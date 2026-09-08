@@ -77,7 +77,7 @@ Cannot:
 
 | Watchdog | Tested T3 Code versions |
 | --- | --- |
-| 0.1.x | 0.0.38 |
+| 0.1.x, 0.2.x | 0.0.38 |
 
 `t3-quota-watchdog version` prints the range the binary was built with.
 Newer T3 versions run in monitoring-only mode until either a release adds
