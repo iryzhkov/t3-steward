@@ -130,6 +130,18 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("migrate state database: %w", err)
 		}
 	}
+	for _, col := range []struct{ name, ddl string }{
+		{"kind", "ALTER TABLE usage_samples ADD COLUMN kind TEXT NOT NULL DEFAULT ''"},
+		{"cumulative_tokens", "ALTER TABLE usage_samples ADD COLUMN cumulative_tokens INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if has, err := s.hasColumn("usage_samples", col.name); err != nil {
+			return err
+		} else if !has {
+			if _, err := s.db.Exec(col.ddl); err != nil {
+				return fmt.Errorf("migrate usage_samples.%s: %w", col.name, err)
+			}
+		}
+	}
 	var n int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM schema_version`).Scan(&n); err != nil {
 		return err
@@ -140,6 +152,32 @@ func (s *Store) migrate() error {
 		}
 	}
 	return nil
+}
+
+// hasColumn reports whether a table has a column.
+func (s *Store) hasColumn(table, column string) (bool, error) {
+	rows, err := s.db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notnull int
+			dflt    any
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // LoadBucket returns the stored state for a key; a zero state when none.
@@ -443,17 +481,17 @@ func (s *Store) Observations(ctx context.Context, from, to time.Time) ([]domain.
 // RecordUsage stores one token usage sample. Duplicates are ignored.
 func (s *Store) RecordUsage(ctx context.Context, u domain.UsageSample) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO usage_samples(event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO usage_samples(event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd, kind, cumulative_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.SourceEventID, u.ProviderInstanceID, u.ThreadID, u.Model, u.ObservedAt.UTC().Format(time.RFC3339Nano),
-		u.InputTokens, u.CacheWriteTokens, u.CacheReadTokens, u.OutputTokens, u.CostUSD)
+		u.InputTokens, u.CacheWriteTokens, u.CacheReadTokens, u.OutputTokens, u.CostUSD, u.Kind, u.CumulativeTokens)
 	return err
 }
 
 // UsageSamples returns samples in [from, to), oldest first.
 func (s *Store) UsageSamples(ctx context.Context, from, to time.Time) ([]domain.UsageSample, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd
+		`SELECT event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd, kind, cumulative_tokens
 		 FROM usage_samples WHERE observed_at >= ? AND observed_at < ? ORDER BY observed_at`,
 		from.UTC().Format(time.RFC3339Nano), to.UTC().Format(time.RFC3339Nano))
 	if err != nil {
@@ -466,7 +504,7 @@ func (s *Store) UsageSamples(ctx context.Context, from, to time.Time) ([]domain.
 			at string
 			u  domain.UsageSample
 		)
-		if err := rows.Scan(&u.SourceEventID, &u.ProviderInstanceID, &u.ThreadID, &u.Model, &at, &u.InputTokens, &u.CacheWriteTokens, &u.CacheReadTokens, &u.OutputTokens, &u.CostUSD); err != nil {
+		if err := rows.Scan(&u.SourceEventID, &u.ProviderInstanceID, &u.ThreadID, &u.Model, &at, &u.InputTokens, &u.CacheWriteTokens, &u.CacheReadTokens, &u.OutputTokens, &u.CostUSD, &u.Kind, &u.CumulativeTokens); err != nil {
 			return nil, err
 		}
 		u.ObservedAt, _ = time.Parse(time.RFC3339Nano, at)

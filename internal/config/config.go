@@ -174,6 +174,15 @@ type Notifications struct {
 	Desktop bool `yaml:"desktop"`
 }
 
+// Report configures the consumption report.
+type Report struct {
+	// Peak is the schedule treated as peak hours, local time.
+	Peak string `yaml:"peak"`
+	// Remotes are SSH hosts running the watchdog whose data the report
+	// merges in (same provider account on several machines).
+	Remotes []string `yaml:"remotes"`
+}
+
 // Config is the full configuration.
 type Config struct {
 	T3            T3            `yaml:"t3"`
@@ -183,6 +192,7 @@ type Config struct {
 	Overrides     []Override    `yaml:"overrides"`
 	Messages      Messages      `yaml:"messages"`
 	Notifications Notifications `yaml:"notifications"`
+	Report        Report        `yaml:"report"`
 	// StatePath is the SQLite database. Empty means the platform default.
 	StatePath string `yaml:"state_path"`
 	// LogLevel is debug, info, warn or error.
@@ -236,6 +246,7 @@ func Default() Config {
 	c.Messages.Warn = DefaultWarnMessage
 	c.Messages.Drain = DefaultDrainMessage
 	c.Notifications.Desktop = true
+	c.Report.Peak = "Mon-Fri 09:00-17:00"
 	c.LogLevel = "info"
 	return c
 }

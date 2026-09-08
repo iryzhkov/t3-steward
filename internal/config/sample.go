@@ -105,6 +105,13 @@ messages:
   drain: |
     Provider quota is nearly exhausted (T3 quota watchdog): "{{.LimitName}}" is at {{.UsedPercent}}% and resets at {{.ResetsAt}}. Stop spawning subagents now. Cancel or finish active subagents, collect their results, write a short checkpoint of the current state and remaining work, then stop. The session will be interrupted in {{.GracePeriod}} if it is still running.
 
+report:
+  # Hours treated as "peak" by "t3-quota-watchdog report" (local time).
+  peak: "Mon-Fri 09:00-17:00"
+  # SSH hosts that run the watchdog against the same provider accounts;
+  # the report merges their readings and token samples with this host's.
+  remotes: []
+
 notifications:
   # Desktop notification (notify-send on Linux) when a stop fails or when
   # a thread is stopped or resumed.

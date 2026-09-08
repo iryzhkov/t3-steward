@@ -304,7 +304,19 @@ type UsageSample struct {
 	OutputTokens       int64     `json:"outputTokens"`
 	// CostUSD is the provider's own cost figure when it reports one.
 	CostUSD float64 `json:"costUsd"`
+	// Kind is "call" for one API call or "turn" for a whole turn. Turn
+	// samples carry exact per-model counts; call samples carry timing.
+	Kind string `json:"kind"`
+	// CumulativeTokens is the provider's running total for the thread when
+	// it reports one, used to drop repeated notifications of the same call.
+	CumulativeTokens int64 `json:"cumulativeTokens,omitempty"`
 }
+
+// Sample kinds.
+const (
+	UsageKindCall = "call"
+	UsageKindTurn = "turn"
+)
 
 // FreshTokens are the tokens that are not cache reads: input, cache
 // writes and output. Cache reads are reported separately because their

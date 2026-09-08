@@ -1,15 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/iryzhkov/t3-quota-watchdog/internal/config"
 	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
 	"github.com/iryzhkov/t3-quota-watchdog/internal/report"
 	"github.com/iryzhkov/t3-quota-watchdog/internal/source/providerlog"
@@ -24,14 +27,159 @@ type reportFlags struct {
 	fromLogs bool
 	doImport bool
 	asJSON   bool
+	remotes  string
+	local    bool
+}
+
+// exportFile is the interchange format between hosts: everything one host
+// knows about the period.
+type exportFile struct {
+	Version      int                    `json:"version"`
+	Host         string                 `json:"host"`
+	From         time.Time              `json:"from"`
+	To           time.Time              `json:"to"`
+	Observations []domain.Observation   `json:"observations"`
+	Usage        []domain.UsageSample   `json:"usage"`
+	Threads      map[string]threadEntry `json:"threads"`
+}
+
+type threadEntry struct {
+	Title string `json:"title"`
+	Model string `json:"model"`
+}
+
+// collect gathers this host's observations, usage samples and thread index
+// for the period, optionally scanning the provider logs.
+func collect(ctx context.Context, cfg config.Config, from, to time.Time, fromLogs, doImport bool) (*exportFile, *sqlite.Store, error) {
+	statePath, err := cfg.ResolveStatePath()
+	if err != nil {
+		return nil, nil, err
+	}
+	store, err := sqlite.Open(statePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	observations, err := store.Observations(ctx, from, to)
+	if err != nil {
+		store.Close()
+		return nil, nil, err
+	}
+	usage, err := store.UsageSamples(ctx, from, to)
+	if err != nil {
+		store.Close()
+		return nil, nil, err
+	}
+	host, _ := os.Hostname()
+	out := &exportFile{Version: 1, Host: host, From: from, To: to, Threads: map[string]threadEntry{}}
+	for _, o := range observations {
+		if o.Model != "" {
+			out.Threads[o.ThreadID] = threadEntry{Model: o.Model}
+		}
+	}
+	logger := newLogger("error")
+	if client, _, err := connect(cfg, logger); err == nil {
+		cctx, cancel := context.WithTimeout(ctx, cfg.T3.RequestTimeout.D())
+		if threads, err := fullSnapshot(cctx, client); err == nil {
+			for _, t := range threads {
+				out.Threads[t.ID] = threadEntry{Title: t.Title, Model: t.Model}
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "note: thread titles unavailable (%v)\n", err)
+		}
+		cancel()
+	}
+	if fromLogs {
+		dataDir, err := cfg.ResolveDataDir()
+		if err != nil {
+			store.Close()
+			return nil, nil, err
+		}
+		scanned, scannedUsage, err := scanProviderLogs(t3api.ProviderLogDir(dataDir), from)
+		if err != nil {
+			store.Close()
+			return nil, nil, err
+		}
+		observations = mergeObservations(observations, scanned)
+		usage = mergeUsage(usage, scannedUsage)
+		fmt.Fprintf(os.Stderr, "%s: scanned provider logs: %d observations, %d usage samples\n", host, len(scanned), len(scannedUsage))
+	}
+	for i := range observations {
+		if observations[i].Model == "" {
+			observations[i].Model = out.Threads[observations[i].ThreadID].Model
+		}
+	}
+	for i := range usage {
+		if usage[i].Model == "" {
+			usage[i].Model = out.Threads[usage[i].ThreadID].Model
+		}
+	}
+	if doImport {
+		for _, o := range observations {
+			_ = store.RecordObservation(ctx, o)
+		}
+		for _, u := range usage {
+			_ = store.RecordUsage(ctx, u)
+		}
+		fmt.Fprintf(os.Stderr, "%s: imported into %s\n", host, statePath)
+	}
+	out.Observations = observations
+	out.Usage = usage
+	return out, store, nil
+}
+
+// cmdExport prints this host's data as JSON for another host's report.
+func cmdExport(g globalFlags, days int, fromLogs bool) error {
+	cfg, err := loadConfig(g)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	data, store, err := collect(context.Background(), cfg, now.Add(-time.Duration(days)*24*time.Hour), now.Add(time.Hour), fromLogs, false)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	enc := json.NewEncoder(os.Stdout)
+	return enc.Encode(data)
+}
+
+// fetchRemote runs `export` on another host over SSH.
+func fetchRemote(ctx context.Context, host string, days int, fromLogs bool) (*exportFile, error) {
+	args := fmt.Sprintf("t3-quota-watchdog export --days %d", days)
+	if fromLogs {
+		args += " --from-logs"
+	}
+	// A login shell so that ~/.local/bin is on PATH on the remote side.
+	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", host, "bash", "-lc", "'"+args+"'")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("%s: %v: %s", host, err, strings.TrimSpace(stderr.String()))
+	}
+	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+	}
+	var data exportFile
+	if err := json.Unmarshal(stdout.Bytes(), &data); err != nil {
+		return nil, fmt.Errorf("%s: decode export: %w", host, err)
+	}
+	if data.Host == "" {
+		data.Host = host
+	}
+	return &data, nil
 }
 
 // cmdReport builds the consumption breakdown from the state database,
-// optionally merged with a full scan of the provider logs.
+// optionally merged with a full scan of the provider logs and with the
+// exports of other hosts.
 func cmdReport(g globalFlags, f reportFlags) error {
 	cfg, err := loadConfig(g)
 	if err != nil {
 		return err
+	}
+	if f.peak == "" {
+		f.peak = cfg.Report.Peak
 	}
 	peak, err := report.ParseSchedule(f.peak)
 	if err != nil {
@@ -41,81 +189,47 @@ func cmdReport(g globalFlags, f reportFlags) error {
 	from := now.Add(-time.Duration(f.days) * 24 * time.Hour)
 	ctx := context.Background()
 
-	statePath, err := cfg.ResolveStatePath()
-	if err != nil {
-		return err
-	}
-	store, err := sqlite.Open(statePath)
+	local, store, err := collect(ctx, cfg, from, now.Add(time.Hour), f.fromLogs, f.doImport)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
-	observations, err := store.Observations(ctx, from, now.Add(time.Hour))
-	if err != nil {
-		return err
-	}
-	usage, err := store.UsageSamples(ctx, from, now.Add(time.Hour))
-	if err != nil {
-		return err
-	}
-
-	// Thread id to model and title, from the T3 server when reachable.
-	models := map[string]string{}
+	sources := []string{local.Host + " (local)"}
+	observations := local.Observations
+	usage := local.Usage
 	titles := map[string]string{}
-	for _, o := range observations {
-		if o.Model != "" {
-			models[o.ThreadID] = o.Model
-		}
+	for id, t := range local.Threads {
+		titles[id] = t.Title
 	}
-	logger := newLogger("error")
-	if client, _, err := connect(cfg, logger); err == nil {
-		cctx, cancel := context.WithTimeout(ctx, cfg.T3.RequestTimeout.D())
-		if snap, err := fullSnapshot(cctx, client); err == nil {
-			for _, t := range snap {
-				models[t.ID] = t.Model
-				titles[t.ID] = t.Title
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "note: thread titles unavailable (%v)\n", err)
+	remotes := cfg.Report.Remotes
+	if f.remotes != "" {
+		remotes = strings.Split(f.remotes, ",")
+	}
+	if f.local {
+		remotes = nil
+	}
+	for _, host := range remotes {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
 		}
+		rctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		data, err := fetchRemote(rctx, host, f.days, f.fromLogs)
 		cancel()
-	}
-
-	if f.fromLogs {
-		dataDir, err := cfg.ResolveDataDir()
 		if err != nil {
-			return err
+			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+			sources = append(sources, host+" (unavailable)")
+			continue
 		}
-		scanned, scannedUsage, err := scanProviderLogs(t3api.ProviderLogDir(dataDir), from)
-		if err != nil {
-			return err
-		}
-		observations = mergeObservations(observations, scanned)
-		usage = mergeUsage(usage, scannedUsage)
-		fmt.Fprintf(os.Stderr, "scanned provider logs: %d observations, %d usage samples\n", len(scanned), len(scannedUsage))
-	}
-	for i := range observations {
-		if observations[i].Model == "" {
-			observations[i].Model = models[observations[i].ThreadID]
-		}
-	}
-	for i := range usage {
-		if usage[i].Model == "" {
-			usage[i].Model = models[usage[i].ThreadID]
-		}
-	}
-	if f.doImport {
-		n := 0
-		for _, o := range observations {
-			if err := store.RecordObservation(ctx, o); err == nil {
-				n++
+		sources = append(sources, data.Host)
+		observations = mergeObservations(observations, data.Observations)
+		usage = mergeUsage(usage, data.Usage)
+		for id, t := range data.Threads {
+			if t.Title != "" {
+				titles[id] = t.Title + " @" + data.Host
 			}
 		}
-		for _, u := range usage {
-			_ = store.RecordUsage(ctx, u)
-		}
-		fmt.Fprintf(os.Stderr, "imported into %s\n", statePath)
 	}
 	if f.bucket != "" {
 		var filtered []domain.Observation
@@ -130,6 +244,7 @@ func cmdReport(g globalFlags, f reportFlags) error {
 		Observations: observations, Usage: usage, Location: time.Local, Peak: peak,
 		From: from, To: now, ThreadTitles: titles,
 	})
+	rep.Sources = sources
 	if f.asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -139,8 +254,7 @@ func cmdReport(g globalFlags, f reportFlags) error {
 	return nil
 }
 
-// fullSnapshot lists every thread, archived ones included, from the
-// orchestration read model.
+// fullSnapshot lists every thread, archived ones included.
 func fullSnapshot(ctx context.Context, client *t3api.Client) ([]domain.Thread, error) {
 	threads, err := client.ThreadIndex(ctx)
 	if err != nil {

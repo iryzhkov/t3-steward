@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-08
+
+### Changed
+
+- Attribution splits each rise across the calls of every thread active in
+  the interval, weighted by a per-token cost fitted from the data;
+  subagent usage (Claude per-turn totals) is spread over the turn so it
+  is no longer "outside T3".
+
+### Added
+
+- `export` command and `report.remotes` / `--remotes`: merge readings and
+  token samples from other machines that share the provider account.
+- Per-call Claude samples from `message_delta` events; `kind` and
+  `cumulative_tokens` columns (migrated automatically).
+
 ## [0.2.0] - 2026-09-08
 
 ### Added

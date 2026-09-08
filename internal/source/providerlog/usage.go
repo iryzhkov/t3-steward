@@ -71,6 +71,9 @@ type codexTokenUsage struct {
 			InputTokens           int64 `json:"inputTokens"`
 			OutputTokens          int64 `json:"outputTokens"`
 		} `json:"last"`
+		Total *struct {
+			TotalTokens int64 `json:"totalTokens"`
+		} `json:"total"`
 	} `json:"tokenUsage"`
 }
 
@@ -97,6 +100,7 @@ func ParseUsageJSON(body []byte, fallbackObservedAt time.Time) ([]domain.UsageSa
 	base := domain.UsageSample{ProviderInstanceID: instance, ThreadID: rec.ThreadID, ObservedAt: observedAt, SourceEventID: rec.EventID}
 	switch rec.Raw.Method {
 	case "claude/result":
+		// One sample per model for the whole turn: exact model split.
 		var p struct {
 			ModelUsage map[string]claudeModelUsage `json:"modelUsage"`
 		}
@@ -106,6 +110,7 @@ func ParseUsageJSON(body []byte, fallbackObservedAt time.Time) ([]domain.UsageSa
 		var out []domain.UsageSample
 		for model, u := range p.ModelUsage {
 			s := base
+			s.Kind = domain.UsageKindTurn
 			s.Model = model
 			if u.CanonicalModel != "" {
 				s.Model = u.CanonicalModel
@@ -119,6 +124,30 @@ func ParseUsageJSON(body []byte, fallbackObservedAt time.Time) ([]domain.UsageSa
 			out = append(out, s)
 		}
 		return out, nil
+	case "claude/stream_event/message_delta":
+		// One sample per API call, subagent calls included: exact timing,
+		// model left to the thread's selection.
+		var p struct {
+			Event struct {
+				Usage *struct {
+					InputTokens              int64 `json:"input_tokens"`
+					CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+					CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+					OutputTokens             int64 `json:"output_tokens"`
+				} `json:"usage"`
+			} `json:"event"`
+		}
+		if err := json.Unmarshal(rec.Raw.Payload, &p); err != nil || p.Event.Usage == nil {
+			return nil, ErrNotUsage
+		}
+		u := p.Event.Usage
+		s := base
+		s.Kind = domain.UsageKindCall
+		s.InputTokens = u.InputTokens
+		s.CacheWriteTokens = u.CacheCreationInputTokens
+		s.CacheReadTokens = u.CacheReadInputTokens
+		s.OutputTokens = u.OutputTokens
+		return []domain.UsageSample{s}, nil
 	case "thread/tokenUsage/updated":
 		var p codexTokenUsage
 		if err := json.Unmarshal(rec.Raw.Payload, &p); err != nil || p.TokenUsage.Last == nil {
@@ -126,6 +155,7 @@ func ParseUsageJSON(body []byte, fallbackObservedAt time.Time) ([]domain.UsageSa
 		}
 		last := p.TokenUsage.Last
 		s := base
+		s.Kind = domain.UsageKindCall
 		// Codex reports cached tokens as part of inputTokens.
 		s.InputTokens = last.InputTokens - last.CachedInputTokens
 		if s.InputTokens < 0 {
@@ -134,6 +164,9 @@ func ParseUsageJSON(body []byte, fallbackObservedAt time.Time) ([]domain.UsageSa
 		s.CacheWriteTokens = last.CacheWriteInputTokens
 		s.CacheReadTokens = last.CachedInputTokens
 		s.OutputTokens = last.OutputTokens
+		if p.TokenUsage.Total != nil {
+			s.CumulativeTokens = p.TokenUsage.Total.TotalTokens
+		}
 		return []domain.UsageSample{s}, nil
 	default:
 		return nil, ErrNotUsage

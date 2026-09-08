@@ -48,6 +48,7 @@ Commands:
   status             Show bucket states, resume intents and recent actions.
   replay <file>      Feed recorded quota events through the policy engine (no T3 needed).
   report             Consumption by peak/off-peak hours, hour of day, model and thread.
+  export             Print this host's readings and token samples as JSON for another host's report.
   install-service    Install a per-user background service (Linux systemd).
   uninstall-service  Remove the background service.
   version            Print the version.
@@ -125,10 +126,15 @@ func run(args []string) error {
 		fs.IntVar(&limit, "limit", 20, "number of recent actions to show")
 		fs.BoolVar(&asJSON, "json", false, "print JSON")
 		fs.BoolVar(&showAll, "all", false, "include resumed and cancelled intents")
+	case "export":
+		fs.IntVar(&rf.days, "days", 14, "period to export, in days")
+		fs.BoolVar(&rf.fromLogs, "from-logs", false, "also scan the provider logs")
 	case "report":
 		fs.IntVar(&rf.days, "days", 14, "period to report, in days")
 		fs.StringVar(&rf.bucket, "bucket", "", "only buckets whose key contains this text")
-		fs.StringVar(&rf.peak, "peak", "Mon-Fri 09:00-17:00", "peak schedule, local time")
+		fs.StringVar(&rf.peak, "peak", "", "peak schedule, local time (default: report.peak in the configuration)")
+		fs.StringVar(&rf.remotes, "remotes", "", "comma-separated SSH hosts to merge (default: report.remotes)")
+		fs.BoolVar(&rf.local, "local", false, "ignore configured remotes")
 		fs.BoolVar(&rf.fromLogs, "from-logs", false, "also scan the provider logs (rotated files included)")
 		fs.BoolVar(&rf.doImport, "import", false, "store scanned observations in the state database")
 		fs.BoolVar(&rf.asJSON, "json", false, "print JSON")
@@ -155,6 +161,8 @@ func run(args []string) error {
 			return errors.New("replay needs exactly one file argument")
 		}
 		return cmdReplay(g, fs.Arg(0), speed, fromState, enable)
+	case "export":
+		return cmdExport(g, rf.days, rf.fromLogs)
 	case "report":
 		return cmdReport(g, rf)
 	case "install-service":

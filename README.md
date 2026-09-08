@@ -77,7 +77,7 @@ Cannot:
 
 | Watchdog | Tested T3 Code versions |
 | --- | --- |
-| 0.1.x, 0.2.x | 0.0.38 |
+| 0.1.x to 0.3.x | 0.0.38 |
 
 `t3-quota-watchdog version` prints the range the binary was built with.
 Newer T3 versions run in monitoring-only mode until either a release adds
@@ -365,14 +365,43 @@ t3-quota-watchdog report --bucket five_hour --json
 ```
 
 Consumption is the rise of the reported percentage between consecutive
-readings of one reset window, attributed to the thread and model whose turn
-produced the reading. Totals are exact; the split between threads running
-at the same time is approximate. Two normalizations separate "I use it more
-at that time" from "it costs more at that time": consumption per active
-hour, and consumption per million fresh tokens (input, cache writes and
-output; cache reads are listed separately because their quota weight is
-unknown). Claude reports per-model token counts and a cost figure per turn;
-Codex reports per-call counts for the thread's model.
+readings of one reset window. Each rise is split across the API calls made
+during that interval, by every thread, in proportion to their estimated
+quota cost, so concurrent threads share a rise instead of the last reporter
+taking all of it. Rises with no calls at all are reported as "outside T3 or
+no token data" (the phone, a bare CLI, another machine).
+
+The cost per token type is fitted from your own data: a non-negative least
+squares fit of hourly rises against hourly token counts (input, cache
+write, cache read, output). The report prints the fitted weights and the
+R²; when the data is too thin it falls back to list-price ratios and says
+so. Claude reports per-call usage only for the parent agent and per-turn
+totals per model (subagents included); the part of a turn that the parent's
+calls do not explain is spread over the turn's duration, which is what
+keeps subagent-heavy sessions attributable. Codex reports per-call counts
+for the thread's model.
+
+`actual/est` compares consumption with the fitted cost of the tokens in
+each band; a value well above 1 in one band means that band costs more per
+token than the fit expects.
+
+### Several machines, one account
+
+When the same provider account is used from several machines, each
+machine sees only its own threads, and a rise caused elsewhere shows up as
+"outside T3". List the other hosts and the report merges their data over
+SSH (each host runs `t3-quota-watchdog export`):
+
+```yaml
+report:
+  peak: "Mon-Fri 09:00-17:00"
+  remotes: [gaming-pc, normandy, homelab]
+```
+
+```sh
+t3-quota-watchdog report --from-logs            # merges configured remotes
+t3-quota-watchdog report --remotes a,b --local  # override, or local only
+```
 
 `--import` stores scanned log data in the state database, which keeps
 history for `policy.history_retention` (90 days by default) after the logs
@@ -386,7 +415,8 @@ t3-quota-watchdog check
 t3-quota-watchdog run [--dry-run | --no-dry-run] [--log-level debug]
 t3-quota-watchdog status [--json] [--all] [--limit N]
 t3-quota-watchdog replay FILE [--resume] [--speed 0.1]
-t3-quota-watchdog report [--days 14] [--peak "Mon-Fri 09:00-17:00"] [--bucket TEXT] [--from-logs] [--import] [--json]
+t3-quota-watchdog report [--days 14] [--peak "Mon-Fri 09:00-17:00"] [--bucket TEXT] [--from-logs] [--import] [--remotes a,b] [--local] [--json]
+t3-quota-watchdog export [--days 14] [--from-logs]
 t3-quota-watchdog install-service [--force] [--enable]
 t3-quota-watchdog uninstall-service
 t3-quota-watchdog version
