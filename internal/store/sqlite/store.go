@@ -67,6 +67,30 @@ var migrations = []string{
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	);`,
+	`CREATE TABLE IF NOT EXISTS observations (
+		bucket TEXT NOT NULL,
+		observed_at TEXT NOT NULL,
+		used_percent REAL NOT NULL,
+		resets_at TEXT NOT NULL,
+		event_id TEXT NOT NULL,
+		thread_id TEXT NOT NULL,
+		model TEXT NOT NULL,
+		PRIMARY KEY (bucket, event_id)
+	);`,
+	`CREATE INDEX IF NOT EXISTS observations_at ON observations(observed_at);`,
+	`CREATE TABLE IF NOT EXISTS usage_samples (
+		event_id TEXT PRIMARY KEY,
+		provider TEXT NOT NULL,
+		thread_id TEXT NOT NULL,
+		model TEXT NOT NULL,
+		observed_at TEXT NOT NULL,
+		input_tokens INTEGER NOT NULL,
+		cache_write_tokens INTEGER NOT NULL,
+		cache_read_tokens INTEGER NOT NULL,
+		output_tokens INTEGER NOT NULL,
+		cost_usd REAL NOT NULL
+	);`,
+	`CREATE INDEX IF NOT EXISTS usage_samples_at ON usage_samples(observed_at);`,
 }
 
 // Open opens or creates the database, creating the parent directory with
@@ -368,5 +392,95 @@ func (s *Store) GetKV(ctx context.Context, key string) (string, bool, error) {
 func (s *Store) SetKV(ctx context.Context, key, value string) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO kv(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+// RecordObservation stores one accepted quota reading. Duplicate event ids
+// per bucket are ignored.
+func (s *Store) RecordObservation(ctx context.Context, o domain.Observation) error {
+	resets := ""
+	if o.ResetsAt != nil {
+		resets = o.ResetsAt.UTC().Format(time.RFC3339)
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO observations(bucket, observed_at, used_percent, resets_at, event_id, thread_id, model)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		o.Key.String(), o.ObservedAt.UTC().Format(time.RFC3339Nano), o.UsedPercent, resets, o.EventID, o.ThreadID, o.Model)
+	return err
+}
+
+// Observations returns readings in [from, to), oldest first.
+func (s *Store) Observations(ctx context.Context, from, to time.Time) ([]domain.Observation, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT bucket, observed_at, used_percent, resets_at, event_id, thread_id, model FROM observations
+		 WHERE observed_at >= ? AND observed_at < ? ORDER BY observed_at`,
+		from.UTC().Format(time.RFC3339Nano), to.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Observation
+	for rows.Next() {
+		var (
+			bucket, at, resets string
+			o                  domain.Observation
+		)
+		if err := rows.Scan(&bucket, &at, &o.UsedPercent, &resets, &o.EventID, &o.ThreadID, &o.Model); err != nil {
+			return nil, err
+		}
+		o.Key = domain.ParseBucketKey(bucket)
+		o.ObservedAt, _ = time.Parse(time.RFC3339Nano, at)
+		if resets != "" {
+			if t, err := time.Parse(time.RFC3339, resets); err == nil {
+				o.ResetsAt = &t
+			}
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// RecordUsage stores one token usage sample. Duplicates are ignored.
+func (s *Store) RecordUsage(ctx context.Context, u domain.UsageSample) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO usage_samples(event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.SourceEventID, u.ProviderInstanceID, u.ThreadID, u.Model, u.ObservedAt.UTC().Format(time.RFC3339Nano),
+		u.InputTokens, u.CacheWriteTokens, u.CacheReadTokens, u.OutputTokens, u.CostUSD)
+	return err
+}
+
+// UsageSamples returns samples in [from, to), oldest first.
+func (s *Store) UsageSamples(ctx context.Context, from, to time.Time) ([]domain.UsageSample, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd
+		 FROM usage_samples WHERE observed_at >= ? AND observed_at < ? ORDER BY observed_at`,
+		from.UTC().Format(time.RFC3339Nano), to.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.UsageSample
+	for rows.Next() {
+		var (
+			at string
+			u  domain.UsageSample
+		)
+		if err := rows.Scan(&u.SourceEventID, &u.ProviderInstanceID, &u.ThreadID, &u.Model, &at, &u.InputTokens, &u.CacheWriteTokens, &u.CacheReadTokens, &u.OutputTokens, &u.CostUSD); err != nil {
+			return nil, err
+		}
+		u.ObservedAt, _ = time.Parse(time.RFC3339Nano, at)
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// PruneHistory deletes observations and usage samples older than the cutoff.
+func (s *Store) PruneHistory(ctx context.Context, before time.Time) error {
+	cutoff := before.UTC().Format(time.RFC3339Nano)
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM observations WHERE observed_at < ?`, cutoff); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM usage_samples WHERE observed_at < ?`, cutoff)
 	return err
 }

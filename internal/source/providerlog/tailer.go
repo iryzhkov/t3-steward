@@ -39,6 +39,9 @@ type Options struct {
 	// MaxLineBytes bounds a single record.
 	MaxLineBytes int
 	Logger       *slog.Logger
+	// Usage receives token usage samples when set. Only live records are
+	// delivered; the bootstrap scan does not replay history.
+	Usage chan<- domain.UsageSample
 }
 
 // Tailer follows every events.*.log file in a directory.
@@ -395,6 +398,19 @@ func (t *Tailer) readNew(ctx context.Context, fs *fileState, output chan<- domai
 		}
 		line = bytes.TrimRight(line, "\r\n")
 		if len(line) == 0 {
+			continue
+		}
+		if t.opts.Usage != nil && bytes.Contains(line, []byte(UsageEventType)) {
+			if usage, uerr := ParseUsageLine(string(line)); uerr == nil {
+				for _, u := range usage {
+					select {
+					case t.opts.Usage <- u:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+			fs.offset = consumed - int64(len(fs.partial))
 			continue
 		}
 		snaps, perr := ParseLine(string(line))

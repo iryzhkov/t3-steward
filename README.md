@@ -343,6 +343,41 @@ Intents are cancelled, not resumed, when a human interacted with the thread
 after the stop, when the thread was archived or deleted, or after
 `resume.max_intent_age`.
 
+## Consumption report
+
+`report` shows where the quota went: peak versus off-peak hours, hour of day
+on weekdays and weekends, model and thread, plus the latest window. It reads
+the observations the daemon stores and, with `--from-logs`, the full
+provider logs (rotated files included), so it works on day one:
+
+```sh
+t3-quota-watchdog report --from-logs --days 14 --peak "Mon-Fri 09:00-17:00"
+t3-quota-watchdog report --bucket five_hour --json
+```
+
+```text
+== claudeAgent/claude/five_hour: 511% consumed over 873 observations
+              consumed active-h %/active-h fresh-tokens   %/1M-fresh      %/USD
+   peak           208%       19       10.9        59.4M         3.50       0.08
+   off-peak       303%       57        5.3        67.1M         4.51       0.10
+   Per fresh token, peak hours cost 0.78x off-peak hours.
+   Per active hour, peak hours consume 2.06x off-peak hours.
+```
+
+Consumption is the rise of the reported percentage between consecutive
+readings of one reset window, attributed to the thread and model whose turn
+produced the reading. Totals are exact; the split between threads running
+at the same time is approximate. Two normalizations separate "I use it more
+at that time" from "it costs more at that time": consumption per active
+hour, and consumption per million fresh tokens (input, cache writes and
+output; cache reads are listed separately because their quota weight is
+unknown). Claude reports per-model token counts and a cost figure per turn;
+Codex reports per-call counts for the thread's model.
+
+`--import` stores scanned log data in the state database, which keeps
+history for `policy.history_retention` (90 days by default) after the logs
+themselves rotate away.
+
 ## Commands
 
 ```text
@@ -351,6 +386,7 @@ t3-quota-watchdog check
 t3-quota-watchdog run [--dry-run | --no-dry-run] [--log-level debug]
 t3-quota-watchdog status [--json] [--all] [--limit N]
 t3-quota-watchdog replay FILE [--resume] [--speed 0.1]
+t3-quota-watchdog report [--days 14] [--peak "Mon-Fri 09:00-17:00"] [--bucket TEXT] [--from-logs] [--import] [--json]
 t3-quota-watchdog install-service [--force] [--enable]
 t3-quota-watchdog uninstall-service
 t3-quota-watchdog version

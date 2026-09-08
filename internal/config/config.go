@@ -104,6 +104,9 @@ type Policy struct {
 	// MaxSnapshotAge discards observations older than this at startup, so a
 	// daemon that was down for a long time does not act on history.
 	MaxSnapshotAge Duration `yaml:"max_snapshot_age"`
+	// HistoryRetention is how long quota observations and token samples are
+	// kept for reports.
+	HistoryRetention Duration `yaml:"history_retention"`
 }
 
 // Resume configures automatic resumption.
@@ -217,6 +220,7 @@ func Default() Config {
 	c.Policy.StopNewSessions = true
 	c.Policy.IgnoreWindows = []string{"overage"}
 	c.Policy.MaxSnapshotAge = Duration(12 * time.Hour)
+	c.Policy.HistoryRetention = Duration(90 * 24 * time.Hour)
 	c.Resume.Enabled = false
 	c.Resume.BelowPercent = 50
 	c.Resume.ResetConfirmationRequired = true
@@ -401,6 +405,9 @@ func (c *Config) Validate() error {
 	}
 	if c.T3.TokenTTL.D() < time.Minute {
 		return errors.New("t3: token_ttl must be at least 1m")
+	}
+	if c.Policy.HistoryRetention.D() < 24*time.Hour {
+		return errors.New("policy: history_retention must be at least 24h")
 	}
 	if c.T3.RequestTimeout.D() <= 0 {
 		return errors.New("t3: request_timeout must be positive")

@@ -58,6 +58,8 @@ policy:
   ignore_windows: ["overage"]
   # Observations older than this are ignored at startup.
   max_snapshot_age: 12h
+  # Quota readings and token samples kept for "t3-quota-watchdog report".
+  history_retention: 2160h
 
 resume:
   # Automatic resume is opt-in and only ever touches threads that the

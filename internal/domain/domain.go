@@ -47,6 +47,20 @@ func (k BucketKey) String() string {
 	return strings.Join(parts, "/")
 }
 
+// ParseBucketKey inverts String. Unknown shapes yield a key with only the
+// provider instance set.
+func ParseBucketKey(s string) BucketKey {
+	parts := strings.Split(s, "/")
+	switch len(parts) {
+	case 3:
+		return BucketKey{ProviderInstanceID: parts[0], LimitID: parts[1], Window: parts[2]}
+	case 4:
+		return BucketKey{ProviderInstanceID: parts[0], AccountID: parts[1], LimitID: parts[2], Window: parts[3]}
+	default:
+		return BucketKey{ProviderInstanceID: s}
+	}
+}
+
 // QuotaSnapshot is one observation of one bucket.
 type QuotaSnapshot struct {
 	Key BucketKey `json:"key"`
@@ -261,6 +275,42 @@ type LogPosition struct {
 	Path   string
 	Inode  uint64
 	Offset int64
+}
+
+// Observation is one accepted quota reading kept for history and reports.
+type Observation struct {
+	Key         BucketKey  `json:"key"`
+	ObservedAt  time.Time  `json:"observedAt"`
+	UsedPercent float64    `json:"usedPercent"`
+	ResetsAt    *time.Time `json:"resetsAt"`
+	EventID     string     `json:"eventId"`
+	// ThreadID and Model identify the session whose turn produced the
+	// reading, for attributing quota consumption.
+	ThreadID string `json:"threadId"`
+	Model    string `json:"model"`
+}
+
+// UsageSample is a token count reported by a provider for one API call or
+// one turn, used to normalize quota consumption by work done.
+type UsageSample struct {
+	ProviderInstanceID string    `json:"providerInstanceId"`
+	ThreadID           string    `json:"threadId"`
+	Model              string    `json:"model"`
+	ObservedAt         time.Time `json:"observedAt"`
+	SourceEventID      string    `json:"sourceEventId"`
+	InputTokens        int64     `json:"inputTokens"`
+	CacheWriteTokens   int64     `json:"cacheWriteTokens"`
+	CacheReadTokens    int64     `json:"cacheReadTokens"`
+	OutputTokens       int64     `json:"outputTokens"`
+	// CostUSD is the provider's own cost figure when it reports one.
+	CostUSD float64 `json:"costUsd"`
+}
+
+// FreshTokens are the tokens that are not cache reads: input, cache
+// writes and output. Cache reads are reported separately because their
+// weight in provider quotas is unknown.
+func (u UsageSample) FreshTokens() int64 {
+	return u.InputTokens + u.CacheWriteTokens + u.OutputTokens
 }
 
 // EpochFor derives the reset epoch identifier from a reset time.

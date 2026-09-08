@@ -236,6 +236,22 @@ func (c *Client) ShellSnapshot(ctx context.Context) (*ShellSnapshot, error) {
 	return &s, nil
 }
 
+// ThreadIndex lists every thread including archived ones from the full
+// orchestration read model, decoding only identity fields.
+func (c *Client) ThreadIndex(ctx context.Context) ([]ThreadShell, error) {
+	raw, err := c.do(ctx, http.MethodGet, "/api/orchestration/snapshot", nil, true)
+	if err != nil {
+		return nil, err
+	}
+	var s struct {
+		Threads []ThreadShell `json:"threads"`
+	}
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, fmt.Errorf("decode snapshot: %w", err)
+	}
+	return s.Threads, nil
+}
+
 // ThreadDetail fetches one thread with its last turnLimit turns.
 func (c *Client) ThreadDetail(ctx context.Context, threadID string, turnLimit int) (*ThreadDetail, error) {
 	path := "/api/orchestration/threads/" + url.PathEscape(threadID)

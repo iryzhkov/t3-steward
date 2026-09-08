@@ -47,6 +47,7 @@ Commands:
   run                Run the watchdog in the foreground.
   status             Show bucket states, resume intents and recent actions.
   replay <file>      Feed recorded quota events through the policy engine (no T3 needed).
+  report             Consumption by peak/off-peak hours, hour of day, model and thread.
   install-service    Install a per-user background service (Linux systemd).
   uninstall-service  Remove the background service.
   version            Print the version.
@@ -110,6 +111,7 @@ func run(args []string) error {
 		speed     float64
 		showAll   bool
 		fromState bool
+		rf        reportFlags
 	)
 	switch cmd {
 	case "install-service":
@@ -123,6 +125,13 @@ func run(args []string) error {
 		fs.IntVar(&limit, "limit", 20, "number of recent actions to show")
 		fs.BoolVar(&asJSON, "json", false, "print JSON")
 		fs.BoolVar(&showAll, "all", false, "include resumed and cancelled intents")
+	case "report":
+		fs.IntVar(&rf.days, "days", 14, "period to report, in days")
+		fs.StringVar(&rf.bucket, "bucket", "", "only buckets whose key contains this text")
+		fs.StringVar(&rf.peak, "peak", "Mon-Fri 09:00-17:00", "peak schedule, local time")
+		fs.BoolVar(&rf.fromLogs, "from-logs", false, "also scan the provider logs (rotated files included)")
+		fs.BoolVar(&rf.doImport, "import", false, "store scanned observations in the state database")
+		fs.BoolVar(&rf.asJSON, "json", false, "print JSON")
 	case "replay":
 		fs.Float64Var(&speed, "speed", 0, "sleep between events scaled by this factor (0 = no sleep)")
 		fs.BoolVar(&fromState, "with-state", false, "use the real state database instead of a temporary one")
@@ -146,6 +155,8 @@ func run(args []string) error {
 			return errors.New("replay needs exactly one file argument")
 		}
 		return cmdReplay(g, fs.Arg(0), speed, fromState, enable)
+	case "report":
+		return cmdReport(g, rf)
 	case "install-service":
 		return cmdInstallService(g, force, enable)
 	case "uninstall-service":
@@ -417,11 +428,14 @@ func cmdRun(g globalFlags) error {
 		return err
 	}
 	control := t3control.New(client, logger, cfg.Policy.DryRun)
+	usageCh := make(chan domain.UsageSample, 256)
 	d := daemon.New(cfg, logger, store, control, providerlog.NewTailer(providerlog.Options{
 		Dir:          t3api.ProviderLogDir(dataDir),
 		ScanInterval: cfg.Polling.LogScanInterval.D(),
 		Logger:       logger,
+		Usage:        usageCh,
 	}, store))
+	d.Usage = usageCh
 
 	// Version gate, retried with backoff until the server answers.
 	backoff := time.Second

@@ -50,8 +50,14 @@ type Daemon struct {
 
 	now func() time.Time
 
+	// Usage optionally receives token samples from the source; they are
+	// stored for reports.
+	Usage <-chan domain.UsageSample
+
 	mu      sync.Mutex
 	engines map[domain.BucketKey]*policy.Engine
+	// threadModels caches thread id to model id for attribution.
+	threadModels map[string]string
 	// lastResume is the last resume dispatch per provider instance.
 	lastResume map[string]time.Time
 }
@@ -72,6 +78,7 @@ func New(cfg config.Config, logger *slog.Logger, store *sqlite.Store, control Co
 		now:            time.Now,
 		engines:        map[domain.BucketKey]*policy.Engine{},
 		lastResume:     map[string]time.Time{},
+		threadModels:   map[string]string{},
 	}
 }
 
@@ -83,6 +90,24 @@ func (d *Daemon) Tick(ctx context.Context) { d.tickBuckets(ctx) }
 
 // Poll reconciles thread state and resume intents. Exposed for replay.
 func (d *Daemon) Poll(ctx context.Context) { d.pollThreads(ctx) }
+
+// modelFor returns the cached model id of a thread, or empty.
+func (d *Daemon) modelFor(threadID string) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.threadModels[threadID]
+}
+
+// recordUsage stores a token sample, filling in the thread's model when
+// the provider did not name one.
+func (d *Daemon) recordUsage(ctx context.Context, u domain.UsageSample) {
+	if u.Model == "" {
+		u.Model = d.modelFor(u.ThreadID)
+	}
+	if err := d.store.RecordUsage(ctx, u); err != nil {
+		d.log.Warn("record usage sample", "err", err)
+	}
+}
 
 // Run executes the loop until ctx is cancelled.
 func (d *Daemon) Run(ctx context.Context) error {
@@ -123,12 +148,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return nil
 		case snap := <-snapshots:
 			d.HandleSnapshot(ctx, snap)
+		case u := <-d.Usage:
+			d.recordUsage(ctx, u)
 		case <-tick.C:
 			d.tickBuckets(ctx)
 		case <-poll.C:
 			d.pollThreads(ctx)
 		case <-prune.C:
 			_ = d.store.PruneEvents(ctx, d.now().Add(-7*24*time.Hour))
+			_ = d.store.PruneHistory(ctx, d.now().Add(-d.cfg.Policy.HistoryRetention.D()))
 		}
 	}
 }
@@ -237,6 +265,12 @@ func (d *Daemon) HandleSnapshot(ctx context.Context, snap domain.QuotaSnapshot) 
 		log.Error("save bucket state", "err", err)
 		return
 	}
+	if err := d.store.RecordObservation(ctx, domain.Observation{
+		Key: snap.Key, ObservedAt: snap.ObservedAt, UsedPercent: snap.UsedPercent, ResetsAt: snap.ResetsAt,
+		EventID: snap.SourceEventID, ThreadID: snap.ThreadID, Model: d.modelFor(snap.ThreadID),
+	}); err != nil {
+		log.Warn("record observation", "err", err)
+	}
 	resets := "none"
 	if snap.ResetsAt != nil {
 		resets = snap.ResetsAt.Local().Format(time.RFC3339)
@@ -285,6 +319,13 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 		d.log.Warn("cannot list T3 threads", "err", err)
 		return
 	}
+	d.mu.Lock()
+	for _, t := range threads {
+		if t.Model != "" {
+			d.threadModels[t.ID] = t.Model
+		}
+	}
+	d.mu.Unlock()
 	states, err := d.store.ListBuckets(ctx)
 	if err != nil {
 		d.log.Error("list buckets", "err", err)

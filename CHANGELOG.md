@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-08
+
+### Added
+
+- `report` command: quota consumption by peak/off-peak schedule, hour of
+  day, model and thread, normalized per active hour and per million fresh
+  tokens, with `--from-logs` backfill from the provider logs.
+- The daemon records every accepted quota reading and token usage sample
+  (`policy.history_retention`, default 90 days).
+
+### Fixed
+
+- `install-service` no longer claims dry-run is on when it is off.
+- Rotation-by-rename test skipped on Windows, where it cannot pass.
+
 ## [0.1.0] - 2026-09-08
 
 First prerelease.
