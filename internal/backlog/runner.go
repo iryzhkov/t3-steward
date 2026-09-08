@@ -45,6 +45,12 @@ type Options struct {
 	HistoryDays     int
 	DryRun          bool
 	Logger          *slog.Logger
+	// LocalHost is this machine's name as tasks refer to it. Tasks whose
+	// host is empty use DefaultHost; tasks for any other host are handed
+	// to Forward.
+	LocalHost   string
+	DefaultHost string
+	Forward     func(ctx context.Context, host string, task Task) error
 }
 
 // Runner drives the backlog.
@@ -143,7 +149,7 @@ func (r *Runner) load(ctx context.Context) ([]Task, error) {
 			r.save(ctx, st)
 		}
 		// An edited file re-queues a finished or failed task.
-		if t.ModTime.After(st.FileModTime) && (st.Status == StatusDone || st.Status == StatusFailed || st.Status == StatusNeedsInput || st.Status == StatusCancelled) {
+		if t.ModTime.After(st.FileModTime) && (st.Status == StatusDone || st.Status == StatusFailed || st.Status == StatusNeedsInput || st.Status == StatusCancelled || st.Status == StatusForwarded) {
 			st.Status, st.Reason, st.ThreadID, st.Turns = StatusPending, "re-queued after edit", "", 0
 			st.FileModTime = t.ModTime
 			r.save(ctx, st)
@@ -347,6 +353,10 @@ func (r *Runner) dispatchNext(ctx context.Context, tasks []Task, threads map[str
 	r.refreshDemand(ctx, now)
 	for _, t := range pending {
 		st := r.states[t.ID]
+		if host := r.targetHost(t); host != "" {
+			r.forward(ctx, t, st, host)
+			continue
+		}
 		if t.NotBefore != nil && now.Before(*t.NotBefore) {
 			continue
 		}
@@ -378,6 +388,56 @@ func (r *Runner) setReason(ctx context.Context, st *State, reason string) {
 		st.Reason = reason
 		r.save(ctx, st)
 	}
+}
+
+// targetHost returns the remote host a task must be forwarded to, or ""
+// when it runs here.
+func (r *Runner) targetHost(t Task) string {
+	host := strings.TrimSpace(t.Host)
+	if host == "" {
+		host = strings.TrimSpace(r.opts.DefaultHost)
+	}
+	if host == "" || IsLocalHost(host, r.opts.LocalHost) {
+		return ""
+	}
+	return host
+}
+
+// IsLocalHost reports whether a task host name means this machine.
+func IsLocalHost(host, localName string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if h == "" || h == "local" || h == "localhost" {
+		return true
+	}
+	l := strings.ToLower(strings.TrimSpace(localName))
+	if l == "" {
+		return false
+	}
+	// "normandy" matches "omarchy-normandy" and vice versa is not wanted;
+	// accept the exact name or the first label of the host name.
+	return h == l || h == strings.SplitN(l, ".", 2)[0]
+}
+
+// forward hands a task to another host's backlog.
+func (r *Runner) forward(ctx context.Context, t Task, st *State, host string) {
+	if r.opts.Forward == nil {
+		r.setReason(ctx, st, "task is for host "+host+" but forwarding is not configured")
+		return
+	}
+	if r.opts.DryRun {
+		r.setReason(ctx, st, "dry-run: would forward to "+host)
+		return
+	}
+	if err := r.opts.Forward(ctx, host, t); err != nil {
+		r.log.Warn("forward backlog task", "task", t.ID, "host", host, "err", err)
+		r.setReason(ctx, st, "forward to "+host+" failed: "+err.Error())
+		return
+	}
+	st.Status = StatusForwarded
+	st.Reason = "forwarded to " + host + " at " + r.now().Format(time.RFC3339)
+	r.log.Info("backlog task forwarded", "task", t.ID, "host", host)
+	r.record(ctx, t.ID, "", "forwarded to "+host)
+	r.save(ctx, st)
 }
 
 // gateOpen decides whether a task may start now.

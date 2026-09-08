@@ -27,6 +27,8 @@ const (
 	StatusFailed     Status = "failed"
 	StatusCancelled  Status = "cancelled"
 	StatusDisabled   Status = "disabled"
+	// StatusForwarded means another host's runner owns the task now.
+	StatusForwarded Status = "forwarded"
 )
 
 // Task is one backlog item as authored in a markdown file with YAML
@@ -37,7 +39,11 @@ type Task struct {
 	// Project is the T3 project title or id: the workspace the agent
 	// works in.
 	Project string `yaml:"project"`
-	Title   string `yaml:"title"`
+	// Host is the machine whose T3 server runs the task (an SSH alias).
+	// Empty means the configured default; a task for another host is
+	// forwarded into that host's backlog directory.
+	Host  string `yaml:"host"`
+	Title string `yaml:"title"`
 	// Importance 1..5 orders tasks; Difficulty 1..5 seeds the cost and
 	// duration estimates.
 	Importance int `yaml:"importance"`

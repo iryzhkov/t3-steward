@@ -122,6 +122,11 @@ backlog:
   quiet_for: 30m
   long_window_cap_percent: 80   # weekly windows are never pushed past this
   history_days: 56
+  # Tasks name the host that runs them (an SSH alias); default_host runs
+  # the ones that name none. Empty means this machine. host_name is what
+  # tasks call this machine (default: the OS host name).
+  default_host: ""
+  host_name: ""
   # Forecast of your own (interactive) usage, used to decide how much of a
   # window backlog tasks may spend. See "t3-quota-watchdog forecast".
   safety_margin_percent: 10     # always left unused

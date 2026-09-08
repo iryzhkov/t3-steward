@@ -20,12 +20,13 @@ import (
 const backlogUsage = `Usage: t3-quota-watchdog backlog <command> [args]
 
 Commands:
-  list               Tasks with status, estimate and the reason they wait.
+  list [--all]       Tasks with status, estimate and the reason they wait; --all asks report.remotes too.
   show <id>          One task's file and state.
   new <id>           Create a task file from a template and print its path.
   retry <id>         Re-queue a failed, done or needs-input task.
   cancel <id>        Cancel a pending task (the file stays; edit it to re-queue).
   path               Print the task directory.
+  receive <id>       Store a task sent by another host (used by forwarding).
 
 A task is a markdown file <dir>/<id>.md:
 
@@ -39,6 +40,7 @@ A task is a markdown file <dir>/<id>.md:
   deadline: 2026-09-12T00:00:00-07:00     # optional; within 24h bypasses the gate
   max_turns: 3
   gate: true                  # false: run at not_before whenever quota is healthy
+  host: normandy              # run on that host's T3 (default: backlog.default_host, else here)
   ---
   The prompt. Written for an agent that will get no input from you.
 
@@ -78,6 +80,9 @@ func newBacklogRunner(cfg config.Config, store *sqlite.Store, control backlog.Co
 		HistoryDays:     cfg.Backlog.HistoryDays,
 		DryRun:          cfg.Policy.DryRun,
 		Logger:          logger,
+		LocalHost:       localHostName(cfg),
+		DefaultHost:     cfg.Backlog.DefaultHost,
+		Forward:         forwardTask,
 	}, store, control), nil
 }
 
@@ -120,6 +125,11 @@ func cmdBacklog(g globalFlags, args []string) error {
 	case "path":
 		fmt.Println(dir)
 		return nil
+	case "receive":
+		if len(args) != 2 {
+			return errors.New("receive needs a task id")
+		}
+		return cmdBacklogReceive(cfg, dir, args[1])
 	case "new":
 		if len(args) != 2 {
 			return errors.New("new needs a task id")
@@ -143,6 +153,10 @@ func cmdBacklog(g globalFlags, args []string) error {
 		return nil
 	case "list":
 		tasks, errs := backlog.LoadDir(dir)
+		all := len(args) > 1 && args[1] == "--all"
+		if all {
+			fmt.Printf("== %s (local)\n", localHostName(cfg))
+		}
 		for _, e := range errs {
 			fmt.Fprintln(os.Stderr, "warning:", e)
 		}
@@ -188,6 +202,14 @@ func cmdBacklog(g globalFlags, args []string) error {
 		sort.Strings(gone)
 		for _, id := range gone {
 			fmt.Printf("%-24s %-12s %3s %3s %6s %6s  %s\n", id, states[id].Status, "-", "-", "-", "-", "file removed")
+		}
+		if all {
+			for _, host := range cfg.Report.Remotes {
+				fmt.Println()
+				if err := remoteBacklogList(ctx, host); err != nil {
+					fmt.Fprintln(os.Stderr, "warning:", err)
+				}
+			}
 		}
 		return nil
 	case "show":

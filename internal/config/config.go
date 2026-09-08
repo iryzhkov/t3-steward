@@ -199,6 +199,12 @@ type Backlog struct {
 	HistoryDays int `yaml:"history_days"`
 	// Preamble precedes every task prompt; empty means the built-in text.
 	Preamble string `yaml:"preamble"`
+	// HostName is how tasks refer to this machine (default: the OS host
+	// name). "local" and "localhost" always mean this machine.
+	HostName string `yaml:"host_name"`
+	// DefaultHost runs tasks that name no host. Empty means this machine;
+	// another host's SSH alias forwards them there.
+	DefaultHost string `yaml:"default_host"`
 	// SafetyMargin is the percent of a window always left unused.
 	SafetyMargin float64 `yaml:"safety_margin_percent"`
 	// FallbackPerHour is the interactive demand assumed for an hour slot

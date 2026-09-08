@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-08
+
+### Added
+
+- Backlog tasks may name the machine that runs them (`host:`), with
+  `backlog.default_host` for tasks that name none; tasks for another host
+  are forwarded into its backlog over SSH (`backlog receive`), and
+  `backlog list --all` shows every host's queue.
+
 ## [0.4.0] - 2026-09-08
 
 ### Added

@@ -247,3 +247,36 @@ func TestParseTask(t *testing.T) {
 		t.Fatal("importance 9 accepted")
 	}
 }
+
+func TestForwardToOtherHost(t *testing.T) {
+	r, _, control, dir, now := setup(t, 0)
+	var forwarded []string
+	r.opts.LocalHost = "laptop"
+	r.opts.Forward = func(_ context.Context, host string, task Task) error {
+		forwarded = append(forwarded, host+":"+task.ID)
+		return nil
+	}
+	writeTask(t, dir, "remote", "---\nproject: laptop home\nhost: normandy\n---\nremote task")
+	writeTask(t, dir, "here", "---\nproject: laptop home\nhost: laptop\n---\nlocal task")
+	buckets := []domain.BucketState{healthy(5, now.Add(4*time.Hour))}
+	r.Tick(context.Background(), nil, buckets)
+	if len(forwarded) != 1 || forwarded[0] != "normandy:remote" {
+		t.Fatalf("forwarded = %v", forwarded)
+	}
+	if r.States()["remote"].Status != StatusForwarded {
+		t.Fatalf("status = %s", r.States()["remote"].Status)
+	}
+	if len(control.started) != 1 || control.started[0].Title != "local task" {
+		t.Fatalf("started = %+v", control.started)
+	}
+	// A default host that is another machine forwards unnamed tasks.
+	r.opts.DefaultHost = "homelab"
+	writeTask(t, dir, "unnamed", "---\nproject: laptop home\n---\nunnamed task")
+	r.Tick(context.Background(), nil, buckets)
+	if len(forwarded) != 2 || forwarded[1] != "homelab:unnamed" {
+		t.Fatalf("forwarded = %v", forwarded)
+	}
+	if !IsLocalHost("omarchy-normandy", "omarchy-normandy") || IsLocalHost("normandy", "omarchy-normandy") || !IsLocalHost("local", "x") {
+		t.Fatal("IsLocalHost rules")
+	}
+}

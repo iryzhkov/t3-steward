@@ -77,7 +77,7 @@ Cannot:
 
 | Watchdog | Tested T3 Code versions |
 | --- | --- |
-| 0.1.x to 0.4.x | 0.0.38 |
+| 0.1.x to 0.5.x | 0.0.38 |
 
 `t3-quota-watchdog version` prints the range the binary was built with.
 Newer T3 versions run in monitoring-only mode until either a release adds
@@ -455,6 +455,7 @@ not_before: 2026-09-09T00:00:00-07:00   # optional
 deadline: 2026-09-12T00:00:00-07:00     # optional; within 24 h the gate is bypassed
 max_turns: 3
 gate: true               # false: run at not_before whenever quota is healthy
+host: normandy           # optional: run on that machine's T3 (see below)
 ---
 The prompt, written for an agent that gets no input from you.
 ```
@@ -484,6 +485,19 @@ running task is an ordinary thread to the watchdog: the warn, drain and
 stop ladder applies, and a task interrupted for quota resumes with the
 others.
 
+### Running a task on another machine
+
+A task may name the machine whose T3 server should run it (`host:`, an SSH
+alias), and `backlog.default_host` sets the host for tasks that name none.
+A task for another host is forwarded: the local runner copies the file into
+that host's backlog directory over SSH (`t3-quota-watchdog backlog receive`
+on the remote side, so the binary must be on the login shell's PATH there)
+and marks its own copy `forwarded`. The remote runner owns it from then on,
+with its projects, its quota view and its quiet-hours gate.
+`backlog list --all` shows every host's queue (the hosts in
+`report.remotes`). `local` and `localhost` always mean this machine;
+`backlog.host_name` sets what tasks call it (default: the OS host name).
+
 The gate cannot see the phone or a bare CLI session start; it sees them
 as rises without T3 tokens after the fact. A backlog task may therefore
 occasionally start just before you do, and the ladder drains it at 90%
@@ -500,7 +514,7 @@ t3-quota-watchdog replay FILE [--resume] [--speed 0.1]
 t3-quota-watchdog report [--days 14] [--peak "Mon-Fri 09:00-17:00"] [--bucket TEXT] [--from-logs] [--import] [--remotes a,b] [--local] [--json]
 t3-quota-watchdog export [--days 14] [--from-logs]
 t3-quota-watchdog forecast [--days 56] [--bucket TEXT] [--from-logs] [--remotes a,b] [--json]
-t3-quota-watchdog backlog list|new ID|show ID|retry ID|cancel ID|path
+t3-quota-watchdog backlog list [--all]|new ID|show ID|retry ID|cancel ID|receive ID|path
 t3-quota-watchdog install-service [--force] [--enable]
 t3-quota-watchdog uninstall-service
 t3-quota-watchdog version
