@@ -1,8 +1,4 @@
-	// Tuesday 10:00 has no own samples: pooled weekday hour 10 is used,
-	// zeros of the quiet weekdays included (80th percentile of 8 zeros and
-	// 10, 20, 30 is 10).
-	pct, _, ok = d.Forecast(Slot{Weekday: time.Tuesday, Hour: 10})
-	if !ok || pct != 10 {package report
+package report
 
 import (
 	"testing"
@@ -49,9 +45,11 @@ func TestRisesAndDemand(t *testing.T) {
 	if !ok || n != 3 || pct != 30 { // 80th percentile of {10,20,30}
 		t.Fatalf("forecast = %v n=%d ok=%v", pct, n, ok)
 	}
-	// Tuesday 10:00 has no own samples: pooled weekday hour 10 is used.
+	// Tuesday 10:00 has no own samples: pooled weekday hour 10 is used;
+	// zeros of the quiet weekdays are included, so the 80th percentile of
+	// eight zeros and 10, 20, 30 is 10.
 	pct, _, ok = d.Forecast(Slot{Weekday: time.Tuesday, Hour: 10})
-	if !ok || pct != 30 {
+	if !ok || pct != 10 {
 		t.Fatalf("pooled forecast = %v ok=%v", pct, ok)
 	}
 	// Expected demand over Monday 10:30-11:30: half of hour 10 (30) plus
@@ -61,9 +59,10 @@ func TestRisesAndDemand(t *testing.T) {
 	if exp != 15 || fb != 0 {
 		t.Fatalf("expected = %v fallback=%v", exp, fb)
 	}
-	// Out of range hours fall back.
-	exp, fb = d.Expected(mon.AddDate(0, 0, 1).Add(-2*time.Hour), mon.AddDate(0, 0, 1).Add(-time.Hour), loc, 4)
-	if fb == 0 && exp == 0 {
-		t.Fatalf("expected fallback for unobserved hours, got exp=%v fb=%v", exp, fb)
+	// With no history at all every hour falls back.
+	empty := Demand{Key: key, Values: map[Slot][]float64{}, Quantile: 0.8, MinSamples: 3}
+	exp, fb = empty.Expected(mon, mon.Add(2*time.Hour), loc, 4)
+	if exp != 8 || fb != 2*time.Hour {
+		t.Fatalf("empty demand: exp=%v fb=%v", exp, fb)
 	}
 }
