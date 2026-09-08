@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,7 +108,15 @@ func setup(t *testing.T, quiet time.Duration) (*Runner, *fakeStore, *fakeControl
 		projects: []t3control.Project{{ID: "p1", Title: "laptop home", DefaultModelSelection: map[string]any{"instanceId": "claudeAgent", "model": "claude-opus-5"}}},
 		lastText: map[string]string{},
 	}
-	r := New(Options{Dir: dir, QuietFor: quiet, SafetyMargin: 10, FallbackPerHour: 5, MinSamples: 3, LongWindowCap: 80}, store, control)
+	dataDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dataDir, "caches"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cache := `{"instanceId":"claudeAgent","driver":"claudeAgent","enabled":true,"installed":true,"status":"ready","auth":{"status":"authenticated"},"models":[{"slug":"claude-opus-5","capabilities":{"optionDescriptors":[{"id":"effort","type":"select","options":[{"id":"high"},{"id":"medium"},{"id":"low"}]}]}},{"slug":"claude-sonnet-5"}]}`
+	if err := os.WriteFile(filepath.Join(dataDir, "caches", "claudeAgent.json"), []byte(cache), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := New(Options{Dir: dir, QuietFor: quiet, SafetyMargin: 10, FallbackPerHour: 5, MinSamples: 3, LongWindowCap: 80, DataDir: dataDir}, store, control)
 	now := time.Date(2030, 1, 2, 1, 0, 0, 0, time.UTC) // Wednesday 01:00
 	r.SetClock(func() time.Time { return now })
 	return r, store, control, dir, &now
@@ -278,5 +287,27 @@ func TestForwardToOtherHost(t *testing.T) {
 	}
 	if !IsLocalHost("omarchy-normandy", "omarchy-normandy") || IsLocalHost("normandy", "omarchy-normandy") || !IsLocalHost("local", "x") {
 		t.Fatal("IsLocalHost rules")
+	}
+}
+
+func TestValidationParksBadTasks(t *testing.T) {
+	r, _, control, dir, now := setup(t, 0)
+	writeTask(t, dir, "badmodel", "---\nproject: laptop home\nmodel: claude-opus-9\ninstance: claudeAgent\n---\nuses a model that does not exist on this host at all")
+	writeTask(t, dir, "badoption", "---\nproject: laptop home\nmodel: claude-opus-5\ninstance: claudeAgent\noptions: {effort: extreme}\n---\nuses an option value the model does not offer, long enough prompt")
+	writeTask(t, dir, "badproject", "---\nproject: nowhere\n---\nnames a project that does not exist on this host, long enough prompt")
+	writeTask(t, dir, "good", "---\nproject: laptop home\nmodel: claude-sonnet-5\ninstance: claudeAgent\n---\nvalid task with a prompt that is long enough to pass the length warning")
+	buckets := []domain.BucketState{healthy(5, now.Add(4*time.Hour))}
+	r.Tick(context.Background(), nil, buckets)
+	for _, id := range []string{"badmodel", "badoption", "badproject"} {
+		st := r.States()[id]
+		if st.Status != StatusFailed || !strings.HasPrefix(st.Reason, "invalid: ") {
+			t.Fatalf("%s: %+v", id, st)
+		}
+	}
+	if len(control.started) != 1 || control.started[0].ModelSelection["model"] != "claude-sonnet-5" {
+		t.Fatalf("started = %+v", control.started)
+	}
+	if !strings.Contains(r.States()["badmodel"].Reason, "available: claude-opus-5, claude-sonnet-5") {
+		t.Fatalf("reason = %s", r.States()["badmodel"].Reason)
 	}
 }

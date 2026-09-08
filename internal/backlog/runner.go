@@ -51,6 +51,9 @@ type Options struct {
 	LocalHost   string
 	DefaultHost string
 	Forward     func(ctx context.Context, host string, task Task) error
+	// DataDir is T3's base directory, for validating provider instances
+	// and models against T3's caches before a dispatch.
+	DataDir string
 }
 
 // Runner drives the backlog.
@@ -349,6 +352,12 @@ func (r *Runner) dispatchNext(ctx context.Context, tasks []Task, threads map[str
 		r.log.Warn("cannot list projects", "err", err)
 		return
 	}
+	seen := map[string]bool{}
+	for _, th := range threads {
+		if th.ProviderInstanceID != "" {
+			seen[th.ProviderInstanceID] = true
+		}
+	}
 	Order(pending, r.states, now)
 	r.refreshDemand(ctx, now)
 	for _, t := range pending {
@@ -360,16 +369,26 @@ func (r *Runner) dispatchNext(ctx context.Context, tasks []Task, threads map[str
 		if t.NotBefore != nil && now.Before(*t.NotBefore) {
 			continue
 		}
-		project, ok := findProject(projects, t.Project)
-		if !ok {
-			r.setReason(ctx, st, fmt.Sprintf("project %q not found", t.Project))
+		val := Validator{Control: r.control, DataDir: r.opts.DataDir, SeenInstances: seen, Projects: projects, Now: now}
+		result := val.Validate(ctx, t)
+		if !result.OK() {
+			var fails []string
+			for _, f := range result.Findings {
+				if f.Level == "fail" {
+					fails = append(fails, f.Message)
+				}
+			}
+			// A task that cannot run here is parked as failed with the
+			// reasons, so backlog list shows what to fix; editing the file
+			// re-queues it.
+			st.Status, st.Reason = StatusFailed, "invalid: "+strings.Join(fails, "; ")
+			r.log.Warn("backlog task invalid", "task", t.ID, "reason", st.Reason)
+			r.record(ctx, t.ID, "", st.Reason)
+			r.save(ctx, st)
 			continue
 		}
-		selection := modelSelection(t, project)
-		if selection == nil {
-			r.setReason(ctx, st, "no model: set model and instance, or a default model on the project")
-			continue
-		}
+		project := *result.Project
+		selection := result.Selection
 		instance, _ := selection["instanceId"].(string)
 		if runningPerProvider[instance] {
 			continue

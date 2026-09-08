@@ -13,6 +13,7 @@ import (
 
 	"github.com/iryzhkov/t3-quota-watchdog/internal/backlog"
 	"github.com/iryzhkov/t3-quota-watchdog/internal/config"
+	t3control "github.com/iryzhkov/t3-quota-watchdog/internal/control/t3"
 )
 
 var hostLine = regexp.MustCompile(`(?m)^host:.*\n`)
@@ -107,5 +108,77 @@ func remoteBacklogList(ctx context.Context, host string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %v", host, err)
 	}
+	return nil
+}
+
+// cmdBacklogCheck validates a task file (or stdin with "-") against this
+// host, or against the task's host when it names another machine: the
+// project must exist there, the provider instance must be enabled and
+// signed in, the model offered, and the options known. Exit status 1 on
+// any failure.
+func cmdBacklogCheck(cfg config.Config, source string) error {
+	var raw []byte
+	var err error
+	if source == "-" {
+		raw, err = readAll(os.Stdin)
+	} else {
+		raw, err = os.ReadFile(source)
+	}
+	if err != nil {
+		return err
+	}
+	task, err := backlog.Parse(raw)
+	if err != nil {
+		fmt.Printf("fail  %v\n", err)
+		return errors.New("task is invalid")
+	}
+	host := strings.TrimSpace(task.Host)
+	if host == "" {
+		host = strings.TrimSpace(cfg.Backlog.DefaultHost)
+	}
+	if host != "" && !backlog.IsLocalHost(host, localHostName(cfg)) {
+		// Ask the host that would run it. Its own copy is written as local.
+		cctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(cctx, "ssh", "-o", "BatchMode=yes", host, "bash", "-lc", "'t3-quota-watchdog backlog check -'")
+		cmd.Stdin = bytes.NewReader(rewriteHost(raw, host))
+		out, err := cmd.CombinedOutput()
+		fmt.Printf("host  %s\n%s", host, out)
+		if err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && len(out) > 0 {
+				return errors.New("task is invalid on " + host)
+			}
+			fmt.Printf("fail  host %q: cannot run the watchdog there over SSH (%v)\n", host, err)
+			return errors.New("host is not usable")
+		}
+		return nil
+	}
+	logger := newLogger("error")
+	client, dataDir, err := connect(cfg, logger)
+	if err != nil {
+		fmt.Printf("fail  T3 on this host: %v\n", err)
+		return errors.New("T3 is not reachable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.T3.RequestTimeout.D())
+	defer cancel()
+	control := t3control.New(client, logger, true)
+	seen := map[string]bool{}
+	if threads, err := control.ListThreads(ctx); err == nil {
+		for _, t := range threads {
+			seen[t.ProviderInstanceID] = true
+		}
+	} else {
+		fmt.Printf("fail  T3 on this host: %v\n", err)
+		return errors.New("T3 is not reachable")
+	}
+	result := backlog.Validator{Control: control, DataDir: dataDir, SeenInstances: seen}.Validate(ctx, task)
+	for _, f := range result.Findings {
+		fmt.Printf("%-5s %s\n", f.Level, f.Message)
+	}
+	if !result.OK() {
+		return errors.New("task is invalid")
+	}
+	fmt.Printf("ok    task %q would run on %s\n", task.Title, localHostName(cfg))
 	return nil
 }

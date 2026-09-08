@@ -77,7 +77,7 @@ Cannot:
 
 | Watchdog | Tested T3 Code versions |
 | --- | --- |
-| 0.1.x to 0.5.x | 0.0.38 |
+| 0.1.x to 0.6.x | 0.0.38 |
 
 `t3-quota-watchdog version` prints the range the binary was built with.
 Newer T3 versions run in monitoring-only mode until either a release adds
@@ -485,6 +485,16 @@ running task is an ordinary thread to the watchdog: the warn, drain and
 stop ladder applies, and a task interrupted for quota resumes with the
 others.
 
+### Checking a task
+
+`t3-quota-watchdog backlog check <file>` validates a task against the host
+that would run it (over SSH when the task names another host): the project
+exists, the provider instance is enabled and signed in, the model is one it
+offers, the options are ones the model knows. It reads T3's provider caches
+(`<data_dir>/caches/<instance>.json`), so it works for every provider T3
+knows, Codex, Claude and OpenCode alike. The runner runs the same check
+before a dispatch and parks an invalid task as `failed: invalid: ...`.
+
 ### Running a task on another machine
 
 A task may name the machine whose T3 server should run it (`host:`, an SSH
@@ -514,7 +524,7 @@ t3-quota-watchdog replay FILE [--resume] [--speed 0.1]
 t3-quota-watchdog report [--days 14] [--peak "Mon-Fri 09:00-17:00"] [--bucket TEXT] [--from-logs] [--import] [--remotes a,b] [--local] [--json]
 t3-quota-watchdog export [--days 14] [--from-logs]
 t3-quota-watchdog forecast [--days 56] [--bucket TEXT] [--from-logs] [--remotes a,b] [--json]
-t3-quota-watchdog backlog list [--all]|new ID|show ID|retry ID|cancel ID|receive ID|path
+t3-quota-watchdog backlog list [--all]|new ID|check FILE|show ID|retry ID|cancel ID|receive ID|path
 t3-quota-watchdog install-service [--force] [--enable]
 t3-quota-watchdog uninstall-service
 t3-quota-watchdog version

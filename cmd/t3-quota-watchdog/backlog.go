@@ -26,6 +26,7 @@ Commands:
   retry <id>         Re-queue a failed, done or needs-input task.
   cancel <id>        Cancel a pending task (the file stays; edit it to re-queue).
   path               Print the task directory.
+  check <file|->     Validate a task: project, provider instance, model, options, host.
   receive <id>       Store a task sent by another host (used by forwarding).
 
 A task is a markdown file <dir>/<id>.md:
@@ -63,7 +64,7 @@ Describe the task for an agent that will get no input from you. Say what
 `
 
 // newBacklogRunner builds the runner from the configuration.
-func newBacklogRunner(cfg config.Config, store *sqlite.Store, control backlog.Control, logger *slog.Logger) (*backlog.Runner, error) {
+func newBacklogRunner(cfg config.Config, store *sqlite.Store, control backlog.Control, logger *slog.Logger, dataDir string) (*backlog.Runner, error) {
 	dir, err := cfg.ResolveBacklogDir()
 	if err != nil {
 		return nil, err
@@ -83,6 +84,7 @@ func newBacklogRunner(cfg config.Config, store *sqlite.Store, control backlog.Co
 		LocalHost:       localHostName(cfg),
 		DefaultHost:     cfg.Backlog.DefaultHost,
 		Forward:         forwardTask,
+		DataDir:         dataDir,
 	}, store, control), nil
 }
 
@@ -125,6 +127,11 @@ func cmdBacklog(g globalFlags, args []string) error {
 	case "path":
 		fmt.Println(dir)
 		return nil
+	case "check":
+		if len(args) != 2 {
+			return errors.New("check needs a task file path, or - for stdin")
+		}
+		return cmdBacklogCheck(cfg, args[1])
 	case "receive":
 		if len(args) != 2 {
 			return errors.New("receive needs a task id")

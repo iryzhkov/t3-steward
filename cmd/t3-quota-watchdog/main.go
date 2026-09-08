@@ -475,7 +475,7 @@ func cmdRun(g globalFlags) error {
 	}, store))
 	d.Usage = usageCh
 	if cfg.Backlog.Enabled {
-		runner, err := newBacklogRunner(cfg, store, control, logger)
+		runner, err := newBacklogRunner(cfg, store, control, logger, dataDir)
 		if err != nil {
 			return err
 		}
