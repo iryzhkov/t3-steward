@@ -183,6 +183,21 @@ type Report struct {
 	Remotes []string `yaml:"remotes"`
 }
 
+// Backlog configures the quota-gated task runner and its forecast.
+type Backlog struct {
+	// SafetyMargin is the percent of a window always left unused.
+	SafetyMargin float64 `yaml:"safety_margin_percent"`
+	// FallbackPerHour is the interactive demand assumed for an hour slot
+	// with too little history, in percent of the window per hour.
+	FallbackPerHour float64 `yaml:"fallback_per_hour_percent"`
+	// Quantile of past occurrences the forecast covers (0.8 = a heavy
+	// week rather than the average one).
+	Quantile float64 `yaml:"quantile"`
+	// MinSamples is how many past occurrences a slot needs before its
+	// forecast is used instead of the fallback.
+	MinSamples int `yaml:"min_samples"`
+}
+
 // Config is the full configuration.
 type Config struct {
 	T3            T3            `yaml:"t3"`
@@ -193,6 +208,7 @@ type Config struct {
 	Messages      Messages      `yaml:"messages"`
 	Notifications Notifications `yaml:"notifications"`
 	Report        Report        `yaml:"report"`
+	Backlog       Backlog       `yaml:"backlog"`
 	// StatePath is the SQLite database. Empty means the platform default.
 	StatePath string `yaml:"state_path"`
 	// LogLevel is debug, info, warn or error.
@@ -247,6 +263,10 @@ func Default() Config {
 	c.Messages.Drain = DefaultDrainMessage
 	c.Notifications.Desktop = true
 	c.Report.Peak = "Mon-Fri 09:00-17:00"
+	c.Backlog.SafetyMargin = 10
+	c.Backlog.FallbackPerHour = 10
+	c.Backlog.Quantile = 0.8
+	c.Backlog.MinSamples = 3
 	c.LogLevel = "info"
 	return c
 }
@@ -407,6 +427,15 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(r.Prompt) == "" {
 		return errors.New("resume: prompt must not be empty")
+	}
+	if c.Backlog.SafetyMargin < 0 || c.Backlog.SafetyMargin >= 100 {
+		return errors.New("backlog: safety_margin_percent must be between 0 and 100")
+	}
+	if c.Backlog.Quantile <= 0 || c.Backlog.Quantile > 1 {
+		return errors.New("backlog: quantile must be between 0 and 1")
+	}
+	if c.Backlog.MinSamples < 1 {
+		return errors.New("backlog: min_samples must be at least 1")
 	}
 	if c.Polling.SnapshotInterval.D() < time.Second {
 		return errors.New("polling: snapshot_interval must be at least 1s")

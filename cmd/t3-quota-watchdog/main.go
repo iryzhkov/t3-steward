@@ -48,6 +48,7 @@ Commands:
   status             Show bucket states, resume intents and recent actions.
   replay <file>      Feed recorded quota events through the policy engine (no T3 needed).
   report             Consumption by peak/off-peak hours, hour of day, model and thread.
+  forecast           Interactive-demand map by weekday and hour, and current backlog headroom.
   export             Print this host's readings and token samples as JSON for another host's report.
   install-service    Install a per-user background service (Linux systemd).
   uninstall-service  Remove the background service.
@@ -129,6 +130,14 @@ func run(args []string) error {
 	case "export":
 		fs.IntVar(&rf.days, "days", 14, "period to export, in days")
 		fs.BoolVar(&rf.fromLogs, "from-logs", false, "also scan the provider logs")
+	case "forecast":
+		fs.IntVar(&rf.days, "days", 56, "history to learn from, in days")
+		fs.StringVar(&rf.bucket, "bucket", "", "only buckets whose key contains this text")
+		fs.BoolVar(&rf.fromLogs, "from-logs", false, "also scan the provider logs")
+		fs.BoolVar(&rf.doImport, "import", false, "store scanned observations in the state database")
+		fs.StringVar(&rf.remotes, "remotes", "", "comma-separated SSH hosts to merge (default: report.remotes)")
+		fs.BoolVar(&rf.local, "local", false, "ignore configured remotes")
+		fs.BoolVar(&rf.asJSON, "json", false, "print JSON")
 	case "report":
 		fs.IntVar(&rf.days, "days", 14, "period to report, in days")
 		fs.StringVar(&rf.bucket, "bucket", "", "only buckets whose key contains this text")
@@ -163,6 +172,8 @@ func run(args []string) error {
 		return cmdReplay(g, fs.Arg(0), speed, fromState, enable)
 	case "export":
 		return cmdExport(g, rf.days, rf.fromLogs)
+	case "forecast":
+		return cmdForecast(g, rf)
 	case "report":
 		return cmdReport(g, rf)
 	case "install-service":

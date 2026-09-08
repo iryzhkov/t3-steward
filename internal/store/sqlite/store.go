@@ -91,6 +91,12 @@ var migrations = []string{
 		cost_usd REAL NOT NULL
 	);`,
 	`CREATE INDEX IF NOT EXISTS usage_samples_at ON usage_samples(observed_at);`,
+	`CREATE TABLE IF NOT EXISTS dispatched_threads (
+		thread_id TEXT PRIMARY KEY,
+		task_id TEXT NOT NULL,
+		project TEXT NOT NULL,
+		dispatched_at TEXT NOT NULL
+	);`,
 }
 
 // Open opens or creates the database, creating the parent directory with
@@ -521,4 +527,32 @@ func (s *Store) PruneHistory(ctx context.Context, before time.Time) error {
 	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM usage_samples WHERE observed_at < ?`, cutoff)
 	return err
+}
+
+// RegisterDispatchedThread records that a thread was started by the
+// watchdog (backlog runner or scheduled job), so that it is not counted as
+// interactive use.
+func (s *Store) RegisterDispatchedThread(ctx context.Context, threadID, taskID, project string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO dispatched_threads(thread_id, task_id, project, dispatched_at) VALUES (?, ?, ?, ?)`,
+		threadID, taskID, project, at.UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+// DispatchedThreads returns the ids of every thread the watchdog started.
+func (s *Store) DispatchedThreads(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT thread_id, task_id FROM dispatched_threads`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id, task string
+		if err := rows.Scan(&id, &task); err != nil {
+			return nil, err
+		}
+		out[id] = task
+	}
+	return out, rows.Err()
 }

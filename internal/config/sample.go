@@ -112,6 +112,14 @@ report:
   # the report merges their readings and token samples with this host's.
   remotes: []
 
+backlog:
+  # Forecast of your own (interactive) usage, used to decide how much of a
+  # window backlog tasks may spend. See "t3-quota-watchdog forecast".
+  safety_margin_percent: 10     # always left unused
+  fallback_per_hour_percent: 10 # assumed demand for hours with little history
+  quantile: 0.8                 # cover a heavy week, not the average one
+  min_samples: 3                # past occurrences before a slot's history counts
+
 notifications:
   # Desktop notification (notify-send on Linux) when a stop fails or when
   # a thread is stopped or resumed.
