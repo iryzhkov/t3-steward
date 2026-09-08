@@ -58,6 +58,15 @@ policy:
   ignore_windows: ["overage"]
   # Observations older than this are ignored at startup.
   max_snapshot_age: 12h
+  # Projected exhaustion. The burn rate over the last rate_window of
+  # readings gives a time to 100%; warn, drain or stop when it falls below
+  # these, unless the window resets first. reset_exemption suppresses every
+  # action when the reset is that close, because stopping saves nothing.
+  rate_window: 10m
+  warn_eta: 30m
+  drain_eta: 15m
+  stop_eta: 5m
+  reset_exemption: 10m
   # Quota readings and token samples kept for "t3-quota-watchdog report".
   history_retention: 2160h
 

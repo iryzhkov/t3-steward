@@ -185,6 +185,11 @@ func (d *Daemon) engineFor(key domain.BucketKey, limitName string) *policy.Engin
 		GracePeriod:       d.cfg.Policy.GracePeriod.D(),
 		RearmObservations: d.cfg.Policy.RearmObservations,
 		ResetTolerance:    5 * time.Minute,
+		RateWindow:        d.cfg.Policy.RateWindow.D(),
+		WarnETA:           d.cfg.Policy.WarnETA.D(),
+		DrainETA:          d.cfg.Policy.DrainETA.D(),
+		StopETA:           d.cfg.Policy.StopETA.D(),
+		ResetExemption:    d.cfg.Policy.ResetExemption.D(),
 	}
 	for _, o := range d.cfg.Overrides {
 		if !overrideMatches(o, key, limitName) {
@@ -306,6 +311,11 @@ func (d *Daemon) tickBuckets(ctx context.Context) {
 			continue
 		}
 		decision := d.engineFor(st.Key, st.LimitName).Tick(st, now)
+		if decision.Ignored != "" {
+			d.log.Info("grace period expired without a stop", "bucket", st.Key.String(), "reason", decision.Ignored)
+			_ = d.store.SaveBucket(ctx, decision.State)
+			continue
+		}
 		if len(decision.Actions) == 0 {
 			continue
 		}

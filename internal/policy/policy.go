@@ -31,6 +31,16 @@ type Thresholds struct {
 	// two events of the same window. A reset time that moves forward by more
 	// than this is treated as a new window.
 	ResetTolerance time.Duration
+	// RateWindow is how far back readings are used to estimate the burn
+	// rate. Zero disables rate-based escalation.
+	RateWindow time.Duration
+	// WarnETA, DrainETA and StopETA escalate when the projected time to
+	// exhaustion at the current rate falls below them, provided the window
+	// does not reset first.
+	WarnETA, DrainETA, StopETA time.Duration
+	// ResetExemption suppresses every escalation when the window resets
+	// within this long: stopping then saves nothing.
+	ResetExemption time.Duration
 }
 
 // DefaultThresholds are the shipped defaults.
@@ -43,6 +53,11 @@ func DefaultThresholds() Thresholds {
 		GracePeriod:       60 * time.Second,
 		RearmObservations: 2,
 		ResetTolerance:    5 * time.Minute,
+		RateWindow:        10 * time.Minute,
+		WarnETA:           30 * time.Minute,
+		DrainETA:          15 * time.Minute,
+		StopETA:           5 * time.Minute,
+		ResetExemption:    10 * time.Minute,
 	}
 }
 
@@ -63,6 +78,12 @@ func (t Thresholds) Validate() error {
 	}
 	if t.RearmObservations < 1 {
 		return fmt.Errorf("rearm_observations must be at least 1")
+	}
+	if t.RateWindow > 0 && !(t.StopETA < t.DrainETA && t.DrainETA < t.WarnETA) {
+		return fmt.Errorf("stop_eta < drain_eta < warn_eta is required (got %s, %s, %s)", t.StopETA, t.DrainETA, t.WarnETA)
+	}
+	if t.ResetExemption < 0 {
+		return fmt.Errorf("reset_exemption must not be negative")
 	}
 	return nil
 }
@@ -92,6 +113,109 @@ func (e *Engine) level(usedPercent float64) domain.Phase {
 	default:
 		return domain.PhaseNormal
 	}
+}
+
+func (e *Engine) rateWindow() time.Duration {
+	if e.t.RateWindow <= 0 {
+		return 10 * time.Minute
+	}
+	return e.t.RateWindow
+}
+
+// burnRate estimates percent per minute from the readings inside the rate
+// window and the time to exhaustion at that rate. Readings are whole
+// percent and can wobble, so the rate is the rise from the oldest reading
+// in the window to the highest reading, over that span; it needs at least
+// two minutes of history and never goes negative.
+func (e *Engine) burnRate(recent []domain.Reading, now time.Time) (float64, *time.Duration) {
+	if e.t.RateWindow <= 0 || len(recent) < 2 {
+		return 0, nil
+	}
+	cutoff := now.Add(-e.rateWindow())
+	var oldest *domain.Reading
+	high := recent[len(recent)-1]
+	for i := range recent {
+		r := recent[i]
+		if r.At.Before(cutoff) {
+			continue
+		}
+		if oldest == nil {
+			oldest = &recent[i]
+		}
+		if r.Used > high.Used {
+			high = r
+		}
+	}
+	if oldest == nil {
+		return 0, nil
+	}
+	span := high.At.Sub(oldest.At)
+	if span < 2*time.Minute {
+		// Too little history for a rate: use the whole window span so a
+		// burst of readings a few seconds apart does not read as infinite.
+		span = now.Sub(oldest.At)
+		if span < 2*time.Minute {
+			return 0, nil
+		}
+	}
+	rise := high.Used - oldest.Used
+	if rise <= 0 {
+		return 0, nil
+	}
+	rate := rise / span.Minutes()
+	remaining := 100 - high.Used
+	if remaining <= 0 {
+		d := time.Duration(0)
+		return rate, &d
+	}
+	eta := time.Duration(remaining / rate * float64(time.Minute))
+	return rate, &eta
+}
+
+func trimReadings(recent []domain.Reading, cutoff time.Time) []domain.Reading {
+	i := 0
+	for i < len(recent) && recent[i].At.Before(cutoff) {
+		i++
+	}
+	if i == 0 {
+		return recent
+	}
+	return append([]domain.Reading(nil), recent[i:]...)
+}
+
+// wantedLevel combines the percentage ladder with the exhaustion ladder and
+// applies the reset exemption. It returns the level and the reason.
+func (e *Engine) wantedLevel(snap domain.QuotaSnapshot, state domain.BucketState, now time.Time) (domain.Phase, string) {
+	var untilReset time.Duration
+	if snap.ResetsAt != nil {
+		untilReset = snap.ResetsAt.Sub(now)
+		if e.t.ResetExemption > 0 && untilReset > 0 && untilReset <= e.t.ResetExemption {
+			return domain.PhaseNormal, fmt.Sprintf("window resets in %s; nothing to save by stopping", untilReset.Round(time.Second))
+		}
+	}
+	level := e.level(snap.UsedPercent)
+	why := fmt.Sprintf("threshold %.0f%%", e.thresholdFor(level))
+	if state.ExhaustsIn != nil && e.t.RateWindow > 0 && (snap.ResetsAt == nil || *state.ExhaustsIn < untilReset) {
+		eta := *state.ExhaustsIn
+		var etaLevel domain.Phase
+		switch {
+		case eta <= e.t.StopETA:
+			etaLevel = domain.PhaseStopped
+		case eta <= e.t.DrainETA:
+			etaLevel = domain.PhaseDraining
+		case eta <= e.t.WarnETA:
+			etaLevel = domain.PhaseWarned
+		}
+		if etaLevel.Rank() > level.Rank() {
+			level = etaLevel
+			resetNote := "no reset time reported"
+			if snap.ResetsAt != nil {
+				resetNote = fmt.Sprintf("window resets in %s", untilReset.Round(time.Minute))
+			}
+			why = fmt.Sprintf("burning %.1f%%/min, exhausted in about %s, %s", state.RatePerMinute, eta.Round(time.Minute), resetNote)
+		}
+	}
+	return level, why
 }
 
 // Evaluate applies one snapshot to the previous state of the same bucket.
@@ -147,9 +271,19 @@ func (e *Engine) Evaluate(snap domain.QuotaSnapshot, prev domain.BucketState, no
 		}
 	}
 
-	// Escalate to the highest applicable level. Levels below the current
+	// Burn rate over the recent readings of this window.
+	if reset || len(state.Recent) == 0 {
+		state.Recent = nil
+	}
+	state.Recent = append(state.Recent, domain.Reading{At: snap.ObservedAt, Used: snap.UsedPercent})
+	state.RatePerMinute, state.ExhaustsIn = e.burnRate(state.Recent, snap.ObservedAt)
+	state.Recent = trimReadings(state.Recent, snap.ObservedAt.Add(-2*e.rateWindow()))
+
+	// Escalate to the highest applicable level, from the percentage ladder
+	// or from the projected time to exhaustion, unless the window resets
+	// so soon that stopping would save nothing. Levels below the current
 	// phase never fire again within the same epoch.
-	want := e.level(snap.UsedPercent)
+	want, why := e.wantedLevel(snap, state, now)
 	if want.Rank() > state.Phase.Rank() {
 		var kind domain.ActionKind
 		switch want {
@@ -162,7 +296,7 @@ func (e *Engine) Evaluate(snap domain.QuotaSnapshot, prev domain.BucketState, no
 		}
 		actions = append(actions, domain.Action{
 			Kind: kind, Bucket: snap.Key, Snapshot: snap,
-			Reason: fmt.Sprintf("%s at %.0f%% (threshold %.0f%%)", describe(snap), snap.UsedPercent, e.thresholdFor(want)),
+			Reason: fmt.Sprintf("%s at %.0f%%: %s", describe(snap), snap.UsedPercent, why),
 		})
 		state.Phase = want
 		switch want {
@@ -192,6 +326,15 @@ func (e *Engine) Tick(prev domain.BucketState, now time.Time) domain.Decision {
 	state := prev
 	if state.Phase != domain.PhaseDraining || state.DrainDeadline == nil || now.Before(*state.DrainDeadline) {
 		return domain.Decision{State: prev}
+	}
+	if state.ResetsAt != nil && e.t.ResetExemption > 0 {
+		if until := state.ResetsAt.Sub(now); until > 0 && until <= e.t.ResetExemption {
+			// The window resets before a stop would save anything; let the
+			// drain request stand and wait for the reset.
+			state.DrainDeadline = nil
+			state.UpdatedAt = now
+			return domain.Decision{State: state, Ignored: fmt.Sprintf("grace expired but the window resets in %s; not stopping", until.Round(time.Second))}
+		}
 	}
 	state.Phase = domain.PhaseStopped
 	state.DrainDeadline = nil

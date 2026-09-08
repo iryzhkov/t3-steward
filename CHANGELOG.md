@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-08
+
+### Added
+
+- Projected-exhaustion ladder: the burn rate over the last `rate_window`
+  of readings gives a time to 100%, and warn, drain and stop fire when it
+  drops below `warn_eta`, `drain_eta`, `stop_eta`, unless the window resets
+  first.
+- `reset_exemption`: no action when the window resets within it.
+
 ## [0.6.0] - 2026-09-08
 
 ### Added

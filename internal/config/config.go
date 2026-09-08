@@ -104,6 +104,18 @@ type Policy struct {
 	// MaxSnapshotAge discards observations older than this at startup, so a
 	// daemon that was down for a long time does not act on history.
 	MaxSnapshotAge Duration `yaml:"max_snapshot_age"`
+	// RateWindow is how much recent history estimates the burn rate; zero
+	// disables the projected-exhaustion ladder.
+	RateWindow Duration `yaml:"rate_window"`
+	// WarnETA, DrainETA and StopETA escalate when the projected time to
+	// exhaustion at the current burn rate falls below them and the window
+	// does not reset first.
+	WarnETA  Duration `yaml:"warn_eta"`
+	DrainETA Duration `yaml:"drain_eta"`
+	StopETA  Duration `yaml:"stop_eta"`
+	// ResetExemption suppresses warnings and stops when the window resets
+	// within this long: stopping then saves nothing.
+	ResetExemption Duration `yaml:"reset_exemption"`
 	// HistoryRetention is how long quota observations and token samples are
 	// kept for reports.
 	HistoryRetention Duration `yaml:"history_retention"`
@@ -266,6 +278,11 @@ func Default() Config {
 	c.Policy.StopNewSessions = true
 	c.Policy.IgnoreWindows = []string{"overage"}
 	c.Policy.MaxSnapshotAge = Duration(12 * time.Hour)
+	c.Policy.RateWindow = Duration(10 * time.Minute)
+	c.Policy.WarnETA = Duration(30 * time.Minute)
+	c.Policy.DrainETA = Duration(15 * time.Minute)
+	c.Policy.StopETA = Duration(5 * time.Minute)
+	c.Policy.ResetExemption = Duration(10 * time.Minute)
 	c.Policy.HistoryRetention = Duration(90 * 24 * time.Hour)
 	c.Resume.Enabled = false
 	c.Resume.BelowPercent = 50
@@ -411,6 +428,12 @@ func (c *Config) Validate() error {
 	}
 	if p.GracePeriod < 0 {
 		return errors.New("policy: grace_period must not be negative")
+	}
+	if p.RateWindow > 0 && !(p.StopETA < p.DrainETA && p.DrainETA < p.WarnETA) {
+		return fmt.Errorf("policy: stop_eta < drain_eta < warn_eta is required (got %s, %s, %s)", p.StopETA.D(), p.DrainETA.D(), p.WarnETA.D())
+	}
+	if p.ResetExemption < 0 {
+		return errors.New("policy: reset_exemption must not be negative")
 	}
 	switch p.StopMode {
 	case "interrupt", "session-stop":

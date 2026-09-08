@@ -1,6 +1,8 @@
 package policy
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,32 +44,34 @@ func TestLadder(t *testing.T) {
 	e := New(DefaultThresholds())
 	r := resetAt
 	var st domain.BucketState
+	// Readings ten minutes apart keep the burn rate below the exhaustion
+	// ladder; this test is about the percentage ladder alone.
 	d := e.Evaluate(snap(84, base, &r, "1"), st, base)
 	only(t, d)
 	st = d.State
-	d = e.Evaluate(snap(85, base.Add(time.Minute), &r, "2"), st, base.Add(time.Minute))
+	d = e.Evaluate(snap(85, base.Add(10*time.Minute), &r, "2"), st, base.Add(10*time.Minute))
 	only(t, d, domain.ActionWarn)
 	st = d.State
 	if st.Phase != domain.PhaseWarned {
 		t.Fatalf("phase = %s", st.Phase)
 	}
-	d = e.Evaluate(snap(88, base.Add(2*time.Minute), &r, "3"), st, base.Add(2*time.Minute))
+	d = e.Evaluate(snap(88, base.Add(20*time.Minute), &r, "3"), st, base.Add(20*time.Minute))
 	only(t, d)
 	st = d.State
-	d = e.Evaluate(snap(90, base.Add(3*time.Minute), &r, "4"), st, base.Add(3*time.Minute))
+	d = e.Evaluate(snap(90, base.Add(30*time.Minute), &r, "4"), st, base.Add(30*time.Minute))
 	only(t, d, domain.ActionDrain)
 	st = d.State
-	if st.DrainDeadline == nil || !st.DrainDeadline.Equal(base.Add(4*time.Minute)) {
+	if st.DrainDeadline == nil || !st.DrainDeadline.Equal(base.Add(31*time.Minute)) {
 		t.Fatalf("drain deadline = %v", st.DrainDeadline)
 	}
-	d = e.Evaluate(snap(95, base.Add(3*time.Minute+30*time.Second), &r, "5"), st, base.Add(3*time.Minute+30*time.Second))
+	d = e.Evaluate(snap(95, base.Add(30*time.Minute+30*time.Second), &r, "5"), st, base.Add(30*time.Minute+30*time.Second))
 	only(t, d, domain.ActionStop)
 	st = d.State
 	if st.Phase != domain.PhaseStopped || st.DrainDeadline != nil || st.Healthy {
 		t.Fatalf("state after stop = %+v", st)
 	}
 	// Usage decreasing without a reset does not rearm.
-	d = e.Evaluate(snap(40, base.Add(10*time.Minute), &r, "6"), st, base.Add(10*time.Minute))
+	d = e.Evaluate(snap(40, base.Add(40*time.Minute), &r, "6"), st, base.Add(40*time.Minute))
 	only(t, d)
 	if d.State.Phase != domain.PhaseStopped {
 		t.Fatalf("decrease without reset rearmed: %s", d.State.Phase)
@@ -232,3 +236,73 @@ func TestValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestBurnRateDrainsBeforeThresholds(t *testing.T) {
+	e := New(DefaultThresholds())
+	r := base.Add(3 * time.Hour) // window resets in 3 hours
+	var st domain.BucketState
+	// 2.3% per minute for ten minutes: 40% -> 63%. At 63% the percentage
+	// ladder is quiet, but exhaustion is about 16 minutes away: warn, and
+	// a minute later drain.
+	used := 40.0
+	var d domain.Decision
+	for i := 0; i <= 10; i++ {
+		at := base.Add(time.Duration(i) * time.Minute)
+		d = e.Evaluate(snap(used, at, &r, fmt.Sprintf("r%d", i)), st, at)
+		st = d.State
+		used += 2.3
+	}
+	if st.RatePerMinute < 2.2 || st.RatePerMinute > 2.4 {
+		t.Fatalf("rate = %v", st.RatePerMinute)
+	}
+	if st.ExhaustsIn == nil || *st.ExhaustsIn > 17*time.Minute || *st.ExhaustsIn < 15*time.Minute {
+		t.Fatalf("eta = %v", st.ExhaustsIn)
+	}
+	if st.Phase != domain.PhaseWarned {
+		t.Fatalf("phase = %s (%v)", st.Phase, d.Actions)
+	}
+	at := base.Add(12 * time.Minute)
+	d = e.Evaluate(snap(used+2.3, at, &r, "r12"), st, at)
+	only(t, d, domain.ActionDrain)
+	if !strings.Contains(d.Actions[0].Reason, "burning") {
+		t.Fatalf("reason = %s", d.Actions[0].Reason)
+	}
+}
+
+func TestResetExemptionSkipsStopNearReset(t *testing.T) {
+	e := New(DefaultThresholds())
+	r := base.Add(2 * time.Minute)
+	d := e.Evaluate(snap(96, base, &r, "1"), domain.BucketState{}, base)
+	only(t, d)
+	if d.State.Phase != domain.PhaseNormal {
+		t.Fatalf("phase = %s", d.State.Phase)
+	}
+	// And the grace timer does not fire a stop when the reset is that close.
+	far := base.Add(time.Hour)
+	d = e.Evaluate(snap(91, base, &far, "2"), domain.BucketState{}, base)
+	only(t, d, domain.ActionDrain)
+	st := d.State
+	st.ResetsAt = ptrTime(base.Add(3 * time.Minute))
+	d = e.Tick(st, base.Add(2*time.Minute))
+	only(t, d)
+	if d.Ignored == "" || d.State.DrainDeadline != nil {
+		t.Fatalf("tick = %+v", d)
+	}
+}
+
+func TestExhaustionAfterResetIsIgnored(t *testing.T) {
+	e := New(DefaultThresholds())
+	r := base.Add(12 * time.Minute) // resets before the projected exhaustion
+	var st domain.BucketState
+	used := 40.0
+	for i := 0; i <= 10; i++ {
+		at := base.Add(time.Duration(i) * time.Minute)
+		st = e.Evaluate(snap(used, at, &r, fmt.Sprintf("x%d", i)), st, at).State
+		used += 2.3
+	}
+	if st.Phase != domain.PhaseNormal {
+		t.Fatalf("phase = %s although the window resets before exhaustion", st.Phase)
+	}
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }

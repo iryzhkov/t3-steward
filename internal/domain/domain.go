@@ -144,6 +144,21 @@ type BucketState struct {
 	// RecoveredAt is when the bucket last rearmed.
 	RecoveredAt *time.Time `json:"recoveredAt"`
 	UpdatedAt   time.Time  `json:"updatedAt"`
+	// Recent holds the last readings of the current window, for the burn
+	// rate.
+	Recent []Reading `json:"recent,omitempty"`
+	// RatePerMinute is the burn rate over the rate window, percent per
+	// minute; zero when unknown or not rising.
+	RatePerMinute float64 `json:"ratePerMinute"`
+	// ExhaustsIn is the projected time until 100% at the current rate;
+	// nil when no exhaustion is projected.
+	ExhaustsIn *time.Duration `json:"exhaustsIn,omitempty"`
+}
+
+// Reading is one usage reading kept for rate estimation.
+type Reading struct {
+	At   time.Time `json:"at"`
+	Used float64   `json:"used"`
 }
 
 // ActionKind is what the policy engine asked the controller to do.

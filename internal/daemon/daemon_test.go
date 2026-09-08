@@ -160,28 +160,29 @@ func TestWarnDrainStopResumeFlow(t *testing.T) {
 	h.fake.add("a", "codex", "gpt", true)
 	h.fake.add("b", "codex", "gpt", false)       // idle: never touched
 	h.fake.add("c", "claudeAgent", "opus", true) // other provider: never touched
+	// Readings ten minutes apart keep the burn-rate ladder quiet.
 	reset := h.clock.Add(5 * time.Hour)
 
 	h.snap(codexPrimary, 84, reset, "1")
 	if len(h.fake.warnings) != 0 {
 		t.Fatalf("84%% warned: %v", h.fake.warnings)
 	}
-	h.advance(time.Minute)
+	h.advance(10 * time.Minute)
 	h.snap(codexPrimary, 85, reset, "2")
 	if fmt.Sprint(h.fake.warnings) != "[warn:a]" {
 		t.Fatalf("warnings = %v", h.fake.warnings)
 	}
-	h.advance(time.Minute)
+	h.advance(10 * time.Minute)
 	h.snap(codexPrimary, 88, reset, "3")
 	if len(h.fake.warnings) != 1 {
 		t.Fatalf("duplicate warning: %v", h.fake.warnings)
 	}
-	h.advance(time.Minute)
+	h.advance(10 * time.Minute)
 	h.snap(codexPrimary, 90, reset, "4")
 	if fmt.Sprint(h.fake.warnings) != "[warn:a drain:a]" {
 		t.Fatalf("warnings = %v", h.fake.warnings)
 	}
-	h.advance(time.Minute)
+	h.advance(10 * time.Minute)
 	h.snap(codexPrimary, 95, reset, "5")
 	if fmt.Sprint(h.fake.stops) != "[interrupt:a]" {
 		t.Fatalf("stops = %v", h.fake.stops)

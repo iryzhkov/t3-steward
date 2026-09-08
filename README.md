@@ -77,7 +77,7 @@ Cannot:
 
 | Watchdog | Tested T3 Code versions |
 | --- | --- |
-| 0.1.x to 0.6.x | 0.0.38 |
+| 0.1.x to 0.7.x | 0.0.38 |
 
 `t3-quota-watchdog version` prints the range the binary was built with.
 Newer T3 versions run in monitoring-only mode until either a release adds
@@ -301,6 +301,15 @@ normal -> warned -> draining -> stopped -> (reset confirmed) -> normal
 - **90% (drain)**: one message per thread asking it to stop spawning,
   finish or cancel subagents, collect results, write a checkpoint and stop.
   A grace timer starts.
+- **Projected exhaustion** works alongside the percentages. The burn rate
+  over the last ten minutes of readings gives a time to 100%; the same
+  warn, drain and stop actions fire when that falls below 30, 15 and 5
+  minutes (`policy.warn_eta` etc.), but only if the window does not reset
+  first. A session burning 2.3% a minute at 63% gets the drain request at
+  about 16 minutes to exhaustion instead of waiting for 90%.
+- **Reset exemption**: when the window resets within `policy.reset_exemption`
+  (10 minutes), nothing fires, not even at 96%, and an expired grace
+  timer does not stop. Stopping then would save nothing.
 - **95% (stop)** or grace timer expired: `thread.turn.interrupt` for every
   affected running thread, verification that it left the running state,
   bounded retries, escalation to `thread.session.stop`, and a desktop
