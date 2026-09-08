@@ -1,0 +1,67 @@
+version: 2
+
+project_name: t3-quota-watchdog
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: t3-quota-watchdog
+    main: ./cmd/t3-quota-watchdog
+    binary: t3-quota-watchdog
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+      - config.example.yaml
+      - packaging/systemd/t3-quota-watchdog.service
+      - docs/t3-protocol.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  prerelease: auto
+  draft: false
+  footer: |
+    ## Verify a download
+
+    ```sh
+    sha256sum -c --ignore-missing checksums.txt
+    ```
+
+    Tested T3 Code versions are listed in the README compatibility table.

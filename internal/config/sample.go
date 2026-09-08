@@ -1,0 +1,115 @@
+package config
+
+// sampleConfig is written by `init` and shipped as config.example.yaml.
+// Keep it in sync with Default().
+const sampleConfig = `# t3-quota-watchdog configuration.
+#
+# Every value here is the shipped default. Delete what you do not change.
+# Environment variables prefixed with T3_QUOTA_WATCHDOG_ override this file,
+# command-line flags override both.
+
+t3:
+  # Base URL of the local T3 server. Leave empty to discover it from
+  # <data_dir>/userdata/server-runtime.json, which the server writes on start.
+  url: ""
+  # T3 base directory (the parent of "userdata"). Leave empty to use
+  # $T3CODE_HOME or ~/.t3.
+  data_dir: ""
+  # Bearer token. Prefer leaving this empty: the watchdog then mints a
+  # short-lived token by running "t3 auth session issue --token-only" and
+  # refreshes it before it expires. Nothing long-lived is stored on disk.
+  token: ""
+  # Alternative token source: an argv (no shell) that prints a token.
+  # token_command: ["/usr/local/bin/my-token-helper"]
+  # Lifetime requested for minted tokens and the refresh interval.
+  token_ttl: 1h
+  # Explicit path to the t3 CLI when it is not on PATH.
+  t3_binary: ""
+  # T3's control protocol is internal. Control actions are refused when the
+  # server version is outside the tested range unless this is true.
+  allow_unsupported_version: false
+  request_timeout: 30s
+
+policy:
+  # Usage thresholds in percent. warn < drain < stop <= 100 is enforced.
+  warn_percent: 85    # one warning per affected running thread
+  drain_percent: 90   # ask threads to stop subagents and checkpoint
+  stop_percent: 95    # interrupt affected threads
+  # After the drain message, interrupt even without a newer quota event.
+  grace_period: 60s
+  # Usage below which a bucket may rearm (see README, "Reset and rearm").
+  rearm_percent: 50
+  rearm_observations: 2
+  # Dry run: log every decision, send nothing, interrupt nothing.
+  # Set to false only after "t3-quota-watchdog check" and a dry-run soak.
+  dry_run: true
+  # "interrupt" ends the running turn (the thread keeps its session).
+  # "session-stop" ends the provider session as well.
+  stop_mode: interrupt
+  # Retry a stop that did not take effect with a session stop.
+  escalate_to_session_stop: true
+  stop_verify_timeout: 20s
+  stop_retries: 3
+  # Also stop threads that start running while an applicable bucket is
+  # already in the stopped phase.
+  stop_new_sessions: true
+  # Window names (substring match) that are recorded but never act.
+  # Claude reports an "overage" window that is not a hard limit.
+  ignore_windows: ["overage"]
+  # Observations older than this are ignored at startup.
+  max_snapshot_age: 12h
+
+resume:
+  # Automatic resume is opt-in and only ever touches threads that the
+  # watchdog itself stopped.
+  enabled: false
+  # Every bucket that caused the stop must be below this after its reset.
+  below_percent: 50
+  # Never resume on the wall clock alone; wait for a fresh provider snapshot.
+  reset_confirmation_required: true
+  reset_settle_delay: 2m
+  interval_between_threads: 45s
+  max_concurrent_per_provider: 1
+  coordinator_threads_only: true
+  require_checkpoint: false
+  # Intents older than this are cancelled.
+  max_intent_age: 336h
+  # prompt: |
+  #   The provider quota has recovered. Resume from the latest checkpoint...
+
+polling:
+  # How often the T3 thread list is read.
+  snapshot_interval: 15s
+  # Cap on the backoff between failed T3 requests.
+  reconnect_max_delay: 30s
+  # Fallback scan of the provider log directory when file notifications
+  # are missed.
+  log_scan_interval: 10s
+
+# Per-bucket threshold overrides. Match fields are globs; the first match
+# wins. Window names: Codex "primary"/"secondary"; Claude "five_hour",
+# "seven_day", "seven_day_opus", "seven_day_sonnet", ...
+overrides: []
+#  - match:
+#      provider: claudeAgent
+#      window: "seven_day*"
+#    stop_percent: 98
+
+# Message templates. Fields: .LimitName .UsedPercent .ResetsAt .GracePeriod
+# .Window .Provider
+messages:
+  warn: |
+    Provider quota warning from the T3 quota watchdog: "{{.LimitName}}" is at {{.UsedPercent}}% and resets at {{.ResetsAt}}. Do not start new subagents. Ask active subagents to checkpoint and return their results, consolidate the current work, then stop at a clean point.
+  drain: |
+    Provider quota is nearly exhausted (T3 quota watchdog): "{{.LimitName}}" is at {{.UsedPercent}}% and resets at {{.ResetsAt}}. Stop spawning subagents now. Cancel or finish active subagents, collect their results, write a short checkpoint of the current state and remaining work, then stop. The session will be interrupted in {{.GracePeriod}} if it is still running.
+
+notifications:
+  # Desktop notification (notify-send on Linux) when a stop fails or when
+  # a thread is stopped or resumed.
+  desktop: true
+
+# SQLite state database. Empty means $XDG_STATE_HOME/t3-quota-watchdog/state.db
+state_path: ""
+# debug, info, warn, error
+log_level: info
+`
