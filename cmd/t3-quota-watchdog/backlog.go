@@ -171,7 +171,10 @@ func cmdBacklog(g globalFlags, args []string) error {
 		}
 		if len(tasks) == 0 && len(states) == 0 {
 			fmt.Printf("No tasks in %s. Create one with: t3-quota-watchdog backlog new <id>\n", dir)
-			return nil
+			if !all {
+				return nil
+			}
+			tasks = nil
 		}
 		backlog.Order(tasks, states, time.Now())
 		fmt.Printf("%-24s %-12s %3s %3s %6s %6s  %s\n", "id", "status", "imp", "dif", "est%", "meas%", "detail")
