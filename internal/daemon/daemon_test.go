@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -414,5 +415,33 @@ func TestOverrideChangesThresholds(t *testing.T) {
 	h.snap(codexPrimary, 99, reset, "2")
 	if len(h.fake.stops) != 1 {
 		t.Fatalf("stops = %v", h.fake.stops)
+	}
+}
+
+func TestLateThreadsGetTheCurrentNotice(t *testing.T) {
+	h := newHarness(t, nil)
+	h.fake.add("a", "codex", "gpt", true)
+	reset := h.clock.Add(5 * time.Hour)
+	h.snap(codexPrimary, 86, reset, "1")
+	if fmt.Sprint(h.fake.warnings) != "[warn:a]" {
+		t.Fatalf("warnings = %v", h.fake.warnings)
+	}
+	// A thread that starts while the bucket is warned gets the warning on
+	// the next poll; the earlier thread is not warned twice.
+	h.fake.add("late", "codex", "gpt", true)
+	h.poll()
+	h.poll()
+	if fmt.Sprint(h.fake.warnings) != "[warn:a warn:late]" {
+		t.Fatalf("warnings = %v", h.fake.warnings)
+	}
+	// Drain: both running threads get the drain request, once each, and a
+	// thread started during the drain gets it too.
+	h.advance(10 * time.Minute)
+	h.snap(codexPrimary, 91, reset, "2")
+	h.fake.add("later", "codex", "gpt", true)
+	h.poll()
+	got := fmt.Sprint(h.fake.warnings)
+	if !strings.Contains(got, "drain:a") || !strings.Contains(got, "drain:late") || !strings.Contains(got, "drain:later") || strings.Count(got, "drain:a ") > 1 {
+		t.Fatalf("warnings = %v", h.fake.warnings)
 	}
 }

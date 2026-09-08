@@ -352,25 +352,41 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 	}
 	now := d.now()
 	stoppedAny := false
-	if d.cfg.Policy.StopNewSessions {
-		for _, st := range states {
-			if st.Phase != domain.PhaseStopped || d.ignoredWindow(st.Key.Window) {
+	for _, st := range states {
+		if st.Phase == domain.PhaseNormal || d.ignoredWindow(st.Key.Window) {
+			continue
+		}
+		if st.ResetsAt != nil && !st.ResetsAt.After(now) {
+			// The window passed; wait for a fresh snapshot to rearm.
+			continue
+		}
+		var running []domain.Thread
+		for _, t := range threads {
+			if t.Running && t.MatchesBucket(st.Key, st.ModelSelector) {
+				running = append(running, t)
+			}
+		}
+		if len(running) == 0 {
+			continue
+		}
+		snap := snapshotFromState(st)
+		switch st.Phase {
+		case domain.PhaseWarned, domain.PhaseDraining:
+			// A thread that started after the threshold was crossed still
+			// gets the notice; warnThreads sends each kind once per thread
+			// and window, so threads notified earlier are skipped.
+			kind := domain.ActionWarn
+			if st.Phase == domain.PhaseDraining {
+				kind = domain.ActionDrain
+			}
+			d.warnThreads(ctx, running, domain.Action{
+				Kind: kind, Bucket: st.Key, Snapshot: snap,
+				Reason: fmt.Sprintf("thread running while %s is %s at %.0f%%", st.Key, st.Phase, st.UsedPercent),
+			}, st)
+		case domain.PhaseStopped:
+			if !d.cfg.Policy.StopNewSessions {
 				continue
 			}
-			if st.ResetsAt != nil && !st.ResetsAt.After(now) {
-				// The window passed; wait for a fresh snapshot to rearm.
-				continue
-			}
-			var running []domain.Thread
-			for _, t := range threads {
-				if t.Running && t.MatchesBucket(st.Key, st.ModelSelector) {
-					running = append(running, t)
-				}
-			}
-			if len(running) == 0 {
-				continue
-			}
-			snap := snapshotFromState(st)
 			d.stopThreads(ctx, running, domain.Action{
 				Kind: domain.ActionStop, Bucket: st.Key, Snapshot: snap,
 				Reason: fmt.Sprintf("thread started while %s is stopped at %.0f%%", st.Key, st.UsedPercent),

@@ -327,8 +327,11 @@ normal -> warned -> draining -> stopped -> (reset confirmed) -> normal
 - A jump straight from 60% to 97% performs only the highest action.
 - Each notice is sent once per thread per reset window. A daemon restart
   never repeats one.
-- Threads that start running while the bucket is stopped are stopped too
-  (`policy.stop_new_sessions`).
+- Threads that start running after a threshold was crossed are not left
+  out: while the bucket is warned or draining they get the current notice
+  on the next poll, and while it is stopped they are stopped too
+  (`policy.stop_new_sessions`). Each notice goes once per thread and
+  window.
 - **Reset**: the bucket rearms when the provider's reset time has passed
   *and* a fresh snapshot shows usage below `rearm_percent`. Buckets without
   a reset time rearm after two consecutive low observations. The wall clock

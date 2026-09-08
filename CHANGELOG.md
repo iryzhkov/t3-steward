@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-09-08
+
+### Fixed
+
+- Threads that start while a bucket is already warned or draining now
+  receive the warn or drain message on the next poll instead of nothing
+  until the stop.
+
 ## [0.8.1] - 2026-09-08
 
 ### Changed
