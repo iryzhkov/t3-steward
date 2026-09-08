@@ -88,6 +88,10 @@ resume:
   require_checkpoint: false
   # Intents older than this are cancelled.
   max_intent_age: 336h
+  # Readings only come from running turns. When the reset time has passed
+  # by this long with no reading, one stopped thread per provider is resumed
+  # as a probe; its first call confirms the reset (or gets it stopped again).
+  probe_after_reset: 5m
   # prompt: |
   #   The provider quota has recovered. Resume from the latest checkpoint...
 

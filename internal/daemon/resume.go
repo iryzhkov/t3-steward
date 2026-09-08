@@ -125,6 +125,13 @@ func (d *Daemon) advanceResumes(ctx context.Context, threads []domain.Thread, st
 		d.resumeOne(ctx, intent, thread, now)
 		launched[provider]++
 		d.lastResume[provider] = now
+		// Remember a probe so only one thread per provider tests a reset
+		// that no reading has confirmed yet.
+		for _, key := range intent.Buckets {
+			if st, ok := byKey[key]; ok && st.ResetsAt != nil && !st.ObservedAt.After(*st.ResetsAt) && now.After(*st.ResetsAt) {
+				d.probed[key.ProviderInstanceID] = *st.ResetsAt
+			}
+		}
 	}
 }
 
@@ -137,6 +144,14 @@ func (d *Daemon) resumeEligible(intent domain.ResumeIntent, thread domain.Thread
 			return false, fmt.Sprintf("no state for %s", key)
 		}
 		if st.RecoveredAt == nil || !st.RecoveredAt.After(intent.StoppedAt) {
+			// No fresh reading has confirmed the reset. Readings only come
+			// from running turns, so after the reset time has passed by
+			// probe_after_reset one thread per provider is resumed as a
+			// probe; its first call yields the reading that rearms the
+			// bucket, or gets it stopped again at once.
+			if d.probeAllowed(st, now) {
+				continue
+			}
 			return false, fmt.Sprintf("%s has not recovered since the stop", key)
 		}
 		if st.Phase != domain.PhaseNormal {
@@ -155,6 +170,30 @@ func (d *Daemon) resumeEligible(intent domain.ResumeIntent, thread domain.Thread
 	return d.applicableHealthy(thread, byKey)
 }
 
+// probeAllowed reports whether a bucket whose reset time has passed without
+// a fresh reading may be probed by resuming one thread.
+func (d *Daemon) probeAllowed(st domain.BucketState, now time.Time) bool {
+	probe := d.cfg.Resume.ProbeAfterReset.D()
+	if probe <= 0 || st.ResetsAt == nil {
+		return false
+	}
+	if now.Before(st.ResetsAt.Add(probe + d.cfg.Resume.ResetSettleDelay.D())) {
+		return false
+	}
+	// A reading newer than the reset would have rearmed or re-stopped the
+	// bucket; if one exists the probe is not needed.
+	if st.ObservedAt.After(*st.ResetsAt) {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	// One probe per provider per reset.
+	if last, ok := d.probed[st.Key.ProviderInstanceID]; ok && last.Equal(*st.ResetsAt) {
+		return false
+	}
+	return true
+}
+
 // applicableHealthy requires every bucket that applies to the thread to be
 // in the normal phase below the warning threshold.
 func (d *Daemon) applicableHealthy(thread domain.Thread, byKey map[domain.BucketKey]domain.BucketState) (bool, string) {
@@ -165,8 +204,9 @@ func (d *Daemon) applicableHealthy(thread domain.Thread, byKey map[domain.Bucket
 		if !thread.MatchesBucket(key, st.ModelSelector) {
 			continue
 		}
-		if st.ResetsAt != nil && !st.ResetsAt.After(d.now()) && st.Phase == domain.PhaseNormal {
-			// Window expired with no fresh data: not a blocker.
+		if st.ResetsAt != nil && !st.ResetsAt.After(d.now()) {
+			// Window expired with no fresh data: whatever phase it was in
+			// belongs to the old window, so it is not a blocker.
 			continue
 		}
 		if !st.Healthy {

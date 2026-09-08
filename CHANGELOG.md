@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-09-08
+
+### Fixed
+
+- Resume after a reset nobody observed: one stopped thread per provider is
+  resumed as a probe once the reset time has passed by
+  `resume.probe_after_reset`, since readings only come from running turns.
+- A bucket whose window has passed no longer blocks resumes of other
+  threads.
+
 ## [0.8.3] - 2026-09-08
 
 ### Fixed

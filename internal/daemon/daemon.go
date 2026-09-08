@@ -68,6 +68,9 @@ type Daemon struct {
 	threadModels map[string]string
 	// lastResume is the last resume dispatch per provider instance.
 	lastResume map[string]time.Time
+	// probed records, per provider instance, the reset time a probe resume
+	// was sent for.
+	probed map[string]time.Time
 }
 
 // New builds a daemon.
@@ -86,6 +89,7 @@ func New(cfg config.Config, logger *slog.Logger, store *sqlite.Store, control Co
 		now:            time.Now,
 		engines:        map[domain.BucketKey]*policy.Engine{},
 		lastResume:     map[string]time.Time{},
+		probed:         map[string]time.Time{},
 		threadModels:   map[string]string{},
 	}
 }

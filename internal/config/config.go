@@ -149,6 +149,11 @@ type Resume struct {
 	Prompt string `yaml:"prompt"`
 	// MaxIntentAge cancels intents older than this.
 	MaxIntentAge Duration `yaml:"max_intent_age"`
+	// ProbeAfterReset: when the reset time has passed by this long and no
+	// reading has confirmed it (nothing is running to produce one), one
+	// stopped thread per provider is resumed to obtain that reading. Zero
+	// disables the probe.
+	ProbeAfterReset Duration `yaml:"probe_after_reset"`
 }
 
 // Polling configures how often the watchdog reads T3 state.
@@ -297,6 +302,7 @@ func Default() Config {
 	c.Resume.CoordinatorThreadsOnly = true
 	c.Resume.Prompt = DefaultResumePrompt
 	c.Resume.MaxIntentAge = Duration(14 * 24 * time.Hour)
+	c.Resume.ProbeAfterReset = Duration(5 * time.Minute)
 	c.Polling.SnapshotInterval = Duration(15 * time.Second)
 	c.Polling.ReconnectMaxDelay = Duration(30 * time.Second)
 	c.Polling.LogScanInterval = Duration(10 * time.Second)

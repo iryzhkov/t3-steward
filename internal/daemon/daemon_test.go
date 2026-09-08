@@ -203,20 +203,22 @@ func TestWarnDrainStopResumeFlow(t *testing.T) {
 		t.Fatalf("restart repeated actions: stops=%v warnings=%v", h.fake.stops, h.fake.warnings)
 	}
 
-	// Reset time passes with no fresh snapshot: nothing resumes.
-	h2.clock = reset.Add(10 * time.Minute)
+	// Reset time passes with no fresh snapshot: after the probe delay the
+	// one stopped thread is resumed as a probe for the reading.
+	h2.clock = reset.Add(3 * time.Minute)
 	h2.d.Tick(context.Background())
 	h2.poll()
 	if len(h.fake.resumes) != 0 {
-		t.Fatalf("resumed on the wall clock: %v", h.fake.resumes)
+		t.Fatalf("resumed before the probe delay: %v", h.fake.resumes)
 	}
-	// Fresh snapshot below 50% after the reset: rearm, then resume after
-	// the settle delay.
-	h2.snap(codexPrimary, 4, reset.Add(5*time.Hour), "7")
+	h2.clock = reset.Add(10 * time.Minute)
 	h2.poll()
-	if len(h.fake.resumes) != 0 {
-		t.Fatalf("resumed before the settle delay: %v", h.fake.resumes)
+	if fmt.Sprint(h.fake.resumes) != "[a]" {
+		t.Fatalf("probe resumes = %v", h.fake.resumes)
 	}
+	// The probe's first reading, below 50% in the new window, rearms the
+	// bucket; nothing else is waiting, and the probe is not resumed twice.
+	h2.snap(codexPrimary, 4, reset.Add(5*time.Hour), "7")
 	h2.clock = h2.clock.Add(3 * time.Minute)
 	h2.poll()
 	if fmt.Sprint(h.fake.resumes) != "[a]" {
@@ -443,5 +445,39 @@ func TestLateThreadsGetTheCurrentNotice(t *testing.T) {
 	got := fmt.Sprint(h.fake.warnings)
 	if !strings.Contains(got, "drain:a") || !strings.Contains(got, "drain:late") || !strings.Contains(got, "drain:later") || strings.Count(got, "drain:a ") > 1 {
 		t.Fatalf("warnings = %v", h.fake.warnings)
+	}
+}
+
+func TestProbeResumeWhenNoReadingConfirmsTheReset(t *testing.T) {
+	h := newHarness(t, nil)
+	h.fake.add("a", "codex", "gpt", true)
+	h.fake.add("b", "codex", "gpt", true)
+	reset := h.clock.Add(5 * time.Hour)
+	h.snap(codexPrimary, 96, reset, "1")
+	if len(h.fake.stops) != 2 {
+		t.Fatalf("stops = %v", h.fake.stops)
+	}
+	// Reset time passes, nothing runs, no reading arrives.
+	h.clock = reset.Add(3 * time.Minute)
+	h.poll()
+	if len(h.fake.resumes) != 0 {
+		t.Fatalf("resumed before the probe delay: %v", h.fake.resumes)
+	}
+	// After settle delay (2m) plus probe_after_reset (5m): exactly one
+	// probe per provider, and no second one on later polls.
+	h.clock = reset.Add(8 * time.Minute)
+	h.poll()
+	h.clock = h.clock.Add(time.Minute)
+	h.poll()
+	if len(h.fake.resumes) != 1 {
+		t.Fatalf("probe resumes = %v", h.fake.resumes)
+	}
+	// The probe's first reading confirms the reset: the bucket rearms and
+	// the other thread follows after the settle delay and stagger.
+	h.snap(codexPrimary, 2, reset.Add(5*time.Hour), "2")
+	h.clock = h.clock.Add(3 * time.Minute)
+	h.poll()
+	if len(h.fake.resumes) != 2 {
+		t.Fatalf("resumes after confirmation = %v", h.fake.resumes)
 	}
 }

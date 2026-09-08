@@ -365,6 +365,13 @@ Intents are cancelled, not resumed, when a human interacted with the thread
 after the stop, when the thread was archived or deleted, or after
 `resume.max_intent_age`.
 
+Readings only come from running turns, so a reset that nobody is around to
+observe would never be confirmed. When the reset time has passed by
+`resume.probe_after_reset` (5 minutes) with no reading, one stopped thread
+per provider is resumed as a probe: its first call yields the reading that
+rearms the bucket and releases the others, or gets it stopped again at
+once if the window has not actually reset.
+
 ## Consumption report
 
 `report` shows where the quota went: peak versus off-peak hours, hour of day
