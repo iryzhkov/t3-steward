@@ -49,6 +49,7 @@ Commands:
   replay <file>      Feed recorded quota events through the policy engine (no T3 needed).
   report             Consumption by peak/off-peak hours, hour of day, model and thread.
   forecast           Interactive-demand map by weekday and hour, and current backlog headroom.
+  backlog            Manage the quota-gated task backlog (list, new, show, retry, cancel).
   export             Print this host's readings and token samples as JSON for another host's report.
   install-service    Install a per-user background service (Linux systemd).
   uninstall-service  Remove the background service.
@@ -88,6 +89,24 @@ func run(args []string) error {
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil
+	case "backlog":
+		// Sub-commands parse their own arguments; only --config and
+		// --dry-run style globals are shared, taken from the environment here.
+		paths, err := config.DefaultPaths()
+		if err != nil {
+			return err
+		}
+		g := globalFlags{configPath: paths.ConfigFile}
+		var sub []string
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == "--config" && i+1 < len(rest) {
+				g.configPath = rest[i+1]
+				i++
+				continue
+			}
+			sub = append(sub, rest[i])
+		}
+		return cmdBacklog(g, sub)
 	case "version", "--version", "-v":
 		fmt.Printf("t3-quota-watchdog %s (commit %s, built %s, %s/%s, tested with T3 %s..%s)\n",
 			version, commit, date, runtime.GOOS, runtime.GOARCH, compat.MinServerVersion, compat.MaxServerVersion)
@@ -455,6 +474,15 @@ func cmdRun(g globalFlags) error {
 		Usage:        usageCh,
 	}, store))
 	d.Usage = usageCh
+	if cfg.Backlog.Enabled {
+		runner, err := newBacklogRunner(cfg, store, control, logger)
+		if err != nil {
+			return err
+		}
+		d.Backlog = runner
+		dir, _ := cfg.ResolveBacklogDir()
+		logger.Info("backlog runner enabled", "dir", dir, "quiet_for", cfg.Backlog.QuietFor.D())
+	}
 
 	// Version gate, retried with backoff until the server answers.
 	backoff := time.Second

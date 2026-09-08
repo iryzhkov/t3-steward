@@ -113,6 +113,15 @@ report:
   remotes: []
 
 backlog:
+  # Quota-gated task runner: markdown tasks in "dir" run as T3 threads
+  # when no interactive session has run for quiet_for and the forecast
+  # of your own usage leaves room before the next reset.
+  # See "t3-quota-watchdog backlog --help".
+  enabled: false
+  dir: ""                       # default: <config dir>/backlog
+  quiet_for: 30m
+  long_window_cap_percent: 80   # weekly windows are never pushed past this
+  history_days: 56
   # Forecast of your own (interactive) usage, used to decide how much of a
   # window backlog tasks may spend. See "t3-quota-watchdog forecast".
   safety_margin_percent: 10     # always left unused

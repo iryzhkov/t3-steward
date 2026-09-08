@@ -35,6 +35,12 @@ type Controller interface {
 	ResumeThread(ctx context.Context, thread domain.Thread, prompt string) error
 }
 
+// BacklogRunner is ticked with the current threads and bucket states after
+// every poll; the backlog package implements it.
+type BacklogRunner interface {
+	Tick(ctx context.Context, threads []domain.Thread, buckets []domain.BucketState)
+}
+
 // Daemon is the watchdog.
 type Daemon struct {
 	cfg      config.Config
@@ -53,6 +59,8 @@ type Daemon struct {
 	// Usage optionally receives token samples from the source; they are
 	// stored for reports.
 	Usage <-chan domain.UsageSample
+	// Backlog, when set, is ticked after every thread poll.
+	Backlog BacklogRunner
 
 	mu      sync.Mutex
 	engines map[domain.BucketKey]*policy.Engine
@@ -369,6 +377,9 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 		}
 	}
 	d.advanceResumes(ctx, threads, states)
+	if d.Backlog != nil {
+		d.Backlog.Tick(ctx, threads, states)
+	}
 }
 
 func snapshotFromState(st domain.BucketState) domain.QuotaSnapshot {

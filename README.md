@@ -77,7 +77,7 @@ Cannot:
 
 | Watchdog | Tested T3 Code versions |
 | --- | --- |
-| 0.1.x to 0.3.x | 0.0.38 |
+| 0.1.x to 0.4.x | 0.0.38 |
 
 `t3-quota-watchdog version` prints the range the binary was built with.
 Newer T3 versions run in monitoring-only mode until either a release adds
@@ -407,6 +407,88 @@ t3-quota-watchdog report --remotes a,b --local  # override, or local only
 history for `policy.history_retention` (90 days by default) after the logs
 themselves rotate away.
 
+## Forecast and backlog: run queued work when you are not using the quota
+
+The watchdog learns from history when *you* use the quota and can run a
+backlog of unattended tasks in the gaps.
+
+### Forecast
+
+```sh
+t3-quota-watchdog forecast --from-logs
+```
+
+prints, per weekday and hour, how much of the window interactive threads
+consumed (80th percentile over past weeks, so a heavy week is covered), plus
+the headroom right now: usage, forecast demand until the next reset, and
+what is left for backlog work after the safety margin. Threads the watchdog
+dispatched itself are excluded from "interactive", so backlog and scheduled
+runs do not teach it that you work at 3 a.m. While history is thin a slot
+borrows from the same hour on similar days; `?` marks slots with too few
+occurrences, `.` slots never observed.
+
+### Backlog
+
+Enable the runner and drop markdown tasks into the backlog directory:
+
+```yaml
+backlog:
+  enabled: true
+  quiet_for: 30m              # no interactive thread for this long
+  safety_margin_percent: 10   # always left unused
+  long_window_cap_percent: 80 # weekly windows are never pushed past this
+```
+
+```sh
+t3-quota-watchdog backlog new refactor-auth     # writes <config>/backlog/refactor-auth.md
+t3-quota-watchdog backlog list
+```
+
+```markdown
+---
+project: laptop home     # T3 project: the workspace the agent works in
+importance: 4            # 1-5, higher runs first
+difficulty: 3            # 1-5, seeds the cost (5/10/20/35/50% of the window) and duration
+model: claude-opus-5     # optional with instance; else the project's default model
+instance: claudeAgent
+not_before: 2026-09-09T00:00:00-07:00   # optional
+deadline: 2026-09-12T00:00:00-07:00     # optional; within 24 h the gate is bypassed
+max_turns: 3
+gate: true               # false: run at not_before whenever quota is healthy
+---
+The prompt, written for an agent that gets no input from you.
+```
+
+A task starts when all of these hold:
+
+- no interactive thread has run for `quiet_for`;
+- every bucket of the task's provider is healthy;
+- for windows that reset within a day: `usage + task cost landing before the
+  reset + forecast interactive demand until the reset ≤ 100 − safety margin`;
+- for longer windows: `usage + task cost ≤ long_window_cap_percent`;
+- no other backlog task is running on that provider.
+
+Order: tasks with a deadline inside 24 hours first, then importance, then
+the cheaper estimate. The estimate is seeded by difficulty and replaced by
+the measured consumption after the first turn, so it converges per task.
+
+Each task runs as a new T3 thread in the project, `full-access` runtime
+mode, with a preamble that tells the agent to work without asking, do
+everything that does not depend on a decision, leave a handoff, and end
+with one line: `BACKLOG STATUS: done`, `continue`, or `needs-input`.
+`continue` re-dispatches the same thread up to `max_turns`; `needs-input`,
+or the agent asking a question through T3, parks the task with the thread
+link so you can answer it in the app. Edit the file to re-queue a finished
+task, or use `backlog retry`; `backlog cancel` stops a pending one. A
+running task is an ordinary thread to the watchdog: the warn, drain and
+stop ladder applies, and a task interrupted for quota resumes with the
+others.
+
+The gate cannot see the phone or a bare CLI session start; it sees them
+as rises without T3 tokens after the fact. A backlog task may therefore
+occasionally start just before you do, and the ladder drains it at 90%
+like anything else.
+
 ## Commands
 
 ```text
@@ -417,6 +499,8 @@ t3-quota-watchdog status [--json] [--all] [--limit N]
 t3-quota-watchdog replay FILE [--resume] [--speed 0.1]
 t3-quota-watchdog report [--days 14] [--peak "Mon-Fri 09:00-17:00"] [--bucket TEXT] [--from-logs] [--import] [--remotes a,b] [--local] [--json]
 t3-quota-watchdog export [--days 14] [--from-logs]
+t3-quota-watchdog forecast [--days 56] [--bucket TEXT] [--from-logs] [--remotes a,b] [--json]
+t3-quota-watchdog backlog list|new ID|show ID|retry ID|cancel ID|path
 t3-quota-watchdog install-service [--force] [--enable]
 t3-quota-watchdog uninstall-service
 t3-quota-watchdog version

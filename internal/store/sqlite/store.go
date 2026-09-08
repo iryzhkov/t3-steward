@@ -97,6 +97,12 @@ var migrations = []string{
 		project TEXT NOT NULL,
 		dispatched_at TEXT NOT NULL
 	);`,
+	`CREATE TABLE IF NOT EXISTS backlog_tasks (
+		id TEXT PRIMARY KEY,
+		state TEXT NOT NULL,
+		status TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);`,
 }
 
 // Open opens or creates the database, creating the parent directory with
@@ -553,6 +559,38 @@ func (s *Store) DispatchedThreads(ctx context.Context) (map[string]string, error
 			return nil, err
 		}
 		out[id] = task
+	}
+	return out, rows.Err()
+}
+
+// SaveTaskState upserts a backlog task's state, stored as JSON with the
+// status duplicated in a column for listing.
+func (s *Store) SaveTaskState(ctx context.Context, id, status string, state any) error {
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO backlog_tasks(id, state, status, updated_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET state = excluded.state, status = excluded.status, updated_at = excluded.updated_at`,
+		id, string(raw), status, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+// LoadTaskStates returns every stored task state as raw JSON keyed by id.
+func (s *Store) LoadTaskStates(ctx context.Context) (map[string]json.RawMessage, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, state FROM backlog_tasks`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]json.RawMessage{}
+	for rows.Next() {
+		var id, raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			return nil, err
+		}
+		out[id] = json.RawMessage(raw)
 	}
 	return out, rows.Err()
 }

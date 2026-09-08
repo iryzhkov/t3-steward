@@ -271,6 +271,111 @@ func (c *Control) WaitStopped(ctx context.Context, threadID string, timeout time
 	}
 }
 
+// Project is a T3 project as the backlog runner needs it.
+type Project struct {
+	ID                    string
+	Title                 string
+	WorkspaceRoot         string
+	DefaultModelSelection map[string]any
+}
+
+// ListProjects returns the projects known to the server.
+func (c *Control) ListProjects(ctx context.Context) ([]Project, error) {
+	snap, err := c.client.ShellSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Project, 0, len(snap.Projects))
+	for _, p := range snap.Projects {
+		proj := Project{ID: p.ID, Title: p.Title, WorkspaceRoot: p.WorkspaceRoot}
+		if len(p.DefaultModelSelection) > 0 {
+			_ = json.Unmarshal(p.DefaultModelSelection, &proj.DefaultModelSelection)
+		}
+		out = append(out, proj)
+	}
+	return out, nil
+}
+
+// NewThreadInput describes a thread to create and start.
+type NewThreadInput struct {
+	ProjectID       string
+	Title           string
+	ModelSelection  map[string]any
+	RuntimeMode     string
+	InteractionMode string
+	Prompt          string
+}
+
+// CreateAndStartThread creates a thread and dispatches its first turn,
+// returning the new thread id. The HTTP dispatch endpoint applies one
+// command at a time, so the thread is created first.
+func (c *Control) CreateAndStartThread(ctx context.Context, in NewThreadInput) (string, error) {
+	threadID := newID()
+	if in.RuntimeMode == "" {
+		in.RuntimeMode = "full-access"
+	}
+	if in.InteractionMode == "" {
+		in.InteractionMode = "default"
+	}
+	create := map[string]any{
+		"type":            "thread.create",
+		"commandId":       newID(),
+		"threadId":        threadID,
+		"projectId":       in.ProjectID,
+		"title":           in.Title,
+		"modelSelection":  in.ModelSelection,
+		"runtimeMode":     in.RuntimeMode,
+		"interactionMode": in.InteractionMode,
+		"branch":          nil,
+		"worktreePath":    nil,
+		"createdAt":       now(),
+	}
+	turn := map[string]any{
+		"type":      "thread.turn.start",
+		"commandId": newID(),
+		"threadId":  threadID,
+		"message": map[string]any{
+			"messageId":   newID(),
+			"role":        "user",
+			"text":        in.Prompt,
+			"attachments": []any{},
+		},
+		"modelSelection":  in.ModelSelection,
+		"titleSeed":       in.Title,
+		"runtimeMode":     in.RuntimeMode,
+		"interactionMode": in.InteractionMode,
+		"createdAt":       now(),
+	}
+	if c.DryRun {
+		c.log.Info("dry-run: would create and start thread", "title", in.Title, "project", in.ProjectID)
+		return threadID, nil
+	}
+	if _, err := c.client.Dispatch(ctx, create); err != nil {
+		return "", fmt.Errorf("create thread %q: %w", in.Title, err)
+	}
+	if _, err := c.client.Dispatch(ctx, turn); err != nil {
+		return threadID, fmt.Errorf("start turn on thread %s: %w", threadID, err)
+	}
+	c.log.Info("thread created and started", "thread", threadID, "title", in.Title)
+	return threadID, nil
+}
+
+// LastAssistantMessage returns the text of the newest assistant message
+// in the thread's latest turn.
+func (c *Control) LastAssistantMessage(ctx context.Context, threadID string) (string, error) {
+	detail, err := c.client.ThreadDetail(ctx, threadID, 1)
+	if err != nil {
+		return "", err
+	}
+	text := ""
+	for _, m := range detail.Messages {
+		if m.Role == "assistant" && m.Text != "" {
+			text = m.Text
+		}
+	}
+	return text, nil
+}
+
 func now() string {
 	return time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
 }

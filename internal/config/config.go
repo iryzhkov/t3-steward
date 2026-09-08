@@ -185,6 +185,20 @@ type Report struct {
 
 // Backlog configures the quota-gated task runner and its forecast.
 type Backlog struct {
+	// Enabled turns the runner on. Tasks are markdown files in Dir.
+	Enabled bool `yaml:"enabled"`
+	// Dir holds the task files; empty means <config dir>/backlog.
+	Dir string `yaml:"dir"`
+	// QuietFor is how long no interactive thread must have run before a
+	// gated task starts.
+	QuietFor Duration `yaml:"quiet_for"`
+	// LongWindowCap is the usage ceiling on windows longer than a day
+	// (weekly limits), in percent.
+	LongWindowCap float64 `yaml:"long_window_cap_percent"`
+	// HistoryDays is how much history feeds the forecast.
+	HistoryDays int `yaml:"history_days"`
+	// Preamble precedes every task prompt; empty means the built-in text.
+	Preamble string `yaml:"preamble"`
 	// SafetyMargin is the percent of a window always left unused.
 	SafetyMargin float64 `yaml:"safety_margin_percent"`
 	// FallbackPerHour is the interactive demand assumed for an hour slot
@@ -263,6 +277,9 @@ func Default() Config {
 	c.Messages.Drain = DefaultDrainMessage
 	c.Notifications.Desktop = true
 	c.Report.Peak = "Mon-Fri 09:00-17:00"
+	c.Backlog.QuietFor = Duration(30 * time.Minute)
+	c.Backlog.LongWindowCap = 80
+	c.Backlog.HistoryDays = 56
 	c.Backlog.SafetyMargin = 10
 	c.Backlog.FallbackPerHour = 10
 	c.Backlog.Quantile = 0.8
@@ -437,6 +454,12 @@ func (c *Config) Validate() error {
 	if c.Backlog.MinSamples < 1 {
 		return errors.New("backlog: min_samples must be at least 1")
 	}
+	if c.Backlog.LongWindowCap <= 0 || c.Backlog.LongWindowCap > 100 {
+		return errors.New("backlog: long_window_cap_percent must be between 0 and 100")
+	}
+	if c.Backlog.HistoryDays < 1 {
+		return errors.New("backlog: history_days must be at least 1")
+	}
 	if c.Polling.SnapshotInterval.D() < time.Second {
 		return errors.New("polling: snapshot_interval must be at least 1s")
 	}
@@ -520,6 +543,18 @@ func (c *Config) ResolveDataDir() (string, error) {
 		return "", fmt.Errorf("resolve home dir: %w", err)
 	}
 	return filepath.Join(home, ".t3"), nil
+}
+
+// ResolveBacklogDir returns the task directory.
+func (c *Config) ResolveBacklogDir() (string, error) {
+	if c.Backlog.Dir != "" {
+		return expandHome(c.Backlog.Dir)
+	}
+	p, err := DefaultPaths()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(p.ConfigDir, "backlog"), nil
 }
 
 func expandHome(p string) (string, error) {

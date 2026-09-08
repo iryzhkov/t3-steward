@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-08
+
+### Added
+
+- `forecast`: interactive-demand map by weekday and hour learned from
+  history, and the headroom available for unattended work right now.
+- Backlog runner: markdown tasks run as T3 threads when no interactive
+  session has run for a while and the forecast leaves room before the next
+  reset; ordered by deadline, importance and cost; multi-turn with a
+  `BACKLOG STATUS` protocol; `backlog` command to manage them.
+- Threads the watchdog dispatches are registered so they never count as
+  interactive use.
+
 ## [0.3.0] - 2026-09-08
 
 ### Changed

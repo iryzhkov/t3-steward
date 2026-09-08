@@ -88,9 +88,10 @@ func (t ThreadShell) Model() ModelSelection {
 
 // ProjectShell mirrors OrchestrationProjectShell.
 type ProjectShell struct {
-	ID            string `json:"id"`
-	Title         string `json:"title"`
-	WorkspaceRoot string `json:"workspaceRoot"`
+	ID                    string          `json:"id"`
+	Title                 string          `json:"title"`
+	WorkspaceRoot         string          `json:"workspaceRoot"`
+	DefaultModelSelection json.RawMessage `json:"defaultModelSelection"`
 }
 
 // ShellSnapshot mirrors OrchestrationShellSnapshot.
@@ -106,6 +107,7 @@ type ShellSnapshot struct {
 type Message struct {
 	ID        string `json:"id"`
 	Role      string `json:"role"`
+	Text      string `json:"text"`
 	CreatedAt string `json:"createdAt"`
 }
 
