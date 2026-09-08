@@ -24,6 +24,9 @@ type InstallOptions struct {
 	T3Unit string
 	// Enable starts the service now and at login.
 	Enable bool
+	// DryRun reports whether the configuration still has dry-run on, for
+	// the installer's advice.
+	DryRun bool
 }
 
 // InstallResult reports what was written.

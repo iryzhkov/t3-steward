@@ -694,7 +694,7 @@ func cmdInstallService(g globalFlags, force, enable bool) error {
 	if _, err := os.Stat(configPath); err != nil {
 		return fmt.Errorf("configuration %s does not exist; run `t3-quota-watchdog init` first", configPath)
 	}
-	res, err := mgr.Install(platform.InstallOptions{Binary: exe, ConfigPath: configPath, Force: force, Enable: enable})
+	res, err := mgr.Install(platform.InstallOptions{Binary: exe, ConfigPath: configPath, Force: force, Enable: enable, DryRun: cfg.Policy.DryRun})
 	if err != nil {
 		return err
 	}

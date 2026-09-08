@@ -121,8 +121,14 @@ func (s *systemdUser) Install(opts InstallOptions) (*InstallResult, error) {
 			res.Notes = append(res.Notes, "service enabled and started")
 		}
 	}
+	if opts.DryRun {
+		res.Notes = append(res.Notes,
+			"The service runs in dry-run mode until policy.dry_run is set to false in "+opts.ConfigPath+".")
+	} else {
+		res.Notes = append(res.Notes,
+			"policy.dry_run is false in "+opts.ConfigPath+": the service will send messages and interrupt threads.")
+	}
 	res.Notes = append(res.Notes,
-		"The service runs in dry-run mode until policy.dry_run is set to false in "+opts.ConfigPath+".",
 		"Enable lingering so the service also runs while you are logged out: loginctl enable-linger $USER")
 	return res, nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -114,6 +115,9 @@ func TestTailerBootstrapTailAndFollow(t *testing.T) {
 }
 
 func TestTailerRotationByRename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("rotation by rename is not detected without inodes; documented Windows limitation")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "events.thread-b.log")
 	appendFile(t, path, codexLine("2030-01-01T00:00:00Z", 10, "r-1"))
