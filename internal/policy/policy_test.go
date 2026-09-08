@@ -309,23 +309,26 @@ func ptrTime(t time.Time) *time.Time { return &t }
 
 func TestRunwayHoldsSkipsStopAtHighPercent(t *testing.T) {
 	e := New(DefaultThresholds())
-	r := base.Add(30 * time.Minute) // resets in 30 minutes
+	r := base.Add(60 * time.Minute) // resets in an hour
 	var st domain.BucketState
-	// 0.05%/min at 96%: about 80 minutes of runway against 30 to the
-	// reset, so nothing fires even though the percentage ladder says stop.
-	used := 96.0
-	for i := 0; i <= 10; i++ {
+	// A slow, steady climb from 84%: 0.2%/min. At 93% with 15 minutes to
+	// the reset the runway is about 35 minutes, more than 1.5x the wait,
+	// so nothing fires although the percentage ladder passed 85 and 90.
+	used := 84.0
+	for i := 0; i <= 45; i++ {
 		at := base.Add(time.Duration(i) * time.Minute)
 		st = e.Evaluate(snap(used, at, &r, fmt.Sprintf("w%d", i)), st, at).State
-		used += 0.05
+		used += 0.2
 	}
-	if st.Phase != domain.PhaseNormal {
-		t.Fatalf("phase = %s with runway to spare", st.Phase)
+	// The 85% warning went out early on, when the runway (75 minutes)
+	// did not yet cover 1.5x the 55 minutes to the reset; the drain at 90%
+	// and the stop at 95% did not, because by then it did.
+	if st.Phase.Rank() > domain.PhaseWarned.Rank() || st.ExhaustsIn == nil {
+		t.Fatalf("phase = %s with runway to spare (eta %v)", st.Phase, st.ExhaustsIn)
 	}
-	// A burst with no usable rate falls back to the percentage ladder.
-	at := base.Add(10*time.Minute + 30*time.Second)
+	// A burst changes the rate: 99% half a minute later projects
+	// exhaustion within minutes, well before the reset.
+	at := base.Add(45*time.Minute + 30*time.Second)
 	d := e.Evaluate(snap(99, at, &r, "burst"), st, at)
-	if d.State.Phase == domain.PhaseNormal && d.State.ExhaustsIn != nil && *d.State.ExhaustsIn > 45*time.Minute {
-		t.Fatalf("burst still read as runway: %+v", d.State)
-	}
+	only(t, d, domain.ActionStop)
 }
