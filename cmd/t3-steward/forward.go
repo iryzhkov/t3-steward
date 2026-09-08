@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/backlog"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/config"
-	t3control "github.com/iryzhkov/t3-quota-watchdog/internal/control/t3"
+	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/config"
+	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 )
 
 var hostLine = regexp.MustCompile(`(?m)^host:.*\n`)
@@ -51,7 +51,7 @@ func forwardTask(ctx context.Context, host string, task backlog.Task) error {
 	cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, "ssh", "-o", "BatchMode=yes", host, "bash", "-lc",
-		fmt.Sprintf("'t3-quota-watchdog backlog receive %s'", task.ID))
+		fmt.Sprintf("'t3-steward backlog receive %s'", task.ID))
 	cmd.Stdin = bytes.NewReader(content)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -102,7 +102,7 @@ func readAll(f *os.File) ([]byte, error) {
 func remoteBacklogList(ctx context.Context, host string) error {
 	cctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, "ssh", "-o", "BatchMode=yes", host, "bash", "-lc", "'t3-quota-watchdog backlog list'")
+	cmd := exec.CommandContext(cctx, "ssh", "-o", "BatchMode=yes", host, "bash", "-lc", "'t3-steward backlog list'")
 	out, err := cmd.CombinedOutput()
 	fmt.Printf("== %s\n%s", host, out)
 	if err != nil {
@@ -140,7 +140,7 @@ func cmdBacklogCheck(cfg config.Config, source string) error {
 		// Ask the host that would run it. Its own copy is written as local.
 		cctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		cmd := exec.CommandContext(cctx, "ssh", "-o", "BatchMode=yes", host, "bash", "-lc", "'t3-quota-watchdog backlog check -'")
+		cmd := exec.CommandContext(cctx, "ssh", "-o", "BatchMode=yes", host, "bash", "-lc", "'t3-steward backlog check -'")
 		// "local" always means the receiving machine, whatever it calls itself.
 		cmd.Stdin = bytes.NewReader(rewriteHost(raw, "local"))
 		out, err := cmd.CombinedOutput()

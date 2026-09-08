@@ -1,15 +1,15 @@
 version: 2
 
-project_name: t3-quota-watchdog
+project_name: t3-steward
 
 before:
   hooks:
     - go mod tidy
 
 builds:
-  - id: t3-quota-watchdog
-    main: ./cmd/t3-quota-watchdog
-    binary: t3-quota-watchdog
+  - id: t3-steward
+    main: ./cmd/t3-steward
+    binary: t3-steward
     env:
       - CGO_ENABLED=0
     goos:
@@ -38,7 +38,7 @@ archives:
       - LICENSE
       - CHANGELOG.md
       - config.example.yaml
-      - packaging/systemd/t3-quota-watchdog.service
+      - packaging/systemd/t3-steward.service
       - docs/t3-protocol.md
 
 checksum:

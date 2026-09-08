@@ -7,7 +7,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // messageFields are available to the warn and drain templates.

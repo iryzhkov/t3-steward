@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // Schedule is a weekly recurring set of hours, in local time.

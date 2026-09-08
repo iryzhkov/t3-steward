@@ -17,7 +17,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // PositionStore persists per-file read positions across restarts.

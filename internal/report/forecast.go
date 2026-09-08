@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // Slot is one hour of one weekday in local time.

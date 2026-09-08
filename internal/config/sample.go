@@ -2,10 +2,10 @@ package config
 
 // sampleConfig is written by `init` and shipped as config.example.yaml.
 // Keep it in sync with Default().
-const sampleConfig = `# t3-quota-watchdog configuration.
+const sampleConfig = `# t3-steward configuration.
 #
 # Every value here is the shipped default. Delete what you do not change.
-# Environment variables prefixed with T3_QUOTA_WATCHDOG_ override this file,
+# Environment variables prefixed with T3_STEWARD_ override this file,
 # command-line flags override both.
 
 t3:
@@ -41,7 +41,7 @@ policy:
   rearm_percent: 50
   rearm_observations: 2
   # Dry run: log every decision, send nothing, interrupt nothing.
-  # Set to false only after "t3-quota-watchdog check" and a dry-run soak.
+  # Set to false only after "t3-steward check" and a dry-run soak.
   dry_run: true
   # "interrupt" ends the running turn (the thread keeps its session).
   # "session-stop" ends the provider session as well.
@@ -67,7 +67,7 @@ policy:
   drain_eta: 15m
   stop_eta: 5m
   reset_exemption: 10m
-  # Quota readings and token samples kept for "t3-quota-watchdog report".
+  # Quota readings and token samples kept for "t3-steward report".
   history_retention: 2160h
 
 resume:
@@ -115,7 +115,7 @@ messages:
     Provider quota is nearly exhausted (T3 quota watchdog): "{{.LimitName}}" is at {{.UsedPercent}}% and resets at {{.ResetsAt}}. Stop spawning subagents now. Cancel or finish active subagents, collect their results, write a short checkpoint of the current state and remaining work, then stop. The session will be interrupted in {{.GracePeriod}} if it is still running.
 
 report:
-  # Hours treated as "peak" by "t3-quota-watchdog report" (local time).
+  # Hours treated as "peak" by "t3-steward report" (local time).
   peak: "Mon-Fri 09:00-17:00"
   # SSH hosts that run the watchdog against the same provider accounts;
   # the report merges their readings and token samples with this host's.
@@ -125,7 +125,7 @@ backlog:
   # Quota-gated task runner: markdown tasks in "dir" run as T3 threads
   # when no interactive session has run for quiet_for and the forecast
   # of your own usage leaves room before the next reset.
-  # See "t3-quota-watchdog backlog --help".
+  # See "t3-steward backlog --help".
   enabled: false
   dir: ""                       # default: <config dir>/backlog
   quiet_for: 30m
@@ -137,7 +137,7 @@ backlog:
   default_host: ""
   host_name: ""
   # Forecast of your own (interactive) usage, used to decide how much of a
-  # window backlog tasks may spend. See "t3-quota-watchdog forecast".
+  # window backlog tasks may spend. See "t3-steward forecast".
   safety_margin_percent: 10     # always left unused
   fallback_per_hour_percent: 10 # assumed demand for hours with little history
   quantile: 0.8                 # cover a heavy week, not the average one
@@ -148,7 +148,7 @@ notifications:
   # a thread is stopped or resumed.
   desktop: true
 
-# SQLite state database. Empty means $XDG_STATE_HOME/t3-quota-watchdog/state.db
+# SQLite state database. Empty means $XDG_STATE_HOME/t3-steward/state.db
 state_path: ""
 # debug, info, warn, error
 log_level: info

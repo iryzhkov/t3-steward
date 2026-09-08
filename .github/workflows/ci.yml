@@ -46,5 +46,5 @@ jobs:
           check-latest: true
       - run: |
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
-            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 go build -o /dev/null ./cmd/t3-quota-watchdog
+            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 go build -o /dev/null ./cmd/t3-steward
           done

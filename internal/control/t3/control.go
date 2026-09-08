@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/t3api"
+	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/t3api"
 )
 
 // StopMode selects how a thread is stopped.

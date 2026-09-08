@@ -5,7 +5,7 @@ import (
 	"math"
 	"os"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // Weights are quota percent per million tokens of each type.

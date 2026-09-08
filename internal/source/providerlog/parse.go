@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // EventType is the canonical runtime event the watchdog consumes.

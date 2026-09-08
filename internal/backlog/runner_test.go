@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	t3control "github.com/iryzhkov/t3-quota-watchdog/internal/control/t3"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
+	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 type fakeStore struct {

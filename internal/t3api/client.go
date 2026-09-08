@@ -193,7 +193,7 @@ func New(baseURL string, tokens TokenSource, timeout time.Duration) *Client {
 		BaseURL:   strings.TrimRight(baseURL, "/"),
 		HTTP:      &http.Client{Timeout: timeout},
 		Tokens:    tokens,
-		UserAgent: "t3-quota-watchdog",
+		UserAgent: "t3-steward",
 	}
 }
 

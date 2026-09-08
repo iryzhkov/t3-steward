@@ -1,7 +1,7 @@
-# t3-quota-watchdog configuration.
+# t3-steward configuration.
 #
 # Every value here is the shipped default. Delete what you do not change.
-# Environment variables prefixed with T3_QUOTA_WATCHDOG_ override this file,
+# Environment variables prefixed with T3_STEWARD_ override this file,
 # command-line flags override both.
 
 t3:
@@ -37,7 +37,7 @@ policy:
   rearm_percent: 50
   rearm_observations: 2
   # Dry run: log every decision, send nothing, interrupt nothing.
-  # Set to false only after "t3-quota-watchdog check" and a dry-run soak.
+  # Set to false only after "t3-steward check" and a dry-run soak.
   dry_run: true
   # "interrupt" ends the running turn (the thread keeps its session).
   # "session-stop" ends the provider session as well.
@@ -104,7 +104,7 @@ notifications:
   # a thread is stopped or resumed.
   desktop: true
 
-# SQLite state database. Empty means $XDG_STATE_HOME/t3-quota-watchdog/state.db
+# SQLite state database. Empty means $XDG_STATE_HOME/t3-steward/state.db
 state_path: ""
 # debug, info, warn, error
 log_level: info

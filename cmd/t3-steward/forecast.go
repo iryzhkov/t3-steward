@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/report"
+	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/report"
 )
 
 // cmdForecast shows the interactive-demand map learned from history and

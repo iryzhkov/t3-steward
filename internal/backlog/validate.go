@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	t3control "github.com/iryzhkov/t3-quota-watchdog/internal/control/t3"
+	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 )
 
 // providerCache mirrors the fields of <data_dir>/caches/<instance>.json that

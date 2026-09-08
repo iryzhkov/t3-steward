@@ -1,15 +1,15 @@
-# Example systemd user unit. `t3-quota-watchdog install-service` generates
+# Example systemd user unit. `t3-steward install-service` generates
 # the real one with absolute paths; this copy documents the shape.
 #
 # Install manually:
-#   cp t3-quota-watchdog.service ~/.config/systemd/user/
+#   cp t3-steward.service ~/.config/systemd/user/
 #   edit ExecStart and the PATH line
 #   systemctl --user daemon-reload
-#   systemctl --user enable --now t3-quota-watchdog.service
+#   systemctl --user enable --now t3-steward.service
 
 [Unit]
 Description=T3 quota watchdog (stops T3 agent sessions before the provider quota runs out)
-Documentation=https://github.com/iryzhkov/t3-quota-watchdog
+Documentation=https://github.com/iryzhkov/t3-steward
 # Start after the T3 server and stop together with it when it runs as a
 # user unit named t3code.service. Remove both lines otherwise.
 After=t3code.service
@@ -17,7 +17,7 @@ PartOf=t3code.service
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/t3-quota-watchdog run --config %h/.config/t3-quota-watchdog/config.yaml
+ExecStart=%h/.local/bin/t3-steward run --config %h/.config/t3-steward/config.yaml
 Restart=on-failure
 RestartSec=5
 # The default token command runs the t3 CLI, which needs node on PATH.

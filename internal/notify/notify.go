@@ -33,7 +33,7 @@ func (n Notifier) Send(ctx context.Context, title, body string) {
 		if err != nil {
 			return
 		}
-		cmd = exec.CommandContext(cctx, path, "--app-name=t3-quota-watchdog", title, body)
+		cmd = exec.CommandContext(cctx, path, "--app-name=t3-steward", title, body)
 	case "darwin":
 		path, err := exec.LookPath("osascript")
 		if err != nil {

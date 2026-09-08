@@ -10,7 +10,7 @@ import (
 )
 
 // ErrUnsupported means the platform has no background-process installer yet.
-var ErrUnsupported = errors.New("background-process installation is not supported on this platform yet; run `t3-quota-watchdog run` in the foreground (see README, \"Manual foreground operation\")")
+var ErrUnsupported = errors.New("background-process installation is not supported on this platform yet; run `t3-steward run` in the foreground (see README, \"Manual foreground operation\")")
 
 // InstallOptions parametrize the generated service definition.
 type InstallOptions struct {

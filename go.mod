@@ -1,4 +1,4 @@
-module github.com/iryzhkov/t3-quota-watchdog
+module github.com/iryzhkov/t3-steward
 
 go 1.25.0
 

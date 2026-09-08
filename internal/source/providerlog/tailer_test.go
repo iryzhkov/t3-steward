@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 type memPositions struct {

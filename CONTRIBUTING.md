@@ -5,11 +5,11 @@ Thanks for helping. This project is small and the rules are short.
 ## Development
 
 ```sh
-git clone https://github.com/iryzhkov/t3-quota-watchdog
-cd t3-quota-watchdog
+git clone https://github.com/iryzhkov/t3-steward
+cd t3-steward
 make test      # go test, go test -race, go vet
 make lint      # staticcheck and gofmt
-make build     # bin/t3-quota-watchdog
+make build     # bin/t3-steward
 ```
 
 Go 1.24 or newer is required. There is no CGO: the SQLite driver is pure Go

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // advanceResumes cancels stale intents, marks eligible ones, and resumes

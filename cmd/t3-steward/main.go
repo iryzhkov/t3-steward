@@ -1,4 +1,4 @@
-// Command t3-quota-watchdog monitors provider quota windows reported by T3
+// Command t3-steward monitors provider quota windows reported by T3
 // Code's providers and stops T3 sessions before the quota is exhausted.
 package main
 
@@ -17,16 +17,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/compat"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/config"
-	t3control "github.com/iryzhkov/t3-quota-watchdog/internal/control/t3"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/daemon"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/platform"
+	"github.com/iryzhkov/t3-steward/internal/compat"
+	"github.com/iryzhkov/t3-steward/internal/config"
+	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
+	"github.com/iryzhkov/t3-steward/internal/daemon"
+	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/platform"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/source/providerlog"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/store/sqlite"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/t3api"
+	"github.com/iryzhkov/t3-steward/internal/source/providerlog"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/t3api"
 )
 
 // Set by GoReleaser through -ldflags.
@@ -36,10 +36,10 @@ var (
 	date    = "unknown"
 )
 
-const usage = `t3-quota-watchdog - stop T3 Code agent sessions before the provider quota runs out.
+const usage = `t3-steward - stop T3 Code agent sessions before the provider quota runs out.
 
 Usage:
-  t3-quota-watchdog <command> [flags]
+  t3-steward <command> [flags]
 
 Commands:
   init               Write a commented configuration file and create the state directory.
@@ -56,12 +56,12 @@ Commands:
   version            Print the version.
 
 Global flags:
-  --config PATH      Configuration file (default: $XDG_CONFIG_HOME/t3-quota-watchdog/config.yaml)
+  --config PATH      Configuration file (default: $XDG_CONFIG_HOME/t3-steward/config.yaml)
   --dry-run          Force dry-run mode regardless of the configuration.
   --log-level LEVEL  debug, info, warn or error.
 
-Environment variables prefixed with T3_QUOTA_WATCHDOG_ override the configuration
-file (for example T3_QUOTA_WATCHDOG_T3_URL, T3_QUOTA_WATCHDOG_DRY_RUN).
+Environment variables prefixed with T3_STEWARD_ override the configuration
+file (for example T3_STEWARD_T3_URL, T3_STEWARD_DRY_RUN).
 `
 
 func main() {
@@ -108,7 +108,7 @@ func run(args []string) error {
 		}
 		return cmdBacklog(g, sub)
 	case "version", "--version", "-v":
-		fmt.Printf("t3-quota-watchdog %s (commit %s, built %s, %s/%s, tested with T3 %s..%s)\n",
+		fmt.Printf("t3-steward %s (commit %s, built %s, %s/%s, tested with T3 %s..%s)\n",
 			version, commit, date, runtime.GOOS, runtime.GOARCH, compat.MinServerVersion, compat.MaxServerVersion)
 		return nil
 	}
@@ -317,7 +317,7 @@ func cmdInit(g globalFlags, paths config.Paths, force bool, t3URL, dataDir strin
 	} else {
 		fmt.Printf("t3 CLI: not found (%v)\n", err)
 	}
-	fmt.Printf("\nNext: validate the connection with\n  t3-quota-watchdog check --config %s\n", configPath)
+	fmt.Printf("\nNext: validate the connection with\n  t3-steward check --config %s\n", configPath)
 	return nil
 }
 
@@ -435,7 +435,7 @@ func cmdCheck(g globalFlags) error {
 	if !ok {
 		return errors.New("check failed")
 	}
-	fmt.Println("\nAll checks passed. Start with `t3-quota-watchdog run` (dry-run unless policy.dry_run is false).")
+	fmt.Println("\nAll checks passed. Start with `t3-steward run` (dry-run unless policy.dry_run is false).")
 	return nil
 }
 
@@ -446,7 +446,7 @@ func cmdRun(g globalFlags) error {
 	}
 	logger := newLogger(cfg.LogLevel)
 	slog.SetDefault(logger)
-	logger.Info("t3-quota-watchdog starting", "version", version, "config", cfg.Path)
+	logger.Info("t3-steward starting", "version", version, "config", cfg.Path)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -753,7 +753,7 @@ func cmdInstallService(g globalFlags, force, enable bool) error {
 	exe, _ = filepath.EvalSymlinks(exe)
 	configPath, _ := filepath.Abs(cfg.Path)
 	if _, err := os.Stat(configPath); err != nil {
-		return fmt.Errorf("configuration %s does not exist; run `t3-quota-watchdog init` first", configPath)
+		return fmt.Errorf("configuration %s does not exist; run `t3-steward init` first", configPath)
 	}
 	res, err := mgr.Install(platform.InstallOptions{Binary: exe, ConfigPath: configPath, Force: force, Enable: enable, DryRun: cfg.Policy.DryRun})
 	if err != nil {

@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/backlog"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/config"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/config"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
-const backlogUsage = `Usage: t3-quota-watchdog backlog <command> [args]
+const backlogUsage = `Usage: t3-steward backlog <command> [args]
 
 Commands:
   list [--all]       Tasks with status, estimate and the reason they wait; --all asks report.remotes too.
@@ -177,7 +177,7 @@ func cmdBacklog(g globalFlags, args []string) error {
 			return err
 		}
 		if len(tasks) == 0 && len(states) == 0 {
-			fmt.Printf("No tasks in %s. Create one with: t3-quota-watchdog backlog new <id>\n", dir)
+			fmt.Printf("No tasks in %s. Create one with: t3-steward backlog new <id>\n", dir)
 			if !all {
 				return nil
 			}

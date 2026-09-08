@@ -1,7 +1,7 @@
 // Package config loads and validates the watchdog configuration.
 //
 // Precedence, highest first: command-line flags, environment variables
-// prefixed with T3_QUOTA_WATCHDOG_, the configuration file, then platform
+// prefixed with T3_STEWARD_, the configuration file, then platform
 // defaults and T3 discovery.
 package config
 
@@ -18,7 +18,7 @@ import (
 )
 
 // EnvPrefix is the prefix of every environment variable the watchdog reads.
-const EnvPrefix = "T3_QUOTA_WATCHDOG_"
+const EnvPrefix = "T3_STEWARD_"
 
 // Duration is a time.Duration that unmarshals from YAML strings like "60s".
 type Duration time.Duration
@@ -339,7 +339,7 @@ func Load(path string) (Config, error) {
 	return c, nil
 }
 
-// applyEnv overrides fields from T3_QUOTA_WATCHDOG_* variables.
+// applyEnv overrides fields from T3_STEWARD_* variables.
 func (c *Config) applyEnv() error {
 	str := func(name string, target *string) {
 		if v, ok := os.LookupEnv(EnvPrefix + name); ok {
@@ -538,12 +538,32 @@ func DefaultPaths() (Paths, error) {
 		stateDir = filepath.Join(home, ".local", "state")
 	}
 	p := Paths{
-		ConfigDir: filepath.Join(configDir, "t3-quota-watchdog"),
-		StateDir:  filepath.Join(stateDir, "t3-quota-watchdog"),
+		ConfigDir: filepath.Join(configDir, appName),
+		StateDir:  filepath.Join(stateDir, appName),
 	}
+	// The project was renamed from t3-quota-watchdog; adopt its directories
+	// once, when the new ones do not exist yet.
+	migrateDir(filepath.Join(configDir, legacyAppName), p.ConfigDir)
+	migrateDir(filepath.Join(stateDir, legacyAppName), p.StateDir)
 	p.ConfigFile = filepath.Join(p.ConfigDir, "config.yaml")
 	p.StateFile = filepath.Join(p.StateDir, "state.db")
 	return p, nil
+}
+
+// Directory names, current and before the rename.
+const (
+	appName       = "t3-steward"
+	legacyAppName = "t3-quota-watchdog"
+)
+
+func migrateDir(old, current string) {
+	if _, err := os.Stat(current); err == nil {
+		return
+	}
+	if info, err := os.Stat(old); err != nil || !info.IsDir() {
+		return
+	}
+	_ = os.Rename(old, current)
 }
 
 // ResolveStatePath returns the configured state path or the platform default.

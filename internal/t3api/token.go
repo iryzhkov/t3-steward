@@ -33,7 +33,7 @@ type CommandToken struct {
 // DefaultTokenArgv builds the argv for the t3 CLI.
 func DefaultTokenArgv(t3Binary string, ttl time.Duration) []string {
 	return []string{t3Binary, "auth", "session", "issue", "--token-only",
-		"--ttl", fmt.Sprintf("%dm", int(ttl.Minutes())), "--label", "t3-quota-watchdog"}
+		"--ttl", fmt.Sprintf("%dm", int(ttl.Minutes())), "--label", "t3-steward"}
 }
 
 // Token implements TokenSource.

@@ -32,7 +32,7 @@ dependency on the RPC wire format.
 
 ## Authentication
 
-- `t3 auth session issue --token-only --ttl 60m --label t3-quota-watchdog`
+- `t3 auth session issue --token-only --ttl 60m --label t3-steward`
   writes a bearer session directly into T3's own database
   (`userdata/state.sqlite`) and prints the token. The session carries the
   administrative scope set, including `orchestration:read` and
@@ -206,7 +206,7 @@ watchdog detects manual interaction after its own stop.
 
 ## Verification checklist for a new T3 version
 
-1. `t3-quota-watchdog check` passes (descriptor, token, shell snapshot).
+1. `t3-steward check` passes (descriptor, token, shell snapshot).
 2. A provider log line for each provider parses (`replay` on a copied log).
 3. On a disposable thread with `dry_run: false`: inject 86% and confirm the
    warning arrives as a user message; inject 91% and confirm the drain

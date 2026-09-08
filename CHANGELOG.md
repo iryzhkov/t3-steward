@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-08
+
+### Changed
+
+- Renamed to t3-steward: module path, binary, config and state directories
+  (`~/.config/t3-steward`, `~/.local/state/t3-steward`), systemd unit and
+  the `T3_STEWARD_` environment prefix. The old directories are adopted
+  automatically on first run.
+
 ## [0.7.0] - 2026-09-08
 
 ### Added

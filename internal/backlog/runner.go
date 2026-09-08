@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	t3control "github.com/iryzhkov/t3-quota-watchdog/internal/control/t3"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/report"
+	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
+	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/report"
 )
 
 // Control is what the runner needs from the T3 adapter.

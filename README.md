@@ -1,11 +1,16 @@
-# t3-quota-watchdog
+# t3-steward
 
-A small daemon that watches the provider quota windows reported to
-[T3 Code](https://github.com/pingdotgg/t3code) by Codex and Claude, warns the
-running agent sessions as usage approaches a limit, asks them to wind down
-their subagents and checkpoint, interrupts them cleanly before the quota is
-exhausted, and (optionally) resumes the sessions it stopped once the quota
-has recovered.
+A steward for [T3 Code](https://github.com/pingdotgg/t3code) sessions and
+their Codex and Claude quotas. It watches every quota window the providers
+report, warns running agent sessions as usage or the burn rate approaches a
+limit, asks them to wind down their subagents and checkpoint, interrupts
+them cleanly before the quota is exhausted, and (optionally) resumes the
+sessions it stopped once the quota has recovered. It also reports where the
+quota went, learns when you work, and runs a backlog of unattended tasks
+in the quiet hours on whichever machine should do them.
+
+Formerly `t3-quota-watchdog`; the binary migrates that name's config and
+state directories on first run.
 
 It exists because a coordinator session that hits a hard quota cut-off
 mid-task loses its in-flight subagent work. Stopping ten minutes earlier at
@@ -79,7 +84,7 @@ Cannot:
 | --- | --- |
 | 0.1.x to 0.7.x | 0.0.38 |
 
-`t3-quota-watchdog version` prints the range the binary was built with.
+`t3-steward version` prints the range the binary was built with.
 Newer T3 versions run in monitoring-only mode until either a release adds
 them to the table or you set `t3.allow_unsupported_version: true`.
 
@@ -102,15 +107,15 @@ verify, and put the binary on your `PATH`:
 ```sh
 VERSION=0.1.0
 TARGET=linux_arm64          # linux_amd64, darwin_arm64, darwin_amd64, windows_amd64
-BASE=https://github.com/iryzhkov/t3-quota-watchdog/releases/download/v${VERSION}
+BASE=https://github.com/iryzhkov/t3-steward/releases/download/v${VERSION}
 
-curl -fsSLO "${BASE}/t3-quota-watchdog_${VERSION}_${TARGET}.tar.gz"
+curl -fsSLO "${BASE}/t3-steward_${VERSION}_${TARGET}.tar.gz"
 curl -fsSLO "${BASE}/checksums.txt"
 sha256sum -c --ignore-missing checksums.txt
 
-tar -xzf "t3-quota-watchdog_${VERSION}_${TARGET}.tar.gz"
+tar -xzf "t3-steward_${VERSION}_${TARGET}.tar.gz"
 install -d "$HOME/.local/bin"
-install -m 0755 t3-quota-watchdog "$HOME/.local/bin/t3-quota-watchdog"
+install -m 0755 t3-steward "$HOME/.local/bin/t3-steward"
 ```
 
 On macOS use `shasum -a 256 -c --ignore-missing checksums.txt`. On Windows
@@ -120,19 +125,19 @@ the archive is a `.zip`; verify with `Get-FileHash` and compare against
 ### Option B: build from source
 
 ```sh
-git clone https://github.com/iryzhkov/t3-quota-watchdog
-cd t3-quota-watchdog
+git clone https://github.com/iryzhkov/t3-steward
+cd t3-steward
 git checkout v0.1.0          # or a newer tag
-make build                   # writes bin/t3-quota-watchdog
+make build                   # writes bin/t3-steward
 make install                 # copies it to ~/.local/bin
 ```
 
-Plain `go build ./cmd/t3-quota-watchdog` works too. No CGO is needed.
+Plain `go build ./cmd/t3-steward` works too. No CGO is needed.
 
 ### Option C: go install
 
 ```sh
-go install github.com/iryzhkov/t3-quota-watchdog/cmd/t3-quota-watchdog@latest
+go install github.com/iryzhkov/t3-steward/cmd/t3-steward@latest
 ```
 
 The binary lands in `$(go env GOPATH)/bin`.
@@ -140,9 +145,9 @@ The binary lands in `$(go env GOPATH)/bin`.
 ## First run
 
 ```sh
-t3-quota-watchdog init      # writes a commented config, dry-run on, resume off
-t3-quota-watchdog check     # server, version, token, logs, thread list
-t3-quota-watchdog run       # foreground, dry-run: logs what it would do
+t3-steward init      # writes a commented config, dry-run on, resume off
+t3-steward check     # server, version, token, logs, thread list
+t3-steward run       # foreground, dry-run: logs what it would do
 ```
 
 `init` discovers the T3 data directory (`$T3CODE_HOME` or `~/.t3`) and the
@@ -155,7 +160,7 @@ token from T3's own auth store and refreshes it before expiry. Nothing
 long-lived is written to disk. For a server on another machine set
 `t3.token` to a token you minted there.
 
-Leave it in dry-run for a while. `t3-quota-watchdog status` shows the
+Leave it in dry-run for a while. `t3-steward status` shows the
 buckets it tracks and every action it would have taken:
 
 ```text
@@ -173,8 +178,8 @@ want it, `resume.enabled: true`) and restart.
 Paths follow XDG conventions:
 
 ```text
-Config:  ${XDG_CONFIG_HOME:-~/.config}/t3-quota-watchdog/config.yaml
-State:   ${XDG_STATE_HOME:-~/.local/state}/t3-quota-watchdog/state.db
+Config:  ${XDG_CONFIG_HOME:-~/.config}/t3-steward/config.yaml
+State:   ${XDG_STATE_HOME:-~/.local/state}/t3-steward/state.db
 ```
 
 Both are created with user-only permissions.
@@ -182,20 +187,20 @@ Both are created with user-only permissions.
 ## Linux: run it as a systemd user service
 
 ```sh
-t3-quota-watchdog install-service          # writes ~/.config/systemd/user/t3-quota-watchdog.service
+t3-steward install-service          # writes ~/.config/systemd/user/t3-steward.service
 systemctl --user daemon-reload
-systemctl --user enable --now t3-quota-watchdog.service
+systemctl --user enable --now t3-steward.service
 loginctl enable-linger "$USER"             # keep it running while logged out
 ```
 
 Then:
 
 ```sh
-systemctl --user status t3-quota-watchdog.service
-journalctl --user -u t3-quota-watchdog.service -f      # logs
-systemctl --user restart t3-quota-watchdog.service     # after editing the config
-systemctl --user disable --now t3-quota-watchdog.service
-t3-quota-watchdog uninstall-service                    # removes the unit, keeps config and state
+systemctl --user status t3-steward.service
+journalctl --user -u t3-steward.service -f      # logs
+systemctl --user restart t3-steward.service     # after editing the config
+systemctl --user disable --now t3-steward.service
+t3-steward uninstall-service                    # removes the unit, keeps config and state
 ```
 
 The generated unit uses absolute paths, starts after `t3code.service` when
@@ -213,8 +218,8 @@ service installer yet, so run it in a terminal, a tmux session, or your own
 process manager:
 
 ```sh
-t3-quota-watchdog init && t3-quota-watchdog check
-t3-quota-watchdog run
+t3-steward init && t3-steward check
+t3-steward run
 ```
 
 On Windows the log tailer detects rotation only by truncation, so the tail
@@ -224,8 +229,8 @@ of a rotated file can be missed; treat Windows as experimental.
 
 The full commented file that `init` writes is
 [config.example.yaml](config.example.yaml). Precedence, highest first:
-command-line flags, `T3_QUOTA_WATCHDOG_*` environment variables (for example
-`T3_QUOTA_WATCHDOG_DRY_RUN=false`, `T3_QUOTA_WATCHDOG_T3_URL`), the
+command-line flags, `T3_STEWARD_*` environment variables (for example
+`T3_STEWARD_DRY_RUN=false`, `T3_STEWARD_T3_URL`), the
 configuration file, then discovery and defaults.
 
 ```yaml
@@ -360,8 +365,8 @@ the observations the daemon stores and, with `--from-logs`, the full
 provider logs (rotated files included), so it works on day one:
 
 ```sh
-t3-quota-watchdog report --from-logs --days 14 --peak "Mon-Fri 09:00-17:00"
-t3-quota-watchdog report --bucket five_hour --json
+t3-steward report --from-logs --days 14 --peak "Mon-Fri 09:00-17:00"
+t3-steward report --bucket five_hour --json
 ```
 
 ```text
@@ -399,7 +404,7 @@ token than the fit expects.
 When the same provider account is used from several machines, each
 machine sees only its own threads, and a rise caused elsewhere shows up as
 "outside T3". List the other hosts and the report merges their data over
-SSH (each host runs `t3-quota-watchdog export`):
+SSH (each host runs `t3-steward export`):
 
 ```yaml
 report:
@@ -408,8 +413,8 @@ report:
 ```
 
 ```sh
-t3-quota-watchdog report --from-logs            # merges configured remotes
-t3-quota-watchdog report --remotes a,b --local  # override, or local only
+t3-steward report --from-logs            # merges configured remotes
+t3-steward report --remotes a,b --local  # override, or local only
 ```
 
 `--import` stores scanned log data in the state database, which keeps
@@ -424,7 +429,7 @@ backlog of unattended tasks in the gaps.
 ### Forecast
 
 ```sh
-t3-quota-watchdog forecast --from-logs
+t3-steward forecast --from-logs
 ```
 
 prints, per weekday and hour, how much of the window interactive threads
@@ -449,8 +454,8 @@ backlog:
 ```
 
 ```sh
-t3-quota-watchdog backlog new refactor-auth     # writes <config>/backlog/refactor-auth.md
-t3-quota-watchdog backlog list
+t3-steward backlog new refactor-auth     # writes <config>/backlog/refactor-auth.md
+t3-steward backlog list
 ```
 
 ```markdown
@@ -496,7 +501,7 @@ others.
 
 ### Checking a task
 
-`t3-quota-watchdog backlog check <file>` validates a task against the host
+`t3-steward backlog check <file>` validates a task against the host
 that would run it (over SSH when the task names another host): the project
 exists, the provider instance is enabled and signed in, the model is one it
 offers, the options are ones the model knows. It reads T3's provider caches
@@ -509,7 +514,7 @@ before a dispatch and parks an invalid task as `failed: invalid: ...`.
 A task may name the machine whose T3 server should run it (`host:`, an SSH
 alias), and `backlog.default_host` sets the host for tasks that name none.
 A task for another host is forwarded: the local runner copies the file into
-that host's backlog directory over SSH (`t3-quota-watchdog backlog receive`
+that host's backlog directory over SSH (`t3-steward backlog receive`
 on the remote side, so the binary must be on the login shell's PATH there)
 and marks its own copy `forwarded`. The remote runner owns it from then on,
 with its projects, its quota view and its quiet-hours gate.
@@ -525,18 +530,18 @@ like anything else.
 ## Commands
 
 ```text
-t3-quota-watchdog init [--force] [--t3-url URL] [--t3-data-dir DIR]
-t3-quota-watchdog check
-t3-quota-watchdog run [--dry-run | --no-dry-run] [--log-level debug]
-t3-quota-watchdog status [--json] [--all] [--limit N]
-t3-quota-watchdog replay FILE [--resume] [--speed 0.1]
-t3-quota-watchdog report [--days 14] [--peak "Mon-Fri 09:00-17:00"] [--bucket TEXT] [--from-logs] [--import] [--remotes a,b] [--local] [--json]
-t3-quota-watchdog export [--days 14] [--from-logs]
-t3-quota-watchdog forecast [--days 56] [--bucket TEXT] [--from-logs] [--remotes a,b] [--json]
-t3-quota-watchdog backlog list [--all]|new ID|check FILE|show ID|retry ID|cancel ID|receive ID|path
-t3-quota-watchdog install-service [--force] [--enable]
-t3-quota-watchdog uninstall-service
-t3-quota-watchdog version
+t3-steward init [--force] [--t3-url URL] [--t3-data-dir DIR]
+t3-steward check
+t3-steward run [--dry-run | --no-dry-run] [--log-level debug]
+t3-steward status [--json] [--all] [--limit N]
+t3-steward replay FILE [--resume] [--speed 0.1]
+t3-steward report [--days 14] [--peak "Mon-Fri 09:00-17:00"] [--bucket TEXT] [--from-logs] [--import] [--remotes a,b] [--local] [--json]
+t3-steward export [--days 14] [--from-logs]
+t3-steward forecast [--days 56] [--bucket TEXT] [--from-logs] [--remotes a,b] [--json]
+t3-steward backlog list [--all]|new ID|check FILE|show ID|retry ID|cancel ID|receive ID|path
+t3-steward install-service [--force] [--enable]
+t3-steward uninstall-service
+t3-steward version
 ```
 
 `replay` feeds a copied provider log (or a JSONL of canonical events)
@@ -544,7 +549,7 @@ through the policy engine against a fake T3 with one running thread per
 provider, printing every message and action. It needs no server:
 
 ```sh
-t3-quota-watchdog replay testdata/codex-rate-limits.log --resume
+t3-steward replay testdata/codex-rate-limits.log --resume
 ```
 
 ## Troubleshooting
@@ -598,15 +603,15 @@ the window is not in `ignore_windows`, and that dry-run is off.
 ## Upgrade and rollback
 
 1. Download or build the new version and replace the binary at the same
-   path (`~/.local/bin/t3-quota-watchdog`).
-2. `t3-quota-watchdog check`, then `systemctl --user restart
-   t3-quota-watchdog.service` (or restart your foreground process).
+   path (`~/.local/bin/t3-steward`).
+2. `t3-steward check`, then `systemctl --user restart
+   t3-steward.service` (or restart your foreground process).
 3. The state database migrates forward automatically.
 
 To roll back, put the previous binary back and restart. State written by a
 newer version is readable by older ones within the same minor series; if
 in doubt, stop the service, delete
-`~/.local/state/t3-quota-watchdog/state.db`, and start again. You lose the
+`~/.local/state/t3-steward/state.db`, and start again. You lose the
 audit log and pending resume intents, nothing else.
 
 After a T3 upgrade, run `check`: it reports whether the new server version
@@ -614,7 +619,7 @@ is in the tested range.
 
 ## Project
 
-- Issues: <https://github.com/iryzhkov/t3-quota-watchdog/issues>
+- Issues: <https://github.com/iryzhkov/t3-steward/issues>
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Security: [SECURITY.md](SECURITY.md)
 - Protocol notes: [docs/t3-protocol.md](docs/t3-protocol.md)

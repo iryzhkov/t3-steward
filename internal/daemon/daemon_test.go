@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/config"
-	t3control "github.com/iryzhkov/t3-quota-watchdog/internal/control/t3"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/config"
+	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
+	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
 // fakeT3 is an in-memory controller that records every call.

@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/config"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/report"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/source/providerlog"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/store/sqlite"
-	"github.com/iryzhkov/t3-quota-watchdog/internal/t3api"
+	"github.com/iryzhkov/t3-steward/internal/config"
+	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/report"
+	"github.com/iryzhkov/t3-steward/internal/source/providerlog"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/t3api"
 )
 
 type reportFlags struct {
@@ -145,7 +145,7 @@ func cmdExport(g globalFlags, days int, fromLogs bool) error {
 
 // fetchRemote runs `export` on another host over SSH.
 func fetchRemote(ctx context.Context, host string, days int, fromLogs bool) (*exportFile, error) {
-	args := fmt.Sprintf("t3-quota-watchdog export --days %d", days)
+	args := fmt.Sprintf("t3-steward export --days %d", days)
 	if fromLogs {
 		args += " --from-logs"
 	}

@@ -14,7 +14,7 @@ import (
 
 	_ "modernc.org/sqlite" // database/sql driver
 
-	"github.com/iryzhkov/t3-quota-watchdog/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // Store is the SQLite-backed state store.
