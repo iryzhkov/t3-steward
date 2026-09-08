@@ -47,7 +47,7 @@ func forwardTask(ctx context.Context, host string, task backlog.Task) error {
 	if err != nil {
 		return err
 	}
-	content := rewriteHost(raw, host)
+	content := rewriteHost(raw, "local")
 	cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, "ssh", "-o", "BatchMode=yes", host, "bash", "-lc",
@@ -141,7 +141,8 @@ func cmdBacklogCheck(cfg config.Config, source string) error {
 		cctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		cmd := exec.CommandContext(cctx, "ssh", "-o", "BatchMode=yes", host, "bash", "-lc", "'t3-quota-watchdog backlog check -'")
-		cmd.Stdin = bytes.NewReader(rewriteHost(raw, host))
+		// "local" always means the receiving machine, whatever it calls itself.
+		cmd.Stdin = bytes.NewReader(rewriteHost(raw, "local"))
 		out, err := cmd.CombinedOutput()
 		fmt.Printf("host  %s\n%s", host, out)
 		if err != nil {
