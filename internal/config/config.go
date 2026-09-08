@@ -116,6 +116,9 @@ type Policy struct {
 	// ResetExemption suppresses warnings and stops when the window resets
 	// within this long: stopping then saves nothing.
 	ResetExemption Duration `yaml:"reset_exemption"`
+	// RunwayMargin: with a known burn rate, no action fires while the
+	// projected runway covers this many times the time to the reset.
+	RunwayMargin float64 `yaml:"runway_margin"`
 	// HistoryRetention is how long quota observations and token samples are
 	// kept for reports.
 	HistoryRetention Duration `yaml:"history_retention"`
@@ -283,6 +286,7 @@ func Default() Config {
 	c.Policy.DrainETA = Duration(15 * time.Minute)
 	c.Policy.StopETA = Duration(5 * time.Minute)
 	c.Policy.ResetExemption = Duration(10 * time.Minute)
+	c.Policy.RunwayMargin = 1.5
 	c.Policy.HistoryRetention = Duration(90 * 24 * time.Hour)
 	c.Resume.Enabled = false
 	c.Resume.BelowPercent = 50
@@ -434,6 +438,9 @@ func (c *Config) Validate() error {
 	}
 	if p.ResetExemption < 0 {
 		return errors.New("policy: reset_exemption must not be negative")
+	}
+	if p.RunwayMargin < 1 {
+		return fmt.Errorf("policy: runway_margin must be at least 1 (got %v)", p.RunwayMargin)
 	}
 	switch p.StopMode {
 	case "interrupt", "session-stop":

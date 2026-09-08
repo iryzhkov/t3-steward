@@ -306,3 +306,26 @@ func TestExhaustionAfterResetIsIgnored(t *testing.T) {
 }
 
 func ptrTime(t time.Time) *time.Time { return &t }
+
+func TestRunwayHoldsSkipsStopAtHighPercent(t *testing.T) {
+	e := New(DefaultThresholds())
+	r := base.Add(30 * time.Minute) // resets in 30 minutes
+	var st domain.BucketState
+	// 0.05%/min at 96%: about 80 minutes of runway against 30 to the
+	// reset, so nothing fires even though the percentage ladder says stop.
+	used := 96.0
+	for i := 0; i <= 10; i++ {
+		at := base.Add(time.Duration(i) * time.Minute)
+		st = e.Evaluate(snap(used, at, &r, fmt.Sprintf("w%d", i)), st, at).State
+		used += 0.05
+	}
+	if st.Phase != domain.PhaseNormal {
+		t.Fatalf("phase = %s with runway to spare", st.Phase)
+	}
+	// A burst with no usable rate falls back to the percentage ladder.
+	at := base.Add(10*time.Minute + 30*time.Second)
+	d := e.Evaluate(snap(99, at, &r, "burst"), st, at)
+	if d.State.Phase == domain.PhaseNormal && d.State.ExhaustsIn != nil && *d.State.ExhaustsIn > 45*time.Minute {
+		t.Fatalf("burst still read as runway: %+v", d.State)
+	}
+}

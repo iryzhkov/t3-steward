@@ -82,7 +82,7 @@ Cannot:
 
 | Watchdog | Tested T3 Code versions |
 | --- | --- |
-| 0.1.x to 0.7.x | 0.0.38 |
+| 0.1.x to 0.8.x | 0.0.38 |
 
 `t3-steward version` prints the range the binary was built with.
 Newer T3 versions run in monitoring-only mode until either a release adds
@@ -312,6 +312,11 @@ normal -> warned -> draining -> stopped -> (reset confirmed) -> normal
   minutes (`policy.warn_eta` etc.), but only if the window does not reset
   first. A session burning 2.3% a minute at 63% gets the drain request at
   about 16 minutes to exhaustion instead of waiting for 90%.
+- **Runway**: with a known burn rate, nothing fires while the projected
+  time to 100% covers `policy.runway_margin` (1.5) times the time to the
+  reset, whatever the percentage: at 96% burning 0.05%/min with the reset
+  30 minutes away, the session is left alone. A burst too short to give a
+  rate falls back to the percentage ladder.
 - **Reset exemption**: when the window resets within `policy.reset_exemption`
   (10 minutes), nothing fires, not even at 96%, and an expired grace
   timer does not stop. Stopping then would save nothing.

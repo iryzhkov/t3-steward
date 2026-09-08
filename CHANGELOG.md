@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-08
+
+### Changed
+
+- Runway rule: with a known burn rate, no action fires while the projected
+  time to exhaustion covers `runway_margin` times the time to the reset,
+  whatever the percentage. The fixed reset exemption remains for readings
+  too sparse to give a rate.
+
 ## [0.8.0] - 2026-09-08
 
 ### Changed

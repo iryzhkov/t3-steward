@@ -41,6 +41,9 @@ type Thresholds struct {
 	// ResetExemption suppresses every escalation when the window resets
 	// within this long: stopping then saves nothing.
 	ResetExemption time.Duration
+	// RunwayMargin is how many times the time to the reset the projected
+	// runway must cover before the percentage ladder is ignored.
+	RunwayMargin float64
 }
 
 // DefaultThresholds are the shipped defaults.
@@ -58,6 +61,7 @@ func DefaultThresholds() Thresholds {
 		DrainETA:          15 * time.Minute,
 		StopETA:           5 * time.Minute,
 		ResetExemption:    10 * time.Minute,
+		RunwayMargin:      1.5,
 	}
 }
 
@@ -84,6 +88,9 @@ func (t Thresholds) Validate() error {
 	}
 	if t.ResetExemption < 0 {
 		return fmt.Errorf("reset_exemption must not be negative")
+	}
+	if t.RunwayMargin < 1 {
+		return fmt.Errorf("runway_margin must be at least 1 (got %v)", t.RunwayMargin)
 	}
 	return nil
 }
@@ -193,6 +200,14 @@ func (e *Engine) wantedLevel(snap domain.QuotaSnapshot, state domain.BucketState
 			return domain.PhaseNormal, fmt.Sprintf("window resets in %s; nothing to save by stopping", untilReset.Round(time.Second))
 		}
 	}
+	// With a known burn rate the question is runway, not percentage: if
+	// the window would last to the reset with margin, nothing is gained by
+	// stopping, however high the reading.
+	if state.ExhaustsIn != nil && e.t.RateWindow > 0 && untilReset > 0 {
+		if ok, why := e.runwayHolds(*state.ExhaustsIn, untilReset, state.RatePerMinute); ok {
+			return domain.PhaseNormal, why
+		}
+	}
 	level := e.level(snap.UsedPercent)
 	why := fmt.Sprintf("threshold %.0f%%", e.thresholdFor(level))
 	if state.ExhaustsIn != nil && e.t.RateWindow > 0 && (snap.ResetsAt == nil || *state.ExhaustsIn < untilReset) {
@@ -216,6 +231,20 @@ func (e *Engine) wantedLevel(snap domain.QuotaSnapshot, state domain.BucketState
 		}
 	}
 	return level, why
+}
+
+// runwayHolds reports whether the projected time to exhaustion covers the
+// time to the reset with the configured margin.
+func (e *Engine) runwayHolds(eta, untilReset time.Duration, rate float64) (bool, string) {
+	margin := e.t.RunwayMargin
+	if margin <= 0 {
+		margin = 1.5
+	}
+	if float64(eta) >= margin*float64(untilReset) {
+		return true, fmt.Sprintf("burning %.2f%%/min, about %s of runway against %s to the reset; no need to stop",
+			rate, eta.Round(time.Minute), untilReset.Round(time.Minute))
+	}
+	return false, ""
 }
 
 // Evaluate applies one snapshot to the previous state of the same bucket.
@@ -326,6 +355,15 @@ func (e *Engine) Tick(prev domain.BucketState, now time.Time) domain.Decision {
 	state := prev
 	if state.Phase != domain.PhaseDraining || state.DrainDeadline == nil || now.Before(*state.DrainDeadline) {
 		return domain.Decision{State: prev}
+	}
+	if state.ResetsAt != nil && state.ExhaustsIn != nil && e.t.RateWindow > 0 {
+		if until := state.ResetsAt.Sub(now); until > 0 {
+			if ok, why := e.runwayHolds(*state.ExhaustsIn, until, state.RatePerMinute); ok {
+				state.DrainDeadline = nil
+				state.UpdatedAt = now
+				return domain.Decision{State: state, Ignored: "grace expired but " + why}
+			}
+		}
 	}
 	if state.ResetsAt != nil && e.t.ResetExemption > 0 {
 		if until := state.ResetsAt.Sub(now); until > 0 && until <= e.t.ResetExemption {

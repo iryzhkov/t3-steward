@@ -190,6 +190,7 @@ func (d *Daemon) engineFor(key domain.BucketKey, limitName string) *policy.Engin
 		DrainETA:          d.cfg.Policy.DrainETA.D(),
 		StopETA:           d.cfg.Policy.StopETA.D(),
 		ResetExemption:    d.cfg.Policy.ResetExemption.D(),
+		RunwayMargin:      d.cfg.Policy.RunwayMargin,
 	}
 	for _, o := range d.cfg.Overrides {
 		if !overrideMatches(o, key, limitName) {

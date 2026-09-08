@@ -67,6 +67,9 @@ policy:
   drain_eta: 15m
   stop_eta: 5m
   reset_exemption: 10m
+  # With a known burn rate, nothing fires while the projected runway covers
+  # this many times the time to the reset, whatever the percentage.
+  runway_margin: 1.5
   # Quota readings and token samples kept for "t3-steward report".
   history_retention: 2160h
 
