@@ -114,11 +114,21 @@ polling:
 # Per-bucket threshold overrides. Match fields are globs; the first match
 # wins. Window names: Codex "primary"/"secondary"; Claude "five_hour",
 # "seven_day", "seven_day_opus", "seven_day_sonnet", ...
-overrides: []
-#  - match:
-#      provider: claudeAgent
-#      window: "seven_day*"
-#    stop_percent: 98
+overrides:
+  # Weekly windows reset slowly and are shared by everything; let them run
+  # closer to the edge than the five-hour windows.
+  - match:
+      provider: claudeAgent
+      window: "seven_day*"
+    warn_percent: 96
+    drain_percent: 98
+    stop_percent: 99
+  - match:
+      provider: codex
+      window: secondary
+    warn_percent: 96
+    drain_percent: 98
+    stop_percent: 99
 
 # Message templates. Fields: .LimitName .UsedPercent .ResetsAt .GracePeriod
 # .Window .Provider
