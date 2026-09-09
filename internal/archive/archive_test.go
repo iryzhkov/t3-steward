@@ -61,10 +61,12 @@ func TestCandidatesAndBundle(t *testing.T) {
 	dest := t.TempDir()
 	store := &memStore{recs: map[string]Record{}, busy: map[string]string{"parked": "wait w-1 is waiting"}, kv: map[string]string{}}
 	control := &memControl{threads: []domain.Thread{
-		{ID: "old", Title: "old thread", UpdatedAt: now.Add(-72 * time.Hour)},
-		{ID: "fresh", Title: "fresh", UpdatedAt: now.Add(-time.Hour)},
+		{ID: "old", Title: "old thread", UpdatedAt: now.Add(-72 * time.Hour), SettledAt: ptr(now.Add(-60 * time.Hour))},
+		{ID: "fresh", Title: "fresh", UpdatedAt: now.Add(-time.Hour), SettledAt: ptr(now.Add(-time.Hour))},
 		{ID: "running", Title: "running", Running: true, UpdatedAt: now.Add(-72 * time.Hour)},
-		{ID: "parked", Title: "parked", UpdatedAt: now.Add(-72 * time.Hour)},
+		{ID: "parked", Title: "parked", UpdatedAt: now.Add(-72 * time.Hour), SettledAt: ptr(now.Add(-72 * time.Hour))},
+		{ID: "active", Title: "idle but active", UpdatedAt: now.Add(-72 * time.Hour)},
+		{ID: "pinned", Title: "pinned active", UpdatedAt: now.Add(-72 * time.Hour), SettledAt: ptr(now.Add(-72 * time.Hour)), SettledOverride: "active"},
 	}}
 	a := New(Options{After: 48 * time.Hour, Destination: dest, HostName: "h", DataDir: dataDir, TranscriptDirs: []string{tdir},
 		DeleteFromT3: true, RemoveLocal: true, KeepTranscripts: 24 * time.Hour}, store, control)
@@ -73,7 +75,7 @@ func TestCandidatesAndBundle(t *testing.T) {
 	if err != nil || len(cands) != 1 || cands[0].ID != "old" {
 		t.Fatalf("candidates = %+v err=%v", cands, err)
 	}
-	if skipped["fresh"] == "" || skipped["running"] != "running" || skipped["parked"] == "" {
+	if skipped["fresh"] == "" || skipped["running"] != "running" || skipped["parked"] == "" || skipped["active"] == "" || skipped["pinned"] == "" {
 		t.Fatalf("skipped = %v", skipped)
 	}
 	n, err := a.Run(context.Background(), false)
@@ -114,3 +116,5 @@ func TestCandidatesAndBundle(t *testing.T) {
 		t.Fatal("should not be due twice in a day")
 	}
 }
+
+func ptr(t time.Time) *time.Time { return &t }

@@ -82,12 +82,16 @@ func FromShell(t t3api.ThreadShell) domain.Thread {
 		HasPendingApprovals: t.HasPendingApprovals,
 		HasPendingUserInput: t.HasPendingUserInput,
 		ArchivedAt:          t3api.ParseTime(t.ArchivedAt),
+		SettledAt:           t3api.ParseTime(t.SettledAt),
 	}
 	if up := t3api.ParseTime(&t.UpdatedAt); up != nil {
 		d.UpdatedAt = *up
 	}
 	if t.BackgroundLiveness != nil {
 		d.BackgroundWork = *t.BackgroundLiveness
+	}
+	if t.SettledOverride != nil {
+		d.SettledOverride = *t.SettledOverride
 	}
 	if t.LatestTurn != nil {
 		d.TurnID = t.LatestTurn.TurnID

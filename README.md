@@ -573,9 +573,9 @@ cannot run, already succeeds, or gives up. Parked threads cost nothing.
 
 T3 keeps every thread's messages in its database and the provider logs and
 transcripts on disk. With `archive` enabled the steward runs once a day
-(`archive.at`) and, for every thread not updated for `archive.after` (48
-hours) that is not running and has no pending resume, backlog task or
-wait, builds one bundle: `thread.json` (the full T3 export), the provider
+(`archive.at`) and, for every thread that is settled or archived in T3, not
+updated for `archive.after` (48 hours), not running, and has no pending
+resume, backlog task or wait, builds one bundle: `thread.json` (the full T3 export), the provider
 log files and the provider's transcript (Claude `~/.claude/projects/...`,
 Codex `~/.codex/sessions/...`, matched by session id). The bundle goes to
 `<destination>/<host>/<yyyy-mm>/<thread-id>.tar.gz`, a directory or a

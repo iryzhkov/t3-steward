@@ -223,7 +223,22 @@ type Thread struct {
 	// after the turn settled, "monitoring" for watch loops, empty otherwise.
 	BackgroundWork string
 	ArchivedAt     *time.Time
-	UpdatedAt      time.Time
+	// SettledAt is when T3 moved the thread to its settled shelf, by hand
+	// or by auto-settlement; nil while it is active.
+	SettledAt *time.Time
+	// SettledOverride is "settled" or "active" when the user pinned the
+	// state, empty otherwise.
+	SettledOverride string
+	UpdatedAt       time.Time
+}
+
+// Settled reports whether the thread rests on T3's settled shelf or is
+// archived: finished work, from T3's point of view.
+func (t Thread) Settled() bool {
+	if t.SettledOverride == "active" {
+		return false
+	}
+	return t.ArchivedAt != nil || t.SettledAt != nil || t.SettledOverride == "settled"
 }
 
 // MatchesBucket reports whether a limit applies to the thread: the provider

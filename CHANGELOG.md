@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-09-08
+
+### Fixed
+
+- Archive only takes threads that are settled or archived in T3; an idle
+  thread still on the active shelf, or pinned active, is left alone.
+
 ## [0.10.0] - 2026-09-08
 
 ### Added

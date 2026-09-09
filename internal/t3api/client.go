@@ -71,6 +71,8 @@ type ThreadShell struct {
 	CreatedAt           string          `json:"createdAt"`
 	UpdatedAt           string          `json:"updatedAt"`
 	ArchivedAt          *string         `json:"archivedAt"`
+	SettledAt           *string         `json:"settledAt"`
+	SettledOverride     *string         `json:"settledOverride"`
 	DeletedAt           *string         `json:"deletedAt"`
 	Session             *Session        `json:"session"`
 	LatestUserMessageAt *string         `json:"latestUserMessageAt"`

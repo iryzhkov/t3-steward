@@ -196,6 +196,8 @@ func (a *Archiver) Candidates(ctx context.Context) ([]domain.Thread, map[string]
 			skipped[t.ID] = fmt.Sprintf("updated %s ago", now.Sub(t.UpdatedAt).Round(time.Minute))
 		case t.HasPendingApprovals || t.HasPendingUserInput:
 			skipped[t.ID] = "waiting for user input"
+		case !t.Settled():
+			skipped[t.ID] = "still active in T3 (not settled or archived)"
 		default:
 			if why, ok := busy[t.ID]; ok {
 				skipped[t.ID] = why
