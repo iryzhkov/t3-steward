@@ -241,31 +241,49 @@ func TestBurnRateDrainsBeforeThresholds(t *testing.T) {
 	e := New(DefaultThresholds())
 	r := base.Add(3 * time.Hour) // window resets in 3 hours
 	var st domain.BucketState
-	// 2.3% per minute for ten minutes: 40% -> 63%. At 63% the percentage
-	// ladder is quiet, but exhaustion is about 16 minutes away: warn, and
-	// a minute later drain.
-	used := 40.0
-	var d domain.Decision
-	for i := 0; i <= 10; i++ {
-		at := base.Add(time.Duration(i) * time.Minute)
-		d = e.Evaluate(snap(used, at, &r, fmt.Sprintf("r%d", i)), st, at)
-		st = d.State
-		used += 2.3
+	// Above the warn threshold and burning 1.5%/min: the projection says
+	// under ten minutes to exhaustion, so the drain request goes out at
+	// 89.5% instead of waiting for 90%.
+	d := e.Evaluate(snap(85, base, &r, "r0"), st, base)
+	only(t, d, domain.ActionWarn)
+	st = d.State
+	d = e.Evaluate(snap(86.5, base.Add(time.Minute), &r, "r1"), st, base.Add(time.Minute))
+	only(t, d)
+	st = d.State
+	d = e.Evaluate(snap(88, base.Add(2*time.Minute), &r, "r2"), st, base.Add(2*time.Minute))
+	only(t, d) // first strike
+	st = d.State
+	if st.RatePerMinute < 1.4 || st.RatePerMinute > 1.6 || st.ETAStrikes != 1 {
+		t.Fatalf("rate = %v strikes = %d", st.RatePerMinute, st.ETAStrikes)
 	}
-	if st.RatePerMinute < 2.2 || st.RatePerMinute > 2.4 {
-		t.Fatalf("rate = %v", st.RatePerMinute)
-	}
-	if st.ExhaustsIn == nil || *st.ExhaustsIn > 17*time.Minute || *st.ExhaustsIn < 15*time.Minute {
-		t.Fatalf("eta = %v", st.ExhaustsIn)
-	}
-	if st.Phase != domain.PhaseWarned {
-		t.Fatalf("phase = %s (%v)", st.Phase, d.Actions)
-	}
-	at := base.Add(12 * time.Minute)
-	d = e.Evaluate(snap(used+2.3, at, &r, "r12"), st, at)
+	d = e.Evaluate(snap(89.5, base.Add(3*time.Minute), &r, "r3"), st, base.Add(3*time.Minute))
 	only(t, d, domain.ActionDrain)
 	if !strings.Contains(d.Actions[0].Reason, "burning") {
 		t.Fatalf("reason = %s", d.Actions[0].Reason)
+	}
+}
+
+func TestProjectionNeverFiresBelowWarnThreshold(t *testing.T) {
+	e := New(DefaultThresholds())
+	r := base.Add(3 * time.Hour)
+	var st domain.BucketState
+	// A burst early in the window: 29% to 41% in six minutes projects 29
+	// minutes to exhaustion, but usage is far below the warn threshold.
+	st = e.Evaluate(snap(29, base, &r, "b1"), st, base).State
+	st = e.Evaluate(snap(30, base.Add(4*time.Minute), &r, "b2"), st, base.Add(4*time.Minute)).State
+	st = e.Evaluate(snap(41, base.Add(6*time.Minute), &r, "b3"), st, base.Add(6*time.Minute)).State
+	d := e.Evaluate(snap(43, base.Add(7*time.Minute), &r, "b4"), st, base.Add(7*time.Minute))
+	only(t, d)
+	if d.State.Phase != domain.PhaseNormal || d.State.ETAStrikes != 0 {
+		t.Fatalf("state = %+v", d.State)
+	}
+	// A bucket left warned by an earlier version drops back to normal
+	// when usage is below the threshold.
+	warned := d.State
+	warned.Phase = domain.PhaseWarned
+	d = e.Evaluate(snap(44, base.Add(8*time.Minute), &r, "b5"), warned, base.Add(8*time.Minute))
+	if d.State.Phase != domain.PhaseNormal {
+		t.Fatalf("warned did not de-escalate: %s", d.State.Phase)
 	}
 }
 
@@ -331,22 +349,4 @@ func TestRunwayHoldsSkipsStopAtHighPercent(t *testing.T) {
 	at := base.Add(45*time.Minute + 30*time.Second)
 	d := e.Evaluate(snap(99, at, &r, "burst"), st, at)
 	only(t, d, domain.ActionStop)
-}
-
-func TestBurstNeedsTwoStrikesBeforeETAEscalation(t *testing.T) {
-	e := New(DefaultThresholds())
-	r := base.Add(2 * time.Hour)
-	var st domain.BucketState
-	st = e.Evaluate(snap(29, base, &r, "b1"), st, base).State
-	st = e.Evaluate(snap(30, base.Add(4*time.Minute), &r, "b2"), st, base.Add(4*time.Minute)).State
-	// A 12% step in six minutes projects 29 minutes: first strike, no action.
-	d := e.Evaluate(snap(41, base.Add(6*time.Minute), &r, "b3"), st, base.Add(6*time.Minute))
-	only(t, d)
-	st = d.State
-	if st.ETAStrikes != 1 {
-		t.Fatalf("strikes = %d", st.ETAStrikes)
-	}
-	// The pace continues: second strike, warn.
-	d = e.Evaluate(snap(43, base.Add(7*time.Minute), &r, "b4"), st, base.Add(7*time.Minute))
-	only(t, d, domain.ActionWarn)
 }

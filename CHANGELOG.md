@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-09-08
+
+### Changed
+
+- The projection ladder only applies at or above `warn_percent`; below it
+  the burn rate never warns, drains or stops. A bucket left in the warned
+  phase drops back to normal when usage is below the threshold.
+
 ## [0.9.0] - 2026-09-08
 
 ### Added

@@ -306,8 +306,11 @@ normal -> warned -> draining -> stopped -> (reset confirmed) -> normal
 - **90% (drain)**: one message per thread asking it to stop spawning,
   finish or cancel subagents, collect results, write a checkpoint and stop.
   A grace timer starts.
-- **Projected exhaustion** works alongside the percentages, once the
-  projection has held on two consecutive readings. The burn rate
+- **Projected exhaustion** tightens the ladder only once usage is already
+  at or above `warn_percent`, and only after the projection has held on
+  two consecutive readings. Below the warn threshold the burn rate never
+  fires anything: a burst at the start of a window is not a reason to
+  wind down. The burn rate
   over the last ten minutes of readings gives a time to 100%; the same
   warn, drain and stop actions fire when that falls below 30, 15 and 5
   minutes (`policy.warn_eta` etc.), but only if the window does not reset

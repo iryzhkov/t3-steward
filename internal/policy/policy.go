@@ -210,7 +210,10 @@ func (e *Engine) wantedLevel(snap domain.QuotaSnapshot, state *domain.BucketStat
 	}
 	level := e.level(snap.UsedPercent)
 	why := fmt.Sprintf("threshold %.0f%%", e.thresholdFor(level))
-	if state.ExhaustsIn != nil && e.t.RateWindow > 0 && (snap.ResetsAt == nil || *state.ExhaustsIn < untilReset) {
+	// The projection only tightens the ladder once usage is already in
+	// warning territory; a burst early in a window is not a reason to
+	// wind anything down.
+	if snap.UsedPercent >= e.t.WarnPercent && state.ExhaustsIn != nil && e.t.RateWindow > 0 && (snap.ResetsAt == nil || *state.ExhaustsIn < untilReset) {
 		eta := *state.ExhaustsIn
 		var etaLevel domain.Phase
 		switch {
@@ -323,6 +326,12 @@ func (e *Engine) Evaluate(snap domain.QuotaSnapshot, prev domain.BucketState, no
 	if state.ETAStrikes == strikesBefore {
 		// This reading did not ask for a projection-based level.
 		state.ETAStrikes = 0
+	}
+	// A warning is advisory; once usage is back below the warn threshold
+	// with nothing asking for more, the bucket is normal again. Draining
+	// and stopped never de-escalate within a window.
+	if state.Phase == domain.PhaseWarned && want == domain.PhaseNormal && snap.UsedPercent < e.t.WarnPercent {
+		state.Phase = domain.PhaseNormal
 	}
 	if want.Rank() > state.Phase.Rank() {
 		var kind domain.ActionKind
