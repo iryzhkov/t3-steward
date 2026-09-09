@@ -558,8 +558,8 @@ interval after every "not yet" up to 10 minutes (`--every`, `--max-every`),
 for up to `--timeout` (24 h). Exit 0 means the condition is met, exit 2
 means give up, anything else means keep polling. When the wait settles the
 steward starts the thread's next turn with the outcome and the check's
-last output; if the provider quota is unhealthy at that moment the wake
-waits for it. `--group NAME --wake all` wakes once when every wait in the
+last output; if the provider is draining or stopped at that moment the
+wake waits for the window to recover. `--group NAME --wake all` wakes once when every wait in the
 group has settled. The check is run once at registration and refused if it
 cannot run, already succeeds, or gives up. Parked threads cost nothing.
 

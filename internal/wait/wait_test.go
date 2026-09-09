@@ -84,7 +84,7 @@ func TestBackoffSettleAndWake(t *testing.T) {
 	// Unhealthy quota holds the wake; healthy delivers it once.
 	exit = 0
 	now = now.Add(5 * time.Minute)
-	unhealthy := []domain.BucketState{{Key: healthy[0].Key, Phase: domain.PhaseStopped, UsedPercent: 96}}
+	unhealthy := []domain.BucketState{{Key: healthy[0].Key, Phase: domain.PhaseDraining, UsedPercent: 91}}
 	r.Tick(ctx, nil, unhealthy)
 	if store.waits["w1"].Status != StatusMet || len(control.resumed) != 0 {
 		t.Fatalf("status=%s resumed=%v", store.waits["w1"].Status, control.resumed)

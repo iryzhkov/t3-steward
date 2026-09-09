@@ -362,7 +362,9 @@ func (r *Runner) healthy(thread domain.Thread) (bool, string) {
 		if b.ResetsAt != nil && !b.ResetsAt.After(now) {
 			continue
 		}
-		if b.Phase != domain.PhaseNormal {
+		// A warning is advice the woken thread will receive itself; only a
+		// bucket that is draining or stopped keeps the thread parked.
+		if b.Phase == domain.PhaseDraining || b.Phase == domain.PhaseStopped {
 			return false, fmt.Sprintf("%s is %s at %.0f%%", b.Key, b.Phase, b.UsedPercent)
 		}
 	}
