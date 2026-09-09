@@ -240,9 +240,14 @@ func cmdReport(g globalFlags, f reportFlags) error {
 		}
 		observations = filtered
 	}
+	windowModels := map[string]string{}
+	for name, o := range cfg.Policy.Windows {
+		windowModels[name] = o.Model
+	}
 	rep := report.Build(report.Input{
 		Observations: observations, Usage: usage, Location: time.Local, Peak: peak,
 		From: from, To: now, ThreadTitles: titles,
+		WindowModels: windowModels,
 	})
 	rep.Sources = sources
 	if f.asJSON {

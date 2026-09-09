@@ -53,9 +53,16 @@ policy:
   # Also stop threads that start running while an applicable bucket is
   # already in the stopped phase.
   stop_new_sessions: true
-  # Window names (substring match) that are recorded but never act.
-  # Claude reports an "overage" window that is not a hard limit.
+  # Window names (globs) that are recorded but never act. Claude's bare
+  # "overage" window is not a hard limit.
   ignore_windows: ["overage"]
+  # Relabel or rescope provider windows. Claude reports the Fable weekly
+  # limit under the key below; scoping it to "fable" makes it act only on
+  # threads whose model id contains fable.
+  windows:
+    seven_day_overage_included:
+      label: "Claude 7-day (Fable)"
+      model: fable
   # Observations older than this are ignored at startup.
   max_snapshot_age: 12h
   # Projected exhaustion. The burn rate over the last rate_window of

@@ -227,6 +227,9 @@ type Input struct {
 	ResetTolerance time.Duration
 	// ThreadTitles maps thread ids to titles for display; optional.
 	ThreadTitles map[string]string
+	// WindowModels maps a window name to the model selector configured for
+	// it, overriding what the window name implies.
+	WindowModels map[string]string
 }
 
 // callSlack is how long after a reading a call may be logged and still
@@ -280,15 +283,21 @@ func Build(in Input) Report {
 	for _, key := range keys {
 		obs := byBucket[key]
 		sort.SliceStable(obs, func(i, j int) bool { return obs[i].ObservedAt.Before(obs[j].ObservedAt) })
+		applies := func(model string) bool {
+			if sel, ok := in.WindowModels[key.Window]; ok {
+				return sel == "" || model == "" || strings.Contains(strings.ToLower(model), strings.ToLower(sel))
+			}
+			return modelApplies(key, model)
+		}
 		var calls []domain.UsageSample
 		for _, u := range callsByProvider[key.ProviderInstanceID] {
-			if modelApplies(key, u.Model) {
+			if applies(u.Model) {
 				calls = append(calls, u)
 			}
 		}
 		var turns []domain.UsageSample
 		for _, u := range turnsByProvider[key.ProviderInstanceID] {
-			if modelApplies(key, u.Model) {
+			if applies(u.Model) {
 				turns = append(turns, u)
 			}
 		}

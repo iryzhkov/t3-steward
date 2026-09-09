@@ -72,6 +72,14 @@ type T3 struct {
 	RequestTimeout Duration `yaml:"request_timeout"`
 }
 
+// WindowOverride relabels or rescopes one provider window.
+type WindowOverride struct {
+	// Label is the human-readable limit name used in messages.
+	Label string `yaml:"label"`
+	// Model limits the window to threads whose model id contains it.
+	Model string `yaml:"model"`
+}
+
 // Policy configures the thresholds and the safety switches.
 type Policy struct {
 	WarnPercent  float64  `yaml:"warn_percent"`
@@ -98,9 +106,13 @@ type Policy struct {
 	// StopNewSessions stops threads that start running while a bucket that
 	// applies to them is already in the stopped phase.
 	StopNewSessions bool `yaml:"stop_new_sessions"`
-	// IgnoreWindows lists window names (case-insensitive substrings) that are
+	// IgnoreWindows lists window names (globs, case-insensitive) that are
 	// recorded but never trigger actions.
 	IgnoreWindows []string `yaml:"ignore_windows"`
+	// Windows relabels or rescopes provider windows by name: a display
+	// label and a model selector (substring of the model id) that limits
+	// the window to matching threads.
+	Windows map[string]WindowOverride `yaml:"windows"`
 	// MaxSnapshotAge discards observations older than this at startup, so a
 	// daemon that was down for a long time does not act on history.
 	MaxSnapshotAge Duration `yaml:"max_snapshot_age"`
@@ -285,6 +297,11 @@ func Default() Config {
 	c.Policy.StopRetries = 3
 	c.Policy.StopNewSessions = true
 	c.Policy.IgnoreWindows = []string{"overage"}
+	// Claude reports the Fable weekly limit under this key; the Claude
+	// dashboard shows it as the Fable 7-day limit.
+	c.Policy.Windows = map[string]WindowOverride{
+		"seven_day_overage_included": {Label: "Claude 7-day (Fable)", Model: "fable"},
+	}
 	c.Policy.MaxSnapshotAge = Duration(12 * time.Hour)
 	c.Policy.RateWindow = Duration(10 * time.Minute)
 	c.Policy.WarnETA = Duration(30 * time.Minute)

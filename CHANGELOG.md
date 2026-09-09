@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-09-08
+
+### Changed
+
+- `policy.windows` relabels and rescopes provider windows. By default
+  Claude's `seven_day_overage_included` is treated as the 7-day Fable
+  limit (label "Claude 7-day (Fable)", model selector `fable`) and acts
+  on Fable threads; it is no longer ignored.
+- `policy.ignore_windows` entries are globs, not substrings.
+
 ## [0.9.2] - 2026-09-08
 
 ### Changed

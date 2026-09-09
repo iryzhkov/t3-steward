@@ -289,9 +289,12 @@ applies to it.
   apply only to threads whose selected model id contains that name.
 - **Spending limits** (Codex `individualLimit`, reported as remaining
   percent) become a `spending` bucket with `100 - remaining`.
-- **Overage windows** (Claude `seven_day_overage_included`) are recorded but
-  never act, because they are not a hard limit; adjust
-  `policy.ignore_windows` if your plan differs.
+- **Relabelled windows**: Claude reports the 7-day Fable limit under the
+  key `seven_day_overage_included`; `policy.windows` maps it to the label
+  "Claude 7-day (Fable)" with model selector `fable`, so it acts on Fable
+  threads only. Use the same setting to relabel or rescope any window.
+  `policy.ignore_windows` (globs) lists windows that never act; Claude's
+  bare `overage` window is there by default.
 
 ## Warning, drain, stop, reset, resume
 

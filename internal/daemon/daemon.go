@@ -245,7 +245,10 @@ func overrideMatches(o config.Override, key domain.BucketKey, limitName string) 
 func (d *Daemon) ignoredWindow(window string) bool {
 	w := strings.ToLower(window)
 	for _, ig := range d.cfg.Policy.IgnoreWindows {
-		if ig != "" && strings.Contains(w, strings.ToLower(ig)) {
+		if ig == "" {
+			continue
+		}
+		if ok, err := path.Match(strings.ToLower(ig), w); err == nil && ok {
 			return true
 		}
 	}
@@ -256,6 +259,14 @@ func (d *Daemon) ignoredWindow(window string) bool {
 // executes the resulting actions.
 func (d *Daemon) HandleSnapshot(ctx context.Context, snap domain.QuotaSnapshot) {
 	now := d.now()
+	if o, ok := d.cfg.Policy.Windows[snap.Key.Window]; ok {
+		if o.Label != "" {
+			snap.LimitName = o.Label
+		}
+		if o.Model != "" {
+			snap.ModelSelector = o.Model
+		}
+	}
 	log := d.log.With("bucket", snap.Key.String(), "used", fmt.Sprintf("%.0f%%", snap.UsedPercent))
 	if age := now.Sub(snap.ObservedAt); age > d.cfg.Policy.MaxSnapshotAge.D() {
 		log.Debug("ignoring old snapshot", "age", age.Round(time.Second))
