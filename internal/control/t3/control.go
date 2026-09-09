@@ -376,6 +376,44 @@ func (c *Control) LastAssistantMessage(ctx context.Context, threadID string) (st
 	return text, nil
 }
 
+// ExportThread returns the thread's full detail as T3 serves it (all
+// turns, messages, activities), for archiving.
+func (c *Control) ExportThread(ctx context.Context, threadID string) ([]byte, error) {
+	return c.client.ThreadDetailRaw(ctx, threadID)
+}
+
+// DeleteThread deletes a thread from T3.
+func (c *Control) DeleteThread(ctx context.Context, threadID string) error {
+	cmd := map[string]any{
+		"type":      "thread.delete",
+		"commandId": newID(),
+		"threadId":  threadID,
+	}
+	if c.DryRun {
+		c.log.Info("dry-run: would delete thread", "thread", threadID)
+		return nil
+	}
+	if _, err := c.client.Dispatch(ctx, cmd); err != nil {
+		return fmt.Errorf("delete thread %s: %w", threadID, err)
+	}
+	c.log.Info("thread deleted from T3", "thread", threadID)
+	return nil
+}
+
+// ProjectTitle resolves a project id to its title, or returns the id.
+func (c *Control) ProjectTitle(ctx context.Context, projectID string) string {
+	projects, err := c.ListProjects(ctx)
+	if err != nil {
+		return projectID
+	}
+	for _, p := range projects {
+		if p.ID == projectID {
+			return p.Title
+		}
+	}
+	return projectID
+}
+
 func now() string {
 	return time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
 }

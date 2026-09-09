@@ -63,6 +63,9 @@ type Daemon struct {
 	Backlog BacklogRunner
 	// Waits, when set, is ticked after every thread poll.
 	Waits BacklogRunner
+	// Archive, when set, is ticked after every thread poll and runs once a
+	// day.
+	Archive BacklogRunner
 
 	mu      sync.Mutex
 	engines map[domain.BucketKey]*policy.Engine
@@ -426,6 +429,9 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 	}
 	if d.Waits != nil {
 		d.Waits.Tick(ctx, threads, states)
+	}
+	if d.Archive != nil {
+		d.Archive.Tick(ctx, threads, states)
 	}
 }
 

@@ -273,6 +273,11 @@ func (c *Client) ThreadDetail(ctx context.Context, threadID string, turnLimit in
 	return &wrapper.Thread, nil
 }
 
+// ThreadDetailRaw fetches one thread in full, as the server serializes it.
+func (c *Client) ThreadDetailRaw(ctx context.Context, threadID string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, "/api/orchestration/threads/"+url.PathEscape(threadID), nil, true)
+}
+
 // Dispatch posts one ClientOrchestrationCommand.
 func (c *Client) Dispatch(ctx context.Context, command map[string]any) (*DispatchResult, error) {
 	body, err := json.Marshal(command)

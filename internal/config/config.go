@@ -250,6 +250,29 @@ type Backlog struct {
 	MinSamples int `yaml:"min_samples"`
 }
 
+// Archive configures cold storage of finished threads.
+type Archive struct {
+	Enabled bool `yaml:"enabled"`
+	// After is how long a thread must have gone without an update.
+	After Duration `yaml:"after"`
+	// Destination is a directory, or host:/path reached over SSH.
+	Destination string `yaml:"destination"`
+	// At is the local time of day the daily run starts.
+	At string `yaml:"at"`
+	// DeleteFromT3 deletes the thread from T3 once its bundle is verified.
+	DeleteFromT3 bool `yaml:"delete_from_t3"`
+	// RemoveLocal removes provider logs and transcripts once verified.
+	RemoveLocal bool `yaml:"remove_local"`
+	// KeepTranscripts keeps a bundled transcript on disk until it is this
+	// old, because other tools (toolfeedback) read recent transcripts.
+	KeepTranscripts Duration `yaml:"keep_transcripts"`
+	// TranscriptDirs are searched for provider transcripts; empty means
+	// ~/.claude/projects and ~/.codex/sessions.
+	TranscriptDirs []string `yaml:"transcript_dirs"`
+	// MaxPerRun bounds the threads archived per daily run.
+	MaxPerRun int `yaml:"max_per_run"`
+}
+
 // Config is the full configuration.
 type Config struct {
 	T3            T3            `yaml:"t3"`
@@ -261,6 +284,7 @@ type Config struct {
 	Notifications Notifications `yaml:"notifications"`
 	Report        Report        `yaml:"report"`
 	Backlog       Backlog       `yaml:"backlog"`
+	Archive       Archive       `yaml:"archive"`
 	// StatePath is the SQLite database. Empty means the platform default.
 	StatePath string `yaml:"state_path"`
 	// LogLevel is debug, info, warn or error.
@@ -327,6 +351,12 @@ func Default() Config {
 	c.Messages.Drain = DefaultDrainMessage
 	c.Notifications.Desktop = true
 	c.Report.Peak = "Mon-Fri 09:00-17:00"
+	c.Archive.After = Duration(48 * time.Hour)
+	c.Archive.At = "03:30"
+	c.Archive.DeleteFromT3 = true
+	c.Archive.RemoveLocal = true
+	c.Archive.MaxPerRun = 50
+	c.Archive.KeepTranscripts = Duration(14 * 24 * time.Hour)
 	c.Backlog.QuietFor = Duration(30 * time.Minute)
 	c.Backlog.LongWindowCap = 80
 	c.Backlog.HistoryDays = 56
@@ -503,6 +533,18 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(r.Prompt) == "" {
 		return errors.New("resume: prompt must not be empty")
+	}
+	if c.Archive.Enabled {
+		if strings.TrimSpace(c.Archive.Destination) == "" {
+			return errors.New("archive: destination is required when enabled")
+		}
+		if c.Archive.After.D() < time.Hour {
+			return errors.New("archive: after must be at least 1h")
+		}
+		var hh, mm int
+		if _, err := fmt.Sscanf(c.Archive.At, "%d:%d", &hh, &mm); err != nil || hh < 0 || hh > 23 || mm < 0 || mm > 59 {
+			return fmt.Errorf("archive: at must be HH:MM (got %q)", c.Archive.At)
+		}
 	}
 	if c.Backlog.SafetyMargin < 0 || c.Backlog.SafetyMargin >= 100 {
 		return errors.New("backlog: safety_margin_percent must be between 0 and 100")

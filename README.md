@@ -82,7 +82,7 @@ Cannot:
 
 | Watchdog | Tested T3 Code versions |
 | --- | --- |
-| 0.1.x to 0.9.x | 0.0.38 |
+| 0.1.x to 0.10.x | 0.0.38 |
 
 `t3-steward version` prints the range the binary was built with.
 Newer T3 versions run in monitoring-only mode until either a release adds
@@ -569,6 +569,31 @@ wake waits for the window to recover. `--group NAME --wake all` wakes once when 
 group has settled. The check is run once at registration and refused if it
 cannot run, already succeeds, or gives up. Parked threads cost nothing.
 
+## Cold storage for finished threads
+
+T3 keeps every thread's messages in its database and the provider logs and
+transcripts on disk. With `archive` enabled the steward runs once a day
+(`archive.at`) and, for every thread not updated for `archive.after` (48
+hours) that is not running and has no pending resume, backlog task or
+wait, builds one bundle: `thread.json` (the full T3 export), the provider
+log files and the provider's transcript (Claude `~/.claude/projects/...`,
+Codex `~/.codex/sessions/...`, matched by session id). The bundle goes to
+`<destination>/<host>/<yyyy-mm>/<thread-id>.tar.gz`, a directory or a
+`host:/path` reached over SSH, and an `index.jsonl` line per thread. Only
+after the far side confirms the checksum are the provider logs removed,
+the thread deleted from T3 (`delete_from_t3`) and, once older than
+`keep_transcripts` (14 days, because other tools read recent ones), the
+transcript removed.
+
+```sh
+t3-steward archive candidates      # what would go, and why the rest stays
+t3-steward archive run [--dry-run]
+t3-steward archive list
+t3-steward archive restore <thread-id> [DIR]   # fetch and unpack a bundle
+```
+
+The export is JSON to read or hand to an agent; T3 has no import.
+
 ## Commands
 
 ```text
@@ -583,6 +608,7 @@ t3-steward forecast [--days 56] [--bucket TEXT] [--from-logs] [--remotes a,b] [-
 t3-steward backlog list [--all]|new ID|check FILE|show ID|retry ID|cancel ID|receive ID|path
 t3-steward wait add [--name TEXT] [--every 30s] [--max-every 10m] [--timeout 24h] [--thread ID] [--group G --wake all] -- CMD...
 t3-steward wait list [--all]|cancel ID|run-now ID
+t3-steward archive candidates|run [--dry-run]|list|restore ID [DIR]
 t3-steward install-service [--force] [--enable]
 t3-steward uninstall-service
 t3-steward version

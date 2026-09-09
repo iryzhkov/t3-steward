@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-08
+
+### Added
+
+- `archive`: daily cold storage of threads idle for `archive.after`: full
+  T3 export, provider logs and transcript bundled to a directory or an
+  SSH destination, verified by checksum, then removed locally and deleted
+  from T3. Transcripts stay on disk for `keep_transcripts`.
+
 ## [0.9.3] - 2026-09-08
 
 ### Changed

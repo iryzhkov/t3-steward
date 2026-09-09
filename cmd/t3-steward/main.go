@@ -52,6 +52,7 @@ Commands:
   forecast           Interactive-demand map by weekday and hour, and current backlog headroom.
   backlog            Manage the quota-gated task backlog (list, new, show, retry, cancel).
   wait               Park a thread until a check succeeds; the steward wakes it (add, list, cancel).
+  archive            Cold storage for finished threads (candidates, run, list, restore).
   export             Print this host's readings and token samples as JSON for another host's report.
   install-service    Install a per-user background service (Linux systemd).
   uninstall-service  Remove the background service.
@@ -107,6 +108,22 @@ func run(args []string) error {
 			sub = append(sub, rest[i])
 		}
 		return cmdWait(g, sub)
+	case "archive":
+		paths, err := config.DefaultPaths()
+		if err != nil {
+			return err
+		}
+		g := globalFlags{configPath: paths.ConfigFile}
+		var sub []string
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == "--config" && i+1 < len(rest) {
+				g.configPath = rest[i+1]
+				i++
+				continue
+			}
+			sub = append(sub, rest[i])
+		}
+		return cmdArchive(g, sub)
 	case "backlog":
 		// Sub-commands parse their own arguments; only --config and
 		// --dry-run style globals are shared, taken from the environment here.
@@ -495,6 +512,10 @@ func cmdRun(g globalFlags) error {
 	waits := wait.New(store, control, logger)
 	waits.DryRun = cfg.Policy.DryRun
 	d.Waits = waits
+	if cfg.Archive.Enabled {
+		d.Archive = newArchiver(cfg, store, control, logger, dataDir)
+		logger.Info("archive enabled", "destination", cfg.Archive.Destination, "after", cfg.Archive.After.D(), "at", cfg.Archive.At)
+	}
 	if cfg.Backlog.Enabled {
 		runner, err := newBacklogRunner(cfg, store, control, logger, dataDir)
 		if err != nil {

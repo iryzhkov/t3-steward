@@ -167,6 +167,22 @@ backlog:
   quantile: 0.8                 # cover a heavy week, not the average one
   min_samples: 3                # past occurrences before a slot's history counts
 
+archive:
+  # Cold storage for finished threads. Once a day a thread that has not
+  # been updated for "after" is bundled (full T3 export, provider logs,
+  # the provider's transcript) into <destination>/<host>/<yyyy-mm>/<id>.tar.gz,
+  # verified by checksum on the far side, and only then removed locally and
+  # deleted from T3. Threads with pending resumes, backlog tasks or waits
+  # are left alone. "t3-steward archive candidates" shows what would go.
+  enabled: false
+  after: 48h
+  destination: ""               # a directory, or host:/path over SSH
+  at: "03:30"                   # local time of the daily run
+  delete_from_t3: true
+  remove_local: true
+  keep_transcripts: 336h        # bundled transcripts stay on disk this long (toolfeedback reads them)
+  max_per_run: 50
+
 notifications:
   # Desktop notification (notify-send on Linux) when a stop fails or when
   # a thread is stopped or resumed.

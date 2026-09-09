@@ -14,6 +14,7 @@ import (
 
 	_ "modernc.org/sqlite" // database/sql driver
 
+	"github.com/iryzhkov/t3-steward/internal/archive"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/wait"
 )
@@ -110,6 +111,11 @@ var migrations = []string{
 		status TEXT NOT NULL,
 		state TEXT NOT NULL,
 		updated_at TEXT NOT NULL
+	);`,
+	`CREATE TABLE IF NOT EXISTS archives (
+		thread_id TEXT PRIMARY KEY,
+		record TEXT NOT NULL,
+		archived_at TEXT NOT NULL
 	);`,
 }
 
@@ -644,4 +650,74 @@ func (s *Store) ListWaits(ctx context.Context, threadID string) ([]wait.Wait, er
 		out = append(out, w)
 	}
 	return out, rows.Err()
+}
+
+// SaveArchive upserts an archive record.
+func (s *Store) SaveArchive(ctx context.Context, r archive.Record) error {
+	raw, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO archives(thread_id, record, archived_at) VALUES (?, ?, ?)
+		 ON CONFLICT(thread_id) DO UPDATE SET record = excluded.record, archived_at = excluded.archived_at`,
+		r.ThreadID, string(raw), r.ArchivedAt.UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+// ListArchives returns every archive record, oldest first.
+func (s *Store) ListArchives(ctx context.Context) ([]archive.Record, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT record FROM archives ORDER BY archived_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []archive.Record
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var r archive.Record
+		if err := json.Unmarshal([]byte(raw), &r); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// BusyThreads lists threads the steward still has business with.
+func (s *Store) BusyThreads(ctx context.Context) (map[string]string, error) {
+	out := map[string]string{}
+	intents, err := s.ListResumeIntents(ctx, domain.ResumePending, domain.ResumeEligible, domain.ResumeResuming)
+	if err != nil {
+		return nil, err
+	}
+	for _, i := range intents {
+		out[i.ThreadID] = "resume intent " + string(i.Status)
+	}
+	tasks, err := s.LoadTaskStates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for id, raw := range tasks {
+		var st struct {
+			Status   string `json:"status"`
+			ThreadID string `json:"threadId"`
+		}
+		if json.Unmarshal(raw, &st) == nil && st.ThreadID != "" && (st.Status == "running" || st.Status == "pending" || st.Status == "needs-input") {
+			out[st.ThreadID] = "backlog task " + id + " is " + st.Status
+		}
+	}
+	waits, err := s.ListWaits(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range waits {
+		if w.Status == wait.StatusWaiting || w.Settled() {
+			out[w.ThreadID] = "wait " + w.ID + " is " + string(w.Status)
+		}
+	}
+	return out, nil
 }
