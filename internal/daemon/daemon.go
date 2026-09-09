@@ -61,6 +61,8 @@ type Daemon struct {
 	Usage <-chan domain.UsageSample
 	// Backlog, when set, is ticked after every thread poll.
 	Backlog BacklogRunner
+	// Waits, when set, is ticked after every thread poll.
+	Waits BacklogRunner
 
 	mu      sync.Mutex
 	engines map[domain.BucketKey]*policy.Engine
@@ -410,6 +412,9 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 	d.advanceResumes(ctx, threads, states)
 	if d.Backlog != nil {
 		d.Backlog.Tick(ctx, threads, states)
+	}
+	if d.Waits != nil {
+		d.Waits.Tick(ctx, threads, states)
 	}
 }
 

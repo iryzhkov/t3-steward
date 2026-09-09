@@ -82,7 +82,7 @@ Cannot:
 
 | Watchdog | Tested T3 Code versions |
 | --- | --- |
-| 0.1.x to 0.8.x | 0.0.38 |
+| 0.1.x to 0.9.x | 0.0.38 |
 
 `t3-steward version` prints the range the binary was built with.
 Newer T3 versions run in monitoring-only mode until either a release adds
@@ -306,7 +306,8 @@ normal -> warned -> draining -> stopped -> (reset confirmed) -> normal
 - **90% (drain)**: one message per thread asking it to stop spawning,
   finish or cancel subagents, collect results, write a checkpoint and stop.
   A grace timer starts.
-- **Projected exhaustion** works alongside the percentages. The burn rate
+- **Projected exhaustion** works alongside the percentages, once the
+  projection has held on two consecutive readings. The burn rate
   over the last ten minutes of readings gives a time to 100%; the same
   warn, drain and stop actions fire when that falls below 30, 15 and 5
   minutes (`policy.warn_eta` etc.), but only if the window does not reset
@@ -542,6 +543,26 @@ as rises without T3 tokens after the fact. A backlog task may therefore
 occasionally start just before you do, and the ladder drains it at 90%
 like anything else.
 
+## Waiting for something external
+
+An agent that would otherwise poll in a loop (PR review, CI, a long job)
+registers the check with the steward and ends its turn:
+
+```sh
+t3-steward wait add --name "PR 123 reviewed" -- gh pr view 123 --json reviewDecision --jq 'select(.reviewDecision != "") | .reviewDecision'
+```
+
+The thread is resolved from the calling agent's `CLAUDE_CODE_SESSION_ID`
+(or `--thread`). The steward runs the check every 30 seconds, doubling the
+interval after every "not yet" up to 10 minutes (`--every`, `--max-every`),
+for up to `--timeout` (24 h). Exit 0 means the condition is met, exit 2
+means give up, anything else means keep polling. When the wait settles the
+steward starts the thread's next turn with the outcome and the check's
+last output; if the provider quota is unhealthy at that moment the wake
+waits for it. `--group NAME --wake all` wakes once when every wait in the
+group has settled. The check is run once at registration and refused if it
+cannot run, already succeeds, or gives up. Parked threads cost nothing.
+
 ## Commands
 
 ```text
@@ -554,6 +575,8 @@ t3-steward report [--days 14] [--peak "Mon-Fri 09:00-17:00"] [--bucket TEXT] [--
 t3-steward export [--days 14] [--from-logs]
 t3-steward forecast [--days 56] [--bucket TEXT] [--from-logs] [--remotes a,b] [--json]
 t3-steward backlog list [--all]|new ID|check FILE|show ID|retry ID|cancel ID|receive ID|path
+t3-steward wait add [--name TEXT] [--every 30s] [--max-every 10m] [--timeout 24h] [--thread ID] [--group G --wake all] -- CMD...
+t3-steward wait list [--all]|cancel ID|run-now ID
 t3-steward install-service [--force] [--enable]
 t3-steward uninstall-service
 t3-steward version
@@ -610,9 +633,10 @@ the window is not in `ignore_windows`, and that dry-run is off.
   tokens, message bodies, account identifiers or full provider events.
 - The state database records bucket percentages, thread ids and titles,
   and the audit log of actions. It is created with mode 0600.
-- The systemd unit runs unprivileged with `NoNewPrivileges`, `PrivateTmp`
-  and `ProtectSystem=full`. `ProtectHome` is deliberately not set because
-  the `t3` CLI writes T3's own database under `$HOME`.
+- The systemd unit runs unprivileged with `NoNewPrivileges` and
+  `ProtectSystem=full`. `ProtectHome` and `PrivateTmp` are deliberately not
+  set: the `t3` CLI writes T3's own database under `$HOME`, and wait checks
+  written by agents must see the same `/tmp` the agents use.
 - Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
 ## Upgrade and rollback

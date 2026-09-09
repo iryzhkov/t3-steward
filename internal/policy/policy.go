@@ -192,7 +192,7 @@ func trimReadings(recent []domain.Reading, cutoff time.Time) []domain.Reading {
 
 // wantedLevel combines the percentage ladder with the exhaustion ladder and
 // applies the reset exemption. It returns the level and the reason.
-func (e *Engine) wantedLevel(snap domain.QuotaSnapshot, state domain.BucketState, now time.Time) (domain.Phase, string) {
+func (e *Engine) wantedLevel(snap domain.QuotaSnapshot, state *domain.BucketState, now time.Time) (domain.Phase, string) {
 	var untilReset time.Duration
 	if snap.ResetsAt != nil {
 		untilReset = snap.ResetsAt.Sub(now)
@@ -222,6 +222,12 @@ func (e *Engine) wantedLevel(snap domain.QuotaSnapshot, state domain.BucketState
 			etaLevel = domain.PhaseWarned
 		}
 		if etaLevel.Rank() > level.Rank() {
+			// A single burst of readings can project a short ETA; require
+			// the projection on two consecutive readings before acting.
+			state.ETAStrikes++
+			if state.ETAStrikes < 2 {
+				return level, why
+			}
 			level = etaLevel
 			resetNote := "no reset time reported"
 			if snap.ResetsAt != nil {
@@ -312,7 +318,12 @@ func (e *Engine) Evaluate(snap domain.QuotaSnapshot, prev domain.BucketState, no
 	// or from the projected time to exhaustion, unless the window resets
 	// so soon that stopping would save nothing. Levels below the current
 	// phase never fire again within the same epoch.
-	want, why := e.wantedLevel(snap, state, now)
+	strikesBefore := state.ETAStrikes
+	want, why := e.wantedLevel(snap, &state, now)
+	if state.ETAStrikes == strikesBefore {
+		// This reading did not ask for a projection-based level.
+		state.ETAStrikes = 0
+	}
 	if want.Rank() > state.Phase.Rank() {
 		var kind domain.ActionKind
 		switch want {

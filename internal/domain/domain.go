@@ -153,6 +153,10 @@ type BucketState struct {
 	// ExhaustsIn is the projected time until 100% at the current rate;
 	// nil when no exhaustion is projected.
 	ExhaustsIn *time.Duration `json:"exhaustsIn,omitempty"`
+	// ETAStrikes counts consecutive readings whose projection asked for a
+	// higher level than the percentage ladder; escalation on the
+	// projection needs two, so a single burst does not fire it.
+	ETAStrikes int `json:"etaStrikes,omitempty"`
 }
 
 // Reading is one usage reading kept for rate estimation.

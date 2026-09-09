@@ -15,6 +15,7 @@ import (
 	_ "modernc.org/sqlite" // database/sql driver
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/wait"
 )
 
 // Store is the SQLite-backed state store.
@@ -101,6 +102,13 @@ var migrations = []string{
 		id TEXT PRIMARY KEY,
 		state TEXT NOT NULL,
 		status TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);`,
+	`CREATE TABLE IF NOT EXISTS waits (
+		id TEXT PRIMARY KEY,
+		thread_id TEXT NOT NULL,
+		status TEXT NOT NULL,
+		state TEXT NOT NULL,
 		updated_at TEXT NOT NULL
 	);`,
 }
@@ -591,6 +599,49 @@ func (s *Store) LoadTaskStates(ctx context.Context) (map[string]json.RawMessage,
 			return nil, err
 		}
 		out[id] = json.RawMessage(raw)
+	}
+	return out, rows.Err()
+}
+
+// SaveWait upserts a wait, stored as JSON with status and thread columns
+// for listing.
+func (s *Store) SaveWait(ctx context.Context, w wait.Wait) error {
+	raw, err := json.Marshal(w)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO waits(id, thread_id, status, state, updated_at) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET thread_id = excluded.thread_id, status = excluded.status, state = excluded.state, updated_at = excluded.updated_at`,
+		w.ID, w.ThreadID, string(w.Status), string(raw), time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+// ListWaits returns waits, optionally for one thread, oldest first.
+func (s *Store) ListWaits(ctx context.Context, threadID string) ([]wait.Wait, error) {
+	query := `SELECT state FROM waits`
+	var args []any
+	if threadID != "" {
+		query += ` WHERE thread_id = ?`
+		args = append(args, threadID)
+	}
+	query += ` ORDER BY updated_at`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []wait.Wait
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var w wait.Wait
+		if err := json.Unmarshal([]byte(raw), &w); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
 	}
 	return out, rows.Err()
 }

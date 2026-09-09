@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-08
+
+### Added
+
+- `wait`: an agent registers a check and ends its turn; the steward polls
+  with exponential backoff (30s to 10m) and wakes the thread with the
+  outcome when the check succeeds, gives up or times out. Groups can wake
+  once when all their waits settle. The check is verified at registration.
+
+### Changed
+
+- Projection-based escalation needs the projection on two consecutive
+  readings, so a single burst does not warn.
+- The systemd unit no longer sets PrivateTmp: wait checks must see the
+  agents' /tmp.
+
 ## [0.8.4] - 2026-09-08
 
 ### Fixed

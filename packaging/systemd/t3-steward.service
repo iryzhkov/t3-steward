@@ -24,7 +24,6 @@ RestartSec=5
 Environment=PATH=%h/.local/share/mise/shims:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
 NoNewPrivileges=true
-PrivateTmp=true
 ProtectSystem=full
 
 [Install]

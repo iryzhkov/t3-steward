@@ -27,6 +27,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/source/providerlog"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
+	"github.com/iryzhkov/t3-steward/internal/wait"
 )
 
 // Set by GoReleaser through -ldflags.
@@ -50,6 +51,7 @@ Commands:
   report             Consumption by peak/off-peak hours, hour of day, model and thread.
   forecast           Interactive-demand map by weekday and hour, and current backlog headroom.
   backlog            Manage the quota-gated task backlog (list, new, show, retry, cancel).
+  wait               Park a thread until a check succeeds; the steward wakes it (add, list, cancel).
   export             Print this host's readings and token samples as JSON for another host's report.
   install-service    Install a per-user background service (Linux systemd).
   uninstall-service  Remove the background service.
@@ -89,6 +91,22 @@ func run(args []string) error {
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil
+	case "wait":
+		paths, err := config.DefaultPaths()
+		if err != nil {
+			return err
+		}
+		g := globalFlags{configPath: paths.ConfigFile}
+		var sub []string
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == "--config" && i+1 < len(rest) {
+				g.configPath = rest[i+1]
+				i++
+				continue
+			}
+			sub = append(sub, rest[i])
+		}
+		return cmdWait(g, sub)
 	case "backlog":
 		// Sub-commands parse their own arguments; only --config and
 		// --dry-run style globals are shared, taken from the environment here.
@@ -474,6 +492,9 @@ func cmdRun(g globalFlags) error {
 		Usage:        usageCh,
 	}, store))
 	d.Usage = usageCh
+	waits := wait.New(store, control, logger)
+	waits.DryRun = cfg.Policy.DryRun
+	d.Waits = waits
 	if cfg.Backlog.Enabled {
 		runner, err := newBacklogRunner(cfg, store, control, logger, dataDir)
 		if err != nil {

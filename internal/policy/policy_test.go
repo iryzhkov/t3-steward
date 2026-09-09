@@ -332,3 +332,21 @@ func TestRunwayHoldsSkipsStopAtHighPercent(t *testing.T) {
 	d := e.Evaluate(snap(99, at, &r, "burst"), st, at)
 	only(t, d, domain.ActionStop)
 }
+
+func TestBurstNeedsTwoStrikesBeforeETAEscalation(t *testing.T) {
+	e := New(DefaultThresholds())
+	r := base.Add(2 * time.Hour)
+	var st domain.BucketState
+	st = e.Evaluate(snap(29, base, &r, "b1"), st, base).State
+	st = e.Evaluate(snap(30, base.Add(4*time.Minute), &r, "b2"), st, base.Add(4*time.Minute)).State
+	// A 12% step in six minutes projects 29 minutes: first strike, no action.
+	d := e.Evaluate(snap(41, base.Add(6*time.Minute), &r, "b3"), st, base.Add(6*time.Minute))
+	only(t, d)
+	st = d.State
+	if st.ETAStrikes != 1 {
+		t.Fatalf("strikes = %d", st.ETAStrikes)
+	}
+	// The pace continues: second strike, warn.
+	d = e.Evaluate(snap(43, base.Add(7*time.Minute), &r, "b4"), st, base.Add(7*time.Minute))
+	only(t, d, domain.ActionWarn)
+}
