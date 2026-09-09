@@ -120,14 +120,14 @@ overrides:
   - match:
       provider: claudeAgent
       window: "seven_day*"
-    warn_percent: 96
-    drain_percent: 98
+    warn_percent: 95
+    drain_percent: 97
     stop_percent: 99
   - match:
       provider: codex
       window: secondary
-    warn_percent: 96
-    drain_percent: 98
+    warn_percent: 95
+    drain_percent: 97
     stop_percent: 99
 
 # Message templates. Fields: .LimitName .UsedPercent .ResetsAt .GracePeriod
