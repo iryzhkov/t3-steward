@@ -217,9 +217,15 @@ func TestBuildPlanAppliesCandidateConstraintsDeterministically(t *testing.T) {
 
 type planningConstraintFunc func(PlanningCandidate) []PlanningBlocker
 
+func (constraint planningConstraintFunc) StartPlan(time.Time) PlanningConstraintSession {
+	return constraint
+}
+
 func (constraint planningConstraintFunc) Evaluate(candidate PlanningCandidate) []PlanningBlocker {
 	return constraint(candidate)
 }
+
+func (planningConstraintFunc) Reserve(PlanningCandidate) {}
 
 func plannerInput(tasks []domain.Task, workers []domain.WorkerInventory) PlanInput {
 	state := testDAGState(tasks...)

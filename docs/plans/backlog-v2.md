@@ -376,7 +376,7 @@ Each milestone should fit one unattended development session where practical. A 
 ### M4. Planner, task classes, and provider routes
 
 - [x] Extract a deterministic planner whose input is fleet state plus queued workflows and whose output is a plan with explanations.
-- [ ] Implement required and surplus policies, expiry, forecast reservations, remaining-cost accounting, and runtime-versus-drain checks.
+- [x] Implement required and surplus policies, expiry, forecast reservations, remaining-cost accounting, and runtime-versus-drain checks.
 - [ ] Add ordered alternative routes, fleet quota pools, route-specific estimates, and concurrency limits.
 - [ ] Add fairness and starvation protection without weakening deadlines.
 - [ ] Build table-driven simulations for low quota, late-week surplus, competing providers, and stale observations.

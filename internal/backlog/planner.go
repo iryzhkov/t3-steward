@@ -41,17 +41,31 @@ type PlanningCandidate struct {
 	WorkerID      string
 }
 
+// PlanningConstraint is immutable planning policy input. StartPlan returns
+// private state for one dry-run evaluation.
 type PlanningConstraint interface {
+	StartPlan(time.Time) PlanningConstraintSession
+}
+
+type PlanningConstraintSession interface {
 	Evaluate(PlanningCandidate) []PlanningBlocker
+	Reserve(PlanningCandidate)
 }
 
 type PlanningBlocker struct {
-	Code      string `json:"code"`
-	Detail    string `json:"detail"`
-	WorkerID  string `json:"workerId,omitempty"`
-	Resource  string `json:"resource,omitempty"`
-	OwnerID   string `json:"ownerId,omitempty"`
-	DependsOn string `json:"dependsOn,omitempty"`
+	Code          string                `json:"code"`
+	Detail        string                `json:"detail"`
+	WorkerID      string                `json:"workerId,omitempty"`
+	Resource      string                `json:"resource,omitempty"`
+	OwnerID       string                `json:"ownerId,omitempty"`
+	DependsOn     string                `json:"dependsOn,omitempty"`
+	QuotaPoolID   string                `json:"quotaPoolId,omitempty"`
+	QuotaWindowID string                `json:"quotaWindowId,omitempty"`
+	Admission     domain.AdmissionState `json:"admission,omitempty"`
+	RequiredCost  float64               `json:"requiredCost,omitempty"`
+	Available     float64               `json:"available,omitempty"`
+	EarliestAt    *time.Time            `json:"earliestAt,omitempty"`
+	DeadlineAt    *time.Time            `json:"deadlineAt,omitempty"`
 }
 
 type CandidateEvaluation struct {
@@ -90,6 +104,14 @@ func BuildPlan(input PlanInput) (Plan, error) {
 	if err := validatePlanInput(input); err != nil {
 		return Plan{}, err
 	}
+	constraints := make([]PlanningConstraintSession, 0, len(input.Constraints))
+	for _, constraint := range input.Constraints {
+		session := constraint.StartPlan(input.Now)
+		if session == nil {
+			return Plan{}, errors.New("planning constraint returned a nil plan session")
+		}
+		constraints = append(constraints, session)
+	}
 	workflows := append([]PlanningWorkflow(nil), input.Workflows...)
 	sort.Slice(workflows, func(i, j int) bool {
 		return workflows[i].State.Run.ID < workflows[j].State.Run.ID
@@ -116,7 +138,7 @@ func BuildPlan(input PlanInput) (Plan, error) {
 			if attempt.Progress.Terminal() {
 				continue
 			}
-			decision, proposal, err := planTask(input, workflow.Workflow, state, task, attempt, resourceOwners, checkoutOwners)
+			decision, proposal, err := planTask(input, constraints, workflow.Workflow, state, task, attempt, resourceOwners, checkoutOwners)
 			if err != nil {
 				return Plan{}, err
 			}
@@ -129,6 +151,15 @@ func BuildPlan(input PlanInput) (Plan, error) {
 				if workflow.Workflow.Environment.Scope == EnvironmentScopeWorkflow {
 					checkoutOwners[state.Run.ID] = proposal.AttemptID
 				}
+				candidate := PlanningCandidate{
+					WorkflowRunID: state.Run.ID,
+					Task:          clonePlanningTask(task),
+					Attempt:       clonePlanningAttempt(attempt),
+					WorkerID:      proposal.WorkerID,
+				}
+				for _, constraint := range constraints {
+					constraint.Reserve(clonePlanningCandidate(candidate))
+				}
 			}
 			result.Decisions = append(result.Decisions, decision)
 		}
@@ -136,7 +167,7 @@ func BuildPlan(input PlanInput) (Plan, error) {
 	return result, nil
 }
 
-func planTask(input PlanInput, workflow domain.Workflow, state DAGState, task domain.Task, attempt domain.Attempt, resourceOwners, checkoutOwners map[string]string) (TaskPlanningDecision, *ProposedTask, error) {
+func planTask(input PlanInput, constraints []PlanningConstraintSession, workflow domain.Workflow, state DAGState, task domain.Task, attempt domain.Attempt, resourceOwners, checkoutOwners map[string]string) (TaskPlanningDecision, *ProposedTask, error) {
 	placement, err := MatchWorkers(WorkerPlacementRequest{
 		Task: task, Project: workflow.Project, Now: input.Now, MaxSnapshotAge: input.MaxWorkerSnapshotAge,
 	}, input.Workers)
@@ -174,11 +205,8 @@ func planTask(input PlanInput, workflow domain.Workflow, state DAGState, task do
 	for _, workerID := range placement.EligibleWorkerIDs {
 		candidate := PlanningCandidate{WorkflowRunID: state.Run.ID, Task: clonePlanningTask(task), Attempt: clonePlanningAttempt(attempt), WorkerID: workerID}
 		evaluation := CandidateEvaluation{WorkerID: workerID}
-		for _, constraint := range input.Constraints {
-			if constraint == nil {
-				return TaskPlanningDecision{}, nil, errors.New("plan input contains a nil planning constraint")
-			}
-			evaluation.Blockers = append(evaluation.Blockers, constraint.Evaluate(candidate)...)
+		for _, constraint := range constraints {
+			evaluation.Blockers = append(evaluation.Blockers, constraint.Evaluate(clonePlanningCandidate(candidate))...)
 		}
 		if err := normalizePlanningBlockers(evaluation.Blockers, workerID); err != nil {
 			return TaskPlanningDecision{}, nil, fmt.Errorf("plan task %q candidate %q: %w", task.Name, workerID, err)
@@ -214,6 +242,11 @@ func validatePlanInput(input PlanInput) error {
 	}
 	if input.MaxWorkerSnapshotAge <= 0 {
 		return errors.New("plan maximum worker snapshot age must be positive")
+	}
+	for _, constraint := range input.Constraints {
+		if constraint == nil {
+			return errors.New("plan input contains a nil planning constraint")
+		}
 	}
 	seenRuns := make(map[string]struct{}, len(input.Workflows))
 	for _, workflow := range input.Workflows {
@@ -316,20 +349,33 @@ func normalizePlanningBlockers(blockers []PlanningBlocker, workerID string) erro
 func sortPlanningBlockers(blockers []PlanningBlocker) {
 	sort.Slice(blockers, func(i, j int) bool {
 		left, right := blockers[i], blockers[j]
-		if left.Code != right.Code {
-			return left.Code < right.Code
+		leftFields := []string{
+			left.Code, left.WorkerID, left.Resource, left.OwnerID, left.DependsOn,
+			left.QuotaPoolID, left.QuotaWindowID, string(left.Admission),
+			planningTimeKey(left.EarliestAt), planningTimeKey(left.DeadlineAt), left.Detail,
 		}
-		if left.WorkerID != right.WorkerID {
-			return left.WorkerID < right.WorkerID
+		rightFields := []string{
+			right.Code, right.WorkerID, right.Resource, right.OwnerID, right.DependsOn,
+			right.QuotaPoolID, right.QuotaWindowID, string(right.Admission),
+			planningTimeKey(right.EarliestAt), planningTimeKey(right.DeadlineAt), right.Detail,
 		}
-		if left.Resource != right.Resource {
-			return left.Resource < right.Resource
+		for index := range leftFields {
+			if leftFields[index] != rightFields[index] {
+				return leftFields[index] < rightFields[index]
+			}
 		}
-		if left.DependsOn != right.DependsOn {
-			return left.DependsOn < right.DependsOn
+		if left.RequiredCost != right.RequiredCost {
+			return left.RequiredCost < right.RequiredCost
 		}
-		return left.Detail < right.Detail
+		return left.Available < right.Available
 	})
+}
+
+func planningTimeKey(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 
@@ -359,6 +405,12 @@ func clonePlanningTask(task domain.Task) domain.Task {
 	task.Deadline = clonePlanningTime(task.Deadline)
 	task.ExpiresAt = clonePlanningTime(task.ExpiresAt)
 	return task
+}
+
+func clonePlanningCandidate(candidate PlanningCandidate) PlanningCandidate {
+	candidate.Task = clonePlanningTask(candidate.Task)
+	candidate.Attempt = clonePlanningAttempt(candidate.Attempt)
+	return candidate
 }
 
 func clonePlanningAttempt(attempt domain.Attempt) domain.Attempt {
