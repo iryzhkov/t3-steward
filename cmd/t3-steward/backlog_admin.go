@@ -17,10 +17,14 @@ import (
 
 const schedulesUsage = `Usage: t3-steward schedules <command> [args]
 
-Commands:
-  list [--json]              List schedules.
-  show <schedule> [--json]   Show a schedule definition.
-  history <schedule> [--json] Show its trigger history.
+Read commands:
+  list [--json]                List schedules.
+  show <schedule> [--json]     Show a schedule definition.
+  history <schedule> [--json]  Show its trigger history.
+
+Revision-fenced controls:
+  run|enable|disable <schedule> --reason TEXT [--command-id ID] [--json]
+  delay-next <schedule> --until RFC3339 --reason TEXT [--command-id ID] [--json]
 `
 
 type localAdminAuthorizer struct{}
@@ -42,14 +46,19 @@ type adminQueryService interface {
 }
 
 type backlogAdminCLI struct {
-	service   adminQueryService
-	principal backlogadmin.Principal
-	stdout    io.Writer
+	service      adminQueryService
+	mutator      adminMutationService
+	principal    backlogadmin.Principal
+	stdout       io.Writer
+	newCommandID func() (string, error)
 }
 
 func (c backlogAdminCLI) runBacklog(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return errors.New("backlog admin command is required")
+	}
+	if isBacklogMutation(args[0]) {
+		return c.runBacklogMutation(ctx, args)
 	}
 	query, asJSON, err := parseBacklogAdminQuery(args)
 	if err != nil {
@@ -62,6 +71,9 @@ func (c backlogAdminCLI) runSchedules(ctx context.Context, args []string) error 
 	if len(args) == 0 || isHelp(args[0]) {
 		fmt.Fprint(c.stdout, schedulesUsage)
 		return nil
+	}
+	if isScheduleMutation(args[0]) {
+		return c.runScheduleMutation(ctx, args)
 	}
 	clean, asJSON, err := takeJSONFlag(args)
 	if err != nil {

@@ -420,10 +420,12 @@ Each milestone should fit one unattended development session where practical. A 
   - [x] Define the versioned read-query envelope, authorization seam, deterministic projections, and safe DTO boundary.
   - [x] Implement read-only coordinator queries for status, filtered workflows, workflow/task detail, DAGs, explanations, events, artifacts, schedules, workers, quota, reservations, locks, progress, and T3 links.
   - [x] Implement immutable, revision-checked mutation commands, durable audit events, and asynchronous outcomes.
-- [ ] Refactor existing backlog CLI code away from direct database mutation.
+- [x] Refactor existing backlog CLI code away from direct database mutation.
 - [ ] Implement status, filters, DAG view, task detail, explanations, events, artifacts, controls, and schedule commands.
   - [x] Add the read-only CLI adapter for coordinator status, filtered workflow lists, workflow/task/DAG detail, explanations, events, artifacts, command visibility, and schedule list/show/history.
   - [ ] Add revision-fenced task controls, artifact retrieval, and schedule mutations.
+    - [x] Add revision-fenced task and schedule command submission.
+    - [ ] Add command execution and artifact retrieval.
 - [x] Include worker health, quota admission, reservations, locks, progress, and T3 links in the admin projections.
 - [x] Define versioned JSON data transfer objects suitable for the future dashboard.
 - [x] Test stale commands, asynchronous command outcomes, authorization seam, and JSON stability.
@@ -439,6 +441,31 @@ Each milestone should fit one unattended development session where practical. A 
 - [ ] Produce a release-candidate commit and a deployment-readiness report.
 - [ ] Do not deploy. Stop and wait for explicit user approval.
 
+## Remaining serial stage checklist
+
+This checklist is the authority for the rest of the implementation chain. A chain thread selects exactly the first incomplete named stage and finishes that whole stage before queueing a successor. Do not subdivide a stage into opportunistic per-turn commits merely to create a handoff.
+
+- [x] S10 — Revision-fenced admin mutation CLI
+  - Replace legacy direct retry/cancel writes with `BacklogAdmin` mutations.
+  - Add task start, delay, pause, resume, cancel, retry, and skip commands with required audit reasons, optional replay IDs, current-revision lookup, human output, and `--json`.
+  - Add schedule run, delay-next, enable, and disable command submission. Manual run remains a durable command whose executor must use the existing transactional trigger/idempotency path.
+  - Test parsing, revision lookup, accepted/stale responses, replay IDs, authorization, JSON/human output, and complete removal of direct CLI state writes.
+- [ ] S11 — Admin command execution and artifact retrieval
+  - Execute pending task and schedule commands through deterministic policy plus atomic target-revision transitions, durable outcomes, and audit events.
+  - Recheck dependencies, locks, worker health, and hard quota admission when applying commands; an ordinary admin command never bypasses closed admission.
+  - Execute manual schedule runs through the existing transactional trigger path and retain occurrence/open-run idempotency.
+  - Add coordinator-owned artifact retrieval with checksum verification and safe text/download behavior.
+  - Complete both remaining M8 checklist items and run focused persistence, restart, replay, stale-command, invalid-transition, quota-closure, CLI, artifact, and M8 full gates.
+- [ ] S12 — End-to-end orchestration hardening
+  - Exercise a complete temporary/local workflow with dependencies, artifacts, verification, pause, resume, retry, and a suppressed recurring trigger.
+  - Run and extend unit, integration, migration, fault-injection, no-duplicate dispatch, and compatibility suites.
+  - Run the race suite and resolve all failures without weakening fail-closed behavior.
+  - Complete the first three M9 checklist items.
+- [ ] S13 — Release candidate and deployment readiness
+  - Document configuration, manifests, operator recovery, backup, rollback, migration point-of-no-return, and deployment order.
+  - Produce the release-candidate commit and deployment-readiness report with exact verification evidence and remaining operational risks.
+  - Run all release gates, mark M9 complete, do not deploy, and queue no successor.
+
 ## Session execution contract
 
 Development runs only in `/home/igor/Work/t3-steward` on Normandy, on branch `feature/backlog-orchestrator`. Do not use or modify the laptop checkout or laptop backlog.
@@ -450,11 +477,12 @@ At the beginning of every session:
 1. Read this plan and `CONTEXT.md` completely.
 2. Inspect Git status, recent commits, and the current milestone checklist.
 3. Confirm the checkout is on `feature/backlog-orchestrator` and contains no unexplained changes.
-4. Select the first incomplete milestone item that forms a coherent tested increment.
+4. Select exactly the first incomplete named stage in the remaining serial stage checklist and record its starting commit and exit gates in the handoff.
 5. Reconcile current code before editing. Do not assume the prior final message is complete.
 
 During every session:
 
+- Complete the selected named stage as one substantial unit. Do not voluntarily stop after a smaller increment while safe stage work remains.
 - Use the repository's documented development tools and standards.
 - Keep interfaces small and put planning policy behind a deterministic planner seam.
 - Add tests before or with each behavior change.
@@ -463,16 +491,13 @@ During every session:
 - Never install the development binary, restart the service, or open the live state database.
 - Never push, create a pull request, or deploy unless the user separately authorizes it.
 
-At the end of every nonfinal session:
+The three end states are mutually exclusive:
 
-1. Update this milestone checklist accurately.
-2. Write or update `docs/plans/backlog-v2-handoff.md` with completed work, decisions, test results, remaining risks, and the exact next increment.
-3. Commit code, tests, plan progress, and handoff together.
-4. Confirm the working tree is clean.
-5. Queue exactly one ungated successor using `docs/plans/backlog-v2-session-prompt.md`, `--ungated`, and model `gpt-5.6-sol` on the `codex` instance.
-6. End with `BACKLOG STATUS: done`. Do not continue editing after queueing the successor.
+1. If safe work remains inside the selected stage, queue no successor, update the handoff with the exact in-stage checkpoint, and end `BACKLOG STATUS: continue`. The steward continues the same T3 thread.
+2. If the selected stage is fully complete, update both checklists and the handoff, commit all code/tests/docs together, confirm the tree is clean, queue exactly one ungated successor only when another named stage remains, then end `BACKLOG STATUS: done`. Never emit `continue` after queueing.
+3. If progress genuinely requires user input, queue no successor, preserve safe work and an exact question in the handoff, and end `BACKLOG STATUS: needs-input`.
 
-At the end of M9, do not queue another session. Commit the readiness report, leave the tree clean, and end with `BACKLOG STATUS: done`, clearly stating that host-wide deployment awaits user approval.
+After queueing a successor, make no further changes. At the end of S13/M9, queue nothing, commit the readiness report, leave the tree clean, and end `BACKLOG STATUS: done`, clearly stating that host-wide deployment awaits user approval.
 
 ## Definition of done
 

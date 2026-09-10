@@ -50,8 +50,8 @@ Commands:
   replay <file>      Feed recorded quota events through the policy engine (no T3 needed).
   report             Consumption by peak/off-peak hours, hour of day, model and thread.
   forecast           Interactive-demand map by weekday and hour, and current backlog headroom.
-  backlog            Inspect coordinator workflows and use legacy task-file helpers.
-  schedules          Inspect schedule definitions and trigger history.
+  backlog            Inspect and control coordinator workflows; includes legacy file helpers.
+  schedules          Inspect and control schedules and trigger history.
   wait               Park a thread until a check succeeds; the steward wakes it (add, list, cancel).
   archive            Cold storage for finished threads (candidates, run, list, restore).
   export             Print this host's readings and token samples as JSON for another host's report.

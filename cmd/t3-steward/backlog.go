@@ -34,13 +34,17 @@ Coordinator read commands:
   commands [<workflow-run>[/<task>]] [--json]
   command show <command> [--json]
 
+Revision-fenced controls:
+  start|resume|cancel|retry|skip <workflow-run>/<task> --reason TEXT [--command-id ID] [--json]
+  delay <workflow-run>/<task> --until RFC3339 --reason TEXT [--command-id ID] [--json]
+  pause <workflow-run>/<task> [--now] --reason TEXT [--command-id ID] [--json]
+
 Legacy task-file helpers:
   new <id>           Create a task file from a template and print its path.
   path               Print the task directory.
   check <file|->     Validate a task: project, provider instance, model, options, host.
   receive <id>       Store a task sent by another host (used by forwarding).
   list --all         Show the legacy local task files and configured remote lists.
-  retry|cancel <id>  Legacy state controls; these will migrate to admin commands.
 
 The runner is part of "run"; enable it with backlog.enabled: true.
 `
@@ -85,12 +89,13 @@ func newBacklogRunner(cfg config.Config, store *sqlite.Store, control backlog.Co
 	}, store, control), nil
 }
 
-func isCoordinatorRead(args []string) bool {
+func isCoordinatorAdmin(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
 	switch args[0] {
-	case "status", "graph", "task", "events", "explain", "artifacts", "artifact", "commands", "command", "show":
+	case "status", "graph", "task", "events", "explain", "artifacts", "artifact", "commands", "command", "show",
+		"start", "delay", "pause", "resume", "cancel", "retry", "skip":
 		return true
 	case "list":
 		return len(args) != 2 || args[1] != "--all"
@@ -99,7 +104,7 @@ func isCoordinatorRead(args []string) bool {
 	}
 }
 
-func runCoordinatorRead(cfg config.Config, args []string, schedules bool) error {
+func runCoordinatorAdmin(cfg config.Config, args []string, schedules bool) error {
 	statePath, err := cfg.ResolveStatePath()
 	if err != nil {
 		return err
@@ -115,6 +120,7 @@ func runCoordinatorRead(cfg config.Config, args []string, schedules bool) error 
 	}
 	cli := backlogAdminCLI{
 		service: service,
+		mutator: service,
 		principal: backlogadmin.Principal{
 			ID:    fmt.Sprintf("local:%d", os.Getuid()),
 			Roles: []string{"local-admin"},
@@ -136,7 +142,7 @@ func cmdSchedules(g globalFlags, args []string) error {
 	if err != nil {
 		return err
 	}
-	return runCoordinatorRead(cfg, args, true)
+	return runCoordinatorAdmin(cfg, args, true)
 }
 
 func cmdBacklog(g globalFlags, args []string) error {
@@ -148,8 +154,8 @@ func cmdBacklog(g globalFlags, args []string) error {
 	if err != nil {
 		return err
 	}
-	if isCoordinatorRead(args) {
-		return runCoordinatorRead(cfg, args, false)
+	if isCoordinatorAdmin(args) {
+		return runCoordinatorAdmin(cfg, args, false)
 	}
 	dir, err := cfg.ResolveBacklogDir()
 	if err != nil {
@@ -275,38 +281,6 @@ func cmdBacklog(g globalFlags, args []string) error {
 				}
 			}
 		}
-		return nil
-	case "retry", "cancel":
-		if len(args) != 2 {
-			return fmt.Errorf("%s needs a task id", args[0])
-		}
-		store, err := openStore()
-		if err != nil {
-			return err
-		}
-		defer store.Close()
-		states, err := loadStates(store)
-		if err != nil {
-			return err
-		}
-		st, ok := states[args[1]]
-		if !ok {
-			return fmt.Errorf("no state for task %q (has the runner seen it?)", args[1])
-		}
-		if args[0] == "retry" {
-			st.Status, st.Reason, st.ThreadID, st.Turns = backlog.StatusPending, "re-queued manually", "", 0
-		} else {
-			if st.Status == backlog.StatusRunning {
-				return errors.New("task is running; interrupt its thread in T3 first")
-			}
-			st.Status, st.Reason = backlog.StatusCancelled, "cancelled manually"
-		}
-		st.UpdatedAt = time.Now()
-		if err := store.SaveTaskState(ctx, st.ID, string(st.Status), st); err != nil {
-			return err
-		}
-		fmt.Printf("%s: %s\n", st.ID, st.Status)
-		fmt.Fprintln(os.Stderr, "note: a running daemon picks the change up on its next poll; the change takes effect then")
 		return nil
 	default:
 		return fmt.Errorf("unknown backlog command %q", args[0])

@@ -338,14 +338,14 @@ func TestLocalAdminAuthorizerFailsClosed(t *testing.T) {
 	}
 }
 
-func TestCoordinatorReadRoutingPreservesLegacyHelpers(t *testing.T) {
-	for _, args := range [][]string{{"path"}, {"check", "-"}, {"receive", "id"}, {"new", "id"}, {"retry", "id"}, {"cancel", "id"}, {"list", "--all"}} {
-		if isCoordinatorRead(args) {
+func TestCoordinatorAdminRoutingPreservesLegacyHelpers(t *testing.T) {
+	for _, args := range [][]string{{"path"}, {"check", "-"}, {"receive", "id"}, {"new", "id"}, {"list", "--all"}} {
+		if isCoordinatorAdmin(args) {
 			t.Errorf("%q unexpectedly routed to coordinator admin", args)
 		}
 	}
-	for _, args := range [][]string{{"status"}, {"list"}, {"list", "--project", "steward"}, {"show", "run-1"}, {"task", "show", "run-1/task-1"}, {"commands"}, {"command", "show", "command-1"}} {
-		if !isCoordinatorRead(args) {
+	for _, args := range [][]string{{"status"}, {"list"}, {"list", "--project", "steward"}, {"show", "run-1"}, {"task", "show", "run-1/task-1"}, {"commands"}, {"command", "show", "command-1"}, {"retry", "run-1/task-1", "--reason", "again"}, {"cancel", "run-1/task-1", "--reason", "stop"}} {
+		if !isCoordinatorAdmin(args) {
 			t.Errorf("%q did not route to coordinator admin", args)
 		}
 	}

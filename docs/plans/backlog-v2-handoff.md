@@ -2,56 +2,70 @@
 
 Updated: 2026-09-10
 
+## Authority and chain invariant
+
+- Repository: `/home/igor/Work/t3-steward`
+- Branch: `feature/backlog-orchestrator`
+- S10 starting commit: `4f83df0`
+- No install, deployment, live-service restart, live configuration/state mutation by development code, worker contact, push, or pull request is authorized.
+- The remaining chain follows the named S10–S13 checklist in `docs/plans/backlog-v2.md`.
+- A stage may use `BACKLOG STATUS: continue` to stay in its current T3 thread, but then queues no successor. A completed stage may queue exactly one successor and must end `BACKLOG STATUS: done`. These paths are mutually exclusive.
+
+## Chain audit and correction
+
+- A read-only live T3 shell inspection found exactly two running threads: backlog-v2 thread `92557fb5-884d-4b06-89fd-06f0f43050b7` and unrelated Huyang thread `88a93b83-965c-482c-b18f-b78254447d30`. No second backlog-v2 thread is currently executing.
+- Historical duplication came from the old successor prompt allowing `BACKLOG STATUS: continue` after also queueing a successor. The steward continued the same thread while the queued task could create another.
+- Replaced open-ended “next coherent increment” selection with four authoritative, substantial stages: S10 mutation CLI, S11 command execution/artifact retrieval, S12 end-to-end hardening, and S13 release readiness.
+- Successors now use the title `Backlog-v2 serial implementation successor`, `--max-turns 12`, and `--ungated`.
+- The prompt now forbids queueing on `continue` or `needs-input`, forbids `continue` after queueing, and permits exactly one successor only after a complete committed stage.
+- Old stopped/needs-input backlog records were inspected but not modified; none can dispatch automatically.
+
 ## Completed checkpoint
 
-- Completed M1 through M7.
-- Earlier M8 increments completed the authorized `backlog.admin/v1` read projections plus immutable, revision-fenced command submission, durable audit events, replay safety, and asynchronous outcomes.
-- Continued M8 through a read-only CLI adapter over the versioned `BacklogAdmin` query contract.
-- Added coordinator-backed `backlog status`, filtered workflow `list`, workflow `show`, DAG `graph`, task `show`, `events`, `explain`, artifact list/show, and command-visibility commands.
-- Added the top-level `schedules list|show|history` adapter, including schedule selection and trigger-history rendering.
-- Every new coordinator CLI read constructs a versioned, locally authorized admin query and calls `BacklogAdmin.Query`; parsing and rendering are independent of configuration and storage.
-- Added stable indented `--json` output using the existing `backlog.admin/v1` response envelope and deterministic human tables/details for every exposed read view.
-- Added project, schedule, progress, class, worker, and quota-pool workflow filters. Progress accepts a comma-separated set.
-- Removed the old task-file implementation behind `backlog show`; that command now identifies a workflow run and reads its coordinator projection.
-- Preserved the legacy `path`, `check`, `receive`, and `new` helpers. `list --all` remains the explicitly legacy local/remote report path, while bare `list` is the coordinator workflow view.
-- Retained legacy `retry` and `cancel` temporarily; they remain for the next command-adapter increment so existing callers are not broken before replacement controls exist.
-- Added CLI tests for every command shape, all workflow filters, invalid arguments, version/principal injection, service error propagation, JSON selection, human renderers, schedule selection/history, local authorization, and legacy/admin routing.
-- No configured/live repository, T3 thread, worker, service, or live database was touched.
+- Completed M1 through M7 and the query/persistence portions of M8.
+- Completed S10 — Revision-fenced admin mutation CLI.
+- Replaced the legacy direct `retry`/`cancel` task-state writes with coordinator admin mutations. No `SaveTaskState` mutation remains in the backlog CLI.
+- Added `backlog start|delay|pause|resume|cancel|retry|skip <workflow-run>/<task>`.
+- Added `schedules run|delay-next|enable|disable <schedule>` command submission.
+- Every mutation requires `--reason`, accepts optional `--command-id` for exact replay, and supports `--json`.
+- Delay commands require an RFC 3339 `--until` value normalized to UTC. Pause records explicit `{"now":false}` or `{"now":true}` payload intent.
+- Task commands query the authorized task projection and use the latest attempt revision. Schedule commands query the authorized schedule projection and use its current revision. The durable store fences the revision again when inserting the command.
+- Added cryptographically random 96-bit `admin-` command IDs when the operator does not supply a replay ID.
+- Added human rendering for pending, rejected/stale, and failed command decisions, including the durable event and current target revision.
+- Added tests for every task/schedule command, invalid or command-specific flags, required audit reasons, timezone normalization, current-revision lookup, replay IDs, generated-ID failures, missing targets/attempts, stale decisions, human/JSON output, routing, and removal of the legacy mutation path.
+- Added a temporary-SQLite integration test proving CLI submission persists through coordinator restart and exact replay returns the original timestamped command with one command and one audit event.
+- No development binary was installed or run against the live coordinator state database.
 
 ## Decisions
 
-- Human and JSON rendering consume only safe admin DTOs. Artifact output exposes the admin download locator, never the coordinator storage path.
-- `backlog artifacts <task>` follows the planned task-oriented form; `<workflow-run>/<task>` is also accepted to resolve a logical task within one run.
-- Workflow and task identifiers use the existing `<workflow-run>/<task>` form consistently for task detail, explanations, scoped artifacts, and command visibility.
-- Schedule show/history selection happens after the single authorized schedule query. This keeps the transport-neutral query contract unchanged while giving the CLI focused views.
-- The local executable supplies an explicit `local-admin` principal derived from the Unix uid, and its authorizer fails closed on a missing identity or role. Future remote transports still need their own authenticated authorizer.
-- The adapter itself owns no store. The executable wiring opens the configured coordinator store and injects the service, while tests inject a fake service and therefore cannot open live state.
-- Control commands, schedule mutations, artifact retrieval, and execution of pending commands remain deferred as required by this increment.
+- S10 submits schedule `run` as durable intent. S11 must execute it through `CommitScheduleTrigger`, using command-derived deterministic trigger/run IDs so manual-run open-run checks and replay guarantees remain authoritative.
+- CLI revision lookup is intentionally separate from the atomic store fence. A race between lookup and submission becomes a durable rejected command with the current target snapshot.
+- Operator-provided command IDs are the recovery mechanism after a lost response. Auto-generated IDs are unique for ordinary one-shot invocations.
+- The local CLI continues to use the explicit fail-closed `local-admin` authorization seam.
+- Artifact retrieval remains S11 scope because it requires a distinct coordinator-owned content interface and checksum validation.
 
 ## Verification
 
 - Baseline: `go test ./...`
 - `go test ./cmd/t3-steward -count=1 -v`
-- `go test ./cmd/t3-steward ./internal/backlogadmin -count=1 -v`
+- `go test ./cmd/t3-steward ./internal/backlogadmin ./internal/store/sqlite -count=1 -v`
 - `go test ./cmd/t3-steward -count=20`
 - `go test ./...`
 - `go build ./...`
 - `go vet ./...`
 - `git diff --check`
-- Agent99 project check: `go build ./...` and `go vet ./...`
 
-All passed.
+All final commands passed. One mistyped exploratory command used an invalid `-countlf` test flag; it changed no files or state and was immediately replaced by the successful `-count=20` run above.
 
 ## Remaining risks
 
-- Pending commands are durable intent, not yet an executor: start/delay/pause/resume/cancel/retry/skip and schedule-specific state transitions still need coordinator handlers.
-- Legacy `retry` and `cancel` still mutate the legacy task-state projection directly; the next increment must replace their CLI path with revision-fenced admin commands.
-- `artifact get` is not implemented. The safe admin DTO has a download locator, but the CLI still needs a coordinator-owned content retrieval seam with checksum validation.
-- Non-admin operations do not yet append native audit events. Their admin event views remain deterministic reconstructions of current projections rather than full historical streams.
-- Schedule `run` must continue to use the existing transactional trigger path, and all executor handlers must recheck current state and hard quota constraints before applying pending intent.
-- The top-level coordinator/worker service loop still needs concrete transport binding. No development code has contacted workers or dispatched work.
-- No development code has opened live state, installed or restarted a service, pushed, or deployed.
+- Admin commands are durable intent but are not yet executed. S11 must implement deterministic policy, atomic state transitions, terminal outcomes, and audit events.
+- Start/resume still need hard quota-admission, dependency, resource-lock, and worker-health rechecks at execution time. CLI submission grants no bypass.
+- Schedule run/delay-next/enable/disable need executor semantics; manual run must retain existing occurrence and one-open-run idempotency.
+- `artifact get` is not implemented.
+- Non-admin operations do not yet append native audit events; some read views remain deterministic reconstructions of current projections.
+- The coordinator/worker service loop still needs concrete transport binding. No development code has contacted workers or dispatched work.
 
-## Exact next increment
+## Exact next stage
 
-Continue M8 with revision-fenced CLI mutations and coordinator command execution. Replace the legacy direct `retry`/`cancel` state writes and add `backlog start|delay|pause|resume|cancel|retry|skip <workflow-run>/<task>`, requiring an audit reason and using the latest projected attempt revision. Add `schedules run|delay-next|enable|disable <schedule>`, preserving manual `run` through the existing transactional trigger/idempotency path. Implement scheduler-specific pending-command handlers with atomic state/revision checks, durable outcomes and audit events, and hard quota-health rechecks; do not add an ordinary quota bypass. Keep parsing/execution testable with temporary state and add restart, stale-command, replay, invalid-transition, and quota-closure tests. Defer artifact content retrieval if it does not fit the coherent command increment.
+S11 — Admin command execution and artifact retrieval. Implement deterministic pending-command policy and atomic SQLite application for task and schedule commands, including valid transition checks, target-revision fencing, hard quota/dependency/lock/worker rechecks, command-derived idempotent manual schedule triggers, terminal command outcomes/audit events, restart/replay behavior, and coordinator-owned checksum-verified artifact retrieval with safe CLI text/download handling. Complete the remaining M8 checklist items and run all focused and M8 full gates.
