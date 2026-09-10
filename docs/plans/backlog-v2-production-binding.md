@@ -61,7 +61,7 @@ do not need to stop for routine design choices.
 ## Milestones
 
 - [x] R1 — Authority, configuration, and storage lifecycle (S14)
-- [ ] R2 — Versioned worker exchange and execution package (S15)
+- [x] R2 — Versioned worker exchange and execution package (S15)
 - [ ] R3 — Restart-safe worker runtime (S16)
 - [ ] R4 — Coordinator runtime, submissions, schedules, and quota bridge (S17)
 - [ ] R5 — Audit, backup, recovery, and security hardening (S18)
@@ -109,22 +109,22 @@ Exit gates:
 
 ### S15 — Versioned worker exchange and execution package
 
-- [ ] Define stable versioned DTOs for exchange envelopes, snapshots, offers,
+- [x] Define stable versioned DTOs for exchange envelopes, snapshots, offers,
   claims, lease renewals, commands, acknowledgements, observations, structured
   errors, and capability negotiation.
-- [ ] Define the immutable execution package carrying task/prompt data,
+- [x] Define the immutable execution package carrying task/prompt data,
   provider route, environment/catalog references, dependency inputs,
   verification, artifact declarations, deadlines, limits, and idempotency
   identities.
-- [ ] Define authenticated identity, authorization, sequencing, replay,
+- [x] Define authenticated identity, authorization, sequencing, replay,
   retry/backoff, timeout, cancellation, message-size, compatibility, and
   backpressure semantics.
-- [ ] Define content-addressed artifact upload/download manifests and custody
+- [x] Define content-addressed artifact upload/download manifests and custody
   records, including safe path and archive rules.
-- [ ] Implement a bounded local transport spike for coordinator-initiated SSH.
+- [x] Implement a bounded local transport spike for coordinator-initiated SSH.
   Retain SSH only if it meets the fixed contract; otherwise implement the
   authenticated HTTP foundation and document the evidence-based decision.
-- [ ] Keep all spike and integration traffic confined to local disposable
+- [x] Keep all spike and integration traffic confined to local disposable
   processes; do not contact fleet workers.
 
 Exit gates:

@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "type": "capabilities",
+  "sessionId": "session-1",
+  "requestId": "request-1",
+  "sender": "coordinator",
+  "recipient": "normandy",
+  "coordinatorEpoch": 9,
+  "workerEpoch": "worker-1",
+  "sequence": 1,
+  "sentAt": "2026-09-10T20:00:00Z",
+  "deadline": "2026-09-10T20:01:00Z",
+  "payloadSha256": "d98eadcdc411076d1017432b05d283ea149af4f25f72722181a871f06ed01afb",
+  "authentication": {
+    "principal": "ssh:coordinator",
+    "keyId": "coordinator-key",
+    "signature": "7129d2d9e3aeafdabd82f443204c115a541a81f141e93fe6bf426fe7a0f58e44"
+  },
+  "payload": {
+    "supportedVersions": [
+      1
+    ],
+    "capabilities": [
+      "artifact-transfer",
+      "commands"
+    ],
+    "maxMessageBytes": 4096,
+    "maxArtifactBytes": 1048576
+  }
+}

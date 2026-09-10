@@ -1,0 +1,100 @@
+{
+  "mediaType": "application/vnd.t3-steward.execution-package.v1+json",
+  "size": 1720,
+  "sha256": "9b069e7761463de77920abfcb0c87b287601b08c86c8a029964cb112a33bf199",
+  "package": {
+    "version": 1,
+    "id": "package-1",
+    "coordinatorId": "coordinator",
+    "coordinatorEpoch": 9,
+    "workerId": "normandy",
+    "workerEpoch": "worker-1",
+    "identity": {
+      "workflowId": "workflow-1",
+      "workflowRunId": "run-1",
+      "taskId": "task-1",
+      "attemptId": "attempt-1",
+      "assignmentId": "assignment-1",
+      "assignmentEpoch": 2,
+      "dispatchToken": "dispatch-1",
+      "threadId": "thread-1"
+    },
+    "class": "required",
+    "prompt": {
+      "id": "artifact-prompt",
+      "path": "prompt/task.md",
+      "kind": "input",
+      "mediaType": "text/plain",
+      "size": 7,
+      "sha256": "64d6f071c16a0984c4d1331002dd6f6a2ec7a503d23b38648fa52069af7330e7"
+    },
+    "staticInputs": [
+      {
+        "id": "artifact-input",
+        "path": "inputs/context.md",
+        "kind": "input",
+        "mediaType": "text/plain",
+        "size": 7,
+        "sha256": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4"
+      }
+    ],
+    "dependencies": [
+      {
+        "taskId": "inspect",
+        "artifacts": [
+          {
+            "id": "artifact-dependency",
+            "path": "dependencies/inspect/findings.md",
+            "kind": "input",
+            "mediaType": "text/plain",
+            "size": 8,
+            "sha256": "8aa3c4ce3ccdfe89f32935d164b3fb04ea01afa7a71f17c5be4f777cb7968cbc"
+          }
+        ]
+      }
+    ],
+    "route": {
+      "workerId": "normandy",
+      "providerInstanceId": "codex",
+      "model": "gpt-5.6-sol",
+      "options": {
+        "effort": "high"
+      },
+      "quotaPoolId": "codex-main"
+    },
+    "environment": {
+      "catalogRevision": "catalog-1",
+      "project": "t3-steward",
+      "repository": "github.com/iryzhkov/t3-steward",
+      "ref": "ce1fd4d",
+      "scope": "task",
+      "setupProfile": "go",
+      "t3Project": "development",
+      "resourceLocks": [
+        "repo:t3-steward"
+      ],
+      "requiredCredentials": [
+        "git:github"
+      ]
+    },
+    "verification": [
+      "go test ./..."
+    ],
+    "outputs": [
+      {
+        "name": "findings.md",
+        "mediaType": "text/markdown"
+      }
+    ],
+    "deadline": "2026-09-10T22:00:00Z",
+    "expiresAt": "2026-09-10T23:00:00Z",
+    "limits": {
+      "maxTurns": 12,
+      "prepareTimeout": 60000000000,
+      "verificationTimeout": 600000000000,
+      "maxArtifactBytes": 1048576,
+      "maxTotalBytes": 4194304
+    },
+    "createdAt": "2026-09-10T20:00:00Z"
+  }
+}

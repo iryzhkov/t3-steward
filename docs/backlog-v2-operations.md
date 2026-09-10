@@ -10,16 +10,19 @@ The release candidate includes the version 2 workflow model and manifest
 validation, immutable bundle ingestion, DAG readiness, scheduling and quota
 policy, workspace preparation, artifact transfer, coordinator persistence,
 worker protocol records, deterministic dispatch identities, throttle
-pause/resume, schedule idempotency, and the transport-neutral admin service and
-CLI.
+pause/resume, schedule idempotency, the transport-neutral admin service and
+CLI, and the S15 versioned worker exchange, immutable execution package,
+artifact custody contract, and bounded SSH transport foundation.
 
 The current executable does **not** bind a fleet project catalog, worker
-inventory transport, coordinator planning loop, bundle-submission command, or
-worker command delivery transport into the production daemon. The existing
-Markdown `t3-backlog` runner remains the production path. Do not deploy
-backlog-v2 as a fleet coordinator until those bindings exist and the release
-gates have been rerun. The detailed decision is in
+runtime, coordinator planning loop, bundle-submission command, or worker
+exchange into the production daemon. The existing Markdown `t3-backlog`
+runner remains the production path. Do not deploy backlog-v2 as a fleet
+coordinator until those bindings exist and the release gates have been rerun.
+The detailed decision is in
 [the deployment-readiness report](plans/backlog-v2-deployment-readiness.md).
+The frozen S15 wire, execution-package, artifact, retry, and SSH contract is
+documented in [the worker protocol](backlog-v2-worker-protocol.md).
 
 ## Configuration inventory
 
@@ -44,7 +47,11 @@ remain compatible, and backlog-v2 is disabled by default.
 - `storage` declares absolute, non-root, non-overlapping bundle, artifact, and
   workspace roots.
 - `transport`, `message_limits`, `freshness`, `leases`, and `scheduling`
-  set bounded exchange and lifecycle controls.
+  set bounded exchange and lifecycle controls. SSH transport uses batch mode,
+  strict host-key verification, fixed remote commands, request deadlines, and
+  bounded stdin/stdout/stderr. Envelope signing keys and authenticated
+  principals must be resolved from worker credential references, never stored
+  in workflow bundles or execution packages.
 - `startup_admission` must be `closed`. The S14 skeleton acquires exclusive
   coordinator ownership and advances its epoch without contacting a worker or T3.
 - `state_path` selects SQLite. Plain opens never create or migrate it;
@@ -207,8 +214,10 @@ readiness report resolved.
    once; verify schema 10 and record counts.
 5. Load and validate project catalog, setup profiles, quota-pool mappings,
    artifact root, and worker identities without dispatch.
-6. Upgrade/register workers one at a time. Verify epochs, capabilities,
-   provider/model inventory, T3 URL, credential names, and clock freshness.
+6. Upgrade/register workers one at a time. Verify epochs, protocol-version and
+   limit negotiation, SSH host/login identity, envelope signing identity,
+   restricted remote command, capabilities, provider/model inventory, T3 URL,
+   credential names, and clock freshness.
 7. Reconcile all pre-existing/nonterminal work while admission remains closed.
 8. Enable transport in observe-only mode and prove lease, command replay,
    deterministic dispatch lookup, throttle acknowledgement, and artifact

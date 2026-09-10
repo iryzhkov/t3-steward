@@ -121,7 +121,10 @@ transitions.
 
 The production coordinator still does not construct `BundleIngester`,
 `ProjectCatalog`, `FleetCoordinator`, `WorkspacePreparer`, or worker
-exchange. Those bindings remain the next architectural deployment gap.
+exchange. S15 supplies the versioned worker protocol, execution package,
+artifact-transfer contract, and bounded SSH transport foundation, but none is
+constructed by the executable. Those runtime bindings remain architectural
+deployment gaps.
 
 ## State and ownership
 
@@ -181,12 +184,21 @@ Commands must be durable before delivery; command IDs are idempotency keys.
 Acknowledgements are evidence of acceptance, not proof of the final external
 effect. Subsequent worker snapshots reconcile actual state.
 
-Existing DTOs define snapshots, claims, lease renewals, commands,
-acknowledgements, and observations. The execution package transported with an
-offered assignment is not yet defined. A `WorkerCommand` contains identity and
-kind but not the workflow/task/environment/prompt/artifact material needed to
-execute `prepare`, `dispatch`, or `collect`. Offer discovery and artifact
-upload/download envelopes are also missing.
+S15 defines protocol version 1 envelopes and typed snapshots, offers, claims,
+lease renewals, commands, acknowledgements, observations, structured errors,
+and capability negotiation. Each exchange binds sender, recipient, coordinator
+epoch, authenticated principal/key, session sequence, request identity,
+deadline, payload checksum, and HMAC signature. Principal allowlists authorize
+message kinds. Exact completed duplicates return cached signed responses;
+changed replay, reordering, stale epochs, excess concurrency, and expired or
+oversized messages fail closed.
+
+A content-addressed execution package now carries the immutable assignment,
+task, prompt, inputs, route, resolved catalog/environment references,
+verification, outputs, deadlines, limits, and idempotency identities required
+by `prepare`, `dispatch`, and `collect`. It carries credential names, never
+credential values. The package and protocol are not yet composed into a worker
+runtime or production coordinator.
 
 ### Worker/T3 boundary
 
@@ -240,8 +252,12 @@ and opening verify size and SHA-256. Inline terminal rendering is restricted;
 downloads are owner-only, no-overwrite, and symlink resistant. A corrupt or
 missing artifact blocks dependency release.
 
-The worker-to-coordinator transfer protocol and upload authorization remain
-undefined.
+S15 defines versioned upload/download manifests and checksum-linked custody
+records. Transfer objects bind safe relative paths, size, SHA-256, media type,
+assignment epochs, direction, and expiry. Bounded tar validation rejects
+traversal, links, devices, duplicates, truncation, and expansion excess.
+Coordinator publication is still the authoritative custody transition. The
+worker and coordinator runtimes do not yet perform these transfers.
 
 ## Stable primitives
 
@@ -275,22 +291,20 @@ Already first-class: workflow, workflow run, task, attempt, assignment, worker
 snapshot/epoch, provider route, quota pool/admission, reservation, resource
 lock, workspace reservation, artifact, schedule template, trigger, throttle
 directive/command/acknowledgement, worker command/acknowledgement, turn outcome,
-admin command, audit event, and verification report.
+admin command, audit event, verification report, protocol exchange/session,
+execution package, artifact transfer manifest, and custody record.
 
 Concepts still implicit or incomplete:
 
 - **Coordinator runtime identity:** S14 composes file-backed exclusive ownership,
   durable epoch advancement, and a mandatory closed startup state. It remains a
   single-host authority primitive, not distributed consensus.
-- **Worker execution package:** no versioned object gives a worker the exact
-  immutable task, environment, prompt, dependency artifacts, verification, and
-  retention contract for an assignment.
-- **Transport session/exchange:** no request identity, protocol version,
-  authentication principal, size limits, or compatibility negotiation.
+- **Production worker protocol binding:** S15 defines versioned exchange,
+  execution-package, authentication, replay, limit, artifact-transfer, and
+  custody contracts plus a bounded SSH foundation. A restart-safe worker and
+  coordinator composition do not yet bind them.
 - **Submission request:** no caller idempotency key or durable submission
   outcome.
-- **Artifact transfer:** publication metadata exists, but upload/download
-  custody and retry state across hosts do not.
 - **Schedule firing source:** schedule records exist, but no production timer
   loop owns nominal-fire calculation and durable trigger submission.
 - **Coordinator mode/admission latch:** deployment needs an explicit
@@ -330,6 +344,10 @@ implementations and one runtime composition root, not to add parallel seams.
   assignment-epoch/kind.
 - Admin commands are immutable by ID and revision fenced.
 - Artifact reads verify recorded size and checksum.
+- Protocol requests authenticate complete envelope and payload identity; exact
+  duplicate requests cannot execute their handler twice.
+- Execution packages and artifact transfers verify safe paths, sizes, SHA-256,
+  epochs, expiry, and aggregate limits before custody changes.
 - Hard quota admission cannot be bypassed by an ordinary admin command.
 
 ### Cross-component
@@ -356,7 +374,8 @@ types alone do not enforce them across a network.
 ### Not yet enforceable in production
 
 - No unleased worker execution: there is no production worker runtime.
-- Authenticated coordinator-only mutation across hosts: there is no transport.
+- Authenticated coordinator-only mutation across hosts: the bounded SSH and
+  envelope foundation exists, but no production worker/runtime binding does.
 - Complete native audit history for every non-admin transition.
 - Fleet-wide quota deduplication/freshness: derivation exists, runtime feed does
   not.
@@ -393,14 +412,17 @@ silently guessed away.
 Strong evidence currently includes schema migration tests, compatibility
 fixtures, deterministic planner simulations, optimistic concurrency tests,
 lost-response and replay tests, throttle fault tests, artifact path/hash tests,
-admin JSON goldens, a temporary SQLite end-to-end workflow, repeated suites,
-and the race suite.
+admin and worker-protocol JSON goldens, a bounded local multi-process SSH
+transport harness, a temporary SQLite end-to-end workflow, repeated suites, and
+the race suite.
 
 Evidence limits:
 
 - The complete workflow runs in one test process with temporary storage.
-- No real coordinator/worker transport, authentication, process restart pair, or
-  remote artifact transfer has been exercised.
+- The SSH foundation has been exercised only between disposable local test
+  processes. No fleet connection, production worker authentication binding,
+  coordinator/worker restart pair, or remote artifact transfer has been
+  exercised.
 - The production `cmdRun` path constructs only the closed-admission authority
   skeleton; planning and worker exchange are not yet composed.
 - No candidate has touched live state or dispatched a real worker.
@@ -428,20 +450,24 @@ disabled mode, and closed startup without worker or T3 contact.
 
 ### P2. Versioned worker exchange and execution package
 
-Define a versioned authenticated exchange envelope containing worker snapshot,
-assignment offers/claims, lease renewals, durable commands/acknowledgements, and
-a content-addressed execution package. Define request limits, timeout, retry,
-ordering, compatibility, and error semantics. Define artifact transfer and
-custody records.
+Complete in S15. Protocol version 1 defines authenticated, authorized, sequenced,
+deadline- and size-bounded envelopes for snapshots, offers, claims, lease
+renewals, commands, acknowledgements, observations, capabilities, artifacts,
+and structured errors. The content-addressed execution package and artifact
+transfer/custody manifests preserve assignment identity and validate paths,
+archives, sizes, hashes, and expiry.
 
-For this small SSH-addressable fleet, first evaluate a coordinator-initiated SSH
-exchange adapter: it reuses host authentication, requires no listener, and keeps
-workers from opening coordinator SQLite. Reject it if bounded streaming,
-cancellation, identity, or artifact custody cannot meet the contract; then use
-an authenticated HTTP transport.
+The coordinator-initiated SSH foundation is retained: it invokes a restricted
+remote command without a local shell, uses strict host authentication, bounds
+stdin/stdout/stderr and connect/request time, propagates cancellation, and
+retries the same immutable request. The local multi-process spike proves these
+transport mechanics without contacting a fleet host. S16 must bind the SSH
+principal and restricted command to the restart-safe worker runtime; failure to
+preserve the contract requires mutually authenticated HTTP.
 
-Gate: protocol JSON goldens, incompatible-version tests, replay/reorder/drop
-fault tests, authentication failure tests, and a bounded transport spike.
+Focused gates cover JSON goldens, version/epoch/authentication/authorization,
+replay/reorder/duplicate/drop, timeout/cancellation/backpressure/limits,
+malformed archives/checksums, and repeated local multi-process transport.
 
 ### P3. Worker runtime
 
