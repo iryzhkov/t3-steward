@@ -4,33 +4,35 @@ Updated: 2026-09-10
 
 ## Completed checkpoint
 
-- Completed M1, M2, M3, and M4.
-- Added table-driven fleet planning simulations for low quota, late-week surplus, competing provider pools, and stale quota observations.
-- Every simulation asserts selected proposals, route-specific candidate exclusions, reservation effects through exact remaining capacity, deterministic ordering explanations, and identical output after reversing task, worker, provider, pool, window, and estimate inputs.
-- Quota windows now carry an explicit observation timestamp, and quota admission requires a positive maximum observation age.
-- Planning fails closed with a structured `quota-observation-stale` blocker when an applicable observation is older than the configured limit or is timestamped after planning time.
-- Freshness is evaluated per applicable quota-pool window. A stale preferred route remains excluded while a fresh ordered alternative may be selected.
-- Freshness boundary, stale, future-timestamp, missing-timestamp, and invalid-age behavior is covered by unit tests.
+- Completed M1, M2, M3, M4, and the first M5 increment.
+- Added a pure `DeriveQuotaPoolAdmissions` seam that projects each fleet quota pool to `open`, `constrained`, `draining`, `closed`, or `recovering`.
+- Pool admission is the conservative maximum across all configured bucket windows: normal maps to open, warned to constrained, draining to draining, and stopped to closed.
+- Healthy pools with active pending, eligible, or resuming attempt reservations enter recovering; terminal resume records do not affect admission.
+- Active required-work resume reservations contribute their remaining cost to `PausedRequiredWorkRemainder`; surplus reservations remain visible in the recovery count without consuming required-work capacity.
+- Shared-account bucket projections are reconciled by freshest observation. Equal-time observations in one epoch use the highest credible phase and conservative health; equal-time epoch conflicts fail closed.
+- Missing, stale, future-dated, expired-epoch, epoch-inconsistent, and irreconcilably conflicting observations fail closed with structured, deterministic issues.
+- Results, issue order, bucket epoch order, and reservation accounting are invariant to reordered inputs, and caller-owned slices and bucket states are detached.
+- Marked the first M5 checklist item complete.
 - No configured/live repository, T3 thread, worker, service, or live database was touched.
-- By user direction, the remaining implementation-chain backlog submissions are ungated: use `t3-backlog --ungated`. Hard quota-health controls still apply.
 
 ## Decisions
 
-- Observation freshness is distinct from capacity and admission state. Staleness receives its own blocker rather than being hidden as unavailable capacity.
-- Every value in one quota window is treated as one immutable snapshot collected at `ObservedAt`.
-- The freshness limit is required input to quota policy construction; missing or non-positive limits and missing observation timestamps are configuration errors.
-- An observation is usable through the exact maximum-age boundary. Older observations and observations from the future fail closed.
-- If several windows apply to one route, every applicable window must be fresh. Reservations continue to be isolated by quota pool and window.
-- Structured stale blockers include the quota pool/window, observation time, configured maximum age, route estimate, and the otherwise computed available capacity for deterministic explanation.
-- Existing deadline/fairness ordering, ordered provider fallback, concurrency accounting, and resource reservation semantics remain unchanged.
+- Admission derivation consumes immutable coordinator snapshots and has no dispatch, worker, database, or deployed throttle-controller side effects.
+- Observation freshness is evaluated at a required explicit derivation time and maximum age. The exact age boundary remains usable.
+- When several workers report one shared bucket, a newer observation supersedes older observations. Same-time observations in the same epoch reconcile to the highest severity and require all reporters to agree that the bucket is healthy.
+- Same-time observations that identify different epochs are not safe to order and close admission.
+- A bucket epoch must equal `domain.EpochFor(ResetsAt)`; a reset time at or before derivation time is no longer a current epoch.
+- A normal bucket whose persisted health flag is false constrains admission, preventing resume while still distinguishing that condition from a hard closure.
+- Required paused remainder includes pending, eligible, and resuming attempts until their resume record becomes terminal.
+- Input/configuration defects return errors; uncertain runtime quota state produces a closed admission projection with structured issues.
+- Pool and bucket ordering is canonical so later atomic planning and directive generation can compare projections reliably.
 
 ## Verification
 
 - Baseline: `go test ./...`
-- `go test ./internal/backlog -run 'TestBuildPlanFleetQuotaSimulations|TestQuotaAdmissionPolicy|TestBuildPlanQuotaAdmission|TestBuildPlanFallsBackUsingRouteSpecificQuotaEstimate' -count=1`
-- `go test -race ./internal/backlog -run 'TestBuildPlanFleetQuotaSimulations|TestQuotaAdmissionPolicy|TestBuildPlanQuotaAdmission|TestBuildPlanFallsBackUsingRouteSpecificQuotaEstimate' -count=1`
+- `go test ./internal/backlog -run TestDeriveQuotaPoolAdmissions -count=1`
+- `go test -race ./internal/backlog -run TestDeriveQuotaPoolAdmissions -count=1`
 - `go test ./internal/backlog -count=1`
-- `go test -race ./internal/backlog -count=1`
 - `go test ./...`
 - `go vet ./...`
 - `git diff --check`
@@ -39,14 +41,15 @@ All passed.
 
 ## Remaining risks
 
-- Quota freshness currently applies to planner admission snapshots. M5 must derive admission states from bucket observations and resume intents before those snapshots can be built by the coordinator.
-- Deferral history and ready timestamps remain planner inputs; the future coordinator must persist and advance them transactionally after each committed plan.
-- Deadline slack currently means wall-clock time until the declared deadline. Runtime-aware admission remains route-specific and is enforced after ordering by quota policy.
-- Route-free legacy tasks still need coordinator-side default route materialization before they can become complete assignment records.
-- The planner is not yet connected to dispatch or a persisted assignment transaction; those integrations belong to later milestones.
-- Workflow workspace metadata, environment reservations, route reservations, ordering history, and quota reservations are not persisted through coordinator restart; durable coordinator recovery remains M7.
+- Admission projections are not yet persisted atomically ahead of warn/drain worker directives; that is the next M5 increment.
+- The new resume-reservation seam is scheduler-owned and is not yet populated from durable attempts or assignments.
+- Paused required cost is derived but has not yet been wired into planner quota-window construction.
+- Structured warning, drain, checkpoint, hard-stop, completion-marker reconciliation, and resume execution remain unimplemented for orchestrated attempts.
+- Recovery ordering and surplus expiry behavior remain future M5 work.
+- The legacy host-local watchdog still owns its independent bucket and resume machinery; this increment does not alter or invoke it.
+- Deferral history, workspace metadata, assignments, route reservations, and quota reservations are not yet coordinator-durable; coordinator recovery remains M7.
 - No development code has opened live state, contacted workers, dispatched work, or installed/restarted a service.
 
 ## Exact next increment
 
-Begin M5 by deriving deterministic quota-pool admission states from immutable bucket observations and resume intents. Define the input and output seam, precedence across multiple bucket windows, freshness and epoch handling, and the transition reasons needed by later worker directives. Cover open, constrained, draining, closed, and recovering states; paused required-work reservations; stale or conflicting observations; and reordered-input determinism. Keep the derivation pure and disconnected from dispatch, workers, live state, and the deployed throttle controller. Run targeted and race tests, then `go test ./...`, `go vet ./...`, and `git diff --check`. If implementation remains, queue the one successor with `--ungated` as required by the session prompt.
+Implement the second M5 checklist item: close quota-pool admission atomically before warning or draining affected work. Add a small deterministic transition/directive seam that compares prior and derived pool admissions, persists the complete admission transition before any outward directive becomes eligible, binds directives to pool and bucket epochs, and makes replay idempotent. Cover warn-to-constrained, drain/stop closure ordering, repeated epochs, stale transition revisions, multiple pools, and reordered-input determinism. Keep it disconnected from live state and the deployed daemon. Run targeted and race tests, then `go test ./...`, `go vet ./...`, and `git diff --check`. If implementation remains, queue the one successor with `--ungated` as required by the session prompt.

@@ -383,7 +383,7 @@ Each milestone should fit one unattended development session where practical. A 
 
 ### M5. Throttle, checkpoint, and resume integration
 
-- [ ] Derive quota-pool admission states from bucket state and resume intents.
+- [x] Derive quota-pool admission states from bucket state and resume intents.
 - [ ] Close admission before warning or draining affected work.
 - [ ] Implement structured warn, drain, checkpoint, hard-stop, and resume handling.
 - [ ] Reconcile completion markers against throttle intents in the documented order.
