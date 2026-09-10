@@ -702,6 +702,7 @@ is in the tested range.
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Security: [SECURITY.md](SECURITY.md)
 - Protocol notes: [docs/t3-protocol.md](docs/t3-protocol.md)
+- Backlog-v2 system model: [docs/architecture/system-model.md](docs/architecture/system-model.md)
 - Backlog-v2 operations: [docs/backlog-v2-operations.md](docs/backlog-v2-operations.md)
 - Backlog-v2 readiness: [docs/plans/backlog-v2-deployment-readiness.md](docs/plans/backlog-v2-deployment-readiness.md)
 - License: [MIT](LICENSE)

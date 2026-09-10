@@ -81,12 +81,16 @@ alone must not bypass them.
 
 ## Documentation evidence
 
+- [State, ownership, boundaries, contracts, primitives, invariants, transactions,
+  evidence, and production-binding sequence](../architecture/system-model.md)
 - [Operations, configuration, manifest, recovery, backup, rollback, and
   deployment order](../backlog-v2-operations.md)
 - [Version 2 example bundle](../examples/backlog-v2/workflow.yaml)
 - [Admin command and artifact safety](../backlog-admin.md)
 - [Approved implementation plan](backlog-v2.md)
 - [Serial implementation handoff](backlog-v2-handoff.md)
+
+## Verification record
 
 The following gates passed on Normandy against the candidate worktree:
 

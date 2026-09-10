@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- A backlog-v2 system model covering state, ownership, boundaries, contracts,
+  primitives, first-class concepts, seams, invariants, transactions, failure,
+  evidence, and the production-binding sequence.
 - Backlog-v2 release-candidate operations, manifest, recovery, coherent backup,
   rollback, migration point-of-no-return, and deployment-order documentation.
 - A checked version 2 example workflow bundle and deployment-readiness report.

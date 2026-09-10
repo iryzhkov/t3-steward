@@ -116,8 +116,8 @@ func (r *Runner) load(ctx context.Context) ([]Task, error) {
 	for _, err := range errs {
 		r.log.Warn("backlog task skipped", "err", err)
 	}
-	// The database is the source of truth: the CLI edits it directly for
-	// retry and cancel, so reload it every tick.
+	// The database is the source of truth for the legacy runner's mutable
+	// projection, so reload it every tick to recover daemon restarts.
 	raw, err := r.store.LoadTaskStates(ctx)
 	if err != nil {
 		return nil, err

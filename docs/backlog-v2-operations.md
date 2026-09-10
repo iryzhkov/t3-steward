@@ -24,8 +24,10 @@ gates have been rerun. The detailed decision is in
 ## Configuration inventory
 
 The shipped YAML schema remains the host-local configuration documented in
-[config.example.yaml](../config.example.yaml). Unknown YAML fields are rejected.
-Its backlog settings control only the existing Markdown runner:
+[config.example.yaml](../config.example.yaml). The current loader ignores unknown
+YAML fields; backlog-v2 production configuration must define and test an explicit
+strictness/compatibility contract before rollout. Existing backlog settings
+control only the Markdown runner:
 
 - `backlog.enabled`, `dir`, `quiet_for`, and forecast fields control local
   task discovery and admission.
