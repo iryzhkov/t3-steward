@@ -367,6 +367,8 @@ Each milestone should fit one unattended development session where practical. A 
 - [x] Implement clean per-attempt Git environments with pinned revisions and repository caching.
 - [x] Prototype and verify T3 `worktreePath` behavior.
 - [ ] Add workflow-scoped environments, resource locks, preparation logs, retention, and process containment.
+  - [x] Add atomic workflow checkout ownership, worker pinning, deterministic resource reservations, and explicit pause/terminal release policies.
+  - [ ] Materialize shared workflow checkouts and add retention plus process containment.
 - [ ] Test alternate workers, GPU-only placement, offline workers, setup failure, and workspace cleanup.
 
 ### M4. Planner, task classes, and provider routes
