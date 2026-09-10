@@ -411,7 +411,7 @@ Each milestone should fit one unattended development session where practical. A 
   - [x] Derive stable prepare, dispatch, stop, and collect commands; deliver only durable pending commands and persist partial acknowledgements across lost responses.
   - [x] Reconcile command acknowledgements and worker assignment observations into optimistic assignment and attempt transitions.
 - [x] Prevent dispatch during partitions or stale state.
-- [ ] Support centrally retained artifacts and cross-worker dependency transfer.
+- [x] Support centrally retained artifacts and cross-worker dependency transfer.
 - [x] Test concurrent worker claims, coordinator restart, worker reconnect, lease expiry, and no-duplicate guarantees.
 
 ### M8. Admin module and CLI

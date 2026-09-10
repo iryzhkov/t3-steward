@@ -266,13 +266,12 @@ func (s *Store) SaveCoordinatorRecords(ctx context.Context, records CoordinatorR
 		}
 	}
 	for _, record := range records.Artifacts {
-		if err := upsertJSON(ctx, tx, "artifact", record.ID,
+		if err := insertImmutableJSON(ctx, tx, "artifact", record.ID,
 			`INSERT INTO coordinator_artifacts(id, workflow_run_id, task_id, attempt_id, sha256, record)
-			 VALUES (?, ?, ?, ?, ?, ?)
-			 ON CONFLICT(id) DO UPDATE SET workflow_run_id = excluded.workflow_run_id,
-			 task_id = excluded.task_id, attempt_id = excluded.attempt_id,
-			 sha256 = excluded.sha256, record = excluded.record`,
-			[]any{record.ID, record.WorkflowRunID, record.TaskID, record.AttemptID, record.SHA256}, record); err != nil {
+			 VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`,
+			[]any{record.ID, record.WorkflowRunID, record.TaskID, record.AttemptID, record.SHA256},
+			`SELECT record FROM coordinator_artifacts WHERE id = ?`,
+			[]any{record.ID}, record); err != nil {
 			return err
 		}
 	}
