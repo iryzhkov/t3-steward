@@ -21,6 +21,7 @@ type WorkerAssignmentObservation struct {
 	AssignmentID    string          `json:"assignmentId"`
 	AssignmentEpoch int64           `json:"assignmentEpoch"`
 	State           AssignmentState `json:"state"`
+	Control         ControlState    `json:"control,omitempty"`
 	ThreadID        string          `json:"threadId,omitempty"`
 	ObservedAt      time.Time       `json:"observedAt"`
 }
@@ -111,4 +112,19 @@ type AssignmentLeaseRenewal struct {
 	LeaseToken       string    `json:"leaseToken"`
 	RenewedAt        time.Time `json:"renewedAt"`
 	LeaseExpiresAt   time.Time `json:"leaseExpiresAt"`
+}
+
+// WorkerStateTransition atomically reconciles one assignment and attempt
+// against an exact durable worker snapshot and optimistic coordinator state.
+type WorkerStateTransition struct {
+	CoordinatorEpoch        int64      `json:"coordinatorEpoch"`
+	WorkerID                string     `json:"workerId"`
+	WorkerEpoch             string     `json:"workerEpoch"`
+	WorkerSequence          int64      `json:"workerSequence"`
+	TransitionedAt          time.Time  `json:"transitionedAt"`
+	ExpectedAssignment      Assignment `json:"expectedAssignment"`
+	ExpectedAttemptRevision int64      `json:"expectedAttemptRevision"`
+	Assignment              Assignment `json:"assignment"`
+	Attempt                 Attempt    `json:"attempt"`
+	Reason                  string     `json:"reason"`
 }

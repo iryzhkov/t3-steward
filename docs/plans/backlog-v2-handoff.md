@@ -5,29 +5,30 @@ Updated: 2026-09-10
 ## Completed checkpoint
 
 - Completed M1 through M6.
-- Continued M7 with a transport-neutral authoritative coordinator seam.
-- Added deterministic planner-to-assignment translation that replaces caller-supplied worker inventory with current durable epoch-bound snapshots and commits the complete proposed assignment batch atomically.
-- Assignment, lease, dispatch, and lifecycle command identities are deterministic across coordinator reconstruction.
-- Added stable prepare, dispatch, stop, and collect command derivation from durable assignment, attempt, acknowledgement, and worker-observation projections.
-- Added durable command history queries and a delivery loop that persists commands before transport, reloads only currently deliverable pending commands, and records every returned acknowledgement even alongside a partial transport error.
-- Added a fake idempotent worker integration test covering assignment planning, claiming, a lost prepare response, coordinator reconstruction, command replay, and dispatch without duplicate worker execution.
-- Added lifecycle derivation coverage for all command kinds and repeated transactional tests using temporary databases only.
+- Continued M7 through authoritative planning, worker snapshots, epoch-bound claims and leases, durable idempotent worker commands, and optimistic worker-state reconciliation.
+- Added deterministic assignment/attempt transition planning from fresh complete worker snapshots and immutable command acknowledgements.
+- Added an atomic SQLite transition boundary fenced by coordinator epoch, exact worker snapshot identity, assignment identity/state, and attempt revision.
+- Fresh present observations recover unknown assignments and rebind them after a worker process-epoch change; fresh stopped or authoritative absent observations safely release ownership for reassignment.
+- Completed observations now advance through durable collection before the assignment becomes complete and the attempt enters verification.
+- Rejected prepare or dispatch commands release work safely. Accepted dispatch, stop, and collect acknowledgements advance their corresponding projections.
+- Delayed immutable acknowledgements remain admissible after a newer sequence from the same worker process, while worker and coordinator epoch changes remain fenced.
+- Pending commands are revalidated against current assignment ownership and state immediately before delivery, preventing stale prepare or dispatch after release or process-epoch rebinding.
+- Added fake-worker coverage for a lost dispatch acknowledgement followed by worker reconnect and replay of the same command ID with one underlying execution.
 - No configured/live repository, T3 thread, worker, service, or live database was touched.
 
 ## Decisions
 
-- The coordinator obtains worker inventory exclusively from durable snapshots in the current coordinator epoch. Disconnected or expired snapshots are exposed to the deterministic planner as offline, preserving useful blocker explanations while preventing assignment commit.
-- Planner proposals are translated into deterministic assignment, lease, and dispatch identities keyed by attempt. Atomic store validation remains the final fence against stale attempt revisions or changed worker snapshots.
-- Worker command IDs are deterministic per assignment epoch and command kind. Existing durable command records, including immutable acknowledgements, determine lifecycle advancement after restart.
-- Commands are committed before transport and reloaded through the exact current worker snapshot. A transport may return acknowledgements with an error; the coordinator persists every acknowledgement it did receive before returning that error.
-- Prepare must be accepted before dispatch is created. A stopped attempt produces stop, and an explicit completed worker observation produces collect. Unknown assignments never receive prepare or dispatch.
-- Worker transport implementations must deduplicate command IDs. The fake transport demonstrates a lost response followed by replay of the same ID with one underlying execution.
-- Worker observations do not yet mutate assignment or attempt projections. That mutation needs its own optimistic transactional transition API rather than using the generic coordinator-record upsert.
+- Worker snapshot assignment lists are complete. Omission is authoritative only for lease-expired unknown ownership or after a worker process-epoch change; omission from the claim snapshot does not release a newly claimed assignment.
+- A present observation may recover an unknown assignment onto the current worker process epoch and extends its safety horizon to the snapshot validity deadline.
+- A completed observation first produces a collect command. Only an accepted collect acknowledgement makes the assignment complete and moves the attempt to verification.
+- Command acknowledgements are immutable. A delayed response from an older sequence of the same current worker process is accepted and stored; a conflicting later response for the same command is rejected.
+- Reconciliation commits before command derivation. The delivery query independently filters commands against the resulting assignment state and worker epoch as a final safety fence.
+- Worker transports must continue deduplicating command IDs because an accepted command whose response was lost is intentionally replayed.
 
 ## Verification
 
 - Baseline: `go test ./...`
-- `go test ./internal/backlog -run 'TestFleetCoordinator|TestPlanWorkerCommands' -count=1 -v`
+- `go test ./internal/backlog ./internal/store/sqlite ./internal/domain -run 'TestPlanWorkerStateTransitions|TestCommitWorkerStateTransitions|TestReleasedWorkerState|TestFleetCoordinator|TestPlanWorkerCommands|TestWorkerCommands' -count=1 -v`
 - `go test ./internal/backlog ./internal/store/sqlite ./internal/domain -count=20`
 - `go build ./...`
 - `go vet ./...`
@@ -38,10 +39,9 @@ All passed.
 
 ## Remaining risks
 
-- Worker assignment observations and command acknowledgements still need optimistic transactional reconciliation into assignment, attempt, preparation, dispatch, stop, and collection projections.
-- Lease-expired unknown assignments still need authoritative present/stopped/absent proofs before recovery or reassignment.
-- Snapshot ingestion remains a separate protocol call; a higher coordinator cycle still needs to order snapshot persistence, observation reconciliation, admission derivation, planning, lease expiry, and command delivery.
-- Centrally retained artifacts and cross-worker dependency transfer remain part of M7.
+- Centrally retained artifacts and cross-worker dependency transfer remain the final incomplete M7 implementation item.
+- Snapshot ingestion remains a separate protocol call; the eventual top-level service loop must preserve snapshot persistence before reconciliation and command delivery.
+- Assignment reconciliation updates current projections but does not yet append the full audit-event stream required by the observability milestone.
 - Schedule projection/version advancement outside the trigger operation is not yet an optimistic coordinator transaction.
 - Failure-hold acknowledgement/retry/skip/cancel commands remain part of the later admin module.
 - The legacy host-local watchdog still owns its independent scheduling and dispatch machinery.
@@ -49,4 +49,4 @@ All passed.
 
 ## Exact next increment
 
-Continue M7 with optimistic worker-state reconciliation. Define explicit assignment/attempt transitions planned from current command acknowledgements and worker assignment observations, commit them atomically against assignment identity/state and attempt revision, and make fresh present/stopped/absent observations recover or safely release lease-expired unknown assignments. Integrate this ahead of command derivation in the coordinator cycle. Exercise worker reconnect, process-epoch change, stale snapshots, rejected commands, lease-expired unknown assignments, lost acknowledgements, and no-reassignment/no-duplicate-dispatch guarantees with temporary state and fake workers only; do not contact live workers or T3.
+Finish M7 with coordinator-owned artifact retention and cross-worker dependency transfer. Define a transport-neutral artifact publication/fetch protocol with immutable metadata and checksum verification; stage declared outputs, checkpoints, preparation logs, final messages, Git state/diffs/commits, and verification reports in coordinator-owned storage; materialize declared predecessor artifacts under the documented dependency path on another worker; fence publication to the current attempt/assignment identity; and add temporary-state integration tests for cross-worker transfer, checksum mismatch, partial upload, replay, offline producers, retention, and path/symlink safety. Do not contact live workers or T3.

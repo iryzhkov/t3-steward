@@ -19,6 +19,7 @@ type FleetCoordinatorStore interface {
 	LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRecords, error)
 	LoadWorkerSnapshots(context.Context) ([]domain.WorkerSnapshot, error)
 	CommitAssignmentPlan(context.Context, domain.AssignmentPlanCommit) ([]domain.Assignment, error)
+	CommitWorkerStateTransitions(context.Context, []domain.WorkerStateTransition) ([]domain.Assignment, error)
 	CommitWorkerCommands(context.Context, []domain.WorkerCommand) ([]domain.WorkerCommand, error)
 	LoadWorkerCommandRecords(context.Context) ([]domain.WorkerCommandRecord, error)
 	LoadPendingWorkerCommands(context.Context, string, string, int64, int64, time.Time) ([]domain.WorkerCommand, error)
@@ -42,6 +43,7 @@ type AssignmentPlanningReport struct {
 }
 
 type WorkerDeliveryReport struct {
+	Reconciled       []domain.Assignment            `json:"reconciled,omitempty"`
 	Planned          []domain.WorkerCommand         `json:"planned,omitempty"`
 	Pending          []domain.WorkerCommand         `json:"pending,omitempty"`
 	Acknowledgements []domain.WorkerAcknowledgement `json:"acknowledgements,omitempty"`
@@ -159,11 +161,26 @@ func (c FleetCoordinator) ReconcileWorkerCommands(
 	if err != nil {
 		return WorkerDeliveryReport{}, err
 	}
+	transitions, err := PlanWorkerStateTransitions(records, snapshot, commandRecords, now)
+	if err != nil {
+		return WorkerDeliveryReport{}, err
+	}
+	report := WorkerDeliveryReport{}
+	if len(transitions) > 0 {
+		report.Reconciled, err = c.Store.CommitWorkerStateTransitions(ctx, transitions)
+		if err != nil {
+			return WorkerDeliveryReport{}, err
+		}
+		records, err = c.Store.LoadCoordinatorRecords(ctx)
+		if err != nil {
+			return WorkerDeliveryReport{}, err
+		}
+	}
 	planned, err := PlanWorkerCommands(records, snapshot, commandRecords, now)
 	if err != nil {
 		return WorkerDeliveryReport{}, err
 	}
-	report := WorkerDeliveryReport{Planned: planned}
+	report.Planned = planned
 	if len(planned) > 0 {
 		if _, err := c.Store.CommitWorkerCommands(ctx, planned); err != nil {
 			return WorkerDeliveryReport{}, err
@@ -202,6 +219,9 @@ func PlanWorkerCommands(
 	if snapshot.WorkerID == "" || snapshot.WorkerEpoch == "" ||
 		snapshot.CoordinatorEpoch < 1 || snapshot.Sequence < 1 || now.IsZero() {
 		return nil, errors.New("worker command planning requires a complete snapshot and time")
+	}
+	if !snapshot.Connected || !snapshot.ValidUntil.After(now) {
+		return nil, fmt.Errorf("worker %q snapshot is disconnected or stale", snapshot.WorkerID)
 	}
 	attemptByID := make(map[string]domain.Attempt, len(records.Attempts))
 	for _, attempt := range records.Attempts {
@@ -259,17 +279,17 @@ func nextWorkerCommand(
 		record, ok := existing[workerCommandKey(assignment.ID, assignment.Epoch, kind)]
 		return record, ok
 	}
-	if attempt.Control == domain.ControlStopped {
-		if _, ok := has(domain.WorkerCommandStop); !ok {
-			return domain.WorkerCommandStop, true
-		}
-		return "", false
-	}
 	if observation.AssignmentID == assignment.ID &&
 		observation.AssignmentEpoch == assignment.Epoch &&
 		observation.State == domain.AssignmentCompleted {
 		if _, ok := has(domain.WorkerCommandCollect); !ok {
 			return domain.WorkerCommandCollect, true
+		}
+		return "", false
+	}
+	if attempt.Control == domain.ControlStopped {
+		if _, ok := has(domain.WorkerCommandStop); !ok {
+			return domain.WorkerCommandStop, true
 		}
 		return "", false
 	}

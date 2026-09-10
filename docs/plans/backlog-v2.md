@@ -401,18 +401,18 @@ Each milestone should fit one unattended development session where practical. A 
 
 ### M7. Fleet coordinator and worker protocol
 
-- [ ] Move authoritative planning and mutation to the coordinator.
+- [x] Move authoritative planning and mutation to the coordinator.
   - [x] Commit assignment batches atomically against optimistic attempt revisions and exact worker snapshots before exposing them to workers.
   - [x] Drive deterministic planner proposals through the coordinator into atomic assignment commits using only current durable worker snapshots.
-- [ ] Add worker snapshots, commands, acknowledgements, leases, epochs, and reconciliation.
+- [x] Add worker snapshots, commands, acknowledgements, leases, epochs, and reconciliation.
   - [x] Define transport-neutral snapshot, command, acknowledgement, plan, claim, and lease-renewal records; persist monotonic snapshots and epoch-bound claims.
   - [x] Persist commands before delivery with idempotent acknowledgements, exact snapshot/epoch fences, and one command of each kind per assignment epoch.
   - [x] Renew leases against exact worker snapshots and make expiry fail closed by moving unproven executions to unknown.
   - [x] Derive stable prepare, dispatch, stop, and collect commands; deliver only durable pending commands and persist partial acknowledgements across lost responses.
-  - [ ] Reconcile command acknowledgements and worker assignment observations into optimistic assignment and attempt transitions.
-- [ ] Prevent dispatch during partitions or stale state.
+  - [x] Reconcile command acknowledgements and worker assignment observations into optimistic assignment and attempt transitions.
+- [x] Prevent dispatch during partitions or stale state.
 - [ ] Support centrally retained artifacts and cross-worker dependency transfer.
-- [ ] Test concurrent worker claims, coordinator restart, worker reconnect, lease expiry, and no-duplicate guarantees.
+- [x] Test concurrent worker claims, coordinator restart, worker reconnect, lease expiry, and no-duplicate guarantees.
 
 ### M8. Admin module and CLI
 

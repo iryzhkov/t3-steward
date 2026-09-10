@@ -157,21 +157,37 @@ func (s *Store) LoadPendingWorkerCommands(
 	if err != nil {
 		return nil, fmt.Errorf("load pending worker commands: %w", err)
 	}
-	defer rows.Close()
-	var commands []domain.WorkerCommand
+	var candidates []domain.WorkerCommand
 	for rows.Next() {
 		var id, raw string
 		if err := rows.Scan(&id, &raw); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("scan pending worker command: %w", err)
 		}
 		var command domain.WorkerCommand
 		if err := json.Unmarshal([]byte(raw), &command); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("decode worker command %q: %w", id, err)
 		}
-		commands = append(commands, command)
+		candidates = append(candidates, command)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, fmt.Errorf("iterate pending worker commands: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	commands := make([]domain.WorkerCommand, 0, len(candidates))
+	for _, command := range candidates {
+		assignment, err := loadAssignmentTx(ctx, tx, command.AssignmentID)
+		if err != nil {
+			return nil, err
+		}
+		if workerCommandCurrentlyDeliverable(command, assignment) {
+			commands = append(commands, command)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("finish pending worker commands: %w", err)
@@ -207,8 +223,7 @@ func (s *Store) AcknowledgeWorkerCommand(ctx context.Context, acknowledgement do
 	if err := requireCoordinatorEpoch(ctx, tx, acknowledgement.CoordinatorEpoch); err != nil {
 		return domain.WorkerAcknowledgement{}, err
 	}
-	if err := requireCurrentWorker(ctx, tx, acknowledgement.WorkerID, acknowledgement.WorkerEpoch,
-		acknowledgement.CoordinatorEpoch, acknowledgement.WorkerSequence, acknowledgement.AcknowledgedAt); err != nil {
+	if err := requireWorkerAcknowledgementSnapshot(ctx, tx, acknowledgement); err != nil {
 		return domain.WorkerAcknowledgement{}, err
 	}
 	command, exists, err := loadWorkerCommandTx(ctx, tx, acknowledgement.CommandID)
@@ -410,6 +425,26 @@ func requireCurrentWorker(ctx context.Context, tx *sql.Tx, workerID, workerEpoch
 	return nil
 }
 
+func requireWorkerAcknowledgementSnapshot(
+	ctx context.Context,
+	tx *sql.Tx,
+	acknowledgement domain.WorkerAcknowledgement,
+) error {
+	snapshot, exists, err := loadWorkerSnapshotTx(ctx, tx, acknowledgement.WorkerID)
+	if err != nil {
+		return err
+	}
+	if !exists || snapshot.WorkerEpoch != acknowledgement.WorkerEpoch ||
+		snapshot.CoordinatorEpoch != acknowledgement.CoordinatorEpoch ||
+		acknowledgement.WorkerSequence > snapshot.Sequence {
+		return fmt.Errorf("%w: worker %q acknowledgement snapshot is not current", ErrStaleWorkerSnapshot, acknowledgement.WorkerID)
+	}
+	if !workerAccepts(snapshot, acknowledgement.AcknowledgedAt) {
+		return fmt.Errorf("%w: worker %q is disconnected, stale, or not ready", ErrWorkerUnavailable, acknowledgement.WorkerID)
+	}
+	return nil
+}
+
 func validateWorkerCommand(command domain.WorkerCommand) error {
 	switch command.Kind {
 	case domain.WorkerCommandPrepare, domain.WorkerCommandDispatch, domain.WorkerCommandStop, domain.WorkerCommandCollect:
@@ -441,6 +476,21 @@ func validateCommandAssignment(command domain.WorkerCommand, assignment domain.A
 		}
 	}
 	return nil
+}
+
+func workerCommandCurrentlyDeliverable(command domain.WorkerCommand, assignment domain.Assignment) bool {
+	if assignment.WorkerID != command.WorkerID || assignment.WorkerEpoch != command.WorkerEpoch ||
+		assignment.Epoch != command.AssignmentEpoch {
+		return false
+	}
+	switch command.Kind {
+	case domain.WorkerCommandPrepare, domain.WorkerCommandDispatch:
+		return assignment.State == domain.AssignmentClaimed
+	case domain.WorkerCommandStop, domain.WorkerCommandCollect:
+		return assignment.State == domain.AssignmentClaimed || assignment.State == domain.AssignmentUnknown
+	default:
+		return false
+	}
 }
 
 func validateWorkerAcknowledgement(acknowledgement domain.WorkerAcknowledgement) error {

@@ -130,6 +130,93 @@ func TestFleetCoordinatorCommitsPlanAndReplaysLostCommandResponse(t *testing.T) 
 	}
 }
 
+func TestFleetCoordinatorRecoversLostDispatchAcknowledgementWithoutDuplicateExecution(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	snapshot := coordinatorSnapshot(1)
+	attempt := domain.Attempt{
+		ID: "attempt-1", WorkflowRunID: "run-1", TaskID: "task-1", Number: 1,
+		Progress: domain.ProgressActive, Control: domain.ControlPreparing,
+		Revision: 1, AssignmentID: "assignment-1", UpdatedAt: coordinatorTestTime,
+	}
+	assignment := domain.Assignment{
+		ID: "assignment-1", AttemptID: attempt.ID, WorkerID: snapshot.WorkerID,
+		WorkerEpoch: snapshot.WorkerEpoch, State: domain.AssignmentClaimed, Epoch: 1,
+		LeaseToken: "lease-1", DispatchToken: "dispatch-1",
+		LeaseExpiresAt: coordinatorTestTime.Add(time.Hour),
+		CreatedAt:      coordinatorTestTime, UpdatedAt: coordinatorTestTime,
+	}
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
+		Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	transport := &deduplicatingWorkerTransport{}
+	coordinator := FleetCoordinator{Store: store, Now: func() time.Time {
+		return coordinatorTestTime.Add(2 * time.Minute)
+	}}
+	prepare, err := coordinator.ReconcileWorkerCommands(ctx, snapshot, transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepare.Acknowledgements) != 1 ||
+		prepare.Pending[0].Kind != domain.WorkerCommandPrepare {
+		t.Fatalf("prepare report = %#v", prepare)
+	}
+
+	transport.dropFirstResponse = true
+	coordinator.Now = func() time.Time { return coordinatorTestTime.Add(3 * time.Minute) }
+	dispatch, err := coordinator.ReconcileWorkerCommands(ctx, snapshot, transport)
+	if !errors.Is(err, errLostWorkerResponse) ||
+		len(dispatch.Pending) != 1 || dispatch.Pending[0].Kind != domain.WorkerCommandDispatch {
+		t.Fatalf("dispatch report = %#v, error = %v", dispatch, err)
+	}
+	dispatchID := dispatch.Pending[0].ID
+	if transport.executions[dispatchID] != 1 {
+		t.Fatalf("dispatch executions after lost response = %d", transport.executions[dispatchID])
+	}
+
+	reconnected := coordinatorSnapshot(2)
+	reconnected.ObservedAt = coordinatorTestTime.Add(4 * time.Minute)
+	reconnected.ValidUntil = coordinatorTestTime.Add(time.Hour)
+	reconnected.Assignments = []domain.WorkerAssignmentObservation{{
+		AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
+		State: domain.AssignmentClaimed, Control: domain.ControlRunning,
+		ThreadID: "thread-1", ObservedAt: reconnected.ObservedAt,
+	}}
+	if err := store.SaveWorkerSnapshot(ctx, reconnected); err != nil {
+		t.Fatal(err)
+	}
+	coordinator.Now = func() time.Time { return coordinatorTestTime.Add(5 * time.Minute) }
+	recovered, err := coordinator.ReconcileWorkerCommands(ctx, reconnected, transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered.Reconciled) != 1 || len(recovered.Pending) != 1 ||
+		recovered.Pending[0].ID != dispatchID {
+		t.Fatalf("recovered report = %#v", recovered)
+	}
+	if transport.executions[dispatchID] != 1 {
+		t.Fatalf("dispatch executions after replay = %d, want one", transport.executions[dispatchID])
+	}
+	records, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records.Attempts[0].Control != domain.ControlRunning ||
+		records.Attempts[0].ThreadID != "thread-1" {
+		t.Fatalf("reconciled attempt = %#v", records.Attempts[0])
+	}
+}
+
 func TestPlanWorkerCommandsDerivesStableLifecycleCommands(t *testing.T) {
 	snapshot := coordinatorSnapshot(7)
 	assignment := domain.Assignment{
@@ -183,7 +270,7 @@ func TestPlanWorkerCommandsDerivesStableLifecycleCommands(t *testing.T) {
 		t.Fatalf("collect plan = %#v", collect)
 	}
 
-	repeated, err := PlanWorkerCommands(records, snapshot, nil, coordinatorTestTime.Add(time.Hour))
+	repeated, err := PlanWorkerCommands(records, snapshot, nil, coordinatorTestTime.Add(59*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

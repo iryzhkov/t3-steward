@@ -47,14 +47,14 @@ func TestWorkerCommandsPersistBeforeDeliveryAndAcknowledgeIdempotently(t *testin
 		t.Fatalf("delivery from current snapshot = %#v, error=%v", pending, err)
 	}
 
-	staleAck := fleetWorkerAcknowledgement(command, 1, fleetTestTime.Add(6*time.Second))
-	if _, err := store.AcknowledgeWorkerCommand(context.Background(), staleAck); !errors.Is(err, ErrStaleWorkerSnapshot) {
-		t.Fatalf("stale acknowledgement error = %v, want stale worker snapshot", err)
+	delayedAcknowledgement := fleetWorkerAcknowledgement(command, 1, fleetTestTime.Add(6*time.Second))
+	got, err := store.AcknowledgeWorkerCommand(context.Background(), delayedAcknowledgement)
+	if err != nil || !reflect.DeepEqual(got, delayedAcknowledgement) {
+		t.Fatalf("delayed acknowledgement = %#v, error=%v", got, err)
 	}
-	acknowledgement := fleetWorkerAcknowledgement(command, 2, fleetTestTime.Add(6*time.Second))
-	got, err := store.AcknowledgeWorkerCommand(context.Background(), acknowledgement)
-	if err != nil || !reflect.DeepEqual(got, acknowledgement) {
-		t.Fatalf("acknowledge command = %#v, error=%v", got, err)
+	conflictingAcknowledgement := fleetWorkerAcknowledgement(command, 2, fleetTestTime.Add(6*time.Second))
+	if _, err := store.AcknowledgeWorkerCommand(context.Background(), conflictingAcknowledgement); !errors.Is(err, ErrWorkerAcknowledgement) {
+		t.Fatalf("conflicting acknowledgement error = %v", err)
 	}
 
 	latest := next
@@ -62,8 +62,8 @@ func TestWorkerCommandsPersistBeforeDeliveryAndAcknowledgeIdempotently(t *testin
 	latest.ObservedAt = fleetTestTime.Add(7 * time.Second)
 	latest.ValidUntil = fleetTestTime.Add(3 * time.Minute)
 	saveFleetSnapshot(t, store, latest)
-	got, err = store.AcknowledgeWorkerCommand(context.Background(), acknowledgement)
-	if err != nil || !reflect.DeepEqual(got, acknowledgement) {
+	got, err = store.AcknowledgeWorkerCommand(context.Background(), delayedAcknowledgement)
+	if err != nil || !reflect.DeepEqual(got, delayedAcknowledgement) {
 		t.Fatalf("replay durable acknowledgement after newer snapshot = %#v, error=%v", got, err)
 	}
 	pending, err = store.LoadPendingWorkerCommands(context.Background(), "normandy", "worker-epoch-1", 1, 3, fleetTestTime.Add(8*time.Second))
