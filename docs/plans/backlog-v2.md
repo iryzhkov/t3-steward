@@ -357,8 +357,8 @@ Each milestone should fit one unattended development session where practical. A 
 - [x] Define and validate the version 2 manifest.
 - [x] Implement atomic bundle ingestion and immutable static inputs.
 - [x] Implement dependency readiness, strict completion, failure propagation, retry, cancellation, and graph validation.
-- [ ] Add declared outputs, dependency artifact transfer, verification commands, and checksums.
-- [ ] Cover chains, diamonds, cycles, missing artifacts, retry, cancellation, and verification failure.
+- [x] Add declared outputs, dependency artifact transfer, verification commands, and checksums.
+- [x] Cover chains, diamonds, cycles, missing artifacts, retry, cancellation, and verification failure.
 
 ### M3. Project catalog, placement, and isolated environments
 
