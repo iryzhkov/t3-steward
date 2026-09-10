@@ -6,8 +6,9 @@ import (
 	"strings"
 	"testing"
 )
+
 func TestCoordinatorArtifactSnapshotMetadataIsImmutable(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

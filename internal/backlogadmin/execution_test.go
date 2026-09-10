@@ -16,7 +16,7 @@ import (
 
 func TestExecutePendingCommandsSurvivesRestartAndReplaysRetry(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := sqlite.Open(path)
+	store, err := sqlite.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestExecutePendingCommandsSurvivesRestartAndReplaysRetry(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = sqlite.Open(path)
+	store, err = sqlite.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestExecutePendingCommandsSurvivesRestartAndReplaysRetry(t *testing.T) {
 
 func TestExecutePendingPausePersistsDeliveryIntentAcrossRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := sqlite.Open(path)
+	store, err := sqlite.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestExecutePendingPausePersistsDeliveryIntentAcrossRestart(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = sqlite.Open(path)
+	store, err = sqlite.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}

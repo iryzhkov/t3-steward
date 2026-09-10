@@ -19,7 +19,7 @@ func TestCommitScheduleTriggerSerializesSimultaneousFirings(t *testing.T) {
 	first := openScheduleTriggerStore(t, path, domain.ScheduleFailureNextCycle, nil)
 	defer first.Close()
 
-	second, err := Open(path)
+	second, err := OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestCommitScheduleTriggerPersistsMisfireAndReplaysAfterRestart(t *testing.T
 		t.Fatal(err)
 	}
 
-	store, err = Open(path)
+	store, err = OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestCommitScheduleTriggerAcceptsAndReplaysManualRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err = Open(path)
+	store, err = OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func openScheduleTriggerStore(
 	activeRun *domain.WorkflowRun,
 ) *Store {
 	t.Helper()
-	store, err := Open(path)
+	store, err := OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}

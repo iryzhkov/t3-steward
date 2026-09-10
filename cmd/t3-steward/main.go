@@ -502,12 +502,15 @@ func cmdRun(g globalFlags) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if handled, err := runBacklogV2(ctx, cfg, logger); handled || err != nil {
+		return err
+	}
 
 	statePath, err := cfg.ResolveStatePath()
 	if err != nil {
 		return err
 	}
-	store, err := sqlite.Open(statePath)
+	store, err := sqlite.OpenMigrated(statePath)
 	if err != nil {
 		return err
 	}
@@ -687,7 +690,7 @@ func cmdReplay(g globalFlags, file string, speed float64, withState, resume bool
 			return err
 		}
 	} else {
-		store, err = sqlite.Open(":memory:")
+		store, err = sqlite.OpenMigrated(":memory:")
 		if err != nil {
 			return err
 		}

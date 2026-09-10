@@ -8,17 +8,16 @@ Candidate baseline: `57f0b3269d8341e52170675863fe663566e8bfd3`
 
 **NO-GO for host-wide deployment.**
 
-The code is a release candidate for the backlog-v2 domain, persistence, planner,
-worker protocol, orchestration, artifact, throttle, schedule, and admin seams.
-It is not yet a deployable fleet coordinator because the production executable
-does not load the backlog-v2 fleet/project configuration or run authenticated
-coordinator/worker planning, lease, delivery, acknowledgement, and
-reconciliation transports. The legacy Markdown backlog remains the wired
-production path.
+S14 binds strict backlog-v2 fleet/project configuration, explicit storage
+migration, exclusive coordinator identity/epoch, and a disabled-by-default
+closed-admission runtime skeleton into the production executable. It is not yet
+a deployable fleet coordinator because authenticated worker exchange, execution
+packages, planning, lease/command delivery, acknowledgement, reconciliation,
+submission, schedules, and quota bridging are not composed.
 
 No binary was installed, no service or live configuration was changed, no live
 state database was opened by development code, no worker was contacted, and no
-workflow was dispatched during release preparation.
+workflow was dispatched during S14.
 
 ## Candidate contents
 
@@ -43,27 +42,31 @@ workflow was dispatched during release preparation.
 
 ## Deployment blockers
 
-1. Bind validated project catalog, setup profiles, worker policy, quota-pool
-   mapping, coordinator storage, and transport settings into the shipped
-   configuration schema.
-2. Bind bundle submission and schedule-definition administration to the
+1. Bind bundle submission and schedule-definition administration to the
    coordinator service.
-3. Implement and authenticate the production coordinator/worker transport for
+2. Implement and authenticate the production coordinator/worker transport for
    snapshots, planning, claims, leases, durable command delivery,
    acknowledgements, reconciliation, and artifact transfer.
+3. Compose planning, scheduling, quota observation, worker exchange, admin
+   execution, and recovery beyond the current closed-admission authority
+   skeleton.
 4. Run an observe-only multi-process integration test, then a non-side-effecting
    canary on disposable state. Repeat all release gates after those changes.
 5. Define native audit-event emission for the remaining non-admin state
    transitions, or explicitly accept the current reconstructed read views.
 
-These are implementation blockers, not operator toggles. Deployment approval
-alone must not bypass them.
+The shipped schema, explicit migration lifecycle, exclusive coordinator
+ownership/epoch, and submission-only admin boundary are now implemented. The
+remaining items are implementation blockers, not operator toggles; deployment
+approval alone must not bypass them.
 
 ## Operational risks retained
 
 - SQLite and artifact files must be backed up and restored as one coherent unit.
-- Schema migration is automatic on open. A candidate must never be pointed at
-  live state before its coherent backup is verified.
+- Schema migration is explicit and coordinator-owned. A candidate must never be
+  pointed at live state before its coherent backup is verified.
+- Exclusive ownership uses a host-local file lock; future cross-host transport
+  must not turn it into distributed leadership.
 - The first candidate dispatch or resume is the rollback point after which
   worker/T3 reconciliation is mandatory.
 - Worker loss remains fail closed as `unknown`; automatic reassignment without
@@ -109,6 +112,22 @@ The following gates passed on Normandy against the candidate worktree:
 All tests used temporary state, artifact, bundle, and workspace roots. The
 documented workflow bundle is loaded by a repository test so manifest drift
 fails CI.
+
+### S14 production-binding evidence
+
+The following S14 gates passed on Normandy against disposable state:
+
+- `go test ./internal/config -count=1`;
+- `go test ./internal/store/sqlite -run 'Test(Open|Migrate|Migration|CoordinatorOwner|CoordinatorEpoch)' -count=1 -v`;
+- `go test ./cmd/t3-steward -run 'Test(BacklogMutation|Coordinator|Run|Disabled|Closed|Legacy)' -count=1 -v`;
+- `go test ./internal/config ./internal/store/sqlite ./cmd/t3-steward -count=1`;
+- `go test ./...`;
+- `go build ./...`;
+- `go vet ./...`;
+- `git diff --check`.
+
+The migration-focused run covers the existing version 1, 5, 6, 8, and 9
+fixtures plus no-implicit-migration, second-owner refusal, and epoch restart.
 
 ## Approval boundary
 

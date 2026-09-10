@@ -23,38 +23,37 @@ gates have been rerun. The detailed decision is in
 
 ## Configuration inventory
 
-The shipped YAML schema remains the host-local configuration documented in
-[config.example.yaml](../config.example.yaml). The current loader ignores unknown
-YAML fields; backlog-v2 production configuration must define and test an explicit
-strictness/compatibility contract before rollout. Existing backlog settings
-control only the Markdown runner:
+The shipped YAML schema is documented in
+[config.example.yaml](../config.example.yaml). Decoding is strict at every
+level: unknown keys are startup errors. Existing valid legacy configurations
+remain compatible, and backlog-v2 is disabled by default.
 
-- `backlog.enabled`, `dir`, `quiet_for`, and forecast fields control local
-  task discovery and admission.
+- `backlog.enabled`, `dir`, `quiet_for`, and forecast fields control the
+  legacy Markdown runner.
 - `backlog.host_name` and `default_host` control legacy SSH forwarding; they
   are not backlog-v2 worker registration.
-- `policy.*` and `resume.*` remain the active watchdog safety controls.
-- `state_path` selects the SQLite database. Opening it automatically migrates
-  its schema to version 10.
-- `t3.data_dir` resolves the data root used by the admin CLI for retained
-  artifact content under `artifacts/`.
+- `backlog_v2.mode` is `disabled` or `coordinator`. Coordinator mode and
+  `backlog.enabled` are mutually exclusive.
+- `backlog_v2.coordinator.id` is the durable authority identity.
+- `workers` declare SSH address, credential reference, capabilities, accepted
+  provider instances/models, and quota-pool references.
+- `projects` declare repository, default ref, T3 project, setup profile,
+  eligible workers, credential references, and resource locks.
+- `setup_profiles` contain nonempty command lists and positive timeouts.
+- `quota_pools` map fleet admission to providers.
+- `storage` declares absolute, non-root, non-overlapping bundle, artifact, and
+  workspace roots.
+- `transport`, `message_limits`, `freshness`, `leases`, and `scheduling`
+  set bounded exchange and lifecycle controls.
+- `startup_admission` must be `closed`. The S14 skeleton acquires exclusive
+  coordinator ownership and advances its epoch without contacting a worker or T3.
+- `state_path` selects SQLite. Plain opens never create or migrate it;
+  coordinator startup uses the explicit migration path.
 
-Backlog-v2 additionally requires coordinator-owned configuration that is
-currently represented by internal typed seams and is not accepted in the
-shipped YAML:
-
-- a project catalog: logical name, canonical HTTPS/SSH Git repository, safe
-  default ref, T3 project template, setup profile, resource locks, and required
-  credential names;
-- setup profiles: nonempty command lists and positive timeouts;
-- workers: stable worker ID and epoch, accept-backlog policy, capabilities, T3
-  web base URL, project/provider/model inventory, and freshness timestamps;
-- provider-instance to quota-pool mappings, admission observations, concurrency
-  limits, reservation policy, and coordinator artifact/workspace roots;
-- authenticated coordinator/worker transport and lease/heartbeat intervals.
-
-Credential names may appear in the catalog, but credential values must remain in
-worker-managed secret stores. Repository URLs must not embed credentials.
+Admin and status clients query or submit durable intent only. They neither
+migrate schema nor execute pending coordinator commands. Credential references
+may appear in configuration, but credential values remain in worker-managed
+secret stores and repository URLs must not embed credentials.
 
 ## Version 2 workflow bundles
 

@@ -53,7 +53,7 @@ tasks:
 `)
 
 	stateDir := t.TempDir()
-	store, err := sqlite.Open(filepath.Join(stateDir, "state.db"))
+	store, err := sqlite.OpenMigrated(filepath.Join(stateDir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,7 @@ import (
 )
 
 func TestRoundTrips(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "state", "state.db"))
+	s, err := OpenMigrated(filepath.Join(t.TempDir(), "state", "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

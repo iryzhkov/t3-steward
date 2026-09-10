@@ -402,7 +402,7 @@ func (r *countingReader) LoadQuotaAdmissions(context.Context) ([]domain.QuotaAdm
 
 func openAdminTestStore(t *testing.T) *sqlite.Store {
 	t.Helper()
-	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -95,7 +95,7 @@ func TestCoordinatorArtifactsTransferAcrossWorkerRestartAndVerifyChecksum(t *tes
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = sqlite.Open(dbPath)
+	store, err = sqlite.OpenMigrated(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func coordinatorArtifactFixture(t *testing.T) (*sqlite.Store, string, domain.Art
 	t.Helper()
 	base := t.TempDir()
 	dbPath := filepath.Join(base, "state.db")
-	store, err := sqlite.Open(dbPath)
+	store, err := sqlite.OpenMigrated(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

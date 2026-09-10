@@ -99,6 +99,37 @@ messages:
   drain: |
     Provider quota is nearly exhausted (T3 quota watchdog): "{{.LimitName}}" is at {{.UsedPercent}}% and resets at {{.ResetsAt}}. Stop spawning subagents now. Cancel or finish active subagents, collect their results, write a short checkpoint of the current state and remaining work, then stop. The session will be interrupted in {{.GracePeriod}} if it is still running.
 
+backlog_v2:
+  # Disabled by default. "coordinator" is mutually exclusive with backlog.enabled.
+  mode: disabled
+  coordinator:
+    id: ""
+  workers: {}
+  projects: {}
+  setup_profiles: {}
+  quota_pools: {}
+  storage:
+    bundles: ""
+    artifacts: ""
+    workspaces: ""
+  transport:
+    kind: ssh
+    request_timeout: 30s
+  message_limits:
+    max_bytes: 4194304
+    max_artifact_bytes: 1073741824
+  freshness:
+    worker_max_age: 1m
+    quota_max_age: 1m
+  leases:
+    duration: 2m
+    renew_interval: 30s
+  scheduling:
+    interval: 10s
+    catch_up_max: 100
+  # Startup is always closed; no worker or T3 contact occurs in this state.
+  startup_admission: closed
+
 notifications:
   # Desktop notification (notify-send on Linux) when a stop fails or when
   # a thread is stopped or resumed.

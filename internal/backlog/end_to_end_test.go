@@ -40,7 +40,7 @@ tasks:
       - test -f result.txt && grep -q inspected .t3/dependencies/inspect/findings.md && grep -q complete result.txt
 `)
 
-	store, err := sqlite.Open(statePath)
+	store, err := sqlite.OpenMigrated(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ tasks:
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = sqlite.Open(statePath)
+	store, err = sqlite.OpenMigrated(statePath)
 	if err != nil {
 		t.Fatalf("restart coordinator store: %v", err)
 	}

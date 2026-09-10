@@ -15,7 +15,7 @@ var coordinatorTestTime = time.Date(2026, time.September, 10, 20, 0, 0, 0, time.
 
 func TestFleetCoordinatorCommitsPlanAndReplaysLostCommandResponse(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestFleetCoordinatorCommitsPlanAndReplaysLostCommandResponse(t *testing.T) 
 
 func TestFleetCoordinatorRecoversLostDispatchAcknowledgementWithoutDuplicateExecution(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

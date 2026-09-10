@@ -108,24 +108,26 @@ authoritative identity and checksum metadata.
 
 ## Current executable wiring
 
-`cmd/t3-steward/main.go:cmdRun` loads the existing host configuration, opens
-SQLite, connects to the local T3 server, constructs the quota watchdog, and
-optionally attaches `backlog.Runner`. That runner scans Markdown files and
-dispatches directly to T3.
+`cmd/t3-steward/main.go:cmdRun` selects mutually exclusive legacy or
+backlog-v2 coordinator composition. Backlog-v2 remains disabled by default.
+Coordinator mode explicitly migrates its database, acquires exclusive
+file-backed ownership, advances the durable epoch, and waits with admission
+closed. This startup path does not construct a worker transport or T3 client.
 
-The production command does not construct `BundleIngester`,
-`ProjectCatalog`, `FleetCoordinator`, `WorkspacePreparer`, or a worker
-transport. Production references to the first three are absent; their references
-are definitions and tests. The admin CLI does instantiate the transport-neutral
-admin service over the local SQLite store, but this is not a coordinator loop.
+Legacy mode retains the existing quota watchdog and optional Markdown
+`backlog.Runner`. The admin CLI opens existing SQLite without migration and
+submits or queries durable commands; it no longer executes coordinator
+transitions.
 
-This is the architectural deployment gap.
+The production coordinator still does not construct `BundleIngester`,
+`ProjectCatalog`, `FleetCoordinator`, `WorkspacePreparer`, or worker
+exchange. Those bindings remain the next architectural deployment gap.
 
 ## State and ownership
 
 | State | Authoritative representation | Owner / mutator | Copies and freshness | Recovery |
 | --- | --- | --- | --- | --- |
-| Shipped configuration | YAML plus environment/flags | Operator; `config.Load` validates values | Process-local immutable config; no revision identity | Reload on restart; current YAML decoding accepts unknown fields |
+| Shipped configuration | Strict YAML plus environment/flags | Operator; `config.Load` validates values and references | Process-local immutable config; no revision identity | Reload on restart; unknown fields fail startup |
 | Workflow definition | `domain.Workflow` plus immutable bundle files | Coordinator ingestion | Worker receives only materialized inputs | Restore SQLite and bundle storage together |
 | Workflow-run progress | `domain.WorkflowRun` in coordinator SQLite | Coordinator transactions | Admin views are derived projections | Reload and reconcile nonterminal attempts |
 | Task definition | `domain.Task` in coordinator SQLite | Coordinator ingestion; immutable thereafter | Planner and worker execution package | Rebuild only from retained immutable bundle |
@@ -277,9 +279,9 @@ admin command, audit event, and verification report.
 
 Concepts still implicit or incomplete:
 
-- **Coordinator runtime identity:** schema has a numeric epoch, but process
-  startup, leadership acquisition, and epoch advancement are not composed as a
-  lifecycle.
+- **Coordinator runtime identity:** S14 composes file-backed exclusive ownership,
+  durable epoch advancement, and a mandatory closed startup state. It remains a
+  single-host authority primitive, not distributed consensus.
 - **Worker execution package:** no versioned object gives a worker the exact
   immutable task, environment, prompt, dependency artifacts, verification, and
   retention contract for an assignment.
@@ -399,7 +401,8 @@ Evidence limits:
 - The complete workflow runs in one test process with temporary storage.
 - No real coordinator/worker transport, authentication, process restart pair, or
   remote artifact transfer has been exercised.
-- No production `cmdRun` path constructs the v2 runtime.
+- The production `cmdRun` path constructs only the closed-admission authority
+  skeleton; planning and worker exchange are not yet composed.
 - No candidate has touched live state or dispatched a real worker.
 - Some admin views reconstruct events from current projections because native
   non-admin audit emission is incomplete.
@@ -410,14 +413,18 @@ Each slice must update this model when its contract changes.
 
 ### P1. Configuration and runtime identity
 
-Add a disabled-by-default backlog-v2 configuration model for coordinator,
-workers, project catalog, setup profiles, quota pools, storage roots, transport,
-freshness, leases, and admission startup mode. Define strict unknown-field
-behavior and environment overrides. Add coordinator lifecycle startup that
-advances/owns one epoch and starts with admission closed.
+Complete in S14. The shipped strict YAML model includes disabled-by-default
+mode, coordinator identity, workers, projects, setup profiles, quota pools,
+safe storage roots, SSH transport, message limits, freshness, leases,
+scheduling, and a mandatory closed startup admission state. Existing legacy
+configuration remains compatible and cannot be enabled with coordinator mode.
 
-Gate: config round trips and rejection tests, legacy-config compatibility,
-startup/restart epoch tests, no worker/T3 contact while disabled or closed.
+SQLite opening no longer implies migration. Coordinator startup explicitly
+migrates, takes exclusive process ownership, and advances the durable epoch;
+read/status/admin opens cannot create or migrate schema. A refused second owner
+does not advance authority. Admin compatibility clients submit/query only.
+Focused tests cover strictness, references, migration fixtures, restart/refusal,
+disabled mode, and closed startup without worker or T3 contact.
 
 ### P2. Versioned worker exchange and execution package
 

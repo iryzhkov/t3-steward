@@ -12,7 +12,7 @@ import (
 
 func TestCommitWorkerStateTransitionsAtomicallyFencesSnapshotAndAttempt(t *testing.T) {
 	ctx := context.Background()
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestCommitWorkerStateTransitionsAtomicallyFencesSnapshotAndAttempt(t *testi
 
 func TestReleasedWorkerStateSuppressesPreviouslyPendingDispatch(t *testing.T) {
 	ctx := context.Background()
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

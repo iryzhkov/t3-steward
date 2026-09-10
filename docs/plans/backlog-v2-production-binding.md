@@ -60,7 +60,7 @@ do not need to stop for routine design choices.
 
 ## Milestones
 
-- [ ] R1 — Authority, configuration, and storage lifecycle (S14)
+- [x] R1 — Authority, configuration, and storage lifecycle (S14)
 - [ ] R2 — Versioned worker exchange and execution package (S15)
 - [ ] R3 — Restart-safe worker runtime (S16)
 - [ ] R4 — Coordinator runtime, submissions, schedules, and quota bridge (S17)
@@ -77,24 +77,24 @@ stage.
 
 ### S14 — Authority, configuration, and storage lifecycle
 
-- [ ] Add disabled-by-default backlog-v2 runtime configuration for mode,
+- [x] Add disabled-by-default backlog-v2 runtime configuration for mode,
   coordinator identity, workers, project catalog, setup profiles, quota pools,
   storage roots, transport, message limits, freshness, leases, scheduling, and
   startup admission.
-- [ ] Reject unknown fields and invalid cross-references while retaining
+- [x] Reject unknown fields and invalid cross-references while retaining
   fixtures proving current legacy configurations still load.
-- [ ] Split SQLite opening from migration. Make schema migration an explicit
+- [x] Split SQLite opening from migration. Make schema migration an explicit
   coordinator startup/maintenance operation, and prove read/status/admin opens
   cannot alter schema.
-- [ ] Establish exclusive coordinator ownership and durable epoch advancement.
+- [x] Establish exclusive coordinator ownership and durable epoch advancement.
   A second coordinator must fail closed without advancing authority.
-- [ ] Remove admin CLI command execution. Until the authenticated admin adapter
+- [x] Remove admin CLI command execution. Until the authenticated admin adapter
   exists, any local compatibility adapter may submit/query only and must neither
   migrate schema nor perform target state transitions.
-- [ ] Add the runtime mode skeleton to the production composition root, with
+- [x] Add the runtime mode skeleton to the production composition root, with
   legacy/coordinator mutual exclusion and closed admission. Disabled or closed
   startup must make no worker or T3 contact.
-- [ ] Update configuration, operations, system-model, and migration-boundary
+- [x] Update configuration, operations, system-model, and migration-boundary
   documentation.
 
 Exit gates:

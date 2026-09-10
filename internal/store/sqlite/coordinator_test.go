@@ -13,7 +13,7 @@ import (
 )
 
 func TestCoordinatorRecordsRoundTrip(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	s, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestCoordinatorRecordsRoundTrip(t *testing.T) {
 }
 
 func TestSaveCoordinatorRecordsRollsBackOnConstraintFailure(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	s, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,8 +45,8 @@ func TestSaveCoordinatorRecordsRollsBackOnConstraintFailure(t *testing.T) {
 		ScheduleID:      "schedule-1",
 		ScheduleVersion: 4,
 		OccurrenceKey:   records.Triggers[0].OccurrenceKey,
-		State:         domain.TriggerSuppressed,
-		ObservedAt:    records.Triggers[0].ObservedAt,
+		State:           domain.TriggerSuppressed,
+		ObservedAt:      records.Triggers[0].ObservedAt,
 	})
 	if err := s.SaveCoordinatorRecords(context.Background(), records); err == nil {
 		t.Fatal("save with duplicate occurrence key succeeded")
@@ -86,7 +86,7 @@ func TestMigrationFromVersionOnePreservesState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s, err := Open(path)
+	s, err := OpenMigrated(path)
 	if err != nil {
 		t.Fatalf("open version 1 database: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestMigrationFromVersionOnePreservesState(t *testing.T) {
 }
 
 func TestScheduleTemplatesAndTriggersAreImmutable(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	s, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestScheduleTemplatesAndTriggersAreImmutable(t *testing.T) {
 
 func TestMigrationFromVersionFiveAddsScheduleHistory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	s, err := Open(path)
+	s, err := OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestMigrationFromVersionFiveAddsScheduleHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s, err = Open(path)
+	s, err = OpenMigrated(path)
 	if err != nil {
 		t.Fatalf("migrate version 5 database: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestMigrationFromVersionFiveAddsScheduleHistory(t *testing.T) {
 func TestMigrationFromVersionNineBackfillsAdminCommandAuditHistory(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := Open(path)
+	store, err := OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestMigrationFromVersionNineBackfillsAdminCommandAuditHistory(t *testing.T)
 		t.Fatal(err)
 	}
 
-	store, err = Open(path)
+	store, err = OpenMigrated(path)
 	if err != nil {
 		t.Fatalf("migrate version 9 database: %v", err)
 	}

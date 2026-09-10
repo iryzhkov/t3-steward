@@ -21,8 +21,10 @@ import (
 
 // Store is the SQLite-backed state store.
 type Store struct {
-	db  *sql.DB
-	now func() time.Time
+	db        *sql.DB
+	now       func() time.Time
+	path      string
+	ownerLock *os.File
 }
 
 var migrations = []string{
@@ -120,36 +122,76 @@ var migrations = []string{
 	);`,
 }
 
-// Open opens or creates the database, creating the parent directory with
-// user-only permissions.
+// Open opens an existing database without creating directories, changing
+// journal mode, or applying schema migrations. Query and admin clients use it
+// so merely inspecting coordinator state cannot alter the schema.
 func Open(path string) (*Store, error) {
+	return open(path, false)
+}
+
+func open(path string, create bool) (*Store, error) {
 	if path != ":memory:" {
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return nil, fmt.Errorf("create state directory: %w", err)
+		if create {
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				return nil, fmt.Errorf("create state directory: %w", err)
+			}
+		} else if _, err := os.Stat(path); err != nil {
+			return nil, fmt.Errorf("open existing state database: %w", err)
 		}
 	}
 	dsn := path
 	if path != ":memory:" {
-		dsn = "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+		mode := "rw"
+		if create {
+			mode = "rwc"
+		}
+		dsn = "file:" + path + "?mode=" + mode + "&_pragma=busy_timeout(5000)"
+		if create {
+			dsn += "&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+		}
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open state database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db, now: time.Now}
-	if err := s.migrate(); err != nil {
+	if err := db.Ping(); err != nil {
 		db.Close()
+		return nil, fmt.Errorf("open state database: %w", err)
+	}
+	return &Store{db: db, now: time.Now, path: path}, nil
+}
+
+// OpenMigrated opens or creates a database and explicitly applies every
+// supported migration. Only coordinator startup and maintenance paths should
+// use it.
+func OpenMigrated(path string) (*Store, error) {
+	store, err := open(path, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.Migrate(); err != nil {
+		store.Close()
 		return nil, err
 	}
 	if path != ":memory:" {
 		_ = os.Chmod(path, 0o600)
 	}
-	return s, nil
+	return store, nil
 }
 
-// Close closes the database.
-func (s *Store) Close() error { return s.db.Close() }
+// Close releases coordinator ownership, when held, and closes the database.
+func (s *Store) Close() error {
+	var releaseErr error
+	if s.ownerLock != nil {
+		releaseErr = releaseCoordinatorLock(s.ownerLock)
+		s.ownerLock = nil
+	}
+	if err := s.db.Close(); err != nil {
+		return err
+	}
+	return releaseErr
+}
 
 // SetClock replaces the wall clock used for time-sensitive transactional fences.
 func (s *Store) SetClock(now func() time.Time) {
@@ -160,7 +202,9 @@ func (s *Store) SetClock(now func() time.Time) {
 	s.now = now
 }
 
-func (s *Store) migrate() error {
+// Migrate explicitly advances the database through every supported schema
+// version. It is a coordinator-owned lifecycle operation.
+func (s *Store) Migrate() error {
 	for _, stmt := range migrations {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("migrate state database: %w", err)
@@ -196,58 +240,28 @@ func (s *Store) migrate() error {
 	if version > currentSchemaVersion {
 		return fmt.Errorf("state database schema version %d is newer than supported version %d", version, currentSchemaVersion)
 	}
-	if version < 2 {
-		if err := s.applyVersionedMigration(2, coordinatorMigrationV2); err != nil {
-			return err
-		}
-		version = 2
+	versioned := []struct {
+		version int
+		ddl     string
+	}{
+		{2, coordinatorMigrationV2},
+		{3, coordinatorMigrationV3},
+		{4, coordinatorMigrationV4},
+		{5, coordinatorMigrationV5},
+		{6, coordinatorMigrationV6},
+		{7, coordinatorMigrationV7},
+		{8, coordinatorMigrationV8},
+		{9, coordinatorMigrationV9},
+		{10, coordinatorMigrationV10},
 	}
-	if version < 3 {
-		if err := s.applyVersionedMigration(3, coordinatorMigrationV3); err != nil {
+	for _, migration := range versioned {
+		if version >= migration.version {
+			continue
+		}
+		if err := s.applyVersionedMigration(migration.version, migration.ddl); err != nil {
 			return err
 		}
-		version = 3
-	}
-	if version < 4 {
-		if err := s.applyVersionedMigration(4, coordinatorMigrationV4); err != nil {
-			return err
-		}
-		version = 4
-	}
-	if version < 5 {
-		if err := s.applyVersionedMigration(5, coordinatorMigrationV5); err != nil {
-			return err
-		}
-		version = 5
-	}
-	if version < 6 {
-		if err := s.applyVersionedMigration(6, coordinatorMigrationV6); err != nil {
-			return err
-		}
-		version = 6
-	}
-	if version < 7 {
-		if err := s.applyVersionedMigration(7, coordinatorMigrationV7); err != nil {
-			return err
-		}
-		version = 7
-	}
-	if version < 8 {
-		if err := s.applyVersionedMigration(8, coordinatorMigrationV8); err != nil {
-			return err
-		}
-		version = 8
-	}
-	if version < 9 {
-		if err := s.applyVersionedMigration(9, coordinatorMigrationV9); err != nil {
-			return err
-		}
-		version = 9
-	}
-	if version < 10 {
-		if err := s.applyVersionedMigration(10, coordinatorMigrationV10); err != nil {
-			return err
-		}
+		version = migration.version
 	}
 	return nil
 }

@@ -167,6 +167,37 @@ backlog:
   quantile: 0.8                 # cover a heavy week, not the average one
   min_samples: 3                # past occurrences before a slot's history counts
 
+backlog_v2:
+  # Disabled by default. "coordinator" is mutually exclusive with backlog.enabled.
+  mode: disabled
+  coordinator:
+    id: ""
+  workers: {}
+  projects: {}
+  setup_profiles: {}
+  quota_pools: {}
+  storage:
+    bundles: ""
+    artifacts: ""
+    workspaces: ""
+  transport:
+    kind: ssh
+    request_timeout: 30s
+  message_limits:
+    max_bytes: 4194304
+    max_artifact_bytes: 1073741824
+  freshness:
+    worker_max_age: 1m
+    quota_max_age: 1m
+  leases:
+    duration: 2m
+    renew_interval: 30s
+  scheduling:
+    interval: 10s
+    catch_up_max: 100
+  # Startup is always closed; no worker or T3 contact occurs in this state.
+  startup_admission: closed
+
 archive:
   # Cold storage for finished threads. Once a day a thread that has not
   # been updated for "after" is bundled (full T3 export, provider logs,

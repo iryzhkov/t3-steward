@@ -123,7 +123,7 @@ func newHarness(t *testing.T, mutate func(*config.Config)) *harness {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	store, err := sqlite.Open(":memory:")
+	store, err := sqlite.OpenMigrated(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}

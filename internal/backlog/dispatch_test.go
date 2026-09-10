@@ -183,7 +183,7 @@ func TestReconcileAssignmentDispatchRetainsAmbiguousWorkerOwnership(t *testing.T
 
 func openDispatchTestStore(t *testing.T, path string) *sqlite.Store {
 	t.Helper()
-	store, err := sqlite.Open(path)
+	store, err := sqlite.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}

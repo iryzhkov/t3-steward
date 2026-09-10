@@ -8,6 +8,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -273,6 +274,90 @@ type Archive struct {
 	MaxPerRun int `yaml:"max_per_run"`
 }
 
+// BacklogV2 configures the disabled-by-default coordinator runtime.
+type BacklogV2 struct {
+	Mode             string                    `yaml:"mode"`
+	Coordinator      V2Coordinator             `yaml:"coordinator"`
+	Workers          map[string]V2Worker       `yaml:"workers"`
+	Projects         map[string]V2Project      `yaml:"projects"`
+	SetupProfiles    map[string]V2SetupProfile `yaml:"setup_profiles"`
+	QuotaPools       map[string]V2QuotaPool    `yaml:"quota_pools"`
+	Storage          V2Storage                 `yaml:"storage"`
+	Transport        V2Transport               `yaml:"transport"`
+	MessageLimits    V2MessageLimits           `yaml:"message_limits"`
+	Freshness        V2Freshness               `yaml:"freshness"`
+	Leases           V2Leases                  `yaml:"leases"`
+	Scheduling       V2Scheduling              `yaml:"scheduling"`
+	StartupAdmission string                    `yaml:"startup_admission"`
+}
+
+type V2Coordinator struct {
+	ID string `yaml:"id"`
+}
+
+type V2Worker struct {
+	Address       string                `yaml:"address"`
+	AcceptBacklog bool                  `yaml:"accept_backlog"`
+	Capabilities  []string              `yaml:"capabilities"`
+	Providers     map[string]V2Provider `yaml:"providers"`
+	Credential    string                `yaml:"credential"`
+}
+
+type V2Provider struct {
+	Models    []string `yaml:"models"`
+	QuotaPool string   `yaml:"quota_pool"`
+}
+
+type V2Project struct {
+	Repository    string   `yaml:"repository"`
+	DefaultRef    string   `yaml:"default_ref"`
+	T3Project     string   `yaml:"t3_project"`
+	SetupProfile  string   `yaml:"setup_profile"`
+	Workers       []string `yaml:"workers"`
+	Credentials   []string `yaml:"credentials"`
+	ResourceLocks []string `yaml:"resource_locks"`
+}
+
+type V2SetupProfile struct {
+	Commands []string `yaml:"commands"`
+	Timeout  Duration `yaml:"timeout"`
+}
+
+type V2QuotaPool struct {
+	Provider string `yaml:"provider"`
+}
+
+type V2Storage struct {
+	Bundles    string `yaml:"bundles"`
+	Artifacts  string `yaml:"artifacts"`
+	Workspaces string `yaml:"workspaces"`
+}
+
+type V2Transport struct {
+	Kind           string   `yaml:"kind"`
+	RequestTimeout Duration `yaml:"request_timeout"`
+}
+
+type V2MessageLimits struct {
+	MaxBytes         int64 `yaml:"max_bytes"`
+	MaxArtifactBytes int64 `yaml:"max_artifact_bytes"`
+}
+
+type V2Freshness struct {
+	WorkerMaxAge Duration `yaml:"worker_max_age"`
+	QuotaMaxAge  Duration `yaml:"quota_max_age"`
+}
+
+type V2Leases struct {
+	Duration      Duration `yaml:"duration"`
+	RenewInterval Duration `yaml:"renew_interval"`
+}
+
+type V2Scheduling struct {
+	Interval   Duration `yaml:"interval"`
+	CatchUpMax int      `yaml:"catch_up_max"`
+}
+
 // Config is the full configuration.
 type Config struct {
 	T3            T3            `yaml:"t3"`
@@ -284,6 +369,7 @@ type Config struct {
 	Notifications Notifications `yaml:"notifications"`
 	Report        Report        `yaml:"report"`
 	Backlog       Backlog       `yaml:"backlog"`
+	BacklogV2     BacklogV2     `yaml:"backlog_v2"`
 	Archive       Archive       `yaml:"archive"`
 	// StatePath is the SQLite database. Empty means the platform default.
 	StatePath string `yaml:"state_path"`
@@ -364,6 +450,18 @@ func Default() Config {
 	c.Backlog.FallbackPerHour = 10
 	c.Backlog.Quantile = 0.8
 	c.Backlog.MinSamples = 3
+	c.BacklogV2.Mode = "disabled"
+	c.BacklogV2.StartupAdmission = "closed"
+	c.BacklogV2.Transport.Kind = "ssh"
+	c.BacklogV2.Transport.RequestTimeout = Duration(30 * time.Second)
+	c.BacklogV2.MessageLimits.MaxBytes = 4 << 20
+	c.BacklogV2.MessageLimits.MaxArtifactBytes = 1 << 30
+	c.BacklogV2.Freshness.WorkerMaxAge = Duration(1 * time.Minute)
+	c.BacklogV2.Freshness.QuotaMaxAge = Duration(1 * time.Minute)
+	c.BacklogV2.Leases.Duration = Duration(2 * time.Minute)
+	c.BacklogV2.Leases.RenewInterval = Duration(30 * time.Second)
+	c.BacklogV2.Scheduling.Interval = Duration(10 * time.Second)
+	c.BacklogV2.Scheduling.CatchUpMax = 100
 	c.LogLevel = "info"
 	return c
 }
@@ -378,7 +476,16 @@ func Load(path string) (Config, error) {
 		data, err := os.ReadFile(path)
 		switch {
 		case err == nil:
-			if err := yaml.Unmarshal(data, &c); err != nil {
+			decoder := yaml.NewDecoder(strings.NewReader(string(data)))
+			decoder.KnownFields(true)
+			if err := decoder.Decode(&c); err != nil {
+				return c, fmt.Errorf("parse %s: %w", path, err)
+			}
+			var extra any
+			if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+				if err == nil {
+					err = errors.New("multiple YAML documents are not allowed")
+				}
 				return c, fmt.Errorf("parse %s: %w", path, err)
 			}
 		case errors.Is(err, os.ErrNotExist):
@@ -445,6 +552,8 @@ func (c *Config) applyEnv() error {
 	str("T3_BINARY", &c.T3.T3Binary)
 	str("STATE_PATH", &c.StatePath)
 	str("LOG_LEVEL", &c.LogLevel)
+	str("BACKLOG_V2_MODE", &c.BacklogV2.Mode)
+	str("BACKLOG_V2_COORDINATOR_ID", &c.BacklogV2.Coordinator.ID)
 	str("STOP_MODE", &c.Policy.StopMode)
 	for _, err := range []error{
 		boolean("DRY_RUN", &c.Policy.DryRun),
@@ -584,7 +693,7 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Messages.Warn) == "" || strings.TrimSpace(c.Messages.Drain) == "" {
 		return errors.New("messages: warn and drain must not be empty")
 	}
-	return nil
+	return c.validateBacklogV2()
 }
 
 // Paths are the resolved platform locations.

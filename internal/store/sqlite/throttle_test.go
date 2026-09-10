@@ -14,7 +14,7 @@ import (
 var throttleStoreTime = time.Date(2026, time.September, 10, 22, 0, 0, 0, time.UTC)
 
 func TestCommitQuotaAdmissionTransitionsAtomicReplayAndStaleRevision(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestCommitQuotaAdmissionTransitionsAtomicReplayAndStaleRevision(t *testing.
 }
 
 func TestCommitQuotaAdmissionTransitionsRejectsMismatchedDirective(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

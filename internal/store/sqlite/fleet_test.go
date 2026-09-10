@@ -108,7 +108,7 @@ func TestConcurrentAssignmentClaimsHaveOneWinner(t *testing.T) {
 
 func TestCoordinatorRestartFencesOldClaimsAndRetainsPlan(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := Open(path)
+	store, err := OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestCoordinatorRestartFencesOldClaimsAndRetainsPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err = Open(path)
+	store, err = OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestAssignmentPlanRollsBackWhenAnyAttemptIsStale(t *testing.T) {
 
 func openFleetTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

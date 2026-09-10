@@ -292,9 +292,9 @@ func TestNewAdminCommandID(t *testing.T) {
 	}
 }
 
-func TestBacklogMutationPersistsAndReplaysThroughAdminService(t *testing.T) {
+func TestBacklogMutationSubmitsAndReplaysWithoutExecuting(t *testing.T) {
 	path := t.TempDir() + "/state.db"
-	store, err := sqlite.Open(path)
+	store, err := sqlite.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestBacklogMutationPersistsAndReplaysThroughAdminService(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err = sqlite.Open(path)
+	store, err = sqlite.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,10 +357,10 @@ func TestBacklogMutationPersistsAndReplaysThroughAdminService(t *testing.T) {
 	if err := json.Unmarshal(replay.Bytes(), &replayResponse); err != nil {
 		t.Fatal(err)
 	}
-	if firstResponse.Command.ID != "replay-1" || firstResponse.Command.State != domain.AdminCommandApplied ||
+	if firstResponse.Command.ID != "replay-1" || firstResponse.Command.State != domain.AdminCommandPending ||
 		!firstResponse.Command.CreatedAt.Equal(now) ||
 		replayResponse.Command.ID != firstResponse.Command.ID ||
-		replayResponse.Command.State != domain.AdminCommandApplied ||
+		replayResponse.Command.State != domain.AdminCommandPending ||
 		!replayResponse.Command.CreatedAt.Equal(firstResponse.Command.CreatedAt) {
 		t.Fatalf("first = %+v, replay = %+v", firstResponse.Command, replayResponse.Command)
 	}
@@ -368,7 +368,7 @@ func TestBacklogMutationPersistsAndReplaysThroughAdminService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.AdminCommands) != 1 || len(loaded.AuditEvents) != 2 || len(loaded.Attempts) != 2 {
+	if len(loaded.AdminCommands) != 1 || len(loaded.AuditEvents) != 1 || len(loaded.Attempts) != 1 {
 		t.Fatalf("commands = %d, audit events = %d, attempts = %d", len(loaded.AdminCommands), len(loaded.AuditEvents), len(loaded.Attempts))
 	}
 }
