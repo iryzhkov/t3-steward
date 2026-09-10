@@ -274,7 +274,7 @@ func TestBuildPlanFallsBackUsingRouteSpecificQuotaEstimate(t *testing.T) {
 	windowA.QuotaPoolID = "pool-a"
 	windowB := quotaTestWindow()
 	windowB.QuotaPoolID = "pool-b"
-	policy, err := NewQuotaAdmissionPolicy(QuotaAdmissionInput{Windows: []QuotaWindowBudget{windowB, windowA}})
+	policy, err := NewQuotaAdmissionPolicy(quotaTestInput(windowB, windowA))
 	if err != nil {
 		t.Fatalf("NewQuotaAdmissionPolicy: %v", err)
 	}

@@ -144,6 +144,32 @@ func TestQuotaAdmissionPolicyScenarios(t *testing.T) {
 			wantCodes:    []string{PlanningBlockerEstimateMissing},
 		},
 		{
+			name:  "observation at freshness boundary remains usable",
+			class: domain.TaskClassRequired,
+			window: func(window QuotaWindowBudget) QuotaWindowBudget {
+				window.ObservedAt = plannerTestTime.Add(-5 * time.Minute)
+				return window
+			},
+		},
+		{
+			name:  "stale observation fails closed explicitly",
+			class: domain.TaskClassRequired,
+			window: func(window QuotaWindowBudget) QuotaWindowBudget {
+				window.ObservedAt = plannerTestTime.Add(-5*time.Minute - time.Nanosecond)
+				return window
+			},
+			wantCodes: []string{PlanningBlockerQuotaObservationStale},
+		},
+		{
+			name:  "future observation fails closed explicitly",
+			class: domain.TaskClassRequired,
+			window: func(window QuotaWindowBudget) QuotaWindowBudget {
+				window.ObservedAt = plannerTestTime.Add(time.Nanosecond)
+				return window
+			},
+			wantCodes: []string{PlanningBlockerQuotaObservationStale},
+		},
+		{
 			name:      "unknown task class fails closed",
 			class:     "best-effort",
 			wantCodes: []string{PlanningBlockerTaskClass},
@@ -164,9 +190,7 @@ func TestQuotaAdmissionPolicyScenarios(t *testing.T) {
 			if estimate.RemainingCost == 0 {
 				estimate = quotaTestEstimate()
 			}
-			policy, err := NewQuotaAdmissionPolicy(QuotaAdmissionInput{
-				Windows: []QuotaWindowBudget{window},
-			})
+			policy, err := NewQuotaAdmissionPolicy(quotaTestInput(window))
 			if err != nil {
 				t.Fatalf("NewQuotaAdmissionPolicy: %v", err)
 			}
@@ -188,9 +212,7 @@ func TestQuotaAdmissionPolicyScenarios(t *testing.T) {
 }
 
 func TestQuotaAdmissionPolicyRequiresMatchingRoutePoolWindow(t *testing.T) {
-	policy, err := NewQuotaAdmissionPolicy(QuotaAdmissionInput{
-		Windows: []QuotaWindowBudget{quotaTestWindow()},
-	})
+	policy, err := NewQuotaAdmissionPolicy(quotaTestInput(quotaTestWindow()))
 	if err != nil {
 		t.Fatalf("NewQuotaAdmissionPolicy: %v", err)
 	}
@@ -209,7 +231,7 @@ func TestQuotaAdmissionPolicyRequiresMatchingRoutePoolWindow(t *testing.T) {
 func TestQuotaAdmissionPolicyUsesRemainingCostAndPrivateInput(t *testing.T) {
 	window := quotaTestWindow()
 	windows := []QuotaWindowBudget{window}
-	policy, err := NewQuotaAdmissionPolicy(QuotaAdmissionInput{Windows: windows})
+	policy, err := NewQuotaAdmissionPolicy(quotaTestInput(windows...))
 	if err != nil {
 		t.Fatalf("NewQuotaAdmissionPolicy: %v", err)
 	}
@@ -235,9 +257,7 @@ func TestBuildPlanQuotaAdmissionReservesBatchAndIsRepeatable(t *testing.T) {
 	beta := testTask("beta")
 	beta.Class = domain.TaskClassSurplus
 	beta.Routes = []domain.ProviderRoute{{ProviderInstanceID: "codex", Model: "gpt"}}
-	policy, err := NewQuotaAdmissionPolicy(QuotaAdmissionInput{
-		Windows: []QuotaWindowBudget{quotaTestWindow()},
-	})
+	policy, err := NewQuotaAdmissionPolicy(quotaTestInput(quotaTestWindow()))
 	if err != nil {
 		t.Fatalf("NewQuotaAdmissionPolicy: %v", err)
 	}
@@ -287,6 +307,18 @@ func TestQuotaAdmissionPolicyRejectsInvalidInput(t *testing.T) {
 			},
 		},
 		{
+			name: "invalid maximum observation age",
+			mutate: func(input *QuotaAdmissionInput) {
+				input.MaxObservationAge = 0
+			},
+		},
+		{
+			name: "missing observation time",
+			mutate: func(input *QuotaAdmissionInput) {
+				input.Windows[0].ObservedAt = time.Time{}
+			},
+		},
+		{
 			name: "duplicate window",
 			mutate: func(input *QuotaAdmissionInput) {
 				input.Windows = append(input.Windows, input.Windows[0])
@@ -313,7 +345,7 @@ func TestQuotaAdmissionPolicyRejectsInvalidInput(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			input := QuotaAdmissionInput{Windows: []QuotaWindowBudget{quotaTestWindow()}}
+			input := quotaTestInput(quotaTestWindow())
 			test.mutate(&input)
 			if _, err := NewQuotaAdmissionPolicy(input); err == nil {
 				t.Fatal("NewQuotaAdmissionPolicy succeeded, want validation error")
@@ -326,6 +358,7 @@ func quotaTestWindow() QuotaWindowBudget {
 	return QuotaWindowBudget{
 		QuotaPoolID:                 "pool",
 		WindowID:                    "weekly",
+		ObservedAt:                  plannerTestTime.Add(-time.Minute),
 		Admission:                   domain.AdmissionOpen,
 		Capacity:                    100,
 		CurrentUsage:                30,
@@ -337,6 +370,13 @@ func quotaTestWindow() QuotaWindowBudget {
 		SurplusStartsAt:             plannerTestTime.Add(-time.Minute),
 		DrainAt:                     plannerTestTime.Add(2 * time.Hour),
 		ResetsAt:                    plannerTestTime.Add(7 * 24 * time.Hour),
+	}
+}
+
+func quotaTestInput(windows ...QuotaWindowBudget) QuotaAdmissionInput {
+	return QuotaAdmissionInput{
+		Windows:           append([]QuotaWindowBudget(nil), windows...),
+		MaxObservationAge: 5 * time.Minute,
 	}
 }
 

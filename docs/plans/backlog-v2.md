@@ -379,7 +379,7 @@ Each milestone should fit one unattended development session where practical. A 
 - [x] Implement required and surplus policies, expiry, forecast reservations, remaining-cost accounting, and runtime-versus-drain checks.
 - [x] Add ordered alternative routes, fleet quota pools, route-specific estimates, and concurrency limits.
 - [x] Add fairness and starvation protection without weakening deadlines.
-- [ ] Build table-driven simulations for low quota, late-week surplus, competing providers, and stale observations.
+- [x] Build table-driven simulations for low quota, late-week surplus, competing providers, and stale observations.
 
 ### M5. Throttle, checkpoint, and resume integration
 

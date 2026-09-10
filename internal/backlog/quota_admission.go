@@ -11,16 +11,17 @@ import (
 )
 
 const (
-	PlanningBlockerTaskClass          = "task-class"
-	PlanningBlockerTaskNotBefore      = "task-not-before"
-	PlanningBlockerTaskExpired        = "task-expired"
-	PlanningBlockerEstimateMissing    = "admission-estimate-missing"
-	PlanningBlockerQuotaAdmission     = "quota-admission"
-	PlanningBlockerQuotaCapacity      = "quota-capacity"
-	PlanningBlockerQuotaWindowMissing = "quota-window-missing"
-	PlanningBlockerSurplusWindow    = "surplus-window"
-	PlanningBlockerDeadlineRunway   = "deadline-runway"
-	PlanningBlockerQuotaDrainRunway = "quota-drain-runway"
+	PlanningBlockerTaskClass             = "task-class"
+	PlanningBlockerTaskNotBefore         = "task-not-before"
+	PlanningBlockerTaskExpired           = "task-expired"
+	PlanningBlockerEstimateMissing       = "admission-estimate-missing"
+	PlanningBlockerQuotaAdmission        = "quota-admission"
+	PlanningBlockerQuotaCapacity         = "quota-capacity"
+	PlanningBlockerQuotaWindowMissing    = "quota-window-missing"
+	PlanningBlockerQuotaObservationStale = "quota-observation-stale"
+	PlanningBlockerSurplusWindow         = "surplus-window"
+	PlanningBlockerDeadlineRunway        = "deadline-runway"
+	PlanningBlockerQuotaDrainRunway      = "quota-drain-runway"
 )
 
 // QuotaWindowBudget is an immutable snapshot of one quota pool window. Costs
@@ -29,6 +30,7 @@ const (
 type QuotaWindowBudget struct {
 	QuotaPoolID                 string
 	WindowID                    string
+	ObservedAt                  time.Time // Collection time for every value in this window.
 	Admission                   domain.AdmissionState
 	Capacity                    float64
 	CurrentUsage                float64
@@ -50,25 +52,33 @@ type TaskAdmissionEstimate struct {
 	CheckpointMargin time.Duration `json:"checkpointMargin"`
 }
 
+// QuotaAdmissionInput fails closed unless every applicable window was observed
+// at or before planning time and no more than MaxObservationAge ago.
 type QuotaAdmissionInput struct {
-	Windows []QuotaWindowBudget
+	Windows           []QuotaWindowBudget
+	MaxObservationAge time.Duration
 }
 
 // QuotaAdmissionPolicy is immutable and safe to reuse across planning cycles.
 // Each cycle receives private reservation accounting through StartPlan.
 type QuotaAdmissionPolicy struct {
-	windows   []QuotaWindowBudget
+	windows           []QuotaWindowBudget
+	maxObservationAge time.Duration
 }
 
 type quotaAdmissionSession struct {
-	now           time.Time
-	windows       []QuotaWindowBudget
-	batchReserved []float64
+	now               time.Time
+	windows           []QuotaWindowBudget
+	maxObservationAge time.Duration
+	batchReserved     []float64
 }
 
 func NewQuotaAdmissionPolicy(input QuotaAdmissionInput) (QuotaAdmissionPolicy, error) {
 	if len(input.Windows) == 0 {
 		return QuotaAdmissionPolicy{}, fmt.Errorf("quota admission requires at least one quota window")
+	}
+	if input.MaxObservationAge <= 0 {
+		return QuotaAdmissionPolicy{}, fmt.Errorf("quota admission maximum observation age must be positive")
 	}
 	windows := append([]QuotaWindowBudget(nil), input.Windows...)
 	sort.Slice(windows, func(i, j int) bool {
@@ -88,14 +98,18 @@ func NewQuotaAdmissionPolicy(input QuotaAdmissionInput) (QuotaAdmissionPolicy, e
 		}
 		seen[key] = struct{}{}
 	}
-	return QuotaAdmissionPolicy{windows: windows}, nil
+	return QuotaAdmissionPolicy{
+		windows:           windows,
+		maxObservationAge: input.MaxObservationAge,
+	}, nil
 }
 
 func (policy QuotaAdmissionPolicy) StartPlan(now time.Time) PlanningConstraintSession {
 	return &quotaAdmissionSession{
-		now:           now,
-		windows:       append([]QuotaWindowBudget(nil), policy.windows...),
-		batchReserved: make([]float64, len(policy.windows)),
+		now:               now,
+		windows:           append([]QuotaWindowBudget(nil), policy.windows...),
+		maxObservationAge: policy.maxObservationAge,
+		batchReserved:     make([]float64, len(policy.windows)),
 	}
 }
 
@@ -142,6 +156,15 @@ func (session *quotaAdmissionSession) Evaluate(candidate PlanningCandidate) []Pl
 			Admission:     window.Admission,
 			RequiredCost:  estimate.RemainingCost,
 			Available:     available,
+		}
+		if detail, stale := session.quotaObservationStaleness(window); stale {
+			blocker := common
+			blocker.Code = PlanningBlockerQuotaObservationStale
+			blocker.Detail = detail
+			blocker.ObservedAt = planningTimeValue(window.ObservedAt)
+			blocker.MaxObservationAgeSeconds = session.maxObservationAge.Seconds()
+			blockers = append(blockers, blocker)
+			continue
 		}
 		if quotaAdmissionBlocked(window.Admission, class) {
 			blocker := common
@@ -197,6 +220,18 @@ func (session *quotaAdmissionSession) Reserve(candidate PlanningCandidate) {
 			session.batchReserved[index] += candidate.Estimate.RemainingCost
 		}
 	}
+}
+
+func (session *quotaAdmissionSession) quotaObservationStaleness(window QuotaWindowBudget) (string, bool) {
+	key := quotaWindowKey(window)
+	if window.ObservedAt.After(session.now) {
+		return fmt.Sprintf("quota window %q observation at %s is after planning time %s", key, window.ObservedAt.UTC().Format(time.RFC3339), session.now.UTC().Format(time.RFC3339)), true
+	}
+	age := session.now.Sub(window.ObservedAt)
+	if age > session.maxObservationAge {
+		return fmt.Sprintf("quota window %q observation at %s is %s old, exceeding maximum age %s", key, window.ObservedAt.UTC().Format(time.RFC3339), age, session.maxObservationAge), true
+	}
+	return "", false
 }
 
 func (session *quotaAdmissionSession) taskTimeBlockers(candidate PlanningCandidate) []PlanningBlocker {
@@ -262,6 +297,9 @@ func validateQuotaWindow(window QuotaWindowBudget) error {
 	if strings.TrimSpace(window.QuotaPoolID) != window.QuotaPoolID || window.QuotaPoolID == "" ||
 		strings.TrimSpace(window.WindowID) != window.WindowID || window.WindowID == "" {
 		return fmt.Errorf("quota admission pool and window IDs must be nonempty and trimmed")
+	}
+	if window.ObservedAt.IsZero() {
+		return fmt.Errorf("quota admission window %q must have an observation time", quotaWindowKey(window))
 	}
 	switch window.Admission {
 	case domain.AdmissionOpen, domain.AdmissionConstrained, domain.AdmissionDraining, domain.AdmissionClosed, domain.AdmissionRecovering:

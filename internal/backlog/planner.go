@@ -79,22 +79,24 @@ type PlanningConstraintSession interface {
 }
 
 type PlanningBlocker struct {
-	Code          string                `json:"code"`
-	Detail        string                `json:"detail"`
-	WorkerID      string                `json:"workerId,omitempty"`
-	Resource      string                `json:"resource,omitempty"`
-	OwnerID       string                `json:"ownerId,omitempty"`
-	DependsOn     string                `json:"dependsOn,omitempty"`
-	ProviderInstanceID string                `json:"providerInstanceId,omitempty"`
-	Model              string                `json:"model,omitempty"`
-	RouteOrdinal         int                   `json:"routeOrdinal,omitempty"`
-	QuotaPoolID        string                `json:"quotaPoolId,omitempty"`
-	QuotaWindowID      string                `json:"quotaWindowId,omitempty"`
-	Admission     domain.AdmissionState `json:"admission,omitempty"`
-	RequiredCost  float64               `json:"requiredCost,omitempty"`
-	Available     float64               `json:"available,omitempty"`
-	EarliestAt    *time.Time            `json:"earliestAt,omitempty"`
-	DeadlineAt    *time.Time            `json:"deadlineAt,omitempty"`
+	Code                     string                `json:"code"`
+	Detail                   string                `json:"detail"`
+	WorkerID                 string                `json:"workerId,omitempty"`
+	Resource                 string                `json:"resource,omitempty"`
+	OwnerID                  string                `json:"ownerId,omitempty"`
+	DependsOn                string                `json:"dependsOn,omitempty"`
+	ProviderInstanceID       string                `json:"providerInstanceId,omitempty"`
+	Model                    string                `json:"model,omitempty"`
+	RouteOrdinal             int                   `json:"routeOrdinal,omitempty"`
+	QuotaPoolID              string                `json:"quotaPoolId,omitempty"`
+	QuotaWindowID            string                `json:"quotaWindowId,omitempty"`
+	Admission                domain.AdmissionState `json:"admission,omitempty"`
+	RequiredCost             float64               `json:"requiredCost,omitempty"`
+	Available                float64               `json:"available,omitempty"`
+	MaxObservationAgeSeconds float64               `json:"maxObservationAgeSeconds,omitempty"`
+	ObservedAt               *time.Time            `json:"observedAt,omitempty"`
+	EarliestAt               *time.Time            `json:"earliestAt,omitempty"`
+	DeadlineAt               *time.Time            `json:"deadlineAt,omitempty"`
 }
 
 type CandidateEvaluation struct {
@@ -546,12 +548,12 @@ func sortPlanningBlockers(blockers []PlanningBlocker) {
 		leftFields := []string{
 			left.Code, left.WorkerID, left.Resource, left.OwnerID, left.DependsOn,
 			left.ProviderInstanceID, left.Model, left.QuotaPoolID, left.QuotaWindowID, string(left.Admission),
-			planningTimeKey(left.EarliestAt), planningTimeKey(left.DeadlineAt), left.Detail,
+			planningTimeKey(left.ObservedAt), planningTimeKey(left.EarliestAt), planningTimeKey(left.DeadlineAt), left.Detail,
 		}
 		rightFields := []string{
 			right.Code, right.WorkerID, right.Resource, right.OwnerID, right.DependsOn,
 			right.ProviderInstanceID, right.Model, right.QuotaPoolID, right.QuotaWindowID, string(right.Admission),
-			planningTimeKey(right.EarliestAt), planningTimeKey(right.DeadlineAt), right.Detail,
+			planningTimeKey(right.ObservedAt), planningTimeKey(right.EarliestAt), planningTimeKey(right.DeadlineAt), right.Detail,
 		}
 		for index := range leftFields {
 			if leftFields[index] != rightFields[index] {
@@ -560,6 +562,9 @@ func sortPlanningBlockers(blockers []PlanningBlocker) {
 		}
 		if left.RouteOrdinal != right.RouteOrdinal {
 			return left.RouteOrdinal < right.RouteOrdinal
+		}
+		if left.MaxObservationAgeSeconds != right.MaxObservationAgeSeconds {
+			return left.MaxObservationAgeSeconds < right.MaxObservationAgeSeconds
 		}
 		if left.RequiredCost != right.RequiredCost {
 			return left.RequiredCost < right.RequiredCost
