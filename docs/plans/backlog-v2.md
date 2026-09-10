@@ -346,8 +346,8 @@ Each milestone should fit one unattended development session where practical. A 
 
 ### M1. Domain and compatibility foundation
 
-- [ ] Add workflow, task, attempt, assignment, schedule, trigger, route, quota-pool, artifact, and admin-command domain types.
-- [ ] Separate workflow progress from execution control state.
+- [x] Add workflow, task, attempt, assignment, schedule, trigger, route, quota-pool, artifact, and admin-command domain types.
+- [x] Separate workflow progress from execution control state.
 - [ ] Add schema migrations and round-trip tests.
 - [ ] Parse every existing Markdown task as a one-task workflow.
 - [ ] Freeze compatibility tests for current task parsing, ordering, and CLI submission.
