@@ -4,49 +4,49 @@ Updated: 2026-09-10
 
 ## Completed checkpoint
 
-- Completed M1, M2, M3, M4, and the first five M5 increments.
-- Added deterministic quota-planning reconstruction from canonical tasks, attempts, assignments, route estimates, quota pools, quota windows, and latest throttle records.
-- Checkpointed and forced-paused attempts now retain route-specific remaining-cost reservations while releasing their provider concurrency slots.
-- Required paused and resuming remainder is copied into every quota window for the shared pool; paused surplus work remains visible for recovery without consuming required-work budget.
-- Runtime occupancy is recomputed from attempt control state, counting preparing, running, draining, and resuming work instead of trusting stale pool counters.
-- Reconstruction fails closed on duplicate identities and assignment ownership, assignments for unknown attempts, missing fixed-route estimates, settled assignments, and contradictory canonical attempt/throttle/assignment execution identity.
-- Resume planning now requires a valid pool snapshot, reacquires provider capacity before creating a resume command, and chooses deterministically under contention.
-- Resume commands preserve assignment, worker, T3 thread, workspace, provider route, and provider options.
-- Covered checkpointed and forced pauses, shared pools and multiple windows, restart reconstruction, reordered inputs, duplicate records, contradictory durable state, and resumed slot contention.
-- Marked the fifth M5 checklist item complete.
+- Completed M1, M2, M3, M4, and the first six M5 increments.
+- Added deterministic recovery planning that arbitrates provider slots between paused attempts and already-routed new required work.
+- Interactive resumptions rank first; a new required attempt inside the configured deadline-risk window may precede ordinary paused required work; other paused required work precedes ordinary new required work.
+- Valid paused surplus work ranks after required work and resumes only when the pool is open and the caller's surplus-admission decision remains true.
+- Expired or otherwise ineligible surplus occurrences produce optimistic skipped/stopped transitions without artifact fields, allowing persistence to retain checkpoints and captured artifacts.
+- Recovery reconstruction now carries detached task identity, attempt revision, deadline, and expiry metadata alongside fixed-route remaining-cost reservations.
+- Existing resuming commands remain replayable without reacquiring their already-counted provider slot.
+- Recovery remains deterministic across reordered restart snapshots and pool contention.
+- Removed three accidentally duplicated cases from the prior recovery identity table while preserving their unique coverage.
+- Marked the sixth M5 checklist item complete.
 - No configured/live repository, T3 thread, worker, service, or live database was touched.
 
 ## Decisions
 
-- The coordinator supplies a complete durable snapshot to quota reconstruction; derived pool occupancy replaces any stored active-assignment counter in that snapshot.
-- A nonterminal attempt must have a matching unsettled assignment before it can hold a provider slot or retain a paused reservation.
-- Paused and paused-uncheckpointed work use the latest throttle projection as the authoritative execution identity; resuming work remains reserved and also holds a slot.
-- Required remaining cost is reserved in each applicable quota window. Surplus remainder stays in the resume queue but does not reduce the required-work budget.
-- Route estimates are keyed to the attempt's fixed worker, provider instance, model, and options; recovery never selects a replacement route.
-- Duplicate and contradictory durable records are errors rather than guessed through.
-- Pool contention is resolved in canonical attempt-ID order in this increment; recovery priority and expiry policy remain the next M5 item.
-- Existing pending resume commands are replayable without trying to acquire their already-counted slot again.
+- Recovery policy is transport-neutral and consumes the reconstructed quota snapshot plus an explicit per-pool surplus-eligibility projection from the ordinary quota planner.
+- Slot priority is: user-requested interactive resume, immediate-deadline new required work, paused required work, ordinary new required work, then eligible paused surplus work.
+- Deadline exceptions apply only to new required work inside the configured risk window; attempt ID is the stable final tie-breaker.
+- A recovering pool admits required recovery but not surplus recovery; surplus requires fully open admission and a still-valid occurrence.
+- Surplus skip transitions carry only optimistic revision, terminal progress/control, reason, and completion time. They deliberately cannot overwrite checkpoint or artifact references.
+- Resume commands continue to be created by the existing replay-safe throttle seam, preserving assignment, worker, thread, workspace, provider route, and provider options.
+- Existing pending resume commands are replayed and do not consume a second slot.
 
 ## Verification
 
 - Baseline: `go test ./...`
-- `go test ./internal/backlog -run 'Test(DeriveQuotaPlanningState|PlanThrottleResumes|ThrottleCheckpoint|ReconcileThrottleDeadline)' -count=1`
-- `go test -race ./internal/backlog -run 'Test(DeriveQuotaPlanningState|PlanThrottleResumes|ThrottleCheckpoint|ReconcileThrottleDeadline)' -count=1`
+- `go test ./internal/backlog -run 'Test(DeriveQuotaPlanningState|PlanQuotaRecovery|PlanThrottleResumes)' -count=1`
+- `go test -race ./internal/backlog -run 'Test(DeriveQuotaPlanningState|PlanQuotaRecovery|PlanThrottleResumes)' -count=1`
 - `go test ./...`
 - `go vet ./...`
+- `go test -race ./internal/backlog -run 'Test(DeriveQuotaPlanningState|PlanQuotaRecovery|PlanThrottleResumes|ThrottleCheckpoint|ReconcileThrottleDeadline)' -count=1`
 - `git diff --check`
 
 All passed.
 
 ## Remaining risks
 
-- Recovery ordering still uses canonical attempt IDs; required-before-new-required, imminent deadline exceptions, interactive priority, and surplus expiry remain future M5 work.
+- The recovery seam accepts already-routed new required candidates and a surplus-eligibility projection; full atomic coordinator plan persistence and route claims remain M7 work.
+- Skip transitions are policy output only until the coordinator persistence layer consumes them; their narrow shape prevents artifact loss by construction.
+- Drain races, multiple buckets, recovery probes, user interaction delivery, and repeated throttle epochs still need the final M5 fault-oriented test increment.
 - The reconstruction seam is transport-neutral and not yet wired to a full coordinator planning cycle; fleet worker protocol integration remains M7.
-- Resume planning trusts the reconstructed pool snapshot to be transactionally current. Atomic slot claims with coordinator plan persistence remain part of later coordinator integration.
-- Assignment completion and workflow-run revision changes are still handled by their existing coordinator paths.
 - The legacy host-local watchdog still owns its independent bucket, warning, drain, stop, and resume machinery; this increment does not alter or invoke it.
 - No development code has opened live state, contacted workers, dispatched work, or installed/restarted a service.
 
 ## Exact next increment
 
-Implement the sixth M5 checklist item: deterministic recovery priority and expiry behavior for paused attempts. Required paused work should normally precede new required work while allowing an immediate-deadline exception; interactive resumptions outrank backlog recovery; surplus resumes only while surplus admission and occurrence validity remain, otherwise it becomes skipped with artifacts retained. Integrate these decisions with the quota reconstruction and slot-reacquisition seams without changing assignment, worker, thread, workspace, or provider route. Cover required-versus-new work, deadline risk, interactive priority, surplus expiry and closure, stable ordering, restart reconstruction, and contention. Keep all worker/T3 communication behind fakes and disconnected from the deployed daemon. Run targeted and race tests, then `go test ./...`, `go vet ./...`, and `git diff --check`. If implementation remains, queue the one successor with `--ungated` as required by the session prompt.
+Complete the seventh M5 checklist item with fault-oriented coverage across the existing admission, throttle delivery, turn-outcome, reconstruction, and recovery seams. Add deterministic tests for drain/completion races, hard-stop acknowledgement races, multiple quota buckets and pools, recovery probes with gradual slot admission, interactive resume contention, and repeated throttle epochs including stale or duplicate commands. Fix any defects those tests expose without wiring live worker transport. Run targeted and race tests, then `go test ./...`, `go vet ./...`, and `git diff --check`. If M5 becomes complete, mark its final checklist item and queue the one ungated successor for M6.

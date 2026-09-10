@@ -28,10 +28,10 @@ func TestDeriveQuotaPlanningStateReconstructsPausedReservationsAndSlots(t *testi
 		}
 	}
 	wantReservations := []QuotaResumeReservation{
-		{AttemptID: "forced", QuotaPoolID: "shared", Class: domain.TaskClassRequired, Status: domain.ResumePending, RemainingCost: 20, StopEpoch: "directive-forced"},
-		{AttemptID: "paused", QuotaPoolID: "shared", Class: domain.TaskClassRequired, Status: domain.ResumePending, RemainingCost: 10, StopEpoch: "directive-paused"},
-		{AttemptID: "resuming", QuotaPoolID: "shared", Class: domain.TaskClassRequired, Status: domain.ResumeResuming, RemainingCost: 5, StopEpoch: "directive-resuming"},
-		{AttemptID: "surplus", QuotaPoolID: "shared", Class: domain.TaskClassSurplus, Status: domain.ResumePending, RemainingCost: 40, StopEpoch: "directive-surplus"},
+		{AttemptID: "forced", TaskID: "task-forced", QuotaPoolID: "shared", Class: domain.TaskClassRequired, Status: domain.ResumePending, RemainingCost: 20, StopEpoch: "directive-forced"},
+		{AttemptID: "paused", TaskID: "task-paused", QuotaPoolID: "shared", Class: domain.TaskClassRequired, Status: domain.ResumePending, RemainingCost: 10, StopEpoch: "directive-paused"},
+		{AttemptID: "resuming", TaskID: "task-resuming", QuotaPoolID: "shared", Class: domain.TaskClassRequired, Status: domain.ResumeResuming, RemainingCost: 5, StopEpoch: "directive-resuming"},
+		{AttemptID: "surplus", TaskID: "task-surplus", QuotaPoolID: "shared", Class: domain.TaskClassSurplus, Status: domain.ResumePending, RemainingCost: 40, StopEpoch: "directive-surplus"},
 	}
 	if !reflect.DeepEqual(got.ResumeReservations, wantReservations) {
 		t.Fatalf("resume reservations = %#v, want %#v", got.ResumeReservations, wantReservations)
@@ -47,6 +47,43 @@ func TestDeriveQuotaPlanningStateReconstructsPausedReservationsAndSlots(t *testi
 	}
 	if input.QuotaPools[0].ActiveAssignments != 99 || input.QuotaWindows[0].PausedRequiredWorkRemainder != 99 {
 		t.Fatal("derivation mutated caller input")
+	}
+}
+
+func TestDeriveQuotaPlanningStateCarriesDetachedRecoveryMetadata(t *testing.T) {
+	input := quotaRecoveryFixture()
+	deadline := throttleDeliveryTime.Add(3 * time.Hour)
+	expires := throttleDeliveryTime.Add(6 * time.Hour)
+	for index := range input.Tasks {
+		if input.Tasks[index].ID == "task-paused" {
+			input.Tasks[index].Deadline = &deadline
+			input.Tasks[index].ExpiresAt = &expires
+		}
+	}
+	for index := range input.Attempts {
+		if input.Attempts[index].ID == "paused" {
+			input.Attempts[index].Revision = 9
+		}
+	}
+	got, err := DeriveQuotaPlanningState(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reservation QuotaResumeReservation
+	for _, candidate := range got.ResumeReservations {
+		if candidate.AttemptID == "paused" {
+			reservation = candidate
+		}
+	}
+	if reservation.TaskID != "task-paused" || reservation.AttemptRevision != 9 ||
+		reservation.Deadline == nil || !reservation.Deadline.Equal(deadline) ||
+		reservation.ExpiresAt == nil || !reservation.ExpiresAt.Equal(expires) {
+		t.Fatalf("recovery metadata = %#v", reservation)
+	}
+	originalDeadline := deadline
+	deadline = deadline.Add(time.Hour)
+	if !reservation.Deadline.Equal(originalDeadline) {
+		t.Fatal("recovery deadline aliases caller input")
 	}
 }
 

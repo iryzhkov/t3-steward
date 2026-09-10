@@ -388,7 +388,7 @@ Each milestone should fit one unattended development session where practical. A 
 - [x] Implement structured warn, drain, checkpoint, hard-stop, and resume handling.
 - [x] Reconcile completion markers against throttle intents in the documented order.
 - [x] Keep paused work visible to reservations while releasing runtime slots.
-- [ ] Add recovery priority and expiry behavior for required and surplus tasks.
+- [x] Add recovery priority and expiry behavior for required and surplus tasks.
 - [ ] Test drain races, hard stops, multiple buckets, recovery probes, user interaction, and repeated throttle epochs.
 
 ### M6. Schedules and idempotency

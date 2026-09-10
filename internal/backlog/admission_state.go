@@ -22,12 +22,16 @@ const (
 // remains visible to quota accounting while the attempt releases its runtime
 // provider slot.
 type QuotaResumeReservation struct {
-	AttemptID     string
-	QuotaPoolID   string
-	Class         domain.TaskClass
-	Status        domain.ResumeStatus
-	RemainingCost float64
-	StopEpoch     string
+	AttemptID       string
+	TaskID          string
+	QuotaPoolID     string
+	Class           domain.TaskClass
+	Status          domain.ResumeStatus
+	RemainingCost   float64
+	StopEpoch       string
+	AttemptRevision int64
+	Deadline        *time.Time
+	ExpiresAt       *time.Time
 }
 
 // QuotaAdmissionDerivationInput is one immutable coordinator snapshot.

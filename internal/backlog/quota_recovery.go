@@ -175,9 +175,10 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 			status = domain.ResumeResuming
 		}
 		reservation := QuotaResumeReservation{
-			AttemptID: attempt.ID, QuotaPoolID: assignment.Route.QuotaPoolID,
+			AttemptID: attempt.ID, TaskID: task.ID, QuotaPoolID: assignment.Route.QuotaPoolID,
 			Class: class, Status: status, RemainingCost: estimate.RemainingCost,
-			StopEpoch: record.DirectiveID,
+			StopEpoch: record.DirectiveID, AttemptRevision: attempt.Revision,
+			Deadline: clonePlanningTime(task.Deadline), ExpiresAt: clonePlanningTime(task.ExpiresAt),
 		}
 		reservations = append(reservations, reservation)
 		if class == domain.TaskClassRequired {
