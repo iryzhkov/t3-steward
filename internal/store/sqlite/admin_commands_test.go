@@ -169,7 +169,7 @@ func TestAdminCommandTransactionsRollBackWithAuditConflict(t *testing.T) {
 	if err := store.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{
 		Attempts: []domain.Attempt{adminCommandAttempt(3)},
 		AuditEvents: []domain.AuditEvent{{
-			ID: "admin-command:command-submit-rollback:submission",
+			ID:   "admin-command:command-submit-rollback:submission",
 			Kind: "conflicting-event", CreatedAt: adminCommandTestTime,
 		}},
 	}); err != nil {
@@ -192,7 +192,7 @@ func TestAdminCommandTransactionsRollBackWithAuditConflict(t *testing.T) {
 	}
 	if err := store.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{
 		AuditEvents: []domain.AuditEvent{{
-			ID: "admin-command:command-outcome-rollback:outcome",
+			ID:   "admin-command:command-outcome-rollback:outcome",
 			Kind: "conflicting-outcome", CreatedAt: adminCommandTestTime,
 		}},
 	}); err != nil {
@@ -266,6 +266,7 @@ func openAdminCommandStore(t *testing.T, path string) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	store.SetClock(func() time.Time { return adminCommandTestTime })
 	t.Cleanup(func() { _ = store.Close() })
 	return store
 }

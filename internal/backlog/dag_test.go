@@ -129,6 +129,22 @@ func TestDAGExecutionCancellationPropagatesAndPreservesSuccess(t *testing.T) {
 	assertRunProgress(t, execution, domain.ProgressCancelled)
 }
 
+func TestDAGExecutionSkipProjectsTerminalRunWithoutReleasingDependency(t *testing.T) {
+	execution := newTestDAG(t,
+		testTask("target"),
+		testTask("child", "target"),
+	)
+	if err := execution.SkipTask("task-target", dagTestTime.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	assertAttemptProgress(t, execution, "target-1", domain.ProgressSkipped)
+	assertAttemptProgress(t, execution, "child-1", domain.ProgressBlocked)
+	assertRunProgress(t, execution, domain.ProgressSkipped)
+	if err := execution.SkipTask("task-target", dagTestTime.Add(2*time.Minute)); err == nil {
+		t.Fatal("skipped an already skipped task")
+	}
+}
+
 func TestDAGExecutionValidatesGraphAndAttempts(t *testing.T) {
 	tests := []struct {
 		name  string

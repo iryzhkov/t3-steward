@@ -71,6 +71,37 @@ func ReconcileThrottleDeliveries(
 	return reconcilePlannedThrottleCommands(ctx, store, transport, previous, transitions, commands, now)
 }
 
+// ReconcilePendingThrottleCommands replays durable, unacknowledged commands
+// after restart without needing to reconstruct their original directive.
+func ReconcilePendingThrottleCommands(
+	ctx context.Context,
+	store ThrottleDeliveryStore,
+	transport ThrottleWorkerTransport,
+	now time.Time,
+) (ThrottleDeliveryReport, error) {
+	if store == nil {
+		return ThrottleDeliveryReport{}, fmt.Errorf("throttle delivery store is required")
+	}
+	if transport == nil {
+		return ThrottleDeliveryReport{}, fmt.Errorf("throttle worker transport is required")
+	}
+	previous, err := store.LoadThrottleAttemptRecords(ctx)
+	if err != nil {
+		return ThrottleDeliveryReport{}, fmt.Errorf("load pending throttle commands: %w", err)
+	}
+	var commands []domain.ThrottleCommand
+	for _, record := range previous {
+		if err := validateThrottleAttemptRecord(record); err != nil {
+			return ThrottleDeliveryReport{}, err
+		}
+		if record.Delivery == domain.ThrottleDeliveryPending {
+			commands = append(commands, cloneThrottleCommand(record.Command))
+		}
+	}
+	sortThrottleCommands(commands)
+	return reconcilePlannedThrottleCommands(ctx, store, transport, previous, nil, commands, now)
+}
+
 // ReconcileThrottleDeadlineExpirations persists and delivers hard-stop commands
 // only after a draining attempt's checkpoint deadline has expired.
 func ReconcileThrottleDeadlineExpirations(
@@ -259,6 +290,42 @@ func PlanThrottleDeliveries(
 	sortThrottleAttemptTransitions(transitions)
 	sortThrottleCommands(commands)
 	return transitions, commands, nil
+}
+
+// PlanAdminPauseDelivery creates one durable drain or hard-stop intent from
+// an administrator command while preserving the assigned execution identity.
+func PlanAdminPauseDelivery(
+	directiveID string,
+	reason string,
+	hard bool,
+	binding ThrottleAttemptBinding,
+	now time.Time,
+) (domain.ThrottleAttemptTransition, error) {
+	if directiveID == "" || strings.TrimSpace(reason) == "" || now.IsZero() {
+		return domain.ThrottleAttemptTransition{}, fmt.Errorf("admin pause directive, reason, and time are required")
+	}
+	if err := validateThrottleBinding(binding); err != nil {
+		return domain.ThrottleAttemptTransition{}, err
+	}
+	if binding.Assignment.Route.QuotaPoolID == "" {
+		return domain.ThrottleAttemptTransition{}, fmt.Errorf("admin pause assignment quota pool is required")
+	}
+	kind := domain.ThrottleCommandDrain
+	severity := domain.ThrottleDrain
+	if hard {
+		kind = domain.ThrottleCommandHardStop
+		severity = domain.ThrottleStop
+	}
+	directive := domain.ThrottleDirective{
+		ID: directiveID, QuotaPoolID: binding.Assignment.Route.QuotaPoolID,
+		Severity: severity, Reason: reason, CreatedAt: now,
+	}
+	command := throttleCommand(directive, binding, kind, 1, now)
+	return domain.ThrottleAttemptTransition{Record: domain.ThrottleAttemptRecord{
+		DirectiveID: directiveID, AttemptID: binding.Attempt.ID, Revision: 1,
+		Command: command, Delivery: domain.ThrottleDeliveryPending,
+		Control: domain.ControlDraining, UpdatedAt: now,
+	}}, nil
 }
 
 // PlanThrottleDeadlineExpirations converts drain commands that did not produce

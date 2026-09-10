@@ -166,7 +166,9 @@ func (session *quotaAdmissionSession) Evaluate(candidate PlanningCandidate) []Pl
 			blockers = append(blockers, blocker)
 			continue
 		}
-		if quotaAdmissionBlocked(window.Admission, class) {
+		if quotaAdmissionBlocked(window.Admission, class) &&
+			!(candidate.Attempt.AdminForceStart &&
+				(window.Admission == domain.AdmissionConstrained || window.Admission == domain.AdmissionRecovering)) {
 			blocker := common
 			blocker.Code = PlanningBlockerQuotaAdmission
 			blocker.Detail = fmt.Sprintf("quota window %q admission is %q for %s work", quotaWindowKey(window), window.Admission, class)
@@ -175,7 +177,8 @@ func (session *quotaAdmissionSession) Evaluate(candidate PlanningCandidate) []Pl
 			}
 			blockers = append(blockers, blocker)
 		}
-		if class == domain.TaskClassSurplus && !window.SurplusStartsAt.IsZero() && session.now.Before(window.SurplusStartsAt) {
+		if !candidate.Attempt.AdminForceStart && class == domain.TaskClassSurplus &&
+			!window.SurplusStartsAt.IsZero() && session.now.Before(window.SurplusStartsAt) {
 			blocker := common
 			blocker.Code = PlanningBlockerSurplusWindow
 			blocker.Detail = fmt.Sprintf("surplus window %q opens at %s", quotaWindowKey(window), window.SurplusStartsAt.UTC().Format(time.RFC3339))
@@ -236,13 +239,19 @@ func (session *quotaAdmissionSession) quotaObservationStaleness(window QuotaWind
 
 func (session *quotaAdmissionSession) taskTimeBlockers(candidate PlanningCandidate) []PlanningBlocker {
 	var blockers []PlanningBlocker
-	if notBefore := candidate.Task.NotBefore; notBefore != nil && session.now.Before(*notBefore) {
-		blockers = append(blockers, PlanningBlocker{
-			Code:       PlanningBlockerTaskNotBefore,
-			Detail:     fmt.Sprintf("task is not eligible before %s", notBefore.UTC().Format(time.RFC3339)),
-			WorkerID:   candidate.WorkerID,
-			EarliestAt: clonePlanningTime(notBefore),
-		})
+	if !candidate.Attempt.AdminForceStart {
+		notBefore := candidate.Task.NotBefore
+		if candidate.Attempt.AdminNotBefore != nil && (notBefore == nil || candidate.Attempt.AdminNotBefore.After(*notBefore)) {
+			notBefore = candidate.Attempt.AdminNotBefore
+		}
+		if notBefore != nil && session.now.Before(*notBefore) {
+			blockers = append(blockers, PlanningBlocker{
+				Code:       PlanningBlockerTaskNotBefore,
+				Detail:     fmt.Sprintf("task is not eligible before %s", notBefore.UTC().Format(time.RFC3339)),
+				WorkerID:   candidate.WorkerID,
+				EarliestAt: clonePlanningTime(notBefore),
+			})
+		}
 	}
 	if expiresAt := candidate.Task.ExpiresAt; expiresAt != nil && !session.now.Before(*expiresAt) {
 		blockers = append(blockers, PlanningBlocker{

@@ -64,3 +64,24 @@ type AdminCommandOutcome struct {
 	Failure       string            `json:"failure,omitempty"`
 	AppliedAt     time.Time         `json:"appliedAt"`
 }
+
+// AdminCommandApplication is the coordinator's deterministic, revision-fenced
+// state transition for one pending command. The store commits the target changes,
+// terminal command outcome, and audit event in one transaction.
+type AdminCommandApplication struct {
+	CommandID              string                     `json:"commandId"`
+	ExpectedCommandState   AdminCommandState          `json:"expectedCommandState"`
+	ExpectedTargetRevision int64                      `json:"expectedTargetRevision"`
+	SafetyFingerprint      string                     `json:"-"`
+	SafetyValidUntil       *time.Time                 `json:"-"`
+	PauseIntent            *ThrottleAttemptTransition `json:"-"`
+	Attempt                *Attempt                   `json:"attempt,omitempty"`
+	RelatedAttempts        []Attempt                  `json:"relatedAttempts,omitempty"`
+	NewAttempt             *Attempt                   `json:"newAttempt,omitempty"`
+	WorkflowRun            *WorkflowRun               `json:"workflowRun,omitempty"`
+	Schedule               *Schedule                  `json:"schedule,omitempty"`
+	ScheduleTrigger        *ScheduleTriggerRequest    `json:"scheduleTrigger,omitempty"`
+	State                  AdminCommandState          `json:"state"`
+	Failure                string                     `json:"failure,omitempty"`
+	AppliedAt              time.Time                  `json:"appliedAt"`
+}

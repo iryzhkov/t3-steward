@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -52,6 +53,18 @@ func (s *Service) Mutate(ctx context.Context, request Mutation) (MutationRespons
 	if err != nil {
 		return MutationResponse{}, fmt.Errorf("load coordinator snapshot: %w", err)
 	}
+	if existing, ok := existingAdminCommand(records.AdminCommands, request.ID); ok {
+		if !mutationReplayMatches(records, request, existing) {
+			return MutationResponse{}, fmt.Errorf("admin command replay %q conflicts with immutable request", request.ID)
+		}
+		replay := existing
+		replay.State, replay.Failure, replay.AppliedAt = domain.AdminCommandPending, "", nil
+		decision, err := mutator.SubmitAdminCommand(ctx, replay)
+		if err != nil {
+			return MutationResponse{}, fmt.Errorf("submit admin command replay: %w", err)
+		}
+		return mutationResponse(decision), nil
+	}
 	targetType, targetID, err := resolveMutationTarget(records, request)
 	if err != nil {
 		return MutationResponse{}, err
@@ -95,6 +108,51 @@ func (s *Service) CompleteCommand(ctx context.Context, outcome CommandOutcome) (
 		return MutationResponse{}, fmt.Errorf("complete admin command: %w", err)
 	}
 	return mutationResponse(decision), nil
+}
+
+func existingAdminCommand(commands []domain.AdminCommand, id string) (domain.AdminCommand, bool) {
+	for _, command := range commands {
+		if command.ID == id {
+			return command, true
+		}
+	}
+	return domain.AdminCommand{}, false
+}
+
+func mutationReplayMatches(records sqlite.CoordinatorRecords, request Mutation, command domain.AdminCommand) bool {
+	if command.Kind != request.Kind || command.Reason != request.Reason ||
+		command.RequestedBy != request.Principal.ID || !sameMutationJSON(command.Payload, request.Payload) {
+		return false
+	}
+	if request.ScheduleID != "" {
+		return command.TargetType == domain.AdminTargetSchedule && command.TargetID == request.ScheduleID
+	}
+	if command.TargetType == domain.AdminTargetWorkflowRun {
+		return request.TaskID == "" && command.TargetID == request.WorkflowRunID
+	}
+	if command.TargetType != domain.AdminTargetAttempt || request.TaskID == "" {
+		return false
+	}
+	for _, attempt := range records.Attempts {
+		if attempt.ID != command.TargetID || attempt.WorkflowRunID != request.WorkflowRunID {
+			continue
+		}
+		for _, task := range records.Tasks {
+			if task.ID == attempt.TaskID && (task.ID == request.TaskID || task.Name == request.TaskID) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sameMutationJSON(left, right json.RawMessage) bool {
+	if len(left) == 0 || string(left) == "null" {
+		return len(right) == 0 || string(right) == "null"
+	}
+	var leftValue, rightValue any
+	return json.Unmarshal(left, &leftValue) == nil && json.Unmarshal(right, &rightValue) == nil &&
+		reflect.DeepEqual(leftValue, rightValue)
 }
 
 func resolveMutationTarget(records sqlite.CoordinatorRecords, request Mutation) (domain.AdminTargetType, string, error) {

@@ -421,11 +421,11 @@ Each milestone should fit one unattended development session where practical. A 
   - [x] Implement read-only coordinator queries for status, filtered workflows, workflow/task detail, DAGs, explanations, events, artifacts, schedules, workers, quota, reservations, locks, progress, and T3 links.
   - [x] Implement immutable, revision-checked mutation commands, durable audit events, and asynchronous outcomes.
 - [x] Refactor existing backlog CLI code away from direct database mutation.
-- [ ] Implement status, filters, DAG view, task detail, explanations, events, artifacts, controls, and schedule commands.
+- [x] Implement status, filters, DAG view, task detail, explanations, events, artifacts, controls, and schedule commands.
   - [x] Add the read-only CLI adapter for coordinator status, filtered workflow lists, workflow/task/DAG detail, explanations, events, artifacts, command visibility, and schedule list/show/history.
-  - [ ] Add revision-fenced task controls, artifact retrieval, and schedule mutations.
+  - [x] Add revision-fenced task controls, artifact retrieval, and schedule mutations.
     - [x] Add revision-fenced task and schedule command submission.
-    - [ ] Add command execution and artifact retrieval.
+    - [x] Add command execution and artifact retrieval.
 - [x] Include worker health, quota admission, reservations, locks, progress, and T3 links in the admin projections.
 - [x] Define versioned JSON data transfer objects suitable for the future dashboard.
 - [x] Test stale commands, asynchronous command outcomes, authorization seam, and JSON stability.
@@ -450,7 +450,7 @@ This checklist is the authority for the rest of the implementation chain. A chai
   - Add task start, delay, pause, resume, cancel, retry, and skip commands with required audit reasons, optional replay IDs, current-revision lookup, human output, and `--json`.
   - Add schedule run, delay-next, enable, and disable command submission. Manual run remains a durable command whose executor must use the existing transactional trigger/idempotency path.
   - Test parsing, revision lookup, accepted/stale responses, replay IDs, authorization, JSON/human output, and complete removal of direct CLI state writes.
-- [ ] S11 — Admin command execution and artifact retrieval
+- [x] S11 — Admin command execution and artifact retrieval
   - Execute pending task and schedule commands through deterministic policy plus atomic target-revision transitions, durable outcomes, and audit events.
   - Recheck dependencies, locks, worker health, and hard quota admission when applying commands; an ordinary admin command never bypasses closed admission.
   - Execute manual schedule runs through the existing transactional trigger path and retain occurrence/open-run idempotency.

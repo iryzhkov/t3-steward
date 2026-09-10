@@ -142,6 +142,26 @@ func (e *DAGExecution) CancelTask(taskID string, now time.Time) error {
 	return nil
 }
 
+// SkipTask marks one unfinished task as intentionally skipped without releasing
+// dependent tasks.
+func (e *DAGExecution) SkipTask(taskID string, now time.Time) error {
+	taskIndex, ok := e.taskByID[taskID]
+	if !ok {
+		return fmt.Errorf("skip task %q: unknown task", taskID)
+	}
+	attempt := &e.state.Attempts[e.currentAttemptIndex(e.state.Tasks[taskIndex].ID)]
+	if attempt.Progress == domain.ProgressSucceeded || attempt.Progress == domain.ProgressSkipped {
+		return fmt.Errorf("skip task %q: progress is %q", taskID, attempt.Progress)
+	}
+	attempt.Progress = domain.ProgressSkipped
+	attempt.Control = domain.ControlStopped
+	attempt.UpdatedAt = now
+	attempt.CompletedAt = timePointer(now)
+	attempt.Failure = ""
+	e.refresh(now, true)
+	return nil
+}
+
 // RetryTask creates a new unassigned attempt for a failed or cancelled task.
 // Successful dependency attempts are reused and are never rerun.
 func (e *DAGExecution) RetryTask(taskID, attemptID string, now time.Time) error {
@@ -340,7 +360,7 @@ func (e *DAGExecution) refresh(now time.Time, touch bool) {
 func (e *DAGExecution) runProgress() domain.ProgressState {
 	allSucceeded := len(e.state.Tasks) != 0
 	anyActive, anyReady, anyNeedsInput := false, false, false
-	anyFailed, anyCancelled := false, false
+	anyFailed, anyCancelled, anySkipped := false, false, false
 	for _, task := range e.state.Tasks {
 		if e.taskSucceeded(task.ID) {
 			continue
@@ -357,6 +377,8 @@ func (e *DAGExecution) runProgress() domain.ProgressState {
 			anyFailed = true
 		case domain.ProgressCancelled:
 			anyCancelled = true
+		case domain.ProgressSkipped:
+			anySkipped = true
 		}
 	}
 	switch {
@@ -372,6 +394,8 @@ func (e *DAGExecution) runProgress() domain.ProgressState {
 		return domain.ProgressFailed
 	case anyCancelled:
 		return domain.ProgressCancelled
+	case anySkipped:
+		return domain.ProgressSkipped
 	default:
 		return domain.ProgressBlocked
 	}

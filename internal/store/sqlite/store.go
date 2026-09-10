@@ -21,7 +21,8 @@ import (
 
 // Store is the SQLite-backed state store.
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	now func() time.Time
 }
 
 var migrations = []string{
@@ -136,7 +137,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open state database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db}
+	s := &Store{db: db, now: time.Now}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, err
@@ -149,6 +150,15 @@ func Open(path string) (*Store, error) {
 
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
+
+// SetClock replaces the wall clock used for time-sensitive transactional fences.
+func (s *Store) SetClock(now func() time.Time) {
+	if now == nil {
+		s.now = time.Now
+		return
+	}
+	s.now = now
+}
 
 func (s *Store) migrate() error {
 	for _, stmt := range migrations {

@@ -231,6 +231,44 @@ func TestCommitScheduleTriggerAcceptsAndReplaysManualRun(t *testing.T) {
 	}
 }
 
+func TestScheduleTriggerHonorsAdminDelayNext(t *testing.T) {
+	store := openScheduleTriggerStore(t, filepath.Join(t.TempDir(), "state.db"), domain.ScheduleFailureNextCycle, nil)
+	defer store.Close()
+	records, err := store.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	until := scheduleTriggerTestTime.Add(time.Hour)
+	records.Schedules[0].NextNotBefore = &until
+	records.Schedules[0].Revision++
+	if err := store.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{Schedules: records.Schedules}); err != nil {
+		t.Fatal(err)
+	}
+	before := scheduleTriggerRequest("trigger-before-delay", "run-before-delay", until.Add(-time.Minute))
+	result, err := store.CommitScheduleTrigger(context.Background(), before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Trigger.State != domain.TriggerSuppressed || result.Trigger.Reason != "admin-delayed" || result.WorkflowRun != nil {
+		t.Fatalf("before delay = %#v", result)
+	}
+	after := scheduleTriggerRequest("trigger-after-delay", "run-after-delay", until)
+	result, err = store.CommitScheduleTrigger(context.Background(), after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Trigger.State != domain.TriggerAccepted || result.WorkflowRun == nil {
+		t.Fatalf("after delay = %#v", result)
+	}
+	records, err = store.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records.Schedules[0].NextNotBefore != nil {
+		t.Fatalf("delay was not cleared: %#v", records.Schedules[0])
+	}
+}
+
 func openScheduleTriggerStore(
 	t *testing.T,
 	path string,

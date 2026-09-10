@@ -98,6 +98,9 @@ func (s *Store) CommitThrottleAttemptTransitions(ctx context.Context, input []do
 		if replayed {
 			continue
 		}
+		if err := syncThrottleAttemptControlTx(ctx, tx, transition); err != nil {
+			return err
+		}
 		raw, err := json.Marshal(transition.Record)
 		if err != nil {
 			return fmt.Errorf("encode throttle attempt record %q/%q: %w",
@@ -117,6 +120,65 @@ func (s *Store) CommitThrottleAttemptTransitions(ctx context.Context, input []do
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit throttle attempt transitions: %w", err)
+	}
+	return nil
+}
+
+func syncThrottleAttemptControlTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	transition domain.ThrottleAttemptTransition,
+) error {
+	var attemptRaw []byte
+	err := tx.QueryRowContext(ctx,
+		"SELECT record FROM coordinator_attempts WHERE id = ?", transition.Record.AttemptID,
+	).Scan(&attemptRaw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load throttle attempt %q: %w", transition.Record.AttemptID, err)
+	}
+	var attempt domain.Attempt
+	if err := json.Unmarshal(attemptRaw, &attempt); err != nil {
+		return fmt.Errorf("decode throttle attempt %q: %w", transition.Record.AttemptID, err)
+	}
+	if attempt.Progress.Terminal() || attempt.Control == transition.Record.Control {
+		return nil
+	}
+
+	if transition.ExpectedRevision == 0 {
+		if transition.Record.Control != domain.ControlDraining || !attempt.Control.HoldsProviderSlot() {
+			return fmt.Errorf("new throttle control %q is invalid from attempt control %q",
+				transition.Record.Control, attempt.Control)
+		}
+	} else {
+		var previousRaw []byte
+		if err := tx.QueryRowContext(ctx,
+			`SELECT record FROM coordinator_throttle_attempts
+			 WHERE directive_id = ? AND attempt_id = ? AND revision = ?`,
+			transition.Record.DirectiveID, transition.Record.AttemptID, transition.ExpectedRevision,
+		).Scan(&previousRaw); err != nil {
+			return fmt.Errorf("load previous throttle control for %q/%q: %w",
+				transition.Record.DirectiveID, transition.Record.AttemptID, err)
+		}
+		var previous domain.ThrottleAttemptRecord
+		if err := json.Unmarshal(previousRaw, &previous); err != nil {
+			return fmt.Errorf("decode previous throttle control for %q/%q: %w",
+				transition.Record.DirectiveID, transition.Record.AttemptID, err)
+		}
+		if attempt.Control != previous.Control {
+			return fmt.Errorf("attempt %q control %q contradicts previous throttle control %q",
+				attempt.ID, attempt.Control, previous.Control)
+		}
+	}
+
+	expectedRevision := attempt.Revision
+	attempt.Control = transition.Record.Control
+	attempt.Revision++
+	attempt.UpdatedAt = transition.Record.UpdatedAt
+	if err := updateAdminAttemptTx(ctx, tx, attempt, expectedRevision); err != nil {
+		return fmt.Errorf("project throttle control to attempt %q: %w", attempt.ID, err)
 	}
 	return nil
 }

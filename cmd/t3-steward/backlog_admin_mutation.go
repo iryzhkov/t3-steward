@@ -19,6 +19,10 @@ type adminMutationService interface {
 	Mutate(context.Context, backlogadmin.Mutation) (backlogadmin.MutationResponse, error)
 }
 
+type adminCommandExecutor interface {
+	ExecutePendingCommands(context.Context) (backlogadmin.CommandExecutionReport, error)
+}
+
 type adminMutationInvocation struct {
 	kind          domain.AdminCommandKind
 	workflowRunID string
@@ -234,6 +238,20 @@ func (c backlogAdminCLI) submitMutation(ctx context.Context, invocation adminMut
 	})
 	if err != nil {
 		return err
+	}
+	if response.Command.State == domain.AdminCommandPending {
+		if executor, ok := c.mutator.(adminCommandExecutor); ok {
+			report, executeErr := executor.ExecutePendingCommands(ctx)
+			if executeErr != nil {
+				return executeErr
+			}
+			for _, decision := range report.Decisions {
+				if decision.Command.ID == response.Command.ID {
+					response = decision
+					break
+				}
+			}
+		}
 	}
 	if invocation.asJSON {
 		encoder := json.NewEncoder(c.stdout)

@@ -42,6 +42,44 @@ type routedCandidate struct {
 	blockers  []PlanningBlocker
 }
 
+// ResolvedProviderRoute identifies the worker and fleet quota pool selected
+// while resolving a task's provider preferences. It deliberately omits cost and
+// concurrency policy so callers can apply their own admission rules.
+type ResolvedProviderRoute struct {
+	WorkerID    string
+	QuotaPoolID string
+}
+
+// ResolveProviderRoutePools uses the planner's canonical provider inventory and
+// fleet-pool mapping rules without requiring route estimates.
+func ResolveProviderRoutePools(task domain.Task, attempt domain.Attempt, workers []domain.WorkerInventory, pools []domain.QuotaPool) ([]ResolvedProviderRoute, error) {
+	router, err := newProviderRouter(PlanInput{Workers: workers, QuotaPools: pools})
+	if err != nil {
+		return nil, err
+	}
+	workerIDs := make([]string, 0, len(workers))
+	for _, worker := range workers {
+		workerIDs = append(workerIDs, worker.ID)
+	}
+	sort.Strings(workerIDs)
+	var resolved []ResolvedProviderRoute
+	for _, candidate := range router.Candidates(task, attempt, workerIDs) {
+		usable := true
+		for _, blocker := range candidate.blockers {
+			if blocker.Code != PlanningBlockerRouteEstimateMissing && blocker.Code != PlanningBlockerPoolConcurrency {
+				usable = false
+				break
+			}
+		}
+		if usable && candidate.candidate.Route != nil {
+			resolved = append(resolved, ResolvedProviderRoute{
+				WorkerID: candidate.candidate.WorkerID, QuotaPoolID: candidate.candidate.Route.QuotaPoolID,
+			})
+		}
+	}
+	return resolved, nil
+}
+
 func newProviderRouter(input PlanInput) (*providerRouter, error) {
 	router := &providerRouter{
 		workers:          make(map[string]domain.WorkerInventory, len(input.Workers)),

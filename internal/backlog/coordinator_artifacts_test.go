@@ -194,6 +194,34 @@ func TestCoordinatorArtifactRetentionAndPathSafety(t *testing.T) {
 	}
 }
 
+func TestCoordinatorArtifactOpenVerifiesContentBeforeReturning(t *testing.T) {
+	catalog, root, publication := coordinatorArtifactFixture(t)
+	content := []byte("verified output\n")
+	setPublicationContent(&publication, content)
+	store := CoordinatorArtifactStore{Root: root, Catalog: catalog}
+	if _, err := store.Publish(ctxForTest(), publication, bytes.NewReader(content)); err != nil {
+		t.Fatal(err)
+	}
+	artifact, reader, err := store.Open(ctxForTest(), publication.Artifact.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil || !bytes.Equal(got, content) || artifact.ID != publication.Artifact.ID {
+		t.Fatalf("open = %q, %#v, %v", got, artifact, err)
+	}
+	objectPath := filepath.Join(root, filepath.FromSlash(artifact.StoragePath))
+	if err := os.Chmod(objectPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(objectPath, []byte("tampered output"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if _, reader, err := store.Open(ctxForTest(), artifact.ID); err == nil || reader != nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("tampered open = reader %#v, error %v", reader, err)
+	}
+}
 type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("connection lost") }

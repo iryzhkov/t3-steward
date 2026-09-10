@@ -33,6 +33,18 @@ func TestCommitTurnOutcomeTransitionsAtomicReplayAndStaleRevision(t *testing.T) 
 	); err != nil {
 		t.Fatal(err)
 	}
+	projected, err := store.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, attempt := range projected.Attempts {
+		switch attempt.ID {
+		case attemptA.ID:
+			attemptA = attempt
+		case attemptZ.ID:
+			attemptZ = attempt
+		}
+	}
 
 	doneA := turnOutcomeStoreTransition(attemptA, throttleA.Record, "outcome-a", now.Add(time.Minute))
 	if err := store.CommitTurnOutcomeTransitions(

@@ -172,6 +172,8 @@ type Attempt struct {
 	ThreadID               string            `json:"threadId,omitempty"`
 	CheckpointArtifactID   string            `json:"checkpointArtifactId,omitempty"`
 	FinalSummaryArtifactID string            `json:"finalSummaryArtifactId,omitempty"`
+	AdminNotBefore         *time.Time        `json:"adminNotBefore,omitempty"`
+	AdminForceStart        bool              `json:"adminForceStart,omitempty"`
 	Failure                string            `json:"failure,omitempty"`
 	StartedAt              *time.Time        `json:"startedAt,omitempty"`
 	UpdatedAt              time.Time         `json:"updatedAt"`
@@ -241,20 +243,21 @@ type ScheduleTemplate struct {
 
 // Schedule is the mutable projection of a recurring definition's current template and execution state.
 type Schedule struct {
-	ID           string                `json:"id"`
-	Name         string                `json:"name"`
-	Version      int                   `json:"version"`
-	WorkflowID   string                `json:"workflowId"`
-	Expression   string                `json:"expression"`
-	Timezone     string                `json:"timezone"`
-	Overlap      ScheduleOverlapPolicy `json:"overlap"`
-	Misfire      ScheduleMisfirePolicy `json:"misfire"`
-	AfterFailure ScheduleFailurePolicy `json:"afterFailure"`
-	Enabled      bool                  `json:"enabled"`
-	ActiveRunID  string                `json:"activeRunId,omitempty"`
-	Revision     int64                 `json:"revision"`
-	CreatedAt    time.Time             `json:"createdAt"`
-	UpdatedAt    time.Time             `json:"updatedAt"`
+	ID            string                `json:"id"`
+	Name          string                `json:"name"`
+	Version       int                   `json:"version"`
+	WorkflowID    string                `json:"workflowId"`
+	Expression    string                `json:"expression"`
+	Timezone      string                `json:"timezone"`
+	Overlap       ScheduleOverlapPolicy `json:"overlap"`
+	Misfire       ScheduleMisfirePolicy `json:"misfire"`
+	AfterFailure  ScheduleFailurePolicy `json:"afterFailure"`
+	Enabled       bool                  `json:"enabled"`
+	ActiveRunID   string                `json:"activeRunId,omitempty"`
+	NextNotBefore *time.Time            `json:"nextNotBefore,omitempty"`
+	Revision      int64                 `json:"revision"`
+	CreatedAt     time.Time             `json:"createdAt"`
+	UpdatedAt     time.Time             `json:"updatedAt"`
 }
 
 // TriggerState records whether one nominal schedule firing created a run.

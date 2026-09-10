@@ -127,6 +127,57 @@ func (s CoordinatorArtifactStore) Publish(ctx context.Context, publication domai
 	return committed, nil
 }
 
+// Open retrieves one coordinator-owned artifact after verifying the retained
+// object against its immutable size and checksum. The returned descriptor is
+// positioned at the beginning and must be closed by the caller.
+func (s CoordinatorArtifactStore) Open(ctx context.Context, artifactID string) (domain.Artifact, *os.File, error) {
+	if s.Catalog == nil {
+		return domain.Artifact{}, nil, errors.New("open artifact: catalog is required")
+	}
+	if strings.TrimSpace(artifactID) != artifactID || artifactID == "" {
+		return domain.Artifact{}, nil, errors.New("open artifact: artifact ID is required")
+	}
+	artifacts, err := s.Catalog.LoadArtifacts(ctx, []string{artifactID})
+	if err != nil {
+		return domain.Artifact{}, nil, fmt.Errorf("open artifact: %w", err)
+	}
+	if len(artifacts) != 1 {
+		return domain.Artifact{}, nil, fmt.Errorf("open artifact: artifact %q not found", artifactID)
+	}
+	artifact := artifacts[0]
+	objectPath, err := safeBundleFile(s.Root, filepath.FromSlash(artifact.StoragePath))
+	if err != nil {
+		return domain.Artifact{}, nil, fmt.Errorf("open artifact: resolve retained object: %w", err)
+	}
+	file, err := os.Open(objectPath)
+	if err != nil {
+		return domain.Artifact{}, nil, fmt.Errorf("open artifact: %w", err)
+	}
+	closeOnError := true
+	defer func() {
+		if closeOnError {
+			_ = file.Close()
+		}
+	}()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return domain.Artifact{}, nil, errors.New("open artifact: retained object is not a regular file")
+	}
+	digest := sha256.New()
+	size, err := io.Copy(digest, file)
+	if err != nil {
+		return domain.Artifact{}, nil, fmt.Errorf("open artifact: verify content: %w", err)
+	}
+	if size != artifact.Size || !strings.EqualFold(hex.EncodeToString(digest.Sum(nil)), artifact.SHA256) {
+		return domain.Artifact{}, nil, errors.New("open artifact: checksum mismatch")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return domain.Artifact{}, nil, fmt.Errorf("open artifact: rewind content: %w", err)
+	}
+	closeOnError = false
+	return artifact, file, nil
+}
+
 // FetchDependencies resolves coordinator metadata and atomically materializes
 // declared predecessor outputs into a worker workspace.
 func (s CoordinatorArtifactStore) FetchDependencies(

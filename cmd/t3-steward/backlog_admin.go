@@ -48,6 +48,7 @@ type adminQueryService interface {
 type backlogAdminCLI struct {
 	service      adminQueryService
 	mutator      adminMutationService
+	artifacts    adminArtifactService
 	principal    backlogadmin.Principal
 	stdout       io.Writer
 	newCommandID func() (string, error)
@@ -59,6 +60,9 @@ func (c backlogAdminCLI) runBacklog(ctx context.Context, args []string) error {
 	}
 	if isBacklogMutation(args[0]) {
 		return c.runBacklogMutation(ctx, args)
+	}
+	if len(args) >= 2 && args[0] == "artifact" && args[1] == "get" {
+		return c.runArtifactGet(ctx, args[2:])
 	}
 	query, asJSON, err := parseBacklogAdminQuery(args)
 	if err != nil {

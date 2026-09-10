@@ -300,6 +300,12 @@ func comparePlanningPriority(left, right planningTaskEntry) int {
 		}
 		return 1
 	}
+	if left.attempt.AdminForceStart != right.attempt.AdminForceStart {
+		if left.attempt.AdminForceStart {
+			return -1
+		}
+		return 1
+	}
 	if left.order.DeadlineRisk != right.order.DeadlineRisk {
 		if left.order.DeadlineRisk {
 			return -1

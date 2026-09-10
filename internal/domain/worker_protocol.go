@@ -23,6 +23,7 @@ type WorkerAssignmentObservation struct {
 	State           AssignmentState `json:"state"`
 	Control         ControlState    `json:"control,omitempty"`
 	ThreadID        string          `json:"threadId,omitempty"`
+	WorkspacePath   string          `json:"workspacePath,omitempty"`
 	ObservedAt      time.Time       `json:"observedAt"`
 }
 

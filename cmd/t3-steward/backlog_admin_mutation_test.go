@@ -357,9 +357,10 @@ func TestBacklogMutationPersistsAndReplaysThroughAdminService(t *testing.T) {
 	if err := json.Unmarshal(replay.Bytes(), &replayResponse); err != nil {
 		t.Fatal(err)
 	}
-	if firstResponse.Command.ID != "replay-1" || firstResponse.Command.State != domain.AdminCommandPending ||
+	if firstResponse.Command.ID != "replay-1" || firstResponse.Command.State != domain.AdminCommandApplied ||
 		!firstResponse.Command.CreatedAt.Equal(now) ||
 		replayResponse.Command.ID != firstResponse.Command.ID ||
+		replayResponse.Command.State != domain.AdminCommandApplied ||
 		!replayResponse.Command.CreatedAt.Equal(firstResponse.Command.CreatedAt) {
 		t.Fatalf("first = %+v, replay = %+v", firstResponse.Command, replayResponse.Command)
 	}
@@ -367,7 +368,7 @@ func TestBacklogMutationPersistsAndReplaysThroughAdminService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.AdminCommands) != 1 || len(loaded.AuditEvents) != 1 {
-		t.Fatalf("commands = %d, audit events = %d", len(loaded.AdminCommands), len(loaded.AuditEvents))
+	if len(loaded.AdminCommands) != 1 || len(loaded.AuditEvents) != 2 || len(loaded.Attempts) != 2 {
+		t.Fatalf("commands = %d, audit events = %d, attempts = %d", len(loaded.AdminCommands), len(loaded.AuditEvents), len(loaded.Attempts))
 	}
 }

@@ -22,17 +22,23 @@ func (s *Store) CommitScheduleTrigger(ctx context.Context, request domain.Schedu
 	if err := validateScheduleTriggerRequest(request); err != nil {
 		return domain.ScheduleTriggerResult{}, err
 	}
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.ScheduleTriggerResult{}, fmt.Errorf("begin schedule trigger: %w", err)
 	}
 	defer tx.Rollback()
+	result, err := commitScheduleTriggerTx(ctx, tx, request)
+	if err != nil {
+		return domain.ScheduleTriggerResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.ScheduleTriggerResult{}, fmt.Errorf("commit schedule trigger: %w", err)
+	}
+	return result, nil
+}
 
-	result, err := tx.ExecContext(ctx,
-		`UPDATE coordinator_schedules SET revision = revision WHERE id = ?`,
-		request.ScheduleID,
-	)
+func commitScheduleTriggerTx(ctx context.Context, tx *sql.Tx, request domain.ScheduleTriggerRequest) (domain.ScheduleTriggerResult, error) {
+	result, err := tx.ExecContext(ctx, "UPDATE coordinator_schedules SET revision = revision WHERE id = ?", request.ScheduleID)
 	if err != nil {
 		return domain.ScheduleTriggerResult{}, fmt.Errorf("lock schedule %q: %w", request.ScheduleID, err)
 	}
@@ -53,9 +59,6 @@ func (s *Store) CommitScheduleTrigger(ctx context.Context, request domain.Schedu
 			return domain.ScheduleTriggerResult{}, err
 		}
 		replayed.Replay = true
-		if err := tx.Commit(); err != nil {
-			return domain.ScheduleTriggerResult{}, fmt.Errorf("commit schedule trigger replay: %w", err)
-		}
 		return replayed, nil
 	}
 
@@ -63,83 +66,67 @@ func (s *Store) CommitScheduleTrigger(ctx context.Context, request domain.Schedu
 	if err != nil {
 		return domain.ScheduleTriggerResult{}, err
 	}
-
 	reason := ""
 	if request.Source == domain.ScheduleTriggerScheduled {
 		switch {
 		case !schedule.Enabled:
 			reason = "schedule-disabled"
+		case schedule.NextNotBefore != nil && request.NominalAt.Before(*schedule.NextNotBefore):
+			reason = "admin-delayed"
 		case request.Misfired && template.Misfire == domain.ScheduleMisfireSkip:
 			reason = "misfire-skipped"
 		case activeRun != nil && !activeRun.Progress.Terminal():
 			reason = "overlap-forbidden"
-		case activeRun != nil && activeRun.Progress == domain.ProgressFailed &&
-			template.AfterFailure == domain.ScheduleFailureHold:
+		case activeRun != nil && activeRun.Progress == domain.ProgressFailed && template.AfterFailure == domain.ScheduleFailureHold:
 			reason = "failure-hold"
 		}
 	} else if activeRun != nil && !activeRun.Progress.Terminal() {
 		return domain.ScheduleTriggerResult{}, ErrManualScheduleRunOpen
-	} else if activeRun != nil && activeRun.Progress == domain.ProgressFailed &&
-		template.AfterFailure == domain.ScheduleFailureHold {
+	} else if activeRun != nil && activeRun.Progress == domain.ProgressFailed && template.AfterFailure == domain.ScheduleFailureHold {
 		return domain.ScheduleTriggerResult{}, ErrScheduleFailureHeld
 	}
 
 	trigger := domain.Trigger{
-		ID:              request.TriggerID,
-		ScheduleID:      schedule.ID,
-		ScheduleVersion: template.Version,
-		NominalAt:       request.NominalAt.UTC(),
-		OccurrenceKey:   occurrenceKey,
-		State:           domain.TriggerSuppressed,
-		Reason:          reason,
-		ObservedAt:      request.ObservedAt.UTC(),
+		ID: request.TriggerID, ScheduleID: schedule.ID, ScheduleVersion: template.Version,
+		NominalAt: request.NominalAt.UTC(), OccurrenceKey: occurrenceKey,
+		State: domain.TriggerSuppressed, Reason: reason, ObservedAt: request.ObservedAt.UTC(),
 	}
 	var workflowRun *domain.WorkflowRun
 	if reason == "" {
-		trigger.State = domain.TriggerAccepted
-		trigger.WorkflowRunID = request.WorkflowRunID
+		trigger.State, trigger.WorkflowRunID = domain.TriggerAccepted, request.WorkflowRunID
 		run := domain.WorkflowRun{
-			ID:         request.WorkflowRunID,
-			WorkflowID: template.WorkflowID,
-			ScheduleID: schedule.ID,
-			TriggerID:  trigger.ID,
-			Progress:   domain.ProgressQueued,
-			Revision:   1,
-			CreatedAt:  request.ObservedAt.UTC(),
-			UpdatedAt:  request.ObservedAt.UTC(),
+			ID: request.WorkflowRunID, WorkflowID: template.WorkflowID, ScheduleID: schedule.ID,
+			TriggerID: trigger.ID, Progress: domain.ProgressQueued, Revision: 1,
+			CreatedAt: request.ObservedAt.UTC(), UpdatedAt: request.ObservedAt.UTC(),
 		}
 		workflowRun = &run
 	}
-
 	if err := insertScheduleTrigger(ctx, tx, trigger); err != nil {
 		return domain.ScheduleTriggerResult{}, err
 	}
 	if workflowRun != nil {
 		if err := upsertJSON(ctx, tx, "workflow run", workflowRun.ID,
-			`INSERT INTO coordinator_workflow_runs(id, workflow_id, schedule_id, progress, revision, record)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
+			"INSERT INTO coordinator_workflow_runs(id, workflow_id, schedule_id, progress, revision, record) VALUES (?, ?, ?, ?, ?, ?)",
 			[]any{workflowRun.ID, workflowRun.WorkflowID, workflowRun.ScheduleID, workflowRun.Progress, workflowRun.Revision},
 			*workflowRun,
 		); err != nil {
 			return domain.ScheduleTriggerResult{}, err
 		}
 		schedule.ActiveRunID = workflowRun.ID
+		if schedule.NextNotBefore != nil && !request.NominalAt.Before(*schedule.NextNotBefore) {
+			schedule.NextNotBefore = nil
+		}
 		schedule.Revision++
 		schedule.UpdatedAt = request.ObservedAt.UTC()
 		if err := upsertJSON(ctx, tx, "schedule", schedule.ID,
-			`INSERT INTO coordinator_schedules(id, active_run_id, revision, current_version, record)
-			 VALUES (?, ?, ?, ?, ?)
-			 ON CONFLICT(id) DO UPDATE SET active_run_id = excluded.active_run_id,
-			 revision = excluded.revision, current_version = excluded.current_version,
-			 record = excluded.record`,
+			"INSERT INTO coordinator_schedules(id, active_run_id, revision, current_version, record) VALUES (?, ?, ?, ?, ?) "+
+				"ON CONFLICT(id) DO UPDATE SET active_run_id = excluded.active_run_id, revision = excluded.revision, "+
+				"current_version = excluded.current_version, record = excluded.record",
 			[]any{schedule.ID, schedule.ActiveRunID, schedule.Revision, schedule.Version},
 			schedule,
 		); err != nil {
 			return domain.ScheduleTriggerResult{}, err
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return domain.ScheduleTriggerResult{}, fmt.Errorf("commit schedule trigger: %w", err)
 	}
 	return domain.ScheduleTriggerResult{Trigger: trigger, WorkflowRun: workflowRun}, nil
 }

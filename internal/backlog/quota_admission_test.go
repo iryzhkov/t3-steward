@@ -3,6 +3,7 @@ package backlog
 import (
 	"math"
 	"reflect"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -351,6 +352,34 @@ func TestQuotaAdmissionPolicyRejectsInvalidInput(t *testing.T) {
 				t.Fatal("NewQuotaAdmissionPolicy succeeded, want validation error")
 			}
 		})
+	}
+}
+
+func TestAdminForceStartBypassesTimingAndSurplusHorizonButNotHardClosure(t *testing.T) {
+	window := quotaTestWindow()
+	window.Admission = domain.AdmissionConstrained
+	window.SurplusStartsAt = plannerTestTime.Add(time.Hour)
+	policy, err := NewQuotaAdmissionPolicy(quotaTestInput(window))
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := plannerTestTime.Add(time.Hour)
+	estimate := quotaTestEstimate()
+	candidate := PlanningCandidate{
+		Task:    domain.Task{Class: domain.TaskClassSurplus, NotBefore: &future},
+		Attempt: domain.Attempt{ID: "attempt-1", AdminForceStart: true, AdminNotBefore: &future},
+		Route:   &domain.ProviderRoute{QuotaPoolID: "pool"}, WorkerID: "normandy", Estimate: &estimate,
+	}
+	if blockers := policy.StartPlan(plannerTestTime).Evaluate(candidate); len(blockers) != 0 {
+		t.Fatalf("forced blockers = %#v", blockers)
+	}
+	window.Admission = domain.AdmissionClosed
+	policy, err = NewQuotaAdmissionPolicy(quotaTestInput(window))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if codes := planningBlockerCodes(policy.StartPlan(plannerTestTime).Evaluate(candidate)); !slices.Equal(codes, []string{PlanningBlockerQuotaAdmission}) {
+		t.Fatalf("closed blockers = %v", codes)
 	}
 }
 

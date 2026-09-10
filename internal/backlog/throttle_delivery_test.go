@@ -106,6 +106,47 @@ func TestReconcileThrottleDeliveriesPersistsBeforePartialAcknowledgement(t *test
 	}
 }
 
+func TestReconcilePendingThrottleCommandsReplaysAdminPauseAfterRestart(t *testing.T) {
+	binding := throttleBinding("attempt-a", "worker-a", domain.ControlRunning)
+	planned, err := PlanAdminPauseDelivery(
+		"admin-pause", "operator pause", false, binding, throttleDeliveryTime,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &throttleDeliveryStoreFake{records: []domain.ThrottleAttemptRecord{planned.Record}}
+	deliveries := 0
+	transport := throttleTransportFunc(func(_ context.Context, workerID string, commands []domain.ThrottleCommand) ([]domain.ThrottleAcknowledgement, error) {
+		deliveries++
+		if workerID != binding.Assignment.WorkerID || len(commands) != 1 ||
+			commands[0].AssignmentID != binding.Assignment.ID ||
+			commands[0].ThreadID != binding.Assignment.ThreadID ||
+			commands[0].WorkspacePath != binding.WorkspacePath ||
+			!reflect.DeepEqual(commands[0].Route, binding.Assignment.Route) {
+			t.Fatalf("replayed delivery changed identity: %q %#v", workerID, commands)
+		}
+		return []domain.ThrottleAcknowledgement{{
+			CommandID: commands[0].ID, AttemptID: binding.Attempt.ID, Accepted: true,
+			Result: domain.ThrottleResultCheckpointed, Checkpoint: checkpointFixture(),
+			AcknowledgedAt: throttleDeliveryTime.Add(time.Minute),
+		}}, nil
+	})
+	report, err := ReconcilePendingThrottleCommands(
+		context.Background(), store, transport, throttleDeliveryTime.Add(time.Minute),
+	)
+	if err != nil || len(report.Commands) != 1 || len(report.Acknowledgements) != 1 ||
+		store.records[0].Delivery != domain.ThrottleDeliveryAcknowledged ||
+		store.records[0].Control != domain.ControlPaused {
+		t.Fatalf("pending replay = %#v, records = %#v, err = %v", report, store.records, err)
+	}
+	report, err = ReconcilePendingThrottleCommands(
+		context.Background(), store, transport, throttleDeliveryTime.Add(2*time.Minute),
+	)
+	if err != nil || len(report.Commands) != 0 || deliveries != 1 {
+		t.Fatalf("settled replay = %#v, deliveries = %d, err = %v", report, deliveries, err)
+	}
+}
+
 func TestReconcileThrottleDeliveriesReplaysLostDeliveryWithStableCommand(t *testing.T) {
 	store := &throttleDeliveryStoreFake{}
 	binding := throttleBinding("attempt-a", "worker-a", domain.ControlRunning)

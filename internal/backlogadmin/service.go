@@ -31,9 +31,10 @@ type Reader interface {
 }
 
 type Service struct {
-	reader     Reader
-	authorizer Authorizer
-	now        func() time.Time
+	reader       Reader
+	authorizer   Authorizer
+	now          func() time.Time
+	artifactOpen ArtifactOpenFunc
 }
 
 func New(reader Reader, authorizer Authorizer) (*Service, error) {

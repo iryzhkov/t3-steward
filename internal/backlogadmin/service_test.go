@@ -406,6 +406,7 @@ func openAdminTestStore(t *testing.T) *sqlite.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	store.SetClock(func() time.Time { return adminTestNow })
 	t.Cleanup(func() { _ = store.Close() })
 	return store
 }

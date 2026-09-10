@@ -221,6 +221,52 @@ func TestBuildPlanDerivesPoolFromFleetMapping(t *testing.T) {
 	}
 }
 
+func TestResolveProviderRoutePoolsUsesCanonicalInventoryMapping(t *testing.T) {
+	task := domain.Task{
+		ID:         "task",
+		WorkflowID: "workflow",
+		Name:       "task",
+		Class:      domain.TaskClassRequired,
+		Routes: []domain.ProviderRoute{{
+			ProviderInstanceID: "codex",
+			Model:              "model-a",
+		}},
+	}
+	attempt := domain.Attempt{
+		ID:            "attempt",
+		WorkflowRunID: "run",
+		TaskID:        task.ID,
+		Number:        1,
+		Progress:      domain.ProgressReady,
+		Control:       domain.ControlUnassigned,
+	}
+	workers := []domain.WorkerInventory{{
+		ID: "worker-a",
+		Providers: []domain.WorkerProviderInventory{{
+			InstanceID: "codex", Models: []string{"model-a"}, Available: true,
+		}},
+	}}
+	pools := []domain.QuotaPool{{
+		ID: "pool", ProviderInstanceIDs: []string{"codex"}, MaxConcurrent: 2,
+	}}
+	resolved, err := ResolveProviderRoutePools(task, attempt, workers, pools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 1 || resolved[0].WorkerID != "worker-a" || resolved[0].QuotaPoolID != "pool" {
+		t.Fatalf("resolved = %#v", resolved)
+	}
+
+	workers[0].Providers[0].Models = []string{"another-model"}
+	resolved, err = ResolveProviderRoutePools(task, attempt, workers, pools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 0 {
+		t.Fatalf("model-incompatible routes = %#v", resolved)
+	}
+}
+
 func TestBuildPlanUsesWorkerPoolForAmbiguousInstance(t *testing.T) {
 	task := routingTask("alpha", "codex", "gpt")
 	workerA := routingWorker("worker-a", routingProvider("codex", "pool-a", true, "gpt"))

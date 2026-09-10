@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
@@ -31,6 +33,7 @@ Coordinator read commands:
   explain <workflow-run>/<task> [--json]
   artifacts [<task>|<workflow-run>/<task>] [--json]
   artifact show <artifact> [--json]
+  artifact get <artifact> [--output PATH]
   commands [<workflow-run>[/<task>]] [--json]
   command show <command> [--json]
 
@@ -118,9 +121,19 @@ func runCoordinatorAdmin(cfg config.Config, args []string, schedules bool) error
 	if err != nil {
 		return err
 	}
+	dataDir, err := cfg.ResolveDataDir()
+	if err != nil {
+		return err
+	}
+	artifactStore := backlog.CoordinatorArtifactStore{Root: filepath.Join(dataDir, "artifacts"), Catalog: store}
+	service.SetArtifactOpener(func(ctx context.Context, artifactID string) (domain.Artifact, io.ReadCloser, error) {
+		artifact, content, openErr := artifactStore.Open(ctx, artifactID)
+		return artifact, content, openErr
+	})
 	cli := backlogAdminCLI{
-		service: service,
-		mutator: service,
+		service:   service,
+		mutator:   service,
+		artifacts: service,
 		principal: backlogadmin.Principal{
 			ID:    fmt.Sprintf("local:%d", os.Getuid()),
 			Roles: []string{"local-admin"},
