@@ -109,6 +109,20 @@ func TestDeriveQuotaPlanningStateRejectsContradictoryDurableState(t *testing.T) 
 		{name: "canonical thread mismatch", edit: func(input *QuotaPlanningStateInput) {
 			input.Attempts[0].ThreadID = "other-thread"
 		}, want: "canonical execution identity contradicts"},
+		{name: "duplicate attempt assignment", edit: func(input *QuotaPlanningStateInput) {
+			duplicate := input.Assignments[0]
+			duplicate.ID += "-duplicate"
+			input.Assignments = append(input.Assignments, duplicate)
+		}, want: "has assignments"},
+		{name: "assignment for unknown attempt", edit: func(input *QuotaPlanningStateInput) {
+			unknown := input.Assignments[0]
+			unknown.ID = "assignment-unknown"
+			unknown.AttemptID = "unknown"
+			input.Assignments = append(input.Assignments, unknown)
+		}, want: "names unknown attempt"},
+		{name: "canonical thread mismatch", edit: func(input *QuotaPlanningStateInput) {
+			input.Attempts[0].ThreadID = "other-thread"
+		}, want: "canonical execution identity contradicts"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
