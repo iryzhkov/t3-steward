@@ -4,35 +4,35 @@ Updated: 2026-09-10
 
 ## Completed checkpoint
 
-- Completed M1, M2, M3, M4, and the first M5 increment.
-- Added a pure `DeriveQuotaPoolAdmissions` seam that projects each fleet quota pool to `open`, `constrained`, `draining`, `closed`, or `recovering`.
-- Pool admission is the conservative maximum across all configured bucket windows: normal maps to open, warned to constrained, draining to draining, and stopped to closed.
-- Healthy pools with active pending, eligible, or resuming attempt reservations enter recovering; terminal resume records do not affect admission.
-- Active required-work resume reservations contribute their remaining cost to `PausedRequiredWorkRemainder`; surplus reservations remain visible in the recovery count without consuming required-work capacity.
-- Shared-account bucket projections are reconciled by freshest observation. Equal-time observations in one epoch use the highest credible phase and conservative health; equal-time epoch conflicts fail closed.
-- Missing, stale, future-dated, expired-epoch, epoch-inconsistent, and irreconcilably conflicting observations fail closed with structured, deterministic issues.
-- Results, issue order, bucket epoch order, and reservation accounting are invariant to reordered inputs, and caller-owned slices and bucket states are detached.
-- Marked the first M5 checklist item complete.
+- Completed M1, M2, M3, M4, and the first two M5 increments.
+- Added deterministic admission-transition planning that compares durable per-pool revisions with derived admissions and emits canonical fleet batches independent of input order.
+- Added persisted quota-admission records and fleet throttle directives, with a schema-v3 migration and ordered load APIs.
+- Admission records for every changed pool and their optional directives commit in one SQLite transaction. A directive is returned to outward callers only after that transaction commits.
+- Directives are deterministically identified and bound to quota pool, admission revision, canonical bucket epochs, severity, reason, deadline, and creation time.
+- Constrained, draining, and closed admissions map to warn, drain, and stop directives respectively. Repeated state in the same epoch is a no-op; a repeated severity in a new epoch produces a new revision-bound directive.
+- Exact transaction replay succeeds without duplicate records or directives. Stale revisions reject and roll back the complete multi-pool batch.
+- Admission derivation now carries the earliest accepted bucket drain deadline into transition planning without aliasing caller-owned state.
+- Marked the second M5 checklist item complete.
 - No configured/live repository, T3 thread, worker, service, or live database was touched.
 
 ## Decisions
 
-- Admission derivation consumes immutable coordinator snapshots and has no dispatch, worker, database, or deployed throttle-controller side effects.
-- Observation freshness is evaluated at a required explicit derivation time and maximum age. The exact age boundary remains usable.
-- When several workers report one shared bucket, a newer observation supersedes older observations. Same-time observations in the same epoch reconcile to the highest severity and require all reporters to agree that the bucket is healthy.
-- Same-time observations that identify different epochs are not safe to order and close admission.
-- A bucket epoch must equal `domain.EpochFor(ResetsAt)`; a reset time at or before derivation time is no longer a current epoch.
-- A normal bucket whose persisted health flag is false constrains admission, preventing resume while still distinguishing that condition from a hard closure.
-- Required paused remainder includes pending, eligible, and resuming attempts until their resume record becomes terminal.
-- Input/configuration defects return errors; uncertain runtime quota state produces a closed admission projection with structured issues.
-- Pool and bucket ordering is canonical so later atomic planning and directive generation can compare projections reliably.
+- Admission planning and persistence remain behind a small store interface; no worker transport or daemon path is connected yet.
+- SQLite is the authority for when a directive becomes eligible: admission rows are written first inside the transaction, directive rows second, and neither is externally visible until commit.
+- A persisted admission revision changes only when admission, reason, or canonical bucket epochs change. Merely receiving a fresher equivalent observation does not create directive churn.
+- An admission severity is reissued when its bucket epoch set changes, allowing workers to distinguish a new provider reset window while keeping same-epoch replay idempotent.
+- Directive identity is a deterministic digest of quota pool, admission revision, severity, and bucket epochs.
+- Every directive must match its admission record's pool, revision, epoch set, and allowed admission/severity mapping.
+- The earliest drain deadline across reconciled buckets is used for the pool directive.
+- Existing databases migrate forward transactionally to schema version 3; tests continue to use temporary databases only.
 
 ## Verification
 
 - Baseline: `go test ./...`
-- `go test ./internal/backlog -run TestDeriveQuotaPoolAdmissions -count=1`
-- `go test -race ./internal/backlog -run TestDeriveQuotaPoolAdmissions -count=1`
-- `go test ./internal/backlog -count=1`
+- `go test ./internal/backlog -run 'Test(Reconcile|Plan)QuotaAdmissionTransitions' -count=1`
+- `go test ./internal/store/sqlite -run 'Test(CommitQuotaAdmissionTransitions|MigrationFromVersionOne)' -count=1`
+- `go test ./internal/backlog ./internal/store/sqlite ./internal/domain -count=1`
+- `go test -race ./internal/backlog ./internal/store/sqlite -run 'Test(DeriveQuotaPoolAdmissions|ReconcileQuotaAdmissionTransitions|PlanQuotaAdmissionTransitions|CommitQuotaAdmissionTransitions|MigrationFromVersionOne)' -count=1`
 - `go test ./...`
 - `go vet ./...`
 - `git diff --check`
@@ -41,15 +41,16 @@ All passed.
 
 ## Remaining risks
 
-- Admission projections are not yet persisted atomically ahead of warn/drain worker directives; that is the next M5 increment.
+- Persisted directives are not yet delivered, acknowledged, or reconciled with affected attempts; that is the next M5 increment.
+- Structured warning, drain, checkpoint capture, hard-stop execution, and resume execution remain unimplemented for orchestrated attempts.
+- Completion-marker precedence against active throttle intent is not yet implemented.
 - The new resume-reservation seam is scheduler-owned and is not yet populated from durable attempts or assignments.
 - Paused required cost is derived but has not yet been wired into planner quota-window construction.
-- Structured warning, drain, checkpoint, hard-stop, completion-marker reconciliation, and resume execution remain unimplemented for orchestrated attempts.
-- Recovery ordering and surplus expiry behavior remain future M5 work.
-- The legacy host-local watchdog still owns its independent bucket and resume machinery; this increment does not alter or invoke it.
-- Deferral history, workspace metadata, assignments, route reservations, and quota reservations are not yet coordinator-durable; coordinator recovery remains M7.
+- Runtime-slot release, recovery ordering, user-interaction handling, and surplus expiry behavior remain future M5 work.
+- The legacy host-local watchdog still owns its independent bucket, warning, drain, stop, and resume machinery; this increment does not alter or invoke it.
+- Deferral history, workspace metadata, assignments, route reservations, and quota reservations are not yet coordinator-durable; broader coordinator recovery remains M7.
 - No development code has opened live state, contacted workers, dispatched work, or installed/restarted a service.
 
 ## Exact next increment
 
-Implement the second M5 checklist item: close quota-pool admission atomically before warning or draining affected work. Add a small deterministic transition/directive seam that compares prior and derived pool admissions, persists the complete admission transition before any outward directive becomes eligible, binds directives to pool and bucket epochs, and makes replay idempotent. Cover warn-to-constrained, drain/stop closure ordering, repeated epochs, stale transition revisions, multiple pools, and reordered-input determinism. Keep it disconnected from live state and the deployed daemon. Run targeted and race tests, then `go test ./...`, `go vet ./...`, and `git diff --check`. If implementation remains, queue the one successor with `--ungated` as required by the session prompt.
+Implement the third M5 checklist item: structured warn, drain, checkpoint, hard-stop, and resume handling. Build a transport-neutral worker directive/acknowledgement state machine around the committed directives, record affected attempts deterministically, make delivery and acknowledgement replay-safe, and ensure drain deadlines lead to hard-stop intent only after checkpoint opportunity. Persist checkpoint metadata and the control transitions needed to resume the same attempt/thread/workspace/worker/route, while keeping all worker communication behind fakes and disconnected from the deployed daemon. Cover delivery loss, duplicate acknowledgement, partial worker response, checkpoint success/failure, deadline expiry, multiple buckets, and reordered-input determinism. Run targeted and race tests, then `go test ./...`, `go vet ./...`, and `git diff --check`. If implementation remains, queue the one successor with `--ungated` as required by the session prompt.

@@ -87,6 +87,33 @@ func TestDeriveQuotaPoolAdmissionsAllStates(t *testing.T) {
 	}
 }
 
+func TestDeriveQuotaPoolAdmissionsSelectsEarliestDirectiveDeadline(t *testing.T) {
+	keyA := admissionBucket("codex", "weekly")
+	keyB := admissionBucket("codex", "five-hour")
+	later := admissionDerivationTime.Add(5 * time.Minute)
+	earlier := admissionDerivationTime.Add(2 * time.Minute)
+	stateA := admissionBucketState(keyA, domain.PhaseDraining, false)
+	stateA.DrainDeadline = &later
+	stateB := admissionBucketState(keyB, domain.PhaseDraining, false)
+	stateB.DrainDeadline = &earlier
+
+	got, err := DeriveQuotaPoolAdmissions(QuotaAdmissionDerivationInput{
+		Now: admissionDerivationTime, MaxObservationAge: 10 * time.Minute,
+		Pools:        []domain.QuotaPool{{ID: "pool-a", Buckets: []domain.BucketKey{keyA, keyB}}},
+		BucketStates: []domain.BucketState{stateA, stateB},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].DirectiveDeadline == nil || !got[0].DirectiveDeadline.Equal(earlier) {
+		t.Fatalf("directive deadline = %#v, want %s", got, earlier)
+	}
+	earlier = earlier.Add(time.Hour)
+	if got[0].DirectiveDeadline.Equal(earlier) {
+		t.Fatal("derived deadline aliases caller-owned time")
+	}
+}
+
 func TestDeriveQuotaPoolAdmissionsReservations(t *testing.T) {
 	key := admissionBucket("codex", "weekly")
 	reservations := []QuotaResumeReservation{

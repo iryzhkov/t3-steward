@@ -60,6 +60,7 @@ type QuotaPoolAdmissionSnapshot struct {
 	Admission                   domain.AdmissionState
 	ObservedAt                  time.Time
 	BucketEpochs                []QuotaBucketEpoch
+	DirectiveDeadline           *time.Time
 	PausedRequiredWorkRemainder float64
 	ActiveResumeReservations    int
 	Reason                      string
@@ -231,6 +232,10 @@ func deriveQuotaPoolAdmission(pool domain.QuotaPool, statesByKey map[domain.Buck
 			continue
 		}
 		result.BucketEpochs = append(result.BucketEpochs, QuotaBucketEpoch{Bucket: key, Epoch: state.Epoch})
+		if state.DrainDeadline != nil && (result.DirectiveDeadline == nil || state.DrainDeadline.Before(*result.DirectiveDeadline)) {
+			deadline := *state.DrainDeadline
+			result.DirectiveDeadline = &deadline
+		}
 		if result.ObservedAt.IsZero() || state.ObservedAt.Before(result.ObservedAt) {
 			result.ObservedAt = state.ObservedAt
 		}

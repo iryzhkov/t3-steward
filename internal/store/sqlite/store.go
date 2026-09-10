@@ -187,20 +187,33 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("state database schema version %d is newer than supported version %d", version, currentSchemaVersion)
 	}
 	if version < 2 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin schema migration 2: %w", err)
+		if err := s.applyVersionedMigration(2, coordinatorMigrationV2); err != nil {
+			return err
 		}
-		defer tx.Rollback()
-		if _, err := tx.Exec(coordinatorMigrationV2); err != nil {
-			return fmt.Errorf("apply schema migration 2: %w", err)
+		version = 2
+	}
+	if version < 3 {
+		if err := s.applyVersionedMigration(3, coordinatorMigrationV3); err != nil {
+			return err
 		}
-		if _, err := tx.Exec(`INSERT INTO schema_version(version) VALUES (2)`); err != nil {
-			return fmt.Errorf("record schema version 2: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit schema migration 2: %w", err)
-		}
+	}
+	return nil
+}
+
+func (s *Store) applyVersionedMigration(version int, ddl string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin schema migration %d: %w", version, err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(ddl); err != nil {
+		return fmt.Errorf("apply schema migration %d: %w", version, err)
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_version(version) VALUES (?)`, version); err != nil {
+		return fmt.Errorf("record schema version %d: %w", version, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit schema migration %d: %w", version, err)
 	}
 	return nil
 }

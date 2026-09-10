@@ -113,6 +113,8 @@ func TestMigrationFromVersionOnePreservesState(t *testing.T) {
 		"coordinator_quota_pools",
 		"coordinator_artifacts",
 		"coordinator_admin_commands",
+		"coordinator_quota_admissions",
+		"coordinator_throttle_directives",
 	} {
 		var count int
 		if err := s.db.QueryRow(
