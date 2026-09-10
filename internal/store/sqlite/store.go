@@ -168,13 +168,38 @@ func (s *Store) migrate() error {
 			}
 		}
 	}
-	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM schema_version`).Scan(&n); err != nil {
-		return err
+
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM schema_version`).Scan(&count); err != nil {
+		return fmt.Errorf("read schema version count: %w", err)
 	}
-	if n == 0 {
+	if count == 0 {
 		if _, err := s.db.Exec(`INSERT INTO schema_version(version) VALUES (1)`); err != nil {
-			return err
+			return fmt.Errorf("record schema version 1: %w", err)
+		}
+	}
+
+	var version int
+	if err := s.db.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if version > currentSchemaVersion {
+		return fmt.Errorf("state database schema version %d is newer than supported version %d", version, currentSchemaVersion)
+	}
+	if version < 2 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin schema migration 2: %w", err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec(coordinatorMigrationV2); err != nil {
+			return fmt.Errorf("apply schema migration 2: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO schema_version(version) VALUES (2)`); err != nil {
+			return fmt.Errorf("record schema version 2: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit schema migration 2: %w", err)
 		}
 	}
 	return nil
