@@ -362,7 +362,7 @@ Each milestone should fit one unattended development session where practical. A 
 
 ### M3. Project catalog, placement, and isolated environments
 
-- [ ] Add worker inventory and capability matching.
+- [x] Add worker inventory and capability matching.
 - [ ] Add the logical project catalog and named setup profiles.
 - [ ] Implement clean per-attempt Git environments with pinned revisions and repository caching.
 - [ ] Prototype and verify T3 `worktreePath` behavior.
