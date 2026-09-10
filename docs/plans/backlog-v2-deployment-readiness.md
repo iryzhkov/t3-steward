@@ -89,6 +89,8 @@ alone must not bypass them.
 - [Admin command and artifact safety](../backlog-admin.md)
 - [Approved implementation plan](backlog-v2.md)
 - [Serial implementation handoff](backlog-v2-handoff.md)
+- [Production-binding remediation plan](backlog-v2-production-binding.md)
+- [Production-binding serial handoff](backlog-v2-production-handoff.md)
 
 ## Verification record
 
