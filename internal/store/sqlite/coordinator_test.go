@@ -115,6 +115,7 @@ func TestMigrationFromVersionOnePreservesState(t *testing.T) {
 		"coordinator_admin_commands",
 		"coordinator_quota_admissions",
 		"coordinator_throttle_directives",
+		"coordinator_throttle_attempts",
 	} {
 		var count int
 		if err := s.db.QueryRow(

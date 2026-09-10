@@ -9,7 +9,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
 
 const coordinatorMigrationV2 = `
 CREATE TABLE coordinator_workflows (
