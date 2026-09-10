@@ -190,6 +190,19 @@ func TestDispatchOrderAndStatusProtocol(t *testing.T) {
 	}
 }
 
+func TestDispatchesUpToConfiguredProviderConcurrency(t *testing.T) {
+	r, _, control, dir, now := setup(t, 30*time.Minute)
+	r.opts.MaxConcurrentPerProvider = 2
+	writeTask(t, dir, "first", "---\nproject: laptop home\ngate: false\n---\nfirst task")
+	writeTask(t, dir, "second", "---\nproject: laptop home\ngate: false\n---\nsecond task")
+	writeTask(t, dir, "third", "---\nproject: laptop home\ngate: false\n---\nthird task")
+
+	r.Tick(context.Background(), nil, []domain.BucketState{healthy(10, now.Add(4*time.Hour))})
+	if len(control.started) != 2 {
+		t.Fatalf("started %d tasks, want 2", len(control.started))
+	}
+}
+
 func TestGateRespectsQuotaAndForecast(t *testing.T) {
 	r, _, control, dir, now := setup(t, 0)
 	writeTask(t, dir, "big", "---\nproject: laptop home\ndifficulty: 5\n---\nbig task") // 50%

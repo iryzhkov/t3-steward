@@ -34,17 +34,18 @@ type Store interface {
 
 // Options configure the runner.
 type Options struct {
-	Dir             string
-	Preamble        string
-	QuietFor        time.Duration
-	SafetyMargin    float64
-	FallbackPerHour float64
-	Quantile        float64
-	MinSamples      int
-	LongWindowCap   float64
-	HistoryDays     int
-	DryRun          bool
-	Logger          *slog.Logger
+	Dir                      string
+	Preamble                 string
+	QuietFor                 time.Duration
+	SafetyMargin             float64
+	FallbackPerHour          float64
+	Quantile                 float64
+	MinSamples               int
+	LongWindowCap            float64
+	HistoryDays              int
+	DryRun                   bool
+	MaxConcurrentPerProvider int
+	Logger                   *slog.Logger
 	// LocalHost is this machine's name as tasks refer to it. Tasks whose
 	// host is empty use DefaultHost; tasks for any other host are handed
 	// to Forward.
@@ -91,6 +92,9 @@ func New(opts Options, store Store, control Control) *Runner {
 	}
 	if opts.QuietFor <= 0 {
 		opts.QuietFor = 30 * time.Minute
+	}
+	if opts.MaxConcurrentPerProvider <= 0 {
+		opts.MaxConcurrentPerProvider = 1
 	}
 	if opts.HistoryDays <= 0 {
 		opts.HistoryDays = 56
@@ -328,7 +332,7 @@ func shortWindow(key domain.BucketKey) bool {
 // dispatchNext starts the best pending task whose gate is open.
 func (r *Runner) dispatchNext(ctx context.Context, tasks []Task, threads map[string]domain.Thread, buckets []domain.BucketState, now time.Time) {
 	var pending []Task
-	runningPerProvider := map[string]bool{}
+	runningPerProvider := map[string]int{}
 	for _, t := range tasks {
 		st := r.states[t.ID]
 		if st == nil {
@@ -336,7 +340,7 @@ func (r *Runner) dispatchNext(ctx context.Context, tasks []Task, threads map[str
 		}
 		if st.Status == StatusRunning {
 			if th, ok := threads[st.ThreadID]; ok {
-				runningPerProvider[th.ProviderInstanceID] = true
+				runningPerProvider[th.ProviderInstanceID]++
 			}
 			continue
 		}
@@ -390,7 +394,7 @@ func (r *Runner) dispatchNext(ctx context.Context, tasks []Task, threads map[str
 		project := *result.Project
 		selection := result.Selection
 		instance, _ := selection["instanceId"].(string)
-		if runningPerProvider[instance] {
+		if runningPerProvider[instance] >= r.opts.MaxConcurrentPerProvider {
 			continue
 		}
 		if ok, why := r.gateOpen(t, st, instance, buckets, now); !ok {
@@ -398,7 +402,7 @@ func (r *Runner) dispatchNext(ctx context.Context, tasks []Task, threads map[str
 			continue
 		}
 		r.dispatch(ctx, t, st, project, selection, threads, now)
-		runningPerProvider[instance] = true
+		runningPerProvider[instance]++
 	}
 }
 

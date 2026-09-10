@@ -83,21 +83,22 @@ func newBacklogRunner(cfg config.Config, store *sqlite.Store, control backlog.Co
 		return nil, err
 	}
 	return backlog.New(backlog.Options{
-		Dir:             dir,
-		Preamble:        cfg.Backlog.Preamble,
-		QuietFor:        cfg.Backlog.QuietFor.D(),
-		SafetyMargin:    cfg.Backlog.SafetyMargin,
-		FallbackPerHour: cfg.Backlog.FallbackPerHour,
-		Quantile:        cfg.Backlog.Quantile,
-		MinSamples:      cfg.Backlog.MinSamples,
-		LongWindowCap:   cfg.Backlog.LongWindowCap,
-		HistoryDays:     cfg.Backlog.HistoryDays,
-		DryRun:          cfg.Policy.DryRun,
-		Logger:          logger,
-		LocalHost:       localHostName(cfg),
-		DefaultHost:     cfg.Backlog.DefaultHost,
-		Forward:         forwardTask,
-		DataDir:         dataDir,
+		Dir:                      dir,
+		Preamble:                 cfg.Backlog.Preamble,
+		QuietFor:                 cfg.Backlog.QuietFor.D(),
+		SafetyMargin:             cfg.Backlog.SafetyMargin,
+		FallbackPerHour:          cfg.Backlog.FallbackPerHour,
+		Quantile:                 cfg.Backlog.Quantile,
+		MinSamples:               cfg.Backlog.MinSamples,
+		LongWindowCap:            cfg.Backlog.LongWindowCap,
+		HistoryDays:              cfg.Backlog.HistoryDays,
+		DryRun:                   cfg.Policy.DryRun,
+		MaxConcurrentPerProvider: cfg.Resume.MaxConcurrentPerProvider,
+		Logger:                   logger,
+		LocalHost:                localHostName(cfg),
+		DefaultHost:              cfg.Backlog.DefaultHost,
+		Forward:                  forwardTask,
+		DataDir:                  dataDir,
 	}, store, control), nil
 }
 
