@@ -91,3 +91,17 @@ type AssignmentClaimRequest struct {
 	ClaimedAt        time.Time `json:"claimedAt"`
 	LeaseExpiresAt   time.Time `json:"leaseExpiresAt"`
 }
+
+// AssignmentLeaseRenewal extends a claimed assignment lease against an exact
+// worker snapshot. The lease token proves possession of the assignment.
+type AssignmentLeaseRenewal struct {
+	CoordinatorEpoch int64     `json:"coordinatorEpoch"`
+	WorkerID         string    `json:"workerId"`
+	WorkerEpoch      string    `json:"workerEpoch"`
+	WorkerSequence   int64     `json:"workerSequence"`
+	AssignmentID     string    `json:"assignmentId"`
+	AssignmentEpoch  int64     `json:"assignmentEpoch"`
+	LeaseToken       string    `json:"leaseToken"`
+	RenewedAt        time.Time `json:"renewedAt"`
+	LeaseExpiresAt   time.Time `json:"leaseExpiresAt"`
+}

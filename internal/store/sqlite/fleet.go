@@ -239,8 +239,8 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO coordinator_assignments(
 				id, attempt_id, dispatch_token, dispatch_revision, dispatch_state,
-				worker_id, worker_epoch, assignment_epoch, assignment_state, record
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				worker_id, worker_epoch, assignment_epoch, assignment_state, lease_expires_at, record
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)
 		`, assignment.ID, assignment.AttemptID, assignment.DispatchToken, 0, "",
 			assignment.WorkerID, assignment.WorkerEpoch, assignment.Epoch, assignment.State, raw); err != nil {
 			return nil, fmt.Errorf("commit assignment %q: %w", assignment.ID, err)
@@ -321,9 +321,10 @@ func (s *Store) ClaimAssignment(ctx context.Context, request domain.AssignmentCl
 		return domain.Assignment{}, fmt.Errorf("encode claimed assignment %q: %w", assignment.ID, err)
 	}
 	result, err := tx.ExecContext(ctx, `
-		UPDATE coordinator_assignments SET assignment_state = ?, record = ?
+		UPDATE coordinator_assignments SET assignment_state = ?, lease_expires_at = ?, record = ?
 		WHERE id = ? AND assignment_state = ?
-	`, assignment.State, raw, assignment.ID, domain.AssignmentOffered)
+	`, assignment.State, assignment.LeaseExpiresAt.UTC().Format(time.RFC3339Nano), raw,
+		assignment.ID, domain.AssignmentOffered)
 	if err != nil {
 		return domain.Assignment{}, fmt.Errorf("claim assignment %q: %w", assignment.ID, err)
 	}

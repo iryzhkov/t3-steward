@@ -15,6 +15,7 @@ func TestWorkerProtocolJSONRoundTrip(t *testing.T) {
 		Ack      WorkerAcknowledgement  `json:"ack"`
 		Plan     AssignmentPlanCommit   `json:"plan"`
 		Claim    AssignmentClaimRequest `json:"claim"`
+		Renewal  AssignmentLeaseRenewal `json:"renewal"`
 	}{
 		Snapshot: WorkerSnapshot{
 			WorkerID: "normandy", WorkerEpoch: "worker-epoch-1",
@@ -53,6 +54,11 @@ func TestWorkerProtocolJSONRoundTrip(t *testing.T) {
 			AssignmentID: "assignment-1", AssignmentEpoch: 2, LeaseToken: "lease-1",
 			ClaimedAt: now, LeaseExpiresAt: now.Add(time.Minute),
 		},
+		Renewal: AssignmentLeaseRenewal{
+			CoordinatorEpoch: 3, WorkerID: "normandy", WorkerEpoch: "worker-epoch-1",
+			WorkerSequence: 9, AssignmentID: "assignment-1", AssignmentEpoch: 2,
+			LeaseToken: "lease-1", RenewedAt: now, LeaseExpiresAt: now.Add(time.Minute),
+		},
 	}
 	raw, err := json.Marshal(fixture)
 	if err != nil {
@@ -74,4 +80,5 @@ type typeofWorkerProtocolFixture struct {
 	Ack      WorkerAcknowledgement  `json:"ack"`
 	Plan     AssignmentPlanCommit   `json:"plan"`
 	Claim    AssignmentClaimRequest `json:"claim"`
+	Renewal  AssignmentLeaseRenewal `json:"renewal"`
 }

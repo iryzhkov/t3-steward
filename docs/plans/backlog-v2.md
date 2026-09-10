@@ -404,7 +404,9 @@ Each milestone should fit one unattended development session where practical. A 
 - [ ] Move authoritative planning and mutation to the coordinator.
   - [x] Commit assignment batches atomically against optimistic attempt revisions and exact worker snapshots before exposing them to workers.
 - [ ] Add worker snapshots, commands, acknowledgements, leases, epochs, and reconciliation.
-  - [x] Define transport-neutral snapshot, command, acknowledgement, plan, and claim records; persist monotonic snapshots and epoch-bound claims.
+  - [x] Define transport-neutral snapshot, command, acknowledgement, plan, claim, and lease-renewal records; persist monotonic snapshots and epoch-bound claims.
+  - [x] Persist commands before delivery with idempotent acknowledgements, exact snapshot/epoch fences, and one command of each kind per assignment epoch.
+  - [x] Renew leases against exact worker snapshots and make expiry fail closed by moving unproven executions to unknown.
 - [ ] Prevent dispatch during partitions or stale state.
 - [ ] Support centrally retained artifacts and cross-worker dependency transfer.
 - [ ] Test concurrent worker claims, coordinator restart, worker reconnect, lease expiry, and no-duplicate guarantees.

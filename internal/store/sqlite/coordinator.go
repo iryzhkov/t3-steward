@@ -5,11 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-const currentSchemaVersion = 8
+const currentSchemaVersion = 9
 
 const coordinatorMigrationV6 = `
 ALTER TABLE coordinator_schedules ADD COLUMN current_version INTEGER NOT NULL DEFAULT 0;
@@ -199,18 +200,20 @@ func (s *Store) SaveCoordinatorRecords(ctx context.Context, records CoordinatorR
 		if err := upsertJSON(ctx, tx, "assignment", record.ID,
 			`INSERT INTO coordinator_assignments(
 			 id, attempt_id, dispatch_token, dispatch_revision, dispatch_state,
-			 worker_id, worker_epoch, assignment_epoch, assignment_state, record
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 worker_id, worker_epoch, assignment_epoch, assignment_state, lease_expires_at, record
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(id) DO UPDATE SET attempt_id = excluded.attempt_id,
 			 dispatch_token = excluded.dispatch_token,
 			 dispatch_revision = excluded.dispatch_revision,
 			 dispatch_state = excluded.dispatch_state,
 			 worker_id = excluded.worker_id, worker_epoch = excluded.worker_epoch,
 			 assignment_epoch = excluded.assignment_epoch,
-			 assignment_state = excluded.assignment_state, record = excluded.record`,
+			 assignment_state = excluded.assignment_state,
+			 lease_expires_at = excluded.lease_expires_at, record = excluded.record`,
 			[]any{record.ID, record.AttemptID, record.DispatchToken,
 				record.DispatchRevision, record.DispatchState, record.WorkerID,
-				record.WorkerEpoch, record.Epoch, record.State}, record); err != nil {
+				record.WorkerEpoch, record.Epoch, record.State,
+				record.LeaseExpiresAt.UTC().Format(time.RFC3339Nano)}, record); err != nil {
 			return err
 		}
 	}
