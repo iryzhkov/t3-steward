@@ -9,7 +9,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-const currentSchemaVersion = 7
+const currentSchemaVersion = 8
 
 const coordinatorMigrationV6 = `
 ALTER TABLE coordinator_schedules ADD COLUMN current_version INTEGER NOT NULL DEFAULT 0;
@@ -198,14 +198,19 @@ func (s *Store) SaveCoordinatorRecords(ctx context.Context, records CoordinatorR
 	for _, record := range records.Assignments {
 		if err := upsertJSON(ctx, tx, "assignment", record.ID,
 			`INSERT INTO coordinator_assignments(
-			 id, attempt_id, dispatch_token, dispatch_revision, dispatch_state, record
-			) VALUES (?, ?, ?, ?, ?, ?)
+			 id, attempt_id, dispatch_token, dispatch_revision, dispatch_state,
+			 worker_id, worker_epoch, assignment_epoch, assignment_state, record
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(id) DO UPDATE SET attempt_id = excluded.attempt_id,
 			 dispatch_token = excluded.dispatch_token,
 			 dispatch_revision = excluded.dispatch_revision,
-			 dispatch_state = excluded.dispatch_state, record = excluded.record`,
+			 dispatch_state = excluded.dispatch_state,
+			 worker_id = excluded.worker_id, worker_epoch = excluded.worker_epoch,
+			 assignment_epoch = excluded.assignment_epoch,
+			 assignment_state = excluded.assignment_state, record = excluded.record`,
 			[]any{record.ID, record.AttemptID, record.DispatchToken,
-				record.DispatchRevision, record.DispatchState}, record); err != nil {
+				record.DispatchRevision, record.DispatchState, record.WorkerID,
+				record.WorkerEpoch, record.Epoch, record.State}, record); err != nil {
 			return err
 		}
 	}

@@ -194,6 +194,7 @@ type Assignment struct {
 	ID                  string          `json:"id"`
 	AttemptID           string          `json:"attemptId"`
 	WorkerID            string          `json:"workerId"`
+	WorkerEpoch         string          `json:"workerEpoch,omitempty"`
 	Route               ProviderRoute   `json:"route"`
 	State               AssignmentState `json:"state"`
 	Epoch               int64           `json:"epoch"`

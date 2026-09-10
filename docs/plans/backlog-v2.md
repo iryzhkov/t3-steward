@@ -402,7 +402,9 @@ Each milestone should fit one unattended development session where practical. A 
 ### M7. Fleet coordinator and worker protocol
 
 - [ ] Move authoritative planning and mutation to the coordinator.
+  - [x] Commit assignment batches atomically against optimistic attempt revisions and exact worker snapshots before exposing them to workers.
 - [ ] Add worker snapshots, commands, acknowledgements, leases, epochs, and reconciliation.
+  - [x] Define transport-neutral snapshot, command, acknowledgement, plan, and claim records; persist monotonic snapshots and epoch-bound claims.
 - [ ] Prevent dispatch during partitions or stale state.
 - [ ] Support centrally retained artifacts and cross-worker dependency transfer.
 - [ ] Test concurrent worker claims, coordinator restart, worker reconnect, lease expiry, and no-duplicate guarantees.

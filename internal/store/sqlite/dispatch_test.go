@@ -82,10 +82,17 @@ func TestMigrationFromVersionSixRestoresDispatchProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
+		`DROP INDEX coordinator_assignments_worker_state`,
+		`ALTER TABLE coordinator_assignments DROP COLUMN assignment_state`,
+		`ALTER TABLE coordinator_assignments DROP COLUMN assignment_epoch`,
+		`ALTER TABLE coordinator_assignments DROP COLUMN worker_epoch`,
+		`ALTER TABLE coordinator_assignments DROP COLUMN worker_id`,
+		`DROP TABLE coordinator_worker_snapshots`,
+		`DROP TABLE coordinator_runtime`,
 		`DROP INDEX coordinator_assignments_dispatch`,
 		`ALTER TABLE coordinator_assignments DROP COLUMN dispatch_state`,
 		`ALTER TABLE coordinator_assignments DROP COLUMN dispatch_revision`,
-		`DELETE FROM schema_version WHERE version = 7`,
+		`DELETE FROM schema_version WHERE version >= 7`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("restore version 6 schema: %v", err)

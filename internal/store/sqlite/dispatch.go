@@ -85,10 +85,12 @@ func (s *Store) PrepareAssignmentDispatch(ctx context.Context, input domain.Assi
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO coordinator_assignments(
-			id, attempt_id, dispatch_token, dispatch_revision, dispatch_state, record
-		) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`,
+			id, attempt_id, dispatch_token, dispatch_revision, dispatch_state,
+			worker_id, worker_epoch, assignment_epoch, assignment_state, record
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`,
 		prepared.ID, prepared.AttemptID, prepared.DispatchToken,
-		prepared.DispatchRevision, prepared.DispatchState, raw,
+		prepared.DispatchRevision, prepared.DispatchState, prepared.WorkerID,
+		prepared.WorkerEpoch, prepared.Epoch, prepared.State, raw,
 	); err != nil {
 		return domain.Assignment{}, fmt.Errorf("prepare assignment dispatch %q: %w", prepared.ID, err)
 	}
@@ -160,9 +162,9 @@ func (s *Store) CommitAssignmentDispatch(ctx context.Context, transition domain.
 	}
 	result, err := tx.ExecContext(ctx,
 		`UPDATE coordinator_assignments
-		 SET dispatch_revision = ?, dispatch_state = ?, record = ?
+		 SET dispatch_revision = ?, dispatch_state = ?, assignment_state = ?, record = ?
 		 WHERE id = ? AND dispatch_revision = ?`,
-		next.DispatchRevision, next.DispatchState, raw, next.ID, transition.ExpectedRevision,
+		next.DispatchRevision, next.DispatchState, next.State, raw, next.ID, transition.ExpectedRevision,
 	)
 	if err != nil {
 		return fmt.Errorf("save assignment dispatch %q: %w", next.ID, err)
@@ -246,6 +248,7 @@ func sameDispatchIdentity(left, right domain.Assignment) bool {
 	return left.ID == right.ID &&
 		left.AttemptID == right.AttemptID &&
 		left.WorkerID == right.WorkerID &&
+		left.WorkerEpoch == right.WorkerEpoch &&
 		reflect.DeepEqual(left.Route, right.Route) &&
 		left.Epoch == right.Epoch &&
 		left.LeaseToken == right.LeaseToken &&
