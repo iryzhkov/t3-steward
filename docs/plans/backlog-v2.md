@@ -354,7 +354,7 @@ Each milestone should fit one unattended development session where practical. A 
 
 ### M2. Workflow bundles and DAG execution
 
-- [ ] Define and validate the version 2 manifest.
+- [x] Define and validate the version 2 manifest.
 - [ ] Implement atomic bundle ingestion and immutable static inputs.
 - [ ] Implement dependency readiness, strict completion, failure propagation, retry, cancellation, and graph validation.
 - [ ] Add declared outputs, dependency artifact transfer, verification commands, and checksums.
