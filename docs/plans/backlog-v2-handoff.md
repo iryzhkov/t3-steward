@@ -9,7 +9,7 @@ Updated: 2026-09-10
 - Checkpointed and forced-paused attempts now retain route-specific remaining-cost reservations while releasing their provider concurrency slots.
 - Required paused and resuming remainder is copied into every quota window for the shared pool; paused surplus work remains visible for recovery without consuming required-work budget.
 - Runtime occupancy is recomputed from attempt control state, counting preparing, running, draining, and resuming work instead of trusting stale pool counters.
-- Reconstruction fails closed on duplicate identities, missing fixed-route estimates, settled assignments, and contradictory attempt/throttle/assignment execution identity.
+- Reconstruction fails closed on duplicate identities and assignment ownership, assignments for unknown attempts, missing fixed-route estimates, settled assignments, and contradictory canonical attempt/throttle/assignment execution identity.
 - Resume planning now requires a valid pool snapshot, reacquires provider capacity before creating a resume command, and chooses deterministically under contention.
 - Resume commands preserve assignment, worker, T3 thread, workspace, provider route, and provider options.
 - Covered checkpointed and forced pauses, shared pools and multiple windows, restart reconstruction, reordered inputs, duplicate records, contradictory durable state, and resumed slot contention.
