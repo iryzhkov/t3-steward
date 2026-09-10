@@ -243,6 +243,47 @@ func (s *Store) AcknowledgeWorkerCommand(ctx context.Context, acknowledgement do
 	return acknowledgement, nil
 }
 
+// LoadWorkerCommandRecords returns every durable command with its optional
+// immutable acknowledgement in command ID order.
+func (s *Store) LoadWorkerCommandRecords(ctx context.Context) ([]domain.WorkerCommandRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT command.id, command.record, acknowledgement.record
+		FROM coordinator_worker_commands AS command
+		LEFT JOIN coordinator_worker_acknowledgements AS acknowledgement
+		  ON acknowledgement.command_id = command.id
+		ORDER BY command.id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("load worker command records: %w", err)
+	}
+	defer rows.Close()
+
+	var records []domain.WorkerCommandRecord
+	for rows.Next() {
+		var id, commandRaw string
+		var acknowledgementRaw sql.NullString
+		if err := rows.Scan(&id, &commandRaw, &acknowledgementRaw); err != nil {
+			return nil, fmt.Errorf("scan worker command record: %w", err)
+		}
+		var record domain.WorkerCommandRecord
+		if err := json.Unmarshal([]byte(commandRaw), &record.Command); err != nil {
+			return nil, fmt.Errorf("decode worker command %q: %w", id, err)
+		}
+		if acknowledgementRaw.Valid {
+			var acknowledgement domain.WorkerAcknowledgement
+			if err := json.Unmarshal([]byte(acknowledgementRaw.String), &acknowledgement); err != nil {
+				return nil, fmt.Errorf("decode worker acknowledgement %q: %w", id, err)
+			}
+			record.Acknowledgement = &acknowledgement
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate worker command records: %w", err)
+	}
+	return records, nil
+}
+
 // RenewAssignmentLease extends a live claim only from the exact current worker
 // snapshot. Exact replay returns the durable assignment.
 func (s *Store) RenewAssignmentLease(ctx context.Context, renewal domain.AssignmentLeaseRenewal) (domain.Assignment, error) {

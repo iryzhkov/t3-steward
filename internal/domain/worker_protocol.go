@@ -63,6 +63,13 @@ type WorkerAcknowledgement struct {
 	AcknowledgedAt   time.Time `json:"acknowledgedAt"`
 }
 
+// WorkerCommandRecord is the coordinator's durable view of a command and its
+// optional immutable acknowledgement.
+type WorkerCommandRecord struct {
+	Command         WorkerCommand          `json:"command"`
+	Acknowledgement *WorkerAcknowledgement `json:"acknowledgement,omitempty"`
+}
+
 // AssignmentPlanItem is one planner proposal prepared for atomic commit.
 type AssignmentPlanItem struct {
 	Assignment              Assignment `json:"assignment"`
