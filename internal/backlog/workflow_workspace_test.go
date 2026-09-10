@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
@@ -159,7 +160,7 @@ func TestWorkflowWorkspaceManagerCleanupRequiresTerminalDecision(t *testing.T) {
 	repository := newGitFixture(t)
 	runsRoot := t.TempDir()
 	manager := workflowWorkspaceManager(runsRoot, "")
-	if err := manager.CleanupWorkflow("../escape", WorkflowWorkspaceRetain); err == nil || !strings.Contains(err.Error(), "safe path component") {
+	if err := manager.CleanupWorkflow(context.Background(), "../escape", WorkflowWorkspaceRetain); err == nil || !strings.Contains(err.Error(), "safe path component") {
 		t.Fatalf("unsafe cleanup error = %v", err)
 	}
 	request := workflowWorkspaceRequest(repository, workspaceTask("task-1", "first"), "attempt-1")
@@ -168,7 +169,7 @@ func TestWorkflowWorkspaceManagerCleanupRequiresTerminalDecision(t *testing.T) {
 		t.Fatalf("prepare workflow: %v", err)
 	}
 	cleanupImmutable(t, prepared.RootDir)
-	if err := manager.CleanupWorkflow(request.WorkflowRunID, WorkflowWorkspaceRemove); err == nil {
+	if err := manager.CleanupWorkflow(context.Background(), request.WorkflowRunID, WorkflowWorkspaceRemove); err == nil {
 		t.Fatal("cleanup succeeded with an active attempt")
 	}
 	if _, err := os.Stat(prepared.RootDir); err != nil {
@@ -177,7 +178,7 @@ func TestWorkflowWorkspaceManagerCleanupRequiresTerminalDecision(t *testing.T) {
 	if err := manager.Release(request.Attempt.ID, EnvironmentReleaseTerminal); err != nil {
 		t.Fatalf("complete attempt: %v", err)
 	}
-	if err := manager.CleanupWorkflow(request.WorkflowRunID, WorkflowWorkspaceRemove); err != nil {
+	if err := manager.CleanupWorkflow(context.Background(), request.WorkflowRunID, WorkflowWorkspaceRemove); err != nil {
 		t.Fatalf("remove terminal workflow workspace: %v", err)
 	}
 	if _, err := os.Stat(prepared.RootDir); !errors.Is(err, os.ErrNotExist) {
@@ -195,11 +196,135 @@ func TestWorkflowWorkspaceManagerCleanupRequiresTerminalDecision(t *testing.T) {
 	if err := manager.Release(retainedRequest.Attempt.ID, EnvironmentReleaseTerminal); err != nil {
 		t.Fatalf("complete retained workflow: %v", err)
 	}
-	if err := manager.CleanupWorkflow(retainedRequest.WorkflowRunID, WorkflowWorkspaceRetain); err != nil {
+	if err := manager.CleanupWorkflow(context.Background(), retainedRequest.WorkflowRunID, WorkflowWorkspaceRetain); err != nil {
 		t.Fatalf("retain terminal workflow workspace: %v", err)
 	}
 	if _, err := os.Stat(retained.RootDir); err != nil {
 		t.Fatalf("retained workspace missing: %v", err)
+	}
+}
+
+func TestWorkflowWorkspaceManagersSerializePublicationAndCleanStaleStage(t *testing.T) {
+	repository := newGitFixture(t)
+	runsRoot := t.TempDir()
+	runDir := filepath.Join(runsRoot, "run-1")
+	stale := filepath.Join(runDir, ".workflow-prepare-orphan")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatalf("create stale workflow stage: %v", err)
+	}
+	firstManager := workflowWorkspaceManager(runsRoot, "")
+	secondManager := workflowWorkspaceManager(runsRoot, "")
+	request := workflowWorkspaceRequest(repository, workspaceTask("task-1", "first"), "attempt-1")
+	request.Environment.Setup.Commands = []string{"printf once > setup-once.txt"}
+
+	start := make(chan struct{})
+	results := make(chan PreparedWorkspace, 2)
+	errs := make(chan error, 2)
+	for _, manager := range []*WorkflowWorkspaceManager{firstManager, secondManager} {
+		go func(manager *WorkflowWorkspaceManager) {
+			<-start
+			prepared, err := manager.Prepare(context.Background(), "worker-a", request)
+			results <- prepared
+			errs <- err
+		}(manager)
+	}
+	close(start)
+	firstPrepared := <-results
+	secondPrepared := <-results
+	cleanupImmutable(t, firstPrepared.RootDir)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent workflow preparation: %v", err)
+		}
+	}
+	if firstPrepared.WorkspaceDir != secondPrepared.WorkspaceDir {
+		t.Fatalf("published workspaces differ: %q != %q", firstPrepared.WorkspaceDir, secondPrepared.WorkspaceDir)
+	}
+	if got := readTestFile(t, firstPrepared.WorkspaceDir, "setup-once.txt"); got != "once" {
+		t.Fatalf("setup output = %q, want one publication", got)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale workflow stage remains: %v", err)
+	}
+}
+
+func TestWorkflowWorkspaceReconcileRetainedExpiryAndActiveProtection(t *testing.T) {
+	repository := newGitFixture(t)
+	runsRoot := t.TempDir()
+	manager := workflowWorkspaceManager(runsRoot, "")
+	retainedAt := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	manager.Now = func() time.Time { return retainedAt }
+
+	retainedRequest := workflowWorkspaceRequest(repository, workspaceTask("task-1", "retained"), "attempt-1")
+	retained, err := manager.Prepare(context.Background(), "worker-a", retainedRequest)
+	if err != nil {
+		t.Fatalf("prepare retained workflow: %v", err)
+	}
+	cleanupImmutable(t, retained.RootDir)
+	if err := manager.Release(retainedRequest.Attempt.ID, EnvironmentReleaseTerminal); err != nil {
+		t.Fatalf("complete retained workflow: %v", err)
+	}
+	if err := manager.CleanupWorkflow(context.Background(), retainedRequest.WorkflowRunID, WorkflowWorkspaceRetain); err != nil {
+		t.Fatalf("retain workflow: %v", err)
+	}
+	marker, err := readWorkflowRetention(retained.RootDir)
+	if err != nil || !marker.RetainedAt.Equal(retainedAt) {
+		t.Fatalf("retention marker = %#v, %v", marker, err)
+	}
+	staleMarker := filepath.Join(retained.RootDir, "retention.json.next")
+	if err := os.WriteFile(staleMarker, []byte("interrupted"), 0o644); err != nil {
+		t.Fatalf("write stale retention marker: %v", err)
+	}
+	if result, err := manager.Reconcile(context.Background(), retainedAt.Add(-time.Minute)); err != nil || len(result.RemovedWorkflowRunIDs) != 0 {
+		t.Fatalf("early reconciliation = %#v, %v", result, err)
+	}
+	if _, err := os.Stat(staleMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale retention marker remains: %v", err)
+	}
+
+	activeRequest := workflowWorkspaceRequest(repository, workspaceTask("task-2", "active"), "attempt-2")
+	activeRequest.WorkflowRunID = "run-2"
+	activeRequest.Attempt.WorkflowRunID = "run-2"
+	active, err := manager.Prepare(context.Background(), "worker-a", activeRequest)
+	if err != nil {
+		t.Fatalf("prepare active workflow: %v", err)
+	}
+	cleanupImmutable(t, active.RootDir)
+	if err := writeWorkflowRetention(active.RootDir, workflowRetention{RetainedAt: retainedAt.Add(-time.Hour)}); err != nil {
+		t.Fatalf("write active retention marker: %v", err)
+	}
+
+	result, err := manager.Reconcile(context.Background(), retainedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("reconcile retained workflows: %v", err)
+	}
+	if len(result.RemovedWorkflowRunIDs) != 1 || result.RemovedWorkflowRunIDs[0] != "run-1" {
+		t.Fatalf("removed workflows = %v, want run-1", result.RemovedWorkflowRunIDs)
+	}
+	if _, err := os.Stat(retained.RootDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expired retained workflow remains: %v", err)
+	}
+	if _, err := os.Stat(active.RootDir); err != nil {
+		t.Fatalf("active workflow was removed: %v", err)
+	}
+}
+
+func TestWorkflowWorkspaceReconcileFailsClosedOnInvalidRetentionMarker(t *testing.T) {
+	runsRoot := t.TempDir()
+	manager := workflowWorkspaceManager(runsRoot, "")
+	rootDir := manager.workflowRoot("run-invalid")
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		t.Fatalf("create invalid retained workflow: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootDir, "retention.json"), []byte("{"), 0o644); err != nil {
+		t.Fatalf("write invalid retention marker: %v", err)
+	}
+	_, err := manager.Reconcile(context.Background(), time.Now())
+	if err == nil || !strings.Contains(err.Error(), "decode workflow retention marker") {
+		t.Fatalf("reconciliation error = %v", err)
+	}
+	if _, statErr := os.Stat(rootDir); statErr != nil {
+		t.Fatalf("invalid retained workflow was removed: %v", statErr)
 	}
 }
 

@@ -45,7 +45,18 @@ func (c LocalRepositoryCache) Prepare(ctx context.Context, repository string, lo
 		return CachedRepository{}, fmt.Errorf("create repository cache: %w", err)
 	}
 	sum := sha256.Sum256([]byte(repository))
-	cachePath := filepath.Join(c.Root, fmt.Sprintf("%x.git", sum))
+	cacheID := fmt.Sprintf("%x", sum)
+	lock, err := acquireFileLock(ctx, c.Root, "repository:"+repository)
+	if err != nil {
+		return CachedRepository{}, fmt.Errorf("lock repository cache: %w", err)
+	}
+	defer lock.Close()
+
+	stagePrefix := ".clone-" + cacheID + "-"
+	if err := removeStageDirectories(c.Root, stagePrefix); err != nil {
+		return CachedRepository{}, fmt.Errorf("reconcile repository cache: %w", err)
+	}
+	cachePath := filepath.Join(c.Root, cacheID+".git")
 	info, err := os.Stat(cachePath)
 	if err == nil {
 		if !info.IsDir() {
@@ -60,11 +71,11 @@ func (c LocalRepositoryCache) Prepare(ctx context.Context, repository string, lo
 		return CachedRepository{}, fmt.Errorf("inspect repository cache: %w", err)
 	}
 
-	stageRoot, err := os.MkdirTemp(c.Root, ".clone-")
+	stageRoot, err := os.MkdirTemp(c.Root, stagePrefix)
 	if err != nil {
 		return CachedRepository{}, fmt.Errorf("stage repository cache: %w", err)
 	}
-	defer os.RemoveAll(stageRoot)
+	defer removeIngestedTree(stageRoot)
 	stagePath := filepath.Join(stageRoot, "repository.git")
 	if err := runLoggedCommand(ctx, log, "", c.git(), "clone", "--mirror", "--", repository, stagePath); err != nil {
 		return CachedRepository{}, fmt.Errorf("clone repository cache: %w", err)
@@ -80,6 +91,25 @@ func (c LocalRepositoryCache) git() string {
 		return c.GitBinary
 	}
 	return "git"
+}
+
+func removeStageDirectories(root, prefix string) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+			return fmt.Errorf("staging path %q is not a real directory", filepath.Join(root, entry.Name()))
+		}
+		if err := removeIngestedTree(filepath.Join(root, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // WorkspacePreparation identifies one isolated task attempt and all immutable inputs.

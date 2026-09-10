@@ -366,11 +366,11 @@ Each milestone should fit one unattended development session where practical. A 
 - [x] Add the logical project catalog and named setup profiles.
 - [x] Implement clean per-attempt Git environments with pinned revisions and repository caching.
 - [x] Prototype and verify T3 `worktreePath` behavior.
-- [ ] Add workflow-scoped environments, resource locks, preparation logs, retention, and process containment.
+- [x] Add workflow-scoped environments, resource locks, preparation logs, retention, and process containment.
   - [x] Add atomic workflow checkout ownership, worker pinning, deterministic resource reservations, and explicit pause/terminal release policies.
   - [x] Materialize shared workflow checkouts with setup-once preparation, per-attempt dependency views, and explicit terminal retain/remove decisions.
   - [x] Run setup and verification child processes in transient user systemd scopes with whole-cgroup hard stops.
-  - [ ] Add interprocess cache locking and crash-orphan retention reconciliation.
+  - [x] Add interprocess cache locking and crash-orphan retention reconciliation.
 - [x] Test alternate workers, GPU-only placement, offline workers, setup failure, and workspace cleanup.
 
 ### M4. Planner, task classes, and provider routes

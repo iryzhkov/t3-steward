@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 )
 
 const workflowWorkspaceDirectory = "workflow"
@@ -30,12 +31,21 @@ type workflowWorkspaceMetadata struct {
 	InputFingerprint []string `json:"input_fingerprint"`
 }
 
+type workflowRetention struct {
+	RetainedAt time.Time `json:"retained_at"`
+}
+
+type WorkspaceReconciliation struct {
+	RemovedWorkflowRunIDs []string
+}
+
 // WorkflowWorkspaceManager reserves and prepares one mutable checkout per workflow run.
 // Its mutex protects filesystem publication; EnvironmentCoordinator separately owns
 // worker placement, checkout mutation, and declared resource locks.
 type WorkflowWorkspaceManager struct {
 	Preparer     WorkspacePreparer
 	Environments *EnvironmentCoordinator
+	Now          func() time.Time
 
 	mu sync.Mutex
 }
@@ -73,6 +83,18 @@ func (m *WorkflowWorkspaceManager) Prepare(ctx context.Context, workerID string,
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	lock, lockErr := acquireFileLock(ctx, m.Preparer.RunsRoot, "workflow:"+request.WorkflowRunID)
+	if lockErr != nil {
+		return PreparedWorkspace{}, &PreparationError{Err: fmt.Errorf("lock workflow workspace: %w", lockErr)}
+	}
+	defer lock.Close()
+	runDir := filepath.Join(m.Preparer.RunsRoot, request.WorkflowRunID)
+	if mkdirErr := os.MkdirAll(runDir, 0o755); mkdirErr != nil {
+		return PreparedWorkspace{}, &PreparationError{Err: fmt.Errorf("create workflow run directory: %w", mkdirErr)}
+	}
+	if reconcileErr := removeStageDirectories(runDir, ".workflow-prepare-"); reconcileErr != nil {
+		return PreparedWorkspace{}, &PreparationError{Err: fmt.Errorf("reconcile workflow preparation: %w", reconcileErr)}
+	}
 
 	rootDir := m.workflowRoot(request.WorkflowRunID)
 	if _, statErr := os.Lstat(rootDir); errors.Is(statErr, os.ErrNotExist) {
@@ -96,7 +118,7 @@ func (m *WorkflowWorkspaceManager) Release(attemptID string, policy EnvironmentR
 	return m.Environments.Release(attemptID, policy)
 }
 
-func (m *WorkflowWorkspaceManager) CleanupWorkflow(workflowRunID string, retention WorkflowWorkspaceRetention) error {
+func (m *WorkflowWorkspaceManager) CleanupWorkflow(ctx context.Context, workflowRunID string, retention WorkflowWorkspaceRetention) error {
 	if m == nil || m.Environments == nil {
 		return errors.New("workflow workspace manager and environment coordinator are required")
 	}
@@ -109,15 +131,97 @@ func (m *WorkflowWorkspaceManager) CleanupWorkflow(workflowRunID string, retenti
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	lock, err := acquireFileLock(ctx, m.Preparer.RunsRoot, "workflow:"+workflowRunID)
+	if err != nil {
+		return fmt.Errorf("lock workflow workspace: %w", err)
+	}
+	defer lock.Close()
 	if err := m.Environments.CleanupWorkflow(workflowRunID); err != nil {
 		return err
 	}
+	rootDir := m.workflowRoot(workflowRunID)
 	if retention == WorkflowWorkspaceRemove {
-		if err := removeIngestedTree(m.workflowRoot(workflowRunID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := removeIngestedTree(rootDir); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove workflow workspace: %w", err)
 		}
+		return nil
+	}
+	if err := writeWorkflowRetention(rootDir, workflowRetention{RetainedAt: m.now()}); err != nil {
+		return err
 	}
 	return nil
+}
+
+func (m *WorkflowWorkspaceManager) Reconcile(ctx context.Context, retainedBefore time.Time) (WorkspaceReconciliation, error) {
+	if m == nil || m.Environments == nil {
+		return WorkspaceReconciliation{}, errors.New("workflow workspace manager and environment coordinator are required")
+	}
+	if retainedBefore.IsZero() {
+		return WorkspaceReconciliation{}, errors.New("retained-before time is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	entries, err := os.ReadDir(m.Preparer.RunsRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return WorkspaceReconciliation{}, nil
+	}
+	if err != nil {
+		return WorkspaceReconciliation{}, fmt.Errorf("read workflow runs: %w", err)
+	}
+	result := WorkspaceReconciliation{}
+	for _, entry := range entries {
+		if !entry.IsDir() || !safePathComponent(entry.Name()) {
+			continue
+		}
+		removed, err := m.reconcileWorkflow(ctx, entry.Name(), retainedBefore)
+		if err != nil {
+			return WorkspaceReconciliation{}, err
+		}
+		if removed {
+			result.RemovedWorkflowRunIDs = append(result.RemovedWorkflowRunIDs, entry.Name())
+		}
+	}
+	sort.Strings(result.RemovedWorkflowRunIDs)
+	return result, nil
+}
+
+func (m *WorkflowWorkspaceManager) reconcileWorkflow(ctx context.Context, workflowRunID string, retainedBefore time.Time) (bool, error) {
+	lock, err := acquireFileLock(ctx, m.Preparer.RunsRoot, "workflow:"+workflowRunID)
+	if err != nil {
+		return false, fmt.Errorf("lock workflow workspace %q: %w", workflowRunID, err)
+	}
+	defer lock.Close()
+
+	runDir := filepath.Join(m.Preparer.RunsRoot, workflowRunID)
+	if err := removeStageDirectories(runDir, ".workflow-prepare-"); err != nil {
+		return false, fmt.Errorf("reconcile workflow stages %q: %w", workflowRunID, err)
+	}
+	rootDir := m.workflowRoot(workflowRunID)
+	if err := os.Remove(filepath.Join(rootDir, "retention.json.next")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("remove stale retention marker %q: %w", workflowRunID, err)
+	}
+	retention, err := readWorkflowRetention(rootDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reconcile retained workflow %q: %w", workflowRunID, err)
+	}
+	if m.Environments.WorkflowActive(workflowRunID) || retention.RetainedAt.After(retainedBefore) {
+		return false, nil
+	}
+	if err := removeIngestedTree(rootDir); err != nil {
+		return false, fmt.Errorf("remove expired workflow workspace %q: %w", workflowRunID, err)
+	}
+	return true, nil
+}
+
+func (m *WorkflowWorkspaceManager) now() time.Time {
+	if m.Now != nil {
+		return m.Now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func (m *WorkflowWorkspaceManager) workflowRoot(workflowRunID string) string {
@@ -125,10 +229,11 @@ func (m *WorkflowWorkspaceManager) workflowRoot(workflowRunID string) string {
 }
 
 func (m *WorkflowWorkspaceManager) prepareInitial(ctx context.Context, request WorkspacePreparation, finalDir string) (PreparedWorkspace, error) {
-	if err := os.MkdirAll(m.Preparer.RunsRoot, 0o755); err != nil {
-		return PreparedWorkspace{}, &PreparationError{Err: fmt.Errorf("create runs root: %w", err)}
+	runDir := filepath.Dir(finalDir)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return PreparedWorkspace{}, &PreparationError{Err: fmt.Errorf("create workflow run directory: %w", err)}
 	}
-	stageRoot, err := os.MkdirTemp(m.Preparer.RunsRoot, ".workflow-prepare-")
+	stageRoot, err := os.MkdirTemp(runDir, ".workflow-prepare-")
 	if err != nil {
 		return PreparedWorkspace{}, &PreparationError{Err: fmt.Errorf("create workflow preparation stage: %w", err)}
 	}
@@ -333,4 +438,43 @@ func readWorkflowMetadata(rootDir string) (workflowWorkspaceMetadata, error) {
 		return workflowWorkspaceMetadata{}, errors.New("workflow workspace metadata has invalid commit")
 	}
 	return metadata, nil
+}
+
+func writeWorkflowRetention(rootDir string, retention workflowRetention) error {
+	if retention.RetainedAt.IsZero() {
+		return errors.New("retained time is required")
+	}
+	raw, err := json.MarshalIndent(retention, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode workflow retention: %w", err)
+	}
+	path := filepath.Join(rootDir, "retention.json")
+	staged := path + ".next"
+	if err := os.Remove(staged); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove stale workflow retention marker: %w", err)
+	}
+	if err := os.WriteFile(staged, append(raw, '\n'), 0o444); err != nil {
+		return fmt.Errorf("write workflow retention marker: %w", err)
+	}
+	if err := os.Rename(staged, path); err != nil {
+		_ = os.Remove(staged)
+		return fmt.Errorf("publish workflow retention marker: %w", err)
+	}
+	return nil
+}
+
+func readWorkflowRetention(rootDir string) (workflowRetention, error) {
+	raw, err := os.ReadFile(filepath.Join(rootDir, "retention.json"))
+	if err != nil {
+		return workflowRetention{}, err
+	}
+	var retention workflowRetention
+	if err := json.Unmarshal(raw, &retention); err != nil {
+		return workflowRetention{}, fmt.Errorf("decode workflow retention marker: %w", err)
+	}
+	if retention.RetainedAt.IsZero() {
+		return workflowRetention{}, errors.New("workflow retention marker has no retained time")
+	}
+	retention.RetainedAt = retention.RetainedAt.UTC()
+	return retention, nil
 }

@@ -150,8 +150,14 @@ func TestWorkspacePreparerReusesCacheWithIndependentClones(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read cache: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("cache entries = %d, want one mirror", len(entries))
+	mirrors := 0
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasSuffix(entry.Name(), ".git") {
+			mirrors++
+		}
+	}
+	if mirrors != 1 {
+		t.Fatalf("cache mirrors = %d, want one", mirrors)
 	}
 }
 

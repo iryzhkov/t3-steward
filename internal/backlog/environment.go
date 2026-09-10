@@ -195,6 +195,23 @@ func (c *EnvironmentCoordinator) Reservation(attemptID string) (EnvironmentReser
 	return cloneEnvironmentReservation(reservation), ok
 }
 
+func (c *EnvironmentCoordinator) WorkflowActive(workflowRunID string) bool {
+	if c == nil || workflowRunID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.workflows[workflowRunID]; ok {
+		return true
+	}
+	for _, reservation := range c.reservations {
+		if reservation.WorkflowRunID == workflowRunID {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *EnvironmentCoordinator) initializeLocked() {
 	if c.workflows == nil {
 		c.workflows = make(map[string]workflowEnvironmentOwner)
