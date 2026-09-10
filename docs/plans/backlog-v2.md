@@ -429,6 +429,8 @@ Each milestone should fit one unattended development session where practical. A 
 
 Development runs only in `/home/igor/Work/t3-steward` on Normandy, on branch `feature/backlog-orchestrator`. Do not use or modify the laptop checkout or laptop backlog.
 
+The remainder of this implementation chain is submitted with `t3-backlog --ungated`. This bypasses forecast and quiet-hours admission for the development sessions, but does not bypass hard quota-health controls.
+
 At the beginning of every session:
 
 1. Read this plan and `CONTEXT.md` completely.
@@ -453,7 +455,7 @@ At the end of every nonfinal session:
 2. Write or update `docs/plans/backlog-v2-handoff.md` with completed work, decisions, test results, remaining risks, and the exact next increment.
 3. Commit code, tests, plan progress, and handoff together.
 4. Confirm the working tree is clean.
-5. Queue exactly one successor using `docs/plans/backlog-v2-session-prompt.md` and model `gpt-5.6-sol` on the `codex` instance.
+5. Queue exactly one ungated successor using `docs/plans/backlog-v2-session-prompt.md`, `--ungated`, and model `gpt-5.6-sol` on the `codex` instance.
 6. End with `BACKLOG STATUS: done`. Do not continue editing after queueing the successor.
 
 At the end of M9, do not queue another session. Commit the readiness report, leave the tree clean, and end with `BACKLOG STATUS: done`, clearly stating that host-wide deployment awaits user approval.

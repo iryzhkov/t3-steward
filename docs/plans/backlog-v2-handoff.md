@@ -14,6 +14,7 @@ Updated: 2026-09-10
 - Deadline-risk tasks that are route- or quota-blocked remain fully explained; the next eligible fairness candidate may be proposed and its reservations affect later decisions normally.
 - Tests cover deadline precedence, importance, ready age, repeated deferrals, stable workflow rotation, input-order independence, invalid history, quota-blocked fallback, and resource contention.
 - No configured/live repository, T3 thread, worker, service, or live database was touched.
+- By user direction, the remaining implementation-chain backlog submissions are ungated: use `t3-backlog --ungated`. Hard quota-health controls still apply.
 
 ## Decisions
 
@@ -49,4 +50,4 @@ All passed.
 
 ## Exact next increment
 
-Complete M4 with table-driven fleet planning simulations for low quota, late-week surplus admission, competing provider pools, and stale quota observations. Extend the immutable planning input only where the simulations expose a missing seam; preserve the new deadline/fairness ordering and ordered-route semantics. Each scenario must assert proposals, candidate exclusions, quota reservations, and deterministic explanations across reordered inputs. Define an explicit fail-closed freshness rule for quota observations rather than hiding staleness inside generic capacity. Run targeted tests and race tests, then the full M4 test set, `go test ./...`, `go vet ./...`, and `git diff --check`. Do not dispatch work, contact workers, open live state, or modify deployed configuration.
+Complete M4 with table-driven fleet planning simulations for low quota, late-week surplus admission, competing provider pools, and stale quota observations. Extend the immutable planning input only where the simulations expose a missing seam; preserve the new deadline/fairness ordering and ordered-route semantics. Each scenario must assert proposals, candidate exclusions, quota reservations, and deterministic explanations across reordered inputs. Define an explicit fail-closed freshness rule for quota observations rather than hiding staleness inside generic capacity. Run targeted tests and race tests, then the full M4 test set, `go test ./...`, `go vet ./...`, and `git diff --check`. Do not dispatch work, contact workers, open live state, or modify deployed configuration. If implementation remains, queue the one successor with `--ungated` as required by the session prompt.
