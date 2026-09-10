@@ -393,7 +393,7 @@ Each milestone should fit one unattended development session where practical. A 
 
 ### M6. Schedules and idempotency
 
-- [ ] Add versioned schedule definitions and trigger history.
+- [x] Add versioned schedule definitions and trigger history.
 - [ ] Enforce one open run per schedule transactionally.
 - [ ] Add unique occurrence keys, suppressed triggers, misfire behavior, failure holds, and manual schedule runs.
 - [ ] Make T3 dispatch idempotent with persisted thread IDs and dispatch tokens.

@@ -219,7 +219,22 @@ const (
 	ScheduleFailureHold      ScheduleFailurePolicy = "hold"
 )
 
-// Schedule is a versioned recurring workflow definition.
+// ScheduleTemplate is one immutable version of a recurring workflow definition.
+// Schedule.Version selects the template used for future triggers; existing triggers
+// retain the version they observed.
+type ScheduleTemplate struct {
+	ScheduleID   string                `json:"scheduleId"`
+	Version      int                   `json:"version"`
+	WorkflowID   string                `json:"workflowId"`
+	Expression   string                `json:"expression"`
+	Timezone     string                `json:"timezone"`
+	Overlap      ScheduleOverlapPolicy `json:"overlap"`
+	Misfire      ScheduleMisfirePolicy `json:"misfire"`
+	AfterFailure ScheduleFailurePolicy `json:"afterFailure"`
+	CreatedAt    time.Time             `json:"createdAt"`
+}
+
+// Schedule is the mutable projection of a recurring definition's current template and execution state.
 type Schedule struct {
 	ID           string                `json:"id"`
 	Name         string                `json:"name"`
@@ -247,14 +262,15 @@ const (
 
 // Trigger is one observed firing of a schedule.
 type Trigger struct {
-	ID            string       `json:"id"`
-	ScheduleID    string       `json:"scheduleId"`
-	NominalAt     time.Time    `json:"nominalAt"`
-	OccurrenceKey string       `json:"occurrenceKey"`
-	State         TriggerState `json:"state"`
-	WorkflowRunID string       `json:"workflowRunId,omitempty"`
-	Reason        string       `json:"reason,omitempty"`
-	ObservedAt    time.Time    `json:"observedAt"`
+	ID              string       `json:"id"`
+	ScheduleID      string       `json:"scheduleId"`
+	ScheduleVersion int          `json:"scheduleVersion"`
+	NominalAt       time.Time    `json:"nominalAt"`
+	OccurrenceKey   string       `json:"occurrenceKey"`
+	State           TriggerState `json:"state"`
+	WorkflowRunID   string       `json:"workflowRunId,omitempty"`
+	Reason          string       `json:"reason,omitempty"`
+	ObservedAt      time.Time    `json:"observedAt"`
 }
 
 // QuotaPool groups provider instances that consume the same provider limit.

@@ -41,9 +41,10 @@ func TestSaveCoordinatorRecordsRollsBackOnConstraintFailure(t *testing.T) {
 
 	records := coordinatorFixture()
 	records.Triggers = append(records.Triggers, domain.Trigger{
-		ID:            "trigger-2",
-		ScheduleID:    "schedule-1",
-		OccurrenceKey: records.Triggers[0].OccurrenceKey,
+		ID:              "trigger-2",
+		ScheduleID:      "schedule-1",
+		ScheduleVersion: 4,
+		OccurrenceKey:   records.Triggers[0].OccurrenceKey,
 		State:         domain.TriggerSuppressed,
 		ObservedAt:    records.Triggers[0].ObservedAt,
 	})
@@ -109,6 +110,7 @@ func TestMigrationFromVersionOnePreservesState(t *testing.T) {
 		"coordinator_attempts",
 		"coordinator_assignments",
 		"coordinator_schedules",
+		"coordinator_schedule_templates",
 		"coordinator_triggers",
 		"coordinator_quota_pools",
 		"coordinator_artifacts",
@@ -128,10 +130,150 @@ func TestMigrationFromVersionOnePreservesState(t *testing.T) {
 			t.Errorf("migrated table %q count = %d, want 1", table, count)
 		}
 	}
-	if has, err := s.hasColumn("coordinator_attempts", "revision"); err != nil {
+	for _, column := range []struct {
+		table string
+		name  string
+	}{
+		{table: "coordinator_attempts", name: "revision"},
+		{table: "coordinator_schedules", name: "current_version"},
+		{table: "coordinator_triggers", name: "schedule_version"},
+	} {
+		if has, err := s.hasColumn(column.table, column.name); err != nil {
+			t.Fatal(err)
+		} else if !has {
+			t.Errorf("migrated %s.%s is missing", column.table, column.name)
+		}
+	}
+}
+
+func TestScheduleTemplatesAndTriggersAreImmutable(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
 		t.Fatal(err)
-	} else if !has {
-		t.Error("migrated coordinator_attempts.revision is missing")
+	}
+	defer s.Close()
+
+	records := coordinatorFixture()
+	if err := s.SaveCoordinatorRecords(context.Background(), records); err != nil {
+		t.Fatalf("save coordinator records: %v", err)
+	}
+	if err := s.SaveCoordinatorRecords(context.Background(), records); err != nil {
+		t.Fatalf("idempotent replay: %v", err)
+	}
+	nextTemplate := records.ScheduleTemplates[0]
+	nextTemplate.Version++
+	nextTemplate.WorkflowID = "workflow-replacement"
+	nextTemplate.CreatedAt = nextTemplate.CreatedAt.Add(time.Hour)
+	if err := s.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{
+		ScheduleTemplates: []domain.ScheduleTemplate{nextTemplate},
+	}); err != nil {
+		t.Fatalf("save next schedule template: %v", err)
+	}
+
+	changedTemplate := records.ScheduleTemplates[0]
+	changedTemplate.WorkflowID = "workflow-replacement"
+	if err := s.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{
+		ScheduleTemplates: []domain.ScheduleTemplate{changedTemplate},
+	}); err == nil {
+		t.Fatal("changed immutable schedule template succeeded")
+	}
+
+	changedTrigger := records.Triggers[0]
+	changedTrigger.Reason = "rewritten history"
+	if err := s.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{
+		Triggers: []domain.Trigger{changedTrigger},
+	}); err == nil {
+		t.Fatal("changed immutable trigger succeeded")
+	}
+
+	got, err := s.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatalf("load coordinator records: %v", err)
+	}
+	wantTemplates := append(records.ScheduleTemplates, nextTemplate)
+	if !reflect.DeepEqual(got.ScheduleTemplates, wantTemplates) {
+		t.Fatalf("schedule templates changed: %#v", got.ScheduleTemplates)
+	}
+	if !reflect.DeepEqual(got.Triggers, records.Triggers) {
+		t.Fatalf("triggers changed: %#v", got.Triggers)
+	}
+}
+
+func TestMigrationFromVersionFiveAddsScheduleHistory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`DROP INDEX coordinator_triggers_schedule_version`,
+		`DROP TABLE coordinator_schedule_templates`,
+		`ALTER TABLE coordinator_triggers DROP COLUMN schedule_version`,
+		`ALTER TABLE coordinator_schedules DROP COLUMN current_version`,
+		`DELETE FROM schema_version WHERE version = 6`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("restore version 5 schema: %v", err)
+		}
+	}
+
+	fixture := coordinatorFixture()
+	scheduleRaw, err := json.Marshal(fixture.Schedules[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyTrigger := fixture.Triggers[0]
+	legacyTrigger.ScheduleVersion = 0
+	triggerRaw, err := json.Marshal(legacyTrigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO coordinator_schedules(id, active_run_id, revision, record) VALUES (?, ?, ?, ?)`,
+		fixture.Schedules[0].ID, fixture.Schedules[0].ActiveRunID, fixture.Schedules[0].Revision, scheduleRaw,
+	); err != nil {
+		t.Fatalf("insert version 5 schedule: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO coordinator_triggers(id, schedule_id, occurrence_key, record) VALUES (?, ?, ?, ?)`,
+		legacyTrigger.ID, legacyTrigger.ScheduleID, legacyTrigger.OccurrenceKey, triggerRaw,
+	); err != nil {
+		t.Fatalf("insert version 5 trigger: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err = Open(path)
+	if err != nil {
+		t.Fatalf("migrate version 5 database: %v", err)
+	}
+	defer s.Close()
+	got, err := s.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatalf("load migrated schedule history: %v", err)
+	}
+	if len(got.ScheduleTemplates) != 1 {
+		t.Fatalf("schedule template count = %d, want 1", len(got.ScheduleTemplates))
+	}
+	template := got.ScheduleTemplates[0]
+	if template.ScheduleID != fixture.Schedules[0].ID ||
+		template.Version != fixture.Schedules[0].Version ||
+		template.WorkflowID != fixture.Schedules[0].WorkflowID ||
+		template.Expression != fixture.Schedules[0].Expression ||
+		template.CreatedAt != fixture.Schedules[0].CreatedAt {
+		t.Fatalf("migrated schedule template = %#v", template)
+	}
+	if len(got.Triggers) != 1 || got.Triggers[0].ScheduleVersion != fixture.Schedules[0].Version {
+		t.Fatalf("migrated triggers = %#v", got.Triggers)
 	}
 }
 
@@ -188,8 +330,14 @@ func coordinatorFixture() CoordinatorRecords {
 			AfterFailure: domain.ScheduleFailureHold, Enabled: true, ActiveRunID: "run-1",
 			Revision: 2, CreatedAt: now, UpdatedAt: later,
 		}},
+		ScheduleTemplates: []domain.ScheduleTemplate{{
+			ScheduleID: "schedule-1", Version: 4, WorkflowID: "workflow-1",
+			Expression: "0 2 * * *", Timezone: "America/Los_Angeles",
+			Overlap: domain.ScheduleOverlapForbid, Misfire: domain.ScheduleMisfireSkip,
+			AfterFailure: domain.ScheduleFailureHold, CreatedAt: now,
+		}},
 		Triggers: []domain.Trigger{{
-			ID: "trigger-1", ScheduleID: "schedule-1", NominalAt: now,
+			ID: "trigger-1", ScheduleID: "schedule-1", ScheduleVersion: 4, NominalAt: now,
 			OccurrenceKey: "schedule-1/2026-09-09T12:00:00Z", State: domain.TriggerAccepted,
 			WorkflowRunID: "run-1", ObservedAt: now,
 		}},

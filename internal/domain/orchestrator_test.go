@@ -68,16 +68,17 @@ func TestOrchestratorDomainJSONRoundTrip(t *testing.T) {
 		QuotaPoolID:        "openai-primary",
 	}
 	fixture := struct {
-		Workflow     Workflow     `json:"workflow"`
-		WorkflowRun  WorkflowRun  `json:"workflowRun"`
-		Task         Task         `json:"task"`
-		Attempt      Attempt      `json:"attempt"`
-		Assignment   Assignment   `json:"assignment"`
-		Schedule     Schedule     `json:"schedule"`
-		Trigger      Trigger      `json:"trigger"`
-		QuotaPool    QuotaPool    `json:"quotaPool"`
-		Artifact     Artifact     `json:"artifact"`
-		AdminCommand AdminCommand `json:"adminCommand"`
+		Workflow         Workflow         `json:"workflow"`
+		WorkflowRun      WorkflowRun      `json:"workflowRun"`
+		Task             Task             `json:"task"`
+		Attempt          Attempt          `json:"attempt"`
+		Assignment       Assignment       `json:"assignment"`
+		Schedule         Schedule         `json:"schedule"`
+		ScheduleTemplate ScheduleTemplate `json:"scheduleTemplate"`
+		Trigger          Trigger          `json:"trigger"`
+		QuotaPool        QuotaPool        `json:"quotaPool"`
+		Artifact         Artifact         `json:"artifact"`
+		AdminCommand     AdminCommand     `json:"adminCommand"`
 	}{
 		Workflow: Workflow{
 			ID: "workflow-1", Version: 2, Name: "build", Project: "t3-steward", Class: TaskClassRequired,
@@ -115,8 +116,14 @@ func TestOrchestratorDomainJSONRoundTrip(t *testing.T) {
 			AfterFailure: ScheduleFailureHold, Enabled: true, ActiveRunID: "run-1",
 			Revision: 2, CreatedAt: now, UpdatedAt: later,
 		},
+		ScheduleTemplate: ScheduleTemplate{
+			ScheduleID: "schedule-1", Version: 4, WorkflowID: "workflow-1",
+			Expression: "0 2 * * *", Timezone: "America/Los_Angeles",
+			Overlap: ScheduleOverlapForbid, Misfire: ScheduleMisfireSkip,
+			AfterFailure: ScheduleFailureHold, CreatedAt: now,
+		},
 		Trigger: Trigger{
-			ID: "trigger-1", ScheduleID: "schedule-1", NominalAt: now,
+			ID: "trigger-1", ScheduleID: "schedule-1", ScheduleVersion: 4, NominalAt: now,
 			OccurrenceKey: "schedule-1/2026-09-09T12:00:00Z", State: TriggerAccepted,
 			WorkflowRunID: "run-1", ObservedAt: now,
 		},
@@ -143,16 +150,17 @@ func TestOrchestratorDomainJSONRoundTrip(t *testing.T) {
 		t.Fatalf("marshal domain fixture: %v", err)
 	}
 	var got struct {
-		Workflow     Workflow     `json:"workflow"`
-		WorkflowRun  WorkflowRun  `json:"workflowRun"`
-		Task         Task         `json:"task"`
-		Attempt      Attempt      `json:"attempt"`
-		Assignment   Assignment   `json:"assignment"`
-		Schedule     Schedule     `json:"schedule"`
-		Trigger      Trigger      `json:"trigger"`
-		QuotaPool    QuotaPool    `json:"quotaPool"`
-		Artifact     Artifact     `json:"artifact"`
-		AdminCommand AdminCommand `json:"adminCommand"`
+		Workflow         Workflow         `json:"workflow"`
+		WorkflowRun      WorkflowRun      `json:"workflowRun"`
+		Task             Task             `json:"task"`
+		Attempt          Attempt          `json:"attempt"`
+		Assignment       Assignment       `json:"assignment"`
+		Schedule         Schedule         `json:"schedule"`
+		ScheduleTemplate ScheduleTemplate `json:"scheduleTemplate"`
+		Trigger          Trigger          `json:"trigger"`
+		QuotaPool        QuotaPool        `json:"quotaPool"`
+		Artifact         Artifact         `json:"artifact"`
+		AdminCommand     AdminCommand     `json:"adminCommand"`
 	}
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("unmarshal domain fixture: %v", err)
