@@ -302,24 +302,40 @@ func (c *Control) ListProjects(ctx context.Context) ([]Project, error) {
 
 // NewThreadInput describes a thread to create and start.
 type NewThreadInput struct {
+	ThreadID        string
 	ProjectID       string
 	Title           string
 	ModelSelection  map[string]any
 	RuntimeMode     string
 	InteractionMode string
+	Branch          string
+	WorktreePath    string
 	Prompt          string
 }
 
-// CreateAndStartThread creates a thread and dispatches its first turn,
-// returning the new thread id. The HTTP dispatch endpoint applies one
-// command at a time, so the thread is created first.
+// CreateAndStartThread creates a thread and dispatches its first turn. A
+// caller-supplied thread ID is preserved and returned even when creation fails,
+// allowing a durable scheduler to reconcile an ambiguous response. The HTTP
+// dispatch endpoint applies one command at a time, so the thread is created first.
 func (c *Control) CreateAndStartThread(ctx context.Context, in NewThreadInput) (string, error) {
-	threadID := newID()
+	threadID := strings.TrimSpace(in.ThreadID)
+	callerProvidedThreadID := threadID != ""
+	if threadID == "" {
+		threadID = newID()
+	}
 	if in.RuntimeMode == "" {
 		in.RuntimeMode = "full-access"
 	}
 	if in.InteractionMode == "" {
 		in.InteractionMode = "default"
+	}
+	var branch any
+	if in.Branch != "" {
+		branch = in.Branch
+	}
+	var worktreePath any
+	if in.WorktreePath != "" {
+		worktreePath = in.WorktreePath
 	}
 	create := map[string]any{
 		"type":            "thread.create",
@@ -330,8 +346,8 @@ func (c *Control) CreateAndStartThread(ctx context.Context, in NewThreadInput) (
 		"modelSelection":  in.ModelSelection,
 		"runtimeMode":     in.RuntimeMode,
 		"interactionMode": in.InteractionMode,
-		"branch":          nil,
-		"worktreePath":    nil,
+		"branch":          branch,
+		"worktreePath":    worktreePath,
 		"createdAt":       now(),
 	}
 	turn := map[string]any{
@@ -351,16 +367,19 @@ func (c *Control) CreateAndStartThread(ctx context.Context, in NewThreadInput) (
 		"createdAt":       now(),
 	}
 	if c.DryRun {
-		c.log.Info("dry-run: would create and start thread", "title", in.Title, "project", in.ProjectID)
+		c.log.Info("dry-run: would create and start thread", "thread", threadID, "title", in.Title, "project", in.ProjectID, "worktree", in.WorktreePath)
 		return threadID, nil
 	}
 	if _, err := c.client.Dispatch(ctx, create); err != nil {
+		if callerProvidedThreadID {
+			return threadID, fmt.Errorf("create thread %q: %w", in.Title, err)
+		}
 		return "", fmt.Errorf("create thread %q: %w", in.Title, err)
 	}
 	if _, err := c.client.Dispatch(ctx, turn); err != nil {
 		return threadID, fmt.Errorf("start turn on thread %s: %w", threadID, err)
 	}
-	c.log.Info("thread created and started", "thread", threadID, "title", in.Title)
+	c.log.Info("thread created and started", "thread", threadID, "title", in.Title, "worktree", in.WorktreePath)
 	return threadID, nil
 }
 

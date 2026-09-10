@@ -365,7 +365,7 @@ Each milestone should fit one unattended development session where practical. A 
 - [x] Add worker inventory and capability matching.
 - [x] Add the logical project catalog and named setup profiles.
 - [x] Implement clean per-attempt Git environments with pinned revisions and repository caching.
-- [ ] Prototype and verify T3 `worktreePath` behavior.
+- [x] Prototype and verify T3 `worktreePath` behavior.
 - [ ] Add workflow-scoped environments, resource locks, preparation logs, retention, and process containment.
 - [ ] Test alternate workers, GPU-only placement, offline workers, setup failure, and workspace cleanup.
 

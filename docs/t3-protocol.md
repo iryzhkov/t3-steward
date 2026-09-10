@@ -172,6 +172,30 @@ the whole thread, which ends its subagents with it.
 All commands go to `POST /api/orchestration/dispatch` as a JSON body with a
 `commandId` (UUID) and ISO `createdAt`.
 
+Create a thread in a steward-prepared checkout:
+
+```json
+{"type":"thread.create","commandId":"...","threadId":"...","projectId":"...",
+ "title":"...","modelSelection":{...},"runtimeMode":"full-access",
+ "interactionMode":"default","branch":"main",
+ "worktreePath":"/absolute/path/to/prepared/workspace","createdAt":"..."}
+```
+
+In the tested contract, `branch` and `worktreePath` are nullable strings. The
+control adapter sends legacy calls as explicit `null` values and sends supplied
+values unchanged. A hermetic HTTP integration test verifies that an isolated
+endpoint receives the absolute prepared checkout path, branch, and the same
+caller-selected `threadId` in both `thread.create` and the following
+`thread.turn.start`. A rejected create or lost HTTP response returns that stable
+thread ID to the scheduler and does not remove the prepared checkout, so it can
+be reconciled instead of dispatched under a new identity. The adapter does not
+own workspace cleanup.
+
+This test exercises request serialization and failure ownership without
+contacting a live T3 daemon. Acceptance by a newly supported T3 release must
+still be checked against that release's contracts as part of the version
+verification checklist.
+
 Send a message (warn, drain, resume):
 
 ```json
