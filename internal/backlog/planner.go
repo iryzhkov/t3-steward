@@ -29,6 +29,8 @@ type PlanInput struct {
 	MaxWorkerSnapshotAge   time.Duration
 	Workflows              []PlanningWorkflow
 	Workers                []domain.WorkerInventory
+	QuotaPools             []domain.QuotaPool
+	RouteEstimates         []RouteEstimate
 	ResourceOwners         map[string]string
 	WorkflowCheckoutOwners map[string]string
 	Constraints            []PlanningConstraint
@@ -39,6 +41,9 @@ type PlanningCandidate struct {
 	Task          domain.Task
 	Attempt       domain.Attempt
 	WorkerID      string
+	RouteOrdinal    int
+	Route         *domain.ProviderRoute
+	Estimate      *TaskAdmissionEstimate
 }
 
 // PlanningConstraint is immutable planning policy input. StartPlan returns
@@ -59,8 +64,11 @@ type PlanningBlocker struct {
 	Resource      string                `json:"resource,omitempty"`
 	OwnerID       string                `json:"ownerId,omitempty"`
 	DependsOn     string                `json:"dependsOn,omitempty"`
-	QuotaPoolID   string                `json:"quotaPoolId,omitempty"`
-	QuotaWindowID string                `json:"quotaWindowId,omitempty"`
+	ProviderInstanceID string                `json:"providerInstanceId,omitempty"`
+	Model              string                `json:"model,omitempty"`
+	RouteOrdinal         int                   `json:"routeOrdinal,omitempty"`
+	QuotaPoolID        string                `json:"quotaPoolId,omitempty"`
+	QuotaWindowID      string                `json:"quotaWindowId,omitempty"`
 	Admission     domain.AdmissionState `json:"admission,omitempty"`
 	RequiredCost  float64               `json:"requiredCost,omitempty"`
 	Available     float64               `json:"available,omitempty"`
@@ -69,8 +77,11 @@ type PlanningBlocker struct {
 }
 
 type CandidateEvaluation struct {
-	WorkerID string            `json:"workerId"`
-	Blockers []PlanningBlocker `json:"blockers,omitempty"`
+	WorkerID   string                 `json:"workerId"`
+	RouteOrdinal int                    `json:"routeOrdinal,omitempty"`
+	Route      *domain.ProviderRoute  `json:"route,omitempty"`
+	Estimate   *TaskAdmissionEstimate `json:"estimate,omitempty"`
+	Blockers   []PlanningBlocker      `json:"blockers,omitempty"`
 }
 
 type TaskPlanningDecision struct {
@@ -86,11 +97,13 @@ type TaskPlanningDecision struct {
 }
 
 type ProposedTask struct {
-	WorkflowRunID string   `json:"workflowRunId"`
-	TaskID        string   `json:"taskId"`
-	AttemptID     string   `json:"attemptId"`
-	WorkerID      string   `json:"workerId"`
-	ResourceLocks []string `json:"resourceLocks,omitempty"`
+	WorkflowRunID string                 `json:"workflowRunId"`
+	TaskID        string                 `json:"taskId"`
+	AttemptID     string                 `json:"attemptId"`
+	WorkerID      string                 `json:"workerId"`
+	Route         *domain.ProviderRoute  `json:"route,omitempty"`
+	Estimate      *TaskAdmissionEstimate `json:"estimate,omitempty"`
+	ResourceLocks []string               `json:"resourceLocks,omitempty"`
 }
 
 type Plan struct {
@@ -102,6 +115,10 @@ type Plan struct {
 // reservations, worker inventory, or any external state.
 func BuildPlan(input PlanInput) (Plan, error) {
 	if err := validatePlanInput(input); err != nil {
+		return Plan{}, err
+	}
+	router, err := newProviderRouter(input)
+	if err != nil {
 		return Plan{}, err
 	}
 	constraints := make([]PlanningConstraintSession, 0, len(input.Constraints))
@@ -138,7 +155,7 @@ func BuildPlan(input PlanInput) (Plan, error) {
 			if attempt.Progress.Terminal() {
 				continue
 			}
-			decision, proposal, err := planTask(input, constraints, workflow.Workflow, state, task, attempt, resourceOwners, checkoutOwners)
+			decision, proposal, err := planTask(input, router, constraints, workflow.Workflow, state, task, attempt, resourceOwners, checkoutOwners)
 			if err != nil {
 				return Plan{}, err
 			}
@@ -156,7 +173,10 @@ func BuildPlan(input PlanInput) (Plan, error) {
 					Task:          clonePlanningTask(task),
 					Attempt:       clonePlanningAttempt(attempt),
 					WorkerID:      proposal.WorkerID,
+					Route:         cloneProviderRoutePointer(proposal.Route),
+					Estimate:      cloneTaskAdmissionEstimatePointer(proposal.Estimate),
 				}
+				router.Reserve(candidate)
 				for _, constraint := range constraints {
 					constraint.Reserve(clonePlanningCandidate(candidate))
 				}
@@ -167,7 +187,7 @@ func BuildPlan(input PlanInput) (Plan, error) {
 	return result, nil
 }
 
-func planTask(input PlanInput, constraints []PlanningConstraintSession, workflow domain.Workflow, state DAGState, task domain.Task, attempt domain.Attempt, resourceOwners, checkoutOwners map[string]string) (TaskPlanningDecision, *ProposedTask, error) {
+func planTask(input PlanInput, router *providerRouter, constraints []PlanningConstraintSession, workflow domain.Workflow, state DAGState, task domain.Task, attempt domain.Attempt, resourceOwners, checkoutOwners map[string]string) (TaskPlanningDecision, *ProposedTask, error) {
 	placement, err := MatchWorkers(WorkerPlacementRequest{
 		Task: task, Project: workflow.Project, Now: input.Now, MaxSnapshotAge: input.MaxWorkerSnapshotAge,
 	}, input.Workers)
@@ -201,29 +221,38 @@ func planTask(input PlanInput, constraints []PlanningConstraintSession, workflow
 		}
 	}
 
-	selectedWorker := ""
-	for _, workerID := range placement.EligibleWorkerIDs {
-		candidate := PlanningCandidate{WorkflowRunID: state.Run.ID, Task: clonePlanningTask(task), Attempt: clonePlanningAttempt(attempt), WorkerID: workerID}
-		evaluation := CandidateEvaluation{WorkerID: workerID}
-		for _, constraint := range constraints {
-			evaluation.Blockers = append(evaluation.Blockers, constraint.Evaluate(clonePlanningCandidate(candidate))...)
+	var selected *PlanningCandidate
+	for _, routed := range router.Candidates(task, attempt, placement.EligibleWorkerIDs) {
+		candidate := clonePlanningCandidate(routed.candidate)
+		candidate.WorkflowRunID = state.Run.ID
+		evaluation := CandidateEvaluation{
+			WorkerID: candidate.WorkerID, RouteOrdinal: candidate.RouteOrdinal,
+			Route:    cloneProviderRoutePointer(candidate.Route),
+			Estimate: cloneTaskAdmissionEstimatePointer(candidate.Estimate),
+			Blockers: append([]PlanningBlocker(nil), routed.blockers...),
 		}
-		if err := normalizePlanningBlockers(evaluation.Blockers, workerID); err != nil {
-			return TaskPlanningDecision{}, nil, fmt.Errorf("plan task %q candidate %q: %w", task.Name, workerID, err)
+		if len(evaluation.Blockers) == 0 {
+			for _, constraint := range constraints {
+				evaluation.Blockers = append(evaluation.Blockers, constraint.Evaluate(clonePlanningCandidate(candidate))...)
+			}
+		}
+		if err := normalizePlanningBlockers(evaluation.Blockers, candidate.WorkerID); err != nil {
+			return TaskPlanningDecision{}, nil, fmt.Errorf("plan task %q candidate worker %q route %d: %w", task.Name, candidate.WorkerID, candidate.RouteOrdinal, err)
 		}
 		sortPlanningBlockers(evaluation.Blockers)
 		decision.Candidates = append(decision.Candidates, evaluation)
-		if selectedWorker == "" && len(evaluation.Blockers) == 0 {
-			selectedWorker = workerID
+		if selected == nil && len(evaluation.Blockers) == 0 {
+			copied := clonePlanningCandidate(candidate)
+			selected = &copied
 		}
 	}
 	if len(placement.EligibleWorkerIDs) == 0 {
 		decision.Blockers = append(decision.Blockers, PlanningBlocker{
 			Code: PlanningBlockerNoEligibleWorker, Detail: "no worker satisfies placement requirements",
 		})
-	} else if selectedWorker == "" {
+	} else if selected == nil {
 		decision.Blockers = append(decision.Blockers, PlanningBlocker{
-			Code: PlanningBlockerCandidatePolicy, Detail: "every placement-eligible worker is blocked by planning policy",
+			Code: PlanningBlockerCandidatePolicy, Detail: "every placement-eligible worker and provider route is blocked by planning policy",
 		})
 	}
 	sortPlanningBlockers(decision.Blockers)
@@ -232,7 +261,8 @@ func planTask(input PlanInput, constraints []PlanningConstraintSession, workflow
 	}
 	return decision, &ProposedTask{
 		WorkflowRunID: state.Run.ID, TaskID: task.ID, AttemptID: attempt.ID,
-		WorkerID: selectedWorker, ResourceLocks: locks,
+		WorkerID: selected.WorkerID, Route: cloneProviderRoutePointer(selected.Route),
+		Estimate: cloneTaskAdmissionEstimatePointer(selected.Estimate), ResourceLocks: locks,
 	}, nil
 }
 
@@ -351,18 +381,21 @@ func sortPlanningBlockers(blockers []PlanningBlocker) {
 		left, right := blockers[i], blockers[j]
 		leftFields := []string{
 			left.Code, left.WorkerID, left.Resource, left.OwnerID, left.DependsOn,
-			left.QuotaPoolID, left.QuotaWindowID, string(left.Admission),
+			left.ProviderInstanceID, left.Model, left.QuotaPoolID, left.QuotaWindowID, string(left.Admission),
 			planningTimeKey(left.EarliestAt), planningTimeKey(left.DeadlineAt), left.Detail,
 		}
 		rightFields := []string{
 			right.Code, right.WorkerID, right.Resource, right.OwnerID, right.DependsOn,
-			right.QuotaPoolID, right.QuotaWindowID, string(right.Admission),
+			right.ProviderInstanceID, right.Model, right.QuotaPoolID, right.QuotaWindowID, string(right.Admission),
 			planningTimeKey(right.EarliestAt), planningTimeKey(right.DeadlineAt), right.Detail,
 		}
 		for index := range leftFields {
 			if leftFields[index] != rightFields[index] {
 				return leftFields[index] < rightFields[index]
 			}
+		}
+		if left.RouteOrdinal != right.RouteOrdinal {
+			return left.RouteOrdinal < right.RouteOrdinal
 		}
 		if left.RequiredCost != right.RequiredCost {
 			return left.RequiredCost < right.RequiredCost
@@ -410,6 +443,8 @@ func clonePlanningTask(task domain.Task) domain.Task {
 func clonePlanningCandidate(candidate PlanningCandidate) PlanningCandidate {
 	candidate.Task = clonePlanningTask(candidate.Task)
 	candidate.Attempt = clonePlanningAttempt(candidate.Attempt)
+	candidate.Route = cloneProviderRoutePointer(candidate.Route)
+	candidate.Estimate = cloneTaskAdmissionEstimatePointer(candidate.Estimate)
 	return candidate
 }
 

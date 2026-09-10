@@ -5,31 +5,32 @@ Updated: 2026-09-10
 ## Completed checkpoint
 
 - Completed M1, M2, and M3.
-- Completed the first two M4 checklist items: deterministic planning and required/surplus quota admission policy.
-- Added immutable quota-window budgets covering capacity, current usage, interactive forecast, active consumption, paused required-work remainder, committed reservations, and safety margin.
-- Added immutable per-attempt remaining-cost, expected-runtime, and checkpoint-margin estimates.
-- Required and surplus tasks now obey hard admission closure, task not-before/expiry, deadline runway, and quota drain runway. Constrained/recovering admission reserves starts for required work; surplus additionally obeys its eligibility horizon.
-- The planner creates a private policy session for every dry run. Accepted proposals reserve quota only within that plan, preventing later proposals from spending the same headroom without mutating reusable policy input.
-- Planning blockers now carry machine-readable quota pool/window, admission state, required/available cost, earliest eligibility, and deadline cutoff fields.
-- Policy sessions receive isolated task and attempt values, preventing one policy from mutating planner input or another policy's evaluation.
-- Table-driven tests cover open, constrained, recovering, draining, and closed admission; required deadline pressure; late-window and premature surplus; forecast/reservation pressure; missing estimates; expiry; not-before; deadline/drain runway; validation; batch reservation; and repeatable dry runs.
+- Completed the first three M4 checklist items: deterministic planning, required/surplus quota admission, and ordered provider routing with fleet quota pools.
+- The planner now expands each task route preference across placement-eligible workers in route order, using worker ID only as the deterministic tie-break within one preference.
+- Provider candidates validate host pinning, installed/available instances, exact model availability, fleet pool binding, route-specific remaining-cost/runtime estimates, pool admission windows, and shared-pool concurrency.
+- Accepted proposals contain the resolved worker-specific provider route and estimate. Candidate decisions retain every evaluated route and machine-readable exclusion.
+- Host-local provider instance names may map to different quota pools on different workers. Worker inventory disambiguates those accounts; a fleet-level fallback is used only when exactly one pool contains the instance.
+- Route estimates include attempt, worker, provider instance, model, and canonicalized options. Quota admission now evaluates and reserves only windows belonging to the candidate's resolved pool.
+- Active assignments and accepted proposals share one pool concurrency counter, including when different provider instances consume the same account pool.
+- Planner and routing inputs are copied, sorted, and evaluated without mutation. Reordered workers, pools, and estimates produce the same plan.
+- Tests cover ordered fallback, host-pinned routes, unavailable instances/models, missing estimates, pool conflicts, unique and ambiguous pool mapping, worker-specific accounts, competing providers, route-specific quota estimates, existing concurrency, and within-batch shared-pool reservation.
 - No configured/live repository, T3 thread, worker, service, or live database was touched.
 
 ## Decisions
 
-- The documented quota formula applies to all work: capacity minus current usage, forecast interactive usage, active consumption, paused required-work remainder, committed reservations, and safety margin.
-- Required work differs from surplus through urgency and admission eligibility, not by consuming capacity reserved for interactive or paused required work.
-- Empty task class remains compatible with legacy single-task records and is treated as required. Unknown nonempty classes fail closed with an explanation.
-- Missing remaining-cost or runtime estimates fail closed as an explainable planning blocker.
-- Expected runtime plus checkpoint margin must fit both the task deadline and the window drain cutoff. Equality is allowed.
-- A quota policy can include multiple applicable windows; a candidate must fit every window, and a proposal reserves its remaining cost in every window for the rest of the batch.
-- Constraint configuration is immutable. `StartPlan(now)` creates private mutable accounting, while `Reserve` records only proposals accepted by all placement, lock, and policy checks.
-- Provider routes are deliberately not inferred in this increment. The current policy receives the quota windows applicable to a candidate; route construction will bind workers, instances, models, pools, and route-specific estimates next.
+- Ordered preference is authoritative: route ordinal precedes worker ordering. The first fully eligible route/worker combination is proposed.
+- A route without an available model, unambiguous pool, or route-specific estimate fails closed and remains visible in candidate explanations.
+- Provider instance identifiers are host-local. Duplicate names across fleet pools are valid when worker inventory names the pool; an empty worker binding is accepted only when fleet mapping is unique.
+- Quota pool concurrency is shared across every worker and provider instance bound to that pool. Paused attempts are expected to be excluded from `ActiveAssignments` by the future coordinator because they release runtime slots.
+- Route estimate identity includes canonical option key/value pairs, so estimates for materially different provider options cannot be substituted.
+- Tasks with no route retain the prior route-free planning behavior for legacy compatibility. New version 2 workflows are expected to provide materialized routes before assignment.
+- Quota admission configuration remains an immutable planning constraint. Provider routing supplies the resolved route and estimate; admission applies only that pool's windows and reserves only that pool after selection.
+- Route and policy sessions mutate private batch counters only. They do not create assignments or contact workers.
 
 ## Verification
 
-- `go test ./internal/backlog -run 'QuotaAdmission|BuildPlan' -count=1`
-- `go test -race ./internal/backlog -run 'QuotaAdmission|BuildPlan' -count=1`
+- `go test ./internal/backlog -run 'ProviderRouting|ProviderRoute|RouteSpecific|SharedPool|QuotaAdmission|BuildPlan' -count=1`
+- `go test -race ./internal/backlog -run 'ProviderRouting|ProviderRoute|RouteSpecific|SharedPool|QuotaAdmission|BuildPlan' -count=1`
 - `go test ./internal/backlog -count=1`
 - `go test ./...`
 - `go vet ./...`
@@ -39,13 +40,13 @@ All passed.
 
 ## Remaining risks
 
-- Provider-route selection, fleet quota-pool binding, provider concurrency, route-specific estimates, fairness, starvation protection, and stale-observation simulations remain M4.
-- Quota cost units are normalized by the future route/observation adapter; this policy validates consistent finite units but does not convert provider percentages or tokens itself.
+- Fairness, starvation protection, and the final low-quota/late-week/competing-provider/stale-observation simulation matrix remain M4.
+- Route-free legacy tasks still need coordinator-side default route materialization before they can become complete assignment records.
+- Quota cost units and observation freshness are normalized by future coordinator adapters; routing validates consistent finite estimates but does not convert provider percentages or infer stale admission state.
 - The planner is not yet connected to dispatch or a persisted assignment transaction; those integrations belong to later milestones.
-- Workflow workspace metadata, environment reservations, and quota reservations are not persisted through coordinator restart; durable coordinator recovery remains M7.
-- Stable thread IDs are accepted at the API seam but are not yet generated and persisted with dispatch tokens; that remains M6.
+- Workflow workspace metadata, environment reservations, route reservations, and quota reservations are not persisted through coordinator restart; durable coordinator recovery remains M7.
 - No development code has opened live state, contacted workers, dispatched work, or installed/restarted a service.
 
 ## Exact next increment
 
-Continue M4 by adding ordered alternative provider-route selection to the deterministic planner. Combine each placement-eligible worker's provider inventory with task route preferences, bind provider instances to fleet quota pools, apply route-specific remaining-cost/runtime estimates and shared-pool concurrency limits, and record the selected route in proposals and candidate explanations. Cover ordered fallback, unavailable instance/model exclusions, worker-specific routes, competing providers, shared-pool concurrency, and batch reservation with table-driven tests. Keep fairness/starvation ordering and stale-observation simulations as subsequent M4 increments. Do not dispatch work, contact workers, open live state, or modify deployed configuration.
+Continue M4 by adding deterministic fairness and starvation protection without weakening required-task deadlines. Define explicit immutable ordering inputs (importance, deadline slack, ready age, prior deferrals, and workflow identity), order tasks before batch selection, and expose the ordering reason in planning decisions. Required tasks at deadline risk must outrank fairness rotation; otherwise prevent one workflow or repeatedly blocked ready task from monopolizing capacity. Add table-driven tests for deadline precedence, equal-priority workflow rotation, repeated deferrals, stable tie-breaking, and interaction with route/quota/resource contention. Keep the final low-quota, late-week surplus, competing-provider, and stale-observation simulation matrix as the following M4 increment. Do not dispatch work, contact workers, open live state, or modify deployed configuration.

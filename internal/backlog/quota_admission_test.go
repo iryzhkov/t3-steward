@@ -164,13 +164,8 @@ func TestQuotaAdmissionPolicyScenarios(t *testing.T) {
 			if estimate.RemainingCost == 0 {
 				estimate = quotaTestEstimate()
 			}
-			estimates := map[string]TaskAdmissionEstimate{"alpha-1": estimate}
-			if test.omitEstimate {
-				estimates = nil
-			}
 			policy, err := NewQuotaAdmissionPolicy(QuotaAdmissionInput{
-				Windows:   []QuotaWindowBudget{window},
-				Estimates: estimates,
+				Windows: []QuotaWindowBudget{window},
 			})
 			if err != nil {
 				t.Fatalf("NewQuotaAdmissionPolicy: %v", err)
@@ -181,6 +176,9 @@ func TestQuotaAdmissionPolicyScenarios(t *testing.T) {
 				Attempt:       domain.Attempt{ID: "alpha-1"},
 				WorkerID:      "worker-a",
 			}
+			if !test.omitEstimate {
+				candidate.Estimate = cloneTaskAdmissionEstimate(estimate)
+			}
 			got := planningBlockerCodes(policy.StartPlan(plannerTestTime).Evaluate(candidate))
 			if !reflect.DeepEqual(got, test.wantCodes) {
 				t.Fatalf("blocker codes = %v, want %v", got, test.wantCodes)
@@ -189,47 +187,72 @@ func TestQuotaAdmissionPolicyScenarios(t *testing.T) {
 	}
 }
 
+func TestQuotaAdmissionPolicyRequiresMatchingRoutePoolWindow(t *testing.T) {
+	policy, err := NewQuotaAdmissionPolicy(QuotaAdmissionInput{
+		Windows: []QuotaWindowBudget{quotaTestWindow()},
+	})
+	if err != nil {
+		t.Fatalf("NewQuotaAdmissionPolicy: %v", err)
+	}
+	candidate := PlanningCandidate{
+		Task: testTask("alpha"), Attempt: domain.Attempt{ID: "alpha-1"}, WorkerID: "worker-a",
+		Route:    &domain.ProviderRoute{ProviderInstanceID: "codex", Model: "gpt", QuotaPoolID: "other"},
+		Estimate: cloneTaskAdmissionEstimate(quotaTestEstimate()),
+	}
+	blockers := policy.StartPlan(plannerTestTime).Evaluate(candidate)
+	if len(blockers) != 1 || blockers[0].Code != PlanningBlockerQuotaWindowMissing ||
+		blockers[0].QuotaPoolID != "other" {
+		t.Fatalf("blockers = %#v, want missing route-pool window", blockers)
+	}
+}
+
 func TestQuotaAdmissionPolicyUsesRemainingCostAndPrivateInput(t *testing.T) {
 	window := quotaTestWindow()
-	estimate := quotaTestEstimate()
 	windows := []QuotaWindowBudget{window}
-	estimates := map[string]TaskAdmissionEstimate{"alpha-1": estimate}
-	policy, err := NewQuotaAdmissionPolicy(QuotaAdmissionInput{Windows: windows, Estimates: estimates})
+	policy, err := NewQuotaAdmissionPolicy(QuotaAdmissionInput{Windows: windows})
 	if err != nil {
 		t.Fatalf("NewQuotaAdmissionPolicy: %v", err)
 	}
 	windows[0].Capacity = 1
-	estimates["alpha-1"] = TaskAdmissionEstimate{RemainingCost: 99, ExpectedRuntime: time.Hour}
 
 	originalCost := 90.0
 	task := testTask("alpha")
 	task.Class = domain.TaskClassRequired
 	task.EstimatedCost = &originalCost
-	candidate := PlanningCandidate{Task: task, Attempt: domain.Attempt{ID: "alpha-1"}, WorkerID: "worker-a"}
+	candidate := PlanningCandidate{
+		Task: task, Attempt: domain.Attempt{ID: "alpha-1"}, WorkerID: "worker-a",
+		Estimate: cloneTaskAdmissionEstimate(quotaTestEstimate()),
+	}
 	if blockers := policy.StartPlan(plannerTestTime).Evaluate(candidate); len(blockers) != 0 {
-		t.Fatalf("blockers = %#v, want remaining estimate admitted independently of original cost and mutated input", blockers)
+		t.Fatalf("blockers = %#v, want route remaining estimate admitted independently of original cost and mutated input", blockers)
 	}
 }
 
 func TestBuildPlanQuotaAdmissionReservesBatchAndIsRepeatable(t *testing.T) {
 	alpha := testTask("alpha")
 	alpha.Class = domain.TaskClassSurplus
+	alpha.Routes = []domain.ProviderRoute{{ProviderInstanceID: "codex", Model: "gpt"}}
 	beta := testTask("beta")
 	beta.Class = domain.TaskClassSurplus
+	beta.Routes = []domain.ProviderRoute{{ProviderInstanceID: "codex", Model: "gpt"}}
 	policy, err := NewQuotaAdmissionPolicy(QuotaAdmissionInput{
 		Windows: []QuotaWindowBudget{quotaTestWindow()},
-		Estimates: map[string]TaskAdmissionEstimate{
-			"alpha-1": quotaTestEstimate(),
-			"beta-1":  quotaTestEstimate(),
-		},
 	})
 	if err != nil {
 		t.Fatalf("NewQuotaAdmissionPolicy: %v", err)
 	}
-	input := plannerInput(
-		[]domain.Task{beta, alpha},
-		[]domain.WorkerInventory{plannerWorker("worker-a")},
-	)
+	worker := plannerWorker("worker-a")
+	worker.Providers = []domain.WorkerProviderInventory{{
+		InstanceID: "codex", Models: []string{"gpt"}, QuotaPoolID: "pool", Available: true,
+	}}
+	input := plannerInput([]domain.Task{beta, alpha}, []domain.WorkerInventory{worker})
+	input.QuotaPools = []domain.QuotaPool{{
+		ID: "pool", ProviderInstanceIDs: []string{"codex"}, MaxConcurrent: 10,
+	}}
+	input.RouteEstimates = []RouteEstimate{
+		{AttemptID: "alpha-1", WorkerID: "worker-a", ProviderInstanceID: "codex", Model: "gpt", Estimate: quotaTestEstimate()},
+		{AttemptID: "beta-1", WorkerID: "worker-a", ProviderInstanceID: "codex", Model: "gpt", Estimate: quotaTestEstimate()},
+	}
 	input.Constraints = []PlanningConstraint{policy}
 
 	first, err := BuildPlan(input)
@@ -287,19 +310,10 @@ func TestQuotaAdmissionPolicyRejectsInvalidInput(t *testing.T) {
 				input.Windows[0].Capacity = math.Inf(1)
 			},
 		},
-		{
-			name: "invalid estimate",
-			mutate: func(input *QuotaAdmissionInput) {
-				input.Estimates["alpha-1"] = TaskAdmissionEstimate{}
-			},
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			input := QuotaAdmissionInput{
-				Windows:   []QuotaWindowBudget{quotaTestWindow()},
-				Estimates: map[string]TaskAdmissionEstimate{"alpha-1": quotaTestEstimate()},
-			}
+			input := QuotaAdmissionInput{Windows: []QuotaWindowBudget{quotaTestWindow()}}
 			test.mutate(&input)
 			if _, err := NewQuotaAdmissionPolicy(input); err == nil {
 				t.Fatal("NewQuotaAdmissionPolicy succeeded, want validation error")

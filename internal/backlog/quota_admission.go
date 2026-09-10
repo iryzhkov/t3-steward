@@ -11,12 +11,13 @@ import (
 )
 
 const (
-	PlanningBlockerTaskClass        = "task-class"
-	PlanningBlockerTaskNotBefore    = "task-not-before"
-	PlanningBlockerTaskExpired      = "task-expired"
-	PlanningBlockerEstimateMissing  = "admission-estimate-missing"
-	PlanningBlockerQuotaAdmission   = "quota-admission"
-	PlanningBlockerQuotaCapacity    = "quota-capacity"
+	PlanningBlockerTaskClass          = "task-class"
+	PlanningBlockerTaskNotBefore      = "task-not-before"
+	PlanningBlockerTaskExpired        = "task-expired"
+	PlanningBlockerEstimateMissing    = "admission-estimate-missing"
+	PlanningBlockerQuotaAdmission     = "quota-admission"
+	PlanningBlockerQuotaCapacity      = "quota-capacity"
+	PlanningBlockerQuotaWindowMissing = "quota-window-missing"
 	PlanningBlockerSurplusWindow    = "surplus-window"
 	PlanningBlockerDeadlineRunway   = "deadline-runway"
 	PlanningBlockerQuotaDrainRunway = "quota-drain-runway"
@@ -44,27 +45,24 @@ type QuotaWindowBudget struct {
 // TaskAdmissionEstimate describes the remaining work for one attempt rather
 // than the original whole-task estimate.
 type TaskAdmissionEstimate struct {
-	RemainingCost    float64
-	ExpectedRuntime  time.Duration
-	CheckpointMargin time.Duration
+	RemainingCost    float64       `json:"remainingCost"`
+	ExpectedRuntime  time.Duration `json:"expectedRuntime"`
+	CheckpointMargin time.Duration `json:"checkpointMargin"`
 }
 
 type QuotaAdmissionInput struct {
-	Windows   []QuotaWindowBudget
-	Estimates map[string]TaskAdmissionEstimate
+	Windows []QuotaWindowBudget
 }
 
 // QuotaAdmissionPolicy is immutable and safe to reuse across planning cycles.
 // Each cycle receives private reservation accounting through StartPlan.
 type QuotaAdmissionPolicy struct {
 	windows   []QuotaWindowBudget
-	estimates map[string]TaskAdmissionEstimate
 }
 
 type quotaAdmissionSession struct {
 	now           time.Time
 	windows       []QuotaWindowBudget
-	estimates     map[string]TaskAdmissionEstimate
 	batchReserved []float64
 }
 
@@ -90,30 +88,13 @@ func NewQuotaAdmissionPolicy(input QuotaAdmissionInput) (QuotaAdmissionPolicy, e
 		}
 		seen[key] = struct{}{}
 	}
-	estimates := make(map[string]TaskAdmissionEstimate, len(input.Estimates))
-	for attemptID, estimate := range input.Estimates {
-		if strings.TrimSpace(attemptID) != attemptID || attemptID == "" {
-			return QuotaAdmissionPolicy{}, fmt.Errorf("quota admission estimate attempt IDs must be nonempty and trimmed")
-		}
-		if !positiveFinite(estimate.RemainingCost) {
-			return QuotaAdmissionPolicy{}, fmt.Errorf("quota admission estimate %q remaining cost must be positive and finite", attemptID)
-		}
-		if estimate.ExpectedRuntime <= 0 {
-			return QuotaAdmissionPolicy{}, fmt.Errorf("quota admission estimate %q runtime must be positive", attemptID)
-		}
-		if estimate.CheckpointMargin < 0 {
-			return QuotaAdmissionPolicy{}, fmt.Errorf("quota admission estimate %q checkpoint margin cannot be negative", attemptID)
-		}
-		estimates[attemptID] = estimate
-	}
-	return QuotaAdmissionPolicy{windows: windows, estimates: estimates}, nil
+	return QuotaAdmissionPolicy{windows: windows}, nil
 }
 
 func (policy QuotaAdmissionPolicy) StartPlan(now time.Time) PlanningConstraintSession {
 	return &quotaAdmissionSession{
 		now:           now,
 		windows:       append([]QuotaWindowBudget(nil), policy.windows...),
-		estimates:     cloneAdmissionEstimates(policy.estimates),
 		batchReserved: make([]float64, len(policy.windows)),
 	}
 }
@@ -129,11 +110,11 @@ func (session *quotaAdmissionSession) Evaluate(candidate PlanningCandidate) []Pl
 	}
 
 	blockers := session.taskTimeBlockers(candidate)
-	estimate, found := session.estimates[candidate.Attempt.ID]
-	if !found {
+	estimate := candidate.Estimate
+	if estimate == nil {
 		return append(blockers, PlanningBlocker{
 			Code:     PlanningBlockerEstimateMissing,
-			Detail:   fmt.Sprintf("attempt %q has no remaining-cost and runtime estimate", candidate.Attempt.ID),
+			Detail:   fmt.Sprintf("attempt %q candidate has no remaining-cost and runtime estimate", candidate.Attempt.ID),
 			WorkerID: candidate.WorkerID,
 		})
 	}
@@ -147,7 +128,12 @@ func (session *quotaAdmissionSession) Evaluate(candidate PlanningCandidate) []Pl
 		})
 	}
 
+	appliedWindows := 0
 	for index, window := range session.windows {
+		if !quotaWindowApplies(candidate, window) {
+			continue
+		}
+		appliedWindows++
 		available := quotaAvailable(window) - session.batchReserved[index]
 		common := PlanningBlocker{
 			WorkerID:      candidate.WorkerID,
@@ -190,16 +176,26 @@ func (session *quotaAdmissionSession) Evaluate(candidate PlanningCandidate) []Pl
 			blockers = append(blockers, blocker)
 		}
 	}
+	if candidate.Route != nil && candidate.Route.QuotaPoolID != "" && appliedWindows == 0 {
+		blockers = append(blockers, PlanningBlocker{
+			Code:     PlanningBlockerQuotaWindowMissing,
+			Detail:   fmt.Sprintf("quota pool %q has no admission window", candidate.Route.QuotaPoolID),
+			WorkerID: candidate.WorkerID, RouteOrdinal: candidate.RouteOrdinal,
+			ProviderInstanceID: candidate.Route.ProviderInstanceID,
+			Model:              candidate.Route.Model, QuotaPoolID: candidate.Route.QuotaPoolID,
+		})
+	}
 	return blockers
 }
 
 func (session *quotaAdmissionSession) Reserve(candidate PlanningCandidate) {
-	estimate, found := session.estimates[candidate.Attempt.ID]
-	if !found {
+	if candidate.Estimate == nil {
 		return
 	}
-	for index := range session.batchReserved {
-		session.batchReserved[index] += estimate.RemainingCost
+	for index, window := range session.windows {
+		if quotaWindowApplies(candidate, window) {
+			session.batchReserved[index] += candidate.Estimate.RemainingCost
+		}
 	}
 }
 
@@ -222,6 +218,12 @@ func (session *quotaAdmissionSession) taskTimeBlockers(candidate PlanningCandida
 		})
 	}
 	return blockers
+}
+
+func quotaWindowApplies(candidate PlanningCandidate, window QuotaWindowBudget) bool {
+	return candidate.Route == nil ||
+		candidate.Route.QuotaPoolID == "" ||
+		candidate.Route.QuotaPoolID == window.QuotaPoolID
 }
 
 func quotaAvailable(window QuotaWindowBudget) float64 {
@@ -292,13 +294,6 @@ func quotaWindowKey(window QuotaWindowBudget) string {
 	return window.QuotaPoolID + "/" + window.WindowID
 }
 
-func cloneAdmissionEstimates(source map[string]TaskAdmissionEstimate) map[string]TaskAdmissionEstimate {
-	result := make(map[string]TaskAdmissionEstimate, len(source))
-	for attemptID, estimate := range source {
-		result[attemptID] = estimate
-	}
-	return result
-}
 
 func planningTimeValue(value time.Time) *time.Time {
 	copied := value
