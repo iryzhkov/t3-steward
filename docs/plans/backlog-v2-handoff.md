@@ -5,32 +5,31 @@ Updated: 2026-09-10
 ## Completed checkpoint
 
 - Completed M1, M2, and M3.
-- Completed the first three M4 checklist items: deterministic planning, required/surplus quota admission, and ordered provider routing with fleet quota pools.
-- The planner now expands each task route preference across placement-eligible workers in route order, using worker ID only as the deterministic tie-break within one preference.
-- Provider candidates validate host pinning, installed/available instances, exact model availability, fleet pool binding, route-specific remaining-cost/runtime estimates, pool admission windows, and shared-pool concurrency.
-- Accepted proposals contain the resolved worker-specific provider route and estimate. Candidate decisions retain every evaluated route and machine-readable exclusion.
-- Host-local provider instance names may map to different quota pools on different workers. Worker inventory disambiguates those accounts; a fleet-level fallback is used only when exactly one pool contains the instance.
-- Route estimates include attempt, worker, provider instance, model, and canonicalized options. Quota admission now evaluates and reserves only windows belonging to the candidate's resolved pool.
-- Active assignments and accepted proposals share one pool concurrency counter, including when different provider instances consume the same account pool.
-- Planner and routing inputs are copied, sorted, and evaluated without mutation. Reordered workers, pools, and estimates produce the same plan.
-- Tests cover ordered fallback, host-pinned routes, unavailable instances/models, missing estimates, pool conflicts, unique and ambiguous pool mapping, worker-specific accounts, competing providers, route-specific quota estimates, existing concurrency, and within-batch shared-pool reservation.
+- Completed the first four M4 checklist items: deterministic planning, required/surplus quota admission, ordered provider routing with fleet quota pools, and deterministic fairness with starvation protection.
+- Planner callers now provide immutable per-attempt ordering history: ready time and prior deferral count, plus the planning-wide deadline-risk window.
+- The planner builds one fleet-wide task order before evaluating routes and reserving quota, workers, workflow checkouts, or resource locks.
+- Required tasks inside the deadline-risk window sort first by deadline slack. Normal ordering then uses importance, prior deferrals, ready age, workflow round, workflow-run identity, task name, and task ID.
+- Equal-priority tasks are interleaved by workflow round, preventing a workflow with several ready tasks from consuming the whole batch ahead of another equal-priority workflow.
+- Every planning decision carries a structured ordering explanation with deadline risk/slack, importance, ready time, prior deferrals, workflow round, and a human-readable reason.
+- Deadline-risk tasks that are route- or quota-blocked remain fully explained; the next eligible fairness candidate may be proposed and its reservations affect later decisions normally.
+- Tests cover deadline precedence, importance, ready age, repeated deferrals, stable workflow rotation, input-order independence, invalid history, quota-blocked fallback, and resource contention.
 - No configured/live repository, T3 thread, worker, service, or live database was touched.
 
 ## Decisions
 
-- Ordered preference is authoritative: route ordinal precedes worker ordering. The first fully eligible route/worker combination is proposed.
-- A route without an available model, unambiguous pool, or route-specific estimate fails closed and remains visible in candidate explanations.
-- Provider instance identifiers are host-local. Duplicate names across fleet pools are valid when worker inventory names the pool; an empty worker binding is accepted only when fleet mapping is unique.
-- Quota pool concurrency is shared across every worker and provider instance bound to that pool. Paused attempts are expected to be excluded from `ActiveAssignments` by the future coordinator because they release runtime slots.
-- Route estimate identity includes canonical option key/value pairs, so estimates for materially different provider options cannot be substituted.
-- Tasks with no route retain the prior route-free planning behavior for legacy compatibility. New version 2 workflows are expected to provide materialized routes before assignment.
-- Quota admission configuration remains an immutable planning constraint. Provider routing supplies the resolved route and estimate; admission applies only that pool's windows and reserves only that pool after selection.
-- Route and policy sessions mutate private batch counters only. They do not create assignments or contact workers.
+- Deadline risk is restricted to required tasks whose deadline is within the explicit positive planning window. Surplus work and required work outside the window remain subject to normal fairness ordering.
+- A deadline-risk task outranks importance, accumulated deferrals, ready age, and workflow rotation. Among at-risk tasks, the smallest deadline slack wins.
+- Importance remains authoritative outside deadline risk. Starvation protection applies among equally important work: more prior deferrals first, then the oldest ready time.
+- Workflow rotation is deterministic rather than stateful: tasks receive a per-workflow round after local priority ordering, and equal-priority rounds are interleaved by workflow-run ID.
+- Ordering history is required for every nonterminal attempt and fails closed when missing, future-dated, or negative. The planner never mutates the history map.
+- Blocked tasks remain in decisions for explanation, but dependency-ready tasks sort ahead of them and alone can consume reservations.
+- Provider routing, quota constraints, and resource reservation semantics are unchanged; only the deterministic order in which candidates reach those seams changed.
 
 ## Verification
 
-- `go test ./internal/backlog -run 'ProviderRouting|ProviderRoute|RouteSpecific|SharedPool|QuotaAdmission|BuildPlan' -count=1`
-- `go test -race ./internal/backlog -run 'ProviderRouting|ProviderRoute|RouteSpecific|SharedPool|QuotaAdmission|BuildPlan' -count=1`
+- Baseline: `go test ./...`
+- `go test ./internal/backlog -run 'BuildPlan(OrdersByDeadlineThenFairness|RotatesEqualPriority|FairnessInteracts|RejectsInvalidOrdering|Deterministic|OrdersWorkflow|Accounts|Applies)' -count=1`
+- `go test -race ./internal/backlog -run 'BuildPlan(OrdersByDeadlineThenFairness|RotatesEqualPriority|FairnessInteracts|RejectsInvalidOrdering|Deterministic|OrdersWorkflow|Accounts|Applies)' -count=1`
 - `go test ./internal/backlog -count=1`
 - `go test ./...`
 - `go vet ./...`
@@ -40,13 +39,14 @@ All passed.
 
 ## Remaining risks
 
-- Fairness, starvation protection, and the final low-quota/late-week/competing-provider/stale-observation simulation matrix remain M4.
+- The final M4 low-quota, late-week surplus, competing-provider, and stale-observation simulation matrix remains.
+- Deferral history and ready timestamps are planner inputs; the future coordinator must persist and advance them transactionally after each committed plan.
+- Deadline slack currently means wall-clock time until the declared deadline. Runtime-aware admission remains route-specific and is enforced after ordering by quota policy.
 - Route-free legacy tasks still need coordinator-side default route materialization before they can become complete assignment records.
-- Quota cost units and observation freshness are normalized by future coordinator adapters; routing validates consistent finite estimates but does not convert provider percentages or infer stale admission state.
 - The planner is not yet connected to dispatch or a persisted assignment transaction; those integrations belong to later milestones.
-- Workflow workspace metadata, environment reservations, route reservations, and quota reservations are not persisted through coordinator restart; durable coordinator recovery remains M7.
+- Workflow workspace metadata, environment reservations, route reservations, ordering history, and quota reservations are not persisted through coordinator restart; durable coordinator recovery remains M7.
 - No development code has opened live state, contacted workers, dispatched work, or installed/restarted a service.
 
 ## Exact next increment
 
-Continue M4 by adding deterministic fairness and starvation protection without weakening required-task deadlines. Define explicit immutable ordering inputs (importance, deadline slack, ready age, prior deferrals, and workflow identity), order tasks before batch selection, and expose the ordering reason in planning decisions. Required tasks at deadline risk must outrank fairness rotation; otherwise prevent one workflow or repeatedly blocked ready task from monopolizing capacity. Add table-driven tests for deadline precedence, equal-priority workflow rotation, repeated deferrals, stable tie-breaking, and interaction with route/quota/resource contention. Keep the final low-quota, late-week surplus, competing-provider, and stale-observation simulation matrix as the following M4 increment. Do not dispatch work, contact workers, open live state, or modify deployed configuration.
+Complete M4 with table-driven fleet planning simulations for low quota, late-week surplus admission, competing provider pools, and stale quota observations. Extend the immutable planning input only where the simulations expose a missing seam; preserve the new deadline/fairness ordering and ordered-route semantics. Each scenario must assert proposals, candidate exclusions, quota reservations, and deterministic explanations across reordered inputs. Define an explicit fail-closed freshness rule for quota observations rather than hiding staleness inside generic capacity. Run targeted tests and race tests, then the full M4 test set, `go test ./...`, `go vet ./...`, and `git diff --check`. Do not dispatch work, contact workers, open live state, or modify deployed configuration.

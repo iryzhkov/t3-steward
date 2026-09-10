@@ -65,6 +65,10 @@ func TestBuildPlanOrdersWorkflowRuns(t *testing.T) {
 
 	input := plannerInput(nil, []domain.WorkerInventory{plannerWorker("worker-a")})
 	input.Workflows = []PlanningWorkflow{runZ, runA}
+	input.Ordering.Attempts = map[string]PlanningAttemptOrdering{
+		"run-a-alpha-1": {ReadySince: plannerTestTime},
+		"run-z-alpha-1": {ReadySince: plannerTestTime},
+	}
 	got, err := BuildPlan(input)
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
@@ -229,6 +233,10 @@ func (planningConstraintFunc) Reserve(PlanningCandidate) {}
 
 func plannerInput(tasks []domain.Task, workers []domain.WorkerInventory) PlanInput {
 	state := testDAGState(tasks...)
+	ordering := make(map[string]PlanningAttemptOrdering, len(state.Attempts))
+	for _, attempt := range state.Attempts {
+		ordering[attempt.ID] = PlanningAttemptOrdering{ReadySince: plannerTestTime}
+	}
 	return PlanInput{
 		Now:                  plannerTestTime,
 		MaxWorkerSnapshotAge: time.Hour,
@@ -242,6 +250,10 @@ func plannerInput(tasks []domain.Task, workers []domain.WorkerInventory) PlanInp
 		Workers:                workers,
 		ResourceOwners:         map[string]string{},
 		WorkflowCheckoutOwners: map[string]string{},
+		Ordering: PlanningOrderingInput{
+			DeadlineRiskWindow: time.Hour,
+			Attempts:           ordering,
+		},
 	}
 }
 

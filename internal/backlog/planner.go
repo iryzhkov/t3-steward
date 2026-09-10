@@ -34,6 +34,27 @@ type PlanInput struct {
 	ResourceOwners         map[string]string
 	WorkflowCheckoutOwners map[string]string
 	Constraints            []PlanningConstraint
+	Ordering               PlanningOrderingInput
+}
+
+type PlanningOrderingInput struct {
+	DeadlineRiskWindow time.Duration
+	Attempts           map[string]PlanningAttemptOrdering
+}
+
+type PlanningAttemptOrdering struct {
+	ReadySince     time.Time
+	PriorDeferrals int
+}
+
+type PlanningOrder struct {
+	DeadlineRisk         bool      `json:"deadlineRisk"`
+	DeadlineSlackSeconds *int64    `json:"deadlineSlackSeconds,omitempty"`
+	Importance           int       `json:"importance"`
+	ReadySince           time.Time `json:"readySince"`
+	PriorDeferrals       int       `json:"priorDeferrals"`
+	WorkflowRound        int       `json:"workflowRound"`
+	Reason               string    `json:"reason"`
 }
 
 type PlanningCandidate struct {
@@ -90,6 +111,7 @@ type TaskPlanningDecision struct {
 	TaskName      string                `json:"taskName"`
 	AttemptID     string                `json:"attemptId"`
 	Progress      domain.ProgressState  `json:"progress"`
+	Order         PlanningOrder         `json:"order"`
 	Placement     WorkerPlacement       `json:"placement"`
 	Candidates    []CandidateEvaluation `json:"candidates,omitempty"`
 	Blockers      []PlanningBlocker     `json:"blockers,omitempty"`
@@ -129,65 +151,196 @@ func BuildPlan(input PlanInput) (Plan, error) {
 		}
 		constraints = append(constraints, session)
 	}
-	workflows := append([]PlanningWorkflow(nil), input.Workflows...)
-	sort.Slice(workflows, func(i, j int) bool {
-		return workflows[i].State.Run.ID < workflows[j].State.Run.ID
-	})
+	entries, err := orderedPlanningTasks(input)
+	if err != nil {
+		return Plan{}, err
+	}
 	resourceOwners := cloneStringMap(input.ResourceOwners)
 	checkoutOwners := cloneStringMap(input.WorkflowCheckoutOwners)
-	result := Plan{Decisions: make([]TaskPlanningDecision, 0)}
+	result := Plan{Decisions: make([]TaskPlanningDecision, 0, len(entries))}
 
-	for _, workflow := range workflows {
-		execution, err := NewDAGExecution(workflow.State)
+	for _, entry := range entries {
+		if entry.attempt.Progress.Terminal() {
+			continue
+		}
+		decision, proposal, err := planTask(input, router, constraints, entry.workflow, entry.state, entry.task, entry.attempt, entry.order, resourceOwners, checkoutOwners)
 		if err != nil {
-			return Plan{}, fmt.Errorf("plan workflow run %q: %w", workflow.State.Run.ID, err)
+			return Plan{}, err
 		}
-		state := execution.Snapshot()
-		tasks := append([]domain.Task(nil), state.Tasks...)
-		sort.Slice(tasks, func(i, j int) bool {
-			if tasks[i].Name == tasks[j].Name {
-				return tasks[i].ID < tasks[j].ID
+		if proposal != nil {
+			decision.Proposed = true
+			result.Proposals = append(result.Proposals, *proposal)
+			for _, resource := range proposal.ResourceLocks {
+				resourceOwners[resource] = proposal.AttemptID
 			}
-			return tasks[i].Name < tasks[j].Name
-		})
-		for _, task := range tasks {
-			attempt := currentPlanningAttempt(state.Attempts, task.ID)
-			if attempt.Progress.Terminal() {
-				continue
+			if entry.workflow.Environment.Scope == EnvironmentScopeWorkflow {
+				checkoutOwners[entry.state.Run.ID] = proposal.AttemptID
 			}
-			decision, proposal, err := planTask(input, router, constraints, workflow.Workflow, state, task, attempt, resourceOwners, checkoutOwners)
-			if err != nil {
-				return Plan{}, err
+			candidate := PlanningCandidate{
+				WorkflowRunID: entry.state.Run.ID,
+				Task:          clonePlanningTask(entry.task),
+				Attempt:       clonePlanningAttempt(entry.attempt),
+				WorkerID:      proposal.WorkerID,
+				Route:         cloneProviderRoutePointer(proposal.Route),
+				Estimate:      cloneTaskAdmissionEstimatePointer(proposal.Estimate),
 			}
-			if proposal != nil {
-				decision.Proposed = true
-				result.Proposals = append(result.Proposals, *proposal)
-				for _, resource := range proposal.ResourceLocks {
-					resourceOwners[resource] = proposal.AttemptID
-				}
-				if workflow.Workflow.Environment.Scope == EnvironmentScopeWorkflow {
-					checkoutOwners[state.Run.ID] = proposal.AttemptID
-				}
-				candidate := PlanningCandidate{
-					WorkflowRunID: state.Run.ID,
-					Task:          clonePlanningTask(task),
-					Attempt:       clonePlanningAttempt(attempt),
-					WorkerID:      proposal.WorkerID,
-					Route:         cloneProviderRoutePointer(proposal.Route),
-					Estimate:      cloneTaskAdmissionEstimatePointer(proposal.Estimate),
-				}
-				router.Reserve(candidate)
-				for _, constraint := range constraints {
-					constraint.Reserve(clonePlanningCandidate(candidate))
-				}
+			router.Reserve(candidate)
+			for _, constraint := range constraints {
+				constraint.Reserve(clonePlanningCandidate(candidate))
 			}
-			result.Decisions = append(result.Decisions, decision)
 		}
+		result.Decisions = append(result.Decisions, decision)
 	}
 	return result, nil
 }
 
-func planTask(input PlanInput, router *providerRouter, constraints []PlanningConstraintSession, workflow domain.Workflow, state DAGState, task domain.Task, attempt domain.Attempt, resourceOwners, checkoutOwners map[string]string) (TaskPlanningDecision, *ProposedTask, error) {
+type planningTaskEntry struct {
+	workflow domain.Workflow
+	state    DAGState
+	task     domain.Task
+	attempt  domain.Attempt
+	order    PlanningOrder
+	ready    bool
+}
+
+func orderedPlanningTasks(input PlanInput) ([]planningTaskEntry, error) {
+	entries := make([]planningTaskEntry, 0)
+	byWorkflow := make(map[string][]int, len(input.Workflows))
+	for _, workflow := range input.Workflows {
+		execution, err := NewDAGExecution(workflow.State)
+		if err != nil {
+			return nil, fmt.Errorf("plan workflow run %q: %w", workflow.State.Run.ID, err)
+		}
+		state := execution.Snapshot()
+		for _, task := range state.Tasks {
+			attempt := currentPlanningAttempt(state.Attempts, task.ID)
+			if attempt.Progress.Terminal() {
+				continue
+			}
+			history, ok := input.Ordering.Attempts[attempt.ID]
+			if !ok {
+				return nil, fmt.Errorf("plan attempt %q is missing ordering history", attempt.ID)
+			}
+			if history.ReadySince.IsZero() {
+				return nil, fmt.Errorf("plan attempt %q ready time is required", attempt.ID)
+			}
+			if history.ReadySince.After(input.Now) {
+				return nil, fmt.Errorf("plan attempt %q ready time is in the future", attempt.ID)
+			}
+			if history.PriorDeferrals < 0 {
+				return nil, fmt.Errorf("plan attempt %q prior deferrals must not be negative", attempt.ID)
+			}
+			order := planningOrder(input, task, history)
+			entries = append(entries, planningTaskEntry{
+				workflow: workflow.Workflow,
+				state:    state,
+				task:     task,
+				attempt:  attempt,
+				order:    order,
+				ready:    attempt.Progress == domain.ProgressReady,
+			})
+			byWorkflow[state.Run.ID] = append(byWorkflow[state.Run.ID], len(entries)-1)
+		}
+	}
+	for _, indices := range byWorkflow {
+		sort.Slice(indices, func(i, j int) bool {
+			left, right := entries[indices[i]], entries[indices[j]]
+			if comparison := comparePlanningPriority(left, right); comparison != 0 {
+				return comparison < 0
+			}
+			if left.task.Name != right.task.Name {
+				return left.task.Name < right.task.Name
+			}
+			return left.task.ID < right.task.ID
+		})
+		for round, index := range indices {
+			entries[index].order.WorkflowRound = round
+			entries[index].order.Reason = planningOrderReason(entries[index].order)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if comparison := comparePlanningPriority(entries[i], entries[j]); comparison != 0 {
+			return comparison < 0
+		}
+		if entries[i].order.WorkflowRound != entries[j].order.WorkflowRound {
+			return entries[i].order.WorkflowRound < entries[j].order.WorkflowRound
+		}
+		if entries[i].state.Run.ID != entries[j].state.Run.ID {
+			return entries[i].state.Run.ID < entries[j].state.Run.ID
+		}
+		if entries[i].task.Name != entries[j].task.Name {
+			return entries[i].task.Name < entries[j].task.Name
+		}
+		return entries[i].task.ID < entries[j].task.ID
+	})
+	return entries, nil
+}
+
+func planningOrder(input PlanInput, task domain.Task, history PlanningAttemptOrdering) PlanningOrder {
+	order := PlanningOrder{
+		Importance:     task.Importance,
+		ReadySince:     history.ReadySince,
+		PriorDeferrals: history.PriorDeferrals,
+	}
+	if task.Deadline != nil {
+		slack := int64(task.Deadline.Sub(input.Now) / time.Second)
+		order.DeadlineSlackSeconds = &slack
+		order.DeadlineRisk = task.Class == domain.TaskClassRequired &&
+			task.Deadline.Sub(input.Now) <= input.Ordering.DeadlineRiskWindow
+	}
+	return order
+}
+
+func comparePlanningPriority(left, right planningTaskEntry) int {
+	if left.ready != right.ready {
+		if left.ready {
+			return -1
+		}
+		return 1
+	}
+	if left.order.DeadlineRisk != right.order.DeadlineRisk {
+		if left.order.DeadlineRisk {
+			return -1
+		}
+		return 1
+	}
+	if left.order.DeadlineRisk && *left.order.DeadlineSlackSeconds != *right.order.DeadlineSlackSeconds {
+		if *left.order.DeadlineSlackSeconds < *right.order.DeadlineSlackSeconds {
+			return -1
+		}
+		return 1
+	}
+	if left.order.Importance != right.order.Importance {
+		if left.order.Importance > right.order.Importance {
+			return -1
+		}
+		return 1
+	}
+	if left.order.PriorDeferrals != right.order.PriorDeferrals {
+		if left.order.PriorDeferrals > right.order.PriorDeferrals {
+			return -1
+		}
+		return 1
+	}
+	if !left.order.ReadySince.Equal(right.order.ReadySince) {
+		if left.order.ReadySince.Before(right.order.ReadySince) {
+			return -1
+		}
+		return 1
+	}
+	return 0
+}
+
+func planningOrderReason(order PlanningOrder) string {
+	prefix := "fairness"
+	if order.DeadlineRisk {
+		prefix = fmt.Sprintf("deadline risk with %s slack", (time.Duration(*order.DeadlineSlackSeconds) * time.Second).String())
+	}
+	return fmt.Sprintf("%s; importance %d; prior deferrals %d; ready since %s; workflow round %d",
+		prefix, order.Importance, order.PriorDeferrals, order.ReadySince.UTC().Format(time.RFC3339Nano), order.WorkflowRound)
+}
+
+func planTask(input PlanInput, router *providerRouter, constraints []PlanningConstraintSession, workflow domain.Workflow, state DAGState, task domain.Task, attempt domain.Attempt, order PlanningOrder, resourceOwners, checkoutOwners map[string]string) (TaskPlanningDecision, *ProposedTask, error) {
 	placement, err := MatchWorkers(WorkerPlacementRequest{
 		Task: task, Project: workflow.Project, Now: input.Now, MaxSnapshotAge: input.MaxWorkerSnapshotAge,
 	}, input.Workers)
@@ -196,7 +349,7 @@ func planTask(input PlanInput, router *providerRouter, constraints []PlanningCon
 	}
 	decision := TaskPlanningDecision{
 		WorkflowRunID: state.Run.ID, TaskID: task.ID, TaskName: task.Name,
-		AttemptID: attempt.ID, Progress: attempt.Progress, Placement: placement,
+		AttemptID: attempt.ID, Progress: attempt.Progress, Order: order, Placement: placement,
 	}
 	decision.Blockers = append(decision.Blockers, progressBlockers(state, task, attempt)...)
 
@@ -272,6 +425,17 @@ func validatePlanInput(input PlanInput) error {
 	}
 	if input.MaxWorkerSnapshotAge <= 0 {
 		return errors.New("plan maximum worker snapshot age must be positive")
+	}
+	if input.Ordering.DeadlineRiskWindow <= 0 {
+		return errors.New("plan deadline risk window must be positive")
+	}
+	if input.Ordering.Attempts == nil {
+		return errors.New("plan attempt ordering history is required")
+	}
+	for attemptID := range input.Ordering.Attempts {
+		if strings.TrimSpace(attemptID) != attemptID || attemptID == "" {
+			return errors.New("plan attempt ordering history contains an invalid attempt ID")
+		}
 	}
 	for _, constraint := range input.Constraints {
 		if constraint == nil {

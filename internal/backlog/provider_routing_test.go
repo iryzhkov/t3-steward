@@ -417,5 +417,9 @@ func cloneRoutingPlanInput(input PlanInput) PlanInput {
 	result.ResourceOwners = cloneStringMap(input.ResourceOwners)
 	result.WorkflowCheckoutOwners = cloneStringMap(input.WorkflowCheckoutOwners)
 	result.Constraints = append([]PlanningConstraint(nil), input.Constraints...)
+	result.Ordering.Attempts = make(map[string]PlanningAttemptOrdering, len(input.Ordering.Attempts))
+	for attemptID, ordering := range input.Ordering.Attempts {
+		result.Ordering.Attempts[attemptID] = ordering
+	}
 	return result
 }
