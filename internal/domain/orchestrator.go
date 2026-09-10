@@ -78,16 +78,24 @@ const (
 	AdmissionRecovering  AdmissionState = "recovering"
 )
 
+// ExecutionEnvironment describes the immutable project workspace requested by a workflow.
+type ExecutionEnvironment struct {
+	Type  string `json:"type"`
+	Scope string `json:"scope"`
+	Ref   string `json:"ref,omitempty"`
+}
+
 // Workflow is an immutable workflow definition after submission.
 type Workflow struct {
-	ID               string    `json:"id"`
-	Version          int       `json:"version"`
-	Name             string    `json:"name"`
-	Project          string    `json:"project,omitempty"`
-	Class            TaskClass `json:"class"`
-	TaskIDs          []string  `json:"taskIds"`
-	InputArtifactIDs []string  `json:"inputArtifactIds,omitempty"`
-	CreatedAt        time.Time `json:"createdAt"`
+	ID               string               `json:"id"`
+	Version          int                  `json:"version"`
+	Name             string               `json:"name"`
+	Project          string               `json:"project,omitempty"`
+	Environment      ExecutionEnvironment `json:"environment"`
+	Class            TaskClass            `json:"class"`
+	TaskIDs          []string             `json:"taskIds"`
+	InputArtifactIDs []string             `json:"inputArtifactIds,omitempty"`
+	CreatedAt        time.Time            `json:"createdAt"`
 }
 
 // WorkflowRun is one execution of a workflow definition.
