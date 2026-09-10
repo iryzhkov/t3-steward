@@ -5,32 +5,31 @@ Updated: 2026-09-10
 ## Completed checkpoint
 
 - Completed M1 through M7.
-- Finished M7 with a transport-neutral artifact publication and fetch protocol plus coordinator-owned, content-addressed storage.
-- Worker publications stream through temporary storage, verify declared size and SHA-256, become read-only objects, and expose metadata only after an atomic SQLite fence succeeds.
-- Publication is fenced to the current coordinator epoch, claimed assignment and assignment epoch, worker process epoch, attempt identity, and attempt revision.
-- Exact publication replay returns the immutable record; conflicting metadata is rejected, incomplete streams publish nothing, and failed stale publications remove newly created unreferenced objects.
-- Artifact metadata is immutable through both the dedicated publication transaction and the general coordinator snapshot API.
-- Cross-worker fetch loads metadata from the coordinator and atomically materializes declared outputs under `.t3/dependencies/<task>/`, with size, checksum, workflow-run, path, and symlink validation.
-- Coordinator restart and an offline producer do not affect retained artifact reads. Retention deletes expired metadata first and removes a blob only after confirming that no retained artifact still references it.
-- The generic artifact kinds cover immutable inputs, declared outputs, checkpoints, preparation and execution logs, final summaries, Git state/diffs/commits, and verification reports.
+- Began M8 with the versioned `backlog.admin/v1` read contract in `internal/backlogadmin`.
+- Added one transport-neutral query envelope and response DTO family for status, filtered workflow lists, workflow detail, DAG graphs, task detail, explanations, projected events, artifact metadata, schedules, workers, quota admissions, reservations, and resource locks.
+- Added an explicit authorization seam. Every query is authorized before coordinator state is read, and constructing a service without an authorizer fails closed.
+- Read queries compose one transactionally consistent coordinator snapshot with durable worker snapshots and quota-admission projections from temporary SQLite state.
+- Workflow and task projections include DAG progress, the latest attempt, current assignment, quota reservation, resource-lock ownership/waiters, and a stable T3 thread link derived from the assigned worker's configured web base URL.
+- Explanations deterministically expose dependency, timing, expiry, worker-placement, quota-admission, control-state, needs-input, and resource-lock blockers.
+- Admin assignment DTOs omit lease and dispatch tokens. Artifact DTOs omit coordinator storage paths and expose only a relative download route.
+- Added a frozen JSON golden fixture and temporary-state integration coverage for every read query kind, filters, authorization failure, version/target validation, missing records, and sensitive-field exclusion.
 - No configured/live repository, T3 thread, worker, service, or live database was touched.
 
 ## Decisions
 
-- Artifact bytes travel separately from transport control messages so large payloads do not enter JSON command envelopes.
-- Workers declare artifact identity, provenance, size, checksum, media type, and logical name, but only the coordinator chooses the content-addressed storage path.
-- Metadata publication follows durable-bytes-first ordering. A crash may leave an unreferenced object, but never metadata pointing to incomplete or absent content.
-- Replay is checked before the current-assignment fence so a worker can recover a lost successful response after the assignment has advanced.
-- New publication requires a currently claimed assignment. Unknown, released, completed, reassigned, or revision-changed work cannot add artifacts.
-- Retention protects explicitly named workflow runs and never deletes zero-timestamp legacy records automatically.
-- Dependency materialization continues to use only explicitly declared predecessor outputs; arbitrary retained artifacts are not injected into a workspace.
+- `backlog.admin/v1` versions the envelope rather than relying on Go package versions, so CLI and future HTTP adapters can negotiate the same contract.
+- The coordinator-side service accepts a reader interface and authorizer; adapters supply principals but never read SQLite or task files directly.
+- DTOs deliberately project internal records instead of embedding assignment or artifact persistence records when those records contain execution capabilities or coordinator-only paths.
+- Read results are deterministically ordered. JSON map encoding is covered by a golden response fixture.
+- Current event results are deterministic events reconstructed from durable projections. They are explicitly not a substitute for the append-only audit stream required by the observability milestone.
+- A paused nonterminal attempt remains a quota reservation while reporting that it no longer holds a provider concurrency slot.
+- Stable T3 links use `<worker web base URL>/thread/<escaped thread ID>`; workers without a configured base URL expose no guessed link.
 
 ## Verification
 
 - Baseline: `go test ./...`
-- `go test ./internal/domain ./internal/store/sqlite ./internal/backlog -run 'TestArtifactProtocol|TestCoordinatorArtifact|TestCoordinatorRecordsRoundTrip|TestScheduleTemplatesAndTriggersAreImmutable' -count=1 -v`
-- `go test ./internal/domain ./internal/store/sqlite ./internal/backlog -count=20`
-- `go test ./...`
+- `go test ./internal/backlogadmin -count=1 -v`
+- `go test ./internal/backlogadmin ./internal/store/sqlite -count=1`
 - `go build ./...`
 - `go vet ./...`
 - `git diff --check`
@@ -39,15 +38,15 @@ All passed.
 
 ## Remaining risks
 
-- The top-level coordinator/worker service loop still needs to bind a concrete streaming transport to the artifact protocol; this increment establishes and integration-tests the transport-neutral contract and durable implementation only.
-- Artifact pruning is metadata-driven and deliberately favors orphaned bytes over dangling metadata after a crash; a later maintenance command may add orphan-object garbage collection.
-- Snapshot ingestion remains a separate protocol call; the eventual top-level service loop must preserve snapshot persistence before reconciliation and command delivery.
-- Assignment reconciliation updates current projections but does not yet append the full audit-event stream required by the observability milestone.
-- Schedule projection/version advancement outside the trigger operation is not yet an optimistic coordinator transaction.
-- Failure-hold acknowledgement/retry/skip/cancel commands remain part of M8.
-- The legacy host-local watchdog still owns its independent scheduling and dispatch machinery.
-- No development code has opened live state, contacted workers, dispatched work, or installed/restarted a service.
+- Revision-checked start, delay, pause, resume, cancel, retry, skip, and schedule mutation commands are not implemented yet.
+- Admin command persistence currently exists only as the generic coordinator projection; it needs a dedicated optimistic transaction, immutable request semantics, authorization action, durable audit event, and asynchronous outcome transition.
+- The append-only audit event schema required by M8/M9 does not exist. The read endpoint currently reconstructs a useful but incomplete event timeline from current durable projections.
+- Explanations reflect durable current state but do not persist the planner's full route-by-route decision or predict quota recovery beyond an explicit `not_before` time.
+- The relative artifact download route is a DTO contract only; a future transport adapter must bind it to the coordinator's checksum-verifying artifact fetch path.
+- The existing CLI still has host-local backlog paths and has not been rewired through `BacklogAdmin`.
+- The top-level coordinator/worker service loop still needs concrete transport binding. No development code has contacted workers or dispatched work.
+- No development code has opened live state, installed or restarted a service, pushed, or deployed.
 
 ## Exact next increment
 
-Begin M8 by defining the versioned, transport-neutral BacklogAdmin DTO and authorization seams, then implement read-only coordinator queries for status, filtered workflow lists, workflow/task detail, DAG graph, explanations, events, artifacts, worker health, quota admission, reservations, locks, progress, and stable T3 links. Add JSON golden tests and temporary-state query tests before adding revision-checked mutation commands or rewiring the CLI.
+Continue M8 by adding a dedicated coordinator transaction for immutable, authorized admin-command submission with optimistic target revisions and idempotent replay. Persist append-only audit events in the same transaction, model asynchronous pending/applied/rejected/failed outcomes, and expose those durable events and command outcomes through `BacklogAdmin`. Cover stale revisions, replay conflicts, authorization denial before mutation, transaction rollback, and restart persistence. Leave CLI rewiring for the following coherent increment.

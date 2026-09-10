@@ -1,0 +1,24 @@
+{
+  "version": "backlog.admin/v1",
+  "kind": "status",
+  "generatedAt": "2026-09-10T20:00:00Z",
+  "status": {
+    "workflowRuns": {
+      "active": 2,
+      "succeeded": 4
+    },
+    "tasks": {
+      "blocked": 1
+    },
+    "workers": {
+      "offline": 1,
+      "ready": 2
+    },
+    "quotaPools": {
+      "closed": 1,
+      "open": 2
+    },
+    "reservations": 3,
+    "locks": 1
+  }
+}
