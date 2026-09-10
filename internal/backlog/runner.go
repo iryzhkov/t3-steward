@@ -573,7 +573,7 @@ func modelSelection(t Task, p t3control.Project) map[string]any {
 			}
 			sel["options"] = opts
 		}
-		return sel
+		return withCodexMinimumEffort(sel)
 	}
 	if p.DefaultModelSelection != nil {
 		sel := map[string]any{}
@@ -586,9 +586,42 @@ func modelSelection(t Task, p t3control.Project) map[string]any {
 		if t.Instance != "" {
 			sel["instanceId"] = t.Instance
 		}
-		return sel
+		return withCodexMinimumEffort(sel)
 	}
 	return nil
+}
+
+func withCodexMinimumEffort(sel map[string]any) map[string]any {
+	if sel == nil || sel["instanceId"] != "codex" {
+		return sel
+	}
+
+	rawOptions, _ := sel["options"].([]any)
+	options := make([]any, 0, len(rawOptions)+1)
+	found := false
+	for _, raw := range rawOptions {
+		option, ok := raw.(map[string]any)
+		if !ok {
+			options = append(options, raw)
+			continue
+		}
+		copied := make(map[string]any, len(option))
+		for key, value := range option {
+			copied[key] = value
+		}
+		if copied["id"] == "effort" {
+			found = true
+			if value, _ := copied["value"].(string); value == "" || value == "low" {
+				copied["value"] = "medium"
+			}
+		}
+		options = append(options, copied)
+	}
+	if !found {
+		options = append(options, map[string]any{"id": "effort", "value": "medium"})
+	}
+	sel["options"] = options
+	return sel
 }
 
 func (r *Runner) dispatch(ctx context.Context, t Task, st *State, project t3control.Project, selection map[string]any, threads map[string]domain.Thread, now time.Time) {

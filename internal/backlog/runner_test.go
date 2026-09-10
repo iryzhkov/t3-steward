@@ -203,6 +203,62 @@ func TestDispatchesUpToConfiguredProviderConcurrency(t *testing.T) {
 	}
 }
 
+func TestModelSelectionEnforcesCodexMinimumEffort(t *testing.T) {
+	effort := func(t *testing.T, selection map[string]any) string {
+		t.Helper()
+		for _, raw := range selection["options"].([]any) {
+			option := raw.(map[string]any)
+			if option["id"] == "effort" {
+				return option["value"].(string)
+			}
+		}
+		t.Fatal("effort option missing")
+		return ""
+	}
+
+	explicitDefault := modelSelection(Task{Instance: "codex", Model: "gpt-5.6-sol"}, t3control.Project{})
+	if got := effort(t, explicitDefault); got != "medium" {
+		t.Fatalf("default effort = %q, want medium", got)
+	}
+
+	explicitLow := modelSelection(Task{
+		Instance: "codex",
+		Model:    "gpt-5.6-sol",
+		Options:  map[string]string{"effort": "low"},
+	}, t3control.Project{})
+	if got := effort(t, explicitLow); got != "medium" {
+		t.Fatalf("low effort = %q, want medium", got)
+	}
+
+	explicitHigh := modelSelection(Task{
+		Instance: "codex",
+		Model:    "gpt-5.6-sol",
+		Options:  map[string]string{"effort": "high"},
+	}, t3control.Project{})
+	if got := effort(t, explicitHigh); got != "high" {
+		t.Fatalf("high effort = %q, want high", got)
+	}
+
+	project := t3control.Project{DefaultModelSelection: map[string]any{
+		"instanceId": "codex",
+		"model":      "gpt-5.6-sol",
+		"options":    []any{map[string]any{"id": "effort", "value": "low"}},
+	}}
+	projectDefault := modelSelection(Task{}, project)
+	if got := effort(t, projectDefault); got != "medium" {
+		t.Fatalf("project default effort = %q, want medium", got)
+	}
+	original := project.DefaultModelSelection["options"].([]any)[0].(map[string]any)["value"]
+	if original != "low" {
+		t.Fatalf("project default was mutated to %q", original)
+	}
+
+	claude := modelSelection(Task{Instance: "claudeAgent", Model: "claude-opus-5"}, t3control.Project{})
+	if _, ok := claude["options"]; ok {
+		t.Fatal("non-Codex selection unexpectedly received options")
+	}
+}
+
 func TestGateRespectsQuotaAndForecast(t *testing.T) {
 	r, _, control, dir, now := setup(t, 0)
 	writeTask(t, dir, "big", "---\nproject: laptop home\ndifficulty: 5\n---\nbig task") // 50%
