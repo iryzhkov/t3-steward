@@ -5,32 +5,31 @@ Updated: 2026-09-10
 ## Completed checkpoint
 
 - Completed M1 and M2.
-- Continued M3 through worker placement, project catalogs/setup profiles, clean per-attempt Git environments, the T3 `worktreePath` control/API prototype, atomic environment reservations, and materialized workflow-scoped Git checkouts.
-- Added `WorkflowWorkspaceManager`, which reserves a workflow environment before preparation and publishes one shared checkout at `<runs>/<workflow-run>/workflow` on its pinned worker.
-- Initial preparation pins the commit, copies immutable workflow inputs, runs setup once, retains its log, and records the preparation contract outside the checkout.
-- Sequential tasks and retries reuse checkout mutations. Each attempt receives a separate immutable dependency view, selected through an atomically replaced `.t3/dependencies` symlink while checkout ownership is held.
-- Preparation failure retains the log, removes the incomplete checkout, and releases the failed attempt's reservation without consuming a model dispatch.
-- Pause with released resources can reacquire the same attempt and checkout. Retries use the retained checkout, while a different worker remains rejected until terminal workflow cleanup.
-- Terminal cleanup requires all attempts to be terminal and an explicit `retain` or `remove` decision; active or paused attempts prevent cleanup.
-- Completed M3 coverage for alternate workers, GPU-only placement, offline workers, setup failure, and workspace cleanup.
+- Continued M3 through worker placement, project catalogs/setup profiles, clean per-attempt Git environments, the T3 `worktreePath` prototype, environment reservations, materialized workflow-scoped checkouts, and contained child-process execution.
+- Added the transport-neutral `ProcessRunner` seam with structured output and exit-code results.
+- Added `SystemdScopeRunner`, which uses a deterministic transient user scope with `KillMode=control-group`, waits for completion, captures combined output, and records commands in preparation/verification logs.
+- Context cancellation issues `systemctl --user kill --kill-who=all --signal=KILL <scope>` before returning, then also terminates the local `systemd-run` client as a defensive fallback.
+- Workspace setup commands and declared verification commands now use the containment seam by default. Tests inject a direct local runner, so no test contacts the live user manager.
+- Added tests for scope construction, deterministic unit identity, working-directory propagation, output and nonzero-exit reporting, pre-canceled requests, and cancellation of a spawned descendant.
+- Existing workspace, workflow checkout, artifact, verification, and compatibility behavior remains covered and passing.
 - No configured/live repository, T3 thread, worker, service, or live database was touched.
 
 ## Decisions
 
-- The workflow workspace is coordinator-owned state adjacent to, rather than inside, per-attempt views. T3 still receives only the shared `workspace` path.
-- Immutable static inputs live once at workflow scope. Dependency artifacts live under `tasks/<task>/<attempt>/dependencies`, so retry and prior-attempt evidence remain available without replacing the checkout.
-- The initial pinned repository, ref, setup recipe, timeout, and input artifact fingerprints are recorded in read-only `environment.json`. Later attempts fail closed if that workflow preparation contract changes.
-- Setup executes only while publishing the first complete workflow checkout. A failed first setup publishes nothing, so a later retry may prepare from scratch.
-- Filesystem publication is serialized separately from environment reservation locking. The existing coordinator remains authoritative for worker pins, checkout mutation ownership, named locks, pause, and terminal state.
-- Existing per-attempt preparation behavior and layout remain unchanged.
-- Explicit retention policy is intentionally separate from terminal attempt release. Process containment and crash-orphan reconciliation remain M3 work.
-- The coordinator and workflow manager remain in-memory seams; durable coordinator state and recovery remain M7 work.
+- Process identity is hashed into a stable `t3-steward-<digest>.scope` unit name. This avoids unsafe user-controlled unit characters while making cancellation and later reconciliation deterministic.
+- `systemd-run --user --scope --wait --collect --pipe` keeps output attached to steward logging and automatically unloads completed units.
+- A nonzero child exit is represented by `ProcessExitError` plus `ProcessResult`, allowing setup to fail operationally while verification preserves the command output and exit code as an artifact.
+- The default is contained execution. Direct execution exists only as a test implementation of the interface.
+- Git metadata operations remain direct short-lived child commands; setup and verification are the potentially descendant-spawning commands placed behind the scope boundary.
+- T3 thread processes remain owned by T3 rather than launched as steward children. This increment does not modify or restart T3.
+- Interprocess cache/workflow filesystem coordination and retention reconciliation remain the last M3 work.
+- Durable coordinator state and worker recovery remain M7 work.
 
 ## Verification
 
-- `go test ./internal/backlog -run 'WorkflowWorkspaceManager' -count=1`
+- `go test ./internal/backlog -run 'SystemdScopeRunner|WorkspacePreparer|WorkflowWorkspaceManager|AttemptFinalizer' -count=1`
 - `go test ./internal/backlog -count=1`
-- `go test -race ./internal/backlog -run 'WorkflowWorkspaceManager|EnvironmentCoordinator' -count=1`
+- `go test -race ./internal/backlog -run 'SystemdScopeRunner|WorkspacePreparer|WorkflowWorkspaceManager|AttemptFinalizer' -count=1`
 - `go test ./...`
 - `go vet ./...`
 - `git diff --check`
@@ -39,14 +38,16 @@ All passed.
 
 ## Remaining risks
 
-- Preparation and task child processes are not yet placed in a user systemd scope/cgroup, so setup timeout terminates the direct command but does not guarantee descendant cleanup.
-- Repository cache refresh lacks an interprocess lock, and interrupted workflow/cache preparation has no crash-orphan reconciliation policy.
-- Workflow workspace metadata and environment reservations are not persisted through coordinator restart; that remains M7 work.
-- The reservation and workspace seams are not yet wired into a planner, persisted assignment transaction, or worker protocol.
-- Stable thread IDs are accepted at the API seam but are not yet generated and persisted with dispatch tokens; that remains the M6 idempotency increment.
+- Repository cache refresh lacks an interprocess lock. Concurrent daemon/process preparation can refresh or publish the same mirror simultaneously.
+- Interrupted cache and workflow preparation stages have no age-based crash-orphan reconciliation.
+- Explicitly retained workflow workspaces have no persisted retention timestamp or expiry cleanup.
+- Workflow workspace metadata and environment reservations are not persisted through coordinator restart; durable coordinator recovery remains M7 work.
+- The reservation, workspace, and process seams are not yet wired into a planner, persisted assignment transaction, or worker protocol.
+- Stable thread IDs are accepted at the API seam but are not yet generated and persisted with dispatch tokens; that remains M6.
 - Placement establishes worker eligibility only; provider routing, quota, concurrency, reservations, and ordering remain M4.
+- A missing or unhealthy user systemd manager causes setup/verification to fail closed; deployment readiness must verify user-manager availability and lingering on each worker.
 - No development code has opened live state, contacted workers, dispatched work, or installed/restarted a service.
 
 ## Exact next increment
 
-Finish M3 by adding a testable process-execution seam that runs setup and task child processes in a user systemd scope/cgroup and guarantees hard-stop cleanup of descendants. Add interprocess repository-cache preparation locking plus reconciliation/cleanup for interrupted staging directories and retained workflow workspaces. Cover descendant termination, concurrent cache preparation, stale staging recovery, retention expiry/cleanup, and failure logs with temporary directories and fake process-control boundaries. Then run the full M3 test, race, vet, and diff gates. Do not install binaries, contact workers, or touch live T3 configuration/state.
+Complete M3 by adding context-aware interprocess locks for repository cache preparation and workflow filesystem publication. Reconcile only lock-protected stale staging directories, persist explicit retained-workspace timestamps, and remove expired retained workspaces only when the coordinator reports them inactive. Add concurrent cache/preparation tests plus stale-stage, active-workflow, retained-expiry, and cleanup-failure coverage using temporary repositories and directories. Run the complete M3 package, race, vet, full-suite, and diff gates. Do not install binaries, contact workers, or touch live T3 configuration/state.

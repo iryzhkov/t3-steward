@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -49,6 +48,7 @@ type AttemptFinalizer struct {
 	StorageRoot string
 	Now         func() time.Time
 	NewID       func(kind string) string
+	Processes   ProcessRunner
 }
 
 // Finalize runs verification, captures immutable artifacts, and returns a strict
@@ -66,8 +66,9 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 
 	reports := make([]VerificationReport, 0, len(request.Task.Verification))
 	failures := make([]string, 0)
-	for _, command := range request.Task.Verification {
-		report, err := f.runVerification(ctx, request.WorkspaceDir, command)
+	for index, command := range request.Task.Verification {
+		processID := fmt.Sprintf("verify-%s-%d", request.Attempt.ID, index)
+		report, err := f.runVerification(ctx, processID, request.WorkspaceDir, command)
 		if err != nil {
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt verification %q: %w", command, err)
 		}
@@ -236,14 +237,14 @@ func (f AttemptFinalizer) validateRequest(request AttemptFinalization) error {
 	return nil
 }
 
-func (f AttemptFinalizer) runVerification(ctx context.Context, workspace, command string) (VerificationReport, error) {
+func (f AttemptFinalizer) runVerification(ctx context.Context, processID, workspace, command string) (VerificationReport, error) {
 	started := f.now()
-	process := exec.CommandContext(ctx, "/bin/sh", "-c", command)
-	process.Dir = workspace
-	output, err := process.CombinedOutput()
+	result, err := f.processRunner().Run(ctx, ProcessRequest{
+		ID: processID, Dir: workspace, Program: "/bin/sh", Args: []string{"-c", command},
+	})
 	completed := f.now()
 	report := VerificationReport{
-		Command: command, ExitCode: 0, Output: string(output),
+		Command: command, ExitCode: result.ExitCode, Output: result.Output,
 		StartedAt: started, CompletedAt: completed,
 	}
 	if err == nil {
@@ -252,12 +253,19 @@ func (f AttemptFinalizer) runVerification(ctx context.Context, workspace, comman
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return VerificationReport{}, ctxErr
 	}
-	var exitError *exec.ExitError
+	var exitError *ProcessExitError
 	if errors.As(err, &exitError) {
-		report.ExitCode = exitError.ExitCode()
+		report.ExitCode = exitError.ExitCode
 		return report, nil
 	}
 	return VerificationReport{}, err
+}
+
+func (f AttemptFinalizer) processRunner() ProcessRunner {
+	if f.Processes != nil {
+		return f.Processes
+	}
+	return SystemdScopeRunner{}
 }
 
 func (f AttemptFinalizer) now() time.Time {

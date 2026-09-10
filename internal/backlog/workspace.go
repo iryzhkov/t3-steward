@@ -126,6 +126,7 @@ type WorkspacePreparer struct {
 	StorageRoot string
 	Cache       RepositoryCache
 	GitBinary   string
+	Processes   ProcessRunner
 }
 
 // Prepare resolves a ref once, creates an independent checkout, materializes
@@ -210,8 +211,12 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 
 	setupCtx, cancel := context.WithTimeout(ctx, request.Environment.Setup.Timeout)
 	defer cancel()
-	for _, command := range request.Environment.Setup.Commands {
-		if err := runLoggedCommand(setupCtx, logFile, workspaceDir, "/bin/sh", "-c", command); err != nil {
+	for index, command := range request.Environment.Setup.Commands {
+		processID := fmt.Sprintf("setup-%s-%s-%s-%d", request.WorkflowRunID, request.Task.ID, request.Attempt.ID, index)
+		_, err := p.processRunner().Run(setupCtx, ProcessRequest{
+			ID: processID, Dir: workspaceDir, Program: "/bin/sh", Args: []string{"-c", command}, Log: logFile,
+		})
+		if err != nil {
 			if setupCtx.Err() != nil {
 				return fail(fmt.Errorf("setup command %q: %w", command, setupCtx.Err()))
 			}
@@ -392,6 +397,13 @@ func (p WorkspacePreparer) git() string {
 		return p.GitBinary
 	}
 	return "git"
+}
+
+func (p WorkspacePreparer) processRunner() ProcessRunner {
+	if p.Processes != nil {
+		return p.Processes
+	}
+	return SystemdScopeRunner{}
 }
 
 func runLoggedCommand(ctx context.Context, log io.Writer, dir, program string, args ...string) error {

@@ -369,7 +369,8 @@ Each milestone should fit one unattended development session where practical. A 
 - [ ] Add workflow-scoped environments, resource locks, preparation logs, retention, and process containment.
   - [x] Add atomic workflow checkout ownership, worker pinning, deterministic resource reservations, and explicit pause/terminal release policies.
   - [x] Materialize shared workflow checkouts with setup-once preparation, per-attempt dependency views, and explicit terminal retain/remove decisions.
-  - [ ] Add process containment and crash-orphan retention reconciliation.
+  - [x] Run setup and verification child processes in transient user systemd scopes with whole-cgroup hard stops.
+  - [ ] Add interprocess cache locking and crash-orphan retention reconciliation.
 - [x] Test alternate workers, GPU-only placement, offline workers, setup failure, and workspace cleanup.
 
 ### M4. Planner, task classes, and provider routes

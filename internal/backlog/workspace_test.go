@@ -15,6 +15,19 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
+type testProcessRunner struct{}
+
+func (testProcessRunner) Run(ctx context.Context, request ProcessRequest) (ProcessResult, error) {
+	output, err := runLoggedCommandOutput(ctx, request.Log, request.Dir, request.Program, request.Args...)
+	result := ProcessResult{Output: string(output)}
+	var exitError *exec.ExitError
+	if errors.As(err, &exitError) {
+		result.ExitCode = exitError.ExitCode()
+		return result, &ProcessExitError{ExitCode: result.ExitCode, Err: err}
+	}
+	return result, err
+}
+
 func TestWorkspacePreparerPinsCommitAndMaterializesInputs(t *testing.T) {
 	repository := newGitFixture(t)
 	firstCommit := gitOutput(t, repository, "rev-parse", "HEAD")
@@ -89,8 +102,9 @@ func TestWorkspacePreparerReusesCacheWithIndependentClones(t *testing.T) {
 	runsRoot := t.TempDir()
 	cacheRoot := t.TempDir()
 	preparer := WorkspacePreparer{
-		RunsRoot: runsRoot,
-		Cache:    LocalRepositoryCache{Root: cacheRoot},
+		RunsRoot:  runsRoot,
+		Cache:     LocalRepositoryCache{Root: cacheRoot},
+		Processes: testProcessRunner{},
 	}
 	task := workspaceTask("task-id", "task")
 
@@ -258,7 +272,8 @@ func TestWorkspacePreparerRejectsWorkflowScope(t *testing.T) {
 func workspacePreparer(runsRoot, storageRoot string) WorkspacePreparer {
 	return WorkspacePreparer{
 		RunsRoot: runsRoot, StorageRoot: storageRoot,
-		Cache: LocalRepositoryCache{Root: filepath.Join(runsRoot, "cache")},
+		Cache:     LocalRepositoryCache{Root: filepath.Join(runsRoot, "cache")},
+		Processes: testProcessRunner{},
 	}
 }
 

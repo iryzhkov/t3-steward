@@ -338,6 +338,7 @@ func testFinalizer(storage string) AttemptFinalizer {
 	nextID := 0
 	return AttemptFinalizer{
 		StorageRoot: storage,
+		Processes:   testProcessRunner{},
 		Now: func() time.Time {
 			return time.Date(2026, 9, 10, 15, 0, nextID, 0, time.UTC)
 		},
