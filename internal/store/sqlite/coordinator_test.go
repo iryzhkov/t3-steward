@@ -130,6 +130,7 @@ func TestMigrationFromVersionOnePreservesState(t *testing.T) {
 func coordinatorFixture() CoordinatorRecords {
 	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 	later := now.Add(time.Hour)
+	estimatedCost := 37.5
 	route := domain.ProviderRoute{
 		WorkerID:           "normandy",
 		ProviderInstanceID: "codex",
@@ -139,7 +140,7 @@ func coordinatorFixture() CoordinatorRecords {
 	}
 	return CoordinatorRecords{
 		Workflows: []domain.Workflow{{
-			ID: "workflow-1", Version: 2, Name: "build", Class: domain.TaskClassRequired,
+			ID: "workflow-1", Version: 2, Name: "build", Project: "t3-steward", Class: domain.TaskClassRequired,
 			TaskIDs: []string{"task-1"}, InputArtifactIDs: []string{"artifact-input"}, CreatedAt: now,
 		}},
 		WorkflowRuns: []domain.WorkflowRun{{
@@ -158,7 +159,7 @@ func coordinatorFixture() CoordinatorRecords {
 				Hosts: []string{"normandy"}, Capabilities: []string{"internet"},
 			},
 			Routes: []domain.ProviderRoute{route}, ResourceLocks: []string{"project:t3-steward"},
-			Importance: 5, Difficulty: 5, MaxTurns: 6, NotBefore: &now, Deadline: &later,
+			Importance: 5, Difficulty: 5, EstimatedCost: &estimatedCost, MaxTurns: 6, NotBefore: &now, Deadline: &later,
 		}},
 		Attempts: []domain.Attempt{{
 			ID: "attempt-1", WorkflowRunID: "run-1", TaskID: "task-1", Number: 1,

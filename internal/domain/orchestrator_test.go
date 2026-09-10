@@ -59,6 +59,7 @@ func TestProgressTerminalStates(t *testing.T) {
 func TestOrchestratorDomainJSONRoundTrip(t *testing.T) {
 	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 	later := now.Add(time.Hour)
+	estimatedCost := 37.5
 	route := ProviderRoute{
 		WorkerID:           "normandy",
 		ProviderInstanceID: "codex",
@@ -79,7 +80,7 @@ func TestOrchestratorDomainJSONRoundTrip(t *testing.T) {
 		AdminCommand AdminCommand `json:"adminCommand"`
 	}{
 		Workflow: Workflow{
-			ID: "workflow-1", Version: 2, Name: "build", Class: TaskClassRequired,
+			ID: "workflow-1", Version: 2, Name: "build", Project: "t3-steward", Class: TaskClassRequired,
 			TaskIDs: []string{"task-1"}, InputArtifactIDs: []string{"artifact-input"}, CreatedAt: now,
 		},
 		WorkflowRun: WorkflowRun{
@@ -95,7 +96,7 @@ func TestOrchestratorDomainJSONRoundTrip(t *testing.T) {
 			Outputs:          []ArtifactDeclaration{{Name: "result.md", MediaType: "text/markdown"}},
 			Verification:     []string{"go test ./..."}, Placement: Placement{Hosts: []string{"normandy"}, Capabilities: []string{"internet"}},
 			Routes: []ProviderRoute{route}, ResourceLocks: []string{"project:t3-steward"},
-			Importance: 5, Difficulty: 5, MaxTurns: 6, NotBefore: &now, Deadline: &later,
+			Importance: 5, Difficulty: 5, EstimatedCost: &estimatedCost, MaxTurns: 6, NotBefore: &now, Deadline: &later,
 		},
 		Attempt: Attempt{
 			ID: "attempt-1", WorkflowRunID: "run-1", TaskID: "task-1", Number: 1,

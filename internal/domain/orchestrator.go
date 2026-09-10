@@ -83,6 +83,7 @@ type Workflow struct {
 	ID               string    `json:"id"`
 	Version          int       `json:"version"`
 	Name             string    `json:"name"`
+	Project          string    `json:"project,omitempty"`
 	Class            TaskClass `json:"class"`
 	TaskIDs          []string  `json:"taskIds"`
 	InputArtifactIDs []string  `json:"inputArtifactIds,omitempty"`
@@ -141,6 +142,7 @@ type Task struct {
 	ResourceLocks    []string              `json:"resourceLocks,omitempty"`
 	Importance       int                   `json:"importance"`
 	Difficulty       int                   `json:"difficulty"`
+	EstimatedCost    *float64              `json:"estimatedCost,omitempty"`
 	MaxTurns         int                   `json:"maxTurns"`
 	NotBefore        *time.Time            `json:"notBefore,omitempty"`
 	Deadline         *time.Time            `json:"deadline,omitempty"`

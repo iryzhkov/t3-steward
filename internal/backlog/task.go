@@ -126,13 +126,17 @@ func ParseFile(path string) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
+	return parseFile(path, raw, info.ModTime())
+}
+
+func parseFile(path string, raw []byte, modTime time.Time) (Task, error) {
 	t, err := Parse(raw)
 	if err != nil {
 		return Task{}, fmt.Errorf("%s: %w", path, err)
 	}
 	t.Path = path
 	t.ID = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	t.ModTime = info.ModTime()
+	t.ModTime = modTime
 	if t.Title == "" {
 		for _, line := range strings.Split(t.Prompt, "\n") {
 			line = strings.TrimSpace(strings.TrimLeft(line, "# "))
@@ -195,25 +199,10 @@ func Parse(raw []byte) (Task, error) {
 
 // LoadDir parses every *.md file in the directory.
 func LoadDir(dir string) ([]Task, []error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, []error{err}
-	}
-	var tasks []Task
-	var errs []error
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") || strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		t, err := ParseFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		tasks = append(tasks, t)
+	workflows, errs := LoadLegacyWorkflows(dir)
+	tasks := make([]Task, 0, len(workflows))
+	for _, workflow := range workflows {
+		tasks = append(tasks, workflow.Source)
 	}
 	return tasks, errs
 }
