@@ -1,40 +1,43 @@
 # Backlog-v2 worker exchange protocol
 
-Status: S15 production-binding contract. The protocol and SSH transport foundation
-are implemented and tested locally, but they are not composed into the production
-coordinator or a worker runtime.
+Status: S16 production-binding contract. The authenticated protocol, fixed worker
+commands, durable replay state, restart-safe worker runtime, and bounded artifact
+streams are implemented and tested locally; coordinator-side composition remains S17.
 
 ## Transport decision
 
 Retain coordinator-initiated SSH for the first production worker runtime. The
-bounded local multi-process spike demonstrates the properties required by the
+bounded local multi-process tests demonstrate the properties required by the
 production-binding plan:
 
 - OpenSSH is invoked without a shell, with a validated destination and fixed
   remote command, BatchMode enabled, strict host-key checking, and a bounded
   connect timeout.
-- A single request and response use stdin/stdout. Both directions are byte
-  bounded; stderr has its own smaller bound.
-- The request context and the envelope deadline bound the child process.
-  Cancellation terminates the local SSH process and therefore the SSH channel.
-- SSH authenticates the host and login identity. The versioned envelope
-  additionally binds the authenticated principal, key ID, sender, recipient,
-  coordinator and worker epochs, session, sequence, request ID, deadline, payload
-  checksum,
-  and an HMAC-SHA-256 signature.
-- Content-addressed execution packages and artifact manifests travel as protocol
-  payloads. Artifact bytes may use a separately bounded SSH stream in the worker
-  runtime without granting the worker coordinator database access.
-- Lost responses retry the same immutable signed request. The receiver returns
-  the cached response for an exact duplicate and never reruns the handler.
+- The worker executable accepts exactly one fixed operation: `control`,
+  `artifact-receive`, or `artifact-send`. It requires an explicit local
+  configuration path; general `T3_STEWARD_*` configuration overrides and
+  authority-changing flags are rejected. Only separately named credential
+  references are resolved from the worker-managed environment.
+- Control uses one byte-bounded request and response on stdin/stdout. The
+  request context and envelope deadline bound the child process; cancellation
+  terminates the local SSH process and channel.
+- SSH authenticates the host and login identity. The envelope additionally
+  binds the credential principal, key ID, sender, recipient, coordinator and
+  worker epochs, session, sequence, request ID, deadline, payload checksum, and
+  HMAC-SHA-256 signature.
+- Session sequence, pending request digest, and completed signed response are
+  fsync-persisted under an interprocess lock. Lost responses retry the same
+  immutable request and return the exact response without rerunning effects.
+  If a process exits while handling, the same request resumes through the
+  worker's durable idempotent journal; a different request cannot pass it.
+- Artifact manifests and custody travel in signed envelopes. Artifact bytes use
+  separate raw, exactly sized, checksum-verified streams so the control-envelope
+  limit remains independent of the artifact limit.
 
-This is evidence for the transport foundation, not authorization to contact a
-fleet worker. The spike uses only child copies of the Go test binary and
-disposable in-memory state. S16 must bind the authenticated SSH principal from
-the restricted worker command, persist worker-side execution state, and keep the
-remote command incapable of arbitrary shell execution. If that binding cannot
-preserve these constraints, the implementation must stop and replace the
-foundation with mutually authenticated HTTP rather than weakening the contract.
+These tests authorize no fleet contact or deployment. They use disposable
+roots and local child processes only. If an eventual qualification cannot
+preserve the fixed-command, principal, epoch, replay, containment, and custody
+constraints, deployment remains NO-GO.
 
 ## Envelope
 

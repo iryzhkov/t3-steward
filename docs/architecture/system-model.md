@@ -108,35 +108,44 @@ authoritative identity and checksum metadata.
 
 ## Current executable wiring
 
-`cmd/t3-steward/main.go:cmdRun` selects mutually exclusive legacy or
-backlog-v2 coordinator composition. Backlog-v2 remains disabled by default.
-Coordinator mode explicitly migrates its database, acquires exclusive
-file-backed ownership, advances the durable epoch, and waits with admission
-closed. This startup path does not construct a worker transport or T3 client.
+`cmd/t3-steward/main.go:cmdRun` selects mutually exclusive legacy,
+backlog-v2 coordinator, or backlog-v2 worker configuration. Backlog-v2 remains
+disabled by default. Coordinator mode explicitly migrates its database,
+acquires exclusive file-backed ownership, advances the durable epoch, and waits
+with admission closed. This startup path does not construct a worker transport
+or T3 client. Worker mode does not acquire coordinator authority.
+
+The fixed `worker-exchange` command requires an explicit operator-controlled
+configuration path and accepts exactly one of `control`, `artifact-receive`,
+or `artifact-send`. It loads strict local YAML without general environment
+overrides, binds the configured worker and coordinator epochs, resolves only
+named credential references, and constructs the S16 restart-safe worker
+service. Control exchanges persist session sequence, pending request identity,
+and exact signed responses under an interprocess lock; a crash resumes the same
+request through the idempotent worker journal. Artifact streams use separate
+signed metadata plus raw size/checksum-bounded bytes and durable custody.
 
 Legacy mode retains the existing quota watchdog and optional Markdown
 `backlog.Runner`. The admin CLI opens existing SQLite without migration and
-submits or queries durable commands; it no longer executes coordinator
+submits or queries durable commands; it does not execute coordinator
 transitions.
 
-The production coordinator still does not construct `BundleIngester`,
-`ProjectCatalog`, `FleetCoordinator`, `WorkspacePreparer`, or worker
-exchange. S15 supplies the versioned worker protocol, execution package,
-artifact-transfer contract, and bounded SSH transport foundation, but none is
-constructed by the executable. Those runtime bindings remain architectural
-deployment gaps.
+The production coordinator still does not construct bundle ingestion,
+planning, scheduling, quota derivation, worker transport/delivery, or admin
+execution. Those S17 runtime bindings remain deployment gaps.
 
 ## State and ownership
 
 | State | Authoritative representation | Owner / mutator | Copies and freshness | Recovery |
 | --- | --- | --- | --- | --- |
-| Shipped configuration | Strict YAML plus environment/flags | Operator; `config.Load` validates values and references | Process-local immutable config; no revision identity | Reload on restart; unknown fields fail startup |
+| Shipped configuration | Strict YAML plus environment/flags; worker endpoint uses local YAML only | Operator; `config.Load` serves general commands and `config.LoadFile` isolates worker authority | Process-local immutable config; worker ID and epochs are explicit | Reload on restart; unknown fields or durable epoch mismatch fail startup |
 | Workflow definition | `domain.Workflow` plus immutable bundle files | Coordinator ingestion | Worker receives only materialized inputs | Restore SQLite and bundle storage together |
 | Workflow-run progress | `domain.WorkflowRun` in coordinator SQLite | Coordinator transactions | Admin views are derived projections | Reload and reconcile nonterminal attempts |
 | Task definition | `domain.Task` in coordinator SQLite | Coordinator ingestion; immutable thereafter | Planner and worker execution package | Rebuild only from retained immutable bundle |
 | Attempt progress/control | Revisioned `domain.Attempt` | Coordinator transaction methods | Workers report observations, never authoritative transitions | Optimistic replan/reconcile after stale revisions |
 | Assignment and lease | `domain.Assignment` | Coordinator; worker may request an epoch-bound claim | Worker observation is expiring evidence | Expiry becomes `unknown`, not automatic reassignment |
 | Worker inventory | Last accepted `domain.WorkerSnapshot` | Worker authors; coordinator validates/persists | `ValidUntil`, worker epoch, coordinator epoch, sequence | New epoch invalidates delayed claims/commands |
+| Worker execution/replay | fsync-backed local journal, protocol replay state, custody, and workspace | Fixed worker endpoint | Bound to worker/coordinator/assignment epochs and immutable request IDs | Exact replay returns the signed response; pending requests reconcile idempotently; uncertainty becomes `unknown` |
 | T3 thread state | T3 server | Worker-side T3 adapter | Coordinator stores deterministic ID; worker reports observations | Observe before create; uncertainty is explicit |
 | Quota bucket reading | Provider event/log observation | Provider source/watchdog | Timestamp and bucket epoch | Stale or absent readings close/degrade admission |
 | Quota admission | Revisioned `QuotaAdmissionRecord` | Coordinator derivation/commit | Planner consumes a snapshot | Re-derive, compare epochs, commit atomically |

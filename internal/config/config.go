@@ -278,6 +278,7 @@ type Archive struct {
 type BacklogV2 struct {
 	Mode             string                    `yaml:"mode"`
 	Coordinator      V2Coordinator             `yaml:"coordinator"`
+	LocalWorker      V2LocalWorker             `yaml:"local_worker"`
 	Workers          map[string]V2Worker       `yaml:"workers"`
 	Projects         map[string]V2Project      `yaml:"projects"`
 	SetupProfiles    map[string]V2SetupProfile `yaml:"setup_profiles"`
@@ -293,6 +294,13 @@ type BacklogV2 struct {
 
 type V2Coordinator struct {
 	ID string `yaml:"id"`
+}
+
+// V2LocalWorker fixes the authority identity used by restricted worker commands.
+type V2LocalWorker struct {
+	ID               string `yaml:"id"`
+	Epoch            string `yaml:"epoch"`
+	CoordinatorEpoch int64  `yaml:"coordinator_epoch"`
 }
 
 type V2Worker struct {
@@ -466,10 +474,21 @@ func Default() Config {
 	return c
 }
 
-// Load reads the configuration file when it exists, applies environment
-// overrides, and validates the result. A missing file is not an error: the
-// defaults apply.
-func Load(path string) (Config, error) {
+// LoadFile reads and validates local configuration without applying environment
+// overrides. Authority-bearing restricted endpoints use it so their identity,
+// epochs, and connection settings can only come from the operator-controlled file.
+func LoadFile(path string) (Config, error) {
+	c, err := loadFile(path)
+	if err != nil {
+		return c, err
+	}
+	if err := c.Validate(); err != nil {
+		return c, err
+	}
+	return c, nil
+}
+
+func loadFile(path string) (Config, error) {
 	c := Default()
 	c.Path = path
 	if path != "" {
@@ -493,6 +512,17 @@ func Load(path string) (Config, error) {
 		default:
 			return c, fmt.Errorf("read %s: %w", path, err)
 		}
+	}
+	return c, nil
+}
+
+// Load reads the configuration file when it exists, applies environment
+// overrides, and validates the result. A missing file is not an error: the
+// defaults apply.
+func Load(path string) (Config, error) {
+	c, err := loadFile(path)
+	if err != nil {
+		return c, err
 	}
 	if err := c.applyEnv(); err != nil {
 		return c, err

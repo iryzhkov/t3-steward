@@ -100,10 +100,15 @@ messages:
     Provider quota is nearly exhausted (T3 quota watchdog): "{{.LimitName}}" is at {{.UsedPercent}}% and resets at {{.ResetsAt}}. Stop spawning subagents now. Cancel or finish active subagents, collect their results, write a short checkpoint of the current state and remaining work, then stop. The session will be interrupted in {{.GracePeriod}} if it is still running.
 
 backlog_v2:
-  # Disabled by default. "coordinator" is mutually exclusive with backlog.enabled.
+# Disabled by default. "coordinator" is mutually exclusive with backlog.enabled;
+  # "worker" enables only the fixed SSH worker-exchange command boundary.
   mode: disabled
   coordinator:
     id: ""
+  local_worker:
+    id: ""
+    epoch: ""
+    coordinator_epoch: 0
   workers: {}
   projects: {}
   setup_profiles: {}

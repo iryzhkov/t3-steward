@@ -26,6 +26,20 @@ func TestRunBacklogV2DisabledHasNoStartupEffects(t *testing.T) {
 	}
 }
 
+func TestRunBacklogV2WorkerModeDoesNotAcquireCoordinatorAuthority(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	cfg := config.Default()
+	cfg.StatePath = path
+	cfg.BacklogV2.Mode = "worker"
+	handled, err := runBacklogV2(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil || handled {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("worker runtime created coordinator state: %v", err)
+	}
+}
+
 func TestRunBacklogV2CoordinatorStartsClosedAndAdvancesEpoch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	cfg := config.Default()

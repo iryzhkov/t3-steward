@@ -8,20 +8,24 @@ Candidate baseline: `57f0b3269d8341e52170675863fe663566e8bfd3`
 
 **NO-GO for host-wide deployment.**
 
-S14 binds strict backlog-v2 fleet/project configuration, explicit storage
-migration, exclusive coordinator identity/epoch, and a disabled-by-default,
-closed-admission runtime skeleton into the production executable. S15 adds the
-versioned authenticated worker exchange, content-addressed execution package,
-artifact transfer/custody contract, and a bounded coordinator-initiated SSH
-foundation. It is not yet a deployable fleet coordinator because the
-restart-safe worker, production credential/principal binding, planning,
-lease/command delivery, acknowledgement, reconciliation, submission, schedules,
-and quota bridge are not composed.
+S14 binds strict configuration, storage migration, and exclusive closed
+coordinator authority. S15 adds the authenticated worker protocol, immutable
+execution package, artifact custody contract, and bounded SSH foundation. S16
+now adds the restart-safe worker runtime and fixed executable endpoints:
+inventory, claims, bounded leases, durable commands and acknowledgements,
+isolated preparation, deterministic observe-before-create T3 dispatch,
+verification, throttle/checkpoint/resume, raw artifact transfer, durable
+cross-process replay, reconciliation, and no-effects testing.
+
+The candidate is still not a deployable fleet coordinator. S17 must compose
+submission, schedules, planning, quota derivation, worker transport/delivery,
+outcomes, and admin execution behind the existing closed authority; S18 and S19
+must supply audit/recovery hardening and deployment qualification.
 
 No binary was installed, no service or live configuration was changed, no live
 state database was opened by development code, no worker was contacted, and no
-workflow was dispatched during S14 or S15. The S15 transport tests use only
-disposable local child processes.
+workflow was dispatched during S14–S16. Worker and transport evidence uses only
+disposable local roots and child processes.
 
 ## Candidate contents
 
@@ -56,51 +60,53 @@ disposable local child processes.
 
 ## Deployment blockers
 
-1. Bind bundle submission and schedule-definition administration to the
+1. Compose bundle submission and schedule-definition administration into the
    coordinator service.
-2. Bind the S15 authenticated SSH/protocol foundation to a restart-safe worker
-   and the coordinator, including restricted-command principal/credential
-   resolution, snapshots, claims, leases, durable command delivery,
-   acknowledgements, reconciliation, and artifact byte transfer.
-3. Compose planning, scheduling, quota observation, worker exchange, admin
-   execution, and recovery beyond the current closed-admission authority
-   skeleton.
-4. Run an observe-only multi-process integration test, then a non-side-effecting
-   canary on disposable state. Repeat all release gates after those changes.
-5. Define native audit-event emission for the remaining non-admin state
-   transitions, or explicitly accept the current reconstructed read views.
+2. Compose planning, quota observation/admission, worker SSH exchange, atomic
+   assignment, lease/command delivery, acknowledgement/reconciliation, outcomes,
+   artifact import, and admin execution beyond the current closed authority.
+3. Run the S18 audit, backup, unknown-state recovery, credential-rotation, and
+   security hardening work.
+4. Run S19 observe-only multi-process qualification and a non-side-effecting
+   canary on disposable state, then repeat all release gates.
+5. Obtain explicit user approval after a GO readiness report before any
+   host-wide installation or deployment.
 
-The shipped schema, explicit migration lifecycle, exclusive coordinator
-ownership/epoch, submission-only admin boundary, and S15 wire/execution-package/
-artifact/SSH foundation are now implemented. The remaining items are
-implementation blockers, not operator toggles; deployment approval alone must
-not bypass them.
+The shipped schema and authority boundary, S15 transport/package contract, and
+S16 restart-safe worker endpoint are implemented. The remaining items are
+implementation and qualification blockers, not operator toggles; deployment
+approval alone must not bypass them.
 
 ## Operational risks retained
 
-- SQLite and artifact files must be backed up and restored as one coherent unit.
+- SQLite and coordinator artifact files must be backed up and restored as one
+  coherent unit. Worker journals, replay state, custody, and workspaces likewise
+  require a coherent per-worker recovery point.
 - Schema migration is explicit and coordinator-owned. A candidate must never be
   pointed at live state before its coherent backup is verified.
-- Exclusive ownership uses a host-local file lock; future cross-host transport
-  must not turn it into distributed leadership.
+- Exclusive coordinator ownership and worker replay serialization use host-local
+  file locks; cross-host transport must not reinterpret them as distributed
+  leadership.
 - The first candidate dispatch or resume is the rollback point after which
   worker/T3 reconciliation is mandatory.
 - Worker loss remains fail closed as `unknown`; automatic reassignment without
   proof of stop can duplicate external effects.
-- Deterministic assignment and dispatch prevent duplicate active scheduling but
-  cannot make arbitrary external side effects exactly once.
+- Deterministic assignment, dispatch, and protocol replay prevent duplicate
+  steward effects but cannot make arbitrary task side effects exactly once.
+- Worker and coordinator epoch rotation must occur under closed admission.
+  Mismatched durable state fails startup and requires reconciliation, not
+  deletion.
 - Paused required work retains remaining-cost reservations; incorrect operator
   deletion can over-admit quota.
-- Inline artifact display is intentionally restricted. Binary or oversized
-  content must be downloaded, and checksum failure blocks use.
+- Binary or oversized artifacts use bounded raw streams and checksum custody;
+  missing or corrupt evidence blocks use.
 - Fleet clock skew and stale worker/quota observations close admission.
-- SSH host authentication and envelope signing are separate controls. A future
-  worker binding must map the restricted SSH login to the configured principal,
-  resolve signing secrets from credential references, and never accept an
-  arbitrary remote command.
+- SSH host/login authentication and envelope signing remain separate controls.
+  Forced commands must use an explicit local config, map credential principals
+  to configured identities, and never evaluate `SSH_ORIGINAL_COMMAND`.
 - Existing systemd timers may continue producing compatible schedule-marked
-  submissions during migration; duplicate occurrence and open-run checks must
-  remain authoritative.
+  submissions during migration; duplicate occurrence and open-run checks remain
+  authoritative.
 
 ## Documentation evidence
 

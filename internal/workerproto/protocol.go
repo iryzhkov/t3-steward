@@ -1,7 +1,6 @@
 package workerproto
 
 import (
-	"maps"
 	"bytes"
 	"context"
 	"crypto/hmac"
@@ -11,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -24,17 +24,19 @@ const Version = 1
 type MessageType string
 
 const (
-	MessageCapabilities     MessageType = "capabilities"
-	MessageSnapshot         MessageType = "snapshot"
-	MessageOffers           MessageType = "offers"
-	MessageClaims           MessageType = "claims"
-	MessageLeaseRenewals    MessageType = "lease-renewals"
-	MessageCommands         MessageType = "commands"
-	MessageAcknowledgements MessageType = "acknowledgements"
-	MessageObservations     MessageType = "observations"
-	MessageArtifactUpload   MessageType = "artifact-upload"
-	MessageArtifactDownload MessageType = "artifact-download"
-	MessageError            MessageType = "error"
+	MessageCapabilities             MessageType = "capabilities"
+	MessageSnapshot                 MessageType = "snapshot"
+	MessageOffers                   MessageType = "offers"
+	MessageClaims                   MessageType = "claims"
+	MessageLeaseRenewals            MessageType = "lease-renewals"
+	MessageCommands                 MessageType = "commands"
+	MessageAcknowledgements         MessageType = "acknowledgements"
+	MessageObservations             MessageType = "observations"
+	MessageArtifactUpload           MessageType = "artifact-upload"
+	MessageArtifactDownload         MessageType = "artifact-download"
+	MessageThrottleCommands         MessageType = "throttle-commands"
+	MessageThrottleAcknowledgements MessageType = "throttle-acknowledgements"
+	MessageError                    MessageType = "error"
 )
 
 type Authentication struct {
@@ -97,6 +99,19 @@ type Acknowledgements struct {
 
 type Observations struct {
 	Snapshot domain.WorkerSnapshot `json:"snapshot"`
+}
+
+// SnapshotRequest asks the worker to publish a fresh durable observation.
+type SnapshotRequest struct{}
+
+// ThrottleDelivery carries durable quota-control commands to one worker.
+type ThrottleDelivery struct {
+	Commands []domain.ThrottleCommand `json:"commands"`
+}
+
+// ThrottleAcknowledgements carries replay-safe quota-control outcomes.
+type ThrottleAcknowledgements struct {
+	Acknowledgements []domain.ThrottleAcknowledgement `json:"acknowledgements"`
 }
 
 type ErrorCode string
@@ -270,6 +285,16 @@ func (p RetryPolicy) Delay(attempt int) time.Duration {
 
 type Handler func(context.Context, Envelope) (MessageType, any, error)
 
+type ReplayStore interface {
+	Begin(peerPrincipal string, envelope Envelope, digest string, maxCachedRequests int) (ReplayTransaction, error)
+}
+
+type ReplayTransaction interface {
+	CachedResponse() (Envelope, bool)
+	Complete(response Envelope) error
+	Release() error
+}
+
 type ServerConfig struct {
 	CoordinatorID     string
 	WorkerID          string
@@ -286,6 +311,7 @@ type ServerConfig struct {
 	MaxClockSkew      time.Duration
 	MaxInFlight       int
 	MaxCachedRequests int
+	ReplayStore       ReplayStore
 	Now               func() time.Time
 }
 
@@ -340,6 +366,9 @@ func (s *Server) Handle(ctx context.Context, envelope Envelope, handler Handler)
 	if protocolErr != nil {
 		return Envelope{}, protocolErr
 	}
+	if s.config.ReplayStore != nil {
+		return s.handleDurable(ctx, envelope, digest, handler)
+	}
 	cacheKey := s.config.PeerPrincipal + "/" + envelope.RequestID
 
 	s.mu.Lock()
@@ -377,6 +406,64 @@ func (s *Server) Handle(ctx context.Context, envelope Envelope, handler Handler)
 	}
 	s.mu.Unlock()
 
+	response, err := s.execute(ctx, envelope, handler)
+
+	s.mu.Lock()
+	s.inFlight--
+	if err == nil {
+		s.requests[cacheKey] = cachedExchange{digest: digest, response: response, ready: true}
+	} else {
+		delete(s.requests, cacheKey)
+	}
+	s.mu.Unlock()
+	if err != nil {
+		return Envelope{}, err
+	}
+	return response, nil
+}
+
+func (s *Server) handleDurable(ctx context.Context, envelope Envelope, digest string, handler Handler) (Envelope, error) {
+	transaction, err := s.config.ReplayStore.Begin(s.config.PeerPrincipal, envelope, digest, s.config.MaxCachedRequests)
+	if err != nil {
+		return Envelope{}, err
+	}
+	defer transaction.Release()
+	if response, ok := transaction.CachedResponse(); ok {
+		if err := s.validateCachedResponse(envelope, response); err != nil {
+			return Envelope{}, err
+		}
+		return response, nil
+	}
+	response, err := s.execute(ctx, envelope, handler)
+	if err != nil {
+		return Envelope{}, err
+	}
+	if err := transaction.Complete(response); err != nil {
+		return Envelope{}, err
+	}
+	return response, nil
+}
+
+func (s *Server) validateCachedResponse(request, response Envelope) error {
+	sum := sha256.Sum256(response.Payload)
+	digest := hex.EncodeToString(sum[:])
+	if response.Version != request.Version || response.SessionID != request.SessionID ||
+		response.RequestID != "response-"+request.RequestID || response.InReplyTo != request.RequestID ||
+		response.Sender != s.config.WorkerID || response.Recipient != s.config.CoordinatorID ||
+		response.CoordinatorEpoch != s.config.CoordinatorEpoch || response.WorkerEpoch != s.config.WorkerEpoch ||
+		response.Sequence != request.Sequence || !response.Deadline.Equal(request.Deadline) ||
+		response.Authentication.Principal != s.config.SignerPrincipal ||
+		response.Authentication.KeyID != s.config.SignerKeyID ||
+		!hmac.Equal([]byte(strings.ToLower(response.PayloadSHA256)), []byte(digest)) {
+		return &ProtocolError{Code: ErrorAuthentication, Message: "durable replay response failed integrity validation", RequestID: request.RequestID}
+	}
+	if err := VerifyEnvelopeSignature(response, s.config.SignerSecret); err != nil {
+		return &ProtocolError{Code: ErrorAuthentication, Message: "durable replay response signature is invalid", RequestID: request.RequestID}
+	}
+	return nil
+}
+
+func (s *Server) execute(ctx context.Context, envelope Envelope, handler Handler) (Envelope, error) {
 	kind, payload, err := handler(ctx, envelope)
 	if err != nil {
 		code := ErrorInternal
@@ -398,19 +485,7 @@ func (s *Server) Handle(ctx context.Context, envelope Envelope, handler Handler)
 		response.InReplyTo = envelope.RequestID
 		err = SignEnvelope(&response, s.config.SignerPrincipal, s.config.SignerKeyID, s.config.SignerSecret)
 	}
-
-	s.mu.Lock()
-	s.inFlight--
-	if err == nil {
-		s.requests[cacheKey] = cachedExchange{digest: digest, response: response, ready: true}
-	} else {
-		delete(s.requests, cacheKey)
-	}
-	s.mu.Unlock()
-	if err != nil {
-		return Envelope{}, err
-	}
-	return response, nil
+	return response, err
 }
 
 func (s *Server) validate(envelope Envelope) (string, *ProtocolError) {

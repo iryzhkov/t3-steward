@@ -49,6 +49,18 @@ type ArtifactDownloadRequest struct {
 	ObjectIDs  []string `json:"objectIds"`
 }
 
+// ArtifactDownloadReceipt proves a complete manifest entered worker custody.
+type ArtifactDownloadReceipt struct {
+	ManifestID string                  `json:"manifestId"`
+	Custody    []ArtifactCustodyRecord `json:"custody"`
+}
+
+// ArtifactUploadResponse authenticates metadata for raw bytes streamed after it.
+type ArtifactUploadResponse struct {
+	Manifest ArtifactTransferManifest `json:"manifest"`
+	Custody  []ArtifactCustodyRecord  `json:"custody"`
+}
+
 type ArtifactCustodyRecord struct {
 	ManifestID     string    `json:"manifestId"`
 	ObjectID       string    `json:"objectId"`

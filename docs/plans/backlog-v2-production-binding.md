@@ -62,7 +62,7 @@ do not need to stop for routine design choices.
 
 - [x] R1 — Authority, configuration, and storage lifecycle (S14)
 - [x] R2 — Versioned worker exchange and execution package (S15)
-- [ ] R3 — Restart-safe worker runtime (S16)
+- [x] R3 — Restart-safe worker runtime (S16)
 - [ ] R4 — Coordinator runtime, submissions, schedules, and quota bridge (S17)
 - [ ] R5 — Audit, backup, recovery, and security hardening (S18)
 - [ ] R6 — Deployment qualification and new readiness decision (S19)
@@ -139,19 +139,19 @@ Exit gates:
 
 ### S16 — Restart-safe worker runtime
 
-- [ ] Implement worker inventory and snapshot publication, offer validation,
+- [x] Implement worker inventory and snapshot publication, offer validation,
   assignment claim, lease renewal, durable command receipt, and idempotent
   acknowledgement.
-- [ ] Resolve catalog/project/setup profiles and prepare isolated attempt or
+- [x] Resolve catalog/project/setup profiles and prepare isolated attempt or
   workflow workspaces through existing containment primitives.
-- [ ] Implement the v2 T3 dispatch adapter with observe-before-create recovery,
+- [x] Implement the v2 T3 dispatch adapter with observe-before-create recovery,
   deterministic dispatch identity, structured throttle/checkpoint handling,
   verification, turn outcome collection, artifact upload, and cleanup.
-- [ ] Persist a worker-local journal sufficient to resume after restart without
+- [x] Persist a worker-local journal sufficient to resume after restart without
   duplicating T3 or subprocess effects.
-- [ ] Fail stale epochs, corrupt packages/artifacts, missing custody evidence,
+- [x] Fail stale epochs, corrupt packages/artifacts, missing custody evidence,
   lease uncertainty, and unproven execution to explicit closed/unknown states.
-- [ ] Provide a no-external-effects worker test mode.
+- [x] Provide a no-external-effects worker test mode.
 
 Exit gates:
 

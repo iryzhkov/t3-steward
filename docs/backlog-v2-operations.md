@@ -11,18 +11,21 @@ validation, immutable bundle ingestion, DAG readiness, scheduling and quota
 policy, workspace preparation, artifact transfer, coordinator persistence,
 worker protocol records, deterministic dispatch identities, throttle
 pause/resume, schedule idempotency, the transport-neutral admin service and
-CLI, and the S15 versioned worker exchange, immutable execution package,
-artifact custody contract, and bounded SSH transport foundation.
+CLI, the versioned authenticated exchange, and the S16 restart-safe worker
+runtime.
 
-The current executable does **not** bind a fleet project catalog, worker
-runtime, coordinator planning loop, bundle-submission command, or worker
-exchange into the production daemon. The existing Markdown `t3-backlog`
-runner remains the production path. Do not deploy backlog-v2 as a fleet
-coordinator until those bindings exist and the release gates have been rerun.
-The detailed decision is in
-[the deployment-readiness report](plans/backlog-v2-deployment-readiness.md).
-The frozen S15 wire, execution-package, artifact, retry, and SSH contract is
-documented in [the worker protocol](backlog-v2-worker-protocol.md).
+The executable now exposes only three fixed worker operations: control,
+artifact receive, and artifact send. They bind strict local configuration,
+credential principals, durable epochs, replay state, journals, artifact
+custody, isolated workspaces, containment, and the worker-side T3 adapter.
+The production coordinator still does **not** compose planning, submissions,
+schedules, quota bridging, worker transport, or admin execution. The existing
+Markdown `t3-backlog` runner remains the production path. Do not deploy
+backlog-v2 as a fleet coordinator until the remaining stages and qualification
+gates are complete. The detailed decision is in
+[the deployment-readiness report](plans/backlog-v2-deployment-readiness.md);
+the wire and worker contract is in
+[the worker protocol](backlog-v2-worker-protocol.md).
 
 ## Configuration inventory
 
@@ -35,9 +38,15 @@ remain compatible, and backlog-v2 is disabled by default.
   legacy Markdown runner.
 - `backlog.host_name` and `default_host` control legacy SSH forwarding; they
   are not backlog-v2 worker registration.
-- `backlog_v2.mode` is `disabled` or `coordinator`. Coordinator mode and
-  `backlog.enabled` are mutually exclusive.
-- `backlog_v2.coordinator.id` is the durable authority identity.
+- `backlog_v2.mode` is `disabled`, `coordinator`, or `worker`.
+  Coordinator mode and `backlog.enabled` are mutually exclusive. Worker mode
+  exposes only the fixed exchange endpoint and never acquires coordinator
+  authority.
+- `backlog_v2.coordinator.id` is the durable coordinator identity.
+- Worker mode requires `backlog_v2.local_worker.id`, `epoch`, and a positive
+  `coordinator_epoch`. The ID must name an entry in `workers`. Rotate these
+  durable values only while coordinator admission is closed and reconcile the
+  old epoch before accepting work under the new one.
 - `workers` declare SSH address, credential reference, capabilities, accepted
   provider instances/models, and quota-pool references.
 - `projects` declare repository, default ref, T3 project, setup profile,
@@ -45,22 +54,28 @@ remain compatible, and backlog-v2 is disabled by default.
 - `setup_profiles` contain nonempty command lists and positive timeouts.
 - `quota_pools` map fleet admission to providers.
 - `storage` declares absolute, non-root, non-overlapping bundle, artifact, and
-  workspace roots.
+  workspace roots. Worker journals, replay state, workspaces, and custody live
+  beneath the configured worker-scoped roots and must be restored coherently.
 - `transport`, `message_limits`, `freshness`, `leases`, and `scheduling`
-  set bounded exchange and lifecycle controls. SSH transport uses batch mode,
-  strict host-key verification, fixed remote commands, request deadlines, and
-  bounded stdin/stdout/stderr. Envelope signing keys and authenticated
-  principals must be resolved from worker credential references, never stored
-  in workflow bundles or execution packages.
-- `startup_admission` must be `closed`. The S14 skeleton acquires exclusive
-  coordinator ownership and advances its epoch without contacting a worker or T3.
-- `state_path` selects SQLite. Plain opens never create or migrate it;
-  coordinator startup uses the explicit migration path.
+  set bounded exchange and lifecycle controls. The worker caps accepted lease
+  extension at its configured duration.
+- `startup_admission` must be `closed` in coordinator mode. Coordinator
+  startup acquires exclusive ownership and advances its epoch without
+  contacting a worker or T3.
+- `state_path` selects coordinator SQLite. Plain opens never create or migrate
+  it; coordinator startup uses the explicit migration path.
+
+The forced worker command must be installed with an absolute, operator-owned
+configuration path, for example
+`t3-steward worker-exchange --config /etc/t3-steward/worker.yaml control`.
+Configure a separate forced command for each artifact operation; never forward
+`SSH_ORIGINAL_COMMAND` to a shell. The endpoint ignores general configuration
+environment overrides and command-line dry-run/log-level overrides. Envelope
+and project secrets remain worker-managed named credentials and never enter
+workflow bundles, execution packages, journals, or error text.
 
 Admin and status clients query or submit durable intent only. They neither
-migrate schema nor execute pending coordinator commands. Credential references
-may appear in configuration, but credential values remain in worker-managed
-secret stores and repository URLs must not embed credentials.
+migrate schema nor execute pending coordinator commands.
 
 ## Version 2 workflow bundles
 

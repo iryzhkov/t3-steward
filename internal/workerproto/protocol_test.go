@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -384,6 +385,51 @@ func TestProtocolDropHelperProcess(t *testing.T) {
 	if len(os.Args) > 0 && strings.Contains(strings.Join(os.Args, " "), "TestProtocolDropHelperProcess") &&
 		os.Getenv("GO_WANT_WORKERPROTO_HELPER") == "" {
 		os.Exit(17)
+	}
+}
+
+func TestThrottleProtocolPayloadRoundTrip(t *testing.T) {
+	deadline := testNow.Add(time.Minute)
+	command := domain.ThrottleCommand{
+		ID: "throttle-1", DirectiveID: "directive-1", AttemptID: "attempt-1",
+		AssignmentID: "assignment-1", AssignmentEpoch: 2, WorkerID: "normandy",
+		ThreadID: "thread-1", WorkspacePath: "/tmp/workspace",
+		Route: domain.ProviderRoute{WorkerID: "normandy", ProviderInstanceID: "codex", Model: "gpt-5.6-sol", QuotaPoolID: "codex-main"},
+		Kind:  domain.ThrottleCommandDrain, QuotaPoolID: "codex-main", Reason: "quota draining",
+		Deadline: &deadline, CreatedAt: testNow,
+	}
+	envelope, err := NewEnvelope(
+		MessageThrottleCommands, "session-1", "request-throttle", "coordinator", "normandy",
+		9, "worker-1", 1, testNow, deadline, ThrottleDelivery{Commands: []domain.ThrottleCommand{command}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded ThrottleDelivery
+	if err := DecodePayload(envelope, MessageThrottleCommands, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Commands) != 1 || !reflect.DeepEqual(decoded.Commands[0], command) {
+		t.Fatalf("decoded throttle delivery = %+v", decoded)
+	}
+	ack := domain.ThrottleAcknowledgement{
+		CommandID: command.ID, AttemptID: command.AttemptID, Accepted: true,
+		Result: domain.ThrottleResultCheckpointed, AcknowledgedAt: testNow,
+	}
+	response, err := NewEnvelope(
+		MessageThrottleAcknowledgements, "session-1", "response-throttle", "normandy", "coordinator",
+		9, "worker-1", 1, testNow, deadline,
+		ThrottleAcknowledgements{Acknowledgements: []domain.ThrottleAcknowledgement{ack}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decodedAcks ThrottleAcknowledgements
+	if err := DecodePayload(response, MessageThrottleAcknowledgements, &decodedAcks); err != nil {
+		t.Fatal(err)
+	}
+	if len(decodedAcks.Acknowledgements) != 1 || !reflect.DeepEqual(decodedAcks.Acknowledgements[0], ack) {
+		t.Fatalf("decoded throttle acknowledgements = %+v", decodedAcks)
 	}
 }
 

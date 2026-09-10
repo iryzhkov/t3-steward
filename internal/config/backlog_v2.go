@@ -14,17 +14,17 @@ func (c *Config) validateBacklogV2() error {
 	case "", "disabled":
 		v.Mode = "disabled"
 		return nil
-	case "coordinator":
+	case "coordinator", "worker":
 	default:
-		return fmt.Errorf("backlog_v2: mode must be disabled or coordinator (got %q)", v.Mode)
+		return fmt.Errorf("backlog_v2: mode must be disabled, coordinator, or worker (got %q)", v.Mode)
 	}
-	if c.Backlog.Enabled {
+	if v.Mode == "coordinator" && c.Backlog.Enabled {
 		return errors.New("backlog_v2: coordinator mode and legacy backlog.enabled are mutually exclusive")
 	}
 	if strings.TrimSpace(v.Coordinator.ID) == "" {
 		return errors.New("backlog_v2: coordinator.id is required")
 	}
-	if v.StartupAdmission != "closed" {
+	if v.Mode == "coordinator" && v.StartupAdmission != "closed" {
 		return errors.New("backlog_v2: startup_admission must be closed")
 	}
 	if len(v.Workers) == 0 || len(v.Projects) == 0 || len(v.QuotaPools) == 0 {
@@ -109,6 +109,17 @@ func (c *Config) validateBacklogV2() error {
 			if strings.TrimSpace(credential) == "" {
 				return fmt.Errorf("backlog_v2: project %q contains an empty credential reference", name)
 			}
+		}
+	}
+	if v.Mode == "worker" {
+		local := v.LocalWorker
+		if strings.TrimSpace(local.ID) != local.ID || local.ID == "" ||
+			strings.TrimSpace(local.Epoch) != local.Epoch || local.Epoch == "" ||
+			local.CoordinatorEpoch < 1 {
+			return errors.New("backlog_v2: worker mode requires trimmed local_worker id/epoch and positive coordinator_epoch")
+		}
+		if _, ok := v.Workers[local.ID]; !ok {
+			return fmt.Errorf("backlog_v2: local worker %q is not declared in workers", local.ID)
 		}
 	}
 	return nil

@@ -36,6 +36,23 @@ func TestExampleConfigurationLoadsWithStrictDecoder(t *testing.T) {
 	}
 }
 
+func TestLoadFileIgnoresEnvironmentOverrides(t *testing.T) {
+	t.Setenv("T3_STEWARD_BACKLOG_V2_MODE", "coordinator")
+	t.Setenv("T3_STEWARD_T3_URL", "http://remote.invalid")
+
+	path := filepath.Join("..", "..", "config.example.yaml")
+	cfg, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BacklogV2.Mode != "disabled" {
+		t.Fatalf("LoadFile backlog-v2 mode = %q, want local file value", cfg.BacklogV2.Mode)
+	}
+	if cfg.T3.URL == "http://remote.invalid" {
+		t.Fatal("LoadFile applied T3_STEWARD_T3_URL")
+	}
+}
+
 func TestLoadRejectsUnknownFields(t *testing.T) {
 	for name, contents := range map[string]string{
 		"top-level": "mystery: true\n",
@@ -95,6 +112,30 @@ func TestBacklogV2CoordinatorConfigurationAndReferences(t *testing.T) {
 			mutate(&candidate)
 			if err := candidate.Validate(); err == nil {
 				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
+
+func TestBacklogV2WorkerModeRequiresFixedLocalAuthority(t *testing.T) {
+	cfg := validBacklogV2Config(t)
+	cfg.BacklogV2.Mode = "worker"
+	cfg.BacklogV2.LocalWorker = V2LocalWorker{ID: "normandy", Epoch: "worker-1", CoordinatorEpoch: 9}
+	cfg.Backlog.Enabled = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid worker mode: %v", err)
+	}
+	for name, mutate := range map[string]func(*Config){
+		"missing id":                func(c *Config) { c.BacklogV2.LocalWorker.ID = "" },
+		"unknown id":                func(c *Config) { c.BacklogV2.LocalWorker.ID = "other" },
+		"missing epoch":             func(c *Config) { c.BacklogV2.LocalWorker.Epoch = "" },
+		"missing coordinator epoch": func(c *Config) { c.BacklogV2.LocalWorker.CoordinatorEpoch = 0 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := cfg
+			mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("invalid worker authority accepted")
 			}
 		})
 	}

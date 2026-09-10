@@ -57,6 +57,7 @@ Commands:
   export             Print this host's readings and token samples as JSON for another host's report.
   install-service    Install a per-user background service (Linux systemd).
   uninstall-service  Remove the background service.
+  worker-exchange    Restricted SSH worker endpoint (control/artifact-receive/artifact-send).
   version            Print the version.
 
 Global flags:
@@ -76,10 +77,11 @@ func main() {
 }
 
 type globalFlags struct {
-	configPath string
-	dryRun     bool
-	noDryRun   bool
-	logLevel   string
+	configPath     string
+	configExplicit bool
+	dryRun         bool
+	noDryRun       bool
+	logLevel       string
 }
 
 func run(args []string) error {
@@ -226,6 +228,11 @@ func run(args []string) error {
 	if err := fs.Parse(rest); err != nil {
 		return err
 	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "config" {
+			g.configExplicit = true
+		}
+	})
 
 	switch cmd {
 	case "init":
@@ -251,6 +258,11 @@ func run(args []string) error {
 		return cmdInstallService(g, force, enable)
 	case "uninstall-service":
 		return cmdUninstallService()
+	case "worker-exchange":
+		if fs.NArg() != 1 {
+			return errors.New("worker-exchange needs exactly one fixed operation")
+		}
+		return cmdWorkerExchange(g, fs.Arg(0))
 	default:
 		return fmt.Errorf("unknown command %q (try --help)", cmd)
 	}

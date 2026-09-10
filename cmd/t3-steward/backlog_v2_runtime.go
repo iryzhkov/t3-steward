@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/iryzhkov/t3-steward/internal/config"
@@ -9,10 +10,14 @@ import (
 )
 
 func runBacklogV2(ctx context.Context, cfg config.Config, logger *slog.Logger) (bool, error) {
-	if cfg.BacklogV2.Mode == "disabled" {
+	switch cfg.BacklogV2.Mode {
+	case "disabled", "worker":
 		return false, nil
+	case "coordinator":
+		return true, runBacklogV2Coordinator(ctx, cfg, logger)
+	default:
+		return true, fmt.Errorf("unsupported backlog-v2 mode %q", cfg.BacklogV2.Mode)
 	}
-	return true, runBacklogV2Coordinator(ctx, cfg, logger)
 }
 
 // runBacklogV2Coordinator establishes authority with admission closed. Later
