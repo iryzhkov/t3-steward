@@ -387,7 +387,7 @@ Each milestone should fit one unattended development session where practical. A 
 - [x] Close admission before warning or draining affected work.
 - [x] Implement structured warn, drain, checkpoint, hard-stop, and resume handling.
 - [x] Reconcile completion markers against throttle intents in the documented order.
-- [ ] Keep paused work visible to reservations while releasing runtime slots.
+- [x] Keep paused work visible to reservations while releasing runtime slots.
 - [ ] Add recovery priority and expiry behavior for required and surplus tasks.
 - [ ] Test drain races, hard stops, multiple buckets, recovery probes, user interaction, and repeated throttle epochs.
 

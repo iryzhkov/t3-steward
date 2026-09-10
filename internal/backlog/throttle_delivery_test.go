@@ -288,7 +288,7 @@ func TestThrottleCheckpointDeadlineHardStopAndResumeLifecycle(t *testing.T) {
 
 	closed := domain.QuotaAdmissionRecord{QuotaPoolID: "pool", Revision: 3, Admission: domain.AdmissionClosed}
 	noResume, noCommands, err := PlanThrottleResumes(
-		[]domain.ThrottleAttemptRecord{stopped[0].Record}, []domain.QuotaAdmissionRecord{closed},
+		[]domain.ThrottleAttemptRecord{stopped[0].Record}, []domain.QuotaAdmissionRecord{closed}, []domain.QuotaPool{{ID: "pool", MaxConcurrent: 1}},
 		throttleDeliveryTime.Add(7*time.Minute))
 	if err != nil || len(noResume) != 0 || len(noCommands) != 0 {
 		t.Fatalf("closed resume = %#v %#v, err = %v", noResume, noCommands, err)
@@ -297,7 +297,7 @@ func TestThrottleCheckpointDeadlineHardStopAndResumeLifecycle(t *testing.T) {
 	recovering.Admission = domain.AdmissionRecovering
 	recovering.Reason = "probe admitted"
 	resumes, resumeCommands, err := PlanThrottleResumes(
-		[]domain.ThrottleAttemptRecord{stopped[0].Record}, []domain.QuotaAdmissionRecord{recovering},
+		[]domain.ThrottleAttemptRecord{stopped[0].Record}, []domain.QuotaAdmissionRecord{recovering}, []domain.QuotaPool{{ID: "pool", MaxConcurrent: 1}},
 		throttleDeliveryTime.Add(8*time.Minute))
 	if err != nil || len(resumes) != 1 || resumeCommands[0].Kind != domain.ThrottleCommandResume {
 		t.Fatalf("resume plan = %#v %#v, err = %v", resumes, resumeCommands, err)
@@ -357,7 +357,7 @@ func TestThrottleCheckpointSuccessSkipsHardStopAndResumesWithMetadata(t *testing
 		QuotaPoolID: "pool", Revision: 3, Admission: domain.AdmissionOpen, Reason: "healthy",
 	}
 	resumes, commands, err := PlanThrottleResumes(
-		[]domain.ThrottleAttemptRecord{paused[0].Record}, []domain.QuotaAdmissionRecord{admission},
+		[]domain.ThrottleAttemptRecord{paused[0].Record}, []domain.QuotaAdmissionRecord{admission}, []domain.QuotaPool{{ID: "pool", MaxConcurrent: 1}},
 		throttleDeliveryTime.Add(11*time.Minute))
 	if err != nil || len(resumes) != 1 || !reflect.DeepEqual(commands[0].Checkpoint, checkpoint) {
 		t.Fatalf("checkpoint resume = %#v %#v, err = %v", resumes, commands, err)
@@ -411,7 +411,7 @@ func TestPlanThrottleResumesIgnoresObsoletePausedProjection(t *testing.T) {
 	}
 	transitions, commands, err := PlanThrottleResumes(
 		[]domain.ThrottleAttemptRecord{pausedTransitions[0].Record, runningTransitions[0].Record},
-		[]domain.QuotaAdmissionRecord{admission},
+		[]domain.QuotaAdmissionRecord{admission}, []domain.QuotaPool{{ID: "pool", MaxConcurrent: 1}},
 		throttleDeliveryTime.Add(4*time.Minute),
 	)
 	if err != nil || len(transitions) != 0 || len(commands) != 0 {
@@ -501,7 +501,7 @@ func TestReconcileThrottleDeadlineAndResumePersistsBeforeDelivery(t *testing.T) 
 	}
 	resumeReport, err := ReconcileThrottleResumes(
 		context.Background(), store, transport,
-		[]domain.QuotaAdmissionRecord{admission}, throttleDeliveryTime.Add(6*time.Minute),
+		[]domain.QuotaAdmissionRecord{admission}, []domain.QuotaPool{{ID: "pool", MaxConcurrent: 1}}, throttleDeliveryTime.Add(6*time.Minute),
 	)
 	if err != nil || len(resumeReport.Commands) != 1 ||
 		resumeReport.Commands[0].Kind != domain.ThrottleCommandResume ||

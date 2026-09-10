@@ -103,6 +103,7 @@ func ReconcileThrottleResumes(
 	store ThrottleDeliveryStore,
 	transport ThrottleWorkerTransport,
 	admissions []domain.QuotaAdmissionRecord,
+	pools []domain.QuotaPool,
 	now time.Time,
 ) (ThrottleDeliveryReport, error) {
 	if store == nil {
@@ -115,7 +116,7 @@ func ReconcileThrottleResumes(
 	if err != nil {
 		return ThrottleDeliveryReport{}, fmt.Errorf("load throttle attempt records: %w", err)
 	}
-	transitions, commands, err := PlanThrottleResumes(previous, admissions, now)
+	transitions, commands, err := PlanThrottleResumes(previous, admissions, pools, now)
 	if err != nil {
 		return ThrottleDeliveryReport{}, err
 	}
@@ -307,6 +308,7 @@ func PlanThrottleDeadlineExpirations(
 func PlanThrottleResumes(
 	records []domain.ThrottleAttemptRecord,
 	admissions []domain.QuotaAdmissionRecord,
+	pools []domain.QuotaPool,
 	now time.Time,
 ) ([]domain.ThrottleAttemptTransition, []domain.ThrottleCommand, error) {
 	if now.IsZero() {
@@ -326,6 +328,17 @@ func PlanThrottleResumes(
 		}
 		admissionByPool[admission.QuotaPoolID] = admission
 	}
+	poolByID := make(map[string]domain.QuotaPool, len(pools))
+	for _, pool := range pools {
+		if pool.ID == "" || pool.MaxConcurrent <= 0 || pool.ActiveAssignments < 0 ||
+			pool.ActiveAssignments > pool.MaxConcurrent {
+			return nil, nil, fmt.Errorf("quota pool %q has invalid resume concurrency", pool.ID)
+		}
+		if _, exists := poolByID[pool.ID]; exists {
+			return nil, nil, fmt.Errorf("quota resume pools repeat pool %q", pool.ID)
+		}
+		poolByID[pool.ID] = pool
+	}
 
 	latest := make(map[string]domain.ThrottleAttemptRecord)
 	for _, record := range indexed {
@@ -335,13 +348,23 @@ func PlanThrottleResumes(
 			latest[record.AttemptID] = record
 		}
 	}
+	attemptIDs := make([]string, 0, len(latest))
+	for attemptID := range latest {
+		attemptIDs = append(attemptIDs, attemptID)
+	}
+	sort.Strings(attemptIDs)
 
 	var transitions []domain.ThrottleAttemptTransition
 	var commands []domain.ThrottleCommand
-	for _, record := range latest {
+	for _, attemptID := range attemptIDs {
+		record := latest[attemptID]
 		if record.Control != domain.ControlPaused && record.Control != domain.ControlPausedUncheckpointed &&
 			!(record.Control == domain.ControlResuming && record.Delivery == domain.ThrottleDeliveryPending) {
 			continue
+		}
+		pool, exists := poolByID[record.Command.QuotaPoolID]
+		if !exists {
+			return nil, nil, fmt.Errorf("paused attempt %q names unknown quota pool %q", record.AttemptID, record.Command.QuotaPoolID)
 		}
 		if record.Control == domain.ControlResuming && record.Delivery == domain.ThrottleDeliveryPending {
 			commands = append(commands, cloneThrottleCommand(record.Command))
@@ -351,6 +374,12 @@ func PlanThrottleResumes(
 		if !exists || (admission.Admission != domain.AdmissionOpen && admission.Admission != domain.AdmissionRecovering) {
 			continue
 		}
+		if pool.ActiveAssignments >= pool.MaxConcurrent {
+			continue
+		}
+		pool.ActiveAssignments++
+		poolByID[pool.ID] = pool
+
 		previousRevision := record.Revision
 		record.Revision++
 		record.PriorCommandIDs = append(record.PriorCommandIDs, record.Command.ID)
