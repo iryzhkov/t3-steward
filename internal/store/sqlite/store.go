@@ -202,6 +202,12 @@ func (s *Store) migrate() error {
 		if err := s.applyVersionedMigration(4, coordinatorMigrationV4); err != nil {
 			return err
 		}
+		version = 4
+	}
+	if version < 5 {
+		if err := s.applyVersionedMigration(5, coordinatorMigrationV5); err != nil {
+			return err
+		}
 	}
 	return nil
 }

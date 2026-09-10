@@ -159,20 +159,23 @@ type Task struct {
 
 // Attempt is one try to complete a task in a workflow run.
 type Attempt struct {
-	ID                     string        `json:"id"`
-	WorkflowRunID          string        `json:"workflowRunId"`
-	TaskID                 string        `json:"taskId"`
-	Number                 int           `json:"number"`
-	Progress               ProgressState `json:"progress"`
-	Control                ControlState  `json:"control"`
-	AssignmentID           string        `json:"assignmentId,omitempty"`
-	ThreadID               string        `json:"threadId,omitempty"`
-	CheckpointArtifactID   string        `json:"checkpointArtifactId,omitempty"`
-	FinalSummaryArtifactID string        `json:"finalSummaryArtifactId,omitempty"`
-	Failure                string        `json:"failure,omitempty"`
-	StartedAt              *time.Time    `json:"startedAt,omitempty"`
-	UpdatedAt              time.Time     `json:"updatedAt"`
-	CompletedAt            *time.Time    `json:"completedAt,omitempty"`
+	ID                     string            `json:"id"`
+	WorkflowRunID          string            `json:"workflowRunId"`
+	TaskID                 string            `json:"taskId"`
+	Number                 int               `json:"number"`
+	Progress               ProgressState     `json:"progress"`
+	Control                ControlState      `json:"control"`
+	Revision               int64             `json:"revision"`
+	LastTurnOutcomeID      string            `json:"lastTurnOutcomeId,omitempty"`
+	LastTurnOutcomeMarker  TurnOutcomeMarker `json:"lastTurnOutcomeMarker,omitempty"`
+	AssignmentID           string            `json:"assignmentId,omitempty"`
+	ThreadID               string            `json:"threadId,omitempty"`
+	CheckpointArtifactID   string            `json:"checkpointArtifactId,omitempty"`
+	FinalSummaryArtifactID string            `json:"finalSummaryArtifactId,omitempty"`
+	Failure                string            `json:"failure,omitempty"`
+	StartedAt              *time.Time        `json:"startedAt,omitempty"`
+	UpdatedAt              time.Time         `json:"updatedAt"`
+	CompletedAt            *time.Time        `json:"completedAt,omitempty"`
 }
 
 // AssignmentState is the coordinator's knowledge of an assignment lease.

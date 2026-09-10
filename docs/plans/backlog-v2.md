@@ -386,7 +386,7 @@ Each milestone should fit one unattended development session where practical. A 
 - [x] Derive quota-pool admission states from bucket state and resume intents.
 - [x] Close admission before warning or draining affected work.
 - [x] Implement structured warn, drain, checkpoint, hard-stop, and resume handling.
-- [ ] Reconcile completion markers against throttle intents in the documented order.
+- [x] Reconcile completion markers against throttle intents in the documented order.
 - [ ] Keep paused work visible to reservations while releasing runtime slots.
 - [ ] Add recovery priority and expiry behavior for required and surplus tasks.
 - [ ] Test drain races, hard stops, multiple buckets, recovery probes, user interaction, and repeated throttle epochs.

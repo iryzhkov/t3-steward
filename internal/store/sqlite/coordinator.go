@@ -9,7 +9,11 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-const currentSchemaVersion = 4
+const currentSchemaVersion = 5
+
+const coordinatorMigrationV5 = `
+ALTER TABLE coordinator_attempts ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+`
 
 const coordinatorMigrationV2 = `
 CREATE TABLE coordinator_workflows (
@@ -139,11 +143,12 @@ func (s *Store) SaveCoordinatorRecords(ctx context.Context, records CoordinatorR
 	}
 	for _, record := range records.Attempts {
 		if err := upsertJSON(ctx, tx, "attempt", record.ID,
-			`INSERT INTO coordinator_attempts(id, workflow_run_id, task_id, number, record)
-			 VALUES (?, ?, ?, ?, ?)
+			`INSERT INTO coordinator_attempts(id, workflow_run_id, task_id, number, revision, record)
+			 VALUES (?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(id) DO UPDATE SET workflow_run_id = excluded.workflow_run_id,
-			 task_id = excluded.task_id, number = excluded.number, record = excluded.record`,
-			[]any{record.ID, record.WorkflowRunID, record.TaskID, record.Number}, record); err != nil {
+			 task_id = excluded.task_id, number = excluded.number,
+			 revision = excluded.revision, record = excluded.record`,
+			[]any{record.ID, record.WorkflowRunID, record.TaskID, record.Number, record.Revision}, record); err != nil {
 			return err
 		}
 	}

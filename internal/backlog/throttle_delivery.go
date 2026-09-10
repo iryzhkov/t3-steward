@@ -580,7 +580,8 @@ func validateThrottleAttemptRecord(record domain.ThrottleAttemptRecord) error {
 		return fmt.Errorf("throttle attempt record identity is invalid")
 	}
 	switch record.Delivery {
-	case domain.ThrottleDeliveryPending, domain.ThrottleDeliveryAcknowledged, domain.ThrottleDeliveryRejected:
+	case domain.ThrottleDeliveryPending, domain.ThrottleDeliveryAcknowledged,
+		domain.ThrottleDeliveryRejected, domain.ThrottleDeliveryCancelled:
 		return nil
 	default:
 		return fmt.Errorf("throttle attempt record %q has invalid delivery state %q", record.Command.ID, record.Delivery)

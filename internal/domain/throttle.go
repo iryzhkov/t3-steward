@@ -68,6 +68,7 @@ const (
 	ThrottleDeliveryPending      ThrottleDeliveryState = "pending"
 	ThrottleDeliveryAcknowledged ThrottleDeliveryState = "acknowledged"
 	ThrottleDeliveryRejected     ThrottleDeliveryState = "rejected"
+	ThrottleDeliveryCancelled    ThrottleDeliveryState = "cancelled"
 )
 
 // ThrottleAcknowledgementResult is the structured outcome reported by a worker.

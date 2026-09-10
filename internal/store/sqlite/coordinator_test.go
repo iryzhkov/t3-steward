@@ -128,6 +128,11 @@ func TestMigrationFromVersionOnePreservesState(t *testing.T) {
 			t.Errorf("migrated table %q count = %d, want 1", table, count)
 		}
 	}
+	if has, err := s.hasColumn("coordinator_attempts", "revision"); err != nil {
+		t.Fatal(err)
+	} else if !has {
+		t.Error("migrated coordinator_attempts.revision is missing")
+	}
 }
 
 func coordinatorFixture() CoordinatorRecords {
@@ -166,7 +171,7 @@ func coordinatorFixture() CoordinatorRecords {
 		}},
 		Attempts: []domain.Attempt{{
 			ID: "attempt-1", WorkflowRunID: "run-1", TaskID: "task-1", Number: 1,
-			Progress: domain.ProgressActive, Control: domain.ControlPaused,
+			Progress: domain.ProgressActive, Control: domain.ControlPaused, Revision: 4,
 			AssignmentID: "assignment-1", ThreadID: "thread-1",
 			CheckpointArtifactID: "checkpoint-1", StartedAt: &now, UpdatedAt: later,
 		}},
