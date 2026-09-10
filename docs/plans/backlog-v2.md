@@ -368,8 +368,9 @@ Each milestone should fit one unattended development session where practical. A 
 - [x] Prototype and verify T3 `worktreePath` behavior.
 - [ ] Add workflow-scoped environments, resource locks, preparation logs, retention, and process containment.
   - [x] Add atomic workflow checkout ownership, worker pinning, deterministic resource reservations, and explicit pause/terminal release policies.
-  - [ ] Materialize shared workflow checkouts and add retention plus process containment.
-- [ ] Test alternate workers, GPU-only placement, offline workers, setup failure, and workspace cleanup.
+  - [x] Materialize shared workflow checkouts with setup-once preparation, per-attempt dependency views, and explicit terminal retain/remove decisions.
+  - [ ] Add process containment and crash-orphan retention reconciliation.
+- [x] Test alternate workers, GPU-only placement, offline workers, setup failure, and workspace cleanup.
 
 ### M4. Planner, task classes, and provider routes
 
