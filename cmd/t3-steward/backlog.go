@@ -13,37 +13,34 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
 const backlogUsage = `Usage: t3-steward backlog <command> [args]
 
-Commands:
-  list [--all]       Tasks with status, estimate and the reason they wait; --all asks report.remotes too.
-  show <id>          One task's file and state.
+Coordinator read commands:
+  status [--json]
+  list [--project P] [--schedule S] [--progress STATES] [--class CLASS]
+       [--worker W] [--quota-pool Q] [--json]
+  show <workflow-run> [--json]
+  graph <workflow-run> [--json]
+  task show <workflow-run>/<task> [--json]
+  events <workflow-run> [--json]
+  explain <workflow-run>/<task> [--json]
+  artifacts [<task>|<workflow-run>/<task>] [--json]
+  artifact show <artifact> [--json]
+  commands [<workflow-run>[/<task>]] [--json]
+  command show <command> [--json]
+
+Legacy task-file helpers:
   new <id>           Create a task file from a template and print its path.
-  retry <id>         Re-queue a failed, done or needs-input task.
-  cancel <id>        Cancel a pending task (the file stays; edit it to re-queue).
   path               Print the task directory.
   check <file|->     Validate a task: project, provider instance, model, options, host.
   receive <id>       Store a task sent by another host (used by forwarding).
-
-A task is a markdown file <dir>/<id>.md:
-
-  ---
-  project: laptop home        # T3 project title or id: the workspace
-  importance: 3               # 1-5, higher runs first
-  difficulty: 3               # 1-5, seeds the cost and duration estimate
-  model: claude-opus-5        # optional, with instance; else the project default
-  instance: claudeAgent
-  not_before: 2026-09-09T00:00:00-07:00   # optional
-  deadline: 2026-09-12T00:00:00-07:00     # optional; within 24h bypasses the gate
-  max_turns: 3
-  gate: true                  # false: run at not_before whenever quota is healthy
-  host: normandy              # run on that host's T3 (default: backlog.default_host, else here)
-  ---
-  The prompt. Written for an agent that will get no input from you.
+  list --all         Show the legacy local task files and configured remote lists.
+  retry|cancel <id>  Legacy state controls; these will migrate to admin commands.
 
 The runner is part of "run"; enable it with backlog.enabled: true.
 `
@@ -88,6 +85,60 @@ func newBacklogRunner(cfg config.Config, store *sqlite.Store, control backlog.Co
 	}, store, control), nil
 }
 
+func isCoordinatorRead(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "status", "graph", "task", "events", "explain", "artifacts", "artifact", "commands", "command", "show":
+		return true
+	case "list":
+		return len(args) != 2 || args[1] != "--all"
+	default:
+		return false
+	}
+}
+
+func runCoordinatorRead(cfg config.Config, args []string, schedules bool) error {
+	statePath, err := cfg.ResolveStatePath()
+	if err != nil {
+		return err
+	}
+	store, err := sqlite.Open(statePath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	service, err := backlogadmin.New(store, localAdminAuthorizer{})
+	if err != nil {
+		return err
+	}
+	cli := backlogAdminCLI{
+		service: service,
+		principal: backlogadmin.Principal{
+			ID:    fmt.Sprintf("local:%d", os.Getuid()),
+			Roles: []string{"local-admin"},
+		},
+		stdout: os.Stdout,
+	}
+	if schedules {
+		return cli.runSchedules(context.Background(), args)
+	}
+	return cli.runBacklog(context.Background(), args)
+}
+
+func cmdSchedules(g globalFlags, args []string) error {
+	if len(args) == 0 || isHelp(args[0]) {
+		fmt.Print(schedulesUsage)
+		return nil
+	}
+	cfg, err := loadConfig(g)
+	if err != nil {
+		return err
+	}
+	return runCoordinatorRead(cfg, args, true)
+}
+
 func cmdBacklog(g globalFlags, args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		fmt.Print(backlogUsage)
@@ -96,6 +147,9 @@ func cmdBacklog(g globalFlags, args []string) error {
 	cfg, err := loadConfig(g)
 	if err != nil {
 		return err
+	}
+	if isCoordinatorRead(args) {
+		return runCoordinatorRead(cfg, args, false)
 	}
 	dir, err := cfg.ResolveBacklogDir()
 	if err != nil {
@@ -220,30 +274,6 @@ func cmdBacklog(g globalFlags, args []string) error {
 					fmt.Fprintln(os.Stderr, "warning:", err)
 				}
 			}
-		}
-		return nil
-	case "show":
-		if len(args) != 2 {
-			return errors.New("show needs a task id")
-		}
-		path := filepath.Join(dir, args[1]+".md")
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("== %s\n%s\n", path, raw)
-		store, err := openStore()
-		if err != nil {
-			return err
-		}
-		defer store.Close()
-		states, err := loadStates(store)
-		if err != nil {
-			return err
-		}
-		if st, ok := states[args[1]]; ok {
-			js, _ := json.MarshalIndent(st, "", "  ")
-			fmt.Printf("== state\n%s\n", js)
 		}
 		return nil
 	case "retry", "cancel":

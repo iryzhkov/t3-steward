@@ -422,6 +422,8 @@ Each milestone should fit one unattended development session where practical. A 
   - [x] Implement immutable, revision-checked mutation commands, durable audit events, and asynchronous outcomes.
 - [ ] Refactor existing backlog CLI code away from direct database mutation.
 - [ ] Implement status, filters, DAG view, task detail, explanations, events, artifacts, controls, and schedule commands.
+  - [x] Add the read-only CLI adapter for coordinator status, filtered workflow lists, workflow/task/DAG detail, explanations, events, artifacts, command visibility, and schedule list/show/history.
+  - [ ] Add revision-fenced task controls, artifact retrieval, and schedule mutations.
 - [x] Include worker health, quota admission, reservations, locks, progress, and T3 links in the admin projections.
 - [x] Define versioned JSON data transfer objects suitable for the future dashboard.
 - [x] Test stale commands, asynchronous command outcomes, authorization seam, and JSON stability.

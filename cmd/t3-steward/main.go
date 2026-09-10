@@ -50,7 +50,8 @@ Commands:
   replay <file>      Feed recorded quota events through the policy engine (no T3 needed).
   report             Consumption by peak/off-peak hours, hour of day, model and thread.
   forecast           Interactive-demand map by weekday and hour, and current backlog headroom.
-  backlog            Manage the quota-gated task backlog (list, new, show, retry, cancel).
+  backlog            Inspect coordinator workflows and use legacy task-file helpers.
+  schedules          Inspect schedule definitions and trigger history.
   wait               Park a thread until a check succeeds; the steward wakes it (add, list, cancel).
   archive            Cold storage for finished threads (candidates, run, list, restore).
   export             Print this host's readings and token samples as JSON for another host's report.
@@ -142,6 +143,22 @@ func run(args []string) error {
 			sub = append(sub, rest[i])
 		}
 		return cmdBacklog(g, sub)
+	case "schedules":
+		paths, err := config.DefaultPaths()
+		if err != nil {
+			return err
+		}
+		g := globalFlags{configPath: paths.ConfigFile}
+		var sub []string
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == "--config" && i+1 < len(rest) {
+				g.configPath = rest[i+1]
+				i++
+				continue
+			}
+			sub = append(sub, rest[i])
+		}
+		return cmdSchedules(g, sub)
 	case "version", "--version", "-v":
 		fmt.Printf("t3-steward %s (commit %s, built %s, %s/%s, tested with T3 %s..%s)\n",
 			version, commit, date, runtime.GOOS, runtime.GOARCH, compat.MinServerVersion, compat.MaxServerVersion)
