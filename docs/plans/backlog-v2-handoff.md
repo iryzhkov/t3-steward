@@ -6,17 +6,20 @@ Updated: 2026-09-10
 
 - Repository: `/home/igor/Work/t3-steward`
 - Branch: `feature/backlog-orchestrator`
-- S12 starting commit: `8162756`
+- Selected stage: S13 — Release candidate and deployment readiness.
+- S13 starting commit: `57f0b32` (`57f0b3269d8341e52170675863fe663566e8bfd3`).
+- S13 exit gates: document configuration, manifests, operator recovery, backup, rollback, migration point-of-no-return, and deployment order; produce the release-candidate commit and deployment-readiness report with exact verification evidence and remaining operational risks; run all release gates; mark M9 and S13 complete; do not deploy; queue no successor; leave host-wide deployment for explicit user approval.
+- Required S13 verification: documentation/configuration consistency checks; focused compatibility, migration, fault-injection, no-duplicate-dispatch, throttle, admin, and end-to-end suites; `go test ./...`; `go build ./...`; `go vet ./...`; `go test -race ./...`; and `git diff --check`.
 - No install, deployment, live-service restart, live configuration/state mutation by development code, worker contact, push, or pull request is authorized.
-- The remaining chain follows the named S10–S13 checklist in `docs/plans/backlog-v2.md`.
-- A stage may use `BACKLOG STATUS: continue` to stay in its current T3 thread, but then queues no successor. A completed stage may queue exactly one successor and must end `BACKLOG STATUS: done`. These paths are mutually exclusive.
+- The S10–S13 serial checklist in `docs/plans/backlog-v2.md` is complete.
+- S13 is terminal: queue no successor. Host-wide deployment remains outside this chain and requires explicit user approval after the readiness blockers are resolved.
 
 ## Completed stage
 
-- Completed stage: S12 — End-to-end orchestration hardening.
-- Starting commit: `8162756`.
-- Exit gates: complete temporary/local workflow coverage for dependencies, artifacts, verification, pause, resume, retry, and recurring-trigger suppression; extended integration, migration, fault, no-duplicate-dispatch, and helper-format compatibility coverage; clean race suite without weakening fail-closed behavior; first three M9 items checked.
-- Required verification: focused S12 tests; repeated backlog, SQLite, and CLI package suites; `go test ./...`; `go build ./...`; `go vet ./...`; `go test -race ./...`; and `git diff --check`.
+- Completed stage: S13 — Release candidate and deployment readiness.
+- Starting commit: `57f0b32` (`57f0b3269d8341e52170675863fe663566e8bfd3`).
+- Exit gates satisfied: configuration, manifest, recovery, backup, rollback, migration point-of-no-return, and deployment-order documentation; checked example bundle; release-candidate readiness report with exact verification and risks; all release gates; M9 and S13 checklists complete; no deployment; no successor.
+- Release decision: backlog-v2 is a tested code release candidate but **NO-GO for host-wide deployment** until production configuration and authenticated coordinator/worker transport bindings are implemented and revalidated.
 
 ## Chain audit and correction
 
@@ -29,7 +32,7 @@ Updated: 2026-09-10
 
 ## Completed checkpoint
 
-- Completed M1 through M7 and the query/persistence portions of M8.
+- Completed M1 through M9 and named serial stages S10 through S13.
 - Completed S10 — Revision-fenced admin mutation CLI.
 - Replaced the legacy direct `retry`/`cancel` task-state writes with coordinator admin mutations. No `SaveTaskState` mutation remains in the backlog CLI.
 - Added `backlog start|delay|pause|resume|cancel|retry|skip <workflow-run>/<task>`.
@@ -53,16 +56,17 @@ Updated: 2026-09-10
 
 ## Verification
 
+- `go test ./internal/backlog -run TestDocumentedWorkflowBundleStaysValid -count=1`
 - `go test ./internal/backlog ./internal/store/sqlite -run 'TestBacklogV2EndToEndLocalWorkflowHardening|TestT3(Job|Backlog)|TestMigrationFromVersion(Nine|Five|One|Six|Eight)' -count=1 -v`
-- `go test ./internal/backlog ./internal/store/sqlite ./cmd/t3-steward -count=10`
-- `go test ./internal/backlog ./internal/store/sqlite -run 'Test(M5|FleetCoordinator.*(Lost|Replays)|ReconcileAssignmentDispatch|BundleIngesterRollsBack|CoordinatorArtifactPublicationReplayFencingAndPartialUpload|MigrationFromVersionNine|BacklogV2EndToEnd)' -count=20`
+- `go test ./internal/backlog ./internal/backlogadmin ./internal/store/sqlite ./cmd/t3-steward -count=10`
+- `go test ./internal/backlog ./internal/backlogadmin ./internal/store/sqlite -run 'Test(M5|FleetCoordinator.*(Lost|Replays)|ReconcileAssignmentDispatch|BundleIngesterRollsBack|CoordinatorArtifactPublicationReplayFencingAndPartialUpload|MigrationFromVersionNine|BacklogV2EndToEnd|ExecutePendingCommandsSurvivesRestartAndReplaysRetry|ExecutePendingStartReplansWhenHardQuotaClosesBeforeApply)' -count=20`
 - `go test ./...`
 - `go build ./...`
 - `go vet ./...`
 - `go test -race ./...`
 - `git diff --check`
 
-All commands passed. Tests opened only temporary databases and temporary artifact, bundle, and workspace roots.
+All commands passed on Normandy. Tests opened only temporary databases and temporary artifact, bundle, and workspace roots.
 
 ## S11 final checkpoint
 
@@ -100,13 +104,25 @@ All commands passed. Tests opened only temporary databases and temporary artifac
 - Focused fault-injection and idempotency coverage includes ingestion rollback, partial artifact publication, throttle races, lost worker-command responses, lost dispatch acknowledgements, deterministic thread identity recovery, migration replay, and duplicate schedule suppression. Repeated focused suites and the full race suite pass.
 - No development binary was installed, no daemon or live configuration was changed, no live state database was opened, and no worker or remote host was contacted.
 
+## S13 final checkpoint
+
+- S13 is complete in the release-candidate commit containing this handoff. M9 and the named S13 checklist entry are complete.
+- Added `docs/backlog-v2-operations.md` covering the exact shipped configuration boundary, version 2 manifests, routine administration, coordinator restart/lost-response recovery, pause/resume, schedule holds, artifact faults, coherent backup, rollback, the first-dispatch point-of-no-return, and an admission-closed deployment order.
+- Added a complete example bundle under `docs/examples/backlog-v2/` and a test that loads it through the strict production manifest parser, verifies its dependency/artifact contract, and checks inherited quota routing.
+- Corrected the README rollback guidance: deleting coordinator state is unsafe because it removes dispatch, schedule singleton, reservation, audit, and resume identity required to avoid duplicate execution.
+- Added `docs/plans/backlog-v2-deployment-readiness.md` with candidate contents, exact passing gates, retained risks, and an explicit NO-GO decision.
+- The release audit confirmed a material boundary: backlog-v2 fleet/project configuration, bundle submission, schedule definition, and authenticated coordinator/worker transport are not wired into the production executable. They are deployment blockers requiring separately authorized implementation and complete revalidation, not settings an operator may bypass.
+- No binary was installed, no service was restarted, no live configuration or state was changed or opened by development code, no worker or remote host was contacted, no workflow was dispatched, and nothing was pushed or deployed.
+
 ## Remaining risks
 
-- S12 validates orchestration through transport-neutral coordinator seams and local temporary storage. The coordinator/worker service loop still needs concrete production transport binding; no development code contacted workers or dispatched work.
+- Production fleet/project configuration loading and authenticated coordinator/worker transport are not wired; the readiness report classifies host-wide deployment as NO-GO.
+- Bundle submission and schedule-definition administration are not exposed through the production coordinator executable.
 - Native non-admin audit-event coverage remains incomplete; some read views remain deterministic reconstructions of current projections.
-- Configuration, operator recovery, backup/rollback, migration point-of-no-return, deployment order, release-candidate evidence, and the deployment-readiness report remain S13 scope.
+- SQLite plus coordinator artifacts are one backup unit. After the first candidate dispatch/resume, rollback requires explicit worker/T3 reconciliation.
+- Deterministic dispatch cannot make arbitrary external side effects exactly once; ambiguous executions remain fail closed and may require manual verification.
 - No development binary has been installed or run against the live coordinator state database.
 
-## Exact next stage
+## Chain complete
 
-S13 — Release candidate and deployment readiness. At successor start, use the S12 stage commit at `HEAD` as the starting commit and record S13's exit gates: document configuration, manifests, operator recovery, backup, rollback, migration point-of-no-return, and deployment order; produce the release-candidate commit and deployment-readiness report with exact verification evidence and remaining operational risks; run all release gates, mark M9 and S13 complete, do not deploy, queue no successor, and leave host-wide deployment for explicit user approval.
+S13/M9 is complete. Queue no successor. Preserve this release candidate without deployment. The production-binding blockers in `docs/plans/backlog-v2-deployment-readiness.md` require a separately authorized development effort and full revalidation; even after a future GO readiness decision, host-wide deployment requires explicit user approval.

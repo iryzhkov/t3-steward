@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Backlog-v2 release-candidate operations, manifest, recovery, coherent backup,
+  rollback, migration point-of-no-return, and deployment-order documentation.
+- A checked version 2 example workflow bundle and deployment-readiness report.
+
+### Changed
+
+- Clarify that the fleet coordinator remains a deployment NO-GO until production
+  configuration and coordinator/worker transport bindings are implemented.
+- Rollback guidance now preserves coordinator database and artifact consistency
+  instead of treating state deletion as a safe recovery path.
+
 ## [0.10.1] - 2026-09-08
 
 ### Fixed

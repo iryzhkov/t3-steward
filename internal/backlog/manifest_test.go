@@ -34,6 +34,28 @@ tasks:
 	}
 }
 
+func TestDocumentedWorkflowBundleStaysValid(t *testing.T) {
+	bundle := filepath.Join("..", "..", "docs", "examples", "backlog-v2")
+	manifest, err := LoadManifest(bundle)
+	if err != nil {
+		t.Fatalf("load documented workflow bundle: %v", err)
+	}
+	if manifest.Version != ManifestVersion || manifest.Name != "review-and-implement" {
+		t.Fatalf("documented manifest identity = %#v", manifest)
+	}
+	implement, ok := manifest.Tasks["implement"]
+	if !ok {
+		t.Fatal("documented manifest is missing implement task")
+	}
+	if !reflect.DeepEqual(implement.Needs, []string{"review"}) ||
+		!reflect.DeepEqual(implement.InputsFrom["review"], []string{"review.md"}) {
+		t.Fatalf("documented dependency contract = %#v", implement)
+	}
+	if len(implement.Routes) != 1 || implement.Routes[0].QuotaPool != "openai-main" {
+		t.Fatalf("documented route inheritance = %#v", implement.Routes)
+	}
+}
+
 func TestParseManifestEveryFieldAndInheritance(t *testing.T) {
 	manifest := mustParseManifest(t, `
 version: 2

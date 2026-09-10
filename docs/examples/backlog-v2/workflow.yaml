@@ -1,0 +1,46 @@
+version: 2
+name: review-and-implement
+class: required
+
+placement:
+  hosts: [normandy, homelab]
+  requires: [internet]
+
+environment:
+  project: t3-steward
+  type: git
+  scope: task
+  ref: main
+
+inputs:
+  - inputs/*.md
+
+routes:
+  - host: normandy
+    instance: codex
+    model: gpt-5.6-sol
+    options:
+      effort: high
+    quota_pool: openai-main
+
+tasks:
+  review:
+    prompt_file: prompts/review.md
+    outputs: [review.md]
+    verify:
+      - test -s review.md
+    importance: 4
+    difficulty: 2
+
+  implement:
+    prompt_file: prompts/implement.md
+    needs: [review]
+    inputs_from:
+      review: [review.md]
+    outputs: [verification.txt]
+    verify:
+      - go test ./...
+    resource_locks: [t3-steward-repository]
+    importance: 5
+    difficulty: 4
+    max_turns: 6

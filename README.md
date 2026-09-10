@@ -465,6 +465,13 @@ occurrences, `.` slots never observed.
 
 ### Backlog
 
+The shipped daemon runs the host-local Markdown backlog described below. The
+backlog-v2 fleet orchestrator is a tested release candidate but is not wired for
+production deployment; its configuration, manifest, recovery, and deployment
+boundary are documented in
+[Backlog-v2 operations](docs/backlog-v2-operations.md) and the
+[deployment-readiness report](docs/plans/backlog-v2-deployment-readiness.md).
+
 Enable the runner and drop markdown tasks into the backlog directory:
 
 ```yaml
@@ -679,11 +686,12 @@ the window is not in `ignore_windows`, and that dry-run is off.
    t3-steward.service` (or restart your foreground process).
 3. The state database migrates forward automatically.
 
-To roll back, put the previous binary back and restart. State written by a
-newer version is readable by older ones within the same minor series; if
-in doubt, stop the service, delete
-`~/.local/state/t3-steward/state.db`, and start again. You lose the
-audit log and pending resume intents, nothing else.
+To roll back the host-local watchdog, put the previous binary back and restart.
+State written by a newer version is readable by older ones within the same minor
+series. Backlog-v2 coordinator state is different: never delete its database as
+a rollback technique. Its database and retained artifacts form one recovery
+unit, and rollback after the first candidate dispatch requires worker/T3
+reconciliation. Follow [Backlog-v2 operations](docs/backlog-v2-operations.md).
 
 After a T3 upgrade, run `check`: it reports whether the new server version
 is in the tested range.
@@ -694,4 +702,6 @@ is in the tested range.
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Security: [SECURITY.md](SECURITY.md)
 - Protocol notes: [docs/t3-protocol.md](docs/t3-protocol.md)
+- Backlog-v2 operations: [docs/backlog-v2-operations.md](docs/backlog-v2-operations.md)
+- Backlog-v2 readiness: [docs/plans/backlog-v2-deployment-readiness.md](docs/plans/backlog-v2-deployment-readiness.md)
 - License: [MIT](LICENSE)

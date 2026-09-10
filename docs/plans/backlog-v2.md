@@ -437,9 +437,9 @@ Each milestone should fit one unattended development session where practical. A 
 - [x] Run full unit, integration, race, migration, and fault-injection suites.
 - [x] Exercise a complete local workflow with dependencies, artifacts, verification, pause, resume, retry, and a suppressed recurring trigger.
 - [x] Test compatibility with existing `t3-backlog` and `t3-job` submission formats.
-- [ ] Document configuration, manifests, operator recovery, backup, rollback, and deployment order.
-- [ ] Produce a release-candidate commit and a deployment-readiness report.
-- [ ] Do not deploy. Stop and wait for explicit user approval.
+- [x] Document configuration, manifests, operator recovery, backup, rollback, and deployment order.
+- [x] Produce a release-candidate commit and a deployment-readiness report.
+- [x] Do not deploy. Stop and wait for explicit user approval.
 
 ## Remaining serial stage checklist
 
@@ -461,7 +461,7 @@ This checklist is the authority for the rest of the implementation chain. A chai
   - Run and extend unit, integration, migration, fault-injection, no-duplicate dispatch, and compatibility suites.
   - Run the race suite and resolve all failures without weakening fail-closed behavior.
   - Complete the first three M9 checklist items.
-- [ ] S13 — Release candidate and deployment readiness
+- [x] S13 — Release candidate and deployment readiness
   - Document configuration, manifests, operator recovery, backup, rollback, migration point-of-no-return, and deployment order.
   - Produce the release-candidate commit and deployment-readiness report with exact verification evidence and remaining operational risks.
   - Run all release gates, mark M9 complete, do not deploy, and queue no successor.
