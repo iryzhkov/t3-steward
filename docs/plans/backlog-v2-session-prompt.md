@@ -19,7 +19,6 @@ t3-backlog \
   --model gpt-5.6-sol \
   --instance codex \
   --max-turns 6 \
-  --host normandy \
   < docs/plans/backlog-v2-session-prompt.md
 ```
 
