@@ -191,18 +191,22 @@ const (
 
 // Assignment commits one attempt to a worker and provider route.
 type Assignment struct {
-	ID             string          `json:"id"`
-	AttemptID      string          `json:"attemptId"`
-	WorkerID       string          `json:"workerId"`
-	Route          ProviderRoute   `json:"route"`
-	State          AssignmentState `json:"state"`
-	Epoch          int64           `json:"epoch"`
-	LeaseToken     string          `json:"leaseToken"`
-	LeaseExpiresAt time.Time       `json:"leaseExpiresAt"`
-	DispatchToken  string          `json:"dispatchToken"`
-	ThreadID       string          `json:"threadId,omitempty"`
-	CreatedAt      time.Time       `json:"createdAt"`
-	UpdatedAt      time.Time       `json:"updatedAt"`
+	ID                  string          `json:"id"`
+	AttemptID           string          `json:"attemptId"`
+	WorkerID            string          `json:"workerId"`
+	Route               ProviderRoute   `json:"route"`
+	State               AssignmentState `json:"state"`
+	Epoch               int64           `json:"epoch"`
+	LeaseToken          string          `json:"leaseToken"`
+	LeaseExpiresAt      time.Time       `json:"leaseExpiresAt"`
+	DispatchToken       string          `json:"dispatchToken"`
+	ThreadID            string          `json:"threadId,omitempty"`
+	DispatchState       DispatchState   `json:"dispatchState,omitempty"`
+	DispatchRevision    int64           `json:"dispatchRevision,omitempty"`
+	DispatchConfirmedAt *time.Time      `json:"dispatchConfirmedAt,omitempty"`
+	DispatchError       string          `json:"dispatchError,omitempty"`
+	CreatedAt           time.Time       `json:"createdAt"`
+	UpdatedAt           time.Time       `json:"updatedAt"`
 }
 
 // Schedule overlap, misfire, and failure policies.

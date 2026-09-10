@@ -6,6 +6,7 @@ package t3
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -303,6 +304,7 @@ func (c *Control) ListProjects(ctx context.Context) ([]Project, error) {
 // NewThreadInput describes a thread to create and start.
 type NewThreadInput struct {
 	ThreadID        string
+	DispatchToken   string
 	ProjectID       string
 	Title           string
 	ModelSelection  map[string]any
@@ -329,6 +331,14 @@ func (c *Control) CreateAndStartThread(ctx context.Context, in NewThreadInput) (
 	if in.InteractionMode == "" {
 		in.InteractionMode = "default"
 	}
+	createCommandID := newID()
+	turnCommandID := newID()
+	messageID := newID()
+	if in.DispatchToken != "" {
+		createCommandID = deterministicID(in.DispatchToken, "thread.create")
+		turnCommandID = deterministicID(in.DispatchToken, "thread.turn.start")
+		messageID = deterministicID(in.DispatchToken, "message")
+	}
 	var branch any
 	if in.Branch != "" {
 		branch = in.Branch
@@ -339,7 +349,7 @@ func (c *Control) CreateAndStartThread(ctx context.Context, in NewThreadInput) (
 	}
 	create := map[string]any{
 		"type":            "thread.create",
-		"commandId":       newID(),
+		"commandId":       createCommandID,
 		"threadId":        threadID,
 		"projectId":       in.ProjectID,
 		"title":           in.Title,
@@ -352,10 +362,10 @@ func (c *Control) CreateAndStartThread(ctx context.Context, in NewThreadInput) (
 	}
 	turn := map[string]any{
 		"type":      "thread.turn.start",
-		"commandId": newID(),
+		"commandId": turnCommandID,
 		"threadId":  threadID,
 		"message": map[string]any{
-			"messageId":   newID(),
+			"messageId":   messageID,
 			"role":        "user",
 			"text":        in.Prompt,
 			"attachments": []any{},
@@ -451,4 +461,15 @@ func newID() string {
 	b[8] = (b[8] & 0x3f) | 0x80
 	h := hex.EncodeToString(b[:])
 	return strings.Join([]string{h[0:8], h[8:12], h[12:16], h[16:20], h[20:32]}, "-")
+}
+
+func deterministicID(token, purpose string) string {
+	sum := sha256.Sum256([]byte(token + "\x00" + purpose))
+	bytes := sum[:16]
+	bytes[6] = (bytes[6] & 0x0f) | 0x50
+	bytes[8] = (bytes[8] & 0x3f) | 0x80
+	hexValue := hex.EncodeToString(bytes)
+	return strings.Join([]string{
+		hexValue[0:8], hexValue[8:12], hexValue[12:16], hexValue[16:20], hexValue[20:32],
+	}, "-")
 }

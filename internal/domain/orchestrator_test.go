@@ -107,7 +107,8 @@ func TestOrchestratorDomainJSONRoundTrip(t *testing.T) {
 		Assignment: Assignment{
 			ID: "assignment-1", AttemptID: "attempt-1", WorkerID: "normandy", Route: route,
 			State: AssignmentClaimed, Epoch: 7, LeaseToken: "lease-1", LeaseExpiresAt: later,
-			DispatchToken: "dispatch-1", ThreadID: "thread-1", CreatedAt: now, UpdatedAt: later,
+			DispatchToken: "dispatch-1", ThreadID: "thread-1", DispatchState: DispatchConfirmed,
+			DispatchRevision: 2, DispatchConfirmedAt: &now, CreatedAt: now, UpdatedAt: later,
 		},
 		Schedule: Schedule{
 			ID: "schedule-1", Name: "nightly", Version: 4, WorkflowID: "workflow-1",

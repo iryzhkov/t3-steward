@@ -219,6 +219,48 @@ func TestCreateThreadWithoutWorkspaceSerializesNullFields(t *testing.T) {
 	}
 }
 
+func TestCreateAndStartThreadUsesDeterministicDispatchToken(t *testing.T) {
+	recorder := &dispatchRecorder{}
+	server := httptest.NewServer(recorder)
+	defer server.Close()
+	control := New(
+		t3api.New(server.URL, t3api.StaticToken("test-token"), time.Second),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		false,
+	)
+	input := NewThreadInput{
+		ThreadID:      "3124c35e-1551-5d86-b45a-9f859871881b",
+		DispatchToken: "dispatch-1",
+		ProjectID:     "project-1",
+		Title:         "deterministic dispatch",
+		Prompt:        "continue",
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := control.CreateAndStartThread(context.Background(), input); err != nil {
+			t.Fatalf("dispatch attempt %d: %v", attempt+1, err)
+		}
+	}
+	commands := recorder.snapshot()
+	if len(commands) != 4 {
+		t.Fatalf("recorded %d commands, want 4", len(commands))
+	}
+	if commands[0]["commandId"] != commands[2]["commandId"] ||
+		commands[1]["commandId"] != commands[3]["commandId"] {
+		t.Fatalf("dispatch command IDs changed across retry: %#v", commands)
+	}
+	firstMessage := commands[1]["message"].(map[string]any)
+	secondMessage := commands[3]["message"].(map[string]any)
+	if firstMessage["messageId"] != secondMessage["messageId"] {
+		t.Fatalf("dispatch message ID changed across retry: %v != %v",
+			firstMessage["messageId"], secondMessage["messageId"])
+	}
+	if commands[0]["commandId"] == commands[1]["commandId"] ||
+		commands[0]["commandId"] == firstMessage["messageId"] ||
+		commands[1]["commandId"] == firstMessage["messageId"] {
+		t.Fatal("dispatch token did not derive purpose-specific IDs")
+	}
+}
+
 func assertCommandField(t *testing.T, command map[string]any, key string, want any) {
 	t.Helper()
 	if got := command[key]; got != want {

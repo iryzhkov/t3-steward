@@ -135,6 +135,8 @@ func TestMigrationFromVersionOnePreservesState(t *testing.T) {
 		name  string
 	}{
 		{table: "coordinator_attempts", name: "revision"},
+		{table: "coordinator_assignments", name: "dispatch_revision"},
+		{table: "coordinator_assignments", name: "dispatch_state"},
 		{table: "coordinator_schedules", name: "current_version"},
 		{table: "coordinator_triggers", name: "schedule_version"},
 	} {
@@ -214,11 +216,14 @@ func TestMigrationFromVersionFiveAddsScheduleHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, stmt := range []string{
+		`DROP INDEX coordinator_assignments_dispatch`,
+		`ALTER TABLE coordinator_assignments DROP COLUMN dispatch_state`,
+		`ALTER TABLE coordinator_assignments DROP COLUMN dispatch_revision`,
 		`DROP INDEX coordinator_triggers_schedule_version`,
 		`DROP TABLE coordinator_schedule_templates`,
 		`ALTER TABLE coordinator_triggers DROP COLUMN schedule_version`,
 		`ALTER TABLE coordinator_schedules DROP COLUMN current_version`,
-		`DELETE FROM schema_version WHERE version = 6`,
+		`DELETE FROM schema_version WHERE version >= 6`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("restore version 5 schema: %v", err)
@@ -321,6 +326,7 @@ func coordinatorFixture() CoordinatorRecords {
 			ID: "assignment-1", AttemptID: "attempt-1", WorkerID: "normandy", Route: route,
 			State: domain.AssignmentClaimed, Epoch: 7, LeaseToken: "lease-1",
 			LeaseExpiresAt: later, DispatchToken: "dispatch-1", ThreadID: "thread-1",
+			DispatchState: domain.DispatchConfirmed, DispatchRevision: 2, DispatchConfirmedAt: &now,
 			CreatedAt: now, UpdatedAt: later,
 		}},
 		Schedules: []domain.Schedule{{
