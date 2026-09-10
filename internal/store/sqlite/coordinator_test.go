@@ -296,6 +296,75 @@ func TestMigrationFromVersionFiveAddsScheduleHistory(t *testing.T) {
 	}
 }
 
+func TestMigrationFromVersionNineBackfillsAdminCommandAuditHistory(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := adminCommandAttempt(7)
+	pending := adminCommand("legacy-pending", attempt.Revision)
+	applied := adminCommand("legacy-applied", attempt.Revision)
+	applied.State = domain.AdminCommandApplied
+	appliedAt := adminCommandTestTime.Add(time.Minute)
+	applied.AppliedAt = &appliedAt
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{
+		Attempts: []domain.Attempt{attempt}, AdminCommands: []domain.AdminCommand{pending, applied},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`DROP TABLE coordinator_audit_events`,
+		`DELETE FROM schema_version WHERE version >= 10`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("restore version 9 schema: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(path)
+	if err != nil {
+		t.Fatalf("migrate version 9 database: %v", err)
+	}
+	defer store.Close()
+	replayed, err := store.SubmitAdminCommand(ctx, pending)
+	if err != nil {
+		t.Fatalf("replay migrated pending command: %v", err)
+	}
+	if replayed.Command.ID != pending.ID || replayed.Event.ID != adminSubmissionEventID(pending.ID) {
+		t.Fatalf("pending replay = %#v", replayed)
+	}
+	outcome, err := store.CompleteAdminCommand(ctx, domain.AdminCommandOutcome{
+		CommandID: applied.ID, ExpectedState: domain.AdminCommandPending,
+		State: domain.AdminCommandApplied, AppliedAt: appliedAt,
+	})
+	if err != nil {
+		t.Fatalf("replay migrated terminal outcome: %v", err)
+	}
+	if outcome.Command.ID != applied.ID || outcome.Event.ID != adminOutcomeEventID(applied.ID) {
+		t.Fatalf("terminal replay = %#v", outcome)
+	}
+	events, err := store.LoadAuditEvents(ctx, attempt.WorkflowRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("backfilled audit events = %#v, want two submissions and one outcome", events)
+	}
+}
+
 func coordinatorFixture() CoordinatorRecords {
 	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 	later := now.Add(time.Hour)

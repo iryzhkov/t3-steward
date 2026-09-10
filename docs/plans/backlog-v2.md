@@ -434,9 +434,9 @@ Each milestone should fit one unattended development session where practical. A 
 
 ### M9. End-to-end hardening and release candidate
 
-- [ ] Run full unit, integration, race, migration, and fault-injection suites.
-- [ ] Exercise a complete local workflow with dependencies, artifacts, verification, pause, resume, retry, and a suppressed recurring trigger.
-- [ ] Test compatibility with existing `t3-backlog` and `t3-job` submission formats.
+- [x] Run full unit, integration, race, migration, and fault-injection suites.
+- [x] Exercise a complete local workflow with dependencies, artifacts, verification, pause, resume, retry, and a suppressed recurring trigger.
+- [x] Test compatibility with existing `t3-backlog` and `t3-job` submission formats.
 - [ ] Document configuration, manifests, operator recovery, backup, rollback, and deployment order.
 - [ ] Produce a release-candidate commit and a deployment-readiness report.
 - [ ] Do not deploy. Stop and wait for explicit user approval.
@@ -456,7 +456,7 @@ This checklist is the authority for the rest of the implementation chain. A chai
   - Execute manual schedule runs through the existing transactional trigger path and retain occurrence/open-run idempotency.
   - Add coordinator-owned artifact retrieval with checksum verification and safe text/download behavior.
   - Complete both remaining M8 checklist items and run focused persistence, restart, replay, stale-command, invalid-transition, quota-closure, CLI, artifact, and M8 full gates.
-- [ ] S12 — End-to-end orchestration hardening
+- [x] S12 — End-to-end orchestration hardening
   - Exercise a complete temporary/local workflow with dependencies, artifacts, verification, pause, resume, retry, and a suppressed recurring trigger.
   - Run and extend unit, integration, migration, fault-injection, no-duplicate dispatch, and compatibility suites.
   - Run the race suite and resolve all failures without weakening fail-closed behavior.

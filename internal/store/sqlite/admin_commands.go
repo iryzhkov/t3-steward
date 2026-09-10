@@ -31,6 +31,83 @@ CREATE INDEX coordinator_audit_events_run_sequence
 	ON coordinator_audit_events(workflow_run_id, sequence);
 CREATE INDEX coordinator_audit_events_target_sequence
 	ON coordinator_audit_events(target_type, target_id, sequence);
+
+-- Admin commands predate the audit-event table. Backfill enough immutable
+-- history to preserve command replay and outcome replay across the migration.
+INSERT INTO coordinator_audit_events(
+	id, kind, workflow_run_id, task_id, attempt_id,
+	target_type, target_id, created_at, record
+)
+SELECT
+	'admin-command:' || command.id || ':submission',
+	CASE WHEN command.state = 'rejected' THEN 'admin-command-rejected'
+		ELSE 'admin-command-submitted' END,
+	COALESCE(json_extract(attempt.record, '$.workflowRunId'), ''),
+	COALESCE(json_extract(attempt.record, '$.taskId'), ''),
+	CASE WHEN command.target_type = 'attempt' THEN command.target_id ELSE '' END,
+	command.target_type,
+	command.target_id,
+	json_extract(command.record, '$.createdAt'),
+	json_object(
+		'id', 'admin-command:' || command.id || ':submission',
+		'sequence', 0,
+		'kind', CASE WHEN command.state = 'rejected' THEN 'admin-command-rejected'
+			ELSE 'admin-command-submitted' END,
+		'workflowRunId', COALESCE(json_extract(attempt.record, '$.workflowRunId'), ''),
+		'taskId', COALESCE(json_extract(attempt.record, '$.taskId'), ''),
+		'attemptId', CASE WHEN command.target_type = 'attempt' THEN command.target_id ELSE '' END,
+		'targetType', command.target_type,
+		'targetId', command.target_id,
+		'actor', COALESCE(json_extract(command.record, '$.requestedBy'), ''),
+		'reason', COALESCE(json_extract(command.record, '$.reason'), ''),
+		'detail', json_object(
+			'commandKind', json_extract(command.record, '$.kind'),
+			'state', command.state,
+			'expectedRevision', json_extract(command.record, '$.expectedRevision'),
+			'failure', COALESCE(json_extract(command.record, '$.failure'), '')
+		),
+		'createdAt', json_extract(command.record, '$.createdAt')
+	)
+FROM coordinator_admin_commands AS command
+LEFT JOIN coordinator_attempts AS attempt
+	ON command.target_type = 'attempt' AND attempt.id = command.target_id;
+
+INSERT INTO coordinator_audit_events(
+	id, kind, workflow_run_id, task_id, attempt_id,
+	target_type, target_id, created_at, record
+)
+SELECT
+	'admin-command:' || command.id || ':outcome',
+	'admin-command-' || command.state,
+	COALESCE(json_extract(attempt.record, '$.workflowRunId'), ''),
+	COALESCE(json_extract(attempt.record, '$.taskId'), ''),
+	CASE WHEN command.target_type = 'attempt' THEN command.target_id ELSE '' END,
+	command.target_type,
+	command.target_id,
+	json_extract(command.record, '$.appliedAt'),
+	json_object(
+		'id', 'admin-command:' || command.id || ':outcome',
+		'sequence', 0,
+		'kind', 'admin-command-' || command.state,
+		'workflowRunId', COALESCE(json_extract(attempt.record, '$.workflowRunId'), ''),
+		'taskId', COALESCE(json_extract(attempt.record, '$.taskId'), ''),
+		'attemptId', CASE WHEN command.target_type = 'attempt' THEN command.target_id ELSE '' END,
+		'targetType', command.target_type,
+		'targetId', command.target_id,
+		'actor', 'coordinator',
+		'reason', COALESCE(json_extract(command.record, '$.reason'), ''),
+		'detail', json_object(
+			'commandKind', json_extract(command.record, '$.kind'),
+			'state', command.state,
+			'expectedRevision', json_extract(command.record, '$.expectedRevision'),
+			'failure', COALESCE(json_extract(command.record, '$.failure'), '')
+		),
+		'createdAt', json_extract(command.record, '$.appliedAt')
+	)
+FROM coordinator_admin_commands AS command
+LEFT JOIN coordinator_attempts AS attempt
+	ON command.target_type = 'attempt' AND attempt.id = command.target_id
+WHERE command.state != 'pending' AND json_extract(command.record, '$.appliedAt') IS NOT NULL;
 `
 
 var (

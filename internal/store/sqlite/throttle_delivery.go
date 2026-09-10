@@ -175,6 +175,9 @@ func syncThrottleAttemptControlTx(
 
 	expectedRevision := attempt.Revision
 	attempt.Control = transition.Record.Control
+	if transition.Record.Checkpoint != nil {
+		attempt.CheckpointArtifactID = transition.Record.Checkpoint.ArtifactID
+	}
 	attempt.Revision++
 	attempt.UpdatedAt = transition.Record.UpdatedAt
 	if err := updateAdminAttemptTx(ctx, tx, attempt, expectedRevision); err != nil {

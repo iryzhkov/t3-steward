@@ -70,6 +70,32 @@ func TestT3BacklogSubmissionFixtures(t *testing.T) {
 	})
 }
 
+func TestT3JobEnqueueSubmissionFixture(t *testing.T) {
+	got, err := ParseWorkflowFile("testdata/t3-job-enqueue.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := got.Source
+	if source.Project != "nightly maintenance" || source.Title != "Scheduled review" ||
+		source.Importance != 4 || source.Difficulty != 2 || source.MaxTurns != 5 ||
+		source.Model != "claude-opus-5" || source.Instance != "claudeAgent" ||
+		source.Host != "normandy" || source.Options["effort"] != "high" ||
+		source.Options["contextWindow"] != "1m" || source.NotBefore == nil || source.Deadline == nil {
+		t.Fatalf("t3-job source = %+v", source)
+	}
+	if source.Gated() != true || got.Workflow.Version != 1 ||
+		got.Workflow.Class != domain.TaskClassSurplus ||
+		got.Attempt.Progress != domain.ProgressReady ||
+		!reflect.DeepEqual(got.Task.Placement.Hosts, []string{"normandy"}) {
+		t.Fatalf("t3-job workflow adaptation = %+v", got)
+	}
+	if got.Task.Routes[0].ProviderInstanceID != "claudeAgent" ||
+		got.Task.Routes[0].Model != "claude-opus-5" ||
+		got.Task.Routes[0].Options["contextWindow"] != "1m" {
+		t.Fatalf("t3-job route = %+v", got.Task.Routes)
+	}
+}
+
 func TestLegacyWorkflowIdentityTracksContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "compat.md")
 	raw := []byte("---\nproject: p\n---\n# Derived title\n")

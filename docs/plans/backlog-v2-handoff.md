@@ -6,17 +6,17 @@ Updated: 2026-09-10
 
 - Repository: `/home/igor/Work/t3-steward`
 - Branch: `feature/backlog-orchestrator`
-- S10 starting commit: `4f83df0`
+- S12 starting commit: `8162756`
 - No install, deployment, live-service restart, live configuration/state mutation by development code, worker contact, push, or pull request is authorized.
 - The remaining chain follows the named S10–S13 checklist in `docs/plans/backlog-v2.md`.
 - A stage may use `BACKLOG STATUS: continue` to stay in its current T3 thread, but then queues no successor. A completed stage may queue exactly one successor and must end `BACKLOG STATUS: done`. These paths are mutually exclusive.
 
 ## Completed stage
 
-- Completed stage: S11 — Admin command execution and artifact retrieval.
-- Starting commit: `7fdbde1`.
-- Exit gates: deterministic pending task/schedule command execution; atomic revision-fenced transitions, outcomes, and audit events; dependency, resource-lock, worker-health, and hard quota-admission rechecks; command-derived idempotent manual schedule triggers; coordinator-owned checksum-verified artifact retrieval with safe text/stdout and file-download behavior; all remaining M8 items checked.
-- Required verification: focused persistence/restart/replay/stale-command/invalid-transition/quota-closure/CLI/artifact tests; `go test ./cmd/t3-steward ./internal/backlogadmin ./internal/store/sqlite ./internal/backlog -count=1`; `go test ./...`; `go build ./...`; `go vet ./...`; and `git diff --check`.
+- Completed stage: S12 — End-to-end orchestration hardening.
+- Starting commit: `8162756`.
+- Exit gates: complete temporary/local workflow coverage for dependencies, artifacts, verification, pause, resume, retry, and recurring-trigger suppression; extended integration, migration, fault, no-duplicate-dispatch, and helper-format compatibility coverage; clean race suite without weakening fail-closed behavior; first three M9 items checked.
+- Required verification: focused S12 tests; repeated backlog, SQLite, and CLI package suites; `go test ./...`; `go build ./...`; `go vet ./...`; `go test -race ./...`; and `git diff --check`.
 
 ## Chain audit and correction
 
@@ -53,16 +53,16 @@ Updated: 2026-09-10
 
 ## Verification
 
-- Baseline: `go test ./...`
-- `go test ./cmd/t3-steward -count=1 -v`
-- `go test ./cmd/t3-steward ./internal/backlogadmin ./internal/store/sqlite -count=1 -v`
-- `go test ./cmd/t3-steward -count=20`
+- `go test ./internal/backlog ./internal/store/sqlite -run 'TestBacklogV2EndToEndLocalWorkflowHardening|TestT3(Job|Backlog)|TestMigrationFromVersion(Nine|Five|One|Six|Eight)' -count=1 -v`
+- `go test ./internal/backlog ./internal/store/sqlite ./cmd/t3-steward -count=10`
+- `go test ./internal/backlog ./internal/store/sqlite -run 'Test(M5|FleetCoordinator.*(Lost|Replays)|ReconcileAssignmentDispatch|BundleIngesterRollsBack|CoordinatorArtifactPublicationReplayFencingAndPartialUpload|MigrationFromVersionNine|BacklogV2EndToEnd)' -count=20`
 - `go test ./...`
 - `go build ./...`
 - `go vet ./...`
+- `go test -race ./...`
 - `git diff --check`
 
-All final commands passed. One mistyped exploratory command used an invalid `-countlf` test flag; it changed no files or state and was immediately replaced by the successful `-count=20` run above.
+All commands passed. Tests opened only temporary databases and temporary artifact, bundle, and workspace roots.
 
 ## S11 final checkpoint
 
@@ -89,13 +89,24 @@ All final commands passed. One mistyped exploratory command used an invalid `-co
   - `git diff --check`
 - S11 exit gates are satisfied and M8 lines 424, 426, and 428 are complete. The complete-diff, runtime-wiring, persistence-race, artifact-path/stream, replay-recovery, cross-record revision, elapsed-freshness, and artifact-directory-race audits are finished; their seven findings are resolved with regressions. Replay recovery is verified against the CLI integration test, the focused S11 and artifact suites passed ten consecutive runs, and all full/static/race gates pass from the final code.
 
+## S12 final checkpoint
+
+- S12 is complete in the stage commit containing this handoff. The first three M9 items and the named S12 checklist entry are checked; S13 documentation and release-candidate work remain intentionally untouched.
+- Added a complete temporary/local workflow hardening test backed by a real temporary SQLite coordinator store. It ingests a version 2 bundle, enforces dependency readiness, captures and checksum-verifies a declared output, materializes it for a successor, exercises a verification failure and retry, persists pause/checkpoint state, restarts the coordinator store, resumes only under recovering quota admission, completes verification, and records an accepted then overlap-suppressed recurring trigger.
+- Added an exact fixture for the currently installed `t3-job enqueue` Markdown format alongside the existing `t3-backlog` fixtures, including route options, host, timing, and one-task workflow adaptation.
+- The migration audit found that v10 created the audit-event table without backfilling admin commands persisted by older schemas. Exact command replay and terminal outcome replay therefore failed after migration because their immutable audit events were absent.
+- Migration v10 now backfills deterministic submission events for all pre-existing admin commands and outcome events for terminal commands, including attempt workflow/task context. A version-9 migration regression proves both pending-command replay and terminal-outcome replay after restart.
+- The end-to-end pause assertion found that SQLite projected checkpoint acknowledgement control but omitted the canonical attempt's checkpoint artifact ID. Throttle transition synchronization now projects the acknowledged checkpoint ID atomically and retains it through resume.
+- Focused fault-injection and idempotency coverage includes ingestion rollback, partial artifact publication, throttle races, lost worker-command responses, lost dispatch acknowledgements, deterministic thread identity recovery, migration replay, and duplicate schedule suppression. Repeated focused suites and the full race suite pass.
+- No development binary was installed, no daemon or live configuration was changed, no live state database was opened, and no worker or remote host was contacted.
+
 ## Remaining risks
 
-- S11 is complete. Canonical provider-route/pool resolution, apply-time fingerprint and observation-expiry fencing, durable acknowledgement-driven admin pause delivery, store-owned execution-identity verification, duplicate-pause rejection, durable schedule-policy race outcomes, Unicode terminal-control safety, symlink and directory-swap-resistant artifact output, and multi-record revision rollback are covered.
-- Non-admin operations do not yet append native audit events; some read views remain deterministic reconstructions of current projections.
-- The coordinator/worker service loop still needs concrete transport binding. No development code has contacted workers or dispatched work.
+- S12 validates orchestration through transport-neutral coordinator seams and local temporary storage. The coordinator/worker service loop still needs concrete production transport binding; no development code contacted workers or dispatched work.
+- Native non-admin audit-event coverage remains incomplete; some read views remain deterministic reconstructions of current projections.
+- Configuration, operator recovery, backup/rollback, migration point-of-no-return, deployment order, release-candidate evidence, and the deployment-readiness report remain S13 scope.
 - No development binary has been installed or run against the live coordinator state database.
 
 ## Exact next stage
 
-S12 — End-to-end orchestration hardening. At successor start, use the S11 stage commit at `HEAD` as the starting commit and record S12's exit gates: exercise a complete temporary/local workflow with dependencies, artifacts, verification, pause, resume, retry, and a suppressed recurring trigger; extend unit, integration, migration, fault-injection, no-duplicate-dispatch, and compatibility coverage; run and resolve the race suite without weakening fail-closed behavior; and complete the first three M9 checklist items. The completing S11 thread queues exactly one ungated S12 successor and makes no S12 changes.
+S13 — Release candidate and deployment readiness. At successor start, use the S12 stage commit at `HEAD` as the starting commit and record S13's exit gates: document configuration, manifests, operator recovery, backup, rollback, migration point-of-no-return, and deployment order; produce the release-candidate commit and deployment-readiness report with exact verification evidence and remaining operational risks; run all release gates, mark M9 and S13 complete, do not deploy, queue no successor, and leave host-wide deployment for explicit user approval.
