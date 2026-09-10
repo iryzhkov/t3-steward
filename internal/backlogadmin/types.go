@@ -26,6 +26,7 @@ const (
 	QueryQuota        QueryKind = "quota"
 	QueryReservations QueryKind = "reservations"
 	QueryLocks        QueryKind = "locks"
+	QueryCommands     QueryKind = "commands"
 )
 
 type Principal struct {
@@ -49,14 +50,19 @@ type Query struct {
 	WorkflowRunID string    `json:"workflowRunId,omitempty"`
 	TaskID        string    `json:"taskId,omitempty"`
 	ArtifactID    string    `json:"artifactId,omitempty"`
+	CommandID     string    `json:"commandId,omitempty"`
 	Filter        Filter    `json:"filter,omitempty"`
 }
 
 type Action struct {
 	Kind          QueryKind
+	CommandKind   domain.AdminCommandKind
 	WorkflowRunID string
 	TaskID        string
+	ScheduleID    string
 	ArtifactID    string
+	CommandID     string
+	OutcomeState  domain.AdminCommandState
 	Filter        Filter
 }
 
@@ -78,6 +84,7 @@ type Response struct {
 	Quotas        []Quota           `json:"quotas,omitempty"`
 	Reservations  []Reservation     `json:"reservations,omitempty"`
 	ResourceLocks []ResourceLock    `json:"resourceLocks,omitempty"`
+	Commands      []Command         `json:"commands,omitempty"`
 }
 
 type Status struct {
@@ -184,13 +191,18 @@ type Explanation struct {
 }
 
 type Event struct {
-	ID            string          `json:"id"`
-	WorkflowRunID string          `json:"workflowRunId"`
-	TaskID        string          `json:"taskId,omitempty"`
-	AttemptID     string          `json:"attemptId,omitempty"`
-	Kind          string          `json:"kind"`
-	At            time.Time       `json:"at"`
-	Detail        json.RawMessage `json:"detail,omitempty"`
+	ID            string                 `json:"id"`
+	Sequence      int64                  `json:"sequence,omitempty"`
+	WorkflowRunID string                 `json:"workflowRunId"`
+	TaskID        string                 `json:"taskId,omitempty"`
+	AttemptID     string                 `json:"attemptId,omitempty"`
+	Kind          string                 `json:"kind"`
+	TargetType    domain.AdminTargetType `json:"targetType,omitempty"`
+	TargetID      string                 `json:"targetId,omitempty"`
+	Actor         string                 `json:"actor,omitempty"`
+	Reason        string                 `json:"reason,omitempty"`
+	At            time.Time              `json:"at"`
+	Detail        json.RawMessage        `json:"detail,omitempty"`
 }
 
 type Artifact struct {
@@ -242,4 +254,48 @@ type ResourceLock struct {
 	Name             string   `json:"name"`
 	OwnerAttemptID   string   `json:"ownerAttemptId,omitempty"`
 	WaiterAttemptIDs []string `json:"waiterAttemptIds,omitempty"`
+}
+
+type Command struct {
+	ID               string                   `json:"id"`
+	Kind             domain.AdminCommandKind  `json:"kind"`
+	TargetType       domain.AdminTargetType   `json:"targetType"`
+	TargetID         string                   `json:"targetId"`
+	ExpectedRevision int64                    `json:"expectedRevision"`
+	Reason           string                   `json:"reason"`
+	RequestedBy      string                   `json:"requestedBy"`
+	Payload          json.RawMessage          `json:"payload,omitempty"`
+	State            domain.AdminCommandState `json:"state"`
+	Failure          string                   `json:"failure,omitempty"`
+	CreatedAt        time.Time                `json:"createdAt"`
+	AppliedAt        *time.Time               `json:"appliedAt,omitempty"`
+}
+
+type Mutation struct {
+	Version          string                  `json:"version"`
+	Principal        Principal               `json:"principal"`
+	ID               string                  `json:"id"`
+	Kind             domain.AdminCommandKind `json:"kind"`
+	WorkflowRunID    string                  `json:"workflowRunId,omitempty"`
+	TaskID           string                  `json:"taskId,omitempty"`
+	ScheduleID       string                  `json:"scheduleId,omitempty"`
+	ExpectedRevision int64                   `json:"expectedRevision"`
+	Reason           string                  `json:"reason"`
+	Payload          json.RawMessage         `json:"payload,omitempty"`
+}
+
+type MutationResponse struct {
+	Version       string                      `json:"version"`
+	Command       Command                     `json:"command"`
+	Event         Event                       `json:"event"`
+	CurrentTarget *domain.AdminTargetSnapshot `json:"currentTarget,omitempty"`
+}
+
+type CommandOutcome struct {
+	Version       string                   `json:"version"`
+	Principal     Principal                `json:"principal"`
+	CommandID     string                   `json:"commandId"`
+	ExpectedState domain.AdminCommandState `json:"expectedState"`
+	State         domain.AdminCommandState `json:"state"`
+	Failure       string                   `json:"failure,omitempty"`
 }

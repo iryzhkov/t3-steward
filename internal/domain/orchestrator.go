@@ -333,8 +333,8 @@ const (
 // AdminCommand is a version-checked request to change scheduler intent.
 type AdminCommand struct {
 	ID               string            `json:"id"`
-	Kind             string            `json:"kind"`
-	TargetType       string            `json:"targetType"`
+	Kind             AdminCommandKind  `json:"kind"`
+	TargetType       AdminTargetType   `json:"targetType"`
 	TargetID         string            `json:"targetId"`
 	ExpectedRevision int64             `json:"expectedRevision"`
 	Reason           string            `json:"reason"`

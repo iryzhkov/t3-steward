@@ -416,17 +416,17 @@ Each milestone should fit one unattended development session where practical. A 
 
 ### M8. Admin module and CLI
 
-- [ ] Implement transport-neutral admin queries and revision-checked commands.
+- [x] Implement transport-neutral admin queries and revision-checked commands.
   - [x] Define the versioned read-query envelope, authorization seam, deterministic projections, and safe DTO boundary.
   - [x] Implement read-only coordinator queries for status, filtered workflows, workflow/task detail, DAGs, explanations, events, artifacts, schedules, workers, quota, reservations, locks, progress, and T3 links.
-  - [ ] Implement revision-checked mutation commands and asynchronous outcomes.
+  - [x] Implement immutable, revision-checked mutation commands, durable audit events, and asynchronous outcomes.
 - [ ] Refactor existing backlog CLI code away from direct database mutation.
 - [ ] Implement status, filters, DAG view, task detail, explanations, events, artifacts, controls, and schedule commands.
 - [x] Include worker health, quota admission, reservations, locks, progress, and T3 links in the admin projections.
 - [x] Define versioned JSON data transfer objects suitable for the future dashboard.
-- [ ] Test stale commands, asynchronous command outcomes, authorization seam, and JSON stability.
-  - [x] Test read authorization failure and JSON stability.
-  - [ ] Test stale commands and asynchronous outcomes.
+- [x] Test stale commands, asynchronous command outcomes, authorization seam, and JSON stability.
+  - [x] Test read and mutation authorization failure plus JSON stability.
+  - [x] Test stale commands, replay conflicts, concurrent submission, transaction rollback, restart persistence, and asynchronous outcomes.
 
 ### M9. End-to-end hardening and release candidate
 

@@ -82,6 +82,7 @@ func TestMigrationFromVersionSixRestoresDispatchProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
+		`DROP TABLE coordinator_audit_events`,
 		`DROP TABLE coordinator_worker_acknowledgements`,
 		`DROP INDEX coordinator_worker_commands_pending`,
 		`DROP TABLE coordinator_worker_commands`,

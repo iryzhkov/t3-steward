@@ -61,7 +61,8 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 	}
 	action := Action{
 		Kind: query.Kind, WorkflowRunID: query.WorkflowRunID,
-		TaskID: query.TaskID, ArtifactID: query.ArtifactID, Filter: query.Filter,
+		TaskID: query.TaskID, ArtifactID: query.ArtifactID,
+		CommandID: query.CommandID, Filter: query.Filter,
 	}
 	if err := s.authorizer.Authorize(ctx, query.Principal, action); err != nil {
 		return Response{}, fmt.Errorf("authorize %s: %w", query.Kind, err)
@@ -135,14 +136,19 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		response.Reservations = view.reservations(query.Filter)
 	case QueryLocks:
 		response.ResourceLocks = view.locks(query.Filter)
+	case QueryCommands:
+		response.Commands = view.commands(query)
 	}
 	return response, nil
 }
 
 func validQuery(query Query) bool {
 	switch query.Kind {
-	case QueryStatus, QueryWorkflows, QuerySchedules, QueryWorkers, QueryQuota, QueryReservations, QueryLocks:
+	case QueryStatus, QueryWorkflows, QuerySchedules, QueryWorkers, QueryQuota,
+		QueryReservations, QueryLocks:
 		return true
+	case QueryCommands:
+		return query.TaskID == "" || query.WorkflowRunID != ""
 	case QueryWorkflow, QueryGraph, QueryEvents:
 		return query.WorkflowRunID != ""
 	case QueryTask, QueryExplanation:
@@ -801,14 +807,36 @@ func (v view) events(runID string) []Event {
 			result = append(result, event("artifact:"+artifact.ID, runID, artifact.TaskID, artifact.AttemptID, "artifact-"+string(artifact.Kind), artifact.CreatedAt, map[string]any{"artifactId": artifact.ID, "name": artifact.Name}))
 		}
 	}
+
+	durableCommands := make(map[string]struct{})
+	for _, audit := range v.records.AuditEvents {
+		if audit.WorkflowRunID != runID {
+			continue
+		}
+		result = append(result, auditEventDTO(audit))
+		for _, command := range v.records.AdminCommands {
+			if strings.HasPrefix(audit.ID, "admin-command:"+command.ID+":") {
+				durableCommands[command.ID] = struct{}{}
+			}
+		}
+	}
 	for _, command := range v.records.AdminCommands {
+		if _, durable := durableCommands[command.ID]; durable {
+			continue
+		}
 		_, taskTarget := taskIDs[command.TargetID]
-		if (command.TargetType == "workflow-run" && command.TargetID == runID) || (command.TargetType == "task" && taskTarget) {
+		_, attemptTarget := attemptIDs[command.TargetID]
+		if (command.TargetType == domain.AdminTargetWorkflowRun && command.TargetID == runID) ||
+			(command.TargetType == domain.AdminTargetAttempt && attemptTarget) ||
+			(command.TargetType == "task" && taskTarget) {
 			result = append(result, event("admin-command:"+command.ID, runID, command.TargetID, "", "admin-command-"+string(command.State), command.CreatedAt, map[string]any{"kind": command.Kind, "requestedBy": command.RequestedBy, "reason": command.Reason}))
 		}
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].At.Equal(result[j].At) {
+			if result[i].Sequence != result[j].Sequence {
+				return result[i].Sequence < result[j].Sequence
+			}
 			return result[i].ID < result[j].ID
 		}
 		return result[i].At.Before(result[j].At)

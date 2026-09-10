@@ -176,6 +176,118 @@ func TestExplanationBlocksSurplusDuringConstrainedAdmission(t *testing.T) {
 	}
 }
 
+func TestAdminMutationAuthorizationStaleReplayAndAsyncOutcome(t *testing.T) {
+	store := openAdminTestStore(t)
+	seedAdminTestStore(t, store)
+	authorizer := &allowAuthorizer{}
+	service, err := New(store, authorizer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetClock(func() time.Time { return adminTestNow })
+	principal := Principal{ID: "operator-1", Roles: []string{"backlog-writer"}}
+	request := Mutation{
+		Version: Version, Principal: principal, ID: "command-service-1",
+		Kind: domain.AdminCommandPause, WorkflowRunID: "run-1", TaskID: "implement",
+		ExpectedRevision: 4, Reason: "maintenance window",
+		Payload: json.RawMessage(`{"now":false}`),
+	}
+	submitted, err := service.Mutate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if submitted.Command.State != domain.AdminCommandPending ||
+		submitted.Command.TargetType != domain.AdminTargetAttempt ||
+		submitted.Command.TargetID != "attempt-implement" ||
+		submitted.Event.Kind != "admin-command-submitted" ||
+		submitted.Command.RequestedBy != principal.ID || submitted.CurrentTarget != nil {
+		t.Fatalf("unexpected mutation response: %#v", submitted)
+	}
+	replayed, err := service.Mutate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(replayed, submitted) {
+		t.Fatalf("mutation replay changed: got %#v want %#v", replayed, submitted)
+	}
+
+	staleRequest := request
+	staleRequest.ID = "command-service-stale"
+	staleRequest.ExpectedRevision = 3
+	stale, err := service.Mutate(context.Background(), staleRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale.Command.State != domain.AdminCommandRejected || stale.CurrentTarget == nil ||
+		stale.CurrentTarget.Revision != 4 || stale.Event.Kind != "admin-command-rejected" {
+		t.Fatalf("unexpected stale response: %#v", stale)
+	}
+
+	completed, err := service.CompleteCommand(context.Background(), CommandOutcome{
+		Version: Version, Principal: Principal{ID: "coordinator"},
+		CommandID: submitted.Command.ID, ExpectedState: domain.AdminCommandPending,
+		State: domain.AdminCommandApplied,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Command.State != domain.AdminCommandApplied ||
+		completed.Event.Kind != "admin-command-applied" ||
+		completed.Event.Sequence <= submitted.Event.Sequence {
+		t.Fatalf("unexpected asynchronous outcome: %#v", completed)
+	}
+	query, err := service.Query(context.Background(), Query{
+		Version: Version, Kind: QueryCommands, Principal: principal,
+		WorkflowRunID: "run-1", TaskID: "implement",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(query.Commands) != 2 || query.Commands[0].State != domain.AdminCommandApplied ||
+		query.Commands[1].State != domain.AdminCommandRejected {
+		t.Fatalf("unexpected command query: %#v", query.Commands)
+	}
+	events, err := service.Query(context.Background(), Query{
+		Version: Version, Kind: QueryEvents, Principal: principal, WorkflowRunID: "run-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable := 0
+	for _, event := range events.Events {
+		if event.Sequence > 0 {
+			durable++
+		}
+	}
+	if durable != 3 {
+		t.Fatalf("durable admin event count = %d, events %#v", durable, events.Events)
+	}
+	if len(authorizer.actions) != 6 || authorizer.actions[0].CommandKind != domain.AdminCommandPause ||
+		authorizer.actions[3].OutcomeState != domain.AdminCommandApplied {
+		t.Fatalf("unexpected authorized mutation actions: %#v", authorizer.actions)
+	}
+}
+
+func TestAdminMutationAuthorizationFailsBeforeStateAccess(t *testing.T) {
+	reader := &countingReader{}
+	denied := errors.New("permission denied")
+	service, err := New(reader, &allowAuthorizer{err: denied})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Mutate(context.Background(), Mutation{
+		Version: Version, Principal: Principal{ID: "denied"}, ID: "command-1",
+		Kind: domain.AdminCommandPause, WorkflowRunID: "run-1", TaskID: "task-1",
+		ExpectedRevision: 1, Reason: "test",
+	})
+	if !errors.Is(err, denied) {
+		t.Fatalf("mutation authorization error = %v", err)
+	}
+	if reader.reads != 0 {
+		t.Fatalf("mutation read state %d times before authorization", reader.reads)
+	}
+}
+
 func TestAdminAuthorizationFailsClosedBeforeStateRead(t *testing.T) {
 	store := &countingReader{}
 	denied := errors.New("permission denied")
@@ -234,6 +346,38 @@ func TestAdminStatusJSONGolden(t *testing.T) {
 	}
 	if string(got)+"\n" != string(want) {
 		t.Fatalf("admin JSON changed\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+func TestAdminMutationJSONGolden(t *testing.T) {
+	response := MutationResponse{
+		Version: Version,
+		Command: Command{
+			ID: "command-1", Kind: domain.AdminCommandPause,
+			TargetType: domain.AdminTargetAttempt, TargetID: "attempt-1",
+			ExpectedRevision: 7, Reason: "operator request", RequestedBy: "operator-1",
+			Payload: json.RawMessage(`{"now":false}`), State: domain.AdminCommandPending,
+			CreatedAt: adminTestNow,
+		},
+		Event: Event{
+			ID: "admin-command:command-1:submission", Sequence: 42,
+			WorkflowRunID: "run-1", TaskID: "task-1", AttemptID: "attempt-1",
+			Kind: "admin-command-submitted", TargetType: domain.AdminTargetAttempt,
+			TargetID: "attempt-1", Actor: "operator-1", Reason: "operator request",
+			At:     adminTestNow,
+			Detail: json.RawMessage(`{"commandKind":"pause","state":"pending","expectedRevision":7}`),
+		},
+	}
+	got, err := json.MarshalIndent(response, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(filepath.Join("testdata", "mutation.golden.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got)+"\n" != string(want) {
+		t.Fatalf("admin mutation JSON changed\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }
 

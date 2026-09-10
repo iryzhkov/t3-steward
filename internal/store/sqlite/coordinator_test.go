@@ -115,6 +115,7 @@ func TestMigrationFromVersionOnePreservesState(t *testing.T) {
 		"coordinator_quota_pools",
 		"coordinator_artifacts",
 		"coordinator_admin_commands",
+		"coordinator_audit_events",
 		"coordinator_quota_admissions",
 		"coordinator_throttle_directives",
 		"coordinator_throttle_attempts",
@@ -216,6 +217,7 @@ func TestMigrationFromVersionFiveAddsScheduleHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, stmt := range []string{
+		`DROP TABLE coordinator_audit_events`,
 		`DROP TABLE coordinator_worker_acknowledgements`,
 		`DROP INDEX coordinator_worker_commands_pending`,
 		`DROP TABLE coordinator_worker_commands`,

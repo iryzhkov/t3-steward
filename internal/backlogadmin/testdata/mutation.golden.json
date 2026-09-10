@@ -1,0 +1,35 @@
+{
+  "version": "backlog.admin/v1",
+  "command": {
+    "id": "command-1",
+    "kind": "pause",
+    "targetType": "attempt",
+    "targetId": "attempt-1",
+    "expectedRevision": 7,
+    "reason": "operator request",
+    "requestedBy": "operator-1",
+    "payload": {
+      "now": false
+    },
+    "state": "pending",
+    "createdAt": "2026-09-10T20:00:00Z"
+  },
+  "event": {
+    "id": "admin-command:command-1:submission",
+    "sequence": 42,
+    "workflowRunId": "run-1",
+    "taskId": "task-1",
+    "attemptId": "attempt-1",
+    "kind": "admin-command-submitted",
+    "targetType": "attempt",
+    "targetId": "attempt-1",
+    "actor": "operator-1",
+    "reason": "operator request",
+    "at": "2026-09-10T20:00:00Z",
+    "detail": {
+      "commandKind": "pause",
+      "state": "pending",
+      "expectedRevision": 7
+    }
+  }
+}

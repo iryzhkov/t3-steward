@@ -10,7 +10,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-const currentSchemaVersion = 9
+const currentSchemaVersion = 10
 
 const coordinatorMigrationV6 = `
 ALTER TABLE coordinator_schedules ADD COLUMN current_version INTEGER NOT NULL DEFAULT 0;
@@ -147,6 +147,7 @@ type CoordinatorRecords struct {
 	QuotaPools        []domain.QuotaPool
 	Artifacts         []domain.Artifact
 	AdminCommands     []domain.AdminCommand
+	AuditEvents       []domain.AuditEvent
 }
 
 // SaveCoordinatorRecords atomically inserts or updates the supplied records.
@@ -276,12 +277,17 @@ func (s *Store) SaveCoordinatorRecords(ctx context.Context, records CoordinatorR
 		}
 	}
 	for _, record := range records.AdminCommands {
-		if err := upsertJSON(ctx, tx, "admin command", record.ID,
+		if err := insertImmutableJSON(ctx, tx, "admin command", record.ID,
 			`INSERT INTO coordinator_admin_commands(id, target_type, target_id, state, record)
-			 VALUES (?, ?, ?, ?, ?)
-			 ON CONFLICT(id) DO UPDATE SET target_type = excluded.target_type,
-			 target_id = excluded.target_id, state = excluded.state, record = excluded.record`,
-			[]any{record.ID, record.TargetType, record.TargetID, record.State}, record); err != nil {
+			 VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`,
+			[]any{record.ID, record.TargetType, record.TargetID, record.State},
+			`SELECT record FROM coordinator_admin_commands WHERE id = ?`,
+			[]any{record.ID}, record); err != nil {
+			return err
+		}
+	}
+	for _, event := range records.AuditEvents {
+		if _, err := insertAuditEventTx(ctx, tx, event); err != nil {
 			return err
 		}
 	}
@@ -386,6 +392,9 @@ func (s *Store) LoadCoordinatorRecords(ctx context.Context) (CoordinatorRecords,
 		return CoordinatorRecords{}, err
 	}
 	if records.AdminCommands, err = loadJSON[domain.AdminCommand](ctx, tx, "coordinator_admin_commands"); err != nil {
+		return CoordinatorRecords{}, err
+	}
+	if records.AuditEvents, err = loadAuditEventsTx(ctx, tx, ""); err != nil {
 		return CoordinatorRecords{}, err
 	}
 	if err := tx.Commit(); err != nil {
