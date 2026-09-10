@@ -276,8 +276,7 @@ func latestThrottleRecords(records []domain.ThrottleAttemptRecord) (map[string]d
 	latest := make(map[string]domain.ThrottleAttemptRecord)
 	for _, record := range indexed {
 		current, exists := latest[record.AttemptID]
-		if !exists || record.UpdatedAt.After(current.UpdatedAt) ||
-			(record.UpdatedAt.Equal(current.UpdatedAt) && record.DirectiveID > current.DirectiveID) {
+		if !exists || throttleRecordIsNewer(record, current) {
 			latest[record.AttemptID] = record
 		}
 	}

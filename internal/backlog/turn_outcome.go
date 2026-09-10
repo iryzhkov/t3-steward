@@ -168,8 +168,7 @@ func latestThrottleRecordsByAttempt(
 			return nil, err
 		}
 		current, exists := latest[record.AttemptID]
-		if !exists || record.UpdatedAt.After(current.UpdatedAt) ||
-			(record.UpdatedAt.Equal(current.UpdatedAt) && record.DirectiveID > current.DirectiveID) {
+		if !exists || throttleRecordIsNewer(record, current) {
 			latest[record.AttemptID] = cloneThrottleAttemptRecord(record)
 		}
 	}

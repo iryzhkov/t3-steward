@@ -106,8 +106,7 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 	latestThrottle := make(map[string]domain.ThrottleAttemptRecord)
 	for _, record := range indexedThrottle {
 		current, exists := latestThrottle[record.AttemptID]
-		if !exists || record.UpdatedAt.After(current.UpdatedAt) ||
-			(record.UpdatedAt.Equal(current.UpdatedAt) && record.DirectiveID > current.DirectiveID) {
+		if !exists || throttleRecordIsNewer(record, current) {
 			latestThrottle[record.AttemptID] = record
 		}
 	}

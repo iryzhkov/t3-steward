@@ -343,8 +343,7 @@ func PlanThrottleResumes(
 	latest := make(map[string]domain.ThrottleAttemptRecord)
 	for _, record := range indexed {
 		current, exists := latest[record.AttemptID]
-		if !exists || record.UpdatedAt.After(current.UpdatedAt) ||
-			(record.UpdatedAt.Equal(current.UpdatedAt) && record.DirectiveID > current.DirectiveID) {
+		if !exists || throttleRecordIsNewer(record, current) {
 			latest[record.AttemptID] = record
 		}
 	}
@@ -703,6 +702,16 @@ func sortThrottleCommands(commands []domain.ThrottleCommand) {
 		}
 		return commands[i].ID < commands[j].ID
 	})
+}
+
+func throttleRecordIsNewer(candidate, current domain.ThrottleAttemptRecord) bool {
+	if !candidate.Command.CreatedAt.Equal(current.Command.CreatedAt) {
+		return candidate.Command.CreatedAt.After(current.Command.CreatedAt)
+	}
+	if !candidate.UpdatedAt.Equal(current.UpdatedAt) {
+		return candidate.UpdatedAt.After(current.UpdatedAt)
+	}
+	return candidate.DirectiveID > current.DirectiveID
 }
 
 func cloneThrottleAttemptRecord(record domain.ThrottleAttemptRecord) domain.ThrottleAttemptRecord {
