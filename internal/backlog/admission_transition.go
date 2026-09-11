@@ -91,7 +91,10 @@ func PlanQuotaAdmissionTransitions(
 		}
 		seen[snapshot.QuotaPoolID] = struct{}{}
 
-		epochs := make([]domain.QuotaBucketEpoch, len(snapshot.BucketEpochs))
+		var epochs []domain.QuotaBucketEpoch
+		if len(snapshot.BucketEpochs) != 0 {
+			epochs = make([]domain.QuotaBucketEpoch, len(snapshot.BucketEpochs))
+		}
 		for index, epoch := range snapshot.BucketEpochs {
 			epochs[index] = domain.QuotaBucketEpoch{Bucket: epoch.Bucket, Epoch: epoch.Epoch}
 		}

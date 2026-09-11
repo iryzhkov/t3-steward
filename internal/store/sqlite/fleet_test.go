@@ -30,6 +30,14 @@ func TestAssignmentPlanCommitsBeforeEpochBoundClaim(t *testing.T) {
 	if err != nil || len(replayed) != 1 || replayed[0].ID != assignments[0].ID {
 		t.Fatalf("replay assignment plan: assignments=%#v error=%v", replayed, err)
 	}
+	changed := commit
+	changed.Items = append([]domain.AssignmentPlanItem(nil), commit.Items...)
+	changedEstimate := *commit.Items[0].Assignment.Estimate
+	changedEstimate.RemainingCost++
+	changed.Items[0].Assignment.Estimate = &changedEstimate
+	if _, err := store.CommitAssignmentPlan(context.Background(), changed); err == nil {
+		t.Fatal("assignment replay changed its durable estimate")
+	}
 	records, err := store.LoadCoordinatorRecords(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -302,8 +310,11 @@ func fleetPlanCommit(coordinatorEpoch int64, assignmentID, attemptID, workerEpoc
 			Assignment: domain.Assignment{
 				ID: assignmentID, AttemptID: attemptID, WorkerID: "normandy",
 				Route: domain.ProviderRoute{ProviderInstanceID: "codex", Model: "gpt-5.6-sol"},
+				Estimate: &domain.TaskAdmissionEstimate{
+					RemainingCost: 10, ExpectedRuntime: time.Hour, CheckpointMargin: time.Minute,
+				},
 				State: domain.AssignmentOffered, Epoch: 1,
-				LeaseToken: "lease-token-1", DispatchToken: "dispatch-token-1",
+				LeaseToken: "lease-token-1", DispatchToken: "dispatch-token-1", ThreadID: "thread-1",
 			},
 		}},
 	}

@@ -1,8 +1,9 @@
 # Backlog-v2 worker exchange protocol
 
-Status: S16 production-binding contract. The authenticated protocol, fixed worker
-commands, durable replay state, restart-safe worker runtime, and bounded artifact
-streams are implemented and tested locally; coordinator-side composition remains S17.
+Status: S17 production binding complete. The authenticated protocol, fixed worker
+commands, durable replay state, restart-safe worker runtime, bounded artifact
+streams, and coordinator-side lifecycle composition are implemented and tested
+locally.
 
 ## Transport decision
 
@@ -10,9 +11,9 @@ Retain coordinator-initiated SSH for the first production worker runtime. The
 bounded local multi-process tests demonstrate the properties required by the
 production-binding plan:
 
-- OpenSSH is invoked without a shell, with a validated destination and fixed
-  remote command, BatchMode enabled, strict host-key checking, and a bounded
-  connect timeout.
+- OpenSSH is invoked without a shell, with a validated destination, fixed
+  remote command, and one validated fixed operation argument; BatchMode,
+  strict host-key checking, and a bounded connect timeout remain mandatory.
 - The worker executable accepts exactly one fixed operation: `control`,
   `artifact-receive`, or `artifact-send`. It requires an explicit local
   configuration path; general `T3_STEWARD_*` configuration overrides and
@@ -74,7 +75,9 @@ The stable message kinds are:
 | lease-renewals | worker to coordinator | Renew exact epoch-bound leases. |
 | commands | coordinator to worker | Deliver durable prepare, dispatch, stop, or collect intent. |
 | acknowledgements | worker to coordinator | Acknowledge command acceptance idempotently. |
-| artifact-upload | worker to coordinator | Request transfer into coordinator custody. |
+| artifact-poll / artifact-announcement | coordinator to worker / worker to coordinator | Discover at most one immutable purpose-scoped outbox manifest. |
+| artifact-upload | both | Request one exact announced manifest/object sequence and return signed custody metadata plus bounded raw bytes. |
+| artifact-acknowledge / artifact-acknowledged | coordinator to worker / worker to coordinator | Retire discovery only after coordinator import; exact replay is idempotent. |
 | artifact-download | coordinator to worker | Authorize selected immutable inputs. |
 | error | both | Return a stable structured failure. |
 
@@ -146,6 +149,17 @@ size/hash/time, and the prior custody-record hash. Its own SHA-256 makes
 tampering detectable. Coordinator publication remains the authoritative custody
 transition; transfer alone does not release dependencies.
 
+Result and checkpoint discovery is deliberately one manifest per purpose and
+poll. The coordinator fetches
+the exact announced object order over a separate `artifact-send` session,
+verifies it again during import, and sends an authenticated acknowledgement only
+after coordinator artifact metadata and the terminal outcome are durable. The
+worker atomically moves that manifest from pending to retained acknowledged
+custody, so lost acknowledgements replay without duplicate execution.
+Checkpoint publication additionally requires the exact artifact identity,
+size, hash, and path already accepted in the coordinator's acknowledged
+throttle projection.
+
 ## Compatibility and next binding
 
 Version negotiation is explicit and version 1 accepts no unknown fields.
@@ -153,5 +167,7 @@ Changing field meaning or encoding requires a new version; adding an optional
 field still requires updating the JSON goldens and compatibility review.
 
 S16 owns the restart-safe worker implementation behind this contract. S17 owns
-coordinator composition. Until then the production daemon remains closed and
-constructs no SSH transport, worker process, or T3 client.
+the completed coordinator composition. The runtime constructs fresh configured
+SSH sessions only on scheduled post-startup passes; hard quota admission still
+withholds every offer and prepare/dispatch command unless the pool is open.
+This local evidence authorizes no installation, fleet contact, or deployment.

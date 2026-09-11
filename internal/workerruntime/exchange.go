@@ -66,6 +66,35 @@ func (e Exchange) handle(ctx context.Context, envelope workerproto.Envelope) (wo
 		}
 		acknowledgements, err := e.Runtime.DeliverThrottle(ctx, delivery.Commands)
 		return workerproto.MessageThrottleAcknowledgements, workerproto.ThrottleAcknowledgements{Acknowledgements: acknowledgements}, err
+	case workerproto.MessageArtifactPoll:
+		if e.Custody == nil {
+			return "", nil, fmt.Errorf("worker exchange: custody is required")
+		}
+		var request workerproto.ArtifactPollRequest
+		if err := workerproto.DecodePayload(envelope, workerproto.MessageArtifactPoll, &request); err != nil {
+			return "", nil, err
+		}
+		pending, err := e.Custody.PendingUploadByPurpose(request.Purpose)
+		if err != nil {
+			return "", nil, err
+		}
+		announcement := workerproto.ArtifactAnnouncement{}
+		if pending != nil {
+			announcement.Upload = &workerproto.ArtifactUploadResponse{Manifest: pending.Manifest, Custody: pending.Custody}
+		}
+		return workerproto.MessageArtifactAnnouncement, announcement, nil
+	case workerproto.MessageArtifactAcknowledge:
+		if e.Custody == nil {
+			return "", nil, fmt.Errorf("worker exchange: custody is required")
+		}
+		var request workerproto.ArtifactAcknowledgeRequest
+		if err := workerproto.DecodePayload(envelope, workerproto.MessageArtifactAcknowledge, &request); err != nil {
+			return "", nil, err
+		}
+		if err := e.Custody.AcknowledgeUpload(request.ManifestID); err != nil {
+			return "", nil, err
+		}
+		return workerproto.MessageArtifactAcknowledged, workerproto.ArtifactAcknowledgement{ManifestID: request.ManifestID}, nil
 	default:
 		return "", nil, &workerproto.ProtocolError{Code: workerproto.ErrorAuthorization, Message: "message kind is not a worker request", RequestID: envelope.RequestID}
 	}

@@ -62,7 +62,7 @@ func OpenCustodyStore(config CustodyConfig) (*CustodyStore, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	for _, name := range []string{"objects", "receipts", "outbox"} {
+	for _, name := range []string{"objects", "receipts", "outbox", "acknowledged"} {
 		if err := ensureRealDirectory(filepath.Join(root, name)); err != nil {
 			return nil, fmt.Errorf("open custody: %s: %w", name, err)
 		}
@@ -171,7 +171,7 @@ func (s *CustodyStore) PublishResult(ctx context.Context, pkg workerproto.Execut
 		}
 		object := workerproto.ArtifactObject{
 			ID:        artifact.ID,
-			Path:      "results/" + artifact.ID,
+			Path:      "results/" + filepath.ToSlash(artifact.Name),
 			Kind:      string(artifact.Kind),
 			MediaType: artifact.MediaType,
 			Size:      artifact.Size,
@@ -206,7 +206,7 @@ func (s *CustodyStore) PublishResult(ctx context.Context, pkg workerproto.Execut
 // PublishCheckpoint retains checkpoint bytes and advertises an immutable upload.
 func (s *CustodyStore) PublishCheckpoint(ctx context.Context, pkg workerproto.ExecutionPackage, path string, data []byte) (*domain.CheckpointMetadata, error) {
 	id := "checkpoint-" + pkg.Identity.AttemptID + "-" + shortDigest(data)
-	object := objectForBytes(id, "checkpoints/"+id+".json", "checkpoint", "application/json", data)
+	object := objectForBytes(id, "checkpoints/"+id+".md", "checkpoint", "text/markdown", data)
 	if err := s.storeObject(bytes.NewReader(data), object); err != nil {
 		return nil, fmt.Errorf("publish checkpoint: %w", err)
 	}
@@ -268,6 +268,93 @@ func (s *CustodyStore) PendingUploads() ([]PendingUpload, error) {
 		result = append(result, pending)
 	}
 	return result, nil
+}
+
+// PendingUploadByPurpose returns at most the lexicographically first immutable
+// outbox entry for a fixed purpose. Acknowledged entries are not rediscovered.
+func (s *CustodyStore) PendingUploadByPurpose(purpose string) (*PendingUpload, error) {
+	if purpose != "result" && purpose != "checkpoint" {
+		return nil, errors.New("pending upload: unsupported purpose")
+	}
+	entries, err := os.ReadDir(filepath.Join(s.config.Root, "outbox"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			return nil, errors.New("pending uploads: unexpected outbox entry")
+		}
+		pending, err := s.loadPending(filepath.Join(s.config.Root, "outbox", entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		matches := purpose == "result" && strings.HasSuffix(pending.Manifest.ID, "-result") ||
+			purpose == "checkpoint" && strings.Contains(pending.Manifest.ID, "-checkpoint-")
+		if matches {
+			return &pending, nil
+		}
+	}
+	return nil, nil
+}
+
+// AcknowledgeUpload durably removes one imported manifest from discovery while
+// retaining its immutable custody record for restart reconciliation and audit.
+func (s *CustodyStore) AcknowledgeUpload(manifestID string) error {
+	if strings.TrimSpace(manifestID) != manifestID || manifestID == "" {
+		return errors.New("acknowledge upload: manifest ID is required")
+	}
+	outbox := filepath.Join(s.config.Root, "outbox")
+	acknowledged := filepath.Join(s.config.Root, "acknowledged")
+	source, _, err := s.findPending(outbox, manifestID)
+	if err != nil {
+		return err
+	}
+	if source == "" {
+		_, retained, retainedErr := s.findPending(acknowledged, manifestID)
+		if retainedErr != nil {
+			return retainedErr
+		}
+		if retained == nil {
+			return errors.New("acknowledge upload: manifest not found")
+		}
+		return nil
+	}
+	target := filepath.Join(acknowledged, filepath.Base(source))
+	if err := os.Rename(source, target); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			_, retained, retainedErr := s.findPending(acknowledged, manifestID)
+			if retainedErr == nil && retained != nil {
+				return nil
+			}
+		}
+		return fmt.Errorf("acknowledge upload: retain manifest: %w", err)
+	}
+	if err := syncDirectory(outbox); err != nil {
+		return err
+	}
+	return syncDirectory(acknowledged)
+}
+
+func (s *CustodyStore) findPending(directory, manifestID string) (string, *PendingUpload, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return "", nil, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			return "", nil, errors.New("pending uploads: unexpected custody entry")
+		}
+		path := filepath.Join(directory, entry.Name())
+		pending, err := s.loadPending(path)
+		if err != nil {
+			return "", nil, err
+		}
+		if pending.Manifest.ID == manifestID {
+			return path, &pending, nil
+		}
+	}
+	return "", nil, nil
 }
 
 func (s *CustodyStore) publishManifest(ctx context.Context, pkg workerproto.ExecutionPackage, purpose string, objects []workerproto.ArtifactObject) error {

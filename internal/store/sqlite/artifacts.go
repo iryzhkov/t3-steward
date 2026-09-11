@@ -53,7 +53,7 @@ func (s *Store) CommitArtifactPublication(ctx context.Context, publication domai
 		assignment.WorkerID != publication.WorkerID ||
 		assignment.WorkerEpoch != publication.WorkerEpoch ||
 		assignment.Epoch != publication.AssignmentEpoch ||
-		assignment.State != domain.AssignmentClaimed {
+		(assignment.State != domain.AssignmentClaimed && assignment.State != domain.AssignmentCompleted) {
 		return domain.Artifact{}, fmt.Errorf("%w: assignment identity or state changed", ErrStaleArtifactPublication)
 	}
 	attempt, err := loadAttemptTx(ctx, tx, artifact.AttemptID)
@@ -63,6 +63,10 @@ func (s *Store) CommitArtifactPublication(ctx context.Context, publication domai
 	if attempt.WorkflowRunID != artifact.WorkflowRunID || attempt.TaskID != artifact.TaskID ||
 		attempt.AssignmentID != assignment.ID || attempt.Revision != publication.AttemptRevision {
 		return domain.Artifact{}, fmt.Errorf("%w: attempt identity or revision changed", ErrStaleArtifactPublication)
+	}
+	if assignment.State == domain.AssignmentCompleted &&
+		attempt.Progress != domain.ProgressVerifying && !attempt.Progress.Terminal() {
+		return domain.Artifact{}, fmt.Errorf("%w: completed assignment is not ready for result publication", ErrStaleArtifactPublication)
 	}
 	raw, err := json.Marshal(artifact)
 	if err != nil {

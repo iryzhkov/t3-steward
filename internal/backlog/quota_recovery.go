@@ -165,9 +165,25 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 		if err := validateThrottlePlanningIdentity(attempt, assignment, record); err != nil {
 			return QuotaPlanningState{}, err
 		}
-		estimate, exists := estimates[routeEstimateKey(attempt.ID, assignment.Route)]
+		estimateKey := routeEstimateKey(attempt.ID, assignment.Route)
+		estimate, exists := estimates[estimateKey]
+		if assignment.Estimate != nil {
+			durable := RouteEstimate{
+				AttemptID: attempt.ID, WorkerID: assignment.Route.WorkerID,
+				ProviderInstanceID: assignment.Route.ProviderInstanceID,
+				Model:              assignment.Route.Model, Options: assignment.Route.Options,
+				Estimate: *assignment.Estimate,
+			}
+			if err := validateRouteEstimate(durable); err != nil {
+				return QuotaPlanningState{}, fmt.Errorf("assignment %q durable estimate: %w", assignment.ID, err)
+			}
+			if exists && !reflect.DeepEqual(estimate, durable.Estimate) {
+				return QuotaPlanningState{}, fmt.Errorf("assignment %q durable estimate contradicts its route estimate", assignment.ID)
+			}
+			estimate, exists = durable.Estimate, true
+		}
 		if !exists {
-			return QuotaPlanningState{}, fmt.Errorf("paused attempt %q has no remaining-cost estimate for its fixed route", attempt.ID)
+			return QuotaPlanningState{}, fmt.Errorf("paused attempt %q has no durable remaining-cost estimate for its fixed route", attempt.ID)
 		}
 		status := domain.ResumePending
 		if attempt.Control == domain.ControlResuming {
@@ -191,6 +207,56 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 		}
 	}
 
+	activeCostByPool := make(map[string]float64)
+	committedCostByPool := make(map[string]float64)
+	for _, attempt := range attempts {
+		if attempt.Progress.Terminal() || attempt.AssignmentID == "" {
+			continue
+		}
+		assignment, exists := assignments[attempt.AssignmentID]
+		if !exists || assignment.AttemptID != attempt.ID {
+			return QuotaPlanningState{}, fmt.Errorf("attempt %q has no matching assignment", attempt.ID)
+		}
+		if assignment.State == domain.AssignmentReleased || assignment.State == domain.AssignmentCompleted {
+			return QuotaPlanningState{}, fmt.Errorf("nonterminal attempt %q uses settled assignment %q", attempt.ID, assignment.ID)
+		}
+		poolIndex, exists := poolByID[assignment.Route.QuotaPoolID]
+		if !exists {
+			return QuotaPlanningState{}, fmt.Errorf("attempt %q assignment names unknown pool %q", attempt.ID, assignment.Route.QuotaPoolID)
+		}
+		estimateKey := routeEstimateKey(attempt.ID, assignment.Route)
+		estimate, estimateExists := estimates[estimateKey]
+		if assignment.Estimate != nil {
+			durable := RouteEstimate{
+				AttemptID: attempt.ID, WorkerID: assignment.Route.WorkerID,
+				ProviderInstanceID: assignment.Route.ProviderInstanceID,
+				Model:              assignment.Route.Model, Options: assignment.Route.Options,
+				Estimate: *assignment.Estimate,
+			}
+			if err := validateRouteEstimate(durable); err != nil {
+				return QuotaPlanningState{}, fmt.Errorf("assignment %q durable estimate: %w", assignment.ID, err)
+			}
+			if estimateExists && !reflect.DeepEqual(estimate, durable.Estimate) {
+				return QuotaPlanningState{}, fmt.Errorf("assignment %q durable estimate contradicts its route estimate", assignment.ID)
+			}
+			estimate, estimateExists = durable.Estimate, true
+		}
+		if !estimateExists {
+			return QuotaPlanningState{}, fmt.Errorf("active assignment %q has no durable remaining-cost estimate", assignment.ID)
+		}
+		poolID := pools[poolIndex].ID
+		if assignment.State == domain.AssignmentUnknown || attempt.Control.HoldsProviderSlot() {
+			activeCostByPool[poolID] += estimate.RemainingCost
+			if assignment.State == domain.AssignmentUnknown && !attempt.Control.HoldsProviderSlot() {
+				pools[poolIndex].ActiveAssignments++
+			}
+			continue
+		}
+		if !pausedControl(attempt.Control) && attempt.Control != domain.ControlResuming {
+			committedCostByPool[poolID] += estimate.RemainingCost
+		}
+	}
+
 	windows := append([]QuotaWindowBudget(nil), input.QuotaWindows...)
 	sort.Slice(windows, func(i, j int) bool { return quotaWindowKey(windows[i]) < quotaWindowKey(windows[j]) })
 	seenWindows := make(map[string]struct{}, len(windows))
@@ -203,7 +269,10 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 		if _, exists := poolByID[windows[index].QuotaPoolID]; !exists {
 			return QuotaPlanningState{}, fmt.Errorf("quota window %q names unknown pool %q", key, windows[index].QuotaPoolID)
 		}
-		windows[index].PausedRequiredWorkRemainder = remainderByPool[windows[index].QuotaPoolID]
+		poolID := windows[index].QuotaPoolID
+		windows[index].ActiveConsumption = activeCostByPool[poolID]
+		windows[index].PausedRequiredWorkRemainder = remainderByPool[poolID]
+		windows[index].CommittedReservations = committedCostByPool[poolID]
 	}
 
 	return QuotaPlanningState{QuotaPools: pools, QuotaWindows: windows, ResumeReservations: reservations}, nil

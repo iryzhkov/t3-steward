@@ -9,9 +9,13 @@ t3-steward backlog pause <workflow-run>/<task> [--now] --reason TEXT
 t3-steward backlog resume|cancel|retry|skip <workflow-run>/<task> --reason TEXT
 ```
 
-Schedule controls use the schedule ID:
+Schedule definitions and controls use the schedule ID:
 
 ```text
+t3-steward schedules put <schedule> --name TEXT --workflow ID \
+  --cron "EXPR" --timezone IANA --reason TEXT \
+  [--after-failure next-cycle|hold] [--disabled] \
+  [--expected-revision N] [--request-id ID] [--json]
 t3-steward schedules run <schedule> --reason TEXT
 t3-steward schedules delay-next <schedule> --until RFC3339 --reason TEXT
 t3-steward schedules enable|disable <schedule> --reason TEXT

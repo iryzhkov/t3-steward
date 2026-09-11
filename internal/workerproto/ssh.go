@@ -1,6 +1,7 @@
 package workerproto
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -20,6 +21,7 @@ type CommandFactory func(context.Context, string, ...string) *exec.Cmd
 type SSHConfig struct {
 	Address           string
 	RemoteCommand     string
+	RemoteArguments   []string
 	RequestTimeout    time.Duration
 	ConnectTimeout    time.Duration
 	MaxMessageBytes   int64
@@ -45,7 +47,13 @@ func NewSSHTransport(config SSHConfig) (*SSHTransport, error) {
 	if config.ResponsePrincipal == "" || config.ResponseKeyID == "" || len(config.ResponseSecret) < 16 {
 		return nil, errors.New("ssh transport: response authentication is required")
 	}
+	for _, argument := range config.RemoteArguments {
+		if !sshTokenPattern.MatchString(argument) || strings.HasPrefix(argument, "-") {
+			return nil, errors.New("ssh transport: safe remote arguments are required")
+		}
+	}
 	config.ResponseSecret = append([]byte(nil), config.ResponseSecret...)
+	config.RemoteArguments = append([]string(nil), config.RemoteArguments...)
 	if config.Factory == nil {
 		config.Factory = exec.CommandContext
 	}
@@ -56,15 +64,30 @@ func (t *SSHTransport) RoundTrip(ctx context.Context, request Envelope) (Envelop
 	if t == nil {
 		return Envelope{}, errors.New("ssh transport: transport is required")
 	}
+	raw, err := t.roundTripBytes(ctx, request, t.config.MaxMessageBytes)
+	if err != nil {
+		return Envelope{}, err
+	}
+	var response Envelope
+	if err := t.codec.Decode(bytes.NewReader(raw), &response); err != nil {
+		return Envelope{}, err
+	}
+	if err := t.validateResponse(request, response); err != nil {
+		return Envelope{}, err
+	}
+	return response, nil
+}
+
+func (t *SSHTransport) roundTripBytes(ctx context.Context, request Envelope, stdoutLimit int64) ([]byte, error) {
 	var input bytes.Buffer
 	if err := t.codec.Encode(&input, request); err != nil {
-		return Envelope{}, err
+		return nil, err
 	}
 	timeout := t.config.RequestTimeout
 	if !request.Deadline.IsZero() {
 		untilDeadline := time.Until(request.Deadline)
 		if untilDeadline <= 0 {
-			return Envelope{}, &ProtocolError{Code: ErrorTimeout, Message: "request deadline expired", RequestID: request.RequestID}
+			return nil, &ProtocolError{Code: ErrorTimeout, Message: "request deadline expired", RequestID: request.RequestID}
 		}
 		if untilDeadline < timeout {
 			timeout = untilDeadline
@@ -73,16 +96,17 @@ func (t *SSHTransport) RoundTrip(ctx context.Context, request Envelope) (Envelop
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	connectSeconds := max(int(t.config.ConnectTimeout.Round(time.Second) / time.Second), 1)
+	connectSeconds := max(int(t.config.ConnectTimeout.Round(time.Second)/time.Second), 1)
 	args := []string{
 		"-oBatchMode=yes",
 		"-oStrictHostKeyChecking=yes",
 		"-oConnectTimeout=" + strconv.Itoa(connectSeconds),
 		"--", t.config.Address, t.config.RemoteCommand,
 	}
+	args = append(args, t.config.RemoteArguments...)
 	command := t.config.Factory(requestCtx, "ssh", args...)
 	command.Stdin = &input
-	stdout := &boundedBuffer{limit: t.config.MaxMessageBytes}
+	stdout := &boundedBuffer{limit: stdoutLimit}
 	stderr := &boundedBuffer{limit: t.config.MaxStderrBytes}
 	command.Stdout = stdout
 	command.Stderr = stderr
@@ -92,35 +116,35 @@ func (t *SSHTransport) RoundTrip(ctx context.Context, request Envelope) (Envelop
 		if errors.Is(requestCtx.Err(), context.DeadlineExceeded) {
 			code = ErrorTimeout
 		}
-		return Envelope{}, &ProtocolError{Code: code, Message: requestCtx.Err().Error(), Retryable: code == ErrorTimeout, RequestID: request.RequestID}
+		return nil, &ProtocolError{Code: code, Message: requestCtx.Err().Error(), Retryable: code == ErrorTimeout, RequestID: request.RequestID}
 	}
 	if errors.Is(stdout.err, errBoundedBuffer) || errors.Is(stderr.err, errBoundedBuffer) {
-		return Envelope{}, &ProtocolError{Code: ErrorLimit, Message: "SSH response exceeded byte limit", RequestID: request.RequestID}
+		return nil, &ProtocolError{Code: ErrorLimit, Message: "SSH response exceeded byte limit", RequestID: request.RequestID}
 	}
 	if err != nil {
 		detail := strings.TrimSpace(stderr.String())
 		if detail != "" {
 			err = fmt.Errorf("%w: %s", err, detail)
 		}
-		return Envelope{}, fmt.Errorf("ssh transport: remote exchange: %w", err)
+		return nil, fmt.Errorf("ssh transport: remote exchange: %w", err)
 	}
-	var response Envelope
-	if err := t.codec.Decode(bytes.NewReader(stdout.Bytes()), &response); err != nil {
-		return Envelope{}, err
-	}
+	return append([]byte(nil), stdout.Bytes()...), nil
+}
+
+func (t *SSHTransport) validateResponse(request, response Envelope) error {
 	if response.InReplyTo != request.RequestID || response.SessionID != request.SessionID ||
 		response.CoordinatorEpoch != request.CoordinatorEpoch || response.WorkerEpoch != request.WorkerEpoch ||
 		response.Sender != request.Recipient || response.Recipient != request.Sender {
-		return Envelope{}, &ProtocolError{Code: ErrorMalformed, Message: "response identity does not match request", RequestID: request.RequestID}
+		return &ProtocolError{Code: ErrorMalformed, Message: "response identity does not match request", RequestID: request.RequestID}
 	}
 	if response.Authentication.Principal != t.config.ResponsePrincipal ||
 		response.Authentication.KeyID != t.config.ResponseKeyID {
-		return Envelope{}, &ProtocolError{Code: ErrorAuthentication, Message: "response principal or key id does not match worker identity", RequestID: request.RequestID}
+		return &ProtocolError{Code: ErrorAuthentication, Message: "response principal or key id does not match worker identity", RequestID: request.RequestID}
 	}
 	if err := VerifyEnvelopeSignature(response, t.config.ResponseSecret); err != nil {
-		return Envelope{}, err
+		return err
 	}
-	return response, nil
+	return nil
 }
 
 func (t *SSHTransport) RoundTripWithRetry(ctx context.Context, request Envelope, policy RetryPolicy) (Envelope, error) {
@@ -150,6 +174,68 @@ func (t *SSHTransport) RoundTripWithRetry(ctx context.Context, request Envelope,
 		}
 	}
 	return Envelope{}, lastErr
+}
+
+// RoundTripArtifactWithRetry authenticates a signed metadata response and
+// returns the exact bounded raw suffix streamed after its newline-delimited
+// envelope. Every retry reuses the supplied immutable request envelope.
+func (t *SSHTransport) RoundTripArtifactWithRetry(ctx context.Context, request Envelope, policy RetryPolicy, maxRawBytes int64) (Envelope, []byte, error) {
+	if t == nil || maxRawBytes < 0 || maxRawBytes > int64(^uint64(0)>>1)-t.config.MaxMessageBytes {
+		return Envelope{}, nil, errors.New("ssh artifact transport: invalid raw byte limit")
+	}
+	if policy.MaxAttempts < 1 {
+		return Envelope{}, nil, errors.New("ssh artifact transport: retry attempts must be positive")
+	}
+	var lastErr error
+	for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
+		response, raw, err := t.roundTripArtifact(ctx, request, maxRawBytes)
+		if err == nil {
+			return response, raw, nil
+		}
+		lastErr = err
+		var protocolErr *ProtocolError
+		if errors.As(err, &protocolErr) && !protocolErr.Retryable {
+			return Envelope{}, nil, err
+		}
+		if attempt == policy.MaxAttempts {
+			break
+		}
+		timer := time.NewTimer(policy.Delay(attempt))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return Envelope{}, nil, &ProtocolError{Code: ErrorCancelled, Message: ctx.Err().Error(), RequestID: request.RequestID}
+		case <-timer.C:
+		}
+	}
+	return Envelope{}, nil, lastErr
+}
+
+func (t *SSHTransport) roundTripArtifact(ctx context.Context, request Envelope, maxRawBytes int64) (Envelope, []byte, error) {
+	data, err := t.roundTripBytes(ctx, request, t.config.MaxMessageBytes+maxRawBytes)
+	if err != nil {
+		return Envelope{}, nil, err
+	}
+	buffered := bufio.NewReader(bytes.NewReader(data))
+	header, err := buffered.ReadBytes('\n')
+	if err != nil || int64(len(header)) > t.config.MaxMessageBytes {
+		return Envelope{}, nil, &ProtocolError{Code: ErrorLimit, Message: "artifact metadata response exceeds byte limit", RequestID: request.RequestID}
+	}
+	var response Envelope
+	if err := t.codec.Decode(bytes.NewReader(header), &response); err != nil {
+		return Envelope{}, nil, err
+	}
+	if err := t.validateResponse(request, response); err != nil {
+		return Envelope{}, nil, err
+	}
+	raw, err := io.ReadAll(io.LimitReader(buffered, maxRawBytes+1))
+	if err != nil {
+		return Envelope{}, nil, err
+	}
+	if int64(len(raw)) > maxRawBytes {
+		return Envelope{}, nil, &ProtocolError{Code: ErrorLimit, Message: "artifact payload exceeds byte limit", RequestID: request.RequestID}
+	}
+	return response, raw, nil
 }
 
 var errBoundedBuffer = errors.New("bounded buffer limit exceeded")

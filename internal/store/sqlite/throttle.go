@@ -126,39 +126,64 @@ func (s *Store) CommitQuotaAdmissionTransitions(ctx context.Context, input []dom
 		if err != nil {
 			return err
 		}
-		if replayed {
-			continue
-		}
-		recordJSON, err := json.Marshal(transition.Record)
-		if err != nil {
-			return fmt.Errorf("encode quota admission %q: %w", transition.Record.QuotaPoolID, err)
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO coordinator_quota_admissions(id, revision, record) VALUES (?, ?, ?)
-			 ON CONFLICT(id) DO UPDATE SET revision = excluded.revision, record = excluded.record`,
-			transition.Record.QuotaPoolID, transition.Record.Revision, recordJSON,
-		); err != nil {
-			return fmt.Errorf("save quota admission %q: %w", transition.Record.QuotaPoolID, err)
-		}
-		if transition.Directive != nil {
-			directiveJSON, err := json.Marshal(transition.Directive)
+		if !replayed {
+			recordJSON, err := json.Marshal(transition.Record)
 			if err != nil {
-				return fmt.Errorf("encode throttle directive %q: %w", transition.Directive.ID, err)
+				return fmt.Errorf("encode quota admission %q: %w", transition.Record.QuotaPoolID, err)
 			}
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO coordinator_throttle_directives(id, quota_pool_id, admission_revision, record)
-				 VALUES (?, ?, ?, ?)`,
-				transition.Directive.ID, transition.Directive.QuotaPoolID,
-				transition.Directive.AdmissionRevision, directiveJSON,
+				`INSERT INTO coordinator_quota_admissions(id, revision, record) VALUES (?, ?, ?)
+				 ON CONFLICT(id) DO UPDATE SET revision = excluded.revision, record = excluded.record`,
+				transition.Record.QuotaPoolID, transition.Record.Revision, recordJSON,
 			); err != nil {
-				return fmt.Errorf("save throttle directive %q: %w", transition.Directive.ID, err)
+				return fmt.Errorf("save quota admission %q: %w", transition.Record.QuotaPoolID, err)
 			}
+			if transition.Directive != nil {
+				directiveJSON, err := json.Marshal(transition.Directive)
+				if err != nil {
+					return fmt.Errorf("encode throttle directive %q: %w", transition.Directive.ID, err)
+				}
+				if _, err := tx.ExecContext(ctx,
+					`INSERT INTO coordinator_throttle_directives(id, quota_pool_id, admission_revision, record)
+					 VALUES (?, ?, ?, ?)`,
+					transition.Directive.ID, transition.Directive.QuotaPoolID,
+					transition.Directive.AdmissionRevision, directiveJSON,
+				); err != nil {
+					return fmt.Errorf("save throttle directive %q: %w", transition.Directive.ID, err)
+				}
+			}
+		}
+		if _, err := insertQuotaAdmissionAuditEvent(ctx, tx, transition); err != nil {
+			return err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit quota admission transitions: %w", err)
 	}
 	return nil
+}
+
+func insertQuotaAdmissionAuditEvent(
+	ctx context.Context,
+	tx *sql.Tx,
+	transition domain.QuotaAdmissionTransition,
+) (domain.AuditEvent, error) {
+	detail, err := json.Marshal(transition)
+	if err != nil {
+		return domain.AuditEvent{}, fmt.Errorf(
+			"encode quota admission %q audit detail: %w",
+			transition.Record.QuotaPoolID,
+			err,
+		)
+	}
+	record := transition.Record
+	event := domain.AuditEvent{
+		ID:         fmt.Sprintf("quota-admission:%s:%d", record.QuotaPoolID, record.Revision),
+		Kind:       "quota-admission-" + string(record.Admission),
+		TargetType: domain.AuditTargetQuotaPool, TargetID: record.QuotaPoolID,
+		Actor: "coordinator", Reason: record.Reason, Detail: detail, CreatedAt: record.AppliedAt,
+	}
+	return insertAuditEventTx(ctx, tx, event)
 }
 
 func compareQuotaAdmissionTransition(

@@ -46,6 +46,7 @@ type WorkerDeliveryReport struct {
 	Reconciled       []domain.Assignment            `json:"reconciled,omitempty"`
 	Planned          []domain.WorkerCommand         `json:"planned,omitempty"`
 	Pending          []domain.WorkerCommand         `json:"pending,omitempty"`
+	Withheld         []domain.WorkerCommand         `json:"withheld,omitempty"`
 	Acknowledgements []domain.WorkerAcknowledgement `json:"acknowledgements,omitempty"`
 }
 
@@ -94,6 +95,9 @@ func (c FleetCoordinator) PlanAndCommit(ctx context.Context, input PlanInput) (A
 		if proposal.Route == nil {
 			return AssignmentPlanningReport{}, fmt.Errorf("planner proposed attempt %q without a provider route", proposal.AttemptID)
 		}
+		if proposal.Estimate == nil {
+			return AssignmentPlanningReport{}, fmt.Errorf("planner proposed attempt %q without a quota estimate", proposal.AttemptID)
+		}
 		snapshot, ok := snapshotByWorker[proposal.WorkerID]
 		if !ok {
 			return AssignmentPlanningReport{}, fmt.Errorf("planner proposed worker %q without a current snapshot", proposal.WorkerID)
@@ -104,10 +108,12 @@ func (c FleetCoordinator) PlanAndCommit(ctx context.Context, input PlanInput) (A
 			AttemptID:     attempt.ID,
 			WorkerID:      proposal.WorkerID,
 			Route:         *proposal.Route,
+			Estimate:      cloneTaskAdmissionEstimatePointer(proposal.Estimate),
 			State:         domain.AssignmentOffered,
 			Epoch:         int64(attempt.Number),
 			LeaseToken:    stableCoordinatorID("lease", assignmentID),
 			DispatchToken: stableCoordinatorID("dispatch", assignmentID),
+			ThreadID:      stableCoordinatorID("thread", assignmentID),
 		}
 		items = append(items, domain.AssignmentPlanItem{
 			Assignment:              assignment,
@@ -138,6 +144,26 @@ func (c FleetCoordinator) ReconcileWorkerCommands(
 	ctx context.Context,
 	snapshot domain.WorkerSnapshot,
 	transport WorkerCommandTransport,
+) (WorkerDeliveryReport, error) {
+	return c.reconcileWorkerCommands(ctx, snapshot, transport, nil)
+}
+
+// ReconcileWorkerCommandsWithAdmission applies a current fail-closed quota
+// policy after state reconciliation and again immediately before delivery.
+func (c FleetCoordinator) ReconcileWorkerCommandsWithAdmission(
+	ctx context.Context,
+	snapshot domain.WorkerSnapshot,
+	transport WorkerCommandTransport,
+	admission WorkerAdmissionPolicy,
+) (WorkerDeliveryReport, error) {
+	return c.reconcileWorkerCommands(ctx, snapshot, transport, &admission)
+}
+
+func (c FleetCoordinator) reconcileWorkerCommands(
+	ctx context.Context,
+	snapshot domain.WorkerSnapshot,
+	transport WorkerCommandTransport,
+	admission *WorkerAdmissionPolicy,
 ) (WorkerDeliveryReport, error) {
 	if c.Store == nil {
 		return WorkerDeliveryReport{}, errors.New("fleet coordinator store is required")
@@ -180,6 +206,9 @@ func (c FleetCoordinator) ReconcileWorkerCommands(
 	if err != nil {
 		return WorkerDeliveryReport{}, err
 	}
+	if admission != nil {
+		planned, report.Withheld = admission.filterCommands(records.Assignments, planned)
+	}
 	report.Planned = planned
 	if len(planned) > 0 {
 		if _, err := c.Store.CommitWorkerCommands(ctx, planned); err != nil {
@@ -192,6 +221,12 @@ func (c FleetCoordinator) ReconcileWorkerCommands(
 	)
 	if err != nil {
 		return WorkerDeliveryReport{}, err
+	}
+	if admission != nil {
+		var withheld []domain.WorkerCommand
+		pending, withheld = admission.filterCommands(records.Assignments, pending)
+		report.Withheld = append(report.Withheld, withheld...)
+		sort.Slice(report.Withheld, func(i, j int) bool { return report.Withheld[i].ID < report.Withheld[j].ID })
 	}
 	report.Pending = pending
 	if len(pending) == 0 {

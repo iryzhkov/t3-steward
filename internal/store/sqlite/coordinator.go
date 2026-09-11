@@ -10,7 +10,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-const currentSchemaVersion = 10
+const currentSchemaVersion = 11
 
 const coordinatorMigrationV6 = `
 ALTER TABLE coordinator_schedules ADD COLUMN current_version INTEGER NOT NULL DEFAULT 0;

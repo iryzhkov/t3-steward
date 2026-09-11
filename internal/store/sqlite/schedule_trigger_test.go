@@ -131,8 +131,18 @@ func TestCommitScheduleTriggerPersistsMisfireAndReplaysAfterRestart(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records.Triggers) != 2 || len(records.WorkflowRuns) != 0 {
-		t.Fatalf("catch-up persisted runs = %d, triggers = %d", len(records.WorkflowRuns), len(records.Triggers))
+	if len(records.Triggers) != 2 || len(records.WorkflowRuns) != 0 || len(records.AuditEvents) != 2 {
+		t.Fatalf(
+			"catch-up persisted runs = %d, triggers = %d, events = %d",
+			len(records.WorkflowRuns), len(records.Triggers), len(records.AuditEvents),
+		)
+	}
+	for _, event := range records.AuditEvents {
+		if event.Kind != "schedule-trigger-suppressed" ||
+			event.Reason != "misfire-skipped" ||
+			event.TargetType != domain.AuditTargetTrigger {
+			t.Fatalf("suppressed trigger event = %#v", event)
+		}
 	}
 }
 
@@ -226,8 +236,19 @@ func TestCommitScheduleTriggerAcceptsAndReplaysManualRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records.Triggers) != 1 || len(records.WorkflowRuns) != 1 {
-		t.Fatalf("manual replay persisted runs = %d, triggers = %d", len(records.WorkflowRuns), len(records.Triggers))
+	if len(records.Triggers) != 1 || len(records.WorkflowRuns) != 1 || len(records.AuditEvents) != 1 {
+		t.Fatalf(
+			"manual replay persisted runs = %d, triggers = %d, events = %d",
+			len(records.WorkflowRuns), len(records.Triggers), len(records.AuditEvents),
+		)
+	}
+	event := records.AuditEvents[0]
+	if event.ID != "schedule-trigger:"+request.TriggerID ||
+		event.Kind != "schedule-trigger-accepted" ||
+		event.WorkflowRunID != request.WorkflowRunID ||
+		event.TargetType != domain.AuditTargetTrigger ||
+		event.TargetID != request.TriggerID {
+		t.Fatalf("schedule trigger event = %#v", event)
 	}
 }
 
@@ -333,5 +354,36 @@ func TestScheduleTriggerOccurrenceKey(t *testing.T) {
 	scheduled.Source = domain.ScheduleTriggerManual
 	if got, want := scheduled.OccurrenceKey(), fmt.Sprintf("schedule-1/manual/%s", scheduled.TriggerID); got != want {
 		t.Fatalf("manual occurrence key = %q, want %q", got, want)
+	}
+}
+
+func TestCommitScheduleTriggerRollsBackWhenNativeEventConflicts(t *testing.T) {
+	store := openScheduleTriggerStore(
+		t,
+		filepath.Join(t.TempDir(), "state.db"),
+		domain.ScheduleFailureNextCycle,
+		nil,
+	)
+	defer store.Close()
+
+	request := scheduleTriggerRequest("trigger-conflict", "run-conflict", scheduleTriggerTestTime)
+	conflict := domain.AuditEvent{
+		ID: "schedule-trigger:" + request.TriggerID, Kind: "conflicting-event", CreatedAt: scheduleTriggerTestTime,
+	}
+	if err := store.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{AuditEvents: []domain.AuditEvent{conflict}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CommitScheduleTrigger(context.Background(), request); err == nil {
+		t.Fatal("schedule trigger with conflicting event succeeded")
+	}
+	records, err := store.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records.Triggers) != 0 || len(records.WorkflowRuns) != 0 ||
+		len(records.AuditEvents) != 1 ||
+		records.Schedules[0].ActiveRunID != "" ||
+		records.Schedules[0].Revision != 1 {
+		t.Fatalf("schedule trigger rollback records = %#v", records)
 	}
 }

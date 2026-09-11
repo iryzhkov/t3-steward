@@ -121,8 +121,18 @@ func TestDeriveQuotaPlanningStateRejectsContradictoryDurableState(t *testing.T) 
 			input.ThrottleRecords = append(input.ThrottleRecords, input.ThrottleRecords[0])
 		}, want: "repeat"},
 		{name: "missing fixed-route estimate", edit: func(input *QuotaPlanningStateInput) {
-			input.RouteEstimates = input.RouteEstimates[1:]
-		}, want: "no remaining-cost estimate"},
+			input.Assignments[0].Estimate = nil
+		}, want: "no durable remaining-cost estimate"},
+		{name: "contradictory fixed-route estimate", edit: func(input *QuotaPlanningStateInput) {
+			assignment := input.Assignments[0]
+			estimate := *assignment.Estimate
+			estimate.RemainingCost++
+			input.RouteEstimates = []RouteEstimate{{
+				AttemptID: assignment.AttemptID, WorkerID: assignment.Route.WorkerID,
+				ProviderInstanceID: assignment.Route.ProviderInstanceID,
+				Model:              assignment.Route.Model, Options: assignment.Route.Options, Estimate: estimate,
+			}}
+		}, want: "durable estimate contradicts"},
 		{name: "stale throttle projection", edit: func(input *QuotaPlanningStateInput) {
 			input.ThrottleRecords[0].Control = domain.ControlRunning
 		}, want: "contradicts latest throttle control"},
@@ -193,6 +203,37 @@ func TestPlanThrottleResumesReacquiresSharedPoolSlotDeterministically(t *testing
 	}
 }
 
+func TestDeriveQuotaPlanningStateAccountsOfferedAssignmentReservation(t *testing.T) {
+	input := quotaRecoveryFixture()
+	estimate := domain.TaskAdmissionEstimate{
+		RemainingCost: 7, ExpectedRuntime: time.Hour, CheckpointMargin: 5 * time.Minute,
+	}
+	input.Tasks = append(input.Tasks, domain.Task{ID: "task-offered", Class: domain.TaskClassRequired})
+	input.Attempts = append(input.Attempts, domain.Attempt{
+		ID: "offered", TaskID: "task-offered", Progress: domain.ProgressReady,
+		Control: domain.ControlUnassigned, AssignmentID: "assignment-offered",
+	})
+	input.Assignments = append(input.Assignments, domain.Assignment{
+		ID: "assignment-offered", AttemptID: "offered", WorkerID: "normandy",
+		Route: domain.ProviderRoute{
+			WorkerID: "normandy", ProviderInstanceID: "codex", Model: "gpt-5.6-sol",
+			QuotaPoolID: "shared",
+		},
+		Estimate: &estimate, State: domain.AssignmentOffered,
+	})
+	state, err := DeriveQuotaPlanningState(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, window := range state.QuotaWindows {
+		if window.ActiveConsumption != 13 ||
+			window.PausedRequiredWorkRemainder != 35 ||
+			window.CommittedReservations != 7 {
+			t.Fatalf("assignment accounting window = %#v", window)
+		}
+	}
+}
+
 func quotaRecoveryFixture() QuotaPlanningStateInput {
 	type spec struct {
 		id      string
@@ -221,6 +262,9 @@ func quotaRecoveryFixture() QuotaPlanningStateInput {
 			WorkerID: "normandy", ProviderInstanceID: "codex", Model: "gpt-5.6-sol",
 			Options: map[string]string{"effort": "medium"}, QuotaPoolID: "shared",
 		}
+		estimate := domain.TaskAdmissionEstimate{
+			RemainingCost: item.cost, ExpectedRuntime: time.Hour, CheckpointMargin: 5 * time.Minute,
+		}
 		input.Tasks = append(input.Tasks, domain.Task{ID: taskID, Class: item.class})
 		input.Attempts = append(input.Attempts, domain.Attempt{
 			ID: item.id, TaskID: taskID, Progress: domain.ProgressActive,
@@ -228,14 +272,8 @@ func quotaRecoveryFixture() QuotaPlanningStateInput {
 		})
 		input.Assignments = append(input.Assignments, domain.Assignment{
 			ID: assignmentID, AttemptID: item.id, WorkerID: "normandy", Route: route,
-			State: domain.AssignmentClaimed, Epoch: 7, ThreadID: "thread-" + item.id,
-		})
-		input.RouteEstimates = append(input.RouteEstimates, RouteEstimate{
-			AttemptID: item.id, WorkerID: "normandy", ProviderInstanceID: "codex",
-			Model: "gpt-5.6-sol", Options: map[string]string{"effort": "medium"},
-			Estimate: TaskAdmissionEstimate{
-				RemainingCost: item.cost, ExpectedRuntime: time.Hour, CheckpointMargin: 5 * time.Minute,
-			},
+			Estimate: &estimate, State: domain.AssignmentClaimed, Epoch: 7,
+			ThreadID: "thread-" + item.id,
 		})
 		if item.control == domain.ControlRunning {
 			continue

@@ -264,7 +264,7 @@ func TestSSHTransportLocalMultiProcess(t *testing.T) {
 	var invokedName string
 	var invokedArgs []string
 	transport, err := NewSSHTransport(SSHConfig{
-		Address: "local-test", RemoteCommand: "worker-exchange", RequestTimeout: 2 * time.Second,
+		Address: "local-test", RemoteCommand: "worker-exchange", RemoteArguments: []string{"control"}, RequestTimeout: 2 * time.Second,
 		ConnectTimeout: time.Second, MaxMessageBytes: 64 << 10, MaxStderrBytes: 1024,
 		ResponsePrincipal: "worker:normandy", ResponseKeyID: "worker-key", ResponseSecret: testSecret,
 		Factory: func(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -288,7 +288,7 @@ func TestSSHTransportLocalMultiProcess(t *testing.T) {
 	}
 	wantArgs := []string{
 		"-oBatchMode=yes", "-oStrictHostKeyChecking=yes", "-oConnectTimeout=1",
-		"--", "local-test", "worker-exchange",
+		"--", "local-test", "worker-exchange", "control",
 	}
 	if invokedName != "ssh" || !slices.Equal(invokedArgs, wantArgs) {
 		t.Fatalf("unsafe SSH invocation: %q %q", invokedName, invokedArgs)
@@ -338,6 +338,18 @@ func TestSSHTransportDropRetryTimeoutCancellationAndLimits(t *testing.T) {
 	assertProtocolCode(t, err, ErrorAuthentication)
 }
 
+func TestSSHArtifactTransportAuthenticatesMetadataAndBoundsRawSuffix(t *testing.T) {
+	request := signedLiveEnvelope(t)
+	transport := localHelperTransport(t, "artifact")
+	response, raw, err := transport.RoundTripArtifactWithRetry(context.Background(), request, RetryPolicy{MaxAttempts: 1}, int64(len("raw-artifact")))
+	if err != nil || response.InReplyTo != request.RequestID || string(raw) != "raw-artifact" {
+		t.Fatalf("artifact response=%#v raw=%q err=%v", response, raw, err)
+	}
+	if _, _, err := transport.RoundTripArtifactWithRetry(context.Background(), request, RetryPolicy{MaxAttempts: 1}, 2); err == nil {
+		t.Fatal("oversized raw artifact response was accepted")
+	}
+}
+
 func TestSSHTransportRejectsUnsafeInvocation(t *testing.T) {
 	if _, err := NewSSHTransport(SSHConfig{
 		Address: "-oProxyCommand=bad", RemoteCommand: "worker-exchange",
@@ -350,6 +362,12 @@ func TestSSHTransportRejectsUnsafeInvocation(t *testing.T) {
 		RequestTimeout: time.Second, ConnectTimeout: time.Second, MaxMessageBytes: 1, MaxStderrBytes: 1,
 	}); err == nil {
 		t.Fatal("shell-bearing remote command accepted")
+	}
+	if _, err := NewSSHTransport(SSHConfig{
+		Address: "worker", RemoteCommand: "worker-exchange", RemoteArguments: []string{"--bad"},
+		RequestTimeout: time.Second, ConnectTimeout: time.Second, MaxMessageBytes: 1, MaxStderrBytes: 1,
+	}); err == nil {
+		t.Fatal("option-like remote argument accepted")
 	}
 }
 
@@ -365,7 +383,7 @@ func TestProtocolHelperProcess(t *testing.T) {
 	case "oversize":
 		_, _ = os.Stdout.Write(bytes.Repeat([]byte("x"), 4096))
 		os.Exit(0)
-	case "echo", "bad-auth":
+	case "echo", "bad-auth", "artifact":
 	default:
 		os.Exit(3)
 	}
@@ -377,6 +395,9 @@ func TestProtocolHelperProcess(t *testing.T) {
 	if err != nil {
 		_, _ = os.Stderr.WriteString(err.Error())
 		os.Exit(2)
+	}
+	if mode == "artifact" {
+		_, _ = os.Stdout.WriteString("raw-artifact")
 	}
 	os.Exit(0)
 }

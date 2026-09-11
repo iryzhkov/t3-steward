@@ -145,6 +145,32 @@ func TestCustodyPublishesRestartSafeResultAndCheckpoint(t *testing.T) {
 	if pending[0].Manifest.Direction != "upload" || len(pending[0].Custody) != len(pending[0].Manifest.Objects) {
 		t.Fatalf("pending result = %#v", pending[0])
 	}
+	var resultPath string
+	for _, upload := range pending {
+		if upload.Manifest.ID == "upload-assignment-1-result" {
+			resultPath = upload.Manifest.Objects[0].Path
+		}
+	}
+	if resultPath != "results/result.txt" {
+		t.Fatalf("result output path = %q", resultPath)
+	}
+	resultUpload, err := restarted.PendingUploadByPurpose("result")
+	if err != nil || resultUpload == nil || resultUpload.Manifest.ID != "upload-assignment-1-result" {
+		t.Fatalf("pending result = %#v, %v", resultUpload, err)
+	}
+	if err := restarted.AcknowledgeUpload(resultUpload.Manifest.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.AcknowledgeUpload(resultUpload.Manifest.ID); err != nil {
+		t.Fatalf("acknowledgement replay: %v", err)
+	}
+	if resultUpload, err = restarted.PendingUploadByPurpose("result"); err != nil || resultUpload != nil {
+		t.Fatalf("acknowledged result rediscovered = %#v, %v", resultUpload, err)
+	}
+	checkpointUpload, err := restarted.PendingUploadByPurpose("checkpoint")
+	if err != nil || checkpointUpload == nil {
+		t.Fatalf("pending checkpoint = %#v, %v", checkpointUpload, err)
+	}
 	for _, upload := range pending {
 		for _, object := range upload.Manifest.Objects {
 			reader, err := restarted.OpenArtifact(context.Background(), object)

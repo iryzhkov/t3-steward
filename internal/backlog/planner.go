@@ -62,7 +62,7 @@ type PlanningCandidate struct {
 	Task          domain.Task
 	Attempt       domain.Attempt
 	WorkerID      string
-	RouteOrdinal    int
+	RouteOrdinal  int
 	Route         *domain.ProviderRoute
 	Estimate      *TaskAdmissionEstimate
 }
@@ -100,11 +100,11 @@ type PlanningBlocker struct {
 }
 
 type CandidateEvaluation struct {
-	WorkerID   string                 `json:"workerId"`
+	WorkerID     string                 `json:"workerId"`
 	RouteOrdinal int                    `json:"routeOrdinal,omitempty"`
-	Route      *domain.ProviderRoute  `json:"route,omitempty"`
-	Estimate   *TaskAdmissionEstimate `json:"estimate,omitempty"`
-	Blockers   []PlanningBlocker      `json:"blockers,omitempty"`
+	Route        *domain.ProviderRoute  `json:"route,omitempty"`
+	Estimate     *TaskAdmissionEstimate `json:"estimate,omitempty"`
+	Blockers     []PlanningBlocker      `json:"blockers,omitempty"`
 }
 
 type TaskPlanningDecision struct {
@@ -477,6 +477,12 @@ func validatePlanInput(input PlanInput) error {
 }
 
 func progressBlockers(state DAGState, task domain.Task, attempt domain.Attempt) []PlanningBlocker {
+	if attempt.AssignmentID != "" {
+		return []PlanningBlocker{{
+			Code:   PlanningBlockerAttemptState,
+			Detail: fmt.Sprintf("attempt already has assignment %q", attempt.AssignmentID),
+		}}
+	}
 	if attempt.Progress == domain.ProgressReady {
 		return nil
 	}
@@ -585,7 +591,6 @@ func planningTimeKey(value *time.Time) string {
 	}
 	return value.UTC().Format(time.RFC3339Nano)
 }
-
 
 func clonePlanningTask(task domain.Task) domain.Task {
 	task.Needs = append([]string(nil), task.Needs...)

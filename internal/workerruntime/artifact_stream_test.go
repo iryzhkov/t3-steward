@@ -95,6 +95,27 @@ func TestWorkerArtifactStreamsAuthenticateBoundVerifyAndReplay(t *testing.T) {
 		len(metadata.Custody) != 1 {
 		t.Fatalf("upload metadata=%#v content=%q err=%v", metadata, raw, err)
 	}
+	poll := signedWorkerRequest(t, workerproto.MessageArtifactPoll, 3, workerproto.ArtifactPollRequest{Purpose: "checkpoint"})
+	announced, err := service.Exchange.Handle(context.Background(), poll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var announcement workerproto.ArtifactAnnouncement
+	if err := workerproto.DecodePayload(announced, workerproto.MessageArtifactAnnouncement, &announcement); err != nil {
+		t.Fatal(err)
+	}
+	if announcement.Upload == nil || announcement.Upload.Manifest.ID != pending[0].Manifest.ID {
+		t.Fatalf("announcement = %#v", announcement)
+	}
+	acknowledge := signedWorkerRequest(t, workerproto.MessageArtifactAcknowledge, 4, workerproto.ArtifactAcknowledgeRequest{ManifestID: pending[0].Manifest.ID})
+	acknowledged, err := service.Exchange.Handle(context.Background(), acknowledge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var acknowledgement workerproto.ArtifactAcknowledgement
+	if err := workerproto.DecodePayload(acknowledged, workerproto.MessageArtifactAcknowledged, &acknowledgement); err != nil || acknowledgement.ManifestID != pending[0].Manifest.ID {
+		t.Fatalf("acknowledgement = %#v, %v", acknowledgement, err)
+	}
 }
 
 func TestWorkerArtifactStreamRejectsTrailingAndUnauthorizedInput(t *testing.T) {

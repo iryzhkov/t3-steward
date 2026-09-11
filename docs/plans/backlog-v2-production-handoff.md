@@ -20,26 +20,296 @@ Updated: 2026-09-10
 
 ## Current selection
 
-- Completed stage: S16 — Restart-safe worker runtime.
-- Exact full starting commit: `d6a79a074b1f102acee4b07b07c5724fa9e5e7f9`.
+- Selected stage completed: S17 — Coordinator runtime, submissions, schedules,
+  and quota bridge.
+- Exact full starting commit:
+  `f51170c42fe520e8ed5cdee453f497f8def5272d`.
 - Pre-existing worktree state: clean (`git status --short` produced no
   entries); no unexplained changes were present.
+- Current checkpoint: HEAD remains
+  `f51170c42fe520e8ed5cdee453f497f8def5272d`; `git status --short`
+  contains 88 entries, all expected uncommitted S17 code, tests, and
+  documentation, and `git diff --check` passes.
 - Exit gates copied exactly from the authoritative plan:
-  - Worker restart tests at every durable command/effect boundary.
-  - Lost and ambiguous T3 response, stale epoch, lease loss, corrupt artifact,
-    cancellation/whole-cgroup containment, throttling, checkpoint/resume, and
-    unknown-execution tests.
-  - Local coordinator-stub/worker multi-process test on disposable roots.
+  - Complete local multi-process workflow with dependencies, artifacts,
+    verification, pause/resume/retry, and suppressed recurring trigger.
+  - Simultaneous/replayed submission; unsafe archive; schedule syntax, DST,
+    catch-up, overlap, and restart; quota deduplication/staleness; admin auth; and
+    legacy/coordinator exclusion tests.
+  - Coordinator restart fault injection at every persistence/effect boundary,
+    closed-admission start refusal, and no-duplicate T3 dispatch assertions.
   - `go test ./...`, `go build ./...`, `go vet ./...`, and
     `git diff --check`.
 - Focused tests selected before implementation:
-  - `go test ./internal/workerruntime -count=1`
-  - `go test ./internal/workerruntime -run 'Test(RuntimeRestart|LostAndAmbiguousT3|StaleEpoch|LeaseLoss|CorruptArtifact|Cancellation|Throttle|CheckpointResume|UnknownExecution)' -count=1 -v`
-  - `go test ./internal/workerruntime -run TestLocalCoordinatorStubWorkerMultiProcess -count=10`
-- All focused and full S16 gates passed. The first incomplete stage is now S17
-  — Coordinator runtime, submissions, schedules, and quota bridge. Its
-  successor must inspect the clean post-S16 commit and record its own exact
-  starting state before implementation.
+  - `go test ./internal/backlog ./internal/backlogadmin ./internal/store/sqlite ./internal/workerproto ./internal/workerruntime ./cmd/t3-steward -count=1`
+  - `go test ./internal/backlog ./internal/backlogadmin ./internal/store/sqlite ./cmd/t3-steward -run 'Test(Coordinator|Submission|Schedule|Quota|Admin|Legacy|BacklogV2)' -count=1 -v`
+  - `go test ./cmd/t3-steward -run TestCoordinatorLocalMultiProcessWorkflow -count=10`
+- In-progress checkpoint:
+  - Added `ScheduleTimer`, a persistent timer that reloads its cursor from
+    durable trigger records and delegates decisions to
+    `Store.CommitScheduleTrigger`. Its strict numeric five-field cron parser
+    supports wildcards, lists, ranges, steps, standard day-of-month/day-of-week
+    behavior, and Sunday aliases 0/7.
+  - Occurrences walk the UTC minute timeline in the configured IANA timezone:
+    spring gaps create none and fall folds create two distinct UTC identities.
+    Catch-up keeps the newest configured bounded set, while stable
+    SHA-256-derived trigger/run IDs survive restart.
+  - Added revision-fenced, request-idempotent `ScheduleDefinitionService.Put`.
+    It preserves immutable template history and current active-run/delay state,
+    validates workflows/cron/timezones, and records native create/update audit
+    events.
+  - Added schema version 11 and a durable submission reservation/completion
+    journal. Exact concurrent/restarted requests recover the immutable accepted
+    result; changed content under the same key fails closed.
+  - Added `SubmissionService` for bounded directory, validated safe-tar, and
+    legacy single-task requests. Publication uses deterministic identities and
+    recovers a pending file/metadata boundary without duplicating workflows.
+    Tar traversal, links, special files, duplicates, excess entries, and excess
+    bytes are rejected; legacy gate/host/provider/model/options fields are
+    preserved.
+  - Added `QuotaBridge`, which maps stored provider-bucket observations into
+    configured fleet pools, deduplicates bucket identities, derives admission,
+    persists transitions, and returns throttle directives. Missing, stale,
+    future, or epoch-conflicting evidence and multiply mapped provider
+    instances fail closed.
+  - Accepted submissions, quota-admission revisions, and accepted/suppressed
+    schedule triggers now emit native audit events in the same SQLite
+    transaction as their coordinator-owned state transition. Deterministic
+    event identities make exact replay a no-op and backfill an event if a
+    pre-event accepted record is replayed; an immutable event conflict rolls
+    back the associated state, directive, trigger, and run changes.
+  - Added a bounded local admin protocol for queries, durable mutation
+    submission, and raw artifact retrieval. The mode-0600 Unix socket
+    authenticates `SO_PEERCRED`, accepts only the coordinator owner's UID,
+    replaces claimed principals, bounds JSON and artifact bytes, rejects live
+    socket/non-socket collisions, and closes idle connections on shutdown.
+  - Coordinator mode now owns the admin service/socket, artifact opener, and
+    native tar-bundle submission endpoint. The byte-bounded stream is accepted
+    only from the authenticated owner UID, reuses the submission journal and
+    safe archive validator, and returns immutable accepted/replay identities.
+    `t3-steward backlog submit <bundle.tar>` rejects non-regular or changed
+    input files and can supply an explicit idempotency key. Framed JSON rejects
+    trailing values before any handler runs. Coordinator-mode CLI
+    commands connect to the socket instead of opening SQLite; they remain
+    query/submission clients and cannot execute commands.
+  - Exposed schedule-definition administration through that production local
+    socket. The bounded `schedules put` client supplies request idempotency,
+    expected revision, cron/timezone, failure policy, enabled state, and reason.
+    The server discards claimed identity, uses the kernel-authenticated peer as
+    audit actor, returns immutable exact replay, and rejects changed or stale
+    requests through `ScheduleDefinitionService`.
+  - Added a coordinator-owned legacy Markdown submission source. It scans only
+    an owner-controlled, non-group/world-writable real directory, rejects links,
+    bounds aggregate bytes and file count, maps unique configured T3 project
+    names to logical v2 projects, and submits deterministic immutable requests.
+    Exact scans replay; changed content under the same legacy file ID conflicts.
+  - The coordinator composes a bounded local cycle. On startup and each
+    configured interval it first reconstructs quota reservations and persists
+    derived admission, reconciles durable schedule occurrences, reloads planning
+    state and atomically persists offered assignments, executes pending
+    revision-fenced admin commands, and scans the legacy source. Quota failure
+    defers both planning and admin execution; other component errors do not block
+    safe local boundaries. Planning produces no worker command or dispatch.
+    Unchanged installed `t3-backlog` and `t3-job` drops remain compatible, and
+    runtime-level legacy/coordinator overlap is refused before SQLite opens.
+  - Quota reconciliation and planning are now production-bound locally.
+    Quota-pool config requires positive concurrency, at least one provider
+    instance per pool, and unambiguous provider-instance ownership. Each quota
+    pass produces numeric per-bucket planning windows, using stored usage and
+    burn rate plus configured fallback forecast, safety margin, long-window cap,
+    and surplus horizon. Durable active, paused-required, and offered/committed
+    assignment costs are overlaid before planning; missing or contradictory
+    estimates fail reconciliation without planning or executing queued admin
+    commands.
+  - Planning reloads canonical workflows, runs, tasks, attempts, assignments, and
+    current-epoch worker snapshots; validates every DAG; reconstructs resource
+    and workflow-checkout ownership; and derives immutable difficulty cold-start
+    estimates for exact worker/provider/model/options routes. The hard
+    `QuotaAdmissionPolicy` remains authoritative, including for admin-forced
+    starts. `FleetCoordinator.PlanAndCommit` atomically records offered
+    assignments and their remaining-cost/runtime/checkpoint estimates plus a
+    deterministic future T3 thread identity. Reloaded assigned attempts are
+    blocked from replanning.
+  - Added a serialized coordinator protocol client for snapshots, offers, lease
+    renewals, lifecycle commands, and throttle commands. It signs every typed
+    request, delegates bounded identical-envelope retry, and permanently
+    abandons a session after an unresolved exchange so later requests cannot
+    create a sequence gap or changed replay.
+  - Added `FleetCoordinator.ReconcileWorker`, a transport-neutral durable
+    exchange boundary. It persists a fresh epoch-bound snapshot, loads only
+    already-committed offers for that worker epoch, applies bounded lease and
+    offer expiry, validates the immutable execution package and exact assignment
+    identity, requires one unique claim per offer, commits claims through
+    coordinator SQLite, refreshes the snapshot, then derives, persists, delivers,
+    and acknowledges lifecycle commands.
+  - Added the final worker-transport admission fence. Only quota pools explicitly
+    derived as open may cross the transport with offers or prepare/dispatch
+    commands; closed, constrained, draining, recovering, missing, or failed
+    quota state withholds them. Previously durable pending new-work commands are
+    checked again immediately before delivery, while observation, stop, and
+    result collection remain available.
+  - Coordinator worker configuration now includes the worker epoch and worker
+    mode requires its local epoch to match that declaration. The executable can
+    construct a fresh serialized protocol client and worker-scoped package
+    builder from the configured address, epoch, message limits, strict SSH
+    transport, and environment-resolved mutual credentials. Session IDs contain
+    a cryptographically random nonce so an abandoned ambiguous session is never
+    reused. The immediate startup cycle remains local-only; subsequent scheduled
+    cycles construct fresh sessions for configured workers and reconcile each
+    independently. A failed quota pass supplies an empty final admission policy,
+    preserving observation/stop/collection while withholding new work. No
+    worker or T3 process was contacted during development or verification.
+  - Added `CoordinatorOfferBuilder`. It reloads authoritative records and
+    requires the ephemeral leased offer to match the durable offered assignment,
+    then resolves the exact attempt, task, run, workflow, worker-scoped catalog,
+    prompt ownership, static inputs, named dependency outputs, route, deadlines,
+    verification, output declarations, and byte/time/turn limits. Package ID and
+    creation time derive from the committed assignment, so rebuilding at a later
+    retry time yields the same content address; malformed, cross-run, duplicate,
+    missing, or ownership-conflicting records fail closed.
+  - Legacy single-task submissions now explicitly carry the minimal `true`
+    verification command required by the immutable worker package contract.
+  - Scheduled worker reconciliation now expires elapsed leases before contact,
+    renews only a live durable claim that the same worker still observes, and
+    persists the successful extension against the exact pre-renewal snapshot.
+    A lost renewal response leaves coordinator state unextended and therefore
+    fail closed; an expired unknown assignment cannot be revived merely by a
+    continuing running observation.
+  - The same authenticated session now replays worker-scoped pending throttle
+    intent, delivers new quota warning/drain/hard-stop commands, escalates
+    missed checkpoint deadlines, and resumes eligible paused attempts. Per-
+    worker store scoping prevents one unavailable worker from consuming or
+    blocking another worker's durable throttle records.
+  - Added a transport-neutral `CoordinatorResultImporter`. It accepts only a
+    completed assignment and verifying attempt bound to the exact coordinator,
+    worker, and assignment epochs; verifies the complete checksum-linked
+    custody chain, safe result paths, aggregate/object byte limits, payload
+    size/SHA-256, declared output names and media types, ordered strict-JSON
+    verification reports, thread archive, and explicit final done marker before
+    publishing coordinator-owned artifacts.
+  - Result import distinguishes invalid evidence from a valid failed task.
+    Nonzero verification or missing declared output retains the available
+    evidence and commits a replay-stable failed turn outcome; complete passing
+    evidence commits success. Exact replay republishes no mutable metadata and
+    creates no duplicate outcome transition. Completed assignments are now an
+    explicitly fenced artifact-publication state when their attempt is
+    verifying or terminal.
+  - Worker result custody now preserves declared output paths instead of
+    substituting artifact IDs. Coordinator planning uses the reconciled DAG
+    snapshot, so a successful imported producer releases its blocked dependent
+    for the next planning pass.
+  - Added one-at-a-time, purpose-scoped worker outbox polling and authenticated
+    post-import acknowledgement. A worker atomically moves an acknowledged
+    manifest into retained custody so exact replay succeeds without
+    rediscovery; results and checkpoints cannot starve one another during
+    discovery.
+  - Added an authenticated bounded raw artifact fetch to the coordinator
+    protocol client. It requests the exact announced manifest and complete
+    ordered object identity over a distinct `artifact-send` session, verifies
+    signed response identity plus aggregate/object size and SHA-256, and exposes
+    only exact verified objects to the importer. Retries reuse the immutable
+    envelope; ambiguous exhaustion poisons only that fresh artifact session.
+  - Configured worker cycles now poll, fetch, import, and acknowledge one result
+    after ordinary observation/lease/command/throttle reconciliation. Import or
+    fetch failure never acknowledges the outbox, and a lost acknowledgement
+    safely replays import on the next fresh cycle. The production SSH command
+    now supplies the endpoint's mandatory fixed `control` or `artifact-send`
+    operation as a separately validated shell-free argument.
+  - Added `CoordinatorCheckpointImporter` and composed a second purpose-scoped
+    poll/fetch/import/acknowledge pass. Checkpoint bytes publish only when the
+    object exactly matches the worker/assignment epochs and the artifact ID,
+    size, SHA-256, path, and capture time already accepted in an acknowledged
+    throttle projection. Replay works while paused and after the same assignment
+    later completes; invalid or corrupt evidence is never acknowledged.
+  - Corrected worker checkpoint objects to their actual `text/markdown` media
+    type. Coordinator reports now expose imported checkpoint artifacts
+    separately from terminal result imports.
+  - Added the exact named `TestCoordinatorLocalMultiProcessWorkflow` acceptance
+    gate. It runs the complete disposable dependency/artifact/verification/
+    pause/resume/retry/suppressed-trigger workflow in a child test process,
+    composes the authenticated coordinator-stub/worker child-process exchange,
+    and repeats the closed-admission, coordinator/worker restart, durable
+    command/effect replay, lost-response, and no-duplicate-dispatch assertions.
+  - Added migration-from-10, simultaneous reservation, changed replay,
+    crash-pending recovery, bounds, unsafe input, generated key, legacy
+    compatibility, schedule revision/replay/syntax/DST/catch-up/overlap/restart,
+    quota deduplication/staleness/conflict, local admin auth/limits/shutdown,
+    exact installed legacy fixtures, legacy directory ownership/link/byte/file
+    bounds, runtime mutual exclusion, closed legacy ingestion,
+    transaction-bound submission/quota/schedule events with replay and
+    conflict rollback, CLI archive input checks, authenticated bounded native
+    archive streaming, end-to-end runtime ingestion/replay,
+    schedule-to-timer/runtime-to-admin-socket tests, and end-to-end bounded-cycle
+    schedule/admin convergence with zero assignment dispatch; durable assignment
+    estimate/replay identity and restart reconstruction; zero-observation closed
+    admission; deterministic pool binding; quota-failure admin deferral; and
+    schedule-definition CLI parsing, generated identity, peer authentication,
+    local transport replay, live coordinator-socket administration, numeric
+    quota planning-window projection, active/paused/committed durable accounting,
+    cold route estimate assembly, assigned-attempt replay suppression,
+    quota-failure planning deferral, atomic offered-assignment persistence
+    with no dispatch, deterministic offered thread identity, serialized signed
+    client sequencing/ambiguous-session fencing/structured errors, durable
+    snapshot-offer-claim-refresh-prepare-command reconciliation, replay-stable
+    execution-package assembly, malformed durable-link rejection, and legacy
+    verification compatibility.
+  - Passing checkpoint gates:
+    - `go test ./internal/config ./internal/backlog ./internal/domain ./internal/store/sqlite ./cmd/t3-steward -run 'Test(BacklogV2CoordinatorConfiguration|DeriveQuotaPlanningState|QuotaBridge|FleetCoordinatorCommits|RunBacklogV2Coordinator|CoordinatorBoundaryCycle|CoordinatorQuotaPoolBindings|CoordinatorQuotaReconciler|OrchestratorDomainJSON)' -count=10`
+    - `go test ./cmd/t3-steward -run 'TestRunBacklogV2Coordinator(ReconcilesSchedulesAndAdminCommands|StartsClosedAndAdvancesEpoch|ServesAuthenticatedLocalAdmin|IngestsLegacyDropWithoutDispatch|AcceptsNativeArchiveSubmissionAndReplay)$' -count=10`
+    - `go test ./internal/backlogadmin ./cmd/t3-steward -run 'Test(LocalSubmission|LocalTransport|ReadLocalJSON|BacklogSubmission|RunBacklogV2CoordinatorAcceptsNative)' -count=10`
+    - `go test ./internal/store/sqlite ./internal/backlog -run 'Test(CompleteSubmission|CommitQuotaAdmission|CommitScheduleTrigger|ScheduleDefinition)' -count=10`
+    - `go test ./internal/backlog -run TestQuotaBridge -count=1 -v`
+    - `go test ./internal/backlogadmin ./cmd/t3-steward -run 'Test(LocalTransport|ListenLocal|RunBacklogV2)' -count=10`
+    - `go test ./internal/backlog ./internal/backlogadmin ./cmd/t3-steward -run 'Test(ScheduleDefinition|LocalTransport|ParseScheduleDefinition|RunScheduleDefinition|RunBacklogV2CoordinatorAcceptsNative)' -count=10`
+    - `go test ./internal/backlog ./cmd/t3-steward -run 'Test(LegacySubmissionSource|RunBacklogV2Coordinator|RunBacklogV2Refuses)' -count=10`
+    - `go test ./internal/backlog ./internal/backlogadmin ./internal/config ./internal/store/sqlite ./internal/workerproto ./internal/workerruntime ./cmd/t3-steward -count=1`
+    - `go test ./...`
+    - `go build ./...`
+    - `go vet ./...`
+    - `git diff --check`
+    - `go test ./internal/backlog ./internal/config ./cmd/t3-steward -count=1`
+    - `go test ./internal/backlog ./cmd/t3-steward -run 'Test(QuotaBridge|DeriveQuotaPlanningState|BuildCoordinatorPlanInput|CoordinatorPlanner|CoordinatorBoundaryCycle|RunBacklogV2Coordinator)' -count=10`
+    - `go test ./internal/backlog ./internal/backlogadmin ./internal/store/sqlite ./internal/workerproto ./internal/workerruntime ./cmd/t3-steward -count=1`
+    - `go test ./internal/backlog ./internal/backlogadmin ./internal/store/sqlite ./cmd/t3-steward -run 'Test(Coordinator|Submission|Schedule|Quota|Admin|Legacy|BacklogV2)' -count=1 -v`
+    - `go test ./cmd/t3-steward -run TestCoordinatorLocalMultiProcessWorkflow -count=10`
+    - `go test ./...`
+    - `go build ./...`
+    - `go vet ./...`
+    - `git diff --check`
+    - `go test ./internal/backlog ./internal/store/sqlite ./internal/workerproto -count=1`
+    - `go test ./internal/backlog ./internal/backlogadmin ./internal/store/sqlite ./internal/workerproto ./internal/workerruntime ./cmd/t3-steward -count=1`
+    - `go test ./internal/backlog ./internal/backlogadmin ./internal/store/sqlite ./cmd/t3-steward -run 'Test(Coordinator|Submission|Schedule|Quota|Admin|Legacy|BacklogV2)' -count=1 -v`
+    - `go test ./cmd/t3-steward -run TestCoordinatorLocalMultiProcessWorkflow -count=10`
+    - `go test ./...`
+    - `go build ./...`
+    - `go vet ./...`
+    - `git diff --check`
+    - `go test ./internal/backlog -run 'Test(CoordinatorOfferBuilder|SubmissionServicePreservesLegacy|FleetCoordinatorReconcilesOffer)' -count=10`
+    - `go test ./internal/backlog -run TestFleetCoordinatorWithholdsNewWorkAtFinalQuotaBoundary -count=1 -v`
+    - `go test ./internal/backlog -run 'Test(FleetCoordinatorRenewsLeaseAndDeliversDurableThrottle|LeaseRenewalsForWorker|PlanWorkerStateTransitions)' -count=1 -v`
+    - `go test ./internal/backlog ./cmd/t3-steward -run 'Test(FleetCoordinatorRenewsLeaseAndDeliversDurableThrottle|LeaseRenewalsForWorker|PlanWorkerStateTransitions|CoordinatorWorkerSessions)' -count=10`
+    - `go test ./cmd/t3-steward -run 'Test(CoordinatorBoundaryCycle|CoordinatorWorkerSessions|NewCoordinatorWorkerSession)' -count=1 -v`
+    - `go test ./internal/backlog ./internal/backlogadmin ./internal/store/sqlite ./internal/workerproto ./internal/workerruntime ./cmd/t3-steward -count=1`
+    - `go test ./internal/backlog ./internal/backlogadmin ./internal/store/sqlite ./cmd/t3-steward -run 'Test(Coordinator|Submission|Schedule|Quota|Admin|Legacy|BacklogV2)' -count=1 -v`
+    - `go test ./cmd/t3-steward -run TestCoordinatorLocalMultiProcessWorkflow -count=10`
+    - `go test ./...`
+    - `go build ./...`
+    - `go vet ./...`
+    - `git diff --check`
+- Current outcome/import checkpoint gates:
+    - `go test ./internal/backlog ./internal/store/sqlite ./internal/workerruntime -run 'Test(BuildCoordinatorPlanInputReleasesDependency|CoordinatorResultImporter|CoordinatorArtifact|Custody)' -count=10`
+    - `go test ./internal/backlog ./internal/backlogadmin ./internal/store/sqlite ./internal/workerproto ./internal/workerruntime ./cmd/t3-steward -count=1`
+    - `go test ./...`
+    - `go build ./...`
+    - `go vet ./...`
+    - `git diff --check`
+- Current configured result-transfer focused tests:
+    - `go test ./cmd/t3-steward ./internal/workerproto ./internal/workerruntime ./internal/backlog -run 'Test(ImportCoordinatorWorkerResult|NewCoordinatorWorkerSession|ClientFetch|SSHArtifact|CustodyPublishes|WorkerArtifactStreams)' -count=1 -v`
+- Current checkpoint-transfer focused tests:
+    - `go test ./internal/backlog ./internal/workerruntime ./cmd/t3-steward -run 'Test(CoordinatorCheckpointImporter|CustodyPublishes|ImportCoordinatorWorkerCheckpoint|ImportCoordinatorWorkerResult|NewCoordinatorWorkerSession)' -count=10`
+- S17 has no safe in-stage work remaining. Its focused, named acceptance, full
+  repository, build, vet, and diff gates pass; the stage and R4 checkboxes are
+  complete. S18 is the next incomplete named stage.
 
 ## Completed stages
 
@@ -153,10 +423,13 @@ Updated: 2026-09-10
 
 - The worker runtime and fixed endpoints are implemented but not installed,
   deployed, or contacted by a production coordinator.
-- The coordinator runtime stops at closed authority. S17 must compose bundle
-  ingestion, submissions, planning, schedules, quota bridging, worker exchange,
-  atomic delivery/reconciliation, outcomes, artifact import, and admin
-  execution. Hard closed quota admission remains authoritative for every path.
+- The coordinator runtime composes bundle ingestion, schedules, quota bridging,
+  admin execution, and quota-authoritative planning through atomic offered
+  assignments. S17 now composes worker exchange, delivery/reconciliation,
+  lease expiry/renewal, throttle delivery, bounded result/checkpoint transfer,
+  coordinator custody, and terminal outcomes. Its named disposable
+  multi-process and restart/effect-boundary gates pass. Hard closed quota
+  admission remains authoritative for every path.
 - Native non-admin audit, coherent coordinator/worker backup and restore,
   credential/epoch rotation procedures, and explicit unknown-state recovery
   remain S18 work.

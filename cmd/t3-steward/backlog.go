@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,11 +15,13 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
-	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
 const backlogUsage = `Usage: t3-steward backlog <command> [args]
+
+Coordinator submission command:
+  submit <bundle.tar> [--idempotency-key KEY] [--json]
 
 Coordinator read commands:
   status [--json]
@@ -97,7 +98,7 @@ func isCoordinatorAdmin(args []string) bool {
 		return false
 	}
 	switch args[0] {
-	case "status", "graph", "task", "events", "explain", "artifacts", "artifact", "commands", "command", "show",
+	case "submit", "status", "graph", "task", "events", "explain", "artifacts", "artifact", "commands", "command", "show",
 		"start", "delay", "pause", "resume", "cancel", "retry", "skip":
 		return true
 	case "list":
@@ -108,32 +109,22 @@ func isCoordinatorAdmin(args []string) bool {
 }
 
 func runCoordinatorAdmin(cfg config.Config, args []string, schedules bool) error {
-	statePath, err := cfg.ResolveStatePath()
+	socketPath, err := resolveBacklogV2AdminSocketPath(cfg)
 	if err != nil {
 		return err
 	}
-	store, err := sqlite.Open(statePath)
-	if err != nil {
-		return err
+	client := backlogadmin.LocalClient{
+		Path:             socketPath,
+		MaxResponseBytes: int64(cfg.BacklogV2.MessageLimits.MaxBytes),
+		MaxArtifactBytes:   int64(cfg.BacklogV2.MessageLimits.MaxArtifactBytes),
+		MaxSubmissionBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
 	}
-	defer store.Close()
-	service, err := backlogadmin.New(store, localAdminAuthorizer{})
-	if err != nil {
-		return err
-	}
-	dataDir, err := cfg.ResolveDataDir()
-	if err != nil {
-		return err
-	}
-	artifactStore := backlog.CoordinatorArtifactStore{Root: filepath.Join(dataDir, "artifacts"), Catalog: store}
-	service.SetArtifactOpener(func(ctx context.Context, artifactID string) (domain.Artifact, io.ReadCloser, error) {
-		artifact, content, openErr := artifactStore.Open(ctx, artifactID)
-		return artifact, content, openErr
-	})
 	cli := backlogAdminCLI{
-		service:   service,
-		mutator:   service,
-		artifacts: service,
+		service:             client,
+		mutator:             client,
+		artifacts:           client,
+		submissions:         client,
+		scheduleDefinitions: client,
 		principal: backlogadmin.Principal{
 			ID:    fmt.Sprintf("local:%d", os.Getuid()),
 			Roles: []string{"local-admin"},

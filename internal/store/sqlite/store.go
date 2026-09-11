@@ -253,6 +253,7 @@ func (s *Store) Migrate() error {
 		{8, coordinatorMigrationV8},
 		{9, coordinatorMigrationV9},
 		{10, coordinatorMigrationV10},
+		{11, coordinatorMigrationV11},
 	}
 	for _, migration := range versioned {
 		if version >= migration.version {

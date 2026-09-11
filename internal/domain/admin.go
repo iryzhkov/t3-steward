@@ -11,6 +11,10 @@ const (
 	AdminTargetAttempt     AdminTargetType = "attempt"
 	AdminTargetWorkflowRun AdminTargetType = "workflow-run"
 	AdminTargetSchedule    AdminTargetType = "schedule"
+
+	AuditTargetSubmission AdminTargetType = "submission"
+	AuditTargetQuotaPool  AdminTargetType = "quota-pool"
+	AuditTargetTrigger    AdminTargetType = "trigger"
 )
 
 type AdminCommandKind string

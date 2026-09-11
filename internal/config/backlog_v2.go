@@ -36,8 +36,9 @@ func (c *Config) validateBacklogV2() error {
 	if v.Transport.RequestTimeout.D() <= 0 {
 		return errors.New("backlog_v2: transport.request_timeout must be positive")
 	}
-	if v.MessageLimits.MaxBytes <= 0 || v.MessageLimits.MaxArtifactBytes <= 0 {
-		return errors.New("backlog_v2: message limits must be positive")
+	if v.MessageLimits.MaxBytes <= 0 || v.MessageLimits.MaxFiles <= 0 ||
+		v.MessageLimits.MaxArtifactBytes <= 0 {
+		return errors.New("backlog_v2: message byte, file, and artifact limits must be positive")
 	}
 	if v.Freshness.WorkerMaxAge.D() <= 0 || v.Freshness.QuotaMaxAge.D() <= 0 {
 		return errors.New("backlog_v2: freshness limits must be positive")
@@ -53,14 +54,21 @@ func (c *Config) validateBacklogV2() error {
 		return err
 	}
 	for id, pool := range v.QuotaPools {
-		if strings.TrimSpace(id) == "" || strings.TrimSpace(pool.Provider) == "" {
-			return fmt.Errorf("backlog_v2: quota pool %q requires an id and provider", id)
+		if strings.TrimSpace(id) != id || id == "" ||
+			strings.TrimSpace(pool.Provider) != pool.Provider || pool.Provider == "" {
+			return fmt.Errorf("backlog_v2: quota pool %q requires trimmed id and provider", id)
+		}
+		if pool.MaxConcurrent < 1 {
+			return fmt.Errorf("backlog_v2: quota pool %q max_concurrent must be positive", id)
 		}
 	}
+	providerInstancePools := make(map[string]string)
+	usedQuotaPools := make(map[string]bool)
 	for id, worker := range v.Workers {
 		if strings.TrimSpace(id) == "" || strings.TrimSpace(worker.Address) == "" ||
+			strings.TrimSpace(worker.Epoch) != worker.Epoch || worker.Epoch == "" ||
 			strings.TrimSpace(worker.Credential) == "" {
-			return fmt.Errorf("backlog_v2: worker %q requires address and credential", id)
+			return fmt.Errorf("backlog_v2: worker %q requires address, epoch, and credential", id)
 		}
 		if !worker.AcceptBacklog {
 			return fmt.Errorf("backlog_v2: configured worker %q must accept backlog work", id)
@@ -75,6 +83,16 @@ func (c *Config) validateBacklogV2() error {
 			if _, ok := v.QuotaPools[provider.QuotaPool]; !ok {
 				return fmt.Errorf("backlog_v2: worker %q provider %q references unknown quota pool %q", id, instance, provider.QuotaPool)
 			}
+			if owner, exists := providerInstancePools[instance]; exists && owner != provider.QuotaPool {
+				return fmt.Errorf("backlog_v2: provider instance %q belongs to quota pools %q and %q", instance, owner, provider.QuotaPool)
+			}
+			providerInstancePools[instance] = provider.QuotaPool
+			usedQuotaPools[provider.QuotaPool] = true
+		}
+	}
+	for poolID := range v.QuotaPools {
+		if !usedQuotaPools[poolID] {
+			return fmt.Errorf("backlog_v2: quota pool %q has no provider instances", poolID)
 		}
 	}
 	for name, profile := range v.SetupProfiles {
@@ -120,6 +138,9 @@ func (c *Config) validateBacklogV2() error {
 		}
 		if _, ok := v.Workers[local.ID]; !ok {
 			return fmt.Errorf("backlog_v2: local worker %q is not declared in workers", local.ID)
+		}
+		if v.Workers[local.ID].Epoch != local.Epoch {
+			return fmt.Errorf("backlog_v2: local worker %q epoch does not match its worker declaration", local.ID)
 		}
 	}
 	return nil

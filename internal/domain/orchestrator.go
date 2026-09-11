@@ -191,25 +191,34 @@ const (
 	AssignmentCompleted AssignmentState = "completed"
 )
 
+// TaskAdmissionEstimate is the durable remaining quota and runtime estimate
+// fixed when an assignment route is committed.
+type TaskAdmissionEstimate struct {
+	RemainingCost    float64       `json:"remainingCost"`
+	ExpectedRuntime  time.Duration `json:"expectedRuntime"`
+	CheckpointMargin time.Duration `json:"checkpointMargin"`
+}
+
 // Assignment commits one attempt to a worker and provider route.
 type Assignment struct {
-	ID                  string          `json:"id"`
-	AttemptID           string          `json:"attemptId"`
-	WorkerID            string          `json:"workerId"`
-	WorkerEpoch         string          `json:"workerEpoch,omitempty"`
-	Route               ProviderRoute   `json:"route"`
-	State               AssignmentState `json:"state"`
-	Epoch               int64           `json:"epoch"`
-	LeaseToken          string          `json:"leaseToken"`
-	LeaseExpiresAt      time.Time       `json:"leaseExpiresAt"`
-	DispatchToken       string          `json:"dispatchToken"`
-	ThreadID            string          `json:"threadId,omitempty"`
-	DispatchState       DispatchState   `json:"dispatchState,omitempty"`
-	DispatchRevision    int64           `json:"dispatchRevision,omitempty"`
-	DispatchConfirmedAt *time.Time      `json:"dispatchConfirmedAt,omitempty"`
-	DispatchError       string          `json:"dispatchError,omitempty"`
-	CreatedAt           time.Time       `json:"createdAt"`
-	UpdatedAt           time.Time       `json:"updatedAt"`
+	ID                  string                 `json:"id"`
+	AttemptID           string                 `json:"attemptId"`
+	WorkerID            string                 `json:"workerId"`
+	WorkerEpoch         string                 `json:"workerEpoch,omitempty"`
+	Route               ProviderRoute          `json:"route"`
+	Estimate            *TaskAdmissionEstimate `json:"estimate,omitempty"`
+	State               AssignmentState        `json:"state"`
+	Epoch               int64                  `json:"epoch"`
+	LeaseToken          string                 `json:"leaseToken"`
+	LeaseExpiresAt      time.Time              `json:"leaseExpiresAt"`
+	DispatchToken       string                 `json:"dispatchToken"`
+	ThreadID            string                 `json:"threadId,omitempty"`
+	DispatchState       DispatchState          `json:"dispatchState,omitempty"`
+	DispatchRevision    int64                  `json:"dispatchRevision,omitempty"`
+	DispatchConfirmedAt *time.Time             `json:"dispatchConfirmedAt,omitempty"`
+	DispatchError       string                 `json:"dispatchError,omitempty"`
+	CreatedAt           time.Time              `json:"createdAt"`
+	UpdatedAt           time.Time              `json:"updatedAt"`
 }
 
 // Schedule overlap, misfire, and failure policies.

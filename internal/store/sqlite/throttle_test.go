@@ -44,6 +44,16 @@ func TestCommitQuotaAdmissionTransitionsAtomicReplayAndStaleRevision(t *testing.
 	if len(directives) != 2 || directives[0].QuotaPoolID != "a-pool" || directives[1].QuotaPoolID != "z-pool" {
 		t.Fatalf("directives = %#v", directives)
 	}
+	coordinatorRecords, err := store.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(coordinatorRecords.AuditEvents) != 2 ||
+		coordinatorRecords.AuditEvents[0].ID != "quota-admission:a-pool:1" ||
+		coordinatorRecords.AuditEvents[1].ID != "quota-admission:z-pool:1" ||
+		coordinatorRecords.AuditEvents[0].TargetType != domain.AuditTargetQuotaPool {
+		t.Fatalf("quota admission events = %#v", coordinatorRecords.AuditEvents)
+	}
 
 	updateA := throttleStoreTransition("a-pool", 1, domain.AdmissionClosed, domain.ThrottleStop)
 	staleZ := throttleStoreTransition("z-pool", 0, domain.AdmissionDraining, domain.ThrottleDrain)
@@ -65,6 +75,13 @@ func TestCommitQuotaAdmissionTransitionsAtomicReplayAndStaleRevision(t *testing.
 	}
 	if !reflect.DeepEqual(directivesAfter, directives) {
 		t.Fatalf("stale batch persisted directives:\nafter %#v\nbefore %#v", directivesAfter, directives)
+	}
+	coordinatorRecordsAfter, err := store.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(coordinatorRecordsAfter.AuditEvents, coordinatorRecords.AuditEvents) {
+		t.Fatalf("stale batch persisted events:\nafter %#v\nbefore %#v", coordinatorRecordsAfter.AuditEvents, coordinatorRecords.AuditEvents)
 	}
 }
 
@@ -122,5 +139,35 @@ func throttleStoreTransition(
 		ExpectedRevision: expectedRevision,
 		Record:           record,
 		Directive:        &directive,
+	}
+}
+
+func TestCommitQuotaAdmissionTransitionRollsBackWhenNativeEventConflicts(t *testing.T) {
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	transition := throttleStoreTransition("conflict-pool", 0, domain.AdmissionClosed, domain.ThrottleStop)
+	conflict := domain.AuditEvent{
+		ID: "quota-admission:conflict-pool:1", Kind: "conflicting-event", CreatedAt: throttleStoreTime,
+	}
+	if err := store.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{AuditEvents: []domain.AuditEvent{conflict}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CommitQuotaAdmissionTransitions(context.Background(), []domain.QuotaAdmissionTransition{transition}); err == nil {
+		t.Fatal("quota transition with conflicting event succeeded")
+	}
+	records, err := store.LoadQuotaAdmissions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	directives, err := store.LoadThrottleDirectives(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 || len(directives) != 0 {
+		t.Fatalf("conflicting transition persisted records %#v, directives %#v", records, directives)
 	}
 }

@@ -14,15 +14,62 @@ pause/resume, schedule idempotency, the transport-neutral admin service and
 CLI, the versioned authenticated exchange, and the S16 restart-safe worker
 runtime.
 
+Completed S17 code adds a schema-11 submission journal and bounded
+idempotent directory, tar, and legacy single-task submission services. It also
+adds revision-fenced audited schedule-definition administration and a
+persistent five-field-cron timer whose occurrence cursor and identities survive
+restart. It also adds a quota bridge that deduplicates stored provider-bucket
+evidence into fleet pools and closes admission for missing, stale, future, or
+epoch-conflicting readings. Accepted submissions, quota admission revisions,
+and accepted or suppressed schedule triggers publish native audit events in the
+same transaction as their state changes; exact replay does not duplicate them.
+Archive extraction rejects links, special files, traversal, duplicate paths,
+excess entries, and excess bytes. Schedule matching
+walks UTC minutes in the configured IANA timezone, so DST gaps produce no
+occurrence and folds produce two distinct nominal UTC occurrences.
+
 The executable now exposes only three fixed worker operations: control,
 artifact receive, and artifact send. They bind strict local configuration,
 credential principals, durable epochs, replay state, journals, artifact
 custody, isolated workspaces, containment, and the worker-side T3 adapter.
-The production coordinator still does **not** compose planning, submissions,
-schedules, quota bridging, worker transport, or admin execution. The existing
-Markdown `t3-backlog` runner remains the production path. Do not deploy
-backlog-v2 as a fleet coordinator until the remaining stages and qualification
-gates are complete. The detailed decision is in
+Every worker declaration includes the worker epoch; worker mode rejects a local
+epoch that differs from that declaration. The coordinator-side construction
+boundary resolves the named credential, binds both epochs and principals to a
+fresh authenticated SSH session, and pairs it with the worker-scoped execution
+package catalog. Scheduled post-startup cycles initiate fresh sessions for each
+configured worker; the startup cycle remains local-only and failed quota
+reconstruction supplies an empty new-work admission policy.
+The production coordinator now owns a bounded local admin socket for query,
+durable mutation submission, artifact retrieval, and revision-fenced schedule-
+definition administration. It authenticates the Unix
+peer UID and does not trust client-supplied identity; coordinator-mode CLI
+commands no longer open SQLite. While closed, the coordinator also ingests the
+unchanged owner-controlled `t3-backlog`/`t3-job` Markdown drop through
+aggregate byte/file bounds, project alias mapping, and the immutable submission
+journal; this does not dispatch work. The same authenticated socket accepts
+bounded native tar-bundle streams and returns immutable submission, workflow,
+and run identities; exact idempotency-key replay returns the original result.
+The bounded local cycle immediately and periodically fires restart-derived
+schedule occurrences, executes durable revision-fenced admin commands, and
+reconciles legacy submissions. Component errors are logged without preventing
+other local boundaries from making progress. The cycle first reconstructs
+active slots, paused fixed-route remainder, offered-work reservations, and
+numeric per-bucket capacity/forecast windows, then derives and persists quota
+admission from stored provider evidence. A failure defers both planning and admin
+execution. A successful pass reloads DAG/worker state, applies hard quota
+admission, and atomically persists offered assignments without contacting a
+worker or creating a dispatch command. A transport-neutral importer now
+validates completed-assignment custody, raw object hashes, declared outputs,
+ordered verification reports, and the final done marker before coordinator
+artifact publication and replay-safe success/failure projection. Scheduled
+sessions compose bounded worker transport, lease expiry/renewal, lifecycle
+delivery, durable throttle replay/delivery, one-at-a-time result outbox
+discovery, bounded raw fetch, import, and post-import acknowledgement for both
+results and checkpoints. Checkpoint publication additionally requires an exact
+acknowledged throttle projection. The existing Markdown
+`t3-backlog` runner remains the deployed production path. Do not deploy
+backlog-v2 as a fleet coordinator until the remaining
+stages and qualification gates are complete. The detailed decision is in
 [the deployment-readiness report](plans/backlog-v2-deployment-readiness.md);
 the wire and worker contract is in
 [the worker protocol](backlog-v2-worker-protocol.md).
@@ -52,13 +99,16 @@ remain compatible, and backlog-v2 is disabled by default.
 - `projects` declare repository, default ref, T3 project, setup profile,
   eligible workers, credential references, and resource locks.
 - `setup_profiles` contain nonempty command lists and positive timeouts.
-- `quota_pools` map fleet admission to providers.
+- `quota_pools` map fleet admission to providers and require a positive
+  `max_concurrent`. Every pool must own at least one configured provider
+  instance, and one provider-instance identity cannot span pools.
 - `storage` declares absolute, non-root, non-overlapping bundle, artifact, and
   workspace roots. Worker journals, replay state, workspaces, and custody live
   beneath the configured worker-scoped roots and must be restored coherently.
 - `transport`, `message_limits`, `freshness`, `leases`, and `scheduling`
-  set bounded exchange and lifecycle controls. The worker caps accepted lease
-  extension at its configured duration.
+  set bounded exchange and lifecycle controls. `message_limits.max_files`
+  bounds one legacy-drop scan and bundle/archive expansion. The worker caps
+  accepted lease extension at its configured duration.
 - `startup_admission` must be `closed` in coordinator mode. Coordinator
   startup acquires exclusive ownership and advances its epoch without
   contacting a worker or T3.
@@ -74,8 +124,10 @@ environment overrides and command-line dry-run/log-level overrides. Envelope
 and project secrets remain worker-managed named credentials and never enter
 workflow bundles, execution packages, journals, or error text.
 
-Admin and status clients query or submit durable intent only. They neither
-migrate schema nor execute pending coordinator commands.
+Coordinator-mode admin clients connect to `<resolved-state-path>.admin.sock`,
+which is created mode 0600 and authenticates the kernel peer UID. They query or
+submit durable intent only, never open or migrate SQLite, and never execute
+pending coordinator commands.
 
 ## Version 2 workflow bundles
 
@@ -83,6 +135,18 @@ A bundle is a directory rooted at `workflow.yaml`. Referenced prompts and
 static inputs are copied into coordinator-owned immutable storage at submission;
 workers never depend on the submitting host remaining online. See the
 [checked example bundle](examples/backlog-v2/workflow.yaml).
+
+Submit a regular tar file through the coordinator without opening SQLite:
+
+```sh
+t3-steward backlog submit bundle.tar --idempotency-key REQUEST_ID
+```
+
+The archive byte length is declared and enforced at both ends of the local
+transport, while archive entries and expanded bytes remain subject to the
+configured `max_files` and `max_bytes` limits. Reuse the exact idempotency key
+only for identical content; changed content fails closed. Add `--json` for the
+immutable machine-readable result.
 
 The manifest decoder is strict and accepts one YAML document. The top-level
 fields are `version`, `name`, `class`, `placement`, `environment`,
@@ -118,10 +182,26 @@ retained records belong to the coordinator recovery unit.
 
 ## Routine administration
 
-Use the commands in [Backlog administration](backlog-admin.md) against a copied
-or explicitly selected coordinator database. Read views include status,
-workflow/task/DAG detail, explanations, events, artifacts, schedules, workers,
-quota, reservations, locks, and command outcomes.
+Use the commands in [Backlog administration](backlog-admin.md) while the selected
+backlog-v2 coordinator is running. The CLI connects to the admin socket derived
+from the selected state path; it does not open the database. Read views include
+status, workflow/task/DAG detail, explanations, events, artifacts, schedules,
+workers, quota, reservations, locks, and command outcomes.
+
+Create or revise a definition through the same socket:
+
+```text
+t3-steward schedules put <schedule> --name TEXT --workflow ID \
+  --cron "EXPR" --timezone IANA --reason TEXT \
+  [--after-failure next-cycle|hold] [--disabled] \
+  [--expected-revision N] [--request-id ID] [--json]
+```
+
+New definitions use expected revision zero; updates must supply the current
+revision. Reuse the same request ID after an ambiguous response. The coordinator
+returns the immutable original result for exact replay and rejects changed
+content under that ID. The authenticated peer UID, not client-supplied identity,
+becomes the audit actor.
 
 Every mutation requires an audit reason. Supply `--command-id` for any
 operation whose response might be lost, and reuse exactly that ID to recover
@@ -131,6 +211,13 @@ ID.
 A forced start bypasses ordinary ordering and timing only. Dependencies, live
 locks, fresh worker identity, route compatibility, and hard draining/closed
 quota admission remain authoritative. There is no administrative quota bypass.
+
+Coordinator startup acquires authority and completes one local reconciliation
+pass without contacting workers. Configured SSH worker sessions begin only on a
+later scheduled pass. Every pass creates a fresh authenticated session per
+worker and reapplies current quota admission immediately before offers and
+prepare/dispatch delivery. A failed quota reconstruction is equivalent to no
+open pools; observation, stop, and collection remain available.
 
 ## Recovery procedures
 
@@ -152,8 +239,10 @@ quota admission remain authoritative. There is no administrative quota bypass.
 A checkpoint acknowledgement moves an attempt to `paused` and records the
 checkpoint artifact. A forced stop without one becomes
 `paused-uncheckpointed`. Preserve assignment, thread, workspace, worker
-epoch, provider route, and remaining-cost reservation. Resume only the same
-thread and route after admission is recovering/open and every apply-time fence
+epoch, provider route, and the assignment's durable remaining-cost estimate.
+The coordinator reconstructs that reservation before each admission transition;
+missing or contradictory estimates fail reconciliation closed. Resume only the
+same thread and route after admission is recovering/open and every apply-time fence
 still matches. A cancel command suppresses automatic resume.
 
 ### Schedule overlap or failure hold
@@ -226,7 +315,7 @@ readiness report resolved.
 3. Install the coordinator candidate without starting its planner or worker
    delivery.
 4. Migrate a disposable copy first, then the real coordinator database exactly
-   once; verify schema 10 and record counts.
+   once; verify schema 11 and record counts.
 5. Load and validate project catalog, setup profiles, quota-pool mappings,
    artifact root, and worker identities without dispatch.
 6. Upgrade/register workers one at a time. Verify epochs, protocol-version and

@@ -113,6 +113,9 @@ func planWorkerStateTransition(
 		}
 		switch observation.State {
 		case domain.AssignmentClaimed:
+			if assignment.State == domain.AssignmentUnknown && !assignment.LeaseExpiresAt.After(now) {
+				return assignment, attempt, "", false, nil
+			}
 			control := observation.Control
 			if control == "" {
 				control = domain.ControlRunning
@@ -126,7 +129,6 @@ func planWorkerStateTransition(
 			nextAssignment := assignment
 			nextAssignment.State = domain.AssignmentClaimed
 			nextAssignment.WorkerEpoch = snapshot.WorkerEpoch
-			nextAssignment.LeaseExpiresAt = snapshot.ValidUntil
 			nextAssignment.ThreadID = observation.ThreadID
 			nextAssignment.UpdatedAt = now
 			nextAttempt := attempt

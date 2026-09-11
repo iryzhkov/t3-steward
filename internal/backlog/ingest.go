@@ -30,6 +30,7 @@ type BundleIngester struct {
 	Store       CoordinatorRecordStore
 	Now         func() time.Time
 	NewID       func() string
+	NewTypedID  func(string) string
 }
 
 // IngestedBundle identifies a successfully committed workflow submission.
@@ -285,6 +286,9 @@ func (i BundleIngester) now() time.Time {
 }
 
 func (i BundleIngester) newID(kind string) string {
+	if i.NewTypedID != nil {
+		return i.NewTypedID(kind)
+	}
 	if i.NewID != nil {
 		return kind + "-" + i.NewID()
 	}

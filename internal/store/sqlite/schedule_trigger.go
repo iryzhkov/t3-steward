@@ -59,6 +59,9 @@ func commitScheduleTriggerTx(ctx context.Context, tx *sql.Tx, request domain.Sch
 			return domain.ScheduleTriggerResult{}, err
 		}
 		replayed.Replay = true
+		if _, err := insertScheduleTriggerAuditEvent(ctx, tx, replayed.Trigger); err != nil {
+			return domain.ScheduleTriggerResult{}, err
+		}
 		return replayed, nil
 	}
 
@@ -128,7 +131,28 @@ func commitScheduleTriggerTx(ctx context.Context, tx *sql.Tx, request domain.Sch
 			return domain.ScheduleTriggerResult{}, err
 		}
 	}
+	if _, err := insertScheduleTriggerAuditEvent(ctx, tx, trigger); err != nil {
+		return domain.ScheduleTriggerResult{}, err
+	}
 	return domain.ScheduleTriggerResult{Trigger: trigger, WorkflowRun: workflowRun}, nil
+}
+
+func insertScheduleTriggerAuditEvent(
+	ctx context.Context,
+	tx *sql.Tx,
+	trigger domain.Trigger,
+) (domain.AuditEvent, error) {
+	detail, err := json.Marshal(trigger)
+	if err != nil {
+		return domain.AuditEvent{}, fmt.Errorf("encode schedule trigger %q audit detail: %w", trigger.ID, err)
+	}
+	event := domain.AuditEvent{
+		ID: "schedule-trigger:" + trigger.ID, Kind: "schedule-trigger-" + string(trigger.State),
+		WorkflowRunID: trigger.WorkflowRunID,
+		TargetType:    domain.AuditTargetTrigger, TargetID: trigger.ID,
+		Actor: "coordinator", Reason: trigger.Reason, Detail: detail, CreatedAt: trigger.ObservedAt,
+	}
+	return insertAuditEventTx(ctx, tx, event)
 }
 
 func validateScheduleTriggerRequest(request domain.ScheduleTriggerRequest) error {

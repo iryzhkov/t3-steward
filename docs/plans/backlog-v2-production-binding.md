@@ -63,7 +63,7 @@ do not need to stop for routine design choices.
 - [x] R1 — Authority, configuration, and storage lifecycle (S14)
 - [x] R2 — Versioned worker exchange and execution package (S15)
 - [x] R3 — Restart-safe worker runtime (S16)
-- [ ] R4 — Coordinator runtime, submissions, schedules, and quota bridge (S17)
+- [x] R4 — Coordinator runtime, submissions, schedules, and quota bridge (S17)
 - [ ] R5 — Audit, backup, recovery, and security hardening (S18)
 - [ ] R6 — Deployment qualification and new readiness decision (S19)
 
@@ -165,22 +165,22 @@ Exit gates:
 
 ### S17 — Coordinator runtime, submissions, schedules, and quota bridge
 
-- [ ] Compose bundle ingestion, worker exchange, quota derivation, schedule
+- [x] Compose bundle ingestion, worker exchange, quota derivation, schedule
   firing, planning, atomic assignment, lease expiry, durable command delivery,
   acknowledgement/reconciliation, outcomes, artifact custody, admin execution,
   and recovery into one bounded coordinator lifecycle.
-- [ ] Implement bounded, idempotent single-task and bundle submission adapters,
+- [x] Implement bounded, idempotent single-task and bundle submission adapters,
   including safe archive extraction and immutable accepted results.
-- [ ] Implement schedule definition administration and a persistent timer source
+- [x] Implement schedule definition administration and a persistent timer source
   using the fixed cron/DST/nominal-occurrence contract.
-- [ ] Bridge real quota observations into shared fleet quota-pool state,
+- [x] Bridge real quota observations into shared fleet quota-pool state,
   deduplicating observations by pool and closing admission for stale,
   inconsistent, or unavailable evidence.
-- [ ] Add authenticated admin query/command transport. CLI clients must stop
+- [x] Add authenticated admin query/command transport. CLI clients must stop
   opening coordinator SQLite and remain submission/query clients only.
-- [ ] Preserve legacy `t3-backlog` and `t3-job` input compatibility while
+- [x] Preserve legacy `t3-backlog` and `t3-job` input compatibility while
   enforcing legacy/coordinator runtime mutual exclusion.
-- [ ] Emit native events at coordinator-owned transitions introduced here.
+- [x] Emit native events at coordinator-owned transitions introduced here.
 
 Exit gates:
 

@@ -73,6 +73,26 @@ func TestPlanWorkerStateTransitionsReconcilesObservationsAndAcknowledgements(t *
 			wantReason: workerStateObservedAbsent, wantCount: 1,
 		},
 		{
+			name: "lease expired unknown is not revived by a running observation",
+			assignment: func() domain.Assignment {
+				value := baseAssignment
+				value.State = domain.AssignmentUnknown
+				value.LeaseExpiresAt = now
+				return value
+			}(),
+			attempt: baseAttempt,
+			snapshot: func() domain.WorkerSnapshot {
+				value := baseSnapshot
+				value.Assignments = []domain.WorkerAssignmentObservation{{
+					AssignmentID: baseAssignment.ID, AssignmentEpoch: 1,
+					State: domain.AssignmentClaimed, Control: domain.ControlRunning,
+					ThreadID: "thread-1", ObservedAt: now,
+				}}
+				return value
+			}(),
+			wantCount: 0,
+		},
+		{
 			name: "worker process epoch change makes omission authoritative",
 			assignment: func() domain.Assignment {
 				value := baseAssignment

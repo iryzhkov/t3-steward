@@ -17,15 +17,28 @@ isolated preparation, deterministic observe-before-create T3 dispatch,
 verification, throttle/checkpoint/resume, raw artifact transfer, durable
 cross-process replay, reconciliation, and no-effects testing.
 
-The candidate is still not a deployable fleet coordinator. S17 must compose
-submission, schedules, planning, quota derivation, worker transport/delivery,
-outcomes, and admin execution behind the existing closed authority; S18 and S19
-must supply audit/recovery hardening and deployment qualification.
+The candidate is still not a deployable fleet coordinator. S17 has completed
+quota-authoritative planning through atomic offered-assignment persistence and
+added a transport-neutral snapshot/offer/claim/command reconciliation boundary
+plus replay-stable execution-package assembly from authoritative records. It now
+constructs configured epoch-bound, mutually authenticated SSH sessions and
+applies a final fail-closed quota check before offers or prepare/dispatch
+delivery. Scheduled sessions now compose lease expiry/renewal and durable
+warning/drain/hard-stop/resume delivery. A bounded, replay-safe coordinator
+importer now validates completed-assignment custody, output declarations,
+verification reports, final status, and payload hashes before artifact
+publication and terminal outcome projection; configured sessions now poll,
+fetch, import, and acknowledge completed result outboxes over separately
+bounded authenticated control/raw SSH operations. Checkpoint bytes use the
+same sequence and require exact acknowledged throttle evidence. Its disposable
+multi-process workflow and restart/effect-boundary gates pass repeatedly. S18
+and S19 must supply audit/recovery hardening and deployment qualification.
 
 No binary was installed, no service or live configuration was changed, no live
 state database was opened by development code, no worker was contacted, and no
-workflow was dispatched during S14–S16. Worker and transport evidence uses only
-disposable local roots and child processes.
+workflow was dispatched during S14–S17 development. Worker, admin, and
+submission-transport evidence uses only disposable local roots and child
+processes.
 
 ## Candidate contents
 
@@ -50,26 +63,43 @@ disposable local roots and child processes.
 - Schedule singleton, occurrence idempotency, suppression, misfire, and failure
   hold semantics.
 - Coordinator-owned checksum-verified artifacts and safe admin retrieval.
-- Versioned transport-neutral admin DTOs, read projections, revision-fenced
-  mutations, durable outcomes, and audit events.
-- SQLite schema version 10 with migration coverage from versions 1, 5, 6, 8,
-  and 9, including legacy admin-command event backfill.
+- Versioned admin DTOs, read projections, revision-fenced mutations, durable
+  outcomes, and audit events, now exposed through an owner-only, peer-UID
+  authenticated, bounded local Unix socket. The same peer-authenticated boundary
+  now accepts idempotent, revision-fenced schedule definitions and uses the
+  kernel-authenticated caller as audit actor. Coordinator-mode CLI clients no
+  longer open SQLite.
+- SQLite schema version 11 with migration coverage from versions 1, 5, 6, 8,
+  9, and 10, including legacy admin-command event backfill and the durable
+  submission journal.
+- Completed S17 boundaries for bounded idempotent directory, safe tar, and
+  legacy single-task submission; revision-fenced audited schedule definitions
+  and a restart-derived five-field-cron timer; and fail-closed quota-pool
+  derivation from deduplicated stored provider observations. Their submission,
+  quota-admission, and accepted/suppressed schedule-trigger commit points now
+  emit transaction-bound native audit events with replay deduplication. The
+  coordinator now composes unchanged owner-controlled legacy Markdown
+  submission, peer-UID-authenticated byte-bounded native tar streaming,
+  restart-derived schedule firing, and durable admin-command execution in one
+  bounded local cycle. Pool configuration now requires positive concurrency and
+  unambiguous provider-instance ownership. Assignment commits durably fix the
+  planner's remaining-cost/runtime estimate, so each quota pass reconstructs
+  active slots and paused reservations before atomically changing admission;
+  reconstruction failure defers admin execution. Runtime tests prove scheduled,
+  quota, and operator-created state converges without assignment dispatch.
+  Scheduled worker exchange, lifecycle/throttle delivery, artifact import, and
+  terminal outcome projection are composed behind hard quota admission.
 - A complete temporary SQLite workflow exercising dependencies, artifacts,
   verification failure, retry, pause, restart, resume, success, and duplicate
   schedule suppression.
 
 ## Deployment blockers
 
-1. Compose bundle submission and schedule-definition administration into the
-   coordinator service.
-2. Compose planning, quota observation/admission, worker SSH exchange, atomic
-   assignment, lease/command delivery, acknowledgement/reconciliation, outcomes,
-   artifact import, and admin execution beyond the current closed authority.
-3. Run the S18 audit, backup, unknown-state recovery, credential-rotation, and
+1. Run the S18 audit, backup, unknown-state recovery, credential-rotation, and
    security hardening work.
-4. Run S19 observe-only multi-process qualification and a non-side-effecting
+2. Run S19 observe-only multi-process qualification and a non-side-effecting
    canary on disposable state, then repeat all release gates.
-5. Obtain explicit user approval after a GO readiness report before any
+3. Obtain explicit user approval after a GO readiness report before any
    host-wide installation or deployment.
 
 The shipped schema and authority boundary, S15 transport/package contract, and

@@ -89,6 +89,11 @@ func TestBacklogV2CoordinatorConfigurationAndReferences(t *testing.T) {
 	tests := map[string]func(*Config){
 		"legacy conflict": func(c *Config) { c.Backlog.Enabled = true },
 		"open admission":  func(c *Config) { c.BacklogV2.StartupAdmission = "open" },
+		"missing worker epoch": func(c *Config) {
+			worker := c.BacklogV2.Workers["normandy"]
+			worker.Epoch = ""
+			c.BacklogV2.Workers["normandy"] = worker
+		},
 		"unknown worker": func(c *Config) {
 			c.BacklogV2.Projects["steward"] = V2Project{
 				Repository: "repo", DefaultRef: "main", T3Project: "dev", Workers: []string{"missing"},
@@ -104,7 +109,25 @@ func TestBacklogV2CoordinatorConfigurationAndReferences(t *testing.T) {
 			worker.Providers["codex"] = V2Provider{Models: []string{"gpt"}, QuotaPool: "missing"}
 			c.BacklogV2.Workers["normandy"] = worker
 		},
-		"unsafe root": func(c *Config) { c.BacklogV2.Storage.Bundles = "/" },
+		"unused quota pool": func(c *Config) {
+			c.BacklogV2.QuotaPools["unused"] = V2QuotaPool{Provider: "other", MaxConcurrent: 1}
+		},
+		"conflicting provider instance pools": func(c *Config) {
+			c.BacklogV2.QuotaPools["other"] = V2QuotaPool{Provider: "other", MaxConcurrent: 1}
+			c.BacklogV2.Workers["other"] = V2Worker{
+				Address: "other", AcceptBacklog: true, Credential: "ssh:other",
+				Providers: map[string]V2Provider{
+					"codex": {Models: []string{"other"}, QuotaPool: "other"},
+				},
+			}
+		},
+		"unsafe root":        func(c *Config) { c.BacklogV2.Storage.Bundles = "/" },
+		"invalid file limit": func(c *Config) { c.BacklogV2.MessageLimits.MaxFiles = 0 },
+		"invalid pool concurrency": func(c *Config) {
+			pool := c.BacklogV2.QuotaPools["codex-main"]
+			pool.MaxConcurrent = 0
+			c.BacklogV2.QuotaPools["codex-main"] = pool
+		},
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -130,6 +153,7 @@ func TestBacklogV2WorkerModeRequiresFixedLocalAuthority(t *testing.T) {
 		"unknown id":                func(c *Config) { c.BacklogV2.LocalWorker.ID = "other" },
 		"missing epoch":             func(c *Config) { c.BacklogV2.LocalWorker.Epoch = "" },
 		"missing coordinator epoch": func(c *Config) { c.BacklogV2.LocalWorker.CoordinatorEpoch = 0 },
+		"mismatched declared epoch": func(c *Config) { c.BacklogV2.LocalWorker.Epoch = "worker-2" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := cfg
@@ -150,10 +174,10 @@ func validBacklogV2Config(t *testing.T) Config {
 	cfg.BacklogV2.Storage = V2Storage{
 		Bundles: filepath.Join(root, "bundles"), Artifacts: filepath.Join(root, "artifacts"), Workspaces: filepath.Join(root, "workspaces"),
 	}
-	cfg.BacklogV2.QuotaPools = map[string]V2QuotaPool{"codex-main": {Provider: "codex"}}
+	cfg.BacklogV2.QuotaPools = map[string]V2QuotaPool{"codex-main": {Provider: "codex", MaxConcurrent: 2}}
 	cfg.BacklogV2.Workers = map[string]V2Worker{
 		"normandy": {
-			Address: "normandy", AcceptBacklog: true, Credential: "ssh:normandy",
+			Address: "normandy", Epoch: "worker-1", AcceptBacklog: true, Credential: "ssh:normandy",
 			Providers: map[string]V2Provider{"codex": {Models: []string{"gpt"}, QuotaPool: "codex-main"}},
 		},
 	}

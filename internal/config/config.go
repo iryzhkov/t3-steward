@@ -305,6 +305,7 @@ type V2LocalWorker struct {
 
 type V2Worker struct {
 	Address       string                `yaml:"address"`
+	Epoch         string                `yaml:"epoch"`
 	AcceptBacklog bool                  `yaml:"accept_backlog"`
 	Capabilities  []string              `yaml:"capabilities"`
 	Providers     map[string]V2Provider `yaml:"providers"`
@@ -332,7 +333,8 @@ type V2SetupProfile struct {
 }
 
 type V2QuotaPool struct {
-	Provider string `yaml:"provider"`
+	Provider      string `yaml:"provider"`
+	MaxConcurrent int    `yaml:"max_concurrent"`
 }
 
 type V2Storage struct {
@@ -348,6 +350,7 @@ type V2Transport struct {
 
 type V2MessageLimits struct {
 	MaxBytes         int64 `yaml:"max_bytes"`
+	MaxFiles         int   `yaml:"max_files"`
 	MaxArtifactBytes int64 `yaml:"max_artifact_bytes"`
 }
 
@@ -463,6 +466,7 @@ func Default() Config {
 	c.BacklogV2.Transport.Kind = "ssh"
 	c.BacklogV2.Transport.RequestTimeout = Duration(30 * time.Second)
 	c.BacklogV2.MessageLimits.MaxBytes = 4 << 20
+	c.BacklogV2.MessageLimits.MaxFiles = 1000
 	c.BacklogV2.MessageLimits.MaxArtifactBytes = 1 << 30
 	c.BacklogV2.Freshness.WorkerMaxAge = Duration(1 * time.Minute)
 	c.BacklogV2.Freshness.QuotaMaxAge = Duration(1 * time.Minute)

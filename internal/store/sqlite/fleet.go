@@ -361,7 +361,7 @@ func validateWorkerSnapshot(snapshot domain.WorkerSnapshot) error {
 func validateOfferedAssignment(assignment domain.Assignment, item domain.AssignmentPlanItem) error {
 	if assignment.ID == "" || assignment.AttemptID == "" || assignment.WorkerID == "" ||
 		assignment.WorkerEpoch == "" || assignment.DispatchToken == "" || assignment.LeaseToken == "" ||
-		assignment.Epoch < 1 || assignment.State != domain.AssignmentOffered ||
+		assignment.ThreadID == "" || assignment.Epoch < 1 || assignment.State != domain.AssignmentOffered ||
 		!assignment.LeaseExpiresAt.IsZero() || assignment.DispatchState != "" ||
 		assignment.DispatchRevision != 0 || item.ExpectedAttemptRevision < 0 ||
 		item.WorkerSnapshotSequence < 1 {
@@ -379,9 +379,11 @@ func sameAssignmentPlanIdentity(current, offered domain.Assignment) bool {
 		current.WorkerID == offered.WorkerID &&
 		current.WorkerEpoch == offered.WorkerEpoch &&
 		reflect.DeepEqual(current.Route, offered.Route) &&
+		reflect.DeepEqual(current.Estimate, offered.Estimate) &&
 		current.Epoch == offered.Epoch &&
 		current.LeaseToken == offered.LeaseToken &&
-		current.DispatchToken == offered.DispatchToken
+		current.DispatchToken == offered.DispatchToken &&
+		current.ThreadID == offered.ThreadID
 }
 
 func validateAssignmentClaim(request domain.AssignmentClaimRequest) error {

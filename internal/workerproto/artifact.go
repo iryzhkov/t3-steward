@@ -61,6 +61,24 @@ type ArtifactUploadResponse struct {
 	Custody  []ArtifactCustodyRecord  `json:"custody"`
 }
 
+// ArtifactPollRequest asks for at most one immutable pending upload of a fixed
+// purpose. One-at-a-time discovery keeps control responses bounded.
+type ArtifactPollRequest struct {
+	Purpose string `json:"purpose"`
+}
+
+type ArtifactAnnouncement struct {
+	Upload *ArtifactUploadResponse `json:"upload,omitempty"`
+}
+
+type ArtifactAcknowledgeRequest struct {
+	ManifestID string `json:"manifestId"`
+}
+
+type ArtifactAcknowledgement struct {
+	ManifestID string `json:"manifestId"`
+}
+
 type ArtifactCustodyRecord struct {
 	ManifestID     string    `json:"manifestId"`
 	ObjectID       string    `json:"objectId"`

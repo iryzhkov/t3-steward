@@ -111,9 +111,18 @@ authoritative identity and checksum metadata.
 `cmd/t3-steward/main.go:cmdRun` selects mutually exclusive legacy,
 backlog-v2 coordinator, or backlog-v2 worker configuration. Backlog-v2 remains
 disabled by default. Coordinator mode explicitly migrates its database,
-acquires exclusive file-backed ownership, advances the durable epoch, and waits
-with admission closed. This startup path does not construct a worker transport
-or T3 client. Worker mode does not acquire coordinator authority.
+acquires exclusive file-backed ownership, advances the durable epoch, and
+serves bounded local administration with admission closed. The owner-only Unix
+socket authenticates the kernel peer UID and replaces any claimed principal
+before query, mutation, artifact access, native archive submission, or
+revision-fenced schedule-definition administration. A bounded local cycle
+immediately and periodically reconciles persistent schedule
+occurrences, executes pending revision-fenced admin commands, and scans the
+owner-controlled legacy Markdown drop with aggregate byte/file bounds and
+immutable idempotency. Accepted `t3-backlog`, `t3-job`, scheduled, and native
+bundle work remains queued without dispatch because this startup path does not
+construct a worker transport or T3 client. Worker mode does not acquire
+coordinator authority.
 
 The fixed `worker-exchange` command requires an explicit operator-controlled
 configuration path and accepts exactly one of `control`, `artifact-receive`,
@@ -126,13 +135,45 @@ request through the idempotent worker journal. Artifact streams use separate
 signed metadata plus raw size/checksum-bounded bytes and durable custody.
 
 Legacy mode retains the existing quota watchdog and optional Markdown
-`backlog.Runner`. The admin CLI opens existing SQLite without migration and
-submits or queries durable commands; it does not execute coordinator
-transitions.
+`backlog.Runner`. Coordinator-mode admin CLI commands connect to the
+authenticated local socket and never open SQLite. They submit or query durable
+commands and create or revise schedule definitions; only the coordinator owns
+state and artifact access.
 
-The production coordinator still does not construct bundle ingestion,
-planning, scheduling, quota derivation, worker transport/delivery, or admin
-execution. Those S17 runtime bindings remain deployment gaps.
+The production coordinator now exposes authenticated native bundle/archive
+submission and revision-fenced schedule-definition administration, and composes
+restart-derived schedule firing, durable admin command execution, quota
+reconciliation from stored provider observations, and deterministic planning.
+Each quota pass returns numeric per-bucket planning windows with conservative
+interactive forecast, safety, active, paused, and committed accounting. Planning
+reloads DAGs and worker snapshots, derives difficulty-based cold route estimates,
+applies hard quota admission, reconstructs resource/checkout ownership, and
+atomically persists offered assignments with deterministic future T3 thread
+identities. Replay-stable execution-package assembly now resolves the exact
+durable assignment/attempt/task/run/workflow, worker-scoped catalog, prompt,
+static inputs, dependency outputs, route, limits, and artifact metadata.
+Coordinator worker declarations now carry the worker epoch, and the executable
+can construct a fresh mutually authenticated SSH protocol session plus its
+worker-scoped package builder. New-work offers and pending prepare/dispatch
+commands pass a final fail-closed quota check immediately before transport;
+stop and collection commands remain available while admission is closed. The
+immediate startup cycle remains local-only; later timer cycles schedule fresh
+worker sessions and may derive durable prepare/dispatch commands.
+Each scheduled worker exchange now expires elapsed leases before observation,
+renews only live durably claimed assignments that the same worker still reports,
+and refuses to revive an expired unknown execution from a running observation.
+Durable quota/admin throttle intent is replayed per worker, new directives are
+delivered, checkpoint deadlines escalate, and eligible paused attempts resume
+through the authenticated session. A transport-neutral coordinator importer now
+validates completed-assignment custody, ordered verification evidence, declared
+outputs, final status, and immutable payload bytes before publishing artifacts
+and projecting a replay-safe success or failure outcome. Upload discovery and
+raw-stream fetching for completed results now run through distinct fixed
+`control` and `artifact-send` SSH operations; the worker retains acknowledged
+custody metadata and stops rediscovering an import only after the coordinator
+commits it. The same bounded sequence imports checkpoint bytes only when they
+match an already acknowledged throttle projection before allowing the worker to
+retire discovery.
 
 ## State and ownership
 
@@ -170,9 +211,10 @@ metadata. A failed metadata commit removes the published tree.
 It does not guarantee a single atomic commit across SQLite and the filesystem.
 The guarantee is prepare/publish plus compensation before returning failure.
 
-Missing production contract: authenticated caller identity, request size and
-file-count limits, duplicate submission/idempotency key, archive ingestion, and
-a CLI/API adapter.
+Implemented S17 services add bounded directory and safe-tar ingestion, a durable
+idempotency reservation/completion journal, immutable accepted results, legacy
+single-task adaptation, authenticated local submission transport, and
+composition into the production coordinator.
 
 ### Coordinator persistence boundary
 
@@ -206,8 +248,20 @@ A content-addressed execution package now carries the immutable assignment,
 task, prompt, inputs, route, resolved catalog/environment references,
 verification, outputs, deadlines, limits, and idempotency identities required
 by `prepare`, `dispatch`, and `collect`. It carries credential names, never
-credential values. The package and protocol are not yet composed into a worker
-runtime or production coordinator.
+credential values. The restart-safe worker runtime composes the package and
+protocol. A coordinator protocol client now serializes typed exchanges, retries
+only an identical signed envelope, and abandons an ambiguous session rather than
+risking a sequence gap. `FleetCoordinator.ReconcileWorker` persists a fresh
+snapshot, delivers only durable offers, validates and commits every claim,
+refreshes observed state, then uses persist-before-deliver lifecycle commands.
+`CoordinatorOfferBuilder` assembles and validates the content-addressed package
+from authoritative records and a matching worker catalog revision; retry time
+does not alter package identity. The production coordinator's immediate startup
+pass remains local-only. Later scheduled passes construct fresh authenticated
+client/builder pairs for configured SSH workers and reconcile them independently.
+A failed quota pass supplies an empty final admission policy: observation and
+stop/collection remain possible, but offers and prepare/dispatch cannot cross
+the transport.
 
 ### Worker/T3 boundary
 
@@ -217,8 +271,11 @@ ambiguous create response. A missing response never authorizes a new identity.
 Stop, resume, final-message reading, and thread URLs must preserve the bound
 worker and provider route.
 
-The existing legacy T3 control adapter can create/resume threads, but no
-production adapter implements the v2 `AssignmentDispatchWorker` contract.
+The S16 `LocalDriver` binds the existing T3 control client directly to the v2
+execution package. It observes the deterministic thread identity before create,
+re-observes ambiguous creation, and implements stop, warning, checkpoint,
+resume, final-message, and thread-archive effects behind the durable worker
+journal.
 
 ### Worker/filesystem/process boundary
 
@@ -239,9 +296,13 @@ quota-pool admission and commits it before generating throttle directives.
 Neither required work nor an admin start may bypass draining or closed
 admission.
 
-Missing production contract: the runtime adapter that maps host/provider bucket
-observations into fleet quota pools, deduplicates shared-account observations,
-and feeds admission/throttle reconciliation.
+The S17 quota bridge maps stored host/provider observations into configured
+fleet pools, deduplicates bucket identities, and fails closed for missing,
+stale, future, or epoch-conflicting evidence. Quota-first composition into the
+coordinator lifecycle is present. Scheduled worker sessions now replay and
+deliver persisted warning, drain, hard-stop, and resume commands; new-work
+offers and prepare/dispatch commands remain separately fenced by current open
+admission.
 
 ### Admin boundary
 
@@ -251,8 +312,11 @@ the same command ID. A stale command produces a durable rejection. Start/resume
 revalidate dependencies, locks, worker freshness, route compatibility, and hard
 quota admission inside the apply transaction.
 
-Remote authentication/authorization and streaming events are outside the
-current executable.
+Local query, mutation, artifact access, bundle submission, and schedule-definition
+administration use an owner-only Unix socket plus kernel peer-UID authentication;
+the server replaces caller-supplied identity. Definition updates are request-
+idempotent and revision fenced, and use the authenticated principal as audit actor.
+Remote administration and streaming events remain outside the executable.
 
 ### Artifact boundary
 
@@ -265,8 +329,14 @@ S15 defines versioned upload/download manifests and checksum-linked custody
 records. Transfer objects bind safe relative paths, size, SHA-256, media type,
 assignment epochs, direction, and expiry. Bounded tar validation rejects
 traversal, links, devices, duplicates, truncation, and expansion excess.
-Coordinator publication is still the authoritative custody transition. The
-worker and coordinator runtimes do not yet perform these transfers.
+Coordinator publication remains the authoritative custody transition. Workers
+publish restart-safe immutable result/checkpoint outbox manifests; the
+coordinator importer verifies a complete result into coordinator ownership and
+then commits its terminal outcome. Configured sessions poll one result at a
+time, fetch the exact announced object sequence over a separately bounded raw
+stream, and acknowledge only after import. Checkpoint outbox import uses the
+same sequence and is fenced to the exact paused (or later terminal) attempt plus
+its acknowledged throttle metadata.
 
 ## Stable primitives
 
@@ -274,10 +344,16 @@ worker and coordinator runtimes do not yet perform these transfers.
 | --- | --- |
 | `ParseManifest` / `LoadManifest` | Strict structural, graph, placement, and path validation |
 | `BundleIngester.Ingest` | Immutable copied inputs plus compensated metadata publication |
+| `SubmissionService` / schema-11 journal | Bounded directory, safe-tar, and legacy single-task idempotency across restart |
+| `ScheduleDefinitionService.Put` | Revision-fenced immutable template history with audited replay |
+| `ScheduleTimer.Tick` | Durable-cursor five-field cron, DST, catch-up, and nominal occurrence identity |
 | `NewProjectCatalog.Resolve` | Validated logical project to execution environment mapping |
 | `NewDAGExecution` and transitions | Dependency, retry, cancellation, skip, and run projection semantics |
 | `BuildPlan` | Pure deterministic planning with explanations and private reservation sessions |
-| `FleetCoordinator.PlanAndCommit` | Convert proposals into one revision/worker-fenced assignment transaction |
+| `FleetCoordinator.PlanAndCommit` | Convert proposals into one revision/worker-fenced assignment transaction with deterministic thread identity |
+| `workerproto.Client` | Serialized typed requests, identical-envelope retry, and ambiguous-session abandonment |
+| `CoordinatorOfferBuilder` | Replay-stable package assembly from exact durable execution and artifact identity |
+| `FleetCoordinator.ReconcileWorker` | Snapshot, durable offer, validated claim, refreshed observation, and command reconciliation |
 | `Store.ClaimAssignment` | Epoch/lease-bound exclusive claim plus attempt transition |
 | `PlanWorkerCommands` | Deterministic next command from durable and observed state |
 | `ReconcileWorkerCommands` | Persist-before-deliver and idempotent acknowledgement reconciliation |
@@ -285,14 +361,17 @@ worker and coordinator runtimes do not yet perform these transfers.
 | `ReconcileAssignmentDispatch` | Observe-before-create deterministic T3 dispatch |
 | `AttemptFinalizer.Finalize` | Verification and checksum-captured outputs before success |
 | `CoordinatorArtifactStore.Publish/Open` | Coordinator custody with size/hash validation |
+| `QuotaBridge.Reconcile` | Deduplicated persistent bucket evidence mapped fail-closed into configured fleet pools |
 | `ReconcileQuotaAdmissionTransitions` | Atomic admission projection before throttle intent exposure |
 | `ReconcileThrottleDeliveries` | Durable checkpoint/stop delivery and acknowledgement projection |
 | `ReconcileTurnOutcomes` | Explicit outcome ordering against active throttle intent |
-| `Store.CommitScheduleTrigger` | Occurrence idempotency and one-open-run transaction |
+| `Store.CommitScheduleTrigger` | Occurrence idempotency, one-open-run transaction, and atomic accepted/suppressed audit event |
+| submission/quota commit points | Atomic accepted-submission and revisioned quota-admission audit events with replay backfill |
 | `BacklogAdmin.Mutate/ExecutePendingCommands` | Audited revision-fenced intent and apply-time safety |
+| `backlogadmin.LocalServer/LocalClient` | Owner-UID-authenticated, bounded query/mutation/artifact, streamed bundle submission, and schedule-definition transport without client SQLite access |
 
-A production runtime should compose these primitives. It should not reimplement
-their policy in transport handlers or CLI commands.
+The S17 production runtime composes these primitives. Transport handlers and CLI
+commands do not reimplement their policy.
 
 ## First-class concepts
 
@@ -300,8 +379,9 @@ Already first-class: workflow, workflow run, task, attempt, assignment, worker
 snapshot/epoch, provider route, quota pool/admission, reservation, resource
 lock, workspace reservation, artifact, schedule template, trigger, throttle
 directive/command/acknowledgement, worker command/acknowledgement, turn outcome,
-admin command, audit event, verification report, protocol exchange/session,
-execution package, artifact transfer manifest, and custody record.
+admin command, audit event, submission request/result, verification report,
+protocol exchange/session, local admin exchange, execution package, artifact
+transfer manifest, and custody record.
 
 Concepts still implicit or incomplete:
 
@@ -310,12 +390,11 @@ Concepts still implicit or incomplete:
   single-host authority primitive, not distributed consensus.
 - **Production worker protocol binding:** S15 defines versioned exchange,
   execution-package, authentication, replay, limit, artifact-transfer, and
-  custody contracts plus a bounded SSH foundation. A restart-safe worker and
-  coordinator composition do not yet bind them.
-- **Submission request:** no caller idempotency key or durable submission
-  outcome.
-- **Schedule firing source:** schedule records exist, but no production timer
-  loop owns nominal-fire calculation and durable trigger submission.
+  custody contracts plus a bounded SSH foundation. The restart-safe worker and
+  the S17 coordinator lifecycle now bind them.
+- **Schedule firing source:** the persistent timer implements nominal-fire
+  calculation and durable trigger submission and is now composed into the
+  coordinator lifecycle.
 - **Coordinator mode/admission latch:** deployment needs an explicit
   closed/observe/open lifecycle rather than inferring safety from process
   startup.
@@ -382,12 +461,13 @@ types alone do not enforce them across a network.
 
 ### Not yet enforceable in production
 
-- No unleased worker execution: there is no production worker runtime.
-- Authenticated coordinator-only mutation across hosts: the bounded SSH and
-  envelope foundation exists, but no production worker/runtime binding does.
+- No unleased worker execution: the restart-safe worker candidate enforces
+  leases, but it is not installed or connected to a production coordinator.
+- Authenticated coordinator-only mutation across hosts is composed, but has not
+  been qualified against a fleet host.
 - Complete native audit history for every non-admin transition.
-- Fleet-wide quota deduplication/freshness: derivation exists, runtime feed does
-  not.
+- Fleet-wide quota directive delivery is composed behind persisted admission,
+  but has not been qualified against a fleet host.
 - Atomic coordinator database/artifact backup: documented operator procedure,
   not an implemented snapshot primitive.
 
@@ -427,13 +507,12 @@ the race suite.
 
 Evidence limits:
 
-- The complete workflow runs in one test process with temporary storage.
-- The SSH foundation has been exercised only between disposable local test
-  processes. No fleet connection, production worker authentication binding,
-  coordinator/worker restart pair, or remote artifact transfer has been
-  exercised.
-- The production `cmdRun` path constructs only the closed-admission authority
-  skeleton; planning and worker exchange are not yet composed.
+- The complete workflow and worker exchange run only in disposable local child
+  processes and temporary storage. No fleet connection or remote artifact
+  transfer has been exercised.
+- The production `cmdRun` path composes quota-authoritative planning, worker
+  exchange and delivery, result/checkpoint import, and terminal projection, but
+  has not passed S19 observe-only qualification.
 - No candidate has touched live state or dispatched a real worker.
 - Some admin views reconstruct events from current projections because native
   non-admin audit emission is incomplete.
@@ -470,9 +549,9 @@ The coordinator-initiated SSH foundation is retained: it invokes a restricted
 remote command without a local shell, uses strict host authentication, bounds
 stdin/stdout/stderr and connect/request time, propagates cancellation, and
 retries the same immutable request. The local multi-process spike proves these
-transport mechanics without contacting a fleet host. S16 must bind the SSH
+transport mechanics without contacting a fleet host. S16 binds the SSH
 principal and restricted command to the restart-safe worker runtime; failure to
-preserve the contract requires mutually authenticated HTTP.
+preserve the contract in deployment requires mutually authenticated HTTP.
 
 Focused gates cover JSON goldens, version/epoch/authentication/authorization,
 replay/reorder/duplicate/drop, timeout/cancellation/backpressure/limits,
@@ -491,11 +570,12 @@ T3 response, stale epoch, corrupt artifact, and unknown-execution tests.
 
 ### P4. Coordinator runtime and submission/schedules
 
-Compose ingestion, schedule firing, quota derivation, planning, assignment,
+Completed in S17: compose ingestion, schedule firing, quota derivation, planning, assignment,
 worker exchange, lease expiry, command reconciliation, turn outcomes, admin
-execution, artifact custody, and audit emission into one bounded loop. Add
-bundle submission and schedule-definition CLI/API adapters with idempotency.
-Keep the legacy runner selectable and mutually exclusive with coordinator mode.
+execution, artifact custody, and the native audit transitions introduced by the
+stage into one bounded loop. Bundle submission and schedule-definition CLI/API
+adapters are composed with idempotency. The legacy runner remains selectable and
+mutually exclusive with coordinator mode.
 
 Gate: multi-process temporary-state workflow, simultaneous submission,
 coordinator restart at every commit boundary, schedule catch-up/overlap,

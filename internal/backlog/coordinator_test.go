@@ -13,6 +13,63 @@ import (
 
 var coordinatorTestTime = time.Date(2026, time.September, 10, 20, 0, 0, 0, time.UTC)
 
+func TestFleetCoordinatorWithholdsNewWorkAtFinalQuotaBoundary(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	snapshot := coordinatorSnapshot(1)
+	attempt := domain.Attempt{
+		ID: "attempt-1", WorkflowRunID: "run-1", TaskID: "task-1", Number: 1,
+		Progress: domain.ProgressActive, Control: domain.ControlPreparing,
+		Revision: 1, AssignmentID: "assignment-1", UpdatedAt: coordinatorTestTime,
+	}
+	assignment := domain.Assignment{
+		ID: "assignment-1", AttemptID: attempt.ID, WorkerID: snapshot.WorkerID,
+		WorkerEpoch: snapshot.WorkerEpoch, State: domain.AssignmentClaimed, Epoch: 1,
+		Route:      domain.ProviderRoute{QuotaPoolID: "pool"},
+		LeaseToken: "lease-1", DispatchToken: "dispatch-1",
+		LeaseExpiresAt: coordinatorTestTime.Add(time.Hour),
+		CreatedAt:      coordinatorTestTime, UpdatedAt: coordinatorTestTime,
+	}
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
+		Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	transport := &deduplicatingWorkerTransport{}
+	coordinator := FleetCoordinator{Store: store, Now: func() time.Time {
+		return coordinatorTestTime.Add(time.Minute)
+	}}
+	closed, err := coordinator.ReconcileWorkerCommandsWithAdmission(
+		ctx, snapshot, transport, WorkerAdmissionPolicy{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(closed.Planned) != 0 || len(closed.Pending) != 0 ||
+		len(closed.Withheld) != 1 || closed.Withheld[0].Kind != domain.WorkerCommandPrepare ||
+		len(transport.executions) != 0 {
+		t.Fatalf("closed report = %#v executions=%v", closed, transport.executions)
+	}
+	open, err := coordinator.ReconcileWorkerCommandsWithAdmission(
+		ctx, snapshot, transport,
+		WorkerAdmissionPolicy{OpenQuotaPools: map[string]struct{}{"pool": {}}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(open.Pending) != 1 || open.Pending[0].Kind != domain.WorkerCommandPrepare ||
+		len(open.Acknowledgements) != 1 || transport.executions[open.Pending[0].ID] != 1 {
+		t.Fatalf("open report = %#v executions=%v", open, transport.executions)
+	}
+}
+
 func TestFleetCoordinatorCommitsPlanAndReplaysLostCommandResponse(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
@@ -55,6 +112,17 @@ func TestFleetCoordinatorCommitsPlanAndReplaysLostCommandResponse(t *testing.T) 
 		t.Fatalf("assignments = %#v, plan = %#v, want one", planned.Assignments, planned.Plan)
 	}
 	assignment := planned.Assignments[0]
+	if assignment.Estimate == nil || assignment.Estimate.RemainingCost != 10 {
+		t.Fatalf("assignment durable estimate = %#v", assignment.Estimate)
+	}
+	restartedRecords, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restartedRecords.Assignments) != 1 || restartedRecords.Assignments[0].Estimate == nil ||
+		restartedRecords.Assignments[0].Estimate.RemainingCost != 10 {
+		t.Fatalf("restarted durable assignments = %#v", restartedRecords.Assignments)
+	}
 	claimed, err := store.ClaimAssignment(ctx, domain.AssignmentClaimRequest{
 		CoordinatorEpoch: 1,
 		WorkerID:         "worker-a",

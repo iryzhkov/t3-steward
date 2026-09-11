@@ -17,6 +17,11 @@ import (
 
 const schedulesUsage = `Usage: t3-steward schedules <command> [args]
 
+Definition administration:
+  put <schedule> --name TEXT --workflow ID --cron "EXPR" --timezone IANA
+      --reason TEXT [--after-failure next-cycle|hold] [--disabled]
+      [--expected-revision N] [--request-id ID] [--json]
+
 Read commands:
   list [--json]                List schedules.
   show <schedule> [--json]     Show a schedule definition.
@@ -45,18 +50,31 @@ type adminQueryService interface {
 	Query(context.Context, backlogadmin.Query) (backlogadmin.Response, error)
 }
 
+type adminSubmissionService interface {
+	SubmitArchive(context.Context, backlogadmin.LocalSubmissionRequest, io.Reader, int64) (backlogadmin.LocalSubmissionResponse, error)
+}
+
+type adminScheduleDefinitionService interface {
+	PutSchedule(context.Context, backlogadmin.Principal, backlogadmin.LocalScheduleDefinitionRequest) (backlogadmin.LocalScheduleDefinitionResponse, error)
+}
+
 type backlogAdminCLI struct {
-	service      adminQueryService
-	mutator      adminMutationService
-	artifacts    adminArtifactService
-	principal    backlogadmin.Principal
-	stdout       io.Writer
-	newCommandID func() (string, error)
+	service             adminQueryService
+	mutator             adminMutationService
+	artifacts           adminArtifactService
+	submissions         adminSubmissionService
+	scheduleDefinitions adminScheduleDefinitionService
+	principal           backlogadmin.Principal
+	stdout              io.Writer
+	newCommandID        func() (string, error)
 }
 
 func (c backlogAdminCLI) runBacklog(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return errors.New("backlog admin command is required")
+	}
+	if args[0] == "submit" {
+		return c.runSubmission(ctx, args[1:])
 	}
 	if isBacklogMutation(args[0]) {
 		return c.runBacklogMutation(ctx, args)
@@ -75,6 +93,9 @@ func (c backlogAdminCLI) runSchedules(ctx context.Context, args []string) error 
 	if len(args) == 0 || isHelp(args[0]) {
 		fmt.Fprint(c.stdout, schedulesUsage)
 		return nil
+	}
+	if args[0] == "put" {
+		return c.runScheduleDefinition(ctx, args)
 	}
 	if isScheduleMutation(args[0]) {
 		return c.runScheduleMutation(ctx, args)

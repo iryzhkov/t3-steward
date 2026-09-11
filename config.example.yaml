@@ -109,6 +109,8 @@ backlog_v2:
     id: ""
     epoch: ""
     coordinator_epoch: 0
+  # Worker declarations require a stable boot/config epoch shared with that
+  # worker's local_worker.epoch.
   workers: {}
   projects: {}
   setup_profiles: {}
@@ -122,6 +124,7 @@ backlog_v2:
     request_timeout: 30s
   message_limits:
     max_bytes: 4194304
+    max_files: 1000
     max_artifact_bytes: 1073741824
   freshness:
     worker_max_age: 1m

@@ -46,11 +46,7 @@ type QuotaWindowBudget struct {
 
 // TaskAdmissionEstimate describes the remaining work for one attempt rather
 // than the original whole-task estimate.
-type TaskAdmissionEstimate struct {
-	RemainingCost    float64       `json:"remainingCost"`
-	ExpectedRuntime  time.Duration `json:"expectedRuntime"`
-	CheckpointMargin time.Duration `json:"checkpointMargin"`
-}
+type TaskAdmissionEstimate = domain.TaskAdmissionEstimate
 
 // QuotaAdmissionInput fails closed unless every applicable window was observed
 // at or before planning time and no more than MaxObservationAge ago.
