@@ -269,7 +269,7 @@ func TestLeaseRenewalCannotExtendBeyondConfiguredInterval(t *testing.T) {
 	}
 }
 
-func TestReconcileObservesRunningThreadCompletion(t *testing.T) {
+func TestReconcileObservesAndCollectsRunningThreadCompletion(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{
 		workspace:    filepath.Join(root, "workspace"),
@@ -287,11 +287,11 @@ func TestReconcileObservesRunningThreadCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := state.Attempts["assignment-1"].Phase; got != PhaseStopped {
-		t.Fatalf("phase after terminal observation = %q, want %q", got, PhaseStopped)
+	if got := state.Attempts["assignment-1"].Phase; got != PhaseCompleted {
+		t.Fatalf("phase after terminal observation = %q, want %q", got, PhaseCompleted)
 	}
-	if driver.collectCalls != 0 {
-		t.Fatalf("collection started before a fenced coordinator command: %d calls", driver.collectCalls)
+	if driver.collectCalls != 1 || driver.cleanupCalls != 1 {
+		t.Fatalf("collect calls = %d, cleanup calls = %d; want 1 each", driver.collectCalls, driver.cleanupCalls)
 	}
 }
 func TestThrottleCheckpointResumeAndReplay(t *testing.T) {

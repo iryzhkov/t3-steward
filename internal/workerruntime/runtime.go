@@ -359,7 +359,9 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 			if observeErr != nil {
 				err = r.markUnknown(id, "T3 observation unavailable: "+observeErr.Error())
 			} else if threadState == backlog.DispatchThreadStopped {
-				err = r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
+				if err = r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID); err == nil {
+					err = r.collect(ctx, id)
+				}
 			} else if threadState == backlog.DispatchThreadMissing {
 				err = r.markUnknown(id, "running T3 thread is missing")
 			}
