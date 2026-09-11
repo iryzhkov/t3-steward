@@ -684,6 +684,9 @@ func observation(record AttemptRecord, now time.Time) domain.WorkerAssignmentObs
 	state := record.Assignment.State
 	control := domain.ControlState("")
 	switch record.Phase {
+	case PhaseClaimed, PhasePreparing, PhasePrepared, PhaseDispatching:
+		state = domain.AssignmentClaimed
+		control = domain.ControlPreparing
 	case PhaseRunning:
 		state = domain.AssignmentClaimed
 		control = domain.ControlRunning
@@ -703,7 +706,6 @@ func observation(record AttemptRecord, now time.Time) domain.WorkerAssignmentObs
 		WorkspacePath: record.WorkspacePath, ObservedAt: now,
 	}
 }
-
 func terminalPhase(phase Phase) bool {
 	return slices.Contains([]Phase{PhaseCompleted, PhaseUnknown}, phase)
 }

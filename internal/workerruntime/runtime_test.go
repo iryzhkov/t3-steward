@@ -268,6 +268,20 @@ func TestCancellationWholeCgroupDelegatesDurableStop(t *testing.T) {
 	}
 }
 
+func TestObservationKeepsPreDispatchPhasesPreparing(t *testing.T) {
+	for _, phase := range []Phase{PhaseClaimed, PhasePreparing, PhasePrepared, PhaseDispatching} {
+		t.Run(string(phase), func(t *testing.T) {
+			got := observation(AttemptRecord{
+				Assignment: domain.Assignment{ID: "assignment-1", Epoch: 1},
+				Phase:      phase,
+			}, runtimeTestNow)
+			if got.State != domain.AssignmentClaimed || got.Control != domain.ControlPreparing {
+				t.Fatalf("observation = %#v", got)
+			}
+		})
+	}
+}
+
 func newClaimedRuntime(t *testing.T, root string, driver *fakeDriver) *Runtime {
 	return newClaimedRuntimeWithClock(t, root, driver, func() time.Time { return runtimeTestNow })
 }
