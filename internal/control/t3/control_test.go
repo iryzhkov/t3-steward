@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
 )
 
@@ -61,6 +62,29 @@ func (r *dispatchRecorder) snapshot() []map[string]any {
 	out := make([]map[string]any, len(r.commands))
 	copy(out, r.commands)
 	return out
+}
+
+func TestIsRunningUsesLatestTurnAsSessionBoundary(t *testing.T) {
+	archivedAt := time.Now()
+	tests := []struct {
+		name   string
+		thread domain.Thread
+		want   bool
+	}{
+		{name: "running turn", thread: domain.Thread{TurnID: "turn-1", TurnState: "running", SessionStatus: "running"}, want: true},
+		{name: "completed turn with reusable running session", thread: domain.Thread{TurnID: "turn-1", TurnState: "completed", SessionStatus: "running"}, want: false},
+		{name: "errored turn with reusable starting session", thread: domain.Thread{TurnID: "turn-1", TurnState: "error", SessionStatus: "starting"}, want: false},
+		{name: "background work after completed turn", thread: domain.Thread{TurnID: "turn-1", TurnState: "completed", SessionStatus: "running", BackgroundWork: "working"}, want: true},
+		{name: "running session before first turn projection", thread: domain.Thread{SessionStatus: "running"}, want: true},
+		{name: "archived thread is stopped", thread: domain.Thread{TurnState: "running", SessionStatus: "running", BackgroundWork: "working", ArchivedAt: &archivedAt}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := IsRunning(test.thread); got != test.want {
+				t.Fatalf("IsRunning(%+v) = %v, want %v", test.thread, got, test.want)
+			}
+		})
+	}
 }
 
 func TestResolveProjectID(t *testing.T) {

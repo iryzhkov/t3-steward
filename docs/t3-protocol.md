@@ -158,8 +158,10 @@ without message bodies. Fields used:
 - `latestUserMessageAt`, `hasPendingApprovals`, `hasPendingUserInput`,
   `archivedAt`, `updatedAt`
 
-A thread is "running" for the watchdog when the latest turn is running, the
-session is `starting` or `running`, or `backgroundLiveness` is `working`.
+A thread is "running" for the watchdog when the latest turn is running or
+`backgroundLiveness` is `working`. Session status is consulted only before a
+latest turn is available; a terminal latest turn is authoritative over a
+reusable provider session that remains `starting` or `running`.
 
 T3 has no parent/child thread relation. Subagents and workflows exist only
 inside one thread, as provider-runtime tasks reported through thread

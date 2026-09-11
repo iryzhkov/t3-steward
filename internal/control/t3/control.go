@@ -141,21 +141,26 @@ func FromShell(t t3api.ThreadShell) domain.Thread {
 	return d
 }
 
-// IsRunning is the watchdog's definition of a busy thread: a running turn,
-// a starting or running provider session, or native background work
-// (subagents, workflows) still alive after the turn settled.
+// IsRunning is the watchdog's definition of a busy thread. A known latest turn
+// is authoritative over a reusable provider session: terminal turns are stopped
+// even when their provider process remains running for a future turn. Native
+// background work remains busy after a turn settles, while session status is
+// used only before T3 reports a latest turn.
 func IsRunning(t domain.Thread) bool {
 	if t.ArchivedAt != nil {
 		return false
 	}
-	if t.TurnState == "running" {
+	if t.BackgroundWork == "working" {
 		return true
+	}
+	if t.TurnState != "" {
+		return t.TurnState == "running"
 	}
 	switch t.SessionStatus {
 	case "running", "starting":
 		return true
 	}
-	return t.BackgroundWork == "working"
+	return false
 }
 
 // GetThread fetches one thread's current shell state. It returns a nil
