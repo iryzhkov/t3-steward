@@ -87,6 +87,45 @@ func TestDeriveQuotaPlanningStateCarriesDetachedRecoveryMetadata(t *testing.T) {
 	}
 }
 
+func TestDeriveQuotaPlanningStateLeavesForcedNonQuotaPauseOperatorManaged(t *testing.T) {
+	input := quotaRecoveryFixture()
+	for index := range input.Attempts {
+		if input.Attempts[index].ID == "paused" {
+			input.Attempts[index].AdminForceStart = true
+		}
+	}
+	filtered := input.ThrottleRecords[:0]
+	for _, record := range input.ThrottleRecords {
+		if record.AttemptID != "paused" {
+			filtered = append(filtered, record)
+		}
+	}
+	input.ThrottleRecords = filtered
+	state, err := DeriveQuotaPlanningState(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, reservation := range state.ResumeReservations {
+		if reservation.AttemptID == "paused" {
+			t.Fatal("operator-managed pause gained automatic resume authority")
+		}
+	}
+	for _, window := range state.QuotaWindows {
+		if window.PausedRequiredWorkRemainder != 25 {
+			t.Fatalf("paused remainder = %v, want 25", window.PausedRequiredWorkRemainder)
+		}
+	}
+
+	for index := range input.Attempts {
+		if input.Attempts[index].ID == "paused" {
+			input.Attempts[index].AdminForceStart = false
+		}
+	}
+	if _, err := DeriveQuotaPlanningState(input); err == nil || !strings.Contains(err.Error(), "no durable throttle record") {
+		t.Fatalf("unforced missing throttle error = %v", err)
+	}
+}
+
 func TestDeriveQuotaPlanningStateIsStableAcrossRestartAndInputOrder(t *testing.T) {
 	input := quotaRecoveryFixture()
 	first, err := DeriveQuotaPlanningState(input)

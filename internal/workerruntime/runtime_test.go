@@ -134,6 +134,34 @@ func TestRuntimeRestartAtDurableCommandBoundaries(t *testing.T) {
 	}
 }
 
+func TestAcceptedCreateSurvivesStoppedProjectionLag(t *testing.T) {
+	root := t.TempDir()
+	driver := &fakeDriver{
+		workspace: filepath.Join(root, "workspace"),
+		observations: []backlog.DispatchThreadState{
+			backlog.DispatchThreadMissing,
+			backlog.DispatchThreadStopped,
+		},
+	}
+	runtime := newClaimedRuntime(t, root, driver)
+	prepare := testCommand(t, runtime, domain.WorkerCommandPrepare, "prepare")
+	if _, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{prepare}}); err != nil {
+		t.Fatal(err)
+	}
+	dispatch := testCommand(t, runtime, domain.WorkerCommandDispatch, "dispatch")
+	acks, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{dispatch}})
+	if err != nil || !acks.Acknowledgements[0].Accepted {
+		t.Fatalf("dispatch = %+v, err = %v", acks, err)
+	}
+	snapshot, err := runtime.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Assignments[0].Control != domain.ControlRunning {
+		t.Fatalf("control = %q, want running", snapshot.Assignments[0].Control)
+	}
+}
+
 func TestLostAndAmbiguousT3ResponseFailsUnknown(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}

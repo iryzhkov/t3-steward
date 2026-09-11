@@ -160,6 +160,12 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 		}
 		record, exists := latestThrottle[attempt.ID]
 		if !exists {
+			if attempt.AdminForceStart {
+				// An explicitly forced attempt can be observed stopped without
+				// a quota directive (for example during T3 projection lag).
+				// Do not invent automatic-resume authority or quota remainder.
+				continue
+			}
 			return QuotaPlanningState{}, fmt.Errorf("attempt %q has no durable throttle record", attempt.ID)
 		}
 		if err := validateThrottlePlanningIdentity(attempt, assignment, record); err != nil {

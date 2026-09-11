@@ -467,9 +467,9 @@ func (r *Runtime) reconcileDispatch(ctx context.Context, id string) error {
 			_ = r.markUnknown(id, detail)
 			return errors.New(detail)
 		}
-		if observed == backlog.DispatchThreadStopped {
-			return r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
-		}
+		// A successful deterministic create-and-start response plus a visible
+		// thread proves the effect. T3 may project the new session as stopped
+		// briefly before its asynchronous provider startup becomes visible.
 		return r.markPhase(id, PhaseRunning, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
 	default:
 		_ = r.markUnknown(id, "T3 returned an unknown dispatch state")
