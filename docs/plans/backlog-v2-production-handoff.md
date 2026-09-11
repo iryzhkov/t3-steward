@@ -38,6 +38,9 @@ Updated: 2026-09-10
 
 ## S19 authorization handoff
 
+- Local qualification checkpoint commit:
+  `2beb3ecaf90abf58221c5afe1d1c187cd0637a4d` (parent and exact S19 start
+  `1776bd5546817dd3402866fb149d91346f4c2035`).
 - Completed every qualification step that does not require fleet access. Added
   `TestBacklogV2ProductionProcessTopology`, which runs the real coordinator
   boundary, local-admin client, and restricted worker service in separate OS
