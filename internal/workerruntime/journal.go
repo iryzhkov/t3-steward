@@ -91,8 +91,13 @@ func OpenJournal(root, workerID, workerEpoch string, coordinatorEpoch int64) (*J
 		if state.WorkerID != workerID || state.WorkerEpoch != workerEpoch {
 			return errors.New("worker identity or epoch does not match durable journal")
 		}
-		if state.CoordinatorEpoch != coordinatorEpoch {
-			return errors.New("coordinator epoch does not match durable journal")
+		if state.CoordinatorEpoch > coordinatorEpoch {
+			return errors.New("coordinator epoch is older than durable journal")
+		}
+		if state.CoordinatorEpoch < coordinatorEpoch {
+			// A higher coordinator epoch fences all commands from the prior
+			// coordinator while preserving custody of active attempts.
+			state.CoordinatorEpoch = coordinatorEpoch
 		}
 		return nil
 	})

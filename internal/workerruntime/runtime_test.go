@@ -248,8 +248,19 @@ func TestStaleEpochAndCorruptArtifactFailClosed(t *testing.T) {
 	if _, err := OpenJournal(root, "normandy", "worker-2", 9); err == nil {
 		t.Fatal("changed worker epoch accepted")
 	}
-	if _, err := OpenJournal(root, "normandy", "worker-1", 10); err == nil {
-		t.Fatal("changed coordinator epoch accepted")
+	journal, err := OpenJournal(root, "normandy", "worker-1", 10)
+	if err != nil {
+		t.Fatalf("higher coordinator epoch rejected: %v", err)
+	}
+	state, err := journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CoordinatorEpoch != 10 {
+		t.Fatalf("coordinator epoch = %d, want 10", state.CoordinatorEpoch)
+	}
+	if _, err := OpenJournal(root, "normandy", "worker-1", 9); err == nil {
+		t.Fatal("older coordinator epoch accepted")
 	}
 }
 
