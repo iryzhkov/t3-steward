@@ -514,7 +514,12 @@ func cmdRun(g globalFlags) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if handled, err := runBacklogV2(ctx, cfg, logger); handled || err != nil {
+	coordinatorMode := cfg.BacklogV2.Mode == "coordinator"
+	if coordinatorMode {
+		if cfg.Backlog.Enabled {
+			return errors.New("backlog-v2 coordinator and legacy backlog runner are mutually exclusive")
+		}
+	} else if handled, err := runBacklogV2(ctx, cfg, logger); handled || err != nil {
 		return err
 	}
 
@@ -585,7 +590,38 @@ func cmdRun(g globalFlags) error {
 			backoff = cfg.Polling.ReconnectMaxDelay.D()
 		}
 	}
-	return d.Run(ctx)
+	if !coordinatorMode {
+		return d.Run(ctx)
+	}
+	return runConcurrentServices(ctx,
+		func(serviceCtx context.Context) error {
+			_, err := runBacklogV2(serviceCtx, cfg, logger)
+			return err
+		},
+		d.Run,
+	)
+}
+
+func runConcurrentServices(ctx context.Context, coordinator, watchdog func(context.Context) error) error {
+	serviceCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type result struct {
+		name string
+		err  error
+	}
+	results := make(chan result, 2)
+	go func() { results <- result{name: "coordinator", err: coordinator(serviceCtx)} }()
+	go func() { results <- result{name: "watchdog", err: watchdog(serviceCtx)} }()
+	first := <-results
+	if first.err == nil && ctx.Err() == nil {
+		first.err = fmt.Errorf("%s stopped unexpectedly", first.name)
+	}
+	cancel()
+	second := <-results
+	if second.err == nil && ctx.Err() == nil && first.err == nil {
+		second.err = fmt.Errorf("%s stopped unexpectedly", second.name)
+	}
+	return errors.Join(first.err, second.err)
 }
 
 func cmdStatus(g globalFlags, limit int, asJSON, showAll bool) error {
