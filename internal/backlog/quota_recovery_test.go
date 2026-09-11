@@ -147,6 +147,30 @@ func TestDeriveQuotaPlanningStateIsStableAcrossRestartAndInputOrder(t *testing.T
 	}
 }
 
+func TestDeriveQuotaPlanningStateAcceptsCanonicalPauseAfterDurableDrain(t *testing.T) {
+	for _, control := range []domain.ControlState{
+		domain.ControlPaused,
+		domain.ControlPausedUncheckpointed,
+	} {
+		t.Run(string(control), func(t *testing.T) {
+			input := quotaRecoveryFixture()
+			for index := range input.Attempts {
+				if input.Attempts[index].ID == "paused" {
+					input.Attempts[index].Control = control
+				}
+			}
+			for index := range input.ThrottleRecords {
+				if input.ThrottleRecords[index].AttemptID == "paused" {
+					input.ThrottleRecords[index].Control = domain.ControlDraining
+				}
+			}
+			if _, err := DeriveQuotaPlanningState(input); err != nil {
+				t.Fatalf("canonical %q after durable drain: %v", control, err)
+			}
+		})
+	}
+}
+
 func TestDeriveQuotaPlanningStateRejectsContradictoryDurableState(t *testing.T) {
 	tests := []struct {
 		name string

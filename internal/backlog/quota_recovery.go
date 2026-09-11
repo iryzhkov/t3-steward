@@ -289,7 +289,8 @@ func pausedControl(control domain.ControlState) bool {
 }
 
 func validateThrottlePlanningIdentity(attempt domain.Attempt, assignment domain.Assignment, record domain.ThrottleAttemptRecord) error {
-	if record.Control != attempt.Control {
+	if record.Control != attempt.Control &&
+		!(pausedControl(attempt.Control) && record.Control == domain.ControlDraining) {
 		return fmt.Errorf("attempt %q control %q contradicts latest throttle control %q", attempt.ID, attempt.Control, record.Control)
 	}
 	if attempt.AssignmentID != assignment.ID || attempt.ThreadID == "" ||
