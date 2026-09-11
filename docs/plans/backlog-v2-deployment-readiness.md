@@ -120,6 +120,23 @@ disposable, and the temporary local and remote roots were removed afterward.
   deadlines and concurrency backpressure, secret-safe errors, and fuzz/property
   coverage for protocol, archive, manifest, schedule, and local-frame parsers.
 
+## Citadel F02 adoption preparation
+
+Citadel F02 independently requalified the release candidate in the isolated worktree
+`/home/igor/Work/citadel-attempts/f02/t3-steward`. The qualified integration branch is
+`stage/f02-controlled-production-adoption` at `986259dbdcd6b1b2f3bb9747d36769d3de374ecb`.
+It contains the S19 candidate `1dea80d676d2f51f1e6020dd66ffb7535e2f6b1d`, both
+currently deployed legacy-runner fixes (provider concurrency and minimum Codex effort), bounded
+formatting corrections, and removal of four static-analysis findings. Full focused, unit,
+qualification, build, vet, race, formatting, staticcheck, and diff gates passed.
+
+The live Normandy user service remains active on legacy-mode commit
+`afa6576bc3eefd3f13076a14cd0328ad1b02c905`; its binary SHA-256 is
+`cc9ef22f3d68a8c71dfd03e64061ecd88adce8e1e3530d58987ceb25962e4b9e`.
+Its effective configuration has no `backlog_v2` section, and active backlog work plus nonempty
+SQLite WAL/SHM state were observed. This is not evidence that backlog-v2 is deployed. No live
+binary, configuration, state, service, worker, or T3 thread was changed by F02 preparation.
+
 ## Deployment blockers
 
 1. Obtain explicit user approval before any host-wide installation or
