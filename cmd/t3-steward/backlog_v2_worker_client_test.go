@@ -90,9 +90,12 @@ func TestNewCoordinatorWorkerSessionBindsConfiguredAuthenticationAndPackage(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session.Client == nil || session.ArtifactClient == nil || session.Importer.Store != store || session.CheckpointImporter.Store != store || session.Builder.Store != store ||
-		session.Builder.CoordinatorEpoch != 7 || session.Builder.CoordinatorID != "coordinator" ||
-		session.Builder.Catalog != session.Binding.Catalog ||
+	builder, builderOK := session.Builder.(coordinatorDeliveringOfferBuilder)
+	base, baseOK := builder.Base.(backlog.CoordinatorOfferBuilder)
+	if session.Client == nil || session.ArtifactClient == nil || session.Importer.Store != store || session.CheckpointImporter.Store != store ||
+		!builderOK || !baseOK || builder.Transport == nil || base.Store != store ||
+		base.CoordinatorEpoch != 7 || base.CoordinatorID != "coordinator" ||
+		base.Catalog != session.Binding.Catalog ||
 		resolver.reference != "test" {
 		t.Fatalf("session = %+v reference=%q", session, resolver.reference)
 	}

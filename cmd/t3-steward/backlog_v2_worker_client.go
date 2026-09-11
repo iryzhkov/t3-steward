@@ -16,15 +16,16 @@ import (
 )
 
 const (
-	coordinatorWorkerRemoteCommand         = "worker-exchange"
-	coordinatorWorkerControlOperation      = "control"
-	coordinatorWorkerArtifactSendOperation = "artifact-send"
+	coordinatorWorkerRemoteCommand            = "worker-exchange"
+	coordinatorWorkerControlOperation         = "control"
+	coordinatorWorkerArtifactSendOperation    = "artifact-send"
+	coordinatorWorkerArtifactReceiveOperation = "artifact-receive"
 )
 
 type coordinatorWorkerSession struct {
 	Client             *workerproto.Client
 	ArtifactClient     *workerproto.Client
-	Builder            backlog.CoordinatorOfferBuilder
+	Builder            backlog.AssignmentOfferBuilder
 	Importer           backlog.CoordinatorResultImporter
 	CheckpointImporter backlog.CoordinatorCheckpointImporter
 	Binding            workerruntime.WorkerBinding
@@ -214,6 +215,19 @@ func newCoordinatorWorkerSession(
 	if err != nil {
 		return coordinatorWorkerSession{}, err
 	}
+	downloadTransport, err := workerproto.NewSSHTransport(workerproto.SSHConfig{
+		Address: worker.Address, RemoteCommand: coordinatorWorkerRemoteCommand,
+		RemoteArguments: []string{coordinatorWorkerArtifactReceiveOperation},
+		RequestTimeout:  requestTimeout, ConnectTimeout: connectTimeout,
+		MaxMessageBytes:   settings.MessageLimits.MaxBytes,
+		MaxStderrBytes:    settings.MessageLimits.MaxBytes,
+		ResponsePrincipal: credentials.WorkerPrincipal,
+		ResponseKeyID:     credentials.WorkerKeyID, ResponseSecret: credentials.WorkerSecret,
+		Factory: commandFactory,
+	})
+	if err != nil {
+		return coordinatorWorkerSession{}, err
+	}
 	client, err := workerproto.NewClient(workerproto.ClientConfig{
 		CoordinatorID: settings.Coordinator.ID, WorkerID: workerID,
 		CoordinatorEpoch: coordinatorEpoch, WorkerEpoch: worker.Epoch, SessionID: sessionID,
@@ -255,12 +269,24 @@ func newCoordinatorWorkerSession(
 			MaxArtifactBytes: settings.MessageLimits.MaxArtifactBytes,
 			MaxTotalBytes:    settings.MessageLimits.MaxArtifactBytes,
 		},
-		Builder: backlog.CoordinatorOfferBuilder{
-			Store: store, Catalog: binding.Catalog, CatalogRevision: binding.CatalogRevision,
+		Builder: coordinatorDeliveringOfferBuilder{
+			Base: backlog.CoordinatorOfferBuilder{
+				Store: store, Catalog: binding.Catalog, CatalogRevision: binding.CatalogRevision,
+				CoordinatorID: settings.Coordinator.ID, CoordinatorEpoch: coordinatorEpoch,
+				VerificationTimeout: requestTimeout,
+				MaxArtifactBytes:    settings.MessageLimits.MaxArtifactBytes,
+				MaxTotalBytes:       settings.MessageLimits.MaxArtifactBytes,
+			},
+			Transport: downloadTransport, Artifacts: artifacts,
 			CoordinatorID: settings.Coordinator.ID, CoordinatorEpoch: coordinatorEpoch,
-			VerificationTimeout: requestTimeout,
-			MaxArtifactBytes:    settings.MessageLimits.MaxArtifactBytes,
-			MaxTotalBytes:       settings.MessageLimits.MaxArtifactBytes,
+			WorkerID: workerID, WorkerEpoch: worker.Epoch,
+			SignerPrincipal: credentials.CoordinatorPrincipal,
+			SignerKeyID:     credentials.CoordinatorKeyID, SignerSecret: credentials.CoordinatorSecret,
+			RequestTimeout:   requestTimeout,
+			RetryPolicy:      workerproto.RetryPolicy{MaxAttempts: 3, BaseDelay: 250 * time.Millisecond, MaxDelay: 2 * time.Second},
+			MaxArtifactBytes: settings.MessageLimits.MaxArtifactBytes,
+			MaxTotalBytes:    settings.MessageLimits.MaxArtifactBytes,
+			Now:              time.Now,
 		},
 	}, nil
 }

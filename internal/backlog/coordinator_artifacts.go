@@ -27,8 +27,9 @@ type ArtifactCatalog interface {
 // CoordinatorArtifactStore retains worker uploads independently from worker
 // availability and serves them to later assignments.
 type CoordinatorArtifactStore struct {
-	Root    string
-	Catalog ArtifactCatalog
+	Root           string
+	SubmissionRoot string
+	Catalog        ArtifactCatalog
 }
 
 // Publish streams one complete worker artifact into coordinator-owned,
@@ -145,7 +146,11 @@ func (s CoordinatorArtifactStore) Open(ctx context.Context, artifactID string) (
 		return domain.Artifact{}, nil, fmt.Errorf("open artifact: artifact %q not found", artifactID)
 	}
 	artifact := artifacts[0]
-	objectPath, err := safeBundleFile(s.Root, filepath.FromSlash(artifact.StoragePath))
+	root := s.Root
+	if artifact.Producer == "submission" && s.SubmissionRoot != "" {
+		root = s.SubmissionRoot
+	}
+	objectPath, err := safeBundleFile(root, filepath.FromSlash(artifact.StoragePath))
 	if err != nil {
 		return domain.Artifact{}, nil, fmt.Errorf("open artifact: resolve retained object: %w", err)
 	}

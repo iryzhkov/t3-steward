@@ -340,7 +340,7 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 		MaxWorkerSnapshotAge:   cfg.BacklogV2.Freshness.WorkerMaxAge.D(),
 		MaxQuotaObservationAge: cfg.BacklogV2.Freshness.QuotaMaxAge.D(),
 	})
-	artifactStore := backlog.CoordinatorArtifactStore{Root: cfg.BacklogV2.Storage.Artifacts, Catalog: store}
+	artifactStore := backlog.CoordinatorArtifactStore{Root: cfg.BacklogV2.Storage.Artifacts, SubmissionRoot: cfg.BacklogV2.Storage.Bundles, Catalog: store}
 	service.SetArtifactOpener(func(ctx context.Context, artifactID string) (domain.Artifact, io.ReadCloser, error) {
 		artifact, content, openErr := artifactStore.Open(ctx, artifactID)
 		return artifact, content, openErr
