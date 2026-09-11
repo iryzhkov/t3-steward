@@ -196,6 +196,7 @@ func validAdmissionState(state domain.AdmissionState) bool {
 
 func sameAdmissionProjection(record domain.QuotaAdmissionRecord, snapshot QuotaPoolAdmissionSnapshot, epochs []domain.QuotaBucketEpoch) bool {
 	return record.Admission == snapshot.Admission &&
+		record.ObservedAt.Equal(snapshot.ObservedAt) &&
 		record.Reason == snapshot.Reason &&
 		sameBucketEpochs(record.BucketEpochs, epochs)
 }

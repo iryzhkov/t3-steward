@@ -126,7 +126,7 @@ func TestReconcileQuotaAdmissionTransitionsOrdersDrainThenStop(t *testing.T) {
 	}
 }
 
-func TestPlanQuotaAdmissionTransitionsRepeatedEpochsAreIdempotent(t *testing.T) {
+func TestPlanQuotaAdmissionTransitionsRefreshesObservationAndKeepsExactReplayIdempotent(t *testing.T) {
 	bucket := admissionBucket("codex", domain.WindowSecondary)
 	previous := []domain.QuotaAdmissionRecord{{
 		QuotaPoolID: "pool", Revision: 7, Admission: domain.AdmissionConstrained,
@@ -144,18 +144,29 @@ func TestPlanQuotaAdmissionTransitionsRepeatedEpochsAreIdempotent(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(transitions) != 1 || transitions[0].Directive != nil ||
+		transitions[0].Record.Revision != 8 ||
+		!transitions[0].Record.ObservedAt.Equal(admissionTransitionTime) {
+		t.Fatalf("observation refresh transitions = %#v", transitions)
+	}
+
+	previous = []domain.QuotaAdmissionRecord{transitions[0].Record}
+	transitions, err = PlanQuotaAdmissionTransitions(previous, derived, admissionTransitionTime.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(transitions) != 0 {
-		t.Fatalf("same epoch replay transitions = %#v", transitions)
+		t.Fatalf("exact replay transitions = %#v", transitions)
 	}
 
 	derived[0].BucketEpochs[0].Epoch = "epoch-2"
-	transitions, err = PlanQuotaAdmissionTransitions(previous, derived, admissionTransitionTime)
+	transitions, err = PlanQuotaAdmissionTransitions(previous, derived, admissionTransitionTime.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(transitions) != 1 || transitions[0].Directive == nil ||
 		transitions[0].Directive.Severity != domain.ThrottleWarn ||
-		transitions[0].Record.Revision != 8 {
+		transitions[0].Record.Revision != 9 {
 		t.Fatalf("new epoch transitions = %#v", transitions)
 	}
 }
