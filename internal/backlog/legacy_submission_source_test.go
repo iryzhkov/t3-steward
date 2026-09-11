@@ -110,7 +110,7 @@ func TestLegacySubmissionSourceBoundsFilesAndRejectsLinks(t *testing.T) {
 	source := LegacySubmissionSource{
 		Dir: root, Submitter: rejectingSingleTaskSubmitter{},
 		ProjectAliases: map[string]string{"development": "steward"},
-		MaxBytes: 1 << 20, MaxFiles: 1, AllowedUID: uint32(os.Getuid()),
+		MaxBytes:       1 << 20, MaxFiles: 1, AllowedUID: uint32(os.Getuid()),
 	}
 	report := source.Tick(context.Background())
 	if len(report.Errors) != 1 || !strings.Contains(report.Errors[0].Error(), "exceeds 1 files") {

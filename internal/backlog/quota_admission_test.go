@@ -13,10 +13,10 @@ import (
 
 func TestQuotaAdmissionPolicyScenarios(t *testing.T) {
 	tests := []struct {
-		name      string
-		class     domain.TaskClass
-		task      func(domain.Task) domain.Task
-		window    func(QuotaWindowBudget) QuotaWindowBudget
+		name         string
+		class        domain.TaskClass
+		task         func(domain.Task) domain.Task
+		window       func(QuotaWindowBudget) QuotaWindowBudget
 		estimate     TaskAdmissionEstimate
 		omitEstimate bool
 		wantCodes    []string

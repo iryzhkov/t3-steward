@@ -62,8 +62,7 @@ func TestCommitWorkerStateTransitionsAtomicallyFencesSnapshotAndAttempt(t *testi
 	}
 	tampered := transition
 	tampered.ExpectedAssignment.UpdatedAt = tampered.ExpectedAssignment.UpdatedAt.Add(time.Second)
-	if _, err := store.CommitWorkerStateTransitions(ctx, []domain.WorkerStateTransition{tampered});
-		err == nil || strings.Contains(err.Error(), assignment.LeaseToken) || strings.Contains(err.Error(), assignment.DispatchToken) {
+	if _, err := store.CommitWorkerStateTransitions(ctx, []domain.WorkerStateTransition{tampered}); err == nil || strings.Contains(err.Error(), assignment.LeaseToken) || strings.Contains(err.Error(), assignment.DispatchToken) {
 		t.Fatalf("stale assignment error exposed capability: %v", err)
 	}
 	applied, err := store.CommitWorkerStateTransitions(ctx, []domain.WorkerStateTransition{transition})

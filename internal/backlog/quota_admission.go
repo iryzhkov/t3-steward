@@ -337,7 +337,6 @@ func quotaWindowKey(window QuotaWindowBudget) string {
 	return window.QuotaPoolID + "/" + window.WindowID
 }
 
-
 func planningTimeValue(value time.Time) *time.Time {
 	copied := value
 	return &copied
