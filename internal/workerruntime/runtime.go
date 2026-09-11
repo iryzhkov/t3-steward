@@ -354,6 +354,15 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 			continue
 		}
 		switch record.Phase {
+		case PhaseRunning:
+			threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
+			if observeErr != nil {
+				err = r.markUnknown(id, "T3 observation unavailable: "+observeErr.Error())
+			} else if threadState == backlog.DispatchThreadStopped {
+				err = r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
+			} else if threadState == backlog.DispatchThreadMissing {
+				err = r.markUnknown(id, "running T3 thread is missing")
+			}
 		case PhaseStopped:
 			if len(record.ThrottleRequests) == 0 {
 				threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)

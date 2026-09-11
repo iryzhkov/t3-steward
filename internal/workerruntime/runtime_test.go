@@ -137,8 +137,11 @@ func TestRuntimeRestartAtDurableCommandBoundaries(t *testing.T) {
 func TestReconcileRepairsUnfencedStoppedProjection(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{
-		workspace:    filepath.Join(root, "workspace"),
-		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive},
+		workspace: filepath.Join(root, "workspace"),
+		observations: []backlog.DispatchThreadState{
+			backlog.DispatchThreadActive,
+			backlog.DispatchThreadActive,
+		},
 	}
 	runtime := newClaimedRuntime(t, root, driver)
 	if err := runtime.markPhase("assignment-1", PhaseStopped, "", driver.workspace, "thread-1"); err != nil {
@@ -155,7 +158,6 @@ func TestReconcileRepairsUnfencedStoppedProjection(t *testing.T) {
 		t.Fatalf("control = %q, want running", snapshot.Assignments[0].Control)
 	}
 }
-
 func TestAcceptedCreateSurvivesStoppedProjectionLag(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{
@@ -163,6 +165,7 @@ func TestAcceptedCreateSurvivesStoppedProjectionLag(t *testing.T) {
 		observations: []backlog.DispatchThreadState{
 			backlog.DispatchThreadMissing,
 			backlog.DispatchThreadStopped,
+			backlog.DispatchThreadActive,
 		},
 	}
 	runtime := newClaimedRuntime(t, root, driver)
@@ -183,7 +186,6 @@ func TestAcceptedCreateSurvivesStoppedProjectionLag(t *testing.T) {
 		t.Fatalf("control = %q, want running", snapshot.Assignments[0].Control)
 	}
 }
-
 func TestLostAndAmbiguousT3ResponseFailsUnknown(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}
@@ -267,6 +269,31 @@ func TestLeaseRenewalCannotExtendBeyondConfiguredInterval(t *testing.T) {
 	}
 }
 
+func TestReconcileObservesRunningThreadCompletion(t *testing.T) {
+	root := t.TempDir()
+	driver := &fakeDriver{
+		workspace:    filepath.Join(root, "workspace"),
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadStopped},
+	}
+	runtime := newClaimedRuntime(t, root, driver)
+	if err := runtime.markPhase("assignment-1", PhaseRunning, "", driver.workspace, "thread-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state, err := runtime.journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.Attempts["assignment-1"].Phase; got != PhaseStopped {
+		t.Fatalf("phase after terminal observation = %q, want %q", got, PhaseStopped)
+	}
+	if driver.collectCalls != 0 {
+		t.Fatalf("collection started before a fenced coordinator command: %d calls", driver.collectCalls)
+	}
+}
 func TestThrottleCheckpointResumeAndReplay(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}
