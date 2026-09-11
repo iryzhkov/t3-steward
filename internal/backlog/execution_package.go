@@ -1,9 +1,13 @@
 package backlog
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -29,6 +33,12 @@ type CoordinatorOfferBuilder struct {
 	VerificationTimeout time.Duration
 	MaxArtifactBytes    int64
 	MaxTotalBytes       int64
+	Artifacts           CoordinatorArtifactStore
+	InputSender         CoordinatorInputSender
+}
+
+type CoordinatorInputSender interface {
+	SendArtifact(context.Context, workerproto.ArtifactTransferManifest, []byte, int64, int64) (workerproto.ArtifactDownloadReceipt, error)
 }
 
 func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
@@ -138,6 +148,59 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		return workerproto.AssignmentOffer{}, err
 	}
 	return workerproto.AssignmentOffer{Assignment: assignment, Package: manifest, ExpiresAt: expiresAt}, nil
+}
+
+// StageAssignmentInputs transfers every immutable object referenced by an
+// offer into the selected worker's custody before that offer can be claimed.
+func (b CoordinatorOfferBuilder) StageAssignmentInputs(ctx context.Context, offer workerproto.AssignmentOffer) error {
+	if b.InputSender == nil || b.Artifacts.Catalog == nil || b.MaxArtifactBytes < 1 || b.MaxTotalBytes < b.MaxArtifactBytes {
+		return errors.New("execution package staging: sender, artifact store, and limits are required")
+	}
+	pkg := offer.Package.Package
+	objects := []workerproto.ArtifactObject{pkg.Prompt}
+	objects = append(objects, pkg.StaticInputs...)
+	for _, dependency := range pkg.Dependencies {
+		objects = append(objects, dependency.Artifacts...)
+	}
+	var raw bytes.Buffer
+	seen := make(map[string]struct{}, len(objects))
+	for _, object := range objects {
+		if _, duplicate := seen[object.ID]; duplicate {
+			return fmt.Errorf("artifact %q is referenced more than once", object.ID)
+		}
+		seen[object.ID] = struct{}{}
+		artifact, reader, err := b.Artifacts.Open(ctx, object.ID)
+		if err != nil {
+			return fmt.Errorf("open %q: %w", object.ID, err)
+		}
+		if artifact.Size != object.Size || artifact.SHA256 != object.SHA256 {
+			reader.Close()
+			return fmt.Errorf("artifact %q metadata changed after package construction", object.ID)
+		}
+		written, copyErr := io.Copy(&raw, io.LimitReader(reader, object.Size+1))
+		closeErr := reader.Close()
+		if copyErr != nil {
+			return fmt.Errorf("read %q: %w", object.ID, copyErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close %q: %w", object.ID, closeErr)
+		}
+		if written != object.Size || int64(raw.Len()) > b.MaxTotalBytes {
+			return fmt.Errorf("artifact %q exceeded package limits", object.ID)
+		}
+	}
+	identity := fmt.Sprintf("%s|%d|%s|%s", offer.Assignment.ID, offer.Assignment.Epoch, offer.Package.SHA256, offer.ExpiresAt.UTC().Format(time.RFC3339Nano))
+	digest := sha256.Sum256([]byte(identity))
+	manifest := workerproto.ArtifactTransferManifest{
+		Version: workerproto.ArtifactManifestVersion,
+		ID:      "download-" + hex.EncodeToString(digest[:16]), Direction: "download",
+		CoordinatorEpoch: b.CoordinatorEpoch, WorkerID: offer.Assignment.WorkerID,
+		WorkerEpoch: offer.Assignment.WorkerEpoch, AssignmentID: offer.Assignment.ID,
+		AssignmentEpoch: offer.Assignment.Epoch, Objects: objects, TotalBytes: int64(raw.Len()),
+		CreatedAt: offer.Assignment.CreatedAt, ExpiresAt: offer.ExpiresAt,
+	}
+	_, err := b.InputSender.SendArtifact(ctx, manifest, raw.Bytes(), b.MaxArtifactBytes, b.MaxTotalBytes)
+	return err
 }
 
 type executionPackageState struct {

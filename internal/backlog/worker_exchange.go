@@ -37,6 +37,7 @@ type WorkerControlTransport interface {
 // offered assignment.
 type AssignmentOfferBuilder interface {
 	BuildAssignmentOffer(context.Context, domain.Assignment, time.Time) (workerproto.AssignmentOffer, error)
+	StageAssignmentInputs(context.Context, workerproto.AssignmentOffer) error
 }
 
 type WorkerExchangeReport struct {
@@ -108,6 +109,9 @@ func (c FleetCoordinator) ReconcileWorker(
 		}
 		if err := validateBuiltOffer(offer, leased, now); err != nil {
 			return report, fmt.Errorf("build assignment offer %q: %w", assignment.ID, err)
+		}
+		if err := builder.StageAssignmentInputs(ctx, offer); err != nil {
+			return report, fmt.Errorf("stage assignment inputs %q: %w", assignment.ID, err)
 		}
 		offers = append(offers, offer)
 		report.Offered = append(report.Offered, assignment)

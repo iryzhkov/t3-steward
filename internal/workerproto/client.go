@@ -8,6 +8,7 @@ import (
 	"io"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,10 @@ type RoundTripper interface {
 
 type ArtifactRoundTripper interface {
 	RoundTripArtifactWithRetry(context.Context, Envelope, RetryPolicy, int64) (Envelope, []byte, error)
+}
+
+type ArtifactPushRoundTripper interface {
+	RoundTripArtifactPushWithRetry(context.Context, Envelope, []byte, RetryPolicy) (Envelope, error)
 }
 
 type fetchedArtifactObject struct {
@@ -245,6 +250,92 @@ func (c *Client) FetchArtifact(ctx context.Context, announced ArtifactUploadResp
 		offset = next
 	}
 	return fetched, nil
+}
+
+// SendArtifact transfers one immutable coordinator-owned manifest and its
+// ordered raw objects into worker custody. The transport retries only the exact
+// signed envelope and byte slice supplied here.
+func (c *Client) SendArtifact(ctx context.Context, manifest ArtifactTransferManifest, raw []byte, maxArtifactBytes, maxTotalBytes int64) (ArtifactDownloadReceipt, error) {
+	if maxArtifactBytes < 1 || maxTotalBytes < maxArtifactBytes {
+		return ArtifactDownloadReceipt{}, errors.New("worker protocol client: positive artifact limits are required")
+	}
+	if err := ValidateArtifactTransferManifest(manifest, maxArtifactBytes, maxTotalBytes, c.config.Now().UTC()); err != nil {
+		return ArtifactDownloadReceipt{}, err
+	}
+	if manifest.Direction != "download" || manifest.CoordinatorEpoch != c.config.CoordinatorEpoch ||
+		manifest.WorkerID != c.config.WorkerID || manifest.WorkerEpoch != c.config.WorkerEpoch {
+		return ArtifactDownloadReceipt{}, errors.New("worker protocol client: artifact download authority mismatch")
+	}
+	if int64(len(raw)) != manifest.TotalBytes {
+		return ArtifactDownloadReceipt{}, errors.New("worker protocol client: artifact download payload size mismatch")
+	}
+	offset := int64(0)
+	for _, object := range manifest.Objects {
+		next := offset + object.Size
+		if err := VerifyArtifact(bytes.NewReader(raw[offset:next]), object, maxArtifactBytes); err != nil {
+			return ArtifactDownloadReceipt{}, fmt.Errorf("worker protocol client: verify artifact download %q: %w", object.ID, err)
+		}
+		offset = next
+	}
+	transport, ok := c.config.Transport.(ArtifactPushRoundTripper)
+	if !ok {
+		return ArtifactDownloadReceipt{}, errors.New("worker protocol client: raw artifact push transport is required")
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.unusable {
+		return ArtifactDownloadReceipt{}, errors.New("worker protocol client: session is unusable after an ambiguous exchange")
+	}
+	if err := ctx.Err(); err != nil {
+		return ArtifactDownloadReceipt{}, err
+	}
+	c.sequence++
+	now := c.config.Now().UTC()
+	requestID := c.config.SessionID + "-" + strconv.FormatInt(c.sequence, 10)
+	request, err := NewEnvelope(
+		MessageArtifactDownload, c.config.SessionID, requestID,
+		c.config.CoordinatorID, c.config.WorkerID,
+		c.config.CoordinatorEpoch, c.config.WorkerEpoch, c.sequence,
+		now, now.Add(c.config.RequestTimeout), manifest,
+	)
+	if err != nil {
+		return ArtifactDownloadReceipt{}, err
+	}
+	if err := SignEnvelope(&request, c.config.SignerPrincipal, c.config.SignerKeyID, c.config.SignerSecret); err != nil {
+		return ArtifactDownloadReceipt{}, err
+	}
+	responseEnvelope, err := transport.RoundTripArtifactPushWithRetry(ctx, request, append([]byte(nil), raw...), c.config.RetryPolicy)
+	if err != nil {
+		c.unusable = true
+		return ArtifactDownloadReceipt{}, fmt.Errorf("worker protocol client: artifact push %s: %w", requestID, err)
+	}
+	if responseEnvelope.Type == MessageError {
+		var protocolErr ProtocolError
+		if err := DecodePayload(responseEnvelope, MessageError, &protocolErr); err != nil {
+			return ArtifactDownloadReceipt{}, err
+		}
+		return ArtifactDownloadReceipt{}, &protocolErr
+	}
+	var receipt ArtifactDownloadReceipt
+	if err := DecodePayload(responseEnvelope, MessageArtifactDownload, &receipt); err != nil {
+		return ArtifactDownloadReceipt{}, err
+	}
+	if receipt.ManifestID != manifest.ID || len(receipt.Custody) != len(manifest.Objects) {
+		return ArtifactDownloadReceipt{}, errors.New("worker protocol client: artifact custody receipt is incomplete")
+	}
+	for index, custody := range receipt.Custody {
+		object := manifest.Objects[index]
+		if custody.ManifestID != manifest.ID || custody.ObjectID != object.ID || custody.Size != object.Size ||
+			!strings.EqualFold(custody.SHA256, object.SHA256) || custody.From != "coordinator:"+c.config.CoordinatorID ||
+			custody.To != "worker:"+c.config.WorkerID || custody.Sequence != int64(index+1) {
+			return ArtifactDownloadReceipt{}, errors.New("worker protocol client: artifact custody receipt changed transfer identity")
+		}
+		if err := ValidateCustodyRecord(custody); err != nil {
+			return ArtifactDownloadReceipt{}, err
+		}
+	}
+	return receipt, nil
 }
 
 func (c *Client) requireSnapshot(snapshot domain.WorkerSnapshot) error {

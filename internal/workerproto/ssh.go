@@ -83,6 +83,10 @@ func (t *SSHTransport) roundTripBytes(ctx context.Context, request Envelope, std
 	if err := t.codec.Encode(&input, request); err != nil {
 		return nil, err
 	}
+	return t.roundTripInput(ctx, request, input.Bytes(), stdoutLimit)
+}
+
+func (t *SSHTransport) roundTripInput(ctx context.Context, request Envelope, input []byte, stdoutLimit int64) ([]byte, error) {
 	timeout := t.config.RequestTimeout
 	if !request.Deadline.IsZero() {
 		untilDeadline := time.Until(request.Deadline)
@@ -105,7 +109,7 @@ func (t *SSHTransport) roundTripBytes(ctx context.Context, request Envelope, std
 	}
 	args = append(args, t.config.RemoteArguments...)
 	command := t.config.Factory(requestCtx, "ssh", args...)
-	command.Stdin = &input
+	command.Stdin = bytes.NewReader(input)
 	stdout := &boundedBuffer{limit: stdoutLimit}
 	stderr := &boundedBuffer{limit: t.config.MaxStderrBytes}
 	command.Stdout = stdout
@@ -129,6 +133,51 @@ func (t *SSHTransport) roundTripBytes(ctx context.Context, request Envelope, std
 		return nil, fmt.Errorf("ssh transport: remote exchange: %w", err)
 	}
 	return append([]byte(nil), stdout.Bytes()...), nil
+}
+
+// RoundTripArtifactPushWithRetry streams one exact envelope and immutable raw
+// suffix to the worker. Ambiguous failures retry those identical bytes.
+func (t *SSHTransport) RoundTripArtifactPushWithRetry(ctx context.Context, request Envelope, raw []byte, policy RetryPolicy) (Envelope, error) {
+	if t == nil || policy.MaxAttempts < 1 || int64(len(raw)) > int64(^uint64(0)>>1)-t.config.MaxMessageBytes {
+		return Envelope{}, errors.New("ssh artifact push transport: invalid request")
+	}
+	var header bytes.Buffer
+	if err := t.codec.Encode(&header, request); err != nil {
+		return Envelope{}, err
+	}
+	input := make([]byte, 0, header.Len()+len(raw))
+	input = append(input, header.Bytes()...)
+	input = append(input, raw...)
+	var lastErr error
+	for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
+		data, err := t.roundTripInput(ctx, request, input, t.config.MaxMessageBytes)
+		if err == nil {
+			var response Envelope
+			if err := t.codec.Decode(bytes.NewReader(data), &response); err != nil {
+				return Envelope{}, err
+			}
+			if err := t.validateResponse(request, response); err != nil {
+				return Envelope{}, err
+			}
+			return response, nil
+		}
+		lastErr = err
+		var protocolErr *ProtocolError
+		if errors.As(err, &protocolErr) && !protocolErr.Retryable {
+			return Envelope{}, err
+		}
+		if attempt == policy.MaxAttempts {
+			break
+		}
+		timer := time.NewTimer(policy.Delay(attempt))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return Envelope{}, &ProtocolError{Code: ErrorCancelled, Message: ctx.Err().Error(), RequestID: request.RequestID}
+		case <-timer.C:
+		}
+	}
+	return Envelope{}, lastErr
 }
 
 func (t *SSHTransport) validateResponse(request, response Envelope) error {

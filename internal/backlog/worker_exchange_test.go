@@ -58,13 +58,17 @@ func TestFleetCoordinatorReconcilesOfferClaimAndDurablePrepare(t *testing.T) {
 		}},
 		ObservedAt: coordinatorTestTime.Add(time.Second), ValidUntil: coordinatorTestTime.Add(time.Minute),
 	}}}
+	staged := 0
 	report, err := coordinator.ReconcileWorker(
-		ctx, transport, testOfferBuilder{}, WorkerAdmissionPolicyFromQuotaReport(QuotaBridgeReport{Derived: []QuotaPoolAdmissionSnapshot{{
+		ctx, transport, testOfferBuilder{staged: &staged}, WorkerAdmissionPolicyFromQuotaReport(QuotaBridgeReport{Derived: []QuotaPoolAdmissionSnapshot{{
 			QuotaPoolID: "pool", Admission: domain.AdmissionOpen,
 		}}}), nil, input.QuotaPools, time.Minute, time.Hour,
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if staged != 1 {
+		t.Fatalf("staged inputs = %d", staged)
 	}
 	if len(report.Offered) != 1 || len(report.Claimed) != 1 ||
 		len(report.Delivery.Pending) != 1 || report.Delivery.Pending[0].Kind != domain.WorkerCommandPrepare ||
@@ -167,7 +171,7 @@ func TestFleetCoordinatorRenewsLeaseAndDeliversDurableThrottle(t *testing.T) {
 	}
 }
 
-type testOfferBuilder struct{}
+type testOfferBuilder struct{ staged *int }
 
 func (testOfferBuilder) BuildAssignmentOffer(_ context.Context, assignment domain.Assignment, expiresAt time.Time) (workerproto.AssignmentOffer, error) {
 	object := workerproto.ArtifactObject{
@@ -197,6 +201,13 @@ func (testOfferBuilder) BuildAssignmentOffer(_ context.Context, assignment domai
 	}
 	manifest, err := workerproto.BuildExecutionPackageManifest(pkg)
 	return workerproto.AssignmentOffer{Assignment: assignment, Package: manifest, ExpiresAt: expiresAt}, err
+}
+
+func (b testOfferBuilder) StageAssignmentInputs(context.Context, workerproto.AssignmentOffer) error {
+	if b.staged != nil {
+		*b.staged++
+	}
+	return nil
 }
 
 type exchangeTransport struct {

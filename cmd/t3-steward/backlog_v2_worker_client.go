@@ -16,14 +16,16 @@ import (
 )
 
 const (
-	coordinatorWorkerRemoteCommand         = "worker-exchange"
-	coordinatorWorkerControlOperation      = "control"
-	coordinatorWorkerArtifactSendOperation = "artifact-send"
+	coordinatorWorkerRemoteCommand            = "worker-exchange"
+	coordinatorWorkerControlOperation         = "control"
+	coordinatorWorkerArtifactReceiveOperation = "artifact-receive"
+	coordinatorWorkerArtifactSendOperation    = "artifact-send"
 )
 
 type coordinatorWorkerSession struct {
 	Client             *workerproto.Client
 	ArtifactClient     *workerproto.Client
+	InputClient        *workerproto.Client
 	Builder            backlog.CoordinatorOfferBuilder
 	Importer           backlog.CoordinatorResultImporter
 	CheckpointImporter backlog.CoordinatorCheckpointImporter
@@ -214,6 +216,19 @@ func newCoordinatorWorkerSession(
 	if err != nil {
 		return coordinatorWorkerSession{}, err
 	}
+	inputTransport, err := workerproto.NewSSHTransport(workerproto.SSHConfig{
+		Address: worker.Address, RemoteCommand: coordinatorWorkerRemoteCommand,
+		RemoteArguments: []string{coordinatorWorkerArtifactReceiveOperation},
+		RequestTimeout:  requestTimeout, ConnectTimeout: connectTimeout,
+		MaxMessageBytes:   settings.MessageLimits.MaxBytes,
+		MaxStderrBytes:    settings.MessageLimits.MaxBytes,
+		ResponsePrincipal: credentials.WorkerPrincipal,
+		ResponseKeyID:     credentials.WorkerKeyID, ResponseSecret: credentials.WorkerSecret,
+		Factory: commandFactory,
+	})
+	if err != nil {
+		return coordinatorWorkerSession{}, err
+	}
 	client, err := workerproto.NewClient(workerproto.ClientConfig{
 		CoordinatorID: settings.Coordinator.ID, WorkerID: workerID,
 		CoordinatorEpoch: coordinatorEpoch, WorkerEpoch: worker.Epoch, SessionID: sessionID,
@@ -222,6 +237,18 @@ func newCoordinatorWorkerSession(
 		SignerKeyID:     credentials.CoordinatorKeyID, SignerSecret: credentials.CoordinatorSecret,
 		RetryPolicy: workerproto.RetryPolicy{MaxAttempts: 3, BaseDelay: 250 * time.Millisecond, MaxDelay: 2 * time.Second},
 		Transport:   transport,
+	})
+	if err != nil {
+		return coordinatorWorkerSession{}, err
+	}
+	inputClient, err := workerproto.NewClient(workerproto.ClientConfig{
+		CoordinatorID: settings.Coordinator.ID, WorkerID: workerID,
+		CoordinatorEpoch: coordinatorEpoch, WorkerEpoch: worker.Epoch, SessionID: sessionID + "-input",
+		RequestTimeout:  requestTimeout,
+		SignerPrincipal: credentials.CoordinatorPrincipal,
+		SignerKeyID:     credentials.CoordinatorKeyID, SignerSecret: credentials.CoordinatorSecret,
+		RetryPolicy: workerproto.RetryPolicy{MaxAttempts: 3, BaseDelay: 250 * time.Millisecond, MaxDelay: 2 * time.Second},
+		Transport:   inputTransport,
 	})
 	if err != nil {
 		return coordinatorWorkerSession{}, err
@@ -242,7 +269,7 @@ func newCoordinatorWorkerSession(
 		artifacts.Catalog = store
 	}
 	return coordinatorWorkerSession{
-		Client: client, ArtifactClient: artifactClient, Binding: binding,
+		Client: client, ArtifactClient: artifactClient, InputClient: inputClient, Binding: binding,
 		Importer: backlog.CoordinatorResultImporter{
 			CoordinatorID: settings.Coordinator.ID, CoordinatorEpoch: coordinatorEpoch,
 			Store: store, Artifacts: artifacts,
@@ -261,6 +288,7 @@ func newCoordinatorWorkerSession(
 			VerificationTimeout: requestTimeout,
 			MaxArtifactBytes:    settings.MessageLimits.MaxArtifactBytes,
 			MaxTotalBytes:       settings.MessageLimits.MaxArtifactBytes,
+			Artifacts:           artifacts, InputSender: inputClient,
 		},
 	}, nil
 }
