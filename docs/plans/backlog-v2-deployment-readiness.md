@@ -319,3 +319,15 @@ remain authorized development work in the production-binding chain, but no
 installation or deployment is authorized. After the blockers above are resolved
 and an S19 readiness report is GO, host-wide rollout still requires explicit
 user approval.
+
+## F02 controlled-production adoption (2026-09-10)
+
+Citadel F02 received explicit operator authority and deployed this branch at `64027178b688eb5cd1f9eef614c8c4a0ec09af1d` on Normandy. The installed binary is `v0.10.1-66-g6402717` with SHA-256 `dd62c161d5712acfc422517396926155897117417f258461f4fc836e75ba1e9f`.
+
+The live database migrated from schema 1 through schema 11. Coordinator `normandy-coordinator` is healthy at epoch 9 with one ready/fresh Normandy worker (`f02-worker-2`), one fresh quota pool, and zero workflows, tasks, assignments, reservations, or locks. Two consecutive authenticated SSH exchanges offered and claimed zero work. Configuration and epoch mistakes encountered during binding failed closed before any assignment or external execution; the empty earlier worker journal was preserved before the explicit closed-admission epoch rotation.
+
+The schema-11 coherent snapshot `/home/igor/.local/state/t3-steward/f02-snapshot-schema11-20260911T060357Z` was verified and restored to absent disposable targets; SQLite integrity returned `ok` and restored bytes matched SHA-256 `4c36dbba3e233024a5781ab223ef300c57d3aa66ef8ee480fc6c9b171b498f91`. The pre-migration binary, config, unit, authorized-keys file, and schema-1 database remain in `/home/igor/.local/state/t3-steward/f02-rollback-20260911T060357Z`; the preserved old binary passes `check` and reads that database.
+
+Normandy self-SSH uses its existing key constrained to an exact forced-command wrapper for control and the two artifact operations. `NoNewPrivileges` remains enabled. `ProtectSystem=full` was disabled because a user-service mount namespace maps root-owned `/etc/ssh` client configuration to uid 65534, which OpenSSH rejects; the failure was independently reproduced with `systemd-run --user`.
+
+No workflow was submitted, created, started, resumed, or dispatched during F02. The operational point of no return was not crossed.
