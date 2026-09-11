@@ -274,7 +274,7 @@ func (c FleetCoordinator) reconcileWorkerThrottle(ctx context.Context, store Wor
 	for _, observation := range snapshot.Assignments {
 		assignment, ok := assignments[observation.AssignmentID]
 		attempt, attemptOK := attempts[assignment.AttemptID]
-		if ok && attemptOK && observation.AssignmentEpoch == assignment.Epoch && observation.WorkspacePath != "" {
+		if ok && attemptOK && !attempt.AdminForceStart && observation.AssignmentEpoch == assignment.Epoch && observation.WorkspacePath != "" {
 			bindings = append(bindings, ThrottleAttemptBinding{Attempt: attempt, Assignment: assignment, WorkspacePath: observation.WorkspacePath})
 		}
 	}

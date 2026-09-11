@@ -167,6 +167,61 @@ func TestFleetCoordinatorRenewsLeaseAndDeliversDurableThrottle(t *testing.T) {
 	}
 }
 
+func TestFleetCoordinatorSkipsAutomaticThrottleForForcedAttempt(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	snapshot := coordinatorSnapshot(4)
+	snapshot.Assignments = []domain.WorkerAssignmentObservation{{
+		AssignmentID: "assignment-forced", AssignmentEpoch: 1, State: domain.AssignmentClaimed,
+		Control: domain.ControlPreparing, WorkspacePath: "/tmp/work", ObservedAt: coordinatorTestTime,
+	}}
+	attempt := domain.Attempt{
+		ID: "attempt-forced", WorkflowRunID: "run-1", TaskID: "task-1", AssignmentID: "assignment-forced",
+		Progress: domain.ProgressActive, Control: domain.ControlPreparing, Revision: 1,
+		AdminForceStart: true, UpdatedAt: coordinatorTestTime,
+	}
+	assignment := domain.Assignment{
+		ID: "assignment-forced", AttemptID: attempt.ID, WorkerID: snapshot.WorkerID, WorkerEpoch: snapshot.WorkerEpoch,
+		Route: domain.ProviderRoute{WorkerID: snapshot.WorkerID, ProviderInstanceID: "codex", Model: "gpt", QuotaPoolID: "pool"},
+		State: domain.AssignmentClaimed, Epoch: 1, LeaseToken: "lease-1", DispatchToken: "dispatch-1",
+		LeaseExpiresAt: coordinatorTestTime.Add(10 * time.Minute), CreatedAt: coordinatorTestTime, UpdatedAt: coordinatorTestTime,
+	}
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
+		Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	directive := domain.ThrottleDirective{
+		ID: "directive-closed", QuotaPoolID: "pool", AdmissionRevision: 1,
+		Severity: domain.ThrottleStop, Reason: "quota closed", CreatedAt: coordinatorTestTime,
+	}
+	transport := &exchangeTransport{}
+	report := WorkerExchangeReport{}
+	err = (FleetCoordinator{}).reconcileWorkerThrottle(
+		ctx, store, transport, snapshot, []domain.ThrottleDirective{directive},
+		[]domain.QuotaPool{{ID: "pool", Admission: domain.AdmissionClosed, MaxConcurrent: 1}},
+		coordinatorTestTime, &report,
+	)
+	if err != nil {
+		t.Fatalf("forced attempt throttle reconciliation: %v", err)
+	}
+	if len(transport.throttles) != 0 {
+		t.Fatalf("forced attempt received automatic throttle: %#v", transport.throttles)
+	}
+	records, err := store.LoadThrottleAttemptRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("forced attempt throttle records = %#v", records)
+	}
+}
+
 type testOfferBuilder struct{}
 
 func (testOfferBuilder) BuildAssignmentOffer(_ context.Context, assignment domain.Assignment, expiresAt time.Time) (workerproto.AssignmentOffer, error) {
