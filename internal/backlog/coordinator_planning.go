@@ -178,7 +178,7 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 	routeEstimates := make([]RouteEstimate, 0)
 	for _, attempt := range input.Attempts {
 		task := taskByID[attempt.TaskID]
-		cost := SeedCost(task.Difficulty)
+		cost := SeedWeeklyCost(task.Difficulty)
 		if task.EstimatedCost != nil {
 			cost = *task.EstimatedCost
 		}

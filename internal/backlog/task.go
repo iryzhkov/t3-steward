@@ -88,10 +88,12 @@ type State struct {
 	UpdatedAt     time.Time  `json:"updatedAt"`
 }
 
-// Seeds by difficulty: percent of the short window and minutes per turn.
+// Legacy seeds by difficulty: percent of a short quota window and minutes per turn.
+// Explicit measured estimates override these conservative cold-start defaults.
 var (
-	costSeed = map[int]float64{1: 5, 2: 10, 3: 20, 4: 35, 5: 50}
-	minsSeed = map[int]float64{1: 15, 2: 30, 3: 60, 4: 90, 5: 150}
+	costSeed       = map[int]float64{1: 5, 2: 10, 3: 20, 4: 35, 5: 50}
+	weeklyCostSeed = map[int]float64{1: 0.5, 2: 1, 3: 2, 4: 3.5, 5: 5}
+	minsSeed       = map[int]float64{1: 15, 2: 30, 3: 60, 4: 90, 5: 150}
 )
 
 // SeedCost returns the difficulty's initial cost estimate.
@@ -100,6 +102,15 @@ func SeedCost(difficulty int) float64 {
 		return v
 	}
 	return costSeed[3]
+}
+
+// SeedWeeklyCost returns backlog-v2's provisional cold-start estimate as a
+// percentage of a weekly quota window. Explicit task estimates take precedence.
+func SeedWeeklyCost(difficulty int) float64 {
+	if v, ok := weeklyCostSeed[difficulty]; ok {
+		return v
+	}
+	return weeklyCostSeed[3]
 }
 
 // SeedMinutes returns the difficulty's initial duration estimate.

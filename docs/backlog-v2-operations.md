@@ -186,6 +186,9 @@ fields are `version`, `name`, `class`, `placement`, `environment`,
   `estimated_cost`, `max_turns`, `not_before`, `deadline`, and
   `expires_at`.
 - Defaults are importance 3, difficulty 3, and max turns 3. Times are RFC 3339.
+- Without an explicit `estimatedCost`, backlog-v2 uses a provisional weekly-window cold-start
+  estimate of 0.5/1/2/3.5/5 percent for difficulty 1–5. This R5 adapter is intentionally
+  conservative and model-agnostic; measured or task-supplied estimates remain authoritative.
 - `inputs_from` may name only declared output paths from dependency ancestors.
   A dependency releases only after explicit success and successful verification.
 - All paths are relative to the bundle or workspace as appropriate. Absolute
