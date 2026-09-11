@@ -372,6 +372,8 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 					err = r.markUnknown(id, "T3 observation unavailable: "+observeErr.Error())
 				} else if threadState == backlog.DispatchThreadActive {
 					err = r.markPhase(id, PhaseRunning, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
+				} else if threadState == backlog.DispatchThreadStopped && !hasCommandRequest(record, domain.WorkerCommandStop) {
+					err = r.collect(ctx, id)
 				}
 			}
 		case PhasePreparing:
@@ -690,6 +692,15 @@ func (r *Runtime) markUnknown(id, detail string) error {
 }
 
 func (r *Runtime) now() time.Time { return r.config.Now().UTC() }
+
+func hasCommandRequest(record AttemptRecord, kind domain.WorkerCommandKind) bool {
+	for _, command := range record.CommandRequests {
+		if command.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
 
 func claim(assignment domain.Assignment, config Config, now time.Time) domain.AssignmentClaimRequest {
 	return domain.AssignmentClaimRequest{

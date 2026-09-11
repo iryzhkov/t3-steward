@@ -158,6 +158,31 @@ func TestReconcileRepairsUnfencedStoppedProjection(t *testing.T) {
 		t.Fatalf("control = %q, want running", snapshot.Assignments[0].Control)
 	}
 }
+
+func TestReconcileCollectsUnthrottledStoppedTerminalThread(t *testing.T) {
+	root := t.TempDir()
+	driver := &fakeDriver{
+		workspace:    filepath.Join(root, "workspace"),
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadStopped},
+	}
+	runtime := newClaimedRuntime(t, root, driver)
+	if err := runtime.markPhase("assignment-1", PhaseStopped, "", driver.workspace, "thread-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state, err := runtime.journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.Attempts["assignment-1"].Phase; got != PhaseCompleted {
+		t.Fatalf("phase = %q, want %q", got, PhaseCompleted)
+	}
+	if driver.collectCalls != 1 || driver.cleanupCalls != 1 {
+		t.Fatalf("collect calls = %d, cleanup calls = %d; want 1 each", driver.collectCalls, driver.cleanupCalls)
+	}
+}
 func TestAcceptedCreateSurvivesStoppedProjectionLag(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{
