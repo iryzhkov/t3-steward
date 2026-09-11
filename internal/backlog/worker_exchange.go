@@ -97,7 +97,7 @@ func (c FleetCoordinator) ReconcileWorker(
 		return report, err
 	}
 	assignments := offeredAssignmentsForWorker(records.Assignments, snapshot)
-	assignments, report.Withheld = admission.filterOffers(assignments)
+	assignments, report.Withheld = admission.filterOffers(assignments, records.Attempts)
 	offers := make([]workerproto.AssignmentOffer, 0, len(assignments))
 	for _, assignment := range assignments {
 		leased := assignment

@@ -207,7 +207,7 @@ func (c FleetCoordinator) reconcileWorkerCommands(
 		return WorkerDeliveryReport{}, err
 	}
 	if admission != nil {
-		planned, report.Withheld = admission.filterCommands(records.Assignments, planned)
+		planned, report.Withheld = admission.filterCommands(records.Assignments, records.Attempts, planned)
 	}
 	report.Planned = planned
 	if len(planned) > 0 {
@@ -224,7 +224,7 @@ func (c FleetCoordinator) reconcileWorkerCommands(
 	}
 	if admission != nil {
 		var withheld []domain.WorkerCommand
-		pending, withheld = admission.filterCommands(records.Assignments, pending)
+		pending, withheld = admission.filterCommands(records.Assignments, records.Attempts, pending)
 		report.Withheld = append(report.Withheld, withheld...)
 		sort.Slice(report.Withheld, func(i, j int) bool { return report.Withheld[i].ID < report.Withheld[j].ID })
 	}

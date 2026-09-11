@@ -28,9 +28,26 @@ func (p WorkerAdmissionPolicy) AllowsNewWork(quotaPoolID string) bool {
 	return quotaPoolID != "" && allowed
 }
 
-func (p WorkerAdmissionPolicy) filterOffers(assignments []domain.Assignment) (allowed, withheld []domain.Assignment) {
+func forcedAssignmentIDs(assignments []domain.Assignment, attempts []domain.Attempt) map[string]struct{} {
+	forcedAttempts := make(map[string]struct{})
+	for _, attempt := range attempts {
+		if attempt.AdminForceStart {
+			forcedAttempts[attempt.ID] = struct{}{}
+		}
+	}
+	forcedAssignments := make(map[string]struct{})
 	for _, assignment := range assignments {
-		if p.AllowsNewWork(assignment.Route.QuotaPoolID) {
+		if _, forced := forcedAttempts[assignment.AttemptID]; forced {
+			forcedAssignments[assignment.ID] = struct{}{}
+		}
+	}
+	return forcedAssignments
+}
+
+func (p WorkerAdmissionPolicy) filterOffers(assignments []domain.Assignment, attempts []domain.Attempt) (allowed, withheld []domain.Assignment) {
+	forced := forcedAssignmentIDs(assignments, attempts)
+	for _, assignment := range assignments {
+		if _, override := forced[assignment.ID]; override || p.AllowsNewWork(assignment.Route.QuotaPoolID) {
 			allowed = append(allowed, assignment)
 		} else {
 			withheld = append(withheld, assignment)
@@ -38,15 +55,16 @@ func (p WorkerAdmissionPolicy) filterOffers(assignments []domain.Assignment) (al
 	}
 	return allowed, withheld
 }
-
-func (p WorkerAdmissionPolicy) filterCommands(assignments []domain.Assignment, commands []domain.WorkerCommand) (allowed, withheld []domain.WorkerCommand) {
+func (p WorkerAdmissionPolicy) filterCommands(assignments []domain.Assignment, attempts []domain.Attempt, commands []domain.WorkerCommand) (allowed, withheld []domain.WorkerCommand) {
 	pools := make(map[string]string, len(assignments))
 	for _, assignment := range assignments {
 		pools[assignment.ID] = assignment.Route.QuotaPoolID
 	}
+	forced := forcedAssignmentIDs(assignments, attempts)
 	for _, command := range commands {
 		newWork := command.Kind == domain.WorkerCommandPrepare || command.Kind == domain.WorkerCommandDispatch
-		if !newWork || p.AllowsNewWork(pools[command.AssignmentID]) {
+		_, override := forced[command.AssignmentID]
+		if !newWork || override || p.AllowsNewWork(pools[command.AssignmentID]) {
 			allowed = append(allowed, command)
 		} else {
 			withheld = append(withheld, command)
