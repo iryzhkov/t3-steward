@@ -134,6 +134,28 @@ func TestRuntimeRestartAtDurableCommandBoundaries(t *testing.T) {
 	}
 }
 
+func TestReconcileRepairsUnfencedStoppedProjection(t *testing.T) {
+	root := t.TempDir()
+	driver := &fakeDriver{
+		workspace:    filepath.Join(root, "workspace"),
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive},
+	}
+	runtime := newClaimedRuntime(t, root, driver)
+	if err := runtime.markPhase("assignment-1", PhaseStopped, "", driver.workspace, "thread-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := runtime.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Assignments[0].Control != domain.ControlRunning {
+		t.Fatalf("control = %q, want running", snapshot.Assignments[0].Control)
+	}
+}
+
 func TestAcceptedCreateSurvivesStoppedProjectionLag(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{
