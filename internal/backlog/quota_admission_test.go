@@ -355,10 +355,11 @@ func TestQuotaAdmissionPolicyRejectsInvalidInput(t *testing.T) {
 	}
 }
 
-func TestAdminForceStartBypassesTimingCapacityAndSurplusHorizonButNotHardClosure(t *testing.T) {
+func TestAdminForceStartBypassesTimingCapacityDrainRunwayAndSurplusHorizonButNotHardClosure(t *testing.T) {
 	window := quotaTestWindow()
 	window.Admission = domain.AdmissionConstrained
 	window.SurplusStartsAt = plannerTestTime.Add(time.Hour)
+	window.DrainAt = plannerTestTime.Add(time.Minute)
 	policy, err := NewQuotaAdmissionPolicy(quotaTestInput(window))
 	if err != nil {
 		t.Fatal(err)

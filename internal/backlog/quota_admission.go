@@ -190,7 +190,7 @@ func (session *quotaAdmissionSession) Evaluate(candidate PlanningCandidate) []Pl
 			}
 			blockers = append(blockers, blocker)
 		}
-		if !window.DrainAt.IsZero() && session.now.Add(runway).After(window.DrainAt) {
+		if !candidate.Attempt.AdminForceStart && !window.DrainAt.IsZero() && session.now.Add(runway).After(window.DrainAt) {
 			blocker := common
 			blocker.Code = PlanningBlockerQuotaDrainRunway
 			blocker.Detail = fmt.Sprintf("expected runtime and checkpoint margin exceed quota drain time %s", window.DrainAt.UTC().Format(time.RFC3339))
