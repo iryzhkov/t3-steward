@@ -135,6 +135,43 @@ func TestSubmissionServiceRecoversPendingPublicationAfterRestart(t *testing.T) {
 	}
 }
 
+func TestSubmissionServiceRestoresMissingAcceptedPublication(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	bundle := validBundle(t)
+	storage := filepath.Join(t.TempDir(), "storage")
+	t.Cleanup(func() { _ = removeIngestedTree(storage) })
+	service := &SubmissionService{
+		StorageRoot: storage, Store: store,
+		MaxBytes: 1 << 20, MaxFiles: 16,
+		Now: func() time.Time { return time.Date(2026, 9, 10, 14, 0, 0, 0, time.UTC) },
+	}
+	request := DirectorySubmission{IdempotencyKey: "restore-request", BundleDir: bundle}
+	first, err := service.SubmitDirectory(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := removeIngestedTree(first.StorageDir); err != nil {
+		t.Fatal(err)
+	}
+
+	replayed, err := service.SubmitDirectory(ctx, request)
+	if err != nil {
+		t.Fatalf("restore accepted publication: %v", err)
+	}
+	if !replayed.Replay || replayed.Record.WorkflowID != first.Record.WorkflowID ||
+		replayed.StorageDir != first.StorageDir {
+		t.Fatalf("restored result = %#v, first = %#v", replayed, first)
+	}
+	if _, err := os.Stat(filepath.Join(replayed.StorageDir, "files", "prompts", "inspect.md")); err != nil {
+		t.Fatalf("restored prompt: %v", err)
+	}
+}
+
 func TestSubmissionServiceBoundsAndGeneratedKey(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))

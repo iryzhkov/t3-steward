@@ -92,7 +92,25 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 	}
 	finalDir := filepath.Join(s.StorageRoot, "workflows", record.WorkflowID)
 	if record.State == domain.SubmissionAccepted {
-		return SubmissionResult{Record: record, StorageDir: finalDir, Replay: true}, nil
+		info, statErr := os.Stat(finalDir)
+		if statErr == nil {
+			if !info.IsDir() {
+				return SubmissionResult{}, errors.New("accepted submission storage is not a directory")
+			}
+			publishedDigest, digestErr := directorySubmissionDigest(
+				ctx, filepath.Join(finalDir, "files"), s.MaxBytes, s.MaxFiles,
+			)
+			if digestErr != nil {
+				return SubmissionResult{}, fmt.Errorf("verify accepted submission files: %w", digestErr)
+			}
+			if publishedDigest != digest {
+				return SubmissionResult{}, errors.New("accepted submission files do not match recorded content")
+			}
+			return SubmissionResult{Record: record, StorageDir: finalDir, Replay: true}, nil
+		}
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return SubmissionResult{}, fmt.Errorf("inspect accepted submission files: %w", statErr)
+		}
 	}
 	if replay {
 		if err := recoverPendingSubmission(ctx, request.BundleDir, finalDir, digest, s.MaxBytes, s.MaxFiles); err != nil {
