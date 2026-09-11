@@ -189,6 +189,9 @@ fields are `version`, `name`, `class`, `placement`, `environment`,
 - Without an explicit `estimatedCost`, backlog-v2 uses a provisional weekly-window cold-start
   estimate of 0.5/1/2/3.5/5 percent for difficulty 1–5. This R5 adapter is intentionally
   conservative and model-agnostic; measured or task-supplied estimates remain authoritative.
+- Interactive-demand forecasts cover at most the quota-observation freshness interval (or a
+  sooner reset), because the next planning interval must obtain a fresh observation rather than
+  extrapolating an hourly short-window fallback across an entire week.
 - `inputs_from` may name only declared output paths from dependency ancestors.
   A dependency releases only after explicit success and successful verification.
 - All paths are relative to the bundle or workspace as appropriate. Absolute

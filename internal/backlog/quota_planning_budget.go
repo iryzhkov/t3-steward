@@ -48,7 +48,7 @@ func deriveQuotaPlanningWindows(
 			return nil, fmt.Errorf("quota planning window %q usage must be between zero and 100", state.Key.String())
 		}
 		forecastHorizon := bridge.MaxObservationAge
-		if state.ResetsAt != nil && state.ResetsAt.After(now) {
+		if state.ResetsAt != nil && state.ResetsAt.After(now) && state.ResetsAt.Sub(now) < forecastHorizon {
 			forecastHorizon = state.ResetsAt.Sub(now)
 		}
 		forecast := bridge.FallbackForecastPerHour * forecastHorizon.Hours()

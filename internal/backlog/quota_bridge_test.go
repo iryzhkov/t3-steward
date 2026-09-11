@@ -114,7 +114,7 @@ func TestQuotaBridgeBuildsNumericPlanningWindow(t *testing.T) {
 	window := report.Windows[0]
 	if window.QuotaPoolID != "shared" || window.WindowID != key.String() ||
 		window.Admission != domain.AdmissionOpen || window.Capacity != 100 ||
-		window.CurrentUsage != 25 || window.ForecastInteractiveUsage != 24 ||
+		window.CurrentUsage != 25 || window.ForecastInteractiveUsage != 1 ||
 		window.SafetyMargin != 4 || !window.ObservedAt.Equal(state.ObservedAt) ||
 		!window.ResetsAt.Equal(reset) ||
 		!window.SurplusStartsAt.Equal(reset.Add(-time.Hour)) ||
