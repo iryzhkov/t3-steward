@@ -64,7 +64,7 @@ func TestAssignmentPlanCommitsBeforeEpochBoundClaim(t *testing.T) {
 		t.Fatalf("claimed attempt projection = %#v", records.Attempts[0])
 	}
 	assertNativeAuditEvent(t, store, "worker-snapshot:normandy:worker-epoch-1:1", "worker:normandy", "observed")
-	assertNativeAuditEvent(t, store, "assignment-offer:assignment-1", "coordinator", "offered")
+	assertNativeAuditEvent(t, store, "assignment-offer:assignment-1:1", "coordinator", "offered")
 	assertNativeAuditEvent(t, store, "assignment-claim:assignment-1:1", "worker:normandy", "claimed")
 }
 

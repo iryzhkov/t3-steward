@@ -103,6 +103,11 @@ func (c FleetCoordinator) PlanAndCommit(ctx context.Context, input PlanInput) (A
 			return AssignmentPlanningReport{}, fmt.Errorf("planner proposed worker %q without a current snapshot", proposal.WorkerID)
 		}
 		assignmentID := stableCoordinatorID("assignment", attempt.ID)
+		assignmentEpoch := int64(attempt.Revision)
+		if assignmentEpoch < 1 {
+			assignmentEpoch = 1
+		}
+		assignmentIdentity := fmt.Sprintf("%s/%d", assignmentID, assignmentEpoch)
 		assignment := domain.Assignment{
 			ID:            assignmentID,
 			AttemptID:     attempt.ID,
@@ -110,10 +115,10 @@ func (c FleetCoordinator) PlanAndCommit(ctx context.Context, input PlanInput) (A
 			Route:         *proposal.Route,
 			Estimate:      cloneTaskAdmissionEstimatePointer(proposal.Estimate),
 			State:         domain.AssignmentOffered,
-			Epoch:         int64(attempt.Number),
-			LeaseToken:    stableCoordinatorID("lease", assignmentID),
-			DispatchToken: stableCoordinatorID("dispatch", assignmentID),
-			ThreadID:      stableCoordinatorID("thread", assignmentID),
+			Epoch:         assignmentEpoch,
+			LeaseToken:    stableCoordinatorID("lease", assignmentIdentity),
+			DispatchToken: stableCoordinatorID("dispatch", assignmentIdentity),
+			ThreadID:      stableCoordinatorID("thread", assignmentIdentity),
 		}
 		items = append(items, domain.AssignmentPlanItem{
 			Assignment:              assignment,

@@ -198,6 +198,87 @@ func TestFleetCoordinatorCommitsPlanAndReplaysLostCommandResponse(t *testing.T) 
 	}
 }
 
+func TestFleetCoordinatorReplansRecoveredAttemptWithFreshAssignmentIdentity(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	task := testTask("alpha")
+	task.Routes = []domain.ProviderRoute{{ProviderInstanceID: "codex", Model: "gpt"}}
+	input := plannerInput([]domain.Task{task}, nil)
+	input.Now = coordinatorTestTime
+	input.Workflows[0].State.Run.CreatedAt = coordinatorTestTime
+	input.Workflows[0].State.Run.UpdatedAt = coordinatorTestTime
+	attempt := &input.Workflows[0].State.Attempts[0]
+	attempt.Revision = 4
+	attempt.AssignmentID = ""
+	attempt.UpdatedAt = coordinatorTestTime
+	input.QuotaPools = []domain.QuotaPool{routingPool("pool", 2, 0, "codex")}
+	input.RouteEstimates = []RouteEstimate{
+		routingEstimate("alpha-1", "worker-a", "codex", "gpt", nil, 10),
+	}
+
+	oldAssignmentID := stableCoordinatorID("assignment", attempt.ID)
+	oldAssignment := domain.Assignment{
+		ID: oldAssignmentID, AttemptID: attempt.ID, WorkerID: "worker-a",
+		WorkerEpoch: "worker-epoch-old", State: domain.AssignmentReleased, Epoch: 1,
+		Route:         domain.ProviderRoute{ProviderInstanceID: "codex", Model: "gpt", QuotaPoolID: "pool"},
+		LeaseToken:    stableCoordinatorID("lease", oldAssignmentID),
+		DispatchToken: stableCoordinatorID("dispatch", oldAssignmentID),
+		ThreadID:      stableCoordinatorID("thread", oldAssignmentID),
+		CreatedAt:     coordinatorTestTime.Add(-time.Minute),
+		UpdatedAt:     coordinatorTestTime,
+	}
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
+		Workflows:    []domain.Workflow{input.Workflows[0].Workflow},
+		WorkflowRuns: []domain.WorkflowRun{input.Workflows[0].State.Run},
+		Tasks:        []domain.Task{task},
+		Attempts:     input.Workflows[0].State.Attempts,
+		Assignments:  []domain.Assignment{oldAssignment},
+		QuotaPools:   input.QuotaPools,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := coordinatorSnapshot(1)
+	if err := store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	coordinator := FleetCoordinator{Store: store, Now: func() time.Time { return coordinatorTestTime }}
+	first, err := coordinator.PlanAndCommit(ctx, input)
+	if err != nil {
+		t.Fatalf("PlanAndCommit recovered attempt: %v", err)
+	}
+	if len(first.Assignments) != 1 {
+		t.Fatalf("assignments = %#v, want one", first.Assignments)
+	}
+	replacement := first.Assignments[0]
+	if replacement.ID != oldAssignment.ID ||
+		replacement.Epoch <= oldAssignment.Epoch ||
+		replacement.DispatchToken == oldAssignment.DispatchToken ||
+		replacement.ThreadID == oldAssignment.ThreadID {
+		t.Fatalf("replacement did not fence released identity: old=%#v replacement=%#v", oldAssignment, replacement)
+	}
+
+	replayed, err := coordinator.PlanAndCommit(ctx, input)
+	if err != nil {
+		t.Fatalf("replay PlanAndCommit: %v", err)
+	}
+	if len(replayed.Assignments) != 1 || replayed.Assignments[0].ID != replacement.ID {
+		t.Fatalf("replayed assignments = %#v, want %q", replayed.Assignments, replacement.ID)
+	}
+	records, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records.Assignments) != 1 || records.Assignments[0].Epoch != replacement.Epoch {
+		t.Fatalf("durable assignments = %#v, want revision-fenced replacement", records.Assignments)
+	}
+}
+
 func TestFleetCoordinatorRecoversLostDispatchAcknowledgementWithoutDuplicateExecution(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))

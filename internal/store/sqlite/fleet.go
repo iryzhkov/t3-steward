@@ -275,13 +275,41 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 			return nil, fmt.Errorf("%w: worker %q is disconnected, stale, or not ready", ErrWorkerUnavailable, assignment.WorkerID)
 		}
 
+		current, loadErr := loadAssignmentTx(ctx, tx, assignment.ID)
+		recycle := loadErr == nil
+		if loadErr != nil && !errors.Is(loadErr, sql.ErrNoRows) {
+			return nil, loadErr
+		}
+		if recycle {
+			if current.AttemptID != assignment.AttemptID ||
+				current.State != domain.AssignmentReleased ||
+				current.Epoch >= assignment.Epoch {
+				return nil, fmt.Errorf("assignment %q cannot be revision-fenced for a new offer", assignment.ID)
+			}
+		}
 		assignment.CreatedAt = commit.CommittedAt
 		assignment.UpdatedAt = commit.CommittedAt
 		raw, err := json.Marshal(assignment)
 		if err != nil {
 			return nil, fmt.Errorf("encode assignment %q: %w", assignment.ID, err)
 		}
-		if _, err := tx.ExecContext(ctx, `
+		if recycle {
+			result, err := tx.ExecContext(ctx, `
+				UPDATE coordinator_assignments
+				SET dispatch_token = ?, dispatch_revision = 0, dispatch_state = '',
+					worker_id = ?, worker_epoch = ?, assignment_epoch = ?,
+					assignment_state = ?, lease_expires_at = '', record = ?
+				WHERE id = ? AND assignment_state = ? AND assignment_epoch = ?
+			`, assignment.DispatchToken, assignment.WorkerID, assignment.WorkerEpoch,
+				assignment.Epoch, assignment.State, raw, assignment.ID,
+				current.State, current.Epoch)
+			if err != nil {
+				return nil, fmt.Errorf("reoffer assignment %q: %w", assignment.ID, err)
+			}
+			if changed, _ := result.RowsAffected(); changed != 1 {
+				return nil, fmt.Errorf("%w: assignment %q changed during reoffer", ErrStaleAttemptRevision, assignment.ID)
+			}
+		} else if _, err := tx.ExecContext(ctx, `
 			INSERT INTO coordinator_assignments(
 				id, attempt_id, dispatch_token, dispatch_revision, dispatch_state,
 				worker_id, worker_epoch, assignment_epoch, assignment_state, lease_expires_at, record
@@ -315,7 +343,7 @@ func insertAssignmentPlanAuditEvent(
 	assignment domain.Assignment,
 	attempt domain.Attempt,
 ) (domain.AuditEvent, error) {
-	identity := "assignment-offer:" + assignment.ID
+	identity := fmt.Sprintf("assignment-offer:%s:%d", assignment.ID, assignment.Epoch)
 	return insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
 		ID: identity, Kind: "assignment-offered",
 		WorkflowRunID: attempt.WorkflowRunID, TaskID: attempt.TaskID, AttemptID: attempt.ID,
