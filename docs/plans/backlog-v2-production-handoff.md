@@ -26,10 +26,12 @@ Updated: 2026-09-10
   `f51170c42fe520e8ed5cdee453f497f8def5272d`.
 - Pre-existing worktree state: clean (`git status --short` produced no
   entries); no unexplained changes were present.
-- Current checkpoint: HEAD remains
-  `f51170c42fe520e8ed5cdee453f497f8def5272d`; `git status --short`
-  contains 88 entries, all expected uncommitted S17 code, tests, and
-  documentation, and `git diff --check` passes.
+- Completed S17 implementation commit:
+  `84fb2305f52aa4205f40dec4eb963a653a6bc409` (parent and exact stage start
+  `f51170c42fe520e8ed5cdee453f497f8def5272d`). Code, tests, plan,
+  architecture, operations, readiness, protocol, and handoff changes were
+  committed together. This handoff-only closure commit follows it; the
+  worktree is clean and `git diff --check` passes.
 - Exit gates copied exactly from the authoritative plan:
   - Complete local multi-process workflow with dependencies, artifacts,
     verification, pause/resume/retry, and suppressed recurring trigger.
@@ -313,6 +315,20 @@ Updated: 2026-09-10
 
 ## Completed stages
 
+- S17 — Coordinator runtime, submissions, schedules, and quota bridge,
+  starting from `f51170c42fe520e8ed5cdee453f497f8def5272d` and completed by
+  `84fb2305f52aa4205f40dec4eb963a653a6bc409`.
+- Composed bounded submissions, persistent schedules, quota-authoritative
+  planning, authenticated administration, worker exchange, lease and durable
+  lifecycle/throttle reconciliation, result/checkpoint custody, terminal
+  outcomes, and legacy compatibility into the coordinator runtime.
+- The exact disposable multi-process workflow gate passes dependencies,
+  artifacts, verification failure, retry, pause/restart/resume, success,
+  suppressed recurrence, closed admission, durable effect replay, and
+  no-duplicate dispatch ten consecutive times.
+- No development binary was installed or deployed; no service or live
+  configuration/state was changed; no fleet worker or T3 process was contacted;
+  no workflow was dispatched.
 - S14 — Authority, configuration, and storage lifecycle, starting from
   `ccd1d142e2ae612578682220d2b9cc43d90cc157`.
 - Added strict, disabled-by-default backlog-v2 configuration with validated
