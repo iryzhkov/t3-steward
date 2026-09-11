@@ -225,21 +225,21 @@ Exit gates:
 
 ### S19 — Deployment qualification and readiness decision
 
-- [ ] Run the complete system as separate coordinator, worker, and client
+- [x] Run the complete system as separate coordinator, worker, and client
   processes using disposable configuration, state, artifact, workspace, and
   credential roots.
-- [ ] Exercise transport loss/reorder/duplicate, process restarts, clock skew,
+- [x] Exercise transport loss/reorder/duplicate, process restarts, clock skew,
   stale quota, schedule catch-up, artifact corruption, backup/restore, rollback,
   and legacy/v2 exclusion without external side effects.
 - [ ] Run an observe-only multi-host test and a non-side-effecting canary only
   after explicit authorization identifies the permitted worker hosts and test
   credentials. Never use live state or dispatch a real T3 thread without
   separate explicit authorization.
-- [ ] Repeat unit, integration, migration, compatibility, fault-injection,
+- [x] Repeat unit, integration, migration, compatibility, fault-injection,
   security, race, and rollback gates.
-- [ ] Update the deployment-readiness report to GO or NO-GO with exact evidence,
+- [x] Update the deployment-readiness report to GO or NO-GO with exact evidence,
   residual risks, rollback boundary, and any remaining authorization needs.
-- [ ] Queue no successor. Do not install, restart the service, change live
+- [x] Queue no successor. Do not install, restart the service, change live
   configuration/state, or deploy.
 
 Exit gates:

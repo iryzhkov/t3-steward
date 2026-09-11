@@ -20,23 +20,45 @@ Updated: 2026-09-10
 
 ## Current selection
 
-- Selected stage: S18 — Audit, backup, recovery, and security hardening.
+- Selected stage: S19 — Deployment qualification and readiness decision.
 - Exact full starting commit:
-  `149ab40ae38649c875b76ed72adf891fdc866f42`.
+  `1776bd5546817dd3402866fb149d91346f4c2035`.
 - Pre-existing worktree state: clean (`git status --short` produced no
   entries); no unexplained changes were present.
 - Exit gates copied exactly from the authoritative plan:
-  - Audit completeness and redaction assertions.
-  - Backup/restore drill plus corrupt/incomplete/version-mismatch refusal.
-  - Recovery authentication, authorization, revision, evidence, replay, and
-    closed-quota tests.
-  - Security/limits/fuzz or property tests appropriate to each parser and
-    boundary.
-  - `go test ./...`, `go build ./...`, `go vet ./...`, and
-    `git diff --check`.
+  - All authorized qualification tests pass.
+  - `go test ./...`, `go build ./...`, `go vet ./...`,
+    `go test -race ./...`, and `git diff --check`.
+  - A committed readiness report states a justified GO or NO-GO. A GO is not
+    deployment approval.
 - Focused tests selected before implementation:
-  - `go test ./internal/store/sqlite ./internal/backlog ./internal/backlogadmin ./internal/workerruntime ./cmd/t3-steward -run 'Test(Audit|Backup|Restore|Recovery|RuntimeHealth|Incident|Security|Redact)' -count=1 -v`
-  - `go test ./internal/store/sqlite ./internal/backlog ./internal/backlogadmin ./internal/workerruntime ./cmd/t3-steward -count=1`
+  - `go test ./cmd/t3-steward -run 'Test(BacklogV2Production(ProcessTopology|Qualification)|CoordinatorLocalMultiProcessWorkflow)' -count=1 -v`
+  - `go test ./internal/backlog ./internal/backlogadmin ./internal/backupsnapshot ./internal/store/sqlite ./internal/workerproto ./internal/workerruntime ./cmd/t3-steward -run 'Test(BacklogV2|Coordinator|Worker|Transport|Protocol|Schedule|Quota|Artifact|Backup|Restore|Legacy|Migration|Recovery)' -count=1`
+  - `go test ./internal/backlog ./internal/store/sqlite ./internal/workerruntime ./internal/workerproto ./cmd/t3-steward -run 'Test(.*Restart|.*Replay|.*Lost|.*Duplicate|.*Reorder|.*Clock|.*Stale|.*Corrupt|.*Rollback|.*Exclusion)' -count=1`
+
+## S19 authorization handoff
+
+- Completed every qualification step that does not require fleet access. Added
+  `TestBacklogV2ProductionProcessTopology`, which runs the real coordinator
+  boundary, local-admin client, and restricted worker service in separate OS
+  processes using one disposable root and worker no-external-effects mode.
+- Added `TestBacklogV2ProductionQualification`, a repeatable aggregate that
+  runs fresh child processes for the exact S19 fault categories: transport
+  loss/reorder/duplicate and clock skew; process restart/replay/rollback; stale
+  quota, schedule catch-up, and legacy/v2 exclusion; artifact corruption,
+  backup/restore, and evidence-fenced recovery.
+- The focused topology/aggregate commands, broad focused suites, `go test ./...
+  -count=1`, `go build ./...`, `go vet ./...`, and `go test -race ./...
+  -count=1` pass. `git diff --check` is rerun immediately before the checkpoint
+  commit.
+- All roots and credentials were test-only and disposable. No SSH or T3
+  connection, fleet worker contact, live state access, installation, service
+  restart, configuration change, push, pull request, or deployment occurred.
+- S19 and R6 remain incomplete. No successor is queued.
+- Exact question requiring user authorization: Which worker hosts and test
+  credential references may S19 use for the observe-only multi-host
+  qualification, and do you separately authorize the documented
+  non-side-effecting canary on those hosts?
 
 ## S18 completion record
 

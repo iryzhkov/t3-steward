@@ -504,14 +504,18 @@ Strong evidence currently includes schema migration tests, compatibility
 fixtures, deterministic planner simulations, optimistic concurrency tests,
 lost-response and replay tests, throttle fault tests, artifact path/hash tests,
 admin and worker-protocol JSON goldens, a bounded local multi-process SSH
-transport harness, a temporary SQLite end-to-end workflow, repeated suites, and
-the race suite.
+transport harness, a temporary SQLite end-to-end workflow, and the S19
+no-effects qualification gate. That gate runs coordinator, local-admin client,
+and restricted worker components as separate OS processes on disposable roots,
+then repeats the required transport, restart, clock-skew, stale-quota,
+schedule, corruption, backup/restore, rollback, compatibility, security, and
+race evidence.
 
 Evidence limits:
 
 - The complete workflow and worker exchange run only in disposable local child
-  processes and temporary storage. No fleet connection or remote artifact
-  transfer has been exercised.
+  processes and temporary storage. S19's local process topology is qualified,
+  but no fleet connection or remote artifact transfer has been exercised.
 - The production `cmdRun` path composes quota-authoritative planning, worker
   exchange and delivery, result/checkpoint import, and terminal projection, but
   has not passed S19 observe-only qualification.

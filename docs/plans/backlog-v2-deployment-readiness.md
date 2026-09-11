@@ -34,7 +34,9 @@ same sequence and require exact acknowledged throttle evidence. Its disposable
 multi-process workflow and restart/effect-boundary gates pass repeatedly. S18
 now supplies complete production-transition audit, runtime incident projection,
 coherent stopped backup/restore, fenced evidence-bound recovery, and security
-hardening. S19 deployment qualification remains required.
+hardening. S19's disposable three-process topology, fault matrix, full suite,
+build, vet, and race gates now pass. The authorization-gated multi-host
+observation and non-side-effecting canary remain required.
 
 No binary was installed, no service or live configuration was changed, no live
 state database was opened by development code, no worker was contacted, and no
@@ -111,15 +113,17 @@ processes.
 
 ## Deployment blockers
 
-1. Run S19 observe-only multi-process qualification and a non-side-effecting
-   canary on disposable state, then repeat all release gates.
+1. Authorize the named worker hosts and test credentials for S19 observe-only
+   multi-host qualification, and separately authorize its non-side-effecting
+   canary. Local disposable qualification and release gates already pass.
 2. Obtain explicit user approval after a GO readiness report before any
    host-wide installation or deployment.
 
 The shipped schema and authority boundary, transport/package contract,
 restart-safe worker endpoint, coordinator runtime, and S18 recovery/security
-boundaries are implemented. Qualification remains a blocker, not an operator
-toggle; deployment approval alone must not bypass it.
+boundaries are implemented. S19 local qualification passes, but the authorized
+fleet evidence remains a blocker, not an operator toggle; deployment approval
+alone must not bypass it.
 
 ## Operational risks retained
 
@@ -183,6 +187,36 @@ The following gates passed on Normandy against the candidate worktree:
 All tests used temporary state, artifact, bundle, and workspace roots. The
 documented workflow bundle is loaded by a repository test so manifest drift
 fails CI.
+
+### S19 local qualification evidence
+
+The authorized local portion of S19 passed on Normandy. A dedicated topology
+test runs the real coordinator boundary, local-admin client, and restricted
+worker service in three separate OS processes with one temporary configuration,
+state, bundle, artifact, workspace, and worker-journal tree plus test-only
+credentials. The worker uses the production no-external-effects mode; the test
+opens no SSH or T3 connection. A second aggregate gate launches child processes for
+transport loss/reorder/duplicate and clock skew; coordinator/worker restart and
+replay; stale quota and schedule catch-up; artifact corruption; coherent
+backup/restore; transaction rollback; recovery; and legacy/v2 exclusion.
+
+Passing commands:
+
+- `go test ./cmd/t3-steward -run 'TestBacklogV2Production(ProcessTopology|Qualification)$' -count=1 -v`;
+- `go test ./cmd/t3-steward -run 'Test(BacklogV2ProductionQualification|CoordinatorLocalMultiProcessWorkflow)' -count=1 -v`;
+- `go test ./internal/backlog ./internal/backlogadmin ./internal/backupsnapshot ./internal/store/sqlite ./internal/workerproto ./internal/workerruntime ./cmd/t3-steward -run 'Test(BacklogV2|Coordinator|Worker|Transport|Protocol|Schedule|Quota|Artifact|Backup|Restore|Legacy|Migration|Recovery)' -count=1`;
+- `go test ./internal/backlog ./internal/store/sqlite ./internal/workerruntime ./internal/workerproto ./cmd/t3-steward -run 'Test(.*Restart|.*Replay|.*Lost|.*Duplicate|.*Reorder|.*Clock|.*Stale|.*Corrupt|.*Rollback|.*Exclusion)' -count=1`;
+- `go test ./... -count=1`;
+- `go build ./...`;
+- `go vet ./...`;
+- `go test -race ./... -count=1`;
+- `git diff --check`.
+
+No installation, service restart, live configuration/state access, fleet host
+contact, external T3 dispatch, push, or pull request occurred. The remaining
+S19 evidence requires explicit authorization naming the allowed worker hosts
+and qualification credentials; canary dispatch requires separate explicit
+authorization. The readiness decision therefore remains **NO-GO**.
 
 ### S18 production-binding evidence
 
