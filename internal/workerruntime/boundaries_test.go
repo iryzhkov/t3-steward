@@ -122,6 +122,37 @@ func TestRuntimeRejectsChangedCommandReplayAndCorruptJournal(t *testing.T) {
 	}
 }
 
+func TestOpenJournalAdoptsNewerCoordinatorEpoch(t *testing.T) {
+	root := t.TempDir()
+	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}
+	runtime := newClaimedRuntime(t, root, driver)
+	before, err := runtime.journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	journal, err := OpenJournal(root, "normandy", "worker-1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.CoordinatorEpoch != 10 {
+		t.Fatalf("coordinator epoch = %d, want 10", after.CoordinatorEpoch)
+	}
+	if after.Sequence != before.Sequence {
+		t.Fatalf("sequence = %d, want %d", after.Sequence, before.Sequence)
+	}
+	if _, ok := after.Attempts["assignment-1"]; !ok {
+		t.Fatal("durable attempt was not preserved")
+	}
+	if _, err := OpenJournal(root, "normandy", "worker-1", 9); err == nil {
+		t.Fatal("stale coordinator epoch was accepted")
+	}
+}
+
 func assertPhase(t *testing.T, runtime *Runtime, want Phase) {
 	t.Helper()
 	state, err := runtime.journal.snapshot()

@@ -161,7 +161,7 @@ func TestLostAndAmbiguousT3ResponseFailsUnknown(t *testing.T) {
 	}
 }
 
-func TestStaleEpochAndCorruptArtifactFailClosed(t *testing.T) {
+func TestChangedWorkerEpochAndCorruptArtifactFailClosed(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}
 	runtime := newTestRuntime(t, root, driver)
@@ -173,11 +173,7 @@ func TestStaleEpochAndCorruptArtifactFailClosed(t *testing.T) {
 	if _, err := OpenJournal(root, "normandy", "worker-2", 9); err == nil {
 		t.Fatal("changed worker epoch accepted")
 	}
-	if _, err := OpenJournal(root, "normandy", "worker-1", 10); err == nil {
-		t.Fatal("changed coordinator epoch accepted")
-	}
 }
-
 func TestLeaseLossStopsAndRequiresReconciliation(t *testing.T) {
 	root := t.TempDir()
 	now := runtimeTestNow
