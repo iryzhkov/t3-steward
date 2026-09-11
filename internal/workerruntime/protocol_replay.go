@@ -79,6 +79,17 @@ func OpenProtocolReplayStore(root, coordinatorID, workerID string, coordinatorEp
 		}
 		return store, nil
 	}
+	if state.Version == protocolReplayVersion &&
+		state.CoordinatorID == coordinatorID && state.WorkerID == workerID &&
+		state.WorkerEpoch == workerEpoch && state.CoordinatorEpoch < coordinatorEpoch {
+		// Requests from the prior coordinator epoch are permanently fenced. Start
+		// fresh replay sessions for the new epoch while retaining the worker's
+		// separate attempt journal and execution custody.
+		if err := store.write(store.emptyState()); err != nil {
+			return nil, err
+		}
+		return store, nil
+	}
 	if err := store.validateHeader(state); err != nil {
 		return nil, err
 	}

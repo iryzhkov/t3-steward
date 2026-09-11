@@ -155,9 +155,20 @@ func TestProtocolServerRejectsTamperedDurableResponse(t *testing.T) {
 func TestProtocolReplayStoreRejectsEpochMismatchAndCorruption(t *testing.T) {
 	root := t.TempDir()
 	openTestProtocolReplayStore(t, root)
-	if _, err := OpenProtocolReplayStore(root, "coordinator", "normandy", 10, "worker-1"); err == nil ||
+	store, err := OpenProtocolReplayStore(root, "coordinator", "normandy", 10, "worker-1")
+	if err != nil {
+		t.Fatalf("higher coordinator epoch rejected: %v", err)
+	}
+	state, err := store.read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CoordinatorEpoch != 10 || len(state.Sessions) != 0 || len(state.Requests) != 0 {
+		t.Fatalf("rebound state = %+v", state)
+	}
+	if _, err := OpenProtocolReplayStore(root, "coordinator", "normandy", 9, "worker-1"); err == nil ||
 		!bytes.Contains([]byte(err.Error()), []byte("mismatch")) {
-		t.Fatalf("epoch mismatch error = %v", err)
+		t.Fatalf("older epoch error = %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "protocol-replay.json"), []byte("{broken"), 0o600); err != nil {
 		t.Fatal(err)
