@@ -278,6 +278,8 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 			c.logger.Error("backlog-v2 assignment planning failed", "error", err)
 		} else if len(report.Assignments) != 0 {
 			c.logger.Info("backlog-v2 assignment plans committed", "assignments", len(report.Assignments))
+		} else if len(report.Plan.Decisions) != 0 {
+			c.logger.Debug("backlog-v2 assignment planning deferred", "decisions", report.Plan.Decisions)
 		}
 		if report, err := c.admin.ExecutePendingCommands(ctx); err != nil {
 			c.logger.Error("backlog-v2 admin command execution failed", "error", err)
