@@ -83,6 +83,27 @@ func (d *fakeDriver) Resume(context.Context, workerproto.ExecutionPackage, domai
 	return nil
 }
 
+func TestObservationReportsPreDispatchPhasesAsPreparing(t *testing.T) {
+	for _, phase := range []Phase{PhaseClaimed, PhasePreparing, PhasePrepared, PhaseDispatching} {
+		t.Run(string(phase), func(t *testing.T) {
+			got := observation(AttemptRecord{
+				Assignment: domain.Assignment{
+					ID:    "assignment-1",
+					Epoch: 1,
+					State: domain.AssignmentClaimed,
+				},
+				Phase: phase,
+			}, runtimeTestNow)
+			if got.State != domain.AssignmentClaimed {
+				t.Fatalf("state = %q, want claimed", got.State)
+			}
+			if got.Control != domain.ControlPreparing {
+				t.Fatalf("control = %q, want preparing", got.Control)
+			}
+		})
+	}
+}
+
 func TestRuntimeRestartAtDurableCommandBoundaries(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{workspace: filepath.Join(root, "workspace"), observations: []backlog.DispatchThreadState{
