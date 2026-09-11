@@ -142,10 +142,17 @@ func (r coordinatorQuotaReconciler) Tick(ctx context.Context) (backlog.QuotaBrid
 	if err != nil {
 		return backlog.QuotaBridgeReport{}, fmt.Errorf("load quota throttle snapshot: %w", err)
 	}
-	return r.bridge.ReconcileState(ctx, backlog.QuotaPlanningStateInput{
+	report, err := r.bridge.ReconcileState(ctx, backlog.QuotaPlanningStateInput{
 		Tasks: records.Tasks, Attempts: records.Attempts,
 		Assignments: records.Assignments, ThrottleRecords: throttleRecords,
 	})
+	if err != nil {
+		return backlog.QuotaBridgeReport{}, err
+	}
+	if err := r.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{QuotaPools: report.Pools}); err != nil {
+		return backlog.QuotaBridgeReport{}, fmt.Errorf("persist quota pool projection: %w", err)
+	}
+	return report, nil
 }
 
 type coordinatorPlanningTicker interface {

@@ -612,8 +612,19 @@ func TestCoordinatorQuotaReconcilerPersistsClosedAdmissionWithoutEvidence(t *tes
 	if len(admissions) != 1 || admissions[0].Admission != domain.AdmissionClosed {
 		t.Fatalf("admissions = %#v", admissions)
 	}
+	records, err := store.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records.QuotaPools) != 1 ||
+		records.QuotaPools[0].ID != report.Pools[0].ID ||
+		records.QuotaPools[0].Provider != report.Pools[0].Provider ||
+		!slices.Equal(records.QuotaPools[0].ProviderInstanceIDs, report.Pools[0].ProviderInstanceIDs) ||
+		records.QuotaPools[0].MaxConcurrent != report.Pools[0].MaxConcurrent ||
+		records.QuotaPools[0].Admission != domain.AdmissionClosed {
+		t.Fatalf("durable quota pools = %#v, report = %#v", records.QuotaPools, report.Pools)
+	}
 }
-
 func TestCoordinatorPlannerCommitsOneOfferedAssignmentWithoutDispatch(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlite.OpenMigrated(t.TempDir() + "/state.db")
