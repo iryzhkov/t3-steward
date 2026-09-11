@@ -94,7 +94,7 @@ func (e Exchange) handle(ctx context.Context, envelope workerproto.Envelope) (wo
 		if err := e.Custody.AcknowledgeUpload(request.ManifestID); err != nil {
 			return "", nil, err
 		}
-		return workerproto.MessageArtifactAcknowledged, workerproto.ArtifactAcknowledgement{ManifestID: request.ManifestID}, nil
+		return workerproto.MessageArtifactAcknowledged, workerproto.ArtifactAcknowledgement(request), nil
 	default:
 		return "", nil, &workerproto.ProtocolError{Code: workerproto.ErrorAuthorization, Message: "message kind is not a worker request", RequestID: envelope.RequestID}
 	}

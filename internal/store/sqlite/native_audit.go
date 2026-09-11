@@ -59,14 +59,6 @@ func insertNativeAuditEventTx(ctx context.Context, tx *sql.Tx, input nativeAudit
 	})
 }
 
-func assignmentAuditContext(ctx context.Context, tx *sql.Tx, assignment domain.Assignment) (domain.Attempt, error) {
-	attempt, err := loadAttemptTx(ctx, tx, assignment.AttemptID)
-	if err != nil {
-		return domain.Attempt{}, fmt.Errorf("load assignment %q audit context: %w", assignment.ID, err)
-	}
-	return attempt, nil
-}
-
 func requireNativeAuditEventTx(ctx context.Context, tx *sql.Tx, id string) error {
 	if _, found, err := loadAuditEventTx(ctx, tx, id); err != nil {
 		return err

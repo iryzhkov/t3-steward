@@ -75,22 +75,6 @@ func TestWorkerServiceRejectsCredentialPrincipalMismatch(t *testing.T) {
 	}
 }
 
-func serveWorkerRequest(t *testing.T, service *WorkerService, request workerproto.Envelope) workerproto.Envelope {
-	t.Helper()
-	var output bytes.Buffer
-	if err := service.Serve(context.Background(), bytes.NewReader(mustEncodeEnvelope(t, service.Codec, request)), &output); err != nil {
-		t.Fatalf("serve %s: %v", request.Type, err)
-	}
-	var response workerproto.Envelope
-	if err := service.Codec.Decode(&output, &response); err != nil {
-		t.Fatal(err)
-	}
-	if err := workerproto.VerifyEnvelopeSignature(response, []byte("worker-response-secret")); err != nil {
-		t.Fatal(err)
-	}
-	return response
-}
-
 func signedWorkerRequest(t *testing.T, kind workerproto.MessageType, sequence int64, payload any) workerproto.Envelope {
 	t.Helper()
 	envelope, err := workerproto.NewEnvelope(

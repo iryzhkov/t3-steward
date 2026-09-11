@@ -61,7 +61,7 @@ func TestClientSequencesSignedTypedExchanges(t *testing.T) {
 			if err := DecodePayload(request, MessageArtifactAcknowledge, &acknowledgement); err != nil {
 				t.Fatal(err)
 			}
-			return clientResponse(t, request, MessageArtifactAcknowledged, ArtifactAcknowledgement{ManifestID: acknowledgement.ManifestID})
+			return clientResponse(t, request, MessageArtifactAcknowledged, ArtifactAcknowledgement(acknowledgement))
 		default:
 			t.Fatalf("request type = %q", request.Type)
 			return Envelope{}, nil
