@@ -3,7 +3,6 @@ package backlog
 import (
 	"math"
 	"reflect"
-	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -355,7 +354,7 @@ func TestQuotaAdmissionPolicyRejectsInvalidInput(t *testing.T) {
 	}
 }
 
-func TestAdminForceStartBypassesTimingCapacityDrainRunwayAndSurplusHorizonButNotHardClosure(t *testing.T) {
+func TestAdminForceStartBypassesQuotaSafetyBoundary(t *testing.T) {
 	window := quotaTestWindow()
 	window.Admission = domain.AdmissionConstrained
 	window.SurplusStartsAt = plannerTestTime.Add(time.Hour)
@@ -376,12 +375,13 @@ func TestAdminForceStartBypassesTimingCapacityDrainRunwayAndSurplusHorizonButNot
 		t.Fatalf("forced blockers = %#v", blockers)
 	}
 	window.Admission = domain.AdmissionClosed
+	window.ObservedAt = plannerTestTime.Add(-time.Hour)
 	policy, err = NewQuotaAdmissionPolicy(quotaTestInput(window))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if codes := planningBlockerCodes(policy.StartPlan(plannerTestTime).Evaluate(candidate)); !slices.Equal(codes, []string{PlanningBlockerQuotaAdmission}) {
-		t.Fatalf("closed blockers = %v", codes)
+	if blockers := policy.StartPlan(plannerTestTime).Evaluate(candidate); len(blockers) != 0 {
+		t.Fatalf("forced closed and stale blockers = %#v", blockers)
 	}
 }
 func quotaTestWindow() QuotaWindowBudget {

@@ -556,6 +556,9 @@ func commandSafetyBlocker(records sqlite.CoordinatorRecords, workers []domain.Wo
 	if len(resolved) == 0 {
 		return "no fresh ready worker has a provider-compatible route"
 	}
+	if !resume {
+		return ""
+	}
 	var blocked []string
 	for _, route := range resolved {
 		if admitted, reason := quotaAdmitted(route.QuotaPoolID); admitted {

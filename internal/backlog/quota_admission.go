@@ -138,6 +138,10 @@ func (session *quotaAdmissionSession) Evaluate(candidate PlanningCandidate) []Pl
 		})
 	}
 
+	if candidate.Attempt.AdminForceStart {
+		return blockers
+	}
+
 	appliedWindows := 0
 	for index, window := range session.windows {
 		if !quotaWindowApplies(candidate, window) {

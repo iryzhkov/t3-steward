@@ -403,7 +403,7 @@ func TestPlanAdminStartRechecksSafetyAndOnlyBypassesOrdinaryAdmission(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if application.State != domain.AdminCommandRejected || !strings.Contains(application.Failure, "closed") {
+	if application.State != domain.AdminCommandApplied || application.Attempt == nil || !application.Attempt.AdminForceStart {
 		t.Fatalf("closed application = %#v", application)
 	}
 
@@ -458,7 +458,7 @@ func TestPlanAdminStartAllowsAnOpenAlternativeQuotaRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if application.State != domain.AdminCommandRejected || !strings.Contains(application.Failure, "closed") {
+	if application.State != domain.AdminCommandApplied || application.Attempt == nil || !application.Attempt.AdminForceStart {
 		t.Fatalf("cross-route application = %#v", application)
 	}
 }
@@ -583,8 +583,7 @@ func TestExecutePendingStartReplansWhenHardQuotaClosesBeforeApply(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Decisions) != 1 || report.Decisions[0].Command.State != domain.AdminCommandRejected ||
-		!strings.Contains(report.Decisions[0].Command.Failure, "closed") {
+	if len(report.Decisions) != 1 || report.Decisions[0].Command.State != domain.AdminCommandApplied {
 		t.Fatalf("replanned report = %#v", report)
 	}
 }
