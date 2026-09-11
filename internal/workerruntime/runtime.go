@@ -372,6 +372,13 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 			} else {
 				err = r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
 			}
+		case PhaseStopped:
+			threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
+			if observeErr != nil {
+				err = observeErr
+			} else if threadState == backlog.DispatchThreadActive {
+				err = r.markPhase(id, PhaseRunning, "", record.WorkspacePath, record.ThreadID)
+			}
 		case PhaseCollecting:
 			err = r.collect(ctx, id)
 		case PhaseCompleted:
@@ -458,18 +465,10 @@ func (r *Runtime) reconcileDispatch(ctx context.Context, id string) error {
 			_ = r.markUnknown(id, "T3 create outcome is ambiguous: "+err.Error())
 			return err
 		}
-		observed, err := r.driver.ObserveThread(ctx, record.Package.Package)
-		if err != nil || observed == backlog.DispatchThreadMissing {
-			detail := "T3 create could not be proven"
-			if err != nil {
-				detail += ": " + err.Error()
-			}
-			_ = r.markUnknown(id, detail)
-			return errors.New(detail)
-		}
-		if observed == backlog.DispatchThreadStopped {
-			return r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
-		}
+		// CreateThread returns success only after T3 accepts both thread.create and
+		// thread.turn.start. The projection may briefly expose the new thread as
+		// stopped before the provider session becomes running, so an immediate
+		// observation is not authoritative evidence of a terminal turn.
 		return r.markPhase(id, PhaseRunning, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
 	default:
 		_ = r.markUnknown(id, "T3 returned an unknown dispatch state")

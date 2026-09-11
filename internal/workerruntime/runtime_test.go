@@ -155,6 +155,60 @@ func TestRuntimeRestartAtDurableCommandBoundaries(t *testing.T) {
 	}
 }
 
+func TestReconcileRestoresRunningPhaseForResumedThread(t *testing.T) {
+	root := t.TempDir()
+	driver := &fakeDriver{
+		workspace:      filepath.Join(root, "workspace"),
+		workspaceReady: true,
+		observations:   []backlog.DispatchThreadState{backlog.DispatchThreadActive},
+	}
+	runtime := newClaimedRuntime(t, root, driver)
+	if err := runtime.markPhase("assignment-1", PhaseStopped, "", driver.workspace, "thread-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state, err := runtime.journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Attempts["assignment-1"].Phase != PhaseRunning {
+		t.Fatalf("phase = %q, want running", state.Attempts["assignment-1"].Phase)
+	}
+}
+
+func TestSuccessfulCreateDoesNotMisclassifyProjectionStartupLag(t *testing.T) {
+	root := t.TempDir()
+	driver := &fakeDriver{
+		workspace: filepath.Join(root, "workspace"),
+		observations: []backlog.DispatchThreadState{
+			backlog.DispatchThreadMissing,
+			backlog.DispatchThreadStopped,
+		},
+	}
+	runtime := newClaimedRuntime(t, root, driver)
+	prepare := testCommand(t, runtime, domain.WorkerCommandPrepare, "prepare")
+	if _, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{prepare}}); err != nil {
+		t.Fatal(err)
+	}
+	dispatch := testCommand(t, runtime, domain.WorkerCommandDispatch, "dispatch")
+	acks, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{dispatch}})
+	if err != nil || !acks.Acknowledgements[0].Accepted {
+		t.Fatalf("dispatch: acks=%+v err=%v", acks, err)
+	}
+	state, err := runtime.journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Attempts["assignment-1"].Phase != PhaseRunning {
+		t.Fatalf("phase = %q, want running", state.Attempts["assignment-1"].Phase)
+	}
+	if len(driver.observations) != 1 {
+		t.Fatalf("post-create observations consumed = %d, want 0", 2-len(driver.observations))
+	}
+}
+
 func TestLostAndAmbiguousT3ResponseFailsUnknown(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}
