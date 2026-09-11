@@ -107,13 +107,14 @@ func planWorkerStateTransition(
 	commands map[string]domain.WorkerCommandRecord,
 	now time.Time,
 ) (domain.Assignment, domain.Attempt, string, bool, error) {
+	attemptFinished := attempt.Progress.Terminal() || attempt.CompletedAt != nil
 	if observed {
 		if observation.AssignmentID != assignment.ID || observation.AssignmentEpoch != assignment.Epoch {
 			return assignment, attempt, "", false, fmt.Errorf("assignment observation identity mismatch for %q", assignment.ID)
 		}
 		switch observation.State {
 		case domain.AssignmentClaimed:
-			if assignment.State == domain.AssignmentUnknown && !assignment.LeaseExpiresAt.After(now) {
+			if assignment.State == domain.AssignmentUnknown && !assignment.LeaseExpiresAt.After(now) && !attemptFinished {
 				return assignment, attempt, "", false, nil
 			}
 			control := observation.Control
@@ -133,13 +134,19 @@ func planWorkerStateTransition(
 			nextAssignment.UpdatedAt = now
 			nextAttempt := attempt
 			nextAttempt.AssignmentID = assignment.ID
-			nextAttempt.Progress = domain.ProgressActive
-			nextAttempt.Control = control
+			reason := workerStateObservedPresent
+			if attemptFinished {
+				nextAttempt.Control = domain.ControlStopped
+				reason = "terminal-attempt-stop-required"
+			} else {
+				nextAttempt.Progress = domain.ProgressActive
+				nextAttempt.Control = control
+			}
 			if observation.ThreadID != "" {
 				nextAttempt.ThreadID = observation.ThreadID
 			}
 			nextAttempt.UpdatedAt = now
-			return finishWorkerStateTransition(assignment, attempt, nextAssignment, nextAttempt, workerStateObservedPresent)
+			return finishWorkerStateTransition(assignment, attempt, nextAssignment, nextAttempt, reason)
 		case domain.AssignmentReleased:
 			return releasedWorkerState(assignment, attempt, now, workerStateObservedStopped)
 		case domain.AssignmentCompleted:
@@ -162,6 +169,14 @@ func planWorkerStateTransition(
 		rejectedWorkerCommand(commands, assignment, domain.WorkerCommandDispatch) {
 		return releasedWorkerState(assignment, attempt, now, workerStateCommandRejected)
 	}
+	if attemptFinished && attempt.Control != domain.ControlStopped {
+		nextAttempt := attempt
+		nextAttempt.Control = domain.ControlStopped
+		nextAttempt.UpdatedAt = now
+		nextAssignment := assignment
+		nextAssignment.UpdatedAt = now
+		return finishWorkerStateTransition(assignment, attempt, nextAssignment, nextAttempt, "terminal-attempt-stop-required")
+	}
 	if acceptedWorkerCommand(commands, assignment, domain.WorkerCommandDispatch) &&
 		assignment.State == domain.AssignmentClaimed {
 		nextAttempt := attempt
@@ -177,7 +192,6 @@ func planWorkerStateTransition(
 	}
 	return assignment, attempt, "", false, nil
 }
-
 func releasedWorkerState(
 	assignment domain.Assignment,
 	attempt domain.Attempt,
@@ -216,7 +230,9 @@ func observedCompletedWorkerState(
 	}
 	nextAssignment.UpdatedAt = now
 	nextAttempt := attempt
-	nextAttempt.Progress = domain.ProgressActive
+	if !nextAttempt.Progress.Terminal() && nextAttempt.CompletedAt == nil {
+		nextAttempt.Progress = domain.ProgressActive
+	}
 	nextAttempt.Control = domain.ControlStopped
 	if threadID != "" {
 		nextAttempt.ThreadID = threadID
@@ -224,7 +240,6 @@ func observedCompletedWorkerState(
 	nextAttempt.UpdatedAt = now
 	return finishWorkerStateTransition(assignment, attempt, nextAssignment, nextAttempt, workerStateObservedCompleted)
 }
-
 func completedWorkerState(
 	assignment domain.Assignment,
 	attempt domain.Attempt,
@@ -241,7 +256,7 @@ func completedWorkerState(
 	}
 	nextAssignment.UpdatedAt = now
 	nextAttempt := attempt
-	if !nextAttempt.Progress.Terminal() {
+	if !nextAttempt.Progress.Terminal() && nextAttempt.CompletedAt == nil {
 		nextAttempt.Progress = domain.ProgressVerifying
 	}
 	nextAttempt.Control = domain.ControlStopped
@@ -251,7 +266,6 @@ func completedWorkerState(
 	nextAttempt.UpdatedAt = now
 	return finishWorkerStateTransition(assignment, attempt, nextAssignment, nextAttempt, reason)
 }
-
 func finishWorkerStateTransition(
 	previousAssignment domain.Assignment,
 	previousAttempt domain.Attempt,

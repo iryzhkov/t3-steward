@@ -190,6 +190,74 @@ func TestPlanWorkerStateTransitionsReconcilesObservationsAndAcknowledgements(t *
 	}
 }
 
+func TestPlanWorkerStateTransitionsNeverRevivesFinishedAttempt(t *testing.T) {
+	now := coordinatorTestTime.Add(10 * time.Minute)
+	completedAt := coordinatorTestTime.Add(5 * time.Minute)
+	snapshot := coordinatorSnapshot(2)
+	snapshot.ObservedAt = now
+	snapshot.ValidUntil = now.Add(time.Hour)
+	assignment := domain.Assignment{
+		ID: "assignment-1", AttemptID: "attempt-1", WorkerID: snapshot.WorkerID,
+		WorkerEpoch: snapshot.WorkerEpoch, State: domain.AssignmentClaimed, Epoch: 1,
+		LeaseToken: "lease", DispatchToken: "dispatch", LeaseExpiresAt: now.Add(time.Hour),
+		UpdatedAt: coordinatorTestTime,
+	}
+
+	t.Run("terminal progress wins over a running worker observation", func(t *testing.T) {
+		attempt := domain.Attempt{
+			ID: "attempt-1", AssignmentID: assignment.ID, Progress: domain.ProgressCancelled,
+			Control: domain.ControlStopped, Revision: 3, UpdatedAt: coordinatorTestTime,
+			CompletedAt: &completedAt,
+		}
+		observed := snapshot
+		observed.Assignments = []domain.WorkerAssignmentObservation{{
+			AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
+			State: domain.AssignmentClaimed, Control: domain.ControlRunning,
+			ThreadID: "thread-1", ObservedAt: now,
+		}}
+		transitions, err := PlanWorkerStateTransitions(sqlite.CoordinatorRecords{
+			Assignments: []domain.Assignment{assignment}, Attempts: []domain.Attempt{attempt},
+		}, observed, nil, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(transitions) != 1 {
+			t.Fatalf("transitions = %#v, want 1", transitions)
+		}
+		got := transitions[0]
+		if got.Attempt.Progress != domain.ProgressCancelled ||
+			got.Attempt.Control != domain.ControlStopped ||
+			got.Reason != "terminal-attempt-stop-required" {
+			t.Fatalf("transition revived terminal attempt: %#v", got)
+		}
+	})
+
+	t.Run("completion marker repairs an active projection before dispatch acknowledgement", func(t *testing.T) {
+		attempt := domain.Attempt{
+			ID: "attempt-1", AssignmentID: assignment.ID, Progress: domain.ProgressActive,
+			Control: domain.ControlRunning, Revision: 3, UpdatedAt: coordinatorTestTime,
+			CompletedAt: &completedAt,
+		}
+		dispatch := workerCommandRecord(snapshot, assignment, domain.WorkerCommandDispatch, true)
+		transitions, err := PlanWorkerStateTransitions(sqlite.CoordinatorRecords{
+			Assignments: []domain.Assignment{assignment}, Attempts: []domain.Attempt{attempt},
+		}, snapshot, []domain.WorkerCommandRecord{dispatch}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(transitions) != 1 {
+			t.Fatalf("transitions = %#v, want 1", transitions)
+		}
+		got := transitions[0]
+		if got.Attempt.Progress != domain.ProgressActive ||
+			got.Attempt.Control != domain.ControlStopped ||
+			got.Attempt.CompletedAt == nil ||
+			got.Reason != "terminal-attempt-stop-required" {
+			t.Fatalf("completion marker did not fence dispatch: %#v", got)
+		}
+	})
+}
+
 func TestPlanWorkerStateTransitionsRejectsStaleAndMalformedSnapshots(t *testing.T) {
 	assignment := domain.Assignment{
 		ID: "assignment-1", AttemptID: "attempt-1", WorkerID: "worker-a",
