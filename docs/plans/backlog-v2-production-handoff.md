@@ -41,8 +41,10 @@ Updated: 2026-09-10
 ## S18 completion record
 
 - S18 has no safe in-stage work remaining. Its code, tests, plan, architecture,
-  readiness report, operations documentation, and this handoff are complete.
-  The implementation commit is recorded below by the post-commit handoff.
+  readiness report, operations documentation, and handoff are complete.
+- Completed S18 implementation commit:
+  `58344eb8167fdd01dd05825327ddec86a6253358` (parent and exact stage start
+  `149ab40ae38649c875b76ed72adf891fdc866f42`).
 - Added `internal/backupsnapshot`, a bounded stopped-snapshot implementation for
   the coordinator SQLite database and configured artifact root. It takes the
   coordinator ownership lock, refuses nonempty WAL/SHM state, links, special
