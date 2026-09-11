@@ -81,10 +81,14 @@ func (s *Store) RecoverUnknownAssignment(ctx context.Context, recovery domain.Un
 	switch recovery.Outcome {
 	case domain.UnknownRecoveryStopped:
 		assignment.DispatchState = domain.DispatchStopped
-		attempt.Progress = domain.ProgressReady
-		attempt.Control = domain.ControlUnassigned
-		attempt.ThreadID = ""
-		attempt.Failure = ""
+		if attempt.Progress.Terminal() || attempt.CompletedAt != nil {
+			attempt.Control = domain.ControlStopped
+		} else {
+			attempt.Progress = domain.ProgressReady
+			attempt.Control = domain.ControlUnassigned
+			attempt.ThreadID = ""
+			attempt.Failure = ""
+		}
 	case domain.UnknownRecoveryFailed:
 		attempt.Progress = domain.ProgressFailed
 		attempt.Control = domain.ControlStopped

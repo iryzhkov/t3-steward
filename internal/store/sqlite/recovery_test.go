@@ -79,6 +79,45 @@ func TestUnknownRecoveryIsEvidenceRevisionAndReplayFenced(t *testing.T) {
 	}
 }
 
+func TestUnknownRecoveryStoppedPreservesTerminalAttempt(t *testing.T) {
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	records := coordinatorFixture()
+	records.Assignments[0].State = domain.AssignmentUnknown
+	records.Assignments[0].DispatchState = domain.DispatchUnknown
+	records.Assignments[0].Epoch = 2
+	completed := time.Date(2026, 9, 10, 21, 0, 0, 0, time.UTC)
+	records.Attempts[0].Progress = domain.ProgressCancelled
+	records.Attempts[0].Control = domain.ControlRunning
+	records.Attempts[0].ThreadID = "thread-terminal"
+	records.Attempts[0].CompletedAt = &completed
+	if err := store.SaveCoordinatorRecords(context.Background(), records); err != nil {
+		t.Fatal(err)
+	}
+	now := completed.Add(time.Hour)
+	decision, err := store.RecoverUnknownAssignment(context.Background(), domain.UnknownAssignmentRecovery{
+		ID: "recovery-terminal", AssignmentID: "assignment-1", CoordinatorEpoch: 1,
+		ExpectedAssignmentEpoch: 2, ExpectedAttemptRevision: records.Attempts[0].Revision,
+		Outcome: domain.UnknownRecoveryStopped, EvidenceID: "terminal-thread-evidence",
+		EvidenceSHA256: strings.Repeat("c", 64), Actor: "local:1000",
+		Reason: "reviewed terminal thread evidence", RecoveredAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Assignment.State != domain.AssignmentReleased ||
+		decision.Assignment.DispatchState != domain.DispatchStopped ||
+		decision.Attempt.Progress != domain.ProgressCancelled ||
+		decision.Attempt.Control != domain.ControlStopped ||
+		decision.Attempt.ThreadID != "thread-terminal" ||
+		decision.Attempt.CompletedAt == nil || !decision.Attempt.CompletedAt.Equal(completed) {
+		t.Fatalf("terminal recovery decision = %+v", decision)
+	}
+}
+
 func TestUnknownRecoveryRefusesMissingEvidenceAndStaleState(t *testing.T) {
 	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
