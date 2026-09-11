@@ -40,8 +40,8 @@ type ProcessRunner interface {
 	Run(context.Context, ProcessRequest) (ProcessResult, error)
 }
 
-// SystemdScopeRunner executes a process in a transient user scope. Cancellation
-// kills every process in the scope before returning.
+// SystemdScopeRunner executes a process in a transient user service. Cancellation
+// kills every process in the service before returning.
 type SystemdScopeRunner struct {
 	SystemdRunBinary string
 	SystemctlBinary  string
@@ -61,7 +61,6 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 	unit := processScopeUnit(request.ID)
 	args := []string{
 		"--user",
-		"--scope",
 		"--wait",
 		"--collect",
 		"--pipe",
@@ -156,5 +155,5 @@ func validateProcessRequest(request ProcessRequest) error {
 
 func processScopeUnit(id string) string {
 	sum := sha256.Sum256([]byte(id))
-	return fmt.Sprintf("t3-steward-%x.scope", sum[:12])
+	return fmt.Sprintf("t3-steward-%x.service", sum[:12])
 }

@@ -29,7 +29,7 @@ func TestSystemdScopeRunnerBuildsContainedUserScope(t *testing.T) {
 	}
 	args := readAbsoluteTestFile(t, argsPath)
 	for _, want := range []string{
-		"--user", "--scope", "--wait", "--collect", "--pipe",
+		"--user", "--wait", "--collect", "--pipe",
 		"--property=KillMode=control-group",
 		"--working-directory=" + root,
 		"--", "/bin/sh", "-c", "printf ready",
