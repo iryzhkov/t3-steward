@@ -355,7 +355,7 @@ func TestQuotaAdmissionPolicyRejectsInvalidInput(t *testing.T) {
 	}
 }
 
-func TestAdminForceStartBypassesTimingAndSurplusHorizonButNotHardClosure(t *testing.T) {
+func TestAdminForceStartBypassesTimingCapacityAndSurplusHorizonButNotHardClosure(t *testing.T) {
 	window := quotaTestWindow()
 	window.Admission = domain.AdmissionConstrained
 	window.SurplusStartsAt = plannerTestTime.Add(time.Hour)
@@ -365,6 +365,7 @@ func TestAdminForceStartBypassesTimingAndSurplusHorizonButNotHardClosure(t *test
 	}
 	future := plannerTestTime.Add(time.Hour)
 	estimate := quotaTestEstimate()
+	estimate.RemainingCost = window.Capacity * 2
 	candidate := PlanningCandidate{
 		Task:    domain.Task{Class: domain.TaskClassSurplus, NotBefore: &future},
 		Attempt: domain.Attempt{ID: "attempt-1", AdminForceStart: true, AdminNotBefore: &future},
@@ -382,7 +383,6 @@ func TestAdminForceStartBypassesTimingAndSurplusHorizonButNotHardClosure(t *test
 		t.Fatalf("closed blockers = %v", codes)
 	}
 }
-
 func quotaTestWindow() QuotaWindowBudget {
 	return QuotaWindowBudget{
 		QuotaPoolID:                 "pool",

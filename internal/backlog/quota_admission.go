@@ -181,7 +181,7 @@ func (session *quotaAdmissionSession) Evaluate(candidate PlanningCandidate) []Pl
 			blocker.EarliestAt = planningTimeValue(window.SurplusStartsAt)
 			blockers = append(blockers, blocker)
 		}
-		if estimate.RemainingCost > available {
+		if !candidate.Attempt.AdminForceStart && estimate.RemainingCost > available {
 			blocker := common
 			blocker.Code = PlanningBlockerQuotaCapacity
 			blocker.Detail = fmt.Sprintf("quota window %q has %.3f available, below %.3f remaining cost", quotaWindowKey(window), available, estimate.RemainingCost)
