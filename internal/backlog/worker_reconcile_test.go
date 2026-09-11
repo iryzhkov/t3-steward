@@ -190,6 +190,44 @@ func TestPlanWorkerStateTransitionsReconcilesObservationsAndAcknowledgements(t *
 	}
 }
 
+func TestPlanWorkerStateTransitionsFencesNewUnknownObservation(t *testing.T) {
+	now := coordinatorTestTime.Add(10 * time.Minute)
+	snapshot := coordinatorSnapshot(2)
+	snapshot.ObservedAt = now
+	snapshot.ValidUntil = now.Add(time.Hour)
+	assignment := domain.Assignment{
+		ID: "assignment-1", AttemptID: "attempt-1", WorkerID: snapshot.WorkerID,
+		WorkerEpoch: snapshot.WorkerEpoch, State: domain.AssignmentClaimed, Epoch: 1,
+		LeaseToken: "lease", DispatchToken: "dispatch", LeaseExpiresAt: now.Add(time.Hour),
+		UpdatedAt: coordinatorTestTime,
+	}
+	attempt := domain.Attempt{
+		ID: "attempt-1", AssignmentID: assignment.ID, Progress: domain.ProgressActive,
+		Control: domain.ControlPreparing, Revision: 3, UpdatedAt: coordinatorTestTime,
+	}
+	snapshot.Assignments = []domain.WorkerAssignmentObservation{{
+		AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
+		State: domain.AssignmentUnknown, Control: domain.ControlStopped, ObservedAt: now,
+	}}
+	transitions, err := PlanWorkerStateTransitions(sqlite.CoordinatorRecords{
+		Assignments: []domain.Assignment{assignment}, Attempts: []domain.Attempt{attempt},
+	}, snapshot, nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transitions) != 1 {
+		t.Fatalf("transitions = %#v, want 1", transitions)
+	}
+	got := transitions[0]
+	if got.Assignment.State != domain.AssignmentUnknown ||
+		got.Attempt.Control != domain.ControlStopped ||
+		got.Attempt.Progress != domain.ProgressActive ||
+		got.Attempt.AssignmentID != assignment.ID ||
+		got.Reason != workerStateObservedUnknown {
+		t.Fatalf("transition = %#v", got)
+	}
+}
+
 func TestPlanWorkerStateTransitionsKeepsUnknownEvidenceFencedWithoutBlockingOthers(t *testing.T) {
 	now := coordinatorTestTime.Add(10 * time.Minute)
 	snapshot := coordinatorSnapshot(2)

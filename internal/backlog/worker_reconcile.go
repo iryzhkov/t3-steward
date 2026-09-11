@@ -16,6 +16,7 @@ const (
 	workerStateObservedStopped   = "worker-observed-stopped"
 	workerStateObservedCompleted = "worker-observed-completed"
 	workerStateObservedAbsent    = "worker-observed-absent"
+	workerStateObservedUnknown   = "worker-observed-unknown"
 	workerStateCommandRejected   = "worker-command-rejected"
 	workerStateDispatchAccepted  = "dispatch-accepted"
 	workerStateStopAccepted      = "stop-accepted"
@@ -155,7 +156,18 @@ func planWorkerStateTransition(
 			}
 			return observedCompletedWorkerState(assignment, attempt, snapshot, observation.ThreadID, now)
 		case domain.AssignmentUnknown:
-			return assignment, attempt, "", false, nil
+			if assignment.State == domain.AssignmentUnknown {
+				return assignment, attempt, "", false, nil
+			}
+			nextAssignment := assignment
+			nextAssignment.State = domain.AssignmentUnknown
+			nextAssignment.WorkerEpoch = snapshot.WorkerEpoch
+			nextAssignment.ThreadID = observation.ThreadID
+			nextAssignment.UpdatedAt = now
+			nextAttempt := attempt
+			nextAttempt.Control = domain.ControlStopped
+			nextAttempt.UpdatedAt = now
+			return finishWorkerStateTransition(assignment, attempt, nextAssignment, nextAttempt, workerStateObservedUnknown)
 		default:
 			return assignment, attempt, "", false, fmt.Errorf("assignment %q has invalid observed state %q", assignment.ID, observation.State)
 		}
