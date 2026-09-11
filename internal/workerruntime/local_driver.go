@@ -36,6 +36,7 @@ type ArtifactPublisher interface {
 
 type T3Control interface {
 	GetThread(context.Context, string) (*domain.Thread, error)
+	ResolveProjectID(context.Context, string) (string, error)
 	CreateAndStartThread(context.Context, t3control.NewThreadInput) (string, error)
 	StopThread(context.Context, domain.Thread, t3control.StopMode) error
 	WaitStopped(context.Context, string, time.Duration) (*domain.Thread, bool, error)
@@ -212,6 +213,10 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 	if err != nil {
 		return err
 	}
+	projectID, err := d.T3.ResolveProjectID(ctx, pkg.Environment.T3Project)
+	if err != nil {
+		return err
+	}
 	selection := map[string]any{"instanceId": pkg.Route.ProviderInstanceID, "model": pkg.Route.Model}
 	if len(pkg.Route.Options) != 0 {
 		keys := make([]string, 0, len(pkg.Route.Options))
@@ -227,7 +232,7 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 	}
 	threadID, err := d.T3.CreateAndStartThread(ctx, t3control.NewThreadInput{
 		ThreadID: pkg.Identity.ThreadID, DispatchToken: pkg.Identity.DispatchToken,
-		ProjectID: pkg.Environment.T3Project, Title: pkg.Identity.TaskID,
+		ProjectID: projectID, Title: pkg.Identity.TaskID,
 		ModelSelection: selection, RuntimeMode: "full-access", InteractionMode: "default",
 		WorktreePath: workspace, Prompt: string(prompt),
 	})

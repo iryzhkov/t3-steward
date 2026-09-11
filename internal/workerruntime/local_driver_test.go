@@ -41,13 +41,16 @@ func (p *recordingPublisher) PublishCheckpoint(_ context.Context, _ workerproto.
 }
 
 type recordingT3 struct {
-	thread  *domain.Thread
-	created []t3control.NewThreadInput
-	warns   []domain.Warning
-	resumes []string
-	stops   int
-	message string
-	archive []byte
+	thread         *domain.Thread
+	created        []t3control.NewThreadInput
+	projectID      string
+	resolveProject string
+	resolveErr     error
+	warns          []domain.Warning
+	resumes        []string
+	stops          int
+	message        string
+	archive        []byte
 }
 
 func (c *recordingT3) GetThread(context.Context, string) (*domain.Thread, error) {
@@ -57,6 +60,18 @@ func (c *recordingT3) GetThread(context.Context, string) (*domain.Thread, error)
 	copy := *c.thread
 	return &copy, nil
 }
+
+func (c *recordingT3) ResolveProjectID(_ context.Context, project string) (string, error) {
+	c.resolveProject = project
+	if c.resolveErr != nil {
+		return "", c.resolveErr
+	}
+	if c.projectID == "" {
+		return "resolved-project-id", nil
+	}
+	return c.projectID, nil
+}
+
 func (c *recordingT3) CreateAndStartThread(_ context.Context, input t3control.NewThreadInput) (string, error) {
 	c.created = append(c.created, input)
 	c.thread = &domain.Thread{ID: input.ThreadID, Running: true, ModelSelection: input.ModelSelection}
@@ -186,6 +201,36 @@ func TestLocalDriverBindsCatalogArtifactsWorkspaceAndT3(t *testing.T) {
 	driver.Credentials = nil
 	if _, err := driver.Prepare(context.Background(), pkg); err == nil || !strings.Contains(err.Error(), "resolver is unavailable") {
 		t.Fatalf("missing credential resolver error = %v", err)
+	}
+}
+
+func TestLocalDriverResolvesProjectBeforeCreate(t *testing.T) {
+	pkg := testPackage()
+	root := t.TempDir()
+	control := &recordingT3{projectID: "project-uuid"}
+	driver := &LocalDriver{Config: LocalDriverConfig{ArtifactRoot: root}, T3: control}
+	cachePath := filepath.Join(root, "objects", pkg.Prompt.SHA256)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, []byte("prompt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.CreateThread(context.Background(), pkg, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if control.resolveProject != pkg.Environment.T3Project {
+		t.Fatalf("resolved project = %q, want %q", control.resolveProject, pkg.Environment.T3Project)
+	}
+	if len(control.created) != 1 || control.created[0].ProjectID != "project-uuid" {
+		t.Fatalf("create input = %+v", control.created)
+	}
+	control.resolveErr = io.EOF
+	if err := driver.CreateThread(context.Background(), pkg, t.TempDir()); err == nil || !strings.Contains(err.Error(), "EOF") {
+		t.Fatalf("resolver error = %v", err)
+	}
+	if len(control.created) != 1 {
+		t.Fatalf("create proceeded after resolver failure: %+v", control.created)
 	}
 }
 

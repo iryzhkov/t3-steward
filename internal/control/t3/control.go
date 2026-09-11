@@ -49,6 +49,39 @@ func New(client *t3api.Client, logger *slog.Logger, dryRun bool) *Control {
 // Client exposes the underlying API client.
 func (c *Control) Client() *t3api.Client { return c.client }
 
+// ResolveProjectID resolves an exact T3 project ID or a unique exact project
+// title from the current orchestration snapshot. Ambiguous or missing names
+// fail closed before thread creation.
+func (c *Control) ResolveProjectID(ctx context.Context, project string) (string, error) {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return "", fmt.Errorf("resolve T3 project: project is required")
+	}
+	snapshot, err := c.client.ShellSnapshot(ctx)
+	if err != nil {
+		return "", fmt.Errorf("resolve T3 project %q: %w", project, err)
+	}
+	for _, candidate := range snapshot.Projects {
+		if candidate.ID == project {
+			return candidate.ID, nil
+		}
+	}
+	var resolved string
+	for _, candidate := range snapshot.Projects {
+		if candidate.Title != project {
+			continue
+		}
+		if resolved != "" {
+			return "", fmt.Errorf("resolve T3 project %q: title is ambiguous", project)
+		}
+		resolved = candidate.ID
+	}
+	if resolved == "" {
+		return "", fmt.Errorf("resolve T3 project %q: project not found", project)
+	}
+	return resolved, nil
+}
+
 // ListThreads returns every live (non-archived, non-deleted) thread.
 func (c *Control) ListThreads(ctx context.Context) ([]domain.Thread, error) {
 	snap, err := c.client.ShellSnapshot(ctx)

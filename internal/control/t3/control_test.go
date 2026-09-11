@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -60,6 +61,48 @@ func (r *dispatchRecorder) snapshot() []map[string]any {
 	out := make([]map[string]any, len(r.commands))
 	copy(out, r.commands)
 	return out
+}
+
+func TestResolveProjectID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet || req.URL.Path != "/api/orchestration/shell" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"projects":[{"id":"project-1","title":"Citadel"},{"id":"project-2","title":"Duplicate"},{"id":"project-3","title":"Duplicate"}],"threads":[]}`)
+	}))
+	defer server.Close()
+	control := New(
+		t3api.New(server.URL, t3api.StaticToken("test-token"), time.Second),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		false,
+	)
+	for _, test := range []struct {
+		name        string
+		input       string
+		want        string
+		errContains string
+	}{
+		{name: "id", input: "project-1", want: "project-1"},
+		{name: "title", input: "Citadel", want: "project-1"},
+		{name: "missing", input: "Missing", errContains: "not found"},
+		{name: "ambiguous", input: "Duplicate", errContains: "ambiguous"},
+		{name: "empty", input: " ", errContains: "required"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := control.ResolveProjectID(context.Background(), test.input)
+			if test.errContains != "" {
+				if err == nil || !strings.Contains(err.Error(), test.errContains) {
+					t.Fatalf("ResolveProjectID error = %v, want %q", err, test.errContains)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("ResolveProjectID = %q, %v; want %q", got, err, test.want)
+			}
+		})
+	}
 }
 
 func TestCreateAndStartThreadSerializesPreparedWorkspace(t *testing.T) {
