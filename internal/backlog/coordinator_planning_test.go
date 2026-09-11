@@ -48,7 +48,8 @@ func TestBuildCoordinatorPlanInputProducesQuotaBoundColdEstimateAndStopsReplanni
 		t.Fatalf("assembled input = %#v", planInput)
 	}
 	estimate := planInput.RouteEstimates[0].Estimate
-	wantRuntime := time.Duration(SeedMinutes(task.Difficulty) * float64(time.Minute) * float64(task.MaxTurns))
+	// MaxTurns is a retry/continuation ceiling, not a multiplier for the whole-task duration seed.
+	wantRuntime := time.Duration(SeedMinutes(task.Difficulty) * float64(time.Minute))
 	if estimate.RemainingCost != cost || estimate.ExpectedRuntime != wantRuntime ||
 		estimate.CheckpointMargin != 7*time.Minute {
 		t.Fatalf("cold estimate = %#v", estimate)

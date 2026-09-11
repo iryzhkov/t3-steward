@@ -182,11 +182,7 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 		if task.EstimatedCost != nil {
 			cost = *task.EstimatedCost
 		}
-		turns := task.MaxTurns
-		if turns < 1 {
-			turns = 1
-		}
-		runtime := time.Duration(SeedMinutes(task.Difficulty) * float64(time.Minute) * float64(turns))
+		runtime := time.Duration(SeedMinutes(task.Difficulty) * float64(time.Minute))
 		estimate := TaskAdmissionEstimate{
 			RemainingCost: cost, ExpectedRuntime: runtime, CheckpointMargin: input.CheckpointMargin,
 		}
