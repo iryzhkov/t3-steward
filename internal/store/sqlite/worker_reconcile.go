@@ -165,11 +165,12 @@ func validateWorkerStateTransition(transition domain.WorkerStateTransition) erro
 		return fmt.Errorf("%w: assignment identity changed", ErrStaleWorkerStateTransition)
 	}
 	switch next.State {
-	case domain.AssignmentClaimed, domain.AssignmentReleased, domain.AssignmentCompleted:
+	case domain.AssignmentClaimed, domain.AssignmentUnknown, domain.AssignmentReleased, domain.AssignmentCompleted:
 	default:
 		return fmt.Errorf("%w: invalid next assignment state %q", ErrStaleWorkerStateTransition, next.State)
 	}
-	if next.State == domain.AssignmentClaimed && next.WorkerEpoch != transition.WorkerEpoch {
+	if (next.State == domain.AssignmentClaimed || next.State == domain.AssignmentUnknown) &&
+		next.WorkerEpoch != transition.WorkerEpoch {
 		return fmt.Errorf("%w: recovered assignment is not bound to current worker epoch", ErrStaleWorkerStateTransition)
 	}
 	if attempt.ID != expected.AttemptID || attempt.AssignmentID != next.ID && next.State != domain.AssignmentReleased ||

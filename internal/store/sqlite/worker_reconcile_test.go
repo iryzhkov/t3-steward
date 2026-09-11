@@ -107,6 +107,61 @@ func TestCommitWorkerStateTransitionsAtomicallyFencesSnapshotAndAttempt(t *testi
 	}
 }
 
+func TestCommitWorkerStateTransitionAcceptsFailClosedUnknown(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := fleetTestTime.Add(10 * time.Minute)
+	snapshot := fleetSnapshot(1, "worker-epoch-1", 1, true, now.Add(time.Hour))
+	snapshot.ObservedAt = now
+	snapshot.ValidUntil = now.Add(time.Hour)
+	if err := store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	attempt := fleetAttempt("attempt-1")
+	attempt.Progress = domain.ProgressActive
+	attempt.Control = domain.ControlRunning
+	attempt.AssignmentID = "assignment-1"
+	attempt.Revision = 4
+	assignment := domain.Assignment{
+		ID: "assignment-1", AttemptID: attempt.ID, WorkerID: snapshot.WorkerID,
+		WorkerEpoch: snapshot.WorkerEpoch, State: domain.AssignmentClaimed, Epoch: 1,
+		LeaseToken: "lease-1", DispatchToken: "dispatch-1",
+		LeaseExpiresAt: snapshot.ValidUntil, CreatedAt: fleetTestTime, UpdatedAt: fleetTestTime,
+	}
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{
+		Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	nextAssignment := assignment
+	nextAssignment.State = domain.AssignmentUnknown
+	nextAssignment.UpdatedAt = now
+	nextAttempt := attempt
+	nextAttempt.Control = domain.ControlStopped
+	nextAttempt.Revision++
+	nextAttempt.UpdatedAt = now
+	transition := domain.WorkerStateTransition{
+		CoordinatorEpoch: 1, WorkerID: snapshot.WorkerID, WorkerEpoch: snapshot.WorkerEpoch,
+		WorkerSequence: snapshot.Sequence, TransitionedAt: now,
+		ExpectedAssignment: assignment, ExpectedAttemptRevision: attempt.Revision,
+		Assignment: nextAssignment, Attempt: nextAttempt, Reason: "worker-observed-unknown",
+	}
+	applied, err := store.CommitWorkerStateTransitions(ctx, []domain.WorkerStateTransition{transition})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(applied) != 1 || applied[0].State != domain.AssignmentUnknown {
+		t.Fatalf("applied = %#v", applied)
+	}
+	assertNativeAuditEvent(t, store, workerStateAuditID(transition), "worker:"+snapshot.WorkerID, "unknown")
+}
+
 func TestReleasedWorkerStateSuppressesPreviouslyPendingDispatch(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
