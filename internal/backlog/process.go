@@ -62,9 +62,7 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 	args := []string{
 		"--user",
 		"--scope",
-		"--wait",
 		"--collect",
-		"--pipe",
 		"--quiet",
 		"--unit=" + unit,
 		"--property=KillMode=control-group",

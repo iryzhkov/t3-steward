@@ -29,13 +29,18 @@ func TestSystemdScopeRunnerBuildsContainedUserScope(t *testing.T) {
 	}
 	args := readAbsoluteTestFile(t, argsPath)
 	for _, want := range []string{
-		"--user", "--scope", "--wait", "--collect", "--pipe",
+		"--user", "--scope", "--collect",
 		"--property=KillMode=control-group",
 		"--working-directory=" + root,
 		"--", "/bin/sh", "-c", "printf ready",
 	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("systemd-run arguments missing %q:\n%s", want, args)
+		}
+	}
+	for _, incompatible := range []string{"--wait", "--pipe"} {
+		if strings.Contains(args, incompatible) {
+			t.Fatalf("systemd-run scope arguments contain incompatible flag %q:\n%s", incompatible, args)
 		}
 	}
 	if wantUnit := "--unit=" + processScopeUnit("attempt-1-setup"); !strings.Contains(args, wantUnit) {
