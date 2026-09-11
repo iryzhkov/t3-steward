@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -284,6 +285,53 @@ func (c *Control) StopThread(ctx context.Context, thread domain.Thread, mode Sto
 	}
 	c.log.Info("stop dispatched", "mode", string(mode), "thread", thread.ID, "title", thread.Title)
 	return nil
+}
+
+// SettleThread marks a completed unattended thread settled in T3. The
+// caller-supplied effect token makes retries idempotent. Success is returned
+// only after T3's read model proves the settlement; ambiguous outcomes fail
+// closed so worker cleanup cannot discard recovery evidence.
+func (c *Control) SettleThread(ctx context.Context, threadID, effectToken string) error {
+	threadID = strings.TrimSpace(threadID)
+	effectToken = strings.TrimSpace(effectToken)
+	if threadID == "" || effectToken == "" {
+		return errors.New("settle thread requires thread ID and durable effect token")
+	}
+	cmd := map[string]any{
+		"type":      "thread.settle",
+		"commandId": deterministicID(effectToken, "thread.settle"),
+		"threadId":  threadID,
+	}
+	if c.DryRun {
+		c.log.Info("dry-run: would settle thread", "thread", threadID)
+		return nil
+	}
+	_, dispatchErr := c.client.Dispatch(ctx, cmd)
+	deadline := time.Now().Add(10 * time.Second)
+	var observeErr error
+	for {
+		var thread *domain.Thread
+		thread, observeErr = c.GetThread(ctx, threadID)
+		if observeErr == nil && thread != nil && thread.SettledAt != nil && thread.SettledOverride == "settled" {
+			c.log.Info("thread settlement confirmed", "thread", threadID)
+			return nil
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("settle thread %s outcome is unproven: %w", threadID, ctx.Err())
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	if dispatchErr != nil {
+		return fmt.Errorf("settle thread %s outcome is unproven: dispatch: %w", threadID, dispatchErr)
+	}
+	if observeErr != nil {
+		return fmt.Errorf("settle thread %s outcome is unproven: observe: %w", threadID, observeErr)
+	}
+	return fmt.Errorf("settle thread %s outcome is unproven: T3 did not project the settlement", threadID)
 }
 
 // WaitStopped polls until the thread is no longer running or the timeout

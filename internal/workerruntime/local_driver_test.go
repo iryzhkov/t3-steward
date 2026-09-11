@@ -49,6 +49,7 @@ type recordingT3 struct {
 	warns          []domain.Warning
 	resumes        []string
 	stops          int
+	settlements    []string
 	message        string
 	archive        []byte
 }
@@ -80,6 +81,10 @@ func (c *recordingT3) CreateAndStartThread(_ context.Context, input t3control.Ne
 func (c *recordingT3) StopThread(context.Context, domain.Thread, t3control.StopMode) error {
 	c.stops++
 	c.thread.Running = false
+	return nil
+}
+func (c *recordingT3) SettleThread(_ context.Context, threadID, effectToken string) error {
+	c.settlements = append(c.settlements, threadID+":"+effectToken)
 	return nil
 }
 func (c *recordingT3) WaitStopped(context.Context, string, time.Duration) (*domain.Thread, bool, error) {
@@ -194,6 +199,9 @@ func TestLocalDriverBindsCatalogArtifactsWorkspaceAndT3(t *testing.T) {
 	if len(publisher.results) != 1 || len(publisher.results[0].Finalized.Artifacts) != 1 ||
 		string(publisher.results[0].ThreadArchive) != "{}" {
 		t.Fatalf("published = %+v", publisher.results)
+	}
+	if len(control.settlements) != 1 || control.settlements[0] != "thread-1:dispatch-1" {
+		t.Fatalf("settlements = %v", control.settlements)
 	}
 	if err := driver.Cleanup(context.Background(), pkg, workspace); err != nil {
 		t.Fatal(err)

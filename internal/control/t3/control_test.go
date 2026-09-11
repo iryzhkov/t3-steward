@@ -328,6 +328,56 @@ func TestCreateAndStartThreadUsesDeterministicDispatchToken(t *testing.T) {
 	}
 }
 
+func TestSettleThreadUsesDeterministicEffectAndConfirmsProjection(t *testing.T) {
+	var mu sync.Mutex
+	var commands []map[string]any
+	settled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/api/orchestration/dispatch":
+			var command map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&command); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			commands = append(commands, command)
+			settled = true
+			mu.Unlock()
+			_, _ = io.WriteString(w, `{"sequence":1}`)
+		case req.Method == http.MethodGet && req.URL.Path == "/api/orchestration/shell":
+			mu.Lock()
+			isSettled := settled
+			mu.Unlock()
+			if isSettled {
+				_, _ = io.WriteString(w, `{"projects":[],"threads":[{"id":"thread-1","title":"task","updatedAt":"2026-09-11T22:00:00.000Z","modelSelection":{},"settledAt":"2026-09-11T22:00:00.000Z","settledOverride":"settled"}]}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"projects":[],"threads":[{"id":"thread-1","title":"task","updatedAt":"2026-09-11T21:59:00.000Z","modelSelection":{}}]}`)
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	control := New(t3api.New(server.URL, t3api.StaticToken("test-token"), time.Second), nil, false)
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := control.SettleThread(context.Background(), "thread-1", "dispatch-1"); err != nil {
+			t.Fatalf("settle attempt %d: %v", attempt+1, err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) != 2 {
+		t.Fatalf("commands = %d, want 2", len(commands))
+	}
+	assertCommandField(t, commands[0], "type", "thread.settle")
+	assertCommandField(t, commands[0], "threadId", "thread-1")
+	if commands[0]["commandId"] == "" || commands[0]["commandId"] != commands[1]["commandId"] {
+		t.Fatalf("settlement command IDs are not deterministic: %#v", commands)
+	}
+}
+
 func assertCommandField(t *testing.T, command map[string]any, key string, want any) {
 	t.Helper()
 	if got := command[key]; got != want {

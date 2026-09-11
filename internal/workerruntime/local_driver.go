@@ -39,6 +39,7 @@ type T3Control interface {
 	ResolveProjectID(context.Context, string) (string, error)
 	CreateAndStartThread(context.Context, t3control.NewThreadInput) (string, error)
 	StopThread(context.Context, domain.Thread, t3control.StopMode) error
+	SettleThread(context.Context, string, string) error
 	WaitStopped(context.Context, string, time.Duration) (*domain.Thread, bool, error)
 	WarnThread(context.Context, domain.Thread, domain.Warning) error
 	ResumeThread(context.Context, domain.Thread, string) error
@@ -299,6 +300,11 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
 	}); err != nil {
 		return fmt.Errorf("publish result custody: %w", err)
+	}
+	// Result custody is durable before this external effect. The dispatch token
+	// was recorded with the assignment and derives a stable T3 command ID.
+	if err := d.T3.SettleThread(ctx, pkg.Identity.ThreadID, pkg.Identity.DispatchToken); err != nil {
+		return fmt.Errorf("settle completed T3 thread: %w", err)
 	}
 	return nil
 }
