@@ -8,6 +8,8 @@ S19 local qualification checkpoint: `2beb3ecaf90abf58221c5afe1d1c187cd0637a4d`
 
 S19 authorization checkpoint: `664f2a10b46827d3b549200fab3302c1d18152d9`
 
+S19 completion checkpoint: `0f52e2bd3953a21af35a06c3c4a2cf0904c20b29`
+
 ## Decision
 
 **GO for an explicitly approved host-wide deployment.**
