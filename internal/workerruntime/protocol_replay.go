@@ -79,12 +79,20 @@ func OpenProtocolReplayStore(root, coordinatorID, workerID string, coordinatorEp
 		}
 		return store, nil
 	}
+	adoptedEpoch := state.CoordinatorEpoch < coordinatorEpoch
+	if adoptedEpoch {
+		state.CoordinatorEpoch = coordinatorEpoch
+	}
 	if err := store.validateHeader(state); err != nil {
 		return nil, err
 	}
+	if adoptedEpoch {
+		if err := store.write(state); err != nil {
+			return nil, err
+		}
+	}
 	return store, nil
 }
-
 func (s *ProtocolReplayStore) Begin(peerPrincipal string, envelope workerproto.Envelope, digest string, maxCachedRequests int) (workerproto.ReplayTransaction, error) {
 	if peerPrincipal == "" || envelope.RequestID == "" || envelope.SessionID == "" || digest == "" || maxCachedRequests < 1 {
 		return nil, errors.New("protocol replay store: invalid begin request")

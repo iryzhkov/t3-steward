@@ -152,22 +152,44 @@ func TestProtocolServerRejectsTamperedDurableResponse(t *testing.T) {
 	}
 }
 
-func TestProtocolReplayStoreRejectsEpochMismatchAndCorruption(t *testing.T) {
+func TestProtocolReplayStoreAdoptsNewerCoordinatorEpochAndRejectsCorruption(t *testing.T) {
 	root := t.TempDir()
-	openTestProtocolReplayStore(t, root)
-	if _, err := OpenProtocolReplayStore(root, "coordinator", "normandy", 10, "worker-1"); err == nil ||
+	store := openTestProtocolReplayStore(t, root)
+	state, err := store.read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Sessions["session-1"] = 3
+	if err := store.write(state); err != nil {
+		t.Fatal(err)
+	}
+
+	adopted, err := OpenProtocolReplayStore(root, "coordinator", "normandy", 10, "worker-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err = adopted.read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CoordinatorEpoch != 10 {
+		t.Fatalf("coordinator epoch = %d, want 10", state.CoordinatorEpoch)
+	}
+	if state.Sessions["session-1"] != 3 {
+		t.Fatalf("durable session sequence = %d, want 3", state.Sessions["session-1"])
+	}
+	if _, err := OpenProtocolReplayStore(root, "coordinator", "normandy", 9, "worker-1"); err == nil ||
 		!bytes.Contains([]byte(err.Error()), []byte("mismatch")) {
-		t.Fatalf("epoch mismatch error = %v", err)
+		t.Fatalf("stale epoch error = %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "protocol-replay.json"), []byte("{broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenProtocolReplayStore(root, "coordinator", "normandy", 9, "worker-1"); err == nil ||
+	if _, err := OpenProtocolReplayStore(root, "coordinator", "normandy", 10, "worker-1"); err == nil ||
 		!bytes.Contains([]byte(err.Error()), []byte("decode")) {
 		t.Fatalf("corruption error = %v", err)
 	}
 }
-
 func openTestProtocolReplayStore(t *testing.T, root string) *ProtocolReplayStore {
 	t.Helper()
 	store, err := OpenProtocolReplayStore(root, "coordinator", "normandy", 9, "worker-1")
