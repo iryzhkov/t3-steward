@@ -36,6 +36,10 @@ func TestAdminQueriesTemporaryCoordinatorState(t *testing.T) {
 		t.Fatal(err)
 	}
 	service.SetClock(func() time.Time { return adminTestNow })
+	service.SetRuntimeInfo(RuntimeInfo{
+		Mode: "coordinator", Owner: "coordinator-1", Epoch: 7, Transport: "ssh",
+		MaxWorkerSnapshotAge: time.Minute, MaxQuotaObservationAge: time.Minute,
+	})
 
 	principal := Principal{ID: "operator-1", Roles: []string{"backlog-reader"}}
 	queries := []Query{
@@ -77,6 +81,11 @@ func TestAdminQueriesTemporaryCoordinatorState(t *testing.T) {
 		status.Tasks[domain.ProgressActive] != 1 || status.Workers["ready"] != 1 ||
 		status.QuotaPools[domain.AdmissionDraining] != 1 || status.Reservations != 1 || status.Locks != 1 {
 		t.Fatalf("unexpected status: %#v", status)
+	}
+	if status.Runtime.Mode != "coordinator" || status.Runtime.Owner != "coordinator-1" ||
+		status.Runtime.Epoch != 7 || status.Runtime.Transport != "ssh" || status.Runtime.Health != "degraded" ||
+		len(status.Runtime.CustodyIncidentIDs) != 1 {
+		t.Fatalf("unexpected runtime status: %#v", status.Runtime)
 	}
 	if got := responses[QueryWorkflows].Workflows; len(got) != 1 || got[0].Progress.Succeeded != 1 || got[0].Progress.Active != 1 {
 		t.Fatalf("unexpected workflow list: %#v", got)
@@ -169,7 +178,7 @@ func TestExplanationBlocksSurplusDuringConstrainedAdmission(t *testing.T) {
 	admissions := []domain.QuotaAdmissionRecord{{
 		QuotaPoolID: "pool-1", Admission: domain.AdmissionConstrained,
 	}}
-	explanation, ok := newView(records, workers, admissions, adminTestNow).explanation("run-1", "task-1")
+	explanation, ok := newView(records, workers, admissions, RuntimeInfo{}, adminTestNow).explanation("run-1", "task-1")
 	if !ok || explanation.Eligible || len(explanation.Blockers) != 1 ||
 		explanation.Blockers[0].Code != "quota-admission" {
 		t.Fatalf("unexpected constrained surplus explanation: %#v", explanation)
@@ -309,6 +318,44 @@ func TestAdminAuthorizationFailsClosedBeforeStateRead(t *testing.T) {
 	}
 }
 
+func TestUnknownRecoveryAuthorizesBeforeWriteAndOwnsActorAndTime(t *testing.T) {
+	writer := &countingRecoveryReader{}
+	authorizer := &allowAuthorizer{}
+	service, err := New(writer, authorizer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetClock(func() time.Time { return adminTestNow })
+	request := UnknownRecoveryRequest{
+		ID: "recovery-1", AssignmentID: "assignment-1", CoordinatorEpoch: 7,
+		ExpectedAssignmentEpoch: 3, ExpectedAttemptRevision: 4,
+		Outcome: domain.UnknownRecoveryStopped, EvidenceID: "incident-1",
+		EvidenceSHA256: strings.Repeat("a", 64), Reason: "verified stopped",
+	}
+	principal := Principal{ID: "operator-1", Roles: []string{"local-admin"}}
+	if _, err := service.RecoverUnknown(context.Background(), principal, request); err != nil {
+		t.Fatal(err)
+	}
+	if writer.writes != 1 || writer.recovery.Actor != principal.ID || !writer.recovery.RecoveredAt.Equal(adminTestNow) {
+		t.Fatalf("recovery write = %+v, count %d", writer.recovery, writer.writes)
+	}
+	if len(authorizer.actions) != 1 || authorizer.actions[0].Kind != QueryRecovery || authorizer.actions[0].AssignmentID != "assignment-1" {
+		t.Fatalf("authorization actions = %+v", authorizer.actions)
+	}
+
+	denied := errors.New("permission denied")
+	service, err = New(writer, &allowAuthorizer{err: denied})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RecoverUnknown(context.Background(), principal, request); !errors.Is(err, denied) {
+		t.Fatalf("authorization error = %v", err)
+	}
+	if writer.writes != 1 {
+		t.Fatalf("denied recovery reached writer; count = %d", writer.writes)
+	}
+}
+
 func TestAdminRejectsVersionsTargetsAndMissingRecords(t *testing.T) {
 	service, err := New(&countingReader{}, &allowAuthorizer{})
 	if err != nil {
@@ -383,6 +430,18 @@ func TestAdminMutationJSONGolden(t *testing.T) {
 
 type countingReader struct {
 	reads int
+}
+
+type countingRecoveryReader struct {
+	countingReader
+	writes   int
+	recovery domain.UnknownAssignmentRecovery
+}
+
+func (r *countingRecoveryReader) RecoverUnknownAssignment(_ context.Context, recovery domain.UnknownAssignmentRecovery) (domain.UnknownAssignmentRecoveryDecision, error) {
+	r.writes++
+	r.recovery = recovery
+	return domain.UnknownAssignmentRecoveryDecision{Recovery: recovery}, nil
 }
 
 func (r *countingReader) LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRecords, error) {

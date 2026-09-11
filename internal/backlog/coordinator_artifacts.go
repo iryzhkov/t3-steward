@@ -84,10 +84,10 @@ func (s CoordinatorArtifactStore) Publish(ctx context.Context, publication domai
 
 	hash := strings.ToLower(artifact.SHA256)
 	objectDir := filepath.Join(root, "objects", hash[:2])
-	if err := ensureRealDirectory(filepath.Join(root, "objects"), 0o755); err != nil {
+	if err := ensureRealDirectory(filepath.Join(root, "objects"), 0o700); err != nil {
 		return domain.Artifact{}, fmt.Errorf("publish artifact: prepare objects: %w", err)
 	}
-	if err := ensureRealDirectory(objectDir, 0o755); err != nil {
+	if err := ensureRealDirectory(objectDir, 0o700); err != nil {
 		return domain.Artifact{}, fmt.Errorf("publish artifact: prepare object prefix: %w", err)
 	}
 	objectPath := filepath.Join(objectDir, hash)
@@ -102,7 +102,7 @@ func (s CoordinatorArtifactStore) Publish(ctx context.Context, publication domai
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return domain.Artifact{}, fmt.Errorf("publish artifact: inspect retained object: %w", statErr)
 	} else {
-		if err := os.Chmod(stagePath, 0o444); err != nil {
+		if err := os.Chmod(stagePath, 0o400); err != nil {
 			return domain.Artifact{}, fmt.Errorf("publish artifact: protect content: %w", err)
 		}
 		if err := os.Rename(stagePath, objectPath); err != nil {

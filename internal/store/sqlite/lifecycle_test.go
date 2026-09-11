@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -72,6 +73,7 @@ func TestCoordinatorOwnershipAdvancesEpochOnlyForOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertNativeAuditEvent(t, first, fmt.Sprintf("coordinator-acquire-epoch:%d", epoch1), "coordinator-a", "acquired")
 
 	second, err := Open(path)
 	if err != nil {
@@ -106,6 +108,7 @@ func TestCoordinatorOwnershipAdvancesEpochOnlyForOwner(t *testing.T) {
 	if epoch2 != epoch1+1 {
 		t.Fatalf("restart epoch = %d, want %d", epoch2, epoch1+1)
 	}
+	assertNativeAuditEvent(t, restarted, fmt.Sprintf("coordinator-acquire-epoch:%d", epoch2), "coordinator-a", "acquired")
 }
 
 func TestOpenLeavesVersionFixtureUntouched(t *testing.T) {

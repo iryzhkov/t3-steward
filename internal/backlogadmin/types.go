@@ -27,6 +27,7 @@ const (
 	QueryReservations QueryKind = "reservations"
 	QueryLocks        QueryKind = "locks"
 	QueryCommands     QueryKind = "commands"
+	QueryRecovery     QueryKind = "recovery"
 )
 
 type Principal struct {
@@ -63,7 +64,20 @@ type Action struct {
 	ArtifactID    string
 	CommandID     string
 	OutcomeState  domain.AdminCommandState
+	AssignmentID  string
 	Filter        Filter
+}
+
+type UnknownRecoveryRequest struct {
+	ID                      string                        `json:"id"`
+	AssignmentID            string                        `json:"assignmentId"`
+	CoordinatorEpoch        int64                         `json:"coordinatorEpoch"`
+	ExpectedAssignmentEpoch int64                         `json:"expectedAssignmentEpoch"`
+	ExpectedAttemptRevision int64                         `json:"expectedAttemptRevision"`
+	Outcome                 domain.UnknownRecoveryOutcome `json:"outcome"`
+	EvidenceID              string                        `json:"evidenceId"`
+	EvidenceSHA256          string                        `json:"evidenceSha256"`
+	Reason                  string                        `json:"reason"`
 }
 
 type Response struct {
@@ -94,6 +108,22 @@ type Status struct {
 	QuotaPools   map[domain.AdmissionState]int `json:"quotaPools"`
 	Reservations int                           `json:"reservations"`
 	Locks        int                           `json:"locks"`
+	Runtime      RuntimeStatus                 `json:"runtime"`
+}
+
+type RuntimeStatus struct {
+	Mode                 string   `json:"mode"`
+	Owner                string   `json:"owner"`
+	Epoch                int64    `json:"epoch"`
+	Health               string   `json:"health"`
+	Transport            string   `json:"transport"`
+	FreshWorkers         int      `json:"freshWorkers"`
+	StaleWorkers         int      `json:"staleWorkers"`
+	FreshQuotaPools      int      `json:"freshQuotaPools"`
+	StaleQuotaPools      int      `json:"staleQuotaPools"`
+	ReconciliationIssues []string `json:"reconciliationIssues,omitempty"`
+	UnknownExecutionIDs  []string `json:"unknownExecutionIds,omitempty"`
+	CustodyIncidentIDs   []string `json:"custodyIncidentIds,omitempty"`
 }
 
 type Progress struct {

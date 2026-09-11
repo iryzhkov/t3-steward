@@ -20,6 +20,103 @@ Updated: 2026-09-10
 
 ## Current selection
 
+- Selected stage: S18 — Audit, backup, recovery, and security hardening.
+- Exact full starting commit:
+  `149ab40ae38649c875b76ed72adf891fdc866f42`.
+- Pre-existing worktree state: clean (`git status --short` produced no
+  entries); no unexplained changes were present.
+- Exit gates copied exactly from the authoritative plan:
+  - Audit completeness and redaction assertions.
+  - Backup/restore drill plus corrupt/incomplete/version-mismatch refusal.
+  - Recovery authentication, authorization, revision, evidence, replay, and
+    closed-quota tests.
+  - Security/limits/fuzz or property tests appropriate to each parser and
+    boundary.
+  - `go test ./...`, `go build ./...`, `go vet ./...`, and
+    `git diff --check`.
+- Focused tests selected before implementation:
+  - `go test ./internal/store/sqlite ./internal/backlog ./internal/backlogadmin ./internal/workerruntime ./cmd/t3-steward -run 'Test(Audit|Backup|Restore|Recovery|RuntimeHealth|Incident|Security|Redact)' -count=1 -v`
+  - `go test ./internal/store/sqlite ./internal/backlog ./internal/backlogadmin ./internal/workerruntime ./cmd/t3-steward -count=1`
+
+## S18 completion record
+
+- S18 has no safe in-stage work remaining. Its code, tests, plan, architecture,
+  readiness report, operations documentation, and this handoff are complete.
+  The implementation commit is recorded below by the post-commit handoff.
+- Added `internal/backupsnapshot`, a bounded stopped-snapshot implementation for
+  the coordinator SQLite database and configured artifact root. It takes the
+  coordinator ownership lock, refuses nonempty WAL/SHM state, links, special
+  files, unstable inputs, overlapping/existing targets, corrupt or incomplete
+  manifests, unexpected files, checksum/size failures, and unsupported format
+  or schema versions. Create and restore stage and verify the complete unit;
+  restored SQLite is opened immutable/read-only for integrity and exact-schema
+  checks. Snapshot trees are owner-only and immutable after publication.
+- Added `t3-steward backlog backup create|verify|restore` using coordinator-mode
+  configuration and explicit file/byte limits. Exported read-only SQLite
+  integrity/schema inspection and escaped file URLs so paths containing URL
+  metacharacters cannot alter the SQLite DSN.
+- Added runtime status projection for mode, owner/epoch, health, transport,
+  worker/quota freshness, reconciliation issues, unknown executions, and
+  durable artifact-custody metadata incidents. Coordinator composition now
+  supplies its actual runtime identity and uses the configured v2 artifact
+  root rather than the unrelated legacy data directory.
+- Added evidence-required unknown-assignment recovery for `stopped` and
+  terminal `failed` outcomes. It is coordinator-epoch, assignment-epoch, and
+  attempt-revision fenced; records only an evidence identifier and SHA-256;
+  releases rather than redispatches the assignment; never changes closed quota;
+  and commits the attempt, assignment, and native actor/reason audit event in
+  one SQLite transaction. Exact request replay returns the original decision
+  even though the authenticated server supplies a new application time;
+  changed replay fails closed.
+- Exposed recovery only through the bounded Unix admin transport and the
+  `backlog recover` CLI. The transport authenticates `SO_PEERCRED`, replaces
+  claimed identity, authorizes the assignment-scoped action before the store
+  write, requires every epoch/revision/evidence field, and supports an explicit
+  replay ID. Updated the admin and operations runbooks with the exact recovery,
+  snapshot, verified-restore, rollback, and point-of-no-return procedures.
+- Added native same-transaction audit events for coordinator ownership/epoch,
+  worker snapshots, assignment plan/claim/dispatch/lease/reconciliation,
+  worker command/acknowledgement, throttle delivery, artifact publication and
+  prune, and terminal importer transitions. Allowlisted audit details require
+  actor, reason, available epochs/revisions, idempotency identity, and outcome;
+  tests assert completeness and exclude capability tokens, credential values,
+  filesystem paths, and arbitrary record content. Exact transition replay
+  requires the immutable original audit event and never duplicates it.
+- Hardened all coordinator-owned production roots and immutable objects to
+  owner-only modes, removed capability-bearing assignment dumps from stale
+  errors, bounded local-admin connections by the configured request deadline
+  and a fixed concurrent-handler limit, and added deterministic timeout and
+  backpressure tests. Existing fixed invocation, process containment, bounded
+  stream, and safe archive extraction gates remain intact.
+- Added fuzz/property coverage for strict bounded worker-protocol decoding,
+  bounded safe-tar validation, workflow manifest and schedule parsing, and
+  framed local-admin decoding. Snapshot paths now resolve aliases through the
+  deepest existing ancestor and refuse canonical database/artifact/snapshot or
+  restore-target overlap.
+- Passing S18 evidence:
+  - `go test ./internal/backupsnapshot -count=1`
+  - `go test ./internal/store/sqlite ./internal/backlog ./internal/backlogadmin ./internal/workerruntime ./internal/backupsnapshot ./internal/workerproto ./cmd/t3-steward -count=1`
+  - `go test ./internal/backlogadmin -run TestLocalTransportBoundsIdleClientsAndBackpressure -count=25`
+  - `go test -race ./cmd/t3-steward ./internal/workerproto -run 'TestRunBacklogV2CoordinatorStartsClosedAndAdvancesEpoch|TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands|TestSSHTransportDropRetryTimeoutCancellationAndLimits' -count=1`
+  - `go test ./internal/workerproto -run '^$' -fuzz FuzzProtocolCodecStrictBoundedDecode -fuzztime=2s`
+  - `go test ./internal/workerproto -run '^$' -fuzz FuzzArtifactTarValidationIsBounded -fuzztime=2s`
+  - `go test ./internal/backlog -run '^$' -fuzz FuzzManifestAndScheduleParsers -fuzztime=2s`
+  - `go test ./internal/backlogadmin -run '^$' -fuzz FuzzLocalAdminFrameStrictBoundedDecode -fuzztime=2s`
+  - `go test ./... -count=1`
+  - `go build ./...`
+  - `go vet ./...`
+  - `go test -race ./...`
+  - `git diff --check`
+- No binary was installed, no service was restarted, no live configuration or
+  state was changed or opened by development code, no fleet worker was
+  contacted, and no real T3 thread was dispatched. All evidence used temporary
+  local roots and test child processes.
+- S19 is now the first incomplete named stage. It must not contact a fleet
+  worker or run a canary without the explicit authorization required by S19;
+  a GO readiness report is still not deployment approval.
+
+## S17 final selection record
+
 - Selected stage completed: S17 — Coordinator runtime, submissions, schedules,
   and quota bridge.
 - Exact full starting commit:
@@ -446,9 +543,11 @@ Updated: 2026-09-10
   coordinator custody, and terminal outcomes. Its named disposable
   multi-process and restart/effect-boundary gates pass. Hard closed quota
   admission remains authoritative for every path.
-- Native non-admin audit, coherent coordinator/worker backup and restore,
-  credential/epoch rotation procedures, and explicit unknown-state recovery
-  remain S18 work.
+- S18 now has an uncommitted stopped coordinator snapshot/verified restore,
+  runtime incident projections, and authenticated evidence-bound unknown-state
+  recovery checkpoint. Complete native non-admin audit coverage, production
+  storage/credential/error hardening, fuzz/property limits, and final stage
+  evidence remain before S18 can close.
 - Observe-only multi-process qualification, disposable-state canary, race/full
   release gates, and the final GO/NO-GO report remain S19 work. Any GO still
   requires explicit user approval before host-wide installation or deployment.

@@ -41,7 +41,7 @@ func (c LocalRepositoryCache) Prepare(ctx context.Context, repository string, lo
 	if repository == "" {
 		return CachedRepository{}, errors.New("repository is required")
 	}
-	if err := os.MkdirAll(c.Root, 0o755); err != nil {
+	if err := os.MkdirAll(c.Root, 0o700); err != nil {
 		return CachedRepository{}, fmt.Errorf("create repository cache: %w", err)
 	}
 	sum := sha256.Sum256([]byte(repository))
@@ -166,7 +166,7 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 		return PreparedWorkspace{}, &PreparationError{Err: err}
 	}
 	parent := filepath.Join(p.RunsRoot, request.WorkflowRunID, request.Task.ID)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
+	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return PreparedWorkspace{}, &PreparationError{Err: fmt.Errorf("create run parent: %w", err)}
 	}
 	finalDir := filepath.Join(parent, request.Attempt.ID)
@@ -256,7 +256,7 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 	if err := logFile.Close(); err != nil {
 		return fail(fmt.Errorf("close preparation log: %w", err))
 	}
-	if err := os.Chmod(logPath, 0o444); err != nil {
+	if err := os.Chmod(logPath, 0o400); err != nil {
 		return fail(fmt.Errorf("protect preparation log: %w", err))
 	}
 	if err := os.Rename(stageDir, finalDir); err != nil {
@@ -318,11 +318,11 @@ func (p WorkspacePreparer) validate(request WorkspacePreparation) error {
 
 func (p WorkspacePreparer) materializeInputs(stageDir string, request WorkspacePreparation) error {
 	inputsDir := filepath.Join(stageDir, "inputs")
-	if err := os.Mkdir(inputsDir, 0o755); err != nil {
+	if err := os.Mkdir(inputsDir, 0o700); err != nil {
 		return fmt.Errorf("create input directory: %w", err)
 	}
 	if len(request.InputArtifacts) == 0 {
-		return os.Chmod(inputsDir, 0o555)
+		return os.Chmod(inputsDir, 0o500)
 	}
 	storage, err := os.OpenRoot(p.StorageRoot)
 	if err != nil {
@@ -369,13 +369,13 @@ func (p WorkspacePreparer) materializeInputs(stageDir string, request WorkspaceP
 func (p WorkspacePreparer) materializeDependencyView(stageDir string, request WorkspacePreparation) error {
 	dependenciesDir := filepath.Join(stageDir, "dependencies")
 	if len(request.Task.DependencyInputs) == 0 {
-		if err := os.Mkdir(dependenciesDir, 0o555); err != nil {
+		if err := os.Mkdir(dependenciesDir, 0o500); err != nil {
 			return fmt.Errorf("create dependency directory: %w", err)
 		}
 		return nil
 	}
 	scratch := filepath.Join(stageDir, ".dependency-view")
-	if err := os.Mkdir(scratch, 0o755); err != nil {
+	if err := os.Mkdir(scratch, 0o700); err != nil {
 		return fmt.Errorf("create dependency staging workspace: %w", err)
 	}
 	_, err := MaterializeDependencies(
@@ -386,7 +386,7 @@ func (p WorkspacePreparer) materializeDependencyView(stageDir string, request Wo
 		return err
 	}
 	materializedDir := filepath.Join(scratch, ".t3", "dependencies")
-	if err := os.Chmod(materializedDir, 0o755); err != nil {
+	if err := os.Chmod(materializedDir, 0o700); err != nil {
 		return fmt.Errorf("make dependency view movable: %w", err)
 	}
 	if err := os.Rename(materializedDir, dependenciesDir); err != nil {
@@ -409,7 +409,7 @@ func exposeWorkspaceInputs(workspaceDir string) error {
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("prepare workspace: inspect repository .t3: %w", err)
-	} else if err := os.Mkdir(metadataDir, 0o755); err != nil {
+	} else if err := os.Mkdir(metadataDir, 0o700); err != nil {
 		return fmt.Errorf("prepare workspace: create .t3: %w", err)
 	}
 	for name, target := range map[string]string{

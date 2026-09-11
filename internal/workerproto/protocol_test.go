@@ -329,7 +329,7 @@ func TestSSHTransportDropRetryTimeoutCancellationAndLimits(t *testing.T) {
 	_, err = cancelTransport.RoundTrip(ctx, request)
 	assertProtocolCode(t, err, ErrorCancelled)
 
-	limitTransport := localHelperTransportWithLimits(t, "oversize", time.Second, 1024)
+	limitTransport := localHelperTransportWithLimits(t, "oversize", 5*time.Second, 1024)
 	_, err = limitTransport.RoundTrip(context.Background(), request)
 	assertProtocolCode(t, err, ErrorLimit)
 

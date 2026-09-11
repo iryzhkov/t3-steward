@@ -64,6 +64,14 @@ func (s coordinatorLocalService) Mutate(ctx context.Context, mutation backlogadm
 	return s.admin.Mutate(ctx, mutation)
 }
 
+func (s coordinatorLocalService) RecoverUnknown(
+	ctx context.Context,
+	principal backlogadmin.Principal,
+	request backlogadmin.UnknownRecoveryRequest,
+) (domain.UnknownAssignmentRecoveryDecision, error) {
+	return s.admin.RecoverUnknown(ctx, principal, request)
+}
+
 func (s coordinatorLocalService) PutSchedule(
 	ctx context.Context,
 	principal backlogadmin.Principal,
@@ -319,11 +327,13 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 	if err != nil {
 		return err
 	}
-	dataDir, err := cfg.ResolveDataDir()
-	if err != nil {
-		return err
-	}
-	artifactStore := backlog.CoordinatorArtifactStore{Root: filepath.Join(dataDir, "artifacts"), Catalog: store}
+	service.SetRuntimeInfo(backlogadmin.RuntimeInfo{
+		Mode: "coordinator", Owner: cfg.BacklogV2.Coordinator.ID, Epoch: epoch,
+		Transport:              cfg.BacklogV2.Transport.Kind,
+		MaxWorkerSnapshotAge:   cfg.BacklogV2.Freshness.WorkerMaxAge.D(),
+		MaxQuotaObservationAge: cfg.BacklogV2.Freshness.QuotaMaxAge.D(),
+	})
+	artifactStore := backlog.CoordinatorArtifactStore{Root: cfg.BacklogV2.Storage.Artifacts, Catalog: store}
 	service.SetArtifactOpener(func(ctx context.Context, artifactID string) (domain.Artifact, io.ReadCloser, error) {
 		artifact, content, openErr := artifactStore.Open(ctx, artifactID)
 		return artifact, content, openErr
@@ -366,6 +376,8 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 		MaxRequestBytes:    int64(cfg.BacklogV2.MessageLimits.MaxBytes),
 		MaxArtifactBytes:   int64(cfg.BacklogV2.MessageLimits.MaxArtifactBytes),
 		MaxSubmissionBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
+		RequestTimeout:     cfg.BacklogV2.Transport.RequestTimeout.D(),
+		MaxConcurrent:      16,
 	}
 	workers, err := newCoordinatorWorkerSessions(
 		cfg.BacklogV2, store, epoch, workerruntime.EnvironmentProtocolCredentialResolver{}, nil, artifactStore,

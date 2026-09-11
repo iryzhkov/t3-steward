@@ -12,6 +12,10 @@ import (
 
 const currentSchemaVersion = 11
 
+// CurrentSchemaVersion is the newest coordinator schema this binary can open.
+// Snapshot verification uses it without migrating the inspected database.
+func CurrentSchemaVersion() int { return currentSchemaVersion }
+
 const coordinatorMigrationV6 = `
 ALTER TABLE coordinator_schedules ADD COLUMN current_version INTEGER NOT NULL DEFAULT 0;
 UPDATE coordinator_schedules

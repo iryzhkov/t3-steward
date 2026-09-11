@@ -89,7 +89,7 @@ func (m *WorkflowWorkspaceManager) Prepare(ctx context.Context, workerID string,
 	}
 	defer lock.Close()
 	runDir := filepath.Join(m.Preparer.RunsRoot, request.WorkflowRunID)
-	if mkdirErr := os.MkdirAll(runDir, 0o755); mkdirErr != nil {
+	if mkdirErr := os.MkdirAll(runDir, 0o700); mkdirErr != nil {
 		return PreparedWorkspace{}, &PreparationError{Err: fmt.Errorf("create workflow run directory: %w", mkdirErr)}
 	}
 	if reconcileErr := removeStageDirectories(runDir, ".workflow-prepare-"); reconcileErr != nil {
@@ -230,7 +230,7 @@ func (m *WorkflowWorkspaceManager) workflowRoot(workflowRunID string) string {
 
 func (m *WorkflowWorkspaceManager) prepareInitial(ctx context.Context, request WorkspacePreparation, finalDir string) (PreparedWorkspace, error) {
 	runDir := filepath.Dir(finalDir)
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		return PreparedWorkspace{}, &PreparationError{Err: fmt.Errorf("create workflow run directory: %w", err)}
 	}
 	stageRoot, err := os.MkdirTemp(runDir, ".workflow-prepare-")
@@ -249,11 +249,11 @@ func (m *WorkflowWorkspaceManager) prepareInitial(ctx context.Context, request W
 	}
 
 	viewDir := workflowAttemptView(prepared.RootDir, request.Task.ID, request.Attempt.ID)
-	if err := os.MkdirAll(viewDir, 0o755); err != nil {
+	if err := os.MkdirAll(viewDir, 0o700); err != nil {
 		return PreparedWorkspace{}, &PreparationError{Err: fmt.Errorf("create initial task view: %w", err)}
 	}
 	viewDependencies := filepath.Join(viewDir, "dependencies")
-	if err := os.Chmod(prepared.DependenciesDir, 0o755); err != nil {
+	if err := os.Chmod(prepared.DependenciesDir, 0o700); err != nil {
 		return PreparedWorkspace{}, &PreparationError{Err: fmt.Errorf("make initial dependency view movable: %w", err)}
 	}
 	if err := os.Rename(prepared.DependenciesDir, viewDependencies); err != nil {
@@ -270,7 +270,7 @@ func (m *WorkflowWorkspaceManager) prepareInitial(ctx context.Context, request W
 		return PreparedWorkspace{}, &PreparationError{Err: err}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(finalDir), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(finalDir), 0o700); err != nil {
 		return PreparedWorkspace{}, &PreparationError{Err: fmt.Errorf("create workflow run directory: %w", err)}
 	}
 	if err := os.Rename(prepared.RootDir, finalDir); err != nil {
@@ -308,11 +308,11 @@ func (m *WorkflowWorkspaceManager) prepareExisting(request WorkspacePreparation,
 	if err := m.Preparer.materializeDependencyView(stageDir, request); err != nil {
 		return PreparedWorkspace{}, &PreparationError{Err: err}
 	}
-	if err := os.MkdirAll(viewDir, 0o755); err != nil {
+	if err := os.MkdirAll(viewDir, 0o700); err != nil {
 		return PreparedWorkspace{}, &PreparationError{Err: fmt.Errorf("create task view: %w", err)}
 	}
 	stagedDependencies := filepath.Join(stageDir, "dependencies")
-	if err := os.Chmod(stagedDependencies, 0o755); err != nil {
+	if err := os.Chmod(stagedDependencies, 0o700); err != nil {
 		return PreparedWorkspace{}, &PreparationError{Err: fmt.Errorf("make task dependency view movable: %w", err)}
 	}
 	if err := os.Rename(stagedDependencies, dependenciesDir); err != nil {
@@ -334,11 +334,11 @@ func (m *WorkflowWorkspaceManager) retainInitialFailure(request WorkspacePrepara
 		return cause
 	}
 	parent := filepath.Join(m.Preparer.RunsRoot, request.WorkflowRunID)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
+	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return &PreparationError{Err: fmt.Errorf("%w (create retained log directory: %v)", preparationErr.Err, err)}
 	}
 	retained := filepath.Join(parent, request.Attempt.ID+".preparation.log")
-	if err := copyFileExclusive(preparationErr.LogPath, retained, 0o444); err != nil {
+	if err := copyFileExclusive(preparationErr.LogPath, retained, 0o400); err != nil {
 		return &PreparationError{Err: fmt.Errorf("%w (retain workflow preparation log: %v)", preparationErr.Err, err)}
 	}
 	return &PreparationError{Err: preparationErr.Err, LogPath: retained}
@@ -419,7 +419,7 @@ func writeWorkflowMetadata(rootDir string, metadata workflowWorkspaceMetadata) e
 		return fmt.Errorf("encode workflow workspace metadata: %w", err)
 	}
 	path := filepath.Join(rootDir, "environment.json")
-	if err := os.WriteFile(path, append(raw, '\n'), 0o444); err != nil {
+	if err := os.WriteFile(path, append(raw, '\n'), 0o400); err != nil {
 		return fmt.Errorf("write workflow workspace metadata: %w", err)
 	}
 	return nil
@@ -453,7 +453,7 @@ func writeWorkflowRetention(rootDir string, retention workflowRetention) error {
 	if err := os.Remove(staged); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove stale workflow retention marker: %w", err)
 	}
-	if err := os.WriteFile(staged, append(raw, '\n'), 0o444); err != nil {
+	if err := os.WriteFile(staged, append(raw, '\n'), 0o400); err != nil {
 		return fmt.Errorf("write workflow retention marker: %w", err)
 	}
 	if err := os.Rename(staged, path); err != nil {

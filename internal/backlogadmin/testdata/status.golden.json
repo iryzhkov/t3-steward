@@ -19,6 +19,17 @@
       "open": 2
     },
     "reservations": 3,
-    "locks": 1
+    "locks": 1,
+    "runtime": {
+      "mode": "",
+      "owner": "",
+      "epoch": 0,
+      "health": "",
+      "transport": "",
+      "freshWorkers": 0,
+      "staleWorkers": 0,
+      "freshQuotaPools": 0,
+      "staleQuotaPools": 0
+    }
   }
 }

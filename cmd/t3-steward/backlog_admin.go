@@ -58,12 +58,17 @@ type adminScheduleDefinitionService interface {
 	PutSchedule(context.Context, backlogadmin.Principal, backlogadmin.LocalScheduleDefinitionRequest) (backlogadmin.LocalScheduleDefinitionResponse, error)
 }
 
+type adminRecoveryService interface {
+	RecoverUnknown(context.Context, backlogadmin.Principal, backlogadmin.UnknownRecoveryRequest) (domain.UnknownAssignmentRecoveryDecision, error)
+}
+
 type backlogAdminCLI struct {
 	service             adminQueryService
 	mutator             adminMutationService
 	artifacts           adminArtifactService
 	submissions         adminSubmissionService
 	scheduleDefinitions adminScheduleDefinitionService
+	recovery            adminRecoveryService
 	principal           backlogadmin.Principal
 	stdout              io.Writer
 	newCommandID        func() (string, error)
@@ -75,6 +80,9 @@ func (c backlogAdminCLI) runBacklog(ctx context.Context, args []string) error {
 	}
 	if args[0] == "submit" {
 		return c.runSubmission(ctx, args[1:])
+	}
+	if args[0] == "recover" {
+		return c.runUnknownRecovery(ctx, args)
 	}
 	if isBacklogMutation(args[0]) {
 		return c.runBacklogMutation(ctx, args)

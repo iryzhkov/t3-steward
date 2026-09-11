@@ -52,6 +52,8 @@ func TestAssignmentDispatchPreparationAndOptimisticTransitions(t *testing.T) {
 	if err := store.CommitAssignmentDispatch(context.Background(), transition); err != nil {
 		t.Fatalf("commit creating transition: %v", err)
 	}
+	assertNativeAuditEvent(t, store, "assignment-dispatch:assignment-1:1", "coordinator", "prepared")
+	assertNativeAuditEvent(t, store, "assignment-dispatch:assignment-1:2", "coordinator", "creating")
 	if err := store.CommitAssignmentDispatch(context.Background(), transition); err != nil {
 		t.Fatalf("replay creating transition: %v", err)
 	}

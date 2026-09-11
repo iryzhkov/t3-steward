@@ -107,7 +107,7 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 	}
 
 	runRoot := filepath.Join(f.StorageRoot, "runs", request.Attempt.WorkflowRunID, request.Task.ID)
-	if err := os.MkdirAll(runRoot, 0o755); err != nil {
+	if err := os.MkdirAll(runRoot, 0o700); err != nil {
 		return FinalizedAttempt{}, fmt.Errorf("finalize attempt: create storage: %w", err)
 	}
 	stageDir, err := os.MkdirTemp(runRoot, ".finalize-")
@@ -380,7 +380,7 @@ func MaterializeDependencies(workspaceDir, storageRoot, workflowRunID string, ta
 		}
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return nil, fmt.Errorf("materialize dependencies: inspect task metadata directory: %w", statErr)
-	} else if err := os.Mkdir(t3Dir, 0o755); err != nil {
+	} else if err := os.Mkdir(t3Dir, 0o700); err != nil {
 		return nil, fmt.Errorf("materialize dependencies: create task metadata directory: %w", err)
 	}
 	stageDir, err := os.MkdirTemp(t3Dir, ".dependencies-")

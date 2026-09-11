@@ -481,7 +481,7 @@ func (s *CustodyStore) storeObject(reader io.Reader, object workerproto.Artifact
 	if closeErr != nil {
 		return closeErr
 	}
-	if err := os.Chmod(tempName, 0o444); err != nil {
+	if err := os.Chmod(tempName, 0o400); err != nil {
 		return err
 	}
 	if err := os.Link(tempName, target); err != nil {
@@ -609,7 +609,7 @@ func writeJSONExclusive(path string, value any) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tempName, 0o444); err != nil {
+	if err := os.Chmod(tempName, 0o400); err != nil {
 		return err
 	}
 	if err := os.Link(tempName, path); err != nil {

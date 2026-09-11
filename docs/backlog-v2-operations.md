@@ -28,6 +28,17 @@ excess entries, and excess bytes. Schedule matching
 walks UTC minutes in the configured IANA timezone, so DST gaps produce no
 occurrence and folds produce two distinct nominal UTC occurrences.
 
+Completed S18 code adds native transaction-bound audit events for coordinator
+authority, worker/assignment/dispatch/lease reconciliation, worker commands,
+throttle delivery, artifact publication/pruning, and terminal imports. The
+allowlisted detail binds available epochs and revisions, a stable idempotency
+identity, actor/reason, and outcome without capability tokens, credentials,
+filesystem paths, or arbitrary worker reports. It also adds stopped coherent
+SQLite-plus-artifact snapshots, evidence-bound unknown-assignment recovery,
+runtime incident status, owner-only production directories and immutable
+objects, local-admin request deadlines and concurrency backpressure, and fuzz
+seeds for strict protocol, archive, manifest, schedule, and local-frame parsers.
+
 The executable now exposes only three fixed worker operations: control,
 artifact receive, and artifact send. They bind strict local configuration,
 credential principals, durable epochs, replay state, journals, artifact
@@ -40,8 +51,9 @@ package catalog. Scheduled post-startup cycles initiate fresh sessions for each
 configured worker; the startup cycle remains local-only and failed quota
 reconstruction supplies an empty new-work admission policy.
 The production coordinator now owns a bounded local admin socket for query,
-durable mutation submission, artifact retrieval, and revision-fenced schedule-
-definition administration. It authenticates the Unix
+durable mutation submission, artifact retrieval, revision-fenced schedule-
+definition administration, and evidence-bound unknown-assignment recovery. It
+authenticates the Unix
 peer UID and does not trust client-supplied identity; coordinator-mode CLI
 commands no longer open SQLite. While closed, the coordinator also ingests the
 unchanged owner-controlled `t3-backlog`/`t3-job` Markdown drop through
@@ -108,7 +120,9 @@ remain compatible, and backlog-v2 is disabled by default.
 - `transport`, `message_limits`, `freshness`, `leases`, and `scheduling`
   set bounded exchange and lifecycle controls. `message_limits.max_files`
   bounds one legacy-drop scan and bundle/archive expansion. The worker caps
-  accepted lease extension at its configured duration.
+  accepted lease extension at its configured duration. The configured transport
+  request timeout also bounds every local-admin connection; the coordinator
+  rejects connections above its fixed handler limit with a backpressure error.
 - `startup_admission` must be `closed` in coordinator mode. Coordinator
   startup acquires exclusive ownership and advances its epoch without
   contacting a worker or T3.
@@ -208,6 +222,11 @@ operation whose response might be lost, and reuse exactly that ID to recover
 the immutable original decision. Never retry an ambiguous mutation with a new
 ID.
 
+Production coordinator, worker-custody, bundle, workspace, artifact, snapshot,
+and admin-socket roots and files are owner-only. Treat a group/world-accessible
+replacement, symlink, or special file as a security incident; do not weaken
+modes to make an operation proceed.
+
 A forced start bypasses ordinary ordering and timing only. Dependencies, live
 locks, fresh worker identity, route compatibility, and hard draining/closed
 quota admission remain authoritative. There is no administrative quota bypass.
@@ -260,6 +279,31 @@ recovery fault. Do not release dependencies or substitute worker-local content.
 Restore the matching database and artifact snapshot together, then verify the
 artifact through `backlog artifact get`.
 
+### Unknown assignment
+
+An expired lease or ambiguous dispatch remains `unknown`; it is not permission
+to retry. First close admission and reconcile the recorded worker, worker epoch,
+assignment epoch, deterministic thread ID, workspace, and provider. Preserve the
+reviewed observation outside coordinator state and calculate its SHA-256. After
+the evidence proves either that the old execution stopped or that it must be
+terminally failed, use the authenticated local admin socket:
+
+```text
+t3-steward backlog recover <assignment> --outcome stopped|failed \
+  --coordinator-epoch N --assignment-epoch N --attempt-revision N \
+  --evidence-id ID --evidence-sha256 HEX --reason TEXT \
+  [--recovery-id ID] [--json]
+```
+
+Record and reuse `--recovery-id` if the response can be lost. The coordinator
+binds the kernel-authenticated operator identity and current time, verifies all
+three revision/epoch fences, and returns the immutable original decision for an
+exact replay. Changed replay is rejected. `stopped` releases the assignment and
+returns the attempt to ready/unassigned; `failed` releases it and makes the
+attempt terminal. Neither outcome opens quota, starts, resumes, claims, or
+dispatches work. Admission remains closed until the ordinary quota bridge and
+fresh worker reconciliation permit work again.
+
 ## Backup
 
 The SQLite database and coordinator-owned artifacts are one consistency unit.
@@ -271,22 +315,47 @@ Before any candidate migration:
 3. Record the old binary version and checksum, configuration, service unit,
    schema version, active assignments, deterministic thread IDs, worker epochs,
    and quota admission states.
-4. Copy the resolved `state_path` database together with any `-wal` and
-   `-shm` siblings, plus the complete coordinator artifact/input/checkpoint
-   root, into one timestamped owner-only snapshot.
-5. Verify file counts and cryptographic checksums, test-open a copy with the old
-   binary or a read-only SQLite tool, and keep the original snapshot immutable.
+4. Ensure SQLite has checkpointed cleanly. A nonempty `-wal` or `-shm` sibling
+   is refused rather than copied as an ambiguous recovery point.
+5. Create and verify an owner-only snapshot with the configured coordinator
+   roots:
 
-Copying only `state.db`, or backing up the database and artifacts at different
-logical times, is not a valid recovery point.
+   ```sh
+   t3-steward backlog backup create /absolute/new/snapshot-directory
+   t3-steward backlog backup verify /absolute/snapshot-directory
+   ```
+
+6. Keep the snapshot immutable and retain its manifest with the old binary and
+   configuration. The manifest binds its format and schema versions, exact file
+   set, sizes, and SHA-256 values. Verification rejects missing, added,
+   corrupted, symlinked, special, mismatched-schema, and newer-format content.
+
+Snapshot create and restore compare canonical paths through symlinks and refuse
+any database, artifact, snapshot, or restore-target overlap, including aliases.
+
+The command takes the same nonblocking coordinator ownership lock as the daemon
+and fails if a coordinator holds it. Copying only `state.db`, or backing up the
+database and artifacts at different logical times, is not a valid recovery
+point.
+
+Test restoration into absent disposable targets before relying on a snapshot:
+
+```sh
+t3-steward backlog backup restore /absolute/snapshot-directory
+```
+
+Restore refuses existing state or artifact destinations. It verifies and stages
+the whole recovery unit before publishing either target, then opens the restored
+database read-only for integrity and exact schema checks. Point the disposable
+test configuration at absent destinations; never test restore over live roots.
 
 ## Rollback and point of no return
 
 Before the new coordinator dispatches or resumes any assignment, rollback is:
 
 1. stop the candidate;
-2. restore the old binary, configuration, database snapshot (including WAL
-   state), and matching artifact tree;
+2. restore the old binary and configuration, then use the verified snapshot to
+   restore the matching database and artifact tree into absent targets;
 3. start the old service with admission closed;
 4. verify schema/version compatibility and coordinator views before reopening
    admission.

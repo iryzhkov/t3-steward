@@ -40,6 +40,12 @@ func (s *Store) CommitArtifactPublication(ctx context.Context, publication domai
 		if !sameArtifact(existing, artifact) {
 			return domain.Artifact{}, fmt.Errorf("%w: %s", ErrArtifactConflict, artifact.ID)
 		}
+		if err := requireNativeAuditEventTx(ctx, tx, artifactPublicationAuditID(artifact)); err != nil {
+			return domain.Artifact{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return domain.Artifact{}, fmt.Errorf("commit artifact replay %q: %w", artifact.ID, err)
+		}
 		return existing, nil
 	}
 	if err := requireCoordinatorEpoch(ctx, tx, publication.CoordinatorEpoch); err != nil {
@@ -78,10 +84,32 @@ func (s *Store) CommitArtifactPublication(ctx context.Context, publication domai
 		artifact.ID, artifact.WorkflowRunID, artifact.TaskID, artifact.AttemptID, artifact.SHA256, string(raw)); err != nil {
 		return domain.Artifact{}, fmt.Errorf("insert artifact %q: %w", artifact.ID, err)
 	}
+	if _, err := insertArtifactPublicationAuditEvent(ctx, tx, publication); err != nil {
+		return domain.Artifact{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return domain.Artifact{}, fmt.Errorf("commit artifact %q: %w", artifact.ID, err)
 	}
 	return artifact, nil
+}
+
+func insertArtifactPublicationAuditEvent(ctx context.Context, tx *sql.Tx, publication domain.ArtifactPublication) (domain.AuditEvent, error) {
+	artifact := publication.Artifact
+	identity := artifactPublicationAuditID(artifact)
+	return insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+		ID: identity, Kind: "artifact-published", WorkflowRunID: artifact.WorkflowRunID,
+		TaskID: artifact.TaskID, AttemptID: artifact.AttemptID,
+		TargetType: domain.AuditTargetArtifact, TargetID: artifact.ID,
+		Actor: "worker:" + publication.WorkerID, Reason: "verified artifact entered coordinator custody",
+		CreatedAt: artifact.CreatedAt,
+		Detail: nativeAuditDetail{CoordinatorEpoch: publication.CoordinatorEpoch, WorkerEpoch: publication.WorkerEpoch,
+			AssignmentEpoch: publication.AssignmentEpoch, ExpectedRevision: publication.AttemptRevision,
+			Revision: publication.AttemptRevision, IdempotencyIdentity: artifact.ID, Outcome: "published"},
+	})
+}
+
+func artifactPublicationAuditID(artifact domain.Artifact) string {
+	return "artifact-publication:" + artifact.ID
 }
 
 // LoadArtifacts returns immutable metadata for the requested IDs in request order.
@@ -137,6 +165,16 @@ func (s *Store) PruneArtifacts(ctx context.Context, before time.Time, protectedR
 	for _, artifact := range expired {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM coordinator_artifacts WHERE id = ?`, artifact.ID); err != nil {
 			return nil, fmt.Errorf("delete artifact %q: %w", artifact.ID, err)
+		}
+		identity := "artifact-pruned:" + artifact.ID
+		if _, err := insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+			ID: identity, Kind: "artifact-pruned", WorkflowRunID: artifact.WorkflowRunID,
+			TaskID: artifact.TaskID, AttemptID: artifact.AttemptID,
+			TargetType: domain.AuditTargetArtifact, TargetID: artifact.ID,
+			Actor: "coordinator", Reason: "artifact retention period elapsed", CreatedAt: s.now().UTC(),
+			Detail: nativeAuditDetail{IdempotencyIdentity: identity, Outcome: "pruned"},
+		}); err != nil {
+			return nil, err
 		}
 	}
 	if err := tx.Commit(); err != nil {

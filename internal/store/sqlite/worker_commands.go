@@ -82,6 +82,9 @@ func (s *Store) CommitWorkerCommands(ctx context.Context, commands []domain.Work
 			if !reflect.DeepEqual(current, command) {
 				return nil, fmt.Errorf("%w: command %q replay changes identity", ErrWorkerCommand, command.ID)
 			}
+			if _, err := insertWorkerCommandAuditEvent(ctx, tx, current); err != nil {
+				return nil, err
+			}
 			result = append(result, current)
 			continue
 		}
@@ -120,12 +123,27 @@ func (s *Store) CommitWorkerCommands(ctx context.Context, commands []domain.Work
 			command.AssignmentID, command.AssignmentEpoch, command.ExpectedWorkerSequence, raw); err != nil {
 			return nil, fmt.Errorf("%w: commit command %q: %v", ErrWorkerCommand, command.ID, err)
 		}
+		if _, err := insertWorkerCommandAuditEvent(ctx, tx, command); err != nil {
+			return nil, err
+		}
 		result = append(result, command)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit worker command batch: %w", err)
 	}
 	return result, nil
+}
+
+func insertWorkerCommandAuditEvent(ctx context.Context, tx *sql.Tx, command domain.WorkerCommand) (domain.AuditEvent, error) {
+	identity := "worker-command:" + command.ID + ":committed"
+	return insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+		ID: identity, Kind: "worker-command-committed",
+		TargetType: domain.AuditTargetWorkerCommand, TargetID: command.ID,
+		Actor: "coordinator", Reason: "worker command persisted before delivery", CreatedAt: command.CreatedAt,
+		Detail: nativeAuditDetail{CoordinatorEpoch: command.CoordinatorEpoch, WorkerEpoch: command.WorkerEpoch,
+			AssignmentEpoch: command.AssignmentEpoch, WorkerSequence: command.ExpectedWorkerSequence,
+			IdempotencyIdentity: command.ID, Outcome: string(command.Kind)},
+	})
 }
 
 // LoadPendingWorkerCommands returns commands only through the worker's exact
@@ -215,6 +233,9 @@ func (s *Store) AcknowledgeWorkerCommand(ctx context.Context, acknowledgement do
 		if !reflect.DeepEqual(current, acknowledgement) {
 			return domain.WorkerAcknowledgement{}, fmt.Errorf("%w: acknowledgement for %q conflicts with durable response", ErrWorkerAcknowledgement, acknowledgement.CommandID)
 		}
+		if _, err := insertWorkerAcknowledgementAuditEvent(ctx, tx, current); err != nil {
+			return domain.WorkerAcknowledgement{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return domain.WorkerAcknowledgement{}, err
 		}
@@ -252,10 +273,30 @@ func (s *Store) AcknowledgeWorkerCommand(ctx context.Context, acknowledgement do
 		acknowledgement.CommandID); err != nil {
 		return domain.WorkerAcknowledgement{}, fmt.Errorf("complete worker command %q: %w", acknowledgement.CommandID, err)
 	}
+	if _, err := insertWorkerAcknowledgementAuditEvent(ctx, tx, acknowledgement); err != nil {
+		return domain.WorkerAcknowledgement{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return domain.WorkerAcknowledgement{}, fmt.Errorf("commit worker acknowledgement %q: %w", acknowledgement.CommandID, err)
 	}
 	return acknowledgement, nil
+}
+
+func insertWorkerAcknowledgementAuditEvent(ctx context.Context, tx *sql.Tx, acknowledgement domain.WorkerAcknowledgement) (domain.AuditEvent, error) {
+	outcome := "rejected"
+	if acknowledgement.Accepted {
+		outcome = "accepted"
+	}
+	identity := "worker-command:" + acknowledgement.CommandID + ":acknowledged"
+	return insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+		ID: identity, Kind: "worker-command-" + outcome,
+		TargetType: domain.AuditTargetWorkerCommand, TargetID: acknowledgement.CommandID,
+		Actor: "worker:" + acknowledgement.WorkerID, Reason: "worker command acknowledgement observed",
+		CreatedAt: acknowledgement.AcknowledgedAt,
+		Detail: nativeAuditDetail{CoordinatorEpoch: acknowledgement.CoordinatorEpoch, WorkerEpoch: acknowledgement.WorkerEpoch,
+			AssignmentEpoch: acknowledgement.AssignmentEpoch, WorkerSequence: acknowledgement.WorkerSequence,
+			IdempotencyIdentity: acknowledgement.CommandID, Outcome: outcome},
+	})
 }
 
 // LoadWorkerCommandRecords returns every durable command with its optional
@@ -323,6 +364,10 @@ func (s *Store) RenewAssignmentLease(ctx context.Context, renewal domain.Assignm
 		return domain.Assignment{}, fmt.Errorf("%w: assignment identity or state mismatch for %q", ErrAssignmentLeaseRenewal, renewal.AssignmentID)
 	}
 	if assignment.LeaseExpiresAt.Equal(renewal.LeaseExpiresAt) {
+		identity := assignmentLeaseAuditID(assignment)
+		if err := requireNativeAuditEventTx(ctx, tx, identity); err != nil {
+			return domain.Assignment{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return domain.Assignment{}, err
 		}
@@ -341,10 +386,34 @@ func (s *Store) RenewAssignmentLease(ctx context.Context, renewal domain.Assignm
 	if err := updateAssignmentLeaseTx(ctx, tx, assignment, domain.AssignmentClaimed); err != nil {
 		return domain.Assignment{}, err
 	}
+	if _, err := insertAssignmentLeaseAuditEvent(ctx, tx, renewal, assignment); err != nil {
+		return domain.Assignment{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return domain.Assignment{}, fmt.Errorf("commit assignment lease renewal %q: %w", assignment.ID, err)
 	}
 	return assignment, nil
+}
+
+func assignmentLeaseAuditID(assignment domain.Assignment) string {
+	return fmt.Sprintf("assignment-lease:%s:%d:%d", assignment.ID, assignment.Epoch, assignment.LeaseExpiresAt.UnixNano())
+}
+
+func insertAssignmentLeaseAuditEvent(
+	ctx context.Context,
+	tx *sql.Tx,
+	renewal domain.AssignmentLeaseRenewal,
+	assignment domain.Assignment,
+) (domain.AuditEvent, error) {
+	identity := assignmentLeaseAuditID(assignment)
+	return insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+		ID: identity, Kind: "assignment-lease-renewed", AttemptID: assignment.AttemptID,
+		TargetType: domain.AdminTargetAssignment, TargetID: assignment.ID,
+		Actor: "worker:" + renewal.WorkerID, Reason: "worker renewed assignment lease", CreatedAt: renewal.RenewedAt,
+		Detail: nativeAuditDetail{CoordinatorEpoch: renewal.CoordinatorEpoch, WorkerEpoch: renewal.WorkerEpoch,
+			AssignmentEpoch: renewal.AssignmentEpoch, WorkerSequence: renewal.WorkerSequence,
+			IdempotencyIdentity: identity, Outcome: "renewed"},
+	})
 }
 
 // ExpireAssignmentLeases marks elapsed claims unknown. Unknown is deliberately
@@ -401,6 +470,17 @@ func (s *Store) ExpireAssignmentLeases(ctx context.Context, coordinatorEpoch int
 		}
 		expired[index].UpdatedAt = now
 		if err := updateAssignmentLeaseTx(ctx, tx, expired[index], domain.AssignmentClaimed); err != nil {
+			return nil, err
+		}
+		identity := fmt.Sprintf("assignment-lease-expired:%s:%d", expired[index].ID, expired[index].Epoch)
+		if _, err := insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+			ID: identity, Kind: "assignment-lease-expired", AttemptID: expired[index].AttemptID,
+			TargetType: domain.AdminTargetAssignment, TargetID: expired[index].ID,
+			Actor: "coordinator", Reason: "assignment lease expired without conclusive worker state", CreatedAt: now,
+			Detail: nativeAuditDetail{CoordinatorEpoch: coordinatorEpoch, WorkerEpoch: expired[index].WorkerEpoch,
+				AssignmentEpoch: expired[index].Epoch, Revision: expired[index].Epoch,
+				IdempotencyIdentity: identity, Outcome: string(domain.AssignmentUnknown)},
+		}); err != nil {
 			return nil, err
 		}
 	}

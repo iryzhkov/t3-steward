@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,11 +69,14 @@ func (s *Store) CommitWorkerStateTransitions(
 		}
 		if reflect.DeepEqual(currentAssignment, transition.Assignment) &&
 			reflect.DeepEqual(currentAttempt, transition.Attempt) {
+			if err := requireNativeAuditEventTx(ctx, tx, workerStateAuditID(transition)); err != nil {
+				return nil, err
+			}
 			applied = append(applied, currentAssignment)
 			continue
 		}
 		if !reflect.DeepEqual(currentAssignment, transition.ExpectedAssignment) {
-			return nil, fmt.Errorf("%w: assignment %q changed concurrently: current=%#v expected=%#v", ErrStaleWorkerStateTransition, transition.Assignment.ID, currentAssignment, transition.ExpectedAssignment)
+			return nil, fmt.Errorf("%w: assignment %q changed concurrently", ErrStaleWorkerStateTransition, transition.Assignment.ID)
 		}
 		if currentAttempt.Revision != transition.ExpectedAttemptRevision ||
 			currentAttempt.ID != transition.Attempt.ID ||
@@ -111,12 +115,34 @@ func (s *Store) CommitWorkerStateTransitions(
 			}
 			return nil, err
 		}
+		if _, err := insertWorkerStateAuditEvent(ctx, tx, transition); err != nil {
+			return nil, err
+		}
 		applied = append(applied, transition.Assignment)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit worker state transitions: %w", err)
 	}
 	return applied, nil
+}
+
+func workerStateAuditID(transition domain.WorkerStateTransition) string {
+	return fmt.Sprintf("worker-state:%s:%d", transition.Assignment.ID, transition.Attempt.Revision)
+}
+
+func insertWorkerStateAuditEvent(ctx context.Context, tx *sql.Tx, transition domain.WorkerStateTransition) (domain.AuditEvent, error) {
+	identity := workerStateAuditID(transition)
+	return insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+		ID: identity, Kind: "worker-state-" + string(transition.Assignment.State),
+		WorkflowRunID: transition.Attempt.WorkflowRunID, TaskID: transition.Attempt.TaskID,
+		AttemptID: transition.Attempt.ID, TargetType: domain.AdminTargetAssignment,
+		TargetID: transition.Assignment.ID, Actor: "worker:" + transition.WorkerID,
+		Reason: transition.Reason, CreatedAt: transition.TransitionedAt,
+		Detail: nativeAuditDetail{CoordinatorEpoch: transition.CoordinatorEpoch, WorkerEpoch: transition.WorkerEpoch,
+			AssignmentEpoch: transition.Assignment.Epoch, WorkerSequence: transition.WorkerSequence,
+			ExpectedRevision: transition.ExpectedAttemptRevision, Revision: transition.Attempt.Revision,
+			IdempotencyIdentity: identity, Outcome: string(transition.Assignment.State)},
+	})
 }
 
 func validateWorkerStateTransition(transition domain.WorkerStateTransition) error {

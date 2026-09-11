@@ -316,6 +316,8 @@ Local query, mutation, artifact access, bundle submission, and schedule-definiti
 administration use an owner-only Unix socket plus kernel peer-UID authentication;
 the server replaces caller-supplied identity. Definition updates are request-
 idempotent and revision fenced, and use the authenticated principal as audit actor.
+Connections have an end-to-end deadline and the server rejects work above its
+fixed concurrency bound instead of accumulating unbounded idle handlers.
 Remote administration and streaming events remain outside the executable.
 
 ### Artifact boundary
@@ -368,7 +370,10 @@ its acknowledged throttle metadata.
 | `Store.CommitScheduleTrigger` | Occurrence idempotency, one-open-run transaction, and atomic accepted/suppressed audit event |
 | submission/quota commit points | Atomic accepted-submission and revisioned quota-admission audit events with replay backfill |
 | `BacklogAdmin.Mutate/ExecutePendingCommands` | Audited revision-fenced intent and apply-time safety |
-| `backlogadmin.LocalServer/LocalClient` | Owner-UID-authenticated, bounded query/mutation/artifact, streamed bundle submission, and schedule-definition transport without client SQLite access |
+| `backlogadmin.LocalServer/LocalClient` | Owner-UID-authenticated, byte/time/concurrency-bounded query/mutation/artifact, streamed bundle submission, schedule-definition, and recovery transport without client SQLite access |
+| v2 production store mutations | Same-transaction native audit with actor/reason, available epochs/revisions, stable idempotency identity, outcome, and capability-secret exclusion |
+| `backupsnapshot.Manager` | Stopped coherent SQLite/artifact create, verify, and absent-target restore with canonical-path, manifest, checksum, limit, integrity, and exact-version refusal |
+| `Store.RecoverUnknownAssignment` | Evidence-bound actor/reason recovery with coordinator/assignment epoch and attempt-revision fences; never changes quota admission |
 
 The S17 production runtime composes these primitives. Transport handlers and CLI
 commands do not reimplement their policy.
@@ -465,11 +470,8 @@ types alone do not enforce them across a network.
   leases, but it is not installed or connected to a production coordinator.
 - Authenticated coordinator-only mutation across hosts is composed, but has not
   been qualified against a fleet host.
-- Complete native audit history for every non-admin transition.
 - Fleet-wide quota directive delivery is composed behind persisted admission,
   but has not been qualified against a fleet host.
-- Atomic coordinator database/artifact backup: documented operator procedure,
-  not an implemented snapshot primitive.
 
 ## Transactions and failure semantics
 
@@ -514,8 +516,9 @@ Evidence limits:
   exchange and delivery, result/checkpoint import, and terminal projection, but
   has not passed S19 observe-only qualification.
 - No candidate has touched live state or dispatched a real worker.
-- Some admin views reconstruct events from current projections because native
-  non-admin audit emission is incomplete.
+- Native audit, snapshot/restore, and unknown-recovery evidence is limited to
+  disposable local stores until S19 qualification; no live recovery drill has
+  been authorized.
 
 ## Production-binding sequence
 
@@ -583,13 +586,16 @@ closed-admission start refusal, and no duplicate dispatch.
 
 ### P5. Observability, backup, and recovery
 
-Emit native audit events for all state-changing primitives, expose runtime mode
-and reconciliation incidents, implement or script a coherent stopped
-SQLite/artifact snapshot with verification, and add explicit recovery commands
-for unknown assignments. Never provide a quota bypass.
+Completed in S18: native same-transaction audit events cover production
+state-changing primitives; admin status exposes mode, authority, freshness,
+transport, quota, reconciliation, unknown-execution, and custody incidents; a
+stopped coherent SQLite/artifact snapshot is verified before publication and
+restore; and authenticated evidence-bound recovery resolves unknown assignments
+under epoch and revision fences. Recovery never provides a quota bypass.
 
 Gate: audit completeness assertions, backup/restore drill, corrupt/incomplete
-snapshot refusal, recovery authorization and revision tests.
+and version-mismatch refusal, recovery authentication/authorization/revision/
+replay tests, parser fuzz seeds, and bounded security tests.
 
 ### P6. Deployment qualification
 

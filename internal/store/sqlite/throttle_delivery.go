@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
@@ -96,6 +97,9 @@ func (s *Store) CommitThrottleAttemptTransitions(ctx context.Context, input []do
 			return err
 		}
 		if replayed {
+			if _, err := insertThrottleAttemptAuditEvent(ctx, tx, transition); err != nil {
+				return err
+			}
 			continue
 		}
 		if err := syncThrottleAttemptControlTx(ctx, tx, transition); err != nil {
@@ -117,11 +121,39 @@ func (s *Store) CommitThrottleAttemptTransitions(ctx context.Context, input []do
 			return fmt.Errorf("save throttle attempt record %q/%q: %w",
 				transition.Record.DirectiveID, transition.Record.AttemptID, err)
 		}
+		if _, err := insertThrottleAttemptAuditEvent(ctx, tx, transition); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit throttle attempt transitions: %w", err)
 	}
 	return nil
+}
+
+func insertThrottleAttemptAuditEvent(ctx context.Context, tx *sql.Tx, transition domain.ThrottleAttemptTransition) (domain.AuditEvent, error) {
+	record := transition.Record
+	identity := fmt.Sprintf("throttle-attempt:%s:%s:%d", record.DirectiveID, record.AttemptID, record.Revision)
+	outcome := string(record.Delivery)
+	if record.Result != "" {
+		outcome += ":" + string(record.Result)
+	}
+	actor := "coordinator"
+	if record.Delivery == domain.ThrottleDeliveryAcknowledged || record.Delivery == domain.ThrottleDeliveryRejected {
+		actor = "worker:" + record.Command.WorkerID
+	}
+	reason := record.Command.Reason
+	if strings.TrimSpace(reason) == "" {
+		reason = "quota throttle attempt transition"
+	}
+	return insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+		ID: identity, Kind: "throttle-attempt-" + string(record.Delivery), AttemptID: record.AttemptID,
+		TargetType: domain.AuditTargetThrottle, TargetID: record.DirectiveID + "/" + record.AttemptID,
+		Actor: actor, Reason: reason, CreatedAt: record.UpdatedAt,
+		Detail: nativeAuditDetail{AssignmentEpoch: record.Command.AssignmentEpoch,
+			ExpectedRevision: transition.ExpectedRevision, Revision: record.Revision,
+			IdempotencyIdentity: record.Command.ID, Outcome: outcome},
+	})
 }
 
 func syncThrottleAttemptControlTx(

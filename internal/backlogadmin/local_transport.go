@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -27,6 +28,7 @@ const (
 	localOperationArtifact           = "artifact"
 	localOperationSubmission         = "submission"
 	localOperationScheduleDefinition = "schedule-definition"
+	localOperationUnknownRecovery    = "unknown-recovery"
 )
 
 type LocalService interface {
@@ -35,6 +37,7 @@ type LocalService interface {
 	OpenArtifact(context.Context, Principal, string) (ArtifactContent, error)
 	SubmitArchive(context.Context, Principal, LocalSubmissionRequest, io.Reader) (LocalSubmissionResponse, error)
 	PutSchedule(context.Context, Principal, LocalScheduleDefinitionRequest) (LocalScheduleDefinitionResponse, error)
+	RecoverUnknown(context.Context, Principal, UnknownRecoveryRequest) (domain.UnknownAssignmentRecoveryDecision, error)
 }
 
 type LocalSubmissionRequest struct {
@@ -78,17 +81,19 @@ type localRequest struct {
 	Submission         *LocalSubmissionRequest         `json:"submission,omitempty"`
 	SubmissionSize     int64                           `json:"submissionSize,omitempty"`
 	ScheduleDefinition *LocalScheduleDefinitionRequest `json:"scheduleDefinition,omitempty"`
+	UnknownRecovery    *UnknownRecoveryRequest         `json:"unknownRecovery,omitempty"`
 }
 
 type localResponse struct {
-	Version                    string                           `json:"version"`
-	Response                   *Response                        `json:"response,omitempty"`
-	MutationResponse           *MutationResponse                `json:"mutationResponse,omitempty"`
-	ArtifactMetadata           *ArtifactMetadata                `json:"artifactMetadata,omitempty"`
-	ArtifactSize               int64                            `json:"artifactSize,omitempty"`
-	SubmissionResponse         *LocalSubmissionResponse         `json:"submissionResponse,omitempty"`
-	ScheduleDefinitionResponse *LocalScheduleDefinitionResponse `json:"scheduleDefinitionResponse,omitempty"`
-	Error                      string                           `json:"error,omitempty"`
+	Version                    string                                    `json:"version"`
+	Response                   *Response                                 `json:"response,omitempty"`
+	MutationResponse           *MutationResponse                         `json:"mutationResponse,omitempty"`
+	ArtifactMetadata           *ArtifactMetadata                         `json:"artifactMetadata,omitempty"`
+	ArtifactSize               int64                                     `json:"artifactSize,omitempty"`
+	SubmissionResponse         *LocalSubmissionResponse                  `json:"submissionResponse,omitempty"`
+	ScheduleDefinitionResponse *LocalScheduleDefinitionResponse          `json:"scheduleDefinitionResponse,omitempty"`
+	UnknownRecoveryResponse    *domain.UnknownAssignmentRecoveryDecision `json:"unknownRecoveryResponse,omitempty"`
+	Error                      string                                    `json:"error,omitempty"`
 }
 
 // LocalServer serves one bounded request per authenticated Unix connection.
@@ -99,6 +104,8 @@ type LocalServer struct {
 	MaxRequestBytes    int64
 	MaxArtifactBytes   int64
 	MaxSubmissionBytes int64
+	RequestTimeout     time.Duration
+	MaxConcurrent      int
 }
 
 func ListenLocal(path string) (*net.UnixListener, error) {
@@ -139,10 +146,12 @@ func (s *LocalServer) Serve(ctx context.Context) error {
 	if s == nil || s.Listener == nil || s.Service == nil {
 		return errors.New("local admin server requires listener and service")
 	}
-	if s.MaxRequestBytes <= 0 || s.MaxArtifactBytes <= 0 || s.MaxSubmissionBytes <= 0 {
-		return errors.New("local admin server limits must be positive")
+	if s.MaxRequestBytes <= 0 || s.MaxArtifactBytes <= 0 || s.MaxSubmissionBytes <= 0 ||
+		s.RequestTimeout <= 0 || s.MaxConcurrent <= 0 {
+		return errors.New("local admin server byte, timeout, and concurrency limits must be positive")
 	}
 	var workers sync.WaitGroup
+	active := make(chan struct{}, s.MaxConcurrent)
 	stop := make(chan struct{})
 	go func() {
 		select {
@@ -161,9 +170,18 @@ func (s *LocalServer) Serve(ctx context.Context) error {
 			}
 			return fmt.Errorf("accept admin connection: %w", err)
 		}
+		_ = conn.SetDeadline(time.Now().Add(s.RequestTimeout))
+		select {
+		case active <- struct{}{}:
+		default:
+			_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: "local admin backpressure: concurrency limit reached"})
+			_ = conn.Close()
+			continue
+		}
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
+			defer func() { <-active }()
 			defer conn.Close()
 			stopWatch := watchConnection(ctx, conn)
 			defer stopWatch()
@@ -191,7 +209,7 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 	switch request.Operation {
 	case localOperationQuery:
 		if request.Query == nil || request.Mutation != nil || request.ArtifactID != "" ||
-			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil {
+			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
 			response.Error = "malformed local admin query"
 			break
 		}
@@ -204,7 +222,7 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 		}
 	case localOperationMutation:
 		if request.Mutation == nil || request.Query != nil || request.ArtifactID != "" ||
-			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil {
+			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
 			response.Error = "malformed local admin mutation"
 			break
 		}
@@ -217,7 +235,7 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 		}
 	case localOperationArtifact:
 		if request.ArtifactID == "" || request.Query != nil || request.Mutation != nil ||
-			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil {
+			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
 			response.Error = "malformed local admin artifact request"
 			break
 		}
@@ -241,7 +259,7 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 	case localOperationSubmission:
 		if request.Submission == nil || request.Query != nil || request.Mutation != nil ||
 			request.ArtifactID != "" || request.SubmissionSize <= 0 ||
-			request.SubmissionSize > s.MaxSubmissionBytes || request.ScheduleDefinition != nil {
+			request.SubmissionSize > s.MaxSubmissionBytes || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
 			response.Error = "malformed or oversized local submission request"
 			break
 		}
@@ -256,7 +274,7 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 		}
 	case localOperationScheduleDefinition:
 		if request.ScheduleDefinition == nil || request.Query != nil || request.Mutation != nil ||
-			request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 {
+			request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 || request.UnknownRecovery != nil {
 			response.Error = "malformed local schedule definition request"
 			break
 		}
@@ -265,6 +283,18 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 			response.Error = definitionErr.Error()
 		} else {
 			response.ScheduleDefinitionResponse = &value
+		}
+	case localOperationUnknownRecovery:
+		if request.UnknownRecovery == nil || request.Query != nil || request.Mutation != nil ||
+			request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil {
+			response.Error = "malformed local unknown recovery request"
+			break
+		}
+		value, recoveryErr := s.Service.RecoverUnknown(ctx, principal, *request.UnknownRecovery)
+		if recoveryErr != nil {
+			response.Error = recoveryErr.Error()
+		} else {
+			response.UnknownRecoveryResponse = &value
 		}
 	default:
 		response.Error = "unknown local admin operation"
@@ -347,6 +377,7 @@ type LocalClient struct {
 	MaxResponseBytes   int64
 	MaxArtifactBytes   int64
 	MaxSubmissionBytes int64
+	RequestTimeout     time.Duration
 }
 
 func (c LocalClient) Query(ctx context.Context, query Query) (Response, error) {
@@ -371,6 +402,18 @@ func (c LocalClient) Mutate(ctx context.Context, mutation Mutation) (MutationRes
 		return MutationResponse{}, errors.New("local admin mutation returned no response")
 	}
 	return *response.MutationResponse, nil
+}
+
+func (c LocalClient) RecoverUnknown(ctx context.Context, _ Principal, request UnknownRecoveryRequest) (domain.UnknownAssignmentRecoveryDecision, error) {
+	local := localRequest{Version: LocalTransportVersion, Operation: localOperationUnknownRecovery, UnknownRecovery: &request}
+	var response localResponse
+	if err := c.call(ctx, local, &response); err != nil {
+		return domain.UnknownAssignmentRecoveryDecision{}, err
+	}
+	if response.UnknownRecoveryResponse == nil {
+		return domain.UnknownAssignmentRecoveryDecision{}, errors.New("local unknown recovery returned no response")
+	}
+	return *response.UnknownRecoveryResponse, nil
 }
 
 func (c LocalClient) PutSchedule(
@@ -490,12 +533,16 @@ func (c LocalClient) dial(ctx context.Context) (net.Conn, error) {
 	if strings.TrimSpace(c.Path) != c.Path || c.Path == "" || !filepath.IsAbs(c.Path) {
 		return nil, errors.New("local admin socket path must be absolute and trimmed")
 	}
-	if c.MaxResponseBytes <= 0 || c.MaxArtifactBytes <= 0 {
-		return nil, errors.New("local admin client limits must be positive")
+	if c.MaxResponseBytes <= 0 || c.MaxArtifactBytes <= 0 || c.RequestTimeout <= 0 {
+		return nil, errors.New("local admin client byte and timeout limits must be positive")
 	}
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", c.Path)
 	if err != nil {
 		return nil, fmt.Errorf("connect to backlog-v2 coordinator: %w", err)
+	}
+	if err := conn.SetDeadline(time.Now().Add(c.RequestTimeout)); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("bound local admin request: %w", err)
 	}
 	return conn, nil
 }

@@ -120,6 +120,9 @@ func (s *Store) CommitTurnOutcomeTransitions(
 		); err != nil {
 			return err
 		}
+		if _, err := insertTurnOutcomeAuditEvent(ctx, tx, transition); err != nil {
+			return err
+		}
 		if transition.Throttle == nil {
 			continue
 		}
@@ -144,6 +147,20 @@ func (s *Store) CommitTurnOutcomeTransitions(
 		return fmt.Errorf("commit turn outcome transitions: %w", err)
 	}
 	return nil
+}
+
+func insertTurnOutcomeAuditEvent(ctx context.Context, tx *sql.Tx, transition domain.TurnOutcomeTransition) (domain.AuditEvent, error) {
+	identity := "turn-outcome:" + transition.OutcomeID
+	return insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+		ID: identity, Kind: "turn-outcome-" + string(transition.Attempt.LastTurnOutcomeMarker),
+		WorkflowRunID: transition.Attempt.WorkflowRunID, TaskID: transition.Attempt.TaskID,
+		AttemptID: transition.Attempt.ID, TargetType: domain.AdminTargetAttempt,
+		TargetID: transition.Attempt.ID, Actor: "coordinator",
+		Reason: "verified worker turn outcome committed", CreatedAt: transition.Attempt.UpdatedAt,
+		Detail: nativeAuditDetail{ExpectedRevision: transition.ExpectedAttemptRevision,
+			Revision: transition.Attempt.Revision, IdempotencyIdentity: transition.OutcomeID,
+			Outcome: string(transition.Attempt.LastTurnOutcomeMarker)},
+	})
 }
 
 func compareTurnOutcomeAttempt(

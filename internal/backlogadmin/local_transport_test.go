@@ -23,9 +23,11 @@ type localTransportService struct {
 	artifactPrincipal   Principal
 	submissionPrincipal Principal
 	schedulePrincipal   Principal
+	recoveryPrincipal   Principal
 	submissionRequest   LocalSubmissionRequest
 	submissionArchive   []byte
 	scheduleRequest     LocalScheduleDefinitionRequest
+	recoveryRequest     UnknownRecoveryRequest
 }
 
 func (s *localTransportService) Query(_ context.Context, query Query) (Response, error) {
@@ -93,6 +95,23 @@ func (s *localTransportService) PutSchedule(
 	}, nil
 }
 
+func (s *localTransportService) RecoverUnknown(
+	_ context.Context,
+	principal Principal,
+	request UnknownRecoveryRequest,
+) (domain.UnknownAssignmentRecoveryDecision, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recoveryPrincipal = principal
+	s.recoveryRequest = request
+	return domain.UnknownAssignmentRecoveryDecision{
+		Recovery: domain.UnknownAssignmentRecovery{
+			ID: request.ID, AssignmentID: request.AssignmentID, Outcome: request.Outcome,
+		},
+		Assignment: domain.Assignment{ID: request.AssignmentID},
+	}, nil
+}
+
 func startLocalTransport(t *testing.T, allowedUID uint32, service LocalService) (LocalClient, context.CancelFunc, <-chan error) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "admin.sock")
@@ -105,11 +124,13 @@ func startLocalTransport(t *testing.T, allowedUID uint32, service LocalService) 
 	server := &LocalServer{
 		Listener: listener, Service: service, AllowedUID: allowedUID,
 		MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
+		RequestTimeout: time.Second, MaxConcurrent: 8,
 	}
 	go func() { done <- server.Serve(ctx) }()
 	client := LocalClient{
 		Path: path, MaxResponseBytes: 1 << 20,
 		MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
+		RequestTimeout: time.Second,
 	}
 	return client, cancel, done
 }
@@ -155,6 +176,19 @@ func TestLocalTransportAuthenticatesPeerAndIgnoresClaimedPrincipal(t *testing.T)
 	if schedule.Schedule.ID != "nightly" || schedule.Schedule.Revision != 1 {
 		t.Fatalf("schedule response = %+v", schedule)
 	}
+	recoveryRequest := UnknownRecoveryRequest{
+		ID: "recovery-1", AssignmentID: "assignment-1", CoordinatorEpoch: 2,
+		ExpectedAssignmentEpoch: 3, ExpectedAttemptRevision: 4,
+		Outcome: domain.UnknownRecoveryStopped, EvidenceID: "incident-1",
+		EvidenceSHA256: strings.Repeat("a", 64), Reason: "verified stopped",
+	}
+	recovery, err := client.RecoverUnknown(ctx, spoofed, recoveryRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovery.Recovery.ID != "recovery-1" || recovery.Assignment.ID != "assignment-1" {
+		t.Fatalf("recovery response = %+v", recovery)
+	}
 	submissionRaw := []byte("submission archive")
 	submission, err := client.SubmitArchive(
 		ctx,
@@ -193,10 +227,14 @@ func TestLocalTransportAuthenticatesPeerAndIgnoresClaimedPrincipal(t *testing.T)
 	if service.scheduleRequest != scheduleRequest {
 		t.Fatalf("schedule request = %+v, want %+v", service.scheduleRequest, scheduleRequest)
 	}
+	if service.recoveryRequest != recoveryRequest {
+		t.Fatalf("recovery request = %+v, want %+v", service.recoveryRequest, recoveryRequest)
+	}
 	for label, principal := range map[string]Principal{
 		"query": service.queryPrincipal, "mutation": service.mutationPrincipal,
 		"artifact": service.artifactPrincipal, "submission": service.submissionPrincipal,
 		"schedule": service.schedulePrincipal,
+		"recovery": service.recoveryPrincipal,
 	} {
 		if principal.ID != wantID || principal.ID == spoofed.ID || len(principal.Roles) != 1 || principal.Roles[0] != "local-admin" {
 			t.Fatalf("%s principal = %+v", label, principal)
@@ -306,6 +344,56 @@ func TestLocalTransportShutdownClosesIdleConnection(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("server shutdown blocked on idle connection")
+	}
+}
+
+func TestLocalTransportBoundsIdleClientsAndBackpressure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "admin.sock")
+	listener, err := ListenLocal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	server := &LocalServer{
+		Listener: listener, Service: &localTransportService{}, AllowedUID: uint32(os.Getuid()),
+		MaxRequestBytes: 1024, MaxArtifactBytes: 1024, MaxSubmissionBytes: 1024,
+		RequestTimeout: 150 * time.Millisecond, MaxConcurrent: 1,
+	}
+	go func() { done <- server.Serve(ctx) }()
+	defer stopLocalTransport(t, cancel, done)
+
+	idle, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idle.Close()
+	if _, err := idle.Write([]byte{0, 0, 0, 100, '{'}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	rejected, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rejected.Close()
+	if err := rejected.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var response localResponse
+	if err := readLocalJSON(rejected, 1024, &response); err != nil {
+		t.Fatalf("read backpressure response: %v", err)
+	}
+	if !strings.Contains(response.Error, "backpressure") {
+		t.Fatalf("backpressure response = %+v", response)
+	}
+	if err := idle.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var one [1]byte
+	if _, err := idle.Read(one[:]); err == nil {
+		t.Fatal("idle connection survived request timeout")
 	}
 }
 

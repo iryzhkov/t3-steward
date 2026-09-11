@@ -83,7 +83,7 @@ func (s *Store) PrepareAssignmentDispatch(ctx context.Context, input domain.Assi
 		return domain.Assignment{}, fmt.Errorf("begin assignment dispatch preparation: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx,
+	insertResult, err := tx.ExecContext(ctx,
 		`INSERT INTO coordinator_assignments(
 			id, attempt_id, dispatch_token, dispatch_revision, dispatch_state,
 			worker_id, worker_epoch, assignment_epoch, assignment_state, record
@@ -91,8 +91,13 @@ func (s *Store) PrepareAssignmentDispatch(ctx context.Context, input domain.Assi
 		prepared.ID, prepared.AttemptID, prepared.DispatchToken,
 		prepared.DispatchRevision, prepared.DispatchState, prepared.WorkerID,
 		prepared.WorkerEpoch, prepared.Epoch, prepared.State, raw,
-	); err != nil {
+	)
+	if err != nil {
 		return domain.Assignment{}, fmt.Errorf("prepare assignment dispatch %q: %w", prepared.ID, err)
+	}
+	inserted, err := insertResult.RowsAffected()
+	if err != nil {
+		return domain.Assignment{}, fmt.Errorf("inspect assignment dispatch preparation %q: %w", prepared.ID, err)
 	}
 	current, err := loadAssignmentDispatchTx(ctx, tx, prepared.ID)
 	if err != nil {
@@ -100,6 +105,13 @@ func (s *Store) PrepareAssignmentDispatch(ctx context.Context, input domain.Assi
 	}
 	if !sameDispatchIdentity(current, prepared) {
 		return domain.Assignment{}, fmt.Errorf("assignment dispatch %q identity conflicts with durable record", prepared.ID)
+	}
+	if inserted == 1 || (current.DispatchRevision == 1 && current.DispatchState == domain.DispatchPrepared) {
+		if _, err := insertAssignmentDispatchAuditEvent(ctx, tx, current, 0); err != nil {
+			return domain.Assignment{}, err
+		}
+	} else if err := requireNativeAuditEventTx(ctx, tx, assignmentDispatchAuditID(current)); err != nil {
+		return domain.Assignment{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.Assignment{}, fmt.Errorf("commit assignment dispatch preparation %q: %w", prepared.ID, err)
@@ -143,6 +155,9 @@ func (s *Store) CommitAssignmentDispatch(ctx context.Context, transition domain.
 		return err
 	}
 	if reflect.DeepEqual(current, next) {
+		if _, err := insertAssignmentDispatchAuditEvent(ctx, tx, next, transition.ExpectedRevision); err != nil {
+			return err
+		}
 		return tx.Commit()
 	}
 	if current.DispatchRevision != transition.ExpectedRevision {
@@ -174,10 +189,36 @@ func (s *Store) CommitAssignmentDispatch(ctx context.Context, transition domain.
 	} else if changed != 1 {
 		return staleAssignmentDispatchError(next.ID, transition.ExpectedRevision, current.DispatchRevision)
 	}
+	if _, err := insertAssignmentDispatchAuditEvent(ctx, tx, next, transition.ExpectedRevision); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit assignment dispatch %q: %w", next.ID, err)
 	}
 	return nil
+}
+
+func insertAssignmentDispatchAuditEvent(
+	ctx context.Context,
+	tx *sql.Tx,
+	assignment domain.Assignment,
+	expectedRevision int64,
+) (domain.AuditEvent, error) {
+	identity := assignmentDispatchAuditID(assignment)
+	reason := "assignment dispatch state persisted before external effect"
+	return insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+		ID: identity, Kind: "assignment-dispatch-" + string(assignment.DispatchState),
+		AttemptID:  assignment.AttemptID,
+		TargetType: domain.AdminTargetAssignment, TargetID: assignment.ID,
+		Actor: "coordinator", Reason: reason, CreatedAt: assignment.UpdatedAt,
+		Detail: nativeAuditDetail{WorkerEpoch: assignment.WorkerEpoch, AssignmentEpoch: assignment.Epoch,
+			ExpectedRevision: expectedRevision, Revision: assignment.DispatchRevision,
+			IdempotencyIdentity: identity, Outcome: string(assignment.DispatchState)},
+	})
+}
+
+func assignmentDispatchAuditID(assignment domain.Assignment) string {
+	return fmt.Sprintf("assignment-dispatch:%s:%d", assignment.ID, assignment.DispatchRevision)
 }
 
 func loadAssignmentDispatchTx(ctx context.Context, tx *sql.Tx, assignmentID string) (domain.Assignment, error) {

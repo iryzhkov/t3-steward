@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -36,6 +37,18 @@ func TestCoordinatorArtifactPublicationReplayFencingAndPartialUpload(t *testing.
 	}
 	if got, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(artifact.StoragePath))); err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("retained content = %q, %v", got, err)
+	}
+	events, err := store.LoadAuditEvents(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditRaw, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(auditRaw), "artifact-publication:"+artifact.ID) ||
+		strings.Contains(string(auditRaw), "\"leaseToken\"") || strings.Contains(string(auditRaw), "\"dispatchToken\"") {
+		t.Fatalf("artifact publication audit is missing or unsafe: %s", auditRaw)
 	}
 
 	replayed, err := service.Publish(ctx, publication, bytes.NewReader(content))
@@ -175,6 +188,19 @@ func TestCoordinatorArtifactRetentionAndPathSafety(t *testing.T) {
 	if _, err := store.LoadArtifacts(ctx, []string{fresh.Artifact.ID}); err != nil {
 		t.Fatalf("fresh metadata missing: %v", err)
 	}
+	events, err := store.LoadAuditEvents(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundPrune := false
+	for _, event := range events {
+		if event.ID == "artifact-pruned:"+oldArtifact.ID && event.Actor == "coordinator" && event.Reason != "" {
+			foundPrune = true
+		}
+	}
+	if !foundPrune {
+		t.Fatalf("artifact prune audit missing: %+v", events)
+	}
 
 	unsafe := publication
 	unsafe.Artifact.ID = "artifact-unsafe"
@@ -222,6 +248,7 @@ func TestCoordinatorArtifactOpenVerifiesContentBeforeReturning(t *testing.T) {
 		t.Fatalf("tampered open = reader %#v, error %v", reader, err)
 	}
 }
+
 type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("connection lost") }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,6 +60,12 @@ func TestCommitWorkerStateTransitionsAtomicallyFencesSnapshotAndAttempt(t *testi
 		ExpectedAssignment: assignment, ExpectedAttemptRevision: attempt.Revision,
 		Assignment: nextAssignment, Attempt: nextAttempt, Reason: "worker-observed-absent",
 	}
+	tampered := transition
+	tampered.ExpectedAssignment.UpdatedAt = tampered.ExpectedAssignment.UpdatedAt.Add(time.Second)
+	if _, err := store.CommitWorkerStateTransitions(ctx, []domain.WorkerStateTransition{tampered});
+		err == nil || strings.Contains(err.Error(), assignment.LeaseToken) || strings.Contains(err.Error(), assignment.DispatchToken) {
+		t.Fatalf("stale assignment error exposed capability: %v", err)
+	}
 	applied, err := store.CommitWorkerStateTransitions(ctx, []domain.WorkerStateTransition{transition})
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +76,7 @@ func TestCommitWorkerStateTransitionsAtomicallyFencesSnapshotAndAttempt(t *testi
 	if _, err := store.CommitWorkerStateTransitions(ctx, []domain.WorkerStateTransition{transition}); err != nil {
 		t.Fatalf("idempotent replay: %v", err)
 	}
+	assertNativeAuditEvent(t, store, workerStateAuditID(transition), "worker:"+snapshot.WorkerID, "released")
 
 	records, err := store.LoadCoordinatorRecords(ctx)
 	if err != nil {

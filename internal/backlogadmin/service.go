@@ -30,11 +30,26 @@ type Reader interface {
 	LoadQuotaAdmissions(context.Context) ([]domain.QuotaAdmissionRecord, error)
 }
 
+type UnknownRecoveryWriter interface {
+	RecoverUnknownAssignment(context.Context, domain.UnknownAssignmentRecovery) (domain.UnknownAssignmentRecoveryDecision, error)
+}
+
 type Service struct {
 	reader       Reader
 	authorizer   Authorizer
 	now          func() time.Time
 	artifactOpen ArtifactOpenFunc
+	runtime      RuntimeInfo
+	recovery     UnknownRecoveryWriter
+}
+
+type RuntimeInfo struct {
+	Mode                   string
+	Owner                  string
+	Epoch                  int64
+	Transport              string
+	MaxWorkerSnapshotAge   time.Duration
+	MaxQuotaObservationAge time.Duration
 }
 
 func New(reader Reader, authorizer Authorizer) (*Service, error) {
@@ -44,13 +59,36 @@ func New(reader Reader, authorizer Authorizer) (*Service, error) {
 	if authorizer == nil {
 		return nil, fmt.Errorf("%w: authorizer is required", ErrInvalidQuery)
 	}
-	return &Service{reader: reader, authorizer: authorizer, now: time.Now}, nil
+	service := &Service{reader: reader, authorizer: authorizer, now: time.Now}
+	service.recovery, _ = reader.(UnknownRecoveryWriter)
+	return service, nil
 }
 
 func (s *Service) SetClock(now func() time.Time) {
 	if now != nil {
 		s.now = now
 	}
+}
+
+// SetRuntimeInfo supplies the immutable production composition identity used by
+// the status projection. Dynamic freshness and incident state is derived from
+// the same durable records as the rest of the response.
+func (s *Service) SetRuntimeInfo(info RuntimeInfo) { s.runtime = info }
+
+func (s *Service) RecoverUnknown(ctx context.Context, principal Principal, request UnknownRecoveryRequest) (domain.UnknownAssignmentRecoveryDecision, error) {
+	if s.recovery == nil {
+		return domain.UnknownAssignmentRecoveryDecision{}, errors.New("unknown recovery is unavailable")
+	}
+	action := Action{Kind: QueryRecovery, AssignmentID: request.AssignmentID}
+	if err := s.authorizer.Authorize(ctx, principal, action); err != nil {
+		return domain.UnknownAssignmentRecoveryDecision{}, fmt.Errorf("authorize unknown recovery: %w", err)
+	}
+	return s.recovery.RecoverUnknownAssignment(ctx, domain.UnknownAssignmentRecovery{
+		ID: request.ID, AssignmentID: request.AssignmentID, CoordinatorEpoch: request.CoordinatorEpoch,
+		ExpectedAssignmentEpoch: request.ExpectedAssignmentEpoch, ExpectedAttemptRevision: request.ExpectedAttemptRevision,
+		Outcome: request.Outcome, EvidenceID: request.EvidenceID, EvidenceSHA256: request.EvidenceSHA256,
+		Actor: principal.ID, Reason: request.Reason, RecoveredAt: s.now().UTC(),
+	})
 }
 
 func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
@@ -81,7 +119,7 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 	if err != nil {
 		return Response{}, fmt.Errorf("load quota admissions: %w", err)
 	}
-	view := newView(records, workers, admissions, s.now().UTC())
+	view := newView(records, workers, admissions, s.runtime, s.now().UTC())
 	response := Response{Version: Version, Kind: query.Kind, GeneratedAt: view.now}
 
 	switch query.Kind {
@@ -177,11 +215,12 @@ type view struct {
 	tasks       map[string]domain.Task
 	attempts    map[string][]domain.Attempt
 	assignments map[string]domain.Assignment
+	runtime     RuntimeInfo
 }
 
-func newView(records sqlite.CoordinatorRecords, workers []domain.WorkerSnapshot, admissions []domain.QuotaAdmissionRecord, now time.Time) view {
+func newView(records sqlite.CoordinatorRecords, workers []domain.WorkerSnapshot, admissions []domain.QuotaAdmissionRecord, runtime RuntimeInfo, now time.Time) view {
 	v := view{
-		records: records, workers: workers, admissions: admissions, now: now,
+		records: records, workers: workers, admissions: admissions, runtime: runtime, now: now,
 		workflows: make(map[string]domain.Workflow), runs: make(map[string]domain.WorkflowRun),
 		tasks: make(map[string]domain.Task), attempts: make(map[string][]domain.Attempt),
 		assignments: make(map[string]domain.Assignment),
@@ -233,6 +272,55 @@ func (v view) status() Status {
 	}
 	status.Reservations = len(v.reservations(Filter{}))
 	status.Locks = len(v.locks(Filter{}))
+	status.Runtime = v.runtimeStatus()
+	return status
+}
+
+func (v view) runtimeStatus() RuntimeStatus {
+	status := RuntimeStatus{
+		Mode: v.runtime.Mode, Owner: v.runtime.Owner, Epoch: v.runtime.Epoch,
+		Transport: v.runtime.Transport, Health: "healthy",
+	}
+	for _, worker := range v.workers {
+		stale := !worker.Connected || worker.ObservedAt.After(v.now) || !worker.ValidUntil.After(v.now)
+		if v.runtime.MaxWorkerSnapshotAge > 0 && v.now.Sub(worker.ObservedAt) > v.runtime.MaxWorkerSnapshotAge {
+			stale = true
+		}
+		if stale {
+			status.StaleWorkers++
+			status.ReconciliationIssues = append(status.ReconciliationIssues, "worker:"+worker.WorkerID+":stale")
+		} else {
+			status.FreshWorkers++
+		}
+	}
+	for _, admission := range v.admissions {
+		stale := admission.ObservedAt.IsZero() || admission.ObservedAt.After(v.now)
+		if v.runtime.MaxQuotaObservationAge > 0 && v.now.Sub(admission.ObservedAt) > v.runtime.MaxQuotaObservationAge {
+			stale = true
+		}
+		if stale {
+			status.StaleQuotaPools++
+			status.ReconciliationIssues = append(status.ReconciliationIssues, "quota:"+admission.QuotaPoolID+":stale")
+		} else {
+			status.FreshQuotaPools++
+		}
+	}
+	for _, assignment := range v.records.Assignments {
+		if assignment.State == domain.AssignmentUnknown || assignment.DispatchState == domain.DispatchUnknown {
+			status.UnknownExecutionIDs = append(status.UnknownExecutionIDs, assignment.ID)
+		}
+	}
+	for _, artifact := range v.records.Artifacts {
+		if artifact.StoragePath == "" || artifact.Size < 0 || len(artifact.SHA256) != 64 {
+			status.CustodyIncidentIDs = append(status.CustodyIncidentIDs, artifact.ID)
+		}
+	}
+	sort.Strings(status.ReconciliationIssues)
+	sort.Strings(status.UnknownExecutionIDs)
+	sort.Strings(status.CustodyIncidentIDs)
+	if len(status.ReconciliationIssues) != 0 || len(status.UnknownExecutionIDs) != 0 || len(status.CustodyIncidentIDs) != 0 {
+		status.Health = "degraded"
+	}
 	return status
 }
 

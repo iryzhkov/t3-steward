@@ -70,6 +70,8 @@ func TestWorkerCommandsPersistBeforeDeliveryAndAcknowledgeIdempotently(t *testin
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("commands after acknowledgement = %#v, error=%v", pending, err)
 	}
+	assertNativeAuditEvent(t, store, "worker-command:command-1:committed", "coordinator", "prepare")
+	assertNativeAuditEvent(t, store, "worker-command:command-1:acknowledged", "worker:normandy", "accepted")
 }
 
 func TestWorkerCommandsAreFencedAcrossWorkerAndCoordinatorRestarts(t *testing.T) {
@@ -163,6 +165,8 @@ func TestAssignmentLeaseRenewalAndExpiryFailClosed(t *testing.T) {
 		records.Attempts[0].Control != domain.ControlPreparing {
 		t.Fatalf("fail-closed projections: assignment=%#v attempt=%#v", records.Assignments[0], records.Attempts[0])
 	}
+	assertNativeAuditEvent(t, store, assignmentLeaseAuditID(renewed), "worker:normandy", "renewed")
+	assertNativeAuditEvent(t, store, "assignment-lease-expired:assignment-1:1", "coordinator", "unknown")
 }
 
 func TestMigrationFromVersionEightBackfillsLeaseExpiry(t *testing.T) {

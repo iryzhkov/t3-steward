@@ -138,16 +138,16 @@ tasks:
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Mode().Perm() != 0o444 {
-			t.Errorf("artifact %q mode = %o, want 444", artifact.Name, info.Mode().Perm())
+		if info.Mode().Perm() != 0o400 {
+			t.Errorf("artifact %q mode = %o, want 400", artifact.Name, info.Mode().Perm())
 		}
 	}
 	info, err := os.Stat(got.StorageDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o555 {
-		t.Fatalf("bundle directory mode = %o, want 555", info.Mode().Perm())
+	if info.Mode().Perm() != 0o500 {
+		t.Fatalf("bundle directory mode = %o, want 500", info.Mode().Perm())
 	}
 }
 

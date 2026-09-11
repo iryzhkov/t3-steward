@@ -23,6 +23,11 @@ const backlogUsage = `Usage: t3-steward backlog <command> [args]
 Coordinator submission command:
   submit <bundle.tar> [--idempotency-key KEY] [--json]
 
+Stopped coordinator backup commands:
+  backup create <snapshot-directory>
+  backup verify <snapshot-directory>
+  backup restore <snapshot-directory>
+
 Coordinator read commands:
   status [--json]
   list [--project P] [--schedule S] [--progress STATES] [--class CLASS]
@@ -42,6 +47,9 @@ Revision-fenced controls:
   start|resume|cancel|retry|skip <workflow-run>/<task> --reason TEXT [--command-id ID] [--json]
   delay <workflow-run>/<task> --until RFC3339 --reason TEXT [--command-id ID] [--json]
   pause <workflow-run>/<task> [--now] --reason TEXT [--command-id ID] [--json]
+  recover <assignment> --outcome stopped|failed --coordinator-epoch N
+      --assignment-epoch N --attempt-revision N --evidence-id ID
+      --evidence-sha256 HEX --reason TEXT [--recovery-id ID] [--json]
 
 Legacy task-file helpers:
   new <id>           Create a task file from a template and print its path.
@@ -99,7 +107,7 @@ func isCoordinatorAdmin(args []string) bool {
 	}
 	switch args[0] {
 	case "submit", "status", "graph", "task", "events", "explain", "artifacts", "artifact", "commands", "command", "show",
-		"start", "delay", "pause", "resume", "cancel", "retry", "skip":
+		"start", "delay", "pause", "resume", "cancel", "retry", "skip", "recover":
 		return true
 	case "list":
 		return len(args) != 2 || args[1] != "--all"
@@ -114,10 +122,11 @@ func runCoordinatorAdmin(cfg config.Config, args []string, schedules bool) error
 		return err
 	}
 	client := backlogadmin.LocalClient{
-		Path:             socketPath,
-		MaxResponseBytes: int64(cfg.BacklogV2.MessageLimits.MaxBytes),
+		Path:               socketPath,
+		MaxResponseBytes:   int64(cfg.BacklogV2.MessageLimits.MaxBytes),
 		MaxArtifactBytes:   int64(cfg.BacklogV2.MessageLimits.MaxArtifactBytes),
 		MaxSubmissionBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
+		RequestTimeout:     cfg.BacklogV2.Transport.RequestTimeout.D(),
 	}
 	cli := backlogAdminCLI{
 		service:             client,
@@ -125,6 +134,7 @@ func runCoordinatorAdmin(cfg config.Config, args []string, schedules bool) error
 		artifacts:           client,
 		submissions:         client,
 		scheduleDefinitions: client,
+		recovery:            client,
 		principal: backlogadmin.Principal{
 			ID:    fmt.Sprintf("local:%d", os.Getuid()),
 			Roles: []string{"local-admin"},
@@ -160,6 +170,9 @@ func cmdBacklog(g globalFlags, args []string) error {
 	}
 	if isCoordinatorAdmin(args) {
 		return runCoordinatorAdmin(cfg, args, false)
+	}
+	if args[0] == "backup" {
+		return runBacklogBackup(context.Background(), cfg, args[1:])
 	}
 	dir, err := cfg.ResolveBacklogDir()
 	if err != nil {

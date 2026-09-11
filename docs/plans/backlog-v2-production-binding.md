@@ -64,7 +64,7 @@ do not need to stop for routine design choices.
 - [x] R2 — Versioned worker exchange and execution package (S15)
 - [x] R3 — Restart-safe worker runtime (S16)
 - [x] R4 — Coordinator runtime, submissions, schedules, and quota bridge (S17)
-- [ ] R5 — Audit, backup, recovery, and security hardening (S18)
+- [x] R5 — Audit, backup, recovery, and security hardening (S18)
 - [ ] R6 — Deployment qualification and new readiness decision (S19)
 
 ## Remaining serial stage checklist
@@ -196,20 +196,20 @@ Exit gates:
 
 ### S18 — Audit, backup, recovery, and security hardening
 
-- [ ] Emit and assert native audit events for every production state-changing
+- [x] Emit and assert native audit events for every production state-changing
   primitive, including actor, reason, epoch, revision, idempotency identity, and
   outcome.
-- [ ] Expose runtime mode, owner/epoch, health, freshness, transport, quota,
+- [x] Expose runtime mode, owner/epoch, health, freshness, transport, quota,
   reconciliation, unknown execution, and custody incidents through admin
   projections.
-- [ ] Implement a stopped, coherent SQLite-plus-artifact snapshot and verified
+- [x] Implement a stopped, coherent SQLite-plus-artifact snapshot and verified
   restore flow. Refuse corrupt, incomplete, mismatched, or newer-version
   snapshots.
-- [ ] Add authorization- and revision-fenced recovery commands for unknown
+- [x] Add authorization- and revision-fenced recovery commands for unknown
   assignments, with evidence-required outcomes and no quota bypass.
-- [ ] Harden credentials, secret redaction, file permissions, request limits,
+- [x] Harden credentials, secret redaction, file permissions, request limits,
   extraction, timeouts, backpressure, process containment, and error surfaces.
-- [ ] Update operator recovery, backup, rollback, and point-of-no-return
+- [x] Update operator recovery, backup, rollback, and point-of-no-return
   documentation.
 
 Exit gates:

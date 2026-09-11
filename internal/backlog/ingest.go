@@ -69,7 +69,7 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 	workflowID := i.newID("workflow")
 	runID := i.newID("run")
 	workflowsRoot := filepath.Join(i.StorageRoot, "workflows")
-	if err := os.MkdirAll(workflowsRoot, 0o755); err != nil {
+	if err := os.MkdirAll(workflowsRoot, 0o700); err != nil {
 		return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: create storage: %w", err)
 	}
 	stageDir, err := os.MkdirTemp(workflowsRoot, ".ingest-")
@@ -338,10 +338,10 @@ func copyIngestedFile(sourceRoot *os.Root, sourceRelative, destination, relative
 }
 
 func writeIngestedFile(input io.Reader, destination, relative, storagePath string) (ingestedFile, error) {
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		return ingestedFile{}, err
 	}
-	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o444)
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o400)
 	if err != nil {
 		return ingestedFile{}, err
 	}
@@ -365,16 +365,16 @@ func makeIngestedTreeImmutable(root string) error {
 			return err
 		}
 		if entry.IsDir() {
-			return os.Chmod(path, 0o555)
+			return os.Chmod(path, 0o500)
 		}
-		return os.Chmod(path, 0o444)
+		return os.Chmod(path, 0o400)
 	})
 }
 
 func removeIngestedTree(root string) error {
 	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err == nil && entry.IsDir() {
-			_ = os.Chmod(path, 0o755)
+			_ = os.Chmod(path, 0o700)
 		}
 		return nil
 	})

@@ -32,7 +32,9 @@ fetch, import, and acknowledge completed result outboxes over separately
 bounded authenticated control/raw SSH operations. Checkpoint bytes use the
 same sequence and require exact acknowledged throttle evidence. Its disposable
 multi-process workflow and restart/effect-boundary gates pass repeatedly. S18
-and S19 must supply audit/recovery hardening and deployment qualification.
+now supplies complete production-transition audit, runtime incident projection,
+coherent stopped backup/restore, fenced evidence-bound recovery, and security
+hardening. S19 deployment qualification remains required.
 
 No binary was installed, no service or live configuration was changed, no live
 state database was opened by development code, no worker was contacted, and no
@@ -92,20 +94,32 @@ processes.
 - A complete temporary SQLite workflow exercising dependencies, artifacts,
   verification failure, retry, pause, restart, resume, success, and duplicate
   schedule suppression.
+- Completed S18 native same-transaction audits for coordinator, worker,
+  assignment, dispatch, lease, worker-command, throttle, artifact, importer,
+  submission, quota, schedule, admin, and recovery transitions. Audit detail is
+  allowlisted and excludes capability tokens, credential material, paths, and
+  arbitrary reports.
+- Stopped coherent SQLite-plus-artifact snapshot create/verify/restore with
+  owner-only immutable publication, canonical alias-overlap refusal, bounded
+  exact manifests, hashes, integrity checks, and exact format/schema matching.
+- Authenticated evidence-required unknown-assignment recovery with coordinator,
+  assignment, and attempt fences, exact replay, durable actor/reason audit, and
+  no quota mutation or bypass.
+- Runtime status incidents, private production storage, local-admin connection
+  deadlines and concurrency backpressure, secret-safe errors, and fuzz/property
+  coverage for protocol, archive, manifest, schedule, and local-frame parsers.
 
 ## Deployment blockers
 
-1. Run the S18 audit, backup, unknown-state recovery, credential-rotation, and
-   security hardening work.
-2. Run S19 observe-only multi-process qualification and a non-side-effecting
+1. Run S19 observe-only multi-process qualification and a non-side-effecting
    canary on disposable state, then repeat all release gates.
-3. Obtain explicit user approval after a GO readiness report before any
+2. Obtain explicit user approval after a GO readiness report before any
    host-wide installation or deployment.
 
-The shipped schema and authority boundary, S15 transport/package contract, and
-S16 restart-safe worker endpoint are implemented. The remaining items are
-implementation and qualification blockers, not operator toggles; deployment
-approval alone must not bypass them.
+The shipped schema and authority boundary, transport/package contract,
+restart-safe worker endpoint, coordinator runtime, and S18 recovery/security
+boundaries are implemented. Qualification remains a blocker, not an operator
+toggle; deployment approval alone must not bypass it.
 
 ## Operational risks retained
 
@@ -169,6 +183,24 @@ The following gates passed on Normandy against the candidate worktree:
 All tests used temporary state, artifact, bundle, and workspace roots. The
 documented workflow bundle is loaded by a repository test so manifest drift
 fails CI.
+
+### S18 production-binding evidence
+
+S18 completed on Normandy using only disposable local roots and test child
+processes. Focused audit, recovery, snapshot, local-admin, credential,
+containment, archive, parser, and runtime package tests pass. Each new fuzz
+target completed an explicit short fuzz run, the local-admin timeout/
+backpressure test passed 25 repetitions, and the complete `go test ./...`,
+`go build ./...`, `go vet ./...`, `go test -race ./...`, and
+`git diff --check` gates pass. Snapshot tests include corrupt, incomplete,
+format/schema mismatch, unsafe-file, active-owner, existing-target, and
+canonical symlink-alias refusal. Recovery tests cover authenticated actor
+replacement, authorization-before-write, epoch/revision/evidence validation,
+exact and changed replay, and unchanged closed quota admission.
+
+No installation, service restart, live configuration/state access, fleet
+worker contact, external T3 dispatch, push, or pull request occurred. S19
+qualification and its explicit authorization boundary remain outstanding.
 
 ### S14 production-binding evidence
 

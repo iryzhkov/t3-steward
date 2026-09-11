@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"syscall"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 var ErrCoordinatorOwned = errors.New("coordinator state is already owned")
@@ -48,6 +50,15 @@ func (s *Store) AcquireCoordinator(ctx context.Context, identity string) (int64,
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `INSERT INTO kv(key, value) VALUES ('backlog_v2_coordinator_identity', ?)
 			ON CONFLICT(key) DO UPDATE SET value = excluded.value`, identity)
+	}
+	if err == nil {
+		_, err = insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+			ID: fmt.Sprintf("coordinator-acquire-epoch:%d", epoch), Kind: "coordinator-authority-acquired",
+			TargetType: domain.AuditTargetCoordinator, TargetID: identity,
+			Actor: identity, Reason: "coordinator authority acquired", CreatedAt: s.now().UTC(),
+			Detail: nativeAuditDetail{CoordinatorEpoch: epoch, Revision: epoch,
+				IdempotencyIdentity: fmt.Sprintf("coordinator-acquire-epoch:%d", epoch), Outcome: "acquired"},
+		})
 	}
 	if err == nil {
 		err = tx.Commit()

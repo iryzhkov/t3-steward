@@ -11,11 +11,50 @@ const (
 	AdminTargetAttempt     AdminTargetType = "attempt"
 	AdminTargetWorkflowRun AdminTargetType = "workflow-run"
 	AdminTargetSchedule    AdminTargetType = "schedule"
+	AdminTargetAssignment  AdminTargetType = "assignment"
 
-	AuditTargetSubmission AdminTargetType = "submission"
-	AuditTargetQuotaPool  AdminTargetType = "quota-pool"
-	AuditTargetTrigger    AdminTargetType = "trigger"
+	AuditTargetSubmission    AdminTargetType = "submission"
+	AuditTargetQuotaPool     AdminTargetType = "quota-pool"
+	AuditTargetTrigger       AdminTargetType = "trigger"
+	AuditTargetCoordinator   AdminTargetType = "coordinator"
+	AuditTargetWorker        AdminTargetType = "worker"
+	AuditTargetWorkerCommand AdminTargetType = "worker-command"
+	AuditTargetArtifact      AdminTargetType = "artifact"
+	AuditTargetThrottle      AdminTargetType = "throttle"
 )
+
+type UnknownRecoveryOutcome string
+
+const (
+	UnknownRecoveryStopped UnknownRecoveryOutcome = "stopped"
+	UnknownRecoveryFailed  UnknownRecoveryOutcome = "failed"
+)
+
+// UnknownAssignmentRecovery is evidence-bound operator intent to resolve one
+// ambiguous assignment. Evidence bytes stay outside coordinator state; their
+// stable identifier and SHA-256 bind the reviewed observation without leaking
+// credentials or arbitrary report text into audit records.
+type UnknownAssignmentRecovery struct {
+	ID                      string                 `json:"id"`
+	AssignmentID            string                 `json:"assignmentId"`
+	CoordinatorEpoch        int64                  `json:"coordinatorEpoch"`
+	ExpectedAssignmentEpoch int64                  `json:"expectedAssignmentEpoch"`
+	ExpectedAttemptRevision int64                  `json:"expectedAttemptRevision"`
+	Outcome                 UnknownRecoveryOutcome `json:"outcome"`
+	EvidenceID              string                 `json:"evidenceId"`
+	EvidenceSHA256          string                 `json:"evidenceSha256"`
+	Actor                   string                 `json:"actor"`
+	Reason                  string                 `json:"reason"`
+	RecoveredAt             time.Time              `json:"recoveredAt"`
+}
+
+type UnknownAssignmentRecoveryDecision struct {
+	Recovery   UnknownAssignmentRecovery `json:"recovery"`
+	Assignment Assignment                `json:"assignment"`
+	Attempt    Attempt                   `json:"attempt"`
+	Event      AuditEvent                `json:"event"`
+	Replay     bool                      `json:"replay"`
+}
 
 type AdminCommandKind string
 

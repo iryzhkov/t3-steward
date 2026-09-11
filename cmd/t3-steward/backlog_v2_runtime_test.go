@@ -120,7 +120,7 @@ func TestRunBacklogV2CoordinatorStartsClosedAndAdvancesEpoch(t *testing.T) {
 	cfg.BacklogV2.Coordinator.ID = "normandy"
 	cfg.BacklogV2.StartupAdmission = "closed"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	handled, err := runBacklogV2(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil || !handled {
@@ -180,6 +180,7 @@ func TestRunBacklogV2CoordinatorServesAuthenticatedLocalAdmin(t *testing.T) {
 	client := backlogadmin.LocalClient{
 		Path: socketPath, MaxResponseBytes: int64(cfg.BacklogV2.MessageLimits.MaxBytes),
 		MaxArtifactBytes: int64(cfg.BacklogV2.MessageLimits.MaxArtifactBytes),
+		RequestTimeout:   cfg.BacklogV2.Transport.RequestTimeout.D(),
 	}
 	response, err := client.Query(context.Background(), backlogadmin.Query{
 		Version: backlogadmin.Version, Kind: backlogadmin.QueryStatus,
@@ -236,6 +237,7 @@ func TestRunBacklogV2CoordinatorIngestsLegacyDropWithoutDispatch(t *testing.T) {
 	client := backlogadmin.LocalClient{
 		Path: socketPath, MaxResponseBytes: int64(cfg.BacklogV2.MessageLimits.MaxBytes),
 		MaxArtifactBytes: int64(cfg.BacklogV2.MessageLimits.MaxArtifactBytes),
+		RequestTimeout:   cfg.BacklogV2.Transport.RequestTimeout.D(),
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	var response backlogadmin.Response
@@ -308,6 +310,7 @@ func TestRunBacklogV2CoordinatorAcceptsNativeArchiveSubmissionAndReplay(t *testi
 		Path: socketPath, MaxResponseBytes: int64(cfg.BacklogV2.MessageLimits.MaxBytes),
 		MaxArtifactBytes:   int64(cfg.BacklogV2.MessageLimits.MaxArtifactBytes),
 		MaxSubmissionBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
+		RequestTimeout:     cfg.BacklogV2.Transport.RequestTimeout.D(),
 	}
 	request := backlogadmin.LocalSubmissionRequest{IdempotencyKey: "native-request"}
 	first, err := client.SubmitArchive(context.Background(), request, bytes.NewReader(archive), int64(len(archive)))
@@ -448,17 +451,26 @@ func TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands(t *testing.T
 	client := backlogadmin.LocalClient{
 		Path: socketPath, MaxResponseBytes: int64(cfg.BacklogV2.MessageLimits.MaxBytes),
 		MaxArtifactBytes: int64(cfg.BacklogV2.MessageLimits.MaxArtifactBytes),
+		RequestTimeout:   cfg.BacklogV2.Transport.RequestTimeout.D(),
 	}
-	schedules, err := client.Query(context.Background(), backlogadmin.Query{
-		Version: backlogadmin.Version, Kind: backlogadmin.QuerySchedules,
-	})
-	if err != nil {
-		cancel()
-		t.Fatal(err)
-	}
-	if len(schedules.Schedules) != 1 {
-		cancel()
-		t.Fatalf("schedules = %+v", schedules.Schedules)
+	var schedules backlogadmin.Response
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		schedules, err = client.Query(context.Background(), backlogadmin.Query{
+			Version: backlogadmin.Version, Kind: backlogadmin.QuerySchedules,
+		})
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		if len(schedules.Schedules) == 1 && schedules.Schedules[0].Schedule.Revision > schedule.Revision {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("schedule occurrence did not reconcile: %+v", schedules.Schedules)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	response, err := client.Mutate(context.Background(), backlogadmin.Mutation{
 		Version: backlogadmin.Version, ID: "disable-minute",
@@ -480,7 +492,7 @@ func TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands(t *testing.T
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	deadline = time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(5 * time.Second)
 	for {
 		records, err := reader.LoadCoordinatorRecords(context.Background())
 		if err != nil {

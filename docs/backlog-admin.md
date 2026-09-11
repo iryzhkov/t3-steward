@@ -25,6 +25,25 @@ Every control accepts `--command-id ID` for exact replay and `--json` for machin
 
 `start` bypasses normal timing, surplus admission, and ordering, but it still checks successful dependencies, live resource-lock owners, a fresh ready worker, and hard quota admission. It never bypasses draining or closed quota state. `resume` additionally requires the assigned worker and assigned quota route to remain safe. `pause` atomically records draining state and a worker delivery intent bound to the current assignment, thread, workspace, worker epoch, and provider route. Without `--now`, the worker is asked to checkpoint; with `--now`, it is asked to hard-stop. The attempt becomes `paused` or `paused-uncheckpointed` only after acknowledgement, and pending delivery survives restart. Cancelling a task also cancels unfinished descendants and updates the workflow-run projection in the same transaction. Manual schedule runs use the normal overlap and failure-hold policy and the transactional schedule-trigger path.
 
+`backlog status` includes the active runtime mode, coordinator owner and epoch,
+transport kind, fresh/stale worker and quota counts, reconciliation issues,
+unknown execution IDs, and durable artifact-custody metadata incidents. Any
+stale or incident projection degrades the reported runtime health.
+
+Unknown assignments require a separate evidence-bound recovery operation:
+
+```text
+t3-steward backlog recover <assignment> --outcome stopped|failed \
+  --coordinator-epoch N --assignment-epoch N --attempt-revision N \
+  --evidence-id ID --evidence-sha256 HEX --reason TEXT \
+  [--recovery-id ID] [--json]
+```
+
+The local socket authenticates the operator from the Unix peer credential and
+ignores claimed identity. All epochs and the attempt revision must still match,
+and exact replay requires the same recovery ID and content. Recovery never
+opens quota or directly starts, resumes, claims, or dispatches work.
+
 Artifact metadata is available with `artifact show`; verified coordinator-owned content is retrieved with:
 
 ```text

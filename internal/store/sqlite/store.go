@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -129,6 +130,28 @@ func Open(path string) (*Store, error) {
 	return open(path, false)
 }
 
+// OpenReadOnly opens an immutable read-only database without creating SQLite
+// journal sidecars. Snapshot verification uses it against protected copies.
+func OpenReadOnly(path string) (*Store, error) {
+	if path == "" || path == ":memory:" {
+		return nil, errors.New("read-only state database must be a file")
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("open existing state database: %w", err)
+	}
+	dsn := sqliteFileURL(path) + "?mode=ro&immutable=1&_pragma=query_only(1)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open read-only state database: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open read-only state database: %w", err)
+	}
+	return &Store{db: db, now: time.Now, path: path}, nil
+}
+
 func open(path string, create bool) (*Store, error) {
 	if path != ":memory:" {
 		if create {
@@ -145,7 +168,7 @@ func open(path string, create bool) (*Store, error) {
 		if create {
 			mode = "rwc"
 		}
-		dsn = "file:" + path + "?mode=" + mode + "&_pragma=busy_timeout(5000)"
+		dsn = sqliteFileURL(path) + "?mode=" + mode + "&_pragma=busy_timeout(5000)"
 		if create {
 			dsn += "&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
 		}
@@ -160,6 +183,10 @@ func open(path string, create bool) (*Store, error) {
 		return nil, fmt.Errorf("open state database: %w", err)
 	}
 	return &Store{db: db, now: time.Now, path: path}, nil
+}
+
+func sqliteFileURL(path string) string {
+	return (&url.URL{Scheme: "file", Path: path}).String()
 }
 
 // OpenMigrated opens or creates a database and explicitly applies every
@@ -200,6 +227,37 @@ func (s *Store) SetClock(now func() time.Time) {
 		return
 	}
 	s.now = now
+}
+
+// SchemaVersion returns the recorded schema version without changing it.
+func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
+	var version int
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_version`).Scan(&version); err != nil {
+		return 0, fmt.Errorf("read schema version: %w", err)
+	}
+	return version, nil
+}
+
+// IntegrityCheck performs SQLite's complete read-only consistency check.
+func (s *Store) IntegrityCheck(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA integrity_check`)
+	if err != nil {
+		return fmt.Errorf("run sqlite integrity check: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var result string
+		if err := rows.Scan(&result); err != nil {
+			return fmt.Errorf("read sqlite integrity check: %w", err)
+		}
+		if result != "ok" {
+			return fmt.Errorf("sqlite integrity check failed: %s", result)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate sqlite integrity check: %w", err)
+	}
+	return nil
 }
 
 // Migrate explicitly advances the database through every supported schema

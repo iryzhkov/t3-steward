@@ -66,3 +66,27 @@ func TestRoundTrips(t *testing.T) {
 		t.Fatalf("actions = %+v", acts)
 	}
 }
+
+func TestSQLiteFilePathsWithURLMetacharacters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state ?# percent%.db")
+	store, err := OpenMigrated(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetKV(context.Background(), "key", "value"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	readOnly, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readOnly.Close()
+	value, found, err := readOnly.GetKV(context.Background(), "key")
+	if err != nil || !found || value != "value" {
+		t.Fatalf("read-only value = %q, found %t, err %v", value, found, err)
+	}
+}

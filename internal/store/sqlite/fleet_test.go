@@ -63,6 +63,9 @@ func TestAssignmentPlanCommitsBeforeEpochBoundClaim(t *testing.T) {
 		records.Attempts[0].Revision != 3 {
 		t.Fatalf("claimed attempt projection = %#v", records.Attempts[0])
 	}
+	assertNativeAuditEvent(t, store, "worker-snapshot:normandy:worker-epoch-1:1", "worker:normandy", "observed")
+	assertNativeAuditEvent(t, store, "assignment-offer:assignment-1", "coordinator", "offered")
+	assertNativeAuditEvent(t, store, "assignment-claim:assignment-1:1", "worker:normandy", "claimed")
 }
 
 func TestConcurrentAssignmentClaimsHaveOneWinner(t *testing.T) {
@@ -142,6 +145,7 @@ func TestCoordinatorRestartFencesOldClaimsAndRetainsPlan(t *testing.T) {
 	if epoch != 2 {
 		t.Fatalf("coordinator epoch = %d, want 2", epoch)
 	}
+	assertNativeAuditEvent(t, store, "coordinator-epoch:2", "coordinator", "advanced")
 	oldClaim := fleetClaim(1, "worker-epoch-1", fleetTestTime.Add(time.Second), fleetTestTime.Add(time.Minute))
 	if _, err := store.ClaimAssignment(context.Background(), oldClaim); !errors.Is(err, ErrStaleCoordinatorEpoch) {
 		t.Fatalf("old claim error = %v, want stale coordinator epoch", err)

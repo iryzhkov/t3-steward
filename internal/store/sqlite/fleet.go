@@ -63,13 +63,19 @@ func (s *Store) CoordinatorEpoch(ctx context.Context) (int64, error) {
 // AdvanceCoordinatorEpoch starts a new coordinator session. Workers must publish
 // a snapshot bound to the returned epoch before receiving new assignments.
 func (s *Store) AdvanceCoordinatorEpoch(ctx context.Context, expected int64) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin coordinator epoch advance: %w", err)
+	}
+	defer tx.Rollback()
 	var epoch int64
-	err := s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`UPDATE coordinator_runtime SET epoch = epoch + 1 WHERE id = 1 AND epoch = ? RETURNING epoch`,
 		expected,
 	).Scan(&epoch)
 	if errors.Is(err, sql.ErrNoRows) {
-		current, loadErr := s.CoordinatorEpoch(ctx)
+		var current int64
+		loadErr := tx.QueryRowContext(ctx, `SELECT epoch FROM coordinator_runtime WHERE id = 1`).Scan(&current)
 		if loadErr != nil {
 			return 0, loadErr
 		}
@@ -77,6 +83,20 @@ func (s *Store) AdvanceCoordinatorEpoch(ctx context.Context, expected int64) (in
 	}
 	if err != nil {
 		return 0, fmt.Errorf("advance coordinator epoch: %w", err)
+	}
+	now := s.now().UTC()
+	identity := fmt.Sprintf("coordinator-epoch:%d", epoch)
+	if _, err := insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+		ID: identity, Kind: "coordinator-epoch-advanced",
+		TargetType: domain.AuditTargetCoordinator, TargetID: "coordinator",
+		Actor: "coordinator", Reason: "coordinator epoch advanced", CreatedAt: now,
+		Detail: nativeAuditDetail{CoordinatorEpoch: epoch, ExpectedRevision: expected, Revision: epoch,
+			IdempotencyIdentity: identity, Outcome: "advanced"},
+	}); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit coordinator epoch advance: %w", err)
 	}
 	return epoch, nil
 }
@@ -105,6 +125,9 @@ func (s *Store) SaveWorkerSnapshot(ctx context.Context, snapshot domain.WorkerSn
 	}
 	if exists {
 		if reflect.DeepEqual(current, snapshot) {
+			if _, err := insertWorkerSnapshotAuditEvent(ctx, tx, snapshot); err != nil {
+				return err
+			}
 			return tx.Commit()
 		}
 		sameEpoch := current.WorkerEpoch == snapshot.WorkerEpoch
@@ -129,10 +152,29 @@ func (s *Store) SaveWorkerSnapshot(ctx context.Context, snapshot domain.WorkerSn
 		snapshot.Sequence, snapshot.Connected, snapshot.ValidUntil.UTC().Format(time.RFC3339Nano), raw); err != nil {
 		return fmt.Errorf("save worker snapshot %q: %w", snapshot.WorkerID, err)
 	}
+	if _, err := insertWorkerSnapshotAuditEvent(ctx, tx, snapshot); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit worker snapshot %q: %w", snapshot.WorkerID, err)
 	}
 	return nil
+}
+
+func insertWorkerSnapshotAuditEvent(ctx context.Context, tx *sql.Tx, snapshot domain.WorkerSnapshot) (domain.AuditEvent, error) {
+	identity := fmt.Sprintf("worker-snapshot:%s:%s:%d", snapshot.WorkerID, snapshot.WorkerEpoch, snapshot.Sequence)
+	outcome := "observed"
+	if !snapshot.Connected {
+		outcome = "disconnected"
+	}
+	return insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+		ID: identity, Kind: "worker-snapshot-" + outcome,
+		TargetType: domain.AuditTargetWorker, TargetID: snapshot.WorkerID,
+		Actor: "worker:" + snapshot.WorkerID, Reason: "worker snapshot observed", CreatedAt: snapshot.ObservedAt,
+		Detail: nativeAuditDetail{CoordinatorEpoch: snapshot.CoordinatorEpoch, WorkerEpoch: snapshot.WorkerEpoch,
+			WorkerSequence: snapshot.Sequence, Revision: snapshot.Sequence,
+			IdempotencyIdentity: identity, Outcome: outcome},
+	})
 }
 
 // LoadWorkerSnapshots returns the coordinator's durable worker projections.
@@ -207,6 +249,9 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 			if !sameAssignmentPlanIdentity(current, assignment) {
 				return nil, fmt.Errorf("assignment plan replay changes identity for %q", assignment.ID)
 			}
+			if _, err := insertAssignmentPlanAuditEvent(ctx, tx, commit, item, current, attempt); err != nil {
+				return nil, err
+			}
 			assignments = append(assignments, current)
 			continue
 		}
@@ -251,12 +296,36 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 		if err := updateAttemptTx(ctx, tx, attempt, item.ExpectedAttemptRevision); err != nil {
 			return nil, err
 		}
+		if _, err := insertAssignmentPlanAuditEvent(ctx, tx, commit, item, assignment, attempt); err != nil {
+			return nil, err
+		}
 		assignments = append(assignments, assignment)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit assignment plan: %w", err)
 	}
 	return assignments, nil
+}
+
+func insertAssignmentPlanAuditEvent(
+	ctx context.Context,
+	tx *sql.Tx,
+	commit domain.AssignmentPlanCommit,
+	item domain.AssignmentPlanItem,
+	assignment domain.Assignment,
+	attempt domain.Attempt,
+) (domain.AuditEvent, error) {
+	identity := "assignment-offer:" + assignment.ID
+	return insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+		ID: identity, Kind: "assignment-offered",
+		WorkflowRunID: attempt.WorkflowRunID, TaskID: attempt.TaskID, AttemptID: attempt.ID,
+		TargetType: domain.AdminTargetAssignment, TargetID: assignment.ID,
+		Actor: "coordinator", Reason: "assignment offered by planner", CreatedAt: assignment.CreatedAt,
+		Detail: nativeAuditDetail{CoordinatorEpoch: commit.CoordinatorEpoch, WorkerEpoch: item.WorkerEpoch,
+			AssignmentEpoch: assignment.Epoch, WorkerSequence: item.WorkerSnapshotSequence,
+			ExpectedRevision: item.ExpectedAttemptRevision, Revision: item.ExpectedAttemptRevision + 1,
+			IdempotencyIdentity: identity, Outcome: string(domain.AssignmentOffered)},
+	})
 }
 
 // ClaimAssignment atomically activates one offered assignment and its attempt.
@@ -294,6 +363,13 @@ func (s *Store) ClaimAssignment(ctx context.Context, request domain.AssignmentCl
 	}
 	if assignment.State == domain.AssignmentClaimed {
 		if assignment.LeaseExpiresAt.Equal(request.LeaseExpiresAt) {
+			attempt, loadErr := loadAttemptTx(ctx, tx, assignment.AttemptID)
+			if loadErr != nil {
+				return domain.Assignment{}, loadErr
+			}
+			if _, auditErr := insertAssignmentClaimAuditEvent(ctx, tx, request, assignment, attempt); auditErr != nil {
+				return domain.Assignment{}, auditErr
+			}
 			if err := tx.Commit(); err != nil {
 				return domain.Assignment{}, err
 			}
@@ -339,10 +415,32 @@ func (s *Store) ClaimAssignment(ctx context.Context, request domain.AssignmentCl
 	if err := updateAttemptTx(ctx, tx, attempt, expectedAttemptRevision); err != nil {
 		return domain.Assignment{}, err
 	}
+	if _, err := insertAssignmentClaimAuditEvent(ctx, tx, request, assignment, attempt); err != nil {
+		return domain.Assignment{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return domain.Assignment{}, fmt.Errorf("commit assignment claim %q: %w", assignment.ID, err)
 	}
 	return assignment, nil
+}
+
+func insertAssignmentClaimAuditEvent(
+	ctx context.Context,
+	tx *sql.Tx,
+	request domain.AssignmentClaimRequest,
+	assignment domain.Assignment,
+	attempt domain.Attempt,
+) (domain.AuditEvent, error) {
+	identity := fmt.Sprintf("assignment-claim:%s:%d", assignment.ID, assignment.Epoch)
+	return insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+		ID: identity, Kind: "assignment-claimed",
+		WorkflowRunID: attempt.WorkflowRunID, TaskID: attempt.TaskID, AttemptID: attempt.ID,
+		TargetType: domain.AdminTargetAssignment, TargetID: assignment.ID,
+		Actor: "worker:" + request.WorkerID, Reason: "worker accepted assignment offer", CreatedAt: assignment.UpdatedAt,
+		Detail: nativeAuditDetail{CoordinatorEpoch: request.CoordinatorEpoch, WorkerEpoch: request.WorkerEpoch,
+			AssignmentEpoch: request.AssignmentEpoch, Revision: request.AssignmentEpoch,
+			IdempotencyIdentity: identity, Outcome: string(domain.AssignmentClaimed)},
+	})
 }
 
 func validateWorkerSnapshot(snapshot domain.WorkerSnapshot) error {

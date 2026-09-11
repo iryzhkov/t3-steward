@@ -178,7 +178,7 @@ func resolveMutationTarget(records sqlite.CoordinatorRecords, request Mutation) 
 		}
 		return "", "", notFound("workflow run", request.WorkflowRunID)
 	}
-	v := newView(records, nil, nil, time.Time{})
+	v := newView(records, nil, nil, RuntimeInfo{}, time.Time{})
 	task, ok := v.resolveTask(request.WorkflowRunID, request.TaskID)
 	if !ok {
 		return "", "", notFound("task", request.WorkflowRunID+"/"+request.TaskID)

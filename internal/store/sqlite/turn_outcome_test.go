@@ -92,6 +92,8 @@ func TestCommitTurnOutcomeTransitionsAtomicReplayAndStaleRevision(t *testing.T) 
 		t.Fatalf("stale batch persisted partially:\nattempts %#v\nthrottle %#v",
 			afterAttempts, afterThrottle)
 	}
+	assertNativeAuditEvent(t, store, "throttle-attempt:directive-a:attempt-a:1", "coordinator", "pending")
+	assertNativeAuditEvent(t, store, "turn-outcome:outcome-a", "coordinator", "done")
 }
 
 func turnOutcomeStoreAttempt(id string, revision int64, now time.Time) domain.Attempt {
