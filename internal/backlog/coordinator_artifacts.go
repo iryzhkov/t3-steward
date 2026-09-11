@@ -27,8 +27,9 @@ type ArtifactCatalog interface {
 // CoordinatorArtifactStore retains worker uploads independently from worker
 // availability and serves them to later assignments.
 type CoordinatorArtifactStore struct {
-	Root    string
-	Catalog ArtifactCatalog
+	Root      string
+	ReadRoots []string
+	Catalog   ArtifactCatalog
 }
 
 // Publish streams one complete worker artifact into coordinator-owned,
@@ -145,7 +146,7 @@ func (s CoordinatorArtifactStore) Open(ctx context.Context, artifactID string) (
 		return domain.Artifact{}, nil, fmt.Errorf("open artifact: artifact %q not found", artifactID)
 	}
 	artifact := artifacts[0]
-	objectPath, err := safeBundleFile(s.Root, filepath.FromSlash(artifact.StoragePath))
+	objectPath, err := s.resolveReadPath(artifact.StoragePath)
 	if err != nil {
 		return domain.Artifact{}, nil, fmt.Errorf("open artifact: resolve retained object: %w", err)
 	}
@@ -180,6 +181,40 @@ func (s CoordinatorArtifactStore) Open(ctx context.Context, artifactID string) (
 
 // FetchDependencies resolves coordinator metadata and atomically materializes
 // declared predecessor outputs into a worker workspace.
+func (s CoordinatorArtifactStore) resolveReadPath(storagePath string) (string, error) {
+	roots := append([]string{s.Root}, s.ReadRoots...)
+	seen := make(map[string]struct{}, len(roots))
+	var resolved string
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		absolute, err := filepath.Abs(root)
+		if err != nil {
+			return "", err
+		}
+		if _, duplicate := seen[absolute]; duplicate {
+			continue
+		}
+		seen[absolute] = struct{}{}
+		candidate, err := safeBundleFile(absolute, filepath.FromSlash(storagePath))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if resolved != "" {
+			return "", errors.New("artifact storage path exists under multiple configured roots")
+		}
+		resolved = candidate
+	}
+	if resolved == "" {
+		return "", os.ErrNotExist
+	}
+	return resolved, nil
+}
+
 func (s CoordinatorArtifactStore) FetchDependencies(
 	ctx context.Context,
 	request domain.ArtifactFetchRequest,

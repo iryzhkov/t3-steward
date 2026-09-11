@@ -93,6 +93,38 @@ func TestCoordinatorArtifactPublicationReplayFencingAndPartialUpload(t *testing.
 	}
 }
 
+func TestCoordinatorArtifactOpenUsesDistinctImmutableInputRoot(t *testing.T) {
+	ctx := context.Background()
+	store, outputRoot, publication := coordinatorArtifactFixture(t)
+	inputRoot := filepath.Join(t.TempDir(), "bundles")
+	content := []byte("submitted prompt\n")
+	setPublicationContent(&publication, content)
+	published, err := (CoordinatorArtifactStore{Root: inputRoot, Catalog: store}).
+		Publish(ctx, publication, bytes.NewReader(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reader := CoordinatorArtifactStore{
+		Root: outputRoot, ReadRoots: []string{inputRoot}, Catalog: store,
+	}
+	artifact, opened, err := reader.Open(ctx, published.ID)
+	if err != nil {
+		t.Fatalf("open from input root: %v", err)
+	}
+	defer opened.Close()
+	got, err := io.ReadAll(opened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact != published || !bytes.Equal(got, content) {
+		t.Fatalf("opened artifact = %#v content %q", artifact, got)
+	}
+	if _, err := os.Stat(filepath.Join(outputRoot, filepath.FromSlash(published.StoragePath))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("output root unexpectedly owns input artifact: %v", err)
+	}
+}
+
 func TestCoordinatorArtifactsTransferAcrossWorkerRestartAndVerifyChecksum(t *testing.T) {
 	ctx := context.Background()
 	store, root, publication := coordinatorArtifactFixture(t)
