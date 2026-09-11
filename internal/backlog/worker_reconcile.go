@@ -154,6 +154,8 @@ func planWorkerStateTransition(
 				return completedWorkerState(assignment, attempt, snapshot.WorkerEpoch, observation.ThreadID, now, workerStateCollectAccepted)
 			}
 			return observedCompletedWorkerState(assignment, attempt, snapshot, observation.ThreadID, now)
+		case domain.AssignmentUnknown:
+			return assignment, attempt, "", false, nil
 		default:
 			return assignment, attempt, "", false, fmt.Errorf("assignment %q has invalid observed state %q", assignment.ID, observation.State)
 		}

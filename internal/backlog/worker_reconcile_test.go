@@ -190,6 +190,41 @@ func TestPlanWorkerStateTransitionsReconcilesObservationsAndAcknowledgements(t *
 	}
 }
 
+func TestPlanWorkerStateTransitionsKeepsUnknownEvidenceFencedWithoutBlockingOthers(t *testing.T) {
+	now := coordinatorTestTime.Add(10 * time.Minute)
+	snapshot := coordinatorSnapshot(2)
+	snapshot.ObservedAt = now
+	snapshot.ValidUntil = now.Add(time.Hour)
+	unknown := domain.Assignment{
+		ID: "assignment-1", AttemptID: "attempt-1", WorkerID: snapshot.WorkerID,
+		WorkerEpoch: snapshot.WorkerEpoch, State: domain.AssignmentUnknown, Epoch: 1,
+		UpdatedAt: coordinatorTestTime,
+	}
+	active := domain.Assignment{
+		ID: "assignment-2", AttemptID: "attempt-2", WorkerID: snapshot.WorkerID,
+		WorkerEpoch: snapshot.WorkerEpoch, State: domain.AssignmentClaimed, Epoch: 1,
+		LeaseToken: "lease", DispatchToken: "dispatch", LeaseExpiresAt: now.Add(time.Hour),
+		UpdatedAt: coordinatorTestTime,
+	}
+	snapshot.Assignments = []domain.WorkerAssignmentObservation{
+		{AssignmentID: unknown.ID, AssignmentEpoch: unknown.Epoch, State: domain.AssignmentUnknown, ObservedAt: now},
+		{AssignmentID: active.ID, AssignmentEpoch: active.Epoch, State: domain.AssignmentCompleted, ThreadID: "thread-2", ObservedAt: now},
+	}
+	transitions, err := PlanWorkerStateTransitions(sqlite.CoordinatorRecords{
+		Assignments: []domain.Assignment{unknown, active},
+		Attempts: []domain.Attempt{
+			{ID: "attempt-1", AssignmentID: unknown.ID, Progress: domain.ProgressActive, Control: domain.ControlStopped, Revision: 2, UpdatedAt: coordinatorTestTime},
+			{ID: "attempt-2", AssignmentID: active.ID, Progress: domain.ProgressActive, Control: domain.ControlRunning, Revision: 3, UpdatedAt: coordinatorTestTime},
+		},
+	}, snapshot, nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transitions) != 1 || transitions[0].Assignment.ID != active.ID {
+		t.Fatalf("transitions = %#v, want only assignment-2", transitions)
+	}
+}
+
 func TestPlanWorkerStateTransitionsNeverRevivesFinishedAttempt(t *testing.T) {
 	now := coordinatorTestTime.Add(10 * time.Minute)
 	completedAt := coordinatorTestTime.Add(5 * time.Minute)
