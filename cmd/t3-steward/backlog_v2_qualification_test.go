@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -124,6 +125,9 @@ func TestBacklogV2ProductionProcessTopology(t *testing.T) {
 	case "worker":
 		runQualificationWorker(t, root)
 		return
+	case "remote-worker":
+		runQualificationWorker(t, root)
+		os.Exit(0)
 	}
 
 	root = t.TempDir()
@@ -212,6 +216,59 @@ func TestBacklogV2ProductionProcessTopology(t *testing.T) {
 	}
 }
 
+// TestBacklogV2AuthorizedMultiHostCanary is opt-in because it contacts the
+// explicitly authorized host named by T3_S19_REMOTE_HOST. The remote command
+// must be an ephemeral restricted wrapper that starts this test binary in the
+// remote-worker role with disposable roots. It performs an authenticated
+// snapshot followed by an empty-offer canary: no assignment, workspace
+// preparation, or T3 dispatch is sent.
+func TestBacklogV2AuthorizedMultiHostCanary(t *testing.T) {
+	host := strings.TrimSpace(os.Getenv("T3_S19_REMOTE_HOST"))
+	remoteCommand := strings.TrimSpace(os.Getenv("T3_S19_REMOTE_COMMAND"))
+	if host == "" || remoteCommand == "" {
+		t.Skip("authorized multi-host canary is not configured")
+	}
+	transport, err := workerproto.NewSSHTransport(workerproto.SSHConfig{
+		Address: host, RemoteCommand: remoteCommand, RemoteArguments: []string{"control"},
+		RequestTimeout: 20 * time.Second, ConnectTimeout: 10 * time.Second,
+		MaxMessageBytes: 1 << 20, MaxStderrBytes: 1 << 20,
+		ResponsePrincipal: "ssh:" + host, ResponseKeyID: "worker-key",
+		ResponseSecret: []byte("qualification-worker-secret"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		client, err := workerproto.NewClient(workerproto.ClientConfig{
+			CoordinatorID: "coordinator", WorkerID: host, CoordinatorEpoch: 1,
+			WorkerEpoch: "worker-1", SessionID: fmt.Sprintf("s19-%d-%d", os.Getpid(), attempt),
+			RequestTimeout:  20 * time.Second,
+			SignerPrincipal: "ssh:coordinator", SignerKeyID: "coordinator-key",
+			SignerSecret: []byte("qualification-coordinator-secret"),
+			RetryPolicy:  workerproto.RetryPolicy{MaxAttempts: 2, BaseDelay: 100 * time.Millisecond, MaxDelay: time.Second},
+			Transport:    transport,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := client.Snapshot(context.Background())
+		if err != nil {
+			t.Fatalf("remote observation %d: %v", attempt, err)
+		}
+		if snapshot.WorkerID != host || snapshot.WorkerEpoch != "worker-1" ||
+			snapshot.CoordinatorEpoch != 1 || !snapshot.Connected {
+			t.Fatalf("remote snapshot %d = %+v", attempt, snapshot)
+		}
+		claims, err := client.DeliverOffers(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("remote empty-offer canary %d: %v", attempt, err)
+		}
+		if len(claims) != 0 {
+			t.Fatalf("remote empty-offer canary %d returned %d claims", attempt, len(claims))
+		}
+	}
+}
+
 func qualificationProcess(t *testing.T, root, role string) *exec.Cmd {
 	t.Helper()
 	command := exec.Command(os.Args[0], "-test.run=^TestBacklogV2ProductionProcessTopology$")
@@ -220,6 +277,7 @@ func qualificationProcess(t *testing.T, root, role string) *exec.Cmd {
 }
 
 func qualificationConfig(root string) config.Config {
+	workerID := qualificationWorkerID()
 	cfg := config.Default()
 	cfg.StatePath = filepath.Join(root, "state.db")
 	cfg.Backlog.Dir = filepath.Join(root, "drop")
@@ -233,13 +291,13 @@ func qualificationConfig(root string) config.Config {
 		"pool": {Provider: "test", MaxConcurrent: 1},
 	}
 	cfg.BacklogV2.Workers = map[string]config.V2Worker{
-		"normandy": {
+		workerID: {
 			Address: "local.invalid", Epoch: "worker-1", AcceptBacklog: true, Credential: "qualification",
 			Providers: map[string]config.V2Provider{"test": {Models: []string{"test"}, QuotaPool: "pool"}},
 		},
 	}
 	cfg.BacklogV2.Projects = map[string]config.V2Project{
-		"steward": {Repository: "https://example.invalid/steward.git", DefaultRef: "main", T3Project: "test", SetupProfile: "test", Workers: []string{"normandy"}},
+		"steward": {Repository: "https://example.invalid/steward.git", DefaultRef: "main", T3Project: "test", SetupProfile: "test", Workers: []string{workerID}},
 	}
 	cfg.BacklogV2.SetupProfiles = map[string]config.V2SetupProfile{
 		"test": {Commands: []string{"true"}, Timeout: config.Duration(time.Minute)},
@@ -284,7 +342,7 @@ func (qualificationProtocolCredentials) ResolveProtocol(context.Context, string)
 	return workerruntime.ProtocolCredentials{
 		CoordinatorPrincipal: "ssh:coordinator", CoordinatorKeyID: "coordinator-key",
 		CoordinatorSecret: []byte("qualification-coordinator-secret"),
-		WorkerPrincipal:   "ssh:normandy", WorkerKeyID: "worker-key",
+		WorkerPrincipal:   "ssh:" + qualificationWorkerID(), WorkerKeyID: "worker-key",
 		WorkerSecret: []byte("qualification-worker-secret"),
 	}, nil
 }
@@ -293,18 +351,30 @@ func runQualificationWorker(t *testing.T, root string) {
 	t.Helper()
 	cfg := qualificationConfig(root)
 	service, err := workerruntime.NewWorkerService(context.Background(), workerruntime.WorkerServiceOptions{
-		Settings: cfg.BacklogV2, WorkerID: "normandy", WorkerEpoch: "worker-1", CoordinatorEpoch: 1,
+		Settings: cfg.BacklogV2, WorkerID: qualificationWorkerID(), WorkerEpoch: "worker-1", CoordinatorEpoch: 1,
 		ProtocolCredentials: qualificationProtocolCredentials{}, DryRun: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	output := os.NewFile(3, "qualification-worker-response")
-	if output == nil {
-		t.Fatal("qualification worker response descriptor is missing")
+	var output io.Writer = os.Stdout
+	var responseFile *os.File
+	if os.Getenv("T3_QUALIFICATION_ROLE") != "remote-worker" {
+		responseFile = os.NewFile(3, "qualification-worker-response")
+		if responseFile == nil {
+			t.Fatal("qualification worker response descriptor is missing")
+		}
+		defer responseFile.Close()
+		output = responseFile
 	}
-	defer output.Close()
 	if err := service.Serve(context.Background(), os.Stdin, output); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func qualificationWorkerID() string {
+	if workerID := strings.TrimSpace(os.Getenv("T3_QUALIFICATION_WORKER")); workerID != "" {
+		return workerID
+	}
+	return "normandy"
 }

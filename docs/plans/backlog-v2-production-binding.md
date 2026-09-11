@@ -65,7 +65,7 @@ do not need to stop for routine design choices.
 - [x] R3 — Restart-safe worker runtime (S16)
 - [x] R4 — Coordinator runtime, submissions, schedules, and quota bridge (S17)
 - [x] R5 — Audit, backup, recovery, and security hardening (S18)
-- [ ] R6 — Deployment qualification and new readiness decision (S19)
+- [x] R6 — Deployment qualification and new readiness decision (S19)
 
 ## Remaining serial stage checklist
 
@@ -231,7 +231,7 @@ Exit gates:
 - [x] Exercise transport loss/reorder/duplicate, process restarts, clock skew,
   stale quota, schedule catch-up, artifact corruption, backup/restore, rollback,
   and legacy/v2 exclusion without external side effects.
-- [ ] Run an observe-only multi-host test and a non-side-effecting canary only
+- [x] Run an observe-only multi-host test and a non-side-effecting canary only
   after explicit authorization identifies the permitted worker hosts and test
   credentials. Never use live state or dispatch a real T3 thread without
   separate explicit authorization.

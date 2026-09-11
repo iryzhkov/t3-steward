@@ -468,10 +468,11 @@ types alone do not enforce them across a network.
 
 - No unleased worker execution: the restart-safe worker candidate enforces
   leases, but it is not installed or connected to a production coordinator.
-- Authenticated coordinator-only mutation across hosts is composed, but has not
-  been qualified against a fleet host.
-- Fleet-wide quota directive delivery is composed behind persisted admission,
-  but has not been qualified against a fleet host.
+- Authenticated coordinator-to-worker exchange across hosts is qualified over
+  strict-host-key SSH with an ephemeral no-effects worker. Mutating production
+  commands remain unexercised until an approved deployment.
+- Fleet-wide quota directive delivery is composed behind persisted admission;
+  S19 exercised only snapshot and an empty-offer canary, not a live directive.
 
 ## Transactions and failure semantics
 
@@ -513,16 +514,17 @@ race evidence.
 
 Evidence limits:
 
-- The complete workflow and worker exchange run only in disposable local child
-  processes and temporary storage. S19's local process topology is qualified,
-  but no fleet connection or remote artifact transfer has been exercised.
+- The complete workflow runs in disposable local child processes and temporary
+  storage. S19 additionally qualifies authenticated snapshot and empty-offer
+  exchange from Normandy to an ephemeral no-effects worker on homelab, but no
+  remote artifact transfer or effecting command was exercised.
 - The production `cmdRun` path composes quota-authoritative planning, worker
-  exchange and delivery, result/checkpoint import, and terminal projection, but
-  has not passed S19 observe-only qualification.
+  exchange and delivery, result/checkpoint import, and terminal projection.
+  Its protocol boundary passed S19 observe-only qualification; full live
+  composition remains a deployment-time closed-admission check.
 - No candidate has touched live state or dispatched a real worker.
-- Native audit, snapshot/restore, and unknown-recovery evidence is limited to
-  disposable local stores until S19 qualification; no live recovery drill has
-  been authorized.
+- Native audit, snapshot/restore, and unknown-recovery evidence remains limited
+  to disposable local stores; no live recovery drill has been authorized.
 
 ## Production-binding sequence
 
@@ -603,10 +605,11 @@ replay tests, parser fuzz seeds, and bounded security tests.
 
 ### P6. Deployment qualification
 
-Run observe-only multi-host integration on disposable roots, then a
-non-side-effecting canary. Repeat unit, integration, migration, fault, race,
-compatibility, security, and rollback gates. Update the deployment-readiness
-decision separately from deployment approval.
+Completed in S19. Observe-only multi-host integration and an empty-offer,
+non-side-effecting canary ran over strict-host-key SSH on disposable roots.
+Unit, integration, migration, fault, race, compatibility, security, and
+rollback gates were repeated. The deployment-readiness decision remains
+separate from deployment approval.
 
 Gate: a new GO report with exact evidence and remaining risks. Host-wide
 deployment still requires explicit user approval.

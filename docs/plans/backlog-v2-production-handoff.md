@@ -35,13 +35,15 @@ Updated: 2026-09-10
   - `go test ./cmd/t3-steward -run 'Test(BacklogV2Production(ProcessTopology|Qualification)|CoordinatorLocalMultiProcessWorkflow)' -count=1 -v`
   - `go test ./internal/backlog ./internal/backlogadmin ./internal/backupsnapshot ./internal/store/sqlite ./internal/workerproto ./internal/workerruntime ./cmd/t3-steward -run 'Test(BacklogV2|Coordinator|Worker|Transport|Protocol|Schedule|Quota|Artifact|Backup|Restore|Legacy|Migration|Recovery)' -count=1`
   - `go test ./internal/backlog ./internal/store/sqlite ./internal/workerruntime ./internal/workerproto ./cmd/t3-steward -run 'Test(.*Restart|.*Replay|.*Lost|.*Duplicate|.*Reorder|.*Clock|.*Stale|.*Corrupt|.*Rollback|.*Exclusion)' -count=1`
+  - Authorized multi-host gate after host authorization:
+    `T3_S19_REMOTE_HOST=homelab T3_S19_REMOTE_COMMAND=/tmp/t3-steward-s19.qWmWm6/worker-exchange go test ./cmd/t3-steward -run '^TestBacklogV2AuthorizedMultiHostCanary$' -count=1 -v`
 
-## S19 authorization handoff
+## S19 completion record
 
 - Local qualification checkpoint commit:
   `2beb3ecaf90abf58221c5afe1d1c187cd0637a4d` (parent and exact S19 start
   `1776bd5546817dd3402866fb149d91346f4c2035`).
-- Completed every qualification step that does not require fleet access. Added
+- Completed local and explicitly authorized multi-host qualification. Added
   `TestBacklogV2ProductionProcessTopology`, which runs the real coordinator
   boundary, local-admin client, and restricted worker service in separate OS
   processes using one disposable root and worker no-external-effects mode.
@@ -50,18 +52,24 @@ Updated: 2026-09-10
   loss/reorder/duplicate and clock skew; process restart/replay/rollback; stale
   quota, schedule catch-up, and legacy/v2 exclusion; artifact corruption,
   backup/restore, and evidence-fenced recovery.
-- The focused topology/aggregate commands, broad focused suites, `go test ./...
-  -count=1`, `go build ./...`, `go vet ./...`, and `go test -race ./...
-  -count=1` pass. `git diff --check` is rerun immediately before the checkpoint
-  commit.
-- All roots and credentials were test-only and disposable. No SSH or T3
-  connection, fleet worker contact, live state access, installation, service
-  restart, configuration change, push, pull request, or deployment occurred.
-- S19 and R6 remain incomplete. No successor is queued.
-- Exact question requiring user authorization: Which worker hosts and test
-  credential references may S19 use for the observe-only multi-host
-  qualification, and do you separately authorize the documented
-  non-side-effecting canary on those hosts?
+- The user explicitly authorized homelab and Normandy. The opt-in
+  `TestBacklogV2AuthorizedMultiHostCanary` used Normandy's development tree as
+  the coordinator/client side and a temporary test binary plus fixed wrapper
+  under `/tmp/t3-steward-s19.qWmWm6` on homelab. Across strict-host-key SSH it
+  authenticated and validated a snapshot, then sent an empty offer set and
+  required zero claims. Two fresh sessions and remote worker processes proved
+  durable sequencing/replay across restart without creating an assignment.
+- The installed homelab `t3-steward 0.10.1` binary and service were not changed
+  or restarted. The temporary local and remote qualification roots were
+  removed and their absence confirmed. No live state was opened, no real T3
+  thread was dispatched, and no installation, configuration change, push,
+  pull request, or deployment occurred.
+- The focused topology/aggregate/multi-host commands, broad focused suites,
+  `go test ./... -count=1`, `go build ./...`, `go vet ./...`, `go test -race
+  ./... -count=1`, and `git diff --check` pass.
+- S19 and R6 are complete. The readiness decision is GO for a separately
+  approved deployment procedure, not approval to deploy. S19 is terminal, so
+  no successor is queued.
 
 ## S18 completion record
 

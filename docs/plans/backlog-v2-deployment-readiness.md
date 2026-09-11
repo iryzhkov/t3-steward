@@ -3,11 +3,14 @@
 Date: 2026-09-10  
 Candidate branch: `feature/backlog-orchestrator`  
 Candidate baseline: `57f0b3269d8341e52170675863fe663566e8bfd3`
+
 S19 local qualification checkpoint: `2beb3ecaf90abf58221c5afe1d1c187cd0637a4d`
+
+S19 authorization checkpoint: `664f2a10b46827d3b549200fab3302c1d18152d9`
 
 ## Decision
 
-**NO-GO for host-wide deployment.**
+**GO for an explicitly approved host-wide deployment.**
 
 S14 binds strict configuration, storage migration, and exclusive closed
 coordinator authority. S15 adds the authenticated worker protocol, immutable
@@ -36,14 +39,16 @@ multi-process workflow and restart/effect-boundary gates pass repeatedly. S18
 now supplies complete production-transition audit, runtime incident projection,
 coherent stopped backup/restore, fenced evidence-bound recovery, and security
 hardening. S19's disposable three-process topology, fault matrix, full suite,
-build, vet, and race gates now pass. The authorization-gated multi-host
-observation and non-side-effecting canary remain required.
+build, vet, and race gates pass. Following explicit authorization for homelab
+and Normandy, a real strict-host-key SSH exchange also passed against an
+ephemeral no-effects worker: authenticated observation and an empty-offer
+canary were repeated across fresh sessions and worker processes.
 
-No binary was installed, no service or live configuration was changed, no live
-state database was opened by development code, no worker was contacted, and no
-workflow was dispatched during S14–S17 development. Worker, admin, and
-submission-transport evidence uses only disposable local roots and child
-processes.
+No binary was installed, no service or live configuration was changed, and no
+live state database was opened by development code. S19 contacted homelab only
+through the authorized ephemeral qualification wrapper; it did not invoke the
+installed steward or dispatch a workflow. All state and credentials were
+disposable, and the temporary local and remote roots were removed afterward.
 
 ## Candidate contents
 
@@ -63,7 +68,8 @@ processes.
   records.
 - A retained coordinator-initiated SSH foundation with strict host checking,
   fixed invocation, bounded streams/timeouts, cancellation, signed responses,
-  and same-request retry, qualified only against local child processes.
+  and same-request retry, qualified against local child processes and an
+  explicitly authorized ephemeral worker process on homelab.
 - Checkpoint-aware throttle pause/resume with hard closed-admission enforcement.
 - Schedule singleton, occurrence idempotency, suppression, misfire, and failure
   hold semantics.
@@ -114,17 +120,14 @@ processes.
 
 ## Deployment blockers
 
-1. Authorize the named worker hosts and test credentials for S19 observe-only
-   multi-host qualification, and separately authorize its non-side-effecting
-   canary. Local disposable qualification and release gates already pass.
-2. Obtain explicit user approval after a GO readiness report before any
-   host-wide installation or deployment.
+1. Obtain explicit user approval before any host-wide installation or
+   deployment. This GO readiness decision is not that approval.
 
 The shipped schema and authority boundary, transport/package contract,
 restart-safe worker endpoint, coordinator runtime, and S18 recovery/security
-boundaries are implemented. S19 local qualification passes, but the authorized
-fleet evidence remains a blocker, not an operator toggle; deployment approval
-alone must not bypass it.
+boundaries are implemented, and S19 local plus authorized multi-host
+qualification passes. The remaining approval gate must not be inferred from
+this technical readiness decision.
 
 ## Operational risks retained
 
@@ -189,21 +192,36 @@ All tests used temporary state, artifact, bundle, and workspace roots. The
 documented workflow bundle is loaded by a repository test so manifest drift
 fails CI.
 
-### S19 local qualification evidence
+### S19 qualification evidence
 
-The authorized local portion of S19 passed on Normandy. A dedicated topology
+The local portion of S19 passed on Normandy. A dedicated topology
 test runs the real coordinator boundary, local-admin client, and restricted
 worker service in three separate OS processes with one temporary configuration,
 state, bundle, artifact, workspace, and worker-journal tree plus test-only
-credentials. The worker uses the production no-external-effects mode; the test
-opens no SSH or T3 connection. A second aggregate gate launches child processes for
-transport loss/reorder/duplicate and clock skew; coordinator/worker restart and
-replay; stale quota and schedule catch-up; artifact corruption; coherent
-backup/restore; transaction rollback; recovery; and legacy/v2 exclusion.
+credentials. The worker uses the production no-external-effects mode; the local
+test opens no SSH or T3 connection. A second aggregate gate launches child
+processes for transport loss/reorder/duplicate and clock skew;
+coordinator/worker restart and replay; stale quota and schedule catch-up;
+artifact corruption; coherent backup/restore; transaction rollback; recovery;
+and legacy/v2 exclusion.
+
+After the user explicitly authorized homelab and Normandy, the opt-in
+`TestBacklogV2AuthorizedMultiHostCanary` ran from Normandy through the real SSH
+transport with strict host-key checking to a fixed ephemeral wrapper on
+homelab. It authenticated a worker snapshot and delivered an empty offer set,
+requiring zero claims. The sequence was repeated using two fresh client
+sessions and remote worker processes while retaining disposable remote replay
+state. This exercised connection, identity, envelope authentication, clock,
+sequence, and restart/replay boundaries without assignment creation, workspace
+preparation, artifact transfer, or T3 dispatch. The installed homelab
+`t3-steward 0.10.1` binary and service were untouched. The temporary homelab
+root `/tmp/t3-steward-s19.qWmWm6` and local build root were removed, and absence
+was confirmed.
 
 Passing commands:
 
 - `go test ./cmd/t3-steward -run 'TestBacklogV2Production(ProcessTopology|Qualification)$' -count=1 -v`;
+- `T3_S19_REMOTE_HOST=homelab T3_S19_REMOTE_COMMAND=/tmp/t3-steward-s19.qWmWm6/worker-exchange go test ./cmd/t3-steward -run '^TestBacklogV2AuthorizedMultiHostCanary$' -count=1 -v`;
 - `go test ./cmd/t3-steward -run 'Test(BacklogV2ProductionQualification|CoordinatorLocalMultiProcessWorkflow)' -count=1 -v`;
 - `go test ./internal/backlog ./internal/backlogadmin ./internal/backupsnapshot ./internal/store/sqlite ./internal/workerproto ./internal/workerruntime ./cmd/t3-steward -run 'Test(BacklogV2|Coordinator|Worker|Transport|Protocol|Schedule|Quota|Artifact|Backup|Restore|Legacy|Migration|Recovery)' -count=1`;
 - `go test ./internal/backlog ./internal/store/sqlite ./internal/workerruntime ./internal/workerproto ./cmd/t3-steward -run 'Test(.*Restart|.*Replay|.*Lost|.*Duplicate|.*Reorder|.*Clock|.*Stale|.*Corrupt|.*Rollback|.*Exclusion)' -count=1`;
@@ -213,11 +231,11 @@ Passing commands:
 - `go test -race ./... -count=1`;
 - `git diff --check`.
 
-No installation, service restart, live configuration/state access, fleet host
-contact, external T3 dispatch, push, or pull request occurred. The remaining
-S19 evidence requires explicit authorization naming the allowed worker hosts
-and qualification credentials; canary dispatch requires separate explicit
-authorization. The readiness decision therefore remains **NO-GO**.
+No installation, service restart, live configuration/state access, external T3
+dispatch, push, or pull request occurred. The only fleet-host contact was the
+explicitly authorized no-effects qualification described above. All S19 gates
+pass, so the readiness decision is **GO**; deployment still requires explicit
+user approval.
 
 ### S18 production-binding evidence
 
@@ -234,8 +252,8 @@ replacement, authorization-before-write, epoch/revision/evidence validation,
 exact and changed replay, and unchanged closed quota admission.
 
 No installation, service restart, live configuration/state access, fleet
-worker contact, external T3 dispatch, push, or pull request occurred. S19
-qualification and its explicit authorization boundary remain outstanding.
+worker contact, external T3 dispatch, push, or pull request occurred during
+S18. S19 subsequently completed under its explicit authorization boundary.
 
 ### S14 production-binding evidence
 

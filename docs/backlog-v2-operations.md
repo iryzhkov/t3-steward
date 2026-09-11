@@ -80,10 +80,11 @@ discovery, bounded raw fetch, import, and post-import acknowledgement for both
 results and checkpoints. Checkpoint publication additionally requires an exact
 acknowledged throttle projection. The existing Markdown
 `t3-backlog` runner remains the deployed production path. The disposable S19
-process-topology, fault, full, and race gates pass, but no multi-host observation
-or canary has been authorized. Do not deploy backlog-v2 as a fleet coordinator
-until that qualification and separate deployment approval are complete. The
-detailed decision is in
+process-topology, fault, full, and race gates pass. An explicitly authorized
+Normandy-to-homelab SSH qualification also passed using an ephemeral no-effects
+worker: an authenticated snapshot and empty-offer canary were repeated across
+fresh sessions and worker processes. This evidence supports a GO readiness
+decision, but it is not deployment approval. The detailed decision is in
 [the deployment-readiness report](plans/backlog-v2-deployment-readiness.md);
 the wire and worker contract is in
 [the worker protocol](backlog-v2-worker-protocol.md).
@@ -380,9 +381,9 @@ resume intent needed to prevent duplicate execution.
 Host-wide deployment requires explicit user approval and all blockers in the
 readiness report resolved.
 
-The S19 local no-effects gate is not permission to perform steps 6–9. The
-operator must first name the permitted worker hosts and qualification
-credentials; canary dispatch needs separate explicit authorization.
+The completed S19 no-effects qualification is not permission to perform steps
+3–10. It installed nothing, opened no live state, and dispatched no T3 thread.
+The operator must obtain explicit user approval for host-wide deployment.
 
 1. Freeze submissions and close coordinator admission, including ordinary admin
    starts.
