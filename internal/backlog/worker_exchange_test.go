@@ -222,6 +222,62 @@ func TestFleetCoordinatorSkipsAutomaticThrottleForForcedAttempt(t *testing.T) {
 	}
 }
 
+func TestFleetCoordinatorIgnoresHistoricalReleasedAssignmentForThrottle(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	snapshot := coordinatorSnapshot(4)
+	snapshot.Assignments = []domain.WorkerAssignmentObservation{{
+		AssignmentID: "assignment-released", AssignmentEpoch: 5, State: domain.AssignmentUnknown,
+		Control: domain.ControlStopped, WorkspacePath: "/tmp/historical", ObservedAt: coordinatorTestTime,
+	}}
+	attempt := domain.Attempt{
+		ID: "attempt-terminal", WorkflowRunID: "run-1", TaskID: "task-1",
+		Progress: domain.ProgressSkipped, Control: domain.ControlStopped, Revision: 11,
+		UpdatedAt: coordinatorTestTime,
+	}
+	assignment := domain.Assignment{
+		ID: "assignment-released", AttemptID: attempt.ID, WorkerID: snapshot.WorkerID,
+		WorkerEpoch: snapshot.WorkerEpoch,
+		Route:       domain.ProviderRoute{WorkerID: snapshot.WorkerID, ProviderInstanceID: "codex", Model: "gpt", QuotaPoolID: "pool"},
+		State:       domain.AssignmentReleased, Epoch: 5, DispatchToken: "dispatch-old",
+		ThreadID: "thread-old", CreatedAt: coordinatorTestTime, UpdatedAt: coordinatorTestTime,
+	}
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
+		Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	directive := domain.ThrottleDirective{
+		ID: "directive-closed", QuotaPoolID: "pool", AdmissionRevision: 1,
+		Severity: domain.ThrottleStop, Reason: "quota closed", CreatedAt: coordinatorTestTime,
+	}
+	transport := &exchangeTransport{}
+	report := WorkerExchangeReport{}
+	err = (FleetCoordinator{}).reconcileWorkerThrottle(
+		ctx, store, transport, snapshot, []domain.ThrottleDirective{directive},
+		[]domain.QuotaPool{{ID: "pool", Admission: domain.AdmissionClosed, MaxConcurrent: 1}},
+		coordinatorTestTime, &report,
+	)
+	if err != nil {
+		t.Fatalf("historical assignment throttle reconciliation: %v", err)
+	}
+	if len(transport.throttles) != 0 {
+		t.Fatalf("historical assignment received throttle: %#v", transport.throttles)
+	}
+	records, err := store.LoadThrottleAttemptRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("historical assignment throttle records = %#v", records)
+	}
+}
+
 type testOfferBuilder struct{}
 
 func (testOfferBuilder) BuildAssignmentOffer(_ context.Context, assignment domain.Assignment, expiresAt time.Time) (workerproto.AssignmentOffer, error) {
