@@ -190,6 +190,54 @@ func TestPlanWorkerStateTransitionsReconcilesObservationsAndAcknowledgements(t *
 	}
 }
 
+func TestPlanWorkerStateTransitionsPreservesReservedThreadBeforeDispatch(t *testing.T) {
+	now := coordinatorTestTime.Add(10 * time.Minute)
+	snapshot := coordinatorSnapshot(2)
+	snapshot.ObservedAt = now
+	snapshot.ValidUntil = now.Add(time.Hour)
+
+	assignment := domain.Assignment{
+		ID:             "assignment-1",
+		AttemptID:      "attempt-1",
+		WorkerID:       snapshot.WorkerID,
+		WorkerEpoch:    snapshot.WorkerEpoch,
+		State:          domain.AssignmentClaimed,
+		Epoch:          1,
+		LeaseToken:     "lease",
+		DispatchToken:  "dispatch",
+		ThreadID:       "thread-reserved",
+		LeaseExpiresAt: now.Add(time.Hour),
+	}
+	attempt := domain.Attempt{
+		ID:           "attempt-1",
+		AssignmentID: assignment.ID,
+		Progress:     domain.ProgressActive,
+		Control:      domain.ControlUnassigned,
+		Revision:     3,
+	}
+	snapshot.Assignments = []domain.WorkerAssignmentObservation{{
+		AssignmentID:    assignment.ID,
+		AssignmentEpoch: assignment.Epoch,
+		State:           domain.AssignmentClaimed,
+		Control:         domain.ControlPreparing,
+		ObservedAt:      now,
+	}}
+
+	transitions, err := PlanWorkerStateTransitions(sqlite.CoordinatorRecords{
+		Assignments: []domain.Assignment{assignment},
+		Attempts:    []domain.Attempt{attempt},
+	}, snapshot, nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transitions) != 1 {
+		t.Fatalf("transitions = %d, want 1", len(transitions))
+	}
+	if got := transitions[0].Assignment.ThreadID; got != "thread-reserved" {
+		t.Fatalf("thread id = %q, want reserved thread", got)
+	}
+}
+
 func TestPlanWorkerStateTransitionsRejectsStaleAndMalformedSnapshots(t *testing.T) {
 	assignment := domain.Assignment{
 		ID: "assignment-1", AttemptID: "attempt-1", WorkerID: "worker-a",

@@ -129,7 +129,9 @@ func planWorkerStateTransition(
 			nextAssignment := assignment
 			nextAssignment.State = domain.AssignmentClaimed
 			nextAssignment.WorkerEpoch = snapshot.WorkerEpoch
-			nextAssignment.ThreadID = observation.ThreadID
+			if observation.ThreadID != "" {
+				nextAssignment.ThreadID = observation.ThreadID
+			}
 			nextAssignment.UpdatedAt = now
 			nextAttempt := attempt
 			nextAttempt.AssignmentID = assignment.ID
