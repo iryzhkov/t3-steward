@@ -156,7 +156,7 @@ func validateWorkerStateTransition(transition domain.WorkerStateTransition) erro
 	}
 	if expected.ID == "" || expected.AttemptID == "" || expected.WorkerID != transition.WorkerID ||
 		expected.Epoch < 1 ||
-		(expected.State != domain.AssignmentClaimed && expected.State != domain.AssignmentUnknown) {
+		(expected.State != domain.AssignmentOffered && expected.State != domain.AssignmentClaimed && expected.State != domain.AssignmentUnknown) {
 		return fmt.Errorf("%w: invalid expected assignment", ErrStaleWorkerStateTransition)
 	}
 	if next.ID != expected.ID || next.AttemptID != expected.AttemptID ||
@@ -168,6 +168,9 @@ func validateWorkerStateTransition(transition domain.WorkerStateTransition) erro
 	case domain.AssignmentClaimed, domain.AssignmentReleased, domain.AssignmentCompleted:
 	default:
 		return fmt.Errorf("%w: invalid next assignment state %q", ErrStaleWorkerStateTransition, next.State)
+	}
+	if expected.State == domain.AssignmentOffered && next.State != domain.AssignmentReleased {
+		return fmt.Errorf("%w: offered assignment must be released", ErrStaleWorkerStateTransition)
 	}
 	if next.State == domain.AssignmentClaimed && next.WorkerEpoch != transition.WorkerEpoch {
 		return fmt.Errorf("%w: recovered assignment is not bound to current worker epoch", ErrStaleWorkerStateTransition)

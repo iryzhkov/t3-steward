@@ -12,14 +12,15 @@ import (
 )
 
 const (
-	workerStateObservedPresent   = "worker-observed-present"
-	workerStateObservedStopped   = "worker-observed-stopped"
-	workerStateObservedCompleted = "worker-observed-completed"
-	workerStateObservedAbsent    = "worker-observed-absent"
-	workerStateCommandRejected   = "worker-command-rejected"
-	workerStateDispatchAccepted  = "dispatch-accepted"
-	workerStateStopAccepted      = "stop-accepted"
-	workerStateCollectAccepted   = "collect-accepted"
+	workerStateObservedPresent      = "worker-observed-present"
+	workerStateObservedStopped      = "worker-observed-stopped"
+	workerStateObservedCompleted    = "worker-observed-completed"
+	workerStateObservedAbsent       = "worker-observed-absent"
+	workerStateOfferEpochSuperseded = "worker-offer-epoch-superseded"
+	workerStateCommandRejected      = "worker-command-rejected"
+	workerStateDispatchAccepted     = "dispatch-accepted"
+	workerStateStopAccepted         = "stop-accepted"
+	workerStateCollectAccepted      = "collect-accepted"
 )
 
 // PlanWorkerStateTransitions deterministically reconciles current worker evidence
@@ -65,7 +66,7 @@ func PlanWorkerStateTransitions(
 	var transitions []domain.WorkerStateTransition
 	for _, assignment := range assignments {
 		if assignment.WorkerID != snapshot.WorkerID ||
-			(assignment.State != domain.AssignmentClaimed && assignment.State != domain.AssignmentUnknown) {
+			(assignment.State != domain.AssignmentOffered && assignment.State != domain.AssignmentClaimed && assignment.State != domain.AssignmentUnknown) {
 			continue
 		}
 		attempt, ok := attempts[assignment.AttemptID]
@@ -107,6 +108,12 @@ func planWorkerStateTransition(
 	commands map[string]domain.WorkerCommandRecord,
 	now time.Time,
 ) (domain.Assignment, domain.Attempt, string, bool, error) {
+	if assignment.State == domain.AssignmentOffered {
+		if assignment.WorkerEpoch != snapshot.WorkerEpoch {
+			return releasedWorkerState(assignment, attempt, now, workerStateOfferEpochSuperseded)
+		}
+		return assignment, attempt, "", false, nil
+	}
 	if observed {
 		if observation.AssignmentID != assignment.ID || observation.AssignmentEpoch != assignment.Epoch {
 			return assignment, attempt, "", false, fmt.Errorf("assignment observation identity mismatch for %q", assignment.ID)

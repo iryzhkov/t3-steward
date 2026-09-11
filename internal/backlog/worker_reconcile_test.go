@@ -110,6 +110,24 @@ func TestPlanWorkerStateTransitionsReconcilesObservationsAndAcknowledgements(t *
 			wantReason: workerStateObservedAbsent, wantCount: 1,
 		},
 		{
+			name: "worker process epoch change safely releases an unclaimed offer",
+			assignment: func() domain.Assignment {
+				value := baseAssignment
+				value.State = domain.AssignmentOffered
+				value.WorkerEpoch = "old-process"
+				return value
+			}(),
+			attempt: baseAttempt,
+			snapshot: func() domain.WorkerSnapshot {
+				value := baseSnapshot
+				value.WorkerEpoch = "new-process"
+				return value
+			}(),
+			wantState: domain.AssignmentReleased, wantControl: domain.ControlUnassigned,
+			wantProgress: domain.ProgressReady, wantWorkerEpoch: "old-process",
+			wantReason: workerStateOfferEpochSuperseded, wantCount: 1,
+		},
+		{
 			name:       "same epoch omission does not release claimed assignment",
 			assignment: baseAssignment, attempt: baseAttempt, snapshot: baseSnapshot,
 			wantCount: 0,
