@@ -25,7 +25,7 @@ func WorkerAdmissionPolicyFromQuotaReport(report QuotaBridgeReport) WorkerAdmiss
 
 func (p WorkerAdmissionPolicy) AllowsNewWork(quotaPoolID string) bool {
 	_, allowed := p.OpenQuotaPools[quotaPoolID]
-	return quotaPoolID != "" && allowed
+	return quotaPoolID != "" && (allowed || unmeteredQuotaPoolID(quotaPoolID))
 }
 
 func forcedAssignmentIDs(assignments []domain.Assignment, attempts []domain.Attempt) map[string]struct{} {

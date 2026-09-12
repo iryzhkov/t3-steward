@@ -141,7 +141,7 @@ func (session *quotaAdmissionSession) Evaluate(candidate PlanningCandidate) []Pl
 	// They still require a healthy provider, an available model, a route
 	// estimate, concurrency headroom, and all ordinary task-time checks, but do
 	// not require provider quota telemetry or consume forecast reservations.
-	if candidate.Route != nil && strings.HasSuffix(candidate.Route.QuotaPoolID, "-free") {
+	if candidate.Route != nil && unmeteredQuotaPoolID(candidate.Route.QuotaPoolID) {
 		return blockers
 	}
 

@@ -363,6 +363,10 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
+func unmeteredQuotaPoolID(quotaPoolID string) bool {
+	return strings.HasSuffix(quotaPoolID, "-free")
+}
+
 func cloneRouteWorker(worker domain.WorkerInventory) domain.WorkerInventory {
 	worker.Capabilities = append([]string(nil), worker.Capabilities...)
 	worker.Projects = append([]domain.WorkerProjectInventory(nil), worker.Projects...)
