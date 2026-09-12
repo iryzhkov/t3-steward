@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -338,10 +337,6 @@ func nextWorkerCommand(
 	}
 	prepare, prepared := has(domain.WorkerCommandPrepare)
 	if !prepared {
-		return domain.WorkerCommandPrepare, true
-	}
-	if prepare.Acknowledgement != nil && !prepare.Acknowledgement.Accepted &&
-		strings.Contains(prepare.Acknowledgement.Detail, "stale worker command identity or sequence") {
 		return domain.WorkerCommandPrepare, true
 	}
 	if prepare.Acknowledgement == nil || !prepare.Acknowledgement.Accepted {
