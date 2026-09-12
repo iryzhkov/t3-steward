@@ -276,14 +276,13 @@ func validateDeclaredResultOutputs(task domain.Task, outputs map[string]string) 
 
 func evaluateResultEvidence(task domain.Task, artifacts []domain.Artifact, payloads [][]byte, missingOutputs []string) (bool, string, domain.Artifact, error) {
 	var summary domain.Artifact
+	var summaryDone bool
 	reports := make(map[string][]byte, len(task.Verification))
 	for index, artifact := range artifacts {
 		switch artifact.Kind {
 		case domain.ArtifactSummary:
-			if !hasBacklogDoneMarker(string(payloads[index])) {
-				return false, "", summary, errors.New("result import final summary has no done marker")
-			}
 			summary = artifact
+			summaryDone = hasBacklogDoneMarker(string(payloads[index]))
 		case domain.ArtifactVerification:
 			if artifact.MediaType != "application/json" {
 				return false, "", summary, fmt.Errorf("result import verification %q has media type %q", artifact.Name, artifact.MediaType)
@@ -296,6 +295,9 @@ func evaluateResultEvidence(task domain.Task, artifacts []domain.Artifact, paylo
 		}
 	}
 	failures := make([]string, 0, 2)
+	if !summaryDone {
+		failures = append(failures, "final summary has no done marker")
+	}
 	for index, command := range task.Verification {
 		name := fmt.Sprintf("verification/%03d.json", index+1)
 		raw, exists := reports[name]

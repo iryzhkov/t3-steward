@@ -64,8 +64,9 @@ func TestCoordinatorResultImporterRejectsInvalidEvidenceBeforePublication(t *tes
 	ctx := context.Background()
 	now := coordinatorTestTime
 	for _, test := range []struct {
-		name   string
-		mutate func(*workerproto.ArtifactUploadResponse)
+		name            string
+		mutate          func(*workerproto.ArtifactUploadResponse)
+		terminalFailure bool
 	}{
 		{name: "custody checksum", mutate: func(response *workerproto.ArtifactUploadResponse) { response.Custody[0].RecordSHA256 = "bad" }},
 		{name: "wrong output media type", mutate: func(response *workerproto.ArtifactUploadResponse) {
@@ -77,7 +78,7 @@ func TestCoordinatorResultImporterRejectsInvalidEvidenceBeforePublication(t *tes
 			response.Manifest.TotalBytes += object.Size - response.Manifest.Objects[1].Size
 			response.Manifest.Objects[1] = object
 			response.Custody = resultCustody(t, response.Manifest, "coordinator")
-		}},
+		}, terminalFailure: true},
 		{name: "malformed thread archive", mutate: func(response *workerproto.ArtifactUploadResponse) {
 			object := resultObject("thread-archive-attempt-1", "results/thread.json", "log", "application/json", []byte("not json"))
 			response.Manifest.TotalBytes += object.Size - response.Manifest.Objects[2].Size
@@ -110,7 +111,15 @@ func TestCoordinatorResultImporterRejectsInvalidEvidenceBeforePublication(t *tes
 				data["thread-archive-attempt-1"] = []byte("not json")
 			}
 			importer := CoordinatorResultImporter{CoordinatorID: "coordinator", CoordinatorEpoch: 1, Store: store, Artifacts: CoordinatorArtifactStore{Root: filepath.Join(t.TempDir(), "artifacts"), Catalog: store}, MaxArtifactBytes: 1024, MaxTotalBytes: 4096, Now: func() time.Time { return now.Add(time.Minute) }}
-			if _, err := importer.Import(ctx, response, data); err == nil {
+			report, importErr := importer.Import(ctx, response, data)
+			if test.terminalFailure {
+				if importErr != nil || len(report.Transition) != 1 || report.Transition[0].Attempt.Progress != domain.ProgressFailed ||
+					!strings.Contains(report.Transition[0].Attempt.Failure, "no done marker") {
+					t.Fatalf("deterministic failure report = %#v, err = %v", report, importErr)
+				}
+				return
+			}
+			if importErr == nil {
 				t.Fatal("invalid evidence was accepted")
 			}
 			records, err := store.LoadCoordinatorRecords(ctx)
