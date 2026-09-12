@@ -45,6 +45,7 @@ type Filter struct {
 }
 
 type Query struct {
+	IncludeSink   bool      `json:"includeSink,omitempty"`
 	Version       string    `json:"version"`
 	Kind          QueryKind `json:"kind"`
 	Principal     Principal `json:"principal"`
@@ -155,12 +156,13 @@ type WorkflowDetail struct {
 }
 
 type TaskDetail struct {
-	Task          domain.Task     `json:"task"`
-	Attempt       *domain.Attempt `json:"attempt,omitempty"`
-	Assignment    *Assignment     `json:"assignment,omitempty"`
-	ThreadURL     string          `json:"threadUrl,omitempty"`
-	Artifacts     []Artifact      `json:"artifacts,omitempty"`
-	ResourceLocks []string        `json:"resourceLocks,omitempty"`
+	Sink          *domain.SinkTask `json:"sink,omitempty"`
+	Task          domain.Task      `json:"task"`
+	Attempt       *domain.Attempt  `json:"attempt,omitempty"`
+	Assignment    *Assignment      `json:"assignment,omitempty"`
+	ThreadURL     string           `json:"threadUrl,omitempty"`
+	Artifacts     []Artifact       `json:"artifacts,omitempty"`
+	ResourceLocks []string         `json:"resourceLocks,omitempty"`
 }
 
 type Assignment struct {
@@ -187,6 +189,7 @@ type Graph struct {
 }
 
 type GraphNode struct {
+	Sink      *domain.SinkTask     `json:"sink,omitempty"`
 	TaskID    string               `json:"taskId"`
 	Name      string               `json:"name"`
 	Progress  domain.ProgressState `json:"progress"`

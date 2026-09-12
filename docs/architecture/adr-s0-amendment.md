@@ -1,8 +1,8 @@
 # S0 ADR: graph revisions and amendment authority
 
-Status: recommendation awaiting user decision; S3 owns implementation.
+Status: accepted by the user on 2026-09-12; S3 owns implementation.
 
-## Recommendation
+## Decision
 
 Use a live coordinator amendment API behind the existing authenticated admin
 socket, with immutable graph revision records and revision-fenced commands.
@@ -10,8 +10,9 @@ Keep run/task identity stable; keep submission bytes and prior revisions immutab
 A resubmission with supersession remains useful for cloning but is a poor default
 for adding a node to a run that another workflow already references.
 
-The user decides between this API and bundle resubmission with supersession.
-S0 implements neither. The handoff ends with that exact question.
+The user selected live coordinator amendments with immutable graph revisions after
+S0. S1 records that decision; S3 implements the API. Supersession is not the
+amendment mechanism.
 
 ## Proposed contract
 
@@ -62,4 +63,4 @@ records provenance. It never guesses that earlier external effects are safe to r
 Concurrent amendments, stale revision, replay after lost response, cycle rejection,
 assignment/amendment races, input publication rollback, terminal edit refusal,
 sink rebinding and clone identity tests. `graph --dot` and `diagnose <run>`
-must report the graph revision used. User choice is required before implementation.
+must report the graph revision used. The mechanism is approved; implementation remains in S3.

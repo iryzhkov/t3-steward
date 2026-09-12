@@ -36,7 +36,8 @@ Unavailable evidence is uncertainty, never authority to create a different threa
 A quota error currently has excessive scope: `QuotaBridge.ReconcileState` can
 fail on one inconsistent attempt record, and `coordinatorBoundaryCycle.tick`
 then defers all planning and pending admin execution. Worker observation and
-some stop/collection paths remain available. S6 will isolate buckets and attempts;
+some stop/collection paths remain available. S1 sink projection runs independently
+of quota reconciliation. S6 will isolate buckets and attempts;
 that isolation is not yet a current production guarantee.
 
 ## State and ownership
@@ -130,7 +131,8 @@ manifests, laptop convergence and dev-fleet/omarchy-setup changes remain Track U
 | --- | --- |
 | Manifest validation / bundle ingestion | Valid DAG and contained immutable inputs; filesystem/SQL publication uses compensation |
 | SubmissionService | Durable submission identity and replay; accepted-record replay currently does not revalidate missing bundle custody |
-| DAGExecution | Deterministic task progress, retry, skip/cancel and dependency projection; no implicit sink yet |
+| DAGExecution | Deterministic task progress, retry, skip/cancel and dependency projection; final sink prevents reopening |
+| BindRunSink / ProjectRunSink / CommitWorkflowProjection | Run-local sink, no attempt; aggregate after terminal predecessors and execution containment, fenced transaction and one final audit event |
 | BuildPlan / PlanAndCommit | Pure plan plus fenced assignment commit; current quota reconstruction can prevent the plan |
 | ClaimAssignment / worker reconciliation | Epoch/lease binding and reconciliation; current recovery code can reclaim an observed live expired assignment |
 | Worker command journal / T3 adapter | Durable effect identity and observe-before-create; no universal exactly-once external effect guarantee |
@@ -149,9 +151,9 @@ around that path. It must not become authority to create a replacement execution
 
 | Primitive | Decision and stage |
 | --- | --- |
-| Terminal sink | [Sink ADR](adr-s0-sink.md); coordinator-only aggregation, no attempt; S1 |
+| Terminal sink | [Sink ADR](adr-s0-sink.md); coordinator-only aggregation, no attempt; implemented in S1 |
 | Node waits / cross-run edges | [Node-wait ADR](adr-s0-node-wait.md); durable target/outbox, one intent, observable delivery; S2 |
-| Graph revisions/amendment | [Amendment ADR](adr-s0-amendment.md); recommend live API, user decision pending; S3 |
+| Graph revisions/amendment | [Amendment ADR](adr-s0-amendment.md); live API approved by the user on 2026-09-12; S3 |
 | Worker enrollment/catalog/transport | [Worker ADR](adr-s0-worker-enrollment.md); one effective catalog, persistent workers; S4 |
 | Bucket quota / bounded forecast / measured costs | [Quota ADR](adr-s0-quota.md); S5 fixtures, S6 implementation and requalification |
 | Bounded replay persistence | [Replay ADR](adr-s0-replay-store.md); implemented and tested in S0 |

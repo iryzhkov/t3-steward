@@ -176,6 +176,9 @@ func planAdminCommand(records sqlite.CoordinatorRecords, workers []domain.Worker
 }
 
 func planAttemptCommand(records sqlite.CoordinatorRecords, workers []domain.WorkerSnapshot, admissions []domain.QuotaAdmissionRecord, command domain.AdminCommand, attempt domain.Attempt, task domain.Task, run domain.WorkflowRun, now time.Time) (*domain.Attempt, *domain.Attempt, *domain.WorkflowRun, error) {
+	if run.Sink != nil && run.Sink.Progress.Terminal() {
+		return nil, nil, nil, errors.New("run sink is final; submit a new workflow")
+	}
 	next := attempt
 	next.Revision++
 	next.UpdatedAt = now

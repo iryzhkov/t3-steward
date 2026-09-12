@@ -268,13 +268,32 @@ tasks:
 		t.Fatal(err)
 	}
 	state = execution.Snapshot()
-	if state.Run.Progress != domain.ProgressSucceeded {
-		t.Fatalf("workflow completion = %#v", state.Run)
+	if state.Run.Progress.Terminal() {
+		t.Fatalf("workflow settled before assignment containment: %#v", state.Run)
 	}
 	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
 		WorkflowRuns: []domain.WorkflowRun{state.Run}, Attempts: state.Attempts, Artifacts: succeeded.Artifacts,
 	}); err != nil {
 		t.Fatalf("persist workflow completion: %v", err)
+	}
+
+	// The test transport has finished all execution; persist containment before
+	// publishing the coordinator-only terminal sink.
+	for i := range records.Assignments {
+		records.Assignments[i].State = domain.AssignmentCompleted
+	}
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Assignments: records.Assignments}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProjectWorkflowRuns(ctx, store, now.Add(11*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.WorkflowRuns[0].Progress != domain.ProgressSucceeded || settled.WorkflowRuns[0].Sink.Progress != domain.ProgressSucceeded {
+		t.Fatalf("workflow completion = %#v", settled.WorkflowRuns[0])
 	}
 
 	schedule := domain.Schedule{

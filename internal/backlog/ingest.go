@@ -115,7 +115,10 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 	}
 
 	now := i.now()
-	records := i.buildRecords(manifest, workflowID, runID, inputPaths, files, now)
+	records, err := i.buildRecords(manifest, workflowID, runID, inputPaths, files, now)
+	if err != nil {
+		return IngestedBundle{}, fmt.Errorf("ingest sink: %w", err)
+	}
 	finalDir := filepath.Join(workflowsRoot, workflowID)
 	if err := os.Rename(stageDir, finalDir); err != nil {
 		return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: publish files: %w", err)
@@ -183,7 +186,7 @@ func openIngestionBundle(bundleDir string) (string, *os.Root, Manifest, []byte, 
 	return root, sourceRoot, manifest, raw, nil
 }
 
-func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string, inputPaths []string, files map[string]ingestedFile, now time.Time) sqlite.CoordinatorRecords {
+func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string, inputPaths []string, files map[string]ingestedFile, now time.Time) (sqlite.CoordinatorRecords, error) {
 	records := sqlite.CoordinatorRecords{}
 	manifestArtifact := i.artifact(runID, "", files["workflow.yaml"], now)
 	records.Artifacts = append(records.Artifacts, manifestArtifact)
@@ -266,7 +269,12 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 			Progress: progress, Control: domain.ControlUnassigned, UpdatedAt: now,
 		})
 	}
-	return records
+	run, err := domain.BindRunSink(records.WorkflowRuns[0], records.Tasks)
+	if err != nil {
+		return sqlite.CoordinatorRecords{}, err
+	}
+	records.WorkflowRuns[0] = run
+	return records, nil
 }
 
 func (i BundleIngester) artifact(runID, taskID string, file ingestedFile, now time.Time) domain.Artifact {

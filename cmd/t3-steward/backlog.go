@@ -29,10 +29,10 @@ Stopped coordinator backup commands:
   backup restore <snapshot-directory>
 
 Coordinator read commands:
-  status [--json]
+  status [--include-sink] [--json]
   list [--project P] [--schedule S] [--progress STATES] [--class CLASS]
-       [--worker W] [--quota-pool Q] [--json]
-  show <workflow-run> [--json]
+       [--worker W] [--quota-pool Q] [--include-sink] [--json]
+  show <workflow-run> [--include-sink] [--json]
   graph <workflow-run> [--json]
   task show <workflow-run>/<task> [--json]
   events <workflow-run> [--json]

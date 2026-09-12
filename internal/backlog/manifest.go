@@ -261,8 +261,8 @@ func validateManifest(manifest Manifest) error {
 	if manifest.Environment.Scope != EnvironmentScopeTask && manifest.Environment.Scope != EnvironmentScopeWorkflow {
 		return fmt.Errorf("invalid environment.scope %q", manifest.Environment.Scope)
 	}
-	if len(manifest.Tasks) == 0 {
-		return errors.New("at least one task is required")
+	if manifest.Tasks == nil {
+		return errors.New("tasks is required (use {} for an empty workflow)")
 	}
 	if err := validatePlacement("workflow placement", manifest.Placement); err != nil {
 		return err

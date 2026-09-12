@@ -180,11 +180,6 @@ func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeR
 	if _, err := backlog.RepairCoordinatorState(ctx, p.store, now); err != nil {
 		slog.Warn("coordinator state repair failed; planning continues", "error", err)
 	}
-	if report, err := backlog.ProjectWorkflowRuns(ctx, p.store, now); err != nil {
-		slog.Warn("workflow run projection failed; planning continues", "error", err)
-	} else if len(report.Runs) != 0 || len(report.Attempts) != 0 {
-		slog.Info("workflow run projection published", "runs", len(report.Runs), "attempts", len(report.Attempts))
-	}
 	records, err := p.store.LoadCoordinatorRecords(ctx)
 	if err != nil {
 		return backlog.AssignmentPlanningReport{}, fmt.Errorf("load planning coordinator snapshot: %w", err)
@@ -267,13 +262,14 @@ type coordinatorWorkerTicker interface {
 }
 
 type coordinatorBoundaryCycle struct {
-	quota     coordinatorQuotaTicker
-	schedules coordinatorScheduleTicker
-	planning  coordinatorPlanningTicker
-	admin     coordinatorAdminExecutor
-	legacy    coordinatorLegacyTicker
-	workers   coordinatorWorkerTicker
-	logger    *slog.Logger
+	projection backlog.ProjectionStore
+	quota      coordinatorQuotaTicker
+	schedules  coordinatorScheduleTicker
+	planning   coordinatorPlanningTicker
+	admin      coordinatorAdminExecutor
+	legacy     coordinatorLegacyTicker
+	workers    coordinatorWorkerTicker
+	logger     *slog.Logger
 }
 
 func (c coordinatorBoundaryCycle) Tick(ctx context.Context) {
@@ -288,6 +284,11 @@ func (c coordinatorBoundaryCycle) TickWithWorkers(ctx context.Context) {
 }
 
 func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool) {
+	if c.projection != nil {
+		if _, err := backlog.ProjectWorkflowRuns(ctx, c.projection, time.Now().UTC()); err != nil {
+			c.logger.Error("workflow run projection failed", "error", err)
+		}
+	}
 	quotaHealthy := true
 	quotaReport, err := c.quota.Tick(ctx)
 	if err != nil {
@@ -417,6 +418,7 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 		return err
 	}
 	cycle := coordinatorBoundaryCycle{
+		projection: store,
 		quota: coordinatorQuotaReconciler{store: store, bridge: backlog.QuotaBridge{
 			Store: store, Pools: coordinatorQuotaPoolBindings(cfg),
 			MaxObservationAge:       cfg.BacklogV2.Freshness.QuotaMaxAge.D(),

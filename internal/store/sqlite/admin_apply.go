@@ -96,6 +96,17 @@ func (s *Store) ApplyAdminCommand(ctx context.Context, application domain.AdminC
 	if err != nil {
 		return domain.AdminCommandDecision{}, err
 	}
+	if application.State == domain.AdminCommandApplied && command.TargetType == domain.AdminTargetAttempt {
+		snapshot, loadErr := loadWorkflowProjectionTx(ctx, tx, contextFields.WorkflowRunID)
+		if loadErr != nil {
+			return domain.AdminCommandDecision{}, loadErr
+		}
+		if snapshot.Run.Sink != nil && snapshot.Run.Sink.Progress.Terminal() {
+			application.State = domain.AdminCommandRejected
+			application.Failure = "run sink is final; submit a new workflow"
+			application.Attempt, application.RelatedAttempts, application.NewAttempt, application.WorkflowRun = nil, nil, nil, nil
+		}
+	}
 	currentTarget := (*domain.AdminTargetSnapshot)(nil)
 	expectedTarget := application.ExpectedTargetRevision
 	if expectedTarget != command.ExpectedRevision || target.Revision != expectedTarget {

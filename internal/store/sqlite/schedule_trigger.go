@@ -102,6 +102,14 @@ func commitScheduleTriggerTx(ctx context.Context, tx *sql.Tx, request domain.Sch
 			TriggerID: trigger.ID, Progress: domain.ProgressQueued, Revision: 1,
 			CreatedAt: request.ObservedAt.UTC(), UpdatedAt: request.ObservedAt.UTC(),
 		}
+		tasks, err := loadWorkflowTasksTx(ctx, tx, run.WorkflowID)
+		if err != nil {
+			return domain.ScheduleTriggerResult{}, err
+		}
+		run, err = domain.BindRunSink(run, tasks)
+		if err != nil {
+			return domain.ScheduleTriggerResult{}, err
+		}
 		workflowRun = &run
 	}
 	if err := insertScheduleTrigger(ctx, tx, trigger); err != nil {

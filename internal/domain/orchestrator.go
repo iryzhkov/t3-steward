@@ -102,6 +102,8 @@ type Workflow struct {
 type WorkflowRun struct {
 	ID               string        `json:"id"`
 	WorkflowID       string        `json:"workflowId"`
+	GraphRevision    int64         `json:"graphRevision,omitempty"`
+	Sink             *SinkTask     `json:"sink,omitempty"`
 	ScheduleID       string        `json:"scheduleId,omitempty"`
 	TriggerID        string        `json:"triggerId,omitempty"`
 	Progress         ProgressState `json:"progress"`

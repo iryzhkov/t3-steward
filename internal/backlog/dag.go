@@ -116,6 +116,9 @@ func (e *DAGExecution) CompleteAttempt(attemptID string, result CompletionResult
 // CancelTask cancels a task's unfinished current attempt and every unfinished
 // descendant. Successful tasks and their artifacts are preserved.
 func (e *DAGExecution) CancelTask(taskID string, now time.Time) error {
+	if e.state.Run.Sink != nil && e.state.Run.Sink.Progress.Terminal() {
+		return fmt.Errorf("run sink is final; submit a new workflow")
+	}
 	taskIndex, ok := e.taskByID[taskID]
 	if !ok {
 		return fmt.Errorf("cancel task %q: unknown task", taskID)
@@ -145,6 +148,9 @@ func (e *DAGExecution) CancelTask(taskID string, now time.Time) error {
 // SkipTask marks one unfinished task as intentionally skipped without releasing
 // dependent tasks.
 func (e *DAGExecution) SkipTask(taskID string, now time.Time) error {
+	if e.state.Run.Sink != nil && e.state.Run.Sink.Progress.Terminal() {
+		return fmt.Errorf("run sink is final; submit a new workflow")
+	}
 	taskIndex, ok := e.taskByID[taskID]
 	if !ok {
 		return fmt.Errorf("skip task %q: unknown task", taskID)
@@ -165,6 +171,9 @@ func (e *DAGExecution) SkipTask(taskID string, now time.Time) error {
 // RetryTask creates a new unassigned attempt for a failed or cancelled task.
 // Successful dependency attempts are reused and are never rerun.
 func (e *DAGExecution) RetryTask(taskID, attemptID string, now time.Time) error {
+	if e.state.Run.Sink != nil && e.state.Run.Sink.Progress.Terminal() {
+		return fmt.Errorf("run sink is final; submit a new workflow")
+	}
 	taskIndex, ok := e.taskByID[taskID]
 	if !ok {
 		return fmt.Errorf("retry task %q: unknown task", taskID)
@@ -343,6 +352,14 @@ func (e *DAGExecution) refresh(now time.Time, touch bool) {
 	}
 
 	progress := e.runProgress()
+	if e.state.Run.Sink != nil {
+		if e.state.Run.Sink.Progress.Terminal() {
+			return
+		}
+		if progress.Terminal() {
+			progress = domain.ProgressActive
+		}
+	}
 	e.state.Run.Progress = progress
 	if touch {
 		e.state.Run.Revision++
@@ -452,6 +469,7 @@ func (e *DAGExecution) attemptIndex(id string) (int, error) {
 
 func cloneDAGState(state DAGState) DAGState {
 	cloned := state
+	cloned.Run.Sink = domain.CloneSink(state.Run.Sink)
 	cloned.Run.InputArtifactIDs = append([]string(nil), state.Run.InputArtifactIDs...)
 	cloned.Tasks = append([]domain.Task(nil), state.Tasks...)
 	cloned.Attempts = append([]domain.Attempt(nil), state.Attempts...)

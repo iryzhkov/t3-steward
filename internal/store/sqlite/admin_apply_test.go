@@ -159,6 +159,9 @@ func TestApplyAdminStartRejectsMissingOrExpiredWorkerSafetyValidity(t *testing.T
 
 func TestConcurrentAdminCommandApplicationHasOneTransitionAndOutcome(t *testing.T) {
 	store := openAdminCommandStore(t, filepath.Join(t.TempDir(), "state.db"))
+	if err := store.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{{ID: "run-1", WorkflowID: "workflow-1", Progress: domain.ProgressActive, Revision: 1, CreatedAt: adminCommandTestTime, UpdatedAt: adminCommandTestTime}}}); err != nil {
+		t.Fatal(err)
+	}
 	now := adminCommandTestTime
 	attempt := adminCommandAttempt(3)
 	if err := store.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{Attempts: []domain.Attempt{attempt}}); err != nil {
@@ -334,6 +337,9 @@ func TestApplyManualScheduleRunDurablyRejectsApplyTimeOpenRun(t *testing.T) {
 
 func TestApplyAdminCommandRejectsTargetChangedAfterPlanning(t *testing.T) {
 	store := openAdminCommandStore(t, filepath.Join(t.TempDir(), "state.db"))
+	if err := store.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{{ID: "run-1", WorkflowID: "workflow-1", Progress: domain.ProgressActive, Revision: 1, CreatedAt: adminCommandTestTime, UpdatedAt: adminCommandTestTime}}}); err != nil {
+		t.Fatal(err)
+	}
 	now := adminCommandTestTime
 	attempt := adminCommandAttempt(7)
 	if err := store.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{Attempts: []domain.Attempt{attempt}}); err != nil {

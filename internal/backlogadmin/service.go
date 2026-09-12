@@ -120,6 +120,7 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		return Response{}, fmt.Errorf("load quota admissions: %w", err)
 	}
 	view := newView(records, workers, admissions, s.runtime, s.now().UTC())
+	view.includeSink = query.IncludeSink
 	response := Response{Version: Version, Kind: query.Kind, GeneratedAt: view.now}
 
 	switch query.Kind {
@@ -206,6 +207,7 @@ func notFound(kind, id string) error {
 }
 
 type view struct {
+	includeSink bool
 	records     sqlite.CoordinatorRecords
 	workers     []domain.WorkerSnapshot
 	admissions  []domain.QuotaAdmissionRecord
@@ -254,6 +256,9 @@ func (v view) status() Status {
 	}
 	for _, run := range v.records.WorkflowRuns {
 		status.WorkflowRuns[run.Progress]++
+		if v.includeSink && run.Sink != nil {
+			status.Tasks[run.Sink.Progress]++
+		}
 	}
 	for _, attempts := range v.attempts {
 		if attempt := latestAttempt(attempts); attempt != nil {
@@ -384,35 +389,41 @@ func matchesWorkflowFilter(v view, run domain.WorkflowRun, workflow domain.Workf
 func (v view) progress(runID, workflowID string) Progress {
 	var progress Progress
 	for _, task := range v.workflowTasks(workflowID) {
-		progress.Total++
 		state := domain.ProgressQueued
 		if attempt := latestAttempt(v.attempts[runID+"\x00"+task.ID]); attempt != nil {
 			state = attempt.Progress
 		}
-		switch state {
-		case domain.ProgressQueued:
-			progress.Queued++
-		case domain.ProgressBlocked:
-			progress.Blocked++
-		case domain.ProgressReady:
-			progress.Ready++
-		case domain.ProgressActive:
-			progress.Active++
-		case domain.ProgressNeedsInput:
-			progress.NeedsInput++
-		case domain.ProgressVerifying:
-			progress.Verifying++
-		case domain.ProgressSucceeded:
-			progress.Succeeded++
-		case domain.ProgressFailed:
-			progress.Failed++
-		case domain.ProgressCancelled:
-			progress.Cancelled++
-		case domain.ProgressSkipped:
-			progress.Skipped++
-		}
+		progress.add(state)
+	}
+	if sink := v.runs[runID].Sink; v.includeSink && sink != nil {
+		progress.add(sink.Progress)
 	}
 	return progress
+}
+func (progress *Progress) add(state domain.ProgressState) {
+	progress.Total++
+	switch state {
+	case domain.ProgressQueued:
+		progress.Queued++
+	case domain.ProgressBlocked:
+		progress.Blocked++
+	case domain.ProgressReady:
+		progress.Ready++
+	case domain.ProgressActive:
+		progress.Active++
+	case domain.ProgressNeedsInput:
+		progress.NeedsInput++
+	case domain.ProgressVerifying:
+		progress.Verifying++
+	case domain.ProgressSucceeded:
+		progress.Succeeded++
+	case domain.ProgressFailed:
+		progress.Failed++
+	case domain.ProgressCancelled:
+		progress.Cancelled++
+	case domain.ProgressSkipped:
+		progress.Skipped++
+	}
 }
 
 func (v view) workflowDetail(runID string) (WorkflowDetail, bool) {
@@ -433,6 +444,10 @@ func (v view) workflowDetail(runID string) (WorkflowDetail, bool) {
 	for _, task := range v.workflowTasks(workflow.ID) {
 		taskDetail, _ := v.taskDetail(runID, task.ID)
 		detail.Tasks = append(detail.Tasks, taskDetail)
+	}
+	if run.Sink != nil {
+		sink, _ := v.taskDetail(runID, run.Sink.ID)
+		detail.Tasks = append(detail.Tasks, sink)
 	}
 	detail.ResourceLocks = filterLocksForRun(detail.ResourceLocks, detail.Tasks)
 	detail.Reservations = filterReservationsForRun(detail.Reservations, runID)
@@ -460,6 +475,9 @@ func (v view) resolveTask(runID, taskID string) (domain.Task, bool) {
 	if !ok {
 		return domain.Task{}, false
 	}
+	if run.Sink != nil && (taskID == run.Sink.ID || taskID == domain.SinkTaskName) {
+		return domain.Task{ID: run.Sink.ID, Name: domain.SinkTaskName, WorkflowID: run.WorkflowID, Needs: append([]string(nil), run.Sink.Needs...)}, true
+	}
 	if task, ok := v.tasks[taskID]; ok && task.WorkflowID == run.WorkflowID {
 		return task, true
 	}
@@ -477,6 +495,10 @@ func (v view) taskDetail(runID, taskID string) (TaskDetail, bool) {
 		return TaskDetail{}, false
 	}
 	detail := TaskDetail{Task: task, ResourceLocks: append([]string(nil), task.ResourceLocks...)}
+	if sink := v.runs[runID].Sink; sink != nil && task.ID == sink.ID {
+		detail.Sink = domain.CloneSink(sink)
+		return detail, true
+	}
 	if attempt := latestAttempt(v.attempts[runID+"\x00"+task.ID]); attempt != nil {
 		detail.Attempt = attempt
 		if assignment, ok := v.assignments[attempt.AssignmentID]; ok {
@@ -516,6 +538,12 @@ func (v view) graph(runID string) (Graph, bool) {
 			graph.Edges = append(graph.Edges, GraphEdge{FromTaskID: from, ToTaskID: task.ID})
 		}
 	}
+	if run.Sink != nil {
+		graph.Nodes = append(graph.Nodes, GraphNode{TaskID: run.Sink.ID, Name: run.Sink.Name, Progress: run.Sink.Progress, Sink: domain.CloneSink(run.Sink)})
+		for _, id := range run.Sink.Needs {
+			graph.Edges = append(graph.Edges, GraphEdge{FromTaskID: id, ToTaskID: run.Sink.ID})
+		}
+	}
 	sort.Slice(graph.Edges, func(i, j int) bool {
 		if graph.Edges[i].FromTaskID == graph.Edges[j].FromTaskID {
 			return graph.Edges[i].ToTaskID < graph.Edges[j].ToTaskID
@@ -531,6 +559,13 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 		return Explanation{}, false
 	}
 	explanation := Explanation{WorkflowRunID: runID, TaskID: task.ID, Blockers: make([]Blocker, 0)}
+	if sink := v.runs[runID].Sink; sink != nil && task.ID == sink.ID {
+		explanation.Summary = "coordinator sink waits for all predecessors to be terminal and execution to be quiescent"
+		if sink.Progress.Terminal() {
+			explanation.Summary = "coordinator sink is terminal: " + string(sink.Progress)
+		}
+		return explanation, true
+	}
 	attempt := latestAttempt(v.attempts[runID+"\x00"+task.ID])
 	if attempt != nil {
 		explanation.AttemptID = attempt.ID

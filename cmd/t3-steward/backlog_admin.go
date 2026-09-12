@@ -153,6 +153,30 @@ func (c backlogAdminCLI) queryAndRender(ctx context.Context, query backlogadmin.
 }
 
 func parseBacklogAdminQuery(args []string) (backlogadmin.Query, bool, error) {
+	clean := make([]string, 0, len(args))
+	include := false
+	for _, arg := range args {
+		if arg == "--include-sink" {
+			if include {
+				return backlogadmin.Query{}, false, errors.New("--include-sink may only be specified once")
+			}
+			include = true
+		} else {
+			clean = append(clean, arg)
+		}
+	}
+	query, asJSON, err := parseBacklogAdminQueryWithoutSink(clean)
+	if err != nil {
+		return query, asJSON, err
+	}
+	if include && query.Kind != backlogadmin.QueryStatus && query.Kind != backlogadmin.QueryWorkflows && query.Kind != backlogadmin.QueryWorkflow {
+		return query, asJSON, errors.New("--include-sink is supported by status, list, and show")
+	}
+	query.IncludeSink = include
+	return query, asJSON, nil
+}
+
+func parseBacklogAdminQueryWithoutSink(args []string) (backlogadmin.Query, bool, error) {
 	clean, asJSON, err := takeJSONFlag(args)
 	if err != nil {
 		return backlogadmin.Query{}, false, err
@@ -402,6 +426,10 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 		summary.Workflow.Class, summary.Run.Progress, summary.Run.Revision)
 	fmt.Fprintln(out, "tasks:")
 	for _, task := range detail.Tasks {
+		if task.Sink != nil {
+			fmt.Fprintf(out, "  %s (%s): %s (coordinator sink)\n", task.Task.Name, task.Task.ID, task.Sink.Progress)
+			continue
+		}
 		state, control, attempt := taskState(task)
 		fmt.Fprintf(out, "  %s (%s): %s %s attempt=%s\n", task.Task.Name, task.Task.ID, state, control, attempt)
 	}
@@ -429,6 +457,13 @@ func renderGraph(out io.Writer, graph *backlogadmin.Graph) {
 
 func renderTask(out io.Writer, detail *backlogadmin.TaskDetail) {
 	if detail == nil {
+		return
+	}
+	if detail.Sink != nil {
+		fmt.Fprintf(out, "task: %s (%s)\nkind: coordinator sink\nprogress: %s\ngraph revision: %d\n", detail.Task.Name, detail.Task.ID, detail.Sink.Progress, detail.Sink.GraphRevision)
+		if detail.Sink.Result != nil {
+			fmt.Fprintf(out, "failed task IDs: %s\ncancelled task IDs: %s\nskipped task IDs: %s\n", strings.Join(detail.Sink.Result.FailedTaskIDs, ", "), strings.Join(detail.Sink.Result.CancelledTaskIDs, ", "), strings.Join(detail.Sink.Result.SkippedTaskIDs, ", "))
+		}
 		return
 	}
 	state, control, attemptID := taskState(*detail)

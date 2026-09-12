@@ -20,14 +20,14 @@ Avoid: DAG task, job.
 
 **Graph revision**: A proposed Track S immutable snapshot of a run's task and edge
 definitions, with parent, digest and audited amendment identity. It is distinct
-from mutable execution progress and attempt revisions. Live amendment versus
-resubmission remains a user decision.
+from mutable execution progress and attempt revisions. The user approved live coordinator amendments; S3 implements them.
 
 **Task**: One node with stable run-scoped identity. Its current attempt describes
 execution; its definition is not overwritten to change execution history.
 
-**Sink task**: The proposed coordinator-owned terminal aggregate of all tasks in
-a run. It has no worker, provider route or attempt. S1 implements it.
+**Sink task**: The coordinator-owned terminal aggregate of all tasks in a run,
+implemented in S1. It has no worker, provider route or attempt. Its published
+result is immutable; further work requires a new run.
 
 **Attempt**: One try to complete a task. Retry creates another attempt.
 
