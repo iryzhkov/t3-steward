@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.2] - 2026-09-12
+
+### Fixed
+
+- Worker protocol replay now uses bounded worker-local SQLite rows instead of
+  decoding and rewriting the entire JSON history for every exchange. Signed
+  replay and pending-request recovery are retained, with byte and age limits.
+- The first worker exchange migrates the old JSON transactionally and retains
+  it as evidence. After migration, a JSON-only binary cannot safely resume from
+  that stale file; see [the replay ADR](docs/architecture/adr-s0-replay-store.md).
+
+### Added
+
+- Citadel S0 architecture review and ADRs for sink tasks, node waits, graph
+  amendments, worker enrollment and the quota rework. These are future-stage
+  designs; only the replay repair is implemented here. DAG amendment mechanism
+  remains a user decision.
+
 ## [0.11.0-rc.1] - 2026-09-12
 
 First packaged build of the backlog-v2 runtime that normandy has been running

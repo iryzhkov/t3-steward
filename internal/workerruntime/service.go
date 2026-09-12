@@ -45,6 +45,9 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 	if options.WorkerEpoch == "" || options.CoordinatorEpoch < 1 {
 		return nil, errors.New("worker service: worker and coordinator epochs are required")
 	}
+	if options.Settings.Freshness.WorkerMaxAge.D() >= protocolReplayMaxAge {
+		return nil, errors.New("worker service: protocol clock skew must be shorter than replay retention")
+	}
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}

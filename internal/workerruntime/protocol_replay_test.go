@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -124,25 +123,23 @@ func TestProtocolServerRejectsTamperedDurableResponse(t *testing.T) {
 	if _, err := server.Handle(context.Background(), request, handler); err != nil {
 		t.Fatal(err)
 	}
-	state, err := store.read()
+	db, err := store.openDB()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for key, record := range state.Requests {
-		var response workerproto.Envelope
-		if err := decodeProtocolResponse(record.Response, &response); err != nil {
-			t.Fatal(err)
-		}
-		response.Payload = json.RawMessage(`{"result":"tampered"}`)
-		record.Response, err = json.Marshal(response)
-		if err != nil {
-			t.Fatal(err)
-		}
-		state.Requests[key] = record
-	}
-	if err := store.write(state); err != nil {
+	var raw []byte
+	if err := db.QueryRow("SELECT body FROM responses LIMIT 1").Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
+	var response workerproto.Envelope
+	if err := decodeProtocolResponse(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	response.Payload = json.RawMessage(`{"result":"tampered"}`)
+	if _, err := db.Exec("UPDATE responses SET body=?", mustReplayJSON(t, response)); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
 
 	server = newReplayServer(t, openTestProtocolReplayStore(t, root), now)
 	_, err = server.Handle(context.Background(), request, handler)
@@ -155,39 +152,44 @@ func TestProtocolServerRejectsTamperedDurableResponse(t *testing.T) {
 func TestProtocolReplayStoreAdoptsNewerCoordinatorEpochAndRejectsCorruption(t *testing.T) {
 	root := t.TempDir()
 	store := openTestProtocolReplayStore(t, root)
-	state, err := store.read()
+	db, err := store.openDB()
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.Sessions["session-1"] = 3
-	if err := store.write(state); err != nil {
+	if _, err := db.Exec("INSERT INTO sessions VALUES('session-1',3,?)", time.Now().UnixNano()); err != nil {
 		t.Fatal(err)
 	}
-
+	db.Close()
 	adopted, err := OpenProtocolReplayStore(root, "coordinator", "normandy", 10, "worker-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err = adopted.read()
+	db, err = adopted.openDB()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.CoordinatorEpoch != 10 {
-		t.Fatalf("coordinator epoch = %d, want 10", state.CoordinatorEpoch)
-	}
-	if state.Sessions["session-1"] != 3 {
-		t.Fatalf("durable session sequence = %d, want 3", state.Sessions["session-1"])
-	}
-	if _, err := OpenProtocolReplayStore(root, "coordinator", "normandy", 9, "worker-1"); err == nil ||
-		!bytes.Contains([]byte(err.Error()), []byte("mismatch")) {
-		t.Fatalf("stale epoch error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "protocol-replay.json"), []byte("{broken"), 0o600); err != nil {
+	var epoch, sequence int64
+	if err := db.QueryRow("SELECT epoch FROM identity").Scan(&epoch); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenProtocolReplayStore(root, "coordinator", "normandy", 10, "worker-1"); err == nil ||
-		!bytes.Contains([]byte(err.Error()), []byte("decode")) {
-		t.Fatalf("corruption error = %v", err)
+	if err := db.QueryRow("SELECT sequence FROM sessions WHERE id='session-1'").Scan(&sequence); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if epoch != 10 || sequence != 3 {
+		t.Fatalf("epoch=%d sequence=%d", epoch, sequence)
+	}
+	if _, err := OpenProtocolReplayStore(root, "coordinator", "normandy", 9, "worker-1"); err == nil {
+		t.Fatal("stale epoch accepted")
+	}
+	if _, err := store.Begin("ssh:coordinator", workerproto.Envelope{SessionID: "new", RequestID: "new", Sequence: 1}, "digest", 8); err == nil {
+		t.Fatal("old open store bypassed epoch fence")
+	}
+	if err := os.WriteFile(adopted.path, []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenProtocolReplayStore(root, "coordinator", "normandy", 10, "worker-1"); err == nil {
+		t.Fatal("corrupt database accepted")
 	}
 }
 func openTestProtocolReplayStore(t *testing.T, root string) *ProtocolReplayStore {

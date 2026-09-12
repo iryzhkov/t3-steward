@@ -1,69 +1,79 @@
 # T3 Steward
 
-T3 Steward protects interactive agent quota and schedules unattended agent work across a small fleet.
+T3 Steward protects interactive agent quota and schedules unattended agent work
+across a small fleet. The coordinator owns scheduling; workers own host execution.
+See [the system model](docs/architecture/system-model.md) for implemented behavior,
+proposed Track S contracts and evidence limits.
 
 ## Language
 
-**Schedule**:
-A recurring definition that may create workflow runs at named times.
-_Avoid_: Cron task, recurring task
+**Schedule**: A recurring definition that may create runs at named times.
+Avoid: cron task, recurring task.
 
-**Trigger**:
-One observed firing of a schedule. A trigger may be suppressed without creating a workflow run.
-_Avoid_: Cycle
+**Trigger**: One observed firing of a schedule, possibly suppressed without a run.
+Avoid: cycle (use it only for an internal reconciliation pass).
 
-**Workflow**:
-An immutable directed acyclic graph submitted for execution.
-_Avoid_: DAG task, job
+**Workflow**: An immutable submitted definition and input bundle.
+Avoid: DAG task, job.
 
-**Workflow run**:
-One execution of a workflow, created manually or by a schedule.
-_Avoid_: Occurrence, cron run
+**Workflow run**: One execution of a workflow, created manually or by a schedule.
 
-**Task**:
-One node in a workflow.
-_Avoid_: Step, job
+**Graph revision**: A proposed Track S immutable snapshot of a run's task and edge
+definitions, with parent, digest and audited amendment identity. It is distinct
+from mutable execution progress and attempt revisions. Live amendment versus
+resubmission remains a user decision.
 
-**Attempt**:
-One try to complete a task. Retrying a task creates another attempt.
+**Task**: One node with stable run-scoped identity. Its current attempt describes
+execution; its definition is not overwritten to change execution history.
 
-**Dependency**:
-A task that must succeed before another task becomes ready.
-_Avoid_: Prerequisite
+**Sink task**: The proposed coordinator-owned terminal aggregate of all tasks in
+a run. It has no worker, provider route or attempt. S1 implements it.
 
-**Assignment**:
-A committed decision to execute one task attempt on one worker through one provider route.
+**Attempt**: One try to complete a task. Retry creates another attempt.
 
-**Worker**:
-A host that prepares workspaces and runs assigned T3 threads.
-_Avoid_: Runner, execution host
+**Dependency**: A typed relation to another task. Ordinary execution requires
+verified predecessor success and required artifact custody. The sink instead
+waits for terminal state; node waits observe outcomes rather than authorize work.
 
-**Provider route**:
-An eligible model, provider instance, options, and worker combination for a task.
-_Avoid_: Model selection
+**Assignment**: A committed decision binding an attempt to a worker, provider
+route, execution identity and lease.
 
-**Quota pool**:
-A provider limit shared by one or more provider instances or workers.
-_Avoid_: Provider quota
+**Worker**: A host runtime that prepares workspaces and executes assigned T3
+threads. Avoid: runner, execution host.
 
-**Required task**:
-A task expected to run in its requested time window, subject to hard quota safety controls.
-_Avoid_: Urgent task
+**Provider route**: An eligible model, provider instance, options and worker
+combination. Its consumed quota buckets must be explicit in S6.
 
-**Surplus task**:
-A task allowed to run only from quota predicted to remain after interactive demand, required work, active reservations, and the safety margin.
-_Avoid_: Optional task, gated task
+**Quota pool**: The current configured grouping of shared provider capacity and
+concurrency. It is not a synonym for a single provider window.
 
-**Artifact**:
-An immutable input, output, checkpoint, log, diff, or summary retained with a workflow run.
+**Quota bucket**: A provider/account window with class and scope. S6 makes this
+the authority for observations, pacing, reservations and blocking.
 
-**Checkpoint**:
-A durable description of incomplete work used to resume a paused attempt safely.
+**Admission state**: Permission to start/resume against the relevant quota
+capacity. Current pools are replaced by bucket-derived route admission in S6.
 
-**Admission state**:
-The scheduler's current permission to start or resume work against a quota pool.
-_Avoid_: Gate
+**Required task**: Work expected in its requested time window, subject to automatic
+hard quota safety controls. Avoid: urgent task.
 
-**Admin command**:
-An audited request to change scheduler intent, such as start, delay, pause, resume, retry, skip, or cancel.
-_Avoid_: Control action
+**Surplus task**: Work admitted only from headroom after interactive demand,
+required work, active reservations and reserve. Avoid: optional task, gated task.
+
+**Reservation**: Coordinator-owned capacity/resource commitment tied to an
+assignment. Financial expiry does not prove external execution stopped.
+
+**Artifact**: Immutable retained input, output, checkpoint, log, diff or summary,
+identified by producer, size and checksum.
+
+**Checkpoint**: Durable evidence of incomplete work used for safe resumption.
+
+**Admin command**: An authenticated, audited request to change scheduler intent,
+such as start, delay, pause, resume, retry, skip or cancel. The existing manual
+start override has an explicit user-controlled quota waiver; automatic work does
+not inherit it.
+
+**Node wait**: A proposed durable observation of a task or sink outcome with a
+separate wake-delivery intent. S2 implements it.
+
+**Recovery-required**: An uncertainty requiring evidence or operator reconciliation.
+It is not success, a free resource, or permission to repeat an external effect.
