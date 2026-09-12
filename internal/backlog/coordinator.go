@@ -300,6 +300,10 @@ func PlanWorkerCommands(
 			ExpectedWorkerSequence: snapshot.Sequence,
 			CreatedAt:              now,
 		})
+		// Worker command sequence is a strict compare-and-swap fence. Only one
+		// newly planned command may consume a snapshot sequence; the next tick
+		// observes the resulting sequence before planning another command.
+		break
 	}
 	return commands, nil
 }
