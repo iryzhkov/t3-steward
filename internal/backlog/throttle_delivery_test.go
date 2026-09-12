@@ -460,6 +460,25 @@ func TestPlanThrottleResumesIgnoresObsoletePausedProjection(t *testing.T) {
 	}
 }
 
+func TestPlanThrottleResumesIgnoresPausedProjectionForRetiredPool(t *testing.T) {
+	record := domain.ThrottleAttemptRecord{
+		DirectiveID: "retired-directive", AttemptID: "retired-attempt", Revision: 1,
+		Delivery: domain.ThrottleDeliveryAcknowledged, Control: domain.ControlPaused,
+		Command: domain.ThrottleCommand{
+			ID: "retired-command", DirectiveID: "retired-directive", AttemptID: "retired-attempt",
+			Kind: domain.ThrottleCommandDrain, WorkerID: "worker", ThreadID: "thread",
+			WorkspacePath: "/workspace", QuotaPoolID: "retired-pool",
+		},
+	}
+	transitions, commands, err := PlanThrottleResumes(
+		[]domain.ThrottleAttemptRecord{record}, nil,
+		[]domain.QuotaPool{{ID: "current-pool", MaxConcurrent: 1}}, throttleDeliveryTime,
+	)
+	if err != nil || len(transitions) != 0 || len(commands) != 0 {
+		t.Fatalf("retired pool projection = %#v %#v, err = %v", transitions, commands, err)
+	}
+}
+
 func TestPlanThrottleAcknowledgementsRejectsPriorCommandAttemptMismatch(t *testing.T) {
 	binding := throttleBinding("attempt-a", "worker-a", domain.ControlRunning)
 	directive := throttleDirectiveFixture(domain.ThrottleDrain)

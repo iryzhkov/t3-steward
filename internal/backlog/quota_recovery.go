@@ -224,6 +224,12 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 			return QuotaPlanningState{}, fmt.Errorf("attempt %q has no matching assignment", attempt.ID)
 		}
 		if assignment.State == domain.AssignmentReleased || assignment.State == domain.AssignmentCompleted {
+			// Result collection settles the worker assignment before coordinator
+			// verification imports the durable result.  That transient is not a
+			// quota reservation and must not prevent unrelated planning.
+			if attempt.Progress == domain.ProgressVerifying {
+				continue
+			}
 			return QuotaPlanningState{}, fmt.Errorf("nonterminal attempt %q uses settled assignment %q", attempt.ID, assignment.ID)
 		}
 		poolIndex, exists := poolByID[assignment.Route.QuotaPoolID]

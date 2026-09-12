@@ -430,7 +430,10 @@ func PlanThrottleResumes(
 		}
 		pool, exists := poolByID[record.Command.QuotaPoolID]
 		if !exists {
-			return nil, nil, fmt.Errorf("paused attempt %q names unknown quota pool %q", record.AttemptID, record.Command.QuotaPoolID)
+			// Pool configuration can be retired while an old paused projection
+			// remains durable.  It cannot be resumed through the current worker
+			// route, but it must not block delivery for every configured pool.
+			continue
 		}
 		if record.Control == domain.ControlResuming && record.Delivery == domain.ThrottleDeliveryPending {
 			commands = append(commands, cloneThrottleCommand(record.Command))

@@ -297,6 +297,24 @@ func TestDeriveQuotaPlanningStateAccountsOfferedAssignmentReservation(t *testing
 	}
 }
 
+func TestDeriveQuotaPlanningStateAllowsCompletedAssignmentDuringVerification(t *testing.T) {
+	input := quotaRecoveryFixture()
+	for index := range input.Attempts {
+		if input.Attempts[index].ID == "running" {
+			input.Attempts[index].Progress = domain.ProgressVerifying
+			input.Attempts[index].Control = domain.ControlStopped
+		}
+	}
+	for index := range input.Assignments {
+		if input.Assignments[index].AttemptID == "running" {
+			input.Assignments[index].State = domain.AssignmentCompleted
+		}
+	}
+	if _, err := DeriveQuotaPlanningState(input); err != nil {
+		t.Fatalf("completed assignment awaiting result import blocked planning: %v", err)
+	}
+}
+
 func quotaRecoveryFixture() QuotaPlanningStateInput {
 	type spec struct {
 		id      string
