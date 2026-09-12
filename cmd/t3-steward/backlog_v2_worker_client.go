@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -80,14 +81,15 @@ func newCoordinatorWorkerSessions(
 			if err != nil {
 				return backlog.WorkerExchangeReport{}, err
 			}
-			report, err := coordinator.ReconcileWorker(
+			report, reconcileErr := coordinator.ReconcileWorker(
 				ctx, session.Client, session.Builder, backlog.WorkerAdmissionPolicyFromQuotaReport(quota), quota.Directives, quota.Pools,
 				settings.Leases.RenewInterval.D(), settings.Leases.Duration.D(),
 			)
-			if err != nil {
-				return report, err
+			report, importErr := importCoordinatorWorkerArtifacts(ctx, session, report, settings.MessageLimits.MaxArtifactBytes)
+			if reconcileErr != nil || importErr != nil {
+				return report, errors.Join(reconcileErr, importErr)
 			}
-			return importCoordinatorWorkerArtifacts(ctx, session, report, settings.MessageLimits.MaxArtifactBytes)
+			return report, nil
 		},
 	}, nil
 }
