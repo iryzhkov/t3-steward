@@ -88,6 +88,17 @@ func TestBuildCoordinatorPlanInputProducesQuotaBoundColdEstimateAndStopsReplanni
 		replan.Decisions[0].Blockers[0].Code != PlanningBlockerAttemptState {
 		t.Fatalf("assigned replan = %#v", replan)
 	}
+
+	input.Attempts[0].Progress = domain.ProgressVerifying
+	input.Attempts[0].Control = domain.ControlStopped
+	input.Assignments[0].State = domain.AssignmentCompleted
+	verifying, err := BuildCoordinatorPlanInput(input)
+	if err != nil {
+		t.Fatalf("completed assignment awaiting result import blocked planning: %v", err)
+	}
+	if verifying.ResourceOwners["repository"] != "" || verifying.WorkflowCheckoutOwners[state.Run.ID] != "" {
+		t.Fatalf("verifying attempt retained planning ownership: resources %#v checkouts %#v", verifying.ResourceOwners, verifying.WorkflowCheckoutOwners)
+	}
 }
 
 func TestBuildCoordinatorPlanInputReleasesDependencyAfterImportedOutcome(t *testing.T) {

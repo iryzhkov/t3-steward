@@ -152,6 +152,11 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 			return PlanInput{}, fmt.Errorf("attempt %q has no matching active assignment", attempt.ID)
 		}
 		if assignment.State == domain.AssignmentReleased || assignment.State == domain.AssignmentCompleted {
+			// A worker assignment is settled before its result artifact is
+			// verified and imported. It no longer owns planning resources.
+			if attempt.Progress == domain.ProgressVerifying {
+				continue
+			}
 			return PlanInput{}, fmt.Errorf("attempt %q uses settled assignment %q", attempt.ID, assignment.ID)
 		}
 		task := taskByID[attempt.TaskID]
