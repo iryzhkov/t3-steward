@@ -193,6 +193,20 @@ func TestLocalDriverBindsCatalogArtifactsWorkspaceAndT3(t *testing.T) {
 		t.Fatalf("observe=%q err=%v", state, err)
 	}
 	control.thread.Running = false
+	control.message = "finished without the terminal marker"
+	if err := driver.Collect(context.Background(), pkg, workspace); err != nil {
+		t.Fatalf("collect deterministic failure: %v", err)
+	}
+	if len(publisher.results) != 1 || publisher.results[0].Finalized.Completion.ExplicitSuccess ||
+		publisher.results[0].Finalized.Completion.Failure != "missing explicit success" {
+		t.Fatalf("published deterministic failure = %+v", publisher.results)
+	}
+	if len(control.settlements) != 1 || control.settlements[0] != "thread-1:dispatch-1" {
+		t.Fatalf("failed result settlements = %v", control.settlements)
+	}
+	publisher.results = nil
+	control.settlements = nil
+	control.message = "finished\nBACKLOG STATUS: done"
 	if err := driver.Collect(context.Background(), pkg, workspace); err != nil {
 		t.Fatal(err)
 	}

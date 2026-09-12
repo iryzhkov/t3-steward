@@ -298,9 +298,6 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if err != nil {
 		return err
 	}
-	if !finalized.Completion.ExplicitSuccess || !finalized.Completion.VerificationPassed {
-		return fmt.Errorf("attempt did not verify: %s", finalized.Completion.Failure)
-	}
 	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
 		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
 	}); err != nil {
