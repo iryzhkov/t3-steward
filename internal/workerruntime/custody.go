@@ -432,8 +432,14 @@ func (s *CustodyStore) validateManifest(manifest workerproto.ArtifactTransferMan
 	if err := workerproto.ValidateArtifactTransferManifest(manifest, s.config.MaxArtifactBytes, s.config.MaxTotalBytes, s.now()); err != nil {
 		return err
 	}
-	if manifest.Direction != direction || manifest.CoordinatorEpoch != s.config.CoordinatorEpoch ||
-		manifest.WorkerID != s.config.WorkerID || manifest.WorkerEpoch != s.config.WorkerEpoch {
+	epochMatches := manifest.CoordinatorEpoch == s.config.CoordinatorEpoch
+	if direction == "upload" {
+		// A completed upload is immutable assignment evidence. It must remain
+		// readable after coordinator failover, while future-authority evidence
+		// is never accepted by an older coordinator.
+		epochMatches = manifest.CoordinatorEpoch > 0 && manifest.CoordinatorEpoch <= s.config.CoordinatorEpoch
+	}
+	if manifest.Direction != direction || !epochMatches || manifest.WorkerID != s.config.WorkerID || manifest.WorkerEpoch != s.config.WorkerEpoch {
 		return errors.New("artifact manifest: custody epoch binding mismatch")
 	}
 	return nil

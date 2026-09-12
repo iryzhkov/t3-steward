@@ -65,7 +65,7 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	if err := workerproto.ValidateArtifactTransferManifest(manifest, i.MaxArtifactBytes, i.MaxTotalBytes, now); err != nil {
 		return ResultImportReport{}, err
 	}
-	if manifest.Direction != "upload" || manifest.CoordinatorEpoch != i.CoordinatorEpoch {
+	if manifest.Direction != "upload" || manifest.CoordinatorEpoch < 1 || manifest.CoordinatorEpoch > i.CoordinatorEpoch {
 		return ResultImportReport{}, errors.New("result import manifest authority mismatch")
 	}
 	if err := validateWorkerUploadCustody(response, i.CoordinatorID); err != nil {

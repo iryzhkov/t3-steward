@@ -186,6 +186,29 @@ func TestCustodyPublishesRestartSafeResultAndCheckpoint(t *testing.T) {
 	}
 }
 
+func TestCustodyReloadsCompletedUploadAfterCoordinatorEpochAdvance(t *testing.T) {
+	root := t.TempDir()
+	store := testCustodyStore(t, root, func() time.Time { return runtimeTestNow })
+	pkg := testPackage()
+	result := PublishedResult{Finalized: backlog.FinalizedAttempt{StorageDir: t.TempDir()}, FinalMessage: "done", ThreadArchive: []byte("{}")}
+	if err := store.PublishResult(context.Background(), pkg, result); err != nil {
+		t.Fatal(err)
+	}
+
+	advanced := testCustodyStore(t, root, func() time.Time { return runtimeTestNow.Add(time.Minute) })
+	advanced.config.CoordinatorEpoch++
+	pending, err := advanced.PendingUploadByPurpose("result")
+	if err != nil || pending == nil || pending.Manifest.CoordinatorEpoch != pkg.CoordinatorEpoch {
+		t.Fatalf("prior-epoch upload = %#v, %v", pending, err)
+	}
+
+	older := testCustodyStore(t, root, func() time.Time { return runtimeTestNow.Add(time.Minute) })
+	older.config.CoordinatorEpoch--
+	if _, err := older.PendingUploads(); err == nil || !strings.Contains(err.Error(), "epoch binding") {
+		t.Fatalf("future-epoch upload error = %v", err)
+	}
+}
+
 func TestCustodyRejectsWrongEpochAndChecksumBeforeReceipt(t *testing.T) {
 	root := t.TempDir()
 	store := testCustodyStore(t, root, func() time.Time { return runtimeTestNow })
