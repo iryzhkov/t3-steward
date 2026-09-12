@@ -21,9 +21,22 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
+// shortTempDir is t.TempDir without the test name in the path. The coordinator
+// binds a Unix socket next to its state file, and macOS limits socket paths to
+// 104 bytes, which a long test name under /var/folders exceeds.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	root, err := os.MkdirTemp("", "t3-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	return root
+}
+
 func setCoordinatorTestRoots(t *testing.T, cfg *config.Config) string {
 	t.Helper()
-	root := t.TempDir()
+	root := shortTempDir(t)
 	cfg.StatePath = filepath.Join(root, "state.db")
 	cfg.Backlog.Dir = filepath.Join(root, "drop")
 	cfg.BacklogV2.Storage.Bundles = filepath.Join(root, "bundles")

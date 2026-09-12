@@ -130,7 +130,7 @@ func TestBacklogV2ProductionProcessTopology(t *testing.T) {
 		os.Exit(0)
 	}
 
-	root = t.TempDir()
+	root = shortTempDir(t)
 	if err := os.MkdirAll(filepath.Join(root, "drop"), 0o700); err != nil {
 		t.Fatal(err)
 	}

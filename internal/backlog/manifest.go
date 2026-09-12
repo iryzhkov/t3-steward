@@ -625,5 +625,8 @@ func safeBundleFile(root, relative string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", errors.New("referenced path is not a regular file")
 	}
-	return resolved, nil
+	// Hand back the file under the root the caller named, not under the
+	// resolved root: callers derive os.Root-relative paths from it, and a
+	// path under /private/var would look like an escape from a /var root.
+	return filepath.Join(root, inside), nil
 }
