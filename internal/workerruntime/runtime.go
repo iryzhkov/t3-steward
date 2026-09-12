@@ -577,7 +577,7 @@ func (r *Runtime) validateOffer(offer workerproto.AssignmentOffer, now time.Time
 
 func (r *Runtime) validateCommand(command domain.WorkerCommand, state journalState) error {
 	if command.ID == "" || command.WorkerID != r.config.WorkerID || command.WorkerEpoch != r.config.WorkerEpoch ||
-		command.CoordinatorEpoch != r.config.CoordinatorEpoch || command.ExpectedWorkerSequence != state.Sequence {
+		command.CoordinatorEpoch != r.config.CoordinatorEpoch || command.ExpectedWorkerSequence > state.Sequence {
 		return errors.New("stale worker command identity or sequence")
 	}
 	record, ok := state.Attempts[command.AssignmentID]

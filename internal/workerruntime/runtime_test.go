@@ -97,6 +97,7 @@ func TestRuntimeRestartAtDurableCommandBoundaries(t *testing.T) {
 
 	runtime = reopenTestRuntime(t, root, driver)
 	prepare := testCommand(t, runtime, domain.WorkerCommandPrepare, "prepare-1")
+	prepare.ExpectedWorkerSequence-- // a concurrent snapshot may advance after planning
 	acks, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{
 		Commands: []domain.WorkerCommand{prepare}, Packages: map[string]workerproto.ExecutionPackageManifest{offer.Assignment.ID: offer.Package},
 	})

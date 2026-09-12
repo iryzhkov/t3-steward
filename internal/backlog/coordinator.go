@@ -290,13 +290,8 @@ func PlanWorkerCommands(
 		if !ok {
 			continue
 		}
-		commandIdentity := workerCommandKey(assignment.ID, assignment.Epoch, kind)
-		if prior, exists := existing[commandIdentity]; exists && prior.Acknowledgement != nil &&
-			!prior.Acknowledgement.Accepted && strings.Contains(prior.Acknowledgement.Detail, "stale worker command identity or sequence") {
-			commandIdentity = fmt.Sprintf("%s:sequence:%d", commandIdentity, snapshot.Sequence)
-		}
 		commands = append(commands, domain.WorkerCommand{
-			ID:                     stableCoordinatorID("command", commandIdentity),
+			ID:                     stableCoordinatorID("command", workerCommandKey(assignment.ID, assignment.Epoch, kind)),
 			Kind:                   kind,
 			WorkerID:               snapshot.WorkerID,
 			WorkerEpoch:            snapshot.WorkerEpoch,
