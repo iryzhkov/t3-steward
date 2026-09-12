@@ -137,6 +137,13 @@ func (session *quotaAdmissionSession) Evaluate(candidate PlanningCandidate) []Pl
 			DeadlineAt: clonePlanningTime(deadline),
 		})
 	}
+	// Pools whose fleet identity ends in "-free" are explicitly unmetered.
+	// They still require a healthy provider, an available model, a route
+	// estimate, concurrency headroom, and all ordinary task-time checks, but do
+	// not require provider quota telemetry or consume forecast reservations.
+	if candidate.Route != nil && strings.HasSuffix(candidate.Route.QuotaPoolID, "-free") {
+		return blockers
+	}
 
 	if candidate.Attempt.AdminForceStart {
 		return blockers

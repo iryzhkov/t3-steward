@@ -228,6 +228,23 @@ func TestQuotaAdmissionPolicyRequiresMatchingRoutePoolWindow(t *testing.T) {
 	}
 }
 
+func TestQuotaAdmissionPolicyAdmitsFreePoolWithoutQuotaWindow(t *testing.T) {
+	policy, err := NewQuotaAdmissionPolicy(quotaTestInput(quotaTestWindow()))
+	if err != nil {
+		t.Fatalf("NewQuotaAdmissionPolicy: %v", err)
+	}
+	candidate := PlanningCandidate{
+		Task: testTask("alpha"), Attempt: domain.Attempt{ID: "alpha-1"}, WorkerID: "worker-a",
+		Route: &domain.ProviderRoute{
+			ProviderInstanceID: "opencode", Model: "opencode/muse-spark-1.3-contributor-free", QuotaPoolID: "opencode-free",
+		},
+		Estimate: cloneTaskAdmissionEstimate(quotaTestEstimate()),
+	}
+	if blockers := policy.StartPlan(plannerTestTime).Evaluate(candidate); len(blockers) != 0 {
+		t.Fatalf("blockers = %#v, want unmetered free pool admitted without a quota window", blockers)
+	}
+}
+
 func TestQuotaAdmissionPolicyUsesRemainingCostAndPrivateInput(t *testing.T) {
 	window := quotaTestWindow()
 	windows := []QuotaWindowBudget{window}
