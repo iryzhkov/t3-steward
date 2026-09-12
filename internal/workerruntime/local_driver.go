@@ -135,7 +135,11 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		dependencyTask := domain.Task{ID: dependency.TaskID, WorkflowID: pkg.Identity.WorkflowID, Name: dependency.TaskID}
 		names := make([]string, 0, len(dependency.Artifacts))
 		for _, object := range dependency.Artifacts {
-			name := filepath.Base(filepath.FromSlash(object.Path))
+			parts := strings.Split(filepath.ToSlash(object.Path), "/")
+			if len(parts) < 3 || parts[0] != "dependencies" {
+				return "", fmt.Errorf("prepare workspace: invalid dependency object path %q", object.Path)
+			}
+			name := strings.Join(parts[2:], "/")
 			names = append(names, name)
 			dependencyArtifacts = append(dependencyArtifacts, d.domainArtifact(pkg, object, domain.ArtifactOutput, name, dependency.TaskID))
 		}
