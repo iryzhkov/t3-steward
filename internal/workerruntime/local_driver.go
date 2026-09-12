@@ -141,7 +141,10 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 			}
 			name := strings.Join(parts[2:], "/")
 			names = append(names, name)
-			dependencyArtifacts = append(dependencyArtifacts, d.domainArtifact(pkg, object, domain.ArtifactOutput, name, dependency.TaskID))
+			artifact := d.domainArtifact(pkg, object, domain.ArtifactOutput, name, dependency.TaskID)
+			artifact.TaskID = dependency.TaskID
+			artifact.AttemptID = ""
+			dependencyArtifacts = append(dependencyArtifacts, artifact)
 		}
 		task.Needs = append(task.Needs, dependency.TaskID)
 		if task.DependencyInputs == nil {
