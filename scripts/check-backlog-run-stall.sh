@@ -10,13 +10,13 @@ run_id=$1
 stall_seconds=${2:-180}
 payload=$(t3-steward backlog show "$run_id" --json) || exit 1
 progress=$(jq -r '.workflow.summary.run.progress' <<<"$payload")
+nonterminal=$(jq '[.workflow.tasks[].attempt.progress | select(. != "succeeded" and . != "failed" and . != "cancelled" and . != "skipped")] | length' <<<"$payload")
 
-case "$progress" in
-  succeeded|failed|cancelled|skipped)
-    echo "SETTLED run=$run_id progress=$progress"
-    exit 0
-    ;;
-esac
+if (( nonterminal == 0 )); then
+  states=$(jq -c '[.workflow.tasks[] | {task:.task.name,progress:.attempt.progress}]' <<<"$payload")
+  echo "SETTLED run=$run_id progress=$progress states=$states"
+  exit 0
+fi
 
 latest=$(jq -r '[.workflow.tasks[].attempt.updatedAt // empty] | max // empty' <<<"$payload")
 if [[ -z "$latest" ]]; then

@@ -102,7 +102,14 @@ func (c FleetCoordinator) PlanAndCommit(ctx context.Context, input PlanInput) (A
 		if !ok {
 			return AssignmentPlanningReport{}, fmt.Errorf("planner proposed worker %q without a current snapshot", proposal.WorkerID)
 		}
-		assignmentID := stableCoordinatorID("assignment", attempt.ID)
+		assignmentIdentity := attempt.ID
+		if attempt.Revision > 0 {
+			// Evidence recovery can release an ambiguous assignment and return
+			// the same attempt to ready. Its next offer needs fresh immutable
+			// dispatch identity while remaining stable for plan replay.
+			assignmentIdentity = fmt.Sprintf("%s:%d", attempt.ID, attempt.Revision)
+		}
+		assignmentID := stableCoordinatorID("assignment", assignmentIdentity)
 		assignment := domain.Assignment{
 			ID:            assignmentID,
 			AttemptID:     attempt.ID,
