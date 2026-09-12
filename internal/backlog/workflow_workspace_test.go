@@ -68,8 +68,14 @@ func TestWorkflowWorkspaceManagerSharesMutationRunsSetupOnceAndSwitchesDependenc
 	assertReadOnly(t, filepath.Join(secondPrepared.InputsDir, "plan.md"))
 	assertReadOnly(t, filepath.Join(secondPrepared.DependenciesDir, "first", "result.txt"))
 	assertReadOnly(t, filepath.Join(secondPrepared.RootDir, "environment.json"))
-	if target, err := filepath.EvalSymlinks(filepath.Join(secondPrepared.WorkspaceDir, ".t3", "dependencies")); err != nil || target != secondPrepared.DependenciesDir {
-		t.Fatalf("active dependency view = %q, %v; want %q", target, err, secondPrepared.DependenciesDir)
+	// Compare resolved paths: on macOS the temporary directory itself is behind
+	// a symlink, so the link target and the recorded directory differ in prefix.
+	wantDependencies, err := filepath.EvalSymlinks(secondPrepared.DependenciesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, err := filepath.EvalSymlinks(filepath.Join(secondPrepared.WorkspaceDir, ".t3", "dependencies")); err != nil || target != wantDependencies {
+		t.Fatalf("active dependency view = %q, %v; want %q", target, err, wantDependencies)
 	}
 	if err := manager.Release(second.Attempt.ID, EnvironmentReleaseTerminal); err != nil {
 		t.Fatalf("complete second task: %v", err)

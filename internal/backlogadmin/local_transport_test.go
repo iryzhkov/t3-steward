@@ -112,9 +112,21 @@ func (s *localTransportService) RecoverUnknown(
 	}, nil
 }
 
+// shortTempRoot is t.TempDir without the test name: macOS limits Unix socket
+// paths to 104 bytes and a long test name under /var/folders exceeds it.
+func shortTempRoot(t *testing.T) string {
+	t.Helper()
+	root, err := os.MkdirTemp("", "t3-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	return root
+}
+
 func startLocalTransport(t *testing.T, allowedUID uint32, service LocalService) (LocalClient, context.CancelFunc, <-chan error) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "admin.sock")
+	path := filepath.Join(shortTempRoot(t), "admin.sock")
 	listener, err := ListenLocal(path)
 	if err != nil {
 		t.Fatal(err)
@@ -293,7 +305,7 @@ func TestLocalTransportRejectsOversizedAndMalformedFrames(t *testing.T) {
 }
 
 func TestListenLocalProtectsPathAndRefusesNonSocket(t *testing.T) {
-	root := t.TempDir()
+	root := shortTempRoot(t)
 	path := filepath.Join(root, "admin.sock")
 	listener, err := ListenLocal(path)
 	if err != nil {
@@ -348,7 +360,7 @@ func TestLocalTransportShutdownClosesIdleConnection(t *testing.T) {
 }
 
 func TestLocalTransportBoundsIdleClientsAndBackpressure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "admin.sock")
+	path := filepath.Join(shortTempRoot(t), "admin.sock")
 	listener, err := ListenLocal(path)
 	if err != nil {
 		t.Fatal(err)
