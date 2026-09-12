@@ -242,6 +242,24 @@ func TestLocalDriverResolvesProjectBeforeCreate(t *testing.T) {
 	}
 }
 
+func TestLocalDriverStopSettlesRunningAndAlreadyStoppedThreads(t *testing.T) {
+	pkg := testPackage()
+	control := &recordingT3{thread: &domain.Thread{ID: pkg.Identity.ThreadID, Running: true}}
+	driver := &LocalDriver{Config: LocalDriverConfig{StopTimeout: time.Second}, T3: control}
+	if err := driver.StopThread(context.Background(), pkg); err != nil {
+		t.Fatal(err)
+	}
+	if control.stops != 1 || len(control.settlements) != 1 {
+		t.Fatalf("running thread: stops=%d settlements=%v", control.stops, control.settlements)
+	}
+	if err := driver.StopThread(context.Background(), pkg); err != nil {
+		t.Fatal(err)
+	}
+	if control.stops != 1 || len(control.settlements) != 2 {
+		t.Fatalf("replayed stop: stops=%d settlements=%v", control.stops, control.settlements)
+	}
+}
+
 func TestLocalDriverNoExternalEffectsModeAndCorruption(t *testing.T) {
 	_, commit := makeGitRepository(t)
 	pkg := testPackage()

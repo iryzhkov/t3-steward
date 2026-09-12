@@ -505,7 +505,14 @@ func (r *Runtime) stop(ctx context.Context, id string) error {
 		return err
 	}
 	record := state.Attempts[id]
-	if record.Phase == PhaseStopped || record.Phase == PhaseCompleted {
+	if record.Phase == PhaseCompleted {
+		return nil
+	}
+	if record.Phase == PhaseStopped {
+		if err := r.driver.StopThread(ctx, record.Package.Package); err != nil {
+			_ = r.markUnknown(id, "stop settlement is unproven: "+err.Error())
+			return err
+		}
 		return nil
 	}
 	if record.Phase == PhaseUnknown {

@@ -255,18 +255,23 @@ func (d *LocalDriver) StopThread(ctx context.Context, pkg workerproto.ExecutionP
 	if err != nil {
 		return err
 	}
-	if thread == nil || !thread.Running {
+	if thread == nil {
 		return nil
 	}
-	if err := d.T3.StopThread(ctx, *thread, t3control.StopSession); err != nil {
-		return err
+	if thread.Running {
+		if err := d.T3.StopThread(ctx, *thread, t3control.StopSession); err != nil {
+			return err
+		}
+		_, stopped, err := d.T3.WaitStopped(ctx, pkg.Identity.ThreadID, d.Config.StopTimeout)
+		if err != nil {
+			return err
+		}
+		if !stopped {
+			return errors.New("T3 thread did not stop before the containment deadline")
+		}
 	}
-	_, stopped, err := d.T3.WaitStopped(ctx, pkg.Identity.ThreadID, d.Config.StopTimeout)
-	if err != nil {
-		return err
-	}
-	if !stopped {
-		return errors.New("T3 thread did not stop before the containment deadline")
+	if err := d.T3.SettleThread(ctx, pkg.Identity.ThreadID, pkg.Identity.DispatchToken); err != nil {
+		return fmt.Errorf("settle stopped T3 thread: %w", err)
 	}
 	return nil
 }
