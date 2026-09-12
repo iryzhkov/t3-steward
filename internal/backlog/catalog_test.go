@@ -279,16 +279,20 @@ func TestNilProjectCatalogCannotResolve(t *testing.T) {
 }
 
 func validCatalogFixture() ([]ProjectDefinition, []SetupProfile) {
-	return []ProjectDefinition{{
+	// Named values rather than nested literals: gofmt 1.25 and 1.27 disagree on
+	// how to indent a composite literal inside a slice literal in a return.
+	project := ProjectDefinition{
 		Name: "t3-steward", Repository: "https://github.com/iryzhkov/t3-steward.git",
 		DefaultRef: "main", T3ProjectTemplate: "t3-steward development",
 		SetupProfile:        "go-project",
 		ResourceLocks:       []string{"repository", "database"},
 		RequiredCredentials: []string{"signing-key", "github-token"},
-	}}, []SetupProfile{{
+	}
+	profile := SetupProfile{
 		Name: "go-project", Commands: []string{"go mod download", "go build ./..."},
 		Timeout: 5 * time.Minute,
-	}}
+	}
+	return []ProjectDefinition{project}, []SetupProfile{profile}
 }
 
 func catalogWorkflow() domain.Workflow {

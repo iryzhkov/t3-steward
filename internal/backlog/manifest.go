@@ -599,12 +599,19 @@ func safeBundleFile(root, relative string) (string, error) {
 	if err := validateRelativePath(relative, false); err != nil {
 		return "", err
 	}
+	// Resolve the root as well: on macOS the temporary directory itself lives
+	// behind a symlink (/var -> /private/var), and comparing a resolved child
+	// against an unresolved root would report every file as escaping.
+	rootResolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
 	candidate := filepath.Join(root, relative)
 	resolved, err := filepath.EvalSymlinks(candidate)
 	if err != nil {
 		return "", err
 	}
-	inside, err := filepath.Rel(root, resolved)
+	inside, err := filepath.Rel(rootResolved, resolved)
 	if err != nil {
 		return "", err
 	}

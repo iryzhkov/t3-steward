@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"unicode"
 	"unicode/utf8"
 
@@ -97,11 +98,23 @@ func safeTerminalText(raw []byte) []byte {
 	return safe.Bytes()
 }
 
+// ensureRealOutputDirectory requires every component of the output path to be a
+// real directory. The one exception is a symlink owned by root that nobody else
+// can write, such as macOS's /var -> /private/var: an operator cannot redirect
+// it, so it is not the attack this check exists for. Symlinks the user could
+// have planted, anywhere below, are still refused.
 func ensureRealOutputDirectory(path string) error {
 	current := filepath.Clean(path)
 	for {
 		info, err := os.Lstat(current)
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		if err != nil {
+			return errors.New("artifact output directory is not a real directory")
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if !systemOwnedSymlink(info) {
+				return errors.New("artifact output directory is not a real directory")
+			}
+		} else if !info.IsDir() {
 			return errors.New("artifact output directory is not a real directory")
 		}
 		parent := filepath.Dir(current)
@@ -112,12 +125,17 @@ func ensureRealOutputDirectory(path string) error {
 	}
 }
 
+func systemOwnedSymlink(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Uid == 0 && info.Mode().Perm()&0o022 == 0
+}
+
 func openRealOutputDirectory(path string) (*os.Root, error) {
 	if err := ensureRealOutputDirectory(path); err != nil {
 		return nil, err
 	}
-	checked, err := os.Lstat(path)
-	if err != nil {
+	checked, err := os.Stat(path)
+	if err != nil || !checked.IsDir() {
 		return nil, errors.New("artifact output directory is not a real directory")
 	}
 	return openCheckedOutputDirectory(path, checked)
