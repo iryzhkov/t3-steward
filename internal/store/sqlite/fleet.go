@@ -277,7 +277,7 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 			assignment.Epoch = released.Epoch + 1
 			assignment.LeaseToken = fmt.Sprintf("%s-e%d", released.LeaseToken, assignment.Epoch)
 			assignment.DispatchToken = fmt.Sprintf("%s-e%d", released.DispatchToken, assignment.Epoch)
-			assignment.ThreadID = ""
+			assignment.ThreadID = fmt.Sprintf("thread-%s-e%d", assignment.ID, assignment.Epoch)
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("load released assignment for attempt %q: %w", attempt.ID, err)
 		}
