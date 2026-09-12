@@ -6,7 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.1] - 2026-09-12
+
+First packaged build of the backlog-v2 runtime that normandy has been running
+from source. Published as a prerelease so the fleet's daily `t3-update` check
+converges every host on the same binary.
+
 ### Added
+
+- The backlog-v2 coordinator and worker runtime (`backlog_v2` configuration),
+  the revision-fenced admin commands under `t3-steward backlog`, and the
+  reliability fixes that let both sides tolerate single bad records and
+  restarts.
 
 - A backlog-v2 system model covering state, ownership, boundaries, contracts,
   primitives, first-class concepts, seams, invariants, transactions, failure,
@@ -21,6 +32,19 @@ All notable changes to this project are documented here. The format follows
   configuration and coordinator/worker transport bindings are implemented.
 - Rollback guidance now preserves coordinator database and artifact consistency
   instead of treating state deletion as a safe recovery path.
+
+### Fixed
+
+- The binary builds again for darwin: peer-credential authentication of the
+  local admin socket is Linux-only, and other platforms refuse that transport
+  instead of failing to compile.
+
+### Removed
+
+- Windows builds. The backlog runtime relies on `flock` and unix `stat`, and
+  no host in the fleet runs the steward there.
+- A preparation command that hits its timeout no longer keeps the attempt
+  waiting until its orphaned children exit.
 
 ## [0.10.1] - 2026-09-08
 

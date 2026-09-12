@@ -12,16 +12,14 @@ builds:
     binary: t3-steward
     env:
       - CGO_ENABLED=0
+    # Windows left the matrix in 0.11.0: the backlog runtime relies on flock
+    # and unix stat, and no host in the fleet runs it there.
     goos:
       - linux
       - darwin
-      - windows
     goarch:
       - amd64
       - arm64
-    ignore:
-      - goos: windows
-        goarch: arm64
     ldflags:
       - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
     mod_timestamp: "{{ .CommitTimestamp }}"
@@ -30,9 +28,6 @@ archives:
   - id: default
     formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    format_overrides:
-      - goos: windows
-        formats: [zip]
     files:
       - README.md
       - LICENSE

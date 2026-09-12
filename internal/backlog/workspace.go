@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
@@ -448,6 +449,10 @@ func runLoggedCommandOutput(ctx context.Context, log io.Writer, dir, program str
 	fmt.Fprintf(log, "$ %s %s\n", program, strings.Join(args, " "))
 	command := exec.CommandContext(ctx, program, args...)
 	command.Dir = dir
+	// A cancelled command may leave children holding the output pipe (dash does
+	// not exec the last command of -c). Stop waiting for them shortly after the
+	// context ends instead of blocking until they exit on their own.
+	command.WaitDelay = time.Second
 	output, err := command.CombinedOutput()
 	if len(output) != 0 {
 		_, _ = log.Write(output)
