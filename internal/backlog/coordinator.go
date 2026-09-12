@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -289,8 +290,13 @@ func PlanWorkerCommands(
 		if !ok {
 			continue
 		}
+		commandIdentity := workerCommandKey(assignment.ID, assignment.Epoch, kind)
+		if prior, exists := existing[commandIdentity]; exists && prior.Acknowledgement != nil &&
+			!prior.Acknowledgement.Accepted && strings.Contains(prior.Acknowledgement.Detail, "stale worker command identity or sequence") {
+			commandIdentity = fmt.Sprintf("%s:sequence:%d", commandIdentity, snapshot.Sequence)
+		}
 		commands = append(commands, domain.WorkerCommand{
-			ID:                     stableCoordinatorID("command", workerCommandKey(assignment.ID, assignment.Epoch, kind)),
+			ID:                     stableCoordinatorID("command", commandIdentity),
 			Kind:                   kind,
 			WorkerID:               snapshot.WorkerID,
 			WorkerEpoch:            snapshot.WorkerEpoch,
@@ -337,6 +343,10 @@ func nextWorkerCommand(
 	}
 	prepare, prepared := has(domain.WorkerCommandPrepare)
 	if !prepared {
+		return domain.WorkerCommandPrepare, true
+	}
+	if prepare.Acknowledgement != nil && !prepare.Acknowledgement.Accepted &&
+		strings.Contains(prepare.Acknowledgement.Detail, "stale worker command identity or sequence") {
 		return domain.WorkerCommandPrepare, true
 	}
 	if prepare.Acknowledgement == nil || !prepare.Acknowledgement.Accepted {
