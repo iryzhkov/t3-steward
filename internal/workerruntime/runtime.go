@@ -105,6 +105,20 @@ func (r *Runtime) AcceptOffers(_ context.Context, offers workerproto.AssignmentO
 			}
 			id := offer.Assignment.ID
 			if existing, ok := state.Attempts[id]; ok {
+				if existing.Phase == PhaseUnknown && offer.Assignment.Epoch == existing.Assignment.Epoch+1 {
+					record := AttemptRecord{
+						Assignment: offer.Assignment, Package: offer.Package, Phase: PhaseClaimed,
+						CommandRequests: make(map[string]domain.WorkerCommand), CommandResults: make(map[string]domain.WorkerAcknowledgement),
+						ThrottleRequests: make(map[string]domain.ThrottleCommand), ThrottleResults: make(map[string]domain.ThrottleAcknowledgement), UpdatedAt: now,
+					}
+					record.Assignment.State = domain.AssignmentClaimed
+					record.Assignment.WorkerEpoch = r.config.WorkerEpoch
+					record.Assignment.LeaseExpiresAt = minTime(offer.Assignment.LeaseExpiresAt, now.Add(r.config.LeaseDuration))
+					state.Attempts[id] = record
+					state.Sequence++
+					claims.Claims = append(claims.Claims, claim(record.Assignment, r.config, now))
+					continue
+				}
 				if existing.Package.SHA256 != offer.Package.SHA256 || existing.Assignment.Epoch != offer.Assignment.Epoch {
 					return fmt.Errorf("worker runtime: changed replay for assignment %q", id)
 				}
