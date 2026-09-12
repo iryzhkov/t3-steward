@@ -3,6 +3,7 @@ package backlog
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"sort"
 	"time"
@@ -71,14 +72,19 @@ func PlanWorkerStateTransitions(
 		}
 		attempt, ok := attempts[assignment.AttemptID]
 		if !ok {
-			return nil, fmt.Errorf("assignment %q refers to unknown attempt %q", assignment.ID, assignment.AttemptID)
+			slog.Warn("worker state reconciliation skipped an assignment without an attempt",
+				"assignment", assignment.ID, "attempt", assignment.AttemptID)
+			continue
 		}
 		observation, observed := observations[workerAssignmentKey(assignment.ID, assignment.Epoch)]
 		nextAssignment, nextAttempt, reason, changed, err := planWorkerStateTransition(
 			assignment, attempt, observation, observed, snapshot, commands, now,
 		)
 		if err != nil {
-			return nil, err
+			// One inconsistent observation must not stop reconciliation of the
+			// other assignments on this worker.
+			slog.Warn("worker state reconciliation skipped an assignment", "assignment", assignment.ID, "error", err)
+			continue
 		}
 		if !changed {
 			continue
@@ -115,9 +121,6 @@ func planWorkerStateTransition(
 		}
 		switch observation.State {
 		case domain.AssignmentClaimed:
-			if assignment.State == domain.AssignmentUnknown && !assignment.LeaseExpiresAt.After(now) && !attemptFinished {
-				return assignment, attempt, "", false, nil
-			}
 			control := observation.Control
 			if control == "" {
 				control = domain.ControlRunning
@@ -133,6 +136,13 @@ func planWorkerStateTransition(
 			nextAssignment.WorkerEpoch = snapshot.WorkerEpoch
 			nextAssignment.ThreadID = observation.ThreadID
 			nextAssignment.UpdatedAt = now
+			if assignment.State == domain.AssignmentUnknown || !assignment.LeaseExpiresAt.After(now) {
+				// The worker still owns and observes this execution, so an
+				// expired lease (a coordinator outage, restart, or slow tick)
+				// is re-claimed rather than treated as lost work. The lease
+				// is renewed on the next exchange.
+				nextAssignment.LeaseExpiresAt = snapshot.ValidUntil
+			}
 			nextAttempt := attempt
 			nextAttempt.AssignmentID = assignment.ID
 			reason := workerStateObservedPresent

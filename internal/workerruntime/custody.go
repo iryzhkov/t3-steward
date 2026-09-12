@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -23,6 +24,11 @@ import (
 )
 
 const custodyReceiptVersion = 1
+
+// UploadRetention is the advertised lifetime of an outbox upload. Durable
+// results are never discarded for age on the import path; the lifetime only
+// bounds how long a coordinator may keep discovering an unimported result.
+const UploadRetention = 30 * 24 * time.Hour
 
 // CustodyConfig binds a worker-local content store to one coordinator and worker epoch.
 type CustodyConfig struct {
@@ -256,14 +262,16 @@ func (s *CustodyStore) PendingUploads() ([]PendingUpload, error) {
 	result := make([]PendingUpload, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			return nil, errors.New("pending uploads: unexpected outbox entry")
+			continue
 		}
 		pending, err := s.loadPending(filepath.Join(s.config.Root, "outbox", entry.Name()))
 		if err != nil {
-			return nil, err
+			slog.Warn("custody outbox entry skipped", "entry", entry.Name(), "error", err)
+			continue
 		}
 		if pending.Manifest.Direction != "upload" {
-			return nil, errors.New("pending uploads: non-upload manifest in outbox")
+			slog.Warn("custody outbox entry is not an upload; skipped", "entry", entry.Name())
+			continue
 		}
 		result = append(result, pending)
 	}
@@ -272,9 +280,13 @@ func (s *CustodyStore) PendingUploads() ([]PendingUpload, error) {
 
 // PendingUploadByPurpose returns at most the lexicographically first immutable
 // outbox entry for a fixed purpose. Acknowledged entries are not rediscovered.
-func (s *CustodyStore) PendingUploadByPurpose(purpose string) (*PendingUpload, error) {
+func (s *CustodyStore) PendingUploadByPurpose(purpose string, exclude ...string) (*PendingUpload, error) {
 	if purpose != "result" && purpose != "checkpoint" {
 		return nil, errors.New("pending upload: unsupported purpose")
+	}
+	excluded := make(map[string]struct{}, len(exclude))
+	for _, id := range exclude {
+		excluded[id] = struct{}{}
 	}
 	entries, err := os.ReadDir(filepath.Join(s.config.Root, "outbox"))
 	if err != nil {
@@ -283,11 +295,15 @@ func (s *CustodyStore) PendingUploadByPurpose(purpose string) (*PendingUpload, e
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			return nil, errors.New("pending uploads: unexpected outbox entry")
+			continue
 		}
 		pending, err := s.loadPending(filepath.Join(s.config.Root, "outbox", entry.Name()))
 		if err != nil {
-			return nil, err
+			slog.Warn("custody outbox entry skipped", "entry", entry.Name(), "error", err)
+			continue
+		}
+		if _, skip := excluded[pending.Manifest.ID]; skip {
+			continue
 		}
 		matches := purpose == "result" && strings.HasSuffix(pending.Manifest.ID, "-result") ||
 			purpose == "checkpoint" && strings.Contains(pending.Manifest.ID, "-checkpoint-")
@@ -343,12 +359,13 @@ func (s *CustodyStore) findPending(directory, manifestID string) (string, *Pendi
 	}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			return "", nil, errors.New("pending uploads: unexpected custody entry")
+			continue
 		}
 		path := filepath.Join(directory, entry.Name())
 		pending, err := s.loadPending(path)
 		if err != nil {
-			return "", nil, err
+			slog.Warn("custody entry skipped", "entry", path, "error", err)
+			continue
 		}
 		if pending.Manifest.ID == manifestID {
 			return path, &pending, nil
@@ -361,7 +378,9 @@ func (s *CustodyStore) publishManifest(ctx context.Context, pkg workerproto.Exec
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if pkg.CoordinatorID != s.config.CoordinatorID || pkg.CoordinatorEpoch != s.config.CoordinatorEpoch ||
+	// A package created under an earlier coordinator authority is still this
+	// worker's own execution; its result must survive a coordinator restart.
+	if pkg.CoordinatorID != s.config.CoordinatorID || pkg.CoordinatorEpoch < 1 || pkg.CoordinatorEpoch > s.config.CoordinatorEpoch ||
 		pkg.WorkerID != s.config.WorkerID || pkg.WorkerEpoch != s.config.WorkerEpoch {
 		return errors.New("publish artifact: execution package epoch binding mismatch")
 	}
@@ -379,11 +398,22 @@ func (s *CustodyStore) publishManifest(ctx context.Context, pkg workerproto.Exec
 	}
 	if prior, err := s.loadPending(path); err == nil {
 		if prior.Manifest.AssignmentID != pkg.Identity.AssignmentID ||
-			prior.Manifest.AssignmentEpoch != pkg.Identity.AssignmentEpoch ||
-			!reflect.DeepEqual(prior.Manifest.Objects, objects) {
+			prior.Manifest.AssignmentEpoch != pkg.Identity.AssignmentEpoch {
 			return errors.New("publish artifact: manifest id replay changed immutable content")
 		}
-		return nil
+		if reflect.DeepEqual(prior.Manifest.Objects, objects) {
+			return nil
+		}
+		// A repeated collection of the same execution (after a lost settlement
+		// or a crash) re-captures the same workspace under fresh artifact
+		// identities. While the earlier upload is still waiting in the outbox
+		// the newer capture replaces it: it was taken later and is at least as
+		// complete. An acknowledged upload is never revisited.
+		slog.Warn("pending result replaced by a newer capture of the same execution",
+			"assignment", pkg.Identity.AssignmentID, "manifest", id)
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("publish artifact: replace pending upload: %w", err)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -400,7 +430,7 @@ func (s *CustodyStore) publishManifest(ctx context.Context, pkg workerproto.Exec
 		Objects:          append([]workerproto.ArtifactObject(nil), objects...),
 		TotalBytes:       total,
 		CreatedAt:        now,
-		ExpiresAt:        now.Add(24 * time.Hour),
+		ExpiresAt:        now.Add(UploadRetention),
 	}
 	if err := s.validateManifest(manifest, "upload"); err != nil {
 		return err

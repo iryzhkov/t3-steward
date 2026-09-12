@@ -175,6 +175,16 @@ func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeR
 	if p.now != nil {
 		now = p.now().UTC()
 	}
+	// Publish DAG progress first so dependents of finished tasks are ready
+	// in the durable projection operators read, not only in planner memory.
+	if _, err := backlog.RepairCoordinatorState(ctx, p.store, now); err != nil {
+		slog.Warn("coordinator state repair failed; planning continues", "error", err)
+	}
+	if report, err := backlog.ProjectWorkflowRuns(ctx, p.store, now); err != nil {
+		slog.Warn("workflow run projection failed; planning continues", "error", err)
+	} else if len(report.Runs) != 0 || len(report.Attempts) != 0 {
+		slog.Info("workflow run projection published", "runs", len(report.Runs), "attempts", len(report.Attempts))
+	}
 	records, err := p.store.LoadCoordinatorRecords(ctx)
 	if err != nil {
 		return backlog.AssignmentPlanningReport{}, fmt.Errorf("load planning coordinator snapshot: %w", err)
@@ -329,6 +339,9 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 	if err != nil {
 		return err
 	}
+	if _, err := backlog.RepairCoordinatorState(ctx, store, time.Now().UTC()); err != nil {
+		logger.Warn("coordinator state repair failed; continuing", "error", err)
+	}
 
 	service, err := backlogadmin.New(store, localAdminAuthorizer{})
 	if err != nil {
@@ -423,6 +436,9 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 		"epoch", epoch,
 		"admission", "closed",
 		"admin_socket", socketPath)
+	// The quota watchdog, wait polling, and archiving keep running on this
+	// host alongside the coordinator; they share the state database.
+	go runWatchdogAlongside(ctx, cfg, logger, store)
 	return serveCoordinatorBoundaries(ctx, &server, cycle, cfg.BacklogV2.Scheduling.Interval.D())
 }
 

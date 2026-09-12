@@ -73,7 +73,7 @@ func TestPlanWorkerStateTransitionsReconcilesObservationsAndAcknowledgements(t *
 			wantReason: workerStateObservedAbsent, wantCount: 1,
 		},
 		{
-			name: "lease expired unknown is not revived by a running observation",
+			name: "lease expired unknown is re-claimed by a running observation",
 			assignment: func() domain.Assignment {
 				value := baseAssignment
 				value.State = domain.AssignmentUnknown
@@ -90,7 +90,9 @@ func TestPlanWorkerStateTransitionsReconcilesObservationsAndAcknowledgements(t *
 				}}
 				return value
 			}(),
-			wantCount: 0,
+			wantState: domain.AssignmentClaimed, wantControl: domain.ControlRunning,
+			wantProgress: domain.ProgressActive, wantWorkerEpoch: baseSnapshot.WorkerEpoch,
+			wantAssignmentID: baseAssignment.ID, wantReason: workerStateObservedPresent, wantCount: 1,
 		},
 		{
 			name: "worker process epoch change makes omission authoritative",

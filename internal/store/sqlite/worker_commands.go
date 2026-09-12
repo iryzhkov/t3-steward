@@ -114,6 +114,16 @@ func (s *Store) CommitWorkerCommands(ctx context.Context, commands []domain.Work
 		if err != nil {
 			return nil, fmt.Errorf("encode worker command %q: %w", command.ID, err)
 		}
+		// A command for the same effect issued under an earlier coordinator
+		// authority and never acknowledged can no longer be delivered (delivery
+		// is fenced to the current epoch). The fresh command supersedes it.
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM coordinator_worker_commands
+			WHERE assignment_id = ? AND assignment_epoch = ? AND kind = ?
+			  AND acknowledged = 0 AND coordinator_epoch <> ?
+		`, command.AssignmentID, command.AssignmentEpoch, command.Kind, command.CoordinatorEpoch); err != nil {
+			return nil, fmt.Errorf("%w: supersede stale command for %q: %v", ErrWorkerCommand, command.AssignmentID, err)
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO coordinator_worker_commands(
 				id, kind, worker_id, worker_epoch, coordinator_epoch, assignment_id,
@@ -472,7 +482,9 @@ func (s *Store) ExpireAssignmentLeases(ctx context.Context, coordinatorEpoch int
 		if err := updateAssignmentLeaseTx(ctx, tx, expired[index], domain.AssignmentClaimed); err != nil {
 			return nil, err
 		}
-		identity := fmt.Sprintf("assignment-lease-expired:%s:%d", expired[index].ID, expired[index].Epoch)
+		// A re-claimed assignment can expire more than once under the same
+		// epoch; each expiry is its own audit event keyed by the lease it ended.
+		identity := fmt.Sprintf("assignment-lease-expired:%s:%d:%d", expired[index].ID, expired[index].Epoch, expired[index].LeaseExpiresAt.UTC().UnixNano())
 		if _, err := insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
 			ID: identity, Kind: "assignment-lease-expired", AttemptID: expired[index].AttemptID,
 			TargetType: domain.AdminTargetAssignment, TargetID: expired[index].ID,
@@ -514,9 +526,11 @@ func requireWorkerAcknowledgementSnapshot(
 	if err != nil {
 		return err
 	}
+	// The worker's sequence advances on every exchange (each one reconciles),
+	// so an acknowledgement is routinely newer than the snapshot the command
+	// was planned from. Only the epochs fence the acknowledgement.
 	if !exists || snapshot.WorkerEpoch != acknowledgement.WorkerEpoch ||
-		snapshot.CoordinatorEpoch != acknowledgement.CoordinatorEpoch ||
-		acknowledgement.WorkerSequence > snapshot.Sequence {
+		snapshot.CoordinatorEpoch != acknowledgement.CoordinatorEpoch {
 		return fmt.Errorf("%w: worker %q acknowledgement snapshot is not current", ErrStaleWorkerSnapshot, acknowledgement.WorkerID)
 	}
 	if !workerAccepts(snapshot, acknowledgement.AcknowledgedAt) {

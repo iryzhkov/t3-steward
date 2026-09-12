@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"sort"
 	"time"
@@ -103,11 +104,15 @@ func (c FleetCoordinator) ReconcileWorker(
 		leased := assignment
 		leased.LeaseExpiresAt = now.Add(leaseDuration)
 		offer, err := builder.BuildAssignmentOffer(ctx, leased, now.Add(offerTTL))
-		if err != nil {
-			return report, fmt.Errorf("build assignment offer %q: %w", assignment.ID, err)
+		if err == nil {
+			err = validateBuiltOffer(offer, leased, now)
 		}
-		if err := validateBuiltOffer(offer, leased, now); err != nil {
-			return report, fmt.Errorf("build assignment offer %q: %w", assignment.ID, err)
+		if err != nil {
+			// An assignment that cannot be packaged must not block offers,
+			// commands, or collection for every other assignment.
+			slog.Warn("assignment offer withheld", "assignment", assignment.ID, "error", err)
+			report.Withheld = append(report.Withheld, assignment)
+			continue
 		}
 		offers = append(offers, offer)
 		report.Offered = append(report.Offered, assignment)
@@ -128,17 +133,19 @@ func (c FleetCoordinator) ReconcileWorker(
 			if !exists || duplicate || claim.WorkerID != snapshot.WorkerID || claim.WorkerEpoch != snapshot.WorkerEpoch ||
 				claim.CoordinatorEpoch != epoch || claim.AssignmentEpoch != assignment.Epoch ||
 				claim.LeaseToken != assignment.LeaseToken || claim.LeaseExpiresAt.After(assignment.LeaseExpiresAt) {
-				return report, fmt.Errorf("worker %q returned an invalid claim for assignment %q", snapshot.WorkerID, claim.AssignmentID)
+				slog.Warn("worker returned an invalid claim; ignored", "worker", snapshot.WorkerID, "assignment", claim.AssignmentID)
+				continue
 			}
 			claimedIDs[claim.AssignmentID] = struct{}{}
 			claimed, err := store.ClaimAssignment(ctx, claim)
 			if err != nil {
-				return report, err
+				slog.Warn("assignment claim could not be persisted; it stays offered", "assignment", claim.AssignmentID, "error", err)
+				continue
 			}
 			report.Claimed = append(report.Claimed, claimed)
 		}
 		if len(claimedIDs) != len(offered) {
-			return report, fmt.Errorf("worker %q claimed %d of %d offered assignments", snapshot.WorkerID, len(claimedIDs), len(offered))
+			slog.Warn("worker withheld some offers", "worker", snapshot.WorkerID, "claimed", len(claimedIDs), "offered", len(offered))
 		}
 		snapshot, err = transport.Snapshot(ctx)
 		if err != nil {
@@ -276,7 +283,7 @@ func (c FleetCoordinator) reconcileWorkerThrottle(ctx context.Context, store Wor
 		attempt, attemptOK := attempts[assignment.AttemptID]
 		if ok && attemptOK && !attempt.AdminForceStart &&
 			(assignment.State == domain.AssignmentClaimed || assignment.State == domain.AssignmentUnknown) &&
-			attempt.AssignmentID == assignment.ID &&
+			attempt.AssignmentID == assignment.ID && assignment.ThreadID != "" &&
 			observation.AssignmentEpoch == assignment.Epoch && observation.WorkspacePath != "" {
 			bindings = append(bindings, ThrottleAttemptBinding{Attempt: attempt, Assignment: assignment, WorkspacePath: observation.WorkspacePath})
 		}

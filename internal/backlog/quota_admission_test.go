@@ -318,12 +318,6 @@ func TestQuotaAdmissionPolicyRejectsInvalidInput(t *testing.T) {
 		mutate func(*QuotaAdmissionInput)
 	}{
 		{
-			name: "no windows",
-			mutate: func(input *QuotaAdmissionInput) {
-				input.Windows = nil
-			},
-		},
-		{
 			name: "invalid maximum observation age",
 			mutate: func(input *QuotaAdmissionInput) {
 				input.MaxObservationAge = 0

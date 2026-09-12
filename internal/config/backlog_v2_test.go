@@ -149,11 +149,11 @@ func TestBacklogV2WorkerModeRequiresFixedLocalAuthority(t *testing.T) {
 		t.Fatalf("valid worker mode: %v", err)
 	}
 	for name, mutate := range map[string]func(*Config){
-		"missing id":                func(c *Config) { c.BacklogV2.LocalWorker.ID = "" },
-		"unknown id":                func(c *Config) { c.BacklogV2.LocalWorker.ID = "other" },
-		"missing epoch":             func(c *Config) { c.BacklogV2.LocalWorker.Epoch = "" },
-		"missing coordinator epoch": func(c *Config) { c.BacklogV2.LocalWorker.CoordinatorEpoch = 0 },
-		"mismatched declared epoch": func(c *Config) { c.BacklogV2.LocalWorker.Epoch = "worker-2" },
+		"missing id":                 func(c *Config) { c.BacklogV2.LocalWorker.ID = "" },
+		"unknown id":                 func(c *Config) { c.BacklogV2.LocalWorker.ID = "other" },
+		"missing epoch":              func(c *Config) { c.BacklogV2.LocalWorker.Epoch = "" },
+		"negative coordinator epoch": func(c *Config) { c.BacklogV2.LocalWorker.CoordinatorEpoch = -1 },
+		"mismatched declared epoch":  func(c *Config) { c.BacklogV2.LocalWorker.Epoch = "worker-2" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := cfg

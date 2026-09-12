@@ -133,8 +133,8 @@ func (c *Config) validateBacklogV2() error {
 		local := v.LocalWorker
 		if strings.TrimSpace(local.ID) != local.ID || local.ID == "" ||
 			strings.TrimSpace(local.Epoch) != local.Epoch || local.Epoch == "" ||
-			local.CoordinatorEpoch < 1 {
-			return errors.New("backlog_v2: worker mode requires trimmed local_worker id/epoch and positive coordinator_epoch")
+			local.CoordinatorEpoch < 0 {
+			return errors.New("backlog_v2: worker mode requires trimmed local_worker id/epoch and a nonnegative coordinator_epoch")
 		}
 		if _, ok := v.Workers[local.ID]; !ok {
 			return fmt.Errorf("backlog_v2: local worker %q is not declared in workers", local.ID)

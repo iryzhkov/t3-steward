@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -59,8 +60,9 @@ func coordinatorTestRepositoryRoot(t *testing.T) string {
 		t.Fatal("resolve coordinator acceptance-test source path")
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", ".."))
-	if filepath.Base(root) != "t3-steward" {
-		t.Fatalf("unexpected repository root %q", root)
+	// Worktrees may carry any directory name; the module file identifies the root.
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Fatalf("unexpected repository root %q: %v", root, err)
 	}
 	return root
 }

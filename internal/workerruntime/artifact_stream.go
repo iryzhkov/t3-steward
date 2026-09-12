@@ -20,6 +20,15 @@ func (s *WorkerService) ServeArtifactReceive(ctx context.Context, input io.Reade
 	if err != nil {
 		return err
 	}
+	return s.ServeArtifactReceiveEnvelope(ctx, envelope, buffered, output)
+}
+
+// ServeArtifactReceiveEnvelope is ServeArtifactReceive for an envelope the
+// caller already read from the stream.
+func (s *WorkerService) ServeArtifactReceiveEnvelope(ctx context.Context, envelope workerproto.Envelope, buffered *bufio.Reader, output io.Writer) error {
+	if s == nil || s.Exchange.Server == nil || s.Exchange.Custody == nil {
+		return errors.New("artifact receive: worker service is not initialized")
+	}
 	var manifest workerproto.ArtifactTransferManifest
 	if err := workerproto.DecodePayload(envelope, workerproto.MessageArtifactDownload, &manifest); err != nil {
 		return err
@@ -67,6 +76,15 @@ func (s *WorkerService) ServeArtifactSend(ctx context.Context, input io.Reader, 
 	envelope, buffered, err := readStreamEnvelope(input, s.Codec)
 	if err != nil {
 		return err
+	}
+	return s.ServeArtifactSendEnvelope(ctx, envelope, buffered, output)
+}
+
+// ServeArtifactSendEnvelope is ServeArtifactSend for an envelope the caller
+// already read from the stream.
+func (s *WorkerService) ServeArtifactSendEnvelope(ctx context.Context, envelope workerproto.Envelope, buffered *bufio.Reader, output io.Writer) error {
+	if s == nil || s.Exchange.Server == nil || s.Exchange.Custody == nil {
+		return errors.New("artifact send: worker service is not initialized")
 	}
 	if err := requireStreamEOF(buffered); err != nil {
 		return err
@@ -124,6 +142,12 @@ func (s *WorkerService) ServeArtifactSend(ctx context.Context, input io.Reader, 
 		}
 	}
 	return nil
+}
+
+// ReadStreamEnvelope reads the newline-delimited envelope that starts every
+// worker exchange and returns the buffered remainder of the stream.
+func ReadStreamEnvelope(input io.Reader, codec workerproto.Codec) (workerproto.Envelope, *bufio.Reader, error) {
+	return readStreamEnvelope(input, codec)
 }
 
 func readStreamEnvelope(input io.Reader, codec workerproto.Codec) (workerproto.Envelope, *bufio.Reader, error) {

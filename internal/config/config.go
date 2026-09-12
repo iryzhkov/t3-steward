@@ -298,9 +298,12 @@ type V2Coordinator struct {
 
 // V2LocalWorker fixes the authority identity used by restricted worker commands.
 type V2LocalWorker struct {
-	ID               string `yaml:"id"`
-	Epoch            string `yaml:"epoch"`
-	CoordinatorEpoch int64  `yaml:"coordinator_epoch"`
+	ID    string `yaml:"id"`
+	Epoch string `yaml:"epoch"`
+	// CoordinatorEpoch is an optional floor. The worker adopts the epoch of
+	// every authenticated coordinator envelope, never going backwards, so a
+	// coordinator restart needs no configuration change here.
+	CoordinatorEpoch int64 `yaml:"coordinator_epoch"`
 }
 
 type V2Worker struct {
@@ -341,6 +344,9 @@ type V2Storage struct {
 	Bundles    string `yaml:"bundles"`
 	Artifacts  string `yaml:"artifacts"`
 	Workspaces string `yaml:"workspaces"`
+	// Retention is how long a worker keeps finished attempt workspaces and
+	// their journal records before pruning them (default 72h).
+	Retention Duration `yaml:"retention"`
 }
 
 type V2Transport struct {

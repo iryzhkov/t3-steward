@@ -2,6 +2,7 @@ package backlog
 
 import (
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -112,7 +113,10 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 		}
 		execution, err := NewDAGExecution(state)
 		if err != nil {
-			return PlanInput{}, fmt.Errorf("coordinator planning workflow run %q: %w", run.ID, err)
+			// A corrupt run is excluded from planning; every other run keeps
+			// being scheduled.
+			slog.Warn("coordinator planning skipped a workflow run", "run", run.ID, "error", err)
+			continue
 		}
 		state = execution.Snapshot()
 		planningWorkflows = append(planningWorkflows, PlanningWorkflow{Workflow: workflow, State: state})
@@ -149,31 +153,36 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 		}
 		assignment, exists := assignmentsByID[attempt.AssignmentID]
 		if !exists || assignment.AttemptID != attempt.ID {
-			return PlanInput{}, fmt.Errorf("attempt %q has no matching active assignment", attempt.ID)
+			// The attempt keeps its assignment reference, so the planner
+			// reports it as already assigned instead of planning it twice.
+			slog.Warn("coordinator planning found an attempt without its assignment", "attempt", attempt.ID, "assignment", attempt.AssignmentID)
+			continue
 		}
 		if assignment.State == domain.AssignmentReleased || assignment.State == domain.AssignmentCompleted {
 			// A worker assignment is settled before its result artifact is
 			// verified and imported. It no longer owns planning resources.
-			if attempt.Progress == domain.ProgressVerifying {
-				continue
+			if attempt.Progress != domain.ProgressVerifying {
+				slog.Warn("coordinator planning found a nonterminal attempt on a settled assignment", "attempt", attempt.ID, "assignment", assignment.ID)
 			}
-			return PlanInput{}, fmt.Errorf("attempt %q uses settled assignment %q", attempt.ID, assignment.ID)
+			continue
 		}
 		task := taskByID[attempt.TaskID]
 		for _, resource := range task.ResourceLocks {
 			resource = strings.TrimSpace(resource)
 			if resource == "" {
-				return PlanInput{}, fmt.Errorf("task %q has an invalid resource lock", task.ID)
+				continue
 			}
 			if owner := resourceOwners[resource]; owner != "" && owner != attempt.ID {
-				return PlanInput{}, fmt.Errorf("resource %q is held by attempts %q and %q", resource, owner, attempt.ID)
+				slog.Warn("resource lock is held by more than one attempt; first owner kept", "resource", resource, "owner", owner, "attempt", attempt.ID)
+				continue
 			}
 			resourceOwners[resource] = attempt.ID
 		}
 		run := runByID[attempt.WorkflowRunID]
 		if workflowByID[run.WorkflowID].Environment.Scope == EnvironmentScopeWorkflow {
 			if owner := checkoutOwners[run.ID]; owner != "" && owner != attempt.ID {
-				return PlanInput{}, fmt.Errorf("workflow checkout %q is held by attempts %q and %q", run.ID, owner, attempt.ID)
+				slog.Warn("workflow checkout is held by more than one attempt; first owner kept", "run", run.ID, "owner", owner, "attempt", attempt.ID)
+				continue
 			}
 			checkoutOwners[run.ID] = attempt.ID
 		}

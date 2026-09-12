@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/config"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
@@ -30,6 +32,7 @@ type coordinatorWorkerSession struct {
 	Importer           backlog.CoordinatorResultImporter
 	CheckpointImporter backlog.CoordinatorCheckpointImporter
 	Binding            workerruntime.WorkerBinding
+	Records            backlog.ExecutionPackageRecordStore
 }
 
 type coordinatorWorkerTickResult struct {
@@ -102,19 +105,87 @@ func importCoordinatorWorkerArtifacts(ctx context.Context, session coordinatorWo
 	return importCoordinatorWorkerCheckpoint(ctx, session, report, maxArtifactBytes)
 }
 
+// resultImportDisposition decides what to do with an announced result before
+// its bytes are fetched: import it, wait for the coordinator projection to
+// catch up, or discard an upload that belongs to a superseded execution.
+type resultImportDisposition int
+
+const (
+	resultImportNow resultImportDisposition = iota
+	resultImportDefer
+	resultImportDiscard
+)
+
+func classifyResultImport(records sqlite.CoordinatorRecords, manifest workerproto.ArtifactTransferManifest) (resultImportDisposition, string) {
+	for _, assignment := range records.Assignments {
+		if assignment.ID != manifest.AssignmentID {
+			continue
+		}
+		if assignment.Epoch != manifest.AssignmentEpoch {
+			return resultImportDiscard, fmt.Sprintf("assignment epoch %d superseded by %d", manifest.AssignmentEpoch, assignment.Epoch)
+		}
+		switch assignment.State {
+		case domain.AssignmentCompleted:
+			return resultImportNow, ""
+		case domain.AssignmentReleased:
+			return resultImportDiscard, "assignment was released before its result was imported"
+		default:
+			return resultImportDefer, fmt.Sprintf("assignment is %q; waiting for the completed projection", assignment.State)
+		}
+	}
+	return resultImportDiscard, "assignment is unknown to the coordinator"
+}
+
 func importCoordinatorWorkerResult(ctx context.Context, session coordinatorWorkerSession, report backlog.WorkerExchangeReport, maxArtifactBytes int64) (backlog.WorkerExchangeReport, error) {
 	if session.Client == nil || session.ArtifactClient == nil || maxArtifactBytes < 1 {
 		return report, fmt.Errorf("coordinator worker result import requires control, artifact transport, and a positive limit")
 	}
-	upload, err := session.Client.PollArtifact(ctx, "result")
-	if err != nil || upload == nil {
-		return report, err
+	// Uploads are discovered one at a time. A result that cannot be imported
+	// yet is skipped for the rest of this pass so it does not hide the results
+	// behind it; discarded uploads are acknowledged and the poll continues.
+	var upload *workerproto.ArtifactUploadResponse
+	var deferred []string
+	for round := 0; round < 32; round++ {
+		candidate, err := session.Client.PollArtifact(ctx, "result", deferred...)
+		if err != nil || candidate == nil {
+			return report, err
+		}
+		if session.Records == nil {
+			upload = candidate
+			break
+		}
+		records, err := session.Records.LoadCoordinatorRecords(ctx)
+		if err != nil {
+			return report, err
+		}
+		disposition, reason := classifyResultImport(records, candidate.Manifest)
+		if disposition == resultImportDefer {
+			slog.Debug("worker result import deferred", "manifest", candidate.Manifest.ID, "reason", reason)
+			deferred = append(deferred, candidate.Manifest.ID)
+			continue
+		}
+		if disposition == resultImportDiscard {
+			slog.Warn("worker result discarded", "manifest", candidate.Manifest.ID, "reason", reason)
+			if err := session.Client.AcknowledgeArtifact(ctx, candidate.Manifest.ID); err != nil {
+				return report, err
+			}
+			continue
+		}
+		upload = candidate
+		break
+	}
+	if upload == nil {
+		return report, nil
 	}
 	fetched, err := session.ArtifactClient.FetchArtifact(ctx, *upload, maxArtifactBytes, maxArtifactBytes)
 	if err != nil {
 		return report, err
 	}
 	imported, err := session.Importer.Import(ctx, fetched.Response, fetched)
+	if errors.Is(err, backlog.ErrResultImportSuperseded) {
+		slog.Warn("worker result discarded", "manifest", upload.Manifest.ID, "reason", err)
+		return report, session.Client.AcknowledgeArtifact(ctx, upload.Manifest.ID)
+	}
 	if err != nil {
 		return report, err
 	}
@@ -258,7 +329,7 @@ func newCoordinatorWorkerSession(
 		artifacts.Catalog = store
 	}
 	return coordinatorWorkerSession{
-		Client: client, ArtifactClient: artifactClient, Binding: binding,
+		Client: client, ArtifactClient: artifactClient, Binding: binding, Records: store,
 		Importer: backlog.CoordinatorResultImporter{
 			CoordinatorID: settings.Coordinator.ID, CoordinatorEpoch: coordinatorEpoch,
 			Store: store, Artifacts: artifacts,

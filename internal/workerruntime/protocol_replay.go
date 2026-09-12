@@ -8,17 +8,24 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 const protocolReplayVersion = 1
 
+// abandonedRequestAge is how long an in-flight replay record may stay open
+// before it is presumed to belong to a killed worker process.
+const abandonedRequestAge = 2 * time.Minute
+
 type protocolReplayRecord struct {
-	Digest   string `json:"digest"`
-	Response []byte `json:"response,omitempty"`
-	Ready    bool   `json:"ready"`
+	Digest    string    `json:"digest"`
+	Response  []byte    `json:"response,omitempty"`
+	Ready     bool      `json:"ready"`
+	StartedAt time.Time `json:"startedAt,omitempty"`
 }
 
 type protocolReplayState struct {
@@ -125,19 +132,29 @@ func (s *ProtocolReplayStore) Begin(peerPrincipal string, envelope workerproto.E
 		}
 		return &protocolReplayTransaction{store: s, lock: lock, state: state, key: key, cached: cached, ready: record.Ready, maxCachedRequests: maxCachedRequests}, nil
 	}
-	for _, record := range state.Requests {
-		if !record.Ready {
-			return fail(&workerproto.ProtocolError{
-				Code: workerproto.ErrorBackpressure, Message: "another durable request must be resumed first",
-				Retryable: true, RetryAfter: "1s", RequestID: envelope.RequestID,
-			})
+	for pendingKey, record := range state.Requests {
+		if record.Ready {
+			continue
 		}
+		// Each exchange is its own short-lived process. An in-flight record
+		// whose process was killed (a coordinator timeout, a crash) would
+		// otherwise refuse every later request forever; after a bounded age it
+		// is abandoned and the new request proceeds.
+		if record.StartedAt.IsZero() || time.Since(record.StartedAt) > abandonedRequestAge {
+			delete(state.Requests, pendingKey)
+			state.RequestOrder = slices.DeleteFunc(state.RequestOrder, func(candidate string) bool { return candidate == pendingKey })
+			continue
+		}
+		return fail(&workerproto.ProtocolError{
+			Code: workerproto.ErrorBackpressure, Message: "another durable request must be resumed first",
+			Retryable: true, RetryAfter: "1s", RequestID: envelope.RequestID,
+		})
 	}
 	if envelope.Sequence != state.Sessions[envelope.SessionID]+1 {
 		return fail(&workerproto.ProtocolError{Code: workerproto.ErrorReordered, Message: "sequence is not the next durable session value", RequestID: envelope.RequestID})
 	}
 	state.Sessions[envelope.SessionID] = envelope.Sequence
-	state.Requests[key] = protocolReplayRecord{Digest: digest}
+	state.Requests[key] = protocolReplayRecord{Digest: digest, StartedAt: time.Now().UTC()}
 	state.RequestOrder = append(state.RequestOrder, key)
 	if err := s.write(state); err != nil {
 		return fail(err)

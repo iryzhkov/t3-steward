@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"sort"
 	"strings"
@@ -200,8 +201,12 @@ func syncThrottleAttemptControlTx(
 				transition.Record.DirectiveID, transition.Record.AttemptID, err)
 		}
 		if attempt.Control != previous.Control {
-			return fmt.Errorf("attempt %q control %q contradicts previous throttle control %q",
-				attempt.ID, attempt.Control, previous.Control)
+			// The attempt projection drifted from the throttle record (for
+			// example a worker observation arrived between two throttle
+			// transitions). The newest durable throttle intent wins; failing
+			// here would block every other throttle delivery.
+			slog.Warn("attempt control differs from the previous throttle control; applying the newest throttle intent",
+				"attempt", attempt.ID, "attempt_control", attempt.Control, "throttle_control", previous.Control)
 		}
 	}
 

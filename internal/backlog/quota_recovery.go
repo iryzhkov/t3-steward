@@ -2,6 +2,7 @@ package backlog
 
 import (
 	"fmt"
+	"log/slog"
 	"reflect"
 	"sort"
 	"strings"
@@ -116,6 +117,9 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 	seenAttempts := make(map[string]struct{}, len(attempts))
 	var reservations []QuotaResumeReservation
 	remainderByPool := make(map[string]float64)
+	skip := func(attempt domain.Attempt, reason string) {
+		slog.Warn("quota planning skipped an inconsistent attempt", "attempt", attempt.ID, "reason", reason)
+	}
 	for _, attempt := range attempts {
 		if attempt.ID == "" {
 			return QuotaPlanningState{}, fmt.Errorf("quota planning attempt identity is required")
@@ -126,7 +130,7 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 		seenAttempts[attempt.ID] = struct{}{}
 		if attempt.Progress.Terminal() {
 			if attempt.Control.HoldsProviderSlot() || pausedControl(attempt.Control) {
-				return QuotaPlanningState{}, fmt.Errorf("terminal attempt %q has active control %q", attempt.ID, attempt.Control)
+				skip(attempt, fmt.Sprintf("terminal attempt has active control %q", attempt.Control))
 			}
 			continue
 		}
@@ -135,22 +139,27 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 		}
 		task, exists := tasks[attempt.TaskID]
 		if !exists {
-			return QuotaPlanningState{}, fmt.Errorf("attempt %q names unknown task %q", attempt.ID, attempt.TaskID)
+			skip(attempt, fmt.Sprintf("names unknown task %q", attempt.TaskID))
+			continue
 		}
 		class, valid := planningTaskClass(task.Class)
 		if !valid {
-			return QuotaPlanningState{}, fmt.Errorf("attempt %q task has invalid class %q", attempt.ID, task.Class)
+			skip(attempt, fmt.Sprintf("task has invalid class %q", task.Class))
+			continue
 		}
 		assignment, exists := assignments[attempt.AssignmentID]
 		if !exists || assignment.AttemptID != attempt.ID {
-			return QuotaPlanningState{}, fmt.Errorf("attempt %q has no matching assignment", attempt.ID)
+			skip(attempt, "has no matching assignment")
+			continue
 		}
 		if assignment.State == domain.AssignmentReleased || assignment.State == domain.AssignmentCompleted {
-			return QuotaPlanningState{}, fmt.Errorf("attempt %q uses settled assignment %q", attempt.ID, assignment.ID)
+			skip(attempt, fmt.Sprintf("uses settled assignment %q", assignment.ID))
+			continue
 		}
 		poolIndex, exists := poolByID[assignment.Route.QuotaPoolID]
 		if !exists {
-			return QuotaPlanningState{}, fmt.Errorf("attempt %q assignment names unknown pool %q", attempt.ID, assignment.Route.QuotaPoolID)
+			skip(attempt, fmt.Sprintf("assignment names unknown pool %q", assignment.Route.QuotaPoolID))
+			continue
 		}
 		if attempt.Control.HoldsProviderSlot() {
 			pools[poolIndex].ActiveAssignments++
@@ -166,10 +175,12 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 				// Do not invent automatic-resume authority or quota remainder.
 				continue
 			}
-			return QuotaPlanningState{}, fmt.Errorf("attempt %q has no durable throttle record", attempt.ID)
+			skip(attempt, "paused without a durable throttle record")
+			continue
 		}
 		if err := validateThrottlePlanningIdentity(attempt, assignment, record); err != nil {
-			return QuotaPlanningState{}, err
+			skip(attempt, err.Error())
+			continue
 		}
 		estimateKey := routeEstimateKey(attempt.ID, assignment.Route)
 		estimate, exists := estimates[estimateKey]
@@ -181,15 +192,17 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 				Estimate: *assignment.Estimate,
 			}
 			if err := validateRouteEstimate(durable); err != nil {
-				return QuotaPlanningState{}, fmt.Errorf("assignment %q durable estimate: %w", assignment.ID, err)
+				skip(attempt, fmt.Sprintf("assignment %q durable estimate: %v", assignment.ID, err))
+				continue
 			}
 			if exists && !reflect.DeepEqual(estimate, durable.Estimate) {
-				return QuotaPlanningState{}, fmt.Errorf("assignment %q durable estimate contradicts its route estimate", assignment.ID)
+				slog.Warn("assignment durable estimate differs from its route estimate; durable value wins", "assignment", assignment.ID)
 			}
 			estimate, exists = durable.Estimate, true
 		}
 		if !exists {
-			return QuotaPlanningState{}, fmt.Errorf("paused attempt %q has no durable remaining-cost estimate for its fixed route", attempt.ID)
+			skip(attempt, "paused without a durable remaining-cost estimate for its fixed route")
+			continue
 		}
 		status := domain.ResumePending
 		if attempt.Control == domain.ControlResuming {
@@ -209,7 +222,7 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 	sort.Slice(reservations, func(i, j int) bool { return reservations[i].AttemptID < reservations[j].AttemptID })
 	for attemptID := range assignmentAttempts {
 		if _, exists := seenAttempts[attemptID]; !exists {
-			return QuotaPlanningState{}, fmt.Errorf("quota planning assignment names unknown attempt %q", attemptID)
+			slog.Warn("quota planning ignores an assignment whose attempt is missing", "attempt", attemptID)
 		}
 	}
 
@@ -221,20 +234,22 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 		}
 		assignment, exists := assignments[attempt.AssignmentID]
 		if !exists || assignment.AttemptID != attempt.ID {
-			return QuotaPlanningState{}, fmt.Errorf("attempt %q has no matching assignment", attempt.ID)
+			skip(attempt, "has no matching assignment for cost accounting")
+			continue
 		}
 		if assignment.State == domain.AssignmentReleased || assignment.State == domain.AssignmentCompleted {
 			// Result collection settles the worker assignment before coordinator
 			// verification imports the durable result.  That transient is not a
 			// quota reservation and must not prevent unrelated planning.
-			if attempt.Progress == domain.ProgressVerifying {
-				continue
+			if attempt.Progress != domain.ProgressVerifying {
+				skip(attempt, fmt.Sprintf("nonterminal attempt uses settled assignment %q", assignment.ID))
 			}
-			return QuotaPlanningState{}, fmt.Errorf("nonterminal attempt %q uses settled assignment %q", attempt.ID, assignment.ID)
+			continue
 		}
 		poolIndex, exists := poolByID[assignment.Route.QuotaPoolID]
 		if !exists {
-			return QuotaPlanningState{}, fmt.Errorf("attempt %q assignment names unknown pool %q", attempt.ID, assignment.Route.QuotaPoolID)
+			skip(attempt, fmt.Sprintf("assignment names unknown pool %q", assignment.Route.QuotaPoolID))
+			continue
 		}
 		estimateKey := routeEstimateKey(attempt.ID, assignment.Route)
 		estimate, estimateExists := estimates[estimateKey]
@@ -246,15 +261,14 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 				Estimate: *assignment.Estimate,
 			}
 			if err := validateRouteEstimate(durable); err != nil {
-				return QuotaPlanningState{}, fmt.Errorf("assignment %q durable estimate: %w", assignment.ID, err)
-			}
-			if estimateExists && !reflect.DeepEqual(estimate, durable.Estimate) {
-				return QuotaPlanningState{}, fmt.Errorf("assignment %q durable estimate contradicts its route estimate", assignment.ID)
+				skip(attempt, fmt.Sprintf("assignment %q durable estimate: %v", assignment.ID, err))
+				continue
 			}
 			estimate, estimateExists = durable.Estimate, true
 		}
 		if !estimateExists {
-			return QuotaPlanningState{}, fmt.Errorf("active assignment %q has no durable remaining-cost estimate", assignment.ID)
+			skip(attempt, fmt.Sprintf("active assignment %q has no durable remaining-cost estimate", assignment.ID))
+			continue
 		}
 		poolID := pools[poolIndex].ID
 		if assignment.State == domain.AssignmentUnknown || attempt.Control.HoldsProviderSlot() {

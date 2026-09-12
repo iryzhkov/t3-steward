@@ -121,8 +121,23 @@ func TestDeriveQuotaPlanningStateLeavesForcedNonQuotaPauseOperatorManaged(t *tes
 			input.Attempts[index].AdminForceStart = false
 		}
 	}
-	if _, err := DeriveQuotaPlanningState(input); err == nil || !strings.Contains(err.Error(), "no durable throttle record") {
-		t.Fatalf("unforced missing throttle error = %v", err)
+	// An unforced pause without a durable throttle record is inconsistent
+	// state. It is isolated (no reservation, no remainder) rather than
+	// allowed to stop planning for every other attempt.
+	state, err = DeriveQuotaPlanningState(input)
+	if err != nil {
+		t.Fatalf("unforced missing throttle must be isolated, got error %v", err)
+	}
+	for _, reservation := range state.ResumeReservations {
+		if reservation.AttemptID == "paused" {
+			t.Fatal("inconsistent paused attempt gained a reservation")
+		}
+	}
+	for _, window := range state.QuotaWindows {
+		// The other paused required attempt still contributes its remainder.
+		if window.PausedRequiredWorkRemainder != 25 {
+			t.Fatalf("paused remainder = %v, want 25 with only the inconsistent attempt isolated", window.PausedRequiredWorkRemainder)
+		}
 	}
 }
 
@@ -171,7 +186,7 @@ func TestDeriveQuotaPlanningStateAcceptsCanonicalPauseAfterDurableDrain(t *testi
 	}
 }
 
-func TestDeriveQuotaPlanningStateRejectsContradictoryDurableState(t *testing.T) {
+func TestDeriveQuotaPlanningStateRejectsStructuralDuplicates(t *testing.T) {
 	tests := []struct {
 		name string
 		edit func(*QuotaPlanningStateInput)
@@ -183,42 +198,11 @@ func TestDeriveQuotaPlanningStateRejectsContradictoryDurableState(t *testing.T) 
 		{name: "duplicate throttle record", edit: func(input *QuotaPlanningStateInput) {
 			input.ThrottleRecords = append(input.ThrottleRecords, input.ThrottleRecords[0])
 		}, want: "repeat"},
-		{name: "missing fixed-route estimate", edit: func(input *QuotaPlanningStateInput) {
-			input.Assignments[0].Estimate = nil
-		}, want: "no durable remaining-cost estimate"},
-		{name: "contradictory fixed-route estimate", edit: func(input *QuotaPlanningStateInput) {
-			assignment := input.Assignments[0]
-			estimate := *assignment.Estimate
-			estimate.RemainingCost++
-			input.RouteEstimates = []RouteEstimate{{
-				AttemptID: assignment.AttemptID, WorkerID: assignment.Route.WorkerID,
-				ProviderInstanceID: assignment.Route.ProviderInstanceID,
-				Model:              assignment.Route.Model, Options: assignment.Route.Options, Estimate: estimate,
-			}}
-		}, want: "durable estimate contradicts"},
-		{name: "stale throttle projection", edit: func(input *QuotaPlanningStateInput) {
-			input.ThrottleRecords[0].Control = domain.ControlRunning
-		}, want: "contradicts latest throttle control"},
-		{name: "changed worker identity", edit: func(input *QuotaPlanningStateInput) {
-			input.ThrottleRecords[0].Command.WorkerID = "other-worker"
-		}, want: "execution identity contradicts"},
-		{name: "settled assignment", edit: func(input *QuotaPlanningStateInput) {
-			input.Assignments[0].State = domain.AssignmentReleased
-		}, want: "settled assignment"},
 		{name: "duplicate attempt assignment", edit: func(input *QuotaPlanningStateInput) {
 			duplicate := input.Assignments[0]
 			duplicate.ID += "-duplicate"
 			input.Assignments = append(input.Assignments, duplicate)
 		}, want: "has assignments"},
-		{name: "assignment for unknown attempt", edit: func(input *QuotaPlanningStateInput) {
-			unknown := input.Assignments[0]
-			unknown.ID = "assignment-unknown"
-			unknown.AttemptID = "unknown"
-			input.Assignments = append(input.Assignments, unknown)
-		}, want: "names unknown attempt"},
-		{name: "canonical thread mismatch", edit: func(input *QuotaPlanningStateInput) {
-			input.Attempts[0].ThreadID = "other-thread"
-		}, want: "canonical execution identity contradicts"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -227,6 +211,61 @@ func TestDeriveQuotaPlanningStateRejectsContradictoryDurableState(t *testing.T) 
 			_, err := DeriveQuotaPlanningState(input)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
+// TestDeriveQuotaPlanningStateIsolatesInconsistentAttempts covers the
+// contradictions that used to fail the whole reconstruction. They now drop
+// only the affected attempt's reservation so unrelated planning continues.
+func TestDeriveQuotaPlanningStateIsolatesInconsistentAttempts(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*QuotaPlanningStateInput)
+	}{
+		{name: "missing fixed-route estimate", edit: func(input *QuotaPlanningStateInput) {
+			input.Assignments[0].Estimate = nil
+		}},
+		{name: "stale throttle projection", edit: func(input *QuotaPlanningStateInput) {
+			input.ThrottleRecords[0].Control = domain.ControlRunning
+		}},
+		{name: "changed worker identity", edit: func(input *QuotaPlanningStateInput) {
+			input.ThrottleRecords[0].Command.WorkerID = "other-worker"
+		}},
+		{name: "settled assignment", edit: func(input *QuotaPlanningStateInput) {
+			input.Assignments[0].State = domain.AssignmentReleased
+		}},
+		{name: "assignment for unknown attempt", edit: func(input *QuotaPlanningStateInput) {
+			unknown := input.Assignments[0]
+			unknown.ID = "assignment-unknown"
+			unknown.AttemptID = "unknown"
+			input.Assignments = append(input.Assignments, unknown)
+		}},
+		{name: "canonical thread mismatch", edit: func(input *QuotaPlanningStateInput) {
+			input.Attempts[0].ThreadID = "other-thread"
+		}},
+	}
+	baseline, err := DeriveQuotaPlanningState(quotaRecoveryFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := quotaRecoveryFixture()
+			test.edit(&input)
+			affected := input.Assignments[0].AttemptID
+			state, err := DeriveQuotaPlanningState(input)
+			if err != nil {
+				t.Fatalf("inconsistent attempt must be isolated, got error %v", err)
+			}
+			for _, reservation := range state.ResumeReservations {
+				if reservation.AttemptID == affected && test.name != "assignment for unknown attempt" {
+					t.Fatalf("inconsistent attempt %q kept a reservation", affected)
+				}
+			}
+			if len(state.ResumeReservations) > len(baseline.ResumeReservations) {
+				t.Fatalf("reservations grew: %d > %d", len(state.ResumeReservations), len(baseline.ResumeReservations))
 			}
 		})
 	}

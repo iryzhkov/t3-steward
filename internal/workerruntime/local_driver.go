@@ -35,6 +35,7 @@ type ArtifactPublisher interface {
 }
 
 type T3Control interface {
+	ListThreads(context.Context) ([]domain.Thread, error)
 	GetThread(context.Context, string) (*domain.Thread, error)
 	ResolveProjectID(context.Context, string) (string, error)
 	CreateAndStartThread(context.Context, t3control.NewThreadInput) (string, error)
@@ -108,6 +109,9 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	if err != nil {
 		return "", err
 	}
+	if pkg.Environment.CatalogRevision != d.Config.CatalogRevision {
+		return "", errors.New("execution package catalog revision is stale")
+	}
 	if len(environment.RequiredCredentials) > 0 {
 		if d.Credentials == nil {
 			return "", errors.New("prepare workspace: required credential resolver is unavailable")
@@ -159,6 +163,9 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 			return "", fmt.Errorf("worker no-effects preparation: %w", err)
 		}
 		return filepath.Join(path, "workspace"), nil
+	}
+	if pkg.Identity.AssignmentEpoch > 1 {
+		attempt.ID = fmt.Sprintf("%s-e%d", attempt.ID, pkg.Identity.AssignmentEpoch)
 	}
 	prepared, err := d.Workspace.Prepare(ctx, backlog.WorkspacePreparation{
 		WorkflowRunID: pkg.Identity.WorkflowRunID, Task: task, Attempt: attempt,
@@ -287,18 +294,33 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if d.Config.DryRun {
 		return nil
 	}
-	message, err := d.T3.LastAssistantMessage(ctx, pkg.Identity.ThreadID)
+	thread, err := d.T3.GetThread(ctx, pkg.Identity.ThreadID)
 	if err != nil {
-		return fmt.Errorf("collect final message: %w", err)
+		return fmt.Errorf("collect thread state: %w", err)
 	}
-	archive, err := d.T3.ExportThread(ctx, pkg.Identity.ThreadID)
-	if err != nil {
-		return fmt.Errorf("collect thread archive: %w", err)
+	message, archive := "", []byte("{}")
+	if thread != nil {
+		// T3 marks the turn completed slightly before the final assistant
+		// message is projected. A capture without the completion marker is
+		// re-read a few times before it is taken as the agent's final word.
+		for reads := 0; ; reads++ {
+			if message, err = d.T3.LastAssistantMessage(ctx, pkg.Identity.ThreadID); err != nil {
+				return fmt.Errorf("collect final message: %w", err)
+			}
+			if hasDoneMarker(message) || reads >= 3 {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
+		}
+		if archive, err = d.T3.ExportThread(ctx, pkg.Identity.ThreadID); err != nil {
+			return fmt.Errorf("collect thread archive: %w", err)
+		}
 	}
-	_, task, attempt, err := d.executionRecords(pkg)
-	if err != nil {
-		return err
-	}
+	task, attempt := packageRecords(pkg, d.Now().UTC())
 	finalized, err := d.Finalizer.Finalize(ctx, backlog.AttemptFinalization{
 		Task: task, Attempt: attempt, WorkspaceDir: workspace, ExplicitSuccess: hasDoneMarker(message),
 	})
@@ -310,10 +332,66 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 	}); err != nil {
 		return fmt.Errorf("publish result custody: %w", err)
 	}
+	if thread == nil {
+		return nil
+	}
 	// Result custody is durable before this external effect. The dispatch token
-	// was recorded with the assignment and derives a stable T3 command ID.
+	// was recorded with the assignment and derives a stable T3 command ID. A
+	// settlement that cannot be proven yet is retried later; the result stands.
 	if err := d.T3.SettleThread(ctx, pkg.Identity.ThreadID, pkg.Identity.DispatchToken); err != nil {
-		return fmt.Errorf("settle completed T3 thread: %w", err)
+		return fmt.Errorf("%w: %v", ErrSettleUnproven, err)
+	}
+	return nil
+}
+
+// ErrSettleUnproven reports that the result was published but T3 has not yet
+// projected the thread settlement. The runtime retries settlement on later
+// reconcile passes without repeating collection.
+var ErrSettleUnproven = errors.New("T3 settlement unproven")
+
+// Settle retries the idempotent T3 settlement for a collected attempt.
+func (d *LocalDriver) Settle(ctx context.Context, pkg workerproto.ExecutionPackage) error {
+	if d.Config.DryRun {
+		return nil
+	}
+	thread, err := d.T3.GetThread(ctx, pkg.Identity.ThreadID)
+	if err != nil {
+		return err
+	}
+	if thread == nil || thread.SettledAt != nil {
+		return nil
+	}
+	return d.T3.SettleThread(ctx, pkg.Identity.ThreadID, pkg.Identity.DispatchToken)
+}
+
+// CollectFailure publishes a terminal failed result for an attempt that has no
+// collectable T3 outcome. The final message carries the failure marker and
+// reason so the coordinator records why the attempt failed.
+func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.ExecutionPackage, workspace, failure string) error {
+	if d.Config.DryRun {
+		return nil
+	}
+	if strings.TrimSpace(failure) == "" {
+		failure = "attempt failed on the worker"
+	}
+	message := FailedMarker + "\n" + failure + "\n"
+	archive := []byte("{}")
+	thread, err := d.T3.GetThread(ctx, pkg.Identity.ThreadID)
+	if err == nil && thread != nil {
+		if exported, exportErr := d.T3.ExportThread(ctx, pkg.Identity.ThreadID); exportErr == nil && len(exported) != 0 {
+			archive = exported
+		}
+	}
+	finalized := backlog.FinalizedAttempt{Completion: backlog.CompletionResult{Failure: failure}}
+	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
+		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
+	}); err != nil {
+		return fmt.Errorf("publish failed result custody: %w", err)
+	}
+	if err == nil && thread != nil {
+		if settleErr := d.T3.SettleThread(ctx, pkg.Identity.ThreadID, pkg.Identity.DispatchToken); settleErr != nil {
+			return fmt.Errorf("settle failed T3 thread: %w", settleErr)
+		}
 	}
 	return nil
 }
@@ -402,20 +480,30 @@ func (d *LocalDriver) requiredThread(ctx context.Context, id string) (domain.Thr
 	return *thread, nil
 }
 
-func (d *LocalDriver) executionRecords(pkg workerproto.ExecutionPackage) (backlog.ResolvedEnvironment, domain.Task, domain.Attempt, error) {
-	if pkg.Environment.CatalogRevision != d.Config.CatalogRevision {
-		return backlog.ResolvedEnvironment{}, domain.Task{}, domain.Attempt{}, errors.New("execution package catalog revision is stale")
-	}
-	workflow := domain.Workflow{
-		ID: pkg.Identity.WorkflowID, Project: pkg.Environment.Project,
-		Environment: domain.ExecutionEnvironment{Type: backlog.EnvironmentGit, Scope: pkg.Environment.Scope, Ref: pkg.Environment.Ref},
-	}
+// packageRecords rebuilds the task and attempt an execution package describes.
+// It needs no catalog, so collection keeps working after configuration changes.
+func packageRecords(pkg workerproto.ExecutionPackage, now time.Time) (domain.Task, domain.Attempt) {
 	task := domain.Task{
 		ID: pkg.Identity.TaskID, WorkflowID: pkg.Identity.WorkflowID, Name: pkg.Identity.TaskID,
 		Class: pkg.Class, Outputs: pkg.Outputs, Verification: pkg.Verification,
 		Routes: []domain.ProviderRoute{pkg.Route}, ResourceLocks: append([]string(nil), pkg.Environment.ResourceLocks...),
 		MaxTurns: pkg.Limits.MaxTurns, NotBefore: pkg.NotBefore, Deadline: pkg.Deadline, ExpiresAt: pkg.ExpiresAt,
 	}
+	attempt := domain.Attempt{
+		ID: pkg.Identity.AttemptID, WorkflowRunID: pkg.Identity.WorkflowRunID,
+		TaskID: pkg.Identity.TaskID, Number: 1, Progress: domain.ProgressReady,
+		Control: domain.ControlPreparing, Revision: 1, AssignmentID: pkg.Identity.AssignmentID,
+		ThreadID: pkg.Identity.ThreadID, UpdatedAt: now,
+	}
+	return task, attempt
+}
+
+func (d *LocalDriver) executionRecords(pkg workerproto.ExecutionPackage) (backlog.ResolvedEnvironment, domain.Task, domain.Attempt, error) {
+	workflow := domain.Workflow{
+		ID: pkg.Identity.WorkflowID, Project: pkg.Environment.Project,
+		Environment: domain.ExecutionEnvironment{Type: backlog.EnvironmentGit, Scope: pkg.Environment.Scope, Ref: pkg.Environment.Ref},
+	}
+	task, attempt := packageRecords(pkg, d.Now().UTC())
 	environment, err := d.Catalog.Resolve(workflow, task)
 	if err != nil {
 		return backlog.ResolvedEnvironment{}, domain.Task{}, domain.Attempt{}, err
@@ -426,12 +514,6 @@ func (d *LocalDriver) executionRecords(pkg workerproto.ExecutionPackage) (backlo
 		!slices.Equal(environment.ResourceLocks, pkg.Environment.ResourceLocks) ||
 		!slices.Equal(environment.RequiredCredentials, pkg.Environment.RequiredCredentials) {
 		return backlog.ResolvedEnvironment{}, domain.Task{}, domain.Attempt{}, errors.New("execution package does not match resolved catalog environment")
-	}
-	attempt := domain.Attempt{
-		ID: pkg.Identity.AttemptID, WorkflowRunID: pkg.Identity.WorkflowRunID,
-		TaskID: pkg.Identity.TaskID, Number: 1, Progress: domain.ProgressReady,
-		Control: domain.ControlPreparing, Revision: 1, AssignmentID: pkg.Identity.AssignmentID,
-		ThreadID: pkg.Identity.ThreadID, UpdatedAt: d.Now().UTC(),
 	}
 	return environment, task, attempt, nil
 }
@@ -536,7 +618,11 @@ func (d *LocalDriver) objectPath(object workerproto.ArtifactObject) string {
 }
 
 func (d *LocalDriver) workspacePath(pkg workerproto.ExecutionPackage) string {
-	return filepath.Join(d.Config.RunsRoot, pkg.Identity.WorkflowRunID, pkg.Identity.TaskID, pkg.Identity.AttemptID)
+	attemptDir := pkg.Identity.AttemptID
+	if pkg.Identity.AssignmentEpoch > 1 {
+		attemptDir = fmt.Sprintf("%s-e%d", attemptDir, pkg.Identity.AssignmentEpoch)
+	}
+	return filepath.Join(d.Config.RunsRoot, pkg.Identity.WorkflowRunID, pkg.Identity.TaskID, attemptDir)
 }
 
 func (d *LocalDriver) noEffectsThreadPath(pkg workerproto.ExecutionPackage) string {
@@ -636,6 +722,11 @@ func readBoundedRegularFile(path string, maxBytes int64) ([]byte, error) {
 	defer file.Close()
 	return io.ReadAll(io.LimitReader(file, maxBytes+1))
 }
+
+// FailedMarker is the final-message line a worker writes for a terminal
+// failure it produced itself. The coordinator records the following lines as
+// the failure reason.
+const FailedMarker = "BACKLOG STATUS: failed"
 
 func hasDoneMarker(message string) bool {
 	for _, line := range strings.Split(message, "\n") {

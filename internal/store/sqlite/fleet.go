@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 	"time"
@@ -238,16 +239,23 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 		if err != nil {
 			return nil, err
 		}
+		// Items that fail their own fences are skipped so the rest of the
+		// plan still commits; the planner re-evaluates them next cycle.
+		skip := func(reason string) {
+			slog.Warn("assignment plan item skipped", "attempt", assignment.AttemptID, "reason", reason)
+		}
 		if attempt.AssignmentID != "" {
 			if attempt.AssignmentID != assignment.ID {
-				return nil, fmt.Errorf("attempt %q is already attached to assignment %q", attempt.ID, attempt.AssignmentID)
+				skip(fmt.Sprintf("attempt is already attached to assignment %q", attempt.AssignmentID))
+				continue
 			}
 			current, err := loadAssignmentTx(ctx, tx, assignment.ID)
 			if err != nil {
 				return nil, err
 			}
 			if !sameAssignmentPlanIdentity(current, assignment) {
-				return nil, fmt.Errorf("assignment plan replay changes identity for %q", assignment.ID)
+				skip(fmt.Sprintf("assignment plan replay changes identity for %q", assignment.ID))
+				continue
 			}
 			if _, err := insertAssignmentPlanAuditEvent(ctx, tx, commit, item, current, attempt); err != nil {
 				return nil, err
@@ -256,10 +264,12 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 			continue
 		}
 		if attempt.Revision != item.ExpectedAttemptRevision {
-			return nil, fmt.Errorf("%w: attempt %q expected %d, current %d", ErrStaleAttemptRevision, attempt.ID, item.ExpectedAttemptRevision, attempt.Revision)
+			skip(fmt.Sprintf("%v: expected revision %d, current %d", ErrStaleAttemptRevision, item.ExpectedAttemptRevision, attempt.Revision))
+			continue
 		}
 		if attempt.Progress.Terminal() || attempt.Control != domain.ControlUnassigned {
-			return nil, fmt.Errorf("attempt %q is not assignable", attempt.ID)
+			skip("attempt is not assignable")
+			continue
 		}
 		var released domain.Assignment
 		var releasedRaw []byte
@@ -270,7 +280,8 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 				return nil, fmt.Errorf("decode released assignment for attempt %q: %w", attempt.ID, err)
 			}
 			if released.State != domain.AssignmentReleased {
-				return nil, fmt.Errorf("attempt %q retains non-released assignment %q", attempt.ID, released.ID)
+				skip(fmt.Sprintf("attempt retains non-released assignment %q in state %q", released.ID, released.State))
+				continue
 			}
 			releasedExists = true
 			assignment.ID = released.ID

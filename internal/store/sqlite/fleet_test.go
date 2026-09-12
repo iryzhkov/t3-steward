@@ -35,8 +35,8 @@ func TestAssignmentPlanCommitsBeforeEpochBoundClaim(t *testing.T) {
 	changedEstimate := *commit.Items[0].Assignment.Estimate
 	changedEstimate.RemainingCost++
 	changed.Items[0].Assignment.Estimate = &changedEstimate
-	if _, err := store.CommitAssignmentPlan(context.Background(), changed); err == nil {
-		t.Fatal("assignment replay changed its durable estimate")
+	if skipped, err := store.CommitAssignmentPlan(context.Background(), changed); err != nil || len(skipped) != 0 {
+		t.Fatalf("replay with a changed estimate must be skipped: assignments=%#v err=%v", skipped, err)
 	}
 	records, err := store.LoadCoordinatorRecords(context.Background())
 	if err != nil {
@@ -226,7 +226,7 @@ func TestWorkerSnapshotsAreMonotonicAndEpochBound(t *testing.T) {
 	}
 }
 
-func TestAssignmentPlanRollsBackWhenAnyAttemptIsStale(t *testing.T) {
+func TestAssignmentPlanSkipsStaleAttemptsAndCommitsTheRest(t *testing.T) {
 	store := openFleetTestStore(t)
 	saveFleetAttempt(t, store, fleetAttempt("attempt-1"))
 	second := fleetAttempt("attempt-2")
@@ -244,19 +244,27 @@ func TestAssignmentPlanRollsBackWhenAnyAttemptIsStale(t *testing.T) {
 	secondItem.ExpectedAttemptRevision = 1
 	commit.Items = append(commit.Items, secondItem)
 
-	if _, err := store.CommitAssignmentPlan(context.Background(), commit); !errors.Is(err, ErrStaleAttemptRevision) {
-		t.Fatalf("plan error = %v, want stale attempt revision", err)
+	committed, err := store.CommitAssignmentPlan(context.Background(), commit)
+	if err != nil || len(committed) != 1 || committed[0].ID != "assignment-1" {
+		t.Fatalf("plan with one stale item: assignments=%#v err=%v", committed, err)
 	}
 	records, err := store.LoadCoordinatorRecords(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records.Assignments) != 0 {
-		t.Fatalf("atomic plan retained assignments: %#v", records.Assignments)
+	if len(records.Assignments) != 1 || records.Assignments[0].ID != "assignment-1" {
+		t.Fatalf("stale item leaked or fresh item lost: %#v", records.Assignments)
 	}
 	for _, attempt := range records.Attempts {
-		if attempt.AssignmentID != "" {
-			t.Fatalf("atomic plan modified attempt: %#v", attempt)
+		switch attempt.ID {
+		case "attempt-1":
+			if attempt.AssignmentID != "assignment-1" {
+				t.Fatalf("fresh attempt was not attached: %#v", attempt)
+			}
+		default:
+			if attempt.AssignmentID != "" {
+				t.Fatalf("stale attempt was modified: %#v", attempt)
+			}
 		}
 	}
 }

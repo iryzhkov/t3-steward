@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -14,6 +15,8 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
+// Driver is the worker-local execution seam. Every method must be safe to
+// call again after a crash: the runtime retries from its durable journal.
 type Driver interface {
 	Prepare(context.Context, workerproto.ExecutionPackage) (string, error)
 	InspectWorkspace(context.Context, workerproto.ExecutionPackage) (string, bool, error)
@@ -21,11 +24,26 @@ type Driver interface {
 	CreateThread(context.Context, workerproto.ExecutionPackage, string) error
 	StopThread(context.Context, workerproto.ExecutionPackage) error
 	Collect(context.Context, workerproto.ExecutionPackage, string) error
+	// CollectFailure publishes a terminal failed result for an attempt that
+	// never produced a collectable T3 outcome (preparation or dispatch failed
+	// before any provider effect, or the execution could not be recovered).
+	CollectFailure(context.Context, workerproto.ExecutionPackage, string, string) error
+	// Settle retries the provider-side settlement of a collected attempt whose
+	// result is already durable.
+	Settle(context.Context, workerproto.ExecutionPackage) error
 	Cleanup(context.Context, workerproto.ExecutionPackage, string) error
 	Warn(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) error
 	Checkpoint(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) (*domain.CheckpointMetadata, error)
 	Resume(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) error
 }
+
+// DefaultRetention is how long terminal attempt records and their workspaces
+// stay on the worker before the reconcile loop prunes them.
+const DefaultRetention = 72 * time.Hour
+
+// MaxPrepareAttempts bounds how often preparation is retried before the
+// attempt is failed with the last preparation error.
+const MaxPrepareAttempts = 3
 
 type Config struct {
 	WorkerID         string
@@ -36,13 +54,16 @@ type Config struct {
 	LeaseDuration    time.Duration
 	MaxPackageBytes  int64
 	Inventory        domain.WorkerInventory
+	Retention        time.Duration
 	Now              func() time.Time
+	Logger           *slog.Logger
 }
 
 type Runtime struct {
 	config  Config
 	journal *Journal
 	driver  Driver
+	log     *slog.Logger
 }
 
 func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
@@ -68,7 +89,14 @@ func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	return &Runtime{config: config, journal: journal, driver: driver}, nil
+	if config.Retention <= 0 {
+		config.Retention = DefaultRetention
+	}
+	logger := config.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Runtime{config: config, journal: journal, driver: driver, log: logger.With("component", "worker-runtime")}, nil
 }
 
 func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
@@ -95,7 +123,11 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 	return snapshot, err
 }
 
-func (r *Runtime) AcceptOffers(_ context.Context, offers workerproto.AssignmentOffers) (workerproto.AssignmentClaims, error) {
+// AcceptOffers claims every valid offer. An offer for an assignment the worker
+// already holds is an idempotent replay when only the coordinator epoch inside
+// the package changed; a higher assignment epoch supersedes the old execution,
+// which is stopped before the new claim is recorded.
+func (r *Runtime) AcceptOffers(ctx context.Context, offers workerproto.AssignmentOffers) (workerproto.AssignmentClaims, error) {
 	now := r.now()
 	claims := workerproto.AssignmentClaims{}
 	err := r.journal.update(func(state *journalState) error {
@@ -105,25 +137,31 @@ func (r *Runtime) AcceptOffers(_ context.Context, offers workerproto.AssignmentO
 			}
 			id := offer.Assignment.ID
 			if existing, ok := state.Attempts[id]; ok {
-				if existing.Phase == PhaseUnknown && offer.Assignment.Epoch == existing.Assignment.Epoch+1 {
-					record := AttemptRecord{
-						Assignment: offer.Assignment, Package: offer.Package, Phase: PhaseClaimed,
-						CommandRequests: make(map[string]domain.WorkerCommand), CommandResults: make(map[string]domain.WorkerAcknowledgement),
-						ThrottleRequests: make(map[string]domain.ThrottleCommand), ThrottleResults: make(map[string]domain.ThrottleAcknowledgement), UpdatedAt: now,
+				switch {
+				case offer.Assignment.Epoch > existing.Assignment.Epoch:
+					if err := r.containSuperseded(ctx, existing); err != nil {
+						r.log.Warn("superseded assignment could not be contained; offer withheld",
+							"assignment", id, "epoch", existing.Assignment.Epoch, "error", err)
+						continue
 					}
-					record.Assignment.State = domain.AssignmentClaimed
-					record.Assignment.WorkerEpoch = r.config.WorkerEpoch
-					record.Assignment.LeaseExpiresAt = minTime(offer.Assignment.LeaseExpiresAt, now.Add(r.config.LeaseDuration))
-					state.Attempts[id] = record
-					state.Sequence++
-					claims.Claims = append(claims.Claims, claim(record.Assignment, r.config, now))
+				case offer.Assignment.Epoch < existing.Assignment.Epoch:
+					r.log.Warn("offer for an older assignment epoch ignored", "assignment", id,
+						"offered_epoch", offer.Assignment.Epoch, "held_epoch", existing.Assignment.Epoch)
+					continue
+				default:
+					if !samePackageIgnoringCoordinatorEpoch(existing.Package.Package, offer.Package.Package) {
+						r.log.Warn("offer replay changed the execution package; offer withheld", "assignment", id)
+						continue
+					}
+					if existing.Package.SHA256 != offer.Package.SHA256 {
+						existing.Package = offer.Package
+						existing.UpdatedAt = now
+						state.Attempts[id] = existing
+						state.Sequence++
+					}
+					claims.Claims = append(claims.Claims, claim(existing.Assignment, r.config, now))
 					continue
 				}
-				if existing.Package.SHA256 != offer.Package.SHA256 || existing.Assignment.Epoch != offer.Assignment.Epoch {
-					return fmt.Errorf("worker runtime: changed replay for assignment %q", id)
-				}
-				claims.Claims = append(claims.Claims, claim(existing.Assignment, r.config, now))
-				continue
 			}
 			record := AttemptRecord{
 				Assignment: offer.Assignment, Package: offer.Package, Phase: PhaseClaimed,
@@ -144,6 +182,25 @@ func (r *Runtime) AcceptOffers(_ context.Context, offers workerproto.AssignmentO
 	return claims, err
 }
 
+// containSuperseded proves that an older execution of the same assignment can
+// no longer produce effects before its record is replaced.
+func (r *Runtime) containSuperseded(ctx context.Context, existing AttemptRecord) error {
+	switch existing.Phase {
+	case PhaseClaimed, PhasePreparing, PhasePrepared, PhaseCompleted, PhaseFailed:
+		return nil
+	}
+	if existing.Package.Package.Identity.ThreadID == "" {
+		return nil
+	}
+	return r.driver.StopThread(ctx, existing.Package.Package)
+}
+
+func samePackageIgnoringCoordinatorEpoch(left, right workerproto.ExecutionPackage) bool {
+	left.CoordinatorEpoch = 0
+	right.CoordinatorEpoch = 0
+	return reflect.DeepEqual(left, right)
+}
+
 func (r *Runtime) LeaseRenewals() (workerproto.LeaseRenewals, error) {
 	now := r.now()
 	state, err := r.journal.snapshot()
@@ -153,7 +210,7 @@ func (r *Runtime) LeaseRenewals() (workerproto.LeaseRenewals, error) {
 	result := workerproto.LeaseRenewals{}
 	for _, id := range sortedAttemptIDs(state.Attempts) {
 		record := state.Attempts[id]
-		if terminalPhase(record.Phase) || !now.Before(record.Assignment.LeaseExpiresAt) {
+		if terminalPhase(record.Phase) {
 			continue
 		}
 		result.Renewals = append(result.Renewals, domain.AssignmentLeaseRenewal{
@@ -171,20 +228,25 @@ func (r *Runtime) ApplyLeaseRenewals(renewals workerproto.LeaseRenewals) error {
 	now := r.now()
 	maxExpiry := now.Add(r.config.LeaseDuration)
 	return r.journal.update(func(state *journalState) error {
-		expectedSequence := state.Sequence
 		for _, renewal := range renewals.Renewals {
 			record, ok := state.Attempts[renewal.AssignmentID]
 			if !ok {
 				return fmt.Errorf("worker runtime: renewal for unknown assignment %q", renewal.AssignmentID)
 			}
+			// The worker sequence advances on every exchange, so a renewal
+			// planned from an earlier snapshot is still authorized; the epochs
+			// and the lease token are the fence. A bad renewal is skipped so
+			// the other assignments keep their leases.
 			if renewal.CoordinatorEpoch != r.config.CoordinatorEpoch || renewal.WorkerID != r.config.WorkerID ||
 				renewal.WorkerEpoch != r.config.WorkerEpoch || renewal.AssignmentEpoch != record.Assignment.Epoch ||
-				renewal.LeaseToken != record.Assignment.LeaseToken || renewal.WorkerSequence != expectedSequence {
-				return errors.New("worker runtime: stale or unauthorized lease renewal")
+				renewal.LeaseToken != record.Assignment.LeaseToken {
+				r.log.Warn("stale or unauthorized lease renewal ignored", "assignment", renewal.AssignmentID)
+				continue
 			}
 			if !renewal.LeaseExpiresAt.After(now) || !renewal.LeaseExpiresAt.After(record.Assignment.LeaseExpiresAt) ||
 				renewal.LeaseExpiresAt.After(maxExpiry) {
-				return errors.New("worker runtime: lease renewal is outside the authorized live interval")
+				r.log.Warn("lease renewal outside the authorized live interval ignored", "assignment", renewal.AssignmentID)
+				continue
 			}
 			record.Assignment.LeaseExpiresAt = renewal.LeaseExpiresAt
 			record.UpdatedAt = now
@@ -207,6 +269,10 @@ func (r *Runtime) DeliverCommands(ctx context.Context, delivery workerproto.Comm
 	return result, nil
 }
 
+// deliverCommand acknowledges a command once the worker has durably taken
+// responsibility for it. Execution outcomes reach the coordinator through
+// observations and results, not through the acknowledgement: a preparation
+// that must be retried is still an accepted command.
 func (r *Runtime) deliverCommand(ctx context.Context, command domain.WorkerCommand, supplied workerproto.ExecutionPackageManifest) (domain.WorkerAcknowledgement, error) {
 	state, err := r.journal.snapshot()
 	if err != nil {
@@ -224,14 +290,9 @@ func (r *Runtime) deliverCommand(ctx context.Context, command domain.WorkerComma
 		return r.rejectCommand(command, err.Error())
 	}
 	record := state.Attempts[command.AssignmentID]
-	if supplied.Package.ID != "" && supplied.SHA256 != record.Package.SHA256 {
+	if supplied.Package.ID != "" && supplied.SHA256 != record.Package.SHA256 &&
+		!samePackageIgnoringCoordinatorEpoch(supplied.Package, record.Package.Package) {
 		return r.rejectCommand(command, "execution package changed after claim")
-	}
-	if command.Kind != domain.WorkerCommandStop && !r.now().Before(record.Assignment.LeaseExpiresAt) {
-		if err := r.markUnknown(command.AssignmentID, "assignment lease expired before command"); err != nil {
-			return domain.WorkerAcknowledgement{}, err
-		}
-		return r.rejectCommand(command, "assignment lease expired")
 	}
 	var effectErr error
 	switch command.Kind {
@@ -246,12 +307,13 @@ func (r *Runtime) deliverCommand(ctx context.Context, command domain.WorkerComma
 	default:
 		return r.rejectCommand(command, "unsupported command kind")
 	}
-	accepted := effectErr == nil
 	detail := ""
 	if effectErr != nil {
 		detail = effectErr.Error()
+		r.log.Warn("worker command effect deferred", "command", command.ID, "kind", command.Kind,
+			"assignment", command.AssignmentID, "error", effectErr)
 	}
-	return r.finishCommand(command, accepted, detail)
+	return r.finishCommand(command, true, detail)
 }
 
 func (r *Runtime) DeliverThrottle(ctx context.Context, commands []domain.ThrottleCommand) ([]domain.ThrottleAcknowledgement, error) {
@@ -326,11 +388,7 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 		err = r.driver.StopThread(ctx, pkg)
 		result = domain.ThrottleResultStopped
 	case domain.ThrottleCommandResume:
-		if !r.now().Before(record.Assignment.LeaseExpiresAt) {
-			err = errors.New("assignment lease expired before resume")
-		} else {
-			err = r.driver.Resume(ctx, pkg, command)
-		}
+		err = r.driver.Resume(ctx, pkg, command)
 		result = domain.ThrottleResultResumed
 	default:
 		err = errors.New("unsupported throttle command kind")
@@ -342,12 +400,19 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 	return r.finishThrottle(command, err == nil, result, checkpoint, detail)
 }
 
+// Reconcile advances every durable attempt as far as local evidence allows.
+// A failure on one attempt is recorded on that attempt and never prevents
+// the others from progressing; only journal I/O errors are returned.
 func (r *Runtime) Reconcile(ctx context.Context) error {
 	state, err := r.journal.snapshot()
 	if err != nil {
 		return err
 	}
+	now := r.now()
 	for _, id := range sortedAttemptIDs(state.Attempts) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		record := state.Attempts[id]
 		if record.PendingThrottle != nil {
 			if _, err := r.executeThrottle(ctx, *record.PendingThrottle); err != nil {
@@ -355,69 +420,140 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 			}
 			continue
 		}
-		if !terminalPhase(record.Phase) && !r.now().Before(record.Assignment.LeaseExpiresAt) {
-			if err := r.markPhase(id, PhaseStopping, "lease expired; stopping before reconciliation", "", ""); err != nil {
-				return err
-			}
-			if err := r.driver.StopThread(ctx, record.Package.Package); err != nil {
-				return r.markUnknown(id, "lease expired and stop could not be proven: "+err.Error())
-			}
-			if err := r.markUnknown(id, "lease expired; execution stopped and requires coordinator reconciliation"); err != nil {
-				return err
-			}
-			continue
-		}
-		switch record.Phase {
-		case PhaseRunning:
-			threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
-			if observeErr != nil {
-				err = r.markUnknown(id, "T3 observation unavailable: "+observeErr.Error())
-			} else if threadState == backlog.DispatchThreadStopped {
-				if err = r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID); err == nil {
-					err = r.collect(ctx, id)
-				}
-			} else if threadState == backlog.DispatchThreadMissing {
-				err = r.markUnknown(id, "running T3 thread is missing")
-			}
-		case PhaseStopped:
-			if len(record.ThrottleRequests) == 0 {
-				threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
-				if observeErr != nil {
-					err = r.markUnknown(id, "T3 observation unavailable: "+observeErr.Error())
-				} else if threadState == backlog.DispatchThreadActive {
-					err = r.markPhase(id, PhaseRunning, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
-				} else if threadState == backlog.DispatchThreadStopped && !hasCommandRequest(record, domain.WorkerCommandStop) {
-					err = r.collect(ctx, id)
-				}
-			}
-		case PhasePreparing:
-			workspace, exists, inspectErr := r.driver.InspectWorkspace(ctx, record.Package.Package)
-			if inspectErr != nil {
-				return r.markUnknown(id, "workspace observation failed: "+inspectErr.Error())
-			}
-			if exists {
-				err = r.markPhase(id, PhasePrepared, "", workspace, "")
-			} else {
-				err = r.prepare(ctx, id)
-			}
-		case PhaseDispatching:
-			err = r.reconcileDispatch(ctx, id)
-		case PhaseStopping:
-			if stopErr := r.driver.StopThread(ctx, record.Package.Package); stopErr != nil {
-				err = r.markUnknown(id, "stop outcome is unproven: "+stopErr.Error())
-			} else {
-				err = r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
-			}
-		case PhaseCollecting:
-			err = r.collect(ctx, id)
-		case PhaseCompleted:
-			err = r.driver.Cleanup(ctx, record.Package.Package, record.WorkspacePath)
-		}
-		if err != nil {
+		if err := r.reconcileAttempt(ctx, id, record, now); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record AttemptRecord, now time.Time) error {
+	var err error
+	switch record.Phase {
+	case PhaseRunning:
+		threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
+		switch {
+		case observeErr != nil:
+			r.log.Warn("T3 observation unavailable; attempt keeps running", "assignment", id, "error", observeErr)
+		case threadState == backlog.DispatchThreadStopped:
+			if err = r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID); err == nil {
+				err = r.collect(ctx, id)
+			}
+		case threadState == backlog.DispatchThreadMissing:
+			err = r.markUnknown(id, "running T3 thread is missing")
+		}
+	case PhaseStopped:
+		if len(record.ThrottleRequests) == 0 {
+			threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
+			switch {
+			case observeErr != nil:
+				r.log.Warn("T3 observation unavailable; stopped attempt waits", "assignment", id, "error", observeErr)
+			case threadState == backlog.DispatchThreadActive:
+				err = r.markPhase(id, PhaseRunning, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
+			case threadState == backlog.DispatchThreadStopped && !hasCommandRequest(record, domain.WorkerCommandStop):
+				err = r.collect(ctx, id)
+			}
+		}
+	case PhasePreparing:
+		workspace, exists, inspectErr := r.driver.InspectWorkspace(ctx, record.Package.Package)
+		if inspectErr != nil {
+			r.log.Warn("workspace observation failed", "assignment", id, "error", inspectErr)
+			break
+		}
+		if exists {
+			err = r.markPhase(id, PhasePrepared, "", workspace, "")
+		} else {
+			err = r.prepare(ctx, id)
+		}
+		if err == nil && hasCommandRequest(record, domain.WorkerCommandDispatch) {
+			err = r.dispatchIfPrepared(ctx, id)
+		}
+	case PhasePrepared:
+		if hasCommandRequest(record, domain.WorkerCommandDispatch) {
+			err = r.dispatchIfPrepared(ctx, id)
+		}
+	case PhaseDispatching:
+		err = r.reconcileDispatch(ctx, id)
+	case PhaseStopping:
+		if stopErr := r.driver.StopThread(ctx, record.Package.Package); stopErr != nil {
+			r.log.Warn("stop outcome is unproven; retrying next reconcile", "assignment", id, "error", stopErr)
+		} else {
+			err = r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
+		}
+	case PhaseCollecting:
+		err = r.collect(ctx, id)
+	case PhaseUnknown:
+		err = r.recoverUnknown(ctx, id, record)
+	case PhaseCompleted:
+		if record.SettlePending {
+			if settleErr := r.driver.Settle(ctx, record.Package.Package); settleErr != nil {
+				r.log.Warn("T3 settlement still unproven; retrying next reconcile", "assignment", id, "error", settleErr)
+			} else {
+				err = r.journal.update(func(state *journalState) error {
+					if current, ok := state.Attempts[id]; ok {
+						current.SettlePending = false
+						state.Attempts[id] = current
+						state.Sequence++
+					}
+					return nil
+				})
+			}
+			break
+		}
+		if now.Sub(record.UpdatedAt) >= r.config.Retention {
+			err = r.prune(ctx, id, record)
+		}
+	}
+	if err != nil {
+		if isJournalError(err) {
+			return err
+		}
+		r.log.Warn("attempt reconciliation deferred", "assignment", id, "phase", record.Phase, "error", err)
+	}
+	return nil
+}
+
+// recoverUnknown re-observes an attempt whose last effect was ambiguous. The
+// deterministic T3 thread identity makes the outcome provable later: a missing
+// thread means the execution never started, a stopped thread can be collected,
+// and an active thread is simply running.
+func (r *Runtime) recoverUnknown(ctx context.Context, id string, record AttemptRecord) error {
+	pkg := record.Package.Package
+	threadState, err := r.driver.ObserveThread(ctx, pkg)
+	if err != nil {
+		r.log.Warn("unknown attempt cannot be observed yet", "assignment", id, "error", err)
+		return nil
+	}
+	switch threadState {
+	case backlog.DispatchThreadActive:
+		return r.markPhase(id, PhaseRunning, "", record.WorkspacePath, pkg.Identity.ThreadID)
+	case backlog.DispatchThreadStopped:
+		if err := r.markPhase(id, PhaseStopped, "", record.WorkspacePath, pkg.Identity.ThreadID); err != nil {
+			return err
+		}
+		return r.collect(ctx, id)
+	case backlog.DispatchThreadMissing:
+		reason := record.Failure
+		if reason == "" {
+			reason = "execution could not be recovered"
+		}
+		return r.markFailed(id, "T3 thread never started: "+reason)
+	default:
+		return nil
+	}
+}
+
+func (r *Runtime) prune(ctx context.Context, id string, record AttemptRecord) error {
+	if err := r.driver.Cleanup(ctx, record.Package.Package, record.WorkspacePath); err != nil {
+		return err
+	}
+	return r.journal.update(func(state *journalState) error {
+		if current, ok := state.Attempts[id]; ok && current.Phase == PhaseCompleted {
+			delete(state.Attempts, id)
+			state.Sequence++
+		}
+		return nil
+	})
 }
 
 func (r *Runtime) prepare(ctx context.Context, id string) error {
@@ -426,7 +562,8 @@ func (r *Runtime) prepare(ctx context.Context, id string) error {
 		return err
 	}
 	record := state.Attempts[id]
-	if record.Phase == PhasePrepared || record.Phase == PhaseRunning || record.Phase == PhaseStopped || record.Phase == PhaseCompleted {
+	if record.Phase == PhasePrepared || record.Phase == PhaseRunning || record.Phase == PhaseStopped ||
+		record.Phase == PhaseCompleted || record.Phase == PhaseDispatching || record.Phase == PhaseCollecting {
 		return nil
 	}
 	if record.Phase != PhaseClaimed && record.Phase != PhasePreparing {
@@ -439,14 +576,44 @@ func (r *Runtime) prepare(ctx context.Context, id string) error {
 	}
 	workspace, err := r.driver.Prepare(ctx, record.Package.Package)
 	if err != nil {
-		_ = r.markUnknown(id, "preparation outcome is unproven: "+err.Error())
-		return err
+		attempts := record.PrepareAttempts + 1
+		if attempts >= MaxPrepareAttempts {
+			if markErr := r.markFailed(id, fmt.Sprintf("preparation failed %d times; last error: %v", attempts, err)); markErr != nil {
+				return markErr
+			}
+			return nil
+		}
+		if updateErr := r.journal.update(func(state *journalState) error {
+			current, ok := state.Attempts[id]
+			if !ok {
+				return nil
+			}
+			current.PrepareAttempts = attempts
+			current.Failure = "preparation failed: " + err.Error()
+			current.UpdatedAt = r.now()
+			state.Attempts[id] = current
+			state.Sequence++
+			return nil
+		}); updateErr != nil {
+			return updateErr
+		}
+		return fmt.Errorf("preparation attempt %d failed: %w", attempts, err)
 	}
 	if strings.TrimSpace(workspace) == "" {
-		_ = r.markUnknown(id, "preparation returned an empty workspace")
-		return errors.New("worker runtime: preparation returned an empty workspace")
+		return r.markFailed(id, "preparation returned an empty workspace")
 	}
 	return r.markPhase(id, PhasePrepared, "", workspace, "")
+}
+
+func (r *Runtime) dispatchIfPrepared(ctx context.Context, id string) error {
+	state, err := r.journal.snapshot()
+	if err != nil {
+		return err
+	}
+	if state.Attempts[id].Phase != PhasePrepared {
+		return nil
+	}
+	return r.dispatch(ctx, id)
 }
 
 func (r *Runtime) dispatch(ctx context.Context, id string) error {
@@ -455,8 +622,20 @@ func (r *Runtime) dispatch(ctx context.Context, id string) error {
 		return err
 	}
 	record := state.Attempts[id]
-	if record.Phase == PhaseRunning {
+	switch record.Phase {
+	case PhaseRunning, PhaseStopped, PhaseStopping, PhaseCollecting, PhaseCompleted, PhaseFailed:
 		return nil
+	case PhaseClaimed, PhasePreparing:
+		if err := r.prepare(ctx, id); err != nil {
+			return err
+		}
+		if state, err = r.journal.snapshot(); err != nil {
+			return err
+		}
+		record = state.Attempts[id]
+		if record.Phase != PhasePrepared {
+			return nil
+		}
 	}
 	if record.Phase != PhasePrepared && record.Phase != PhaseDispatching {
 		return fmt.Errorf("dispatch is invalid in phase %q", record.Phase)
@@ -475,41 +654,45 @@ func (r *Runtime) reconcileDispatch(ctx context.Context, id string) error {
 		return err
 	}
 	record := state.Attempts[id]
-	threadState, err := r.driver.ObserveThread(ctx, record.Package.Package)
+	pkg := record.Package.Package
+	threadState, err := r.driver.ObserveThread(ctx, pkg)
 	if err != nil {
-		_ = r.markUnknown(id, "T3 observation unavailable: "+err.Error())
-		return err
+		return fmt.Errorf("T3 observation unavailable before dispatch: %w", err)
 	}
 	switch threadState {
 	case backlog.DispatchThreadActive:
-		return r.markPhase(id, PhaseRunning, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
+		return r.markPhase(id, PhaseRunning, "", record.WorkspacePath, pkg.Identity.ThreadID)
 	case backlog.DispatchThreadStopped:
-		return r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
+		return r.markPhase(id, PhaseStopped, "", record.WorkspacePath, pkg.Identity.ThreadID)
 	case backlog.DispatchThreadMissing:
-		if err := r.driver.CreateThread(ctx, record.Package.Package, record.WorkspacePath); err != nil {
-			observed, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
-			if observeErr == nil && observed == backlog.DispatchThreadActive {
-				return r.markPhase(id, PhaseRunning, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
+		if err := r.driver.CreateThread(ctx, pkg, record.WorkspacePath); err != nil {
+			observed, observeErr := r.driver.ObserveThread(ctx, pkg)
+			switch {
+			case observeErr == nil && observed == backlog.DispatchThreadActive:
+				return r.markPhase(id, PhaseRunning, "", record.WorkspacePath, pkg.Identity.ThreadID)
+			case observeErr == nil && observed == backlog.DispatchThreadStopped:
+				return r.markPhase(id, PhaseStopped, "", record.WorkspacePath, pkg.Identity.ThreadID)
+			case observeErr == nil && observed == backlog.DispatchThreadMissing:
+				// No thread exists, so the failed create had no provider effect.
+				return r.markFailed(id, "T3 thread creation failed: "+err.Error())
+			default:
+				return r.markUnknown(id, "T3 create outcome is ambiguous: "+err.Error())
 			}
-			_ = r.markUnknown(id, "T3 create outcome is ambiguous: "+err.Error())
-			return err
 		}
-		observed, err := r.driver.ObserveThread(ctx, record.Package.Package)
+		observed, err := r.driver.ObserveThread(ctx, pkg)
 		if err != nil || observed == backlog.DispatchThreadMissing {
 			detail := "T3 create could not be proven"
 			if err != nil {
 				detail += ": " + err.Error()
 			}
-			_ = r.markUnknown(id, detail)
-			return errors.New(detail)
+			return r.markUnknown(id, detail)
 		}
 		// A successful deterministic create-and-start response plus a visible
 		// thread proves the effect. T3 may project the new session as stopped
 		// briefly before its asynchronous provider startup becomes visible.
-		return r.markPhase(id, PhaseRunning, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
+		return r.markPhase(id, PhaseRunning, "", record.WorkspacePath, pkg.Identity.ThreadID)
 	default:
-		_ = r.markUnknown(id, "T3 returned an unknown dispatch state")
-		return errors.New("worker runtime: unknown T3 dispatch state")
+		return r.markUnknown(id, "T3 returned an unknown dispatch state")
 	}
 }
 
@@ -519,25 +702,25 @@ func (r *Runtime) stop(ctx context.Context, id string) error {
 		return err
 	}
 	record := state.Attempts[id]
-	if record.Phase == PhaseCompleted {
+	switch record.Phase {
+	case PhaseCompleted, PhaseFailed:
 		return nil
-	}
-	if record.Phase == PhaseStopped {
+	case PhaseClaimed, PhasePreparing, PhasePrepared:
+		// Nothing has been dispatched; stopping means the attempt ends here.
+		return r.markFailed(id, "stopped by the coordinator before dispatch")
+	case PhaseStopped:
 		if err := r.driver.StopThread(ctx, record.Package.Package); err != nil {
-			_ = r.markUnknown(id, "stop settlement is unproven: "+err.Error())
-			return err
+			return fmt.Errorf("stop settlement is unproven: %w", err)
 		}
 		return nil
-	}
-	if record.Phase == PhaseUnknown {
-		return errors.New("stop requires explicit recovery from unknown execution")
+	case PhaseUnknown:
+		return r.recoverUnknown(ctx, id, record)
 	}
 	if err := r.markPhase(id, PhaseStopping, "", record.WorkspacePath, record.ThreadID); err != nil {
 		return err
 	}
 	if err := r.driver.StopThread(ctx, record.Package.Package); err != nil {
-		_ = r.markUnknown(id, "stop outcome is unproven: "+err.Error())
-		return err
+		return fmt.Errorf("stop outcome is unproven: %w", err)
 	}
 	return r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
 }
@@ -548,10 +731,16 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 		return err
 	}
 	record := state.Attempts[id]
-	if record.Phase == PhaseCompleted {
+	switch record.Phase {
+	case PhaseCompleted:
 		return nil
-	}
-	if record.Phase != PhaseStopped && record.Phase != PhaseCollecting {
+	case PhaseFailed:
+		if err := r.driver.CollectFailure(ctx, record.Package.Package, record.WorkspacePath, record.Failure); err != nil {
+			return fmt.Errorf("publish failed result: %w", err)
+		}
+		return r.markPhase(id, PhaseCompleted, record.Failure, record.WorkspacePath, record.ThreadID)
+	case PhaseStopped, PhaseCollecting:
+	default:
 		return fmt.Errorf("collect is invalid in phase %q", record.Phase)
 	}
 	if record.Phase != PhaseCollecting {
@@ -559,14 +748,40 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 			return err
 		}
 	}
+	if record.WorkspacePath != "" {
+		// A workspace that vanished (host cleanup, an older binary's eager
+		// cleanup, a rollback) can never be finalized; publish the failure
+		// instead of retrying collection forever.
+		if _, exists, err := r.driver.InspectWorkspace(ctx, record.Package.Package); err == nil && !exists {
+			if err := r.markFailed(id, "workspace is missing; outputs cannot be collected"); err != nil {
+				return err
+			}
+			return r.collect(ctx, id)
+		}
+	}
 	if err := r.driver.Collect(ctx, record.Package.Package, record.WorkspacePath); err != nil {
-		_ = r.markUnknown(id, "collection or artifact custody is unproven: "+err.Error())
-		return err
+		if !errors.Is(err, ErrSettleUnproven) {
+			return fmt.Errorf("collection deferred: %w", err)
+		}
+		// The result is durable in custody; only the provider settlement is
+		// still unproven. Complete the attempt and retry settlement later
+		// instead of repeating collection.
+		r.log.Warn("result published; T3 settlement deferred", "assignment", id, "error", err)
+		return r.journal.update(func(state *journalState) error {
+			current, ok := state.Attempts[id]
+			if !ok {
+				return fmt.Errorf("worker journal: unknown assignment %q", id)
+			}
+			current.Phase = PhaseCompleted
+			current.Failure = ""
+			current.SettlePending = true
+			current.UpdatedAt = r.now()
+			state.Attempts[id] = current
+			state.Sequence++
+			return nil
+		})
 	}
-	if err := r.markPhase(id, PhaseCompleted, "", record.WorkspacePath, record.ThreadID); err != nil {
-		return err
-	}
-	return r.driver.Cleanup(ctx, record.Package.Package, record.WorkspacePath)
+	return r.markPhase(id, PhaseCompleted, "", record.WorkspacePath, record.ThreadID)
 }
 
 func (r *Runtime) validateOffer(offer workerproto.AssignmentOffer, now time.Time) error {
@@ -691,7 +906,7 @@ func (r *Runtime) markPhase(id string, phase Phase, failure, workspace, thread s
 	return r.journal.update(func(state *journalState) error {
 		record, ok := state.Attempts[id]
 		if !ok {
-			return fmt.Errorf("worker runtime: unknown assignment %q", id)
+			return fmt.Errorf("worker journal: unknown assignment %q", id)
 		}
 		record.Phase = phase
 		record.Failure = failure
@@ -709,10 +924,22 @@ func (r *Runtime) markPhase(id string, phase Phase, failure, workspace, thread s
 }
 
 func (r *Runtime) markUnknown(id, detail string) error {
+	r.log.Warn("attempt execution is unknown until re-observed", "assignment", id, "detail", detail)
 	return r.markPhase(id, PhaseUnknown, detail, "", "")
 }
 
+// markFailed records a deterministic, effect-free failure. The coordinator
+// observes it as a completed assignment and collects a failed result.
+func (r *Runtime) markFailed(id, detail string) error {
+	r.log.Warn("attempt failed on the worker", "assignment", id, "detail", detail)
+	return r.markPhase(id, PhaseFailed, detail, "", "")
+}
+
 func (r *Runtime) now() time.Time { return r.config.Now().UTC() }
+
+func isJournalError(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "worker journal:")
+}
 
 func hasCommandRequest(record AttemptRecord, kind domain.WorkerCommandKind) bool {
 	for _, command := range record.CommandRequests {
@@ -742,10 +969,19 @@ func observation(record AttemptRecord, now time.Time) domain.WorkerAssignmentObs
 	case PhaseRunning:
 		state = domain.AssignmentClaimed
 		control = domain.ControlRunning
-	case PhaseStopped:
+	case PhaseStopping, PhaseCollecting:
 		state = domain.AssignmentClaimed
-		control = domain.ControlPaused
-	case PhaseCompleted:
+		control = domain.ControlRunning
+	case PhaseStopped:
+		// A thread that ended on its own is still owned by a live execution
+		// that waits for collection; only a delivered throttle command makes
+		// the stop a quota pause.
+		state = domain.AssignmentClaimed
+		control = domain.ControlRunning
+		if len(record.ThrottleRequests) != 0 {
+			control = domain.ControlPaused
+		}
+	case PhaseCompleted, PhaseFailed:
 		state = domain.AssignmentCompleted
 		control = domain.ControlStopped
 	case PhaseUnknown:
@@ -758,8 +994,9 @@ func observation(record AttemptRecord, now time.Time) domain.WorkerAssignmentObs
 		WorkspacePath: record.WorkspacePath, ObservedAt: now,
 	}
 }
+
 func terminalPhase(phase Phase) bool {
-	return slices.Contains([]Phase{PhaseCompleted, PhaseUnknown}, phase)
+	return slices.Contains([]Phase{PhaseCompleted, PhaseFailed, PhaseUnknown}, phase)
 }
 
 func minTime(left, right time.Time) time.Time {

@@ -70,9 +70,9 @@ type quotaAdmissionSession struct {
 }
 
 func NewQuotaAdmissionPolicy(input QuotaAdmissionInput) (QuotaAdmissionPolicy, error) {
-	if len(input.Windows) == 0 {
-		return QuotaAdmissionPolicy{}, fmt.Errorf("quota admission requires at least one quota window")
-	}
+	// Zero windows is a valid state: unmetered pools never have windows, and
+	// metered pools have none until the first provider observation arrives.
+	// Candidates on metered pools are then blocked per pool, not globally.
 	if input.MaxObservationAge <= 0 {
 		return QuotaAdmissionPolicy{}, fmt.Errorf("quota admission maximum observation age must be positive")
 	}

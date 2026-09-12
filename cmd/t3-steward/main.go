@@ -527,10 +527,22 @@ func cmdRun(g globalFlags) error {
 		return err
 	}
 	defer store.Close()
-
-	client, dataDir, err := connect(cfg, logger)
+	client, d, err := buildWatchdog(cfg, logger, store, true)
 	if err != nil {
 		return err
+	}
+	if err := gateWatchdogVersion(ctx, cfg, logger, client, d); err != nil || ctx.Err() != nil {
+		return err
+	}
+	return d.Run(ctx)
+}
+
+// buildWatchdog assembles the quota watchdog with its wait, archive, and
+// (optionally) legacy backlog runners around a shared store.
+func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, allowLegacyBacklog bool) (*t3api.Client, *daemon.Daemon, error) {
+	client, dataDir, err := connect(cfg, logger)
+	if err != nil {
+		return nil, nil, err
 	}
 	control := t3control.New(client, logger, cfg.Policy.DryRun)
 	usageCh := make(chan domain.UsageSample, 256)
@@ -548,17 +560,21 @@ func cmdRun(g globalFlags) error {
 		d.Archive = newArchiver(cfg, store, control, logger, dataDir)
 		logger.Info("archive enabled", "destination", cfg.Archive.Destination, "after", cfg.Archive.After.D(), "at", cfg.Archive.At)
 	}
-	if cfg.Backlog.Enabled {
+	if allowLegacyBacklog && cfg.Backlog.Enabled {
 		runner, err := newBacklogRunner(cfg, store, control, logger, dataDir)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 		d.Backlog = runner
 		dir, _ := cfg.ResolveBacklogDir()
 		logger.Info("backlog runner enabled", "dir", dir, "quiet_for", cfg.Backlog.QuietFor.D())
 	}
+	return client, d, nil
+}
 
-	// Version gate, retried with backoff until the server answers.
+// gateWatchdogVersion waits for the T3 server and applies the control
+// compatibility gate. It returns nil when the context ends first.
+func gateWatchdogVersion(ctx context.Context, cfg config.Config, logger *slog.Logger, client *t3api.Client, d *daemon.Daemon) error {
 	backoff := time.Second
 	for {
 		cctx, cancel := context.WithTimeout(ctx, cfg.T3.RequestTimeout.D())
@@ -572,7 +588,7 @@ func cmdRun(g globalFlags) error {
 			if reason != "" {
 				logger.Warn(reason)
 			}
-			break
+			return nil
 		}
 		logger.Warn("T3 server not reachable; retrying", "url", client.BaseURL, "err", err, "in", backoff)
 		select {
@@ -585,7 +601,35 @@ func cmdRun(g globalFlags) error {
 			backoff = cfg.Polling.ReconnectMaxDelay.D()
 		}
 	}
-	return d.Run(ctx)
+}
+
+// runWatchdogAlongside runs the quota watchdog next to the backlog-v2
+// coordinator. Failures are logged and retried; they never stop the
+// coordinator, which must keep scheduling even without T3 telemetry.
+func runWatchdogAlongside(ctx context.Context, cfg config.Config, logger *slog.Logger, store *sqlite.Store) {
+	backoff := 5 * time.Second
+	for ctx.Err() == nil {
+		client, d, err := buildWatchdog(cfg, logger, store, false)
+		if err == nil {
+			if err = gateWatchdogVersion(ctx, cfg, logger, client, d); err == nil && ctx.Err() == nil {
+				err = d.Run(ctx)
+			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			logger.Warn("quota watchdog unavailable alongside the coordinator; retrying", "err", err, "in", backoff)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < 2*time.Minute {
+			backoff *= 2
+		}
+	}
 }
 
 func cmdStatus(g globalFlags, limit int, asJSON, showAll bool) error {

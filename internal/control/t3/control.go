@@ -307,7 +307,20 @@ func (c *Control) SettleThread(ctx context.Context, threadID, effectToken string
 		return nil
 	}
 	_, dispatchErr := c.client.Dispatch(ctx, cmd)
+	if dispatchErr != nil {
+		// T3 rejects a command ID it has already consumed, which happens when
+		// an earlier settle attempt was dispatched but its projection was
+		// never observed. Settling is idempotent on the thread, so retry once
+		// under a fresh command ID before giving up on this pass.
+		c.log.Warn("deterministic settle dispatch rejected; retrying with a fresh command id", "thread", threadID, "err", dispatchErr)
+		cmd["commandId"] = newID()
+		_, dispatchErr = c.client.Dispatch(ctx, cmd)
+	}
 	deadline := time.Now().Add(10 * time.Second)
+	if dispatchErr != nil {
+		// Nothing was dispatched; one quick observation is enough.
+		deadline = time.Now()
+	}
 	var observeErr error
 	for {
 		var thread *domain.Thread

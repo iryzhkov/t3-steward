@@ -74,7 +74,7 @@ func (e Exchange) handle(ctx context.Context, envelope workerproto.Envelope) (wo
 		if err := workerproto.DecodePayload(envelope, workerproto.MessageArtifactPoll, &request); err != nil {
 			return "", nil, err
 		}
-		pending, err := e.Custody.PendingUploadByPurpose(request.Purpose)
+		pending, err := e.Custody.PendingUploadByPurpose(request.Purpose, request.Exclude...)
 		if err != nil {
 			return "", nil, err
 		}

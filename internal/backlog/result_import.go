@@ -81,7 +81,7 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	}
 	outcomeID := stableCoordinatorID("outcome", manifest.ID)
 	if attempt.Progress.Terminal() && attempt.LastTurnOutcomeID != outcomeID {
-		return ResultImportReport{}, errors.New("result import attempt already has a different terminal outcome")
+		return ResultImportReport{}, fmt.Errorf("%w: attempt %q already has a different terminal outcome", ErrResultImportSuperseded, attempt.ID)
 	}
 
 	report := ResultImportReport{}
@@ -295,7 +295,9 @@ func evaluateResultEvidence(task domain.Task, artifacts []domain.Artifact, paylo
 		}
 	}
 	failures := make([]string, 0, 2)
-	if !summaryDone {
+	if reason, failed := backlogFailedReason(string(payloads[summaryIndex(artifacts)])); failed {
+		failures = append(failures, reason)
+	} else if !summaryDone {
 		failures = append(failures, "final summary has no done marker")
 	}
 	for index, command := range task.Verification {
@@ -333,6 +335,35 @@ func evaluateResultEvidence(task domain.Task, artifacts []domain.Artifact, paylo
 		failures = append(failures, "missing declared output: "+strings.Join(missingOutputs, ", "))
 	}
 	return len(failures) == 0, strings.Join(failures, "; "), summary, nil
+}
+
+// BacklogFailedMarker is the final-message line a worker writes when it fails
+// an attempt itself (preparation, dispatch, or recovery failure). The lines
+// after it are the reason.
+const BacklogFailedMarker = "BACKLOG STATUS: failed"
+
+func backlogFailedReason(message string) (string, bool) {
+	lines := strings.Split(message, "\n")
+	for index, line := range lines {
+		if !strings.EqualFold(strings.TrimSpace(line), BacklogFailedMarker) {
+			continue
+		}
+		reason := strings.TrimSpace(strings.Join(lines[index+1:], "\n"))
+		if reason == "" {
+			reason = "worker reported a failed attempt"
+		}
+		return reason, true
+	}
+	return "", false
+}
+
+func summaryIndex(artifacts []domain.Artifact) int {
+	for index, artifact := range artifacts {
+		if artifact.Kind == domain.ArtifactSummary {
+			return index
+		}
+	}
+	return 0
 }
 
 func hasBacklogDoneMarker(message string) bool {

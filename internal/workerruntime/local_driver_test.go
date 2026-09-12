@@ -54,6 +54,13 @@ type recordingT3 struct {
 	archive        []byte
 }
 
+func (c *recordingT3) ListThreads(context.Context) ([]domain.Thread, error) {
+	if c.thread == nil {
+		return nil, nil
+	}
+	return []domain.Thread{*c.thread}, nil
+}
+
 func (c *recordingT3) GetThread(context.Context, string) (*domain.Thread, error) {
 	if c.thread == nil {
 		return nil, nil

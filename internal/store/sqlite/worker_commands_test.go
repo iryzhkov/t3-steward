@@ -166,7 +166,7 @@ func TestAssignmentLeaseRenewalAndExpiryFailClosed(t *testing.T) {
 		t.Fatalf("fail-closed projections: assignment=%#v attempt=%#v", records.Assignments[0], records.Attempts[0])
 	}
 	assertNativeAuditEvent(t, store, assignmentLeaseAuditID(renewed), "worker:normandy", "renewed")
-	assertNativeAuditEvent(t, store, "assignment-lease-expired:assignment-1:1", "coordinator", "unknown")
+	assertNativeAuditEvent(t, store, "assignment-lease-expired:assignment-1:1:1789063320000000000", "coordinator", "unknown")
 }
 
 func TestMigrationFromVersionEightBackfillsLeaseExpiry(t *testing.T) {

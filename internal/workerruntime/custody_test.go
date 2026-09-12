@@ -121,9 +121,13 @@ func TestCustodyPublishesRestartSafeResultAndCheckpoint(t *testing.T) {
 	}
 	changed := result
 	changed.FinalMessage = "changed"
-	if err := store.PublishResult(context.Background(), pkg, changed); err == nil ||
-		!strings.Contains(err.Error(), "changed immutable content") {
-		t.Fatalf("changed result replay error = %v", err)
+	// A repeated capture of the same execution keeps the first published
+	// result; it is neither an error nor a replacement.
+	if err := store.PublishResult(context.Background(), pkg, changed); err != nil {
+		t.Fatalf("repeated capture must keep the first result: %v", err)
+	}
+	if pending, err := store.PendingUploadByPurpose("result"); err != nil || pending == nil || pending.Manifest.Objects[len(pending.Manifest.Objects)-2].SHA256 == "" {
+		t.Fatalf("first result must remain pending: %+v err=%v", pending, err)
 	}
 
 	checkpoint, err := store.PublishCheckpoint(context.Background(), pkg, "worker/checkpoint.json", []byte("{\"turn\":3}"))
@@ -204,8 +208,8 @@ func TestCustodyReloadsCompletedUploadAfterCoordinatorEpochAdvance(t *testing.T)
 
 	older := testCustodyStore(t, root, func() time.Time { return runtimeTestNow.Add(time.Minute) })
 	older.config.CoordinatorEpoch--
-	if _, err := older.PendingUploads(); err == nil || !strings.Contains(err.Error(), "epoch binding") {
-		t.Fatalf("future-epoch upload error = %v", err)
+	if uploads, err := older.PendingUploads(); err != nil || len(uploads) != 0 {
+		t.Fatalf("future-epoch upload must be skipped, not served: %+v, %v", uploads, err)
 	}
 }
 
@@ -265,15 +269,15 @@ func TestCustodyRejectsMalformedOrMisplacedOutboxRecord(t *testing.T) {
 	if err := os.WriteFile(path, append(append([]byte(nil), original...), []byte("junk")...), 0o444); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.PendingUploads(); err == nil || !strings.Contains(err.Error(), "trailing content") {
-		t.Fatalf("trailing content error = %v", err)
+	if uploads, err := store.PendingUploads(); err != nil || len(uploads) != 0 {
+		t.Fatalf("corrupt outbox entry must be skipped: %+v, %v", uploads, err)
 	}
 	changed := bytes.Replace(original, []byte(`"direction":"upload"`), []byte(`"direction":"download"`), 1)
 	if err := os.WriteFile(path, changed, 0o444); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.PendingUploads(); err == nil || !strings.Contains(err.Error(), "non-upload") {
-		t.Fatalf("misplaced manifest error = %v", err)
+	if uploads, err := store.PendingUploads(); err != nil || len(uploads) != 0 {
+		t.Fatalf("non-upload outbox entry must be skipped: %+v, %v", uploads, err)
 	}
 }
 

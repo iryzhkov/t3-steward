@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"path/filepath"
 	"time"
 
@@ -25,6 +26,7 @@ type WorkerServiceOptions struct {
 	T3                  T3Control
 	DryRun              bool
 	Now                 func() time.Time
+	Logger              *slog.Logger
 }
 
 // WorkerService owns the bounded codec and authenticated exchange used by the
@@ -43,6 +45,9 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 	if options.WorkerEpoch == "" || options.CoordinatorEpoch < 1 {
 		return nil, errors.New("worker service: worker and coordinator epochs are required")
 	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
+	}
 	if options.Now == nil {
 		options.Now = time.Now
 	}
@@ -60,10 +65,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		return nil, errors.New("worker service: protocol credential principal does not match configured identity")
 	}
 
-	storageKey := shortDigest([]byte(options.WorkerID))
-	artifactRoot := filepath.Join(options.Settings.Storage.Artifacts, "workers", storageKey)
-	runsRoot := filepath.Join(options.Settings.Storage.Workspaces, "workers", storageKey)
-	journalRoot := filepath.Join(runsRoot, "journal")
+	artifactRoot, runsRoot, journalRoot := WorkerRoots(options.Settings, options.WorkerID)
 	journal, err := OpenJournal(journalRoot, options.WorkerID, options.WorkerEpoch, options.CoordinatorEpoch)
 	if err != nil {
 		return nil, fmt.Errorf("worker service: %w", err)
@@ -90,13 +92,18 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		return nil, err
 	}
 	processes := backlog.SystemdScopeRunner{}
+	t3 := options.T3
+	if t3 != nil {
+		t3 = NewCachedT3(t3)
+	}
 	driver, err := NewLocalDriver(LocalDriver{
 		Config: LocalDriverConfig{
-			CatalogRevision: binding.CatalogRevision,
-			ArtifactRoot:    artifactRoot,
-			RunsRoot:        runsRoot,
-			StopTimeout:     options.Settings.Transport.RequestTimeout.D(),
-			DryRun:          options.DryRun,
+			CatalogRevision:  binding.CatalogRevision,
+			ArtifactRoot:     artifactRoot,
+			RunsRoot:         runsRoot,
+			StopTimeout:      options.Settings.Transport.RequestTimeout.D(),
+			RetainWorkspaces: true,
+			DryRun:           options.DryRun,
 		},
 		Catalog: binding.Catalog,
 		Workspace: backlog.WorkspacePreparer{
@@ -107,7 +114,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		Source:      custody,
 		Publisher:   custody,
 		Credentials: options.ProjectCredentials,
-		T3:          options.T3,
+		T3:          t3,
 		Now:         options.Now,
 	})
 	if err != nil {
@@ -122,7 +129,9 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		LeaseDuration:    options.Settings.Leases.Duration.D(),
 		MaxPackageBytes:  options.Settings.MessageLimits.MaxBytes,
 		Inventory:        binding.Inventory,
+		Retention:        options.Settings.Storage.Retention.D(),
 		Now:              options.Now,
+		Logger:           options.Logger,
 	}, journal, driver)
 	if err != nil {
 		return nil, err
@@ -176,8 +185,85 @@ func (s *WorkerService) Serve(ctx context.Context, input io.Reader, output io.Wr
 	if s == nil || s.Exchange.Runtime == nil {
 		return errors.New("worker service: service is not initialized")
 	}
-	if err := s.Exchange.Runtime.Reconcile(ctx); err != nil {
+	var request workerproto.Envelope
+	if err := s.Codec.Decode(input, &request); err != nil {
 		return err
 	}
-	return ServeOne(ctx, input, output, s.Codec, s.Exchange)
+	return s.ServeEnvelope(ctx, request, output)
+}
+
+// ServeEnvelope is Serve for an envelope the caller already read, for example
+// to adopt its coordinator epoch before constructing the service.
+func (s *WorkerService) ServeEnvelope(ctx context.Context, request workerproto.Envelope, output io.Writer) error {
+	if s == nil || s.Exchange.Runtime == nil {
+		return errors.New("worker service: service is not initialized")
+	}
+	// Reconciliation runs before every request but must leave time to answer
+	// it: a slow provider call is cut off and retried on the next exchange
+	// instead of making the whole exchange time out.
+	reconcileCtx, cancel := context.WithCancel(ctx)
+	if !request.Deadline.IsZero() {
+		budget := time.Until(request.Deadline) * 2 / 3
+		if budget < time.Second {
+			budget = time.Second
+		}
+		reconcileCtx, cancel = context.WithTimeout(ctx, budget)
+	}
+	err := s.Exchange.Runtime.Reconcile(reconcileCtx)
+	cancel()
+	if err != nil && ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+		s.Exchange.Runtime.log.Warn("reconciliation exceeded its time budget; remaining attempts are retried next exchange")
+	} else if err != nil {
+		return err
+	}
+	response, err := s.Exchange.Handle(ctx, request)
+	if err != nil {
+		return err
+	}
+	return s.Codec.Encode(output, response)
+}
+
+// WorkerRoots returns the worker-scoped artifact, runs, and journal roots.
+func WorkerRoots(settings config.BacklogV2, workerID string) (artifactRoot, runsRoot, journalRoot string) {
+	storageKey := shortDigest([]byte(workerID))
+	artifactRoot = filepath.Join(settings.Storage.Artifacts, "workers", storageKey)
+	runsRoot = filepath.Join(settings.Storage.Workspaces, "workers", storageKey)
+	journalRoot = filepath.Join(runsRoot, "journal")
+	return artifactRoot, runsRoot, journalRoot
+}
+
+// AdoptCoordinatorEpoch chooses the coordinator epoch a worker exchange runs
+// under: the highest of the configured floor, the durable journal, and the
+// epoch of an envelope that verifies against the coordinator credential. A
+// forged or unsigned envelope cannot move the epoch.
+func AdoptCoordinatorEpoch(ctx context.Context, options WorkerServiceOptions, envelope workerproto.Envelope) (int64, error) {
+	if options.ProtocolCredentials == nil {
+		return 0, errors.New("worker service: protocol credential resolver is required")
+	}
+	binding, err := BuildWorkerBinding(options.Settings, options.WorkerID, time.Now())
+	if err != nil {
+		return 0, err
+	}
+	credentials, err := options.ProtocolCredentials.ResolveProtocol(ctx, binding.CredentialRef)
+	if err != nil {
+		return 0, err
+	}
+	_, _, journalRoot := WorkerRoots(options.Settings, options.WorkerID)
+	journalEpoch, err := JournalCoordinatorEpoch(journalRoot)
+	if err != nil {
+		return 0, err
+	}
+	epoch := max(options.CoordinatorEpoch, journalEpoch)
+	if envelope.Sender == options.Settings.Coordinator.ID && envelope.Recipient == options.WorkerID &&
+		envelope.WorkerEpoch == options.WorkerEpoch &&
+		envelope.Authentication.Principal == credentials.CoordinatorPrincipal &&
+		envelope.Authentication.KeyID == credentials.CoordinatorKeyID &&
+		workerproto.VerifyEnvelopeSignature(envelope, credentials.CoordinatorSecret) == nil &&
+		envelope.CoordinatorEpoch > epoch {
+		epoch = envelope.CoordinatorEpoch
+	}
+	if epoch < 1 {
+		return 0, errors.New("worker service: no coordinator epoch is known yet; set local_worker.coordinator_epoch or wait for an authenticated coordinator envelope")
+	}
+	return epoch, nil
 }

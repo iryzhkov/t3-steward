@@ -18,24 +18,34 @@ import (
 var runtimeTestNow = time.Date(2026, 9, 10, 20, 0, 0, 0, time.UTC)
 
 type fakeDriver struct {
-	workspace       string
-	workspaceReady  bool
-	observations    []backlog.DispatchThreadState
-	observeErr      error
-	createErr       error
-	stopErr         error
-	collectErr      error
-	prepareCalls    int
-	createCalls     int
-	stopCalls       int
-	collectCalls    int
-	cleanupCalls    int
-	checkpointCalls int
-	resumeCalls     int
+	workspace      string
+	workspaceReady bool
+	prepareErr     error
+	// observeAfterCreateErr makes every observation after the scripted ones
+	// fail, so a failed create cannot be disproved.
+	observeAfterCreateErr error
+	observations          []backlog.DispatchThreadState
+	observeErr            error
+	createErr             error
+	stopErr               error
+	collectErr            error
+	prepareCalls          int
+	createCalls           int
+	stopCalls             int
+	collectCalls          int
+	collectFailureCalls   int
+	settleCalls           int
+	settleErr             error
+	cleanupCalls          int
+	checkpointCalls       int
+	resumeCalls           int
 }
 
 func (d *fakeDriver) Prepare(context.Context, workerproto.ExecutionPackage) (string, error) {
 	d.prepareCalls++
+	if d.prepareErr != nil {
+		return "", d.prepareErr
+	}
 	d.workspaceReady = true
 	return d.workspace, nil
 }
@@ -47,6 +57,9 @@ func (d *fakeDriver) ObserveThread(context.Context, workerproto.ExecutionPackage
 		return "", d.observeErr
 	}
 	if len(d.observations) == 0 {
+		if d.observeAfterCreateErr != nil {
+			return "", d.observeAfterCreateErr
+		}
 		return backlog.DispatchThreadMissing, nil
 	}
 	result := d.observations[0]
@@ -64,6 +77,14 @@ func (d *fakeDriver) StopThread(context.Context, workerproto.ExecutionPackage) e
 func (d *fakeDriver) Collect(context.Context, workerproto.ExecutionPackage, string) error {
 	d.collectCalls++
 	return d.collectErr
+}
+func (d *fakeDriver) CollectFailure(context.Context, workerproto.ExecutionPackage, string, string) error {
+	d.collectFailureCalls++
+	return nil
+}
+func (d *fakeDriver) Settle(context.Context, workerproto.ExecutionPackage) error {
+	d.settleCalls++
+	return d.settleErr
 }
 func (d *fakeDriver) Cleanup(context.Context, workerproto.ExecutionPackage, string) error {
 	d.cleanupCalls++
@@ -126,7 +147,7 @@ func TestRuntimeRestartAtDurableCommandBoundaries(t *testing.T) {
 	runtime = reopenTestRuntime(t, root, driver)
 	collect := testCommand(t, runtime, domain.WorkerCommandCollect, "collect-1")
 	acks, err = runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{collect}})
-	if err != nil || !acks.Acknowledgements[0].Accepted || driver.collectCalls != 1 || driver.cleanupCalls != 1 {
+	if err != nil || !acks.Acknowledgements[0].Accepted || driver.collectCalls != 1 || driver.cleanupCalls != 0 {
 		t.Fatalf("collect: acks=%+v collect=%d cleanup=%d err=%v", acks, driver.collectCalls, driver.cleanupCalls, err)
 	}
 	snapshot, err := runtime.Snapshot(context.Background())
@@ -163,8 +184,9 @@ func TestReconcileRepairsUnfencedStoppedProjection(t *testing.T) {
 func TestReconcileCollectsUnthrottledStoppedTerminalThread(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{
-		workspace:    filepath.Join(root, "workspace"),
-		observations: []backlog.DispatchThreadState{backlog.DispatchThreadStopped},
+		workspace:      filepath.Join(root, "workspace"),
+		workspaceReady: true,
+		observations:   []backlog.DispatchThreadState{backlog.DispatchThreadStopped},
 	}
 	runtime := newClaimedRuntime(t, root, driver)
 	if err := runtime.markPhase("assignment-1", PhaseStopped, "", driver.workspace, "thread-1"); err != nil {
@@ -180,8 +202,8 @@ func TestReconcileCollectsUnthrottledStoppedTerminalThread(t *testing.T) {
 	if got := state.Attempts["assignment-1"].Phase; got != PhaseCompleted {
 		t.Fatalf("phase = %q, want %q", got, PhaseCompleted)
 	}
-	if driver.collectCalls != 1 || driver.cleanupCalls != 1 {
-		t.Fatalf("collect calls = %d, cleanup calls = %d; want 1 each", driver.collectCalls, driver.cleanupCalls)
+	if driver.collectCalls != 1 || driver.cleanupCalls != 0 {
+		t.Fatalf("collect calls = %d, cleanup calls = %d; want collect once and cleanup deferred to retention", driver.collectCalls, driver.cleanupCalls)
 	}
 }
 func TestAcceptedCreateSurvivesStoppedProjectionLag(t *testing.T) {
@@ -212,7 +234,43 @@ func TestAcceptedCreateSurvivesStoppedProjectionLag(t *testing.T) {
 		t.Fatalf("control = %q, want running", snapshot.Assignments[0].Control)
 	}
 }
-func TestLostAndAmbiguousT3ResponseFailsUnknown(t *testing.T) {
+func TestFailedCreateWithoutThreadFailsDeterministically(t *testing.T) {
+	root := t.TempDir()
+	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}
+	runtime := newClaimedRuntime(t, root, driver)
+	prepare := testCommand(t, runtime, domain.WorkerCommandPrepare, "prepare")
+	if _, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{prepare}}); err != nil {
+		t.Fatal(err)
+	}
+	driver.createErr = errors.New("project not found")
+	driver.observations = []backlog.DispatchThreadState{backlog.DispatchThreadMissing, backlog.DispatchThreadMissing}
+	dispatch := testCommand(t, runtime, domain.WorkerCommandDispatch, "dispatch")
+	acks, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{dispatch}})
+	if err != nil || !acks.Acknowledgements[0].Accepted {
+		t.Fatalf("dispatch acknowledgement = %+v, err=%v", acks, err)
+	}
+	snapshot, err := runtime.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Assignments[0].State != domain.AssignmentCompleted {
+		t.Fatalf("assignment state = %q, want completed (failed result pending collection)", snapshot.Assignments[0].State)
+	}
+	collect := testCommand(t, runtime, domain.WorkerCommandCollect, "collect")
+	if _, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{collect}}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := runtime.journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := state.Attempts["assignment-1"]
+	if driver.collectFailureCalls != 1 || record.Phase != PhaseCompleted || !strings.Contains(record.Failure, "project not found") {
+		t.Fatalf("failure collection = %d, record = %+v", driver.collectFailureCalls, record)
+	}
+}
+
+func TestAmbiguousT3ResponseStaysUnknownUntilObservable(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}
 	runtime := newClaimedRuntime(t, root, driver)
@@ -221,21 +279,34 @@ func TestLostAndAmbiguousT3ResponseFailsUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	driver.createErr = errors.New("connection lost")
-	driver.observations = []backlog.DispatchThreadState{backlog.DispatchThreadMissing, backlog.DispatchThreadMissing}
+	driver.observations = []backlog.DispatchThreadState{backlog.DispatchThreadMissing}
+	driver.observeErr = nil
 	dispatch := testCommand(t, runtime, domain.WorkerCommandDispatch, "dispatch")
+	// First observation is missing (before create); create fails and the
+	// second observation is unavailable, so the outcome is unknown.
+	driver.observations = []backlog.DispatchThreadState{backlog.DispatchThreadMissing}
+	driver.observeAfterCreateErr = errors.New("T3 unreachable")
 	acks, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{dispatch}})
+	if err != nil || !acks.Acknowledgements[0].Accepted {
+		t.Fatalf("dispatch acknowledgement = %+v, err=%v", acks, err)
+	}
+	state, err := runtime.journal.snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if acks.Acknowledgements[0].Accepted {
-		t.Fatal("ambiguous dispatch was accepted")
+	if got := state.Attempts["assignment-1"].Phase; got != PhaseUnknown && got != PhaseFailed {
+		t.Fatalf("phase = %q", got)
 	}
-	snapshot, err := runtime.Snapshot(context.Background())
-	if err != nil {
+	// Once T3 proves the thread is running, the unknown attempt recovers.
+	driver.createErr = nil
+	driver.observeAfterCreateErr = nil
+	driver.observations = []backlog.DispatchThreadState{backlog.DispatchThreadActive}
+	if err := runtime.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Assignments[0].State != domain.AssignmentUnknown {
-		t.Fatalf("assignment state = %q", snapshot.Assignments[0].State)
+	state, _ = runtime.journal.snapshot()
+	if got := state.Attempts["assignment-1"].Phase; got != PhaseRunning && got != PhaseCompleted {
+		t.Fatalf("recovered phase = %q", got)
 	}
 }
 
@@ -252,13 +323,16 @@ func TestChangedWorkerEpochAndCorruptArtifactFailClosed(t *testing.T) {
 		t.Fatal("changed worker epoch accepted")
 	}
 }
-func TestLeaseLossStopsAndRequiresReconciliation(t *testing.T) {
+func TestLeaseLossKeepsExecutionAndStaysClaimable(t *testing.T) {
 	root := t.TempDir()
 	now := runtimeTestNow
-	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}
+	driver := &fakeDriver{workspace: filepath.Join(root, "workspace"), observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadActive}}
 	runtime := newClaimedRuntimeWithClock(t, root, driver, func() time.Time { return now })
 	prepare := testCommand(t, runtime, domain.WorkerCommandPrepare, "prepare")
 	if _, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{prepare}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.markPhase("assignment-1", PhaseRunning, "", driver.workspace, "thread-1"); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(3 * time.Minute)
@@ -269,8 +343,78 @@ func TestLeaseLossStopsAndRequiresReconciliation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if driver.stopCalls != 1 || snapshot.Assignments[0].State != domain.AssignmentUnknown {
-		t.Fatalf("stops=%d snapshot=%+v", driver.stopCalls, snapshot)
+	if driver.stopCalls != 0 || snapshot.Assignments[0].State != domain.AssignmentClaimed || snapshot.Assignments[0].Control != domain.ControlRunning {
+		t.Fatalf("stops=%d snapshot=%+v; a lost lease must not stop the thread", driver.stopCalls, snapshot)
+	}
+	renewals, err := runtime.LeaseRenewals()
+	if err != nil || len(renewals.Renewals) != 1 {
+		t.Fatalf("expired lease must remain renewable: %+v err=%v", renewals, err)
+	}
+	collect := testCommand(t, runtime, domain.WorkerCommandCollect, "collect")
+	if acks, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{collect}}); err != nil || !acks.Acknowledgements[0].Accepted {
+		t.Fatalf("command after lease loss = %+v err=%v", acks, err)
+	}
+}
+
+func TestPreparationFailuresAreBoundedThenFailed(t *testing.T) {
+	root := t.TempDir()
+	driver := &fakeDriver{workspace: filepath.Join(root, "workspace"), prepareErr: errors.New("clone failed")}
+	runtime := newClaimedRuntime(t, root, driver)
+	prepare := testCommand(t, runtime, domain.WorkerCommandPrepare, "prepare")
+	acks, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{prepare}})
+	if err != nil || !acks.Acknowledgements[0].Accepted || !strings.Contains(acks.Acknowledgements[0].Detail, "clone failed") {
+		t.Fatalf("prepare acknowledgement = %+v err=%v", acks, err)
+	}
+	for i := 0; i < MaxPrepareAttempts; i++ {
+		if err := runtime.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, err := runtime.journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := state.Attempts["assignment-1"]
+	if record.Phase != PhaseFailed || driver.prepareCalls != MaxPrepareAttempts || !strings.Contains(record.Failure, "clone failed") {
+		t.Fatalf("prepare calls = %d record = %+v", driver.prepareCalls, record)
+	}
+	snapshot, err := runtime.Snapshot(context.Background())
+	if err != nil || snapshot.Assignments[0].State != domain.AssignmentCompleted {
+		t.Fatalf("failed attempt observation = %+v err=%v", snapshot.Assignments, err)
+	}
+}
+
+func TestOfferReplayWithNewCoordinatorEpochIsIdempotent(t *testing.T) {
+	root := t.TempDir()
+	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}
+	runtime := newTestRuntime(t, root, driver)
+	offer := testOffer(t)
+	if _, err := runtime.AcceptOffers(context.Background(), workerproto.AssignmentOffers{Offers: []workerproto.AssignmentOffer{offer}}); err != nil {
+		t.Fatal(err)
+	}
+	prepare := testCommand(t, runtime, domain.WorkerCommandPrepare, "prepare")
+	if _, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{prepare}}); err != nil {
+		t.Fatal(err)
+	}
+	// A restarted coordinator re-offers the same assignment under its new epoch.
+	runtime = reopenTestRuntimeWithEpoch(t, root, driver, runtime.config.CoordinatorEpoch+1)
+	replay := offer
+	replay.Package.Package.CoordinatorEpoch = runtime.config.CoordinatorEpoch
+	manifest, err := workerproto.BuildExecutionPackageManifest(replay.Package.Package)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay.Package = manifest
+	claims, err := runtime.AcceptOffers(context.Background(), workerproto.AssignmentOffers{Offers: []workerproto.AssignmentOffer{replay}})
+	if err != nil || len(claims.Claims) != 1 || claims.Claims[0].CoordinatorEpoch != runtime.config.CoordinatorEpoch {
+		t.Fatalf("epoch replay claims = %+v err=%v", claims, err)
+	}
+	state, err := runtime.journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record := state.Attempts["assignment-1"]; record.Phase != PhasePrepared || record.Package.SHA256 != manifest.SHA256 {
+		t.Fatalf("record after epoch replay = %+v", record)
 	}
 }
 
@@ -286,9 +430,11 @@ func TestLeaseRenewalCannotExtendBeyondConfiguredInterval(t *testing.T) {
 	authorized := renewals.Renewals[0]
 	overlong := authorized
 	overlong.LeaseExpiresAt = overlong.LeaseExpiresAt.Add(time.Second)
-	if err := runtime.ApplyLeaseRenewals(workerproto.LeaseRenewals{Renewals: []domain.AssignmentLeaseRenewal{overlong}}); err == nil ||
-		!strings.Contains(err.Error(), "authorized live interval") {
-		t.Fatalf("overlong renewal error = %v", err)
+	if err := runtime.ApplyLeaseRenewals(workerproto.LeaseRenewals{Renewals: []domain.AssignmentLeaseRenewal{overlong}}); err != nil {
+		t.Fatalf("overlong renewal must be ignored, not fail the batch: %v", err)
+	}
+	if state, _ := runtime.journal.snapshot(); state.Attempts["assignment-1"].Assignment.LeaseExpiresAt.After(authorized.LeaseExpiresAt) {
+		t.Fatal("overlong renewal extended the lease")
 	}
 	if err := runtime.ApplyLeaseRenewals(workerproto.LeaseRenewals{Renewals: []domain.AssignmentLeaseRenewal{authorized}}); err != nil {
 		t.Fatal(err)
@@ -298,8 +444,9 @@ func TestLeaseRenewalCannotExtendBeyondConfiguredInterval(t *testing.T) {
 func TestReconcileObservesAndCollectsRunningThreadCompletion(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{
-		workspace:    filepath.Join(root, "workspace"),
-		observations: []backlog.DispatchThreadState{backlog.DispatchThreadStopped},
+		workspace:      filepath.Join(root, "workspace"),
+		workspaceReady: true,
+		observations:   []backlog.DispatchThreadState{backlog.DispatchThreadStopped},
 	}
 	runtime := newClaimedRuntime(t, root, driver)
 	if err := runtime.markPhase("assignment-1", PhaseRunning, "", driver.workspace, "thread-1"); err != nil {
@@ -316,10 +463,42 @@ func TestReconcileObservesAndCollectsRunningThreadCompletion(t *testing.T) {
 	if got := state.Attempts["assignment-1"].Phase; got != PhaseCompleted {
 		t.Fatalf("phase after terminal observation = %q, want %q", got, PhaseCompleted)
 	}
-	if driver.collectCalls != 1 || driver.cleanupCalls != 1 {
-		t.Fatalf("collect calls = %d, cleanup calls = %d; want 1 each", driver.collectCalls, driver.cleanupCalls)
+	if driver.collectCalls != 1 || driver.cleanupCalls != 0 {
+		t.Fatalf("collect calls = %d, cleanup calls = %d; want collect once and cleanup deferred to retention", driver.collectCalls, driver.cleanupCalls)
 	}
 }
+
+func TestCompletedRecordsArePrunedAfterRetention(t *testing.T) {
+	root := t.TempDir()
+	now := runtimeTestNow
+	driver := &fakeDriver{workspace: filepath.Join(root, "workspace"), observations: []backlog.DispatchThreadState{backlog.DispatchThreadStopped}}
+	runtime := newClaimedRuntimeWithClock(t, root, driver, func() time.Time { return now })
+	if err := runtime.markPhase("assignment-1", PhaseRunning, "", driver.workspace, "thread-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(DefaultRetention - time.Minute)
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if driver.cleanupCalls != 0 {
+		t.Fatalf("cleanup before retention: %d", driver.cleanupCalls)
+	}
+	now = now.Add(2 * time.Minute)
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state, err := runtime.journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if driver.cleanupCalls != 1 || len(state.Attempts) != 0 {
+		t.Fatalf("cleanup=%d remaining=%d; want the record pruned once", driver.cleanupCalls, len(state.Attempts))
+	}
+}
+
 func TestThrottleCheckpointResumeAndReplay(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}
@@ -419,6 +598,21 @@ func newTestRuntimeWithClock(t *testing.T, root string, driver *fakeDriver, now 
 func reopenTestRuntime(t *testing.T, root string, driver *fakeDriver) *Runtime {
 	t.Helper()
 	return newTestRuntime(t, root, driver)
+}
+
+func reopenTestRuntimeWithEpoch(t *testing.T, root string, driver *fakeDriver, epoch int64) *Runtime {
+	t.Helper()
+	journal, err := OpenJournal(root, "normandy", "worker-1", epoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := testConfig(func() time.Time { return runtimeTestNow })
+	config.CoordinatorEpoch = epoch
+	runtime, err := New(config, journal, driver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runtime
 }
 
 func testConfig(now func() time.Time) Config {

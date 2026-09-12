@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -234,10 +235,17 @@ func (c FleetCoordinator) reconcileWorkerCommands(
 	}
 	acknowledgements, deliveryErr := transport.DeliverWorkerCommands(ctx, snapshot, pending)
 	report.Acknowledgements = acknowledgements
+	var ackErrors []error
 	for _, acknowledgement := range acknowledgements {
 		if _, err := c.Store.AcknowledgeWorkerCommand(ctx, acknowledgement); err != nil {
-			return report, err
+			// One unpersistable acknowledgement must not lose the others; the
+			// command stays pending and the worker replays its answer next tick.
+			slog.Warn("worker acknowledgement not persisted", "command", acknowledgement.CommandID, "error", err)
+			ackErrors = append(ackErrors, err)
 		}
+	}
+	if len(ackErrors) != 0 && deliveryErr == nil {
+		deliveryErr = errors.Join(ackErrors...)
 	}
 	return report, deliveryErr
 }
@@ -264,7 +272,17 @@ func PlanWorkerCommands(
 	}
 	existing := make(map[string]domain.WorkerCommandRecord, len(commandRecords))
 	for _, record := range commandRecords {
+		// An acknowledged command is a durable fact whatever authority issued
+		// it. An unacknowledged command from an earlier coordinator epoch can
+		// never be delivered again (delivery is fenced to the current epoch),
+		// so it must not shadow a fresh command under the current authority.
+		if record.Acknowledgement == nil && record.Command.CoordinatorEpoch != snapshot.CoordinatorEpoch {
+			continue
+		}
 		key := workerCommandKey(record.Command.AssignmentID, record.Command.AssignmentEpoch, record.Command.Kind)
+		if previous, ok := existing[key]; ok && previous.Acknowledgement != nil && record.Acknowledgement == nil {
+			continue
+		}
 		existing[key] = record
 	}
 	observations := make(map[string]domain.WorkerAssignmentObservation, len(snapshot.Assignments))
@@ -283,14 +301,16 @@ func PlanWorkerCommands(
 		}
 		attempt, ok := attemptByID[assignment.AttemptID]
 		if !ok {
-			return nil, fmt.Errorf("assignment %q refers to unknown attempt %q", assignment.ID, assignment.AttemptID)
+			slog.Warn("worker command planning skipped an assignment without an attempt",
+				"assignment", assignment.ID, "attempt", assignment.AttemptID)
+			continue
 		}
 		kind, ok := nextWorkerCommand(assignment, attempt, observations[assignment.ID], existing)
 		if !ok {
 			continue
 		}
 		commands = append(commands, domain.WorkerCommand{
-			ID:                     stableCoordinatorID("command", workerCommandKey(assignment.ID, assignment.Epoch, kind)),
+			ID:                     workerCommandID(snapshot.CoordinatorEpoch, assignment.ID, assignment.Epoch, kind),
 			Kind:                   kind,
 			WorkerID:               snapshot.WorkerID,
 			WorkerEpoch:            snapshot.WorkerEpoch,
@@ -380,6 +400,16 @@ func planningAttempts(workflows []PlanningWorkflow) map[string]domain.Attempt {
 
 func workerCommandKey(assignmentID string, assignmentEpoch int64, kind domain.WorkerCommandKind) string {
 	return fmt.Sprintf("%s/%d/%s", assignmentID, assignmentEpoch, kind)
+}
+
+// workerCommandID is stable for one command under one coordinator authority.
+// A restarted coordinator issues a fresh command identity for the same effect;
+// workers treat every lifecycle command as idempotent, so a repeat is harmless.
+func workerCommandID(coordinatorEpoch int64, assignmentID string, assignmentEpoch int64, kind domain.WorkerCommandKind) string {
+	if coordinatorEpoch <= 1 {
+		return stableCoordinatorID("command", workerCommandKey(assignmentID, assignmentEpoch, kind))
+	}
+	return stableCoordinatorID("command", fmt.Sprintf("%s@%d", workerCommandKey(assignmentID, assignmentEpoch, kind), coordinatorEpoch))
 }
 
 func stableCoordinatorID(kind, identity string) string {

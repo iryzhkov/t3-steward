@@ -139,12 +139,12 @@ func (c *Client) DeliverThrottle(ctx context.Context, snapshot domain.WorkerSnap
 
 // PollArtifact asks for one pending immutable upload. The worker advances to a
 // later upload only after the coordinator acknowledges successful import.
-func (c *Client) PollArtifact(ctx context.Context, purpose string) (*ArtifactUploadResponse, error) {
+func (c *Client) PollArtifact(ctx context.Context, purpose string, exclude ...string) (*ArtifactUploadResponse, error) {
 	if purpose != "result" && purpose != "checkpoint" {
 		return nil, errors.New("worker protocol client: unsupported artifact purpose")
 	}
 	var announcement ArtifactAnnouncement
-	if err := c.exchange(ctx, MessageArtifactPoll, MessageArtifactAnnouncement, ArtifactPollRequest{Purpose: purpose}, &announcement); err != nil {
+	if err := c.exchange(ctx, MessageArtifactPoll, MessageArtifactAnnouncement, ArtifactPollRequest{Purpose: purpose, Exclude: exclude}, &announcement); err != nil {
 		return nil, err
 	}
 	return announcement.Upload, nil

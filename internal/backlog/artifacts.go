@@ -185,6 +185,13 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		if err := makeIngestedTreeImmutable(stageDir); err != nil {
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt: protect staged artifacts: %w", err)
 		}
+		// Finalization is retried after a lost settlement or publication; the
+		// previous capture of the same attempt is replaced, not a failure.
+		if _, err := os.Lstat(finalDir); err == nil {
+			if err := removeIngestedTree(finalDir); err != nil {
+				return FinalizedAttempt{}, fmt.Errorf("finalize attempt: replace previous capture: %w", err)
+			}
+		}
 		if err := os.Rename(stageDir, finalDir); err != nil {
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt: publish artifacts: %w", err)
 		}

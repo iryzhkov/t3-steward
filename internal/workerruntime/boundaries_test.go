@@ -59,7 +59,7 @@ func TestRuntimeRestartReconcilesEveryInFlightBoundary(t *testing.T) {
 	})
 	t.Run("collecting", func(t *testing.T) {
 		root := t.TempDir()
-		driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}
+		driver := &fakeDriver{workspace: filepath.Join(root, "workspace"), workspaceReady: true}
 		runtime := newClaimedRuntime(t, root, driver)
 		if err := runtime.markPhase("assignment-1", PhaseCollecting, "", driver.workspace, "thread-1"); err != nil {
 			t.Fatal(err)
@@ -68,7 +68,7 @@ func TestRuntimeRestartReconcilesEveryInFlightBoundary(t *testing.T) {
 			t.Fatal(err)
 		}
 		assertPhase(t, runtime, PhaseCompleted)
-		if driver.collectCalls != 1 || driver.cleanupCalls != 1 {
+		if driver.collectCalls != 1 || driver.cleanupCalls != 0 {
 			t.Fatalf("collect=%d cleanup=%d", driver.collectCalls, driver.cleanupCalls)
 		}
 	})

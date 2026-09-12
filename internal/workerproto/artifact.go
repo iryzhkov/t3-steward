@@ -65,6 +65,9 @@ type ArtifactUploadResponse struct {
 // purpose. One-at-a-time discovery keeps control responses bounded.
 type ArtifactPollRequest struct {
 	Purpose string `json:"purpose"`
+	// Exclude lists manifest IDs the coordinator has already seen this pass
+	// and cannot import yet, so one deferred upload does not hide the rest.
+	Exclude []string `json:"exclude,omitempty"`
 }
 
 type ArtifactAnnouncement struct {
@@ -131,8 +134,14 @@ func ValidateArtifactTransferManifest(manifest ArtifactTransferManifest, maxArti
 		return errors.New("artifact manifest: invalid direction")
 	}
 	if manifest.CoordinatorEpoch < 1 || manifest.AssignmentEpoch < 1 || len(manifest.Objects) == 0 ||
-		manifest.CreatedAt.IsZero() || !manifest.ExpiresAt.After(manifest.CreatedAt) || !now.Before(manifest.ExpiresAt) {
+		manifest.CreatedAt.IsZero() || !manifest.ExpiresAt.After(manifest.CreatedAt) {
 		return errors.New("artifact manifest: invalid epoch, contents, or lifetime")
+	}
+	// Downloads are short-lived offers and expire. Uploads are durable results:
+	// their advertised lifetime bounds discovery, never validity, so a result
+	// that waited for a coordinator is still importable.
+	if manifest.Direction == "download" && !now.Before(manifest.ExpiresAt) {
+		return errors.New("artifact manifest: download offer expired")
 	}
 	ids := make(map[string]struct{}, len(manifest.Objects))
 	paths := make(map[string]struct{}, len(manifest.Objects))

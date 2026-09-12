@@ -29,7 +29,10 @@ const (
 	PhaseStopped     Phase = "stopped"
 	PhaseCollecting  Phase = "collecting"
 	PhaseCompleted   Phase = "completed"
-	PhaseUnknown     Phase = "unknown"
+	// PhaseFailed is a deterministic, effect-free failure (preparation,
+	// dispatch, or recovery) waiting to be collected as a failed result.
+	PhaseFailed  Phase = "failed"
+	PhaseUnknown Phase = "unknown"
 )
 
 type AttemptRecord struct {
@@ -44,6 +47,8 @@ type AttemptRecord struct {
 	ThrottleRequests map[string]domain.ThrottleCommand         `json:"throttleRequests,omitempty"`
 	ThrottleResults  map[string]domain.ThrottleAcknowledgement `json:"throttleResults,omitempty"`
 	PendingThrottle  *domain.ThrottleCommand                   `json:"pendingThrottle,omitempty"`
+	PrepareAttempts  int                                       `json:"prepareAttempts,omitempty"`
+	SettlePending    bool                                      `json:"settlePending,omitempty"`
 	UpdatedAt        time.Time                                 `json:"updatedAt"`
 }
 
@@ -104,6 +109,26 @@ func OpenJournal(root, workerID, workerEpoch string, coordinatorEpoch int64) (*J
 	}
 	return journal, nil
 }
+
+// JournalCoordinatorEpoch reports the coordinator epoch recorded in a durable
+// journal without adopting or validating anything else. A missing journal
+// reports zero.
+func JournalCoordinatorEpoch(root string) (int64, error) {
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return 0, fmt.Errorf("worker journal: resolve root: %w", err)
+	}
+	journal := &Journal{root: absolute, path: filepath.Join(absolute, "journal.json"), lockPath: filepath.Join(absolute, "journal.lock")}
+	if _, err := os.Stat(journal.path); errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	state, err := journal.read()
+	if err != nil {
+		return 0, err
+	}
+	return state.CoordinatorEpoch, nil
+}
+
 func (j *Journal) snapshot() (journalState, error) {
 	var result journalState
 	err := j.withLock(func() error {
