@@ -303,7 +303,8 @@ func evaluateResultEvidence(task domain.Task, artifacts []domain.Artifact, paylo
 		raw, exists := reports[name]
 		if !exists {
 			if index == len(reports) {
-				return false, "", summary, fmt.Errorf("result import is missing verification evidence %q", name)
+				failures = append(failures, fmt.Sprintf("missing verification evidence: %s", name))
+				break
 			}
 			return false, "", summary, fmt.Errorf("result import verification evidence is not contiguous at %q", name)
 		}
