@@ -49,6 +49,7 @@ type recordingT3 struct {
 	warns          []domain.Warning
 	resumes        []string
 	stops          int
+	settles        int
 	message        string
 	archive        []byte
 }
@@ -84,6 +85,10 @@ func (c *recordingT3) StopThread(context.Context, domain.Thread, t3control.StopM
 }
 func (c *recordingT3) WaitStopped(context.Context, string, time.Duration) (*domain.Thread, bool, error) {
 	return c.thread, c.thread == nil || !c.thread.Running, nil
+}
+func (c *recordingT3) SettleThread(context.Context, string) error {
+	c.settles++
+	return nil
 }
 func (c *recordingT3) WarnThread(_ context.Context, _ domain.Thread, warning domain.Warning) error {
 	c.warns = append(c.warns, warning)
@@ -231,6 +236,24 @@ func TestLocalDriverResolvesProjectBeforeCreate(t *testing.T) {
 	}
 	if len(control.created) != 1 {
 		t.Fatalf("create proceeded after resolver failure: %+v", control.created)
+	}
+}
+
+func TestLocalDriverStopSettlesRunningAndAlreadyStoppedThreads(t *testing.T) {
+	pkg := testPackage()
+	control := &recordingT3{thread: &domain.Thread{ID: pkg.Identity.ThreadID, Running: true}}
+	driver := &LocalDriver{Config: LocalDriverConfig{StopTimeout: time.Second}, T3: control}
+	if err := driver.StopThread(context.Background(), pkg); err != nil {
+		t.Fatal(err)
+	}
+	if control.stops != 1 || control.settles != 1 {
+		t.Fatalf("running thread: stops=%d settles=%d", control.stops, control.settles)
+	}
+	if err := driver.StopThread(context.Background(), pkg); err != nil {
+		t.Fatal(err)
+	}
+	if control.stops != 1 || control.settles != 2 {
+		t.Fatalf("replayed stop: stops=%d settles=%d", control.stops, control.settles)
 	}
 }
 

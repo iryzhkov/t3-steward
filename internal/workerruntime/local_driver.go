@@ -40,6 +40,7 @@ type T3Control interface {
 	CreateAndStartThread(context.Context, t3control.NewThreadInput) (string, error)
 	StopThread(context.Context, domain.Thread, t3control.StopMode) error
 	WaitStopped(context.Context, string, time.Duration) (*domain.Thread, bool, error)
+	SettleThread(context.Context, string) error
 	WarnThread(context.Context, domain.Thread, domain.Warning) error
 	ResumeThread(context.Context, domain.Thread, string) error
 	LastAssistantMessage(context.Context, string) (string, error)
@@ -254,20 +255,22 @@ func (d *LocalDriver) StopThread(ctx context.Context, pkg workerproto.ExecutionP
 	if err != nil {
 		return err
 	}
-	if thread == nil || !thread.Running {
+	if thread == nil {
 		return nil
 	}
-	if err := d.T3.StopThread(ctx, *thread, t3control.StopSession); err != nil {
-		return err
+	if thread.Running {
+		if err := d.T3.StopThread(ctx, *thread, t3control.StopSession); err != nil {
+			return err
+		}
+		_, stopped, err := d.T3.WaitStopped(ctx, pkg.Identity.ThreadID, d.Config.StopTimeout)
+		if err != nil {
+			return err
+		}
+		if !stopped {
+			return errors.New("T3 thread did not stop before the containment deadline")
+		}
 	}
-	_, stopped, err := d.T3.WaitStopped(ctx, pkg.Identity.ThreadID, d.Config.StopTimeout)
-	if err != nil {
-		return err
-	}
-	if !stopped {
-		return errors.New("T3 thread did not stop before the containment deadline")
-	}
-	return nil
+	return d.T3.SettleThread(ctx, pkg.Identity.ThreadID)
 }
 
 func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {

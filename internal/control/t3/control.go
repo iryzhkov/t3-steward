@@ -281,6 +281,25 @@ func (c *Control) StopThread(ctx context.Context, thread domain.Thread, mode Sto
 	return nil
 }
 
+// SettleThread marks an inactive thread settled after its provider session has
+// stopped. The T3 command is idempotent, so replaying cancellation is safe.
+func (c *Control) SettleThread(ctx context.Context, threadID string) error {
+	cmd := map[string]any{
+		"type":      "thread.settle",
+		"commandId": newID(),
+		"threadId":  threadID,
+	}
+	if c.DryRun {
+		c.log.Info("dry-run: would settle thread", "thread", threadID)
+		return nil
+	}
+	if _, err := c.client.Dispatch(ctx, cmd); err != nil {
+		return fmt.Errorf("settle thread %s: %w", threadID, err)
+	}
+	c.log.Info("thread settled", "thread", threadID)
+	return nil
+}
+
 // WaitStopped polls until the thread is no longer running or the timeout
 // passes. It returns the last observed thread.
 func (c *Control) WaitStopped(ctx context.Context, threadID string, timeout time.Duration) (*domain.Thread, bool, error) {
