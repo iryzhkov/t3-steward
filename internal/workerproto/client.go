@@ -174,7 +174,7 @@ func (c *Client) FetchArtifact(ctx context.Context, announced ArtifactUploadResp
 	if err := ValidateArtifactTransferManifest(manifest, maxArtifactBytes, maxTotalBytes, c.config.Now().UTC()); err != nil {
 		return FetchedArtifactUpload{}, err
 	}
-	if manifest.Direction != "upload" || manifest.CoordinatorEpoch != c.config.CoordinatorEpoch ||
+	if manifest.Direction != "upload" || manifest.CoordinatorEpoch < 1 || manifest.CoordinatorEpoch > c.config.CoordinatorEpoch ||
 		manifest.WorkerID != c.config.WorkerID || manifest.WorkerEpoch != c.config.WorkerEpoch {
 		return FetchedArtifactUpload{}, errors.New("worker protocol client: announced artifact authority mismatch")
 	}
