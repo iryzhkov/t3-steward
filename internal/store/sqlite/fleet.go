@@ -261,6 +261,26 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 		if attempt.Progress.Terminal() || attempt.Control != domain.ControlUnassigned {
 			return nil, fmt.Errorf("attempt %q is not assignable", attempt.ID)
 		}
+		var released domain.Assignment
+		var releasedRaw []byte
+		releasedExists := false
+		err = tx.QueryRowContext(ctx, `SELECT record FROM coordinator_assignments WHERE attempt_id = ?`, attempt.ID).Scan(&releasedRaw)
+		if err == nil {
+			if err := json.Unmarshal(releasedRaw, &released); err != nil {
+				return nil, fmt.Errorf("decode released assignment for attempt %q: %w", attempt.ID, err)
+			}
+			if released.State != domain.AssignmentReleased {
+				return nil, fmt.Errorf("attempt %q retains non-released assignment %q", attempt.ID, released.ID)
+			}
+			releasedExists = true
+			assignment.ID = released.ID
+			assignment.Epoch = released.Epoch + 1
+			assignment.LeaseToken = fmt.Sprintf("%s-e%d", released.LeaseToken, assignment.Epoch)
+			assignment.DispatchToken = fmt.Sprintf("%s-e%d", released.DispatchToken, assignment.Epoch)
+			assignment.ThreadID = ""
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("load released assignment for attempt %q: %w", attempt.ID, err)
+		}
 
 		snapshot, exists, err := loadWorkerSnapshotTx(ctx, tx, assignment.WorkerID)
 		if err != nil {
@@ -281,12 +301,21 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 		if err != nil {
 			return nil, fmt.Errorf("encode assignment %q: %w", assignment.ID, err)
 		}
-		if _, err := tx.ExecContext(ctx, `
+		statement := `
 			INSERT INTO coordinator_assignments(
 				id, attempt_id, dispatch_token, dispatch_revision, dispatch_state,
 				worker_id, worker_epoch, assignment_epoch, assignment_state, lease_expires_at, record
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)
-		`, assignment.ID, assignment.AttemptID, assignment.DispatchToken, 0, "",
+		`
+		if releasedExists {
+			statement = `UPDATE coordinator_assignments SET dispatch_token = ?, dispatch_revision = ?, dispatch_state = ?,
+				worker_id = ?, worker_epoch = ?, assignment_epoch = ?, assignment_state = ?, lease_expires_at = '', record = ?
+				WHERE id = ? AND attempt_id = ?`
+			if _, err := tx.ExecContext(ctx, statement, assignment.DispatchToken, 0, "", assignment.WorkerID,
+				assignment.WorkerEpoch, assignment.Epoch, assignment.State, raw, assignment.ID, assignment.AttemptID); err != nil {
+				return nil, fmt.Errorf("re-arm assignment %q: %w", assignment.ID, err)
+			}
+		} else if _, err := tx.ExecContext(ctx, statement, assignment.ID, assignment.AttemptID, assignment.DispatchToken, 0, "",
 			assignment.WorkerID, assignment.WorkerEpoch, assignment.Epoch, assignment.State, raw); err != nil {
 			return nil, fmt.Errorf("commit assignment %q: %w", assignment.ID, err)
 		}
@@ -316,6 +345,9 @@ func insertAssignmentPlanAuditEvent(
 	attempt domain.Attempt,
 ) (domain.AuditEvent, error) {
 	identity := "assignment-offer:" + assignment.ID
+	if assignment.Epoch > 1 {
+		identity = fmt.Sprintf("%s:epoch:%d", identity, assignment.Epoch)
+	}
 	return insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
 		ID: identity, Kind: "assignment-offered",
 		WorkflowRunID: attempt.WorkflowRunID, TaskID: attempt.TaskID, AttemptID: attempt.ID,
