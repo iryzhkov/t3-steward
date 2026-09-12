@@ -3,6 +3,7 @@ package backlog
 import (
 	"context"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -21,6 +22,15 @@ type QuotaPoolBinding struct {
 	AccountID           string
 	ProviderInstanceIDs []string
 	MaxConcurrent       int
+	// Models lists the model ids the pool's providers serve on any worker.
+	// A provider window scoped to a model (Claude's Fable weekly limit,
+	// seven_day_opus, seven_day_sonnet) governs the pool only when one of
+	// these ids contains the window's selector; otherwise the observation is
+	// not this pool's business and cannot close it.
+	Models []string
+	// IgnoredWindows are window-name globs (policy.ignore_windows) whose
+	// observations never govern admission, as they never trigger actions.
+	IgnoredWindows []string
 }
 
 type QuotaBridge struct {
@@ -79,6 +89,10 @@ func (b QuotaBridge) Reconcile(ctx context.Context, reservations []QuotaResumeRe
 	for index := range pools {
 		poolIndex[pools[index].ID] = index
 	}
+	bindingByID := make(map[string]QuotaPoolBinding, len(b.Pools))
+	for _, binding := range b.Pools {
+		bindingByID[binding.ID] = binding
+	}
 	bucketSeen := make(map[string]map[domain.BucketKey]struct{}, len(pools))
 	var relevant []domain.BucketState
 	for _, state := range states {
@@ -88,6 +102,9 @@ func (b QuotaBridge) Reconcile(ctx context.Context, reservations []QuotaResumeRe
 		}
 		pool := &pools[poolIndex[poolID]]
 		if pool.AccountID != "" && state.Key.AccountID != pool.AccountID {
+			continue
+		}
+		if !bucketGovernsPool(bindingByID[poolID], state) {
 			continue
 		}
 		if bucketSeen[poolID] == nil {
@@ -158,6 +175,35 @@ func (b QuotaBridge) ReconcileState(ctx context.Context, input QuotaPlanningStat
 	report.Pools = state.QuotaPools
 	report.Windows = state.QuotaWindows
 	return report, nil
+}
+
+// bucketGovernsPool reports whether an observed bucket bears on a pool's
+// admission. An ignored window never does. A window scoped to a model
+// (its ModelSelector, set by policy.windows) governs the pool only when one
+// of the pool's models contains the selector: the Claude Fable weekly limit
+// stops Fable threads, and a pool that serves only Haiku must not close on
+// it. A pool that lists no models keeps the conservative behaviour and is
+// governed by every window of its providers.
+func bucketGovernsPool(binding QuotaPoolBinding, state domain.BucketState) bool {
+	window := strings.ToLower(state.Key.Window)
+	for _, ignored := range binding.IgnoredWindows {
+		if ignored == "" {
+			continue
+		}
+		if ok, err := path.Match(strings.ToLower(ignored), window); err == nil && ok {
+			return false
+		}
+	}
+	selector := strings.ToLower(strings.TrimSpace(state.ModelSelector))
+	if selector == "" || len(binding.Models) == 0 {
+		return true
+	}
+	for _, model := range binding.Models {
+		if strings.Contains(strings.ToLower(model), selector) {
+			return true
+		}
+	}
+	return false
 }
 
 func quotaBridgePools(bindings []QuotaPoolBinding) ([]domain.QuotaPool, map[string]string, error) {

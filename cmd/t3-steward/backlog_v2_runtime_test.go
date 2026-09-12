@@ -784,6 +784,24 @@ func TestCoordinatorQuotaPoolBindingsAreDeterministicAndDeduplicated(t *testing.
 	}
 }
 
+// A binding carries the models its providers serve on every worker, sorted
+// and deduplicated, and the policy's ignored windows, so admission can tell
+// a model-scoped window from an account-wide one.
+func TestCoordinatorQuotaPoolBindingsCarryModelsAndIgnoredWindows(t *testing.T) {
+	cfg := config.Default()
+	cfg.Policy.IgnoreWindows = []string{"overage"}
+	cfg.BacklogV2.QuotaPools = map[string]config.V2QuotaPool{"claude": {Provider: "claudeAgent", MaxConcurrent: 2}}
+	cfg.BacklogV2.Workers = map[string]config.V2Worker{
+		"a": {Providers: map[string]config.V2Provider{"claudeAgent": {QuotaPool: "claude", Models: []string{"claude-sonnet-5", "claude-haiku-4-5"}}}},
+		"b": {Providers: map[string]config.V2Provider{"claudeAgent": {QuotaPool: "claude", Models: []string{"claude-haiku-4-5"}}}},
+	}
+	got := coordinatorQuotaPoolBindings(cfg)
+	if len(got) != 1 || !slices.Equal(got[0].Models, []string{"claude-haiku-4-5", "claude-sonnet-5"}) ||
+		!slices.Equal(got[0].IgnoredWindows, []string{"overage"}) {
+		t.Fatalf("bindings = %#v", got)
+	}
+}
+
 func runtimeSubmissionTar(t *testing.T) []byte {
 	t.Helper()
 	var buffer bytes.Buffer

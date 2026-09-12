@@ -82,6 +82,55 @@ func TestQuotaBridgeDeduplicatesSharedPoolAndFailsClosedWhenStale(t *testing.T) 
 	}
 }
 
+// A window scoped to a model closes only the pools whose models contain
+// the selector: Claude's Fable weekly limit at 96% stops Fable, while a
+// pool serving Haiku stays open on the account-wide windows; an ignored
+// window never governs admission; a pool with no model list keeps the
+// conservative reading.
+func TestQuotaBridgeModelScopedWindowGovernsOnlyMatchingPools(t *testing.T) {
+	now := time.Date(2026, 9, 12, 19, 0, 0, 0, time.UTC)
+	fiveHour := admissionBucketState(admissionBucket("claudeAgent", "five_hour"), domain.PhaseNormal, true)
+	fable := admissionBucketState(admissionBucket("claudeAgent", "seven_day_overage_included"), domain.PhaseStopped, false)
+	fable.ModelSelector = "fable"
+	overage := admissionBucketState(admissionBucket("claudeAgent", "overage"), domain.PhaseStopped, false)
+	for _, state := range []*domain.BucketState{&fiveHour, &fable, &overage} {
+		state.ObservedAt = now.Add(-time.Minute)
+	}
+	store := &quotaBridgeStoreFake{buckets: []domain.BucketState{fiveHour, fable, overage}}
+	cases := []struct {
+		name   string
+		models []string
+		want   domain.AdmissionState
+	}{
+		{"haiku pool ignores the fable window", []string{"claude-haiku-4-5"}, domain.AdmissionOpen},
+		{"fable pool closes on it", []string{"claude-haiku-4-5", "claude-fable-5-1"}, domain.AdmissionClosed},
+		{"no model list stays conservative", nil, domain.AdmissionClosed},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			bridge := QuotaBridge{
+				Store: &quotaBridgeStoreFake{buckets: store.buckets}, MaxObservationAge: 5 * time.Minute, Now: func() time.Time { return now },
+				Pools: []QuotaPoolBinding{{
+					ID: "claude", Provider: "claudeAgent", ProviderInstanceIDs: []string{"claudeAgent"}, MaxConcurrent: 2,
+					Models: test.models, IgnoredWindows: []string{"overage"},
+				}},
+			}
+			report, err := bridge.Reconcile(context.Background(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Pools[0].Admission != test.want {
+				t.Fatalf("admission = %s (%s), want %s; buckets %v", report.Pools[0].Admission, report.Derived[0].Reason, test.want, report.Pools[0].Buckets)
+			}
+			for _, key := range report.Pools[0].Buckets {
+				if key.Window == "overage" {
+					t.Fatalf("ignored window governs the pool: %v", report.Pools[0].Buckets)
+				}
+			}
+		})
+	}
+}
+
 func TestQuotaBridgeBuildsNumericPlanningWindow(t *testing.T) {
 	now := time.Date(2026, 9, 10, 18, 0, 0, 0, time.UTC)
 	reset := now.Add(2 * time.Hour)

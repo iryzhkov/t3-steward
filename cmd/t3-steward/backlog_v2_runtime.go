@@ -210,12 +210,17 @@ func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeR
 
 func coordinatorQuotaPoolBindings(cfg config.Config) []backlog.QuotaPoolBinding {
 	instancesByPool := make(map[string]map[string]struct{}, len(cfg.BacklogV2.QuotaPools))
+	modelsByPool := make(map[string]map[string]struct{}, len(cfg.BacklogV2.QuotaPools))
 	for _, worker := range cfg.BacklogV2.Workers {
 		for instanceID, provider := range worker.Providers {
 			if instancesByPool[provider.QuotaPool] == nil {
 				instancesByPool[provider.QuotaPool] = make(map[string]struct{})
+				modelsByPool[provider.QuotaPool] = make(map[string]struct{})
 			}
 			instancesByPool[provider.QuotaPool][instanceID] = struct{}{}
+			for _, model := range provider.Models {
+				modelsByPool[provider.QuotaPool][model] = struct{}{}
+			}
 		}
 	}
 	poolIDs := make([]string, 0, len(cfg.BacklogV2.QuotaPools))
@@ -231,9 +236,15 @@ func coordinatorQuotaPoolBindings(cfg config.Config) []backlog.QuotaPoolBinding 
 			instances = append(instances, instanceID)
 		}
 		sort.Strings(instances)
+		models := make([]string, 0, len(modelsByPool[poolID]))
+		for model := range modelsByPool[poolID] {
+			models = append(models, model)
+		}
+		sort.Strings(models)
 		bindings = append(bindings, backlog.QuotaPoolBinding{
 			ID: poolID, Provider: pool.Provider,
 			ProviderInstanceIDs: instances, MaxConcurrent: pool.MaxConcurrent,
+			Models: models, IgnoredWindows: append([]string(nil), cfg.Policy.IgnoreWindows...),
 		})
 	}
 	return bindings
