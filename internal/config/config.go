@@ -252,6 +252,15 @@ type Backlog struct {
 	MinSamples int `yaml:"min_samples"`
 }
 
+// UIArchive configures reversible settlement-based T3 UI archiving.
+type UIArchive struct {
+	Enabled         bool     `yaml:"enabled"`
+	DryRun          bool     `yaml:"dry_run"`
+	BackgroundAfter Duration `yaml:"background_after"`
+	UserAfter       Duration `yaml:"user_after"`
+	MaxPerPass      int      `yaml:"max_per_pass"`
+}
+
 // Archive configures cold storage of finished threads.
 type Archive struct {
 	Enabled bool `yaml:"enabled"`
@@ -402,6 +411,7 @@ type Config struct {
 	Backlog       Backlog       `yaml:"backlog"`
 	BacklogV2     BacklogV2     `yaml:"backlog_v2"`
 	Archive       Archive       `yaml:"archive"`
+	UIArchive     UIArchive     `yaml:"ui_archive"`
 	// StatePath is the SQLite database. Empty means the platform default.
 	StatePath string `yaml:"state_path"`
 	// LogLevel is debug, info, warn or error.
@@ -471,6 +481,7 @@ func Default() Config {
 	c.Messages.Drain = DefaultDrainMessage
 	c.Notifications.Desktop = true
 	c.Report.Peak = "Mon-Fri 09:00-17:00"
+	c.UIArchive = UIArchive{Enabled: true, BackgroundAfter: Duration(2 * time.Hour), UserAfter: Duration(24 * time.Hour), MaxPerPass: 10}
 	c.Archive.After = Duration(48 * time.Hour)
 	c.Archive.At = "03:30"
 	c.Archive.DeleteFromT3 = true
@@ -699,6 +710,9 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(r.Prompt) == "" {
 		return errors.New("resume: prompt must not be empty")
+	}
+	if c.UIArchive.Enabled && (c.UIArchive.BackgroundAfter.D() <= 0 || c.UIArchive.UserAfter.D() <= 0 || c.UIArchive.MaxPerPass < 1 || c.UIArchive.MaxPerPass > 100) {
+		return errors.New("ui_archive: positive delays and max_per_pass 1..100 are required")
 	}
 	if c.Archive.Enabled {
 		if strings.TrimSpace(c.Archive.Destination) == "" {

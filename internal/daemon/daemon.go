@@ -66,6 +66,8 @@ type Daemon struct {
 	// Archive, when set, is ticked after every thread poll and runs once a
 	// day.
 	Archive BacklogRunner
+	// UIArchive reversibly hides settled sessions on each thread poll.
+	UIArchive BacklogRunner
 
 	mu      sync.Mutex
 	engines map[domain.BucketKey]*policy.Engine
@@ -436,6 +438,9 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 	}
 	if d.Waits != nil {
 		d.Waits.Tick(ctx, threads, states)
+	}
+	if d.UIArchive != nil {
+		d.UIArchive.Tick(ctx, threads, states)
 	}
 	if d.Archive != nil {
 		d.Archive.Tick(ctx, threads, states)

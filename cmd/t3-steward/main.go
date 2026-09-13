@@ -112,7 +112,7 @@ func run(args []string) error {
 			sub = append(sub, rest[i])
 		}
 		return cmdWait(g, sub)
-	case "archive":
+	case "archive", "ui-archive":
 		paths, err := config.DefaultPaths()
 		if err != nil {
 			return err
@@ -126,6 +126,9 @@ func run(args []string) error {
 				continue
 			}
 			sub = append(sub, rest[i])
+		}
+		if args[0] == "ui-archive" {
+			return cmdUIArchive(g, sub)
 		}
 		return cmdArchive(g, sub)
 	case "backlog", "diagnose", "worker":
@@ -571,6 +574,10 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, 
 	waits.NodeDryRun = waitDryRun
 	waits.DisableQuotaChecks = !cfg.QuotaChecksEnabled() || (cfg.Wait.QuotaChecks != nil && !*cfg.Wait.QuotaChecks)
 	d.Waits = waits
+	if cfg.UIArchive.Enabled {
+		uiControl := t3control.New(client, logger, false)
+		d.UIArchive = newUIArchiver(cfg, store, uiControl, logger)
+	}
 	if cfg.Archive.Enabled {
 		d.Archive = newArchiver(cfg, store, control, logger, dataDir)
 		logger.Info("archive enabled", "destination", cfg.Archive.Destination, "after", cfg.Archive.After.D(), "at", cfg.Archive.At)
