@@ -78,7 +78,7 @@ func TestAdminQueriesTemporaryCoordinatorState(t *testing.T) {
 
 	status := responses[QueryStatus].Status
 	if status == nil || status.WorkflowRuns[domain.ProgressActive] != 1 || status.Tasks[domain.ProgressSucceeded] != 1 ||
-		status.Tasks[domain.ProgressActive] != 1 || status.Workers["ready"] != 1 ||
+		status.Tasks[domain.ProgressActive] != 1 || status.Workers["offline"] != 1 ||
 		status.QuotaPools[domain.AdmissionDraining] != 1 || status.Reservations != 1 || status.Locks != 1 {
 		t.Fatalf("unexpected status: %#v", status)
 	}
@@ -139,7 +139,7 @@ func TestAdminQueriesTemporaryCoordinatorState(t *testing.T) {
 	if schedules := responses[QuerySchedules].Schedules; len(schedules) != 1 || len(schedules[0].Triggers) != 1 {
 		t.Fatalf("unexpected schedules: %#v", schedules)
 	}
-	if workers := responses[QueryWorkers].Workers; len(workers) != 1 || workers[0].Health != "ready" || workers[0].Stale {
+	if workers := responses[QueryWorkers].Workers; len(workers) != 1 || workers[0].Health != "offline" || !workers[0].Stale {
 		t.Fatalf("unexpected workers: %#v", workers)
 	}
 	if quotas := responses[QueryQuota].Quotas; len(quotas) != 1 || quotas[0].Admission == nil ||

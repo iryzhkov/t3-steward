@@ -46,6 +46,7 @@ const DefaultRetention = 72 * time.Hour
 const MaxPrepareAttempts = 3
 
 type Config struct {
+	ObserveInventory func(context.Context, domain.WorkerInventory) (domain.WorkerInventory, error)
 	WorkerID         string
 	WorkerEpoch      string
 	CoordinatorID    string
@@ -60,10 +61,11 @@ type Config struct {
 }
 
 type Runtime struct {
-	config  Config
-	journal *Journal
-	driver  Driver
-	log     *slog.Logger
+	desiredInventory domain.WorkerInventory
+	config           Config
+	journal          *Journal
+	driver           Driver
+	log              *slog.Logger
 }
 
 func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
@@ -96,10 +98,17 @@ func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runtime{config: config, journal: journal, driver: driver, log: logger.With("component", "worker-runtime")}, nil
+	return &Runtime{config: config, desiredInventory: config.Inventory, journal: journal, driver: driver, log: logger.With("component", "worker-runtime")}, nil
 }
 
 func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
+	if r.config.ObserveInventory != nil {
+		inventory, err := r.config.ObserveInventory(ctx, r.desiredInventory)
+		if err != nil {
+			return domain.WorkerSnapshot{}, err
+		}
+		r.config.Inventory = inventory
+	}
 	if err := r.Reconcile(ctx); err != nil {
 		return domain.WorkerSnapshot{}, err
 	}

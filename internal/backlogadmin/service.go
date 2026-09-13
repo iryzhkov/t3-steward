@@ -35,6 +35,7 @@ type UnknownRecoveryWriter interface {
 }
 
 type Service struct {
+	enrollWorker   WorkerEnrollmentHandler
 	graphInputRoot string
 	graphValidator func(domain.Workflow, domain.Task) error
 	reader         Reader
@@ -46,6 +47,9 @@ type Service struct {
 }
 
 type RuntimeInfo struct {
+	Release                string
+	ConfigurationDigest    string
+	LastReload             time.Time
 	Mode                   string
 	Owner                  string
 	Epoch                  int64
@@ -122,6 +126,19 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		return Response{}, fmt.Errorf("load quota admissions: %w", err)
 	}
 	view := newView(records, workers, admissions, s.runtime, s.now().UTC())
+	if reader, ok := s.reader.(interface {
+		LoadWorkerRequirements(context.Context) ([]domain.WorkerRequirement, error)
+		LoadWorkerEnrollments(context.Context) ([]domain.WorkerEnrollment, error)
+	}); ok {
+		view.requirements, err = reader.LoadWorkerRequirements(ctx)
+		if err != nil {
+			return Response{}, err
+		}
+		view.enrollments, err = reader.LoadWorkerEnrollments(ctx)
+		if err != nil {
+			return Response{}, err
+		}
+	}
 	view.includeSink = query.IncludeSink
 	response := Response{Version: Version, Kind: query.Kind, GeneratedAt: view.now}
 
@@ -215,17 +232,19 @@ func notFound(kind, id string) error {
 }
 
 type view struct {
-	includeSink bool
-	records     sqlite.CoordinatorRecords
-	workers     []domain.WorkerSnapshot
-	admissions  []domain.QuotaAdmissionRecord
-	now         time.Time
-	workflows   map[string]domain.Workflow
-	runs        map[string]domain.WorkflowRun
-	tasks       map[string]domain.Task
-	attempts    map[string][]domain.Attempt
-	assignments map[string]domain.Assignment
-	runtime     RuntimeInfo
+	requirements []domain.WorkerRequirement
+	enrollments  []domain.WorkerEnrollment
+	includeSink  bool
+	records      sqlite.CoordinatorRecords
+	workers      []domain.WorkerSnapshot
+	admissions   []domain.QuotaAdmissionRecord
+	now          time.Time
+	workflows    map[string]domain.Workflow
+	runs         map[string]domain.WorkflowRun
+	tasks        map[string]domain.Task
+	attempts     map[string][]domain.Attempt
+	assignments  map[string]domain.Assignment
+	runtime      RuntimeInfo
 }
 
 func newView(records sqlite.CoordinatorRecords, workers []domain.WorkerSnapshot, admissions []domain.QuotaAdmissionRecord, runtime RuntimeInfo, now time.Time) view {
@@ -292,10 +311,11 @@ func (v view) status() Status {
 func (v view) runtimeStatus() RuntimeStatus {
 	status := RuntimeStatus{
 		Mode: v.runtime.Mode, Owner: v.runtime.Owner, Epoch: v.runtime.Epoch,
+		Release: v.runtime.Release, ConfigurationDigest: v.runtime.ConfigurationDigest, LastReload: v.runtime.LastReload,
 		Transport: v.runtime.Transport, Health: "healthy",
 	}
 	for _, worker := range v.workers {
-		stale := !worker.Connected || worker.ObservedAt.After(v.now) || !worker.ValidUntil.After(v.now)
+		stale := !worker.Connected || worker.ObservedAt.After(v.now) || !worker.ValidUntil.After(v.now) || (v.runtime.Epoch > 0 && worker.CoordinatorEpoch != v.runtime.Epoch)
 		if v.runtime.MaxWorkerSnapshotAge > 0 && v.now.Sub(worker.ObservedAt) > v.runtime.MaxWorkerSnapshotAge {
 			stale = true
 		}
@@ -765,17 +785,79 @@ func (v view) schedules() []Schedule {
 
 func (v view) workersResponse(filter Filter) []Worker {
 	result := make([]Worker, 0)
-	for _, snapshot := range v.workers {
+	snapshots := append([]domain.WorkerSnapshot(nil), v.workers...)
+	seen := make(map[string]bool)
+	for _, snapshot := range snapshots {
+		seen[snapshot.WorkerID] = true
+	}
+	for _, requirement := range v.requirements {
+		if !seen[requirement.WorkerID] {
+			snapshots = append(snapshots, domain.WorkerSnapshot{WorkerID: requirement.WorkerID})
+		}
+	}
+	for _, snapshot := range snapshots {
 		if filter.WorkerID != "" && snapshot.WorkerID != filter.WorkerID {
 			continue
 		}
-		stale := v.now.After(snapshot.ValidUntil)
+		stale := !snapshot.ValidUntil.After(v.now) || snapshot.ObservedAt.After(v.now) || (v.runtime.Epoch > 0 && snapshot.CoordinatorEpoch != v.runtime.Epoch) || (v.runtime.MaxWorkerSnapshotAge > 0 && v.now.Sub(snapshot.ObservedAt) > v.runtime.MaxWorkerSnapshotAge)
 		health := string(snapshot.Inventory.Health)
 		if !snapshot.Connected || stale {
 			health = string(domain.WorkerHealthOffline)
 		}
-		result = append(result, Worker{Snapshot: snapshot, Health: health, Stale: stale})
+		dto := Worker{Snapshot: snapshot, Health: health, Stale: stale, State: "observed", ConcurrencySource: "coordinator-quota-pools"}
+		for _, provider := range snapshot.Inventory.Providers {
+			for _, pool := range v.records.QuotaPools {
+				if pool.ID == provider.QuotaPoolID {
+					if dto.PoolConcurrency == nil {
+						dto.PoolConcurrency = map[string]int{}
+					}
+					dto.PoolConcurrency[pool.ID] = pool.MaxConcurrent
+				}
+			}
+		}
+		if !snapshot.ObservedAt.IsZero() {
+			dto.SnapshotAgeSeconds = max(0, v.now.Sub(snapshot.ObservedAt).Seconds())
+		}
+		if stale || !snapshot.Connected {
+			dto.State = "stale"
+		}
+		for _, requirement := range v.requirements {
+			if requirement.WorkerID != snapshot.WorkerID {
+				continue
+			}
+			copy := requirement
+			dto.Requirement = &copy
+			dto.State = "configured"
+			for _, enrollment := range v.enrollments {
+				if enrollment.Request.WorkerID != snapshot.WorkerID {
+					continue
+				}
+				copy := enrollment
+				dto.Enrollment = &copy
+				dto.Enrolled = enrollment.Request.CatalogRevision == requirement.CatalogRevision && enrollment.WorkerEpoch == requirement.WorkerEpoch && enrollment.CredentialRef == requirement.CredentialRef && enrollment.Connection == requirement.Connection
+				if !dto.Enrolled {
+					dto.State = "draining"
+				}
+			}
+			if dto.Enrolled {
+				dto.State = "enrolled"
+				if stale || !snapshot.Connected {
+					dto.State = "stale"
+				} else if snapshot.WorkerEpoch != requirement.WorkerEpoch {
+					dto.State = "recovery-required"
+				} else if snapshot.Inventory.CatalogRevision != requirement.CatalogRevision || !snapshot.Inventory.AcceptBacklog {
+					dto.State = "draining"
+				} else {
+					dto.State = "observed"
+				}
+			}
+			if requirement.Draining || requirement.Connection == "removed" {
+				dto.State = "draining"
+			}
+		}
+		result = append(result, dto)
 	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Snapshot.WorkerID < result[j].Snapshot.WorkerID })
 	return result
 }
 

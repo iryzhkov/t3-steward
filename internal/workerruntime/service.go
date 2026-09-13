@@ -11,12 +11,15 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/config"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 // WorkerServiceOptions composes the fixed restricted-command runtime for one
 // configured worker identity. Construction performs no T3 or fleet operation.
 type WorkerServiceOptions struct {
+	RuntimeIdentity     *domain.WorkerRuntimeIdentity
+	ObserveInventory    func(context.Context, config.BacklogV2, domain.WorkerInventory) (domain.WorkerInventory, error)
 	Settings            config.BacklogV2
 	WorkerID            string
 	WorkerEpoch         string
@@ -123,6 +126,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 	if err != nil {
 		return nil, err
 	}
+	binding.Inventory.Runtime = options.RuntimeIdentity
 	runtime, err := New(Config{
 		WorkerID:         options.WorkerID,
 		WorkerEpoch:      options.WorkerEpoch,
@@ -132,6 +136,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		LeaseDuration:    options.Settings.Leases.Duration.D(),
 		MaxPackageBytes:  options.Settings.MessageLimits.MaxBytes,
 		Inventory:        binding.Inventory,
+		ObserveInventory: observerForSettings(options),
 		Retention:        options.Settings.Storage.Retention.D(),
 		Now:              options.Now,
 		Logger:           options.Logger,
@@ -200,6 +205,9 @@ func (s *WorkerService) Serve(ctx context.Context, input io.Reader, output io.Wr
 func (s *WorkerService) ServeEnvelope(ctx context.Context, request workerproto.Envelope, output io.Writer) error {
 	if s == nil || s.Exchange.Runtime == nil {
 		return errors.New("worker service: service is not initialized")
+	}
+	if err := s.Exchange.Server.ValidateRequest(request); err != nil {
+		return err
 	}
 	// Reconciliation runs before every request but must leave time to answer
 	// it: a slow provider call is cut off and retried on the next exchange

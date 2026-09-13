@@ -128,7 +128,7 @@ func run(args []string) error {
 			sub = append(sub, rest[i])
 		}
 		return cmdArchive(g, sub)
-	case "backlog", "diagnose":
+	case "backlog", "diagnose", "worker":
 		// Sub-commands parse their own arguments; only --config and
 		// --dry-run style globals are shared, taken from the environment here.
 		paths, err := config.DefaultPaths()
@@ -144,6 +144,9 @@ func run(args []string) error {
 				continue
 			}
 			sub = append(sub, rest[i])
+		}
+		if cmd == "worker" {
+			return cmdWorker(g, sub)
 		}
 		if cmd == "diagnose" {
 			sub = append([]string{"diagnose"}, sub...)

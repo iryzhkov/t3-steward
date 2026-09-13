@@ -1,0 +1,15 @@
+[Unit]
+Description=T3 steward persistent execution worker
+After=t3code.service huyang.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/t3-steward --config %h/.config/t3-steward/config.yaml worker serve
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=120
+UMask=0077
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

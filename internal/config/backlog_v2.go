@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func (c *Config) validateBacklogV2() error {
@@ -65,12 +66,18 @@ func (c *Config) validateBacklogV2() error {
 	providerInstancePools := make(map[string]string)
 	usedQuotaPools := make(map[string]bool)
 	for id, worker := range v.Workers {
+		if worker.Connection != "" && worker.Connection != "persistent-ssh" && worker.Connection != "unix" {
+			return fmt.Errorf("backlog_v2: worker %q connection must be persistent-ssh or unix", id)
+		}
+		if worker.Connection != "" && (v.MessageLimits.MaxBytes > 8<<20 || v.MessageLimits.MaxArtifactBytes > 16<<20 || v.Transport.RequestTimeout.D() > 2*time.Minute || v.Freshness.WorkerMaxAge.D() > 5*time.Minute) {
+			return fmt.Errorf("backlog_v2: persistent worker %q exceeds bounded frame, artifact, timeout or freshness limits", id)
+		}
 		if strings.TrimSpace(id) == "" || strings.TrimSpace(worker.Address) == "" ||
 			strings.TrimSpace(worker.Epoch) != worker.Epoch || worker.Epoch == "" ||
 			strings.TrimSpace(worker.Credential) == "" {
 			return fmt.Errorf("backlog_v2: worker %q requires address, epoch, and credential", id)
 		}
-		if !worker.AcceptBacklog {
+		if !worker.AcceptBacklog && worker.Connection == "" {
 			return fmt.Errorf("backlog_v2: configured worker %q must accept backlog work", id)
 		}
 		if len(worker.Providers) == 0 {

@@ -40,7 +40,11 @@ waits for terminal state; node waits observe outcomes rather than authorize work
 route, execution identity and lease.
 
 **Worker**: A host runtime that prepares workspaces and executes assigned T3
-threads. Avoid: runner, execution host.
+threads. The opt-in S4 persistent path separates configured bootstrap, authenticated
+enrollment and observed readiness. Its execution catalog is coordinator-owned;
+UpKeeper distributes bootstrap and releases. See [worker operations](docs/worker-operations.md).
+Live multi-host qualification is still required before S4 closes.
+Avoid: runner, execution host.
 
 **Provider route**: An eligible model, provider instance, options and worker
 combination. Its consumed quota buckets must be explicit in S6.

@@ -56,6 +56,10 @@ type coordinatorLocalService struct {
 	schedules   *backlog.ScheduleDefinitionService
 }
 
+func (s coordinatorLocalService) EnrollWorker(ctx context.Context, p backlogadmin.Principal, r domain.WorkerEnrollmentRequest) (domain.WorkerEnrollment, error) {
+	return s.admin.EnrollWorker(ctx, p, r)
+}
+
 func (s coordinatorLocalService) AmendGraph(ctx context.Context, p backlogadmin.Principal, r domain.GraphAmendment) (domain.GraphAmendmentResult, error) {
 	return s.admin.AmendGraph(ctx, p, r)
 }
@@ -370,12 +374,22 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 		logger.Warn("coordinator state repair failed; continuing", "error", err)
 	}
 
+	return coordinatorConfigLoop(ctx, cfg, logger, store, epoch)
+}
+
+func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger *slog.Logger, store *sqlite.Store, epoch int64, ready func()) error {
 	service, err := backlogadmin.New(store, localAdminAuthorizer{})
 	if err != nil {
 		return err
 	}
 	service.SetGraphAmendmentSupport(cfg.BacklogV2.Storage.Artifacts, graphTaskValidator(cfg.BacklogV2))
+	configurationDigest, err := coordinatorConfigurationDigest(cfg.BacklogV2)
+	if err != nil {
+		return err
+	}
+	appliedAt := time.Now().UTC()
 	service.SetRuntimeInfo(backlogadmin.RuntimeInfo{
+		Release: version, ConfigurationDigest: configurationDigest, LastReload: appliedAt,
 		Mode: "coordinator", Owner: cfg.BacklogV2.Coordinator.ID, Epoch: epoch,
 		Transport:              cfg.BacklogV2.Transport.Kind,
 		MaxWorkerSnapshotAge:   cfg.BacklogV2.Freshness.WorkerMaxAge.D(),
@@ -414,6 +428,7 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 		MaxBytes:    cfg.BacklogV2.MessageLimits.MaxBytes,
 		MaxFiles:    cfg.BacklogV2.MessageLimits.MaxFiles,
 	}
+	service.SetWorkerEnrollmentHandler(coordinatorEnrollmentHandler(cfg.BacklogV2, store, epoch, artifactStore))
 	scheduleDefinitions := &backlog.ScheduleDefinitionService{Store: store}
 	server := backlogadmin.LocalServer{
 		Listener: listener,
@@ -428,11 +443,12 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 		MaxConcurrent:      16,
 	}
 	workers, err := newCoordinatorWorkerSessions(
-		cfg.BacklogV2, store, epoch, workerruntime.EnvironmentProtocolCredentialResolver{}, nil, artifactStore,
+		cfg.BacklogV2, store, epoch, workerruntime.ProtocolResolver{}, nil, artifactStore,
 	)
 	if err != nil {
 		return err
 	}
+	defer workers.close()
 	cycle := coordinatorBoundaryCycle{
 		projection: store,
 		quota: coordinatorQuotaReconciler{store: store, bridge: backlog.QuotaBridge{
@@ -467,7 +483,10 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 		"admin_socket", socketPath)
 	// The quota watchdog, wait polling, and archiving keep running on this
 	// host alongside the coordinator; they share the state database.
-	go runWatchdogAlongside(ctx, cfg, logger, store)
+	if err := store.RecordCoordinatorConfiguration(ctx, epoch, configurationDigest, appliedAt); err != nil {
+		return err
+	}
+	ready()
 	return serveCoordinatorBoundaries(ctx, &server, cycle, cfg.BacklogV2.Scheduling.Interval.D())
 }
 

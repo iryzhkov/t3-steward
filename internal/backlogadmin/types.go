@@ -115,18 +115,21 @@ type Status struct {
 }
 
 type RuntimeStatus struct {
-	Mode                 string   `json:"mode"`
-	Owner                string   `json:"owner"`
-	Epoch                int64    `json:"epoch"`
-	Health               string   `json:"health"`
-	Transport            string   `json:"transport"`
-	FreshWorkers         int      `json:"freshWorkers"`
-	StaleWorkers         int      `json:"staleWorkers"`
-	FreshQuotaPools      int      `json:"freshQuotaPools"`
-	StaleQuotaPools      int      `json:"staleQuotaPools"`
-	ReconciliationIssues []string `json:"reconciliationIssues,omitempty"`
-	UnknownExecutionIDs  []string `json:"unknownExecutionIds,omitempty"`
-	CustodyIncidentIDs   []string `json:"custodyIncidentIds,omitempty"`
+	Release              string    `json:"release,omitempty"`
+	ConfigurationDigest  string    `json:"configurationDigest,omitempty"`
+	LastReload           time.Time `json:"lastReload,omitzero"`
+	Mode                 string    `json:"mode"`
+	Owner                string    `json:"owner"`
+	Epoch                int64     `json:"epoch"`
+	Health               string    `json:"health"`
+	Transport            string    `json:"transport"`
+	FreshWorkers         int       `json:"freshWorkers"`
+	StaleWorkers         int       `json:"staleWorkers"`
+	FreshQuotaPools      int       `json:"freshQuotaPools"`
+	StaleQuotaPools      int       `json:"staleQuotaPools"`
+	ReconciliationIssues []string  `json:"reconciliationIssues,omitempty"`
+	UnknownExecutionIDs  []string  `json:"unknownExecutionIds,omitempty"`
+	CustodyIncidentIDs   []string  `json:"custodyIncidentIds,omitempty"`
 }
 
 type Progress struct {
@@ -266,9 +269,16 @@ type Schedule struct {
 }
 
 type Worker struct {
-	Snapshot domain.WorkerSnapshot `json:"snapshot"`
-	Health   string                `json:"health"`
-	Stale    bool                  `json:"stale"`
+	PoolConcurrency    map[string]int            `json:"poolConcurrency,omitempty"`
+	State              string                    `json:"state"`
+	Enrolled           bool                      `json:"enrolled"`
+	Requirement        *domain.WorkerRequirement `json:"requirement,omitempty"`
+	Enrollment         *domain.WorkerEnrollment  `json:"enrollment,omitempty"`
+	SnapshotAgeSeconds float64                   `json:"snapshotAgeSeconds"`
+	ConcurrencySource  string                    `json:"concurrencySource"`
+	Snapshot           domain.WorkerSnapshot     `json:"snapshot"`
+	Health             string                    `json:"health"`
+	Stale              bool                      `json:"stale"`
 }
 
 type Quota struct {

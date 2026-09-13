@@ -71,6 +71,7 @@ type LocalScheduleDefinitionResponse struct {
 }
 
 type localRequest struct {
+	WorkerEnrollment   *domain.WorkerEnrollmentRequest `json:"workerEnrollment,omitempty"`
 	GraphAmendment     *domain.GraphAmendment          `json:"graphAmendment,omitempty"`
 	NodeWait           *NodeWaitOperation              `json:"nodeWait,omitempty"`
 	Version            string                          `json:"version"`
@@ -85,6 +86,7 @@ type localRequest struct {
 }
 
 type localResponse struct {
+	WorkerEnrollment           *domain.WorkerEnrollment                  `json:"workerEnrollment,omitempty"`
 	GraphAmendment             *domain.GraphAmendmentResult              `json:"graphAmendment,omitempty"`
 	NodeWait                   *NodeWaitResponse                         `json:"nodeWait,omitempty"`
 	Version                    string                                    `json:"version"`
@@ -218,7 +220,26 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 		_ = writeLocalJSON(conn, response)
 		return
 	}
+	if request.WorkerEnrollment != nil && request.Operation != "worker-enrollment" {
+		response.Error = "unexpected worker enrollment"
+		_ = writeLocalJSON(conn, response)
+		return
+	}
 	switch request.Operation {
+	case "worker-enrollment":
+		handler, ok := s.Service.(interface {
+			EnrollWorker(context.Context, Principal, domain.WorkerEnrollmentRequest) (domain.WorkerEnrollment, error)
+		})
+		if !ok || request.WorkerEnrollment == nil || request.GraphAmendment != nil || request.NodeWait != nil || request.Query != nil || request.Mutation != nil || request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
+			response.Error = "malformed worker enrollment request"
+			break
+		}
+		value, err := handler.EnrollWorker(ctx, principal, *request.WorkerEnrollment)
+		if err != nil {
+			response.Error = err.Error()
+		} else {
+			response.WorkerEnrollment = &value
+		}
 	case "graph-amendment":
 		handler, ok := s.Service.(interface {
 			AmendGraph(context.Context, Principal, domain.GraphAmendment) (domain.GraphAmendmentResult, error)

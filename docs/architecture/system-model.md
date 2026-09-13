@@ -55,7 +55,7 @@ that isolation is not yet a current production guarantee.
 | Artifact staging/custody | Assigned worker until accepted import | Checksums, bounded streams, durable outbox and acknowledgement |
 | Quota observations | Provider source/watchdog, persisted in steward state | Account/window/reset identity and observation time; no summing host copies |
 | Admission/throttle projection | Coordinator currently derives pool/attempt state | S6 replaces reconstruction with bucket-owned decisions and reservations |
-| Catalog/policy | Operator configuration, currently duplicated in coordinator/worker YAML | S4 establishes a coordinator-owned effective catalog and worker projections |
+| Catalog/policy | Coordinator effective configuration for persistent workers; legacy YAML remains | Signed, revision-fenced worker projections; validated SIGHUP reload and drain without changing coordinator epoch |
 | Admin command/audit | Authenticated coordinator admin service | Immutable request ID, expected revision, actor/reason and durable result |
 | Schedule/template/trigger | Coordinator SQLite | Versioned templates, nominal occurrence key, one-open-run policy |
 | Wait/check/wake | Coordinator native node rows and legacy shell wait subsystem | S2 native settlement/intent is atomic; observed message identity proves delivery, ambiguous sends retain recovery state |
@@ -75,8 +75,9 @@ envelopes, immutable execution packages and separately bounded artifact streams.
 Worker credentials authorize observations and execution of durable assignments,
 not graph mutations, enrollment or arbitrary admin commands.
 
-S4's local socket transport may share a listener but must preserve these operation
-and principal boundaries. Remote persistence is transport, not a new policy owner.
+S4 uses a separate owner-only worker socket carrying signed frames. Enrollment
+remains on the coordinator admin socket. Persistent SSH forwards frames to the
+existing worker process. Remote persistence is transport, not a new policy owner.
 
 ### Persistence and external effects
 
@@ -155,7 +156,7 @@ around that path. It must not become authority to create a replacement execution
 | Terminal sink | [Sink ADR](adr-s0-sink.md); coordinator-only aggregation, no attempt; implemented in S1 |
 | Node waits / cross-run edges | [Node-wait ADR](adr-s0-node-wait.md); implemented S2: retained targets, atomic outcome/intent, observable delivery and cross-run ordering dependencies |
 | Graph revisions/amendment | [Amendment ADR](adr-s0-amendment.md); implemented S3: immutable run snapshots, owner-only amendments, assignment fences, clone provenance and joined diagnostics |
-| Worker enrollment/catalog/transport | [Worker ADR](adr-s0-worker-enrollment.md); one effective catalog, persistent workers; S4 |
+| Worker enrollment/catalog/transport | [Worker ADR](adr-s0-worker-enrollment.md); opt-in persistent workers, signed catalog projection and audited enrollment implemented; S4 live fleet qualification outstanding |
 | Bucket quota / bounded forecast / measured costs | [Quota ADR](adr-s0-quota.md); S5 fixtures, S6 implementation and requalification |
 | Bounded replay persistence | [Replay ADR](adr-s0-replay-store.md); implemented and tested in S0 |
 

@@ -14,6 +14,14 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
+type catalogRuntimeIdentity struct {
+	CoordinatorID string
+	Transport     config.V2Transport
+	MessageLimits config.V2MessageLimits
+	Freshness     config.V2Freshness
+	Leases        config.V2Leases
+}
+
 type WorkerBinding struct {
 	CatalogRevision string
 	Catalog         *backlog.ProjectCatalog
@@ -26,7 +34,7 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 	if !ok || workerID == "" {
 		return WorkerBinding{}, fmt.Errorf("worker binding: unknown worker %q", workerID)
 	}
-	if !worker.AcceptBacklog || worker.Address == "" || worker.Credential == "" {
+	if (!worker.AcceptBacklog && worker.Connection == "") || worker.Address == "" || worker.Credential == "" {
 		return WorkerBinding{}, errors.New("worker binding: worker is not eligible or has incomplete transport identity")
 	}
 	profileNames := make([]string, 0, len(settings.SetupProfiles))
@@ -91,7 +99,13 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 		Worker   config.V2Worker
 		Projects []backlog.ProjectDefinition
 		Profiles []backlog.SetupProfile
+		Runtime  *catalogRuntimeIdentity `json:",omitempty"`
 	}{WorkerID: workerID, Worker: worker, Projects: projects, Profiles: profiles}
+	if worker.Connection != "" {
+		// Admission is coordinator policy; draining does not replace execution packages.
+		revisionInput.Worker.AcceptBacklog = true
+		revisionInput.Runtime = &catalogRuntimeIdentity{CoordinatorID: settings.Coordinator.ID, Transport: settings.Transport, MessageLimits: settings.MessageLimits, Freshness: settings.Freshness, Leases: settings.Leases}
+	}
 	raw, err := json.Marshal(revisionInput)
 	if err != nil {
 		return WorkerBinding{}, fmt.Errorf("worker binding: catalog revision: %w", err)
@@ -101,7 +115,7 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 	return WorkerBinding{
 		CatalogRevision: revision, Catalog: catalog, CredentialRef: worker.Credential,
 		Inventory: domain.WorkerInventory{
-			ID: workerID, AcceptBacklog: true, Health: domain.WorkerHealthReady,
+			ID: workerID, AcceptBacklog: worker.AcceptBacklog, Health: domain.WorkerHealthReady, CatalogRevision: revision,
 			Capabilities: append([]string(nil), worker.Capabilities...),
 			Projects:     inventoryProjects, Providers: providers, ObservedAt: now.UTC(),
 		},

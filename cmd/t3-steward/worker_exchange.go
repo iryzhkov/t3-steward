@@ -62,7 +62,7 @@ func cmdWorkerExchange(g globalFlags, operation string) error {
 		WorkerID:            local.ID,
 		WorkerEpoch:         local.Epoch,
 		CoordinatorEpoch:    local.CoordinatorEpoch,
-		ProtocolCredentials: workerruntime.EnvironmentProtocolCredentialResolver{},
+		ProtocolCredentials: workerruntime.ProtocolResolver{},
 		ProjectCredentials:  workerruntime.EnvironmentCredentialChecker{},
 		DryRun:              cfg.Policy.DryRun,
 		Logger:              logger,

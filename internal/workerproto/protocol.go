@@ -362,6 +362,15 @@ func NewServer(config ServerConfig) (*Server, error) {
 	return &Server{config: config, last: make(map[string]int64), requests: make(map[string]cachedExchange)}, nil
 }
 
+// ValidateRequest verifies authority and envelope integrity before any local effect.
+func (s *Server) ValidateRequest(envelope Envelope) error {
+	_, protocolErr := s.validate(envelope)
+	if protocolErr != nil {
+		return protocolErr
+	}
+	return nil
+}
+
 func (s *Server) Handle(ctx context.Context, envelope Envelope, handler Handler) (Envelope, error) {
 	if handler == nil {
 		return Envelope{}, errors.New("protocol server: handler is required")

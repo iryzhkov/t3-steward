@@ -29,13 +29,21 @@ type WorkerProviderInventory struct {
 }
 
 // WorkerInventory is the coordinator's latest immutable view of a worker.
+type WorkerRuntimeIdentity struct {
+	Release         string    `json:"release"`
+	Commit          string    `json:"commit"`
+	BootstrapDigest string    `json:"bootstrapDigest"`
+	LastReload      time.Time `json:"lastReload"`
+}
 type WorkerInventory struct {
-	ID            string                    `json:"id"`
-	AcceptBacklog bool                      `json:"acceptBacklog"`
-	Health        WorkerHealth              `json:"health"`
-	Capabilities  []string                  `json:"capabilities,omitempty"`
-	Projects      []WorkerProjectInventory  `json:"projects,omitempty"`
-	Providers     []WorkerProviderInventory `json:"providers,omitempty"`
-	WebBaseURL    string                    `json:"webBaseUrl,omitempty"`
-	ObservedAt    time.Time                 `json:"observedAt"`
+	Runtime         *WorkerRuntimeIdentity    `json:"runtime,omitempty"`
+	CatalogRevision string                    `json:"catalogRevision,omitempty"`
+	ID              string                    `json:"id"`
+	AcceptBacklog   bool                      `json:"acceptBacklog"`
+	Health          WorkerHealth              `json:"health"`
+	Capabilities    []string                  `json:"capabilities,omitempty"`
+	Projects        []WorkerProjectInventory  `json:"projects,omitempty"`
+	Providers       []WorkerProviderInventory `json:"providers,omitempty"`
+	WebBaseURL      string                    `json:"webBaseUrl,omitempty"`
+	ObservedAt      time.Time                 `json:"observedAt"`
 }

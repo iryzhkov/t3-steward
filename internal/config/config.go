@@ -307,6 +307,7 @@ type V2LocalWorker struct {
 }
 
 type V2Worker struct {
+	Connection    string                `yaml:"connection" json:"connection,omitempty"`
 	Address       string                `yaml:"address"`
 	Epoch         string                `yaml:"epoch"`
 	AcceptBacklog bool                  `yaml:"accept_backlog"`

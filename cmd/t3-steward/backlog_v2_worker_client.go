@@ -26,6 +26,7 @@ const (
 )
 
 type coordinatorWorkerSession struct {
+	Close              func() error
 	Client             *workerproto.Client
 	ArtifactClient     *workerproto.Client
 	Builder            backlog.AssignmentOfferBuilder
@@ -49,6 +50,7 @@ type coordinatorWorkerTickReport struct {
 // construction until a scheduled post-startup cycle. Each pass uses a fresh
 // protocol session, so an ambiguous exchange cannot poison a later pass.
 type coordinatorWorkerSessions struct {
+	close     func() error
 	workerIDs []string
 	exchange  func(context.Context, string, backlog.QuotaBridgeReport) (backlog.WorkerExchangeReport, error)
 }
@@ -64,25 +66,52 @@ func newCoordinatorWorkerSessions(
 	if store == nil || coordinatorEpoch < 1 || resolver == nil {
 		return nil, fmt.Errorf("coordinator worker sessions require store, authority, and credential resolver")
 	}
+	var requirements []domain.WorkerRequirement
+	for id, w := range settings.Workers {
+		if w.Connection != "" {
+			b, err := workerruntime.BuildWorkerBinding(settings, id, time.Now())
+			if err != nil {
+				return nil, err
+			}
+			requirements = append(requirements, domain.WorkerRequirement{Draining: !w.AcceptBacklog, WorkerID: id, WorkerEpoch: w.Epoch, CatalogRevision: b.CatalogRevision, CredentialRef: w.Credential, Connection: w.Connection})
+		}
+	}
+	if err := store.SaveWorkerRequirements(context.Background(), requirements); err != nil {
+		return nil, err
+	}
 	workerIDs := make([]string, 0, len(settings.Workers))
 	for workerID := range settings.Workers {
 		workerIDs = append(workerIDs, workerID)
 	}
 	sort.Strings(workerIDs)
 	coordinator := backlog.FleetCoordinator{Store: store}
+	cached := map[string]coordinatorWorkerSession{}
 	return &coordinatorWorkerSessions{
 		workerIDs: workerIDs,
+		close: func() error {
+			var errs []error
+			for id, session := range cached {
+				if session.Close != nil {
+					errs = append(errs, session.Close())
+				}
+				delete(cached, id)
+			}
+			return errors.Join(errs...)
+		},
 		exchange: func(ctx context.Context, workerID string, quota backlog.QuotaBridgeReport) (backlog.WorkerExchangeReport, error) {
 			sessionID, err := newCoordinatorWorkerSessionID(settings.Coordinator.ID, workerID)
 			if err != nil {
 				return backlog.WorkerExchangeReport{}, err
 			}
-			session, err := newCoordinatorWorkerSession(
-				ctx, settings, store, workerID, coordinatorEpoch, sessionID,
-				resolver, time.Now().UTC(), commandFactory, artifacts,
-			)
-			if err != nil {
-				return backlog.WorkerExchangeReport{}, err
+			session, ok := cached[workerID]
+			if !ok {
+				session, err = newCoordinatorWorkerSession(ctx, settings, store, workerID, coordinatorEpoch, sessionID, resolver, time.Now().UTC(), commandFactory, artifacts)
+				if err != nil {
+					return backlog.WorkerExchangeReport{}, err
+				}
+				if settings.Workers[workerID].Connection != "" {
+					cached[workerID] = session
+				}
 			}
 			report, reconcileErr := coordinator.ReconcileWorker(
 				ctx, session.Client, session.Builder, backlog.WorkerAdmissionPolicyFromQuotaReport(quota), quota.Directives, quota.Pools,
@@ -90,6 +119,10 @@ func newCoordinatorWorkerSessions(
 			)
 			report, importErr := importCoordinatorWorkerArtifacts(ctx, session, report, settings.MessageLimits.MaxArtifactBytes)
 			if reconcileErr != nil || importErr != nil {
+				if session.Close != nil {
+					_ = session.Close()
+					delete(cached, workerID)
+				}
 				return report, errors.Join(reconcileErr, importErr)
 			}
 			return report, nil
@@ -301,6 +334,26 @@ func newCoordinatorWorkerSession(
 	if err != nil {
 		return coordinatorWorkerSession{}, err
 	}
+	var controlTransport workerproto.RoundTripper = transport
+	var resultTransport workerproto.RoundTripper = artifactTransport
+	var inputTransport coordinatorArtifactDownloadTransport = downloadTransport
+	var closeTransport func() error
+	if worker.Connection != "" {
+		stream, err := newPersistentWorkerTransport(worker, credentials, settings, commandFactory)
+		if err != nil {
+			return coordinatorWorkerSession{}, err
+		}
+		controlTransport = stream
+		resultTransport = stream
+		inputTransport = stream
+		closeTransport = stream.Close
+	}
+	success := false
+	defer func() {
+		if !success && closeTransport != nil {
+			_ = closeTransport()
+		}
+	}()
 	client, err := workerproto.NewClient(workerproto.ClientConfig{
 		CoordinatorID: settings.Coordinator.ID, WorkerID: workerID,
 		CoordinatorEpoch: coordinatorEpoch, WorkerEpoch: worker.Epoch, SessionID: sessionID,
@@ -308,7 +361,7 @@ func newCoordinatorWorkerSession(
 		SignerPrincipal: credentials.CoordinatorPrincipal,
 		SignerKeyID:     credentials.CoordinatorKeyID, SignerSecret: credentials.CoordinatorSecret,
 		RetryPolicy: workerproto.RetryPolicy{MaxAttempts: 3, BaseDelay: 250 * time.Millisecond, MaxDelay: 2 * time.Second},
-		Transport:   transport,
+		Transport:   controlTransport,
 	})
 	if err != nil {
 		return coordinatorWorkerSession{}, err
@@ -320,16 +373,51 @@ func newCoordinatorWorkerSession(
 		SignerPrincipal: credentials.CoordinatorPrincipal,
 		SignerKeyID:     credentials.CoordinatorKeyID, SignerSecret: credentials.CoordinatorSecret,
 		RetryPolicy: workerproto.RetryPolicy{MaxAttempts: 3, BaseDelay: 250 * time.Millisecond, MaxDelay: 2 * time.Second},
-		Transport:   artifactTransport,
+		Transport:   resultTransport,
 	})
 	if err != nil {
 		return coordinatorWorkerSession{}, err
 	}
+	if worker.Connection != "" {
+		projection, err := workerruntime.BuildCatalogProjection(settings, workerID)
+		if err != nil {
+			return coordinatorWorkerSession{}, err
+		}
+		catalogClient, err := workerproto.NewClient(workerproto.ClientConfig{
+			CoordinatorID: settings.Coordinator.ID, WorkerID: workerID,
+			CoordinatorEpoch: coordinatorEpoch, WorkerEpoch: worker.Epoch, SessionID: sessionID + "-catalog",
+			RequestTimeout: requestTimeout, SignerPrincipal: credentials.CoordinatorPrincipal,
+			SignerKeyID: credentials.CoordinatorKeyID, SignerSecret: credentials.CoordinatorSecret,
+			RetryPolicy: workerproto.RetryPolicy{MaxAttempts: 3, BaseDelay: 250 * time.Millisecond, MaxDelay: 2 * time.Second},
+			Transport:   controlTransport,
+		})
+		if err != nil {
+			return coordinatorWorkerSession{}, err
+		}
+		expectedRevision := projection.Revision
+		snapshots, err := store.LoadWorkerSnapshots(ctx)
+		if err != nil {
+			return coordinatorWorkerSession{}, err
+		}
+		for _, snapshot := range snapshots {
+			if snapshot.WorkerID == workerID && snapshot.Inventory.CatalogRevision != "" {
+				expectedRevision = snapshot.Inventory.CatalogRevision
+			}
+		}
+		accepted, err := catalogClient.Catalog(ctx, workerruntime.CatalogRequest{Projection: projection, ExpectedRevision: expectedRevision})
+		if err != nil {
+			return coordinatorWorkerSession{}, err
+		}
+		if accepted["revision"] != binding.CatalogRevision || accepted["workerId"] != workerID {
+			return coordinatorWorkerSession{}, errors.New("worker accepted wrong catalog")
+		}
+	}
+	success = true
 	if artifacts.Catalog == nil {
 		artifacts.Catalog = store
 	}
 	return coordinatorWorkerSession{
-		Client: client, ArtifactClient: artifactClient, Binding: binding, Records: store,
+		Client: client, ArtifactClient: artifactClient, Binding: binding, Records: store, Close: closeTransport,
 		Importer: backlog.CoordinatorResultImporter{
 			CoordinatorID: settings.Coordinator.ID, CoordinatorEpoch: coordinatorEpoch,
 			Store: store, Artifacts: artifacts,
@@ -350,7 +438,7 @@ func newCoordinatorWorkerSession(
 				MaxArtifactBytes:    settings.MessageLimits.MaxArtifactBytes,
 				MaxTotalBytes:       settings.MessageLimits.MaxArtifactBytes,
 			},
-			Transport: downloadTransport, Artifacts: artifacts,
+			Transport: inputTransport, Artifacts: artifacts,
 			CoordinatorID: settings.Coordinator.ID, CoordinatorEpoch: coordinatorEpoch,
 			WorkerID: workerID, WorkerEpoch: worker.Epoch,
 			SignerPrincipal: credentials.CoordinatorPrincipal,

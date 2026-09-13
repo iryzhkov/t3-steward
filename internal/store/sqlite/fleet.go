@@ -310,6 +310,14 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 			return nil, fmt.Errorf("%w: worker %q is disconnected, stale, or not ready", ErrWorkerUnavailable, assignment.WorkerID)
 		}
 
+		enrolled, err := workerEnrolledTx(ctx, tx, assignment.WorkerID)
+		if err != nil {
+			return nil, err
+		}
+		if !enrolled {
+			skip("worker is not enrolled for the effective catalog")
+			continue
+		}
 		if err := bindAssignmentGraphTx(ctx, tx, attempt, &assignment); err != nil {
 			skip(err.Error())
 			continue

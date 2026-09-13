@@ -90,6 +90,12 @@ func NewClient(config ClientConfig) (*Client, error) {
 	return &Client{config: config}, nil
 }
 
+func (c *Client) Catalog(ctx context.Context, request any) (map[string]string, error) {
+	var response map[string]string
+	err := c.exchange(ctx, MessageType("catalog-projection"), MessageType("catalog-projection"), request, &response)
+	return response, err
+}
+
 func (c *Client) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 	var observations Observations
 	if err := c.exchange(ctx, MessageSnapshot, MessageObservations, SnapshotRequest{}, &observations); err != nil {
