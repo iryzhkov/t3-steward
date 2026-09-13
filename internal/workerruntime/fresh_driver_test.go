@@ -17,7 +17,7 @@ func TestFreshPackageDriverLifecycle(t *testing.T) {
 	pkg.Environment.Repository = ""
 	pkg.Environment.Ref = ""
 	pkg.Environment.T3Project = ""
-	pkg.StaticInputs = []workerproto.ArtifactObject{testArtifact("input", "context.txt", "context")}
+	pkg.StaticInputs = []workerproto.ArtifactObject{testArtifact("input", "inputs/nested/context.txt", "context")}
 	manifest, err := workerproto.BuildExecutionPackageManifest(pkg)
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ func TestFreshPackageDriverLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(workspace, ".t3", "inputs", "context.txt"))
+	data, err := os.ReadFile(filepath.Join(workspace, ".t3", "inputs", "nested", "context.txt"))
 	if err != nil || string(data) != "context" {
 		t.Fatalf("input=%q %v", data, err)
 	}

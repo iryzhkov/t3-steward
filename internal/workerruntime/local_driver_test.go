@@ -143,7 +143,7 @@ func TestLocalDriverBindsCatalogArtifactsWorkspaceAndT3(t *testing.T) {
 	pkg.Environment.Repository = "https://example.com/steward.git"
 	pkg.Environment.Ref = commit
 	pkg.Environment.RequiredCredentials = []string{"github-token"}
-	pkg.StaticInputs = []workerproto.ArtifactObject{testArtifact("input-1", "context.md", "context")}
+	pkg.StaticInputs = []workerproto.ArtifactObject{testArtifact("input-1", "inputs/context.md", "context")}
 	manifest, err := workerproto.BuildExecutionPackageManifest(pkg)
 	if err != nil {
 		t.Fatal(err)

@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.20] - 2026-09-13
+
+### Fixed
+
+- Worker preparation removes the execution package's static-input namespace
+  before materializing inputs, so capsule files appear at `.t3/inputs/<name>`
+  instead of `.t3/inputs/inputs/<name>`. Nested artifact paths are preserved.
+  Regression coverage exercises the coordinator's prefixed paths for both Git
+  and fresh workspaces.
+
 ## [0.11.0-rc.13] - 2026-09-13
 
 ### Fixed

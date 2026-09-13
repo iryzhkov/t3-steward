@@ -135,7 +135,11 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		}
 	}
 	for _, object := range pkg.StaticInputs {
-		inputs = append(inputs, d.domainArtifact(pkg, object, domain.ArtifactInput, object.Path, "submission"))
+		// The package namespaces static objects under inputs/; the preparer
+		// already supplies that directory. Preserve the relative artifact name,
+		// including nested paths, and tolerate older unprefixed packages.
+		name := strings.TrimPrefix(filepath.ToSlash(object.Path), "inputs/")
+		inputs = append(inputs, d.domainArtifact(pkg, object, domain.ArtifactInput, name, "submission"))
 	}
 	for _, dependency := range pkg.Dependencies {
 		dependencyTask := domain.Task{ID: dependency.TaskID, WorkflowID: pkg.Identity.WorkflowID, Name: dependency.TaskID}
