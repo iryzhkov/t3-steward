@@ -24,6 +24,7 @@ type GraphAmendment struct {
 	Options          *map[string]string `json:"options,omitempty"`
 	Timeout          *time.Duration     `json:"timeout,omitempty"`
 	Prompt           string             `json:"prompt,omitempty"`
+	Verification     *[]string          `json:"verification,omitempty"`
 }
 type GraphAmendmentResult struct {
 	Run    WorkflowRun     `json:"run"`
@@ -44,24 +45,42 @@ func ValidateGraphAmendment(r GraphAmendment) error {
 			r.Prompt == "" || len(r.Prompt) > 256<<10 {
 			return errors.New("task add requires a named task and prompt of at most 256 KiB")
 		}
-		if r.TaskID != "" || r.Source != "" || r.Model != nil || r.Provider != nil || r.Options != nil || r.Timeout != nil {
+		if r.TaskID != "" || r.Source != "" || r.Model != nil || r.Provider != nil || r.Options != nil || r.Timeout != nil || r.Verification != nil {
 			return errors.New("mixed task add fields")
 		}
 	case "task-set":
 		if r.TaskID == "" || r.Task != nil || r.Source != "" || r.Prompt != "" ||
-			(r.Model == nil && r.Provider == nil && r.Options == nil && r.Timeout == nil) {
-			return errors.New("task set requires target and model/provider/options/timeout")
+			(r.Model == nil && r.Provider == nil && r.Options == nil && r.Timeout == nil && r.Verification == nil) {
+			return errors.New("task set requires target and model/provider/options/timeout/verification")
 		}
 	case "edge-add", "edge-remove":
-		if r.TaskID == "" || r.Source == "" || r.Task != nil || r.Prompt != "" || r.Model != nil || r.Provider != nil || r.Options != nil || r.Timeout != nil {
+		if r.TaskID == "" || r.Source == "" || r.Task != nil || r.Prompt != "" || r.Model != nil || r.Provider != nil || r.Options != nil || r.Timeout != nil || r.Verification != nil {
 			return errors.New("edge amendment requires source and target")
 		}
 	case "clone":
-		if r.TaskID != "" || r.Task != nil || r.Source != "" || r.Prompt != "" || r.Model != nil || r.Provider != nil || r.Options != nil || r.Timeout != nil {
+		if r.TaskID != "" || r.Task != nil || r.Source != "" || r.Prompt != "" || r.Model != nil || r.Provider != nil || r.Options != nil || r.Timeout != nil || r.Verification != nil {
 			return errors.New("mixed clone fields")
 		}
 	default:
 		return errors.New("unknown graph amendment operation")
+	}
+	if r.Operation == "task-add" {
+		return validateAmendmentVerification(r.Task.Verification)
+	}
+	if r.Verification != nil {
+		return validateAmendmentVerification(*r.Verification)
+	}
+	return nil
+}
+
+func validateAmendmentVerification(commands []string) error {
+	if len(commands) == 0 {
+		return errors.New("task amendment requires at least one verification command")
+	}
+	for _, command := range commands {
+		if strings.TrimSpace(command) == "" || strings.ContainsRune(command, 0) {
+			return errors.New("task amendment has invalid verification command")
+		}
 	}
 	return nil
 }
@@ -118,6 +137,9 @@ func AmendTasks(r GraphAmendment, run WorkflowRun, templates []Task, newID, prom
 			}
 			if r.Timeout != nil {
 				task.Timeout = *r.Timeout
+			}
+			if r.Verification != nil {
+				task.Verification = slices.Clone(*r.Verification)
 			}
 		case "edge-add", "edge-remove":
 			if strings.Contains(r.Source, "/") {

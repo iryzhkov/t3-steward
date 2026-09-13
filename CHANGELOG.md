@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.10] - 2026-09-13
+
+### Fixed
+
+- Graph task additions reject missing or invalid verification before publication.
+  Repeatable `--verify` flags on task add/set supply or replace verification commands,
+  allowing unassigned legacy tasks to be repaired with the existing revision fence.
+  This resolves the S5 case where an accepted addition could never be dispatched.
+
 ## [0.11.0-rc.9] - 2026-09-12
 
 ### Fixed

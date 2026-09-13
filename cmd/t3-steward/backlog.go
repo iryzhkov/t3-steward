@@ -45,11 +45,12 @@ Coordinator read commands:
   command show <command> [--json]
 
 Graph amendments (all require --expected-revision N --request-id ID --reason TEXT):
-  task add <run>/<name> --provider INSTANCE --model MODEL --prompt TEXT
+  task add <run>/<name> --provider INSTANCE --model MODEL --prompt TEXT --verify COMMAND
       [--needs NAME,OTHER-RUN/TASK] [--options JSON] [--timeout DURATION]
       [--class required|surplus] [--max-turns N]
   task set <run>/<task> [--model MODEL] [--provider INSTANCE]
-      [--options JSON] [--timeout DURATION]
+      [--options JSON] [--timeout DURATION] [--verify COMMAND]
+  --verify is repeatable; task set replaces the verification list.
   edge add|remove <run>/<task> --from <task|other-run/task>
   run clone --from <run>
 

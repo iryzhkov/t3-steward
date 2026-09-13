@@ -549,7 +549,8 @@ t3-steward diagnose <run> --json
 t3-steward backlog task set <run>/<task> --timeout 15m \
   --expected-revision 1 --request-id bound-task-1 --reason "Bound execution time"
 t3-steward backlog task add <run>/review --provider <provider> --model <model> \
-  --prompt "Review the changes and report findings." --needs <task> \
+  --prompt "Review the changes and write findings to review.txt." --needs <task> \
+  --verify "test -s review.txt" \
   --expected-revision 2 --request-id add-review-1 --reason "Add review"
 t3-steward backlog edge remove <run>/review --from <task> \
   --expected-revision 3 --request-id remove-edge-1 --reason "Review independently"

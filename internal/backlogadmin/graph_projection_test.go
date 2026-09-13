@@ -15,7 +15,7 @@ func TestAddedAndClonedTasksProjectWithRunDefinitions(t *testing.T) {
 	s, store := graphFixture(t)
 	p := Principal{ID: "operator"}
 	add := graphRequest("project-add", "task-add", "", 1)
-	add.Task = &domain.Task{Name: "c", Class: domain.TaskClassSurplus, MaxTurns: 1, Needs: []string{"a"}, Routes: []domain.ProviderRoute{{ProviderInstanceID: "codex", Model: "new"}}}
+	add.Task = &domain.Task{Name: "c", Verification: []string{"git status --porcelain"}, Class: domain.TaskClassSurplus, MaxTurns: 1, Needs: []string{"a"}, Routes: []domain.ProviderRoute{{ProviderInstanceID: "codex", Model: "new"}}}
 	add.Prompt = "review"
 	if _, err := s.AmendGraph(ctx, p, add); err != nil {
 		t.Fatal(err)

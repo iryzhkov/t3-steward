@@ -28,6 +28,11 @@ an artifact; ordinary worker protocol credentials confer no graph/admin authorit
 
 Expose `task add`, `edge add|remove`, `task set` and `run clone --from`.
 Each amendment requires expected graph revision, stable request ID and reason.
+Task additions require at least one nonblank, NUL-free verification command.
+The CLI accepts repeatable `--verify COMMAND` on `task add` and `task set`;
+setting verification replaces the entire ordered list. Existing unassigned tasks
+can acquire missing verification through a revision-fenced amendment. Assignment
+history and terminal-task fences still apply.
 Validate the complete local/cross-run graph, placement, routes, immutable inputs
 and authorization before the transaction. Revalidate against current progress and
 assignment state inside it. Commit the revision, new definitions, sink rebinding

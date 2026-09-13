@@ -11,7 +11,7 @@ import (
 
 func TestParseGraphAmendmentCLI(t *testing.T) {
 	fence := []string{"--expected-revision", "7", "--request-id", "stable", "--reason", "add a check"}
-	args := append([]string{"task", "add", "run/check", "--provider", "codex", "--model", "model", "--prompt", "check outputs", "--needs", "build,other/__sink", "--timeout", "30m"}, fence...)
+	args := append([]string{"task", "add", "run/check", "--provider", "codex", "--model", "model", "--prompt", "check outputs", "--verify", "test -f result.txt", "--needs", "build,other/__sink", "--timeout", "30m"}, fence...)
 	r, err := parseGraphAmendment(args)
 	if err != nil {
 		t.Fatal(err)
@@ -23,11 +23,18 @@ func TestParseGraphAmendmentCLI(t *testing.T) {
 	if err != nil || r.Options == nil || (*r.Options)["effort"] != "low" {
 		t.Fatal(r, err)
 	}
+	r, err = parseGraphAmendment(append([]string{"task", "set", "run/check", "--verify", "test -f result.txt", "--verify", "git diff --exit-code"}, fence...))
+	if err != nil || r.Verification == nil || len(*r.Verification) != 2 || (*r.Verification)[0] != "test -f result.txt" {
+		t.Fatal(r, err)
+	}
 	r, err = parseGraphAmendment(append([]string{"run", "clone", "--from", "run"}, fence...))
 	if err != nil || r.Operation != "clone" {
 		t.Fatal(r, err)
 	}
 	for _, args := range [][]string{
+		append([]string{"task", "add", "run/check", "--provider", "codex", "--model", "model", "--prompt", "check"}, fence...),
+		append([]string{"task", "set", "run/check", "--verify", " "}, fence...),
+		append([]string{"task", "set", "run/check", "--verify", "bad\x00command"}, fence...),
 		{"task", "set", "run/check", "--model", "new"},
 		append([]string{"edge", "add", "run/check", "--from", "build", "--model", "bad"}, fence...),
 		append([]string{"task", "set", "run/check", "--timeout", "-1m"}, fence...),

@@ -61,6 +61,11 @@ func parseGraphAmendment(args []string) (domain.GraphAmendment, error) {
 	fs.StringVar(&r.Reason, "reason", "", "audit reason")
 	var model, provider, timeout, options, needs, class string
 	var maxTurns int
+	var verification []string
+	fs.Func("verify", "verification command; repeat for multiple commands", func(value string) error {
+		verification = append(verification, value)
+		return nil
+	})
 	fs.StringVar(&model, "model", "", "model")
 	fs.StringVar(&provider, "provider", "", "provider instance")
 	fs.StringVar(&timeout, "timeout", "", "elapsed assignment budget, e.g. 30m")
@@ -88,11 +93,11 @@ func parseGraphAmendment(args []string) (domain.GraphAmendment, error) {
 	allowed := map[string]bool{}
 	switch r.Operation {
 	case "task-add":
-		for _, key := range []string{"model", "provider", "timeout", "options", "prompt", "needs", "class", "max-turns"} {
+		for _, key := range []string{"model", "provider", "timeout", "options", "verify", "prompt", "needs", "class", "max-turns"} {
 			allowed[key] = true
 		}
 	case "task-set":
-		for _, key := range []string{"model", "provider", "timeout", "options"} {
+		for _, key := range []string{"model", "provider", "timeout", "options", "verify"} {
 			allowed[key] = true
 		}
 	case "edge-add", "edge-remove", "clone":
@@ -127,8 +132,11 @@ func parseGraphAmendment(args []string) (domain.GraphAmendment, error) {
 	if supplied["provider"] {
 		r.Provider = &provider
 	}
+	if supplied["verify"] {
+		r.Verification = &verification
+	}
 	if r.Operation == "task-add" {
-		task := domain.Task{Name: r.TaskID, Class: domain.TaskClass(class), MaxTurns: maxTurns, Timeout: duration, Routes: []domain.ProviderRoute{{ProviderInstanceID: provider, Model: model, Options: parsedOptions}}}
+		task := domain.Task{Name: r.TaskID, Verification: verification, Class: domain.TaskClass(class), MaxTurns: maxTurns, Timeout: duration, Routes: []domain.ProviderRoute{{ProviderInstanceID: provider, Model: model, Options: parsedOptions}}}
 		if needs != "" {
 			for _, need := range strings.Split(needs, ",") {
 				if strings.Contains(need, "/") {
@@ -148,6 +156,7 @@ func parseGraphAmendment(args []string) (domain.GraphAmendment, error) {
 		r.Provider = nil
 		r.Options = nil
 		r.Timeout = nil
+		r.Verification = nil
 	}
 	return r, domain.ValidateGraphAmendment(r)
 }

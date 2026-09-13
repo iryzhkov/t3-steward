@@ -146,7 +146,7 @@ func TestGraphAmendmentAddEdgesCyclesAndTerminalFreeze(t *testing.T) {
 	s, store := graphFixture(t)
 	p := Principal{ID: "operator"}
 	add := graphRequest("add", "task-add", "", 1)
-	add.Task = &domain.Task{Name: "c", Class: domain.TaskClassSurplus, MaxTurns: 1, Needs: []string{"a"}, Routes: []domain.ProviderRoute{{ProviderInstanceID: "codex", Model: "new"}}}
+	add.Task = &domain.Task{Name: "c", Verification: []string{"git status --porcelain"}, Class: domain.TaskClassSurplus, MaxTurns: 1, Needs: []string{"a"}, Routes: []domain.ProviderRoute{{ProviderInstanceID: "codex", Model: "new"}}}
 	add.Prompt = "new task"
 	result, err := s.AmendGraph(ctx, p, add)
 	if err != nil {
@@ -242,9 +242,62 @@ func TestGraphAmendmentConcurrentWritersAndAssignedFreeze(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := graphRequest("assigned", "task-set", attempt.TaskID, 2)
-	r.Model = &model
+	verification := []string{"test -f result.txt"}
+	r.Verification = &verification
 	if _, err = s.AmendGraph(ctx, p, r); err == nil {
-		t.Fatal("offered task edited")
+		t.Fatal("offered task verification edited")
+	}
+}
+
+func TestGraphAmendmentVerificationRejectsIncompleteAddAndRepairsLegacyTask(t *testing.T) {
+	ctx := context.Background()
+	s, store := graphFixture(t)
+	p := Principal{ID: "operator"}
+	add := graphRequest("missing-verification", "task-add", "", 1)
+	add.Task = &domain.Task{Name: "c", Class: domain.TaskClassSurplus, MaxTurns: 1, Routes: []domain.ProviderRoute{{ProviderInstanceID: "codex", Model: "new"}}}
+	add.Prompt = "write result.txt"
+	if _, err := s.AmendGraph(ctx, p, add); err == nil {
+		t.Fatal("addition without verification accepted")
+	}
+	records, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records.Artifacts) != 2 || len(records.Attempts) != 2 {
+		t.Fatal("invalid addition published input or attempt")
+	}
+	for _, run := range records.WorkflowRuns {
+		if run.GraphRevision != 1 || run.Graph != nil {
+			t.Fatal("invalid addition changed graph")
+		}
+	}
+	commands := []string{"test -s result.txt", "git diff --exit-code"}
+	set := graphRequest("repair-verification", "task-set", "a", 1)
+	set.Verification = &commands
+	result, err := s.AmendGraph(ctx, p, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Graph.Revision != 2 {
+		t.Fatal("repair did not create revision 2")
+	}
+	commands[0] = "mutated"
+	records, err = store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range records.WorkflowRuns {
+		for _, task := range domain.TasksForRun(run, records.Tasks) {
+			if task.Name != "a" {
+				continue
+			}
+			if run.ID == "run" && (len(task.Verification) != 2 || task.Verification[0] != "test -s result.txt" || task.Verification[1] != "git diff --exit-code") {
+				t.Fatalf("verification not persisted: %+v", task)
+			}
+			if run.ID == "sibling" && len(task.Verification) != 0 {
+				t.Fatal("repair changed original definition")
+			}
+		}
 	}
 }
 
@@ -253,7 +306,7 @@ func TestGraphAmendmentInputFailureDoesNotPublish(t *testing.T) {
 	s, store := graphFixture(t)
 	s.graphInputRoot = "/dev/null/unwritable"
 	r := graphRequest("input-failure", "task-add", "", 1)
-	r.Task = &domain.Task{Name: "c", Class: domain.TaskClassSurplus, MaxTurns: 1, Routes: []domain.ProviderRoute{{ProviderInstanceID: "codex", Model: "new"}}}
+	r.Task = &domain.Task{Name: "c", Verification: []string{"git status --porcelain"}, Class: domain.TaskClassSurplus, MaxTurns: 1, Routes: []domain.ProviderRoute{{ProviderInstanceID: "codex", Model: "new"}}}
 	r.Prompt = "prompt"
 	if _, err := s.AmendGraph(ctx, Principal{ID: "operator"}, r); err == nil {
 		t.Fatal("input publication unexpectedly succeeded")
