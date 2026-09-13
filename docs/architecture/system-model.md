@@ -57,7 +57,7 @@ that isolation is not yet a current production guarantee.
 | Catalog/policy | Operator configuration, currently duplicated in coordinator/worker YAML | S4 establishes a coordinator-owned effective catalog and worker projections |
 | Admin command/audit | Authenticated coordinator admin service | Immutable request ID, expected revision, actor/reason and durable result |
 | Schedule/template/trigger | Coordinator SQLite | Versioned templates, nominal occurrence key, one-open-run policy |
-| Wait/check/wake | Existing wait subsystem | S2 gives native node checks and a durable settlement/outbox contract |
+| Wait/check/wake | Coordinator native node rows and legacy shell wait subsystem | S2 native settlement/intent is atomic; observed message identity proves delivery, ambiguous sends retain recovery state |
 | Legacy Markdown intake | Existing legacy adapter/runner | Still present; S8 deletes it and its migration/forwarding paths |
 | Release/configuration identity | Running process and validated configuration | S4 exposes digests; UpKeeper owns deployment comparison and convergence |
 
@@ -152,7 +152,7 @@ around that path. It must not become authority to create a replacement execution
 | Primitive | Decision and stage |
 | --- | --- |
 | Terminal sink | [Sink ADR](adr-s0-sink.md); coordinator-only aggregation, no attempt; implemented in S1 |
-| Node waits / cross-run edges | [Node-wait ADR](adr-s0-node-wait.md); durable target/outbox, one intent, observable delivery; S2 |
+| Node waits / cross-run edges | [Node-wait ADR](adr-s0-node-wait.md); implemented S2: retained targets, atomic outcome/intent, observable delivery and cross-run ordering dependencies |
 | Graph revisions/amendment | [Amendment ADR](adr-s0-amendment.md); live API approved by the user on 2026-09-12; S3 |
 | Worker enrollment/catalog/transport | [Worker ADR](adr-s0-worker-enrollment.md); one effective catalog, persistent workers; S4 |
 | Bucket quota / bounded forecast / measured costs | [Quota ADR](adr-s0-quota.md); S5 fixtures, S6 implementation and requalification |

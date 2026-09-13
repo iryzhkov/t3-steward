@@ -267,6 +267,10 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 			skip(fmt.Sprintf("%v: expected revision %d, current %d", ErrStaleAttemptRevision, item.ExpectedAttemptRevision, attempt.Revision))
 			continue
 		}
+		if err := requireExternalSuccessTx(ctx, tx, attempt.TaskID); err != nil {
+			skip(err.Error())
+			continue
+		}
 		if attempt.Progress.Terminal() || attempt.Control != domain.ControlUnassigned {
 			skip("attempt is not assignable")
 			continue
@@ -431,6 +435,9 @@ func (s *Store) ClaimAssignment(ctx context.Context, request domain.AssignmentCl
 	if attempt.AssignmentID != assignment.ID || attempt.Progress.Terminal() ||
 		attempt.Control != domain.ControlUnassigned {
 		return domain.Assignment{}, fmt.Errorf("%w: attempt %q is not claimable", ErrAssignmentClaim, attempt.ID)
+	}
+	if err := requireExternalSuccessTx(ctx, tx, attempt.TaskID); err != nil {
+		return domain.Assignment{}, fmt.Errorf("%w: %v", ErrAssignmentClaim, err)
 	}
 	assignment.State = domain.AssignmentClaimed
 	assignment.LeaseExpiresAt = request.LeaseExpiresAt

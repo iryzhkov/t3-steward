@@ -137,6 +137,7 @@ type ProviderRoute struct {
 
 // Task is an immutable node in a workflow definition.
 type Task struct {
+	ExternalNeeds    []NodeRef             `json:"externalNeeds,omitempty"`
 	ID               string                `json:"id"`
 	WorkflowID       string                `json:"workflowId"`
 	Name             string                `json:"name"`

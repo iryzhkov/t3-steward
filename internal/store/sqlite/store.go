@@ -313,6 +313,7 @@ func (s *Store) Migrate() error {
 		{10, coordinatorMigrationV10},
 		{11, coordinatorMigrationV11},
 		{12, coordinatorMigrationV12},
+		{13, coordinatorMigrationV13},
 	}
 	for _, migration := range versioned {
 		if version >= migration.version {
@@ -881,6 +882,15 @@ func (s *Store) BusyThreads(ctx context.Context) (map[string]string, error) {
 	for _, w := range waits {
 		if w.Status == wait.StatusWaiting || w.Settled() {
 			out[w.ThreadID] = "wait " + w.ID + " is " + string(w.Status)
+		}
+	}
+	native, err := s.ListNodeWaits(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range native {
+		if w.Delivery != "delivered" && w.Delivery != "cancelled" {
+			out[w.Request.ThreadID] = "native wait " + w.Request.ID + " is " + w.Delivery
 		}
 	}
 	return out, nil

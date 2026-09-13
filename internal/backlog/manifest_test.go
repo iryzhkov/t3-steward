@@ -47,7 +47,7 @@ func TestDocumentedWorkflowBundleStaysValid(t *testing.T) {
 	if !ok {
 		t.Fatal("documented manifest is missing implement task")
 	}
-	if !reflect.DeepEqual(implement.Needs, []string{"review"}) ||
+	if !reflect.DeepEqual(implement.Needs, ManifestNeeds{"review"}) ||
 		!reflect.DeepEqual(implement.InputsFrom["review"], []string{"review.md"}) {
 		t.Fatalf("documented dependency contract = %#v", implement)
 	}

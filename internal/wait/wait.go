@@ -115,8 +115,10 @@ type Runner struct {
 	now     func() time.Time
 	// Exec runs a command and returns its combined output and exit code;
 	// replaceable in tests.
-	Exec   func(ctx context.Context, w Wait) (string, int, error)
-	DryRun bool
+	Exec       func(ctx context.Context, w Wait) (string, int, error)
+	DryRun     bool
+	NodeDryRun bool
+	NodeHost   string
 
 	buckets []domain.BucketState
 }
@@ -161,6 +163,7 @@ func execCommand(ctx context.Context, w Wait) (string, int, error) {
 // Tick runs due waits and wakes threads whose waits settled.
 func (r *Runner) Tick(ctx context.Context, _ []domain.Thread, buckets []domain.BucketState) {
 	r.buckets = buckets
+	r.tickNodes(ctx)
 	waits, err := r.store.ListWaits(ctx, "")
 	if err != nil {
 		r.log.Error("list waits", "err", err)

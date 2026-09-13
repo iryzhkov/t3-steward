@@ -3,6 +3,7 @@ package backlog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -54,7 +55,13 @@ func ProjectWorkflowRuns(ctx context.Context, store ProjectionStore, now time.Ti
 				before.Assignments = append(before.Assignments, assignment)
 			}
 		}
-		execution, err := NewDAGExecution(DAGState{Run: run, Tasks: before.Tasks, Attempts: before.Attempts})
+		external := ResolveExternalNodes(before.Tasks, records.WorkflowRuns, records.Tasks, records.Attempts, records.Assignments)
+		for _, task := range before.Tasks {
+			for _, ref := range task.ExternalNeeds {
+				before.Dependencies = append(before.Dependencies, external[ref.String()])
+			}
+		}
+		execution, err := NewDAGExecution(DAGState{Run: run, Tasks: before.Tasks, Attempts: before.Attempts, External: external})
 		if err != nil {
 			slog.Warn("workflow run projection skipped", "run", run.ID, "error", err)
 			continue
@@ -106,6 +113,9 @@ func ProjectWorkflowRuns(ctx context.Context, store ProjectionStore, now time.Ti
 		projected.Revision = run.Revision + 1
 		projected.UpdatedAt = now.UTC()
 		if err := store.CommitWorkflowProjection(ctx, before, projected, updated, now); err != nil {
+			if errors.Is(err, sqlite.ErrStaleWorkflowProjection) {
+				continue
+			}
 			return report, fmt.Errorf("persist workflow projection %q: %w", run.ID, err)
 		}
 		report.Runs = append(report.Runs, run.ID)
@@ -169,6 +179,11 @@ func finalizeBlockedSinkPredecessors(state *DAGState, assignments []domain.Assig
 				progress := state.Attempts[dependencyIndex].Progress
 				if progress.Terminal() && progress != domain.ProgressSucceeded {
 					failed = append(failed, name)
+				}
+			}
+			for _, ref := range task.ExternalNeeds {
+				if obs, ok := state.External[ref.String()]; ok && obs.ExitCode == 2 {
+					failed = append(failed, ref.String())
 				}
 			}
 			if len(failed) == 0 {

@@ -558,6 +558,32 @@ like anything else.
 
 ## Waiting for something external
 
+For coordinator tasks, register a native check through the admin socket:
+
+```sh
+t3-steward wait add --task <run>/<task> --name "task finished"
+t3-steward wait add --run <run> --name "workflow finished"
+t3-steward wait list --native
+```
+
+`--run` targets the implicit sink. `--request-id nw-<unique-id>` makes retries of
+registration idempotent. Native waits follow retries while pending; a committed
+outcome is final. The response reports exitCode 0 for success, 2 for terminal
+failure/cancellation/timeout, and 1 while pending. `wait cancel <nw-id>` and
+`wait run-now <nw-id>` use the coordinator socket too. Use `--native` explicitly
+with a custom request ID that does not start with `nw-`.
+
+Native delivery inherits `policy.dry_run`; optional `wait.dry_run` overrides only
+native wake delivery. Held outcomes settle once. A lost send response retains one
+wake identity and waits for positive T3 message evidence; `recovery-required`
+means delivery is uncertain and will not be blindly retried. See the
+[node-wait ADR](docs/architecture/adr-s0-node-wait.md) for evidence limits.
+
+Bundles can use `needs: <source-run>/__sink` or a list mixing local task names and
+cross-run task references. These dependencies require source success, and a
+cancelled source run does not release them. They provide ordering; cross-run
+artifact imports through `inputs_from` are not supported.
+
 An agent that would otherwise poll in a loop (PR review, CI, a long job)
 registers the check with the steward and ends its turn:
 

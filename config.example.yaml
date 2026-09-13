@@ -26,6 +26,11 @@ t3:
   allow_unsupported_version: false
   request_timeout: 30s
 
+# Native node waits inherit policy.dry_run unless this delivery override is set.
+# Settlement still commits while delivery is held. Legacy shell waits keep policy.dry_run.
+# wait:
+#   dry_run: true
+
 policy:
   # Usage thresholds in percent. warn < drain < stop <= 100 is enforced.
   warn_percent: 85    # one warning per affected running thread

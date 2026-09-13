@@ -68,7 +68,7 @@ type ManifestRoute struct {
 type ManifestTask struct {
 	Class         domain.TaskClass    `yaml:"class"`
 	PromptFile    string              `yaml:"prompt_file"`
-	Needs         []string            `yaml:"needs"`
+	Needs         ManifestNeeds       `yaml:"needs"`
 	InputsFrom    map[string][]string `yaml:"inputs_from"`
 	Outputs       []string            `yaml:"outputs"`
 	Verify        []string            `yaml:"verify"`
@@ -352,7 +352,11 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 		if dependency == name {
 			return fmt.Errorf("%s cannot depend on itself", prefix)
 		}
-		if _, ok := tasks[dependency]; !ok {
+		if strings.Contains(dependency, "/") {
+			if _, err := domain.ParseNodeRef(dependency); err != nil {
+				return err
+			}
+		} else if _, ok := tasks[dependency]; !ok {
 			return fmt.Errorf("%s needs missing task %q", prefix, dependency)
 		}
 		if _, duplicate := needs[dependency]; duplicate {
@@ -466,6 +470,9 @@ func validateAcyclic(names []string, tasks map[string]ManifestTask) error {
 		}
 		state[name] = visiting
 		for _, dependency := range tasks[name].Needs {
+			if strings.Contains(dependency, "/") {
+				continue
+			}
 			if err := visit(dependency); err != nil {
 				return err
 			}

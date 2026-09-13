@@ -26,7 +26,11 @@ settles the steward wakes the thread with a message that starts the next
 turn, carrying the outcome and the check's last output.
 
 Commands:
-  add [flags] -- <command...>   Register a check (run once first; see below).
+  add --task <run>/<task> [--thread ID] [--name TEXT] [--timeout 24h] [--request-id ID]
+  add --run <run> [flags]      Native wait on the run sink; no shell command.
+  list --native [--json]       Native waits, outcomes and delivery state.
+  cancel|run-now <nw-id>       Control a native wait through the admin socket.
+  add [flags] -- <command...>   Register a shell check (run once first; see below).
   list [--thread ID] [--all]    Waits of this thread, or of every thread.
   cancel <id>                   Cancel a wait.
   run-now <id>                  Run a wait's check immediately.
@@ -57,6 +61,9 @@ func cmdWait(g globalFlags, args []string) error {
 	cfg, err := loadConfig(g)
 	if err != nil {
 		return err
+	}
+	if nativeWaitArgs(args) {
+		return cmdNodeWait(context.Background(), cfg, args)
 	}
 	statePath, err := cfg.ResolveStatePath()
 	if err != nil {
@@ -231,6 +238,9 @@ func resolveThread(cfg config.Config, explicit string) (string, error) {
 		return explicit, nil
 	}
 	session := os.Getenv("CLAUDE_CODE_SESSION_ID")
+	if session == "" {
+		session = os.Getenv("CODEX_THREAD_ID")
+	}
 	if session == "" {
 		return "", errors.New("no --thread given and CLAUDE_CODE_SESSION_ID is not set; pass --thread with the T3 thread id")
 	}

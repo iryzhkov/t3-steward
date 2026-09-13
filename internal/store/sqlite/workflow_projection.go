@@ -33,10 +33,11 @@ var ErrStaleWorkflowProjection = errors.New("workflow projection inputs changed"
 // It includes the complete attempt/assignment set, so a concurrent retry, claim
 // or new graph node cannot race the sink's terminal publication.
 type WorkflowProjectionSnapshot struct {
-	Run         domain.WorkflowRun
-	Tasks       []domain.Task
-	Attempts    []domain.Attempt
-	Assignments []domain.Assignment
+	Dependencies []domain.NodeObservation
+	Run          domain.WorkflowRun
+	Tasks        []domain.Task
+	Attempts     []domain.Attempt
+	Assignments  []domain.Assignment
 }
 
 func loadWorkflowTasksTx(ctx context.Context, tx *sql.Tx, workflowID string) ([]domain.Task, error) {
@@ -86,6 +87,10 @@ func loadWorkflowProjectionTx(ctx context.Context, tx *sql.Tx, runID string) (Wo
 	snapshot.Assignments, err = loadProjectionRecords[domain.Assignment](ctx, tx, `SELECT assignment.record FROM coordinator_assignments AS assignment
 		JOIN coordinator_attempts AS attempt ON attempt.id=assignment.attempt_id
 		WHERE attempt.workflow_run_id=? ORDER BY assignment.id`, runID)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.Dependencies, err = nodeDependenciesTx(ctx, tx, snapshot.Tasks)
 	return snapshot, err
 }
 
@@ -96,6 +101,10 @@ func projectionBytes(snapshot WorkflowProjectionSnapshot) ([]byte, error) {
 	sort.Slice(snapshot.Tasks, func(i, j int) bool { return snapshot.Tasks[i].ID < snapshot.Tasks[j].ID })
 	sort.Slice(snapshot.Attempts, func(i, j int) bool { return snapshot.Attempts[i].ID < snapshot.Attempts[j].ID })
 	sort.Slice(snapshot.Assignments, func(i, j int) bool { return snapshot.Assignments[i].ID < snapshot.Assignments[j].ID })
+	snapshot.Dependencies = append([]domain.NodeObservation{}, snapshot.Dependencies...)
+	sort.Slice(snapshot.Dependencies, func(i, j int) bool {
+		return snapshot.Dependencies[i].Target.String() < snapshot.Dependencies[j].Target.String()
+	})
 	return json.Marshal(snapshot)
 }
 
@@ -213,6 +222,7 @@ func (s *Store) CommitWorkflowProjection(ctx context.Context, before WorkflowPro
 		return ErrStaleWorkflowProjection
 	}
 	if run.Sink.Progress.Terminal() {
+		// Graph references retain their source for scheduled reuse and inspection.
 		detail, err := json.Marshal(run.Sink)
 		if err != nil {
 			return err

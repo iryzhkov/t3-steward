@@ -1,6 +1,6 @@
 # S0 ADR: durable node waits and cross-run dependencies
 
-Status: accepted design; implementation belongs to S2.
+Status: implemented in S2 (2026-09-12); external delivery qualification remains S5.
 
 ## Scenario and decision
 
@@ -54,9 +54,55 @@ coordinator transaction. Pending references pin required metadata/artifacts agai
 retention. Missing, unauthorized or expired targets fail validation; they never
 silently become success. No transport-side polling loop owns dependency truth.
 
-## S2 evidence required
+## S2 implementation and evidence
 
 Coordinator restart during wait, retry after registration, run cancellation,
 timeout, unavailable target, duplicate registration, lost wake response, quota
 failure on another route, retention pins and cross-run cycles. Tests must distinguish
-one durable intent from proof of one external delivery. No node-wait code in S0.
+one durable intent from proof of one external delivery.
+
+Implementation: schema 13 stores each native registration, canonical target,
+immutable terminal observation and delivery intent in one coordinator-owned row.
+The owner-authenticated admin socket provides register/list/cancel/run-now. CLI
+native operations never open SQLite or execute a shell check. Registration can
+return an already-terminal observation; its exitCode has the same 0/2/1 protocol.
+The registering command itself reports RPC success, not the observation exit code.
+A stable --request-id makes registration replay safe, including after source
+retention is released. Native groups are not supported; each registration has
+one independent delivery identity.
+
+The shared domain resolver follows the current attempt while pending and rejects
+missing targets. Cross-run needs may be a scalar or list; ingestion resolves names
+to IDs in the transaction, validates the combined graph including sink edges, and
+pins source metadata/artifacts. These are ordering dependencies; cross-run
+inputs_from imports are not added. Existing output custody rules still govern
+source success. Pins for graph references are conservative and retained for the
+life of the definition, including scheduled reuse. Native-wait pins release only
+after delivery or cancellation. SQLite delete guards protect pinned metadata and
+artifact catalog rows; no new filesystem collector is introduced.
+
+Projection fences cross-run observations; assignment offer/claim and manual start
+recheck source success. A cancelled source sink does not release consumers. Failed
+external dependencies skip exhausted consumers so their sinks can settle.
+
+Native settlement runs outside quota reconciliation. wait.dry_run is an optional
+native-delivery override; when omitted it inherits policy.dry_run. Held intents
+settle once without repeated would-wake logging. Legacy shell checks retain their
+existing CLI and delivery policy. Native waits are visible with wait list --native
+and keep their target threads busy for archive exclusion.
+
+T3 seam: dispatch carries deterministic commandId and messageId derived from the
+persisted delivery token. The adapter reads the most recent 100 turns and accepts
+only a matching user message ID as positive delivery evidence. A committed sending
+state survives a process death before or after dispatch; it never authorizes another
+send. Missing evidence becomes recovery-required, even after a successful HTTP
+response, until observation proves delivery. A message outside that bounded window
+can remain unresolved. This intentionally sacrifices automatic retry liveness under
+ambiguity; S5 must qualify the deployed server's behavior. No claim of universal
+exactly-once external effects or live provider-backed wake success is made.
+
+Tests cover retry after registration, restart, timeout, cancellation-only sink,
+missing target, changed and exact registration replay, metadata pins, cross-run
+sink cycles with transaction rollback, dependency release/skipping, authenticated
+socket routing, held delivery, lost response, stable message observation, wrong-host
+isolation and settlement while quota reconciliation fails.

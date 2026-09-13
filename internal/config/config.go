@@ -377,6 +377,9 @@ type V2Scheduling struct {
 
 // Config is the full configuration.
 type Config struct {
+	Wait struct {
+		DryRun *bool `yaml:"dry_run"`
+	} `yaml:"wait"`
 	T3            T3            `yaml:"t3"`
 	Policy        Policy        `yaml:"policy"`
 	Resume        Resume        `yaml:"resume"`

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -246,9 +247,19 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 				Options: cloneStringMap(route.Options), QuotaPoolID: route.QuotaPool,
 			})
 		}
+		var localNeeds []string
+		var externalNeeds []domain.NodeRef
+		for _, need := range taskManifest.Needs {
+			if strings.Contains(need, "/") {
+				ref, _ := domain.ParseNodeRef(need)
+				externalNeeds = append(externalNeeds, ref)
+			} else {
+				localNeeds = append(localNeeds, need)
+			}
+		}
 		records.Tasks = append(records.Tasks, domain.Task{
 			ID: taskID, WorkflowID: workflowID, Name: name, Class: taskManifest.Class,
-			Needs: append([]string(nil), taskManifest.Needs...), PromptArtifactID: promptArtifact.ID,
+			Needs: localNeeds, ExternalNeeds: externalNeeds, PromptArtifactID: promptArtifact.ID,
 			InputArtifactIDs: append([]string(nil), taskInputIDs...), DependencyInputs: cloneStringSlices(taskManifest.InputsFrom),
 			Outputs: outputs, Verification: append([]string(nil), taskManifest.Verify...),
 			Placement: domain.Placement{

@@ -111,6 +111,7 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 			Tasks:    append([]domain.Task(nil), tasksByWorkflow[run.WorkflowID]...),
 			Attempts: append([]domain.Attempt(nil), attemptsByRun[run.ID]...),
 		}
+		state.External = ResolveExternalNodes(state.Tasks, input.WorkflowRuns, input.Tasks, input.Attempts, input.Assignments)
 		execution, err := NewDAGExecution(state)
 		if err != nil {
 			// A corrupt run is excluded from planning; every other run keeps

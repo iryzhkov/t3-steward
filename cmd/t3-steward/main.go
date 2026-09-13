@@ -555,6 +555,10 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, 
 	d.Usage = usageCh
 	waits := wait.New(store, control, logger)
 	waits.DryRun = cfg.Policy.DryRun
+	waits.NodeDryRun = cfg.Policy.DryRun
+	if cfg.Wait.DryRun != nil {
+		waits.NodeDryRun = *cfg.Wait.DryRun
+	}
 	d.Waits = waits
 	if cfg.Archive.Enabled {
 		d.Archive = newArchiver(cfg, store, control, logger, dataDir)

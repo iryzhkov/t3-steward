@@ -56,6 +56,10 @@ type coordinatorLocalService struct {
 	schedules   *backlog.ScheduleDefinitionService
 }
 
+func (s coordinatorLocalService) NodeWait(ctx context.Context, p backlogadmin.Principal, op backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error) {
+	return s.admin.NodeWait(ctx, p, op)
+}
+
 func (s coordinatorLocalService) Query(ctx context.Context, query backlogadmin.Query) (backlogadmin.Response, error) {
 	return s.admin.Query(ctx, query)
 }
@@ -287,6 +291,13 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 	if c.projection != nil {
 		if _, err := backlog.ProjectWorkflowRuns(ctx, c.projection, time.Now().UTC()); err != nil {
 			c.logger.Error("workflow run projection failed", "error", err)
+		}
+	}
+	if store, ok := c.projection.(interface {
+		SettleNodeWaits(context.Context, time.Time) error
+	}); ok {
+		if err := store.SettleNodeWaits(ctx, time.Now().UTC()); err != nil {
+			c.logger.Error("node wait settlement failed", "error", err)
 		}
 	}
 	quotaHealthy := true

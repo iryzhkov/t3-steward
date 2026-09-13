@@ -456,6 +456,12 @@ func adminPauseBinding(
 }
 
 func commandSafetyBlocker(records sqlite.CoordinatorRecords, workers []domain.WorkerSnapshot, admissions []domain.QuotaAdmissionRecord, attempt domain.Attempt, task domain.Task, now time.Time, resume bool) string {
+	for _, ref := range task.ExternalNeeds {
+		obs, err := domain.ResolveNode(ref, records.WorkflowRuns, records.Tasks, records.Attempts, records.Assignments)
+		if err != nil || obs.ExitCode != 0 {
+			return "external dependency has not succeeded: " + ref.String()
+		}
+	}
 	for _, dependency := range task.Needs {
 		succeeded := false
 		for _, dependencyTask := range records.Tasks {

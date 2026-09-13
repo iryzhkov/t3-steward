@@ -11,6 +11,7 @@ import (
 
 // DAGState is the complete mutable progress projection for one workflow run.
 type DAGState struct {
+	External map[string]domain.NodeObservation
 	Run      domain.WorkflowRun
 	Tasks    []domain.Task
 	Attempts []domain.Attempt
@@ -341,6 +342,12 @@ func (e *DAGExecution) refresh(now time.Time, touch bool) {
 				blockers = append(blockers, dependency)
 			}
 		}
+		for _, ref := range task.ExternalNeeds {
+			obs, ok := e.state.External[ref.String()]
+			if !ok || obs.ExitCode != 0 {
+				blockers = append(blockers, ref.String())
+			}
+		}
 		sort.Strings(blockers)
 		if len(blockers) == 0 {
 			attempt.Progress = domain.ProgressReady
@@ -469,6 +476,10 @@ func (e *DAGExecution) attemptIndex(id string) (int, error) {
 
 func cloneDAGState(state DAGState) DAGState {
 	cloned := state
+	cloned.External = make(map[string]domain.NodeObservation, len(state.External))
+	for key, value := range state.External {
+		cloned.External[key] = value
+	}
 	cloned.Run.Sink = domain.CloneSink(state.Run.Sink)
 	cloned.Run.InputArtifactIDs = append([]string(nil), state.Run.InputArtifactIDs...)
 	cloned.Tasks = append([]domain.Task(nil), state.Tasks...)
@@ -477,6 +488,7 @@ func cloneDAGState(state DAGState) DAGState {
 		source := state.Tasks[index]
 		task := &cloned.Tasks[index]
 		task.Needs = append([]string(nil), source.Needs...)
+		task.ExternalNeeds = append([]domain.NodeRef(nil), source.ExternalNeeds...)
 		task.InputArtifactIDs = append([]string(nil), source.InputArtifactIDs...)
 		task.DependencyInputs = cloneStringSlices(source.DependencyInputs)
 		task.Outputs = append([]domain.ArtifactDeclaration(nil), source.Outputs...)

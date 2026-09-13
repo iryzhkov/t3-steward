@@ -71,6 +71,7 @@ type LocalScheduleDefinitionResponse struct {
 }
 
 type localRequest struct {
+	NodeWait           *NodeWaitOperation              `json:"nodeWait,omitempty"`
 	Version            string                          `json:"version"`
 	Operation          string                          `json:"operation"`
 	Query              *Query                          `json:"query,omitempty"`
@@ -83,6 +84,7 @@ type localRequest struct {
 }
 
 type localResponse struct {
+	NodeWait                   *NodeWaitResponse                         `json:"nodeWait,omitempty"`
 	Version                    string                                    `json:"version"`
 	Response                   *Response                                 `json:"response,omitempty"`
 	MutationResponse           *MutationResponse                         `json:"mutationResponse,omitempty"`
@@ -204,7 +206,27 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 		return
 	}
 	response := localResponse{Version: LocalTransportVersion}
+	if request.NodeWait != nil && request.Operation != "node-wait" {
+		response.Error = "unexpected native wait"
+		_ = writeLocalJSON(conn, response)
+		return
+	}
 	switch request.Operation {
+	case "node-wait":
+		handler, ok := s.Service.(interface {
+			NodeWait(context.Context, Principal, NodeWaitOperation) (NodeWaitResponse, error)
+		})
+		if !ok || request.NodeWait == nil || request.Query != nil || request.Mutation != nil || request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
+			response.Error = "malformed native wait request"
+			break
+		}
+		value, err := handler.NodeWait(ctx, principal, *request.NodeWait)
+		if err != nil {
+			response.Error = err.Error()
+		} else {
+			response.NodeWait = &value
+		}
+
 	case localOperationQuery:
 		if request.Query == nil || request.Mutation != nil || request.ArtifactID != "" ||
 			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {

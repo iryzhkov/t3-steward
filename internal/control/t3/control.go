@@ -216,6 +216,10 @@ func (c *Control) ResumeThread(ctx context.Context, thread domain.Thread, prompt
 }
 
 func (c *Control) sendMessage(ctx context.Context, thread domain.Thread, text, purpose string) error {
+	return c.sendMessageIDs(ctx, thread, text, purpose, newID(), newID())
+}
+
+func (c *Control) sendMessageIDs(ctx context.Context, thread domain.Thread, text, purpose, commandID, messageID string) error {
 	if thread.ModelSelection == nil {
 		return fmt.Errorf("thread %s has no model selection", thread.ID)
 	}
@@ -229,10 +233,10 @@ func (c *Control) sendMessage(ctx context.Context, thread domain.Thread, text, p
 	}
 	cmd := map[string]any{
 		"type":      "thread.turn.start",
-		"commandId": newID(),
+		"commandId": commandID,
 		"threadId":  thread.ID,
 		"message": map[string]any{
-			"messageId":   newID(),
+			"messageId":   messageID,
 			"role":        "user",
 			"text":        text,
 			"attachments": []any{},

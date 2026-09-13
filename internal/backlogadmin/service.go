@@ -530,6 +530,9 @@ func (v view) graph(runID string) (Graph, bool) {
 			node.Progress, node.Control, node.AttemptID = attempt.Progress, attempt.Control, attempt.ID
 		}
 		graph.Nodes = append(graph.Nodes, node)
+		for _, ref := range task.ExternalNeeds {
+			graph.Edges = append(graph.Edges, GraphEdge{FromTaskID: ref.String(), ToTaskID: task.ID})
+		}
 		for _, dependency := range task.Needs {
 			from := byName[dependency]
 			if from == "" {
@@ -598,6 +601,12 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 	}
 	if task.ExpiresAt != nil && !task.ExpiresAt.After(v.now) {
 		explanation.Blockers = append(explanation.Blockers, Blocker{Code: "expired", Detail: "task has expired"})
+	}
+	for _, ref := range task.ExternalNeeds {
+		obs, err := domain.ResolveNode(ref, v.records.WorkflowRuns, v.records.Tasks, v.records.Attempts, v.records.Assignments)
+		if err != nil || obs.ExitCode != 0 {
+			explanation.Blockers = append(explanation.Blockers, Blocker{Code: "cross-run-dependency", Detail: "source has not succeeded", DependsOn: ref.String()})
+		}
 	}
 	v.addWorkerBlocker(&explanation, task)
 	v.addQuotaBlocker(&explanation, task, attempt)

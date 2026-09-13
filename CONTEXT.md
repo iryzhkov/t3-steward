@@ -72,8 +72,9 @@ such as start, delay, pause, resume, retry, skip or cancel. The existing manual
 start override has an explicit user-controlled quota waiver; automatic work does
 not inherit it.
 
-**Node wait**: A proposed durable observation of a task or sink outcome with a
-separate wake-delivery intent. S2 implements it.
+**Node wait**: A durable observation of a task or sink outcome with a separate
+wake-delivery identity, implemented in S2. An uncertain send remains recovery-required
+until the stable T3 message ID is observed; it is never blindly retried.
 
 **Recovery-required**: An uncertainty requiring evidence or operator reconciliation.
 It is not success, a free resource, or permission to repeat an external effect.

@@ -156,7 +156,7 @@ func TestMigrationV12BackfillsStableSinkWithoutAttempts(t *testing.T) {
 	if err := store.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{before.Run}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec("DELETE FROM schema_version WHERE version=12"); err != nil {
+	if _, err := store.db.Exec("DELETE FROM schema_version WHERE version>=12"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Migrate(); err != nil {
