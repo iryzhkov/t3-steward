@@ -61,6 +61,29 @@ func TestBuildWorkerBindingIsDeterministicAndWorkerScoped(t *testing.T) {
 	if managed.CatalogRevision == first.CatalogRevision {
 		t.Fatal("switching project ownership did not change the catalog fence")
 	}
+	otherBefore, err := BuildWorkerBinding(settings, "other", runtimeTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Projects["fresh"] = config.V2Project{Type: "fresh", Workers: []string{"normandy"}}
+	fresh, err := BuildWorkerBinding(settings, "normandy", runtimeTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherAfter, err := BuildWorkerBinding(settings, "other", runtimeTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherBefore.CatalogRevision != otherAfter.CatalogRevision {
+		t.Fatal("fresh default setup changed an unrelated worker catalog")
+	}
+	if fresh.CatalogRevision == managed.CatalogRevision {
+		t.Fatal("fresh project did not change target catalog")
+	}
+	settings.SetupProfiles["steward-fresh-empty"] = config.V2SetupProfile{Commands: []string{"false"}, Timeout: config.Duration(time.Minute)}
+	if _, err := BuildWorkerBinding(settings, "normandy", runtimeTestNow); err == nil {
+		t.Fatal("implicit setup can be shadowed")
+	}
 	if _, err := BuildWorkerBinding(settings, "missing", runtimeTestNow); err == nil {
 		t.Fatal("unknown worker accepted")
 	}

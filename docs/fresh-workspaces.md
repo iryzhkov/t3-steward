@@ -6,19 +6,15 @@ Git ref, pre-created task directory, or pre-created T3 project is needed.
 Eligible workers and provider routes still come from the catalog; omitting
 capsule host constraints permits placement on any eligible worker.
 
-Example coordinator project and setup profile:
+Example coordinator project (omitting setup_profile selects an empty setup
+only on this project's workers, without changing unrelated worker catalogs):
 
 ```yaml
 backlog_v2:
   projects:
     scratch:
       type: fresh
-      setup_profile: empty
       workers: [homelab, omarchy-pc]
-  setup_profiles:
-    empty:
-      commands: ["true"]
-      timeout: 1m
 ```
 
 Example `workflow.yaml` (supply provider routes supported by your workers):

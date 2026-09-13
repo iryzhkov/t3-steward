@@ -61,6 +61,16 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 		if !slices.Contains(project.Workers, workerID) {
 			continue
 		}
+		if project.SetupProfile == "" && project.Type == backlog.EnvironmentFresh {
+			const emptyProfile = "steward-fresh-empty"
+			if _, exists := settings.SetupProfiles[emptyProfile]; exists {
+				return WorkerBinding{}, errors.New("worker binding: steward-fresh-empty is reserved for implicit fresh setup")
+			}
+			project.SetupProfile = emptyProfile
+			if !slices.ContainsFunc(profiles, func(p backlog.SetupProfile) bool { return p.Name == emptyProfile }) {
+				profiles = append(profiles, backlog.SetupProfile{Name: emptyProfile, Commands: []string{"true"}, Timeout: time.Minute})
+			}
+		}
 		if project.SetupProfile == "" {
 			return WorkerBinding{}, fmt.Errorf("worker binding: project %q has no setup profile", name)
 		}

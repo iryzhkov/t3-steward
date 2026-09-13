@@ -17,6 +17,7 @@ func TestFreshCatalogProjectionReachesWorker(t *testing.T) {
 		p.Repository = ""
 		p.DefaultRef = ""
 		p.T3Project = ""
+		p.SetupProfile = ""
 		settings.Projects["fresh"] = p
 		break
 	}
