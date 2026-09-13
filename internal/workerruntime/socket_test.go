@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"net"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -11,7 +12,13 @@ import (
 )
 
 func TestWorkerSocketPersistsAcrossReconnectAndStopsIdlePeers(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "worker.sock")
+	// Keep the socket name below Darwin’s sockaddr_un path limit.
+	root, err := os.MkdirTemp("", "t3-sock-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	path := filepath.Join(root, "worker.sock")
 	listener, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)

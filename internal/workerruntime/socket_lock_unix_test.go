@@ -10,7 +10,13 @@ import (
 )
 
 func TestWorkerSocketOwnershipAndCrashRecovery(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "worker.sock")
+	// Keep the socket name below Darwin’s sockaddr_un path limit.
+	root, err := os.MkdirTemp("", "t3-sock-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	path := filepath.Join(root, "worker.sock")
 	owner, err := LockWorkerSocket(path)
 	if err != nil {
 		t.Fatal(err)
