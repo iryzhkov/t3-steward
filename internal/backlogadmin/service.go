@@ -35,12 +35,14 @@ type UnknownRecoveryWriter interface {
 }
 
 type Service struct {
-	reader       Reader
-	authorizer   Authorizer
-	now          func() time.Time
-	artifactOpen ArtifactOpenFunc
-	runtime      RuntimeInfo
-	recovery     UnknownRecoveryWriter
+	graphInputRoot string
+	graphValidator func(domain.Workflow, domain.Task) error
+	reader         Reader
+	authorizer     Authorizer
+	now            func() time.Time
+	artifactOpen   ArtifactOpenFunc
+	runtime        RuntimeInfo
+	recovery       UnknownRecoveryWriter
 }
 
 type RuntimeInfo struct {
@@ -124,6 +126,12 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 	response := Response{Version: Version, Kind: query.Kind, GeneratedAt: view.now}
 
 	switch query.Kind {
+	case QueryDiagnose:
+		diagnosis, err := s.diagnose(ctx, view, query.WorkflowRunID)
+		if err != nil {
+			return Response{}, err
+		}
+		response.Diagnosis = &diagnosis
 	case QueryStatus:
 		status := view.status()
 		response.Status = &status
@@ -189,7 +197,7 @@ func validQuery(query Query) bool {
 		return true
 	case QueryCommands:
 		return query.TaskID == "" || query.WorkflowRunID != ""
-	case QueryWorkflow, QueryGraph, QueryEvents:
+	case QueryWorkflow, QueryGraph, QueryEvents, QueryDiagnose:
 		return query.WorkflowRunID != ""
 	case QueryTask, QueryExplanation:
 		return query.WorkflowRunID != "" && query.TaskID != ""
@@ -368,7 +376,7 @@ func matchesWorkflowFilter(v view, run domain.WorkflowRun, workflow domain.Workf
 	}
 	if filter.WorkerID != "" || filter.QuotaPoolID != "" {
 		found := false
-		for _, task := range v.workflowTasks(workflow.ID) {
+		for _, task := range v.runTasks(run.ID) {
 			attempt := latestAttempt(v.attempts[run.ID+"\x00"+task.ID])
 			if attempt == nil {
 				continue
@@ -388,7 +396,7 @@ func matchesWorkflowFilter(v view, run domain.WorkflowRun, workflow domain.Workf
 
 func (v view) progress(runID, workflowID string) Progress {
 	var progress Progress
-	for _, task := range v.workflowTasks(workflowID) {
+	for _, task := range v.runTasks(runID) {
 		state := domain.ProgressQueued
 		if attempt := latestAttempt(v.attempts[runID+"\x00"+task.ID]); attempt != nil {
 			state = attempt.Progress
@@ -441,7 +449,7 @@ func (v view) workflowDetail(runID string) (WorkflowDetail, bool) {
 		ResourceLocks: v.locks(Filter{}),
 		Reservations:  v.reservations(Filter{}),
 	}
-	for _, task := range v.workflowTasks(workflow.ID) {
+	for _, task := range v.runTasks(runID) {
 		taskDetail, _ := v.taskDetail(runID, task.ID)
 		detail.Tasks = append(detail.Tasks, taskDetail)
 	}
@@ -454,19 +462,9 @@ func (v view) workflowDetail(runID string) (WorkflowDetail, bool) {
 	return detail, true
 }
 
-func (v view) workflowTasks(workflowID string) []domain.Task {
-	tasks := make([]domain.Task, 0)
-	for _, task := range v.records.Tasks {
-		if task.WorkflowID == workflowID {
-			tasks = append(tasks, task)
-		}
-	}
-	sort.Slice(tasks, func(i, j int) bool {
-		if tasks[i].Name == tasks[j].Name {
-			return tasks[i].ID < tasks[j].ID
-		}
-		return tasks[i].Name < tasks[j].Name
-	})
+func (v view) runTasks(runID string) []domain.Task {
+	tasks := append([]domain.Task(nil), domain.TasksForRun(v.runs[runID], v.records.Tasks)...)
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].Name < tasks[j].Name })
 	return tasks
 }
 
@@ -478,11 +476,8 @@ func (v view) resolveTask(runID, taskID string) (domain.Task, bool) {
 	if run.Sink != nil && (taskID == run.Sink.ID || taskID == domain.SinkTaskName) {
 		return domain.Task{ID: run.Sink.ID, Name: domain.SinkTaskName, WorkflowID: run.WorkflowID, Needs: append([]string(nil), run.Sink.Needs...)}, true
 	}
-	if task, ok := v.tasks[taskID]; ok && task.WorkflowID == run.WorkflowID {
-		return task, true
-	}
-	for _, task := range v.workflowTasks(run.WorkflowID) {
-		if task.Name == taskID {
+	for _, task := range v.runTasks(runID) {
+		if task.Name == taskID || task.ID == taskID {
 			return task, true
 		}
 	}
@@ -518,9 +513,9 @@ func (v view) graph(runID string) (Graph, bool) {
 	if !ok {
 		return Graph{}, false
 	}
-	graph := Graph{WorkflowRunID: runID, Nodes: make([]GraphNode, 0), Edges: make([]GraphEdge, 0)}
+	graph := Graph{GraphRevision: run.GraphRevision, WorkflowRunID: runID, Nodes: make([]GraphNode, 0), Edges: make([]GraphEdge, 0)}
 	byName := make(map[string]string)
-	tasks := v.workflowTasks(run.WorkflowID)
+	tasks := v.runTasks(runID)
 	for _, task := range tasks {
 		byName[task.Name] = task.ID
 	}
@@ -812,7 +807,7 @@ func (v view) reservations(filter Filter) []Reservation {
 		if attempt == nil || attempt.Progress.Terminal() {
 			continue
 		}
-		task, ok := v.tasks[attempt.TaskID]
+		task, ok := v.resolveTask(attempt.WorkflowRunID, attempt.TaskID)
 		if !ok {
 			continue
 		}
@@ -851,7 +846,7 @@ func (v view) locks(filter Filter) []ResourceLock {
 		if attempt == nil || attempt.Progress.Terminal() {
 			continue
 		}
-		task, ok := v.tasks[attempt.TaskID]
+		task, ok := v.resolveTask(attempt.WorkflowRunID, attempt.TaskID)
 		if !ok {
 			continue
 		}
@@ -912,7 +907,7 @@ func (v view) threadURL(workerID, threadID string) string {
 func (v view) events(runID string) []Event {
 	taskIDs := make(map[string]struct{})
 	attemptIDs := make(map[string]struct{})
-	for _, task := range v.workflowTasks(v.runs[runID].WorkflowID) {
+	for _, task := range v.runTasks(runID) {
 		taskIDs[task.ID] = struct{}{}
 	}
 	result := make([]Event, 0)

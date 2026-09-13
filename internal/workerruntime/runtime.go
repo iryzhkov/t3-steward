@@ -368,6 +368,9 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 	}
 	record := state.Attempts[command.AssignmentID]
 	pkg := record.Package.Package
+	if command.Kind == domain.ThrottleCommandResume && pkg.Timeout > 0 && !r.now().Before(pkg.CreatedAt.Add(pkg.Timeout)) {
+		return r.finishThrottle(command, false, "", nil, "task timeout expired")
+	}
 	var result domain.ThrottleAcknowledgementResult
 	var checkpoint *domain.CheckpointMetadata
 	switch command.Kind {
@@ -414,6 +417,12 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 			return err
 		}
 		record := state.Attempts[id]
+		if taskTimeoutExpired(record, now) {
+			if err := r.expireTask(ctx, id, record); err != nil {
+				return err
+			}
+			continue
+		}
 		if record.PendingThrottle != nil {
 			if _, err := r.executeThrottle(ctx, *record.PendingThrottle); err != nil {
 				return err
@@ -636,6 +645,9 @@ func (r *Runtime) dispatch(ctx context.Context, id string) error {
 		if record.Phase != PhasePrepared {
 			return nil
 		}
+	}
+	if taskTimeoutExpired(record, r.now()) {
+		return r.expireTask(ctx, id, record)
 	}
 	if record.Phase != PhasePrepared && record.Phase != PhaseDispatching {
 		return fmt.Errorf("dispatch is invalid in phase %q", record.Phase)
@@ -988,7 +1000,12 @@ func observation(record AttemptRecord, now time.Time) domain.WorkerAssignmentObs
 		state = domain.AssignmentUnknown
 		control = domain.ControlStopped
 	}
+	failure := record.Failure
+	if len(failure) > 2048 {
+		failure = failure[:2048]
+	}
 	return domain.WorkerAssignmentObservation{
+		Journal:      &domain.WorkerJournalExcerpt{Phase: string(record.Phase), Failure: failure, PackageSHA256: record.Package.SHA256, GraphRevision: record.Package.Package.GraphRevision, TaskRevision: record.Package.Package.TaskRevision, UpdatedAt: record.UpdatedAt},
 		AssignmentID: record.Assignment.ID, AssignmentEpoch: record.Assignment.Epoch,
 		State: state, Control: control, ThreadID: record.ThreadID,
 		WorkspacePath: record.WorkspacePath, ObservedAt: now,

@@ -71,6 +71,7 @@ type LocalScheduleDefinitionResponse struct {
 }
 
 type localRequest struct {
+	GraphAmendment     *domain.GraphAmendment          `json:"graphAmendment,omitempty"`
 	NodeWait           *NodeWaitOperation              `json:"nodeWait,omitempty"`
 	Version            string                          `json:"version"`
 	Operation          string                          `json:"operation"`
@@ -84,6 +85,7 @@ type localRequest struct {
 }
 
 type localResponse struct {
+	GraphAmendment             *domain.GraphAmendmentResult              `json:"graphAmendment,omitempty"`
 	NodeWait                   *NodeWaitResponse                         `json:"nodeWait,omitempty"`
 	Version                    string                                    `json:"version"`
 	Response                   *Response                                 `json:"response,omitempty"`
@@ -211,7 +213,26 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 		_ = writeLocalJSON(conn, response)
 		return
 	}
+	if request.Operation != "graph-amendment" && request.GraphAmendment != nil {
+		response.Error = "unexpected graph amendment"
+		_ = writeLocalJSON(conn, response)
+		return
+	}
 	switch request.Operation {
+	case "graph-amendment":
+		handler, ok := s.Service.(interface {
+			AmendGraph(context.Context, Principal, domain.GraphAmendment) (domain.GraphAmendmentResult, error)
+		})
+		if !ok || request.GraphAmendment == nil || request.NodeWait != nil || request.Query != nil || request.Mutation != nil || request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
+			response.Error = "malformed graph amendment request"
+			break
+		}
+		value, err := handler.AmendGraph(ctx, principal, *request.GraphAmendment)
+		if err != nil {
+			response.Error = err.Error()
+		} else {
+			response.GraphAmendment = &value
+		}
 	case "node-wait":
 		handler, ok := s.Service.(interface {
 			NodeWait(context.Context, Principal, NodeWaitOperation) (NodeWaitResponse, error)

@@ -55,6 +55,10 @@ type DependencyInput struct {
 }
 
 type ExecutionPackage struct {
+	Timeout          time.Duration                `json:"timeout,omitempty"`
+	GraphRevision    int64                        `json:"graphRevision,omitempty"`
+	TaskRevision     int64                        `json:"taskRevision,omitempty"`
+	TaskDigest       string                       `json:"taskDigest,omitempty"`
 	Version          int                          `json:"version"`
 	ID               string                       `json:"id"`
 	CoordinatorID    string                       `json:"coordinatorId"`
@@ -124,6 +128,9 @@ func ValidateExecutionPackageManifest(manifest ExecutionPackageManifest, maxByte
 }
 
 func ValidateExecutionPackage(pkg ExecutionPackage) error {
+	if pkg.Timeout < 0 || pkg.Timeout > 7*24*time.Hour {
+		return errors.New("execution timeout is out of bounds")
+	}
 	if pkg.Version != ExecutionPackageVersion {
 		return fmt.Errorf("execution package: unsupported version %d", pkg.Version)
 	}

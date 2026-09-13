@@ -98,6 +98,8 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: dependencies: %w", err)
 	}
 	pkg := workerproto.ExecutionPackage{
+		Timeout:       state.task.Timeout,
+		GraphRevision: assignment.GraphRevision, TaskRevision: assignment.TaskRevision, TaskDigest: assignment.TaskDigest,
 		Version:          workerproto.ExecutionPackageVersion,
 		ID:               stableCoordinatorID("package", assignment.ID),
 		CoordinatorID:    b.CoordinatorID,
@@ -182,7 +184,13 @@ func resolveExecutionPackageState(records sqlite.CoordinatorRecords, assignment 
 		return state, fmt.Errorf("execution package builder: assignment %q is not attached to attempt %q", assignment.ID, assignment.AttemptID)
 	}
 	var foundTask bool
-	for _, task := range records.Tasks {
+	var taskRun domain.WorkflowRun
+	for _, run := range records.WorkflowRuns {
+		if run.ID == state.attempt.WorkflowRunID {
+			taskRun = run
+		}
+	}
+	for _, task := range domain.TasksForRun(taskRun, records.Tasks) {
 		if task.ID == state.attempt.TaskID {
 			if foundTask {
 				return state, fmt.Errorf("execution package builder: duplicate task %q", task.ID)
@@ -217,11 +225,9 @@ func resolveExecutionPackageState(records sqlite.CoordinatorRecords, assignment 
 	if !foundWorkflow || state.task.WorkflowID != state.workflow.ID {
 		return state, errors.New("execution package builder: workflow, run, and task links are inconsistent")
 	}
-	state.tasks = make([]domain.Task, 0, len(state.workflow.TaskIDs))
-	for _, task := range records.Tasks {
-		if task.WorkflowID == state.workflow.ID {
-			state.tasks = append(state.tasks, task)
-		}
+	state.tasks = domain.TasksForRun(state.run, records.Tasks)
+	if assignment.TaskDigest != "" && assignment.TaskDigest != domain.TaskDigest(state.task) {
+		return state, errors.New("assignment task definition digest changed")
 	}
 	state.artifacts = make(map[string]domain.Artifact, len(records.Artifacts))
 	for _, artifact := range records.Artifacts {

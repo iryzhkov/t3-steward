@@ -56,6 +56,10 @@ type coordinatorLocalService struct {
 	schedules   *backlog.ScheduleDefinitionService
 }
 
+func (s coordinatorLocalService) AmendGraph(ctx context.Context, p backlogadmin.Principal, r domain.GraphAmendment) (domain.GraphAmendmentResult, error) {
+	return s.admin.AmendGraph(ctx, p, r)
+}
+
 func (s coordinatorLocalService) NodeWait(ctx context.Context, p backlogadmin.Principal, op backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error) {
 	return s.admin.NodeWait(ctx, p, op)
 }
@@ -370,6 +374,7 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 	if err != nil {
 		return err
 	}
+	service.SetGraphAmendmentSupport(cfg.BacklogV2.Storage.Artifacts, graphTaskValidator(cfg.BacklogV2))
 	service.SetRuntimeInfo(backlogadmin.RuntimeInfo{
 		Mode: "coordinator", Owner: cfg.BacklogV2.Coordinator.ID, Epoch: epoch,
 		Transport:              cfg.BacklogV2.Transport.Kind,

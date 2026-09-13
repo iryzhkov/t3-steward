@@ -267,7 +267,7 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 			skip(fmt.Sprintf("%v: expected revision %d, current %d", ErrStaleAttemptRevision, item.ExpectedAttemptRevision, attempt.Revision))
 			continue
 		}
-		if err := requireExternalSuccessTx(ctx, tx, attempt.TaskID); err != nil {
+		if err := requireExternalSuccessTx(ctx, tx, attempt); err != nil {
 			skip(err.Error())
 			continue
 		}
@@ -310,6 +310,10 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 			return nil, fmt.Errorf("%w: worker %q is disconnected, stale, or not ready", ErrWorkerUnavailable, assignment.WorkerID)
 		}
 
+		if err := bindAssignmentGraphTx(ctx, tx, attempt, &assignment); err != nil {
+			skip(err.Error())
+			continue
+		}
 		assignment.CreatedAt = commit.CommittedAt
 		assignment.UpdatedAt = commit.CommittedAt
 		raw, err := json.Marshal(assignment)
@@ -436,7 +440,7 @@ func (s *Store) ClaimAssignment(ctx context.Context, request domain.AssignmentCl
 		attempt.Control != domain.ControlUnassigned {
 		return domain.Assignment{}, fmt.Errorf("%w: attempt %q is not claimable", ErrAssignmentClaim, attempt.ID)
 	}
-	if err := requireExternalSuccessTx(ctx, tx, attempt.TaskID); err != nil {
+	if err := requireExternalSuccessTx(ctx, tx, attempt); err != nil {
 		return domain.Assignment{}, fmt.Errorf("%w: %v", ErrAssignmentClaim, err)
 	}
 	assignment.State = domain.AssignmentClaimed

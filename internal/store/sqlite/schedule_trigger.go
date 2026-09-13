@@ -126,6 +126,9 @@ func commitScheduleTriggerTx(ctx context.Context, tx *sql.Tx, request domain.Sch
 		if err := bindNodeEdgesTx(ctx, tx); err != nil {
 			return domain.ScheduleTriggerResult{}, err
 		}
+		if err := ensureInitialGraphsTx(ctx, tx); err != nil {
+			return domain.ScheduleTriggerResult{}, err
+		}
 		schedule.ActiveRunID = workflowRun.ID
 		if schedule.NextNotBefore != nil && !request.NominalAt.Before(*schedule.NextNotBefore) {
 			schedule.NextNotBefore = nil

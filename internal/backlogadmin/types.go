@@ -16,6 +16,7 @@ const (
 	QueryWorkflows    QueryKind = "workflows"
 	QueryWorkflow     QueryKind = "workflow"
 	QueryGraph        QueryKind = "graph"
+	QueryDiagnose     QueryKind = "diagnose"
 	QueryTask         QueryKind = "task"
 	QueryExplanation  QueryKind = "explanation"
 	QueryEvents       QueryKind = "events"
@@ -82,6 +83,7 @@ type UnknownRecoveryRequest struct {
 }
 
 type Response struct {
+	Diagnosis     *Diagnosis        `json:"diagnosis,omitempty"`
 	Version       string            `json:"version"`
 	Kind          QueryKind         `json:"kind"`
 	GeneratedAt   time.Time         `json:"generatedAt"`
@@ -183,6 +185,7 @@ type Assignment struct {
 }
 
 type Graph struct {
+	GraphRevision int64       `json:"graphRevision"`
 	WorkflowRunID string      `json:"workflowRunId"`
 	Nodes         []GraphNode `json:"nodes"`
 	Edges         []GraphEdge `json:"edges"`

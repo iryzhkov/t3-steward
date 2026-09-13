@@ -78,6 +78,9 @@ func (c backlogAdminCLI) runBacklog(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return errors.New("backlog admin command is required")
 	}
+	if args[0] == "edge" || args[0] == "run" || (args[0] == "task" && len(args) > 1 && (args[1] == "add" || args[1] == "set")) {
+		return c.runGraphAmendment(ctx, args)
+	}
 	if args[0] == "submit" {
 		return c.runSubmission(ctx, args[1:])
 	}
@@ -89,6 +92,13 @@ func (c backlogAdminCLI) runBacklog(ctx context.Context, args []string) error {
 	}
 	if len(args) >= 2 && args[0] == "artifact" && args[1] == "get" {
 		return c.runArtifactGet(ctx, args[2:])
+	}
+	if args[0] == "graph" {
+		for _, arg := range args[1:] {
+			if arg == "--dot" {
+				return c.runGraphDOT(ctx, args)
+			}
+		}
 	}
 	query, asJSON, err := parseBacklogAdminQuery(args)
 	if err != nil {
@@ -193,11 +203,11 @@ func parseBacklogAdminQueryWithoutSink(args []string) (backlogadmin.Query, bool,
 	case "list":
 		filter, err := parseWorkflowFilters(clean[1:])
 		return backlogadmin.Query{Kind: backlogadmin.QueryWorkflows, Filter: filter}, asJSON, err
-	case "show", "graph", "events":
+	case "show", "graph", "events", "diagnose":
 		if len(clean) != 2 {
 			return backlogadmin.Query{}, false, fmt.Errorf("%s needs a workflow-run id", clean[0])
 		}
-		kinds := map[string]backlogadmin.QueryKind{"show": backlogadmin.QueryWorkflow, "graph": backlogadmin.QueryGraph, "events": backlogadmin.QueryEvents}
+		kinds := map[string]backlogadmin.QueryKind{"show": backlogadmin.QueryWorkflow, "graph": backlogadmin.QueryGraph, "events": backlogadmin.QueryEvents, "diagnose": backlogadmin.QueryDiagnose}
 		return backlogadmin.Query{Kind: kinds[clean[0]], WorkflowRunID: clean[1]}, asJSON, nil
 	case "task":
 		if len(clean) != 3 || clean[1] != "show" {
@@ -349,6 +359,10 @@ func selectSchedule(response backlogadmin.Response, selector string) (backlogadm
 
 func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector string) error {
 	switch response.Kind {
+	case backlogadmin.QueryDiagnose:
+		encoder := json.NewEncoder(out)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(response.Diagnosis)
 	case backlogadmin.QueryStatus:
 		renderStatus(out, response.Status)
 	case backlogadmin.QueryWorkflows:

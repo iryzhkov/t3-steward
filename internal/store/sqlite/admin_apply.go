@@ -238,6 +238,11 @@ func loadAdminSafetyFingerprintTx(ctx context.Context, tx *sql.Tx) (string, erro
 	if state.QuotaAdmissions, err = loadJSON[domain.QuotaAdmissionRecord](ctx, tx, "coordinator_quota_admissions"); err != nil {
 		return "", err
 	}
+	runs, err := loadJSON[domain.WorkflowRun](ctx, tx, "coordinator_workflow_runs")
+	if err != nil {
+		return "", err
+	}
+	state.Tasks = domain.TasksWithGraphAdditions(runs, state.Tasks)
 	fingerprint, err := domain.AdminSafetyFingerprint(state)
 	if err != nil {
 		return "", fmt.Errorf("fingerprint current admin safety state: %w", err)

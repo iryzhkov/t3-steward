@@ -538,6 +538,34 @@ offers, the options are ones the model knows. It reads T3's provider caches
 knows, Codex, Claude and OpenCode alike. The runner runs the same check
 before a dispatch and parks an invalid task as `failed: invalid: ...`.
 
+### Inspecting and amending a coordinator run
+
+Coordinator mode supports live amendments through its owner-authenticated admin
+socket. Inspect the current graph revision before changing it:
+
+```sh
+t3-steward backlog graph <run> --dot
+t3-steward diagnose <run> --json
+t3-steward backlog task set <run>/<task> --timeout 15m \
+  --expected-revision 1 --request-id bound-task-1 --reason "Bound execution time"
+t3-steward backlog task add <run>/review --provider <provider> --model <model> \
+  --prompt "Review the changes and report findings." --needs <task> \
+  --expected-revision 2 --request-id add-review-1 --reason "Add review"
+t3-steward backlog edge remove <run>/review --from <task> \
+  --expected-revision 3 --request-id remove-edge-1 --reason "Review independently"
+t3-steward backlog run clone --from <run> \
+  --expected-revision 4 --request-id clone-run-1 --reason "Repeat with fresh execution"
+```
+
+Use a new request ID for each intent; repeat the exact command and ID to recover
+a lost response. A stale revision or changed replay is rejected. Task set also
+accepts model, provider and JSON options; route changes require a single route.
+Assigned and terminal task definitions are frozen. Each accepted amendment
+retains an immutable revision and rebinds the sink without changing sibling runs.
+Cloning creates fresh task, input and attempt identities from verified retained
+inputs. See the [amendment contract](docs/architecture/adr-s0-amendment.md) for
+timeout semantics, input custody and diagnostic evidence limits.
+
 ### Running a task on another machine
 
 A task may name the machine whose T3 server should run it (`host:`, an SSH

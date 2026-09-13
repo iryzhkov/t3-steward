@@ -17,14 +17,24 @@ type WorkerSnapshot struct {
 }
 
 // WorkerAssignmentObservation is the worker's view of one assigned attempt.
+type WorkerJournalExcerpt struct {
+	Phase         string    `json:"phase"`
+	Failure       string    `json:"failure,omitempty"`
+	PackageSHA256 string    `json:"packageSha256"`
+	GraphRevision int64     `json:"graphRevision"`
+	TaskRevision  int64     `json:"taskRevision"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
 type WorkerAssignmentObservation struct {
-	AssignmentID    string          `json:"assignmentId"`
-	AssignmentEpoch int64           `json:"assignmentEpoch"`
-	State           AssignmentState `json:"state"`
-	Control         ControlState    `json:"control,omitempty"`
-	ThreadID        string          `json:"threadId,omitempty"`
-	WorkspacePath   string          `json:"workspacePath,omitempty"`
-	ObservedAt      time.Time       `json:"observedAt"`
+	Journal         *WorkerJournalExcerpt `json:"journal,omitempty"`
+	AssignmentID    string                `json:"assignmentId"`
+	AssignmentEpoch int64                 `json:"assignmentEpoch"`
+	State           AssignmentState       `json:"state"`
+	Control         ControlState          `json:"control,omitempty"`
+	ThreadID        string                `json:"threadId,omitempty"`
+	WorkspacePath   string                `json:"workspacePath,omitempty"`
+	ObservedAt      time.Time             `json:"observedAt"`
 }
 
 // WorkerCommandKind identifies transport-neutral coordinator commands.

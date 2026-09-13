@@ -255,11 +255,7 @@ func planDAGCancellation(records sqlite.CoordinatorRecords, attempt domain.Attem
 		return nil, nil, nil, fmt.Errorf("cancel is invalid from terminal progress %s", attempt.Progress)
 	}
 	state := backlog.DAGState{Run: run}
-	for _, candidate := range records.Tasks {
-		if candidate.WorkflowID == task.WorkflowID {
-			state.Tasks = append(state.Tasks, candidate)
-		}
-	}
+	state.Tasks = domain.TasksForRun(run, records.Tasks)
 	original := make(map[string]domain.Attempt)
 	for _, candidate := range records.Attempts {
 		if candidate.WorkflowRunID == run.ID {
@@ -302,11 +298,7 @@ func planDAGCancellation(records sqlite.CoordinatorRecords, attempt domain.Attem
 
 func planDAGSkip(records sqlite.CoordinatorRecords, attempt domain.Attempt, task domain.Task, run domain.WorkflowRun, now time.Time) (*domain.Attempt, *domain.WorkflowRun, error) {
 	state := backlog.DAGState{Run: run}
-	for _, candidate := range records.Tasks {
-		if candidate.WorkflowID == task.WorkflowID {
-			state.Tasks = append(state.Tasks, candidate)
-		}
-	}
+	state.Tasks = domain.TasksForRun(run, records.Tasks)
 	for _, candidate := range records.Attempts {
 		if candidate.WorkflowRunID == run.ID {
 			state.Attempts = append(state.Attempts, candidate)
@@ -396,14 +388,7 @@ func commandAttemptContext(records sqlite.CoordinatorRecords, id string) (domain
 	if !found {
 		return attempt, domain.Task{}, domain.WorkflowRun{}, fmt.Errorf("attempt %q not found", id)
 	}
-	var task domain.Task
-	found = false
-	for _, item := range records.Tasks {
-		if item.ID == attempt.TaskID {
-			task, found = item, true
-			break
-		}
-	}
+	task, found := domain.TaskForAttempt(attempt, records.WorkflowRuns, records.Tasks)
 	if !found {
 		return attempt, task, domain.WorkflowRun{}, fmt.Errorf("task %q not found", attempt.TaskID)
 	}
@@ -486,13 +471,7 @@ func commandSafetyBlocker(records sqlite.CoordinatorRecords, workers []domain.Wo
 		if !found || assignment.State == domain.AssignmentReleased || assignment.State == domain.AssignmentCompleted {
 			continue
 		}
-		var otherTask domain.Task
-		for _, candidate := range records.Tasks {
-			if candidate.ID == other.TaskID {
-				otherTask = candidate
-				break
-			}
-		}
+		otherTask, _ := domain.TaskForAttempt(other, records.WorkflowRuns, records.Tasks)
 		for _, lock := range task.ResourceLocks {
 			if stringContains(otherTask.ResourceLocks, lock) {
 				return "resource lock is held by " + other.ID + ": " + lock

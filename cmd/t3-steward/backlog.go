@@ -33,7 +33,8 @@ Coordinator read commands:
   list [--project P] [--schedule S] [--progress STATES] [--class CLASS]
        [--worker W] [--quota-pool Q] [--include-sink] [--json]
   show <workflow-run> [--include-sink] [--json]
-  graph <workflow-run> [--json]
+  graph <workflow-run> [--json|--dot]
+  diagnose <workflow-run> [--json]
   task show <workflow-run>/<task> [--json]
   events <workflow-run> [--json]
   explain <workflow-run>/<task> [--json]
@@ -42,6 +43,15 @@ Coordinator read commands:
   artifact get <artifact> [--output PATH]
   commands [<workflow-run>[/<task>]] [--json]
   command show <command> [--json]
+
+Graph amendments (all require --expected-revision N --request-id ID --reason TEXT):
+  task add <run>/<name> --provider INSTANCE --model MODEL --prompt TEXT
+      [--needs NAME,OTHER-RUN/TASK] [--options JSON] [--timeout DURATION]
+      [--class required|surplus] [--max-turns N]
+  task set <run>/<task> [--model MODEL] [--provider INSTANCE]
+      [--options JSON] [--timeout DURATION]
+  edge add|remove <run>/<task> --from <task|other-run/task>
+  run clone --from <run>
 
 Revision-fenced controls:
   start|resume|cancel|retry|skip <workflow-run>/<task> --reason TEXT [--command-id ID] [--json]
@@ -107,7 +117,7 @@ func isCoordinatorAdmin(args []string) bool {
 		return false
 	}
 	switch args[0] {
-	case "submit", "status", "graph", "task", "events", "explain", "artifacts", "artifact", "commands", "command", "show",
+	case "submit", "status", "edge", "run", "diagnose", "graph", "task", "events", "explain", "artifacts", "artifact", "commands", "command", "show",
 		"start", "delay", "pause", "resume", "cancel", "retry", "skip", "recover":
 		return true
 	case "list":

@@ -205,13 +205,7 @@ func resultImportBinding(records sqlite.CoordinatorRecords, manifest workerproto
 		(!attempt.Progress.Terminal() && attempt.Progress != domain.ProgressVerifying) {
 		return assignment, attempt, domain.Task{}, fmt.Errorf("result import attempt binding is stale: assignment=%q attempt=%q progress=%q", attempt.AssignmentID, attempt.ID, attempt.Progress)
 	}
-	var task domain.Task
-	for _, candidate := range records.Tasks {
-		if candidate.ID == attempt.TaskID {
-			task = candidate
-			break
-		}
-	}
+	task, _ := domain.TaskForAttempt(attempt, records.WorkflowRuns, records.Tasks)
 	if task.ID == "" {
 		return assignment, attempt, task, errors.New("result import task is missing")
 	}

@@ -57,6 +57,7 @@ func ResolveNode(ref NodeRef, runs []WorkflowRun, tasks []Task, attempts []Attem
 			out.Progress = run.Progress
 		}
 	} else {
+		tasks = TasksForRun(*run, tasks)
 		var task *Task
 		for i := range tasks {
 			if tasks[i].WorkflowID == run.WorkflowID && (tasks[i].ID == ref.TaskID || tasks[i].Name == ref.TaskID) {

@@ -45,6 +45,7 @@ that isolation is not yet a current production guarantee.
 | State | Authority and mutator | Copies, freshness and recovery |
 | --- | --- | --- |
 | Workflow/bundle/task definition | Coordinator ingestion; immutable files and SQLite metadata | Worker execution packages carry pinned inputs; restore metadata and bytes coherently |
+| Graph revision | Coordinator amendment transaction | Immutable run-local snapshots and request results; templates and sibling runs are unchanged |
 | Run/attempt progress | Coordinator transactions | Revisioned projections; reconcile current worker/T3 evidence |
 | Assignment/lease/dispatch identity | Coordinator | Epoch-bound worker claim and expiring observations; expiry alone does not prove stopped execution |
 | Worker snapshot | Worker observation accepted by coordinator | Worker/coordinator epoch, sequence, validity; planner and status should use the same accepted rows |
@@ -153,7 +154,7 @@ around that path. It must not become authority to create a replacement execution
 | --- | --- |
 | Terminal sink | [Sink ADR](adr-s0-sink.md); coordinator-only aggregation, no attempt; implemented in S1 |
 | Node waits / cross-run edges | [Node-wait ADR](adr-s0-node-wait.md); implemented S2: retained targets, atomic outcome/intent, observable delivery and cross-run ordering dependencies |
-| Graph revisions/amendment | [Amendment ADR](adr-s0-amendment.md); live API approved by the user on 2026-09-12; S3 |
+| Graph revisions/amendment | [Amendment ADR](adr-s0-amendment.md); implemented S3: immutable run snapshots, owner-only amendments, assignment fences, clone provenance and joined diagnostics |
 | Worker enrollment/catalog/transport | [Worker ADR](adr-s0-worker-enrollment.md); one effective catalog, persistent workers; S4 |
 | Bucket quota / bounded forecast / measured costs | [Quota ADR](adr-s0-quota.md); S5 fixtures, S6 implementation and requalification |
 | Bounded replay persistence | [Replay ADR](adr-s0-replay-store.md); implemented and tested in S0 |

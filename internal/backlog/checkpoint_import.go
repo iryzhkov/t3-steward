@@ -132,13 +132,7 @@ func checkpointImportBinding(records sqlite.CoordinatorRecords, manifest workerp
 		attempt.CheckpointArtifactID != manifest.Objects[0].ID {
 		return assignment, attempt, domain.Task{}, errors.New("checkpoint import attempt binding is stale")
 	}
-	var task domain.Task
-	for _, candidate := range records.Tasks {
-		if candidate.ID == attempt.TaskID {
-			task = candidate
-			break
-		}
-	}
+	task, _ := domain.TaskForAttempt(attempt, records.WorkflowRuns, records.Tasks)
 	if task.ID == "" {
 		return assignment, attempt, task, errors.New("checkpoint import task is missing")
 	}

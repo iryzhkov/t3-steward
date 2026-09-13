@@ -100,18 +100,19 @@ type Workflow struct {
 
 // WorkflowRun is one execution of a workflow definition.
 type WorkflowRun struct {
-	ID               string        `json:"id"`
-	WorkflowID       string        `json:"workflowId"`
-	GraphRevision    int64         `json:"graphRevision,omitempty"`
-	Sink             *SinkTask     `json:"sink,omitempty"`
-	ScheduleID       string        `json:"scheduleId,omitempty"`
-	TriggerID        string        `json:"triggerId,omitempty"`
-	Progress         ProgressState `json:"progress"`
-	InputArtifactIDs []string      `json:"inputArtifactIds,omitempty"`
-	Revision         int64         `json:"revision"`
-	CreatedAt        time.Time     `json:"createdAt"`
-	UpdatedAt        time.Time     `json:"updatedAt"`
-	CompletedAt      *time.Time    `json:"completedAt,omitempty"`
+	Graph            *GraphDefinition `json:"graph,omitempty"`
+	ID               string           `json:"id"`
+	WorkflowID       string           `json:"workflowId"`
+	GraphRevision    int64            `json:"graphRevision,omitempty"`
+	Sink             *SinkTask        `json:"sink,omitempty"`
+	ScheduleID       string           `json:"scheduleId,omitempty"`
+	TriggerID        string           `json:"triggerId,omitempty"`
+	Progress         ProgressState    `json:"progress"`
+	InputArtifactIDs []string         `json:"inputArtifactIds,omitempty"`
+	Revision         int64            `json:"revision"`
+	CreatedAt        time.Time        `json:"createdAt"`
+	UpdatedAt        time.Time        `json:"updatedAt"`
+	CompletedAt      *time.Time       `json:"completedAt,omitempty"`
 }
 
 // ArtifactDeclaration names an output a task promises to retain.
@@ -137,27 +138,30 @@ type ProviderRoute struct {
 
 // Task is an immutable node in a workflow definition.
 type Task struct {
-	ExternalNeeds    []NodeRef             `json:"externalNeeds,omitempty"`
-	ID               string                `json:"id"`
-	WorkflowID       string                `json:"workflowId"`
-	Name             string                `json:"name"`
-	Class            TaskClass             `json:"class"`
-	Needs            []string              `json:"needs,omitempty"`
-	PromptArtifactID string                `json:"promptArtifactId"`
-	InputArtifactIDs []string              `json:"inputArtifactIds,omitempty"`
-	DependencyInputs map[string][]string   `json:"dependencyInputs,omitempty"`
-	Outputs          []ArtifactDeclaration `json:"outputs,omitempty"`
-	Verification     []string              `json:"verification,omitempty"`
-	Placement        Placement             `json:"placement"`
-	Routes           []ProviderRoute       `json:"routes,omitempty"`
-	ResourceLocks    []string              `json:"resourceLocks,omitempty"`
-	Importance       int                   `json:"importance"`
-	Difficulty       int                   `json:"difficulty"`
-	EstimatedCost    *float64              `json:"estimatedCost,omitempty"`
-	MaxTurns         int                   `json:"maxTurns"`
-	NotBefore        *time.Time            `json:"notBefore,omitempty"`
-	Deadline         *time.Time            `json:"deadline,omitempty"`
-	ExpiresAt        *time.Time            `json:"expiresAt,omitempty"`
+	RunID              string                `json:"runId,omitempty"`
+	DefinitionRevision int64                 `json:"definitionRevision,omitempty"`
+	Timeout            time.Duration         `json:"timeout,omitempty"`
+	ExternalNeeds      []NodeRef             `json:"externalNeeds,omitempty"`
+	ID                 string                `json:"id"`
+	WorkflowID         string                `json:"workflowId"`
+	Name               string                `json:"name"`
+	Class              TaskClass             `json:"class"`
+	Needs              []string              `json:"needs,omitempty"`
+	PromptArtifactID   string                `json:"promptArtifactId"`
+	InputArtifactIDs   []string              `json:"inputArtifactIds,omitempty"`
+	DependencyInputs   map[string][]string   `json:"dependencyInputs,omitempty"`
+	Outputs            []ArtifactDeclaration `json:"outputs,omitempty"`
+	Verification       []string              `json:"verification,omitempty"`
+	Placement          Placement             `json:"placement"`
+	Routes             []ProviderRoute       `json:"routes,omitempty"`
+	ResourceLocks      []string              `json:"resourceLocks,omitempty"`
+	Importance         int                   `json:"importance"`
+	Difficulty         int                   `json:"difficulty"`
+	EstimatedCost      *float64              `json:"estimatedCost,omitempty"`
+	MaxTurns           int                   `json:"maxTurns"`
+	NotBefore          *time.Time            `json:"notBefore,omitempty"`
+	Deadline           *time.Time            `json:"deadline,omitempty"`
+	ExpiresAt          *time.Time            `json:"expiresAt,omitempty"`
 }
 
 // Attempt is one try to complete a task in a workflow run.
@@ -204,6 +208,9 @@ type TaskAdmissionEstimate struct {
 
 // Assignment commits one attempt to a worker and provider route.
 type Assignment struct {
+	GraphRevision       int64                  `json:"graphRevision,omitempty"`
+	TaskRevision        int64                  `json:"taskRevision,omitempty"`
+	TaskDigest          string                 `json:"taskDigest,omitempty"`
 	ID                  string                 `json:"id"`
 	AttemptID           string                 `json:"attemptId"`
 	WorkerID            string                 `json:"workerId"`

@@ -53,7 +53,6 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 		}
 		workflowByID[workflow.ID] = workflow
 	}
-	tasksByWorkflow := make(map[string][]domain.Task)
 	taskByID := make(map[string]domain.Task, len(input.Tasks))
 	for _, task := range input.Tasks {
 		if task.ID == "" || task.WorkflowID == "" {
@@ -66,7 +65,6 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 			return PlanInput{}, fmt.Errorf("task %q names unknown workflow %q", task.ID, task.WorkflowID)
 		}
 		taskByID[task.ID] = task
-		tasksByWorkflow[task.WorkflowID] = append(tasksByWorkflow[task.WorkflowID], task)
 	}
 	attemptsByRun := make(map[string][]domain.Attempt)
 	attemptByID := make(map[string]domain.Attempt, len(input.Attempts))
@@ -94,7 +92,7 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 		if !exists {
 			return PlanInput{}, fmt.Errorf("attempt %q names unknown workflow run %q", attempt.ID, attempt.WorkflowRunID)
 		}
-		task, exists := taskByID[attempt.TaskID]
+		task, exists := domain.TaskForAttempt(attempt, input.WorkflowRuns, input.Tasks)
 		if !exists || task.WorkflowID != run.WorkflowID {
 			return PlanInput{}, fmt.Errorf("attempt %q names a task outside workflow run %q", attempt.ID, run.ID)
 		}
@@ -108,7 +106,7 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 		workflow := workflowByID[run.WorkflowID]
 		state := DAGState{
 			Run:      run,
-			Tasks:    append([]domain.Task(nil), tasksByWorkflow[run.WorkflowID]...),
+			Tasks:    domain.TasksForRun(run, input.Tasks),
 			Attempts: append([]domain.Attempt(nil), attemptsByRun[run.ID]...),
 		}
 		state.External = ResolveExternalNodes(state.Tasks, input.WorkflowRuns, input.Tasks, input.Attempts, input.Assignments)
@@ -167,7 +165,7 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 			}
 			continue
 		}
-		task := taskByID[attempt.TaskID]
+		task, _ := domain.TaskForAttempt(attempt, input.WorkflowRuns, input.Tasks)
 		for _, resource := range task.ResourceLocks {
 			resource = strings.TrimSpace(resource)
 			if resource == "" {
@@ -192,7 +190,7 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 	workers := plannerWorkers(input.WorkerSnapshots, input.CoordinatorEpoch, input.Now)
 	routeEstimates := make([]RouteEstimate, 0)
 	for _, attempt := range input.Attempts {
-		task := taskByID[attempt.TaskID]
+		task, _ := domain.TaskForAttempt(attempt, input.WorkflowRuns, input.Tasks)
 		cost := SeedCost(task.Difficulty)
 		if task.EstimatedCost != nil {
 			cost = *task.EstimatedCost

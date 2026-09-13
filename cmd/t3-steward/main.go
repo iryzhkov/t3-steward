@@ -51,6 +51,7 @@ Commands:
   report             Consumption by peak/off-peak hours, hour of day, model and thread.
   forecast           Interactive-demand map by weekday and hour, and current backlog headroom.
   backlog            Inspect and control coordinator workflows; includes legacy file helpers.
+  diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
   schedules          Inspect and control schedules and trigger history.
   wait               Park a thread until a check succeeds; the steward wakes it (add, list, cancel).
   archive            Cold storage for finished threads (candidates, run, list, restore).
@@ -127,7 +128,7 @@ func run(args []string) error {
 			sub = append(sub, rest[i])
 		}
 		return cmdArchive(g, sub)
-	case "backlog":
+	case "backlog", "diagnose":
 		// Sub-commands parse their own arguments; only --config and
 		// --dry-run style globals are shared, taken from the environment here.
 		paths, err := config.DefaultPaths()
@@ -143,6 +144,9 @@ func run(args []string) error {
 				continue
 			}
 			sub = append(sub, rest[i])
+		}
+		if cmd == "diagnose" {
+			sub = append([]string{"diagnose"}, sub...)
 		}
 		return cmdBacklog(g, sub)
 	case "schedules":

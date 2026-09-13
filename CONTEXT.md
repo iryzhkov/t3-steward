@@ -18,9 +18,10 @@ Avoid: DAG task, job.
 
 **Workflow run**: One execution of a workflow, created manually or by a schedule.
 
-**Graph revision**: A proposed Track S immutable snapshot of a run's task and edge
-definitions, with parent, digest and audited amendment identity. It is distinct
-from mutable execution progress and attempt revisions. The user approved live coordinator amendments; S3 implements them.
+**Graph revision**: An immutable run-local snapshot of task and edge definitions,
+implemented in S3, with parent, digest and audited amendment identity. It is distinct
+from mutable progress and attempt revisions. Live amendments preserve run/task
+identity, freeze assigned definitions and leave submitted workflow templates intact.
 
 **Task**: One node with stable run-scoped identity. Its current attempt describes
 execution; its definition is not overwritten to change execution history.

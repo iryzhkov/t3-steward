@@ -39,11 +39,7 @@ func ProjectWorkflowRuns(ctx context.Context, store ProjectionStore, now time.Ti
 		}
 		before := sqlite.WorkflowProjectionSnapshot{Run: run}
 		owned := make(map[string]bool)
-		for _, task := range records.Tasks {
-			if task.WorkflowID == run.WorkflowID {
-				before.Tasks = append(before.Tasks, task)
-			}
-		}
+		before.Tasks = domain.TasksForRun(run, records.Tasks)
 		for _, attempt := range records.Attempts {
 			if attempt.WorkflowRunID == run.ID {
 				before.Attempts = append(before.Attempts, attempt)

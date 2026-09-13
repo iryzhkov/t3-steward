@@ -17,13 +17,11 @@ func bindNodeEdgesTx(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	hasEdges := false
 	for i := range records.Tasks {
 		task := &records.Tasks[i]
 		if len(task.ExternalNeeds) == 0 {
 			continue
 		}
-		hasEdges = true
 		for j, ref := range task.ExternalNeeds {
 			obs, err := resolveNodeRecords(ref, records)
 			if err != nil {
@@ -39,18 +37,37 @@ func bindNodeEdgesTx(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 	}
-	if !hasEdges {
+	return validateRunGraphEdgesTx(ctx, tx)
+}
+
+func validateRunGraphEdgesTx(ctx context.Context, tx *sql.Tx) error {
+	records, err := nodeRecordsTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	hasGraph := false
+	for _, run := range records.WorkflowRuns {
+		if run.Graph != nil {
+			hasGraph = true
+		}
+	}
+	for _, task := range records.Tasks {
+		if len(task.ExternalNeeds) > 0 {
+			hasGraph = true
+		}
+	}
+	if !hasGraph {
 		return nil
 	}
 	edges := map[string][]string{}
 	for _, run := range records.WorkflowRuns {
 		names := map[string]string{}
-		for _, task := range records.Tasks {
+		for _, task := range domain.TasksForRun(run, records.Tasks) {
 			if task.WorkflowID == run.WorkflowID {
 				names[task.Name] = task.ID
 			}
 		}
-		for _, task := range records.Tasks {
+		for _, task := range domain.TasksForRun(run, records.Tasks) {
 			if task.WorkflowID != run.WorkflowID {
 				continue
 			}
@@ -63,6 +80,13 @@ func bindNodeEdgesTx(ctx context.Context, tx *sql.Tx) error {
 				edges[key] = append(edges[key], (domain.NodeRef{RunID: run.ID, TaskID: id}).String())
 			}
 			for _, ref := range task.ExternalNeeds {
+				obs, err := resolveNodeRecords(ref, records)
+				if err != nil {
+					return err
+				}
+				if obs.Target != ref {
+					return fmt.Errorf("external edge must use canonical identity: %s", ref.String())
+				}
 				edges[key] = append(edges[key], ref.String())
 				if err := pinNodeTx(ctx, tx, "edge:"+run.ID, ref); err != nil {
 					return err
@@ -123,7 +147,25 @@ func nodeDependenciesTx(ctx context.Context, tx *sql.Tx, tasks []domain.Task) ([
 	}
 	return observations, nil
 }
-func requireExternalSuccessTx(ctx context.Context, tx *sql.Tx, taskID string) error {
+func requireExternalSuccessTx(ctx context.Context, tx *sql.Tx, attempt domain.Attempt) error {
+	taskID := attempt.TaskID
+	var runRaw []byte
+	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_workflow_runs WHERE id=?", attempt.WorkflowRunID).Scan(&runRaw); err == nil {
+		var run domain.WorkflowRun
+		if err = json.Unmarshal(runRaw, &run); err != nil {
+			return err
+		}
+		if run.Graph != nil {
+			for _, task := range run.Graph.Tasks {
+				if task.ID == taskID {
+					return requireTaskExternalSuccessTx(ctx, tx, task)
+				}
+			}
+			return errors.New("task missing from run graph")
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	var raw []byte
 	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_tasks WHERE id=?", taskID).Scan(&raw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -135,6 +177,9 @@ func requireExternalSuccessTx(ctx context.Context, tx *sql.Tx, taskID string) er
 	if err := json.Unmarshal(raw, &task); err != nil {
 		return err
 	}
+	return requireTaskExternalSuccessTx(ctx, tx, task)
+}
+func requireTaskExternalSuccessTx(ctx context.Context, tx *sql.Tx, task domain.Task) error {
 	observations, err := nodeDependenciesTx(ctx, tx, []domain.Task{task})
 	if err != nil {
 		return err

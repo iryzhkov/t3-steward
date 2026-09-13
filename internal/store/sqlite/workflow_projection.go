@@ -80,6 +80,7 @@ func loadWorkflowProjectionTx(ctx context.Context, tx *sql.Tx, runID string) (Wo
 	if err != nil {
 		return snapshot, err
 	}
+	snapshot.Tasks = domain.TasksForRun(snapshot.Run, snapshot.Tasks)
 	snapshot.Attempts, err = loadProjectionRecords[domain.Attempt](ctx, tx, "SELECT record FROM coordinator_attempts WHERE workflow_run_id=? ORDER BY id", runID)
 	if err != nil {
 		return snapshot, err

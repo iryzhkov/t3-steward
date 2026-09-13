@@ -314,6 +314,7 @@ func (s *Store) Migrate() error {
 		{11, coordinatorMigrationV11},
 		{12, coordinatorMigrationV12},
 		{13, coordinatorMigrationV13},
+		{14, coordinatorMigrationV14},
 	}
 	for _, migration := range versioned {
 		if version >= migration.version {
@@ -324,7 +325,7 @@ func (s *Store) Migrate() error {
 		}
 		version = migration.version
 	}
-	return nil
+	return s.backfillGraphHistory(context.Background())
 }
 
 func (s *Store) applyVersionedMigration(version int, ddl string) error {

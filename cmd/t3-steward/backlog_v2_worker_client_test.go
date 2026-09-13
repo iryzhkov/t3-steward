@@ -173,7 +173,7 @@ func TestImportCoordinatorWorkerResultFetchesImportsThenAcknowledges(t *testing.
 	task := domain.Task{ID: "task-1", WorkflowID: "workflow-1", Name: "task", Outputs: []domain.ArtifactDeclaration{{Name: "answer.txt", MediaType: "text/plain"}}}
 	attempt := domain.Attempt{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: task.ID, Number: 1, Progress: domain.ProgressVerifying, Control: domain.ControlStopped, Revision: 2, AssignmentID: "assignment-1", UpdatedAt: now}
 	assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "normandy", WorkerEpoch: "worker-1", State: domain.AssignmentCompleted, Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
-	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Tasks: []domain.Task{task}, Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment}}); err != nil {
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{{ID: attempt.WorkflowRunID, WorkflowID: task.WorkflowID}}, Tasks: []domain.Task{task}, Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment}}); err != nil {
 		t.Fatal(err)
 	}
 	contents := [][]byte{[]byte("answer\n"), []byte("BACKLOG STATUS: done\n"), []byte("{}")}
@@ -229,7 +229,7 @@ func TestImportCoordinatorWorkerCheckpointPublishesThenAcknowledges(t *testing.T
 	task := domain.Task{ID: "task-1", WorkflowID: "workflow-1", Name: "task"}
 	attempt := domain.Attempt{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: task.ID, Number: 1, Progress: domain.ProgressActive, Control: domain.ControlRunning, Revision: 1, AssignmentID: "assignment-1", UpdatedAt: now}
 	assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "normandy", WorkerEpoch: "worker-1", State: domain.AssignmentClaimed, Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
-	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Tasks: []domain.Task{task}, Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment}}); err != nil {
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{{ID: attempt.WorkflowRunID, WorkflowID: task.WorkflowID}}, Tasks: []domain.Task{task}, Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment}}); err != nil {
 		t.Fatal(err)
 	}
 	content := []byte("resume here\n")

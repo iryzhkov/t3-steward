@@ -10,7 +10,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-const currentSchemaVersion = 13
+const currentSchemaVersion = 14
 
 // CurrentSchemaVersion is the newest coordinator schema this binary can open.
 // Snapshot verification uses it without migrating the inspected database.
@@ -299,6 +299,9 @@ func (s *Store) SaveCoordinatorRecords(ctx context.Context, records CoordinatorR
 		if err := bindNodeEdgesTx(ctx, tx); err != nil {
 			return err
 		}
+		if err := ensureInitialGraphsTx(ctx, tx); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit coordinator records: %w", err)
@@ -409,6 +412,7 @@ func (s *Store) LoadCoordinatorRecords(ctx context.Context) (CoordinatorRecords,
 	if err := tx.Commit(); err != nil {
 		return CoordinatorRecords{}, fmt.Errorf("commit coordinator load: %w", err)
 	}
+	records.Tasks = domain.TasksWithGraphAdditions(records.WorkflowRuns, records.Tasks)
 	return records, nil
 }
 
