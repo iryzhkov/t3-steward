@@ -98,8 +98,16 @@ The worker must explicitly ensure its project and dispatch its one execution.
 
 The host SocketTokenFile source observes atomic rotations, refuses escapes
 outside control storage, and rejects special files without blocking.
-Provider account credentials/settings, artifact mappings and the normal worker
-binding remain unimplemented. The normal worker's directory guard stays closed
+LocalDriver now accepts an ExecutionT3Provider attachment for directory-bound
+thread operations. Attach must observe an already prepared, fenced supervisor;
+it may not launch or replace one. Creation, observation, cancellation, settlement,
+collection, warnings, checkpoints and resume use this scoped control. Attachment
+failure never falls back to host T3. Attached dispatch explicitly ensures a
+project at /workspace and uses that namespace path for the thread worktree.
+
+Provider account credentials/settings, production supervisor attachment,
+contained verification/artifact mapping and preparation integration remain
+unimplemented. The normal directory preparation guard stays closed. The normal worker's directory guard stays closed
 until those integrations and installed provider recovery qualification pass.
 
 ## Evidence and remaining gate

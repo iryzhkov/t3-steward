@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.29] - 2026-09-13
+
+### Added
+
+- Worker thread operations attach to an execution-specific T3 control for
+  directory-bound packages, with no fallback to host T3 after an attachment
+  error. Dispatch maps its project and worktree to the contained workspace.
+  Preparation remains disabled until provider setup, contained verification
+  and custody are integrated.
+
 ## [0.11.0-rc.28] - 2026-09-13
 
 ### Added

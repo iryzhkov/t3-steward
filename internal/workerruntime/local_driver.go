@@ -68,6 +68,8 @@ type LocalDriver struct {
 	Publisher   ArtifactPublisher
 	Credentials CredentialChecker
 	T3          T3Control
+	ScopedT3    ExecutionT3Provider
+	scoped      bool
 	Now         func() time.Time
 }
 
@@ -202,12 +204,20 @@ func (d *LocalDriver) InspectWorkspace(_ context.Context, pkg workerproto.Execut
 // BeginObservationPass drops observations retained by a previous reconciliation.
 // Persistent workers reuse the driver, but each pass must see current T3 state.
 func (d *LocalDriver) BeginObservationPass() {
+	if scoped, ok := d.ScopedT3.(interface{ BeginObservationPass() }); ok {
+		scoped.BeginObservationPass()
+	}
 	if cache, ok := d.T3.(interface{ invalidate() }); ok {
 		cache.invalidate()
 	}
 }
 
 func (d *LocalDriver) ObserveThread(ctx context.Context, pkg workerproto.ExecutionPackage) (backlog.DispatchThreadState, error) {
+	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
+		return "", err
+	} else if scoped != nil {
+		return scoped.ObserveThread(ctx, pkg)
+	}
 	if d.Config.DryRun {
 		state, err := os.ReadFile(d.noEffectsThreadPath(pkg))
 		if errors.Is(err, os.ErrNotExist) {
@@ -252,6 +262,11 @@ func workerThreadTerminal(thread domain.Thread) bool {
 }
 
 func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
+	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
+		return err
+	} else if scoped != nil {
+		return scoped.CreateThread(ctx, pkg, workspace)
+	}
 	if d.Config.DryRun {
 		return os.WriteFile(d.noEffectsThreadPath(pkg), []byte("active\n"), 0o600)
 	}
@@ -260,7 +275,10 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 		return err
 	}
 	var projectID string
-	if pkg.Environment.T3Project != "" {
+	if d.scoped {
+		workspace = "/workspace"
+		projectID, err = d.T3.EnsureProject(ctx, t3control.ManagedProject{Key: pkg.Identity.ThreadID, Title: "Steward: " + pkg.Environment.Project, WorkspaceRoot: "/workspace"})
+	} else if pkg.Environment.T3Project != "" {
 		projectID, err = d.T3.ResolveProjectID(ctx, pkg.Environment.T3Project)
 	} else {
 		encodedKey, keyErr := json.Marshal([]string{pkg.CoordinatorID, pkg.WorkerID, pkg.Environment.Project})
@@ -303,6 +321,11 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 }
 
 func (d *LocalDriver) StopThread(ctx context.Context, pkg workerproto.ExecutionPackage) error {
+	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
+		return err
+	} else if scoped != nil {
+		return scoped.StopThread(ctx, pkg)
+	}
 	if d.Config.DryRun {
 		path := d.noEffectsThreadPath(pkg)
 		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
@@ -336,6 +359,11 @@ func (d *LocalDriver) StopThread(ctx context.Context, pkg workerproto.ExecutionP
 }
 
 func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
+	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
+		return err
+	} else if scoped != nil {
+		return scoped.Collect(ctx, pkg, workspace)
+	}
 	if d.Config.DryRun {
 		return nil
 	}
@@ -403,6 +431,11 @@ var ErrSettleUnproven = errors.New("T3 settlement unproven")
 
 // Settle retries the idempotent T3 settlement for a collected attempt.
 func (d *LocalDriver) Settle(ctx context.Context, pkg workerproto.ExecutionPackage) error {
+	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
+		return err
+	} else if scoped != nil {
+		return scoped.Settle(ctx, pkg)
+	}
 	if d.Config.DryRun {
 		return nil
 	}
@@ -420,6 +453,11 @@ func (d *LocalDriver) Settle(ctx context.Context, pkg workerproto.ExecutionPacka
 // collectable T3 outcome. The final message carries the failure marker and
 // reason so the coordinator records why the attempt failed.
 func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.ExecutionPackage, workspace, failure string) error {
+	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
+		return err
+	} else if scoped != nil {
+		return scoped.CollectFailure(ctx, pkg, workspace, failure)
+	}
 	if d.Config.DryRun {
 		return nil
 	}
@@ -471,6 +509,11 @@ func (d *LocalDriver) Cleanup(_ context.Context, pkg workerproto.ExecutionPackag
 }
 
 func (d *LocalDriver) Warn(ctx context.Context, pkg workerproto.ExecutionPackage, command domain.ThrottleCommand) error {
+	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
+		return err
+	} else if scoped != nil {
+		return scoped.Warn(ctx, pkg, command)
+	}
 	if d.Config.DryRun {
 		return nil
 	}
@@ -482,6 +525,11 @@ func (d *LocalDriver) Warn(ctx context.Context, pkg workerproto.ExecutionPackage
 }
 
 func (d *LocalDriver) Checkpoint(ctx context.Context, pkg workerproto.ExecutionPackage, command domain.ThrottleCommand) (*domain.CheckpointMetadata, error) {
+	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
+		return nil, err
+	} else if scoped != nil {
+		return scoped.Checkpoint(ctx, pkg, command)
+	}
 	if d.Config.DryRun {
 		data := []byte("no-external-effects checkpoint\n")
 		return d.Publisher.PublishCheckpoint(ctx, pkg, ".t3/checkpoint.md", data)
@@ -510,6 +558,11 @@ func (d *LocalDriver) Checkpoint(ctx context.Context, pkg workerproto.ExecutionP
 }
 
 func (d *LocalDriver) Resume(ctx context.Context, pkg workerproto.ExecutionPackage, command domain.ThrottleCommand) error {
+	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
+		return err
+	} else if scoped != nil {
+		return scoped.Resume(ctx, pkg, command)
+	}
 	if d.Config.DryRun {
 		return os.WriteFile(d.noEffectsThreadPath(pkg), []byte("active\n"), 0o600)
 	}
