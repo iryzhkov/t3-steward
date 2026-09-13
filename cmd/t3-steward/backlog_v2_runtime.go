@@ -14,6 +14,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
+	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
@@ -426,11 +427,16 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	if err != nil {
 		return err
 	}
+	directoryCatalogs := make(map[string][]directoryresource.Binding)
+	for name, project := range cfg.BacklogV2.Projects {
+		directoryCatalogs[name] = directoryresource.CloneBindings(project.DirectoryResources)
+	}
 	submissions := &backlog.SubmissionService{
-		StorageRoot: cfg.BacklogV2.Storage.Bundles,
-		Store:       store,
-		MaxBytes:    cfg.BacklogV2.MessageLimits.MaxBytes,
-		MaxFiles:    cfg.BacklogV2.MessageLimits.MaxFiles,
+		DirectoryCatalogs: directoryCatalogs,
+		StorageRoot:       cfg.BacklogV2.Storage.Bundles,
+		Store:             store,
+		MaxBytes:          cfg.BacklogV2.MessageLimits.MaxBytes,
+		MaxFiles:          cfg.BacklogV2.MessageLimits.MaxFiles,
 	}
 	service.SetWorkerEnrollmentHandler(coordinatorEnrollmentHandler(cfg.BacklogV2, store, epoch, artifactStore))
 	scheduleDefinitions := &backlog.ScheduleDefinitionService{Store: store}

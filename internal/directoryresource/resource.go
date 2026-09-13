@@ -19,32 +19,32 @@ const (
 // Registration is operator-owned. Paths must already be canonical; inspection
 // never creates, chmods or otherwise mutates source directories.
 type Registration struct {
-	WorkerID   string `json:"workerId"`
-	ResourceID string `json:"resourceId"`
-	Revision   string `json:"revision"`
-	Path       string `json:"path"`
-	Writable   bool   `json:"writable,omitempty"`
+	WorkerID   string `json:"workerId" yaml:"workerId"`
+	ResourceID string `json:"resourceId" yaml:"resourceId"`
+	Revision   string `json:"revision" yaml:"revision"`
+	Path       string `json:"path" yaml:"path"`
+	Writable   bool   `json:"writable,omitempty" yaml:"writable,omitempty"`
 }
 
 // Object identifies an inode independently of bind-mount aliases. Birth time
 // prevents an inode reused after deletion from matching an old registration.
 type Object struct {
-	Device       uint64 `json:"device"`
-	Inode        uint64 `json:"inode"`
-	BirthSeconds int64  `json:"birthSeconds"`
-	BirthNanos   uint32 `json:"birthNanos"`
+	Device       uint64 `json:"device" yaml:"device"`
+	Inode        uint64 `json:"inode" yaml:"inode"`
+	BirthSeconds int64  `json:"birthSeconds" yaml:"birthSeconds"`
+	BirthNanos   uint32 `json:"birthNanos" yaml:"birthNanos"`
 }
 
 type Identity struct {
-	Registration Registration `json:"registration"`
-	Object       Object       `json:"object"`
-	MountID      uint64       `json:"mountId"`
-	Ancestors    []Object     `json:"ancestors"`
+	Registration Registration `json:"registration" yaml:"registration"`
+	Object       Object       `json:"object" yaml:"object"`
+	MountID      uint64       `json:"mountId" yaml:"mountId"`
+	Ancestors    []Object     `json:"ancestors" yaml:"ancestors"`
 }
 
 type Binding struct {
-	Identity Identity `json:"identity"`
-	Access   Access   `json:"access"`
+	Identity Identity `json:"identity" yaml:"identity"`
+	Access   Access   `json:"access" yaml:"access"`
 }
 
 func (r Registration) Validate() error {

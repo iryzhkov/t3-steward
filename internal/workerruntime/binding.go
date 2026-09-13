@@ -11,6 +11,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/config"
+	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -74,8 +75,21 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 		if project.SetupProfile == "" {
 			return WorkerBinding{}, fmt.Errorf("worker binding: project %q has no setup profile", name)
 		}
+		if err := directoryresource.ValidateCatalog(project.DirectoryResources); err != nil {
+			return WorkerBinding{}, err
+		}
+		var directories []directoryresource.Binding
+		for _, binding := range project.DirectoryResources {
+			if !slices.Contains(project.Workers, binding.Identity.Registration.WorkerID) {
+				return WorkerBinding{}, errors.New("directory worker is not eligible for project")
+			}
+			if binding.Identity.Registration.WorkerID == workerID {
+				directories = append(directories, binding)
+			}
+		}
 		projects = append(projects, backlog.ProjectDefinition{
-			Type: project.Type, Name: name, Repository: project.Repository, DefaultRef: project.DefaultRef,
+			DirectoryBindings: directoryresource.CloneBindings(directories),
+			Type:              project.Type, Name: name, Repository: project.Repository, DefaultRef: project.DefaultRef,
 			T3ProjectTemplate: project.T3Project, SetupProfile: project.SetupProfile,
 			ResourceLocks:       append([]string(nil), project.ResourceLocks...),
 			RequiredCredentials: append([]string(nil), project.Credentials...),

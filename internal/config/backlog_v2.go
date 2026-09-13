@@ -3,7 +3,9 @@ package config
 import (
 	"errors"
 	"fmt"
+	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -134,6 +136,14 @@ func (c *Config) validateBacklogV2() error {
 		for _, worker := range project.Workers {
 			if _, ok := v.Workers[worker]; !ok {
 				return fmt.Errorf("backlog_v2: project %q references unknown worker %q", name, worker)
+			}
+		}
+		if err := directoryresource.ValidateCatalog(project.DirectoryResources); err != nil {
+			return fmt.Errorf("backlog_v2: project %q directory resources: %w", name, err)
+		}
+		for _, binding := range project.DirectoryResources {
+			if !slices.Contains(project.Workers, binding.Identity.Registration.WorkerID) {
+				return fmt.Errorf("backlog_v2: project %q directory worker is not eligible", name)
 			}
 		}
 		for _, credential := range project.Credentials {

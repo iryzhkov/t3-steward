@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
@@ -27,11 +28,12 @@ type CoordinatorRecordStore interface {
 // BundleIngester copies a validated version 2 submission into coordinator-owned
 // storage and persists the corresponding immutable domain records.
 type BundleIngester struct {
-	StorageRoot string
-	Store       CoordinatorRecordStore
-	Now         func() time.Time
-	NewID       func() string
-	NewTypedID  func(string) string
+	DirectoryCatalogs map[string][]directoryresource.Binding
+	StorageRoot       string
+	Store             CoordinatorRecordStore
+	Now               func() time.Time
+	NewID             func() string
+	NewTypedID        func(string) string
 }
 
 // IngestedBundle identifies a successfully committed workflow submission.
@@ -67,6 +69,17 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 		return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: %w", err)
 	}
 
+	directoryBindings := make(map[string][]directoryresource.Binding)
+	for name, task := range manifest.Tasks {
+		if len(task.Directories) == 0 {
+			continue
+		}
+		bindings, err := directoryresource.Resolve(i.DirectoryCatalogs[manifest.Environment.Project], task.Directories)
+		if err != nil {
+			return IngestedBundle{}, fmt.Errorf("ingest task %q directories: %w", name, err)
+		}
+		directoryBindings[name] = bindings
+	}
 	workflowID := i.newID("workflow")
 	runID := i.newID("run")
 	workflowsRoot := filepath.Join(i.StorageRoot, "workflows")
@@ -116,7 +129,7 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 	}
 
 	now := i.now()
-	records, err := i.buildRecords(manifest, workflowID, runID, inputPaths, files, now)
+	records, err := i.buildRecords(manifest, workflowID, runID, inputPaths, files, directoryBindings, now)
 	if err != nil {
 		return IngestedBundle{}, fmt.Errorf("ingest sink: %w", err)
 	}
@@ -187,7 +200,7 @@ func openIngestionBundle(bundleDir string) (string, *os.Root, Manifest, []byte, 
 	return root, sourceRoot, manifest, raw, nil
 }
 
-func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string, inputPaths []string, files map[string]ingestedFile, now time.Time) (sqlite.CoordinatorRecords, error) {
+func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string, inputPaths []string, files map[string]ingestedFile, directoryBindings map[string][]directoryresource.Binding, now time.Time) (sqlite.CoordinatorRecords, error) {
 	records := sqlite.CoordinatorRecords{}
 	manifestArtifact := i.artifact(runID, "", files["workflow.yaml"], now)
 	records.Artifacts = append(records.Artifacts, manifestArtifact)
@@ -258,7 +271,8 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 			}
 		}
 		records.Tasks = append(records.Tasks, domain.Task{
-			ID: taskID, WorkflowID: workflowID, Name: name, Class: taskManifest.Class,
+			DirectoryBindings: directoryresource.CloneBindings(directoryBindings[name]),
+			ID:                taskID, WorkflowID: workflowID, Name: name, Class: taskManifest.Class,
 			Needs: localNeeds, ExternalNeeds: externalNeeds, PromptArtifactID: promptArtifact.ID,
 			InputArtifactIDs: append([]string(nil), taskInputIDs...), DependencyInputs: cloneStringSlices(taskManifest.InputsFrom),
 			Outputs: outputs, Verification: append([]string(nil), taskManifest.Verify...),

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"gopkg.in/yaml.v3"
 )
 
@@ -322,14 +323,15 @@ type V2Provider struct {
 }
 
 type V2Project struct {
-	Type          string   `yaml:"type" json:"type,omitempty"`
-	Repository    string   `yaml:"repository"`
-	DefaultRef    string   `yaml:"default_ref"`
-	T3Project     string   `yaml:"t3_project"`
-	SetupProfile  string   `yaml:"setup_profile"`
-	Workers       []string `yaml:"workers"`
-	Credentials   []string `yaml:"credentials"`
-	ResourceLocks []string `yaml:"resource_locks"`
+	DirectoryResources []directoryresource.Binding `yaml:"directory_resources" json:"directoryResources,omitempty"`
+	Type               string                      `yaml:"type" json:"type,omitempty"`
+	Repository         string                      `yaml:"repository"`
+	DefaultRef         string                      `yaml:"default_ref"`
+	T3Project          string                      `yaml:"t3_project"`
+	SetupProfile       string                      `yaml:"setup_profile"`
+	Workers            []string                    `yaml:"workers"`
+	Credentials        []string                    `yaml:"credentials"`
+	ResourceLocks      []string                    `yaml:"resource_locks"`
 }
 
 type V2SetupProfile struct {

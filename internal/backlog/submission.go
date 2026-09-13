@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -42,12 +43,13 @@ type SubmissionResult struct {
 // SubmissionService serializes local publication while SQLite supplies durable
 // cross-restart idempotency.
 type SubmissionService struct {
-	StorageRoot string
-	Store       SubmissionStore
-	MaxBytes    int64
-	MaxFiles    int
-	Now         func() time.Time
-	NewKey      func() string
+	DirectoryCatalogs map[string][]directoryresource.Binding
+	StorageRoot       string
+	Store             SubmissionStore
+	MaxBytes          int64
+	MaxFiles          int
+	Now               func() time.Time
+	NewKey            func() string
 
 	mu sync.Mutex
 }
@@ -100,10 +102,11 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 		}
 	}
 	ingester := BundleIngester{
-		StorageRoot: s.StorageRoot,
-		Store:       s.Store,
-		Now:         func() time.Time { return record.CreatedAt },
-		NewTypedID:  submissionTypedIDGenerator(key),
+		DirectoryCatalogs: s.DirectoryCatalogs,
+		StorageRoot:       s.StorageRoot,
+		Store:             s.Store,
+		Now:               func() time.Time { return record.CreatedAt },
+		NewTypedID:        submissionTypedIDGenerator(key),
 	}
 	ingested, err := ingester.Ingest(ctx, request.BundleDir)
 	if err != nil {

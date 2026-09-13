@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.23] - 2026-09-13
+
+### Added
+
+- Operator project directory catalogs and capsule resource requests resolve exact
+  approved identities at submission, default to read-only and reject host paths,
+  stale revisions, wrong placement and write escalation. Worker catalog revisions
+  fence only local resource changes. Accepted requests persist across SQLite
+  restart and idempotent replay. Provider containment remains a required runtime
+  gate; existing-directory execution is still refused before effects.
+
 ## [0.11.0-rc.22] - 2026-09-13
 
 ### Added

@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"gopkg.in/yaml.v3"
 )
@@ -67,22 +69,23 @@ type ManifestRoute struct {
 
 // ManifestTask is one node in a workflow manifest.
 type ManifestTask struct {
-	Class         domain.TaskClass    `yaml:"class"`
-	PromptFile    string              `yaml:"prompt_file"`
-	Needs         ManifestNeeds       `yaml:"needs"`
-	InputsFrom    map[string][]string `yaml:"inputs_from"`
-	Outputs       []string            `yaml:"outputs"`
-	Verify        []string            `yaml:"verify"`
-	Placement     ManifestPlacement   `yaml:"placement"`
-	Routes        []ManifestRoute     `yaml:"routes"`
-	ResourceLocks []string            `yaml:"resource_locks"`
-	Importance    int                 `yaml:"importance"`
-	Difficulty    int                 `yaml:"difficulty"`
-	EstimatedCost *float64            `yaml:"estimated_cost"`
-	MaxTurns      int                 `yaml:"max_turns"`
-	NotBefore     *time.Time          `yaml:"not_before"`
-	Deadline      *time.Time          `yaml:"deadline"`
-	ExpiresAt     *time.Time          `yaml:"expires_at"`
+	Directories   []directoryresource.Request `yaml:"directories"`
+	Class         domain.TaskClass            `yaml:"class"`
+	PromptFile    string                      `yaml:"prompt_file"`
+	Needs         ManifestNeeds               `yaml:"needs"`
+	InputsFrom    map[string][]string         `yaml:"inputs_from"`
+	Outputs       []string                    `yaml:"outputs"`
+	Verify        []string                    `yaml:"verify"`
+	Placement     ManifestPlacement           `yaml:"placement"`
+	Routes        []ManifestRoute             `yaml:"routes"`
+	ResourceLocks []string                    `yaml:"resource_locks"`
+	Importance    int                         `yaml:"importance"`
+	Difficulty    int                         `yaml:"difficulty"`
+	EstimatedCost *float64                    `yaml:"estimated_cost"`
+	MaxTurns      int                         `yaml:"max_turns"`
+	NotBefore     *time.Time                  `yaml:"not_before"`
+	Deadline      *time.Time                  `yaml:"deadline"`
+	ExpiresAt     *time.Time                  `yaml:"expires_at"`
 
 	placementImpossible bool
 }
@@ -287,6 +290,9 @@ func validateManifest(manifest Manifest) error {
 		if !manifestNamePattern.MatchString(name) {
 			return fmt.Errorf("invalid task name %q", name)
 		}
+		if len(manifest.Tasks[name].Directories) > 0 && (manifest.Environment.Type != EnvironmentFresh || manifest.Environment.Scope != EnvironmentScopeTask) {
+			return fmt.Errorf("task %s: directory attachments require a fresh task workspace", name)
+		}
 		if err := validateManifestTask(name, manifest.Tasks[name], manifest.Tasks); err != nil {
 			return err
 		}
@@ -308,6 +314,14 @@ func validClass(class domain.TaskClass) bool {
 
 func validateManifestTask(name string, task ManifestTask, tasks map[string]ManifestTask) error {
 	prefix := "task " + name
+	if err := directoryresource.ValidateRequests(task.Directories); err != nil {
+		return fmt.Errorf("%s: %w", prefix, err)
+	}
+	for _, request := range task.Directories {
+		if len(task.Placement.Hosts) > 0 && !slices.Contains(task.Placement.Hosts, request.WorkerID) {
+			return fmt.Errorf("%s: directory worker conflicts with placement", prefix)
+		}
+	}
 	if !validClass(task.Class) {
 		return fmt.Errorf("%s has invalid class %q", prefix, task.Class)
 	}
