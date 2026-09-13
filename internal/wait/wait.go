@@ -391,9 +391,6 @@ func ResolveThread(logDir, providerSessionID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	encoded, _ := json.Marshal(providerSessionID)
-	needle := append([]byte(`"providerThreadId":`), encoded...)
-	needle2 := append([]byte(`"session_id":`), encoded...)
 	found := ""
 	// Newest files first: the session is almost always the most recent.
 	sort.Slice(entries, func(i, j int) bool { return entries[i].modTime.After(entries[j].modTime) })
@@ -401,7 +398,7 @@ func ResolveThread(logDir, providerSessionID string) (string, error) {
 		if e.age > 14*24*time.Hour {
 			break
 		}
-		if fileContains(e.path, needle, needle2) {
+		if fileContainsSession(e.path, providerSessionID) {
 			name := strings.TrimSuffix(strings.TrimPrefix(e.name, "events."), ".log")
 			if i := strings.Index(name, ".log."); i >= 0 {
 				name = name[:i]

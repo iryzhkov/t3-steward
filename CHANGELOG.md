@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.12] - 2026-09-13
+
+### Fixed
+
+- Caller discovery parses prefixed T3 provider events, including Codex native
+  payload thread IDs. It matches identity fields rather than quoted tool output.
+  Live Codex qualification exposed the missing native-event mapping.
+
 ## [0.11.0-rc.11] - 2026-09-13
 
 ### Added
