@@ -51,11 +51,32 @@ have no host connectivity. NO_PROXY covers only the sandbox's own loopback.
 Provider endpoint/proxy compatibility still needs live qualification.
 
 The supervisor's context stops the dedicated namespace, including descendants.
-This context must belong to a durable, separately managed execution supervisor,
-not a worker connection or assignment lease. The launcher itself does not yet
-persist supervisor identity, expose a scoped T3 control endpoint, integrate
-artifact paths, or establish restart/reconnect recovery. Those are prerequisites
-for removing the normal worker's fail-closed directory guard.
+This context belongs to the separate user systemd service when launched through
+the durable supervisor commands:
+
+```sh
+t3-steward worker contained-start --spec launch.json --state-dir /absolute/private/state --execution ID
+t3-steward worker contained-show --spec launch.json --state-dir /absolute/private/state --execution ID
+t3-steward worker contained-stop --spec launch.json --state-dir /absolute/private/state --execution ID
+```
+
+Provision the state directory as 0700, outside every sandbox mount. Start reserves
+the execution identity durably before its single systemd request. Repeat calls
+only observe the same unit; changed specs are refused. A lost response, incomplete
+intent or missing unit never authorizes another launch or releases ownership.
+The service has no worker-service dependency, no restart policy and no lease
+timer. Cancellation of the calling CLI/worker context leaves it running.
+
+Stop is an explicit cancellation/finalization effect. It waits for systemd's
+control-group stop and persists a complete stop receipt. An uncertain stop reply
+does not release ownership. Even an exited main process is not treated as proof
+that every descendant stopped. A stopped receipt describes process custody,
+never successful provider completion. Keep these journals across worker restarts;
+there is no automatic relaunch or journal cleanup.
+
+Scoped T3 control, provider credentials, artifact mappings and the normal worker
+binding remain unimplemented. The normal worker's directory guard stays closed
+until those integrations and installed provider recovery qualification pass.
 
 ## Evidence and remaining gate
 
@@ -72,7 +93,18 @@ child-process read-only denial, owned output, unavailable host home/services and
 isolated host loopback using disposable directories. A skipped kernel test is not
 containment qualification. Unsupported platforms refuse launching.
 
-Next integrate the dedicated supervisor and scoped T3 API, provider-specific
+The real user-service test additionally checks that cancelling the caller and
+reconstructing the supervisor manager preserves the same running invocation:
+
+```sh
+T3_STEWARD_REQUIRE_SUPERVISOR_TESTS=1 go test ./internal/providercontainment -run TestSupervisorSystemd -count=1
+```
+
+This is a bounded process fixture, not installed provider qualification.
+Unit tests cover lost launch/stop responses, concurrent claims, missing units,
+changed contracts, incomplete intents, foreign unit refusal and durable custody.
+
+Next integrate the supervisor with the worker and scoped T3 API, provider-specific
 credentials/proxy settings, directory cwd/output mappings and authoritative
 stopped-process evidence. Then qualify an actual provider task on installed
 releases on two hosts, including writable data, cancellation, restart and

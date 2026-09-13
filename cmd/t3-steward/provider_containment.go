@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"net"
@@ -31,6 +32,48 @@ func cmdContainedExec(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return providercontainment.Run(ctx, spec, providercontainment.Streams{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr})
+}
+
+// The state directory must be provisioned privately by the worker/operator and
+// must survive worker restarts. These commands never infer a stop from expiry.
+func cmdContainedSupervisor(action string, args []string) error {
+	flags := flag.NewFlagSet("worker contained-"+action, flag.ContinueOnError)
+	path := flags.String("spec", "", "operator-owned containment launch JSON")
+	root := flags.String("state-dir", "", "existing private supervisor state directory")
+	execution := flags.String("execution", "", "stable execution identity")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *path == "" || *root == "" || *execution == "" || flags.NArg() != 0 {
+		return errors.New("contained supervisor requires --spec FILE --state-dir DIR --execution ID")
+	}
+	var spec providercontainment.Spec
+	if err := readDirectoryJSON(*path, &spec); err != nil {
+		return err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	manager := providercontainment.Supervisor{Root: *root, Executable: executable}
+	launch := providercontainment.Launch{ExecutionID: *execution, Spec: spec}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var observation providercontainment.SupervisorObservation
+	switch action {
+	case "start":
+		observation, err = manager.Start(ctx, launch)
+	case "show":
+		observation, err = manager.Observe(ctx, launch)
+	case "stop":
+		observation, err = manager.Stop(ctx, launch)
+	default:
+		return errors.New("unknown containment supervisor action")
+	}
+	if outputErr := json.NewEncoder(os.Stdout).Encode(observation); outputErr != nil {
+		return outputErr
+	}
+	return err
 }
 
 func cmdContainedChild(args []string) error {

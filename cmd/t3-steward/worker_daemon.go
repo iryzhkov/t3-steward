@@ -20,6 +20,16 @@ import (
 )
 
 func cmdWorker(g globalFlags, args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "contained-start":
+			return cmdContainedSupervisor("start", args[1:])
+		case "contained-show":
+			return cmdContainedSupervisor("show", args[1:])
+		case "contained-stop":
+			return cmdContainedSupervisor("stop", args[1:])
+		}
+	}
 	if len(args) > 0 && args[0] == "contained-exec" {
 		return cmdContainedExec(args[1:])
 	}

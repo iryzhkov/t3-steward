@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.26] - 2026-09-13
+
+### Added
+
+- Durable containment supervisor identities and separate user services survive
+  caller cancellation and worker reconstruction. Launch requests are never
+  automatically repeated after uncertainty; explicit confirmed control-group
+  stops persist custody receipts. Lease expiry has no stop behavior. Scoped T3
+  and normal directory worker integration remain gated.
+
 ## [0.11.0-rc.25] - 2026-09-13
 
 ### Fixed
