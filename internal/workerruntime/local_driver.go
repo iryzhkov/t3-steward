@@ -193,6 +193,14 @@ func (d *LocalDriver) InspectWorkspace(_ context.Context, pkg workerproto.Execut
 	return workspace, true, nil
 }
 
+// BeginObservationPass drops observations retained by a previous reconciliation.
+// Persistent workers reuse the driver, but each pass must see current T3 state.
+func (d *LocalDriver) BeginObservationPass() {
+	if cache, ok := d.T3.(interface{ invalidate() }); ok {
+		cache.invalidate()
+	}
+}
+
 func (d *LocalDriver) ObserveThread(ctx context.Context, pkg workerproto.ExecutionPackage) (backlog.DispatchThreadState, error) {
 	if d.Config.DryRun {
 		state, err := os.ReadFile(d.noEffectsThreadPath(pkg))

@@ -416,6 +416,9 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 // A failure on one attempt is recorded on that attempt and never prevents
 // the others from progressing; only journal I/O errors are returned.
 func (r *Runtime) Reconcile(ctx context.Context) error {
+	if observer, ok := r.driver.(interface{ BeginObservationPass() }); ok {
+		observer.BeginObservationPass()
+	}
 	state, err := r.journal.snapshot()
 	if err != nil {
 		return err

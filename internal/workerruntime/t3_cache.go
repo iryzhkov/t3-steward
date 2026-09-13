@@ -9,9 +9,10 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-// CachedT3 serves thread observations from one shell snapshot per worker
-// exchange. Every mutation invalidates the snapshot, so a reconcile pass over
-// many attempts costs one T3 round trip instead of one per attempt.
+// CachedT3 shares one shell snapshot within a worker reconciliation pass.
+// LocalDriver.BeginObservationPass invalidates it at every pass boundary;
+// mutations also invalidate it. Its lifetime may span a persistent worker's
+// process, but observations must never span reconciliation passes.
 type CachedT3 struct {
 	Inner T3Control
 
