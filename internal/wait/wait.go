@@ -391,8 +391,10 @@ func ResolveThread(logDir, providerSessionID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	needle := []byte(`"providerThreadId":"` + providerSessionID + `"`)
-	needle2 := []byte(`"session_id":"` + providerSessionID + `"`)
+	encoded, _ := json.Marshal(providerSessionID)
+	needle := append([]byte(`"providerThreadId":`), encoded...)
+	needle2 := append([]byte(`"session_id":`), encoded...)
+	found := ""
 	// Newest files first: the session is almost always the most recent.
 	sort.Slice(entries, func(i, j int) bool { return entries[i].modTime.After(entries[j].modTime) })
 	for _, e := range entries {
@@ -404,8 +406,14 @@ func ResolveThread(logDir, providerSessionID string) (string, error) {
 			if i := strings.Index(name, ".log."); i >= 0 {
 				name = name[:i]
 			}
-			return name, nil
+			if found != "" && found != name {
+				return "", fmt.Errorf("provider session matches multiple T3 threads (pass --thread)")
+			}
+			found = name
 		}
+	}
+	if found != "" {
+		return found, nil
 	}
 	return "", fmt.Errorf("no T3 thread found for provider session %s (pass --thread)", providerSessionID)
 }

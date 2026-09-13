@@ -34,6 +34,7 @@ archives:
       - CHANGELOG.md
       - config.example.yaml
       - packaging/systemd/t3-steward.service
+      - packaging/opencode/steward-session.js
       - docs/t3-protocol.md
 
 checksum:

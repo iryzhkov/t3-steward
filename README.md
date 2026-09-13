@@ -635,8 +635,13 @@ registers the check with the steward and ends its turn:
 t3-steward wait add --name "PR 123 reviewed" -- gh pr view 123 --json reviewDecision --jq 'select(.reviewDecision != "") | .reviewDecision'
 ```
 
-The thread is resolved from the calling agent's `CLAUDE_CODE_SESSION_ID`
-(or `--thread`). The steward runs the check every 30 seconds, doubling the
+The thread is resolved from `CLAUDE_CODE_SESSION_ID` (Claude), `CODEX_THREAD_ID`
+(Codex), or `OPENCODE_SESSION_ID` (OpenCode). Explicit `--thread` always wins;
+conflicting session variables or matches to multiple T3 threads require it.
+For OpenCode, install the bundled `packaging/opencode/steward-session.js` in
+`~/.config/opencode/plugins/` and start a new OpenCode server. The plugin supplies
+the session ID to each shell invocation through OpenCode's `shell.env` hook.
+Shared MCP servers do not carry per-call shell context; use `--thread` there. The steward runs the check every 30 seconds, doubling the
 interval after every "not yet" up to 10 minutes (`--every`, `--max-every`),
 for up to `--timeout` (24 h). Exit 0 means the condition is met, exit 2
 means give up, anything else means keep polling. When the wait settles the

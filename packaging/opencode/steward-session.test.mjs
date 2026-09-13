@@ -1,0 +1,12 @@
+import { strict as assert } from "node:assert";
+import { StewardSession } from "./steward-session.js";
+const hook = (await StewardSession())["shell.env"];
+const outputs = [{ env: { KEEP: "yes" } }, { env: { KEEP: "yes" } }];
+await Promise.all(["ses_a", "ses_b"].map((sessionID, i) => hook({ sessionID }, outputs[i])));
+assert.equal(outputs[0].env.OPENCODE_SESSION_ID, "ses_a");
+assert.equal(outputs[1].env.OPENCODE_SESSION_ID, "ses_b");
+assert.equal(outputs[0].env.KEEP, "yes");
+assert.equal(outputs[0].env.CODEX_THREAD_ID, "");
+const missing = { env: { OPENCODE_SESSION_ID: "stale" } };
+await hook({}, missing);
+assert.equal(missing.env.OPENCODE_SESSION_ID, "");

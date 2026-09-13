@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.11] - 2026-09-13
+
+### Added
+
+- Wait caller discovery accepts OpenCode session IDs alongside Claude and Codex.
+  A bundled OpenCode shell hook exports the current session per invocation.
+  Explicit thread IDs take precedence; ambiguous caller identities are rejected.
+
 ## [0.11.0-rc.10] - 2026-09-13
 
 ### Fixed

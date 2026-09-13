@@ -42,7 +42,7 @@ add flags:
   --timeout DURATION Give up after this long (default 24h).
   --run-timeout DUR  Bound one run of the check (default 1m).
   --thread ID        T3 thread to wake (default: resolved from
-                     CLAUDE_CODE_SESSION_ID of the calling agent).
+                     CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID or OPENCODE_SESSION_ID).
   --dir PATH         Working directory for the check (default: current).
   --group NAME       Group with other waits of the same thread.
   --wake each|all    Wake per wait (default) or once the whole group settled.
@@ -237,18 +237,34 @@ func resolveThread(cfg config.Config, explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
-	session := os.Getenv("CLAUDE_CODE_SESSION_ID")
-	if session == "" {
-		session = os.Getenv("CODEX_THREAD_ID")
-	}
-	if session == "" {
-		return "", errors.New("no --thread given and CLAUDE_CODE_SESSION_ID is not set; pass --thread with the T3 thread id")
+	session, err := callerSession(os.Getenv)
+	if err != nil {
+		return "", err
 	}
 	dataDir, err := cfg.ResolveDataDir()
 	if err != nil {
 		return "", err
 	}
 	return wait.ResolveThread(t3api.ProviderLogDir(dataDir), session)
+}
+
+// Reject conflicting inherited provider contexts instead of waking another session.
+func callerSession(getenv func(string) string) (string, error) {
+	session := ""
+	for _, key := range []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "OPENCODE_SESSION_ID"} {
+		value := strings.TrimSpace(getenv(key))
+		if value == "" {
+			continue
+		}
+		if session != "" && session != value {
+			return "", errors.New("multiple provider session IDs are set; pass --thread with the intended T3 thread id")
+		}
+		session = value
+	}
+	if session == "" {
+		return "", errors.New("no caller session found: set CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID or OPENCODE_SESSION_ID, or pass --thread with the T3 thread id")
+	}
+	return session, nil
 }
 
 func newWaitID() string {
