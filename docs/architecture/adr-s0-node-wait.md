@@ -90,7 +90,10 @@ failure, wait.dry_run controls both shell and native notification delivery and
 defaults to false independently of policy.dry_run. A separate T3 control client
 uses that same wait policy; explicit --dry-run holds both execution and wakes.
 Held native intents settle once without repeated would-wake logging. Legacy
-shell checks retain their existing CLI and quota health checks. Native waits are visible with wait list --native
+shell checks retain their existing CLI. Per the user's S4 clarification,
+wait.quota_checks (default true) independently controls quota-based delivery holds
+for shell and native waits. Setting it false bypasses those checks; it does not
+change dry-run. Neither wait setting inherits watchdog policy.dry_run. Native waits are visible with wait list --native
 and keep their target threads busy for archive exclusion.
 
 T3 seam: dispatch carries deterministic commandId and messageId derived from the

@@ -119,6 +119,8 @@ type Runner struct {
 	DryRun     bool
 	NodeDryRun bool
 	NodeHost   string
+	// DisableQuotaChecks bypasses quota-based wake holds, independently of DryRun.
+	DisableQuotaChecks bool
 
 	buckets []domain.BucketState
 }
@@ -357,6 +359,9 @@ func MarshalCommand(argv []string) string {
 // healthy reports whether every bucket that applies to the thread is in the
 // normal phase (or belongs to a window that already passed).
 func (r *Runner) healthy(thread domain.Thread) (bool, string) {
+	if r.DisableQuotaChecks {
+		return true, ""
+	}
 	now := r.now()
 	for _, b := range r.buckets {
 		if !thread.MatchesBucket(b.Key, b.ModelSelector) {

@@ -604,7 +604,10 @@ with a custom request ID that does not start with `nw-`.
 Shell and native wake delivery use `wait.dry_run` (default `false`), independently
 of `policy.dry_run`. A dedicated T3 client delivers registered wakes even while
 watchdog enforcement is dry-run. Set `wait.dry_run: true` to hold notifications;
-the explicit global `--dry-run` flag also holds them. Quota health checks still apply. Held outcomes settle once. A lost send response retains one
+the explicit global `--dry-run` flag also holds them. `wait.quota_checks` defaults
+to `true`: unhealthy quota delays notification until it recovers. Set it to
+`false` to bypass quota holds for waits. This is independent of both wait delivery
+dry-run and watchdog `policy.dry_run`; disabling checks does not disable wakes. Held outcomes settle once. A lost send response retains one
 wake identity and waits for positive T3 message evidence; `recovery-required`
 means delivery is uncertain and will not be blindly retried. See the
 [node-wait ADR](docs/architecture/adr-s0-node-wait.md) for evidence limits.

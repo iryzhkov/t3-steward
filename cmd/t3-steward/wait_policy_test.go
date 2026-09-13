@@ -22,17 +22,22 @@ import (
 func TestWaitDeliveryIndependentOfWatchdogDryRun(t *testing.T) {
 	hold, deliver := true, false
 	for _, tc := range []struct {
-		name       string
-		policy     bool
-		waitPolicy *bool
-		blocked    bool
-		wantSend   int32
+		name         string
+		policy       bool
+		waitPolicy   *bool
+		blocked      bool
+		wantSend     int32
+		disableQuota bool
 	}{
-		{"default with dry watchdog", true, nil, false, 1},
-		{"explicit delivery with dry watchdog", true, &deliver, false, 1},
-		{"held with dry watchdog", true, &hold, false, 0},
-		{"held with live watchdog", false, &hold, false, 0},
-		{"unhealthy quota still holds", true, nil, true, 0},
+		{"default with dry watchdog", true, nil, false, 1, false},
+		{"explicit delivery with dry watchdog", true, &deliver, false, 1, false},
+		{"held with dry watchdog", true, &hold, false, 0, false},
+		{"held with live watchdog", false, &hold, false, 0, false},
+		{"unhealthy quota holds with dry watchdog", true, nil, true, 0, false},
+		{"unhealthy quota holds with live watchdog", false, nil, true, 0, false},
+		{"disabled quota checks with dry watchdog", true, nil, true, 1, true},
+		{"disabled quota checks with live watchdog", false, nil, true, 1, true},
+		{"explicit wait dry-run wins with checks disabled", true, &hold, true, 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var sent atomic.Int32
@@ -56,6 +61,9 @@ func TestWaitDeliveryIndependentOfWatchdogDryRun(t *testing.T) {
 			cfg := config.Default()
 			cfg.T3.URL, cfg.T3.Token, cfg.T3.DataDir = server.URL, "test-token", t.TempDir()
 			cfg.Policy.DryRun, cfg.Wait.DryRun = tc.policy, tc.waitPolicy
+			if tc.disableQuota {
+				cfg.Wait.QuotaChecks = &deliver
+			}
 			cfg.Archive.Enabled = false
 			store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 			if err != nil {

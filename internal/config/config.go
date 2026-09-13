@@ -382,6 +382,8 @@ type Config struct {
 		// DryRun holds shell and node wake delivery; nil defaults to false.
 		// It does not inherit watchdog policy.dry_run.
 		DryRun *bool `yaml:"dry_run"`
+		// QuotaChecks gates wake delivery on quota health; nil defaults to true.
+		QuotaChecks *bool `yaml:"quota_checks"`
 	} `yaml:"wait"`
 	T3            T3            `yaml:"t3"`
 	Policy        Policy        `yaml:"policy"`

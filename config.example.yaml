@@ -28,9 +28,11 @@ t3:
 
 # Shell and node wait notifications are independent of policy.dry_run.
 # Delivery defaults to enabled; set true to hold wakes while checks still settle.
+# Quota checks are independent of dry-run. Set quota_checks to false to bypass holds.
 # The global --dry-run flag also holds wait delivery.
 wait:
   dry_run: false
+  quota_checks: true
 
 policy:
   # Usage thresholds in percent. warn < drain < stop <= 100 is enforced.
