@@ -18,7 +18,8 @@ type DAGState struct {
 }
 
 // CompletionResult is the coordinator's reconciled view of an attempt's final turn.
-// A task succeeds only when the agent explicitly reported success and verification passed.
+// A task succeeds only with positive execution evidence and passing verification.
+// ExplicitSuccess carries that evidence; it does not require a prose status marker.
 type CompletionResult struct {
 	ExplicitSuccess    bool
 	VerificationPassed bool

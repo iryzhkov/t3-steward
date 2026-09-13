@@ -157,7 +157,7 @@ func TestLocalDriverBindsCatalogArtifactsWorkspaceAndT3(t *testing.T) {
 	artifactRoot := filepath.Join(root, "artifacts")
 	runsRoot := filepath.Join(root, "runs")
 	publisher := &recordingPublisher{}
-	control := &recordingT3{message: "finished\nBACKLOG STATUS: done", archive: []byte("{}")}
+	control := &recordingT3{message: "finished\nBACKLOG STATUS: done", archive: []byte(`{"thread":{"id":"thread-1","latestTurn":{"turnId":"turn-1","state":"completed","startedAt":"2026-09-13T05:00:00Z","completedAt":"2026-09-13T05:01:00Z"},"session":{"threadId":"thread-1","status":"ready","activeTurnId":null,"lastError":null}}}`)}
 	source := mapArtifactSource{
 		pkg.Prompt.ID:          []byte("prompt"),
 		pkg.StaticInputs[0].ID: []byte("context"),
@@ -202,7 +202,7 @@ func TestLocalDriverBindsCatalogArtifactsWorkspaceAndT3(t *testing.T) {
 	}
 	control.thread.Running = false
 	control.thread.TurnState = "completed"
-	control.message = "finished without the terminal marker"
+	control.message = "BACKLOG STATUS: continue"
 	if err := driver.Collect(context.Background(), pkg, workspace); err != nil {
 		t.Fatalf("collect deterministic failure: %v", err)
 	}
@@ -215,12 +215,12 @@ func TestLocalDriverBindsCatalogArtifactsWorkspaceAndT3(t *testing.T) {
 	}
 	publisher.results = nil
 	control.settlements = nil
-	control.message = "finished\nBACKLOG STATUS: done"
+	control.message = "finished without a status marker"
 	if err := driver.Collect(context.Background(), pkg, workspace); err != nil {
 		t.Fatal(err)
 	}
 	if len(publisher.results) != 1 || len(publisher.results[0].Finalized.Artifacts) != 1 ||
-		string(publisher.results[0].ThreadArchive) != "{}" {
+		string(publisher.results[0].ThreadArchive) != string(control.archive) {
 		t.Fatalf("published = %+v", publisher.results)
 	}
 	if len(control.settlements) != 1 || control.settlements[0] != "thread-1:dispatch-1" {

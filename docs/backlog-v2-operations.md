@@ -72,8 +72,16 @@ execution. A successful pass reloads DAG/worker state, applies hard quota
 admission, and atomically persists offered assignments without contacting a
 worker or creating a dispatch command. A transport-neutral importer now
 validates completed-assignment custody, raw object hashes, declared outputs,
-ordered verification reports, and the final done marker before coordinator
-artifact publication and replay-safe success/failure projection. Scheduled
+ordered verification reports, and structured provider completion before coordinator
+artifact publication and replay-safe success/failure projection. Successful turns
+need no final status marker: the archived thread must match the assignment, show
+a completed turn with valid timestamps and a ready session without errors, active
+turns, pending input/approvals or working background activity. Declared outputs
+and verification must still pass. Legacy done markers remain accepted but cannot
+override failed execution; failed, continue and needs-input markers prevent
+implicit success. Tasks without outputs or verification establish normal execution
+completion, not independent proof of work quality. Existing terminal history is
+not reclassified. Scheduled
 sessions compose bounded worker transport, lease expiry/renewal, lifecycle
 delivery, durable throttle replay/delivery, one-at-a-time result outbox
 discovery, bounded raw fetch, import, and post-import acknowledgement for both

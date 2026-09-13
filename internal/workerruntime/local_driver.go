@@ -329,13 +329,13 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 	}
 	if thread != nil {
 		// T3 marks the turn completed slightly before the final assistant
-		// message is projected. A capture without the completion marker is
-		// re-read a few times before it is taken as the agent's final word.
+		// message is projected. Briefly retry an empty summary; completion
+		// itself is established by the structured thread archive.
 		for reads := 0; ; reads++ {
 			if message, err = d.T3.LastAssistantMessage(ctx, pkg.Identity.ThreadID); err != nil {
 				return fmt.Errorf("collect final message: %w", err)
 			}
-			if hasDoneMarker(message) || reads >= 3 {
+			if strings.TrimSpace(message) != "" || reads >= 3 {
 				break
 			}
 			select {
@@ -348,9 +348,13 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 			return fmt.Errorf("collect thread archive: %w", err)
 		}
 	}
+	failure, err := backlog.ResultCompletionFailure(archive, pkg.Identity.ThreadID, message)
+	if err != nil {
+		return err
+	}
 	task, attempt := packageRecords(pkg, d.Now().UTC())
 	finalized, err := d.Finalizer.Finalize(ctx, backlog.AttemptFinalization{
-		Task: task, Attempt: attempt, WorkspaceDir: workspace, ExplicitSuccess: hasDoneMarker(message),
+		Task: task, Attempt: attempt, WorkspaceDir: workspace, ExplicitSuccess: failure == "",
 	})
 	if err != nil {
 		return err
@@ -755,15 +759,6 @@ func readBoundedRegularFile(path string, maxBytes int64) ([]byte, error) {
 // failure it produced itself. The coordinator records the following lines as
 // the failure reason.
 const FailedMarker = "BACKLOG STATUS: failed"
-
-func hasDoneMarker(message string) bool {
-	for _, line := range strings.Split(message, "\n") {
-		if strings.EqualFold(strings.TrimSpace(line), "BACKLOG STATUS: done") {
-			return true
-		}
-	}
-	return false
-}
 
 func checkpointMetadata(path string, data []byte, now time.Time) domain.CheckpointMetadata {
 	sum := sha256.Sum256(data)

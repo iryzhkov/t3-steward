@@ -74,12 +74,7 @@ type Runner struct {
 }
 
 // DefaultPreamble precedes every backlog prompt.
-const DefaultPreamble = `You are running unattended from a task backlog while the user is away. Work autonomously: do not ask questions and do not wait for confirmation. If a decision genuinely needs the user, do everything that does not depend on it first, then write a short handoff at the end: what was done, what is blocked, and the exact question. Leave the work in a state the user can pick up (commit on a branch, or save files and describe them). End your final message with exactly one line, on its own:
-BACKLOG STATUS: done
-or
-BACKLOG STATUS: continue   (work remains that you can do in another turn)
-or
-BACKLOG STATUS: needs-input`
+const DefaultPreamble = `You are running unattended from a task backlog while the user is away. Work autonomously: do not ask questions and do not wait for confirmation. If a decision genuinely needs the user, do everything that does not depend on it first, then write a short handoff at the end: what was done, what is blocked, and the exact question. Leave the work in a state the user can pick up (commit on a branch, or save files and describe them). Normal turn completion needs no status marker. If unfinished, end with BACKLOG STATUS: continue (another turn can help) or BACKLOG STATUS: needs-input (requires the user).`
 
 var statusLine = regexp.MustCompile(`(?im)^\s*BACKLOG STATUS:\s*(done|continue|needs-input)\s*$`)
 

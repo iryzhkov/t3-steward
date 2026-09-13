@@ -138,7 +138,7 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		}
 		payloads[index] = data
 	}
-	verificationPassed, failure, summary, err := evaluateResultEvidence(task, artifacts, payloads, missingOutputs)
+	verificationPassed, failure, summary, err := evaluateResultEvidence(task, assignment.ThreadID, artifacts, payloads, missingOutputs)
 	if err != nil {
 		return report, err
 	}
@@ -268,31 +268,30 @@ func validateDeclaredResultOutputs(task domain.Task, outputs map[string]string) 
 	return missing, nil
 }
 
-func evaluateResultEvidence(task domain.Task, artifacts []domain.Artifact, payloads [][]byte, missingOutputs []string) (bool, string, domain.Artifact, error) {
+func evaluateResultEvidence(task domain.Task, threadID string, artifacts []domain.Artifact, payloads [][]byte, missingOutputs []string) (bool, string, domain.Artifact, error) {
 	var summary domain.Artifact
-	var summaryDone bool
+	var archive []byte
 	reports := make(map[string][]byte, len(task.Verification))
 	for index, artifact := range artifacts {
 		switch artifact.Kind {
 		case domain.ArtifactSummary:
 			summary = artifact
-			summaryDone = hasBacklogDoneMarker(string(payloads[index]))
 		case domain.ArtifactVerification:
 			if artifact.MediaType != "application/json" {
 				return false, "", summary, fmt.Errorf("result import verification %q has media type %q", artifact.Name, artifact.MediaType)
 			}
 			reports[artifact.Name] = payloads[index]
 		case domain.ArtifactLog:
-			if !json.Valid(payloads[index]) {
-				return false, "", summary, errors.New("result import thread archive is not valid JSON")
-			}
+			archive = payloads[index]
 		}
 	}
 	failures := make([]string, 0, 2)
-	if reason, failed := backlogFailedReason(string(payloads[summaryIndex(artifacts)])); failed {
+	reason, err := ResultCompletionFailure(archive, threadID, string(payloads[summaryIndex(artifacts)]))
+	if err != nil {
+		return false, "", summary, err
+	}
+	if reason != "" {
 		failures = append(failures, reason)
-	} else if !summaryDone {
-		failures = append(failures, "final summary has no done marker")
 	}
 	for index, command := range task.Verification {
 		name := fmt.Sprintf("verification/%03d.json", index+1)
@@ -358,13 +357,4 @@ func summaryIndex(artifacts []domain.Artifact) int {
 		}
 	}
 	return 0
-}
-
-func hasBacklogDoneMarker(message string) bool {
-	for _, line := range strings.Split(message, "\n") {
-		if strings.EqualFold(strings.TrimSpace(line), "BACKLOG STATUS: done") {
-			return true
-		}
-	}
-	return false
 }

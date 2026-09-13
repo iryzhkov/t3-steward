@@ -172,11 +172,11 @@ func TestImportCoordinatorWorkerResultFetchesImportsThenAcknowledges(t *testing.
 	defer store.Close()
 	task := domain.Task{ID: "task-1", WorkflowID: "workflow-1", Name: "task", Outputs: []domain.ArtifactDeclaration{{Name: "answer.txt", MediaType: "text/plain"}}}
 	attempt := domain.Attempt{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: task.ID, Number: 1, Progress: domain.ProgressVerifying, Control: domain.ControlStopped, Revision: 2, AssignmentID: "assignment-1", UpdatedAt: now}
-	assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "normandy", WorkerEpoch: "worker-1", State: domain.AssignmentCompleted, Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
+	assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "normandy", WorkerEpoch: "worker-1", State: domain.AssignmentCompleted, ThreadID: "thread-1", Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
 	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{{ID: attempt.WorkflowRunID, WorkflowID: task.WorkflowID}}, Tasks: []domain.Task{task}, Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment}}); err != nil {
 		t.Fatal(err)
 	}
-	contents := [][]byte{[]byte("answer\n"), []byte("BACKLOG STATUS: done\n"), []byte("{}")}
+	contents := [][]byte{[]byte("answer\n"), []byte("BACKLOG STATUS: done\n"), []byte(`{"thread":{"id":"thread-1","latestTurn":{"turnId":"turn-1","state":"completed","startedAt":"2026-09-13T05:00:00Z","completedAt":"2026-09-13T05:01:00Z"},"session":{"threadId":"thread-1","status":"ready","activeTurnId":null,"lastError":null}}}`)}
 	objects := []workerproto.ArtifactObject{
 		coordinatorResultObject("output-1", "results/answer.txt", "output", "text/plain", contents[0]),
 		coordinatorResultObject("final-message-attempt-1", "results/final-message.md", "summary", "text/markdown", contents[1]),

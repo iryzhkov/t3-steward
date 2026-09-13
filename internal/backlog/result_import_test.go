@@ -35,11 +35,11 @@ func TestCoordinatorResultImporterPublishesCustodyBeforeOutcomeAndReplays(t *tes
 	task.Outputs = []domain.ArtifactDeclaration{{Name: "answer.txt", MediaType: "text/plain"}}
 	task.Verification = []string{"true"}
 	attempt := domain.Attempt{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: task.ID, Number: 1, Progress: domain.ProgressVerifying, Control: domain.ControlStopped, Revision: 3, AssignmentID: "assignment-1", UpdatedAt: now}
-	assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "worker-a", WorkerEpoch: "worker-epoch-1", State: domain.AssignmentCompleted, Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
+	assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "worker-a", WorkerEpoch: "worker-epoch-1", State: domain.AssignmentCompleted, ThreadID: "thread-1", Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
 	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{{ID: attempt.WorkflowRunID, WorkflowID: task.WorkflowID}}, Tasks: []domain.Task{task}, Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment}}); err != nil {
 		t.Fatal(err)
 	}
-	data := resultUploadOpener{"output-1": []byte("answer\n"), "verification-1": verificationBytes(t, "true", 0, now), "final-message-attempt-1": []byte("finished\nBACKLOG STATUS: done\n"), "thread-archive-attempt-1": []byte("{}")}
+	data := resultUploadOpener{"output-1": []byte("answer\n"), "verification-1": verificationBytes(t, "true", 0, now), "final-message-attempt-1": []byte("finished\n"), "thread-archive-attempt-1": []byte(`{"thread":{"id":"thread-1","latestTurn":{"turnId":"turn-1","state":"completed","startedAt":"2026-09-13T05:00:00Z","completedAt":"2026-09-13T05:01:00Z"},"session":{"threadId":"thread-1","status":"ready","activeTurnId":null,"lastError":null}}}`)}
 	objects := []workerproto.ArtifactObject{resultObject("output-1", "results/answer.txt", "output", "text/plain", data["output-1"]), resultObject("verification-1", "results/verification/001.json", "verification", "application/json", data["verification-1"]), resultObject("final-message-attempt-1", "results/final-message.md", "summary", "text/markdown", data["final-message-attempt-1"]), resultObject("thread-archive-attempt-1", "results/thread.json", "log", "application/json", data["thread-archive-attempt-1"])}
 	manifest := resultManifest(now, assignment, objects)
 	response := workerproto.ArtifactUploadResponse{Manifest: manifest, Custody: resultCustody(t, manifest, "coordinator")}
@@ -73,8 +73,8 @@ func TestCoordinatorResultImporterRejectsInvalidEvidenceBeforePublication(t *tes
 			response.Manifest.Objects[0].MediaType = "application/octet-stream"
 			response.Custody = resultCustody(t, response.Manifest, "coordinator")
 		}},
-		{name: "missing done marker", mutate: func(response *workerproto.ArtifactUploadResponse) {
-			object := resultObject("final-message-attempt-1", "results/final-message.md", "summary", "text/markdown", []byte("still working\n"))
+		{name: "unfinished marker", mutate: func(response *workerproto.ArtifactUploadResponse) {
+			object := resultObject("final-message-attempt-1", "results/final-message.md", "summary", "text/markdown", []byte("BACKLOG STATUS: continue\n"))
 			response.Manifest.TotalBytes += object.Size - response.Manifest.Objects[1].Size
 			response.Manifest.Objects[1] = object
 			response.Custody = resultCustody(t, response.Manifest, "coordinator")
@@ -95,17 +95,17 @@ func TestCoordinatorResultImporterRejectsInvalidEvidenceBeforePublication(t *tes
 			task := testTask("task")
 			task.Outputs = []domain.ArtifactDeclaration{{Name: "answer.txt", MediaType: "text/plain"}}
 			attempt := domain.Attempt{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: task.ID, Number: 1, Progress: domain.ProgressVerifying, Control: domain.ControlStopped, Revision: 3, AssignmentID: "assignment-1", UpdatedAt: now}
-			assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "worker-a", WorkerEpoch: "worker-epoch-1", State: domain.AssignmentCompleted, Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
+			assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "worker-a", WorkerEpoch: "worker-epoch-1", State: domain.AssignmentCompleted, ThreadID: "thread-1", Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
 			if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{{ID: attempt.WorkflowRunID, WorkflowID: task.WorkflowID}}, Tasks: []domain.Task{task}, Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment}}); err != nil {
 				t.Fatal(err)
 			}
-			data := resultUploadOpener{"output-1": []byte("answer\n"), "final-message-attempt-1": []byte("BACKLOG STATUS: done\n"), "thread-archive-attempt-1": []byte("{}")}
+			data := resultUploadOpener{"output-1": []byte("answer\n"), "final-message-attempt-1": []byte("BACKLOG STATUS: done\n"), "thread-archive-attempt-1": []byte(`{"thread":{"id":"thread-1","latestTurn":{"turnId":"turn-1","state":"completed","startedAt":"2026-09-13T05:00:00Z","completedAt":"2026-09-13T05:01:00Z"},"session":{"threadId":"thread-1","status":"ready","activeTurnId":null,"lastError":null}}}`)}
 			objects := []workerproto.ArtifactObject{resultObject("output-1", "results/answer.txt", "output", "text/plain", data["output-1"]), resultObject("final-message-attempt-1", "results/final-message.md", "summary", "text/markdown", data["final-message-attempt-1"]), resultObject("thread-archive-attempt-1", "results/thread.json", "log", "application/json", data["thread-archive-attempt-1"])}
 			manifest := workerproto.ArtifactTransferManifest{Version: 1, ID: "upload-assignment-1-result", Direction: "upload", CoordinatorEpoch: 1, WorkerID: "worker-a", WorkerEpoch: "worker-epoch-1", AssignmentID: assignment.ID, AssignmentEpoch: 1, Objects: objects, TotalBytes: int64(len(data["output-1"]) + len(data["final-message-attempt-1"]) + len(data["thread-archive-attempt-1"])), CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
 			response := workerproto.ArtifactUploadResponse{Manifest: manifest, Custody: resultCustody(t, manifest, "coordinator")}
 			test.mutate(&response)
-			if test.name == "missing done marker" {
-				data["final-message-attempt-1"] = []byte("still working\n")
+			if test.name == "unfinished marker" {
+				data["final-message-attempt-1"] = []byte("BACKLOG STATUS: continue\n")
 			}
 			if test.name == "malformed thread archive" {
 				data["thread-archive-attempt-1"] = []byte("not json")
@@ -114,7 +114,7 @@ func TestCoordinatorResultImporterRejectsInvalidEvidenceBeforePublication(t *tes
 			report, importErr := importer.Import(ctx, response, data)
 			if test.terminalFailure {
 				if importErr != nil || len(report.Transition) != 1 || report.Transition[0].Attempt.Progress != domain.ProgressFailed ||
-					!strings.Contains(report.Transition[0].Attempt.Failure, "no done marker") {
+					!strings.Contains(report.Transition[0].Attempt.Failure, "unfinished work") {
 					t.Fatalf("deterministic failure report = %#v, err = %v", report, importErr)
 				}
 				return
@@ -145,14 +145,14 @@ func TestCoordinatorResultImporterProjectsVerificationAndMissingOutputFailure(t 
 	task.Outputs = []domain.ArtifactDeclaration{{Name: "answer.txt", MediaType: "text/plain"}}
 	task.Verification = []string{"first", "second"}
 	attempt := domain.Attempt{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: task.ID, Number: 1, Progress: domain.ProgressVerifying, Control: domain.ControlStopped, Revision: 3, AssignmentID: "assignment-1", UpdatedAt: now}
-	assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "worker-a", WorkerEpoch: "worker-epoch-1", State: domain.AssignmentCompleted, Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
+	assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "worker-a", WorkerEpoch: "worker-epoch-1", State: domain.AssignmentCompleted, ThreadID: "thread-1", Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
 	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{{ID: attempt.WorkflowRunID, WorkflowID: task.WorkflowID}}, Tasks: []domain.Task{task}, Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment}}); err != nil {
 		t.Fatal(err)
 	}
 	data := resultUploadOpener{
 		"verification-1":           verificationBytes(t, "first", 7, now),
 		"final-message-attempt-1":  []byte("BACKLOG STATUS: done\n"),
-		"thread-archive-attempt-1": []byte("{}"),
+		"thread-archive-attempt-1": []byte(`{"thread":{"id":"thread-1","latestTurn":{"turnId":"turn-1","state":"completed","startedAt":"2026-09-13T05:00:00Z","completedAt":"2026-09-13T05:01:00Z"},"session":{"threadId":"thread-1","status":"ready","activeTurnId":null,"lastError":null}}}`),
 	}
 	objects := []workerproto.ArtifactObject{
 		resultObject("verification-1", "results/verification/001.json", "verification", "application/json", data["verification-1"]),
