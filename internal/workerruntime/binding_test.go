@@ -51,6 +51,16 @@ func TestBuildWorkerBindingIsDeterministicAndWorkerScoped(t *testing.T) {
 		first.Inventory.Projects[0].Name != "steward" || len(first.Inventory.Providers) != 1 {
 		t.Fatalf("binding = %+v", first)
 	}
+	project := settings.Projects["steward"]
+	project.T3Project = ""
+	settings.Projects["steward"] = project
+	managed, err := BuildWorkerBinding(settings, "normandy", runtimeTestNow)
+	if err != nil {
+		t.Fatalf("managed project catalog rejected: %v", err)
+	}
+	if managed.CatalogRevision == first.CatalogRevision {
+		t.Fatal("switching project ownership did not change the catalog fence")
+	}
 	if _, err := BuildWorkerBinding(settings, "missing", runtimeTestNow); err == nil {
 		t.Fatal("unknown worker accepted")
 	}

@@ -151,11 +151,13 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 	for name, value := range map[string]string{
 		"repository": pkg.Environment.Repository,
 		"ref":        pkg.Environment.Ref,
-		"t3Project":  pkg.Environment.T3Project,
 	} {
 		if !safeOpaqueValue(value, 1024) {
 			return fmt.Errorf("execution package: invalid %s", name)
 		}
+	}
+	if pkg.Environment.T3Project != "" && !safeOpaqueValue(pkg.Environment.T3Project, 1024) {
+		return errors.New("execution package: invalid t3Project")
 	}
 	if pkg.CoordinatorEpoch < 1 || pkg.Identity.AssignmentEpoch < 1 {
 		return errors.New("execution package: coordinator and assignment epochs must be positive")

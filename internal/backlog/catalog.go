@@ -158,7 +158,7 @@ func validateProjectDefinition(project ProjectDefinition) error {
 	if err := validateGitRef(project.DefaultRef); err != nil {
 		return fmt.Errorf("project catalog: project %q default ref: %w", project.Name, err)
 	}
-	if !safeDisplayName(project.T3ProjectTemplate) {
+	if project.T3ProjectTemplate != "" && !safeDisplayName(project.T3ProjectTemplate) {
 		return fmt.Errorf("project catalog: project %q has invalid T3 project template", project.Name)
 	}
 	if !manifestNamePattern.MatchString(project.SetupProfile) {

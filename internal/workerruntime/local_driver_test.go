@@ -41,17 +41,18 @@ func (p *recordingPublisher) PublishCheckpoint(_ context.Context, _ workerproto.
 }
 
 type recordingT3 struct {
-	thread         *domain.Thread
-	created        []t3control.NewThreadInput
-	projectID      string
-	resolveProject string
-	resolveErr     error
-	warns          []domain.Warning
-	resumes        []string
-	stops          int
-	settlements    []string
-	message        string
-	archive        []byte
+	thread          *domain.Thread
+	created         []t3control.NewThreadInput
+	projectID       string
+	managedProjects []t3control.ManagedProject
+	resolveProject  string
+	resolveErr      error
+	warns           []domain.Warning
+	resumes         []string
+	stops           int
+	settlements     []string
+	message         string
+	archive         []byte
 }
 
 func (c *recordingT3) ListThreads(context.Context) ([]domain.Thread, error) {
@@ -67,6 +68,11 @@ func (c *recordingT3) GetThread(context.Context, string) (*domain.Thread, error)
 	}
 	copy := *c.thread
 	return &copy, nil
+}
+
+func (c *recordingT3) EnsureProject(_ context.Context, input t3control.ManagedProject) (string, error) {
+	c.managedProjects = append(c.managedProjects, input)
+	return "managed-project-id", c.resolveErr
 }
 
 func (c *recordingT3) ResolveProjectID(_ context.Context, project string) (string, error) {

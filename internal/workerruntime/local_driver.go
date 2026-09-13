@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -38,6 +39,7 @@ type T3Control interface {
 	ListThreads(context.Context) ([]domain.Thread, error)
 	GetThread(context.Context, string) (*domain.Thread, error)
 	ResolveProjectID(context.Context, string) (string, error)
+	EnsureProject(context.Context, t3control.ManagedProject) (string, error)
 	CreateAndStartThread(context.Context, t3control.NewThreadInput) (string, error)
 	StopThread(context.Context, domain.Thread, t3control.StopMode) error
 	SettleThread(context.Context, string, string) error
@@ -253,7 +255,21 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 	if err != nil {
 		return err
 	}
-	projectID, err := d.T3.ResolveProjectID(ctx, pkg.Environment.T3Project)
+	var projectID string
+	if pkg.Environment.T3Project != "" {
+		projectID, err = d.T3.ResolveProjectID(ctx, pkg.Environment.T3Project)
+	} else {
+		encodedKey, keyErr := json.Marshal([]string{pkg.CoordinatorID, pkg.WorkerID, pkg.Environment.Project})
+		if keyErr != nil {
+			return keyErr
+		}
+		key := string(encodedKey)
+		sum := sha256.Sum256(encodedKey)
+		projectID, err = d.T3.EnsureProject(ctx, t3control.ManagedProject{
+			Key: key, Title: "Steward: " + pkg.Environment.Project,
+			WorkspaceRoot: filepath.Join(d.Config.RunsRoot, ".projects", hex.EncodeToString(sum[:])),
+		})
+	}
 	if err != nil {
 		return err
 	}

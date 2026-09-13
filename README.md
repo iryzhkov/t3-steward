@@ -585,6 +585,22 @@ as rises without T3 tokens after the fact. A backlog task may therefore
 occasionally start just before you do, and the ladder drains it at 90%
 like anything else.
 
+### Worker-managed T3 projects
+
+For coordinator/worker execution, omit `backlog_v2.projects.<name>.t3_project`
+to let the worker provision a T3 project automatically. The project gets a stable
+identity for the coordinator, worker and catalog project, and an owned metadata
+directory under the worker's runs root. Attempts keep their separate prepared
+workspaces; the metadata directory needs no Git repository. Lost creation replies
+are reconciled against the same ID and expected title/root before starting a thread.
+
+An explicit `t3_project` still resolves an existing exact ID or unique exact title.
+Missing or ambiguous explicit references fail; they do not create a replacement.
+Deploy compatible workers before enrolling catalogs that omit this field; older
+workers reject such catalogs/packages. Git checkout preparation is still required
+for tasks in this release. Fresh and existing-directory task modes are separate
+S5a work and are not enabled by automatic project provisioning.
+
 ## Waiting for something external
 
 For coordinator tasks, register a native check through the admin socket:

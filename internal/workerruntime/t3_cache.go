@@ -77,6 +77,11 @@ func (c *CachedT3) GetThread(ctx context.Context, threadID string) (*domain.Thre
 	return &copied, nil
 }
 
+func (c *CachedT3) EnsureProject(ctx context.Context, input t3control.ManagedProject) (string, error) {
+	defer c.invalidate()
+	return c.Inner.EnsureProject(ctx, input)
+}
+
 func (c *CachedT3) ResolveProjectID(ctx context.Context, project string) (string, error) {
 	return c.Inner.ResolveProjectID(ctx, project)
 }

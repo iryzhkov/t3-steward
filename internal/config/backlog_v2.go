@@ -114,8 +114,8 @@ func (c *Config) validateBacklogV2() error {
 	}
 	for name, project := range v.Projects {
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(project.Repository) == "" ||
-			strings.TrimSpace(project.DefaultRef) == "" || strings.TrimSpace(project.T3Project) == "" {
-			return fmt.Errorf("backlog_v2: project %q requires repository, default_ref, and t3_project", name)
+			strings.TrimSpace(project.DefaultRef) == "" {
+			return fmt.Errorf("backlog_v2: project %q requires repository and default_ref", name)
 		}
 		if project.SetupProfile != "" {
 			if _, ok := v.SetupProfiles[project.SetupProfile]; !ok {
