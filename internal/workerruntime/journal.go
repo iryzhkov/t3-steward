@@ -48,6 +48,7 @@ type AttemptRecord struct {
 	ThrottleResults  map[string]domain.ThrottleAcknowledgement `json:"throttleResults,omitempty"`
 	PendingThrottle  *domain.ThrottleCommand                   `json:"pendingThrottle,omitempty"`
 	PrepareAttempts  int                                       `json:"prepareAttempts,omitempty"`
+	StopConfirmed    bool                                      `json:"stopConfirmed,omitempty"`
 	SettlePending    bool                                      `json:"settlePending,omitempty"`
 	UpdatedAt        time.Time                                 `json:"updatedAt"`
 }

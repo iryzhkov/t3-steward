@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.13] - 2026-09-13
+
+### Fixed
+
+- Explicit worker stops durably record successful provider settlement and report
+  released assignments, allowing cancelled workflow sinks and resources to settle.
+  An accepted stop with an unproven effect still holds ownership. Restart repairs
+  older stopped records by confirming the stop; retained workspaces expire after
+  the existing retention period. Natural completion and quota pauses keep their
+  existing collection and ownership rules.
+
 ## [0.11.0-rc.12] - 2026-09-13
 
 ### Fixed

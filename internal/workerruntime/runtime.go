@@ -464,6 +464,14 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			err = r.markUnknown(id, "running T3 thread is missing")
 		}
 	case PhaseStopped:
+		if hasCommandRequest(record, domain.WorkerCommandStop) {
+			if !record.StopConfirmed {
+				err = r.stop(ctx, id)
+			} else if now.Sub(record.UpdatedAt) >= r.config.Retention {
+				err = r.prune(ctx, id, record)
+			}
+			break
+		}
 		if len(record.ThrottleRequests) == 0 {
 			threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
 			switch {
@@ -499,7 +507,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 		if stopErr := r.driver.StopThread(ctx, record.Package.Package); stopErr != nil {
 			r.log.Warn("stop outcome is unproven; retrying next reconcile", "assignment", id, "error", stopErr)
 		} else {
-			err = r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
+			err = r.confirmStop(id)
 		}
 	case PhaseCollecting:
 		err = r.collect(ctx, id)
@@ -569,7 +577,7 @@ func (r *Runtime) prune(ctx context.Context, id string, record AttemptRecord) er
 		return err
 	}
 	return r.journal.update(func(state *journalState) error {
-		if current, ok := state.Attempts[id]; ok && current.Phase == PhaseCompleted {
+		if current, ok := state.Attempts[id]; ok && (current.Phase == PhaseCompleted || (current.Phase == PhaseStopped && current.StopConfirmed)) {
 			delete(state.Attempts, id)
 			state.Sequence++
 		}
@@ -736,7 +744,7 @@ func (r *Runtime) stop(ctx context.Context, id string) error {
 		if err := r.driver.StopThread(ctx, record.Package.Package); err != nil {
 			return fmt.Errorf("stop settlement is unproven: %w", err)
 		}
-		return nil
+		return r.confirmStop(id)
 	case PhaseUnknown:
 		return r.recoverUnknown(ctx, id, record)
 	}
@@ -746,7 +754,22 @@ func (r *Runtime) stop(ctx context.Context, id string) error {
 	if err := r.driver.StopThread(ctx, record.Package.Package); err != nil {
 		return fmt.Errorf("stop outcome is unproven: %w", err)
 	}
-	return r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
+	return r.confirmStop(id)
+}
+
+// confirmStop records successful provider stop separately from a naturally
+// stopped thread or an accepted command whose provider effect is still unknown.
+func (r *Runtime) confirmStop(id string) error {
+	return r.journal.update(func(state *journalState) error {
+		record := state.Attempts[id]
+		record.Phase = PhaseStopped
+		record.StopConfirmed = true
+		record.ThreadID = record.Package.Package.Identity.ThreadID
+		record.UpdatedAt = r.now()
+		state.Attempts[id] = record
+		state.Sequence++
+		return nil
+	})
 }
 
 func (r *Runtime) collect(ctx context.Context, id string) error {
@@ -1002,7 +1025,10 @@ func observation(record AttemptRecord, now time.Time) domain.WorkerAssignmentObs
 		// the stop a quota pause.
 		state = domain.AssignmentClaimed
 		control = domain.ControlRunning
-		if len(record.ThrottleRequests) != 0 {
+		if record.StopConfirmed && hasCommandRequest(record, domain.WorkerCommandStop) {
+			state = domain.AssignmentReleased
+			control = domain.ControlStopped
+		} else if len(record.ThrottleRequests) != 0 {
 			control = domain.ControlPaused
 		}
 	case PhaseCompleted, PhaseFailed:
