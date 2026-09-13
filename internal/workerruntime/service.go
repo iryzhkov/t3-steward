@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/providercontainment"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -102,6 +104,14 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 	if t3 != nil {
 		t3 = NewCachedT3(t3)
 	}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("worker service executable: %w", err)
+	}
+	scoped := ContainedT3{
+		Supervisor: providercontainment.Supervisor{Root: filepath.Join(journalRoot, "contained"), Executable: executable},
+		Timeout:    options.Settings.Transport.RequestTimeout.D(),
+	}
 	driver, err := NewLocalDriver(LocalDriver{
 		Config: LocalDriverConfig{
 			CatalogRevision:  binding.CatalogRevision,
@@ -121,6 +131,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		Publisher:   custody,
 		Credentials: options.ProjectCredentials,
 		T3:          t3,
+		ScopedT3:    scoped,
 		Now:         options.Now,
 	})
 	if err != nil {

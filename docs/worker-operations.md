@@ -89,3 +89,20 @@ new enrollment.
 
 The Track S4 stage remains incomplete until the Citadel stage document contains
 release CI, remote enrollment and live task/restart/disconnection/lease evidence.
+
+S5a directory execution is still guarded during integration. Worker construction
+now supplies a contained T3 attachment adapter backed by the worker journal's
+`contained` subdirectory. Preparation must record the exact assignment, launch,
+supervisor invocation and authenticated T3 environment before attachment is
+possible. Receipt publication is durable and refuses replacement. Recovery only
+observes that receipt and service; it never launches a replacement. Every API
+request checks the supervisor invocation, and Linux connections and token reads
+reopen the recorded control directory identity. Socket connections pin the socket
+inode rather than following a provider-controlled pathname. Unsupported platforms
+fail closed. Missing, incomplete, stopped or changed identities cannot fall back
+to shared T3. Lease expiry is not a stop condition.
+
+This adapter does not yet enable directory tasks: production preparation still
+needs provider settings, contained verification, output custody and confirmed
+supervisor stop integration. No normal directory task is qualified by the adapter
+unit tests alone.
