@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.28] - 2026-09-13
+
+### Added
+
+- Dedicated contained T3 provisioning creates an execution-local one-hour token,
+  refreshes it without relaunching provider work, and disables implicit startup
+  projects/threads. Host token reads stay inside control storage and reject
+  provider-created symlink escapes or blocking FIFOs. Normal directory worker
+  routing and provider credentials remain gated.
+
 ## [0.11.0-rc.27] - 2026-09-13
 
 ### Added

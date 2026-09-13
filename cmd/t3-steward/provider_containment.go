@@ -76,6 +76,22 @@ func cmdContainedSupervisor(action string, args []string) error {
 	return err
 }
 
+func cmdContainedT3(args []string) error {
+	flags := flag.NewFlagSet("contained-t3", flag.ContinueOnError)
+	node := flags.String("node", "", "mounted Node executable")
+	entry := flags.String("entry", "", "mounted T3 entry point")
+	port := flags.Int("port", 0, "namespace-local API port")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("unexpected contained-t3 arguments")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return providercontainment.RunT3(ctx, providercontainment.T3Spec{Node: *node, Entry: *entry, Port: *port}, providercontainment.Streams{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr})
+}
+
 func cmdContainedChild(args []string) error {
 	flags := flag.NewFlagSet("contained-child", flag.ContinueOnError)
 	egress := flags.Bool("egress", false, "enable constrained provider gateway")

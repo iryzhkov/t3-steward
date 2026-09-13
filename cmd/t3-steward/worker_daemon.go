@@ -22,6 +22,8 @@ import (
 func cmdWorker(g globalFlags, args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
+		case "contained-t3":
+			return cmdContainedT3(args[1:])
 		case "contained-start":
 			return cmdContainedSupervisor("start", args[1:])
 		case "contained-show":

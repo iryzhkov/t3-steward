@@ -83,9 +83,23 @@ port inside the namespace. The host-side `t3api.NewUnix` client dials only this
 socket, ignores proxy environment and refuses redirects. Provision a dedicated
 T3 server and its execution-specific token; never use the shared host token.
 Control storage may not overlap home, output, source data, runtime or supervisor
-state. This transport is implemented; dedicated T3 provisioning/authentication,
-provider credentials, artifact mappings and the normal worker binding remain
-unimplemented. The normal worker's directory guard stays closed
+state. The namespace helper can provision T3 and its local token:
+
+```text
+/steward worker contained-t3 --node /runtime/0/bin/node --entry /runtime/0/lib/node_modules/t3/dist/bin.mjs --port 18881
+```
+
+Use this as the operator spec command with matching controlPort and a reviewed
+Node/T3 runtime mount. It issues a one-hour session in /home/agent/t3, atomically
+publishes /control/token, and refreshes after 48 minutes. Failed maintenance
+stops the dedicated server; it never retries provider execution or reports task
+success. Desktop startup mode disables automatic projects and empty threads.
+The worker must explicitly ensure its project and dispatch its one execution.
+
+The host SocketTokenFile source observes atomic rotations, refuses escapes
+outside control storage, and rejects special files without blocking.
+Provider account credentials/settings, artifact mappings and the normal worker
+binding remain unimplemented. The normal worker's directory guard stays closed
 until those integrations and installed provider recovery qualification pass.
 
 ## Evidence and remaining gate
