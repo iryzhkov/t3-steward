@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -501,6 +502,7 @@ func cloneDAGState(state DAGState) DAGState {
 			task.Routes[routeIndex].Options = cloneStringMap(source.Routes[routeIndex].Options)
 		}
 		task.ResourceLocks = append([]string(nil), source.ResourceLocks...)
+		task.DirectoryBindings = directoryresource.CloneBindings(source.DirectoryBindings)
 	}
 	return cloned
 }

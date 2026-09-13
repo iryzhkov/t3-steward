@@ -33,9 +33,15 @@ Access defaults to read-only; writes require both an explicit request and the
 operator writable flag. Conflict comparison excludes overlapping readers when
 either access is writable, including canonical ancestors and inode aliases.
 Unmanaged external writers and mutations to mount topology by privileged host
-operators are outside this primitive. Scheduler persistence, package binding,
-resource enrollment, containment and writer lifecycle integration are still
-required before these checks can authorize existing-directory tasks.
+operators are outside this primitive. The backend now persists resolved bindings on tasks, authorizes them against
+project catalogs, includes them in execution-package hashes and reconstructs
+ownership for the production planner from assignment records. Reader/writer
+conflicts also reserve within a scheduling pass. Cancelled tasks and expired
+leases retain directory ownership until the assignment confirms completion or
+release; missing assignment evidence retains uncertainty. Empty bindings preserve
+legacy package hashes. Public capsule/config resource resolution, containment
+and writer lifecycle qualification remain required before directory tasks run.
+The local driver explicitly refuses bound directory packages before effects.
 
 A local namespace probe demonstrated denied direct/symlink/child writes and a
 separate writable output directory. It did not run an AI provider. T3 owns the

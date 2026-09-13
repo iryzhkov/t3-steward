@@ -238,6 +238,7 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 		QuotaPools:     append([]domain.QuotaPool(nil), input.QuotaPools...),
 		RouteEstimates: routeEstimates, ResourceOwners: resourceOwners,
 		WorkflowCheckoutOwners: checkoutOwners,
+		DirectoryOwners:        directoryOwners(input.Attempts, input.Assignments, input.WorkflowRuns, input.Tasks),
 		Constraints:            []PlanningConstraint{quotaPolicy},
 		Ordering: PlanningOrderingInput{
 			DeadlineRiskWindow: input.DeadlineRiskWindow, Attempts: ordering,

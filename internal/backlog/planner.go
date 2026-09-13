@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -25,6 +26,7 @@ type PlanningWorkflow struct {
 }
 
 type PlanInput struct {
+	DirectoryOwners        []DirectoryOwner
 	Now                    time.Time
 	MaxWorkerSnapshotAge   time.Duration
 	Workflows              []PlanningWorkflow
@@ -145,7 +147,8 @@ func BuildPlan(input PlanInput) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	constraints := make([]PlanningConstraintSession, 0, len(input.Constraints))
+	constraints := make([]PlanningConstraintSession, 0, len(input.Constraints)+1)
+	constraints = append(constraints, newDirectorySession(input.DirectoryOwners))
 	for _, constraint := range input.Constraints {
 		session := constraint.StartPlan(input.Now)
 		if session == nil {
@@ -600,6 +603,7 @@ func clonePlanningTask(task domain.Task) domain.Task {
 	task.Placement.Hosts = append([]string(nil), task.Placement.Hosts...)
 	task.Placement.Capabilities = append([]string(nil), task.Placement.Capabilities...)
 	task.ResourceLocks = append([]string(nil), task.ResourceLocks...)
+	task.DirectoryBindings = directoryresource.CloneBindings(task.DirectoryBindings)
 	task.Routes = append([]domain.ProviderRoute(nil), task.Routes...)
 	for index := range task.Routes {
 		task.Routes[index].Options = cloneStringMap(task.Routes[index].Options)

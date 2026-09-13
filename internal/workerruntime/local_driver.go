@@ -551,6 +551,9 @@ func packageRecords(pkg workerproto.ExecutionPackage, now time.Time) (domain.Tas
 }
 
 func (d *LocalDriver) executionRecords(pkg workerproto.ExecutionPackage) (backlog.ResolvedEnvironment, domain.Task, domain.Attempt, error) {
+	if len(pkg.Environment.DirectoryBindings) > 0 {
+		return backlog.ResolvedEnvironment{}, domain.Task{}, domain.Attempt{}, errors.New("directory execution requires an integrated provider containment backend")
+	}
 	workspaceType := pkg.Environment.Type
 	if workspaceType == "" {
 		workspaceType = backlog.EnvironmentGit

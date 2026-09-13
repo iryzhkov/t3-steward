@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.22] - 2026-09-13
+
+### Added
+
+- Directory bindings now persist on task records, require exact catalog identity
+  authorization, and participate in execution-package hashes and host checks.
+  The production planner reconstructs reader/writer ownership after restart,
+  retains cancelled or lease-expired unsettled owners, and reserves conflicting
+  accesses within each scheduling pass. Bound directory execution remains
+  refused before effects until the provider containment backend is integrated.
+
 ## [0.11.0-rc.21] - 2026-09-13
 
 ### Added

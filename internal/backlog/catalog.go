@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -25,7 +26,8 @@ type SetupProfile struct {
 
 // ProjectDefinition maps one workflow project name to immutable preparation metadata.
 type ProjectDefinition struct {
-	Type                string `json:"type,omitempty"`
+	DirectoryBindings   []directoryresource.Binding `json:"directoryBindings,omitempty"`
+	Type                string                      `json:"type,omitempty"`
 	Name                string
 	Repository          string
 	DefaultRef          string
@@ -37,7 +39,8 @@ type ProjectDefinition struct {
 
 // ResolvedEnvironment is the deterministic preparation contract for one task attempt.
 type ResolvedEnvironment struct {
-	Type                string `json:"type,omitempty"`
+	DirectoryBindings   []directoryresource.Binding `json:"directoryBindings,omitempty"`
+	Type                string                      `json:"type,omitempty"`
 	ProjectName         string
 	Repository          string
 	Ref                 string
@@ -70,6 +73,9 @@ func NewProjectCatalog(projects []ProjectDefinition, profiles []SetupProfile) (*
 		catalog.profiles[profile.Name] = cloneSetupProfile(profile)
 	}
 	for _, project := range projects {
+		if err := directoryresource.ValidateCatalog(project.DirectoryBindings); err != nil {
+			return nil, err
+		}
 		if err := validateProjectDefinition(project); err != nil {
 			return nil, err
 		}
@@ -128,11 +134,15 @@ func (c *ProjectCatalog) Resolve(workflow domain.Workflow, task domain.Task) (Re
 		return ResolvedEnvironment{}, fmt.Errorf("resolve project %q ref: %w", project.Name, err)
 	}
 
+	if err := directoryresource.Authorize(project.DirectoryBindings, task.DirectoryBindings); err != nil {
+		return ResolvedEnvironment{}, err
+	}
 	locks := append([]string(nil), project.ResourceLocks...)
 	locks = append(locks, task.ResourceLocks...)
 	locks = uniqueSorted(locks)
 	return ResolvedEnvironment{
-		Type: project.Type, ProjectName: project.Name, Repository: project.Repository, Ref: ref,
+		DirectoryBindings: directoryresource.CloneBindings(task.DirectoryBindings),
+		Type:              project.Type, ProjectName: project.Name, Repository: project.Repository, Ref: ref,
 		Scope: workflow.Environment.Scope, T3ProjectTemplate: project.T3ProjectTemplate,
 		Setup: cloneSetupProfile(profile), ResourceLocks: locks,
 		RequiredCredentials: append([]string(nil), project.RequiredCredentials...),
@@ -264,6 +274,7 @@ func cloneSetupProfile(profile SetupProfile) SetupProfile {
 }
 
 func cloneProjectDefinition(project ProjectDefinition) ProjectDefinition {
+	project.DirectoryBindings = directoryresource.CloneBindings(project.DirectoryBindings)
 	project.ResourceLocks = append([]string(nil), project.ResourceLocks...)
 	project.RequiredCredentials = append([]string(nil), project.RequiredCredentials...)
 	sort.Strings(project.ResourceLocks)

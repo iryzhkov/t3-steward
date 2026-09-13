@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -19,16 +20,17 @@ const ExecutionPackageVersion = 1
 var identityPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$`)
 
 type EnvironmentReference struct {
-	Type                string   `json:"type,omitempty"`
-	CatalogRevision     string   `json:"catalogRevision"`
-	Project             string   `json:"project"`
-	Repository          string   `json:"repository"`
-	Ref                 string   `json:"ref"`
-	Scope               string   `json:"scope"`
-	SetupProfile        string   `json:"setupProfile"`
-	T3Project           string   `json:"t3Project"`
-	ResourceLocks       []string `json:"resourceLocks,omitempty"`
-	RequiredCredentials []string `json:"requiredCredentials,omitempty"`
+	DirectoryBindings   []directoryresource.Binding `json:"directoryBindings,omitempty"`
+	Type                string                      `json:"type,omitempty"`
+	CatalogRevision     string                      `json:"catalogRevision"`
+	Project             string                      `json:"project"`
+	Repository          string                      `json:"repository"`
+	Ref                 string                      `json:"ref"`
+	Scope               string                      `json:"scope"`
+	SetupProfile        string                      `json:"setupProfile"`
+	T3Project           string                      `json:"t3Project"`
+	ResourceLocks       []string                    `json:"resourceLocks,omitempty"`
+	RequiredCredentials []string                    `json:"requiredCredentials,omitempty"`
 }
 
 type ExecutionLimits struct {
@@ -129,6 +131,17 @@ func ValidateExecutionPackageManifest(manifest ExecutionPackageManifest, maxByte
 }
 
 func ValidateExecutionPackage(pkg ExecutionPackage) error {
+	seenDirectories := map[string]bool{}
+	for _, binding := range pkg.Environment.DirectoryBindings {
+		if err := directoryresource.ValidateBinding(binding); err != nil {
+			return fmt.Errorf("execution package directory: %w", err)
+		}
+		r := binding.Identity.Registration
+		if r.WorkerID != pkg.WorkerID || seenDirectories[r.ResourceID] {
+			return errors.New("execution package directory worker mismatch or duplicate resource")
+		}
+		seenDirectories[r.ResourceID] = true
+	}
 	if pkg.Timeout < 0 || pkg.Timeout > 7*24*time.Hour {
 		return errors.New("execution timeout is out of bounds")
 	}

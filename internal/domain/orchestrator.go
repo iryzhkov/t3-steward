@@ -3,6 +3,8 @@ package domain
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 )
 
 // TaskClass controls whether work consumes reserved capacity or only forecast
@@ -138,30 +140,32 @@ type ProviderRoute struct {
 
 // Task is an immutable node in a workflow definition.
 type Task struct {
-	RunID              string                `json:"runId,omitempty"`
-	DefinitionRevision int64                 `json:"definitionRevision,omitempty"`
-	Timeout            time.Duration         `json:"timeout,omitempty"`
-	ExternalNeeds      []NodeRef             `json:"externalNeeds,omitempty"`
-	ID                 string                `json:"id"`
-	WorkflowID         string                `json:"workflowId"`
-	Name               string                `json:"name"`
-	Class              TaskClass             `json:"class"`
-	Needs              []string              `json:"needs,omitempty"`
-	PromptArtifactID   string                `json:"promptArtifactId"`
-	InputArtifactIDs   []string              `json:"inputArtifactIds,omitempty"`
-	DependencyInputs   map[string][]string   `json:"dependencyInputs,omitempty"`
-	Outputs            []ArtifactDeclaration `json:"outputs,omitempty"`
-	Verification       []string              `json:"verification,omitempty"`
-	Placement          Placement             `json:"placement"`
-	Routes             []ProviderRoute       `json:"routes,omitempty"`
-	ResourceLocks      []string              `json:"resourceLocks,omitempty"`
-	Importance         int                   `json:"importance"`
-	Difficulty         int                   `json:"difficulty"`
-	EstimatedCost      *float64              `json:"estimatedCost,omitempty"`
-	MaxTurns           int                   `json:"maxTurns"`
-	NotBefore          *time.Time            `json:"notBefore,omitempty"`
-	Deadline           *time.Time            `json:"deadline,omitempty"`
-	ExpiresAt          *time.Time            `json:"expiresAt,omitempty"`
+	// DirectoryBindings are resolved operator identities, never raw capsule paths.
+	DirectoryBindings  []directoryresource.Binding `json:"directoryBindings,omitempty"`
+	RunID              string                      `json:"runId,omitempty"`
+	DefinitionRevision int64                       `json:"definitionRevision,omitempty"`
+	Timeout            time.Duration               `json:"timeout,omitempty"`
+	ExternalNeeds      []NodeRef                   `json:"externalNeeds,omitempty"`
+	ID                 string                      `json:"id"`
+	WorkflowID         string                      `json:"workflowId"`
+	Name               string                      `json:"name"`
+	Class              TaskClass                   `json:"class"`
+	Needs              []string                    `json:"needs,omitempty"`
+	PromptArtifactID   string                      `json:"promptArtifactId"`
+	InputArtifactIDs   []string                    `json:"inputArtifactIds,omitempty"`
+	DependencyInputs   map[string][]string         `json:"dependencyInputs,omitempty"`
+	Outputs            []ArtifactDeclaration       `json:"outputs,omitempty"`
+	Verification       []string                    `json:"verification,omitempty"`
+	Placement          Placement                   `json:"placement"`
+	Routes             []ProviderRoute             `json:"routes,omitempty"`
+	ResourceLocks      []string                    `json:"resourceLocks,omitempty"`
+	Importance         int                         `json:"importance"`
+	Difficulty         int                         `json:"difficulty"`
+	EstimatedCost      *float64                    `json:"estimatedCost,omitempty"`
+	MaxTurns           int                         `json:"maxTurns"`
+	NotBefore          *time.Time                  `json:"notBefore,omitempty"`
+	Deadline           *time.Time                  `json:"deadline,omitempty"`
+	ExpiresAt          *time.Time                  `json:"expiresAt,omitempty"`
 }
 
 // Attempt is one try to complete a task in a workflow run.

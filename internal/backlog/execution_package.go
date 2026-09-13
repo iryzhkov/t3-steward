@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
@@ -117,7 +118,8 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		Dependencies: dependencies,
 		Route:        cloneProviderRoute(assignment.Route),
 		Environment: workerproto.EnvironmentReference{
-			Type: environment.Type, CatalogRevision: b.CatalogRevision, Project: environment.ProjectName,
+			DirectoryBindings: directoryresource.CloneBindings(state.task.DirectoryBindings),
+			Type:              environment.Type, CatalogRevision: b.CatalogRevision, Project: environment.ProjectName,
 			Repository: environment.Repository, Ref: environment.Ref, Scope: environment.Scope,
 			SetupProfile: environment.Setup.Name, T3Project: environment.T3ProjectTemplate,
 			ResourceLocks:       append([]string(nil), environment.ResourceLocks...),
