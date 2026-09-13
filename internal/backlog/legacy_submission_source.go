@@ -165,15 +165,20 @@ func loadLegacyTasksBounded(dir string, maxBytes int64, maxFiles int) ([]Task, [
 }
 
 // LegacyProjectAliases accepts either a v2 logical project name or its unique
-// configured T3 project title/id.
+// configured T3 project title/id. Managed projects have only their logical alias.
 func LegacyProjectAliases(projects map[string]string) (map[string]string, error) {
 	aliases := make(map[string]string, len(projects)*2)
 	for name, t3Project := range projects {
 		if strings.TrimSpace(name) != name || name == "" ||
-			strings.TrimSpace(t3Project) != t3Project || t3Project == "" {
+			strings.TrimSpace(t3Project) != t3Project {
 			return nil, fmt.Errorf("legacy project aliases require trimmed names and T3 projects")
 		}
 		aliases[name] = name
+	}
+	for name, t3Project := range projects {
+		if t3Project == "" {
+			continue
+		}
 		if existing, ok := aliases[t3Project]; ok && existing != name {
 			return nil, fmt.Errorf("T3 project %q maps to multiple v2 projects", t3Project)
 		}

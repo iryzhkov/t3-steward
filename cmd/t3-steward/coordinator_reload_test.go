@@ -82,6 +82,21 @@ func TestCoordinatorReloadSeparatesPolicyDrainAndLifecycle(t *testing.T) {
 		})
 	}
 }
+func TestCoordinatorReloadAcceptsManagedProject(t *testing.T) {
+	base := qualificationConfig(t.TempDir())
+	next := cloneReloadConfig(t, base)
+	for name, project := range next.BacklogV2.Projects {
+		project.T3Project = ""
+		next.BacklogV2.Projects[name] = project
+	}
+	if len(next.BacklogV2.Projects) == 0 {
+		t.Fatal("fixture requires a project")
+	}
+	if err := validateCoordinatorReload(base, next); err != nil {
+		t.Fatalf("managed project reload rejected: %v", err)
+	}
+}
+
 func TestCoordinatorReloadRejectsMissingAndMalformedFile(t *testing.T) {
 	ctx := context.Background()
 	cfg := qualificationConfig(t.TempDir())

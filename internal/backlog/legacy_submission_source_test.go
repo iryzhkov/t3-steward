@@ -57,6 +57,22 @@ func TestLegacySubmissionSourceIngestsUnchangedMarkdownAndReplays(t *testing.T) 
 	}
 }
 
+func TestLegacyManagedProjectAliases(t *testing.T) {
+	aliases, err := LegacyProjectAliases(map[string]string{"managed": "", "other": "", "git": "Git Project"})
+	if err != nil || len(aliases) != 4 || aliases["managed"] != "managed" || aliases["other"] != "other" {
+		t.Fatalf("managed aliases = %v, %v", aliases, err)
+	}
+	if _, exists := aliases[""]; exists {
+		t.Fatal("empty project became an alias")
+	}
+	if _, err := LegacyProjectAliases(map[string]string{"managed": "", "other": "managed"}); err == nil {
+		t.Fatal("explicit T3 alias shadowed a managed logical project")
+	}
+	if _, err := LegacyProjectAliases(map[string]string{"managed": " "}); err == nil {
+		t.Fatal("blank explicit T3 alias accepted")
+	}
+}
+
 func TestLegacySubmissionSourceProjectMappingAndValidation(t *testing.T) {
 	if _, err := LegacyProjectAliases(map[string]string{
 		"one": "shared", "two": "shared",
