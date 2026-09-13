@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.25] - 2026-09-13
+
+### Fixed
+
+- Use a short private Unix-socket path for the containment bridge cancellation
+  test on macOS. rc.24 release artifacts were built, but its macOS CI failed
+  before this test-path correction; rc.24 was not deployed.
+
 ## [0.11.0-rc.24] - 2026-09-13
 
 ### Added

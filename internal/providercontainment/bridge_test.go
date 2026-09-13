@@ -4,13 +4,21 @@ import (
 	"context"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestBridgeUsesUnixGatewayAndClosesOnCancellation(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "gateway.sock")
+	// macOS's default temporary path plus the test name exceeds sockaddr_un.
+	// Keep a private, uniquely allocated directory with a short absolute path.
+	root, err := os.MkdirTemp("/tmp", "t3-bridge-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	socket := filepath.Join(root, "gateway.sock")
 	gateway, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
