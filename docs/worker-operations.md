@@ -18,8 +18,22 @@ part of the release manifest, catalog, enrollment response, or audit event.
 
 Install the released binary through UpKeeper. Install the supplied
 `packaging/systemd/t3-steward-worker.service` as a user unit and enable it.
-The worker uses the host's normal T3 connection settings and dry-run policy.
-It independently reconciles retained execution every five seconds. An exclusive
+The unit reads a dedicated `~/.config/t3-steward/persistent-worker.yaml`:
+
+```yaml
+policy:
+  dry_run: false
+backlog_v2:
+  mode: disabled
+log_level: info
+```
+
+The `worker serve` command owns execution; `backlog_v2.mode: disabled` prevents
+that file from also starting a coordinator if used with `run`. Add host-specific
+`t3` connection settings when automatic discovery is insufficient. This separate
+file lets enrolled workers execute while the normal host watchdog retains its
+own dry-run policy. Keep it private (0600). The unit includes mise shims on PATH.
+The worker independently reconciles retained execution every five seconds. An exclusive
 socket lock prevents two daemons from owning the runtime; a crash leaves a
 socket that the next lock owner can replace.
 

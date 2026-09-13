@@ -4,12 +4,12 @@ After=t3code.service huyang.service
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/t3-steward worker serve --config %h/.config/t3-steward/config.yaml
+ExecStart=%h/.local/bin/t3-steward worker serve --config %h/.config/t3-steward/persistent-worker.yaml
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=120
 UMask=0077
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.local/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=default.target

@@ -649,7 +649,11 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 
 func (v view) addWorkerBlocker(explanation *Explanation, task domain.Task) {
 	eligible := false
-	for _, snapshot := range v.workers {
+	for _, worker := range v.workersResponse(Filter{}) {
+		if worker.State != "observed" || worker.Stale || (worker.Requirement != nil && !worker.Enrolled) {
+			continue
+		}
+		snapshot := worker.Snapshot
 		if len(task.Placement.Hosts) != 0 && !contains(task.Placement.Hosts, snapshot.WorkerID) {
 			continue
 		}

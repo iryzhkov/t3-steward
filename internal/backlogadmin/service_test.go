@@ -105,8 +105,8 @@ func TestAdminQueriesTemporaryCoordinatorState(t *testing.T) {
 		t.Fatalf("unexpected task detail: %#v", task)
 	}
 	explanation := responses[QueryExplanation].Explanation
-	if explanation == nil || explanation.Eligible || len(explanation.Blockers) != 2 ||
-		explanation.Blockers[0].Code != "control" || explanation.Blockers[1].Code != "quota-admission" {
+	if explanation == nil || explanation.Eligible || len(explanation.Blockers) != 3 ||
+		explanation.Blockers[0].Code != "control" || explanation.Blockers[1].Code != "quota-admission" || explanation.Blockers[2].Code != "worker" {
 		t.Fatalf("unexpected explanation: %#v", explanation)
 	}
 	events := responses[QueryEvents].Events
