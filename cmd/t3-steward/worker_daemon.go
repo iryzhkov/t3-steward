@@ -20,6 +20,12 @@ import (
 )
 
 func cmdWorker(g globalFlags, args []string) error {
+	if len(args) > 0 && args[0] == "contained-exec" {
+		return cmdContainedExec(args[1:])
+	}
+	if len(args) > 0 && args[0] == "contained-child" {
+		return cmdContainedChild(args[1:])
+	}
 	if len(args) > 0 && args[0] == "inspect-directory" {
 		return cmdInspectDirectory(args[1:])
 	}

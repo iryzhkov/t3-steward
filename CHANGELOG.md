@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.24] - 2026-09-13
+
+### Added
+
+- A dedicated provider-process containment launcher with descriptor-pinned data
+  mounts, separate owned home/output storage, private process/network namespaces
+  and a provider hostname gateway that refuses host/private destinations.
+  Operator CLI and Linux kernel tests qualify the boundary. Normal directory
+  execution remains disabled until durable supervisor, scoped T3 control and
+  live provider recovery integration are complete.
+
 ## [0.11.0-rc.23] - 2026-09-13
 
 ### Added
