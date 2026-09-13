@@ -37,6 +37,11 @@ func observeHostInventory(control *t3control.Control, dataDir string) func(conte
 				if !ok {
 					return false, nil
 				}
+				// Managed projects are provisioned at dispatch. A successful T3
+				// snapshot establishes availability without requiring prior creation.
+				if binding.T3Project == "" {
+					return true, nil
+				}
 				for _, project := range projects {
 					if project.ID == binding.T3Project || project.Title == binding.T3Project {
 						return true, nil

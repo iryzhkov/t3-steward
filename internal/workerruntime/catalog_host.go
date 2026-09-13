@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -204,7 +205,9 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 			return nil, err
 		}
 		for _, record := range state.Attempts {
-			if record.SettlePending || (record.Phase != PhaseCompleted && record.Phase != PhaseFailed) {
+			terminal := record.Phase == PhaseCompleted || record.Phase == PhaseFailed ||
+				(record.Phase == PhaseStopped && record.StopConfirmed && hasCommandRequest(record, domain.WorkerCommandStop))
+			if record.SettlePending || !terminal {
 				return nil, errors.New("catalog change requires draining retained execution")
 			}
 		}
