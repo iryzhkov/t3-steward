@@ -203,32 +203,40 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 		return PreparedWorkspace{}, &PreparationError{Err: cause, LogPath: retained}
 	}
 
-	cached, err := p.Cache.Prepare(ctx, request.Environment.Repository, logFile)
-	if err != nil {
-		return fail(fmt.Errorf("prepare repository cache: %w", err))
-	}
-	commitBytes, err := runLoggedCommandOutput(ctx, logFile, "", p.git(), "--git-dir", cached.Path, "rev-parse", "--verify", request.Environment.Ref+"^{commit}")
-	if err != nil {
-		return fail(fmt.Errorf("resolve ref %q: %w", request.Environment.Ref, err))
-	}
-	commit := strings.TrimSpace(string(commitBytes))
-	if !validGitObjectID(commit) {
-		return fail(fmt.Errorf("resolve ref %q: Git returned invalid commit %q", request.Environment.Ref, commit))
-	}
-
 	workspaceDir := filepath.Join(stageDir, "workspace")
-	if err := runLoggedCommand(ctx, logFile, "", p.git(), "clone", "--no-local", "--no-checkout", "--", cached.Path, workspaceDir); err != nil {
-		return fail(fmt.Errorf("clone task workspace: %w", err))
-	}
-	if err := runLoggedCommand(ctx, logFile, "", p.git(), "-C", workspaceDir, "checkout", "--detach", commit); err != nil {
-		return fail(fmt.Errorf("checkout pinned commit %s: %w", commit, err))
-	}
-	head, err := runLoggedCommandOutput(ctx, logFile, "", p.git(), "-C", workspaceDir, "rev-parse", "HEAD")
-	if err != nil {
-		return fail(fmt.Errorf("verify checkout: %w", err))
-	}
-	if strings.TrimSpace(string(head)) != commit {
-		return fail(fmt.Errorf("verify checkout: HEAD changed from pinned commit %s", commit))
+	var cached CachedRepository
+	var commit string
+	if request.Environment.Type == EnvironmentFresh {
+		if err := os.Mkdir(workspaceDir, 0o700); err != nil {
+			return fail(err)
+		}
+	} else {
+		cached, err = p.Cache.Prepare(ctx, request.Environment.Repository, logFile)
+		if err != nil {
+			return fail(fmt.Errorf("prepare repository cache: %w", err))
+		}
+		commitBytes, err := runLoggedCommandOutput(ctx, logFile, "", p.git(), "--git-dir", cached.Path, "rev-parse", "--verify", request.Environment.Ref+"^{commit}")
+		if err != nil {
+			return fail(fmt.Errorf("resolve ref %q: %w", request.Environment.Ref, err))
+		}
+		commit = strings.TrimSpace(string(commitBytes))
+		if !validGitObjectID(commit) {
+			return fail(fmt.Errorf("resolve ref %q: Git returned invalid commit %q", request.Environment.Ref, commit))
+		}
+
+		if err := runLoggedCommand(ctx, logFile, "", p.git(), "clone", "--no-local", "--no-checkout", "--", cached.Path, workspaceDir); err != nil {
+			return fail(fmt.Errorf("clone task workspace: %w", err))
+		}
+		if err := runLoggedCommand(ctx, logFile, "", p.git(), "-C", workspaceDir, "checkout", "--detach", commit); err != nil {
+			return fail(fmt.Errorf("checkout pinned commit %s: %w", commit, err))
+		}
+		head, err := runLoggedCommandOutput(ctx, logFile, "", p.git(), "-C", workspaceDir, "rev-parse", "HEAD")
+		if err != nil {
+			return fail(fmt.Errorf("verify checkout: %w", err))
+		}
+		if strings.TrimSpace(string(head)) != commit {
+			return fail(fmt.Errorf("verify checkout: HEAD changed from pinned commit %s", commit))
+		}
 	}
 	if err := p.materializeInputs(stageDir, request); err != nil {
 		return fail(err)
@@ -276,7 +284,7 @@ func (p WorkspacePreparer) validate(request WorkspacePreparation) error {
 	if p.RunsRoot == "" {
 		return errors.New("runs root is required")
 	}
-	if p.Cache == nil {
+	if p.Cache == nil && request.Environment.Type != EnvironmentFresh {
 		return errors.New("repository cache is required")
 	}
 	if request.WorkflowRunID == "" || request.Task.ID == "" || request.Attempt.ID == "" {
@@ -297,10 +305,16 @@ func (p WorkspacePreparer) validate(request WorkspacePreparation) error {
 	if request.Environment.Scope != EnvironmentScopeTask {
 		return fmt.Errorf("environment scope %q is not supported by per-attempt preparation", request.Environment.Scope)
 	}
-	if request.Environment.Repository == "" {
+	if request.Environment.Type != "" && request.Environment.Type != EnvironmentGit && request.Environment.Type != EnvironmentFresh {
+		return errors.New("unsupported workspace type")
+	}
+	if request.Environment.Type == EnvironmentFresh && (request.Environment.Repository != "" || request.Environment.Ref != "") {
+		return errors.New("fresh workspace must not declare repository or ref")
+	}
+	if request.Environment.Type != EnvironmentFresh && request.Environment.Repository == "" {
 		return errors.New("repository is required")
 	}
-	if err := validateGitRef(request.Environment.Ref); err != nil {
+	if err := validateGitRef(request.Environment.Ref); request.Environment.Type != EnvironmentFresh && err != nil {
 		return fmt.Errorf("environment ref: %w", err)
 	}
 	if request.Environment.Setup.Timeout <= 0 {

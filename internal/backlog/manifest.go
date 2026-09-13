@@ -19,7 +19,8 @@ import (
 const ManifestVersion = 2
 
 const (
-	EnvironmentGit = "git"
+	EnvironmentGit   = "git"
+	EnvironmentFresh = "fresh"
 
 	EnvironmentScopeTask     = "task"
 	EnvironmentScopeWorkflow = "workflow"
@@ -255,11 +256,14 @@ func validateManifest(manifest Manifest) error {
 	if manifest.Environment.Project == "" {
 		return errors.New("environment.project is required")
 	}
-	if manifest.Environment.Type != EnvironmentGit {
+	if manifest.Environment.Type != EnvironmentGit && manifest.Environment.Type != EnvironmentFresh {
 		return fmt.Errorf("unsupported environment.type %q", manifest.Environment.Type)
 	}
 	if manifest.Environment.Scope != EnvironmentScopeTask && manifest.Environment.Scope != EnvironmentScopeWorkflow {
 		return fmt.Errorf("invalid environment.scope %q", manifest.Environment.Scope)
+	}
+	if manifest.Environment.Type == EnvironmentFresh && (manifest.Environment.Ref != "" || manifest.Environment.Scope != EnvironmentScopeTask) {
+		return errors.New("fresh environment requires task scope and no ref")
 	}
 	if manifest.Tasks == nil {
 		return errors.New("tasks is required (use {} for an empty workflow)")

@@ -547,9 +547,13 @@ func packageRecords(pkg workerproto.ExecutionPackage, now time.Time) (domain.Tas
 }
 
 func (d *LocalDriver) executionRecords(pkg workerproto.ExecutionPackage) (backlog.ResolvedEnvironment, domain.Task, domain.Attempt, error) {
+	workspaceType := pkg.Environment.Type
+	if workspaceType == "" {
+		workspaceType = backlog.EnvironmentGit
+	}
 	workflow := domain.Workflow{
 		ID: pkg.Identity.WorkflowID, Project: pkg.Environment.Project,
-		Environment: domain.ExecutionEnvironment{Type: backlog.EnvironmentGit, Scope: pkg.Environment.Scope, Ref: pkg.Environment.Ref},
+		Environment: domain.ExecutionEnvironment{Type: workspaceType, Scope: pkg.Environment.Scope, Ref: pkg.Environment.Ref},
 	}
 	task, attempt := packageRecords(pkg, d.Now().UTC())
 	environment, err := d.Catalog.Resolve(workflow, task)

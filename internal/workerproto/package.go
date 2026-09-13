@@ -19,6 +19,7 @@ const ExecutionPackageVersion = 1
 var identityPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$`)
 
 type EnvironmentReference struct {
+	Type                string   `json:"type,omitempty"`
 	CatalogRevision     string   `json:"catalogRevision"`
 	Project             string   `json:"project"`
 	Repository          string   `json:"repository"`
@@ -148,11 +149,17 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 			return fmt.Errorf("execution package: invalid %s", name)
 		}
 	}
+	if pkg.Environment.Type != "" && pkg.Environment.Type != "git" && pkg.Environment.Type != "fresh" {
+		return errors.New("execution package: unsupported workspace type")
+	}
+	if pkg.Environment.Type == "fresh" && (pkg.Environment.Repository != "" || pkg.Environment.Ref != "" || pkg.Environment.Scope != "task") {
+		return errors.New("execution package: fresh workspace requires task scope and no repository/ref")
+	}
 	for name, value := range map[string]string{
 		"repository": pkg.Environment.Repository,
 		"ref":        pkg.Environment.Ref,
 	} {
-		if !safeOpaqueValue(value, 1024) {
+		if pkg.Environment.Type != "fresh" && !safeOpaqueValue(value, 1024) {
 			return fmt.Errorf("execution package: invalid %s", name)
 		}
 	}

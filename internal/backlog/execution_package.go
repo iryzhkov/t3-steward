@@ -117,7 +117,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		Dependencies: dependencies,
 		Route:        cloneProviderRoute(assignment.Route),
 		Environment: workerproto.EnvironmentReference{
-			CatalogRevision: b.CatalogRevision, Project: environment.ProjectName,
+			Type: environment.Type, CatalogRevision: b.CatalogRevision, Project: environment.ProjectName,
 			Repository: environment.Repository, Ref: environment.Ref, Scope: environment.Scope,
 			SetupProfile: environment.Setup.Name, T3Project: environment.T3ProjectTemplate,
 			ResourceLocks:       append([]string(nil), environment.ResourceLocks...),

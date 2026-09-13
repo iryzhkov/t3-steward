@@ -585,6 +585,13 @@ as rises without T3 tokens after the fact. A backlog task may therefore
 occasionally start just before you do, and the ladder drains it at 90%
 like anything else.
 
+### Repository-free workspaces
+
+Version 2 capsules can use `environment.type: fresh` with a `type: fresh`
+catalog project. Steward creates the attempt directory and materializes inputs
+without a repository or Git checkout. See [fresh workspaces](docs/fresh-workspaces.md)
+for configuration, compatibility and current limits.
+
 ### Worker-managed T3 projects
 
 For coordinator/worker execution, omit `backlog_v2.projects.<name>.t3_project`

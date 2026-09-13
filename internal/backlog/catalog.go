@@ -25,6 +25,7 @@ type SetupProfile struct {
 
 // ProjectDefinition maps one workflow project name to immutable preparation metadata.
 type ProjectDefinition struct {
+	Type                string `json:"type,omitempty"`
 	Name                string
 	Repository          string
 	DefaultRef          string
@@ -36,6 +37,7 @@ type ProjectDefinition struct {
 
 // ResolvedEnvironment is the deterministic preparation contract for one task attempt.
 type ResolvedEnvironment struct {
+	Type                string `json:"type,omitempty"`
 	ProjectName         string
 	Repository          string
 	Ref                 string
@@ -94,7 +96,7 @@ func (c *ProjectCatalog) Resolve(workflow domain.Workflow, task domain.Task) (Re
 	if task.WorkflowID != workflow.ID {
 		return ResolvedEnvironment{}, fmt.Errorf("resolve project: task %q belongs to workflow %q, want %q", task.ID, task.WorkflowID, workflow.ID)
 	}
-	if workflow.Environment.Type != EnvironmentGit {
+	if workflow.Environment.Type != EnvironmentGit && workflow.Environment.Type != EnvironmentFresh {
 		return ResolvedEnvironment{}, fmt.Errorf("resolve project: unsupported environment type %q", workflow.Environment.Type)
 	}
 	if workflow.Environment.Scope != EnvironmentScopeTask && workflow.Environment.Scope != EnvironmentScopeWorkflow {
@@ -104,6 +106,16 @@ func (c *ProjectCatalog) Resolve(workflow domain.Workflow, task domain.Task) (Re
 	if !exists {
 		return ResolvedEnvironment{}, fmt.Errorf("resolve project: unknown project %q", workflow.Project)
 	}
+	projectType := project.Type
+	if projectType == "" {
+		projectType = EnvironmentGit
+	}
+	if projectType != workflow.Environment.Type {
+		return ResolvedEnvironment{}, errors.New("resolve project: workspace type does not match catalog")
+	}
+	if projectType == EnvironmentFresh && (workflow.Environment.Ref != "" || workflow.Environment.Scope != EnvironmentScopeTask) {
+		return ResolvedEnvironment{}, errors.New("resolve project: fresh workspace requires task scope and no ref")
+	}
 	profile, exists := c.profiles[project.SetupProfile]
 	if !exists {
 		return ResolvedEnvironment{}, fmt.Errorf("resolve project: setup profile %q is unavailable", project.SetupProfile)
@@ -112,7 +124,7 @@ func (c *ProjectCatalog) Resolve(workflow domain.Workflow, task domain.Task) (Re
 	if ref == "" {
 		ref = project.DefaultRef
 	}
-	if err := validateGitRef(ref); err != nil {
+	if err := validateGitRef(ref); projectType == EnvironmentGit && err != nil {
 		return ResolvedEnvironment{}, fmt.Errorf("resolve project %q ref: %w", project.Name, err)
 	}
 
@@ -120,7 +132,7 @@ func (c *ProjectCatalog) Resolve(workflow domain.Workflow, task domain.Task) (Re
 	locks = append(locks, task.ResourceLocks...)
 	locks = uniqueSorted(locks)
 	return ResolvedEnvironment{
-		ProjectName: project.Name, Repository: project.Repository, Ref: ref,
+		Type: project.Type, ProjectName: project.Name, Repository: project.Repository, Ref: ref,
 		Scope: workflow.Environment.Scope, T3ProjectTemplate: project.T3ProjectTemplate,
 		Setup: cloneSetupProfile(profile), ResourceLocks: locks,
 		RequiredCredentials: append([]string(nil), project.RequiredCredentials...),
@@ -152,10 +164,16 @@ func validateProjectDefinition(project ProjectDefinition) error {
 	if !manifestNamePattern.MatchString(project.Name) {
 		return fmt.Errorf("project catalog: invalid project name %q", project.Name)
 	}
-	if err := validateGitRepository(project.Repository); err != nil {
+	if project.Type != "" && project.Type != EnvironmentGit && project.Type != EnvironmentFresh {
+		return errors.New("project catalog: unsupported workspace type")
+	}
+	if project.Type == EnvironmentFresh && (project.Repository != "" || project.DefaultRef != "") {
+		return errors.New("project catalog: fresh workspace must not declare repository or ref")
+	}
+	if err := validateGitRepository(project.Repository); project.Type != EnvironmentFresh && err != nil {
 		return fmt.Errorf("project catalog: project %q repository: %w", project.Name, err)
 	}
-	if err := validateGitRef(project.DefaultRef); err != nil {
+	if err := validateGitRef(project.DefaultRef); project.Type != EnvironmentFresh && err != nil {
 		return fmt.Errorf("project catalog: project %q default ref: %w", project.Name, err)
 	}
 	if project.T3ProjectTemplate != "" && !safeDisplayName(project.T3ProjectTemplate) {

@@ -113,8 +113,14 @@ func (c *Config) validateBacklogV2() error {
 		}
 	}
 	for name, project := range v.Projects {
-		if strings.TrimSpace(name) == "" || strings.TrimSpace(project.Repository) == "" ||
-			strings.TrimSpace(project.DefaultRef) == "" {
+		if project.Type != "" && project.Type != "git" && project.Type != "fresh" {
+			return fmt.Errorf("backlog_v2: project %q has unsupported type %q", name, project.Type)
+		}
+		if project.Type == "fresh" && (project.Repository != "" || project.DefaultRef != "") {
+			return fmt.Errorf("backlog_v2: fresh project %q must not declare repository or default_ref", name)
+		}
+		if strings.TrimSpace(name) == "" || (project.Type != "fresh" && (strings.TrimSpace(project.Repository) == "" ||
+			strings.TrimSpace(project.DefaultRef) == "")) {
 			return fmt.Errorf("backlog_v2: project %q requires repository and default_ref", name)
 		}
 		if project.SetupProfile != "" {

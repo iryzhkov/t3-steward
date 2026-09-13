@@ -322,6 +322,7 @@ type V2Provider struct {
 }
 
 type V2Project struct {
+	Type          string   `yaml:"type" json:"type,omitempty"`
 	Repository    string   `yaml:"repository"`
 	DefaultRef    string   `yaml:"default_ref"`
 	T3Project     string   `yaml:"t3_project"`

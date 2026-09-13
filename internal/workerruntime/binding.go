@@ -65,7 +65,7 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 			return WorkerBinding{}, fmt.Errorf("worker binding: project %q has no setup profile", name)
 		}
 		projects = append(projects, backlog.ProjectDefinition{
-			Name: name, Repository: project.Repository, DefaultRef: project.DefaultRef,
+			Type: project.Type, Name: name, Repository: project.Repository, DefaultRef: project.DefaultRef,
 			T3ProjectTemplate: project.T3Project, SetupProfile: project.SetupProfile,
 			ResourceLocks:       append([]string(nil), project.ResourceLocks...),
 			RequiredCredentials: append([]string(nil), project.Credentials...),
