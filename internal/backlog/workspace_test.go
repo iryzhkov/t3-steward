@@ -187,6 +187,20 @@ func TestWorkspacePreparerRetainsLogAndCleansSetupFailure(t *testing.T) {
 	assertNoPreparationStages(t, filepath.Dir(attemptDir))
 }
 
+type timedSetupRunner struct {
+	ProcessRunner
+	calls   int
+	elapsed time.Duration
+}
+
+func (r *timedSetupRunner) Run(ctx context.Context, request ProcessRequest) (ProcessResult, error) {
+	r.calls++
+	started := time.Now()
+	result, err := r.ProcessRunner.Run(ctx, request)
+	r.elapsed += time.Since(started)
+	return result, err
+}
+
 func TestWorkspacePreparerTimesOutAndCleansSetup(t *testing.T) {
 	repository := newGitFixture(t)
 	runsRoot := t.TempDir()
@@ -195,10 +209,14 @@ func TestWorkspacePreparerTimesOutAndCleansSetup(t *testing.T) {
 	request.Environment.Setup.Commands = []string{"sleep 5"}
 	request.Environment.Setup.Timeout = 50 * time.Millisecond
 
-	started := time.Now()
-	_, err := workspacePreparer(runsRoot, "").Prepare(context.Background(), request)
-	if elapsed := time.Since(started); elapsed > 2*time.Second {
-		t.Fatalf("setup timeout took %s", elapsed)
+	// Git cache/clone time is outside the setup deadline. Measure only the
+	// actual setup process so runner load cannot charge Git work to setup.
+	runner := &timedSetupRunner{ProcessRunner: testProcessRunner{}}
+	preparer := workspacePreparer(runsRoot, "")
+	preparer.Processes = runner
+	_, err := preparer.Prepare(context.Background(), request)
+	if runner.calls != 1 || runner.elapsed > 2*time.Second {
+		t.Fatalf("setup calls=%d duration=%s", runner.calls, runner.elapsed)
 	}
 	var preparationErr *PreparationError
 	if !errors.As(err, &preparationErr) || !errors.Is(err, context.DeadlineExceeded) {
