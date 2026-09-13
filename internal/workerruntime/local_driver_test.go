@@ -88,6 +88,7 @@ func (c *recordingT3) CreateAndStartThread(_ context.Context, input t3control.Ne
 func (c *recordingT3) StopThread(context.Context, domain.Thread, t3control.StopMode) error {
 	c.stops++
 	c.thread.Running = false
+	c.thread.TurnState = "interrupted"
 	return nil
 }
 func (c *recordingT3) SettleThread(_ context.Context, threadID, effectToken string) error {
@@ -200,6 +201,7 @@ func TestLocalDriverBindsCatalogArtifactsWorkspaceAndT3(t *testing.T) {
 		t.Fatalf("observe=%q err=%v", state, err)
 	}
 	control.thread.Running = false
+	control.thread.TurnState = "completed"
 	control.message = "finished without the terminal marker"
 	if err := driver.Collect(context.Background(), pkg, workspace); err != nil {
 		t.Fatalf("collect deterministic failure: %v", err)

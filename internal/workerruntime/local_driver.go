@@ -214,10 +214,27 @@ func (d *LocalDriver) ObserveThread(ctx context.Context, pkg workerproto.Executi
 	if thread == nil {
 		return backlog.DispatchThreadMissing, nil
 	}
-	if thread.Running {
+	if !workerThreadTerminal(*thread) {
 		return backlog.DispatchThreadActive, nil
 	}
 	return backlog.DispatchThreadStopped, nil
+}
+
+// A newly accepted T3 start may be visible before its turn and session.
+// Only positive terminal evidence permits collection or skipping containment.
+func workerThreadTerminal(thread domain.Thread) bool {
+	if thread.Running || thread.BackgroundWork == "working" {
+		return false
+	}
+	if thread.Settled() {
+		return true
+	}
+	switch thread.TurnState {
+	case "completed", "interrupted", "error":
+		return true
+	default:
+		return false
+	}
 }
 
 func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
@@ -272,7 +289,7 @@ func (d *LocalDriver) StopThread(ctx context.Context, pkg workerproto.ExecutionP
 	if thread == nil {
 		return nil
 	}
-	if thread.Running {
+	if !workerThreadTerminal(*thread) {
 		if err := d.T3.StopThread(ctx, *thread, t3control.StopSession); err != nil {
 			return err
 		}
@@ -299,6 +316,9 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 		return fmt.Errorf("collect thread state: %w", err)
 	}
 	message, archive := "", []byte("{}")
+	if thread != nil && !workerThreadTerminal(*thread) {
+		return errors.New("T3 turn is not yet terminal; result collection deferred")
+	}
 	if thread != nil {
 		// T3 marks the turn completed slightly before the final assistant
 		// message is projected. A capture without the completion marker is
