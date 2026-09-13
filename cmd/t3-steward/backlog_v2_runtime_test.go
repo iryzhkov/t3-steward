@@ -195,6 +195,12 @@ func TestRunBacklogV2CoordinatorServesAuthenticatedLocalAdmin(t *testing.T) {
 		MaxArtifactBytes: int64(cfg.BacklogV2.MessageLimits.MaxArtifactBytes),
 		RequestTimeout:   cfg.BacklogV2.Transport.RequestTimeout.D(),
 	}
+	// Exercise the native-wait CLI client against the actual admin transport.
+	// Its client must supply all required byte limits even for metadata-only calls.
+	if err := cmdNodeWait(ctx, cfg, []string{"list", "--native", "--json"}); err != nil {
+		cancel()
+		t.Fatalf("native wait list: %v", err)
+	}
 	response, err := client.Query(context.Background(), backlogadmin.Query{
 		Version: backlogadmin.Version, Kind: backlogadmin.QueryStatus,
 		Principal: backlogadmin.Principal{ID: "spoofed", Roles: []string{"untrusted"}},

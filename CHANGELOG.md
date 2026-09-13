@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.9] - 2026-09-12
+
+### Fixed
+
+- Native wait CLI commands now supply the required artifact byte limit to the
+  local admin client, allowing requests to reach the coordinator. A live S5
+  registration exposed the failure; a real admin-transport regression covers it.
+
 ## [0.11.0-rc.2] - 2026-09-12
 
 ### Fixed

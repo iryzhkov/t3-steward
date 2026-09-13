@@ -29,7 +29,11 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	client := backlogadmin.LocalClient{Path: path, MaxResponseBytes: cfg.BacklogV2.MessageLimits.MaxBytes, RequestTimeout: cfg.BacklogV2.Transport.RequestTimeout.D()}
+	client := backlogadmin.LocalClient{
+		Path: path, MaxResponseBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
+		MaxArtifactBytes: cfg.BacklogV2.MessageLimits.MaxArtifactBytes,
+		RequestTimeout:   cfg.BacklogV2.Transport.RequestTimeout.D(),
+	}
 	op := backlogadmin.NodeWaitOperation{Action: args[0]}
 	switch args[0] {
 	case "add":
