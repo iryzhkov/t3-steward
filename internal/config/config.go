@@ -379,6 +379,8 @@ type V2Scheduling struct {
 // Config is the full configuration.
 type Config struct {
 	Wait struct {
+		// DryRun holds shell and node wake delivery; nil defaults to false.
+		// It does not inherit watchdog policy.dry_run.
 		DryRun *bool `yaml:"dry_run"`
 	} `yaml:"wait"`
 	T3            T3            `yaml:"t3"`

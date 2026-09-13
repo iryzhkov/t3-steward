@@ -85,10 +85,12 @@ Projection fences cross-run observations; assignment offer/claim and manual star
 recheck source success. A cancelled source sink does not release consumers. Failed
 external dependencies skip exhausted consumers so their sinks can settle.
 
-Native settlement runs outside quota reconciliation. wait.dry_run is an optional
-native-delivery override; when omitted it inherits policy.dry_run. Held intents
-settle once without repeated would-wake logging. Legacy shell checks retain their
-existing CLI and delivery policy. Native waits are visible with wait list --native
+Native settlement runs outside quota reconciliation. Following the S4 live wake
+failure, wait.dry_run controls both shell and native notification delivery and
+defaults to false independently of policy.dry_run. A separate T3 control client
+uses that same wait policy; explicit --dry-run holds both execution and wakes.
+Held native intents settle once without repeated would-wake logging. Legacy
+shell checks retain their existing CLI and quota health checks. Native waits are visible with wait list --native
 and keep their target threads busy for archive exclusion.
 
 T3 seam: dispatch carries deterministic commandId and messageId derived from the

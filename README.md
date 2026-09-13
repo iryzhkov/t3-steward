@@ -601,8 +601,10 @@ failure/cancellation/timeout, and 1 while pending. `wait cancel <nw-id>` and
 `wait run-now <nw-id>` use the coordinator socket too. Use `--native` explicitly
 with a custom request ID that does not start with `nw-`.
 
-Native delivery inherits `policy.dry_run`; optional `wait.dry_run` overrides only
-native wake delivery. Held outcomes settle once. A lost send response retains one
+Shell and native wake delivery use `wait.dry_run` (default `false`), independently
+of `policy.dry_run`. A dedicated T3 client delivers registered wakes even while
+watchdog enforcement is dry-run. Set `wait.dry_run: true` to hold notifications;
+the explicit global `--dry-run` flag also holds them. Quota health checks still apply. Held outcomes settle once. A lost send response retains one
 wake identity and waits for positive T3 message evidence; `recovery-required`
 means delivery is uncertain and will not be blindly retried. See the
 [node-wait ADR](docs/architecture/adr-s0-node-wait.md) for evidence limits.

@@ -282,6 +282,8 @@ func loadConfig(g globalFlags) (config.Config, error) {
 	}
 	if g.dryRun {
 		cfg.Policy.DryRun = true
+		waitDryRun := true
+		cfg.Wait.DryRun = &waitDryRun
 	}
 	if g.noDryRun {
 		cfg.Policy.DryRun = false
@@ -560,12 +562,13 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, 
 		Usage:        usageCh,
 	}, store))
 	d.Usage = usageCh
-	waits := wait.New(store, control, logger)
-	waits.DryRun = cfg.Policy.DryRun
-	waits.NodeDryRun = cfg.Policy.DryRun
-	if cfg.Wait.DryRun != nil {
-		waits.NodeDryRun = *cfg.Wait.DryRun
-	}
+	// Wait delivery is explicitly requested by registration, independent of
+	// watchdog enforcement. Its client must use the same delivery policy.
+	waitDryRun := cfg.Wait.DryRun != nil && *cfg.Wait.DryRun
+	waitControl := t3control.New(client, logger, waitDryRun)
+	waits := wait.New(store, waitControl, logger)
+	waits.DryRun = waitDryRun
+	waits.NodeDryRun = waitDryRun
 	d.Waits = waits
 	if cfg.Archive.Enabled {
 		d.Archive = newArchiver(cfg, store, control, logger, dataDir)
