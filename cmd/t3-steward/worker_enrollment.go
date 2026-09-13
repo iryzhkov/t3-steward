@@ -102,7 +102,7 @@ func cmdWorkerEnroll(g globalFlags, args []string) error {
 	if err != nil {
 		return err
 	}
-	client := backlogadmin.LocalClient{Path: path, MaxResponseBytes: cfg.BacklogV2.MessageLimits.MaxBytes, RequestTimeout: cfg.BacklogV2.Transport.RequestTimeout.D()}
+	client := backlogadmin.LocalClient{Path: path, MaxResponseBytes: cfg.BacklogV2.MessageLimits.MaxBytes, MaxArtifactBytes: cfg.BacklogV2.MessageLimits.MaxArtifactBytes, RequestTimeout: cfg.BacklogV2.Transport.RequestTimeout.D()}
 	result, err := client.EnrollWorker(context.Background(), request)
 	if err != nil {
 		return err

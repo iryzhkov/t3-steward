@@ -195,6 +195,11 @@ func parseBacklogAdminQueryWithoutSink(args []string) (backlogadmin.Query, bool,
 		return backlogadmin.Query{}, false, errors.New("backlog admin command is required")
 	}
 	switch clean[0] {
+	case "workers":
+		if len(clean) != 1 {
+			return backlogadmin.Query{}, false, errors.New("backlog workers takes no arguments")
+		}
+		return backlogadmin.Query{Kind: backlogadmin.QueryWorkers}, asJSON, nil
 	case "status":
 		if len(clean) != 1 {
 			return backlogadmin.Query{}, false, errors.New("backlog status takes no arguments")
@@ -363,6 +368,13 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 		encoder := json.NewEncoder(out)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(response.Diagnosis)
+	case backlogadmin.QueryWorkers:
+		table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(table, "WORKER\tSTATE\tHEALTH\tENROLLED\tSNAPSHOT AGE (s)\tCATALOG")
+		for _, worker := range response.Workers {
+			fmt.Fprintf(table, "%s\t%s\t%s\t%t\t%.1f\t%s\n", worker.Snapshot.WorkerID, worker.State, worker.Health, worker.Enrolled, worker.SnapshotAgeSeconds, worker.Snapshot.Inventory.CatalogRevision)
+		}
+		return table.Flush()
 	case backlogadmin.QueryStatus:
 		renderStatus(out, response.Status)
 	case backlogadmin.QueryWorkflows:

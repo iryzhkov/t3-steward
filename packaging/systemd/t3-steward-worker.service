@@ -4,7 +4,7 @@ After=t3code.service huyang.service
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/t3-steward --config %h/.config/t3-steward/config.yaml worker serve
+ExecStart=%h/.local/bin/t3-steward worker serve --config %h/.config/t3-steward/config.yaml
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=120

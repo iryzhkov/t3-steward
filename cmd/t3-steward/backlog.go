@@ -117,7 +117,7 @@ func isCoordinatorAdmin(args []string) bool {
 		return false
 	}
 	switch args[0] {
-	case "submit", "status", "edge", "run", "diagnose", "graph", "task", "events", "explain", "artifacts", "artifact", "commands", "command", "show",
+	case "submit", "status", "workers", "edge", "run", "diagnose", "graph", "task", "events", "explain", "artifacts", "artifact", "commands", "command", "show",
 		"start", "delay", "pause", "resume", "cancel", "retry", "skip", "recover":
 		return true
 	case "list":
