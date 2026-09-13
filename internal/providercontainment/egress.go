@@ -129,6 +129,12 @@ func (e Egress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // Bridge makes the host-side constrained Unix gateway available on loopback in
 // the private network namespace. It never dials a host TCP service directly.
 func Bridge(ctx context.Context, listener net.Listener, socket string) error {
+	return bridgeTo(ctx, listener, "unix", socket)
+}
+
+func bridgeTo(ctx context.Context, listener net.Listener, network, address string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	go func() { <-ctx.Done(); _ = listener.Close() }()
 	for {
 		local, err := listener.Accept()
@@ -140,7 +146,7 @@ func Bridge(ctx context.Context, listener net.Listener, socket string) error {
 		}
 		go func() {
 			defer local.Close()
-			remote, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "unix", socket)
+			remote, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, address)
 			if err != nil {
 				return
 			}

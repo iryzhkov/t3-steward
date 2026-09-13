@@ -77,18 +77,43 @@ func cmdContainedSupervisor(action string, args []string) error {
 }
 
 func cmdContainedChild(args []string) error {
-	if len(args) < 2 || args[0] != "--" {
+	flags := flag.NewFlagSet("contained-child", flag.ContinueOnError)
+	egress := flags.Bool("egress", false, "enable constrained provider gateway")
+	port := flags.Int("control-port", 0, "scoped namespace API port")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	command := flags.Args()
+	if len(command) == 0 {
 		return errors.New("contained-child requires -- COMMAND")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	listener, err := net.Listen("tcp", "127.0.0.1:18080")
-	if err != nil {
-		return err
+	if *egress {
+		listener, err := net.Listen("tcp", "127.0.0.1:18080")
+		if err != nil {
+			return err
+		}
+		defer listener.Close()
+		go func() {
+			if err := providercontainment.Bridge(ctx, listener, "/run/provider-egress.sock"); err != nil {
+				stop()
+			}
+		}()
 	}
-	defer listener.Close()
-	go func() { _ = providercontainment.Bridge(ctx, listener, "/run/provider-egress.sock") }()
-	cmd := exec.CommandContext(ctx, args[1], args[2:]...)
+	if *port != 0 {
+		listener, err := providercontainment.ListenControl("/control/api.sock")
+		if err != nil {
+			return err
+		}
+		defer listener.Close()
+		go func() {
+			if err := providercontainment.ControlBridge(ctx, listener, *port); err != nil {
+				stop()
+			}
+		}()
+	}
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

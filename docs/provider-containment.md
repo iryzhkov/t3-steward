@@ -24,6 +24,10 @@ The operator-owned JSON specification contains:
   Omit for a completely offline launch.
 - `command`: absolute executable path and arguments inside the sandbox.
 - `cwd`: `/workspace` (default), or exactly one `/data/N` mount for direct cwd.
+- `control`, `controlPort`: optional separate owned 0700 directory identity and
+  namespace-local T3 API port (1–65535, except the egress port 18080). Supply both.
+  The control directory is mounted at `/control`; the contained child publishes
+  `api.sock` there, refusing to replace an existing endpoint.
 
 The specification is not capsule input. It requires worker-owned preparation
 and approved credentials before runtime use. Use fresh owned storage; do not seed
@@ -74,8 +78,14 @@ that every descendant stopped. A stopped receipt describes process custody,
 never successful provider completion. Keep these journals across worker restarts;
 there is no automatic relaunch or journal cleanup.
 
-Scoped T3 control, provider credentials, artifact mappings and the normal worker
-binding remain unimplemented. The normal worker's directory guard stays closed
+The control bridge forwards that Unix socket only to 127.0.0.1 at the approved
+port inside the namespace. The host-side `t3api.NewUnix` client dials only this
+socket, ignores proxy environment and refuses redirects. Provision a dedicated
+T3 server and its execution-specific token; never use the shared host token.
+Control storage may not overlap home, output, source data, runtime or supervisor
+state. This transport is implemented; dedicated T3 provisioning/authentication,
+provider credentials, artifact mappings and the normal worker binding remain
+unimplemented. The normal worker's directory guard stays closed
 until those integrations and installed provider recovery qualification pass.
 
 ## Evidence and remaining gate

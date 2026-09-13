@@ -87,6 +87,9 @@ func (s Supervisor) identity(launch Launch) (unit, dir, digest string, payload [
 
 func sourcePaths(spec Spec) []string {
 	result := append([]string(nil), spec.RuntimePaths...)
+	if spec.Control != nil {
+		result = append(result, spec.Control.Registration.Path)
+	}
 	for _, b := range spec.Directories {
 		result = append(result, b.Identity.Registration.Path)
 	}

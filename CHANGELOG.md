@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.27] - 2026-09-13
+
+### Added
+
+- Contained executions can expose their namespace-local API through a separate
+  owned Unix socket. The scoped T3 client cannot use host proxies or follow
+  redirects to shared services. Socket replacement and overlapping control
+  storage are refused. Worker routing, dedicated T3 authentication and live
+  provider qualification remain gated.
+
 ## [0.11.0-rc.26] - 2026-09-13
 
 ### Added

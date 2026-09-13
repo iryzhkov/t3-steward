@@ -20,6 +20,9 @@ type Spec struct {
 	Command       []string                    `json:"command"`
 	// Cwd is /workspace or exactly /data/N for direct existing-directory use.
 	Cwd string `json:"cwd,omitempty"`
+	// Control is separate owned storage exposing only this namespace\'s API socket.
+	Control     *directoryresource.Identity `json:"control,omitempty"`
+	ControlPort int                         `json:"controlPort,omitempty"`
 }
 
 type Streams struct {

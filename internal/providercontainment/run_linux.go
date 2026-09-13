@@ -35,6 +35,12 @@ func run(ctx context.Context, spec Spec, streams Streams) error {
 		return err
 	}
 	owned := []directoryresource.Identity{spec.Home, spec.Workspace}
+	if (spec.Control == nil) != (spec.ControlPort == 0) || spec.ControlPort < 0 || spec.ControlPort > 65535 || spec.ControlPort == 18080 {
+		return errors.New("control storage and a valid non-egress port must be supplied together")
+	}
+	if spec.Control != nil {
+		owned = append(owned, *spec.Control)
+	}
 	var ownedBindings []directoryresource.Binding
 	for _, identity := range owned {
 		if identity.Registration.WorkerID != spec.WorkerID {
@@ -46,8 +52,12 @@ func run(ctx context.Context, spec Spec, streams Streams) error {
 		}
 		ownedBindings = append(ownedBindings, binding)
 	}
-	if directoryresource.Conflicts(ownedBindings[0], ownedBindings[1]) {
-		return errors.New("home and workspace storage overlap")
+	for i := range ownedBindings {
+		for j := 0; j < i; j++ {
+			if directoryresource.Conflicts(ownedBindings[i], ownedBindings[j]) {
+				return errors.New("owned home, workspace or control storage overlap")
+			}
+		}
 	}
 	for _, dataset := range spec.Directories {
 		if dataset.Identity.Registration.WorkerID != spec.WorkerID {
@@ -115,7 +125,7 @@ func run(ctx context.Context, spec Spec, streams Streams) error {
 		if err != nil {
 			return err
 		}
-		mount(f, []string{"/home/agent", "/workspace"}[i], true)
+		mount(f, []string{"/home/agent", "/workspace", "/control"}[i], true)
 	}
 	for i, binding := range spec.Directories {
 		f, err := directoryresource.Reopen(binding.Identity, binding.Identity.Registration)
@@ -162,6 +172,9 @@ func run(ctx context.Context, spec Spec, streams Streams) error {
 			return err
 		}
 		mount(os.NewFile(uintptr(fd), socket), "/run/provider-egress.sock", false)
+		environment = append(environment, "HTTP_PROXY=http://127.0.0.1:18080", "HTTPS_PROXY=http://127.0.0.1:18080", "http_proxy=http://127.0.0.1:18080", "https_proxy=http://127.0.0.1:18080", "NO_PROXY=localhost,127.0.0.1,::1", "no_proxy=localhost,127.0.0.1,::1")
+	}
+	if len(spec.ProviderHosts) > 0 || spec.Control != nil {
 		executable, err := os.Executable()
 		if err != nil {
 			return err
@@ -171,8 +184,14 @@ func run(ctx context.Context, spec Spec, streams Streams) error {
 			return err
 		}
 		mount(f, "/steward", false)
-		command = append([]string{"/steward", "worker", "contained-child", "--"}, command...)
-		environment = append(environment, "HTTP_PROXY=http://127.0.0.1:18080", "HTTPS_PROXY=http://127.0.0.1:18080", "http_proxy=http://127.0.0.1:18080", "https_proxy=http://127.0.0.1:18080", "NO_PROXY=localhost,127.0.0.1,::1", "no_proxy=localhost,127.0.0.1,::1")
+		helper := []string{"/steward", "worker", "contained-child"}
+		if len(spec.ProviderHosts) > 0 {
+			helper = append(helper, "--egress")
+		}
+		if spec.Control != nil {
+			helper = append(helper, "--control-port", strconv.Itoa(spec.ControlPort))
+		}
+		command = append(append(helper, "--"), command...)
 	}
 	for _, entry := range environment {
 		key, value, _ := strings.Cut(entry, "=")
