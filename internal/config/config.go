@@ -378,7 +378,10 @@ type V2Scheduling struct {
 
 // Config is the full configuration.
 type Config struct {
-	Wait struct {
+	// QuotaChecks controls this host watchdog and, on a coordinator, fleet-wide
+	// scheduler admission and throttling. Nil defaults to enabled.
+	QuotaChecks *bool `yaml:"quota_checks"`
+	Wait        struct {
 		// DryRun holds shell and node wake delivery; nil defaults to false.
 		// It does not inherit watchdog policy.dry_run.
 		DryRun *bool `yaml:"dry_run"`
@@ -413,6 +416,9 @@ const DefaultDrainMessage = `Provider quota is nearly exhausted (T3 quota watchd
 
 // DefaultResumePrompt is sent to a resumed thread.
 const DefaultResumePrompt = `The provider quota has recovered (T3 quota watchdog). Resume the interrupted task from the latest checkpoint. First inspect the current thread, repository state, and any partial results. Do not assume previous subagents are still running. Continue only the unfinished work, and create new subagents only when needed.`
+
+// QuotaChecksEnabled is independent of simulation/dry-run policy.
+func (c Config) QuotaChecksEnabled() bool { return c.QuotaChecks == nil || *c.QuotaChecks }
 
 // Default returns the shipped defaults.
 func Default() Config {

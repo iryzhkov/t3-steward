@@ -568,6 +568,11 @@ func assignmentByID(assignments []domain.Assignment, id string) (domain.Assignme
 }
 
 func admissionFor(records sqlite.CoordinatorRecords, admissions []domain.QuotaAdmissionRecord, poolID string) (domain.AdmissionState, bool) {
+	for _, pool := range records.QuotaPools {
+		if pool.ID == poolID && pool.ChecksDisabled {
+			return domain.AdmissionOpen, true
+		}
+	}
 	for _, admission := range admissions {
 		if admission.QuotaPoolID == poolID {
 			return admission.Admission, true

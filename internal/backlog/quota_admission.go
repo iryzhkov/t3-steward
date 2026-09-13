@@ -51,6 +51,7 @@ type TaskAdmissionEstimate = domain.TaskAdmissionEstimate
 // QuotaAdmissionInput fails closed unless every applicable window was observed
 // at or before planning time and no more than MaxObservationAge ago.
 type QuotaAdmissionInput struct {
+	Disabled          bool
 	Windows           []QuotaWindowBudget
 	MaxObservationAge time.Duration
 }
@@ -58,11 +59,13 @@ type QuotaAdmissionInput struct {
 // QuotaAdmissionPolicy is immutable and safe to reuse across planning cycles.
 // Each cycle receives private reservation accounting through StartPlan.
 type QuotaAdmissionPolicy struct {
+	disabled          bool
 	windows           []QuotaWindowBudget
 	maxObservationAge time.Duration
 }
 
 type quotaAdmissionSession struct {
+	disabled          bool
 	now               time.Time
 	windows           []QuotaWindowBudget
 	maxObservationAge time.Duration
@@ -95,6 +98,7 @@ func NewQuotaAdmissionPolicy(input QuotaAdmissionInput) (QuotaAdmissionPolicy, e
 		seen[key] = struct{}{}
 	}
 	return QuotaAdmissionPolicy{
+		disabled:          input.Disabled,
 		windows:           windows,
 		maxObservationAge: input.MaxObservationAge,
 	}, nil
@@ -102,6 +106,7 @@ func NewQuotaAdmissionPolicy(input QuotaAdmissionInput) (QuotaAdmissionPolicy, e
 
 func (policy QuotaAdmissionPolicy) StartPlan(now time.Time) PlanningConstraintSession {
 	return &quotaAdmissionSession{
+		disabled:          policy.disabled,
 		now:               now,
 		windows:           append([]QuotaWindowBudget(nil), policy.windows...),
 		maxObservationAge: policy.maxObservationAge,
@@ -145,7 +150,7 @@ func (session *quotaAdmissionSession) Evaluate(candidate PlanningCandidate) []Pl
 		return blockers
 	}
 
-	if candidate.Attempt.AdminForceStart {
+	if session.disabled || candidate.Attempt.AdminForceStart {
 		return blockers
 	}
 

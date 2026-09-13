@@ -93,6 +93,7 @@ func newBacklogRunner(cfg config.Config, store *sqlite.Store, control backlog.Co
 		return nil, err
 	}
 	return backlog.New(backlog.Options{
+		DisableQuotaChecks:       !cfg.QuotaChecksEnabled(),
 		Dir:                      dir,
 		Preamble:                 cfg.Backlog.Preamble,
 		QuietFor:                 cfg.Backlog.QuietFor.D(),

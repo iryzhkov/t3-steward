@@ -607,7 +607,17 @@ watchdog enforcement is dry-run. Set `wait.dry_run: true` to hold notifications;
 the explicit global `--dry-run` flag also holds them. `wait.quota_checks` defaults
 to `true`: unhealthy quota delays notification until it recovers. Set it to
 `false` to bypass quota holds for waits. This is independent of both wait delivery
-dry-run and watchdog `policy.dry_run`; disabling checks does not disable wakes. Held outcomes settle once. A lost send response retains one
+dry-run and watchdog `policy.dry_run`; disabling checks does not disable wakes.
+
+The top-level `quota_checks` setting defaults to `true`. Set `quota_checks: false`
+and restart the coordinator to disable quota admission, forecast gates and automatic
+throttling across every worker it dispatches to. It also disables that host's
+watchdog quota actions and wait quota holds (overriding `wait.quota_checks`).
+Readings continue to be recorded, and quota pool diagnostics explicitly report
+`checksDisabled`. Task timing/dependencies, worker health/enrollment, concurrency,
+locks, leases and effect-safety remain enforced. Existing quota-paused tasks are
+not automatically resumed while checks are disabled; operator recovery remains
+explicit. This setting is coordinator-owned fleet policy, not a worker-local toggle. Held outcomes settle once. A lost send response retains one
 wake identity and waits for positive T3 message evidence; `recovery-required`
 means delivery is uncertain and will not be blindly retried. See the
 [node-wait ADR](docs/architecture/adr-s0-node-wait.md) for evidence limits.

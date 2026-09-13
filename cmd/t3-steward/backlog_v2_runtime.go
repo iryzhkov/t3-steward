@@ -150,7 +150,10 @@ func (r coordinatorQuotaReconciler) Tick(ctx context.Context) (backlog.QuotaBrid
 	if err != nil {
 		return backlog.QuotaBridgeReport{}, fmt.Errorf("load quota coordinator snapshot: %w", err)
 	}
-	throttleRecords, err := r.store.LoadThrottleAttemptRecords(ctx)
+	var throttleRecords []domain.ThrottleAttemptRecord
+	if !r.bridge.Disabled {
+		throttleRecords, err = r.store.LoadThrottleAttemptRecords(ctx)
+	}
 	if err != nil {
 		return backlog.QuotaBridgeReport{}, fmt.Errorf("load quota throttle snapshot: %w", err)
 	}
@@ -205,6 +208,7 @@ func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeR
 		Workflows: records.Workflows, WorkflowRuns: records.WorkflowRuns,
 		Tasks: records.Tasks, Attempts: records.Attempts, Assignments: records.Assignments,
 		WorkerSnapshots: snapshots, QuotaPools: quota.Pools, QuotaWindows: quota.Windows,
+		DisableQuotaChecks:     quota.ChecksDisabled,
 		MaxWorkerSnapshotAge:   p.maxWorkerSnapshotAge,
 		MaxQuotaObservationAge: p.maxQuotaObservationAge,
 		DeadlineRiskWindow:     p.deadlineRiskWindow, CheckpointMargin: p.checkpointMargin,
@@ -452,7 +456,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	cycle := coordinatorBoundaryCycle{
 		projection: store,
 		quota: coordinatorQuotaReconciler{store: store, bridge: backlog.QuotaBridge{
-			Store: store, Pools: coordinatorQuotaPoolBindings(cfg),
+			Store: store, Pools: coordinatorQuotaPoolBindings(cfg), Disabled: !cfg.QuotaChecksEnabled(),
 			MaxObservationAge:       cfg.BacklogV2.Freshness.QuotaMaxAge.D(),
 			SafetyMargin:            cfg.Backlog.SafetyMargin,
 			FallbackForecastPerHour: cfg.Backlog.FallbackPerHour,

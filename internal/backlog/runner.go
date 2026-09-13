@@ -34,6 +34,7 @@ type Store interface {
 
 // Options configure the runner.
 type Options struct {
+	DisableQuotaChecks       bool
 	Dir                      string
 	Preamble                 string
 	QuietFor                 time.Duration
@@ -469,6 +470,9 @@ func (r *Runner) gateOpen(t Task, st *State, instance string, buckets []domain.B
 	gated := t.Gated() && !urgent
 	if gated && r.lastInteractive.Add(r.opts.QuietFor).After(now) {
 		return false, fmt.Sprintf("interactive session active within the last %s", r.opts.QuietFor)
+	}
+	if r.opts.DisableQuotaChecks {
+		return true, ""
 	}
 	cost := st.EstimatedCost
 	mins := st.EstimatedMins

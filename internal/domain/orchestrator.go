@@ -302,6 +302,7 @@ type Trigger struct {
 
 // QuotaPool groups provider instances that consume the same provider limit.
 type QuotaPool struct {
+	ChecksDisabled      bool           `json:"checksDisabled,omitempty"`
 	ID                  string         `json:"id"`
 	Provider            string         `json:"provider"`
 	AccountID           string         `json:"accountId,omitempty"`

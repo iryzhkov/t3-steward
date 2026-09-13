@@ -30,6 +30,12 @@ t3:
 # Delivery defaults to enabled; set true to hold wakes while checks still settle.
 # Quota checks are independent of dry-run. Set quota_checks to false to bypass holds.
 # The global --dry-run flag also holds wait delivery.
+# Host watchdog quota checks; on a coordinator this also controls scheduler
+# quota admission/forecast/throttling for the ENTIRE fleet, not just local work.
+# Readings remain recorded. Worker safety and concurrency checks remain enforced.
+# Changing this requires restarting the coordinator, not SIGHUP.
+quota_checks: true
+
 wait:
   dry_run: false
   quota_checks: true

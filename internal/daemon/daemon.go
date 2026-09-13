@@ -314,13 +314,18 @@ func (d *Daemon) HandleSnapshot(ctx context.Context, snap domain.QuotaSnapshot) 
 		log.Info("window is in ignore_windows; actions suppressed", "actions", len(decision.Actions))
 		return
 	}
-	for _, a := range decision.Actions {
-		d.execute(ctx, a, decision.State)
+	if d.cfg.QuotaChecksEnabled() {
+		for _, a := range decision.Actions {
+			d.execute(ctx, a, decision.State)
+		}
 	}
 }
 
 // tickBuckets fires grace-period timers.
 func (d *Daemon) tickBuckets(ctx context.Context) {
+	if !d.cfg.QuotaChecksEnabled() {
+		return
+	}
 	states, err := d.store.ListBuckets(ctx)
 	if err != nil {
 		d.log.Error("list buckets", "err", err)
@@ -373,7 +378,7 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 	now := d.now()
 	stoppedAny := false
 	for _, st := range states {
-		if st.Phase == domain.PhaseNormal || d.ignoredWindow(st.Key.Window) {
+		if !d.cfg.QuotaChecksEnabled() || st.Phase == domain.PhaseNormal || d.ignoredWindow(st.Key.Window) {
 			continue
 		}
 		if st.ResetsAt != nil && !st.ResetsAt.After(now) {
@@ -423,7 +428,9 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 			return
 		}
 	}
-	d.advanceResumes(ctx, threads, states)
+	if d.cfg.QuotaChecksEnabled() {
+		d.advanceResumes(ctx, threads, states)
+	}
 	if d.Backlog != nil {
 		d.Backlog.Tick(ctx, threads, states)
 	}

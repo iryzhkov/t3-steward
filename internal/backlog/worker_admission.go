@@ -10,11 +10,12 @@ import (
 // lifecycle command can cross the worker transport. Only explicitly open pools
 // may receive new work; observation, stop, and collection remain available.
 type WorkerAdmissionPolicy struct {
-	OpenQuotaPools map[string]struct{}
+	QuotaChecksDisabled bool
+	OpenQuotaPools      map[string]struct{}
 }
 
 func WorkerAdmissionPolicyFromQuotaReport(report QuotaBridgeReport) WorkerAdmissionPolicy {
-	policy := WorkerAdmissionPolicy{OpenQuotaPools: make(map[string]struct{})}
+	policy := WorkerAdmissionPolicy{OpenQuotaPools: make(map[string]struct{}), QuotaChecksDisabled: report.ChecksDisabled}
 	for _, pool := range report.Derived {
 		if pool.Admission == domain.AdmissionOpen {
 			policy.OpenQuotaPools[pool.QuotaPoolID] = struct{}{}
@@ -25,7 +26,7 @@ func WorkerAdmissionPolicyFromQuotaReport(report QuotaBridgeReport) WorkerAdmiss
 
 func (p WorkerAdmissionPolicy) AllowsNewWork(quotaPoolID string) bool {
 	_, allowed := p.OpenQuotaPools[quotaPoolID]
-	return quotaPoolID != "" && (allowed || unmeteredQuotaPoolID(quotaPoolID))
+	return quotaPoolID != "" && (p.QuotaChecksDisabled || allowed || unmeteredQuotaPoolID(quotaPoolID))
 }
 
 func forcedAssignmentIDs(assignments []domain.Assignment, attempts []domain.Attempt) map[string]struct{} {

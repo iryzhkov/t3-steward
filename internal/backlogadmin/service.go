@@ -248,6 +248,18 @@ type view struct {
 }
 
 func newView(records sqlite.CoordinatorRecords, workers []domain.WorkerSnapshot, admissions []domain.QuotaAdmissionRecord, runtime RuntimeInfo, now time.Time) view {
+	// Retained quota history is not current admission when checks are disabled.
+	disabled := map[string]bool{}
+	for _, pool := range records.QuotaPools {
+		disabled[pool.ID] = pool.ChecksDisabled
+	}
+	currentAdmissions := make([]domain.QuotaAdmissionRecord, 0, len(admissions))
+	for _, item := range admissions {
+		if !disabled[item.QuotaPoolID] {
+			currentAdmissions = append(currentAdmissions, item)
+		}
+	}
+	admissions = currentAdmissions
 	v := view{
 		records: records, workers: workers, admissions: admissions, runtime: runtime, now: now,
 		workflows: make(map[string]domain.Workflow), runs: make(map[string]domain.WorkflowRun),

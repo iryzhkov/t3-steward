@@ -34,6 +34,7 @@ type QuotaPoolBinding struct {
 }
 
 type QuotaBridge struct {
+	Disabled                bool
 	Store                   QuotaBridgeStore
 	Pools                   []QuotaPoolBinding
 	MaxObservationAge       time.Duration
@@ -45,10 +46,11 @@ type QuotaBridge struct {
 }
 
 type QuotaBridgeReport struct {
-	Pools      []domain.QuotaPool
-	Windows    []QuotaWindowBudget
-	Derived    []QuotaPoolAdmissionSnapshot
-	Directives []domain.ThrottleDirective
+	ChecksDisabled bool
+	Pools          []domain.QuotaPool
+	Windows        []QuotaWindowBudget
+	Derived        []QuotaPoolAdmissionSnapshot
+	Directives     []domain.ThrottleDirective
 }
 
 // Reconcile projects real provider bucket observations into configured fleet
@@ -153,6 +155,9 @@ func (b QuotaBridge) Reconcile(ctx context.Context, reservations []QuotaResumeRe
 // ReconcileState reconstructs active concurrency and paused-attempt reservations
 // from one durable coordinator snapshot before changing admission.
 func (b QuotaBridge) ReconcileState(ctx context.Context, input QuotaPlanningStateInput) (QuotaBridgeReport, error) {
+	if b.Disabled {
+		return b.disabledReport(input.Assignments)
+	}
 	pools, _, err := quotaBridgePools(b.Pools)
 	if err != nil {
 		return QuotaBridgeReport{}, err

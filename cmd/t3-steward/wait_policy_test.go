@@ -110,6 +110,22 @@ func TestWaitDeliveryIndependentOfWatchdogDryRun(t *testing.T) {
 	}
 }
 
+func TestGlobalQuotaDisableAppliesToWaits(t *testing.T) {
+	cfg := config.Default()
+	disabled, enabled := false, true
+	cfg.QuotaChecks, cfg.Wait.QuotaChecks = &disabled, &enabled
+	cfg.T3.URL, cfg.T3.Token, cfg.T3.DataDir = "http://127.0.0.1:1", "test", t.TempDir()
+	cfg.Archive.Enabled = false
+	_, daemon, err := buildWatchdog(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := daemon.Waits.(*wait.Runner)
+	if !runner.DisableQuotaChecks || runner.DryRun || runner.NodeDryRun {
+		t.Fatal("global quota disable did not apply independently of delivery")
+	}
+}
+
 func TestExplicitDryRunAlsoHoldsWaits(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("policy:\n  dry_run: false\nwait:\n  dry_run: false\n"), 0600); err != nil {

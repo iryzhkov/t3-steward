@@ -569,7 +569,7 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, 
 	waits := wait.New(store, waitControl, logger)
 	waits.DryRun = waitDryRun
 	waits.NodeDryRun = waitDryRun
-	waits.DisableQuotaChecks = cfg.Wait.QuotaChecks != nil && !*cfg.Wait.QuotaChecks
+	waits.DisableQuotaChecks = !cfg.QuotaChecksEnabled() || (cfg.Wait.QuotaChecks != nil && !*cfg.Wait.QuotaChecks)
 	d.Waits = waits
 	if cfg.Archive.Enabled {
 		d.Archive = newArchiver(cfg, store, control, logger, dataDir)
