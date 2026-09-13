@@ -20,6 +20,9 @@ import (
 )
 
 func cmdWorker(g globalFlags, args []string) error {
+	if len(args) > 0 && args[0] == "inspect-directory" {
+		return cmdInspectDirectory(args[1:])
+	}
 	if len(args) > 0 && args[0] == "enroll" {
 		return cmdWorkerEnroll(g, args[1:])
 	}

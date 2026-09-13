@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.21] - 2026-09-13
+
+### Added
+
+- Read-only `worker inspect-directory` identity diagnostics for S5a: descriptor
+  traversal rejects symlinks and missing paths; revalidation fences inode birth
+  identity, mounts, ancestors and operator registration revisions. Internal access
+  checks default to read-only and detect overlapping writers. Existing-directory
+  scheduling and provider containment remain disabled pending integration.
+
 ## [0.11.0-rc.20] - 2026-09-13
 
 ### Fixed
