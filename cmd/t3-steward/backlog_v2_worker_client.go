@@ -437,6 +437,9 @@ func newCoordinatorWorkerSession(
 				VerificationTimeout: requestTimeout,
 				MaxArtifactBytes:    settings.MessageLimits.MaxArtifactBytes,
 				MaxTotalBytes:       settings.MessageLimits.MaxArtifactBytes,
+				// WorkerCapabilities stays nil on purpose: the builder then reads
+				// what the worker reported about itself, which is the only source
+				// that knows which build is running on that host.
 			},
 			Transport: inputTransport, Artifacts: artifacts,
 			CoordinatorID: settings.Coordinator.ID, CoordinatorEpoch: coordinatorEpoch,

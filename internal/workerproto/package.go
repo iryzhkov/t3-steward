@@ -70,19 +70,13 @@ func SupportedPackageCapabilities() []string {
 }
 
 // PreflightStep is one declared step the worker runs after the workspace is
-// prepared and strictly before the provider session is created. It mirrors the
-// manifest declaration; the backlog package converts between the two.
-type PreflightStep struct {
-	ID             string        `json:"id"`
-	Kind           string        `json:"kind"`
-	Command        []string      `json:"command,omitempty"`
-	Probe          string        `json:"probe,omitempty"`
-	FailurePolicy  string        `json:"failurePolicy"`
-	Include        string        `json:"include"`
-	MaxOutputBytes int           `json:"maxOutputBytes"`
-	Timeout        time.Duration `json:"timeout"`
-	Required       bool          `json:"required,omitempty"`
-}
+// prepared and strictly before the provider session is created.
+//
+// The declaration is durable task state, so the type belongs to the domain and
+// this is an alias rather than a copy. A task carries its steps, the execution
+// package carries them to the worker, and both name the same struct: a third
+// spelling of nine fields would only create somewhere for them to drift.
+type PreflightStep = domain.PreflightStep
 
 type ExecutionPackage struct {
 	Timeout          time.Duration        `json:"timeout,omitempty"`

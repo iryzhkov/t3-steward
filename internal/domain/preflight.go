@@ -10,6 +10,25 @@ import (
 	"time"
 )
 
+// PreflightStep is one declared step of a task's preflight, run after the
+// workspace is prepared and strictly before a provider session is created.
+//
+// A check step establishes pass-or-fail baseline evidence. A context step
+// collects facts and does not decide pass or fail unless Required marks it,
+// which is only meaningful for a context step because a check step already says
+// that through FailurePolicy. Exactly one of Command and Probe names the work.
+type PreflightStep struct {
+	ID             string        `json:"id"`
+	Kind           string        `json:"kind"`
+	Command        []string      `json:"command,omitempty"`
+	Probe          string        `json:"probe,omitempty"`
+	FailurePolicy  string        `json:"failurePolicy"`
+	Include        string        `json:"include"`
+	MaxOutputBytes int           `json:"maxOutputBytes"`
+	Timeout        time.Duration `json:"timeout"`
+	Required       bool          `json:"required,omitempty"`
+}
+
 // PreflightIdentity binds preflight evidence to the exact bytes it was produced
 // from: the command or probe that ran, the environment it ran in, the source
 // revision it observed and the digest of every mounted input. Two runs share an

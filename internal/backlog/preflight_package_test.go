@@ -6,35 +6,43 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
-func preflightOfferFixture(t *testing.T) (CoordinatorOfferBuilder, workerproto.AssignmentOffer) {
+// preflightOfferFixture builds an offer for a task declaring the given steps.
+// The declaration goes onto the stored task rather than into a builder field,
+// because preflight is durable task state: the builder reads it from the task
+// it already loads, so a retry re-establishes the same declared baseline.
+func preflightOfferFixture(t *testing.T, steps []workerproto.PreflightStep) (CoordinatorOfferBuilder, domain.Assignment, time.Time) {
 	t.Helper()
 	now := time.Date(2026, 9, 10, 22, 0, 0, 0, time.UTC)
 	records, assignment := packageBuilderFixture(now)
-	builder := packageBuilder(t, records)
-	offer, err := builder.BuildAssignmentOffer(context.Background(), assignment, now.Add(time.Minute))
-	if err != nil {
-		t.Fatalf("baseline offer: %v", err)
+	for i := range records.Tasks {
+		if records.Tasks[i].ID == "task-consumer" {
+			records.Tasks[i].Preflight = steps
+		}
 	}
-	return builder, offer
+	return packageBuilder(t, records), assignment, now.Add(time.Minute)
 }
 
 func TestOfferBuilderCarriesPreflightForACapableWorker(t *testing.T) {
-	builder, baseline := preflightOfferFixture(t)
+	bare, bareAssignment, bareExpiry := preflightOfferFixture(t, nil)
+	baseline, err := bare.BuildAssignmentOffer(context.Background(), bareAssignment, bareExpiry)
+	if err != nil {
+		t.Fatalf("baseline offer: %v", err)
+	}
 	if len(baseline.Package.Package.Preflight) != 0 || len(baseline.Package.Package.RequiredCapabilities) != 0 {
 		t.Fatalf("a task without preflight must declare none: %+v", baseline.Package.Package)
 	}
-	taskID := baseline.Package.Package.Identity.TaskID
 	workerID := baseline.Package.Package.WorkerID
-	steps := PackagePreflightSteps([]ManifestPreflightStep{{
+
+	builder, assignment, expiresAt := preflightOfferFixture(t, PackagePreflightSteps([]ManifestPreflightStep{{
 		ID: "go_build", Kind: PreflightKindCheck, Command: []string{"go", "build", "./..."},
-	}})
-	builder.TaskPreflight = map[string][]workerproto.PreflightStep{taskID: steps}
+	}}))
 	builder.WorkerCapabilities = map[string][]string{workerID: {workerproto.PackageCapabilityPreflight}}
 
-	offer, err := builder.BuildAssignmentOffer(context.Background(), baseline.Assignment, baseline.ExpiresAt)
+	offer, err := builder.BuildAssignmentOffer(context.Background(), assignment, expiresAt)
 	if err != nil {
 		t.Fatalf("build offer: %v", err)
 	}
@@ -67,12 +75,10 @@ func TestOfferBuilderCarriesPreflightForACapableWorker(t *testing.T) {
 }
 
 func TestOfferBuilderRefusesPreflightForAnIncapableWorker(t *testing.T) {
-	builder, baseline := preflightOfferFixture(t)
-	taskID := baseline.Package.Package.Identity.TaskID
-	workerID := baseline.Package.Package.WorkerID
-	builder.TaskPreflight = map[string][]workerproto.PreflightStep{taskID: PackagePreflightSteps(
+	builder, assignment, expiresAt := preflightOfferFixture(t, PackagePreflightSteps(
 		[]ManifestPreflightStep{{ID: "go_build", Kind: PreflightKindCheck, Command: []string{"go", "build"}}},
-	)}
+	))
+	workerID := assignment.WorkerID
 
 	tests := map[string]map[string][]string{
 		"unknown worker":     nil,
@@ -82,7 +88,7 @@ func TestOfferBuilderRefusesPreflightForAnIncapableWorker(t *testing.T) {
 	for name, capabilities := range tests {
 		t.Run(name, func(t *testing.T) {
 			builder.WorkerCapabilities = capabilities
-			_, err := builder.BuildAssignmentOffer(context.Background(), baseline.Assignment, baseline.ExpiresAt)
+			_, err := builder.BuildAssignmentOffer(context.Background(), assignment, expiresAt)
 			if err == nil || !strings.Contains(err.Error(), workerproto.PackageCapabilityPreflight) {
 				t.Fatalf("error = %v, want a capability refusal naming preflight", err)
 			}

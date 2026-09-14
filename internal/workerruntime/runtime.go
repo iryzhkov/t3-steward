@@ -101,6 +101,32 @@ func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
 	return &Runtime{config: config, desiredInventory: config.Inventory, journal: journal, driver: driver, log: logger.With("component", "worker-runtime")}, nil
 }
 
+// advertisedCapabilities merges the capabilities an operator configured for
+// this host with the package capabilities this build actually implements.
+//
+// The two answer different questions and only the worker can answer the second.
+// Configuration describes the host: that it has Git, or a Huyang checkout, or
+// reachable internet. A package capability describes the binary: whether this
+// build knows how to honour a declaration the coordinator may send. A
+// coordinator reading its own configuration file cannot know which build is
+// running on the far end, so a worker that reported only its configured list
+// would look equally capable before and after an upgrade.
+//
+// Reporting the build's own list is what lets the coordinator exclude an older
+// worker before assignment rather than discovering the gap mid-attempt. The
+// worker still refuses a package requiring an unsupported capability when it
+// validates one, so this is the explanation, not the only defence.
+func advertisedCapabilities(configured []string) []string {
+	merged := append([]string(nil), configured...)
+	for _, capability := range workerproto.SupportedPackageCapabilities() {
+		if !slices.Contains(merged, capability) {
+			merged = append(merged, capability)
+		}
+	}
+	slices.Sort(merged)
+	return merged
+}
+
 func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 	if r.config.ObserveInventory != nil {
 		inventory, err := r.config.ObserveInventory(ctx, r.desiredInventory)
@@ -121,10 +147,12 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 			record := state.Attempts[id]
 			assignments = append(assignments, observation(record, now))
 		}
+		inventory := r.config.Inventory
+		inventory.Capabilities = advertisedCapabilities(inventory.Capabilities)
 		snapshot = domain.WorkerSnapshot{
 			WorkerID: r.config.WorkerID, WorkerEpoch: r.config.WorkerEpoch,
 			CoordinatorEpoch: r.config.CoordinatorEpoch, Sequence: state.Sequence,
-			Connected: true, Inventory: r.config.Inventory, Assignments: assignments,
+			Connected: true, Inventory: inventory, Assignments: assignments,
 			ObservedAt: now, ValidUntil: now.Add(r.config.SnapshotTTL),
 		}
 		return nil

@@ -18,6 +18,11 @@ import (
 
 type ExecutionPackageRecordStore interface {
 	LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRecords, error)
+	// LoadWorkerSnapshots supplies what each worker reported about itself. A
+	// worker's package capabilities are a property of the build running on that
+	// host, so the coordinator has to be told them rather than reading its own
+	// configuration and assuming the far end matches.
+	LoadWorkerSnapshots(context.Context) ([]domain.WorkerSnapshot, error)
 }
 
 // CoordinatorOfferBuilder resolves a committed assignment into the immutable
@@ -31,17 +36,13 @@ type CoordinatorOfferBuilder struct {
 	VerificationTimeout time.Duration
 	MaxArtifactBytes    int64
 	MaxTotalBytes       int64
-	// TaskPreflight carries the declared preflight steps of a task into its
-	// execution package, keyed by task ID. It is a builder input rather than a
-	// task field because the durable task record is owned by the placement
-	// lane; when that record carries the declaration, this map goes away and
-	// the builder reads the task directly.
-	TaskPreflight map[string][]workerproto.PreflightStep
-	// WorkerCapabilities is the capability list the selected worker advertised.
-	// A package that needs a capability the worker does not advertise is
-	// refused here, so the worker is never sent work whose evidence it cannot
-	// produce. An absent entry is treated as an unknown worker and refused for
-	// the same reason.
+	// WorkerCapabilities overrides what a worker is taken to advertise, for
+	// tests and for a caller that has a fresher view than the store. When it is
+	// nil the builder reads the worker's own reported snapshot instead.
+	//
+	// A package that needs a capability the worker does not advertise is refused
+	// here, so the worker is never sent work whose evidence it cannot produce.
+	// An unknown worker is refused for the same reason: silence is not consent.
 	WorkerCapabilities map[string][]string
 }
 
@@ -140,7 +141,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		},
 		Verification: append([]string(nil), state.task.Verification...),
 		Outputs:      append([]domain.ArtifactDeclaration(nil), state.task.Outputs...),
-		Preflight:    append([]workerproto.PreflightStep(nil), b.TaskPreflight[state.task.ID]...),
+		Preflight:    append([]workerproto.PreflightStep(nil), state.task.Preflight...),
 		NotBefore:    cloneTime(state.task.NotBefore),
 		Deadline:     cloneTime(state.task.Deadline),
 		ExpiresAt:    cloneTime(state.task.ExpiresAt),
@@ -151,7 +152,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		},
 		CreatedAt: assignment.CreatedAt,
 	}
-	if err := b.declarePackageCapabilities(&pkg); err != nil {
+	if err := b.declarePackageCapabilities(ctx, &pkg); err != nil {
 		return workerproto.AssignmentOffer{}, err
 	}
 	manifest, err := workerproto.BuildExecutionPackageManifest(pkg)
@@ -165,25 +166,53 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 // build one the selected worker cannot honour. Capability negotiation happens
 // before dispatch: a worker that does not understand preflight is never handed
 // a package whose evidence it would silently never produce.
-func (b CoordinatorOfferBuilder) declarePackageCapabilities(pkg *workerproto.ExecutionPackage) error {
+func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context, pkg *workerproto.ExecutionPackage) error {
 	if len(pkg.Preflight) == 0 {
 		return nil
 	}
 	pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityPreflight)
-	if b.WorkerCapabilities == nil {
-		// No advertisement was supplied, so nothing can be proven about the
-		// worker. Declared preflight is refused rather than assumed.
+	advertised, known, err := b.advertisedCapabilities(ctx, pkg.WorkerID)
+	if err != nil {
+		return err
+	}
+	if !known {
+		// Nothing can be proven about the worker, so declared preflight is
+		// refused rather than assumed.
 		return fmt.Errorf("execution package builder: worker %q capabilities are unknown, required %q",
 			pkg.WorkerID, workerproto.PackageCapabilityPreflight)
 	}
-	advertised := b.WorkerCapabilities[pkg.WorkerID]
 	for _, capability := range pkg.RequiredCapabilities {
+
 		if !slices.Contains(advertised, capability) {
 			return fmt.Errorf("execution package builder: worker %q does not advertise capability %q",
 				pkg.WorkerID, capability)
 		}
 	}
 	return nil
+}
+
+// advertisedCapabilities reports what the named worker advertises, and whether
+// anything is known about it at all.
+//
+// An explicit WorkerCapabilities map wins, for tests and for a caller holding a
+// fresher view than the store. Otherwise the answer comes from the worker's own
+// reported snapshot, because package capabilities describe the build running on
+// that host and the coordinator cannot infer them from its own configuration.
+func (b CoordinatorOfferBuilder) advertisedCapabilities(ctx context.Context, workerID string) ([]string, bool, error) {
+	if b.WorkerCapabilities != nil {
+		advertised, known := b.WorkerCapabilities[workerID]
+		return advertised, known, nil
+	}
+	snapshots, err := b.Store.LoadWorkerSnapshots(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("execution package builder: load worker snapshots: %w", err)
+	}
+	for _, snapshot := range snapshots {
+		if snapshot.WorkerID == workerID {
+			return snapshot.Inventory.Capabilities, true, nil
+		}
+	}
+	return nil, false, nil
 }
 
 type executionPackageState struct {

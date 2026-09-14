@@ -13,11 +13,16 @@ import (
 )
 
 type packageRecordStore struct {
-	records sqlite.CoordinatorRecords
+	records   sqlite.CoordinatorRecords
+	snapshots []domain.WorkerSnapshot
 }
 
 func (s packageRecordStore) LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRecords, error) {
 	return s.records, nil
+}
+
+func (s packageRecordStore) LoadWorkerSnapshots(context.Context) ([]domain.WorkerSnapshot, error) {
+	return s.snapshots, nil
 }
 
 func TestCoordinatorOfferBuilderAssemblesReplayStablePackage(t *testing.T) {

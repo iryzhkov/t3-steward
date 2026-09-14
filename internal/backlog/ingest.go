@@ -281,6 +281,7 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 				Capabilities: append([]string(nil), taskManifest.Placement.Requires...),
 			},
 			ResourceDemand: resourceDemandFor(taskManifest.Resources),
+			Preflight:      PackagePreflightSteps(taskManifest.Preflight.Steps),
 			Routes:         routes, ResourceLocks: append([]string(nil), taskManifest.ResourceLocks...),
 			Importance: taskManifest.Importance, Difficulty: taskManifest.Difficulty,
 			EstimatedCost: taskManifest.EstimatedCost, MaxTurns: taskManifest.MaxTurns,
