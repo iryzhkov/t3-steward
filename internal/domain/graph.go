@@ -20,6 +20,9 @@ type GraphDefinition struct {
 	CreatedAt  time.Time       `json:"createdAt"`
 	Tasks      []Task          `json:"tasks"`
 	ClonedFrom *GraphReference `json:"clonedFrom,omitempty"`
+	// RerunOf links this definition to the run and task it is a second
+	// attempt at. It is set only by a rerun and never on the source run.
+	RerunOf *RerunProvenance `json:"rerunOf,omitempty"`
 }
 
 type GraphReference struct {

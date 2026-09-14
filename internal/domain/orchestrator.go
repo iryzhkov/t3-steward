@@ -170,9 +170,13 @@ type Task struct {
 	PromptArtifactID   string                      `json:"promptArtifactId"`
 	InputArtifactIDs   []string                    `json:"inputArtifactIds,omitempty"`
 	DependencyInputs   map[string][]string         `json:"dependencyInputs,omitempty"`
-	Outputs            []ArtifactDeclaration       `json:"outputs,omitempty"`
-	Verification       []string                    `json:"verification,omitempty"`
-	Placement          Placement                   `json:"placement"`
+	// CarriedInputs are dependency artifacts a rerun carried over from a
+	// source run by reference. Their producer is not a node of this graph,
+	// which is why they cannot be expressed as DependencyInputs.
+	CarriedInputs []CarriedInput        `json:"carriedInputs,omitempty"`
+	Outputs       []ArtifactDeclaration `json:"outputs,omitempty"`
+	Verification  []string              `json:"verification,omitempty"`
+	Placement     Placement             `json:"placement"`
 	// ResourceDemand sizes the task independently of the eligibility rules in
 	// Placement, which is why it is a sibling field rather than a member.
 	ResourceDemand ResourceDemand `json:"resourceDemand,omitempty"`

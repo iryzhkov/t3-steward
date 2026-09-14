@@ -61,6 +61,15 @@ func ValidateGraphAmendment(r GraphAmendment) error {
 		if r.TaskID != "" || r.Task != nil || r.Source != "" || r.Prompt != "" || r.Model != nil || r.Provider != nil || r.Options != nil || r.Timeout != nil || r.Verification != nil {
 			return errors.New("mixed clone fields")
 		}
+	case "rerun":
+		// A rerun names one source task and nothing else. Every other field
+		// would be an edit to a definition the rerun is supposed to retain.
+		if r.TaskID == "" {
+			return errors.New("rerun requires the source task to start from")
+		}
+		if r.Task != nil || r.Source != "" || r.Prompt != "" || r.Model != nil || r.Provider != nil || r.Options != nil || r.Timeout != nil || r.Verification != nil {
+			return errors.New("mixed rerun fields")
+		}
 	default:
 		return errors.New("unknown graph amendment operation")
 	}
@@ -242,6 +251,18 @@ func ValidateGraphTasks(run WorkflowRun, tasks []Task) error {
 			seen[need] = true
 			if err := visit(need); err != nil {
 				return err
+			}
+		}
+		// A carried input has no edge on purpose: its producer belongs to the
+		// source run of a rerun, not to this graph. It must not also be
+		// declared as a dependency input, or the same file would be claimed
+		// from two places.
+		for _, carried := range t.CarriedInputs {
+			if carried.Producer == "" || carried.ProducerTaskID == "" || carried.Name == "" || carried.ArtifactID == "" {
+				return errors.New("carried input requires a producer, a name and an artifact")
+			}
+			if names[carried.Producer].ID != "" {
+				return errors.New("carried input producer is a task of this graph")
 			}
 		}
 		for source, outputs := range t.DependencyInputs {

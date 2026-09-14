@@ -400,5 +400,55 @@ func packageDependencies(
 		}
 		result = append(result, dependency)
 	}
+	carried, err := packageCarriedInputs(task, artifacts)
+	if err != nil {
+		return nil, err
+	}
+	return append(result, carried...), nil
+}
+
+// packageCarriedInputs delivers the dependency artifacts a rerun carried over
+// from its source run.
+//
+// Their producer is not a node of this run, so they are resolved by artifact ID
+// rather than by walking an edge, and they keep the source producer's identity
+// so that the file arrives exactly where the source run put it. The reference
+// artifact itself belongs to this run, which is what keeps every custody check
+// downstream unchanged.
+func packageCarriedInputs(task domain.Task, artifacts map[string]domain.Artifact) ([]workerproto.DependencyInput, error) {
+	if len(task.CarriedInputs) == 0 {
+		return nil, nil
+	}
+	byProducer := map[string][]domain.CarriedInput{}
+	producers := make([]string, 0, len(task.CarriedInputs))
+	for _, carried := range task.CarriedInputs {
+		if _, seen := byProducer[carried.ProducerTaskID]; !seen {
+			producers = append(producers, carried.ProducerTaskID)
+		}
+		byProducer[carried.ProducerTaskID] = append(byProducer[carried.ProducerTaskID], carried)
+	}
+	sort.Strings(producers)
+	result := make([]workerproto.DependencyInput, 0, len(producers))
+	for _, producerTaskID := range producers {
+		group := append([]domain.CarriedInput(nil), byProducer[producerTaskID]...)
+		sort.Slice(group, func(i, j int) bool { return group[i].Name < group[j].Name })
+		dependency := workerproto.DependencyInput{TaskID: producerTaskID}
+		for _, carried := range group {
+			artifact, exists := artifacts[carried.ArtifactID]
+			if !exists {
+				return nil, fmt.Errorf("missing carried input %q from %q", carried.Name, carried.Producer)
+			}
+			object, err := packageArtifact(
+				artifact,
+				"dependencies/"+carried.Producer+"/"+filepath.ToSlash(carried.Name),
+				"dependency",
+			)
+			if err != nil {
+				return nil, err
+			}
+			dependency.Artifacts = append(dependency.Artifacts, object)
+		}
+		result = append(result, dependency)
+	}
 	return result, nil
 }
