@@ -37,6 +37,8 @@ type Manifest struct {
 	Name        string                  `yaml:"name"`
 	Class       domain.TaskClass        `yaml:"class"`
 	Placement   ManifestPlacement       `yaml:"placement"`
+	Resources   ManifestResources       `yaml:"resources"`
+	Preflight   ManifestPreflight       `yaml:"preflight"`
 	Environment ManifestEnvironment     `yaml:"environment"`
 	Inputs      []string                `yaml:"inputs"`
 	Routes      []ManifestRoute         `yaml:"routes"`
@@ -77,6 +79,8 @@ type ManifestTask struct {
 	Outputs       []string                    `yaml:"outputs"`
 	Verify        []string                    `yaml:"verify"`
 	Placement     ManifestPlacement           `yaml:"placement"`
+	Resources     ManifestResources           `yaml:"resources"`
+	Preflight     ManifestPreflight           `yaml:"preflight"`
 	Routes        []ManifestRoute             `yaml:"routes"`
 	ResourceLocks []string                    `yaml:"resource_locks"`
 	Importance    int                         `yaml:"importance"`
@@ -162,6 +166,10 @@ func applyManifestDefaults(manifest *Manifest) {
 	if manifest.Environment.Scope == "" {
 		manifest.Environment.Scope = EnvironmentScopeTask
 	}
+	// Expand the workflow-level preset before the tasks inherit from it, so a
+	// task sees the same values the workflow author would read back.
+	expandResourcePreset(&manifest.Resources)
+	applyPreflightDefaults(&manifest.Preflight)
 	for name, task := range manifest.Tasks {
 		if task.Class == "" {
 			task.Class = manifest.Class
@@ -181,6 +189,13 @@ func applyManifestDefaults(manifest *Manifest) {
 		task.placementImpossible = len(manifest.Placement.Hosts) != 0 && len(task.Placement.Hosts) != 0 &&
 			len(intersectConstraints(manifest.Placement.Hosts, task.Placement.Hosts)) == 0
 		task.Placement = effectivePlacement(manifest.Placement, task.Placement)
+		expandResourcePreset(&task.Resources)
+		task.Resources = effectiveResources(manifest.Resources, task.Resources)
+		// Expand once more: a task that inherited only a preset from the
+		// workflow still needs that preset's classes filled in.
+		expandResourcePreset(&task.Resources)
+		task.Preflight = effectivePreflight(manifest.Preflight, task.Preflight)
+		applyPreflightDefaults(&task.Preflight)
 		manifest.Tasks[name] = task
 	}
 }
@@ -274,6 +289,12 @@ func validateManifest(manifest Manifest) error {
 	if err := validatePlacement("workflow placement", manifest.Placement); err != nil {
 		return err
 	}
+	if err := validateResources("workflow resources", manifest.Resources); err != nil {
+		return err
+	}
+	if err := validatePreflight("workflow preflight", manifest.Preflight); err != nil {
+		return err
+	}
 	if err := validateRoutes("workflow routes", manifest.Routes); err != nil {
 		return err
 	}
@@ -348,6 +369,12 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 	}
 	if task.placementImpossible {
 		return fmt.Errorf("%s has impossible placement", prefix)
+	}
+	if err := validateResources(prefix+" resources", task.Resources); err != nil {
+		return err
+	}
+	if err := validatePreflight(prefix+" preflight", task.Preflight); err != nil {
+		return err
 	}
 	if err := validateRoutes(prefix+" routes", task.Routes); err != nil {
 		return err

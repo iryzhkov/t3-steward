@@ -508,3 +508,387 @@ func assertErrorContains(t *testing.T, err error, want string) {
 		t.Fatalf("error = %v, want substring %q", err, want)
 	}
 }
+
+func TestParseManifestWithoutResourcesOrPreflight(t *testing.T) {
+	manifest := mustParseManifest(t, `
+version: 2
+name: simple-workflow
+environment:
+  project: t3-steward
+tasks:
+  inspect:
+    prompt_file: prompts/inspect.md
+`)
+
+	if !reflect.DeepEqual(manifest.Resources, ManifestResources{}) {
+		t.Fatalf("workflow resources = %#v, want zero value", manifest.Resources)
+	}
+	if len(manifest.Preflight.Steps) != 0 {
+		t.Fatalf("workflow preflight = %#v, want no steps", manifest.Preflight)
+	}
+	task := manifest.Tasks["inspect"]
+	if !reflect.DeepEqual(task.Resources, ManifestResources{}) || len(task.Preflight.Steps) != 0 {
+		t.Fatalf("task inherited %#v and %#v, want both empty", task.Resources, task.Preflight)
+	}
+}
+
+func TestParseManifestResourcesAndPreflightRoundTrip(t *testing.T) {
+	manifest := mustParseManifest(t, `
+version: 2
+name: resource-workflow
+environment:
+  project: t3-steward
+resources:
+  min_cpu_class: low
+  preferred_cpu_class: medium
+  cpu_units: 1.5
+  memory_mb: 2048
+  scratch_mb: 4096
+preflight:
+  steps:
+    - id: go_build
+      kind: check
+      command: [go, build, ./...]
+tasks:
+  inspect:
+    prompt_file: prompts/inspect.md
+  compile:
+    prompt_file: prompts/compile.md
+    resources:
+      preset: build
+      memory_mb: 8192
+    preflight:
+      steps:
+        - id: git_head
+          kind: context
+          probe: git_head
+          include: reference
+          timeout: 45s
+          max_output_bytes: 1024
+        - id: unit_tests
+          kind: check
+          command: [go, test, ./internal/backlog/...]
+          failure_policy: require-pass
+`)
+
+	cpuUnits, memory, scratch := 1.5, 2048, 4096
+	wantWorkflow := ManifestResources{
+		MinCPUClass:       CPUClassLow,
+		PreferredCPUClass: CPUClassMedium,
+		CPUUnits:          &cpuUnits,
+		MemoryMB:          &memory,
+		ScratchMB:         &scratch,
+	}
+	if !reflect.DeepEqual(manifest.Resources, wantWorkflow) {
+		t.Fatalf("workflow resources = %#v", manifest.Resources)
+	}
+
+	inspect := manifest.Tasks["inspect"]
+	if !reflect.DeepEqual(inspect.Resources, wantWorkflow) {
+		t.Fatalf("inherited task resources = %#v", inspect.Resources)
+	}
+	if len(inspect.Preflight.Steps) != 1 {
+		t.Fatalf("inherited preflight = %#v", inspect.Preflight)
+	}
+	inherited := inspect.Preflight.Steps[0]
+	if inherited.ID != "go_build" || inherited.Kind != PreflightKindCheck ||
+		!reflect.DeepEqual(inherited.Command, []string{"go", "build", "./..."}) {
+		t.Fatalf("inherited step = %#v", inherited)
+	}
+	if inherited.FailurePolicy != PreflightPolicyRecord || inherited.Include != PreflightIncludeSummary ||
+		inherited.MaxOutputBytes != DefaultPreflightMaxOutputBytes || inherited.Timeout != DefaultPreflightTimeout {
+		t.Fatalf("inherited step defaults = %#v", inherited)
+	}
+
+	compile := manifest.Tasks["compile"]
+	if compile.Resources.MinCPUClass != CPUClassMedium || compile.Resources.PreferredCPUClass != CPUClassHigh {
+		t.Fatalf("preset expansion = %#v", compile.Resources)
+	}
+	if compile.Resources.MemoryMB == nil || *compile.Resources.MemoryMB != 8192 {
+		t.Fatalf("task memory override = %#v", compile.Resources.MemoryMB)
+	}
+	if compile.Resources.CPUUnits == nil || *compile.Resources.CPUUnits != 1.5 ||
+		compile.Resources.ScratchMB == nil || *compile.Resources.ScratchMB != 4096 {
+		t.Fatalf("task inherited numerics = %#v", compile.Resources)
+	}
+	if len(compile.Preflight.Steps) != 2 {
+		t.Fatalf("task preflight replaces the workflow list, got %#v", compile.Preflight)
+	}
+	probe := compile.Preflight.Steps[0]
+	if probe.ID != "git_head" || probe.Kind != PreflightKindContext || probe.Probe != "git_head" ||
+		len(probe.Command) != 0 || probe.Include != PreflightIncludeReference ||
+		probe.Timeout != 45*time.Second || probe.MaxOutputBytes != 1024 ||
+		probe.FailurePolicy != PreflightPolicyRecord || probe.Required {
+		t.Fatalf("probe step = %#v", probe)
+	}
+	if compile.Preflight.Steps[1].FailurePolicy != PreflightPolicyRequirePass {
+		t.Fatalf("check step policy = %#v", compile.Preflight.Steps[1])
+	}
+
+	// A task list replaces the inherited one; mutating the task copy must not
+	// reach the workflow declaration the other tasks still inherit.
+	compile.Preflight.Steps[0].ID = "mutated"
+	if manifest.Preflight.Steps[0].ID != "go_build" {
+		t.Fatalf("workflow step aliased into a task: %#v", manifest.Preflight.Steps[0])
+	}
+}
+
+func TestParseManifestResourcePresetPrecedence(t *testing.T) {
+	build := mustParseManifest(t, `
+version: 2
+name: preset-workflow
+environment:
+  project: t3-steward
+tasks:
+  compile:
+    prompt_file: prompts/compile.md
+    resources:
+      preset: build
+  light_task:
+    prompt_file: prompts/light.md
+    resources:
+      preset: light
+  explicit:
+    prompt_file: prompts/explicit.md
+    resources:
+      preset: build
+      preferred_cpu_class: medium
+`)
+
+	if got := build.Tasks["compile"].Resources; got.MinCPUClass != CPUClassMedium || got.PreferredCPUClass != CPUClassHigh {
+		t.Fatalf("build preset = %#v", got)
+	}
+	if got := build.Tasks["light_task"].Resources; got.MinCPUClass != CPUClassLow || got.PreferredCPUClass != "" {
+		t.Fatalf("light preset = %#v", got)
+	}
+	// An explicit field always wins over the value the preset would expand to.
+	if got := build.Tasks["explicit"].Resources; got.MinCPUClass != CPUClassMedium || got.PreferredCPUClass != CPUClassMedium {
+		t.Fatalf("explicit field did not override preset: %#v", got)
+	}
+
+	inherited := mustParseManifest(t, `
+version: 2
+name: inherited-preset
+environment:
+  project: t3-steward
+resources:
+  preset: build
+tasks:
+  compile:
+    prompt_file: prompts/compile.md
+`)
+	if got := inherited.Tasks["compile"].Resources; got.MinCPUClass != CPUClassMedium || got.PreferredCPUClass != CPUClassHigh {
+		t.Fatalf("workflow preset inheritance = %#v", got)
+	}
+}
+
+func TestCPUClassOrdering(t *testing.T) {
+	if CPUClassLow.Compare(CPUClassMedium) >= 0 || CPUClassMedium.Compare(CPUClassHigh) >= 0 ||
+		CPUClassHigh.Compare(CPUClassLow) <= 0 || CPUClassMedium.Compare(CPUClassMedium) != 0 {
+		t.Fatal("CPU classes must order low < medium < high")
+	}
+	if CPUClass("turbo").Valid() || !CPUClassHigh.Valid() {
+		t.Fatal("only low, medium and high are valid CPU classes")
+	}
+}
+
+func TestParseManifestRejectsInvalidResources(t *testing.T) {
+	base := `
+version: 2
+name: valid-workflow
+environment:
+  project: t3-steward
+tasks:
+  inspect:
+    prompt_file: prompts/inspect.md
+`
+	taskResources := func(block string) string {
+		return base + "    resources:\n" + block
+	}
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "unknown min class",
+			yaml: taskResources("      min_cpu_class: turbo\n"),
+			want: `task inspect resources min_cpu_class "turbo" is not one of low, medium, high`,
+		},
+		{
+			name: "unknown preferred class",
+			yaml: taskResources("      preferred_cpu_class: fastest\n"),
+			want: `task inspect resources preferred_cpu_class "fastest" is not one of low, medium, high`,
+		},
+		{
+			name: "unknown preset",
+			yaml: taskResources("      preset: massive\n"),
+			want: `task inspect resources preset "massive" is not one of build, light`,
+		},
+		{
+			name: "preferred below minimum",
+			yaml: taskResources("      min_cpu_class: high\n      preferred_cpu_class: low\n"),
+			want: `task inspect resources preferred_cpu_class "low" is lower than min_cpu_class "high"`,
+		},
+		{
+			name: "merged preference below task minimum",
+			yaml: strings.Replace(taskResources("      min_cpu_class: high\n"),
+				"tasks:", "resources:\n  preferred_cpu_class: low\ntasks:", 1),
+			want: `task inspect resources preferred_cpu_class "low" is lower than min_cpu_class "high"`,
+		},
+		{
+			name: "zero cpu units",
+			yaml: taskResources("      cpu_units: 0\n"),
+			want: "task inspect resources cpu_units must be positive, got 0",
+		},
+		{
+			name: "negative memory",
+			yaml: taskResources("      memory_mb: -1\n"),
+			want: "task inspect resources memory_mb must be positive, got -1",
+		},
+		{
+			name: "zero scratch",
+			yaml: taskResources("      scratch_mb: 0\n"),
+			want: "task inspect resources scratch_mb must be positive, got 0",
+		},
+		{
+			name: "workflow level class",
+			yaml: strings.Replace(base, "tasks:", "resources:\n  min_cpu_class: enormous\ntasks:", 1),
+			want: `workflow resources min_cpu_class "enormous" is not one of low, medium, high`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ParseManifest([]byte(test.yaml))
+			assertErrorContains(t, err, test.want)
+		})
+	}
+}
+
+func TestParseManifestPreflightContextRequired(t *testing.T) {
+	manifest := mustParseManifest(t, `
+version: 2
+name: required-context
+environment:
+  project: t3-steward
+tasks:
+  inspect:
+    prompt_file: prompts/inspect.md
+    preflight:
+      steps:
+        - id: quota
+          kind: context
+          probe: quota_state
+          failure_policy: require-pass
+          required: true
+`)
+	step := manifest.Tasks["inspect"].Preflight.Steps[0]
+	if !step.Required || step.FailurePolicy != PreflightPolicyRequirePass {
+		t.Fatalf("required context step = %#v", step)
+	}
+}
+
+func TestParseManifestRejectsInvalidPreflight(t *testing.T) {
+	base := `
+version: 2
+name: valid-workflow
+environment:
+  project: t3-steward
+tasks:
+  inspect:
+    prompt_file: prompts/inspect.md
+    preflight:
+      steps:
+`
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "missing id",
+			yaml: base + "        - kind: check\n          command: [go, build]\n",
+			want: "task inspect preflight step[0] requires an id",
+		},
+		{
+			name: "invalid id",
+			yaml: base + "        - id: Go Build\n          kind: check\n          command: [go, build]\n",
+			want: `task inspect preflight step[0] has invalid id "Go Build"`,
+		},
+		{
+			name: "duplicate id",
+			yaml: base + "        - id: go_build\n          kind: check\n          command: [go, build]\n" +
+				"        - id: go_build\n          kind: check\n          command: [go, vet]\n",
+			want: `task inspect preflight duplicates step id "go_build"`,
+		},
+		{
+			name: "invalid kind",
+			yaml: base + "        - id: go_build\n          kind: verify\n          command: [go, build]\n",
+			want: `task inspect preflight step "go_build" kind "verify" is not one of check, context`,
+		},
+		{
+			name: "neither command nor probe",
+			yaml: base + "        - id: go_build\n          kind: check\n",
+			want: `task inspect preflight step "go_build" must set command or probe`,
+		},
+		{
+			name: "command and probe together",
+			yaml: base + "        - id: go_build\n          kind: check\n          command: [go, build]\n          probe: git_head\n",
+			want: `task inspect preflight step "go_build" sets both command and probe`,
+		},
+		{
+			name: "empty argv entry",
+			yaml: base + "        - id: go_build\n          kind: check\n          command: [go, \"\"]\n",
+			want: `task inspect preflight step "go_build" command[1] is empty`,
+		},
+		{
+			name: "invalid probe",
+			yaml: base + "        - id: head\n          kind: context\n          probe: Git HEAD\n",
+			want: `task inspect preflight step "head" has invalid probe "Git HEAD"`,
+		},
+		{
+			name: "invalid failure policy",
+			yaml: base + "        - id: go_build\n          kind: check\n          command: [go, build]\n          failure_policy: abort\n",
+			want: `task inspect preflight step "go_build" failure_policy "abort" is not one of record, require-pass`,
+		},
+		{
+			name: "require-pass on optional context step",
+			yaml: base + "        - id: head\n          kind: context\n          probe: git_head\n          failure_policy: require-pass\n",
+			want: `task inspect preflight step "head" is a context step with failure_policy require-pass but is not marked required`,
+		},
+		{
+			name: "invalid include",
+			yaml: base + "        - id: go_build\n          kind: check\n          command: [go, build]\n          include: everything\n",
+			want: `task inspect preflight step "go_build" include "everything" is not one of summary, reference, omit`,
+		},
+		{
+			name: "negative output bound",
+			yaml: base + "        - id: go_build\n          kind: check\n          command: [go, build]\n          max_output_bytes: -1\n",
+			want: `task inspect preflight step "go_build" max_output_bytes must be positive, got -1`,
+		},
+		{
+			name: "negative timeout",
+			yaml: base + "        - id: go_build\n          kind: check\n          command: [go, build]\n          timeout: -5s\n",
+			want: `task inspect preflight step "go_build" timeout must be positive`,
+		},
+		{
+			name: "workflow level step",
+			yaml: strings.Replace(`
+version: 2
+name: valid-workflow
+environment:
+  project: t3-steward
+tasks:
+  inspect:
+    prompt_file: prompts/inspect.md
+`, "tasks:", "preflight:\n  steps:\n    - id: go_build\n      kind: check\ntasks:", 1),
+			want: `workflow preflight step "go_build" must set command or probe`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ParseManifest([]byte(test.yaml))
+			assertErrorContains(t, err, test.want)
+		})
+	}
+}
