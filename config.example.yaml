@@ -119,6 +119,33 @@ backlog_v2:
   mode: disabled
   coordinator:
     id: ""
+    # Remote admin clients this coordinator accepts through the restricted
+    # coordinator-exchange command, keyed by client principal. Each credential
+    # is a reference; the value is resolved at use and never stored here.
+    admin_clients: {}
+    #  omarchy-pc:
+    #    credential: secretref:f03-admin/omarchy-pc
+  # coordinator_client points a host that is not the coordinator at the
+  # coordinator it administers. Declaring it selects the remote carrier for
+  # every command that talks to the coordinator, so an agent runs the ordinary
+  # "t3-steward campaign submit" instead of opening a shell on another host.
+  # Leave it out on the coordinator itself, which administers itself over its
+  # own owner-only socket.
+  #
+  # There are two places to configure it. A block written here is an operator
+  # override and always wins. When it is absent, the same settings are read
+  # from the UpKeeper-owned ~/.config/t3-steward/coordinator-client.json (mode
+  # 0600, schema_version 1, unknown fields refused), which keeps this file to
+  # one author. That file uses the same field names with credential_ref in
+  # place of credential.
+  coordinator_client: {}
+  #  coordinator_id: normandy-coordinator
+  #  address: normandy              # ssh destination or alias
+  #  connection: ssh
+  #  remote_command: t3-steward
+  #  credential: secretref:f03-admin/omarchy-pc
+  #  request_timeout: 30s
+  #  message_limits: {max_bytes: 4194304, max_artifact_bytes: 1073741824}
   local_worker:
     id: ""
     epoch: ""

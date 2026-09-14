@@ -25,15 +25,11 @@ func nativeWaitArgs(args []string) bool {
 	return false
 }
 func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
-	path, err := resolveBacklogV2AdminSocketPath(cfg)
+	transport, err := newCoordinatorTransport(cfg)
 	if err != nil {
 		return err
 	}
-	client := backlogadmin.LocalClient{
-		Path: path, MaxResponseBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
-		MaxArtifactBytes: cfg.BacklogV2.MessageLimits.MaxArtifactBytes,
-		RequestTimeout:   cfg.BacklogV2.Transport.RequestTimeout.D(),
-	}
+	client := transport.client
 	op := backlogadmin.NodeWaitOperation{Action: args[0]}
 	switch args[0] {
 	case "add":

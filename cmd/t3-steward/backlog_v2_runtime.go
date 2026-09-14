@@ -446,6 +446,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			admin: service, submissions: submissions, schedules: scheduleDefinitions,
 		},
 		AllowedUID:         uint32(os.Getuid()),
+		CoordinatorID:      cfg.BacklogV2.Coordinator.ID,
 		MaxRequestBytes:    int64(cfg.BacklogV2.MessageLimits.MaxBytes),
 		MaxArtifactBytes:   int64(cfg.BacklogV2.MessageLimits.MaxArtifactBytes),
 		MaxSubmissionBytes: cfg.BacklogV2.MessageLimits.MaxBytes,

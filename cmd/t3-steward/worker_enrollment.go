@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
+
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
@@ -78,9 +80,48 @@ func coordinatorEnrollmentHandler(settings config.BacklogV2, store *sqlite.Store
 		return store.CommitWorkerEnrollment(ctx, domain.WorkerEnrollment{Request: r, WorkerEpoch: worker.Epoch, CoordinatorID: settings.Coordinator.ID, CredentialRef: worker.Credential, Principal: "ssh:" + r.WorkerID, Connection: worker.Connection, Actor: p.ID, EnrolledAt: time.Now().UTC()}, snapshot)
 	}
 }
+
+const workerEnrollUsage = `Usage: t3-steward worker enroll <worker> --request-id ID \
+    --catalog-revision DIGEST --reason TEXT --expected-revision N
+
+Admit one configured worker to this coordinator's current catalog. Mutating, and
+it prints JSON on success.
+
+It must be run on the coordinator host. Enrollment binds a worker to this
+coordinator's identity, epoch and credential reference, so the remote-admin role
+is refused it even over an authenticated coordinator client.
+
+Example:
+  t3-steward worker enroll homelab --request-id 2026-09-14-homelab \
+    --catalog-revision 9f2c1a --reason "admit homelab after the rebuild" \
+    --expected-revision 0
+
+Required configuration: backlog_v2.mode=coordinator, a backlog_v2.workers entry
+for the worker with a connection, an epoch and a secretref:f02-protocol/<host>
+credential. Admin references (secretref:f03-admin/...) are refused for workers.
+
+Idempotency: --request-id. Repeating it returns the first enrollment rather than
+enrolling twice. --expected-revision fences a concurrent change; 0 is a first
+enrollment.
+
+Common failures. Permanent until something changes: an unknown or unconfigured
+worker, a catalog digest that differs from the effective configuration, a stale
+--expected-revision, or a worker whose observed capabilities or provider routes
+do not match its configuration. Usually temporary: the worker being unreachable
+or not yet ready.
+
+Recovery:
+  t3-steward backlog workers --json        Read the current state and revision.
+  Re-run with the same --request-id once the reported reason is resolved.
+`
+
 func cmdWorkerEnroll(g globalFlags, args []string) error {
 	if len(args) < 1 {
 		return errors.New("worker enroll requires worker ID")
+	}
+	if isHelp(args[0]) {
+		fmt.Print(workerEnrollUsage)
+		return nil
 	}
 	request := domain.WorkerEnrollmentRequest{WorkerID: args[0], ExpectedRevision: -1}
 	fs := flag.NewFlagSet("worker enroll", flag.ContinueOnError)
@@ -98,12 +139,11 @@ func cmdWorkerEnroll(g globalFlags, args []string) error {
 	if err != nil {
 		return err
 	}
-	path, err := resolveBacklogV2AdminSocketPath(cfg)
+	transport, err := newCoordinatorTransport(cfg)
 	if err != nil {
 		return err
 	}
-	client := backlogadmin.LocalClient{Path: path, MaxResponseBytes: cfg.BacklogV2.MessageLimits.MaxBytes, MaxArtifactBytes: cfg.BacklogV2.MessageLimits.MaxArtifactBytes, RequestTimeout: cfg.BacklogV2.Transport.RequestTimeout.D()}
-	result, err := client.EnrollWorker(context.Background(), request)
+	result, err := transport.client.EnrollWorker(context.Background(), request)
 	if err != nil {
 		return err
 	}

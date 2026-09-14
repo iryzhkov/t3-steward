@@ -15,7 +15,12 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 )
 
-const campaignUsage = `Usage: t3-steward campaign <command> [args]
+// The campaign help contract asks for help concise enough to enter agent
+// context, so the campaign namespace carries the short transport note and
+// points at "t3-steward backlog help" for the full one.
+const campaignUsage = campaignCommandUsage + coordinatorTransportSummary
+
+const campaignCommandUsage = `Usage: t3-steward campaign <command> [args]
 
 A campaign is a version 2 workflow authored as a directory. The namespace is a
 facade: submit creates exactly one workflow and one run, and every lifecycle
@@ -158,17 +163,11 @@ func runCampaign(cfg config.Config, args []string) error {
 // commands use. Campaign submission differs from backlog submission only in
 // where the bytes come from, so it must not differ in how they travel.
 func newCampaignSubmissionClient(cfg config.Config) (adminSubmissionService, error) {
-	socketPath, err := resolveBacklogV2AdminSocketPath(cfg)
+	transport, err := newCoordinatorTransport(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return backlogadmin.LocalClient{
-		Path:               socketPath,
-		MaxResponseBytes:   cfg.BacklogV2.MessageLimits.MaxBytes,
-		MaxArtifactBytes:   cfg.BacklogV2.MessageLimits.MaxArtifactBytes,
-		MaxSubmissionBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
-		RequestTimeout:     cfg.BacklogV2.Transport.RequestTimeout.D(),
-	}, nil
+	return transport.client, nil
 }
 
 func (c campaignCLI) run(ctx context.Context, args []string) error {

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
-	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
@@ -70,7 +69,11 @@ Legacy task-file helpers:
   list --all         Show the legacy local task files and configured remote lists.
 
 The runner is part of "run"; enable it with backlog.enabled: true.
-`
+The legacy task-file helpers above are offline: they touch no coordinator.
+
+Example:
+  t3-steward backlog submit ./bundle.tar --idempotency-key 2026-09-14-upkeeper --json
+` + coordinatorTransportHelp
 
 const taskTemplate = `---
 project: %s
@@ -130,17 +133,11 @@ func isCoordinatorAdmin(args []string) bool {
 }
 
 func runCoordinatorAdmin(cfg config.Config, args []string, schedules bool) error {
-	socketPath, err := resolveBacklogV2AdminSocketPath(cfg)
+	transport, err := newCoordinatorTransport(cfg)
 	if err != nil {
-		return err
+		return reportTransportError(args, err)
 	}
-	client := backlogadmin.LocalClient{
-		Path:               socketPath,
-		MaxResponseBytes:   int64(cfg.BacklogV2.MessageLimits.MaxBytes),
-		MaxArtifactBytes:   int64(cfg.BacklogV2.MessageLimits.MaxArtifactBytes),
-		MaxSubmissionBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
-		RequestTimeout:     cfg.BacklogV2.Transport.RequestTimeout.D(),
-	}
+	client := transport.client
 	cli := backlogAdminCLI{
 		service:             client,
 		mutator:             client,
@@ -148,16 +145,13 @@ func runCoordinatorAdmin(cfg config.Config, args []string, schedules bool) error
 		submissions:         client,
 		scheduleDefinitions: client,
 		recovery:            client,
-		principal: backlogadmin.Principal{
-			ID:    fmt.Sprintf("local:%d", os.Getuid()),
-			Roles: []string{"local-admin"},
-		},
-		stdout: os.Stdout,
+		principal:           transport.principal,
+		stdout:              os.Stdout,
 	}
 	if schedules {
-		return cli.runSchedules(context.Background(), args)
+		return reportTransportError(args, cli.runSchedules(context.Background(), args))
 	}
-	return cli.runBacklog(context.Background(), args)
+	return reportTransportError(args, cli.runBacklog(context.Background(), args))
 }
 
 func cmdSchedules(g globalFlags, args []string) error {

@@ -249,6 +249,99 @@ worker and reapplies current quota admission immediately before offers and
 prepare/dispatch delivery. A failed quota reconstruction is equivalent to no
 open pools; observation, stop, and collection remain available.
 
+### Administering the coordinator from another host
+
+A host that is not the coordinator reaches it through the restricted
+`coordinator-exchange` command over SSH, not through a shell. Do not document,
+script or teach `ssh <coordinator> t3-steward ...`: that makes the coordinator's
+owner account a remote shell for anyone holding the key, which is the authority
+story this transport exists to remove.
+
+On the client host, configure the coordinator client in either the configuration
+file, which always wins, or the UpKeeper-owned
+`~/.config/t3-steward/coordinator-client.json` (mode 0600, `schema_version` 1):
+
+```yaml
+backlog_v2:
+  coordinator_client:
+    coordinator_id: normandy-coordinator
+    address: normandy              # ssh destination or alias
+    connection: ssh
+    remote_command: t3-steward
+    credential: secretref:f03-admin/omarchy-pc
+    request_timeout: 30s
+    message_limits: {max_bytes: 4194304, max_artifact_bytes: 1073741824}
+```
+
+On the coordinator host, list the client and the credential reference the
+coordinator verifies it against:
+
+```yaml
+backlog_v2:
+  coordinator:
+    id: normandy-coordinator
+    admin_clients:
+      admin:omarchy-pc:
+        credential: secretref:f03-admin/omarchy-pc
+```
+
+The credential value itself lives in the UpKeeper secret store on both hosts and
+is resolved at use. Never place it in configuration, a manifest, an artifact or a
+diagnosis bundle. Admin references (`secretref:f03-admin/...`) and worker
+references (`secretref:f02-protocol/...`) are refused in each other's place.
+
+The operator installs the `authorized_keys` entries. They are documented here and
+never generated: writing another account's `authorized_keys` is an operator
+decision. Each line pins one operation, because the operation word is an argument
+of the forced command and OpenSSH matches the first line that carries the
+presented key. Use one key per operation and grant only the operations that
+client needs; a read-only client needs `query` and `artifact` alone.
+
+```text
+restrict,command="/home/igor/.local/bin/t3-steward --config /home/igor/.config/t3-steward/config.yaml coordinator-exchange query" ssh-ed25519 AAAA... omarchy-pc-admin-query
+restrict,command="/home/igor/.local/bin/t3-steward --config /home/igor/.config/t3-steward/config.yaml coordinator-exchange submission" ssh-ed25519 AAAA... omarchy-pc-admin-submission
+```
+
+The remaining operations follow the same shape: `mutation`, `artifact`,
+`schedule-definition`, `unknown-recovery`, `node-wait` and `graph-amendment`.
+Do not install a `worker-enrollment` line: the `remote-admin` role is refused
+that operation, because enrollment rewrites the coordinator's own identity and
+epoch, and it must be run on the coordinator host.
+
+`restrict` disables port forwarding, agent forwarding, PTY allocation and X11.
+The `--config` path in the command is the operator's choice and is what supplies
+the coordinator identity and the accepted clients; the command never reads
+`SSH_ORIGINAL_COMMAND`. When the client selects a key per operation, point
+`address` at a `~/.ssh/config` host alias that names the right `IdentityFile`.
+
+Check the result before submitting anything:
+
+```text
+t3-steward coordinator identity --json
+```
+
+It reports the coordinator id, owner, release, configuration digest, epoch,
+health and the carrier that answered. Exit codes for every coordinator command
+are 0 answered, 3 client configuration, 4 authentication, 5 unavailable, 6
+timeout, 7 protocol, 8 refused by the coordinator, and 1 for anything else.
+
+A submission whose response is lost is retried with the same `--idempotency-key`.
+Exactly one run results. The guarantee comes from the submission service, which
+holds the key, the content digest and the result durably and refuses the same key
+carrying different content. The transport keeps its own short-lived copy of the
+answer so that the common retry costs nothing; that copy is a shield rather than
+the guarantee, and a coordinator-exchange process killed between the effect and
+its cache write will re-execute the operation, which the service then recognises
+as the same submission.
+
+The coordinator's CLI and its daemon must be the same build. The admin socket
+refuses a frame carrying fields it does not know, so an older CLI talking to a
+newer coordinator fails to decode the coordinator's error responses and reports a
+decode failure in place of the real refusal. The symptom is a `protocol` class
+and exit 7 with a message about an unknown field, on a command that ought to have
+reported something specific. Upgrade both together; UpKeeper already converges
+them as one unit.
+
 ## Recovery procedures
 
 ### Coordinator restart or lost response

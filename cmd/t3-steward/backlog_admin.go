@@ -30,20 +30,100 @@ Read commands:
 Revision-fenced controls:
   run|enable|disable <schedule> --reason TEXT [--command-id ID] [--json]
   delay-next <schedule> --until RFC3339 --reason TEXT [--command-id ID] [--json]
-`
+
+Example:
+  t3-steward schedules put nightly-upkeep --name "nightly upkeep" \
+    --workflow workflow-1 --cron "0 3 * * *" --timezone Europe/Amsterdam \
+    --reason "restore the nightly pass" --request-id 2026-09-14-nightly --json
+` + coordinatorTransportHelp
 
 type localAdminAuthorizer struct{}
 
-func (localAdminAuthorizer) Authorize(_ context.Context, principal backlogadmin.Principal, _ backlogadmin.Action) error {
+// remoteAdminCommandKinds is what a verified remote client may ask the
+// coordinator to do. It is an allowlist rather than a list of exceptions,
+// because the property that matters is "a remote client cannot rewrite the
+// coordinator's own identity or epoch", and an allowlist keeps that true when
+// a new command kind is added instead of depending on someone remembering to
+// deny it.
+func remoteAdminCommandKinds() map[domain.AdminCommandKind]bool {
+	return map[domain.AdminCommandKind]bool{
+		domain.AdminCommandStart:       true,
+		domain.AdminCommandDelay:       true,
+		domain.AdminCommandPause:       true,
+		domain.AdminCommandResume:      true,
+		domain.AdminCommandCancel:      true,
+		domain.AdminCommandRetry:       true,
+		domain.AdminCommandSkip:        true,
+		domain.AdminCommandScheduleRun: true,
+		domain.AdminCommandEnable:      true,
+		domain.AdminCommandDisable:     true,
+		domain.AdminCommandDelayNext:   true,
+	}
+}
+
+// remoteAdminOperations is the same allowlist for the operations that are not
+// revision-fenced commands. Worker enrollment is absent on purpose: it binds a
+// worker to this coordinator's id, epoch and credential reference, so it stays
+// an operation an operator performs on the coordinator host.
+func remoteAdminOperations() map[backlogadmin.QueryKind]bool {
+	return map[backlogadmin.QueryKind]bool{
+		"node-wait":       true,
+		"graph-amendment": true,
+	}
+}
+
+// Authorize admits the owner-only local peer to everything, and a verified
+// remote client to reads plus an explicit allowlist of mutations.
+//
+// A mutation names its verb in CommandKind, not in Kind, so both are examined.
+// Submission and schedule definition do not reach this authorizer at all; they
+// are bounded by their own services, which is noted here so the next reader
+// does not mistake this function for the whole authority boundary.
+func (localAdminAuthorizer) Authorize(_ context.Context, principal backlogadmin.Principal, action backlogadmin.Action) error {
 	if principal.ID == "" {
 		return errors.New("local admin principal is required")
 	}
 	for _, role := range principal.Roles {
-		if role == "local-admin" {
+		switch role {
+		case backlogadmin.LocalAdminRole:
 			return nil
+		case backlogadmin.RemoteAdminRole:
+			return authorizeRemoteAdmin(action)
 		}
 	}
-	return errors.New("local-admin role is required")
+	return errors.New("local-admin or remote-admin role is required")
+}
+
+func authorizeRemoteAdmin(action backlogadmin.Action) error {
+	if action.CommandKind != "" {
+		if !remoteAdminCommandKinds()[action.CommandKind] {
+			return fmt.Errorf("the remote-admin role may not issue %q; run it on the coordinator host", action.CommandKind)
+		}
+		return nil
+	}
+	if isReadQueryKind(action.Kind) || remoteAdminOperations()[action.Kind] {
+		return nil
+	}
+	if action.Kind == backlogadmin.QueryKind("worker-enrollment") {
+		return errors.New("the remote-admin role may not enroll workers; run worker enroll on the coordinator host")
+	}
+	return fmt.Errorf("the remote-admin role may not perform %q; run it on the coordinator host", action.Kind)
+}
+
+// isReadQueryKind reports whether a kind is one of the read views, which a
+// verified remote client may always perform.
+func isReadQueryKind(kind backlogadmin.QueryKind) bool {
+	switch kind {
+	case backlogadmin.QueryStatus, backlogadmin.QueryWorkflows, backlogadmin.QueryWorkflow,
+		backlogadmin.QueryGraph, backlogadmin.QueryDiagnose, backlogadmin.QueryTask,
+		backlogadmin.QueryExplanation, backlogadmin.QueryEvents, backlogadmin.QueryArtifacts,
+		backlogadmin.QueryArtifact, backlogadmin.QuerySchedules, backlogadmin.QueryWorkers,
+		backlogadmin.QueryQuota, backlogadmin.QueryReservations, backlogadmin.QueryLocks,
+		backlogadmin.QueryCommands, backlogadmin.QueryRecovery:
+		return true
+	default:
+		return false
+	}
 }
 
 type adminQueryService interface {

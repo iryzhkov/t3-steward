@@ -84,11 +84,20 @@ Bounds come from configuration on both ends and are stated in the refusal when t
 rather than surfacing as a decode error. Replay protection is durable, reusing the worker
 protocol's replay store shape: a request ID is answered once, a repeated request ID with a
 matching digest returns the first answer, and a repeated request ID with a different digest is
-refused. This is what makes "lose the response and retry with the same idempotency key" produce
-exactly one workflow run, even when the loss happens below the application layer.
+refused. The digest covers the operation envelope and, for a submission, a digest of the archive
+bytes, so the same idempotency key carrying different content is refused rather than answered
+from the cache.
 
-Idempotency keys, revision fences and audit records stay where they are, in the service. The
-transport does not get its own copy of them.
+The transport store is a shield, not the guarantee. It closes the window in which a lost
+response would be re-executed, and it is defeated by a handler killed between the effect and the
+cache write: no answer was stored, the abandoned identity is reclaimed after two minutes, and
+the operation runs again. What makes that safe is the service, where the idempotency key, the
+revision fence and the audit record live. "Lose the response and retry with the same idempotency
+key produces exactly one workflow run" is a property of the submission service; the transport
+makes the common case cheap and the uncommon case visible.
+
+Idempotency keys, revision fences and audit records therefore stay where they are, in the
+service. The transport does not get its own copy of them.
 
 ## Result taxonomy and exit codes
 
