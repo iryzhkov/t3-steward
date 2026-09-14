@@ -23,6 +23,22 @@ type AttemptFinalization struct {
 	Attempt         domain.Attempt
 	WorkspaceDir    string
 	ExplicitSuccess bool
+	// Extra carries evidence produced before the agent session, such as
+	// preflight logs, that must be captured with the attempt's own outputs.
+	// The capture tree is made immutable and then renamed into place, so an
+	// artifact added afterwards cannot be written at all; it has to take part
+	// in the same pass.
+	Extra []FinalizationArtifact
+}
+
+// FinalizationArtifact is evidence captured alongside an attempt's declared
+// outputs. It carries its own bytes because its producer is not the workspace.
+type FinalizationArtifact struct {
+	Name      string
+	MediaType string
+	Kind      domain.ArtifactKind
+	Producer  string
+	Content   []byte
 }
 
 // VerificationReport is the immutable result of one declared verification command.
@@ -177,6 +193,29 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			Kind: domain.ArtifactVerification, Name: name, MediaType: "application/json",
 			Size: file.size, SHA256: file.sha256, StoragePath: file.storagePath,
 			Producer: "verification", CreatedAt: now,
+		})
+	}
+
+	for index, extra := range request.Extra {
+		storagePath := filepath.ToSlash(filepath.Join(
+			"runs", request.Attempt.WorkflowRunID, request.Task.ID, request.Attempt.ID,
+			"artifacts", extra.Name,
+		))
+		file, writeErr := writeIngestedFile(
+			bytes.NewReader(extra.Content),
+			filepath.Join(stageDir, "artifacts", filepath.FromSlash(extra.Name)),
+			extra.Name,
+			storagePath,
+		)
+		if writeErr != nil {
+			return FinalizedAttempt{}, fmt.Errorf("finalize attempt extra artifact %d: %w", index+1, writeErr)
+		}
+		artifacts = append(artifacts, domain.Artifact{
+			ID: f.newID("artifact"), WorkflowRunID: request.Attempt.WorkflowRunID,
+			TaskID: request.Task.ID, AttemptID: request.Attempt.ID,
+			Kind: extra.Kind, Name: extra.Name, MediaType: extra.MediaType,
+			Size: file.size, SHA256: file.sha256, StoragePath: file.storagePath,
+			Producer: extra.Producer, CreatedAt: now,
 		})
 	}
 

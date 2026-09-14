@@ -61,6 +61,50 @@ func TestAttemptFinalizerCapturesOutputsAndVerification(t *testing.T) {
 	}
 }
 
+// Evidence produced before the agent session, such as a preflight log, has to be
+// captured in the same pass as the declared outputs. The capture tree is made
+// immutable and then renamed into place, so anything appended to the result
+// afterwards cannot be written at all: a live batch sat retrying "permission
+// denied" against the sealed directory instead of settling.
+func TestAttemptFinalizerCapturesExtraEvidenceBeforeSealing(t *testing.T) {
+	workspace := t.TempDir()
+	storage := t.TempDir()
+	writeTestFile(t, workspace, "dist/result.txt", "verified output\n")
+
+	log := "go build ./...\nexit status 0\n"
+	finalizer := testFinalizer(storage)
+	result, err := finalizer.Finalize(context.Background(), AttemptFinalization{
+		Task: artifactTestTask(), Attempt: artifactTestAttempt(),
+		WorkspaceDir: workspace, ExplicitSuccess: true,
+		Extra: []FinalizationArtifact{{
+			Name: "preflight/baseline_build.log", MediaType: "text/plain; charset=utf-8",
+			Kind: domain.ArtifactLog, Producer: "preflight", Content: []byte(log),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("finalize attempt: %v", err)
+	}
+	cleanupImmutable(t, result.StorageDir)
+
+	var captured domain.Artifact
+	for _, artifact := range result.Artifacts {
+		if artifact.Producer == "preflight" {
+			captured = artifact
+		}
+	}
+	if captured.Name != "preflight/baseline_build.log" {
+		t.Fatalf("preflight evidence was not captured: %+v", result.Artifacts)
+	}
+	wantHash := sha256.Sum256([]byte(log))
+	if captured.SHA256 != hex.EncodeToString(wantHash[:]) || captured.Size != int64(len(log)) {
+		t.Fatalf("captured evidence metadata = %#v", captured)
+	}
+	assertStoredContent(t, storage, captured, log)
+	// It must be sealed exactly like every other captured artifact, not left
+	// writable because it arrived by a different route.
+	assertReadOnly(t, filepath.Join(storage, filepath.FromSlash(captured.StoragePath)))
+}
+
 func TestFinalizedVerificationReleasesDAGDependency(t *testing.T) {
 	workspace := t.TempDir()
 	storage := t.TempDir()

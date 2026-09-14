@@ -459,16 +459,18 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 		return err
 	}
 	task, attempt := packageRecords(pkg, d.Now().UTC())
+	// Preflight logs are captured with the attempt's own outputs, in the same
+	// pass, because the capture tree is sealed before it is published.
+	extras, err := d.preflightFinalizationArtifacts(pkg)
+	if err != nil {
+		return fmt.Errorf("collect preflight custody: %w", err)
+	}
 	finalized, err := d.Finalizer.Finalize(ctx, backlog.AttemptFinalization{
 		Task: task, Attempt: attempt, WorkspaceDir: workspace, ExplicitSuccess: failure == "",
+		Extra: extras,
 	})
 	if err != nil {
 		return err
-	}
-	// Preflight logs ride the existing result publication path: they are copied
-	// into the finalized capture and published with everything else.
-	if err := d.publishPreflightArtifacts(pkg, &finalized); err != nil {
-		return fmt.Errorf("publish preflight custody: %w", err)
 	}
 	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
 		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,

@@ -297,41 +297,35 @@ func (d *LocalDriver) PreflightArtifact(pkg workerproto.ExecutionPackage, refere
 	return domain.Artifact{}, "", fmt.Errorf("preflight reference %q has no stored output", reference)
 }
 
-// publishPreflightArtifacts copies the retained preflight logs into the
-// finalized attempt capture so that they travel to the coordinator through the
-// existing result publication path rather than a second one.
-func (d *LocalDriver) publishPreflightArtifacts(pkg workerproto.ExecutionPackage, finalized *backlog.FinalizedAttempt) error {
+// preflightFinalizationArtifacts reads the retained preflight logs so they can
+// be captured with the attempt's declared outputs.
+//
+// They must take part in finalization rather than be appended to its result.
+// Finalization stages the capture, makes the whole tree immutable and renames it
+// into place, so a directory created afterwards is refused: the capture is
+// read-only by the time it exists. Copying the logs in after the fact left the
+// attempt retrying "permission denied" forever instead of settling.
+func (d *LocalDriver) preflightFinalizationArtifacts(pkg workerproto.ExecutionPackage) ([]backlog.FinalizationArtifact, error) {
 	state, err := d.loadPreflightState(pkg)
 	if err != nil || len(state.Artifacts) == 0 {
-		return err
+		return nil, err
 	}
-	if finalized.StorageDir == "" {
-		directory := filepath.Join(d.Config.ArtifactRoot, "runs", pkg.Identity.WorkflowRunID, pkg.Identity.TaskID, pkg.Identity.AttemptID)
-		if err := os.MkdirAll(directory, 0o700); err != nil {
-			return err
-		}
-		finalized.StorageDir = directory
-	}
+	extras := make([]backlog.FinalizationArtifact, 0, len(state.Artifacts))
 	for _, record := range state.Artifacts {
 		raw, err := readBoundedRegularFile(filepath.Join(d.preflightDir(pkg), record.File), pkg.Limits.MaxArtifactBytes)
 		if err != nil {
-			return err
-		}
-		destination := filepath.Join(finalized.StorageDir, "artifacts", filepath.FromSlash(record.Name))
-		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
-			return err
-		}
-		if err := writePreflightFile(destination, raw); err != nil {
-			return err
+			return nil, err
 		}
 		artifact, _, err := d.PreflightArtifact(pkg, record.Reference)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		artifact.StoragePath = filepath.ToSlash(filepath.Join("runs", pkg.Identity.WorkflowRunID, pkg.Identity.TaskID, pkg.Identity.AttemptID, "artifacts", record.Name))
-		finalized.Artifacts = append(finalized.Artifacts, artifact)
+		extras = append(extras, backlog.FinalizationArtifact{
+			Name: record.Name, MediaType: artifact.MediaType,
+			Kind: artifact.Kind, Producer: "preflight", Content: raw,
+		})
 	}
-	return nil
+	return extras, nil
 }
 
 // writePreflightFile publishes bytes through a staged rename with private file
