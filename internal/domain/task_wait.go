@@ -96,6 +96,13 @@ type TaskWait struct {
 	Result             *TaskWaitResult `json:"result,omitempty"`
 	SettledAt          *time.Time      `json:"settledAt,omitempty"`
 	WokenAt            *time.Time      `json:"wokenAt,omitempty"`
+
+	// Delivery is empty until the attempt is resumed, then "pending" until the
+	// wake message reaches the thread and "delivered" afterwards. The resumed
+	// attempt is committed before the message is sent, so a lost response
+	// retries the message and never the resumption.
+	Delivery    string     `json:"delivery,omitempty"`
+	DeliveredAt *time.Time `json:"deliveredAt,omitempty"`
 }
 
 // Live reports whether this wait still parks its attempt. A settled wait whose

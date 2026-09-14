@@ -8,11 +8,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/config"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
 	"github.com/iryzhkov/t3-steward/internal/wait"
@@ -20,37 +22,94 @@ import (
 
 const waitUsage = `Usage: t3-steward wait <command> [flags]
 
-Park a T3 thread until an external condition holds. The agent registers a
-check, ends its turn, and the steward runs the check periodically; when it
-settles the steward wakes the thread with a message that starts the next
-turn, carrying the outcome and the check's last output.
+Wait instead of polling in a loop: register a check, end the turn, and the
+steward wakes you when the condition settles.
+
+There are two kinds of wait. They differ in what they wake and in what they are
+allowed to change, and choosing the wrong one is the difference between a task
+that parks safely and a task that is verified against work it has not done.
+
+  TASK-BOUND WAIT  --task current
+      For a thread that is executing a backlog or campaign task. It is
+      MUTATING: it parks the attempt in waiting-external. While it is live the
+      worker collects no outputs, the coordinator verifies nothing, no
+      dependent task is released and the run sink cannot settle. The executor
+      slot, the CPU, memory and scratch reservation, the provider slot and the
+      quota tally are released; the attempt, thread, workspace, artifacts,
+      dependency mounts, assignment ownership, resource locks and directory
+      bindings are held. On settlement the same thread and the same attempt
+      resume with the outcome in the initial context, and verification runs
+      once, at the end of the turn that ends with no live wait.
+      Only valid inside a task: outside one it is an error that says so.
+
+  INTERACTIVE WAIT  (no --task, or --task <run>/<task>, or --run <run>)
+      For an ordinary session. It is NON-MUTATING with respect to workflow
+      state: it wakes the selected thread and creates or alters nothing else.
+      No task is parked, nothing is held, nothing is released.
 
 Commands:
+  add --task current [flags] -- <command...>
+                                Park this task until the check settles.
+  add [flags] -- <command...>    Interactive shell check on this thread.
   add --task <run>/<task> [--thread ID] [--name TEXT] [--timeout 24h] [--request-id ID]
-  add --run <run> [flags]      Native wait on the run sink; no shell command.
-  list --native [--json]       Native waits, outcomes and delivery state.
-  cancel|run-now <nw-id>       Control a native wait through the admin socket.
-  add [flags] -- <command...>   Register a shell check (run once first; see below).
+                                Interactive wait on another task's outcome.
+  add --run <run> [flags]       Interactive wait on a run sink; no shell command.
   list [--thread ID] [--all]    Waits of this thread, or of every thread.
-  cancel <id>                   Cancel a wait.
-  run-now <id>                  Run a wait's check immediately.
+  list --native [--json]        Native waits, outcomes and delivery state.
+  cancel <id> | run-now <id>    Control an interactive wait.
+  cancel|run-now <nw-id>        Control a native wait through the admin socket.
 
 add flags:
   --name TEXT        What is being waited for (shown in the wake message).
   --every DURATION   First poll interval (default 30s, minimum 30s); doubles
                      after every "not yet" up to --max-every (default 10m).
-  --timeout DURATION Give up after this long (default 24h).
+  --timeout DURATION Give up after this long (default 24h). For --task current
+                     this is the wait's maximum duration, enforced by the
+                     coordinator, because a parked task holds its directory
+                     bindings and those have no deadline of their own.
   --run-timeout DUR  Bound one run of the check (default 1m).
-  --thread ID        T3 thread to wake (default: resolved from
-                     CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID or OPENCODE_SESSION_ID).
+  --thread ID        T3 thread to wake. Default: the canonical thread injected
+                     into a task, otherwise resolved from CLAUDE_CODE_SESSION_ID,
+                     CODEX_THREAD_ID or OPENCODE_SESSION_ID. A provider session
+                     ID is an input to that resolution and never a thread ID; if
+                     it is ambiguous the candidates are named and --thread is
+                     required.
   --dir PATH         Working directory for the check (default: current).
-  --group NAME       Group with other waits of the same thread.
-  --wake each|all    Wake per wait (default) or once the whole group settled.
+  --group NAME       Group with other waits of the same thread (interactive).
+  --wake each|all    Wake on the first settlement (default) or once every wait
+                     has settled.
+  --request-id ID    Stable registration ID. Repeating a request ID returns the
+                     same wait instead of registering a second one, so a retry
+                     after an ambiguous response is safe. A repeated ID with
+                     different contents is refused rather than applied.
+  --json             Print the registered wait as JSON (--task current).
 
-Check protocol: exit 0 = condition met, wake. Exit 2 = give up, wake with
-failure. Any other exit = not yet, keep polling. Timeout = wake with
-"timed out". The check is run once at registration: a command that cannot
-run, exits 2, or already exits 0 is not registered.
+Check protocol: exit 0 = condition met, wake. Exit 2 = give up, wake with the
+failure. Any other exit = not yet, keep polling. The check is run once at
+registration: a command that cannot run, exits 2, or already exits 0 is not
+registered and nothing is parked.
+
+On failure or timeout the wait still wakes you, with structured evidence:
+which wait, which condition, which exit status and how long it ran. A
+task-bound wait that times out releases its attempt to finish or fail
+honestly; it never leaves the task parked. Silence is not an outcome.
+
+Registering a task-bound wait is refused if the attempt is already terminal
+("attempt is terminal (<progress>); task-bound waits are refused") or if the
+attempt has moved on since this process was started. Both are ordinary command
+errors: report them, do not retry blindly.
+
+Exit codes: 0 registered or listed, 1 refused or failed.
+
+Complete example, inside a task, waiting for CI on a pushed commit:
+
+  t3-steward wait add --task current --name "CI on $(git rev-parse HEAD)" \\
+    --every 60s --max-every 10m --timeout 2h --wake all \\
+    --request-id ci-$(git rev-parse --short HEAD) -- \\
+    sh -c 'gh run view --json status --jq \'.status == "completed"\' | grep -q true'
+
+Then end the turn. Nothing is collected or verified until the steward resumes
+this same thread with the outcome.
 `
 
 func cmdWait(g globalFlags, args []string) error {
@@ -61,6 +120,9 @@ func cmdWait(g globalFlags, args []string) error {
 	cfg, err := loadConfig(g)
 	if err != nil {
 		return err
+	}
+	if args[0] == "add" && currentTaskWaitArgs(args[1:]) {
+		return cmdTaskWaitAdd(context.Background(), cfg, args[1:])
 	}
 	if nativeWaitArgs(args) {
 		return cmdNodeWait(context.Background(), cfg, args)
@@ -231,13 +293,25 @@ func cmdWaitAdd(ctx context.Context, cfg config.Config, store *sqlite.Store, arg
 	return nil
 }
 
-// resolveThread returns the explicit id, or the thread of the calling
-// agent found through its provider session id.
+// providerSessionKeys are the provider-local session identifiers this command
+// knows how to resolve, in the order it reports them.
+var providerSessionKeys = []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "OPENCODE_SESSION_ID"}
+
+// resolveThread returns the explicit id, the canonical T3 thread injected into
+// a task process, or the thread of the calling agent resolved from its
+// provider-local session id.
+//
+// A provider session id is an input to resolution and never a thread id. They
+// look alike, both being opaque strings, and treating one as the other wakes
+// whatever thread happens to share the spelling, or nothing at all.
 func resolveThread(cfg config.Config, explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
-	session, err := callerSession(os.Getenv)
+	if injected := strings.TrimSpace(os.Getenv(domain.TaskWaitEnvThreadID)); injected != "" {
+		return injected, nil
+	}
+	sessions, err := callerSessions(os.Getenv)
 	if err != nil {
 		return "", err
 	}
@@ -245,26 +319,77 @@ func resolveThread(cfg config.Config, explicit string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return wait.ResolveThread(t3api.ProviderLogDir(dataDir), session)
-}
-
-// Reject conflicting inherited provider contexts instead of waking another session.
-func callerSession(getenv func(string) string) (string, error) {
-	session := ""
-	for _, key := range []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "OPENCODE_SESSION_ID"} {
-		value := strings.TrimSpace(getenv(key))
-		if value == "" {
+	logDir := t3api.ProviderLogDir(dataDir)
+	resolved := map[string][]string{}
+	var failures []string
+	for _, session := range sessions {
+		thread, err := wait.ResolveThread(logDir, session.value)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s=%s: %v", session.key, session.value, err))
 			continue
 		}
-		if session != "" && session != value {
-			return "", errors.New("multiple provider session IDs are set; pass --thread with the intended T3 thread id")
+		resolved[thread] = append(resolved[thread], session.key)
+	}
+	if len(resolved) == 1 {
+		for thread := range resolved {
+			return thread, nil
 		}
-		session = value
 	}
-	if session == "" {
-		return "", errors.New("no caller session found: set CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID or OPENCODE_SESSION_ID, or pass --thread with the T3 thread id")
+	if len(resolved) == 0 {
+		return "", fmt.Errorf("no T3 thread could be resolved from the caller's provider session (%s); pass --thread with the T3 thread id",
+			strings.Join(failures, "; "))
 	}
-	return session, nil
+	candidates := make([]string, 0, len(resolved))
+	for thread, keys := range resolved {
+		candidates = append(candidates, fmt.Sprintf("%s (from %s)", thread, strings.Join(keys, ", ")))
+	}
+	sort.Strings(candidates)
+	return "", fmt.Errorf("the caller's provider sessions resolve to several T3 threads: %s; pass --thread with the intended one",
+		strings.Join(candidates, "; "))
+}
+
+type providerSession struct {
+	key   string
+	value string
+}
+
+// callerSessions collects every provider-local session id set in the
+// environment. Each is an independent input to resolution, so an inherited
+// context from another provider is reported by name rather than silently
+// deciding which session the caller meant.
+func callerSessions(getenv func(string) string) ([]providerSession, error) {
+	var sessions []providerSession
+	seen := map[string]bool{}
+	for _, key := range providerSessionKeys {
+		value := strings.TrimSpace(getenv(key))
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		sessions = append(sessions, providerSession{key: key, value: value})
+	}
+	if len(sessions) == 0 {
+		return nil, errors.New("no caller session found: set CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID or OPENCODE_SESSION_ID, or pass --thread with the T3 thread id")
+	}
+	return sessions, nil
+}
+
+// callerSession reports the one provider session id of the caller, and names
+// the conflicting candidates when several providers are in the environment.
+func callerSession(getenv func(string) string) (string, error) {
+	sessions, err := callerSessions(getenv)
+	if err != nil {
+		return "", err
+	}
+	if len(sessions) > 1 {
+		named := make([]string, 0, len(sessions))
+		for _, session := range sessions {
+			named = append(named, session.key+"="+session.value)
+		}
+		return "", fmt.Errorf("several provider session IDs are set (%s); pass --thread with the intended T3 thread id",
+			strings.Join(named, ", "))
+	}
+	return sessions[0].value, nil
 }
 
 func newWaitID() string {

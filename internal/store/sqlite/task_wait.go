@@ -373,6 +373,9 @@ func (s *Store) WakeTaskWaits(ctx context.Context, now time.Time) ([]domain.Task
 		expected := attempt.Revision
 		attempt.Revision++
 		attempt.Progress = domain.ProgressActive
+		// Resuming, not running: the attempt reacquires its provider slot and
+		// executor capacity through the ordinary paths, and the worker moves it
+		// to running when it observes the thread active again.
 		attempt.Control = domain.ControlResuming
 		attempt.LastTurnOutcomeID = ""
 		attempt.LastTurnOutcomeMarker = ""
@@ -394,11 +397,70 @@ func markTaskWaitsWokenTx(ctx context.Context, tx *sql.Tx, waits []domain.TaskWa
 	woken := now.UTC()
 	for _, wait := range waits {
 		wait.WokenAt = &woken
+		if wait.Delivery == "" {
+			wait.Delivery = "pending"
+		}
 		if err := saveTaskWaitTx(ctx, tx, wait); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// MarkTaskWaitDelivered records that the wake message reached the thread.
+func (s *Store) MarkTaskWaitDelivered(ctx context.Context, id string, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var raw []byte
+	if err = tx.QueryRowContext(ctx, "SELECT record FROM coordinator_task_waits WHERE id=?", id).Scan(&raw); err != nil {
+		return err
+	}
+	var wait domain.TaskWait
+	if err = json.Unmarshal(raw, &wait); err != nil {
+		return err
+	}
+	if wait.Delivery == "delivered" {
+		return tx.Commit()
+	}
+	delivered := now.UTC()
+	wait.Delivery = "delivered"
+	wait.DeliveredAt = &delivered
+	if err = saveTaskWaitTx(ctx, tx, wait); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// PendingTaskWakes lists the wakes whose attempt is already resumed but whose
+// message has not reached the thread yet.
+func (s *Store) PendingTaskWakes(ctx context.Context) ([]domain.TaskWaitWakeContext, error) {
+	waits, err := s.ListTaskWaits(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byAttempt := make(map[string][]domain.TaskWait)
+	var order []string
+	for _, wait := range waits {
+		if !wait.Woken() || wait.Delivery == "delivered" {
+			continue
+		}
+		if _, seen := byAttempt[wait.AttemptID]; !seen {
+			order = append(order, wait.AttemptID)
+		}
+		byAttempt[wait.AttemptID] = append(byAttempt[wait.AttemptID], wait)
+	}
+	sort.Strings(order)
+	pending := make([]domain.TaskWaitWakeContext, 0, len(order))
+	for _, attemptID := range order {
+		members := byAttempt[attemptID]
+		pending = append(pending, domain.TaskWaitWakeContext{
+			AttemptID: attemptID, ThreadID: members[0].ThreadID, Waits: members,
+		})
+	}
+	return pending, nil
 }
 
 // taskWaitWakeSet applies each and all to one attempt's waits and returns the
