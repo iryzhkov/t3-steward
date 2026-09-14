@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.42] - 2026-09-14
+
+### Fixed
+
+- Preflight logs are counted apart from the thread archive, so a task declaring
+  preflight steps no longer fails the evidence-count contract.
+- The session transcript is read from the thread archive rather than from
+  whichever log artifact came last, which previously parsed a preflight log as
+  JSON and failed the import.
+
 ## [0.11.0-rc.41] - 2026-09-14
 
 ### Fixed
