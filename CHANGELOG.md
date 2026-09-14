@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.37] - 2026-09-14
+
+### Fixed
+
+- Worker journal inspection reads a retained catalog this build cannot activate,
+  instead of failing with a digest mismatch. An updater asks for the journal
+  precisely when it is about to replace the binary, and replacing the binary is
+  what changes how a catalog revision is derived, so the previous behaviour
+  refused the caller at the one moment the answer mattered and left a fleet
+  upgrade stuck with the new binary installed and the old one still serving.
+  Activation still refuses a projection it cannot reproduce; inspection reports
+  it as `catalogActivatable: false` and keeps the journal's attempt counts.
+
 ## [0.11.0-rc.36] - 2026-09-14
 
 ### Added
