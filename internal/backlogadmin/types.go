@@ -33,7 +33,36 @@ const (
 	// read-only and live: it consults the fleet as it is now and creates
 	// nothing.
 	QueryViability QueryKind = "viability"
+	// QueryQuarantine lists the intake submissions the coordinator refused
+	// permanently and is now silent about. Their audit events carry no workflow
+	// run, so the run-scoped event view cannot show them and an operator had no
+	// way to see them at all.
+	QueryQuarantine QueryKind = "quarantine"
 )
+
+// QuarantineRetryAdvice is the one sentence a quarantine view has to say, in
+// the same words everywhere: the marker is bound to the exact content that was
+// refused, so changing the file is both the recovery and the retry.
+const QuarantineRetryAdvice = "change the file: a different content digest releases this marker and the submission is tried again."
+
+// QuarantinedIntake is one permanently refused intake submission. It names no
+// workflow or run because nothing was accepted, which is exactly why it is
+// invisible in every run-scoped view.
+type QuarantinedIntake struct {
+	// Key is the intake idempotency key the submission source used.
+	Key string `json:"key"`
+	// RecordKey is the namespaced key the durable record is stored under in
+	// coordinator_submissions, for an operator reading the database directly.
+	RecordKey string `json:"recordKey"`
+	// Digest is the content the marker was recorded for. A different digest is
+	// different content, and different content is tried again.
+	Digest        string    `json:"digest"`
+	QuarantinedAt time.Time `json:"quarantinedAt"`
+	Reason        string    `json:"reason"`
+	// Retry is QuarantineRetryAdvice, carried in the document so that a reader
+	// of the JSON is told the same thing as a reader of the text.
+	Retry string `json:"retry"`
+}
 
 type Principal struct {
 	ID    string   `json:"id"`
@@ -111,6 +140,10 @@ type Response struct {
 	ResourceLocks []ResourceLock    `json:"resourceLocks,omitempty"`
 	Commands      []Command         `json:"commands,omitempty"`
 	Viability     *ViabilityMatrix  `json:"viability,omitempty"`
+	// Quarantine is the whole list on a QueryQuarantine response. It is absent
+	// when nothing is quarantined, which the text renderer states in words so
+	// that an empty answer is never mistaken for a failed query.
+	Quarantine []QuarantinedIntake `json:"quarantine,omitempty"`
 }
 
 type Status struct {

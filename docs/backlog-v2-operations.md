@@ -281,9 +281,18 @@ log line carrying the reason, and it is durable as one `submission-quarantined`
 audit event per key and digest.
 
 That audit event has no workflow run, so the run-scoped `backlog events
-<workflow-run>` view does not list it. Until a run-less event view exists, an
-operator reads the reason from the log line, and the durable record is in the
-coordinator database in `coordinator_submissions` with state `quarantined`.
+<workflow-run>` view cannot list it. The quarantine is read instead with
+
+```
+t3-steward backlog quarantine [--json]
+```
+
+which reports every marker with its intake key, the namespaced key its record is
+stored under in `coordinator_submissions`, the content digest it was recorded
+for, when it was quarantined, the reason, and the fact that changed content is
+tried again. It is a read of the durable record: it releases nothing and
+resubmits nothing, and it is an ordinary admin query, so it works from a
+non-coordinator host over the same transport as every other read.
 
 Recovery is to change the file. When the content of a quarantined file changes,
 its digest changes, the marker is released, and the submission is attempted
@@ -311,7 +320,7 @@ Use the commands in [Backlog administration](backlog-admin.md) while the selecte
 backlog-v2 coordinator is running. The CLI connects to the admin socket derived
 from the selected state path; it does not open the database. Read views include
 status, workflow/task/DAG detail, explanations, events, artifacts, schedules,
-workers, quota, reservations, locks, and command outcomes.
+workers, quota, reservations, locks, command outcomes, and quarantined intake.
 
 Create or revise a definition through the same socket:
 

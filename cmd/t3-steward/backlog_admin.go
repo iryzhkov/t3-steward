@@ -119,7 +119,7 @@ func isReadQueryKind(kind backlogadmin.QueryKind) bool {
 		backlogadmin.QueryExplanation, backlogadmin.QueryEvents, backlogadmin.QueryArtifacts,
 		backlogadmin.QueryArtifact, backlogadmin.QuerySchedules, backlogadmin.QueryWorkers,
 		backlogadmin.QueryQuota, backlogadmin.QueryReservations, backlogadmin.QueryLocks,
-		backlogadmin.QueryCommands, backlogadmin.QueryRecovery:
+		backlogadmin.QueryCommands, backlogadmin.QueryRecovery, backlogadmin.QueryQuarantine:
 		return true
 	default:
 		return false
@@ -325,6 +325,11 @@ func parseBacklogAdminQueryWithoutSink(args []string) (backlogadmin.Query, bool,
 			return backlogadmin.Query{}, false, errors.New("artifact usage: backlog artifact show <artifact>")
 		}
 		return backlogadmin.Query{Kind: backlogadmin.QueryArtifact, ArtifactID: clean[2]}, asJSON, nil
+	case "quarantine":
+		if len(clean) != 1 {
+			return backlogadmin.Query{}, false, errors.New("backlog quarantine takes no arguments")
+		}
+		return backlogadmin.Query{Kind: backlogadmin.QueryQuarantine}, asJSON, nil
 	case "commands":
 		if len(clean) > 2 {
 			return backlogadmin.Query{}, false, errors.New("commands accepts at most <workflow-run>[/<task>]")
@@ -479,10 +484,35 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 		renderCommands(out, response.Commands)
 	case backlogadmin.QuerySchedules:
 		renderSchedules(out, response.Schedules, selector)
+	case backlogadmin.QueryQuarantine:
+		renderQuarantine(out, response.Quarantine)
 	default:
 		return fmt.Errorf("no human renderer for admin response %q", response.Kind)
 	}
 	return nil
+}
+
+// renderQuarantine prints the intake the coordinator refuses and is silent
+// about. The reason is printed in full on its own line rather than squeezed
+// into a column, because it is the whole point of the view, and the retry rule
+// is stated every time so that an operator never has to guess whether editing
+// the file is enough.
+func renderQuarantine(out io.Writer, quarantined []backlogadmin.QuarantinedIntake) {
+	if len(quarantined) == 0 {
+		fmt.Fprintln(out, "no quarantined intake: every submission source is being read.")
+		return
+	}
+	for index, entry := range quarantined {
+		if index > 0 {
+			fmt.Fprintln(out)
+		}
+		fmt.Fprintf(out, "key:        %s\n", entry.Key)
+		fmt.Fprintf(out, "record:     %s\n", entry.RecordKey)
+		fmt.Fprintf(out, "digest:     %s\n", entry.Digest)
+		fmt.Fprintf(out, "quarantined %s\n", entry.QuarantinedAt.UTC().Format(time.RFC3339))
+		fmt.Fprintf(out, "reason:     %s\n", entry.Reason)
+		fmt.Fprintf(out, "retry:      %s\n", entry.Retry)
+	}
 }
 
 func renderStatus(out io.Writer, status *backlogadmin.Status) {
