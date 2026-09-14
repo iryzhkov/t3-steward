@@ -45,6 +45,8 @@ type Service struct {
 	artifactOpen   ArtifactOpenFunc
 	runtime        RuntimeInfo
 	recovery       UnknownRecoveryWriter
+
+	viabilitySettings ViabilitySettings
 }
 
 type RuntimeInfo struct {
@@ -114,31 +116,9 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		return Response{}, fmt.Errorf("authorize %s: %w", query.Kind, err)
 	}
 
-	records, err := s.reader.LoadCoordinatorRecords(ctx)
+	view, err := s.loadView(ctx)
 	if err != nil {
-		return Response{}, fmt.Errorf("load coordinator snapshot: %w", err)
-	}
-	workers, err := s.reader.LoadWorkerSnapshots(ctx)
-	if err != nil {
-		return Response{}, fmt.Errorf("load worker snapshots: %w", err)
-	}
-	admissions, err := s.reader.LoadQuotaAdmissions(ctx)
-	if err != nil {
-		return Response{}, fmt.Errorf("load quota admissions: %w", err)
-	}
-	view := newView(records, workers, admissions, s.runtime, s.now().UTC())
-	if reader, ok := s.reader.(interface {
-		LoadWorkerRequirements(context.Context) ([]domain.WorkerRequirement, error)
-		LoadWorkerEnrollments(context.Context) ([]domain.WorkerEnrollment, error)
-	}); ok {
-		view.requirements, err = reader.LoadWorkerRequirements(ctx)
-		if err != nil {
-			return Response{}, err
-		}
-		view.enrollments, err = reader.LoadWorkerEnrollments(ctx)
-		if err != nil {
-			return Response{}, err
-		}
+		return Response{}, err
 	}
 	view.includeSink = query.IncludeSink
 	response := Response{Version: Version, Kind: query.Kind, GeneratedAt: view.now}
@@ -204,8 +184,45 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		response.ResourceLocks = view.locks(query.Filter)
 	case QueryCommands:
 		response.Commands = view.commands(query)
+	case QueryViability:
+		if s.viabilitySettings.Catalog == nil {
+			return Response{}, fmt.Errorf("%w: this coordinator has no project catalog to check against", ErrInvalidQuery)
+		}
+		matrix := view.viability(ctx, s.viabilitySettings, *query.Viability)
+		response.Viability = &matrix
 	}
 	return response, nil
+}
+
+// loadView reads the one consistent snapshot every query is answered from.
+func (s *Service) loadView(ctx context.Context) (view, error) {
+	records, err := s.reader.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		return view{}, fmt.Errorf("load coordinator snapshot: %w", err)
+	}
+	workers, err := s.reader.LoadWorkerSnapshots(ctx)
+	if err != nil {
+		return view{}, fmt.Errorf("load worker snapshots: %w", err)
+	}
+	admissions, err := s.reader.LoadQuotaAdmissions(ctx)
+	if err != nil {
+		return view{}, fmt.Errorf("load quota admissions: %w", err)
+	}
+	loaded := newView(records, workers, admissions, s.runtime, s.now().UTC())
+	if reader, ok := s.reader.(interface {
+		LoadWorkerRequirements(context.Context) ([]domain.WorkerRequirement, error)
+		LoadWorkerEnrollments(context.Context) ([]domain.WorkerEnrollment, error)
+	}); ok {
+		loaded.requirements, err = reader.LoadWorkerRequirements(ctx)
+		if err != nil {
+			return view{}, err
+		}
+		loaded.enrollments, err = reader.LoadWorkerEnrollments(ctx)
+		if err != nil {
+			return view{}, err
+		}
+	}
+	return loaded, nil
 }
 
 func validQuery(query Query) bool {
@@ -223,6 +240,10 @@ func validQuery(query Query) bool {
 		return true
 	case QueryArtifact:
 		return query.ArtifactID != ""
+	case QueryViability:
+		// A viability query answers about tasks it was given. An empty request
+		// would otherwise report a ready campaign with nothing in it.
+		return query.Viability != nil && len(query.Viability.Tasks) != 0
 	default:
 		return false
 	}
