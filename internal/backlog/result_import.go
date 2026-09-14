@@ -313,7 +313,12 @@ func evaluateResultEvidence(task domain.Task, threadID string, artifacts []domai
 			}
 			reports[artifact.Name] = payloads[index]
 		case domain.ArtifactLog:
-			archive = payloads[index]
+			// Only the thread archive is the session transcript. Preflight logs
+			// share the kind but are ordinary text, so taking whichever log came
+			// last made the archive parse fail on a preflight log's first byte.
+			if !strings.HasPrefix(artifact.ID, "preflight-") {
+				archive = payloads[index]
+			}
 		}
 	}
 	failures := make([]string, 0, 2)
