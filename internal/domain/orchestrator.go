@@ -213,8 +213,15 @@ type TaskAdmissionEstimate struct {
 	CheckpointMargin time.Duration `json:"checkpointMargin"`
 }
 
-// Assignment commits one attempt to a worker and provider route.
+// Assignment commits one attempt to a worker and provider route. It is also
+// the durable capacity reservation: its worker and its task's resource demand
+// are what an executor registry is rebuilt from, and reaching a terminal state
+// is what releases the capacity it held.
 type Assignment struct {
+	// Placement explains why this worker was chosen: the candidates, the
+	// constraints that rejected the others, the preference scores and the
+	// snapshots read. It is written once, with the assignment.
+	Placement           *PlacementDecision     `json:"placement,omitempty"`
 	GraphRevision       int64                  `json:"graphRevision,omitempty"`
 	TaskRevision        int64                  `json:"taskRevision,omitempty"`
 	TaskDigest          string                 `json:"taskDigest,omitempty"`

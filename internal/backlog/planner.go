@@ -81,24 +81,29 @@ type PlanningConstraintSession interface {
 }
 
 type PlanningBlocker struct {
-	Code                     string                `json:"code"`
-	Detail                   string                `json:"detail"`
-	WorkerID                 string                `json:"workerId,omitempty"`
-	Resource                 string                `json:"resource,omitempty"`
-	OwnerID                  string                `json:"ownerId,omitempty"`
-	DependsOn                string                `json:"dependsOn,omitempty"`
-	ProviderInstanceID       string                `json:"providerInstanceId,omitempty"`
-	Model                    string                `json:"model,omitempty"`
-	RouteOrdinal             int                   `json:"routeOrdinal,omitempty"`
-	QuotaPoolID              string                `json:"quotaPoolId,omitempty"`
-	QuotaWindowID            string                `json:"quotaWindowId,omitempty"`
-	Admission                domain.AdmissionState `json:"admission,omitempty"`
-	RequiredCost             float64               `json:"requiredCost,omitempty"`
-	Available                float64               `json:"available,omitempty"`
-	MaxObservationAgeSeconds float64               `json:"maxObservationAgeSeconds,omitempty"`
-	ObservedAt               *time.Time            `json:"observedAt,omitempty"`
-	EarliestAt               *time.Time            `json:"earliestAt,omitempty"`
-	DeadlineAt               *time.Time            `json:"deadlineAt,omitempty"`
+	Code               string                `json:"code"`
+	Detail             string                `json:"detail"`
+	WorkerID           string                `json:"workerId,omitempty"`
+	Resource           string                `json:"resource,omitempty"`
+	OwnerID            string                `json:"ownerId,omitempty"`
+	DependsOn          string                `json:"dependsOn,omitempty"`
+	ProviderInstanceID string                `json:"providerInstanceId,omitempty"`
+	Model              string                `json:"model,omitempty"`
+	RouteOrdinal       int                   `json:"routeOrdinal,omitempty"`
+	QuotaPoolID        string                `json:"quotaPoolId,omitempty"`
+	QuotaWindowID      string                `json:"quotaWindowId,omitempty"`
+	Admission          domain.AdmissionState `json:"admission,omitempty"`
+	RequiredCost       float64               `json:"requiredCost,omitempty"`
+	// Dimension and Required describe a nonquota limit, such as an executor
+	// pool's slots or a worker's allocatable memory. RequiredCost stays the
+	// quota cost it has always been, so the two are never confused.
+	Dimension                string     `json:"dimension,omitempty"`
+	Required                 float64    `json:"required,omitempty"`
+	Available                float64    `json:"available,omitempty"`
+	MaxObservationAgeSeconds float64    `json:"maxObservationAgeSeconds,omitempty"`
+	ObservedAt               *time.Time `json:"observedAt,omitempty"`
+	EarliestAt               *time.Time `json:"earliestAt,omitempty"`
+	DeadlineAt               *time.Time `json:"deadlineAt,omitempty"`
 }
 
 type CandidateEvaluation struct {
@@ -130,6 +135,10 @@ type ProposedTask struct {
 	Route         *domain.ProviderRoute  `json:"route,omitempty"`
 	Estimate      *TaskAdmissionEstimate `json:"estimate,omitempty"`
 	ResourceLocks []string               `json:"resourceLocks,omitempty"`
+	// Placement is the durable explanation of this proposal: the candidates
+	// considered, every constraint that rejected one, the preference scores
+	// and the selected worker. PlanAndCommit records it on the assignment.
+	Placement *domain.PlacementDecision `json:"placement,omitempty"`
 }
 
 type Plan struct {
@@ -352,12 +361,13 @@ func planningOrderReason(order PlanningOrder) string {
 }
 
 func planTask(input PlanInput, router *providerRouter, constraints []PlanningConstraintSession, workflow domain.Workflow, state DAGState, task domain.Task, attempt domain.Attempt, order PlanningOrder, resourceOwners, checkoutOwners map[string]string) (TaskPlanningDecision, *ProposedTask, error) {
-	placement, err := MatchWorkers(WorkerPlacementRequest{
+	selection, err := SelectWorker(WorkerPlacementRequest{
 		Task: task, Project: workflow.Project, Now: input.Now, MaxSnapshotAge: input.MaxWorkerSnapshotAge,
 	}, input.Workers)
 	if err != nil {
 		return TaskPlanningDecision{}, nil, fmt.Errorf("plan task %q: %w", task.Name, err)
 	}
+	placement := selection.Placement
 	decision := TaskPlanningDecision{
 		WorkflowRunID: state.Run.ID, TaskID: task.ID, TaskName: task.Name,
 		AttemptID: attempt.ID, Progress: attempt.Progress, Order: order, Placement: placement,
@@ -386,6 +396,7 @@ func planTask(input PlanInput, router *providerRouter, constraints []PlanningCon
 	}
 
 	var selected *PlanningCandidate
+	var selectedScore float64
 	for _, routed := range router.Candidates(task, attempt, placement.EligibleWorkerIDs) {
 		candidate := clonePlanningCandidate(routed.candidate)
 		candidate.WorkflowRunID = state.Run.ID
@@ -405,9 +416,18 @@ func planTask(input PlanInput, router *providerRouter, constraints []PlanningCon
 		}
 		sortPlanningBlockers(evaluation.Blockers)
 		decision.Candidates = append(decision.Candidates, evaluation)
-		if selected == nil && len(evaluation.Blockers) == 0 {
+		if len(evaluation.Blockers) != 0 {
+			continue
+		}
+		// Every unblocked candidate is considered and the preference score
+		// chooses between them, instead of the first in worker order winning.
+		// Candidates arrive in a deterministic worker and route order and the
+		// comparison is strict, so an equal score keeps the incumbent and a
+		// replan of unchanged input produces the same plan.
+		score := scoreFor(selection.Decision.Scores, candidate.WorkerID).Total
+		if selected == nil || score > selectedScore {
 			copied := clonePlanningCandidate(candidate)
-			selected = &copied
+			selected, selectedScore = &copied, score
 		}
 	}
 	if len(placement.EligibleWorkerIDs) == 0 {
@@ -423,10 +443,17 @@ func planTask(input PlanInput, router *providerRouter, constraints []PlanningCon
 	if len(decision.Blockers) != 0 {
 		return decision, nil, nil
 	}
+	placed, err := selection.WithSelectedWorker(selected.WorkerID)
+	if err != nil {
+		return TaskPlanningDecision{}, nil, fmt.Errorf("plan task %q: %w", task.Name, err)
+	}
+	explanation := placed.Decision
+	explanation.AttemptID = attempt.ID
 	return decision, &ProposedTask{
 		WorkflowRunID: state.Run.ID, TaskID: task.ID, AttemptID: attempt.ID,
 		WorkerID: selected.WorkerID, Route: cloneProviderRoutePointer(selected.Route),
 		Estimate: cloneTaskAdmissionEstimatePointer(selected.Estimate), ResourceLocks: locks,
+		Placement: &explanation,
 	}, nil
 }
 
@@ -561,12 +588,12 @@ func sortPlanningBlockers(blockers []PlanningBlocker) {
 	sort.Slice(blockers, func(i, j int) bool {
 		left, right := blockers[i], blockers[j]
 		leftFields := []string{
-			left.Code, left.WorkerID, left.Resource, left.OwnerID, left.DependsOn,
+			left.Code, left.WorkerID, left.Resource, left.Dimension, left.OwnerID, left.DependsOn,
 			left.ProviderInstanceID, left.Model, left.QuotaPoolID, left.QuotaWindowID, string(left.Admission),
 			planningTimeKey(left.ObservedAt), planningTimeKey(left.EarliestAt), planningTimeKey(left.DeadlineAt), left.Detail,
 		}
 		rightFields := []string{
-			right.Code, right.WorkerID, right.Resource, right.OwnerID, right.DependsOn,
+			right.Code, right.WorkerID, right.Resource, right.Dimension, right.OwnerID, right.DependsOn,
 			right.ProviderInstanceID, right.Model, right.QuotaPoolID, right.QuotaWindowID, string(right.Admission),
 			planningTimeKey(right.ObservedAt), planningTimeKey(right.EarliestAt), planningTimeKey(right.DeadlineAt), right.Detail,
 		}
@@ -583,6 +610,9 @@ func sortPlanningBlockers(blockers []PlanningBlocker) {
 		}
 		if left.RequiredCost != right.RequiredCost {
 			return left.RequiredCost < right.RequiredCost
+		}
+		if left.Required != right.Required {
+			return left.Required < right.Required
 		}
 		return left.Available < right.Available
 	})

@@ -116,6 +116,15 @@ func (c FleetCoordinator) PlanAndCommit(ctx context.Context, input PlanInput) (A
 			DispatchToken: stableCoordinatorID("dispatch", assignmentID),
 			ThreadID:      stableCoordinatorID("thread", assignmentID),
 		}
+		if proposal.Placement != nil {
+			// The assignment is the durable reservation, so its explanation is
+			// committed with it in the same transaction and survives a restart.
+			placement := *proposal.Placement
+			placement.AssignmentID = assignmentID
+			placement.AttemptID = attempt.ID
+			placement.ReservationID = assignmentID
+			assignment.Placement = &placement
+		}
 		items = append(items, domain.AssignmentPlanItem{
 			Assignment:              assignment,
 			ExpectedAttemptRevision: attempt.Revision,

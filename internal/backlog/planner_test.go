@@ -39,12 +39,24 @@ func TestBuildPlanDeterministicIndependentReadyBranchesAndPure(t *testing.T) {
 		t.Fatalf("BuildPlan mutated its input:\nbefore: %#v\nafter: %#v", before, first)
 	}
 
+	// Every proposal now carries its placement explanation, so the identity
+	// of a proposal is compared without it and the explanation is checked on
+	// its own terms.
 	want := []ProposedTask{
 		{WorkflowRunID: "run", TaskID: "task-alpha", AttemptID: "alpha-1", WorkerID: "worker-a"},
 		{WorkflowRunID: "run", TaskID: "task-beta", AttemptID: "beta-1", WorkerID: "worker-a"},
 	}
-	if !reflect.DeepEqual(got.Proposals, want) {
-		t.Fatalf("proposals = %#v, want %#v", got.Proposals, want)
+	proposals := append([]ProposedTask(nil), got.Proposals...)
+	for index := range proposals {
+		placement := proposals[index].Placement
+		if placement == nil || placement.SelectedWorkerID != proposals[index].WorkerID ||
+			placement.AttemptID != proposals[index].AttemptID {
+			t.Fatalf("proposal %d placement = %#v", index, placement)
+		}
+		proposals[index].Placement = nil
+	}
+	if !reflect.DeepEqual(proposals, want) {
+		t.Fatalf("proposals = %#v, want %#v", proposals, want)
 	}
 	for _, decision := range got.Decisions {
 		if !decision.Proposed || decision.Progress != domain.ProgressReady {

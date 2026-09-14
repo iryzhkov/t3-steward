@@ -239,7 +239,14 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 		RouteEstimates: routeEstimates, ResourceOwners: resourceOwners,
 		WorkflowCheckoutOwners: checkoutOwners,
 		DirectoryOwners:        directoryOwners(input.Attempts, input.Assignments, input.WorkflowRuns, input.Tasks),
-		Constraints:            []PlanningConstraint{quotaPolicy},
+		// Executor capacity and quota admission are separate constraints
+		// because they are separate limits: an attempt holds an executor
+		// slot on its worker and provider admission for its route, and
+		// neither is derived from the other.
+		Constraints: []PlanningConstraint{quotaPolicy, NewCapacityConstraint(
+			executorPools(workers),
+			capacityOwners(input.Attempts, input.Assignments, input.WorkflowRuns, input.Tasks),
+		)},
 		Ordering: PlanningOrderingInput{
 			DeadlineRiskWindow: input.DeadlineRiskWindow, Attempts: ordering,
 		},

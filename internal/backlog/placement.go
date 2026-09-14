@@ -422,6 +422,20 @@ func SelectWorker(request WorkerPlacementRequest, inventory []domain.WorkerInven
 	return PlacementSelection{Placement: placement, Decision: decision}, nil
 }
 
+// WithSelectedWorker records which eligible worker a later planning phase
+// chose. Placement ranks workers on capability and preference; a planner may
+// still reject the top-ranked one for a reason placement does not own, such as
+// a held resource lock or a closed quota pool, and the explanation must name
+// the worker the plan actually used.
+func (s PlacementSelection) WithSelectedWorker(workerID string) (PlacementSelection, error) {
+	selection := s
+	selection.Decision.SelectedWorkerID = workerID
+	if err := selection.Decision.Validate(); err != nil {
+		return PlacementSelection{}, err
+	}
+	return selection, nil
+}
+
 // WithReservation records the reservation and assignment a committed placement
 // acquired, completing the explanation: rejected constraints, preference
 // scores, the selected worker and the reservation are then all recoverable

@@ -44,8 +44,11 @@ func TestBuildCoordinatorPlanInputProducesQuotaBoundColdEstimateAndStopsReplanni
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(planInput.Constraints) != 1 || len(planInput.RouteEstimates) != 1 {
-		t.Fatalf("assembled input = %#v", planInput)
+	// Quota admission and executor capacity are assembled as two separate
+	// constraints, because they are two separate limits.
+	if len(planInput.Constraints) != 2 || len(planInput.RouteEstimates) != 1 {
+		t.Fatalf("assembled input constraints = %d, route estimates = %d",
+			len(planInput.Constraints), len(planInput.RouteEstimates))
 	}
 	estimate := planInput.RouteEstimates[0].Estimate
 	wantRuntime := time.Duration(SeedMinutes(task.Difficulty) * float64(time.Minute) * float64(task.MaxTurns))

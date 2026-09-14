@@ -76,10 +76,34 @@ func (r ReservationRequest) validate() error {
 	return nil
 }
 
+// Capacity dimensions, named so that a planning blocker can say which limit
+// refused the work rather than only that something did.
+const (
+	CapacityDimensionSlots     = "executor-slots"
+	CapacityDimensionCPUUnits  = "cpu-units"
+	CapacityDimensionMemoryMB  = "memory-mb"
+	CapacityDimensionScratchMB = "scratch-mb"
+	CapacityDimensionCPUClass  = "cpu-class"
+)
+
+// CapacityShortfall is one dimension that cannot satisfy a demand, with the
+// numbers that explain it.
+type CapacityShortfall struct {
+	Dimension string  `json:"dimension"`
+	Available float64 `json:"available"`
+	Required  float64 `json:"required"`
+}
+
 // ExecutorRegistry owns the executor pools of the fleet, their independently
 // fenced slots, and the reservations held against them. Every mutation is
 // atomic: a reservation either acquires its slot and all of its sized capacity
 // or changes nothing, and a release returns exactly that capacity exactly once.
+//
+// The registry is a projection, not a second durable record. The assignment is
+// the durable reservation: a coordinator rebuilds this registry from the
+// active assignments in its store, and an assignment reaching a terminal state
+// is what releases its capacity. Exactly-once release therefore rides on
+// assignment settlement, which is already fenced.
 //
 // The registry is safe for concurrent use, because concurrent attempts on one
 // worker are the point of an executor pool.
@@ -206,6 +230,121 @@ func (r *ExecutorRegistry) Reserve(request ReservationRequest) (domain.ResourceR
 	}
 	r.reservations[reservation.ID] = reservation
 	return reservation, nil
+}
+
+// Fits reports every capacity dimension that would refuse this demand on this
+// worker, without changing anything. A worker with no configured executor pool
+// is not capacity-governed and returns no shortfall: unconfigured capacity is
+// unknown rather than exhausted, and placement already refuses a sized demand
+// against a worker that declares no allocatable capacity.
+func (r *ExecutorRegistry) Fits(workerID string, demand domain.ResourceDemand) []CapacityShortfall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	pool, configured := r.pools[workerID]
+	if !configured {
+		return nil
+	}
+	var shortfalls []CapacityShortfall
+	if demand.MinCPUClass != "" &&
+		(!pool.CPUClass.Valid() || pool.CPUClass.Compare(demand.MinCPUClass) < 0) {
+		shortfalls = append(shortfalls, CapacityShortfall{
+			Dimension: CapacityDimensionCPUClass,
+			Available: float64(pool.CPUClass.Rank()), Required: float64(demand.MinCPUClass.Rank()),
+		})
+	}
+	snapshot := r.snapshotLocked(workerID)
+	if snapshot.FreeSlots() < 1 {
+		shortfalls = append(shortfalls, CapacityShortfall{
+			Dimension: CapacityDimensionSlots,
+			Available: float64(snapshot.FreeSlots()), Required: 1,
+		})
+	}
+	if demand.CPUUnits > snapshot.FreeCPUUnits() {
+		shortfalls = append(shortfalls, CapacityShortfall{
+			Dimension: CapacityDimensionCPUUnits,
+			Available: snapshot.FreeCPUUnits(), Required: demand.CPUUnits,
+		})
+	}
+	if demand.MemoryMB > snapshot.FreeMemoryMB() {
+		shortfalls = append(shortfalls, CapacityShortfall{
+			Dimension: CapacityDimensionMemoryMB,
+			Available: float64(snapshot.FreeMemoryMB()), Required: float64(demand.MemoryMB),
+		})
+	}
+	if demand.ScratchMB > snapshot.FreeScratchMB() {
+		shortfalls = append(shortfalls, CapacityShortfall{
+			Dimension: CapacityDimensionScratchMB,
+			Available: float64(snapshot.FreeScratchMB()), Required: float64(demand.ScratchMB),
+		})
+	}
+	return shortfalls
+}
+
+// Governs reports whether this worker has a configured executor pool.
+func (r *ExecutorRegistry) Governs(workerID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, configured := r.pools[workerID]
+	return configured
+}
+
+// adopt records capacity a durable assignment already holds. Unlike Reserve it
+// cannot refuse: the assignment is the reservation, it was committed against
+// the capacity of its time, and a later pool shrink drains future admission
+// rather than revoking a slot a running attempt holds. An adopted owner beyond
+// the configured slot count therefore adds a slot, and the worker reports no
+// free capacity until it releases.
+func (r *ExecutorRegistry) adopt(owner CapacityOwner) error {
+	if owner.AssignmentID == "" || owner.WorkerID == "" {
+		return fmt.Errorf("capacity owner requires an assignment and a worker")
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	pool, configured := r.pools[owner.WorkerID]
+	if !configured {
+		return nil
+	}
+	if _, duplicate := r.reservations[owner.AssignmentID]; duplicate {
+		return fmt.Errorf("assignment %q holds capacity twice: %w", owner.AssignmentID, ErrDuplicateReservation)
+	}
+
+	moment := r.now()
+	slotAt := -1
+	for index, slot := range r.slots[owner.WorkerID] {
+		if slot.State == domain.ExecutorSlotFree {
+			slotAt = index
+			break
+		}
+	}
+	if slotAt < 0 {
+		r.slots[owner.WorkerID] = append(r.slots[owner.WorkerID], domain.ExecutorSlot{
+			WorkerID: owner.WorkerID, PoolName: pool.Name,
+			Ordinal: len(r.slots[owner.WorkerID]), State: domain.ExecutorSlotFree, UpdatedAt: moment,
+		})
+		slotAt = len(r.slots[owner.WorkerID]) - 1
+	}
+	r.tokenSequence++
+	slot := r.slots[owner.WorkerID][slotAt]
+	slot.State = domain.ExecutorSlotRunning
+	slot.FencingToken = fmt.Sprintf("%s-%d", slot.ID(), r.tokenSequence)
+	slot.ReservationID = owner.AssignmentID
+	slot.AssignmentID = owner.AssignmentID
+	slot.UpdatedAt = moment
+	r.slots[owner.WorkerID][slotAt] = slot
+
+	r.reservations[owner.AssignmentID] = domain.ResourceReservation{
+		ID: owner.AssignmentID, WorkerID: owner.WorkerID, PoolName: pool.Name,
+		SlotOrdinal: slot.Ordinal, SlotFencingToken: slot.FencingToken,
+		AssignmentID: owner.AssignmentID, AttemptID: owner.AttemptID,
+		CPUUnits: owner.Demand.CPUUnits, MemoryMB: owner.Demand.MemoryMB,
+		ScratchMB: owner.Demand.ScratchMB,
+		State:     domain.ResourceReservationActive,
+		CreatedAt: moment, UpdatedAt: moment,
+	}
+	return nil
 }
 
 // Activate records that the worker claimed the assignment and began executing
