@@ -429,12 +429,23 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		return err
 	}
 	appliedAt := time.Now().UTC()
+	// A project the catalog cannot hold no longer stops the fleet, so nothing
+	// else breaks to make an operator look. The coordinator says so at
+	// startup and keeps saying so in its status, naming the project and the
+	// exact validation failure.
+	catalogIssues := workerruntime.FleetCatalogIssues(cfg.BacklogV2)
+	for _, issue := range catalogIssues {
+		logger.Warn("backlog-v2 project configuration is unusable",
+			"issue", issue,
+			"effect", "this project cannot be scheduled; every other project is unaffected")
+	}
 	service.SetRuntimeInfo(backlogadmin.RuntimeInfo{
 		Release: version, ConfigurationDigest: configurationDigest, LastReload: appliedAt,
 		Mode: "coordinator", Owner: cfg.BacklogV2.Coordinator.ID, Epoch: epoch,
 		Transport:              cfg.BacklogV2.Transport.Kind,
 		MaxWorkerSnapshotAge:   cfg.BacklogV2.Freshness.WorkerMaxAge.D(),
 		MaxQuotaObservationAge: cfg.BacklogV2.Freshness.QuotaMaxAge.D(),
+		CatalogIssues:          catalogIssues,
 	})
 	artifactStore := backlog.CoordinatorArtifactStore{Root: cfg.BacklogV2.Storage.Artifacts, SubmissionRoot: cfg.BacklogV2.Storage.Bundles, Catalog: store}
 	service.SetArtifactOpener(func(ctx context.Context, artifactID string) (domain.Artifact, io.ReadCloser, error) {
