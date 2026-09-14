@@ -1,0 +1,16 @@
+{
+  "capabilities": [
+    "git",
+    "huyang"
+  ],
+  "coordinator_id": "normandy-coordinator",
+  "credential_ref": "secretref:f02-protocol/omarchy-pc",
+  "provider_routes": [
+    "claudeAgent",
+    "codex",
+    "opencode"
+  ],
+  "schema_version": 1,
+  "transport": "ssh",
+  "worker_id": "omarchy-pc"
+}

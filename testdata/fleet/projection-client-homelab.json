@@ -1,0 +1,13 @@
+{
+  "address": "normandy",
+  "connection": "ssh",
+  "coordinator_id": "normandy-coordinator",
+  "credential_ref": "secretref:f03-admin/homelab",
+  "message_limits": {
+    "max_artifact_bytes": 1073741824,
+    "max_bytes": 4194304
+  },
+  "remote_command": "t3-steward",
+  "request_timeout": "30s",
+  "schema_version": 1
+}
