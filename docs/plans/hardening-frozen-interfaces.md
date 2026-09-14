@@ -151,6 +151,16 @@ no shell, repository validated by `catalog.validateGitRepository`, ref by `catal
 output bounded during accumulation. Evidence key is
 `(worker, catalogDigest, repository, ref, credentialRefs)`, TTL 10 minutes.
 
+The probe is dispatched to the candidate worker over the worker protocol, as the bounded
+request/response pair `repository-probe` and `repository-observation`. The request carries the
+repository, the ref and the credential references, never an argument vector; the worker applies
+the catalog validators again, requires the credential references to be available under its own
+identity before it runs anything, and answers with the classification, the exit code and a
+redacted detail bounded to 512 bytes. The coordinator refuses a classification outside the frozen
+set, and retains the evidence under the key above. With no worker reachable the matrix reports
+`network-unavailable` with a detail saying reachability could not be observed: temporary, never a
+pass and never a permanent refusal.
+
 `campaign submit` runs the check unless `--allow-unverified` is passed; the coordinator repeats
 the permanent checks inside `ingest` before any record is written.
 

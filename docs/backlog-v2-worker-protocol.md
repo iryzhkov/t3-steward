@@ -79,7 +79,17 @@ The stable message kinds are:
 | artifact-upload | both | Request one exact announced manifest/object sequence and return signed custody metadata plus bounded raw bytes. |
 | artifact-acknowledge / artifact-acknowledged | coordinator to worker / worker to coordinator | Retire discovery only after coordinator import; exact replay is idempotent. |
 | artifact-download | coordinator to worker | Authorize selected immutable inputs. |
+| repository-probe / repository-observation | coordinator to worker / worker to coordinator | Ask one worker whether it can read one repository and ref under the credential references the real task would use, and return the classified answer. |
 | error | both | Return a stable structured failure. |
+
+The repository probe is the one message that reaches the network on the worker's
+behalf, and it is narrow by construction. It carries a repository, a ref and
+credential references, never an argument vector, a command name or a shell
+string, and the worker turns them into exactly one fixed argument vector after
+applying the catalog's own repository and ref validators. A value that Git could
+read as an option is refused as a value on both sides. The answer carries a
+classification, an exit code and a bounded, redacted detail; it reports that a
+credential reference resolved and never what it resolved to.
 
 Authorization is an allowlist per authenticated principal. A valid signature does
 not grant access to an unlisted message kind. Workers report observations and
