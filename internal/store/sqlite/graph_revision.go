@@ -49,7 +49,10 @@ type GraphCommit struct {
 	Before  domain.WorkflowRun
 	Tasks   []domain.Task
 	Inputs  []domain.Artifact
-	Now     time.Time
+	// Rerun is the provenance a rerun records on the run it creates. It is
+	// set only by CommitGraphRerun.
+	Rerun *domain.RerunProvenance
+	Now   time.Time
 }
 
 // CommitGraphAmendment publishes the complete candidate and input metadata in
