@@ -86,8 +86,17 @@ component exists to remove.
 The client bootstrap document is canonical JSON with the closed field set `schema_version`,
 `coordinator_id`, `address`, `connection`, `remote_command`, `credential_ref`, `request_timeout`,
 `message_limits`. `message_limits` uses t3-steward's own vocabulary, `max_bytes` (default
-4194304), `max_files` (default 1000) and `max_artifact_bytes` (default 1073741824), because the
-document is consumed as `V2MessageLimits`. Absent means the defaults, never unbounded.
+4194304) and `max_artifact_bytes` (default 1073741824), because the document is consumed as
+`V2MessageLimits`. Absent means the defaults, never unbounded.
+
+Correction, 2026-09-14, after cross-repository verification: this paragraph previously listed
+`max_files` as a key of the document. Neither implementation accepts it there — both close the
+set at `max_bytes` and `max_artifact_bytes`, and `max_files` keeps its own default of 1000 from
+the configuration. The two implementations agreed with each other and only this plan was wrong,
+which is the mild version of the same failure that produced the `request_timeout` mismatch.
+
+`request_timeout` is a duration STRING (`"30s"`), not a number of seconds. That is steward's
+vocabulary everywhere else, and it is what the loader parses with `time.ParseDuration`.
 
 Remote principal role is `remote-admin`; the local peer-UID role stays `local-admin`. The server
 overwrites any claimed principal on both carriers.
