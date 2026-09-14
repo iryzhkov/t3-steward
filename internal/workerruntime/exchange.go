@@ -73,6 +73,13 @@ func (e Exchange) handle(ctx context.Context, envelope workerproto.Envelope) (wo
 		}
 		acknowledgements, err := e.Runtime.DeliverThrottle(ctx, delivery.Commands)
 		return workerproto.MessageThrottleAcknowledgements, workerproto.ThrottleAcknowledgements{Acknowledgements: acknowledgements}, err
+	case workerproto.MessageRepositoryProbe:
+		var request workerproto.RepositoryProbeRequest
+		if err := workerproto.DecodePayload(envelope, workerproto.MessageRepositoryProbe, &request); err != nil {
+			return "", nil, err
+		}
+		observation, err := e.Runtime.ObserveRepository(ctx, request)
+		return workerproto.MessageRepositoryObservation, observation, err
 	case workerproto.MessageArtifactPoll:
 		if e.Custody == nil {
 			return "", nil, fmt.Errorf("worker exchange: custody is required")
