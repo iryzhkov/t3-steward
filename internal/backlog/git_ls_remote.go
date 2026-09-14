@@ -37,6 +37,31 @@ const (
 	RepositoryNetworkUnavailable RepositoryReachability = "network-unavailable"
 )
 
+// ParseRepositoryReachability maps one transported classification back onto the
+// closed set. A value this table does not know is refused rather than accepted
+// as a verdict, so a worker running a build with a class this coordinator has
+// never heard of cannot produce a refusal nobody can explain.
+func ParseRepositoryReachability(value string) (RepositoryReachability, bool) {
+	switch RepositoryReachability(value) {
+	case RepositoryAuthenticatedOK:
+		return RepositoryAuthenticatedOK, true
+	case RepositoryAuthenticationFailed:
+		return RepositoryAuthenticationFailed, true
+	case RepositoryNotFound:
+		return RepositoryNotFound, true
+	case RepositoryRefNotFound:
+		return RepositoryRefNotFound, true
+	case RepositoryProbeTimeout:
+		return RepositoryProbeTimeout, true
+	case RepositoryDNSFailure:
+		return RepositoryDNSFailure, true
+	case RepositoryNetworkUnavailable:
+		return RepositoryNetworkUnavailable, true
+	default:
+		return "", false
+	}
+}
+
 // Permanent reports whether waiting could change this observation. The
 // distinction is about the request rather than about the moment: a repository
 // that does not exist stays absent however long the caller waits, while a host
@@ -266,19 +291,48 @@ func (c *RepositoryProbeCache) Store(observation RepositoryProbeObservation) {
 // it: the output is redacted before it is stored, and the probe reports that a
 // credential reference resolved rather than what it resolved to.
 func ObserveRepository(ctx context.Context, cache *RepositoryProbeCache, runner PreflightRunner, workspaceDir string, key RepositoryProbeKey) (RepositoryProbeObservation, error) {
+	return ObserveRepositoryWith(ctx, cache, runner, workspaceDir, key, RepositoryProbeOptions{})
+}
+
+// RepositoryProbeOptions bounds one probe run. A zero field means the built-in
+// default, which is what a caller that has no bound of its own should send: the
+// probe is bounded either way, and never unbounded.
+type RepositoryProbeOptions struct {
+	MaxOutputBytes int
+	Timeout        time.Duration
+}
+
+// ObserveRepositoryWith is ObserveRepository with the caller's bounds. It exists
+// for the dispatched path, where the coordinator's message limits and request
+// timeout are the bounds that must hold rather than this package's defaults.
+func ObserveRepositoryWith(
+	ctx context.Context,
+	cache *RepositoryProbeCache,
+	runner PreflightRunner,
+	workspaceDir string,
+	key RepositoryProbeKey,
+	options RepositoryProbeOptions,
+) (RepositoryProbeObservation, error) {
 	if observation, found := cache.Lookup(key); found {
 		return observation, nil
 	}
 	if err := ValidateRepositoryProbeArguments(key.Repository, key.Ref); err != nil {
 		return RepositoryProbeObservation{}, err
 	}
+	if options.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, options.Timeout)
+		defer cancel()
+	}
 	result, err := gitLsRemoteProbe(ctx, ProbeRequest{
-		Runner:       runner,
-		WorkspaceDir: workspaceDir,
-		WorkerID:     key.WorkerID,
-		StepID:       "repository-reachability",
-		Repository:   key.Repository,
-		Ref:          key.Ref,
+		Runner:         runner,
+		WorkspaceDir:   workspaceDir,
+		WorkerID:       key.WorkerID,
+		StepID:         "repository-reachability",
+		Repository:     key.Repository,
+		Ref:            key.Ref,
+		CredentialRefs: append([]string(nil), key.CredentialRefs...),
+		MaxOutputBytes: options.MaxOutputBytes,
 	})
 	var exitError *ProcessExitError
 	if err != nil && !errors.As(err, &exitError) &&

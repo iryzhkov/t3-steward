@@ -152,6 +152,27 @@ func (c *Client) DeliverThrottle(ctx context.Context, snapshot domain.WorkerSnap
 	return acknowledgements.Acknowledgements, nil
 }
 
+// ObserveRepository asks one worker to run the built-in repository-reachability
+// probe and returns its classified answer.
+//
+// It is one bounded request and one bounded response, and it carries no
+// snapshot requirement: the question is about the worker's network and identity
+// rather than about any assignment it holds, so a worker with nothing to do can
+// still answer it.
+func (c *Client) ObserveRepository(ctx context.Context, request RepositoryProbeRequest) (RepositoryObservation, error) {
+	if err := ValidateRepositoryProbeRequest(request); err != nil {
+		return RepositoryObservation{}, err
+	}
+	var observation RepositoryObservation
+	if err := c.exchange(ctx, MessageRepositoryProbe, MessageRepositoryObservation, request, &observation); err != nil {
+		return RepositoryObservation{}, err
+	}
+	if err := ValidateRepositoryObservation(observation); err != nil {
+		return RepositoryObservation{}, err
+	}
+	return observation, nil
+}
+
 // PollArtifact asks for one pending immutable upload. The worker advances to a
 // later upload only after the coordinator acknowledges successful import.
 func (c *Client) PollArtifact(ctx context.Context, purpose string, exclude ...string) (*ArtifactUploadResponse, error) {
