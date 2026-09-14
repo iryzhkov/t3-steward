@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
@@ -63,6 +64,13 @@ type Service struct {
 	quarantine     QuarantineReader
 	quarantineOps  QuarantineWriter
 
+	// scheduleIssues is refreshed by the reconciliation loop on every tick and
+	// read by concurrent query handlers, unlike the rest of RuntimeInfo, which
+	// is set once before the service starts answering. It has its own lock for
+	// that reason.
+	scheduleMu     sync.RWMutex
+	scheduleIssues []string
+
 	viabilitySettings ViabilitySettings
 }
 
@@ -81,6 +89,11 @@ type RuntimeInfo struct {
 	// itself rather than the fleet, which means nothing else goes wrong to make
 	// the operator look; the coordinator has to say so instead.
 	CatalogIssues []string
+	// ScheduleIssues names the schedules the most recent reconciliation tick
+	// could not fire, for the same reason and in the same shape. It is supplied
+	// by SetScheduleIssues rather than by SetRuntimeInfo, because it changes on
+	// every tick while the rest of this struct does not.
+	ScheduleIssues []string
 }
 
 func New(reader Reader, authorizer Authorizer) (*Service, error) {
@@ -107,6 +120,25 @@ func (s *Service) SetClock(now func() time.Time) {
 // the status projection. Dynamic freshness and incident state is derived from
 // the same durable records as the rest of the response.
 func (s *Service) SetRuntimeInfo(info RuntimeInfo) { s.runtime = info }
+
+// SetScheduleIssues records the schedules the latest reconciliation tick could
+// not fire. A schedule that fails now fails alone, so nothing else breaks to
+// make an operator look; the status view is where they are told instead.
+func (s *Service) SetScheduleIssues(issues []string) {
+	s.scheduleMu.Lock()
+	defer s.scheduleMu.Unlock()
+	s.scheduleIssues = append([]string(nil), issues...)
+}
+
+// runtimeSnapshot is the composition identity with the current tick's schedule
+// issues folded in.
+func (s *Service) runtimeSnapshot() RuntimeInfo {
+	s.scheduleMu.RLock()
+	defer s.scheduleMu.RUnlock()
+	info := s.runtime
+	info.ScheduleIssues = append([]string(nil), s.scheduleIssues...)
+	return info
+}
 
 func (s *Service) RecoverUnknown(ctx context.Context, principal Principal, request UnknownRecoveryRequest) (domain.UnknownAssignmentRecoveryDecision, error) {
 	if s.recovery == nil {
@@ -238,7 +270,7 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 	if err != nil {
 		return view{}, fmt.Errorf("load quota admissions: %w", err)
 	}
-	loaded := newView(records, workers, admissions, s.runtime, s.now().UTC())
+	loaded := newView(records, workers, admissions, s.runtimeSnapshot(), s.now().UTC())
 	if reader, ok := s.reader.(interface {
 		LoadWorkerRequirements(context.Context) ([]domain.WorkerRequirement, error)
 		LoadWorkerEnrollments(context.Context) ([]domain.WorkerEnrollment, error)
@@ -413,6 +445,7 @@ func (v view) runtimeStatus() RuntimeStatus {
 		}
 	}
 	status.ReconciliationIssues = append(status.ReconciliationIssues, v.runtime.CatalogIssues...)
+	status.ReconciliationIssues = append(status.ReconciliationIssues, v.runtime.ScheduleIssues...)
 	sort.Strings(status.ReconciliationIssues)
 	sort.Strings(status.UnknownExecutionIDs)
 	sort.Strings(status.CustodyIncidentIDs)

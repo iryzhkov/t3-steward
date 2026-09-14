@@ -298,6 +298,21 @@ thing referring to it is gone. Note also that a rerun's carried inputs keep the
 creation time of the artifacts they reference, so a window chosen by age alone
 will treat them as old on the new run's first pass.
 
+The same missing pass has a second consequence, on schedules. Every accepted
+scheduled occurrence creates a run with its own copies of the workflow's prompt
+and input artifact metadata, because the execution package builder resolves
+every artifact inside the custody of the run that owns it and a scheduled run
+pointing at the submitting run's artifacts would lose them the moment that run
+was pruned. The retained content is not copied — each row names the same bytes
+by storage path and SHA-256 — but the rows are. A schedule therefore adds one
+`coordinator_artifacts` row per task prompt plus one per distinct workflow input
+on every firing. Retention is what bounds that, and nothing calls retention
+today, so the row count of a high-frequency schedule with several inputs grows
+without a bound in production right now. An hourly schedule over a three-task
+workflow with two shared inputs adds roughly forty thousand rows a year. This is
+a sizing consideration for the state database, not a correctness problem, and it
+goes away with the same retention pass as the rest of this section.
+
 ### Legacy intake quarantine
 
 The drop directory is read-only to the coordinator: the coordinator re-reads it

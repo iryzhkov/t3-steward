@@ -28,10 +28,30 @@ type ScheduleTimer struct {
 	Now        func() time.Time
 }
 
-// ScheduleTickReport contains every durable trigger decision made by one tick.
+// ScheduleTickReport contains every durable trigger decision made by one tick,
+// and every schedule the tick could not act on.
 type ScheduleTickReport struct {
 	ObservedAt time.Time
 	Results    []domain.ScheduleTriggerResult
+	// Issues names each schedule this tick could not fire, with the exact
+	// failure, one line per schedule.
+	//
+	// A schedule used to be able to abort the whole tick: the first schedule
+	// whose template was missing, whose expression no longer parsed, or whose
+	// occurrence could not be committed returned an error, and every schedule
+	// sorted after it never fired again. That is one bad entry disabling
+	// everything else, which is the shape of defect this fleet has already been
+	// bitten by in the worker catalog. A failing schedule now fails alone. The
+	// coordinator reports these as reconciliation issues, because an isolated
+	// failure that nothing else notices still has to be announced or the
+	// operator only learns about it from work that silently never ran.
+	Issues []string
+}
+
+// scheduleIssue renders one unschedulable schedule for the health surfaces,
+// in the same shape the catalog uses for a project it cannot hold.
+func scheduleIssue(scheduleID string, err error) string {
+	return "schedule:" + scheduleID + ":unschedulable: " + err.Error()
 }
 
 func (t ScheduleTimer) Tick(ctx context.Context) (ScheduleTickReport, error) {
@@ -53,40 +73,62 @@ func (t ScheduleTimer) Tick(ctx context.Context) (ScheduleTickReport, error) {
 	schedules := append([]domain.Schedule(nil), records.Schedules...)
 	sort.Slice(schedules, func(i, j int) bool { return schedules[i].ID < schedules[j].ID })
 	for _, schedule := range schedules {
-		template, ok := currentScheduleTemplate(records.ScheduleTemplates, schedule)
-		if !ok {
-			return ScheduleTickReport{}, fmt.Errorf("schedule %q current template %d is missing", schedule.ID, schedule.Version)
-		}
-		expression, err := ParseScheduleExpression(template.Expression)
+		results, err := t.fireDueOccurrences(ctx, schedule, records, now)
+		// Whatever the schedule managed before it failed is still durable and
+		// still belongs in the report.
+		report.Results = append(report.Results, results...)
 		if err != nil {
-			return ScheduleTickReport{}, fmt.Errorf("schedule %q expression: %w", schedule.ID, err)
-		}
-		location, err := time.LoadLocation(template.Timezone)
-		if err != nil {
-			return ScheduleTickReport{}, fmt.Errorf("schedule %q timezone %q: %w", schedule.ID, template.Timezone, err)
-		}
-		anchor := schedule.CreatedAt.UTC()
-		for _, trigger := range records.Triggers {
-			if trigger.ScheduleID == schedule.ID && trigger.NominalAt.After(anchor) {
-				anchor = trigger.NominalAt.UTC()
-			}
-		}
-		due := expression.occurrences(anchor, now, location)
-		if len(due) > t.CatchUpMax {
-			due = due[len(due)-t.CatchUpMax:]
-		}
-		currentMinute := now.Truncate(time.Minute)
-		for _, nominal := range due {
-			request := deterministicScheduleTrigger(schedule.ID, nominal, now)
-			request.Misfired = nominal.Before(currentMinute)
-			result, err := t.Store.CommitScheduleTrigger(ctx, request)
-			if err != nil {
-				return report, fmt.Errorf("commit schedule %q occurrence %s: %w", schedule.ID, nominal.Format(time.RFC3339), err)
-			}
-			report.Results = append(report.Results, result)
+			report.Issues = append(report.Issues, scheduleIssue(schedule.ID, err))
 		}
 	}
+	sort.Strings(report.Issues)
 	return report, nil
+}
+
+// fireDueOccurrences commits the occurrences one schedule owes, and stops at
+// the first one it cannot commit. Later occurrences of a schedule that is
+// already failing are not attempted: they would fire out of order behind a
+// problem the operator has not seen yet. Every other schedule still runs.
+func (t ScheduleTimer) fireDueOccurrences(
+	ctx context.Context,
+	schedule domain.Schedule,
+	records sqlite.CoordinatorRecords,
+	now time.Time,
+) ([]domain.ScheduleTriggerResult, error) {
+	template, ok := currentScheduleTemplate(records.ScheduleTemplates, schedule)
+	if !ok {
+		return nil, fmt.Errorf("current template %d is missing", schedule.Version)
+	}
+	expression, err := ParseScheduleExpression(template.Expression)
+	if err != nil {
+		return nil, fmt.Errorf("expression: %w", err)
+	}
+	location, err := time.LoadLocation(template.Timezone)
+	if err != nil {
+		return nil, fmt.Errorf("timezone %q: %w", template.Timezone, err)
+	}
+	anchor := schedule.CreatedAt.UTC()
+	for _, trigger := range records.Triggers {
+		if trigger.ScheduleID == schedule.ID && trigger.NominalAt.After(anchor) {
+			anchor = trigger.NominalAt.UTC()
+		}
+	}
+	due := expression.occurrences(anchor, now, location)
+	if len(due) > t.CatchUpMax {
+		due = due[len(due)-t.CatchUpMax:]
+	}
+	currentMinute := now.Truncate(time.Minute)
+	var results []domain.ScheduleTriggerResult
+	for _, nominal := range due {
+		request := deterministicScheduleTrigger(schedule.ID, nominal, now)
+		request.Misfired = nominal.Before(currentMinute)
+		result, err := t.Store.CommitScheduleTrigger(ctx, request)
+		if err != nil {
+			return results, fmt.Errorf("occurrence %s: %w", nominal.Format(time.RFC3339), err)
+		}
+		results = append(results, result)
+	}
+	return results, nil
 }
 
 func currentScheduleTemplate(templates []domain.ScheduleTemplate, schedule domain.Schedule) (domain.ScheduleTemplate, bool) {

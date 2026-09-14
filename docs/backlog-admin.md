@@ -35,6 +35,12 @@ transport kind, fresh/stale worker and quota counts, reconciliation issues,
 unknown execution IDs, and durable artifact-custody metadata incidents. Any
 stale or incident projection degrades the reported runtime health.
 
+A schedule that cannot fire is isolated: it does not stop the other schedules in
+the same reconciliation tick, and it is named in the reconciliation issues as
+`schedule:<id>:unschedulable: <reason>`, which degrades the reported health until
+the next tick finds it healthy. That is the only signal, because an isolated
+failure breaks nothing else that would make an operator look.
+
 Intake that can never be accepted is quarantined, reported once and then
 silent. Its audit event names no workflow run, so it is read with its own view:
 

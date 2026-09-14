@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -189,6 +190,68 @@ func assertNoSeededWork(ctx context.Context, t *testing.T, store *sqlite.Store, 
 	}
 	if len(graphs) != 0 {
 		t.Fatalf("suppressed occurrence wrote graph revisions %#v", graphs)
+	}
+}
+
+// TestOneUnschedulableScheduleDoesNotStopTheOthers is the isolation property.
+// Seeding a scheduled run can fail on a workflow whose declared tasks are gone,
+// and before isolation the first such schedule ended the tick, so every
+// schedule sorted after it silently never fired again. The failing schedule
+// must now fail alone, be named in the tick's issues, and leave the later
+// schedule firing normally.
+func TestOneUnschedulableScheduleDoesNotStopTheOthers(t *testing.T) {
+	ctx := context.Background()
+	records := scheduledWorkflowRecords("workflow-1", "submitted-run")
+
+	// "workflow-broken" declares a task whose definition is not stored, which is
+	// the shape of a workflow whose run cannot be seeded. It sorts before
+	// "workflow-1" by schedule ID, so an abort would take the healthy one with
+	// it.
+	records.Workflows = append(records.Workflows, domain.Workflow{
+		ID: "workflow-broken", Version: ManifestVersion, Name: "broken",
+		Class: domain.TaskClassRequired, CreatedAt: scheduledFixtureTime,
+		TaskIDs: []string{"task-that-was-removed"},
+	})
+	healthy, healthyTemplate := scheduledFixtureSchedule(true, domain.ScheduleFailureNextCycle)
+	healthy.ID, healthyTemplate.ScheduleID = "schedule-healthy", "schedule-healthy"
+	healthy.Expression, healthyTemplate.Expression = "0 * * * *", "0 * * * *"
+	broken, brokenTemplate := scheduledFixtureSchedule(true, domain.ScheduleFailureNextCycle)
+	broken.ID, brokenTemplate.ScheduleID = "schedule-broken", "schedule-broken"
+	broken.WorkflowID, brokenTemplate.WorkflowID = "workflow-broken", "workflow-broken"
+	broken.Expression, brokenTemplate.Expression = "0 * * * *", "0 * * * *"
+	records.Schedules = []domain.Schedule{broken, healthy}
+	records.ScheduleTemplates = []domain.ScheduleTemplate{brokenTemplate, healthyTemplate}
+	store := scheduledFixtureStore(t, records)
+
+	now := scheduledFixtureTime.Add(time.Hour + 30*time.Second)
+	report, err := ScheduleTimer{Store: store, CatchUpMax: 2, Now: func() time.Time { return now }}.Tick(ctx)
+	if err != nil {
+		t.Fatalf("one unschedulable schedule failed the whole tick: %v", err)
+	}
+	if len(report.Issues) != 1 ||
+		!strings.HasPrefix(report.Issues[0], "schedule:schedule-broken:unschedulable: ") {
+		t.Fatalf("tick issues = %#v", report.Issues)
+	}
+	// The issue names the exact failure, not just the schedule.
+	if !strings.Contains(report.Issues[0], "task-that-was-removed") {
+		t.Fatalf("issue does not name the failure: %q", report.Issues[0])
+	}
+	if len(report.Results) != 1 || report.Results[0].Trigger.ScheduleID != "schedule-healthy" ||
+		report.Results[0].Trigger.State != domain.TriggerAccepted {
+		t.Fatalf("healthy schedule did not fire: %#v", report.Results)
+	}
+	assertScheduledRunIsExecutable(ctx, t, store, healthy, report.Results[0], "submitted-run")
+
+	// The broken schedule left nothing durable behind, so the occurrence is
+	// still available once the workflow is repaired.
+	after, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, trigger := range after.Triggers {
+		if trigger.ScheduleID == "schedule-broken" {
+			t.Fatalf("a schedule that could not fire recorded trigger %#v", trigger)
+		}
 	}
 }
 

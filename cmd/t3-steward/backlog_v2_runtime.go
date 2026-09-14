@@ -283,6 +283,12 @@ type coordinatorAdminExecutor interface {
 	ExecutePendingCommands(context.Context) (backlogadmin.CommandExecutionReport, error)
 }
 
+// coordinatorScheduleHealth receives the schedules one tick could not fire, so
+// that an isolated failure reaches the status view instead of only the log.
+type coordinatorScheduleHealth interface {
+	SetScheduleIssues([]string)
+}
+
 type coordinatorLegacyTicker interface {
 	Tick(context.Context) backlog.LegacySubmissionReport
 }
@@ -296,15 +302,18 @@ type coordinatorCampaignRefTicker interface {
 }
 
 type coordinatorBoundaryCycle struct {
-	projection   backlog.ProjectionStore
-	quota        coordinatorQuotaTicker
-	schedules    coordinatorScheduleTicker
-	planning     coordinatorPlanningTicker
-	admin        coordinatorAdminExecutor
-	legacy       coordinatorLegacyTicker
-	workers      coordinatorWorkerTicker
-	campaignRefs coordinatorCampaignRefTicker
-	logger       *slog.Logger
+	projection backlog.ProjectionStore
+	quota      coordinatorQuotaTicker
+	schedules  coordinatorScheduleTicker
+	planning   coordinatorPlanningTicker
+	admin      coordinatorAdminExecutor
+	// scheduleHealth is optional: the boundary cycle is also constructed in
+	// tests that have no status view to report into.
+	scheduleHealth coordinatorScheduleHealth
+	legacy         coordinatorLegacyTicker
+	workers        coordinatorWorkerTicker
+	campaignRefs   coordinatorCampaignRefTicker
+	logger         *slog.Logger
 }
 
 func (c coordinatorBoundaryCycle) Tick(ctx context.Context) {
@@ -367,8 +376,22 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 	}
 	if report, err := c.schedules.Tick(ctx); err != nil {
 		c.logger.Error("backlog-v2 schedule reconciliation failed", "error", err)
-	} else if len(report.Results) != 0 {
-		c.logger.Info("backlog-v2 schedule occurrences reconciled", "results", len(report.Results))
+	} else {
+		// A schedule that cannot fire is isolated: it no longer stops the
+		// schedules sorted after it. Nothing else then breaks to make an
+		// operator look, so the coordinator says so on every tick and keeps
+		// saying so in its status.
+		if c.scheduleHealth != nil {
+			c.scheduleHealth.SetScheduleIssues(report.Issues)
+		}
+		for _, issue := range report.Issues {
+			c.logger.Warn("backlog-v2 schedule could not fire",
+				"issue", issue,
+				"effect", "this schedule is not firing; every other schedule is unaffected")
+		}
+		if len(report.Results) != 0 {
+			c.logger.Info("backlog-v2 schedule occurrences reconciled", "results", len(report.Results))
+		}
 	}
 	if quotaHealthy {
 		if report, err := c.planning.Tick(ctx, quotaReport); err != nil {
@@ -551,7 +574,8 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			LongWindowCap:           cfg.Backlog.LongWindowCap,
 			SurplusHorizon:          24 * time.Hour,
 		}},
-		schedules: backlog.ScheduleTimer{Store: store, CatchUpMax: cfg.BacklogV2.Scheduling.CatchUpMax},
+		schedules:      backlog.ScheduleTimer{Store: store, CatchUpMax: cfg.BacklogV2.Scheduling.CatchUpMax},
+		scheduleHealth: service,
 		planning: coordinatorPlanner{
 			store: store, coordinator: backlog.FleetCoordinator{Store: store}, epoch: epoch,
 			maxWorkerSnapshotAge:   cfg.BacklogV2.Freshness.WorkerMaxAge.D(),

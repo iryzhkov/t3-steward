@@ -108,35 +108,6 @@ func seedExecutableRunTx(ctx context.Context, tx *sql.Tx, kind string, seed runS
 //
 // Only the metadata rows are copied. The retained content is immutable and
 // addressed by storage path and SHA-256, so every copy names the same bytes.
-// requireDeclaredWorkflowTasksTx refuses a workflow whose record is missing, or
-// whose record declares a task identity that its stored definitions no longer
-// contain. A workflow that legitimately declares no tasks is accepted; its run
-// is a sink with nothing in front of it, which is what it was before.
-func requireDeclaredWorkflowTasksTx(ctx context.Context, tx *sql.Tx, workflowID string, templates []domain.Task) error {
-	var raw []byte
-	err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_workflows WHERE id=?", workflowID).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("scheduled workflow %q is not defined", workflowID)
-	}
-	if err != nil {
-		return fmt.Errorf("load scheduled workflow %q: %w", workflowID, err)
-	}
-	var workflow domain.Workflow
-	if err := json.Unmarshal(raw, &workflow); err != nil {
-		return fmt.Errorf("decode scheduled workflow %q: %w", workflowID, err)
-	}
-	available := make(map[string]bool, len(templates))
-	for _, task := range templates {
-		available[task.ID] = true
-	}
-	for _, id := range workflow.TaskIDs {
-		if !available[id] {
-			return fmt.Errorf("scheduled workflow %q declares task %q, which has no stored definition", workflowID, id)
-		}
-	}
-	return nil
-}
-
 func scheduledRunSeed(ctx context.Context, tx *sql.Tx, run domain.WorkflowRun, now time.Time) (runSeed, error) {
 	templates, err := loadWorkflowTasksTx(ctx, tx, run.WorkflowID)
 	if err != nil {
@@ -215,13 +186,21 @@ func scheduledRunSeed(ctx context.Context, tx *sql.Tx, run domain.WorkflowRun, n
 	}
 
 	run.GraphRevision = 1
-	// The occurrence is not re-validated against domain.ValidateGraphTasks here,
-	// on purpose. That check enforces acceptance-time rules a submission is
-	// allowed to fail — a workflow with no provider route is accepted today and
-	// simply never becomes assignable — and applying it at fire time would make
-	// an accepted workflow unschedulable, and would abort the timer's whole tick
-	// rather than leaving one run unplannable where the planner already reports
-	// it. BindRunSink below still refuses a definition whose identities are
+	// The occurrence is deliberately not re-validated against
+	// domain.ValidateGraphTasks, even though the graph clone does validate.
+	//
+	// That check enforces rules a submission is allowed to fail. A version-2
+	// manifest with no provider route at all is accepted at ingest —
+	// validateRoutes in internal/backlog/manifest.go iterates the routes it was
+	// given and returns nil on an empty list, and the task-level default falls
+	// back to the workflow's routes, which may also be empty — yet
+	// ValidateGraphTasks refuses a task with no route. Applying it here would
+	// therefore make an already-accepted workflow permanently unschedulable, and
+	// would do it at fire time rather than at submission where an operator could
+	// act on it. The planner already reports such a run as having no eligible
+	// worker, which is the honest place for it.
+	//
+	// BindRunSink below still refuses a definition whose identities are
 	// unusable, which is what stops an unexecutable run from being created.
 	graph := domain.GraphDefinition{
 		RunID: run.ID, Revision: 1, Actor: "schedule", Reason: "scheduled occurrence",
@@ -236,4 +215,39 @@ func scheduledRunSeed(ctx context.Context, tx *sql.Tx, run domain.WorkflowRun, n
 		Run: run, Tasks: tasks, Inputs: inputs, Graph: graph,
 		ScheduleID: run.ScheduleID, Now: now.UTC(),
 	}, nil
+}
+
+// requireDeclaredWorkflowTasksTx refuses a workflow whose record is missing, or
+// whose record declares a task identity that its stored definitions no longer
+// contain. Those are the cases where a seeded run would silently have fewer
+// tasks than the workflow promised.
+//
+// A workflow that declares no tasks at all is accepted and remains schedulable.
+// It produces a run that is a sink with nothing in front of it, which is what a
+// scheduled occurrence of such a workflow already was before runs were seeded,
+// and refusing it here would turn a legal if pointless definition into a
+// schedule that can never fire.
+func requireDeclaredWorkflowTasksTx(ctx context.Context, tx *sql.Tx, workflowID string, templates []domain.Task) error {
+	var raw []byte
+	err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_workflows WHERE id=?", workflowID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("scheduled workflow %q is not defined", workflowID)
+	}
+	if err != nil {
+		return fmt.Errorf("load scheduled workflow %q: %w", workflowID, err)
+	}
+	var workflow domain.Workflow
+	if err := json.Unmarshal(raw, &workflow); err != nil {
+		return fmt.Errorf("decode scheduled workflow %q: %w", workflowID, err)
+	}
+	available := make(map[string]bool, len(templates))
+	for _, task := range templates {
+		available[task.ID] = true
+	}
+	for _, id := range workflow.TaskIDs {
+		if !available[id] {
+			return fmt.Errorf("scheduled workflow %q declares task %q, which has no stored definition", workflowID, id)
+		}
+	}
+	return nil
 }
