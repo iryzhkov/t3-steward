@@ -34,6 +34,11 @@ type AttemptFinalization struct {
 // FinalizationArtifact is evidence captured alongside an attempt's declared
 // outputs. It carries its own bytes because its producer is not the workspace.
 type FinalizationArtifact struct {
+	// ID preserves an identity the producer already established. Preflight
+	// evidence is addressed by its own identity elsewhere, so minting a fresh
+	// one here would break the reference a receipt hands out. Empty means the
+	// finalizer assigns one, as it does for outputs and verification reports.
+	ID        string
 	Name      string
 	MediaType string
 	Kind      domain.ArtifactKind
@@ -210,8 +215,12 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		if writeErr != nil {
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt extra artifact %d: %w", index+1, writeErr)
 		}
+		id := extra.ID
+		if id == "" {
+			id = f.newID("artifact")
+		}
 		artifacts = append(artifacts, domain.Artifact{
-			ID: f.newID("artifact"), WorkflowRunID: request.Attempt.WorkflowRunID,
+			ID: id, WorkflowRunID: request.Attempt.WorkflowRunID,
 			TaskID: request.Task.ID, AttemptID: request.Attempt.ID,
 			Kind: extra.Kind, Name: extra.Name, MediaType: extra.MediaType,
 			Size: file.size, SHA256: file.sha256, StoragePath: file.storagePath,

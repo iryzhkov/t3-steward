@@ -321,7 +321,7 @@ func (d *LocalDriver) preflightFinalizationArtifacts(pkg workerproto.ExecutionPa
 			return nil, err
 		}
 		extras = append(extras, backlog.FinalizationArtifact{
-			Name: record.Name, MediaType: artifact.MediaType,
+			ID: artifact.ID, Name: record.Name, MediaType: artifact.MediaType,
 			Kind: artifact.Kind, Producer: "preflight", Content: raw,
 		})
 	}

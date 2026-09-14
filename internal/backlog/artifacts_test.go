@@ -77,8 +77,9 @@ func TestAttemptFinalizerCapturesExtraEvidenceBeforeSealing(t *testing.T) {
 		Task: artifactTestTask(), Attempt: artifactTestAttempt(),
 		WorkspaceDir: workspace, ExplicitSuccess: true,
 		Extra: []FinalizationArtifact{{
-			Name: "preflight/baseline_build.log", MediaType: "text/plain; charset=utf-8",
-			Kind: domain.ArtifactLog, Producer: "preflight", Content: []byte(log),
+			ID: "preflight-0123456789abcdef", Name: "preflight/baseline_build.log",
+			MediaType: "text/plain; charset=utf-8",
+			Kind:      domain.ArtifactLog, Producer: "preflight", Content: []byte(log),
 		}},
 	})
 	if err != nil {
@@ -94,6 +95,12 @@ func TestAttemptFinalizerCapturesExtraEvidenceBeforeSealing(t *testing.T) {
 	}
 	if captured.Name != "preflight/baseline_build.log" {
 		t.Fatalf("preflight evidence was not captured: %+v", result.Artifacts)
+	}
+	// The producer's identity has to survive capture. Minting a fresh one here
+	// broke the reference a receipt hands out, and the coordinator then refused
+	// the whole result because the identity did not match.
+	if captured.ID != "preflight-0123456789abcdef" {
+		t.Fatalf("captured evidence lost its identity: %q", captured.ID)
 	}
 	wantHash := sha256.Sum256([]byte(log))
 	if captured.SHA256 != hex.EncodeToString(wantHash[:]) || captured.Size != int64(len(log)) {
