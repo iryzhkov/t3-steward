@@ -42,6 +42,10 @@ Coordinator read commands:
   artifact get <artifact> [--output PATH]
   commands [<workflow-run>[/<task>]] [--json]
   command show <command> [--json]
+  quarantine [--json]   Intake the coordinator refused permanently and is now
+                        silent about: key, digest, when and why. It names no
+                        run, so "events" cannot show it. Read-only: editing the
+                        file is what retries it.
 
 Graph amendments (all require --expected-revision N --request-id ID --reason TEXT):
   task add <run>/<name> --provider INSTANCE --model MODEL --prompt TEXT --verify COMMAND
@@ -122,7 +126,7 @@ func isCoordinatorAdmin(args []string) bool {
 		return false
 	}
 	switch args[0] {
-	case "submit", "status", "workers", "edge", "run", "diagnose", "graph", "task", "events", "explain", "artifacts", "artifact", "commands", "command", "show",
+	case "submit", "status", "workers", "edge", "run", "diagnose", "graph", "task", "events", "explain", "artifacts", "artifact", "commands", "command", "show", "quarantine",
 		"start", "delay", "pause", "resume", "cancel", "retry", "skip", "recover":
 		return true
 	case "list":

@@ -232,6 +232,13 @@ func (s CampaignRefStore) List(workflowRunID string) ([]CommitProvenance, error)
 
 // ReleaseRun drops every campaign ref of one workflow run. It is the end of the
 // declared campaign lifetime, and nothing else removes these refs.
+//
+// Releasing is idempotent, and a run that declared no commit costs nothing: the
+// provenance records are the list of what this run pinned, so an empty list
+// means there is nothing to delete and the bare repository is not even opened.
+// A second release of the same run therefore reaches the same early return,
+// which is what lets the caller retry a failed release on the next cycle
+// without having to remember which runs it already released.
 func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, log io.Writer) error {
 	if err := s.validate(); err != nil {
 		return err
@@ -242,6 +249,9 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 	records, err := s.List(workflowRunID)
 	if err != nil {
 		return err
+	}
+	if len(records) == 0 {
+		return nil
 	}
 	gitDir, err := s.open(ctx, log)
 	if err != nil {

@@ -131,6 +131,13 @@ func writeTask(out *strings.Builder, task Task) {
 	if len(task.Outputs) > 0 {
 		field(out, width, "outputs", strings.Join(task.Outputs, ", "))
 	}
+	for i, commit := range task.Commits {
+		label := ""
+		if i == 0 {
+			label = "commits"
+		}
+		field(out, width, label, describeCommit(commit))
+	}
 	for i, command := range task.Verify {
 		label := ""
 		if i == 0 {
@@ -229,6 +236,9 @@ func describeTotals(totals Totals) string {
 	if totals.ExternalEdges > 0 {
 		parts = append(parts, counted(totals.ExternalEdges, "cross-run edge", "cross-run edges"))
 	}
+	if totals.Commits > 0 {
+		parts = append(parts, counted(totals.Commits, "declared commit", "declared commits"))
+	}
 	if totals.ArtifactBindings > 0 {
 		parts = append(parts, counted(totals.ArtifactBindings, "artifact binding", "artifact bindings"))
 	}
@@ -305,6 +315,18 @@ func describeStep(step Step) string {
 	return value
 }
 
+// describeCommit names the declared commit and the revision that will be
+// resolved for it in the producing workspace. The campaign ref it is published
+// under is not printed: it contains the workflow run and task IDs, which are
+// assigned at ingestion and which a static plan has no honest way to know.
+func describeCommit(commit Commit) string {
+	revision := commit.Revision
+	if revision == "" {
+		revision = "HEAD (default)"
+	}
+	return commit.Name + ": Git commit at " + revision + ", retained as its provenance record"
+}
+
 func describeInput(input Input) string {
 	if len(input.Files) == 0 {
 		return input.Pattern
@@ -378,11 +400,25 @@ func RenderDOT(plan Plan) string {
 		out.WriteString(" }\n")
 	}
 
+	// A declared commit crosses an edge by name like any other artifact, so it
+	// is labelled like one and marked, because what travels is a commit
+	// reference rather than a file the producer wrote.
+	declaredCommits := make(map[string]bool, len(plan.Tasks))
+	for _, task := range plan.Tasks {
+		for _, commit := range task.Commits {
+			declaredCommits[task.Name+"\x00"+commit.Name] = true
+		}
+	}
 	bindings := make(map[string][]string, len(plan.Tasks))
 	for _, task := range plan.Tasks {
 		for _, binding := range task.InputsFrom {
 			key := binding.Producer + "\x00" + task.Name
-			bindings[key] = append(bindings[key], binding.Artifacts...)
+			for _, artifact := range binding.Artifacts {
+				if declaredCommits[binding.Producer+"\x00"+artifact] {
+					artifact += " (commit)"
+				}
+				bindings[key] = append(bindings[key], artifact)
+			}
 		}
 	}
 	for _, edge := range plan.Edges {

@@ -99,6 +99,13 @@ outputs
   else the task writes stays in the disposable workspace and is lost. Declare an
   output for every file a later task, or a human, has to read.
 
+commits
+  A Git commit a task promises to leave behind, declared by name and consumed
+  through inputs_from exactly like an output. What the successor receives is the
+  commit's provenance record, and the commit itself is already fetched into its
+  checkout, so it never has to search a repository cache for it. See
+  "t3-steward campaign help commits".
+
 verify
   Shell commands run in the task's workspace after the agent stops. Every one of
   them must exit zero or the task fails, which means its dependents never start.
@@ -110,6 +117,60 @@ A useful shape is: each task emits a small, named, verified artifact, and the
 task that needs it declares it through inputs_from. Keep repository mutation in
 one task unless separate tasks own isolated worktrees or branches and an
 explicit integration task joins them.
+`
+
+// CommitsHelp is the long help of the commits field. It lives here because the
+// campaign usage block is capped at a length that fits in an agent's context,
+// and because a declared commit is the one output whose contract an author
+// cannot guess from its name.
+const CommitsHelp = `Hand a Git commit to a later task, by reference rather than by luck.
+
+  tasks:
+    implement:
+      prompt_file: prompts/implement.md
+      commits:
+        - name: implementation
+          revision: HEAD
+    review:
+      prompt_file: prompts/review.md
+      needs: [implement]
+      inputs_from:
+        implement: [implementation]
+
+name is one path component, and it is the name a successor consumes. It shares
+the namespace of outputs, so one task cannot declare a commit and an output of
+the same name. revision is resolved in the producing task's own workspace when
+that task finishes, and defaults to HEAD.
+
+What the producer promises is that the revision resolves in its workspace when
+it finishes. A task that declares a commit it did not produce fails with
+"declared commit <name>: <cause>", exactly as a missing declared output fails.
+
+What the successor receives is two things. The retained artifact of that name
+is the commit's provenance record: a JSON document naming the producing task,
+the base the workspace was pinned to, the repository, the commit and its
+campaign ref. It arrives where every dependency artifact arrives, under
+.t3/dependencies/<producer>/<name>. The commit itself arrives fetched into the
+successor's own checkout under the same ref, so
+
+  git rev-parse refs/campaigns/<run>/<task>/<name>
+
+resolves there and nothing has to search a repository cache. The pin the
+workspace started from is recorded at .t3/base-commit.
+
+Why this exists: a commit pushed only into the shared repository cache survives
+until the next task refreshes that cache with --prune, which deletes any ref the
+origin does not have. The campaign ref is in a store beside the cache that is
+never pruned, and it is kept for the campaign's lifetime.
+
+plan cannot print the ref. It contains the workflow run and task IDs, which are
+assigned at ingestion, so a static plan reports the declaration and the revision
+and leaves the ref to the run.
+
+Lifetime: the refs of a run are released together once the run has settled, and
+a run that is carrying a commit into a rerun holds its source. A rerun may only
+be created from a run that has already finished, so a rerun that has to carry a
+declared commit is best created while the source run's refs are still there.
 `
 
 // StaticVersusDynamicHelp is the one paragraph an agent needs to choose between
@@ -311,6 +372,7 @@ func HelpTopics() []HelpTopic {
 		{Name: "plan", Body: PlanHelp},
 		{Name: "graph", Body: GraphHelp},
 		{Name: "dag-semantics", Body: DAGSemanticsHelp},
+		{Name: "commits", Body: CommitsHelp},
 		{Name: "static-versus-dynamic", Body: StaticVersusDynamicHelp},
 		{Name: "readiness", Body: ReadinessHelp},
 		{Name: "rerun", Body: RerunHelp},

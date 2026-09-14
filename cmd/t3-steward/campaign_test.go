@@ -490,7 +490,13 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// gained rerun and submit --notify-thread. The 100-line cap left no room
 	// for their detail, so the block names them and the "rerun" and "notify"
 	// help topics carry the contract.
-	const wantDigest = "4c833c08b94aa553b335cce78de824df2dfba905f10fa1637794472dd8dc598d"
+	//
+	// Updated again when the manifest's commits field became visible: the graph
+	// field list names it in the line it shares with outputs and verify, and the
+	// topic list gains "commits". The usage was already 99 of its 100 permitted
+	// lines, so the field's contract is in the "commits" help topic and not one
+	// word of it is here.
+	const wantDigest = "e394af8c5175fee1dae44f61cc349e99a41f8223ebbe36c5362a7f2d27618ce1"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)
@@ -521,7 +527,8 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 		"rerun    <run> --from TASK --idempotency-key KEY [--reason TEXT] [--json]",
 		"creates a second run and never changes the first",
 		"[--notify-thread <current|id>]",
-		"static-versus-dynamic, plan, graph, rerun, notify.",
+		"static-versus-dynamic, plan, graph, commits, rerun, notify.",
+		"commits (a Git commit a successor needs)",
 	} {
 		if !strings.Contains(campaignUsage, want) {
 			t.Fatalf("usage no longer covers %q", want)

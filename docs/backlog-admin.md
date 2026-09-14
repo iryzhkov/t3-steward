@@ -30,6 +30,18 @@ transport kind, fresh/stale worker and quota counts, reconciliation issues,
 unknown execution IDs, and durable artifact-custody metadata incidents. Any
 stale or incident projection degrades the reported runtime health.
 
+Intake that can never be accepted is quarantined, reported once and then
+silent. Its audit event names no workflow run, so it is read with its own view:
+
+```text
+t3-steward backlog quarantine [--json]
+```
+
+The view is read-only and lists the intake key, the namespaced key of the
+durable record, the content digest it was recorded for, the time and the
+reason, together with the rule that recovers it: change the file, because a
+different digest releases the marker and the submission is tried again.
+
 Unknown assignments require a separate evidence-bound recovery operation:
 
 ```text
