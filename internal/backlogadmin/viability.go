@@ -174,6 +174,30 @@ type ViabilityCandidate struct {
 	Worker  string            `json:"worker"`
 	Outcome ViabilityOutcome  `json:"outcome"`
 	Reasons []ViabilityReason `json:"reasons,omitempty"`
+	// Repository says whether this candidate's repository reachability was
+	// actually observed, and what it observed. It is a separate field from
+	// Reasons because the task-level verdict depends on the difference between
+	// "observed and fine" and "never asked", and a reader of an outcome must be
+	// able to tell those apart too.
+	Repository *ViabilityRepositoryObservation `json:"repository,omitempty"`
+	// Unchecked names what this answer did not look at for this candidate.
+	// Silence about a question nobody asked reads exactly like a passed check,
+	// which is the failure this field exists to prevent.
+	Unchecked []string `json:"unchecked,omitempty"`
+}
+
+// ViabilityRepositoryObservation is one candidate's repository reachability.
+//
+// Observed distinguishes evidence from absence. An unobserved candidate is not
+// contradicting evidence: it neither confirms that the repository can be read
+// nor argues against a permanent verdict another candidate did observe.
+type ViabilityRepositoryObservation struct {
+	Observed bool `json:"observed"`
+	// Class is the reachability classification, present only when Observed.
+	Class string `json:"class,omitempty"`
+	// Unobserved says why no observation was made, present only when the
+	// candidate was not observed.
+	Unobserved string `json:"unobserved,omitempty"`
 }
 
 // ViabilityReason is one independent finding.

@@ -111,6 +111,70 @@ func TestSubmissionRefusesACampaignNamingAnUnreachableRepository(t *testing.T) {
 	}
 }
 
+// TestSubmissionRefusesEvenWhenOneWorkerCannotAnswer is the reproduction of the
+// masking failure, on the fleet shape we actually have.
+//
+// homelab observes repository-not-found. normandy is present, eligible and
+// unreachable, so it contributes no observation. Before the fix the task
+// outcome was accepted_waiting, the submission returned no error, and one
+// workflow run was created for a campaign that could never prepare its
+// workspace. Unanimity is the wrong bar: on a fleet of three, at least one
+// candidate is usually unobserved for an entirely ordinary reason.
+func TestSubmissionRefusesEvenWhenOneWorkerCannotAnswer(t *testing.T) {
+	observer := probeObserver(map[string]repositoryProbeClient{
+		"homelab": absentRepositoryWorker(t, "homelab"),
+		// normandy is deliberately absent from the dial table, which is what an
+		// unreachable worker looks like to this observer.
+	})
+	service, store := probeReadinessService(t, observer, "homelab", "normandy")
+	submissions := probeSubmissions(t, service, store)
+
+	_, err := submissions.SubmitDirectory(context.Background(), backlog.DirectorySubmission{
+		IdempotencyKey: "campaign-masked",
+		BundleDir:      probeCampaignFixture(t),
+		Principal:      "local:1000",
+	})
+	if err == nil {
+		t.Fatal("one unreachable worker masked a confirmed permanent failure")
+	}
+	if !strings.Contains(err.Error(), backlogadmin.ReasonRepositoryNotFound) {
+		t.Fatalf("refusal did not name the observed reason: %v", err)
+	}
+	// The refusal has to show its basis, or an operator cannot judge whether to
+	// override it.
+	for _, want := range []string{"homelab", "normandy", "no candidate observed success"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not name %q", err.Error(), want)
+		}
+	}
+	if count := probeWorkflowCount(t, store); count != 0 {
+		t.Fatalf("a refused campaign created %d workflow(s)", count)
+	}
+}
+
+// TestSubmissionProceedsWhenAnotherWorkerCanRead states the other half: an
+// observed success on any candidate settles the task, because the work can be
+// placed there.
+func TestSubmissionProceedsWhenAnotherWorkerCanRead(t *testing.T) {
+	observer := probeObserver(map[string]repositoryProbeClient{
+		"homelab":  absentRepositoryWorker(t, "homelab"),
+		"normandy": reachableWorker(t, "normandy"),
+	})
+	service, store := probeReadinessService(t, observer, "homelab", "normandy")
+	submissions := probeSubmissions(t, service, store)
+
+	if _, err := submissions.SubmitDirectory(context.Background(), backlog.DirectorySubmission{
+		IdempotencyKey: "campaign-placeable",
+		BundleDir:      probeCampaignFixture(t),
+		Principal:      "local:1000",
+	}); err != nil {
+		t.Fatalf("a placeable campaign was refused: %v", err)
+	}
+	if count := probeWorkflowCount(t, store); count != 1 {
+		t.Fatalf("workflows = %d, want 1", count)
+	}
+}
+
 // TestSubmissionProceedsForAReachableRepository states that the gate only
 // refuses. An observed, reachable repository changes nothing about what the
 // submission becomes.
