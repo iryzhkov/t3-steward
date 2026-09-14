@@ -38,6 +38,7 @@ func TestEligibilityUsesSettlementAndProtectsActiveWork(t *testing.T) {
 		"running":            func(t *domain.Thread) { t.Running = true },
 		"session starting":   func(t *domain.Thread) { t.SessionStatus = "starting" },
 		"approval":           func(t *domain.Thread) { t.HasPendingApprovals = true },
+		"actionable plan":    func(t *domain.Thread) { t.HasActionableProposedPlan = true },
 		"input":              func(t *domain.Thread) { t.HasPendingUserInput = true },
 		"background":         func(t *domain.Thread) { t.BackgroundWork = "monitoring" },
 		"new activity":       func(t *domain.Thread) { t.LatestUserMessageAt = &now },

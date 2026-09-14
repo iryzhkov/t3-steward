@@ -46,7 +46,7 @@ type Archiver struct {
 func Eligible(t domain.Thread, state State, now time.Time, opts Options) bool {
 	if t.ArchivedAt != nil || t.SettledAt == nil || t.SettledAt.IsZero() || !t.Settled() ||
 		t.Running || t.TurnState == "running" || t.SessionStatus == "running" || t.SessionStatus == "starting" ||
-		t.BackgroundWork != "" || t.HasPendingApprovals || t.HasPendingUserInput || state.Busy != "" {
+		t.BackgroundWork != "" || t.HasPendingApprovals || t.HasPendingUserInput || t.HasActionableProposedPlan || state.Busy != "" {
 		return false
 	}
 	// Activity since settlement invalidates the old settlement timestamp.

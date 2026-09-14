@@ -19,11 +19,16 @@ on thread polls, independently of watchdog quota enforcement. The existing
 `archive:` NAS export/deletion schedule remains separate and unchanged.
 
 `t3-steward ui-archive candidates` prints JSON candidate IDs, classification and
-settlement timestamps, plus total/archived counts, without archiving anything.
+settlement timestamps, plus visible-shell counts, without archiving anything.
+T3 excludes archived sessions from this shell; archivedInShell is not a total
+archive count.
 It also accepts `--config PATH`. Daemon effects are bounded by max_per_pass and
-recorded as `ui-archive` actions after T3 confirms its archive projection.
+recorded as `ui-archive` actions after T3 returns a committed event sequence.
+T3 0.0.38 commits the archive event, projection and command receipt before this
+acknowledgement. A missing/error response remains unproven; shell disappearance
+alone is not accepted as success.
 
-Running or starting sessions, native background activity, pending approvals/input,
+Running or starting sessions, native background activity, pending approvals/input or actionable proposed plans,
 active overrides, post-settlement user activity, resume/wait delivery and
 unfinished V2 custody block archiving. Provenance comes from legacy task state,
 coordinator assignments/attempts and local worker journals. The normal UpKeeper
@@ -33,8 +38,7 @@ fences the pass. Lease expiry is never a release signal.
 
 The session and busy state are re-read before dispatch. T3 0.0.38 does not expose
 an atomic conditional archive command, so this is a best-effort race check,
-not an atomic lock against simultaneous UI activity. Ambiguous responses are
-accepted only when the archive projection is observed. The recorded settlement
+not an atomic lock against simultaneous UI activity. Ambiguous responses remain errors; they are not converted to implicit success. The recorded settlement
 prevents re-archiving a manually unarchived session until it settles again.
 
 Read-only candidates and unit tests do not establish an improvement in UI latency;

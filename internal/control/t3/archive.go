@@ -24,7 +24,7 @@ func (c *Control) ArchiveSettledThread(ctx context.Context, expected domain.Thre
 	}
 	if current.SettledAt == nil || expected.SettledAt == nil || !current.SettledAt.Equal(*expected.SettledAt) ||
 		!current.Settled() || IsRunning(*current) || current.SessionStatus == "running" || current.SessionStatus == "starting" ||
-		current.BackgroundWork != "" || current.HasPendingApprovals || current.HasPendingUserInput ||
+		current.BackgroundWork != "" || current.HasPendingApprovals || current.HasPendingUserInput || current.HasActionableProposedPlan ||
 		(current.LatestUserMessageAt != nil && current.LatestUserMessageAt.After(*current.SettledAt)) {
 		return errors.New("archive eligibility changed")
 	}
@@ -32,10 +32,12 @@ func (c *Control) ArchiveSettledThread(ctx context.Context, expected domain.Thre
 		return errors.New("UI archive control is dry-run")
 	}
 	token := expected.ID + ":" + expected.SettledAt.UTC().Format(time.RFC3339Nano)
-	_, dispatchErr := c.client.Dispatch(ctx, map[string]any{"type": "thread.archive", "commandId": deterministicID(token, "thread.archive"), "threadId": expected.ID})
-	observed, observeErr := c.GetThread(ctx, expected.ID)
-	if observeErr == nil && observed != nil && observed.ArchivedAt != nil {
+	result, dispatchErr := c.client.Dispatch(ctx, map[string]any{"type": "thread.archive", "commandId": deterministicID(token, "thread.archive"), "threadId": expected.ID})
+	// T3 0.0.38 acknowledges only after its event, projection and command
+	// receipt transaction commits. Archived threads are omitted from both
+	// shell and thread-detail reads, so their absence is not a confirmation.
+	if dispatchErr == nil && result != nil && result.Sequence > 0 {
 		return nil
 	}
-	return fmt.Errorf("archive projection unproven: %w", errors.Join(dispatchErr, observeErr, errors.New("not observed archived")))
+	return fmt.Errorf("archive commit unproven: %w", errors.Join(dispatchErr, errors.New("missing committed sequence")))
 }

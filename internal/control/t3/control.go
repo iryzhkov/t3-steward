@@ -105,19 +105,20 @@ func FromShell(t t3api.ThreadShell) domain.Thread {
 	var selection map[string]any
 	_ = json.Unmarshal(t.ModelSelection, &selection)
 	d := domain.Thread{
-		ID:                  t.ID,
-		Title:               t.Title,
-		ProjectID:           t.ProjectID,
-		ProviderInstanceID:  sel.InstanceID,
-		Model:               sel.Model,
-		ModelSelection:      selection,
-		RuntimeMode:         t.RuntimeMode,
-		InteractionMode:     t.InteractionMode,
-		LatestUserMessageAt: t3api.ParseTime(t.LatestUserMessageAt),
-		HasPendingApprovals: t.HasPendingApprovals,
-		HasPendingUserInput: t.HasPendingUserInput,
-		ArchivedAt:          t3api.ParseTime(t.ArchivedAt),
-		SettledAt:           t3api.ParseTime(t.SettledAt),
+		ID:                        t.ID,
+		Title:                     t.Title,
+		ProjectID:                 t.ProjectID,
+		ProviderInstanceID:        sel.InstanceID,
+		Model:                     sel.Model,
+		ModelSelection:            selection,
+		RuntimeMode:               t.RuntimeMode,
+		InteractionMode:           t.InteractionMode,
+		LatestUserMessageAt:       t3api.ParseTime(t.LatestUserMessageAt),
+		HasPendingApprovals:       t.HasPendingApprovals,
+		HasPendingUserInput:       t.HasPendingUserInput,
+		HasActionableProposedPlan: t.HasActionableProposedPlan,
+		ArchivedAt:                t3api.ParseTime(t.ArchivedAt),
+		SettledAt:                 t3api.ParseTime(t.SettledAt),
 	}
 	if up := t3api.ParseTime(&t.UpdatedAt); up != nil {
 		d.UpdatedAt = *up

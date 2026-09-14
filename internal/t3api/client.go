@@ -61,24 +61,25 @@ type ModelSelection struct {
 
 // ThreadShell mirrors OrchestrationThreadShell.
 type ThreadShell struct {
-	ID                  string          `json:"id"`
-	ProjectID           string          `json:"projectId"`
-	Title               string          `json:"title"`
-	ModelSelection      json.RawMessage `json:"modelSelection"`
-	RuntimeMode         string          `json:"runtimeMode"`
-	InteractionMode     string          `json:"interactionMode"`
-	LatestTurn          *LatestTurn     `json:"latestTurn"`
-	CreatedAt           string          `json:"createdAt"`
-	UpdatedAt           string          `json:"updatedAt"`
-	ArchivedAt          *string         `json:"archivedAt"`
-	SettledAt           *string         `json:"settledAt"`
-	SettledOverride     *string         `json:"settledOverride"`
-	DeletedAt           *string         `json:"deletedAt"`
-	Session             *Session        `json:"session"`
-	LatestUserMessageAt *string         `json:"latestUserMessageAt"`
-	HasPendingApprovals bool            `json:"hasPendingApprovals"`
-	HasPendingUserInput bool            `json:"hasPendingUserInput"`
-	BackgroundLiveness  *string         `json:"backgroundLiveness"`
+	ID                        string          `json:"id"`
+	ProjectID                 string          `json:"projectId"`
+	Title                     string          `json:"title"`
+	ModelSelection            json.RawMessage `json:"modelSelection"`
+	RuntimeMode               string          `json:"runtimeMode"`
+	InteractionMode           string          `json:"interactionMode"`
+	LatestTurn                *LatestTurn     `json:"latestTurn"`
+	CreatedAt                 string          `json:"createdAt"`
+	UpdatedAt                 string          `json:"updatedAt"`
+	ArchivedAt                *string         `json:"archivedAt"`
+	SettledAt                 *string         `json:"settledAt"`
+	SettledOverride           *string         `json:"settledOverride"`
+	DeletedAt                 *string         `json:"deletedAt"`
+	Session                   *Session        `json:"session"`
+	LatestUserMessageAt       *string         `json:"latestUserMessageAt"`
+	HasPendingApprovals       bool            `json:"hasPendingApprovals"`
+	HasPendingUserInput       bool            `json:"hasPendingUserInput"`
+	HasActionableProposedPlan bool            `json:"hasActionableProposedPlan"`
+	BackgroundLiveness        *string         `json:"backgroundLiveness"`
 }
 
 // Model decodes the model selection's instance and model ids.

@@ -66,5 +66,5 @@ func cmdUIArchive(g globalFlags, args []string) error {
 		}
 		candidates = append(candidates, map[string]any{"threadId": thread.ID, "settledAt": signature, "background": states[thread.ID].Background})
 	}
-	return json.NewEncoder(os.Stdout).Encode(map[string]any{"enabled": cfg.UIArchive.Enabled, "dryRun": cfg.UIArchive.DryRun, "threads": len(threads), "archived": archived, "candidates": candidates})
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{"enabled": cfg.UIArchive.Enabled, "dryRun": cfg.UIArchive.DryRun, "visibleThreads": len(threads), "archivedInShell": archived, "candidates": candidates})
 }

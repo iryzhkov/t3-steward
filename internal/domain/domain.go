@@ -215,10 +215,11 @@ type Thread struct {
 	// error, or empty.
 	TurnState string
 	// SessionStatus is T3's provider session status when a session exists.
-	SessionStatus       string
-	LatestUserMessageAt *time.Time
-	HasPendingApprovals bool
-	HasPendingUserInput bool
+	SessionStatus             string
+	LatestUserMessageAt       *time.Time
+	HasPendingApprovals       bool
+	HasPendingUserInput       bool
+	HasActionableProposedPlan bool
 	// BackgroundWork is "working" while native subagents or workflows run
 	// after the turn settled, "monitoring" for watch loops, empty otherwise.
 	BackgroundWork string
