@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.46] - 2026-09-14
+
+### Fixed
+
+- An attempt whose result is rejected now settles with the rejection as its
+  terminal failure. Discarding the result kept one bad result from blocking a
+  worker, but left the attempt in verifying, where it could neither settle nor be
+  retried and had to be cancelled by hand.
+
 ## [0.11.0-rc.45] - 2026-09-14
 
 ### Fixed
