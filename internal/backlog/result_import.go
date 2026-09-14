@@ -87,7 +87,7 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	report := ResultImportReport{}
 	outputs := make(map[string]string)
 	artifacts := make([]domain.Artifact, 0, len(manifest.Objects))
-	var summaries, logs, verifications int
+	var summaries, logs, preflightLogs, verifications int
 	for _, object := range manifest.Objects {
 		artifact, err := resultArtifact(object, manifest, attempt, task, manifest.CreatedAt)
 		if err != nil {
@@ -108,7 +108,14 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		case domain.ArtifactSummary:
 			summaries++
 		case domain.ArtifactLog:
-			logs++
+			// The thread archive is the one required log. Preflight evidence is
+			// also a log but is optional and unbounded in count, because a task
+			// declares how many steps it runs, so the two are counted apart.
+			if strings.HasPrefix(artifact.ID, "preflight-") {
+				preflightLogs++
+			} else {
+				logs++
+			}
 		case domain.ArtifactVerification:
 			verifications++
 		}
@@ -118,7 +125,8 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		return report, err
 	}
 	if summaries != 1 || logs != 1 || verifications > len(task.Verification) {
-		return report, fmt.Errorf("result import evidence counts summary=%d log=%d verification=%d, want 1, 1, at most %d", summaries, logs, verifications, len(task.Verification))
+		return report, fmt.Errorf("%w: evidence counts summary=%d log=%d verification=%d (preflight logs %d), want 1, 1, at most %d",
+			ErrResultImportRejected, summaries, logs, verifications, preflightLogs, len(task.Verification))
 	}
 	payloads := make([][]byte, len(manifest.Objects))
 	for index, object := range manifest.Objects {
