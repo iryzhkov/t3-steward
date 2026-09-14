@@ -67,8 +67,10 @@ tasks:
       tests: [tests.md]
     outputs: [combined.md]
     verify:
-      - test -s .t3/dependencies/interfaces/interfaces.md
-      - test -s .t3/dependencies/tests/tests.md
+      # Verify this task's own outputs. A dependency is mounted in a directory
+      # named for the producing task's ID, which is assigned at ingestion, so a
+      # verification command cannot name that path in advance. The running task
+      # is told the real locations in its prompt.
       - test -s combined.md
     resources:
       preset: build

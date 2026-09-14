@@ -177,9 +177,16 @@ func (t Timing) Declared() bool {
 type Binding struct {
 	Producer  string   `json:"producer"`
 	Artifacts []string `json:"artifacts"`
-	// Paths are where the artifacts appear in this task's workspace, in the
-	// same order as Artifacts.
-	Paths []string `json:"paths"`
+	// MountDir is absent on purpose. Dependency artifacts are materialized under
+	// DependencyMountPrefix in a directory named for the producing task's ID, and
+	// that ID is assigned at ingestion. A static plan cannot know it, and
+	// fabricating one from the manifest name produced a path that looked
+	// authoritative and did not exist, which is precisely what this projection is
+	// forbidden to do: report only what the manifest knows.
+	//
+	// The running task is told the real locations through its prompt envelope.
+	// Verification commands should therefore assert the task's own outputs rather
+	// than a dependency path the author would have to guess.
 }
 
 // Task is one projected node of the graph.
@@ -670,7 +677,7 @@ func projectBindings(inputsFrom map[string][]string) []Binding {
 	for _, producer := range producers {
 		binding := Binding{Producer: producer, Artifacts: cloneStrings(inputsFrom[producer])}
 		for _, artifact := range binding.Artifacts {
-			binding.Paths = append(binding.Paths, path.Join(DependencyMountPrefix, producer, artifact))
+			_ = artifact
 		}
 		result = append(result, binding)
 	}

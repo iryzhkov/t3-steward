@@ -97,16 +97,8 @@ func TestProjectParallelRootsAndJoin(t *testing.T) {
 		t.Fatalf("join root/leaf = %v/%v", join.Root, join.Leaf)
 	}
 	wantBindings := []Binding{
-		{
-			Producer:  "alpha",
-			Artifacts: []string{"alpha.md", "alpha.txt"},
-			Paths:     []string{".t3/dependencies/alpha/alpha.md", ".t3/dependencies/alpha/alpha.txt"},
-		},
-		{
-			Producer:  "beta",
-			Artifacts: []string{"beta.md"},
-			Paths:     []string{".t3/dependencies/beta/beta.md"},
-		},
+		{Producer: "alpha", Artifacts: []string{"alpha.md", "alpha.txt"}},
+		{Producer: "beta", Artifacts: []string{"beta.md"}},
 	}
 	if !reflect.DeepEqual(join.InputsFrom, wantBindings) {
 		t.Fatalf("join bindings = %#v", join.InputsFrom)

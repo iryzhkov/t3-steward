@@ -81,7 +81,10 @@ func TestRenderTextReportsTheGraphAndItsLimits(t *testing.T) {
 		"wave 1 (1 task)",
 		"alpha [root]",
 		"join [leaf]",
-		"alpha.md -> .t3/dependencies/alpha/alpha.md",
+		// The binding names the producer and its artifacts. It must not name a
+		// mount path: that directory is the producing task's ID, assigned at
+		// ingestion, so the projection cannot know it.
+		"alpha: alpha.md, alpha.txt",
 		"unblocks    join",
 		"waits for every task in the run, not only the leaves",
 	} {

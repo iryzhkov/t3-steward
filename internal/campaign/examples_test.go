@@ -80,19 +80,18 @@ func TestThreeNodeExampleProjects(t *testing.T) {
 	}
 	join := taskByName(t, plan, "join")
 	wantBindings := []Binding{
-		{Producer: "interfaces", Artifacts: []string{"interfaces.md"}, Paths: []string{".t3/dependencies/interfaces/interfaces.md"}},
-		{Producer: "tests", Artifacts: []string{"tests.md"}, Paths: []string{".t3/dependencies/tests/tests.md"}},
+		{Producer: "interfaces", Artifacts: []string{"interfaces.md"}},
+		{Producer: "tests", Artifacts: []string{"tests.md"}},
 	}
 	if !reflect.DeepEqual(join.InputsFrom, wantBindings) {
 		t.Fatalf("join bindings = %#v", join.InputsFrom)
 	}
-	// The join verifies that both artifacts materialized, which is the property
-	// this example exists to demonstrate.
-	for _, binding := range join.InputsFrom {
-		for _, path := range binding.Paths {
-			if !strings.Contains(strings.Join(join.Verify, "\n"), path) {
-				t.Fatalf("join never verifies %q", path)
-			}
+	// A verification command must not name a dependency mount path. The directory
+	// is named for the producing task's ID, assigned at ingestion, so any path an
+	// author writes in advance is a guess that fails at run time.
+	for _, command := range join.Verify {
+		if strings.Contains(command, DependencyMountPrefix) {
+			t.Fatalf("verification %q names a dependency path the author cannot know", command)
 		}
 	}
 	if join.ResourcesFrom != OriginTask || join.Resources.Preset != backlog.ResourcePresetBuild {

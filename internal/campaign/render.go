@@ -313,11 +313,7 @@ func describeInput(input Input) string {
 }
 
 func describeBinding(binding Binding) string {
-	pairs := make([]string, 0, len(binding.Artifacts))
-	for i, artifact := range binding.Artifacts {
-		pairs = append(pairs, artifact+" -> "+binding.Paths[i])
-	}
-	return binding.Producer + ": " + strings.Join(pairs, ", ")
+	return binding.Producer + ": " + strings.Join(binding.Artifacts, ", ")
 }
 
 func describeTiming(timing Timing) string {
