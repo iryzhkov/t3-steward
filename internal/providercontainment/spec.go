@@ -17,7 +17,12 @@ type Spec struct {
 	Directories   []directoryresource.Binding `json:"directories,omitempty"`
 	RuntimePaths  []string                    `json:"runtimePaths,omitempty"`
 	ProviderHosts []string                    `json:"providerHosts,omitempty"`
-	Command       []string                    `json:"command"`
+	// TaskEnvironment is the contained process's execution identity. Only the
+	// six names in domain.TaskWaitEnvironmentNames are passed through; anything
+	// else is dropped rather than refused, because the allowlist is a security
+	// boundary and widening it by accident must not be possible from here.
+	TaskEnvironment map[string]string `json:"taskEnvironment,omitempty"`
+	Command         []string          `json:"command"`
 	// Cwd is /workspace or exactly /data/N for direct existing-directory use.
 	Cwd string `json:"cwd,omitempty"`
 	// Immutable capsule inputs remain separate from the writable output mount.

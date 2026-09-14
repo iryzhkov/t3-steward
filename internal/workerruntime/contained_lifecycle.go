@@ -142,7 +142,8 @@ func (p ContainedT3) PrepareExecution(ctx context.Context, pkg workerproto.Execu
 		}
 		spec := providercontainment.Spec{WorkerID: pkg.WorkerID, Directories: directoryresource.CloneBindings(pkg.Environment.DirectoryBindings),
 			RuntimePaths: append([]string(nil), p.Profile.RuntimePaths...), ProviderHosts: append([]string(nil), p.Profile.ProviderHosts...), ControlPort: 18881,
-			Command: []string{"/steward", "worker", "contained-t3", "--node", p.Profile.Node, "--entry", p.Profile.T3Entry, "--port", "18881", "--opencode-binary", p.Profile.OpenCodeBinary, "--opencode-model", pkg.Route.Model}}
+			TaskEnvironment: pkg.Identity.TaskEnvironment(),
+			Command:         []string{"/steward", "worker", "contained-t3", "--node", p.Profile.Node, "--entry", p.Profile.T3Entry, "--port", "18881", "--opencode-binary", p.Profile.OpenCodeBinary, "--opencode-model", pkg.Route.Model}}
 		for _, name := range []string{"home", "control", "workspace"} {
 			dir := workspace
 			if name != "workspace" {

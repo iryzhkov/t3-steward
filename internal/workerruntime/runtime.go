@@ -47,6 +47,15 @@ const MaxPrepareAttempts = 3
 
 type Config struct {
 	ObserveInventory func(context.Context, domain.WorkerInventory) (domain.WorkerInventory, error)
+	// LiveTaskWait reports whether the coordinator holds a live task-bound wait
+	// for this package's attempt. It is consulted before every collection: a
+	// thread that stopped because its task parked must not have its outputs
+	// collected, because it has not written them yet.
+	//
+	// A worker without the seam collects as before. The coordinator refuses the
+	// resulting done marker anyway, so the two checks are defence in depth
+	// rather than one rule written twice.
+	LiveTaskWait     func(context.Context, workerproto.ExecutionPackage) (bool, error)
 	WorkerID         string
 	WorkerEpoch      string
 	CoordinatorID    string
@@ -490,11 +499,13 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			r.log.Warn("T3 observation unavailable; attempt keeps running", "assignment", id, "error", observeErr)
 		case threadState == backlog.DispatchThreadStopped:
 			if err = r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID); err == nil {
-				err = r.collect(ctx, id)
+				err = r.collectUnlessWaiting(ctx, id, record)
 			}
 		case threadState == backlog.DispatchThreadMissing:
 			err = r.markUnknown(id, "running T3 thread is missing")
 		}
+	case PhaseWaiting:
+		err = r.reconcileWaiting(ctx, id, record)
 	case PhaseStopped:
 		if hasCommandRequest(record, domain.WorkerCommandStop) {
 			if !record.StopConfirmed {
@@ -512,7 +523,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			case threadState == backlog.DispatchThreadActive:
 				err = r.markPhase(id, PhaseRunning, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
 			case threadState == backlog.DispatchThreadStopped && !hasCommandRequest(record, domain.WorkerCommandStop):
-				err = r.collect(ctx, id)
+				err = r.collectUnlessWaiting(ctx, id, record)
 			}
 		}
 	case PhasePreparing:
@@ -592,7 +603,7 @@ func (r *Runtime) recoverUnknown(ctx context.Context, id string, record AttemptR
 		if err := r.markPhase(id, PhaseStopped, "", record.WorkspacePath, pkg.Identity.ThreadID); err != nil {
 			return err
 		}
-		return r.collect(ctx, id)
+		return r.collectUnlessWaiting(ctx, id, record)
 	case backlog.DispatchThreadMissing:
 		reason := record.Failure
 		if reason == "" {
@@ -687,7 +698,7 @@ func (r *Runtime) dispatch(ctx context.Context, id string) error {
 	}
 	record := state.Attempts[id]
 	switch record.Phase {
-	case PhaseRunning, PhaseStopped, PhaseStopping, PhaseCollecting, PhaseCompleted, PhaseFailed:
+	case PhaseRunning, PhaseStopped, PhaseStopping, PhaseWaiting, PhaseCollecting, PhaseCompleted, PhaseFailed:
 		return nil
 	case PhaseClaimed, PhasePreparing:
 		if err := r.prepare(ctx, id); err != nil {
@@ -804,6 +815,66 @@ func (r *Runtime) confirmStop(id string) error {
 		state.Sequence++
 		return nil
 	})
+}
+
+// collectUnlessWaiting parks the attempt instead of collecting it when the
+// coordinator still holds a live task-bound wait for it.
+//
+// A probe that cannot answer defers the decision. Collecting is the dangerous
+// direction: it publishes the outputs a parked task has not written yet and
+// lets the coordinator verify against them, which is precisely the failure this
+// path exists to prevent. Waiting one more reconcile costs nothing.
+func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record AttemptRecord) error {
+	if r.config.LiveTaskWait == nil {
+		return r.collect(ctx, id)
+	}
+	waiting, err := r.config.LiveTaskWait(ctx, record.Package.Package)
+	if err != nil {
+		r.log.Warn("task-bound wait state is unavailable; collection deferred", "assignment", id, "error", err)
+		return nil
+	}
+	if !waiting {
+		if record.Phase == PhaseWaiting {
+			// The wake landed and the resumed turn has ended. The attempt leaves
+			// the parked phase through stopped, the one phase collection is
+			// valid from, so there is a single collection path either way.
+			if err := r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.ThreadID); err != nil {
+				return err
+			}
+		}
+		return r.collect(ctx, id)
+	}
+	if record.Phase == PhaseWaiting {
+		return nil
+	}
+	r.log.Info("turn ended on a live task-bound wait; the task is parked, not finished",
+		"assignment", id, "thread", record.Package.Package.Identity.ThreadID)
+	return r.markPhase(id, PhaseWaiting, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
+}
+
+// reconcileWaiting advances a parked attempt. The wake message restarts the
+// same thread, so an active thread means the task resumed; a thread that is
+// still stopped is re-checked against the wait, and collected only once no wait
+// is live.
+func (r *Runtime) reconcileWaiting(ctx context.Context, id string, record AttemptRecord) error {
+	if hasCommandRequest(record, domain.WorkerCommandStop) {
+		return r.stop(ctx, id)
+	}
+	threadState, err := r.driver.ObserveThread(ctx, record.Package.Package)
+	if err != nil {
+		r.log.Warn("T3 observation unavailable; parked attempt waits", "assignment", id, "error", err)
+		return nil
+	}
+	switch threadState {
+	case backlog.DispatchThreadActive:
+		return r.markPhase(id, PhaseRunning, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
+	case backlog.DispatchThreadStopped:
+		return r.collectUnlessWaiting(ctx, id, record)
+	case backlog.DispatchThreadMissing:
+		return r.markUnknown(id, "parked T3 thread is missing")
+	default:
+		return nil
+	}
 }
 
 func (r *Runtime) collect(ctx context.Context, id string) error {
@@ -1066,6 +1137,12 @@ func observation(record AttemptRecord, now time.Time) domain.WorkerAssignmentObs
 	case PhaseStopping, PhaseCollecting:
 		state = domain.AssignmentClaimed
 		control = domain.ControlRunning
+	case PhaseWaiting:
+		// The attempt keeps its assignment, workspace, artifacts and locks, but
+		// reports a control state that holds no provider slot and releases the
+		// executor capacity it reserved.
+		state = domain.AssignmentClaimed
+		control = domain.ControlWaitingExternal
 	case PhaseStopped:
 		// A thread that ended on its own is still owned by a live execution
 		// that waits for collection; only a delivered throttle command makes

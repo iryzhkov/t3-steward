@@ -361,6 +361,7 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 		ProjectID: projectID, Title: pkg.Identity.TaskID,
 		ModelSelection: selection, RuntimeMode: "full-access", InteractionMode: "default",
 		WorktreePath: workspace, Prompt: prompt,
+		Environment: pkg.Identity.TaskEnvironment(),
 	})
 	if threadID != "" && threadID != pkg.Identity.ThreadID {
 		return errors.New("T3 returned a different deterministic thread identity")

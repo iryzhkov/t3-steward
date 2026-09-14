@@ -417,6 +417,12 @@ type NewThreadInput struct {
 	Branch          string
 	WorktreePath    string
 	Prompt          string
+	// Environment is extra process environment for the thread's agent. The
+	// steward uses it for the execution identity a task needs to name itself
+	// when it registers a task-bound wait; without it, "wait for this and park
+	// me" is not expressible from inside a task, because the identity otherwise
+	// stops at the worker.
+	Environment map[string]string
 }
 
 // CreateAndStartThread creates a thread and dispatches its first turn. A
@@ -463,6 +469,9 @@ func (c *Control) CreateAndStartThread(ctx context.Context, in NewThreadInput) (
 		"branch":          branch,
 		"worktreePath":    worktreePath,
 		"createdAt":       now(),
+	}
+	if len(in.Environment) != 0 {
+		create["environment"] = in.Environment
 	}
 	turn := map[string]any{
 		"type":      "thread.turn.start",

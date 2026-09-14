@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,14 +43,35 @@ type ExecutionLimits struct {
 }
 
 type ExecutionIdentity struct {
-	WorkflowID      string `json:"workflowId"`
-	WorkflowRunID   string `json:"workflowRunId"`
-	TaskID          string `json:"taskId"`
-	AttemptID       string `json:"attemptId"`
+	WorkflowID    string `json:"workflowId"`
+	WorkflowRunID string `json:"workflowRunId"`
+	TaskID        string `json:"taskId"`
+	AttemptID     string `json:"attemptId"`
+	// AttemptRevision is the revision the attempt held when this package was
+	// built. A task-bound wait is fenced on it, so it has to travel with the
+	// rest of the identity rather than being looked up by the agent.
+	AttemptRevision int64  `json:"attemptRevision,omitempty"`
 	AssignmentID    string `json:"assignmentId"`
 	AssignmentEpoch int64  `json:"assignmentEpoch"`
 	DispatchToken   string `json:"dispatchToken"`
 	ThreadID        string `json:"threadId"`
+}
+
+// TaskEnvironment is the execution identity as the six environment variables a
+// task process is given.
+//
+// The dispatch token is deliberately absent. It authorizes task effects, and
+// nothing inside the agent process needs it: the agent names itself, and the
+// coordinator decides what that name is allowed to do.
+func (i ExecutionIdentity) TaskEnvironment() map[string]string {
+	return map[string]string{
+		domain.TaskWaitEnvWorkflowRunID:   i.WorkflowRunID,
+		domain.TaskWaitEnvTaskID:          i.TaskID,
+		domain.TaskWaitEnvAttemptID:       i.AttemptID,
+		domain.TaskWaitEnvAttemptRevision: strconv.FormatInt(i.AttemptRevision, 10),
+		domain.TaskWaitEnvAssignmentID:    i.AssignmentID,
+		domain.TaskWaitEnvThreadID:        i.ThreadID,
+	}
 }
 
 type DependencyInput struct {

@@ -27,8 +27,13 @@ const (
 	PhaseRunning     Phase = "running"
 	PhaseStopping    Phase = "stopping"
 	PhaseStopped     Phase = "stopped"
-	PhaseCollecting  Phase = "collecting"
-	PhaseCompleted   Phase = "completed"
+	// PhaseWaiting is a thread whose turn ended while the coordinator held a
+	// live task-bound wait for this attempt. The turn is over; the task is not.
+	// Nothing is collected from this phase, because the declared outputs are
+	// written by the turn that resumes after the wake.
+	PhaseWaiting    Phase = "waiting-external"
+	PhaseCollecting Phase = "collecting"
+	PhaseCompleted  Phase = "completed"
 	// PhaseFailed is a deterministic, effect-free failure (preparation,
 	// dispatch, or recovery) waiting to be collected as a failed result.
 	PhaseFailed  Phase = "failed"
