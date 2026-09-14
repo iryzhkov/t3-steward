@@ -79,10 +79,13 @@ add flags:
   --group NAME       Group with other waits of the same thread (interactive).
   --wake each|all    Wake on the first settlement (default) or once every wait
                      has settled.
-  --request-id ID    Stable registration ID. Repeating a request ID returns the
-                     same wait instead of registering a second one, so a retry
-                     after an ambiguous response is safe. A repeated ID with
-                     different contents is refused rather than applied.
+  --request-id ID    Stable registration ID, for retrying one registration
+                     safely. Repeating it while that wait is still live and
+                     holding this attempt returns the same wait. Repeating it
+                     after the wait settled is refused: the ID names one park,
+                     not a standing permission to park again. Include
+                     $T3_STEWARD_ATTEMPT_REVISION so each park gets its own ID.
+                     A repeated ID with different contents is also refused.
   --json             Print the registered wait as JSON (--task current).
 
 Check protocol: exit 0 = condition met, wake. Exit 2 = give up, wake with the
@@ -106,7 +109,7 @@ Complete example, inside a task, waiting for CI on a pushed commit:
 
   t3-steward wait add --task current --name "CI on $(git rev-parse HEAD)" \\
     --every 60s --max-every 10m --timeout 2h --wake all \\
-    --request-id ci-$(git rev-parse --short HEAD) -- \\
+    --request-id ci-$T3_STEWARD_ATTEMPT_REVISION-$(git rev-parse --short HEAD) -- \\
     sh -c 'gh run view --json status --jq \'.status == "completed"\' | grep -q true'
 
 Then end the turn. Nothing is collected or verified until the steward resumes

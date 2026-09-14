@@ -341,7 +341,81 @@ func (d *LocalDriver) writeTaskIdentity(pkg workerproto.ExecutionPackage, worksp
 	if err := os.Chmod(path, 0o600); err != nil {
 		return fmt.Errorf("restrict task identity: %w", err)
 	}
+	return excludeTaskIdentityFromGit(workspace, directory)
+}
+
+// excludeTaskIdentityFromGit keeps the identity record out of the project's
+// history.
+//
+// The record lives inside the task's worktree and these tasks commit and push.
+// Removing it when outputs are collected is far too late: by then it has
+// already been committed by `git add -A` and pushed into the project repository
+// and every checkout downstream of it. So it is excluded at the moment it is
+// written, twice over. The self-ignoring .gitignore works in any layout and
+// travels with the directory; the repository's own exclude file covers a tool
+// that reads only that.
+func excludeTaskIdentityFromGit(workspace, directory string) error {
+	if err := os.WriteFile(filepath.Join(directory, ".gitignore"), []byte("# Steward task identity. Never commit this.\n*\n"), 0o600); err != nil {
+		return fmt.Errorf("exclude task identity: %w", err)
+	}
+	gitDir, err := resolveGitDir(workspace)
+	if err != nil || gitDir == "" {
+		// Not a repository, or one whose layout we do not recognise. The
+		// self-ignoring file above is still in place.
+		return nil
+	}
+	info := filepath.Join(gitDir, "info")
+	if err := os.MkdirAll(info, 0o700); err != nil {
+		return nil
+	}
+	exclude := filepath.Join(info, "exclude")
+	line := "/" + domain.TaskIdentityDir + "/"
+	current, err := os.ReadFile(exclude)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	for _, existing := range strings.Split(string(current), "\n") {
+		if strings.TrimSpace(existing) == line {
+			return nil
+		}
+	}
+	updated := string(current)
+	if updated != "" && !strings.HasSuffix(updated, "\n") {
+		updated += "\n"
+	}
+	updated += line + "\n"
+	if err := os.WriteFile(exclude, []byte(updated), 0o600); err != nil {
+		return nil
+	}
 	return nil
+}
+
+// resolveGitDir finds a worktree's git directory, following the gitdir pointer
+// a linked worktree uses instead of a real .git directory.
+func resolveGitDir(workspace string) (string, error) {
+	marker := filepath.Join(workspace, ".git")
+	info, err := os.Lstat(marker)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return marker, nil
+	}
+	if !info.Mode().IsRegular() {
+		return "", nil
+	}
+	raw, err := readBoundedRegularFile(marker, 4096)
+	if err != nil {
+		return "", err
+	}
+	pointer := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(raw)), "gitdir:"))
+	if pointer == "" || pointer == strings.TrimSpace(string(raw)) {
+		return "", nil
+	}
+	if !filepath.IsAbs(pointer) {
+		pointer = filepath.Join(workspace, pointer)
+	}
+	return filepath.Clean(pointer), nil
 }
 
 // removeTaskIdentity deletes the identity record before anything is captured
@@ -466,16 +540,16 @@ func (d *LocalDriver) StopThread(ctx context.Context, pkg workerproto.ExecutionP
 }
 
 func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
+	// The identity record leaves before anything is captured from the
+	// workspace, so it cannot reach a declared output, a git-state artifact or
+	// an archived tree. It runs on every driver, scoped or not: the path may
+	// already be gone, and removing nothing is cheaper than reasoning about
+	// which driver in the chain owns the real one. A parked turn never reaches
+	// Collect, so the record survives for the turn that resumes after the wake.
+	if err := d.removeTaskIdentity(workspace); err != nil {
+		return err
+	}
 	if !d.scoped {
-		// The identity record leaves before anything is captured from the
-		// workspace, so it cannot reach a declared output, a git-state
-		// artifact or an archived tree. It happens here, on the driver that
-		// holds the real host path, rather than inside a scoped execution that
-		// only sees the mapped one. A parked turn never reaches Collect, so
-		// the record survives for the turn that resumes after the wake.
-		if err := d.removeTaskIdentity(workspace); err != nil {
-			return err
-		}
 		if manager := d.containedManager(pkg); manager != nil {
 			if err := manager.Quiesce(ctx, pkg, false); err != nil {
 				return err

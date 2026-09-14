@@ -176,12 +176,28 @@ type TaskWait struct {
 	SettledAt          *time.Time      `json:"settledAt,omitempty"`
 	WokenAt            *time.Time      `json:"wokenAt,omitempty"`
 
-	// Delivery is empty until the attempt is resumed, then "pending" until the
-	// wake message reaches the thread and "delivered" afterwards. The resumed
-	// attempt is committed before the message is sent, so a lost response
-	// retries the message and never the resumption.
+	// Delivery is empty until the wake is committed, then pending, held,
+	// sending, recovery-required, delivered or abandoned. The resumed attempt
+	// is committed before the message is sent, so a lost response retries the
+	// message and never the resumption.
+	//
+	// sending is durable before the send, so a crash on either side of it
+	// leaves evidence that a message may exist. Only observing DeliveryID in
+	// the thread resolves that; absence is not proof of non-delivery and never
+	// authorizes a second send.
 	Delivery    string     `json:"delivery,omitempty"`
 	DeliveredAt *time.Time `json:"deliveredAt,omitempty"`
+	// DeliveryID is the stable external identity of this wake. It is derived
+	// once, from the wait, so a retry sends the same command rather than a new
+	// one that would start a second turn.
+	DeliveryID string `json:"deliveryId,omitempty"`
+	// WakeRevision is the attempt revision the wake was committed against. A
+	// delivery is refused if the attempt has moved past it: the turn that would
+	// have received the message is gone.
+	WakeRevision int64 `json:"wakeRevision,omitempty"`
+	// Resumption records whether this wake resumed a parked attempt or merely
+	// carries evidence to one that was already running.
+	Resumption bool `json:"resumption,omitempty"`
 }
 
 // Live reports whether this wait still parks its attempt. A settled wait whose
@@ -235,6 +251,20 @@ var ErrTaskWaitStaleRevision = errors.New("task-bound wait names a stale attempt
 // differs from the one already committed.
 var ErrTaskWaitReplayChanged = errors.New("task-bound wait request ID replay changed the registration")
 
+// ErrTaskWaitReplaySettled reports a repeated request ID whose wait has already
+// settled, so replaying it cannot park anything.
+//
+// Returning the settled record would be the original failure rebuilt: the agent
+// would be told it is parked, end its turn, and the worker would collect
+// outputs it had not written. A request ID identifies one park, not a standing
+// permission to park again.
+var ErrTaskWaitReplaySettled = errors.New("task-bound wait has already settled; a repeated request ID cannot park the attempt again")
+
+// ErrTaskWaitReplayNotParked reports a repeated request ID whose wait is live
+// but whose attempt is no longer parked on it. The two disagree, so neither is
+// reported as fact.
+var ErrTaskWaitReplayNotParked = errors.New("task-bound wait is live but its attempt is not parked")
+
 // Validate checks a registration before any store is touched.
 func (r TaskWaitRegistration) Validate() error {
 	switch {
@@ -270,6 +300,11 @@ const (
 	TaskWaitReconciliationAuthorityRevoked TaskWaitReconciliationKind = "authority-revoked"
 	// TaskWaitReconciliationExpired records a wait the coordinator timed out.
 	TaskWaitReconciliationExpired TaskWaitReconciliationKind = "expired"
+	// TaskWaitReconciliationUndelivered records a settled wait whose outcome
+	// could not reach any turn, because the attempt became terminal or moved
+	// past the revision the wake was bound to. Silence is not an outcome, so
+	// when the agent cannot be told, the record says so instead.
+	TaskWaitReconciliationUndelivered TaskWaitReconciliationKind = "undelivered"
 )
 
 // TaskWaitReconciliation is the durable record of a lifecycle contradiction.
@@ -287,15 +322,37 @@ type TaskWaitReconciliation struct {
 
 // TaskWaitWakeContext is the evidence handed to the resumed turn.
 type TaskWaitWakeContext struct {
-	AttemptID string     `json:"attemptId"`
-	ThreadID  string     `json:"threadId"`
-	Waits     []TaskWait `json:"waits"`
+	AttemptID string `json:"attemptId"`
+	ThreadID  string `json:"threadId"`
+	// AttemptRevision is the revision this wake belongs to. Delivery is
+	// refused once the attempt has moved past it: the turn that would have
+	// received the message is gone.
+	AttemptRevision int64      `json:"attemptRevision"`
+	Waits           []TaskWait `json:"waits"`
+}
+
+// Resumption reports whether this wake resumed a parked attempt. A wake that
+// did not is evidence delivered to a turn that is already running.
+func (c TaskWaitWakeContext) Resumption() bool {
+	for _, wait := range c.Waits {
+		if wait.Resumption {
+			return true
+		}
+	}
+	return false
 }
 
 // Prompt renders the wake message that starts the resumed turn.
 func (c TaskWaitWakeContext) Prompt() string {
 	var builder strings.Builder
-	builder.WriteString("The steward is waking this task: its registered wait has settled.\n\n")
+	if c.Resumption() {
+		builder.WriteString("The steward is waking this task: its registered wait has settled.\n\n")
+	} else {
+		// The turn is already running. Saying so matters: the agent is being
+		// handed evidence mid-turn, not being restarted, and a wait that
+		// settled without anyone being told is the silence this design refuses.
+		builder.WriteString("A registered wait for this task has settled while the task is already running.\n\n")
+	}
 	for _, w := range c.Waits {
 		name := w.Name
 		if name == "" {

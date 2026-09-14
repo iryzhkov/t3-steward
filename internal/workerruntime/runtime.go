@@ -353,7 +353,10 @@ func (r *Runtime) deliverCommand(ctx context.Context, command domain.WorkerComma
 	case domain.WorkerCommandStop:
 		effectErr = r.stop(ctx, command.AssignmentID)
 	case domain.WorkerCommandCollect:
-		effectErr = r.collect(ctx, command.AssignmentID)
+		// A commanded collection is still a collection: it publishes outputs
+		// and destroys the identity record the resumed turn needs. It goes
+		// through the same park check as the self-driven path.
+		effectErr = r.collectUnlessWaiting(ctx, command.AssignmentID, record)
 	default:
 		return r.rejectCommand(command, "unsupported command kind")
 	}

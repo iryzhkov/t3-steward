@@ -237,6 +237,13 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 		return errors.New("the coordinator did not return exactly one task-bound wait")
 	}
 	registered := response.TaskWaits[0]
+	if !registered.Live() {
+		// The message below tells the agent to end its turn. It must never be
+		// printed for a wait that is not holding the attempt, or the turn ends,
+		// the worker collects, and verification runs against outputs that were
+		// never written.
+		return fmt.Errorf("task-bound wait %s is already settled, so this task is not parked; register a new wait with a different --request-id", registered.ID)
+	}
 
 	statePath, err := cfg.ResolveStatePath()
 	if err != nil {

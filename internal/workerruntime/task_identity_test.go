@@ -1,6 +1,7 @@
 package workerruntime
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,6 +62,93 @@ func TestWorkerWritesAPrivateIdentityRecordCarryingNoAuthority(t *testing.T) {
 	}
 	if info, err = os.Lstat(path); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("rewritten identity record mode = %v (%v)", info.Mode(), err)
+	}
+}
+
+// Collect itself removes the record, before anything is captured from the
+// workspace. Asserting it through Collect rather than through the helper is
+// what makes the test fail if the call is ever dropped.
+func TestCollectRemovesTheIdentityRecordBeforeCapturing(t *testing.T) {
+	workspace := t.TempDir()
+	driver := &LocalDriver{Config: LocalDriverConfig{DryRun: true}}
+	pkg := testPackage()
+	if err := driver.writeTaskIdentity(pkg, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Collect(context.Background(), pkg, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(workspace, domain.TaskIdentityDir)); !os.IsNotExist(err) {
+		t.Fatalf("Collect left the identity record in the workspace: %v", err)
+	}
+}
+
+// The record lives inside the task's worktree, and these tasks commit and push.
+// It is excluded as it is written, because removing it when outputs are
+// collected is far too late: by then `git add -A` has already committed it into
+// the project repository and everything downstream of it.
+func TestIdentityRecordIsExcludedFromGitWhenItIsWritten(t *testing.T) {
+	workspace := t.TempDir()
+	gitDir := filepath.Join(workspace, ".git")
+	if err := os.MkdirAll(gitDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	driver := &LocalDriver{}
+	if err := driver.writeTaskIdentity(testPackage(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	// A .gitignore of "*" inside the directory ignores the directory's whole
+	// content, including itself, in any repository layout.
+	ignore, err := os.ReadFile(filepath.Join(workspace, domain.TaskIdentityDir, ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(ignore), "*") {
+		t.Fatalf("the identity directory does not ignore its own content: %q", ignore)
+	}
+	exclude, err := os.ReadFile(filepath.Join(gitDir, "info", "exclude"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(exclude), "/"+domain.TaskIdentityDir+"/") {
+		t.Fatalf("the repository does not exclude the identity directory: %q", exclude)
+	}
+	// Rewriting, as a resumed attempt does, must not duplicate the entry.
+	if err := driver.writeTaskIdentity(testPackage(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	again, err := os.ReadFile(filepath.Join(gitDir, "info", "exclude"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(again), domain.TaskIdentityDir) != 1 {
+		t.Fatalf("the exclusion was appended twice: %q", again)
+	}
+}
+
+// A linked worktree keeps its git directory elsewhere, behind a gitdir pointer.
+func TestIdentityRecordIsExcludedThroughALinkedWorktreePointer(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "worktree")
+	gitDir := filepath.Join(root, "repository", ".git", "worktrees", "one")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(gitDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".git"), []byte("gitdir: "+gitDir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&LocalDriver{}).writeTaskIdentity(testPackage(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	exclude, err := os.ReadFile(filepath.Join(gitDir, "info", "exclude"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(exclude), "/"+domain.TaskIdentityDir+"/") {
+		t.Fatalf("a linked worktree does not exclude the identity directory: %q", exclude)
 	}
 }
 

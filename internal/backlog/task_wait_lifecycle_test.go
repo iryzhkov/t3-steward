@@ -111,10 +111,13 @@ func TestWaitingTurnOutcomeParksTheAttempt(t *testing.T) {
 	}
 }
 
-// The identity record is never captured, even when the worker has not removed
-// it yet: only declared outputs are collected, and a task cannot declare a name
-// it does not write. This is the property the removal in Collect defends in
-// depth, not the only thing keeping the file out of coordinator custody.
+// Capturing is driven entirely by the task's declared outputs, so a file the
+// task did not declare is never collected.
+//
+// This is a statement about the finalizer, not about the identity record: it
+// would hold for any undeclared file, and it is not what keeps the record out
+// of the project's git history. That is the exclusion written with the record
+// and the removal in Collect, both tested in internal/workerruntime.
 func TestIdentityRecordIsNeverCapturedAsAnArtifact(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(workspace, domain.TaskIdentityDir), 0o700); err != nil {

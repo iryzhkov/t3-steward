@@ -227,17 +227,7 @@ func TestTaskWaitRaceWithTurnCompletionLeavesOneConsistentState(t *testing.T) {
 			if err := second(); err == nil {
 				t.Fatal("both the registration and the completion committed")
 			}
-			final := loadAttempt(t, store, attempt.ID)
-			waiting := final.Progress == domain.ProgressWaitingExternal
-			if waiting && final.Progress.Terminal() {
-				t.Fatal("the attempt is both waiting and terminal")
-			}
-			if name == "wait-first" && !waiting {
-				t.Fatalf("the winning registration did not park the attempt: %q", final.Progress)
-			}
-			if name == "completion-first" && waiting {
-				t.Fatal("a losing registration parked a completed attempt")
-			}
+			assertOneConsistentOutcome(t, store, attempt.ID, name == "wait-first")
 		})
 	}
 }
@@ -276,9 +266,112 @@ func TestTaskWaitConcurrentRaceCommitsExactlyOnce(t *testing.T) {
 	if won != 1 {
 		t.Fatalf("%d of the two fenced paths committed: %v", won, errs)
 	}
-	final := loadAttempt(t, store, attempt.ID)
-	if final.Progress == domain.ProgressWaitingExternal && final.Progress.Terminal() {
-		t.Fatal("the attempt is both waiting and terminal")
+	assertOneConsistentOutcome(t, store, attempt.ID, errs[0] == nil)
+}
+
+// assertOneConsistentOutcome states the invariant the race exists to protect:
+// the attempt either parked, with no completion recorded and a live wait
+// holding it, or completed, with no wait claiming to hold it. Never a mixture,
+// and never a park whose wait does not exist.
+func assertOneConsistentOutcome(t *testing.T, store *Store, attemptID string, expectParked bool) {
+	t.Helper()
+	ctx := context.Background()
+	final := loadAttempt(t, store, attemptID)
+	live, err := store.LiveTaskWaitAttempts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, held := live[attemptID]
+	parked := final.Progress == domain.ProgressWaitingExternal
+	if parked != expectParked {
+		t.Fatalf("attempt progress %q, parked=%v, want parked=%v", final.Progress, parked, expectParked)
+	}
+	if parked {
+		if !held {
+			t.Fatal("the attempt is parked but no live wait holds it")
+		}
+		if final.Control != domain.ControlWaitingExternal {
+			t.Fatalf("a parked attempt has control %q", final.Control)
+		}
+		if final.CompletedAt != nil || final.LastTurnOutcomeMarker == domain.TurnOutcomeDone {
+			t.Fatalf("a parked attempt carries completion evidence: completedAt=%v marker=%q",
+				final.CompletedAt, final.LastTurnOutcomeMarker)
+		}
+		return
+	}
+	if held {
+		t.Fatalf("a live wait holds an attempt that is %q", final.Progress)
+	}
+	if final.LastTurnOutcomeMarker != domain.TurnOutcomeDone {
+		t.Fatalf("the completing turn was not recorded: marker=%q", final.LastTurnOutcomeMarker)
+	}
+}
+
+// A request ID names one park. Replaying it after the wait settled must never
+// report that the attempt is parked: the agent would end its turn, the worker
+// would collect, and verification would run against outputs never written.
+// That is the observed failure rebuilt from a reused ID.
+func TestTaskWaitReplayAfterSettlementIsRefused(t *testing.T) {
+	ctx := context.Background()
+	store, attempt, now := taskWaitFixture(t)
+	request := taskWaitRegistration(attempt, "req-1", domain.WakeEach)
+	wait, err := store.RegisterTaskWait(ctx, request, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SettleTaskWait(ctx, wait.ID, domain.TaskWaitResult{Outcome: domain.TaskWaitMet}, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.WakeTaskWaits(ctx, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	resumed := loadAttempt(t, store, attempt.ID)
+	if resumed.Progress != domain.ProgressActive {
+		t.Fatalf("the attempt did not resume: %q", resumed.Progress)
+	}
+
+	// The resumed turn keeps the same attempt ID, so every equality check in
+	// the replay branch passes. Only the wait's own state distinguishes them.
+	_, err = store.RegisterTaskWait(ctx, request, now.Add(2*time.Minute))
+	if !errors.Is(err, domain.ErrTaskWaitReplaySettled) {
+		t.Fatalf("a replay after settlement was accepted: %v", err)
+	}
+	if after := loadAttempt(t, store, attempt.ID); after.Progress != domain.ProgressActive || after.Revision != resumed.Revision {
+		t.Fatalf("the refused replay changed the attempt: %+v", after)
+	}
+	live, err := store.LiveTaskWaitAttempts(ctx)
+	if err != nil || len(live) != 0 {
+		t.Fatalf("a refused replay left a live wait: %v %v", live, err)
+	}
+
+	// A new request ID parks it again, which is the supported way to wait twice.
+	second := taskWaitRegistration(loadAttempt(t, store, attempt.ID), "req-2", domain.WakeEach)
+	if _, err := store.RegisterTaskWait(ctx, second, now.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if parked := loadAttempt(t, store, attempt.ID); parked.Progress != domain.ProgressWaitingExternal {
+		t.Fatalf("a fresh request ID did not park the attempt: %q", parked.Progress)
+	}
+}
+
+// A live wait whose attempt is no longer parked is a contradiction, so neither
+// side is reported as fact.
+func TestTaskWaitReplayOnAnUnparkedAttemptIsRefused(t *testing.T) {
+	ctx := context.Background()
+	store, attempt, now := taskWaitFixture(t)
+	request := taskWaitRegistration(attempt, "req-1", domain.WakeEach)
+	if _, err := store.RegisterTaskWait(ctx, request, now); err != nil {
+		t.Fatal(err)
+	}
+	parked := loadAttempt(t, store, attempt.ID)
+	parked.Progress = domain.ProgressActive
+	parked.Control = domain.ControlRunning
+	parked.Revision++
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Attempts: []domain.Attempt{parked}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterTaskWait(ctx, request, now.Add(time.Minute)); !errors.Is(err, domain.ErrTaskWaitReplayNotParked) {
+		t.Fatalf("a replay on an unparked attempt was accepted: %v", err)
 	}
 }
 

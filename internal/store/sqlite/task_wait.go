@@ -109,6 +109,24 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 			wait.WorkflowRunID != request.WorkflowRunID || wait.TaskID != request.TaskID {
 			return domain.TaskWait{}, domain.ErrTaskWaitReplayChanged
 		}
+		// A replay may only report a park that is actually in force. The wait
+		// and the attempt are checked separately because they can disagree: a
+		// settled wait whose attempt resumed keeps the same attempt ID, so the
+		// equality above passes and the caller would be told it is parked while
+		// its turn runs on. That is the observed failure rebuilt from a reused
+		// request ID.
+		if !wait.Live() {
+			return domain.TaskWait{}, fmt.Errorf("%w: %s settled as %q",
+				domain.ErrTaskWaitReplaySettled, wait.ID, replaySettledOutcome(wait))
+		}
+		attempt, err := loadAttemptTx(ctx, tx, wait.AttemptID)
+		if err != nil {
+			return domain.TaskWait{}, err
+		}
+		if attempt.Progress != domain.ProgressWaitingExternal {
+			return domain.TaskWait{}, fmt.Errorf("%w: attempt %q is %q",
+				domain.ErrTaskWaitReplayNotParked, attempt.ID, attempt.Progress)
+		}
 		return wait, tx.Commit()
 	case !errors.Is(err, sql.ErrNoRows):
 		return wait, err
@@ -361,13 +379,34 @@ func (s *Store) WakeTaskWaits(ctx context.Context, now time.Time) ([]domain.Task
 		if err != nil {
 			return nil, err
 		}
-		if attempt.Progress != domain.ProgressWaitingExternal {
-			// The attempt is no longer parked: it was cancelled, or an earlier
-			// wake already resumed it. Mark the waits woken so the settled
-			// evidence is not replayed, and change nothing else.
-			if err := markTaskWaitsWokenTx(ctx, tx, ready, now); err != nil {
+		switch {
+		case attempt.Progress.Terminal():
+			// There is no turn left to tell. The evidence is kept on the wait
+			// and the wake is closed so it is not retried forever.
+			if err := markTaskWaitsWokenTx(ctx, tx, ready, attempt, "abandoned", false, now); err != nil {
 				return nil, err
 			}
+			if err := recordTaskWaitEventTx(ctx, tx, domain.TaskWaitReconciliation{
+				ID: "undelivered:" + ready[0].ID, Kind: domain.TaskWaitReconciliationUndelivered,
+				AttemptID: attemptID, WaitID: ready[0].ID, ThreadID: attempt.ThreadID,
+				Detail:     fmt.Sprintf("wait settled after attempt %q became %q; the outcome could not be delivered", attemptID, attempt.Progress),
+				ObservedAt: now.UTC(),
+			}); err != nil {
+				return nil, err
+			}
+			continue
+		case attempt.Progress != domain.ProgressWaitingExternal:
+			// The attempt is running again: an earlier each settlement already
+			// resumed it. This one still has to reach the agent, because a wait
+			// that settles and says nothing is exactly the silence this design
+			// refuses. It is delivered to the live turn and changes no state.
+			if err := markTaskWaitsWokenTx(ctx, tx, ready, attempt, "pending", false, now); err != nil {
+				return nil, err
+			}
+			wakes = append(wakes, domain.TaskWaitWakeContext{
+				AttemptID: attemptID, ThreadID: attempt.ThreadID,
+				AttemptRevision: attempt.Revision, Waits: ready,
+			})
 			continue
 		}
 		if settled, reason, err := taskWaitExecutionAbandonedTx(ctx, tx, attempt); err != nil {
@@ -381,7 +420,7 @@ func (s *Store) WakeTaskWaits(ctx context.Context, now time.Time) ([]domain.Task
 			if err := revokeTaskAuthorityTx(ctx, tx, attempt, reason, now); err != nil {
 				return nil, err
 			}
-			if err := markTaskWaitsWokenTx(ctx, tx, ready, now); err != nil {
+			if err := markTaskWaitsWokenTx(ctx, tx, ready, attempt, "abandoned", false, now); err != nil {
 				return nil, err
 			}
 			continue
@@ -399,22 +438,35 @@ func (s *Store) WakeTaskWaits(ctx context.Context, now time.Time) ([]domain.Task
 		if err := saveAttemptFencedTx(ctx, tx, attempt, expected); err != nil {
 			return nil, err
 		}
-		if err := markTaskWaitsWokenTx(ctx, tx, ready, now); err != nil {
+		if err := markTaskWaitsWokenTx(ctx, tx, ready, attempt, "pending", true, now); err != nil {
 			return nil, err
 		}
 		wakes = append(wakes, domain.TaskWaitWakeContext{
-			AttemptID: attemptID, ThreadID: attempt.ThreadID, Waits: ready,
+			AttemptID: attemptID, ThreadID: attempt.ThreadID,
+			AttemptRevision: attempt.Revision, Waits: ready,
 		})
 	}
 	return wakes, tx.Commit()
 }
 
-func markTaskWaitsWokenTx(ctx context.Context, tx *sql.Tx, waits []domain.TaskWait, now time.Time) error {
+func replaySettledOutcome(wait domain.TaskWait) domain.TaskWaitOutcome {
+	if wait.Result == nil {
+		return "settled"
+	}
+	return wait.Result.Outcome
+}
+
+func markTaskWaitsWokenTx(ctx context.Context, tx *sql.Tx, waits []domain.TaskWait, attempt domain.Attempt, delivery string, resumption bool, now time.Time) error {
 	woken := now.UTC()
 	for _, wait := range waits {
 		wait.WokenAt = &woken
-		if wait.Delivery == "" {
-			wait.Delivery = "pending"
+		wait.Delivery = delivery
+		wait.WakeRevision = attempt.Revision
+		wait.Resumption = resumption
+		if wait.DeliveryID == "" {
+			// Derived once and stored, so a retry sends the same command
+			// instead of a new one that would start a second turn.
+			wait.DeliveryID = fmt.Sprintf("task-wake:%s:%d", wait.ID, attempt.Revision)
 		}
 		if err := saveTaskWaitTx(ctx, tx, wait); err != nil {
 			return err
@@ -423,44 +475,65 @@ func markTaskWaitsWokenTx(ctx context.Context, tx *sql.Tx, waits []domain.TaskWa
 	return nil
 }
 
-// MarkTaskWaitDelivered records that the wake message reached the thread.
-func (s *Store) MarkTaskWaitDelivered(ctx context.Context, id string, now time.Time) error {
+// TransitionTaskWake fences wake delivery ownership exactly as node waits do.
+// Once sending is durable, a lost reply requires positive observation of the
+// delivery ID; its absence never authorizes a second send.
+func (s *Store) TransitionTaskWake(ctx context.Context, id, from, to string, now time.Time) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback()
 	var raw []byte
 	if err = tx.QueryRowContext(ctx, "SELECT record FROM coordinator_task_waits WHERE id=?", id).Scan(&raw); err != nil {
-		return err
+		return false, err
 	}
 	var wait domain.TaskWait
 	if err = json.Unmarshal(raw, &wait); err != nil {
-		return err
+		return false, err
 	}
-	if wait.Delivery == "delivered" {
-		return tx.Commit()
+	if wait.Delivery != from {
+		return false, nil
 	}
-	delivered := now.UTC()
-	wait.Delivery = "delivered"
-	wait.DeliveredAt = &delivered
+	allowed := wait.Woken() && (from == "pending" && (to == "held" || to == "sending") ||
+		from == "held" && (to == "pending" || to == "sending") ||
+		(from == "sending" || from == "recovery-required") && (to == "delivered" || to == "recovery-required") ||
+		to == "abandoned" && from != "delivered")
+	if !allowed {
+		return false, fmt.Errorf("invalid task wake transition %s to %s", from, to)
+	}
+	wait.Delivery = to
+	if to == "delivered" {
+		delivered := now.UTC()
+		wait.DeliveredAt = &delivered
+	}
 	if err = saveTaskWaitTx(ctx, tx, wait); err != nil {
-		return err
+		return false, err
 	}
-	return tx.Commit()
+	return true, tx.Commit()
 }
 
-// PendingTaskWakes lists the wakes whose attempt is already resumed but whose
-// message has not reached the thread yet.
-func (s *Store) PendingTaskWakes(ctx context.Context) ([]domain.TaskWaitWakeContext, error) {
-	waits, err := s.ListTaskWaits(ctx)
+// TaskWakesAwaitingDelivery lists the wakes whose message has not reached its
+// thread yet, and closes the ones whose turn no longer exists.
+//
+// A wake is bound to the attempt revision it was committed against. If the
+// attempt has moved past it, or become terminal, the message would arrive at a
+// turn that did not park and cannot act on it, so the wake is abandoned with a
+// durable record instead of being delivered or retried forever.
+func (s *Store) TaskWakesAwaitingDelivery(ctx context.Context, now time.Time) ([]domain.TaskWaitWakeContext, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	waits, err := loadJSON[domain.TaskWait](ctx, tx, "coordinator_task_waits")
 	if err != nil {
 		return nil, err
 	}
 	byAttempt := make(map[string][]domain.TaskWait)
 	var order []string
 	for _, wait := range waits {
-		if !wait.Woken() || wait.Delivery == "delivered" {
+		if !wait.Woken() || wait.Delivery == "delivered" || wait.Delivery == "abandoned" {
 			continue
 		}
 		if _, seen := byAttempt[wait.AttemptID]; !seen {
@@ -472,11 +545,51 @@ func (s *Store) PendingTaskWakes(ctx context.Context) ([]domain.TaskWaitWakeCont
 	pending := make([]domain.TaskWaitWakeContext, 0, len(order))
 	for _, attemptID := range order {
 		members := byAttempt[attemptID]
+		sort.Slice(members, func(i, j int) bool { return members[i].ID < members[j].ID })
+		attempt, err := loadAttemptTx(ctx, tx, attemptID)
+		if err != nil {
+			return nil, err
+		}
+		stale := make([]domain.TaskWait, 0, len(members))
+		live := make([]domain.TaskWait, 0, len(members))
+		for _, wait := range members {
+			if attempt.Progress.Terminal() || wait.WakeRevision != attempt.Revision {
+				stale = append(stale, wait)
+				continue
+			}
+			live = append(live, wait)
+		}
+		for _, wait := range stale {
+			if wait.Delivery == "sending" || wait.Delivery == "recovery-required" {
+				// A message may already exist. Abandoning it here would claim a
+				// certainty we do not have, so it stays for observation.
+				live = append(live, wait)
+				continue
+			}
+			wait.Delivery = "abandoned"
+			if err := saveTaskWaitTx(ctx, tx, wait); err != nil {
+				return nil, err
+			}
+			if err := recordTaskWaitEventTx(ctx, tx, domain.TaskWaitReconciliation{
+				ID: "undelivered:" + wait.ID, Kind: domain.TaskWaitReconciliationUndelivered,
+				AttemptID: attemptID, WaitID: wait.ID, ThreadID: wait.ThreadID,
+				Detail: fmt.Sprintf("wake for attempt revision %d could not be delivered: attempt is %q at revision %d",
+					wait.WakeRevision, attempt.Progress, attempt.Revision),
+				ObservedAt: now.UTC(),
+			}); err != nil {
+				return nil, err
+			}
+		}
+		if len(live) == 0 {
+			continue
+		}
+		sort.Slice(live, func(i, j int) bool { return live[i].ID < live[j].ID })
 		pending = append(pending, domain.TaskWaitWakeContext{
-			AttemptID: attemptID, ThreadID: members[0].ThreadID, Waits: members,
+			AttemptID: attemptID, ThreadID: attempt.ThreadID,
+			AttemptRevision: attempt.Revision, Waits: live,
 		})
 	}
-	return pending, nil
+	return pending, tx.Commit()
 }
 
 // taskWaitWakeSet applies each and all to one attempt's waits and returns the

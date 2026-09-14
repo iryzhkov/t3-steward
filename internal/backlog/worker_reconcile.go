@@ -243,7 +243,18 @@ func releasedWorkerState(
 	nextAssignment.LeaseExpiresAt = time.Time{}
 	nextAssignment.UpdatedAt = now
 	nextAttempt := attempt
-	if nextAttempt.Control != domain.ControlStopped && !waitingExternal(attempt) {
+	if waitingExternal(attempt) {
+		// A parked attempt keeps its assignment reference even though the
+		// assignment itself has been released. Clearing it would drop the
+		// directory writer binding the park is supposed to hold, and would
+		// hide the release from the abandonment check, leaving an attempt that
+		// is never dispatched, never terminal, and a run that never settles.
+		// The released assignment is exactly the evidence the wake needs in
+		// order to revoke the thread's authority and fail the task honestly.
+		nextAttempt.UpdatedAt = now
+		return finishWorkerStateTransition(assignment, attempt, nextAssignment, nextAttempt, reason)
+	}
+	if nextAttempt.Control != domain.ControlStopped {
 		nextAttempt.Control = domain.ControlUnassigned
 		if !nextAttempt.Progress.Terminal() {
 			nextAttempt.Progress = domain.ProgressReady
@@ -271,7 +282,13 @@ func observedCompletedWorkerState(
 	nextAssignment.UpdatedAt = now
 	nextAttempt := attempt
 	if waitingExternal(attempt) {
-		return assignment, attempt, "", false, nil
+		// The worker finished an attempt the coordinator has parked. The
+		// attempt's own state is left alone, but the assignment transition is
+		// applied: that settled assignment is what the wake reads to see the
+		// execution is gone. Swallowing it here is what made the abandonment
+		// check unreachable through the reconciler.
+		nextAttempt.UpdatedAt = now
+		return finishWorkerStateTransition(assignment, attempt, nextAssignment, nextAttempt, workerStateObservedWaiting)
 	}
 	if !nextAttempt.Progress.Terminal() && nextAttempt.CompletedAt == nil {
 		nextAttempt.Progress = domain.ProgressActive
@@ -303,8 +320,11 @@ func completedWorkerState(
 		// A worker that completed a parked attempt raced the registration and
 		// lost. Moving the attempt to verifying here is exactly the step that
 		// verified a task against outputs it had not written yet, so the
-		// observation is ignored and the wait keeps the attempt parked.
-		return assignment, attempt, "", false, nil
+		// attempt is left parked. The assignment still settles, because that
+		// is the evidence the wake needs to see that this execution cannot be
+		// resumed.
+		nextAttempt.UpdatedAt = now
+		return finishWorkerStateTransition(assignment, attempt, nextAssignment, nextAttempt, workerStateObservedWaiting)
 	}
 	if !nextAttempt.Progress.Terminal() && nextAttempt.CompletedAt == nil {
 		nextAttempt.Progress = domain.ProgressVerifying

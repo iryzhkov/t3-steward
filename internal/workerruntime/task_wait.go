@@ -19,10 +19,15 @@ var ErrParkedReportStale = errors.New("parked-assignment report is stale")
 // of this worker's assignments are parked on a task-bound wait.
 //
 // The statement replaces whatever the worker believed. An entry naming an
-// attempt revision older than one already recorded for the same assignment is
-// dropped: reports can overtake each other on a retried exchange, and a stale
-// park must not be resurrected over a newer one. The rest of the report still
-// applies, so one reordered entry cannot stall the worker.
+// attempt revision older than one already recorded for the same assignment
+// keeps the newer entry, because reports can overtake each other on a retried
+// exchange.
+//
+// That rule is not a fence, and does not claim to be one. It cannot tell a late
+// report from a current one that simply has not moved, so an overtaking report
+// can leave an assignment marked parked for one more exchange after the park
+// ended. The error is in the safe direction, it is self-healing on the next
+// report, and the coordinator refuses the collection either way.
 func (r *Runtime) ApplyParkedAssignments(request workerproto.SnapshotRequest) error {
 	if err := workerproto.ValidateSnapshotRequest(request); err != nil {
 		return err
