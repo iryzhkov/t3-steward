@@ -94,36 +94,28 @@ func (localAdminAuthorizer) Authorize(_ context.Context, principal backlogadmin.
 	return errors.New("local-admin or remote-admin role is required")
 }
 
+// A refusal says what the boundary is and stops there. It never tells the
+// caller to go and run the command on the coordinator instead: an agent that
+// takes that literally opens a shell on the coordinator's owner account, which
+// is the authority story ADR-H1 exists to remove.
 func authorizeRemoteAdmin(action backlogadmin.Action) error {
 	if action.CommandKind != "" {
 		if !remoteAdminCommandKinds()[action.CommandKind] {
-			return fmt.Errorf("the remote-admin role may not issue %q; run it on the coordinator host", action.CommandKind)
+			return fmt.Errorf("%q is reserved to the coordinator's own operator and is not available to the remote-admin role", action.CommandKind)
 		}
 		return nil
 	}
-	if isReadQueryKind(action.Kind) || remoteAdminOperations()[action.Kind] {
+	// Every declared query kind is a read view, so remote clients get all of
+	// them. This is deliberately not a second hand-maintained list: the first
+	// one fell behind and made the readiness check, which submit runs by
+	// default, unreachable from the host that needs it most.
+	if backlogadmin.IsQueryKind(action.Kind) || remoteAdminOperations()[action.Kind] {
 		return nil
 	}
 	if action.Kind == backlogadmin.QueryKind("worker-enrollment") {
-		return errors.New("the remote-admin role may not enroll workers; run worker enroll on the coordinator host")
+		return errors.New("worker enrollment binds a worker to this coordinator's identity and epoch, so it is an operator action on the coordinator itself and is not available to the remote-admin role")
 	}
-	return fmt.Errorf("the remote-admin role may not perform %q; run it on the coordinator host", action.Kind)
-}
-
-// isReadQueryKind reports whether a kind is one of the read views, which a
-// verified remote client may always perform.
-func isReadQueryKind(kind backlogadmin.QueryKind) bool {
-	switch kind {
-	case backlogadmin.QueryStatus, backlogadmin.QueryWorkflows, backlogadmin.QueryWorkflow,
-		backlogadmin.QueryGraph, backlogadmin.QueryDiagnose, backlogadmin.QueryTask,
-		backlogadmin.QueryExplanation, backlogadmin.QueryEvents, backlogadmin.QueryArtifacts,
-		backlogadmin.QueryArtifact, backlogadmin.QuerySchedules, backlogadmin.QueryWorkers,
-		backlogadmin.QueryQuota, backlogadmin.QueryReservations, backlogadmin.QueryLocks,
-		backlogadmin.QueryCommands, backlogadmin.QueryRecovery, backlogadmin.QueryQuarantine:
-		return true
-	default:
-		return false
-	}
+	return fmt.Errorf("%q is reserved to the coordinator's own operator and is not available to the remote-admin role", action.Kind)
 }
 
 type adminQueryService interface {

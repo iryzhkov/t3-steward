@@ -135,13 +135,11 @@ func TestTransportSelectionReportsAnUnresolvableCredential(t *testing.T) {
 	}
 }
 
-func TestCoordinatorExchangeAcceptsOnlyOneFixedOperation(t *testing.T) {
-	if err := run([]string{"coordinator-exchange"}); err == nil ||
-		!strings.Contains(err.Error(), "exactly one fixed operation") {
-		t.Fatalf("missing operation error = %v", err)
-	}
+// A pinned operation word must be one of the nine. Whether the word may be
+// omitted at all is the subject of TestCoordinatorExchangeAcceptsNoOperationWord.
+func TestCoordinatorExchangeAcceptsOnlyAKnownFixedOperation(t *testing.T) {
 	if err := run([]string{"coordinator-exchange", "query", "extra"}); err == nil ||
-		!strings.Contains(err.Error(), "exactly one fixed operation") {
+		!strings.Contains(err.Error(), "at most one fixed operation") {
 		t.Fatalf("extra operation error = %v", err)
 	}
 	for _, operation := range []string{"status", "query;id", "--config"} {
@@ -262,7 +260,7 @@ func TestRemoteAdminRoleIsAuthorizedExceptForWorkerEnrollment(t *testing.T) {
 		Kind: backlogadmin.QueryKind("command"), CommandKind: domain.AdminCommandKind("rotate-coordinator-epoch"),
 	}
 	if err := authorizer.Authorize(ctx, remote, unknown); err == nil ||
-		!strings.Contains(err.Error(), "may not issue") {
+		!strings.Contains(err.Error(), "is not available to the remote-admin role") {
 		t.Fatalf("unknown command kind error = %v", err)
 	}
 	if err := authorizer.Authorize(ctx, local, unknown); err != nil {
@@ -273,7 +271,7 @@ func TestRemoteAdminRoleIsAuthorizedExceptForWorkerEnrollment(t *testing.T) {
 		t.Fatal("remote-admin was authorized for an unknown operation")
 	}
 	err := authorizer.Authorize(ctx, remote, backlogadmin.Action{Kind: "worker-enrollment"})
-	if err == nil || !strings.Contains(err.Error(), "may not enroll workers") {
+	if err == nil || !strings.Contains(err.Error(), "is not available to the remote-admin role") {
 		t.Fatalf("remote worker enrollment error = %v", err)
 	}
 	if teachesRemoteShell(err.Error()) {

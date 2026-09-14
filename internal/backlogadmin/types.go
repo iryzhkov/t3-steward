@@ -40,6 +40,34 @@ const (
 	QueryQuarantine QueryKind = "quarantine"
 )
 
+// QueryKinds is every declared query kind. A query kind is a read view by
+// definition: it answers a question and creates nothing, and a mutation names
+// its verb in Action.CommandKind instead.
+//
+// It exists so that authorization can ask "is this a read" without repeating
+// the list somewhere that will fall behind. A kind that is added above and not
+// added here is refused to remote clients, which is how the viability query
+// became unreachable from a client host; the test beside this function is what
+// catches the omission now.
+func QueryKinds() []QueryKind {
+	return []QueryKind{
+		QueryStatus, QueryWorkflows, QueryWorkflow, QueryGraph, QueryDiagnose,
+		QueryTask, QueryExplanation, QueryEvents, QueryArtifacts, QueryArtifact,
+		QuerySchedules, QueryWorkers, QueryQuota, QueryReservations, QueryLocks,
+		QueryCommands, QueryRecovery, QueryViability, QueryQuarantine,
+	}
+}
+
+// IsQueryKind reports whether kind is one of the declared read views.
+func IsQueryKind(kind QueryKind) bool {
+	for _, candidate := range QueryKinds() {
+		if candidate == kind {
+			return true
+		}
+	}
+	return false
+}
+
 // QuarantineRetryAdvice is the one sentence a quarantine view has to say, in
 // the same words everywhere: the marker is bound to the exact content that was
 // refused, so changing the file is both the recovery and the retry.

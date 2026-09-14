@@ -128,7 +128,10 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 		return err
 	}
 	if op.Action == "register" && len(result.Waits) == 1 && result.Waits[0].Delivery != "delivered" && result.Waits[0].Delivery != "cancelled" {
-		fmt.Println("End this turn now; the coordinator has registered the node wait.")
+		// This command always prints its result as JSON, so the instruction to
+		// the agent goes to stderr. On stdout it would leave a document no
+		// strict reader can parse.
+		fmt.Fprintln(os.Stderr, "End this turn now; the coordinator has registered the node wait.")
 	}
 	return nil
 }
