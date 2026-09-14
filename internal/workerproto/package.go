@@ -256,9 +256,14 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 	if total > pkg.Limits.MaxTotalBytes {
 		return errors.New("execution package: inputs exceed total byte limit")
 	}
-	if len(pkg.Verification) == 0 {
-		return errors.New("execution package: verification command is required")
-	}
+	// Verification is evidence, not the gate. Success is an output-contract
+	// decision, so a task that declares outputs and no verification command is
+	// legitimate: its outputs must still materialize for it to succeed.
+	//
+	// Requiring a command here made such a package unbuildable, and the failure
+	// surfaced only as an offer withheld and retried forever, with the reason
+	// visible nowhere but a coordinator warning. The manifest already validated,
+	// so the campaign looked accepted and simply never ran.
 	for _, command := range pkg.Verification {
 		if strings.TrimSpace(command) == "" || strings.ContainsRune(command, 0) {
 			return errors.New("execution package: invalid verification command")
