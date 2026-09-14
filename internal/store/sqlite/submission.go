@@ -28,7 +28,10 @@ CREATE INDEX IF NOT EXISTS coordinator_submissions_state_idx
 	ON coordinator_submissions(state, created_at);
 `
 
-var ErrSubmissionConflict = errors.New("submission idempotency key already has different content")
+// ErrSubmissionConflict is domain.ErrSubmissionConflict under the name callers
+// of this package already use. An intake source that must decide whether a
+// failure is permanent classifies it without depending on the store package.
+var ErrSubmissionConflict = domain.ErrSubmissionConflict
 
 // ReserveSubmission durably fixes request content and result identities before
 // the coordinator publishes files or workflow metadata.
@@ -164,6 +167,19 @@ func (s *Store) LoadSubmission(ctx context.Context, key string) (domain.Submissi
 	return record, true, err
 }
 
+func loadSubmissionIfExistsTx(ctx context.Context, tx *sql.Tx, key string) (domain.SubmissionRecord, bool, error) {
+	var raw []byte
+	err := tx.QueryRowContext(ctx, `SELECT record FROM coordinator_submissions WHERE key = ?`, key).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.SubmissionRecord{}, false, nil
+	}
+	if err != nil {
+		return domain.SubmissionRecord{}, false, fmt.Errorf("load submission %q: %w", key, err)
+	}
+	record, err := decodeSubmission(key, raw)
+	return record, true, err
+}
+
 func loadSubmissionTx(ctx context.Context, tx *sql.Tx, key string) (domain.SubmissionRecord, error) {
 	var raw []byte
 	if err := tx.QueryRowContext(ctx, `SELECT record FROM coordinator_submissions WHERE key = ?`, key).Scan(&raw); err != nil {
@@ -190,6 +206,20 @@ func validateSubmissionRecord(record domain.SubmissionRecord, accepted bool) err
 	digest, err := hex.DecodeString(record.Digest)
 	if err != nil || len(digest) != 32 {
 		return errors.New("submission digest must be a SHA-256 hex string")
+	}
+	// A quarantined record names content that was never accepted, so it has no
+	// workflow or run identity to carry. It must explain itself instead.
+	if record.State == domain.SubmissionQuarantined {
+		if record.WorkflowID != "" || record.RunID != "" || record.AcceptedAt != nil {
+			return errors.New("quarantined submission must not carry result identities")
+		}
+		if strings.TrimSpace(record.Reason) != record.Reason || record.Reason == "" || record.CreatedAt.IsZero() {
+			return errors.New("quarantined submission requires a trimmed reason and creation time")
+		}
+		return nil
+	}
+	if record.Reason != "" {
+		return errors.New("only a quarantined submission carries a reason")
 	}
 	if strings.TrimSpace(record.WorkflowID) != record.WorkflowID || record.WorkflowID == "" ||
 		strings.TrimSpace(record.RunID) != record.RunID || record.RunID == "" ||

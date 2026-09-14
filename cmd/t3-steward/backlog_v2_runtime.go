@@ -495,6 +495,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			Dir: backlogDir, Submitter: submissions, ProjectAliases: aliases,
 			MaxBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
 			MaxFiles: cfg.BacklogV2.MessageLimits.MaxFiles, AllowedUID: uint32(os.Getuid()),
+			Quarantine: store,
 		},
 		workers: workers,
 		logger:  logger,

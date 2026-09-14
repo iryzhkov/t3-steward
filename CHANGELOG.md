@@ -16,6 +16,11 @@ All notable changes to this project are documented here. The format follows
   failure is also kept durably and quoted in the terminal reason as
   `preparation failed N times; first error: <first>; last error: <last>`.
 
+- A legacy drop file that can never be accepted is now quarantined after one
+  durable report instead of producing the same coordinator error on every
+  cycle for as long as the coordinator runs. The marker records the digest of
+  the file it refused, so changed content is attempted, and reported, again.
+
 ## [0.11.0-rc.48] - 2026-09-14
 
 ### Fixed

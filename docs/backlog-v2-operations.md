@@ -200,6 +200,31 @@ fields are `version`, `name`, `class`, `placement`, `environment`,
   paths, traversal, unsafe globs, missing files, escaping symlinks, cycles,
   duplicate names, impossible placement, and unknown fields are rejected.
 
+### Legacy intake quarantine
+
+The drop directory is read-only to the coordinator: the coordinator re-reads it
+on every cycle and never drains it. A file that can never be accepted, such as
+one naming a project no alias maps or one whose content changed after its key
+was accepted, is therefore recorded as quarantined in the submission journal,
+reported once with its reason, and skipped silently on every later cycle.
+
+The quarantine marker is a `quarantined` submission record under the key
+`quarantine:<idempotency key>`. It carries the digest of the exact file bytes it
+was recorded for and the reason it was refused; it never carries workflow or run
+identities, because nothing was accepted. The single report is the coordinator
+log line carrying the reason, and it is durable as one `submission-quarantined`
+audit event per key and digest.
+
+That audit event has no workflow run, so the run-scoped `backlog events
+<workflow-run>` view does not list it. Until a run-less event view exists, an
+operator reads the reason from the log line, and the durable record is in the
+coordinator database in `coordinator_submissions` with state `quarantined`.
+
+Recovery is to change the file. When the content of a quarantined file changes,
+its digest changes, the marker is released, and the submission is attempted
+again and reported again. Removing the file also ends the reports, and the
+marker then stays in the journal as the record of why the intake refused it.
+
 Dependency artifacts appear in the successor workspace at
 `.t3/dependencies/<task>/<output>`. Declared verification commands, output
 capture, checksums, final messages, preparation logs, checkpoints, and other
