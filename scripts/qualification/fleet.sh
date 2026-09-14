@@ -90,7 +90,7 @@ fleet_init() {
   export ROOT
   mkdir -p \
     "$ROOT/bin" "$ROOT/ssh" "$ROOT/keys" "$ROOT/forced" "$ROOT/evidence" \
-    "$ROOT/repos" "$ROOT/campaigns" "$ROOT/t3" \
+    "$ROOT/repos" "$ROOT/campaigns" "$ROOT/t3" "$ROOT/turns" "$ROOT/signals" \
     "$ROOT/coordinator/home" "$ROOT/coordinator/drop" \
     "$ROOT/coordinator/bundles" "$ROOT/coordinator/artifacts" \
     "$ROOT/coordinator/workspaces" \
@@ -371,7 +371,7 @@ fleet_secrets() {
 fleet_t3_stub() {
   T3_PORT=$(fleet_free_port)
   export T3_PORT
-  python3 "$HARNESS_DIR/t3_stub.py" "$T3_PORT" "$ROOT/evidence/t3-stub.jsonl" \
+  python3 "$HARNESS_DIR/t3_stub.py" "$T3_PORT" "$ROOT/evidence/t3-stub.jsonl" "$ROOT/turns" \
     >"$ROOT/evidence/t3-stub.log" 2>&1 &
   fleet_track "$!"
   local deadline=$((SECONDS + 10))
@@ -395,7 +395,10 @@ t3:
   token: qualification-synthetic-token
   allow_unsupported_version: true
 policy:
-  dry_run: true
+  # The worker must take the real execution path. In dry-run it reads a file
+  # instead of the provider, and Collect returns before anything is captured,
+  # so no lifecycle case could observe an output or a verification.
+  dry_run: false
 backlog_v2:
   mode: worker
   coordinator:
@@ -412,10 +415,13 @@ $(fleet_project_block)
     quick:
       commands: ["true"]
       timeout: 1m
+    broken:
+      commands: ["false"]
+      timeout: 1m
   quota_pools:
     synthetic-pool:
       provider: synthetic
-      max_concurrent: 1
+      max_concurrent: 2
   storage:
     bundles: $ROOT/$worker/storage/bundles
     artifacts: $ROOT/$worker/storage/artifacts
@@ -496,6 +502,36 @@ fleet_project_block() {
       t3_project: qual-private-https
       setup_profile: quick
       workers: [worker-a, worker-b]
+    plain:
+      repository: ssh://qual-repo-good/good.git
+      default_ref: main
+      t3_project: qual-plain
+      setup_profile: quick
+      workers: [worker-a]
+    park:
+      repository: ssh://qual-repo-good/good.git
+      default_ref: main
+      t3_project: qual-park
+      setup_profile: quick
+      workers: [worker-a]
+    park-restart:
+      repository: ssh://qual-repo-good/good.git
+      default_ref: main
+      t3_project: qual-park-restart
+      setup_profile: quick
+      workers: [worker-a]
+    race:
+      repository: ssh://qual-repo-good/good.git
+      default_ref: main
+      t3_project: qual-race
+      setup_profile: quick
+      workers: [worker-a]
+    bad-setup:
+      repository: ssh://qual-repo-good/good.git
+      default_ref: main
+      t3_project: qual-bad-setup
+      setup_profile: broken
+      workers: [worker-a]
 EOF
   [ "${1:-clean}" = malformed ] || return 0
   cat <<EOF
@@ -528,7 +564,11 @@ t3:
   token: qualification-synthetic-token
   allow_unsupported_version: true
 policy:
-  dry_run: true
+  # The coordinator's own wait runner refuses to resume a parked attempt in a
+  # dry run, and its T3 adapter would log the wake instead of sending it.
+  dry_run: false
+wait:
+  dry_run: false
 backlog:
   dir: $ROOT/coordinator/drop
 backlog_v2:
@@ -546,10 +586,13 @@ $(fleet_project_block "$variant")
     quick:
       commands: ["true"]
       timeout: 1m
+    broken:
+      commands: ["false"]
+      timeout: 1m
   quota_pools:
     synthetic-pool:
       provider: synthetic
-      max_concurrent: 1
+      max_concurrent: 2
   storage:
     bundles: $ROOT/coordinator/bundles
     artifacts: $ROOT/coordinator/artifacts
@@ -741,6 +784,75 @@ tasks:
     max_turns: 1
 EOF
   printf '%s' "$dir"
+}
+
+# fleet_executable_campaign writes a campaign whose task is meant to run: it
+# declares one output and one verification command, so a case can tell apart
+# "nothing was collected" from "the output was collected and verified".
+fleet_executable_campaign() {
+  local name=$1 project=$2
+  local dir="$ROOT/campaigns/$name"
+  mkdir -p "$dir/prompts"
+  cat >"$dir/prompts/task.md" <<'EOF'
+The synthetic provider runs a scripted turn for this task. The script is the
+agent: it is what registers a task-bound wait or writes the declared outputs.
+EOF
+  cat >"$dir/workflow.yaml" <<EOF
+version: 2
+name: $name
+class: required
+
+environment:
+  project: $project
+  type: git
+  scope: task
+
+routes:
+  - instance: synthetic
+    model: synthetic-model
+    quota_pool: synthetic-pool
+
+tasks:
+  work:
+    prompt_file: prompts/task.md
+    outputs:
+      - result.txt
+    verify:
+      - test -s result.txt
+    max_turns: 4
+EOF
+  printf '%s' "$dir"
+}
+
+# fleet_turn_script installs one scripted turn for one T3 project.
+#
+# The script runs with the prepared workspace as its working directory, under
+# the synthetic provider, in place of an agent. Everything it invokes is real:
+# the steward binary, the coordinator socket and the workspace on disk.
+fleet_turn_script() {
+  local project=$1 turn=$2
+  mkdir -p "$ROOT/turns/$project"
+  cat >"$ROOT/turns/$project/turn$turn.sh"
+  chmod 0755 "$ROOT/turns/$project/turn$turn.sh"
+}
+
+# fleet_task_env is the environment prelude every turn script shares. It gives
+# the scripted agent the same disposable home the worker has and puts the
+# steward binary on its path.
+fleet_task_env() {
+  cat <<EOF
+export HOME=$ROOT/worker-a/home
+export XDG_CONFIG_HOME=$ROOT/worker-a/home/.config
+export XDG_STATE_HOME=$ROOT/worker-a/home/.local/state
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+export PATH=$ROOT/bin:/usr/bin:/bin
+export T3_QUAL_SSH_CONFIG=$ROOT/worker-a/ssh_config
+export GIT_TERMINAL_PROMPT=0
+STEWARD=$ROOT/bin/t3-steward
+COORDINATOR_CONFIG=$ROOT/coordinator/config.yaml
+SIGNALS=$ROOT/signals
+EVIDENCE=$ROOT/evidence
+EOF
 }
 
 # fleet_workflow_count reports how many workflow runs the coordinator holds.

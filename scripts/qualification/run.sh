@@ -26,6 +26,8 @@ export HARNESS_DIR REPO_DIR
 . "$HARNESS_DIR/fleet.sh"
 # shellcheck source=scripts/qualification/cases.sh
 . "$HARNESS_DIR/cases.sh"
+# shellcheck source=scripts/qualification/lifecycle.sh
+. "$HARNESS_DIR/lifecycle.sh"
 
 KEEP_ROOT=0
 ONLY=""
@@ -99,6 +101,8 @@ selected 1 && case_remote_viability
 selected 2 && case_two
 selected 3 && case_three
 selected 4 && case_four
+
+selected 11 && case_execution_path
 
 if selected 3; then
   fleet_restart_coordinator malformed
