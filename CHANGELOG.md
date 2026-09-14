@@ -15,6 +15,16 @@ All notable changes to this project are documented here. The format follows
   record naming the producing task, the base commit, the repository and the ref.
   The successor resolves the commit through that reference instead of finding it
   in a shared cache that the next `git remote update --prune` may empty.
+  `campaign plan` reports the declarations in its text, JSON and DOT renderings,
+  and `campaign help commits` carries the field's contract.
+
+- `t3-steward backlog quarantine [--json]` lists the intake submissions the
+  coordinator refused permanently: the key, the digest the marker was recorded
+  for, when it was quarantined, the reason, and the fact that changed content is
+  tried again. The quarantine audit event names no workflow run, so the
+  run-scoped `backlog events <run>` view could not show it and the single log
+  line was the only report. The view is read-only and, like every other read,
+  works from a non-coordinator host.
 
 ### Fixed
 
@@ -30,6 +40,29 @@ All notable changes to this project are documented here. The format follows
   durable report instead of producing the same coordinator error on every
   cycle for as long as the coordinator runs. The marker records the digest of
   the file it refused, so changed content is attempted, and reported, again.
+
+- The campaign refs of a run are released when retention removes the provenance
+  records that name its declared commits, so a finished campaign stops pinning
+  commits. Nothing called the release before, and the store grew without bound.
+  The lifetime is the record's rather than the run's: a rerun may only be created
+  from a run that has already finished, and a rerun pins its source against
+  retention, so a commit a rerun carries is kept for as long as the new run
+  needs it.
+
+- A retention pass that meets a pinned run skips it and prunes everything else,
+  and reports which runs it skipped and which owners are holding them. A pin is
+  enforced by a trigger that aborts the delete, and one abort rolled back the
+  whole transaction, so a single rerun pin meant no artifact anywhere was ever
+  pruned. No production path prunes coordinator artifacts yet; this is what makes
+  the first one that does behave.
+
+- A worker on another host releases its own campaign refs. The coordinator
+  states, on the snapshot exchange of every reconciliation pass, the complete
+  list of runs whose commits that worker must keep, and the worker releases the
+  rest. The statement carries an explicit flag, so a coordinator that does not
+  send one is not read as "release everything", it is bounded and validated, and
+  it is refused whole rather than applied in part. Releasing stays idempotent and
+  a failure never fails the exchange.
 
 ## [0.11.0-rc.48] - 2026-09-14
 

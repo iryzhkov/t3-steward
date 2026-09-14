@@ -35,6 +35,14 @@ type UnknownRecoveryWriter interface {
 	RecoverUnknownAssignment(context.Context, domain.UnknownAssignmentRecovery) (domain.UnknownAssignmentRecoveryDecision, error)
 }
 
+// QuarantineReader lists the intake submissions that were refused permanently.
+// It is a capability of the reader rather than part of Reader, so a store that
+// predates the quarantine marker still satisfies the service and answers the
+// query with "unavailable" instead of failing to compile.
+type QuarantineReader interface {
+	ListQuarantinedSubmissions(context.Context) ([]domain.SubmissionRecord, error)
+}
+
 type Service struct {
 	enrollWorker   WorkerEnrollmentHandler
 	graphInputRoot string
@@ -45,6 +53,7 @@ type Service struct {
 	artifactOpen   ArtifactOpenFunc
 	runtime        RuntimeInfo
 	recovery       UnknownRecoveryWriter
+	quarantine     QuarantineReader
 
 	viabilitySettings ViabilitySettings
 }
@@ -70,6 +79,7 @@ func New(reader Reader, authorizer Authorizer) (*Service, error) {
 	}
 	service := &Service{reader: reader, authorizer: authorizer, now: time.Now}
 	service.recovery, _ = reader.(UnknownRecoveryWriter)
+	service.quarantine, _ = reader.(QuarantineReader)
 	return service, nil
 }
 
@@ -184,6 +194,12 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		response.ResourceLocks = view.locks(query.Filter)
 	case QueryCommands:
 		response.Commands = view.commands(query)
+	case QueryQuarantine:
+		quarantined, err := s.quarantinedIntake(ctx)
+		if err != nil {
+			return Response{}, err
+		}
+		response.Quarantine = quarantined
 	case QueryViability:
 		if !s.viabilitySettings.configured() {
 			return Response{}, fmt.Errorf("%w: this coordinator has no project catalog to check against", ErrInvalidQuery)
@@ -228,7 +244,7 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 func validQuery(query Query) bool {
 	switch query.Kind {
 	case QueryStatus, QueryWorkflows, QuerySchedules, QueryWorkers, QueryQuota,
-		QueryReservations, QueryLocks:
+		QueryReservations, QueryLocks, QueryQuarantine:
 		return true
 	case QueryCommands:
 		return query.TaskID == "" || query.WorkflowRunID != ""

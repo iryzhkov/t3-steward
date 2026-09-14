@@ -48,11 +48,11 @@ Lifecycle (delegated to backlog, unchanged; explain is read-only and live):
 Graph amendment and artifact commands stay under "t3-steward backlog".
 Graph fields: needs (run only after these succeed; acyclic), inputs_from (named
 artifacts from a direct dependency, read-only), outputs (the files a task
-promises), verify (commands that must exit zero).
+promises), commits (a Git commit a successor needs), verify (must exit zero).
 plan is static and explain is dynamic; check is dynamic too, before there is a
 run. plan reports waves, edges and the digest submit will send, and can never
 promise a worker, a route or quota. Help topics: readiness, dag-semantics,
-static-versus-dynamic, plan, graph, rerun, notify.
+static-versus-dynamic, plan, graph, commits, rerun, notify.
 
 check reports one outcome per task and per worker:
   ready             at least one worker can take every task now

@@ -230,8 +230,40 @@ func (s CampaignRefStore) List(workflowRunID string) ([]CommitProvenance, error)
 	return records, nil
 }
 
+// Runs reports every workflow run this store currently holds commits for,
+// sorted. It is what lets a worker act on the coordinator's keep list: the
+// difference between what it holds and what it was told to keep is what it may
+// release.
+func (s CampaignRefStore) Runs() ([]string, error) {
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(filepath.Join(s.Root, "provenance"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list campaign commit runs: %w", err)
+	}
+	var runs []string
+	for _, entry := range entries {
+		if entry.IsDir() && safePathComponent(entry.Name()) {
+			runs = append(runs, entry.Name())
+		}
+	}
+	sort.Strings(runs)
+	return runs, nil
+}
+
 // ReleaseRun drops every campaign ref of one workflow run. It is the end of the
 // declared campaign lifetime, and nothing else removes these refs.
+//
+// Releasing is idempotent, and a run that declared no commit costs nothing: the
+// provenance records are the list of what this run pinned, so an empty list
+// means there is nothing to delete and the bare repository is not even opened.
+// A second release of the same run therefore reaches the same early return,
+// which is what lets the caller retry a failed release on the next cycle
+// without having to remember which runs it already released.
 func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, log io.Writer) error {
 	if err := s.validate(); err != nil {
 		return err
@@ -242,6 +274,9 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 	records, err := s.List(workflowRunID)
 	if err != nil {
 		return err
+	}
+	if len(records) == 0 {
+		return nil
 	}
 	gitDir, err := s.open(ctx, log)
 	if err != nil {

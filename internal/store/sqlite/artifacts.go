@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -136,35 +138,71 @@ func (s *Store) LoadArtifacts(ctx context.Context, ids []string) ([]domain.Artif
 	return result, nil
 }
 
-// PruneArtifacts removes expired metadata and returns the deleted records.
-// Protected workflow runs are retained regardless of age.
-func (s *Store) PruneArtifacts(ctx context.Context, before time.Time, protectedRunIDs []string) ([]domain.Artifact, error) {
+// PruneArtifacts removes expired metadata and returns the deleted records and
+// the runs it left alone. Protected workflow runs are retained regardless of
+// age, and so is a run held by a retention pin.
+//
+// A pinned run is skipped rather than attempted. The pin is enforced by a
+// trigger that aborts the delete, and one abort rolls back the whole
+// transaction, so a pass that met a single pinned run pruned nothing anywhere:
+// one rerun held the retention of every campaign on the fleet. The pins are read
+// inside the transaction that does the deleting, so a pin taken while the pass
+// is running cannot be missed.
+func (s *Store) PruneArtifacts(
+	ctx context.Context,
+	before time.Time,
+	protectedRunIDs []string,
+) ([]domain.Artifact, []domain.ArtifactRetentionSkip, error) {
 	records, err := s.LoadCoordinatorRecords(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	protected := make(map[string]struct{}, len(protectedRunIDs))
 	for _, id := range protectedRunIDs {
 		protected[id] = struct{}{}
 	}
-	var expired []domain.Artifact
+	var candidates []domain.Artifact
 	for _, artifact := range records.Artifacts {
 		if _, keep := protected[artifact.WorkflowRunID]; !keep &&
 			!artifact.CreatedAt.IsZero() && artifact.CreatedAt.Before(before) {
-			expired = append(expired, artifact)
+			candidates = append(candidates, artifact)
 		}
 	}
-	if len(expired) == 0 {
-		return nil, nil
+	if len(candidates) == 0 {
+		return nil, nil, nil
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("begin artifact prune: %w", err)
+		return nil, nil, fmt.Errorf("begin artifact prune: %w", err)
 	}
 	defer tx.Rollback()
+	pinned, err := retentionPinOwnersTx(ctx, tx)
+	if err != nil {
+		return nil, nil, err
+	}
+	var expired []domain.Artifact
+	skippedCounts := make(map[string]int)
+	for _, artifact := range candidates {
+		if _, held := pinned[artifact.WorkflowRunID]; held {
+			skippedCounts[artifact.WorkflowRunID]++
+			continue
+		}
+		expired = append(expired, artifact)
+	}
+	skipped := make([]domain.ArtifactRetentionSkip, 0, len(skippedCounts))
+	for runID, count := range skippedCounts {
+		skipped = append(skipped, domain.ArtifactRetentionSkip{
+			WorkflowRunID: runID, Artifacts: count,
+			Reason: "retained by node reference: " + strings.Join(pinned[runID], ", "),
+		})
+	}
+	sort.Slice(skipped, func(i, j int) bool { return skipped[i].WorkflowRunID < skipped[j].WorkflowRunID })
+	if len(expired) == 0 {
+		return nil, skipped, nil
+	}
 	for _, artifact := range expired {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM coordinator_artifacts WHERE id = ?`, artifact.ID); err != nil {
-			return nil, fmt.Errorf("delete artifact %q: %w", artifact.ID, err)
+			return nil, nil, fmt.Errorf("delete artifact %q: %w", artifact.ID, err)
 		}
 		identity := "artifact-pruned:" + artifact.ID
 		if _, err := insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
@@ -174,13 +212,37 @@ func (s *Store) PruneArtifacts(ctx context.Context, before time.Time, protectedR
 			Actor: "coordinator", Reason: "artifact retention period elapsed", CreatedAt: s.now().UTC(),
 			Detail: nativeAuditDetail{IdempotencyIdentity: identity, Outcome: "pruned"},
 		}); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit artifact prune: %w", err)
+		return nil, nil, fmt.Errorf("commit artifact prune: %w", err)
 	}
-	return expired, nil
+	return expired, skipped, nil
+}
+
+// retentionPinOwnersTx indexes the runs that are held against retention by the
+// owners holding them, so a skip can say what is still referring to the run.
+func retentionPinOwnersTx(ctx context.Context, tx *sql.Tx) (map[string][]string, error) {
+	rows, err := tx.QueryContext(ctx, "SELECT owner,run_id FROM coordinator_retention_pins ORDER BY run_id,owner")
+	if err != nil {
+		return nil, fmt.Errorf("load retention pins: %w", err)
+	}
+	defer rows.Close()
+	owners := map[string][]string{}
+	for rows.Next() {
+		var owner, runID string
+		if err := rows.Scan(&owner, &runID); err != nil {
+			return nil, fmt.Errorf("scan retention pin: %w", err)
+		}
+		if !slices.Contains(owners[runID], owner) {
+			owners[runID] = append(owners[runID], owner)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("load retention pins: %w", err)
+	}
+	return owners, nil
 }
 
 // ArtifactStoragePathReferenced reports whether retained metadata still owns a blob.

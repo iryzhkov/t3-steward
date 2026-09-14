@@ -55,7 +55,10 @@ type Config struct {
 	// own statement, carried on the snapshot exchange the worker already makes,
 	// which keeps the restricted worker protocol restricted: the worker is told
 	// what is parked and never asks.
-	LiveTaskWait     func(context.Context, workerproto.ExecutionPackage) (bool, error)
+	LiveTaskWait func(context.Context, workerproto.ExecutionPackage) (bool, error)
+	// CampaignRefs is the worker-local store of campaign-scoped commits. It is
+	// nil for a worker that keeps none, which then has nothing to release.
+	CampaignRefs     CampaignRefCustodian
 	WorkerID         string
 	WorkerEpoch      string
 	CoordinatorID    string

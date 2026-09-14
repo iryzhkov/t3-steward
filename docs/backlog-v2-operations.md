@@ -243,10 +243,60 @@ The refs live in a worker-owned store under `storage.workspaces/campaign-refs`,
 which is a sibling of the repository cache and is never pruned. Publishing the
 same commit again is idempotent; publishing a different commit under a ref that
 already exists is refused, because a successor has already been told what that
-ref means. The refs of a run are released together when its campaign lifetime
-ends. A task that promised a commit it did not produce fails with
+ref means. A task that promised a commit it did not produce fails with
 `declared commit "<name>": <cause>`, in the same way a missing declared output
 fails.
+
+The campaign lifetime of a commit is the lifetime of the provenance record that
+names it. While that record is retained the commit must resolve, because the
+record is the only thing that ever asks for it; once retention has removed the
+record, nothing can ask again and the ref is released. Settlement is not the
+boundary: a rerun may only be created from a run that has already finished, so
+releasing at settlement would release exactly the commits a rerun is about to
+carry.
+
+A rerun needs no special case. It pins its source run against retention, a
+pinned run's artifacts cannot be pruned, and so the provenance record — and the
+commit it names — survive for as long as the new run does. A rerun authored
+after the record has been pruned is refused by the rerun itself, which reads the
+artifact before it creates anything, rather than failing hours later in
+preparation.
+
+On every coordinator boundary, after the projection has advanced the sinks, the
+refs of every run whose provenance records retention has removed are released
+together. A run whose sink is not yet terminal is never released, which covers
+the window between a worker publishing a commit and the coordinator recording
+the artifact that names it. Releasing is idempotent, a run that declared no
+commit costs nothing, and a release that fails is logged as `campaign commit
+release failed` and retried on the next boundary: the run has already finished
+and nothing about its outcome depends on a ref being deleted.
+
+Workers on other hosts keep their own stores. The coordinator states, on the
+snapshot exchange of every reconciliation pass, the complete list of runs whose
+commits that worker must keep; the worker releases every run it holds that the
+list does not name. The statement carries an explicit flag, so a coordinator
+that says nothing is not read as "release everything", and it is refused whole
+rather than applied in part.
+
+**Known limitation: nothing prunes coordinator artifacts yet.** Artifact
+retention exists as a function and is what campaign refs now follow, but no
+production path calls it: there is no scheduled retention pass, and no
+configured retention window. Campaign refs therefore persist for as long as
+their provenance records do, which today is indefinitely. What has changed is
+that they are no longer a separate store with a lifetime of their own — on the
+coordinator and on every worker they are released the moment the records they
+name are gone — so the bound arrives with a retention pass and needs no further
+work on the campaign side.
+
+Choosing a retention window is a policy decision about your data, which is why
+it is not shipped with a default. Whoever configures one must account for pinned
+runs: a rerun, a node wait, a cross-run edge and a clone each hold their source
+run against retention, and a pass reports those runs as skipped, with the owners
+holding them, instead of pruning them. A skipped run is not a failed pass; the
+rest of the fleet is pruned normally, and the run becomes prunable when the last
+thing referring to it is gone. Note also that a rerun's carried inputs keep the
+creation time of the artifacts they reference, so a window chosen by age alone
+will treat them as old on the new run's first pass.
 
 ### Legacy intake quarantine
 
@@ -264,9 +314,18 @@ log line carrying the reason, and it is durable as one `submission-quarantined`
 audit event per key and digest.
 
 That audit event has no workflow run, so the run-scoped `backlog events
-<workflow-run>` view does not list it. Until a run-less event view exists, an
-operator reads the reason from the log line, and the durable record is in the
-coordinator database in `coordinator_submissions` with state `quarantined`.
+<workflow-run>` view cannot list it. The quarantine is read instead with
+
+```
+t3-steward backlog quarantine [--json]
+```
+
+which reports every marker with its intake key, the namespaced key its record is
+stored under in `coordinator_submissions`, the content digest it was recorded
+for, when it was quarantined, the reason, and the fact that changed content is
+tried again. It is a read of the durable record: it releases nothing and
+resubmits nothing, and it is an ordinary admin query, so it works from a
+non-coordinator host over the same transport as every other read.
 
 Recovery is to change the file. When the content of a quarantined file changes,
 its digest changes, the marker is released, and the submission is attempted
@@ -294,7 +353,7 @@ Use the commands in [Backlog administration](backlog-admin.md) while the selecte
 backlog-v2 coordinator is running. The CLI connects to the admin socket derived
 from the selected state path; it does not open the database. Read views include
 status, workflow/task/DAG detail, explanations, events, artifacts, schedules,
-workers, quota, reservations, locks, and command outcomes.
+workers, quota, reservations, locks, command outcomes, and quarantined intake.
 
 Create or revise a definition through the same socket:
 
