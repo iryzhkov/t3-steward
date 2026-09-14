@@ -1,14 +1,18 @@
 You are the join task. Both analysis tasks have succeeded and their artifacts
-were materialized into your workspace, read-only, at:
+were materialized into your workspace, read-only, under `.t3/dependencies/`,
+one directory per producing task. List that directory to find them: the
+directory names are task identifiers assigned when the campaign was submitted,
+so do not assume them.
 
-- `.t3/dependencies/interfaces/interfaces.md`
-- `.t3/dependencies/tests/tests.md`
+Work in your current working directory and write files with relative paths. Do
+not construct an absolute path: your workspace location is not something to
+reason about, and a file written outside it is not collected.
 
 Start by reading both files in full. They were written independently, by agents
 that could not see each other's work, so expect them to overlap, to disagree,
 and to leave gaps that only show up when the two are read together.
 
-Write `combined.md` in the repository root, at most sixty lines:
+Write `combined.md` in your working directory, at most sixty lines:
 
 1. **Agreed.** What both analyses support, stated once.
 2. **Disagreed.** Where they conflict. Say which reading the source supports,

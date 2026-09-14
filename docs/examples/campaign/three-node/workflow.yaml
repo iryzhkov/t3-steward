@@ -44,8 +44,10 @@ tasks:
   interfaces:
     prompt_file: prompts/interfaces.md
     outputs: [interfaces.md]
+    # Do not restate an output here. A declared output is already required, and
+    # its absence is reported as "missing declared output", which names the file.
+    # A `test -s` duplicate fails first and reports only an exit code.
     verify:
-      - test -s interfaces.md
       - git diff --quiet
     importance: 3
     difficulty: 2
@@ -54,7 +56,6 @@ tasks:
     prompt_file: prompts/tests.md
     outputs: [tests.md]
     verify:
-      - test -s tests.md
       - git diff --quiet
     importance: 3
     difficulty: 2
