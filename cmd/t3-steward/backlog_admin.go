@@ -34,16 +34,27 @@ Revision-fenced controls:
 
 type localAdminAuthorizer struct{}
 
-func (localAdminAuthorizer) Authorize(_ context.Context, principal backlogadmin.Principal, _ backlogadmin.Action) error {
+// Authorize admits the owner-only local peer to everything, and a verified
+// remote client to everything except the operations that would let it rewrite
+// the coordinator's own identity or epoch. Worker enrollment is exactly that:
+// it binds a worker to this coordinator's id, epoch and credential reference,
+// so it stays an operation an operator performs on the coordinator host.
+func (localAdminAuthorizer) Authorize(_ context.Context, principal backlogadmin.Principal, action backlogadmin.Action) error {
 	if principal.ID == "" {
 		return errors.New("local admin principal is required")
 	}
 	for _, role := range principal.Roles {
-		if role == "local-admin" {
+		switch role {
+		case backlogadmin.LocalAdminRole:
+			return nil
+		case backlogadmin.RemoteAdminRole:
+			if action.Kind == backlogadmin.QueryKind("worker-enrollment") {
+				return errors.New("the remote-admin role may not enroll workers; run worker enroll on the coordinator host")
+			}
 			return nil
 		}
 	}
-	return errors.New("local-admin role is required")
+	return errors.New("local-admin or remote-admin role is required")
 }
 
 type adminQueryService interface {

@@ -256,11 +256,19 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 		_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: "unsupported local admin transport version", ErrorClass: ClassProtocol})
 		return
 	}
-	// A local peer may not assert a remote identity. The restricted SSH
-	// command is the only thing that may, and it does so on its own carrier.
+	// The restricted SSH command relays a request it has already authenticated
+	// by signature, and says so here. The assertion can only narrow authority:
+	// the peer that made it already holds full local-admin rights through its
+	// UID, and what it gets instead is the weaker remote-admin role under the
+	// remote client's own name. The principal the request claimed is
+	// overwritten either way, on both carriers.
 	if request.RemoteAdmin != nil {
-		_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: "local admin peers may not assert a remote principal", ErrorClass: ClassAuthentication})
-		return
+		if request.RemoteAdmin.Principal == "" || request.RemoteAdmin.RequestID == "" {
+			_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: "remote admin assertion requires a principal and a request id", ErrorClass: ClassAuthentication})
+			return
+		}
+		principal = Principal{ID: "remote:" + request.RemoteAdmin.Principal, Roles: []string{RemoteAdminRole}}
+		request.RemoteAdmin = nil
 	}
 	dispatch := adminDispatch{
 		service:            s.Service,

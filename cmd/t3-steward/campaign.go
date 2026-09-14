@@ -158,17 +158,11 @@ func runCampaign(cfg config.Config, args []string) error {
 // commands use. Campaign submission differs from backlog submission only in
 // where the bytes come from, so it must not differ in how they travel.
 func newCampaignSubmissionClient(cfg config.Config) (adminSubmissionService, error) {
-	socketPath, err := resolveBacklogV2AdminSocketPath(cfg)
+	transport, err := newCoordinatorTransport(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return backlogadmin.LocalClient{
-		Path:               socketPath,
-		MaxResponseBytes:   cfg.BacklogV2.MessageLimits.MaxBytes,
-		MaxArtifactBytes:   cfg.BacklogV2.MessageLimits.MaxArtifactBytes,
-		MaxSubmissionBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
-		RequestTimeout:     cfg.BacklogV2.Transport.RequestTimeout.D(),
-	}, nil
+	return transport.client, nil
 }
 
 func (c campaignCLI) run(ctx context.Context, args []string) error {

@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/compat"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
@@ -51,6 +52,7 @@ Commands:
   report             Consumption by peak/off-peak hours, hour of day, model and thread.
   forecast           Interactive-demand map by weekday and hour, and current backlog headroom.
   campaign           Author, inspect and submit a workflow from a campaign directory.
+  coordinator        Show which coordinator this host administers and how (identity).
   backlog            Inspect and control coordinator workflows; includes legacy file helpers.
   diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
   schedules          Inspect and control schedules and trigger history.
@@ -60,12 +62,17 @@ Commands:
   install-service    Install a per-user background service (Linux systemd).
   uninstall-service  Remove the background service.
   worker-exchange    Restricted SSH worker endpoint (control/artifact-receive/artifact-send).
+  coordinator-exchange  Restricted SSH coordinator-admin endpoint (one operation word).
   version            Print the version.
 
 Global flags:
   --config PATH      Configuration file (default: $XDG_CONFIG_HOME/t3-steward/config.yaml)
   --dry-run          Force dry-run mode regardless of the configuration.
   --log-level LEVEL  debug, info, warn or error.
+
+Exit codes for commands that talk to the coordinator:
+  0 answered, 3 client configuration, 4 authentication, 5 unavailable,
+  6 timeout, 7 protocol, 8 refused by the coordinator, 1 anything else.
 
 Environment variables prefixed with T3_STEWARD_ override the configuration
 file (for example T3_STEWARD_T3_URL, T3_STEWARD_DRY_RUN).
@@ -74,7 +81,9 @@ file (for example T3_STEWARD_T3_URL, T3_STEWARD_DRY_RUN).
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		// A transport failure exits with its class so that automation can
+		// branch without parsing prose. Everything else keeps exit 1.
+		os.Exit(backlogadmin.ExitCodeFor(err))
 	}
 }
 
@@ -132,7 +141,7 @@ func run(args []string) error {
 			return cmdUIArchive(g, sub)
 		}
 		return cmdArchive(g, sub)
-	case "backlog", "diagnose", "worker", "campaign":
+	case "backlog", "diagnose", "worker", "campaign", "coordinator":
 		// Sub-commands parse their own arguments; only --config and
 		// --dry-run style globals are shared, taken from the environment here.
 		paths, err := config.DefaultPaths()
@@ -151,6 +160,9 @@ func run(args []string) error {
 		}
 		if cmd == "worker" {
 			return cmdWorker(g, sub)
+		}
+		if cmd == "coordinator" {
+			return cmdCoordinator(g, sub)
 		}
 		if cmd == "campaign" {
 			return cmdCampaign(g, sub)
@@ -277,6 +289,15 @@ func run(args []string) error {
 			return errors.New("worker-exchange needs exactly one fixed operation")
 		}
 		return cmdWorkerExchange(g, fs.Arg(0))
+	case "coordinator-exchange":
+		if fs.NArg() == 1 && isHelp(fs.Arg(0)) {
+			fmt.Print(coordinatorExchangeUsage)
+			return nil
+		}
+		if fs.NArg() != 1 {
+			return errors.New("coordinator-exchange needs exactly one fixed operation")
+		}
+		return cmdCoordinatorExchange(g, fs.Arg(0))
 	default:
 		return fmt.Errorf("unknown command %q (try --help)", cmd)
 	}

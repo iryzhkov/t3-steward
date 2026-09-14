@@ -17,8 +17,11 @@ import (
 // exchange. Every identity in it comes from the coordinator's own validated
 // configuration; nothing is taken from the SSH invocation or its environment.
 type RemoteServerConfig struct {
-	CoordinatorID      string
-	Credentials        AdminCredentials
+	CoordinatorID string
+	// Clients are the admin clients this coordinator accepts, by principal.
+	// A frame naming a principal that is not here cannot be authenticated,
+	// because there is no credential to verify it against.
+	Clients            map[string]AdminCredentials
 	Relay              LocalClient
 	Replay             *RemoteReplayStore
 	MaxRequestBytes    int64
@@ -34,8 +37,16 @@ type RemoteServer struct {
 }
 
 func NewRemoteServer(config RemoteServerConfig) (*RemoteServer, error) {
-	if config.CoordinatorID == "" || !config.Credentials.Complete() {
-		return nil, errors.New("coordinator-exchange: a coordinator id and complete admin credentials are required")
+	if config.CoordinatorID == "" || len(config.Clients) == 0 {
+		return nil, errors.New("coordinator-exchange: a coordinator id and at least one admin client are required")
+	}
+	for principal, credentials := range config.Clients {
+		if principal == "" || !credentials.Complete() {
+			return nil, fmt.Errorf("coordinator-exchange: admin client %q has incomplete credentials", principal)
+		}
+		if credentials.ClientPrincipal != principal {
+			return nil, fmt.Errorf("coordinator-exchange: admin client %q resolves to principal %q", principal, credentials.ClientPrincipal)
+		}
 	}
 	if config.MaxRequestBytes <= 0 || config.MaxArtifactBytes <= 0 || config.MaxSubmissionBytes <= 0 {
 		return nil, errors.New("coordinator-exchange: byte limits must be positive")
@@ -66,22 +77,22 @@ func (s *RemoteServer) Serve(ctx context.Context, operation string, in io.Reader
 	if err != nil {
 		return err
 	}
-	request, protocolErr := s.validate(operation, frame)
+	request, credentials, protocolErr := s.validate(operation, frame)
 	if protocolErr != nil {
-		return s.refuse(frame, operation, protocolErr)
+		return s.refuse(operation, protocolErr)
 	}
 	if s.config.Replay == nil || !mutatingOperation(operation) {
-		return s.relay(ctx, frame, operation, request, buffered, out)
+		return s.relay(ctx, frame, operation, request, credentials, buffered, out)
 	}
 	digest, err := frameDigest(frame)
 	if err != nil {
-		return s.refuse(frame, operation, &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: err.Error(), RequestID: frame.RequestID})
+		return s.refuse(operation, &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: err.Error(), RequestID: frame.RequestID})
 	}
-	transaction, err := s.config.Replay.Begin(s.config.Credentials.ClientPrincipal, frame.RequestID, digest)
+	transaction, err := s.config.Replay.Begin(credentials.ClientPrincipal, frame.RequestID, digest)
 	if err != nil {
 		var protocolErr *workerproto.ProtocolError
 		if errors.As(err, &protocolErr) {
-			return s.refuse(frame, operation, protocolErr)
+			return s.refuse(operation, protocolErr)
 		}
 		return err
 	}
@@ -94,7 +105,7 @@ func (s *RemoteServer) Serve(ctx context.Context, operation string, in io.Reader
 		}
 		return nil
 	}
-	response, _, err := s.answer(ctx, frame, operation, request, buffered)
+	response, _, err := s.answer(ctx, frame, operation, request, credentials, buffered)
 	if err != nil {
 		return err
 	}
@@ -122,51 +133,55 @@ func mutatingOperation(operation string) bool {
 }
 
 // validate checks the frame's authority and integrity before any local effect.
-func (s *RemoteServer) validate(operation string, frame remoteFrame) (localRequest, *workerproto.ProtocolError) {
+func (s *RemoteServer) validate(operation string, frame remoteFrame) (localRequest, AdminCredentials, *workerproto.ProtocolError) {
 	var request localRequest
+	var credentials AdminCredentials
 	if frame.Version != RemoteTransportVersion {
-		return request, &workerproto.ProtocolError{Code: workerproto.ErrorUnsupportedVersion, Message: "unsupported admin frame version", RequestID: frame.RequestID}
+		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorUnsupportedVersion, Message: "unsupported admin frame version", RequestID: frame.RequestID}
 	}
 	if frame.SessionID == "" || frame.RequestID == "" || frame.Sequence < 1 {
-		return request, &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: "session, request and positive sequence are required", RequestID: frame.RequestID}
+		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: "session, request and positive sequence are required", RequestID: frame.RequestID}
 	}
 	if frame.Operation != operation {
-		return request, &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: "frame operation does not match the invoked operation", RequestID: frame.RequestID}
+		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: "frame operation does not match the invoked operation", RequestID: frame.RequestID}
 	}
 	if frame.Recipient != s.config.CoordinatorID {
-		return request, &workerproto.ProtocolError{Code: workerproto.ErrorAuthorization, Message: "recipient is not this coordinator", RequestID: frame.RequestID}
+		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorAuthorization, Message: "recipient is not this coordinator", RequestID: frame.RequestID}
 	}
-	if frame.Sender != s.config.Credentials.ClientPrincipal ||
-		frame.Authentication.Principal != s.config.Credentials.ClientPrincipal ||
-		frame.Authentication.KeyID != s.config.Credentials.ClientKeyID {
-		return request, &workerproto.ProtocolError{Code: workerproto.ErrorAuthentication, Message: "principal or key id does not match a configured admin client", RequestID: frame.RequestID}
+	// The claimed principal selects which configured credential to check
+	// against, exactly as a key id would. It proves nothing until the
+	// signature over that credential's secret verifies.
+	credentials, known := s.config.Clients[frame.Sender]
+	if !known || frame.Authentication.Principal != credentials.ClientPrincipal ||
+		frame.Authentication.KeyID != credentials.ClientKeyID {
+		return request, AdminCredentials{}, &workerproto.ProtocolError{Code: workerproto.ErrorAuthentication, Message: "principal or key id does not match a configured admin client", RequestID: frame.RequestID}
 	}
 	now := s.config.Now()
 	if frame.Deadline.IsZero() || !now.Before(frame.Deadline) {
-		return request, &workerproto.ProtocolError{Code: workerproto.ErrorTimeout, Message: "request deadline expired", RequestID: frame.RequestID}
+		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorTimeout, Message: "request deadline expired", RequestID: frame.RequestID}
 	}
 	if frame.SentAt.IsZero() || frame.SentAt.Before(now.Add(-s.config.MaxClockSkew)) || frame.SentAt.After(now.Add(s.config.MaxClockSkew)) {
-		return request, &workerproto.ProtocolError{Code: workerproto.ErrorAuthentication, Message: "request timestamp is outside the allowed skew", RequestID: frame.RequestID}
+		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorAuthentication, Message: "request timestamp is outside the allowed skew", RequestID: frame.RequestID}
 	}
-	if err := verifyRemoteFrame(frame, s.config.Credentials.ClientSecret); err != nil {
+	if err := verifyRemoteFrame(frame, credentials.ClientSecret); err != nil {
 		var protocolErr *workerproto.ProtocolError
 		if errors.As(err, &protocolErr) {
-			return request, protocolErr
+			return request, credentials, protocolErr
 		}
-		return request, &workerproto.ProtocolError{Code: workerproto.ErrorAuthentication, Message: err.Error(), RequestID: frame.RequestID}
+		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorAuthentication, Message: err.Error(), RequestID: frame.RequestID}
 	}
 	decoder := json.NewDecoder(bytes.NewReader(frame.Payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		return request, &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: "invalid operation envelope: " + err.Error(), RequestID: frame.RequestID}
+		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: "invalid operation envelope: " + err.Error(), RequestID: frame.RequestID}
 	}
 	if request.Version != LocalTransportVersion || request.Operation != operation {
-		return request, &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: "operation envelope does not match the frame", RequestID: frame.RequestID}
+		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: "operation envelope does not match the frame", RequestID: frame.RequestID}
 	}
 	// The remote client does not get to say who it is. Its claimed principal
 	// is discarded and replaced by the identity the signature proved.
 	if request.RemoteAdmin != nil {
-		return request, &workerproto.ProtocolError{Code: workerproto.ErrorAuthorization, Message: "a remote client may not assert its own principal", RequestID: frame.RequestID}
+		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorAuthorization, Message: "a remote client may not assert its own principal", RequestID: frame.RequestID}
 	}
 	if request.Query != nil {
 		request.Query.Principal = Principal{}
@@ -176,7 +191,7 @@ func (s *RemoteServer) validate(operation string, frame remoteFrame) (localReque
 	}
 	if request.Operation == localOperationSubmission &&
 		(request.SubmissionSize <= 0 || request.SubmissionSize > s.config.MaxSubmissionBytes) {
-		return request, &workerproto.ProtocolError{
+		return request, credentials, &workerproto.ProtocolError{
 			Code: workerproto.ErrorLimit,
 			Message: fmt.Sprintf("submission archive of %d bytes exceeds this coordinator's limit of %d bytes",
 				request.SubmissionSize, s.config.MaxSubmissionBytes),
@@ -184,16 +199,16 @@ func (s *RemoteServer) validate(operation string, frame remoteFrame) (localReque
 		}
 	}
 	request.RemoteAdmin = &RemoteAdminAssertion{
-		Principal:   s.config.Credentials.ClientPrincipal,
+		Principal:   credentials.ClientPrincipal,
 		Coordinator: s.config.CoordinatorID,
 		RequestID:   frame.RequestID,
 	}
-	return request, nil
+	return request, credentials, nil
 }
 
 // answer relays the verified request to the coordinator over its owner-only
 // socket and signs whatever came back.
-func (s *RemoteServer) answer(ctx context.Context, frame remoteFrame, operation string, request localRequest, body io.Reader) (remoteFrame, io.ReadCloser, error) {
+func (s *RemoteServer) answer(ctx context.Context, frame remoteFrame, operation string, request localRequest, credentials AdminCredentials, body io.Reader) (remoteFrame, io.ReadCloser, error) {
 	response, stream, err := s.config.Relay.exchange(ctx, request, body)
 	if err != nil {
 		class := ClassOf(err)
@@ -202,7 +217,7 @@ func (s *RemoteServer) answer(ctx context.Context, frame remoteFrame, operation 
 		}
 		response = localResponse{Version: LocalTransportVersion, Error: err.Error(), ErrorClass: class}
 	}
-	signed, signErr := s.sign(frame, operation, response)
+	signed, signErr := s.sign(frame, operation, response, credentials)
 	if signErr != nil {
 		if stream != nil {
 			_ = stream.Close()
@@ -214,8 +229,8 @@ func (s *RemoteServer) answer(ctx context.Context, frame remoteFrame, operation 
 
 // relay answers an operation that is not replay-protected, streaming artifact
 // content after the response frame.
-func (s *RemoteServer) relay(ctx context.Context, frame remoteFrame, operation string, request localRequest, body io.Reader, out io.Writer) error {
-	response, stream, err := s.answer(ctx, frame, operation, request, body)
+func (s *RemoteServer) relay(ctx context.Context, frame remoteFrame, operation string, request localRequest, credentials AdminCredentials, body io.Reader, out io.Writer) error {
+	response, stream, err := s.answer(ctx, frame, operation, request, credentials, body)
 	if err != nil {
 		return err
 	}
@@ -237,15 +252,15 @@ func (s *RemoteServer) relay(ctx context.Context, frame remoteFrame, operation s
 	return err
 }
 
-func (s *RemoteServer) sign(request remoteFrame, operation string, response localResponse) (remoteFrame, error) {
+func (s *RemoteServer) sign(request remoteFrame, operation string, response localResponse, credentials AdminCredentials) (remoteFrame, error) {
 	frame, err := newRemoteFrame(operation, request.SessionID, "response-"+request.RequestID,
 		s.config.CoordinatorID, request.Sender, request.Sequence, s.config.Now(), request.Deadline, response)
 	if err != nil {
 		return remoteFrame{}, err
 	}
 	frame.InReplyTo = request.RequestID
-	if err := signRemoteFrame(&frame, s.config.Credentials.CoordinatorPrincipal,
-		s.config.Credentials.CoordinatorKeyID, s.config.Credentials.CoordinatorSecret); err != nil {
+	if err := signRemoteFrame(&frame, credentials.CoordinatorPrincipal,
+		credentials.CoordinatorKeyID, credentials.CoordinatorSecret); err != nil {
 		return remoteFrame{}, err
 	}
 	return frame, nil
@@ -254,6 +269,6 @@ func (s *RemoteServer) sign(request remoteFrame, operation string, response loca
 // refuse answers an unauthenticated or malformed request. When the frame
 // itself could not be attributed the refusal goes back as a process error,
 // because signing an answer for an unknown peer would be a lie.
-func (s *RemoteServer) refuse(frame remoteFrame, operation string, protocolErr *workerproto.ProtocolError) error {
+func (s *RemoteServer) refuse(operation string, protocolErr *workerproto.ProtocolError) error {
 	return fmt.Errorf("coordinator-exchange refused %s: %w", operation, protocolErr)
 }
