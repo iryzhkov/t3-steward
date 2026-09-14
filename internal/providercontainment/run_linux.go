@@ -52,6 +52,17 @@ func run(ctx context.Context, spec Spec, streams Streams) error {
 		}
 		ownedBindings = append(ownedBindings, binding)
 	}
+	for _, identity := range []*directoryresource.Identity{spec.Inputs, spec.Dependencies} {
+		if identity == nil {
+			continue
+		}
+		if identity.Registration.WorkerID != spec.WorkerID || identity.Registration.Writable {
+			return errors.New("capsule storage must be read-only and belong to this worker")
+		}
+		// Capsule storage is mounted read-only below. The exclusive binding here is
+		// only how an overlap with owned storage or a dataset alias is refused.
+		ownedBindings = append(ownedBindings, directoryresource.Binding{Identity: *identity, Access: directoryresource.ReadWrite})
+	}
 	for i := range ownedBindings {
 		for j := 0; j < i; j++ {
 			if directoryresource.Conflicts(ownedBindings[i], ownedBindings[j]) {
@@ -126,6 +137,16 @@ func run(ctx context.Context, spec Spec, streams Streams) error {
 			return err
 		}
 		mount(f, []string{"/home/agent", "/workspace", "/control"}[i], true)
+	}
+	for i, identity := range []*directoryresource.Identity{spec.Inputs, spec.Dependencies} {
+		if identity == nil {
+			continue
+		}
+		f, err := directoryresource.Reopen(*identity, identity.Registration)
+		if err != nil {
+			return err
+		}
+		mount(f, []string{"/inputs", "/dependencies"}[i], false)
 	}
 	for i, binding := range spec.Directories {
 		f, err := directoryresource.Reopen(binding.Identity, binding.Identity.Registration)

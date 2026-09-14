@@ -316,7 +316,16 @@ type V2LocalWorker struct {
 	CoordinatorEpoch int64 `yaml:"coordinator_epoch"`
 }
 
+type V2Containment struct {
+	RuntimePaths   []string `yaml:"runtime_paths"`
+	Node           string   `yaml:"node"`
+	T3Entry        string   `yaml:"t3_entry"`
+	OpenCodeBinary string   `yaml:"opencode_binary"`
+	ProviderHosts  []string `yaml:"provider_hosts"`
+}
+
 type V2Worker struct {
+	Containment   *V2Containment        `yaml:"containment,omitempty"`
 	Connection    string                `yaml:"connection" json:"connection,omitempty"`
 	Address       string                `yaml:"address"`
 	Epoch         string                `yaml:"epoch"`

@@ -2,8 +2,9 @@ package workerruntime
 
 import (
 	"context"
-	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 )
 
 func taskTimeoutExpired(record AttemptRecord, now time.Time) bool {
@@ -20,7 +21,7 @@ func taskTimeoutExpired(record AttemptRecord, now time.Time) bool {
 func (r *Runtime) expireTask(ctx context.Context, id string, record AttemptRecord) error {
 	switch record.Phase {
 	case PhaseClaimed, PhasePreparing, PhasePrepared:
-		return r.markFailed(id, "task timeout expired before dispatch")
+		return r.markFailed(ctx, id, "task timeout expired before dispatch")
 	}
 	pkg := record.Package.Package
 	if record.Phase != PhaseStopping {
@@ -36,5 +37,5 @@ func (r *Runtime) expireTask(ctx context.Context, id string, record AttemptRecor
 	if err != nil || (observed != backlog.DispatchThreadStopped && observed != backlog.DispatchThreadMissing) {
 		return nil
 	}
-	return r.markFailed(id, "task timeout expired; execution stopped")
+	return r.markFailed(ctx, id, "task timeout expired; execution stopped")
 }

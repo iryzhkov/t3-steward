@@ -192,10 +192,14 @@ func (r *Runtime) AcceptOffers(ctx context.Context, offers workerproto.Assignmen
 }
 
 // containSuperseded proves that an older execution of the same assignment can
-// no longer produce effects before its record is replaced.
+// no longer produce effects before its record is replaced. A phase before
+// dispatch can still own a prepared contained server, so its custody is
+// released through the driver instead of being assumed absent.
 func (r *Runtime) containSuperseded(ctx context.Context, existing AttemptRecord) error {
 	switch existing.Phase {
-	case PhaseClaimed, PhasePreparing, PhasePrepared, PhaseCompleted, PhaseFailed:
+	case PhaseClaimed, PhasePreparing, PhasePrepared:
+		return r.stopPreparation(ctx, existing.Package.Package)
+	case PhaseCompleted, PhaseFailed:
 		return nil
 	}
 	if existing.Package.Package.Identity.ThreadID == "" {
@@ -566,7 +570,7 @@ func (r *Runtime) recoverUnknown(ctx context.Context, id string, record AttemptR
 		if reason == "" {
 			reason = "execution could not be recovered"
 		}
-		return r.markFailed(id, "T3 thread never started: "+reason)
+		return r.markFailed(ctx, id, "T3 thread never started: "+reason)
 	default:
 		return nil
 	}
@@ -605,9 +609,12 @@ func (r *Runtime) prepare(ctx context.Context, id string) error {
 	}
 	workspace, err := r.driver.Prepare(ctx, record.Package.Package)
 	if err != nil {
+		if errors.Is(err, ErrContainedCustody) {
+			return err
+		}
 		attempts := record.PrepareAttempts + 1
 		if attempts >= MaxPrepareAttempts {
-			if markErr := r.markFailed(id, fmt.Sprintf("preparation failed %d times; last error: %v", attempts, err)); markErr != nil {
+			if markErr := r.markFailed(ctx, id, fmt.Sprintf("preparation failed %d times; last error: %v", attempts, err)); markErr != nil {
 				return markErr
 			}
 			return nil
@@ -629,7 +636,7 @@ func (r *Runtime) prepare(ctx context.Context, id string) error {
 		return fmt.Errorf("preparation attempt %d failed: %w", attempts, err)
 	}
 	if strings.TrimSpace(workspace) == "" {
-		return r.markFailed(id, "preparation returned an empty workspace")
+		return r.markFailed(ctx, id, "preparation returned an empty workspace")
 	}
 	return r.markPhase(id, PhasePrepared, "", workspace, "")
 }
@@ -706,7 +713,7 @@ func (r *Runtime) reconcileDispatch(ctx context.Context, id string) error {
 				return r.markPhase(id, PhaseStopped, "", record.WorkspacePath, pkg.Identity.ThreadID)
 			case observeErr == nil && observed == backlog.DispatchThreadMissing:
 				// No thread exists, so the failed create had no provider effect.
-				return r.markFailed(id, "T3 thread creation failed: "+err.Error())
+				return r.markFailed(ctx, id, "T3 thread creation failed: "+err.Error())
 			default:
 				return r.markUnknown(id, "T3 create outcome is ambiguous: "+err.Error())
 			}
@@ -738,8 +745,7 @@ func (r *Runtime) stop(ctx context.Context, id string) error {
 	case PhaseCompleted, PhaseFailed:
 		return nil
 	case PhaseClaimed, PhasePreparing, PhasePrepared:
-		// Nothing has been dispatched; stopping means the attempt ends here.
-		return r.markFailed(id, "stopped by the coordinator before dispatch")
+		return r.markFailed(ctx, id, "stopped by the coordinator before dispatch")
 	case PhaseStopped:
 		if err := r.driver.StopThread(ctx, record.Package.Package); err != nil {
 			return fmt.Errorf("stop settlement is unproven: %w", err)
@@ -800,7 +806,7 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 		// cleanup, a rollback) can never be finalized; publish the failure
 		// instead of retrying collection forever.
 		if _, exists, err := r.driver.InspectWorkspace(ctx, record.Package.Package); err == nil && !exists {
-			if err := r.markFailed(id, "workspace is missing; outputs cannot be collected"); err != nil {
+			if err := r.markFailed(ctx, id, "workspace is missing; outputs cannot be collected"); err != nil {
 				return err
 			}
 			return r.collect(ctx, id)
@@ -977,7 +983,20 @@ func (r *Runtime) markUnknown(id, detail string) error {
 
 // markFailed records a deterministic, effect-free failure. The coordinator
 // observes it as a completed assignment and collects a failed result.
-func (r *Runtime) markFailed(id, detail string) error {
+func (r *Runtime) markFailed(ctx context.Context, id, detail string) error {
+	// A missing provider thread does not prove its dedicated server or verifier
+	// stopped. Confirm custody before publishing any terminal failure.
+	state, err := r.journal.snapshot()
+	if err != nil {
+		return err
+	}
+	record, exists := state.Attempts[id]
+	if !exists {
+		return errors.New("failed assignment missing from journal")
+	}
+	if err := r.stopPreparation(ctx, record.Package.Package); err != nil {
+		return err
+	}
 	r.log.Warn("attempt failed on the worker", "assignment", id, "detail", detail)
 	return r.markPhase(id, PhaseFailed, detail, "", "")
 }
@@ -1048,6 +1067,18 @@ func observation(record AttemptRecord, now time.Time) domain.WorkerAssignmentObs
 		State: state, Control: control, ThreadID: record.ThreadID,
 		WorkspacePath: record.WorkspacePath, ObservedAt: now,
 	}
+}
+
+// stopPreparation releases any contained execution custody the driver holds for
+// this package. Drivers without contained preparation hold none.
+func (r *Runtime) stopPreparation(ctx context.Context, pkg workerproto.ExecutionPackage) error {
+	stopper, ok := r.driver.(interface {
+		StopPreparation(context.Context, workerproto.ExecutionPackage) error
+	})
+	if !ok {
+		return nil
+	}
+	return stopper.StopPreparation(ctx, pkg)
 }
 
 func terminalPhase(phase Phase) bool {

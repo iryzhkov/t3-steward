@@ -156,7 +156,7 @@ func validateSetupProfile(profile SetupProfile) error {
 	if profile.Timeout <= 0 {
 		return fmt.Errorf("project catalog: setup profile %q timeout must be positive", profile.Name)
 	}
-	if len(profile.Commands) == 0 {
+	if len(profile.Commands) == 0 && profile.Name != "steward-fresh-empty" {
 		return fmt.Errorf("project catalog: setup profile %q must declare at least one command", profile.Name)
 	}
 	for index, command := range profile.Commands {

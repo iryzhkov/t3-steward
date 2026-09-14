@@ -113,6 +113,9 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	if err != nil {
 		return "", err
 	}
+	if d.containedManager(pkg) != nil && (len(environment.Setup.Commands) != 0 || len(environment.RequiredCredentials) != 0) {
+		return "", errors.New("contained preparation requires an empty setup profile and no host credentials")
+	}
 	if pkg.Environment.CatalogRevision != d.Config.CatalogRevision {
 		return "", errors.New("execution package catalog revision is stale")
 	}
@@ -121,6 +124,22 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 			return "", errors.New("prepare workspace: required credential resolver is unavailable")
 		}
 		if err := d.Credentials.Require(ctx, environment.RequiredCredentials); err != nil {
+			return "", err
+		}
+	}
+	// Workspace publication precedes the durable server launch. Recovery must
+	// reuse that publication, including when the readiness reply was lost.
+	if manager := d.containedManager(pkg); manager != nil {
+		workspace := filepath.Join(d.workspacePath(pkg), "workspace")
+		if info, err := os.Lstat(workspace); err == nil {
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return "", errors.New("contained workspace is not a real directory")
+			}
+			if err := manager.PrepareExecution(ctx, pkg, workspace); err != nil {
+				return "", err
+			}
+			return workspace, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return "", err
 		}
 	}
@@ -183,10 +202,15 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	if err != nil {
 		return "", err
 	}
+	if manager := d.containedManager(pkg); manager != nil {
+		if err := manager.PrepareExecution(ctx, pkg, prepared.WorkspaceDir); err != nil {
+			return "", err
+		}
+	}
 	return prepared.WorkspaceDir, nil
 }
 
-func (d *LocalDriver) InspectWorkspace(_ context.Context, pkg workerproto.ExecutionPackage) (string, bool, error) {
+func (d *LocalDriver) InspectWorkspace(ctx context.Context, pkg workerproto.ExecutionPackage) (string, bool, error) {
 	workspace := filepath.Join(d.workspacePath(pkg), "workspace")
 	info, err := os.Lstat(workspace)
 	if errors.Is(err, os.ErrNotExist) {
@@ -197,6 +221,16 @@ func (d *LocalDriver) InspectWorkspace(_ context.Context, pkg workerproto.Execut
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return "", false, errors.New("prepared workspace is not a real directory")
+	}
+	if manager := d.containedManager(pkg); manager != nil {
+		if _, err := manager.load(pkg); errors.Is(err, os.ErrNotExist) {
+			return workspace, false, nil
+		} else if err != nil {
+			return workspace, false, err
+		}
+		if _, err := manager.Attach(ctx, pkg); err != nil {
+			return workspace, false, err
+		}
 	}
 	return workspace, true, nil
 }
@@ -321,6 +355,9 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 }
 
 func (d *LocalDriver) StopThread(ctx context.Context, pkg workerproto.ExecutionPackage) error {
+	if manager := d.containedManager(pkg); manager != nil {
+		return manager.Quiesce(ctx, pkg, true)
+	}
 	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
 		return err
 	} else if scoped != nil {
@@ -359,6 +396,13 @@ func (d *LocalDriver) StopThread(ctx context.Context, pkg workerproto.ExecutionP
 }
 
 func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
+	if !d.scoped {
+		if manager := d.containedManager(pkg); manager != nil {
+			if err := manager.Quiesce(ctx, pkg, false); err != nil {
+				return err
+			}
+		}
+	}
 	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
 		return err
 	} else if scoped != nil {
@@ -453,6 +497,13 @@ func (d *LocalDriver) Settle(ctx context.Context, pkg workerproto.ExecutionPacka
 // collectable T3 outcome. The final message carries the failure marker and
 // reason so the coordinator records why the attempt failed.
 func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.ExecutionPackage, workspace, failure string) error {
+	if !d.scoped {
+		if manager := d.containedManager(pkg); manager != nil {
+			if err := manager.Quiesce(ctx, pkg, true); err != nil {
+				return err
+			}
+		}
+	}
 	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
 		return err
 	} else if scoped != nil {
@@ -486,7 +537,12 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 	return nil
 }
 
-func (d *LocalDriver) Cleanup(_ context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
+func (d *LocalDriver) Cleanup(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
+	if manager := d.containedManager(pkg); manager != nil {
+		if err := manager.Quiesce(ctx, pkg, true); err != nil {
+			return err
+		}
+	}
 	if d.Config.RetainWorkspaces {
 		return nil
 	}
@@ -591,7 +647,8 @@ func packageRecords(pkg workerproto.ExecutionPackage, now time.Time) (domain.Tas
 	task := domain.Task{
 		ID: pkg.Identity.TaskID, WorkflowID: pkg.Identity.WorkflowID, Name: pkg.Identity.TaskID,
 		Class: pkg.Class, Outputs: pkg.Outputs, Verification: pkg.Verification,
-		Routes: []domain.ProviderRoute{pkg.Route}, ResourceLocks: append([]string(nil), pkg.Environment.ResourceLocks...),
+		DirectoryBindings: pkg.Environment.DirectoryBindings,
+		Routes:            []domain.ProviderRoute{pkg.Route}, ResourceLocks: append([]string(nil), pkg.Environment.ResourceLocks...),
 		MaxTurns: pkg.Limits.MaxTurns, NotBefore: pkg.NotBefore, Deadline: pkg.Deadline, ExpiresAt: pkg.ExpiresAt,
 	}
 	attempt := domain.Attempt{
@@ -605,7 +662,10 @@ func packageRecords(pkg workerproto.ExecutionPackage, now time.Time) (domain.Tas
 
 func (d *LocalDriver) executionRecords(pkg workerproto.ExecutionPackage) (backlog.ResolvedEnvironment, domain.Task, domain.Attempt, error) {
 	if len(pkg.Environment.DirectoryBindings) > 0 {
-		return backlog.ResolvedEnvironment{}, domain.Task{}, domain.Attempt{}, errors.New("directory execution requires an integrated provider containment backend")
+		manager := d.containedManager(pkg)
+		if manager == nil || manager.Profile == nil || pkg.Environment.Type != backlog.EnvironmentFresh || pkg.Route.ProviderInstanceID != "opencode" {
+			return backlog.ResolvedEnvironment{}, domain.Task{}, domain.Attempt{}, errors.New("directory execution requires an integrated provider containment backend")
+		}
 	}
 	workspaceType := pkg.Environment.Type
 	if workspaceType == "" {

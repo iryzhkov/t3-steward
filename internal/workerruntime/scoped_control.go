@@ -15,8 +15,8 @@ type ExecutionT3Provider interface {
 
 // scopedDriver isolates all thread operations, including recovery and failure
 // collection. A failed attachment never falls back to the shared host T3.
-// This does not enable preparation: the directory backend guard stays closed
-// until provider setup, verification containment and custody are integrated.
+// Preparation requires an explicit contained provider profile; attachment and
+// retained result recovery do not fall back to the host's shared T3.
 func (d *LocalDriver) scopedDriver(ctx context.Context, pkg workerproto.ExecutionPackage) (*LocalDriver, error) {
 	if d.Config.DryRun || d.scoped || len(pkg.Environment.DirectoryBindings) == 0 {
 		return nil, nil
@@ -34,5 +34,8 @@ func (d *LocalDriver) scopedDriver(ctx context.Context, pkg workerproto.Executio
 	copy := *d
 	copy.T3 = control
 	copy.scoped = true
+	if manager := d.containedManager(pkg); manager != nil {
+		copy.Finalizer.Processes = containedVerifier{manager: *manager, pkg: pkg}
+	}
 	return &copy, nil
 }

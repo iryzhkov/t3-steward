@@ -112,6 +112,9 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		Supervisor: providercontainment.Supervisor{Root: filepath.Join(journalRoot, "contained"), Executable: executable},
 		Timeout:    options.Settings.Transport.RequestTimeout.D(),
 	}
+	if profile := options.Settings.Workers[options.WorkerID].Containment; profile != nil {
+		scoped.Profile = &ContainedProfile{RuntimePaths: append([]string(nil), profile.RuntimePaths...), Node: profile.Node, T3Entry: profile.T3Entry, OpenCodeBinary: profile.OpenCodeBinary, ProviderHosts: append([]string(nil), profile.ProviderHosts...)}
+	}
 	driver, err := NewLocalDriver(LocalDriver{
 		Config: LocalDriverConfig{
 			CatalogRevision:  binding.CatalogRevision,

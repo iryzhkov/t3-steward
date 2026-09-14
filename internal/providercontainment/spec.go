@@ -20,6 +20,9 @@ type Spec struct {
 	Command       []string                    `json:"command"`
 	// Cwd is /workspace or exactly /data/N for direct existing-directory use.
 	Cwd string `json:"cwd,omitempty"`
+	// Immutable capsule inputs remain separate from the writable output mount.
+	Inputs       *directoryresource.Identity `json:"inputs,omitempty"`
+	Dependencies *directoryresource.Identity `json:"dependencies,omitempty"`
 	// Control is separate owned storage exposing only this namespace\'s API socket.
 	Control     *directoryresource.Identity `json:"control,omitempty"`
 	ControlPort int                         `json:"controlPort,omitempty"`

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
+	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/providercontainment"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
@@ -34,6 +35,7 @@ type ContainedAttachment struct {
 // There is intentionally no Start callback: incomplete preparation, missing
 // services and uncertain identities never authorize a replacement execution.
 type ContainedT3 struct {
+	Profile    *ContainedProfile
 	Supervisor providercontainment.Supervisor
 	Timeout    time.Duration
 	observe    func(context.Context, providercontainment.Launch) (providercontainment.SupervisorObservation, error)
@@ -52,6 +54,24 @@ func (p ContainedT3) observation(ctx context.Context, r ContainedAttachment) err
 	}
 	if obs.Stopped || obs.State != "active/running" || obs.InvocationID == "" || obs.InvocationID != r.InvocationID {
 		return errors.New("contained supervisor invocation is unavailable or changed")
+	}
+	if r.Launch.Spec.Workspace.Registration.Path != "" {
+		identities := []directoryresource.Identity{r.Launch.Spec.Home, r.Launch.Spec.Workspace}
+		for _, binding := range r.Launch.Spec.Directories {
+			identities = append(identities, binding.Identity)
+		}
+		for _, identity := range []*directoryresource.Identity{r.Launch.Spec.Inputs, r.Launch.Spec.Dependencies} {
+			if identity != nil {
+				identities = append(identities, *identity)
+			}
+		}
+		for _, identity := range identities {
+			file, err := directoryresource.Reopen(identity, identity.Registration)
+			if err != nil {
+				return err
+			}
+			file.Close()
+		}
 	}
 	return nil
 }
@@ -198,6 +218,14 @@ func (p ContainedT3) Remember(ctx context.Context, pkg workerproto.ExecutionPack
 }
 
 func (p ContainedT3) Attach(ctx context.Context, pkg workerproto.ExecutionPackage) (T3Control, error) {
+	_, planErr := p.preparation(pkg)
+	if p.Profile != nil || !errors.Is(planErr, os.ErrNotExist) {
+		if retained, err := p.stoppedControl(ctx, pkg); err != nil {
+			return nil, err
+		} else if retained != nil {
+			return retained, nil
+		}
+	}
 	r, err := p.load(pkg)
 	if err != nil {
 		return nil, fmt.Errorf("contained preparation receipt unavailable: %w", err)

@@ -69,7 +69,7 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 			}
 			project.SetupProfile = emptyProfile
 			if !slices.ContainsFunc(profiles, func(p backlog.SetupProfile) bool { return p.Name == emptyProfile }) {
-				profiles = append(profiles, backlog.SetupProfile{Name: emptyProfile, Commands: []string{"true"}, Timeout: time.Minute})
+				profiles = append(profiles, backlog.SetupProfile{Name: emptyProfile, Timeout: time.Minute})
 			}
 		}
 		if project.SetupProfile == "" {

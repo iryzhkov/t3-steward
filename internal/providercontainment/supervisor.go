@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 )
 
 // Supervisor owns launch intent outside the worker's lifetime. Root is private,
@@ -87,6 +89,11 @@ func (s Supervisor) identity(launch Launch) (unit, dir, digest string, payload [
 
 func sourcePaths(spec Spec) []string {
 	result := append([]string(nil), spec.RuntimePaths...)
+	for _, identity := range []*directoryresource.Identity{spec.Inputs, spec.Dependencies} {
+		if identity != nil {
+			result = append(result, identity.Registration.Path)
+		}
+	}
 	if spec.Control != nil {
 		result = append(result, spec.Control.Registration.Path)
 	}
