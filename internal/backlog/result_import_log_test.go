@@ -78,6 +78,55 @@ func TestCoordinatorResultImporterAcceptsAResultCarryingPreflightEvidence(t *tes
 	}
 }
 
+// Discarding an unimportable result is not enough on its own. The attempt has
+// already reached verifying, so with its result thrown away it can neither
+// settle nor be retried — retry is invalid from verifying — and an operator's
+// only remaining move is to cancel it by hand. A live campaign left eight
+// attempts stranded exactly that way.
+func TestCoordinatorResultImporterSettlesARejectedResult(t *testing.T) {
+	ctx := context.Background()
+	now := coordinatorTestTime
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	task := testTask("task")
+	task.Verification = nil
+	attempt := domain.Attempt{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: task.ID, Number: 1, Progress: domain.ProgressVerifying, Control: domain.ControlStopped, Revision: 3, AssignmentID: "assignment-1", UpdatedAt: now}
+	assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "worker-a", WorkerEpoch: "worker-epoch-1", State: domain.AssignmentCompleted, ThreadID: "thread-1", Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{{ID: attempt.WorkflowRunID, WorkflowID: task.WorkflowID}}, Tasks: []domain.Task{task}, Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A log naming an identity that is neither the thread archive nor preflight
+	// evidence can never be imported, whatever is retried.
+	data := resultUploadOpener{"artifact-unknown": []byte("whatever\n")}
+	objects := []workerproto.ArtifactObject{
+		resultObject("artifact-unknown", "results/mystery.log", "log", "text/plain; charset=utf-8", data["artifact-unknown"]),
+	}
+	manifest := resultManifest(now, assignment, objects)
+	response := workerproto.ArtifactUploadResponse{Manifest: manifest, Custody: resultCustody(t, manifest, "coordinator")}
+	importer := CoordinatorResultImporter{CoordinatorID: "coordinator", CoordinatorEpoch: 1, Store: store, Artifacts: CoordinatorArtifactStore{Root: filepath.Join(t.TempDir(), "artifacts"), Catalog: store}, MaxArtifactBytes: 4096, MaxTotalBytes: 16384, Now: func() time.Time { return now.Add(time.Minute) }}
+
+	report, err := importer.Import(ctx, response, data)
+	if !errors.Is(err, ErrResultImportRejected) {
+		t.Fatalf("error = %v, want a rejection", err)
+	}
+	if len(report.Transition) != 1 {
+		t.Fatalf("a rejected result left the attempt unsettled: %#v", report.Transition)
+	}
+	settled := report.Transition[0].Attempt
+	if !settled.Progress.Terminal() {
+		t.Fatalf("attempt progress = %q, want a terminal state so the run can proceed", settled.Progress)
+	}
+	// The reason has to survive as durable state, not only as a log line.
+	if !strings.Contains(settled.Failure, "result import rejected") {
+		t.Fatalf("attempt failure = %q, want the rejection recorded", settled.Failure)
+	}
+}
+
 // A result whose objects violate the contract can never import, so it must be
 // rejected in a way the caller can recognise and discard. The coordinator
 // reconciles a worker in one pass, so an ordinary error aborts that pass and

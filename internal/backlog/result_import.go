@@ -95,7 +95,7 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 			// retry, so returning a plain error made the worker's whole
 			// reconciliation pass fail forever and took unrelated results on that
 			// worker down with it.
-			return report, fmt.Errorf("%w: %w", ErrResultImportRejected, err)
+			return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now, err)
 		}
 		artifacts = append(artifacts, artifact)
 		if artifact.Kind == domain.ArtifactOutput {
@@ -125,8 +125,9 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		return report, err
 	}
 	if summaries != 1 || logs != 1 || verifications > len(task.Verification) {
-		return report, fmt.Errorf("%w: evidence counts summary=%d log=%d verification=%d (preflight logs %d), want 1, 1, at most %d",
-			ErrResultImportRejected, summaries, logs, verifications, preflightLogs, len(task.Verification))
+		return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now,
+			fmt.Errorf("evidence counts summary=%d log=%d verification=%d (preflight logs %d), want 1, 1, at most %d",
+				summaries, logs, verifications, preflightLogs, len(task.Verification)))
 	}
 	payloads := make([][]byte, len(manifest.Objects))
 	for index, object := range manifest.Objects {
@@ -165,7 +166,8 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 			// this result names an identity that is not its own. No retry can
 			// resolve that, and leaving it retryable blocks every other result
 			// the worker holds.
-			return report, fmt.Errorf("%w: artifact %q: %w", ErrResultImportRejected, artifact.ID, err)
+			return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now,
+				fmt.Errorf("artifact %q: %w", artifact.ID, err))
 		}
 		if err != nil {
 			return report, err
@@ -229,6 +231,41 @@ func resultImportBinding(records sqlite.CoordinatorRecords, manifest workerproto
 		return assignment, attempt, task, errors.New("result import task is missing")
 	}
 	return assignment, attempt, task, nil
+}
+
+// rejectResult settles an attempt whose result can never be imported.
+//
+// Discarding the result is not enough on its own. The attempt reached verifying
+// when the worker produced a result, and with that result thrown away it can
+// neither settle nor be retried, because retry is invalid from verifying. It was
+// stranded, and an operator's only move was to cancel it by hand.
+//
+// The rejection is therefore recorded as the attempt's terminal outcome, with
+// the reason, so the run can proceed and the failure is durable state rather
+// than a line in a log. This is the dead-letter record: the work is not lost
+// silently, it is lost visibly.
+func (i CoordinatorResultImporter) rejectResult(
+	ctx context.Context,
+	report ResultImportReport,
+	outcomeID string,
+	attempt domain.Attempt,
+	observedAt time.Time,
+	now time.Time,
+	cause error,
+) (ResultImportReport, error) {
+	rejection := fmt.Errorf("%w: %w", ErrResultImportRejected, cause)
+	transition, err := ReconcileTurnOutcomes(ctx, i.Store, []domain.TurnOutcome{{
+		ID: outcomeID, AttemptID: attempt.ID, Marker: domain.TurnOutcomeDone,
+		VerificationPassed: false, Failure: rejection.Error(), ObservedAt: observedAt,
+	}}, now)
+	if err != nil {
+		// Report the settlement failure rather than the rejection: the caller
+		// must not acknowledge a result whose attempt is still unsettled, or the
+		// attempt would be stranded exactly as before.
+		return report, fmt.Errorf("settle rejected result for attempt %q: %w", attempt.ID, err)
+	}
+	report.Transition = transition
+	return report, rejection
 }
 
 // ErrResultImportRejected marks a result that can never be imported, because its
