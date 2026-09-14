@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.40] - 2026-09-14
+
+### Fixed
+
+- Capture preserves an artifact identity the producer already established.
+  Preflight evidence was given a fresh identity during capture, so it arrived at
+  the coordinator as a generic artifact and failed the import contract, which
+  refused the whole result. Outputs and verification reports, which have no
+  identity before capture, are unchanged.
+
 ## [0.11.0-rc.39] - 2026-09-14
 
 ### Fixed
