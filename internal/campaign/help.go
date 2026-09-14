@@ -167,10 +167,12 @@ plan cannot print the ref. It contains the workflow run and task IDs, which are
 assigned at ingestion, so a static plan reports the declaration and the revision
 and leaves the ref to the run.
 
-Lifetime: the refs of a run are released together once the run has settled, and
-a run that is carrying a commit into a rerun holds its source. A rerun may only
-be created from a run that has already finished, so a rerun that has to carry a
-declared commit is best created while the source run's refs are still there.
+Lifetime: the commit stays reachable for as long as its provenance record is
+retained, and the refs of a run are released together when retention removes
+them. A rerun pins its source run against retention, so a commit a rerun
+carries is kept for as long as the new run needs it. A rerun asked for after the
+record has been pruned is refused, naming the artifact it could not read, rather
+than starting a task whose input is missing.
 `
 
 // StaticVersusDynamicHelp is the one paragraph an agent needs to choose between

@@ -230,6 +230,31 @@ func (s CampaignRefStore) List(workflowRunID string) ([]CommitProvenance, error)
 	return records, nil
 }
 
+// Runs reports every workflow run this store currently holds commits for,
+// sorted. It is what lets a worker act on the coordinator's keep list: the
+// difference between what it holds and what it was told to keep is what it may
+// release.
+func (s CampaignRefStore) Runs() ([]string, error) {
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(filepath.Join(s.Root, "provenance"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list campaign commit runs: %w", err)
+	}
+	var runs []string
+	for _, entry := range entries {
+		if entry.IsDir() && safePathComponent(entry.Name()) {
+			runs = append(runs, entry.Name())
+		}
+	}
+	sort.Strings(runs)
+	return runs, nil
+}
+
 // ReleaseRun drops every campaign ref of one workflow run. It is the end of the
 // declared campaign lifetime, and nothing else removes these refs.
 //

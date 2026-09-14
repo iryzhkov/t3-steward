@@ -166,9 +166,13 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		Inventory:        binding.Inventory,
 		ObserveInventory: observerForSettings(options),
 		LiveTaskWait:     options.LiveTaskWait,
-		Retention:        options.Settings.Storage.Retention.D(),
-		Now:              options.Now,
-		Logger:           options.Logger,
+		// The same store the finalizer publishes into. The coordinator
+		// states which campaigns are still alive on every snapshot
+		// exchange, and this is what acts on that statement.
+		CampaignRefs: campaignRefs,
+		Retention:    options.Settings.Storage.Retention.D(),
+		Now:          options.Now,
+		Logger:       options.Logger,
 	}, journal, driver)
 	if err != nil {
 		return nil, err

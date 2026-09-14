@@ -69,7 +69,7 @@ The stable message kinds are:
 | Kind | Direction | Meaning |
 | --- | --- | --- |
 | capabilities | both | Negotiate supported versions, capabilities, and byte limits. |
-| snapshot / observations | worker to coordinator | Publish worker inventory and assignment observations. |
+| snapshot / observations | worker to coordinator | Publish worker inventory and assignment observations. The request carries the coordinator's statements about this worker: which of its assignments are parked, and which campaign runs' commits it must keep. |
 | offers | coordinator to worker | Offer an assignment with its immutable execution package. |
 | claims | worker to coordinator | Claim offers using assignment and lease identities. |
 | lease-renewals | worker to coordinator | Renew exact epoch-bound leases. |
@@ -90,6 +90,18 @@ applying the catalog's own repository and ref validators. A value that Git could
 read as an option is refused as a value on both sides. The answer carries a
 classification, an exit code and a bounded, redacted detail; it reports that a
 credential reference resolved and never what it resolved to.
+
+Two coordinator statements ride on the snapshot request rather than on messages
+of their own, because the worker has no read of coordinator state and must be
+told in an exchange it already makes. Both are complete lists rather than
+incremental ones, both carry an explicit reported flag so that an older
+coordinator's silence is not read as a statement, both are bounded at 1024
+entries, and both are refused whole rather than applied in part. The parked list
+names the assignments that are waiting; the campaign list names the runs whose
+declared commits the worker must keep reachable, and the worker releases every
+run in its campaign ref store that the list does not name. Releasing is
+idempotent, and a release that fails is retried on the next exchange rather than
+failing the exchange.
 
 Authorization is an allowlist per authenticated principal. A valid signature does
 not grant access to an unlisted message kind. Workers report observations and

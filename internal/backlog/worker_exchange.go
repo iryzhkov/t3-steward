@@ -90,12 +90,15 @@ func parkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 	if err != nil {
 		return workerproto.SnapshotRequest{}, fmt.Errorf("load live task waits: %w", err)
 	}
-	if len(live) == 0 {
-		return request, nil
-	}
 	records, err := waits.LoadCoordinatorRecords(ctx)
 	if err != nil {
 		return workerproto.SnapshotRequest{}, err
+	}
+	if err := stateCampaignRefs(&request, records); err != nil {
+		return workerproto.SnapshotRequest{}, err
+	}
+	if len(live) == 0 {
+		return request, nil
 	}
 	revisions := make(map[string]int64, len(records.Attempts))
 	for _, attempt := range records.Attempts {
