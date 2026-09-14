@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.45] - 2026-09-14
+
+### Fixed
+
+- `campaign plan` no longer reports a dependency mount path. Artifacts are
+  mounted in a directory named for the producing task's ID, which is assigned at
+  ingestion, so the projection was rendering a path built from the manifest name
+  that looked authoritative and never existed. A static plan may report only what
+  the manifest knows.
+- Explaining a task also resolves its declared provider routes, so a task that no
+  enrolled worker can serve is reported as blocked rather than eligible.
+
 ## [0.11.0-rc.44] - 2026-09-14
 
 ### Added
