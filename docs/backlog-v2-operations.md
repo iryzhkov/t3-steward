@@ -243,10 +243,27 @@ The refs live in a worker-owned store under `storage.workspaces/campaign-refs`,
 which is a sibling of the repository cache and is never pruned. Publishing the
 same commit again is idempotent; publishing a different commit under a ref that
 already exists is refused, because a successor has already been told what that
-ref means. The refs of a run are released together when its campaign lifetime
-ends. A task that promised a commit it did not produce fails with
+ref means. A task that promised a commit it did not produce fails with
 `declared commit "<name>": <cause>`, in the same way a missing declared output
 fails.
+
+The campaign lifetime ends when the run does. On every coordinator boundary,
+after the projection has advanced the sinks, the refs of every run whose sink is
+terminal are released together, so a finished campaign stops pinning commits and
+the store does not grow without bound. Releasing is idempotent, a run that
+declared no commit costs nothing, and a release that fails is logged as
+`campaign commit release failed` and retried on the next boundary: the run has
+already finished and nothing about its outcome depends on a ref being deleted.
+
+A settled run is held back while another run that has not settled carries one of
+its artifacts by reference, which is how a rerun consumes an ancestor's declared
+commit. Two limits are worth knowing. The coordinator releases the refs in the
+store under its own `storage.workspaces`, so a worker on another host keeps its
+own store until a worker-protocol release exists. And a rerun may only be
+created from a run that has already finished, so a rerun authored well after its
+source settled finds the source's refs already released; a rerun that has to
+carry a declared commit should therefore be created while the source run's
+commits are still listed by `refs/campaigns/<source run>/`.
 
 ### Legacy intake quarantine
 

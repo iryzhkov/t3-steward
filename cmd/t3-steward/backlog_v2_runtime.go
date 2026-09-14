@@ -283,15 +283,20 @@ type coordinatorWorkerTicker interface {
 	Tick(context.Context, backlog.QuotaBridgeReport) coordinatorWorkerTickReport
 }
 
+type coordinatorCampaignRefTicker interface {
+	Tick(context.Context) backlog.CampaignRefReleaseReport
+}
+
 type coordinatorBoundaryCycle struct {
-	projection backlog.ProjectionStore
-	quota      coordinatorQuotaTicker
-	schedules  coordinatorScheduleTicker
-	planning   coordinatorPlanningTicker
-	admin      coordinatorAdminExecutor
-	legacy     coordinatorLegacyTicker
-	workers    coordinatorWorkerTicker
-	logger     *slog.Logger
+	projection   backlog.ProjectionStore
+	quota        coordinatorQuotaTicker
+	schedules    coordinatorScheduleTicker
+	planning     coordinatorPlanningTicker
+	admin        coordinatorAdminExecutor
+	legacy       coordinatorLegacyTicker
+	workers      coordinatorWorkerTicker
+	campaignRefs coordinatorCampaignRefTicker
+	logger       *slog.Logger
 }
 
 func (c coordinatorBoundaryCycle) Tick(ctx context.Context) {
@@ -329,6 +334,19 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 			c.logger.Error("task-bound wait expiry failed", "error", err)
 		} else if len(expired) != 0 {
 			c.logger.Warn("task-bound waits exceeded their maximum duration", "waits", len(expired))
+		}
+	}
+	// A settled run stops pinning its declared commits. This runs after the
+	// projection so that a run which settled on this boundary is released on
+	// this boundary, and its failures are operational: a ref that could not be
+	// deleted is retried next time and changes nothing about the finished run.
+	if c.campaignRefs != nil {
+		report := c.campaignRefs.Tick(ctx)
+		for _, err := range report.Errors {
+			c.logger.Error("campaign commit release failed", "error", err)
+		}
+		if len(report.Released) != 0 {
+			c.logger.Info("campaign commits released", "runs", len(report.Released))
 		}
 	}
 	quotaHealthy := true
@@ -530,7 +548,16 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			Quarantine: store,
 		},
 		workers: workers,
-		logger:  logger,
+		// The campaign ref store is the one this host's worker publishes into,
+		// a sibling of the repository cache under the same configured
+		// workspaces root. A worker on another host keeps its own store, which
+		// this coordinator cannot reach; releasing those needs a worker
+		// protocol message that does not exist yet.
+		campaignRefs: &backlog.CampaignRefReleaseReconciler{
+			Records: store.LoadCoordinatorRecords,
+			Refs:    backlog.CampaignRefStore{Root: filepath.Join(cfg.BacklogV2.Storage.Workspaces, "campaign-refs")},
+		},
+		logger: logger,
 	}
 	logger.Info("backlog-v2 coordinator authority acquired",
 		"coordinator", cfg.BacklogV2.Coordinator.ID,
