@@ -144,7 +144,10 @@ func TestBacklogQuarantineReleaseNeedsAReason(t *testing.T) {
 	if fake.calls != 0 {
 		t.Fatalf("an incomplete release reached the coordinator %d time(s)", fake.calls)
 	}
-	if isReadQueryKind(backlogadmin.QuarantineReleaseKind) {
+	// The read allowlist became the declared query-kind set while this test was
+	// being written. A release must not be in it: every query kind is a read
+	// view by definition, and a release is a mutation with its own audit record.
+	if backlogadmin.IsQueryKind(backlogadmin.QuarantineReleaseKind) {
 		t.Fatal("a release is authorized as a read")
 	}
 	if err := authorizeRemoteAdmin(backlogadmin.Action{
