@@ -21,6 +21,9 @@ type fakeDriver struct {
 	workspace      string
 	workspaceReady bool
 	prepareErr     error
+	// prepareErrs fails consecutive preparation attempts differently, the way a
+	// real repository does when the first failure leaves debris behind.
+	prepareErrs []error
 	// observeAfterCreateErr makes every observation after the scripted ones
 	// fail, so a failed create cannot be disproved.
 	observeAfterCreateErr error
@@ -43,6 +46,11 @@ type fakeDriver struct {
 
 func (d *fakeDriver) Prepare(context.Context, workerproto.ExecutionPackage) (string, error) {
 	d.prepareCalls++
+	if len(d.prepareErrs) != 0 {
+		err := d.prepareErrs[0]
+		d.prepareErrs = d.prepareErrs[1:]
+		return "", err
+	}
 	if d.prepareErr != nil {
 		return "", d.prepareErr
 	}

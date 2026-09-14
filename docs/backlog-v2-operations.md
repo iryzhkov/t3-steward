@@ -189,10 +189,15 @@ fields are `version`, `name`, `class`, `placement`, `environment`,
   `options`, and `quota_pool`. Task routes replace inherited workflow
   routes.
 - Each task declares `prompt_file`; optional fields include `needs`,
-  `inputs_from`, `outputs`, `verify`, placement, routes,
+  `inputs_from`, `outputs`, `commits`, `verify`, placement, routes,
   `resource_locks`, class, `importance`, `difficulty`,
   `estimated_cost`, `max_turns`, `not_before`, `deadline`, and
   `expires_at`.
+- `commits` declares Git commits a task produces for its successors. Each entry
+  has a `name`, which must be one safe path component, and an optional
+  `revision` resolved in the producing workspace, defaulting to `HEAD`. A
+  successor consumes a commit by that name through `inputs_from`, exactly as it
+  consumes a declared output.
 - Defaults are importance 3, difficulty 3, and max turns 3. Times are RFC 3339.
 - `inputs_from` may name only declared output paths from dependency ancestors.
   A dependency releases only after explicit success and successful verification.
@@ -200,10 +205,88 @@ fields are `version`, `name`, `class`, `placement`, `environment`,
   paths, traversal, unsafe globs, missing files, escaping symlinks, cycles,
   duplicate names, impossible placement, and unknown fields are rejected.
 
+### Campaign-scoped commits
+
+A commit a downstream task needs is represented explicitly. A task declares it,
+the coordinator keeps it reachable for the campaign's lifetime under the durable
+ref `refs/campaigns/<workflow-run>/<task>/<name>`, and the successor resolves it
+by that reference. Nothing searches the repository cache for it: the cache is
+refreshed with `git remote update --prune`, which deletes any ref the origin
+does not have, so a commit parked there survives only until the next task
+refreshes the cache.
+
+Declare the commit on the producing task and consume it by name:
+
+```yaml
+tasks:
+  implement:
+    prompt_file: prompts/implement.md
+    commits:
+      - name: implementation
+        revision: HEAD
+  review:
+    prompt_file: prompts/review.md
+    needs: [implement]
+    inputs_from:
+      implement: [implementation]
+```
+
+The retained artifact of a declared commit is its provenance record, a JSON
+document naming the producing task, the base commit the workspace was pinned to,
+the repository, the commit and its campaign ref. The successor receives it at
+`.t3/dependencies/implement/implementation` and starts with the commit already
+fetched into its own checkout under the same ref, so
+`git rev-parse refs/campaigns/<workflow-run>/implement/implementation` resolves
+there. Preparation records the pin it started from at `.t3/base-commit`.
+
+The refs live in a worker-owned store under `storage.workspaces/campaign-refs`,
+which is a sibling of the repository cache and is never pruned. Publishing the
+same commit again is idempotent; publishing a different commit under a ref that
+already exists is refused, because a successor has already been told what that
+ref means. The refs of a run are released together when its campaign lifetime
+ends. A task that promised a commit it did not produce fails with
+`declared commit "<name>": <cause>`, in the same way a missing declared output
+fails.
+
+### Legacy intake quarantine
+
+The drop directory is read-only to the coordinator: the coordinator re-reads it
+on every cycle and never drains it. A file that can never be accepted, such as
+one naming a project no alias maps or one whose content changed after its key
+was accepted, is therefore recorded as quarantined in the submission journal,
+reported once with its reason, and skipped silently on every later cycle.
+
+The quarantine marker is a `quarantined` submission record under the key
+`quarantine:<idempotency key>`. It carries the digest of the exact file bytes it
+was recorded for and the reason it was refused; it never carries workflow or run
+identities, because nothing was accepted. The single report is the coordinator
+log line carrying the reason, and it is durable as one `submission-quarantined`
+audit event per key and digest.
+
+That audit event has no workflow run, so the run-scoped `backlog events
+<workflow-run>` view does not list it. Until a run-less event view exists, an
+operator reads the reason from the log line, and the durable record is in the
+coordinator database in `coordinator_submissions` with state `quarantined`.
+
+Recovery is to change the file. When the content of a quarantined file changes,
+its digest changes, the marker is released, and the submission is attempted
+again and reported again. Removing the file also ends the reports, and the
+marker then stays in the journal as the record of why the intake refused it.
+
 Dependency artifacts appear in the successor workspace at
 `.t3/dependencies/<task>/<output>`. Declared verification commands, output
 capture, checksums, final messages, preparation logs, checkpoints, and other
 retained records belong to the coordinator recovery unit.
+
+A failed preparation retains its log next to the attempt directory as
+`<attempt>.preparation.<ordinal>.log`, with the ordinal counted from 1 in the
+order the preparation attempts ran. Every attempt keeps its own immutable file,
+so reading the first one shows why the preparation started failing rather than
+what the last retry tripped over. The terminal failure of an attempt that
+exhausted its preparation budget reads `preparation failed N times; first error:
+<first>; last error: <last>`; the first error is the causal one. When the log
+itself could not be retained, the retention failure is reported after the
+failure that caused the preparation to fail, never in place of it.
 
 ## Routine administration
 

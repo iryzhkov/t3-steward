@@ -655,8 +655,17 @@ func (r *Runtime) prepare(ctx context.Context, id string) error {
 			return err
 		}
 		attempts := record.PrepareAttempts + 1
+		// The first preparation failure is the one that explains why the
+		// repository could not be prepared; every later one often only
+		// reports the debris the first one left. Keep it durably, before
+		// the terminal decision, and quote both in the terminal reason.
+		first := record.FirstPrepareFailure
+		if first == "" {
+			first = err.Error()
+		}
 		if attempts >= MaxPrepareAttempts {
-			if markErr := r.markFailed(ctx, id, fmt.Sprintf("preparation failed %d times; last error: %v", attempts, err)); markErr != nil {
+			reason := fmt.Sprintf("preparation failed %d times; first error: %s; last error: %v", attempts, first, err)
+			if markErr := r.markFailed(ctx, id, reason); markErr != nil {
 				return markErr
 			}
 			return nil
@@ -667,6 +676,9 @@ func (r *Runtime) prepare(ctx context.Context, id string) error {
 				return nil
 			}
 			current.PrepareAttempts = attempts
+			if current.FirstPrepareFailure == "" {
+				current.FirstPrepareFailure = first
+			}
 			current.Failure = "preparation failed: " + err.Error()
 			current.UpdatedAt = r.now()
 			state.Attempts[id] = current

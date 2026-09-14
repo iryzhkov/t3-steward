@@ -137,6 +137,16 @@ type WorkflowRun struct {
 type ArtifactDeclaration struct {
 	Name      string `json:"name"`
 	MediaType string `json:"mediaType,omitempty"`
+	// Commit declares that this output is a Git commit rather than a file in
+	// the workspace. The retained artifact is the commit's provenance record,
+	// and the commit itself is kept reachable under a campaign-scoped ref.
+	Commit *CommitOutput `json:"commit,omitempty"`
+}
+
+// CommitOutput declares a Git commit a task produces for a downstream task.
+type CommitOutput struct {
+	// Revision is resolved in the producing workspace and defaults to HEAD.
+	Revision string `json:"revision,omitempty"`
 }
 
 // Placement constrains the workers eligible to execute a task.

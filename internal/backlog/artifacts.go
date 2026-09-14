@@ -29,6 +29,12 @@ type AttemptFinalization struct {
 	// artifact added afterwards cannot be written at all; it has to take part
 	// in the same pass.
 	Extra []FinalizationArtifact
+	// Repository and BaseCommit describe where the workspace came from. A
+	// declared commit output records both in its provenance, so that a
+	// downstream task knows which repository the commit belongs to and which
+	// commit it was built on.
+	Repository string
+	BaseCommit string
 }
 
 // FinalizationArtifact is evidence captured alongside an attempt's declared
@@ -70,6 +76,9 @@ type AttemptFinalizer struct {
 	Now         func() time.Time
 	NewID       func(kind string) string
 	Processes   ProcessRunner
+	// CampaignRefs keeps a declared commit reachable for the campaign's
+	// lifetime. It is required only by a task that declares one.
+	CampaignRefs CampaignRefStore
 }
 
 // Finalize runs verification, captures immutable artifacts, and returns a strict
@@ -111,7 +120,14 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		relative    string
 	}
 	outputs := make([]outputSource, 0, len(request.Task.Outputs))
+	var commits []domain.ArtifactDeclaration
 	for _, declaration := range request.Task.Outputs {
+		if declaration.Commit != nil {
+			// A declared commit is not a file in the workspace. It is published
+			// under its campaign ref and retained as its provenance record.
+			commits = append(commits, declaration)
+			continue
+		}
 		resolved, resolveErr := safeBundleFile(request.WorkspaceDir, declaration.Name)
 		if resolveErr != nil {
 			if errors.Is(resolveErr, os.ErrNotExist) {
@@ -198,6 +214,50 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			Kind: domain.ArtifactVerification, Name: name, MediaType: "application/json",
 			Size: file.size, SHA256: file.sha256, StoragePath: file.storagePath,
 			Producer: "verification", CreatedAt: now,
+		})
+	}
+
+	for _, declaration := range commits {
+		if f.CampaignRefs.Root == "" {
+			return FinalizedAttempt{}, fmt.Errorf("finalize attempt commit %q: campaign ref store is required", declaration.Name)
+		}
+		provenance, publishErr := f.CampaignRefs.Publish(ctx, PublishCommitRequest{
+			WorkflowRunID: request.Attempt.WorkflowRunID, TaskID: request.Task.ID,
+			Name: declaration.Name, Repository: request.Repository,
+			WorkspaceDir: request.WorkspaceDir, Revision: declaration.Commit.Revision,
+			Base: request.BaseCommit, CreatedAt: now,
+		}, nil)
+		if publishErr != nil {
+			// The task promised a commit and the promise could not be kept.
+			// That is the task's failure, reported with its cause, exactly as a
+			// missing declared output is.
+			failures = append(failures, fmt.Sprintf("declared commit %q: %v", declaration.Name, publishErr))
+			continue
+		}
+		record, marshalErr := MarshalCommitProvenance(provenance)
+		if marshalErr != nil {
+			return FinalizedAttempt{}, fmt.Errorf("finalize attempt commit %q: %w", declaration.Name, marshalErr)
+		}
+		storagePath := filepath.ToSlash(filepath.Join(
+			"runs", request.Attempt.WorkflowRunID, request.Task.ID, request.Attempt.ID,
+			"artifacts", "outputs", declaration.Name,
+		))
+		file, writeErr := writeIngestedFile(
+			bytes.NewReader(record),
+			filepath.Join(stageDir, "artifacts", "outputs", declaration.Name),
+			declaration.Name,
+			storagePath,
+		)
+		if writeErr != nil {
+			return FinalizedAttempt{}, fmt.Errorf("finalize attempt commit %q: %w", declaration.Name, writeErr)
+		}
+		artifacts = append(artifacts, domain.Artifact{
+			ID: f.newID("artifact"), WorkflowRunID: request.Attempt.WorkflowRunID,
+			TaskID: request.Task.ID, AttemptID: request.Attempt.ID,
+			Kind: domain.ArtifactOutput, Name: filepath.ToSlash(declaration.Name),
+			MediaType: "application/json",
+			Size:      file.size, SHA256: file.sha256, StoragePath: file.storagePath,
+			Producer: request.Task.Name, CreatedAt: now,
 		})
 	}
 

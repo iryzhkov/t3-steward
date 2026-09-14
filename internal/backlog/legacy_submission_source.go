@@ -3,6 +3,8 @@ package backlog
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +12,9 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 type SingleTaskSubmitter interface {
@@ -19,8 +24,26 @@ type SingleTaskSubmitter interface {
 type LegacySubmissionReport struct {
 	Accepted []SubmissionResult
 	Skipped  []string
-	Errors   []error
+	// Quarantined names the submissions skipped because their exact content was
+	// already reported as impossible. They are silent on purpose.
+	Quarantined []string
+	Errors      []error
 }
+
+// LegacySubmissionQuarantine durably records intake content that can never be
+// accepted. The drop directory is read-only to the coordinator, so the marker
+// cannot live beside the file it describes.
+type LegacySubmissionQuarantine interface {
+	// QuarantineSubmission records the conflict and reports whether this exact
+	// content was already recorded.
+	QuarantineSubmission(ctx context.Context, key, digest, reason string, at time.Time) (domain.SubmissionRecord, bool, error)
+	LoadSubmissionQuarantine(ctx context.Context, key string) (domain.SubmissionRecord, bool, error)
+	ReleaseSubmissionQuarantine(ctx context.Context, key string) error
+}
+
+// ErrPermanentIntake marks an intake failure that the same content will always
+// produce. Retrying it cannot succeed; only different content can.
+var ErrPermanentIntake = errors.New("legacy submission content can never be accepted")
 
 // LegacySubmissionSource adapts the unchanged owner-controlled Markdown drop
 // directory into durable immutable v2 submissions.
@@ -31,6 +54,11 @@ type LegacySubmissionSource struct {
 	MaxBytes       int64
 	MaxFiles       int
 	AllowedUID     uint32
+	// Quarantine makes a permanent conflict a durable fact reported once. The
+	// source re-reads the drop directory every cycle and never drains it, so
+	// without a quarantine the same impossible file is reported forever.
+	Quarantine LegacySubmissionQuarantine
+	Now        func() time.Time
 }
 
 func (s LegacySubmissionSource) Tick(ctx context.Context) LegacySubmissionReport {
@@ -47,39 +75,112 @@ func (s LegacySubmissionSource) Tick(ctx context.Context) LegacySubmissionReport
 		report.Errors = append(report.Errors, err)
 		return report
 	}
-	tasks, loadErrors := loadLegacyTasksBounded(s.Dir, s.MaxBytes, s.MaxFiles)
+	files, loadErrors := loadLegacyTasksBounded(s.Dir, s.MaxBytes, s.MaxFiles)
 	report.Errors = append(report.Errors, loadErrors...)
-	sort.Slice(tasks, func(i, j int) bool {
-		return tasks[i].ID < tasks[j].ID
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].task.ID < files[j].task.ID
 	})
-	for _, task := range tasks {
+	for _, file := range files {
 		if err := ctx.Err(); err != nil {
 			report.Errors = append(report.Errors, err)
 			return report
 		}
+		task := file.task
 		if !task.IsEnabled() {
 			report.Skipped = append(report.Skipped, task.ID)
 			continue
 		}
+		key := LegacySubmissionKey(task.ID)
+		quarantined, err := s.quarantinedDigest(ctx, key)
+		if err != nil {
+			report.Errors = append(report.Errors, err)
+			continue
+		}
+		if quarantined == file.digest {
+			report.Quarantined = append(report.Quarantined, task.ID)
+			continue
+		}
+		if quarantined != "" {
+			// The content changed, so the reason it was quarantined may no
+			// longer hold. Try it again and report what it does now.
+			if err := s.Quarantine.ReleaseSubmissionQuarantine(ctx, key); err != nil {
+				report.Errors = append(report.Errors, err)
+				continue
+			}
+		}
 		project, ok := s.ProjectAliases[task.Project]
 		if !ok {
-			report.Errors = append(report.Errors,
-				fmt.Errorf("legacy submission %q references unmapped project %q", task.ID, task.Project))
+			s.recordConflict(ctx, &report, task.ID, key, file.digest,
+				fmt.Errorf("legacy submission %q references unmapped project %q: %w", task.ID, task.Project, ErrPermanentIntake))
 			continue
 		}
 		task.Project = project
-		sum := sha256.Sum256([]byte(task.ID))
 		result, err := s.Submitter.SubmitSingleTask(ctx, SingleTaskSubmission{
-			IdempotencyKey: fmt.Sprintf("legacy-%x", sum[:]),
+			IdempotencyKey: key,
 			Task:           task,
 		})
 		if err != nil {
-			report.Errors = append(report.Errors, fmt.Errorf("submit legacy task %q: %w", task.ID, err))
+			submitErr := fmt.Errorf("submit legacy task %q: %w", task.ID, err)
+			if errors.Is(err, domain.ErrSubmissionConflict) {
+				s.recordConflict(ctx, &report, task.ID, key, file.digest, submitErr)
+				continue
+			}
+			report.Errors = append(report.Errors, submitErr)
 			continue
 		}
 		report.Accepted = append(report.Accepted, result)
 	}
 	return report
+}
+
+// LegacySubmissionKey is the durable idempotency key of one legacy task file.
+func LegacySubmissionKey(taskID string) string {
+	sum := sha256.Sum256([]byte(taskID))
+	return fmt.Sprintf("legacy-%x", sum[:])
+}
+
+func (s LegacySubmissionSource) quarantinedDigest(ctx context.Context, key string) (string, error) {
+	if s.Quarantine == nil {
+		return "", nil
+	}
+	record, found, err := s.Quarantine.LoadSubmissionQuarantine(ctx, key)
+	if err != nil {
+		return "", fmt.Errorf("load legacy submission quarantine %q: %w", key, err)
+	}
+	if !found {
+		return "", nil
+	}
+	return record.Digest, nil
+}
+
+// recordConflict reports a permanent conflict exactly once. Without a durable
+// quarantine there is nowhere to record that it was reported, so the caller
+// keeps hearing it on every cycle, which is the behavior this replaces.
+func (s LegacySubmissionSource) recordConflict(
+	ctx context.Context,
+	report *LegacySubmissionReport,
+	taskID, key, digest string,
+	cause error,
+) {
+	if s.Quarantine == nil {
+		report.Errors = append(report.Errors, cause)
+		return
+	}
+	at := time.Now().UTC()
+	if s.Now != nil {
+		at = s.Now().UTC()
+	}
+	_, reported, err := s.Quarantine.QuarantineSubmission(ctx, key, digest, cause.Error(), at)
+	if err != nil {
+		report.Errors = append(report.Errors, cause, fmt.Errorf("quarantine legacy submission %q: %w", taskID, err))
+		return
+	}
+	if reported {
+		report.Quarantined = append(report.Quarantined, taskID)
+		return
+	}
+	report.Errors = append(report.Errors, cause)
+	report.Quarantined = append(report.Quarantined, taskID)
 }
 
 func authenticateLegacySubmissionDir(dir string, allowedUID uint32) error {
@@ -100,7 +201,15 @@ func authenticateLegacySubmissionDir(dir string, allowedUID uint32) error {
 	return nil
 }
 
-func loadLegacyTasksBounded(dir string, maxBytes int64, maxFiles int) ([]Task, []error) {
+// legacySubmissionFile is one parsed drop-directory file and the digest of the
+// exact bytes it was parsed from. The digest decides whether a quarantined key
+// is still describing the same impossible content.
+type legacySubmissionFile struct {
+	task   Task
+	digest string
+}
+
+func loadLegacyTasksBounded(dir string, maxBytes int64, maxFiles int) ([]legacySubmissionFile, []error) {
 	if maxBytes <= 0 || maxFiles <= 0 {
 		return nil, []error{fmt.Errorf("positive legacy submission byte and file limits are required")}
 	}
@@ -108,7 +217,7 @@ func loadLegacyTasksBounded(dir string, maxBytes int64, maxFiles int) ([]Task, [
 	if err != nil {
 		return nil, []error{fmt.Errorf("read legacy submission directory: %w", err)}
 	}
-	var tasks []Task
+	var tasks []legacySubmissionFile
 	var errs []error
 	remaining := maxBytes
 	files := 0
@@ -159,7 +268,8 @@ func loadLegacyTasksBounded(dir string, maxBytes int64, maxFiles int) ([]Task, [
 			errs = append(errs, parseErr)
 			continue
 		}
-		tasks = append(tasks, task)
+		sum := sha256.Sum256(raw)
+		tasks = append(tasks, legacySubmissionFile{task: task, digest: hex.EncodeToString(sum[:])})
 	}
 	return tasks, errs
 }

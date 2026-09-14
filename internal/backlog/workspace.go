@@ -158,6 +158,9 @@ type WorkspacePreparer struct {
 	Cache       RepositoryCache
 	GitBinary   string
 	Processes   ProcessRunner
+	// CampaignRefs resolves a commit a dependency refers to. It is required
+	// only by a task whose dependencies include a commit.
+	CampaignRefs CampaignRefStore
 }
 
 // Prepare resolves a ref once, creates an independent checkout, materializes
@@ -195,9 +198,13 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 	}
 	fail := func(cause error) (PreparedWorkspace, error) {
 		_ = logFile.Close()
-		retained := filepath.Join(parent, request.Attempt.ID+".preparation.log")
-		if copyErr := copyFileExclusive(logPath, retained, 0o600); copyErr != nil {
-			cause = fmt.Errorf("%w (retain preparation log: %v)", cause, copyErr)
+		retained, retainErr := retainPreparationLog(logPath, parent, request.Attempt.ID, 0o600)
+		if retainErr != nil {
+			// The retention failure is reported after the failure that caused
+			// the preparation to fail, and never in place of it: the causal
+			// error is the one an operator has to read first, and it is the one
+			// that stays unwrappable.
+			cause = fmt.Errorf("%w (retain preparation log: %v)", cause, retainErr)
 			retained = ""
 		}
 		return PreparedWorkspace{}, &PreparationError{Err: cause, LogPath: retained}
@@ -245,6 +252,12 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 		return fail(err)
 	}
 	if err := exposeWorkspaceInputs(workspaceDir); err != nil {
+		return fail(err)
+	}
+	if err := writeWorkspaceBaseCommit(workspaceDir, commit); err != nil {
+		return fail(err)
+	}
+	if err := p.resolveDependencyCommits(ctx, filepath.Join(stageDir, "dependencies"), workspaceDir, request, logFile); err != nil {
 		return fail(err)
 	}
 
@@ -416,6 +429,52 @@ func (p WorkspacePreparer) materializeDependencyView(stageDir string, request Wo
 	return nil
 }
 
+// resolveDependencyCommits makes every commit this task's dependencies refer to
+// reachable in its own workspace, under the campaign ref that names it. The
+// commit is resolved by that reference; nothing searches a repository cache for
+// it, and the cache may have been pruned since the commit was produced.
+func (p WorkspacePreparer) resolveDependencyCommits(
+	ctx context.Context,
+	dependenciesDir, workspaceDir string,
+	request WorkspacePreparation,
+	log io.Writer,
+) error {
+	return filepath.WalkDir(dependenciesDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return fmt.Errorf("resolve dependency commits: %w", err)
+		}
+		if entry.IsDir() || !entry.Type().IsRegular() {
+			return nil
+		}
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return fmt.Errorf("resolve dependency commits: %w", readErr)
+		}
+		provenance, parseErr := ParseCommitProvenance(raw)
+		if parseErr != nil {
+			// An ordinary dependency file is not a commit reference.
+			return nil
+		}
+		if provenance.WorkflowRunID != request.WorkflowRunID {
+			return fmt.Errorf("dependency commit %s belongs to run %q, want %q",
+				provenance.Ref, provenance.WorkflowRunID, request.WorkflowRunID)
+		}
+		if request.Environment.Type == EnvironmentFresh {
+			return fmt.Errorf("dependency commit %s cannot be resolved in a fresh workspace", provenance.Ref)
+		}
+		if p.CampaignRefs.Root == "" {
+			return fmt.Errorf("dependency commit %s needs a campaign ref store", provenance.Ref)
+		}
+		if err := p.CampaignRefs.FetchInto(ctx, workspaceDir, provenance, log); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
 func exposeWorkspaceInputs(workspaceDir string) error {
 	metadataDir := filepath.Join(workspaceDir, ".t3")
 	if info, err := os.Lstat(metadataDir); err == nil {
@@ -435,6 +494,39 @@ func exposeWorkspaceInputs(workspaceDir string) error {
 		}
 	}
 	return nil
+}
+
+// workspaceBaseCommitFile records the commit the workspace was pinned to. A
+// task that produces a commit reports that pin as its base, and by the time it
+// finishes, its own HEAD no longer tells anyone what it started from.
+const workspaceBaseCommitFile = ".t3/base-commit"
+
+func writeWorkspaceBaseCommit(workspaceDir, commit string) error {
+	if commit == "" {
+		return nil
+	}
+	path := filepath.Join(workspaceDir, filepath.FromSlash(workspaceBaseCommitFile))
+	if err := os.WriteFile(path, []byte(commit+"\n"), 0o400); err != nil {
+		return fmt.Errorf("prepare workspace: record base commit: %w", err)
+	}
+	return nil
+}
+
+// WorkspaceBaseCommit reports the commit a prepared workspace started from. It
+// returns an empty string for a workspace that has no pinned source.
+func WorkspaceBaseCommit(workspaceDir string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(workspaceDir, filepath.FromSlash(workspaceBaseCommitFile)))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read workspace base commit: %w", err)
+	}
+	commit := strings.TrimSpace(string(raw))
+	if !validGitObjectID(commit) {
+		return "", fmt.Errorf("workspace base commit %q is not a commit ID", commit)
+	}
+	return commit, nil
 }
 
 func (p WorkspacePreparer) git() string {
@@ -478,6 +570,36 @@ func runLoggedCommandOutput(ctx context.Context, log io.Writer, dir, program str
 		fmt.Fprintf(log, "! %v\n", err)
 	}
 	return output, err
+}
+
+// MaxRetainedPreparationLogs bounds how many per-attempt preparation logs one
+// attempt can retain. It is deliberately larger than any retry budget so that a
+// retry never has to overwrite the evidence of the attempt before it.
+const MaxRetainedPreparationLogs = 64
+
+// PreparationLogName is the immutable evidence path one preparation attempt
+// writes, numbered from 1 in the order the attempts ran.
+func PreparationLogName(attemptID string, ordinal int) string {
+	return fmt.Sprintf("%s.preparation.%d.log", attemptID, ordinal)
+}
+
+// retainPreparationLog copies the staged log to the first unused ordinal for
+// this attempt. The attempt ID alone does not change between retries, so naming
+// the file from it would let the second preparation attempt collide with the
+// first and lose the evidence of the original cause. Each attempt therefore
+// gets its own immutable file and no attempt can overwrite its predecessor.
+func retainPreparationLog(source, parent, attemptID string, mode os.FileMode) (string, error) {
+	for ordinal := 1; ordinal <= MaxRetainedPreparationLogs; ordinal++ {
+		destination := filepath.Join(parent, PreparationLogName(attemptID, ordinal))
+		err := copyFileExclusive(source, destination, mode)
+		if err == nil {
+			return destination, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("attempt %q already retains %d preparation logs", attemptID, MaxRetainedPreparationLogs)
 }
 
 func copyFileExclusive(source, destination string, mode os.FileMode) error {

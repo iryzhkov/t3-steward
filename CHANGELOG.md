@@ -6,6 +6,31 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A task may declare Git commits it produces with `commits`, and a successor may
+  consume one by name through `inputs_from`. The commit is kept reachable under
+  the durable ref `refs/campaigns/<workflow-run>/<task>/<name>`, which pruning
+  the repository cache does not touch, and its retained artifact is a provenance
+  record naming the producing task, the base commit, the repository and the ref.
+  The successor resolves the commit through that reference instead of finding it
+  in a shared cache that the next `git remote update --prune` may empty.
+
+### Fixed
+
+- Each preparation attempt now retains its own evidence file,
+  `<attempt>.preparation.<ordinal>.log`. The retained log was named from the
+  attempt ID alone, and the attempt ID does not change across retries, so the
+  second attempt could not create the file: the real Git error was wrapped in a
+  "file exists" complaint and the log pointer was dropped. The first causal
+  failure is also kept durably and quoted in the terminal reason as
+  `preparation failed N times; first error: <first>; last error: <last>`.
+
+- A legacy drop file that can never be accepted is now quarantined after one
+  durable report instead of producing the same coordinator error on every
+  cycle for as long as the coordinator runs. The marker records the digest of
+  the file it refused, so changed content is attempted, and reported, again.
+
 ## [0.11.0-rc.48] - 2026-09-14
 
 ### Fixed

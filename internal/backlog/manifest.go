@@ -77,6 +77,7 @@ type ManifestTask struct {
 	Needs         ManifestNeeds               `yaml:"needs"`
 	InputsFrom    map[string][]string         `yaml:"inputs_from"`
 	Outputs       []string                    `yaml:"outputs"`
+	Commits       []ManifestCommit            `yaml:"commits"`
 	Verify        []string                    `yaml:"verify"`
 	Placement     ManifestPlacement           `yaml:"placement"`
 	Resources     ManifestResources           `yaml:"resources"`
@@ -92,6 +93,15 @@ type ManifestTask struct {
 	ExpiresAt     *time.Time                  `yaml:"expires_at"`
 
 	placementImpossible bool
+}
+
+// ManifestCommit declares a Git commit a task produces for a downstream task.
+// The commit is kept reachable under its campaign ref for the campaign's
+// lifetime, and the retained artifact of that name is its provenance record.
+type ManifestCommit struct {
+	Name string `yaml:"name"`
+	// Revision is resolved in the producing workspace and defaults to HEAD.
+	Revision string `yaml:"revision"`
 }
 
 // ParseManifest strictly decodes, defaults, and validates a version 2
@@ -385,6 +395,9 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 	if err := validateUniquePaths(prefix+" outputs", task.Outputs, false); err != nil {
 		return err
 	}
+	if err := validateManifestCommits(prefix, task); err != nil {
+		return err
+	}
 	if err := validateNonEmptyUnique(prefix+" verification command", task.Verify); err != nil {
 		return err
 	}
@@ -416,9 +429,15 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 		if err := validateNonEmptyUnique(prefix+" inputs_from "+producer, artifacts); err != nil {
 			return err
 		}
-		outputs := make(map[string]struct{}, len(tasks[producer].Outputs))
+		outputs := make(map[string]struct{}, len(tasks[producer].Outputs)+len(tasks[producer].Commits))
 		for _, output := range tasks[producer].Outputs {
 			outputs[output] = struct{}{}
+		}
+		// A declared commit is consumed by name like any other declared output.
+		// What the successor receives is its provenance record, and the commit
+		// itself is fetched by the campaign ref that record names.
+		for _, commit := range tasks[producer].Commits {
+			outputs[commit.Name] = struct{}{}
 		}
 		for _, artifact := range artifacts {
 			if err := validateRelativePath(artifact, false); err != nil {
@@ -428,6 +447,31 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 				return fmt.Errorf("%s references undeclared artifact %q from %s", prefix, artifact, producer)
 			}
 		}
+	}
+	return nil
+}
+
+func validateManifestCommits(prefix string, task ManifestTask) error {
+	declared := make(map[string]struct{}, len(task.Outputs)+len(task.Commits))
+	for _, output := range task.Outputs {
+		declared[output] = struct{}{}
+	}
+	for _, commit := range task.Commits {
+		if !safePathComponent(commit.Name) {
+			return fmt.Errorf("%s commit name %q must be one safe path component", prefix, commit.Name)
+		}
+		if err := validateGitRef(CampaignRef("run", "task", commit.Name)); err != nil {
+			return fmt.Errorf("%s commit name %q: %w", prefix, commit.Name, err)
+		}
+		if commit.Revision != "" && commit.Revision != "HEAD" {
+			if err := validateGitRef(commit.Revision); err != nil {
+				return fmt.Errorf("%s commit %q revision: %w", prefix, commit.Name, err)
+			}
+		}
+		if _, duplicate := declared[commit.Name]; duplicate {
+			return fmt.Errorf("%s declares %q more than once", prefix, commit.Name)
+		}
+		declared[commit.Name] = struct{}{}
 	}
 	return nil
 }
