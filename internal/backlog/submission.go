@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -178,7 +179,7 @@ func directorySubmissionDigest(ctx context.Context, bundleDir string, maxBytes i
 		return "", fmt.Errorf("submission has %d files, limit is %d", len(paths), maxFiles)
 	}
 	sort.Strings(paths)
-	hash := sha256.New()
+	digest := NewSubmissionDigest()
 	remaining := maxBytes
 	for _, relative := range paths {
 		if err := ctx.Err(); err != nil {
@@ -213,13 +214,51 @@ func directorySubmissionDigest(ctx context.Context, bundleDir string, maxBytes i
 			return "", fmt.Errorf("submission exceeds %d bytes", maxBytes)
 		}
 		remaining -= int64(len(content))
-		hash.Write([]byte(relative))
-		hash.Write([]byte{0})
-		hash.Write(content)
-		hash.Write([]byte{0})
+		digest.AddFile(relative, content)
 	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	return digest.Sum(), nil
 }
+
+// SubmissionDigest computes the digest the coordinator records for a bundle.
+//
+// An idempotency key is only meaningful against this digest: the same key with
+// the same bytes returns the same run, and with different bytes is refused. A
+// caller that wants to show an author what will be sent before sending it must
+// therefore compute exactly this, over the same paths in the same order.
+//
+// It is exported so there is one implementation instead of two that agree until
+// they quietly stop agreeing. A second copy's failure mode is a predicted digest
+// that does not match the recorded one, which is discovered at submission.
+type SubmissionDigest struct{ hash hash.Hash }
+
+// NewSubmissionDigest starts an empty digest.
+func NewSubmissionDigest() *SubmissionDigest {
+	return &SubmissionDigest{hash: sha256.New()}
+}
+
+// File frames one bundle file and returns the writer its content must be
+// streamed into, together with the function that closes the entry.
+//
+// Framing is separate from content because a caller may not hold the content in
+// memory: the campaign packer streams each file into the archive and into this
+// digest at once, rather than reading every file twice. Paths are slash-spelled
+// and must be added in sorted order, and the separators keep a file's name from
+// running into its content or into the next entry.
+func (d *SubmissionDigest) File(relativePath string) (io.Writer, func()) {
+	_, _ = d.hash.Write([]byte(relativePath))
+	_, _ = d.hash.Write([]byte{0})
+	return d.hash, func() { _, _ = d.hash.Write([]byte{0}) }
+}
+
+// AddFile frames one bundle file whose content is already in memory.
+func (d *SubmissionDigest) AddFile(relativePath string, content []byte) {
+	writer, done := d.File(relativePath)
+	_, _ = writer.Write(content)
+	done()
+}
+
+// Sum returns the hexadecimal digest of everything added so far.
+func (d *SubmissionDigest) Sum() string { return hex.EncodeToString(d.hash.Sum(nil)) }
 
 func openIngestionBundleBounded(bundleDir string, maxBytes int64) (string, *os.Root, Manifest, []byte, error) {
 	var empty Manifest

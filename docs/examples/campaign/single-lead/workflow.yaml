@@ -1,0 +1,59 @@
+# Single-lead campaign: one implementation task that owns the repository change
+# from start to finish and must leave evidence that it worked.
+#
+# OPERATOR CONFIGURATION, NOT PORTABLE DEFAULTS.
+# environment.project, routes[].instance, routes[].model and routes[].quota_pool
+# below name one fleet's registered project, provider instance, model and quota
+# pool. Replace all four with the names your own steward is configured with
+# before submitting this directory; they resolve nowhere else. Every value in
+# this file that is operator configuration is marked with a trailing comment.
+
+version: 2
+name: single-lead-example
+class: surplus
+
+environment:
+  project: example-project # operator configuration
+  type: git
+  scope: task
+  ref: main
+
+inputs:
+  - inputs/plan.md
+
+resources:
+  preset: build
+
+preflight:
+  steps:
+    - id: source
+      kind: context
+      probe: git_head
+      include: summary
+    - id: baseline
+      kind: check
+      command: [go, test, ./...]
+      failure_policy: record
+      include: summary
+
+routes:
+  - instance: claudeAgent # operator configuration
+    model: claude-opus-5 # operator configuration
+    quota_pool: claude-main # operator configuration
+
+tasks:
+  implement:
+    prompt_file: prompts/implement.md
+    outputs:
+      - commit.txt
+      - verification.txt
+      - handoff.md
+    verify:
+      - test -s commit.txt
+      - test -s verification.txt
+      - test -s handoff.md
+      - git rev-parse --verify "$(cat commit.txt)^{commit}"
+    resource_locks: [example-project-repository]
+    importance: 5
+    difficulty: 4
+    max_turns: 20

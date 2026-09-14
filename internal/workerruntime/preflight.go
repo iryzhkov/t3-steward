@@ -280,7 +280,7 @@ func (d *LocalDriver) PreflightArtifact(pkg workerproto.ExecutionPackage, refere
 			continue
 		}
 		return domain.Artifact{
-			ID:            "preflight-" + record.SHA256[:16],
+			ID:            preflightArtifactID(pkg.Identity.AttemptID, record.StepID),
 			WorkflowRunID: pkg.Identity.WorkflowRunID,
 			TaskID:        pkg.Identity.TaskID,
 			AttemptID:     pkg.Identity.AttemptID,
@@ -295,6 +295,22 @@ func (d *LocalDriver) PreflightArtifact(pkg workerproto.ExecutionPackage, refere
 		}, filepath.Join(d.preflightDir(pkg), record.File), nil
 	}
 	return domain.Artifact{}, "", fmt.Errorf("preflight reference %q has no stored output", reference)
+}
+
+// preflightArtifactID names one step's evidence within one attempt.
+//
+// The identity must not be derived from the evidence's content. Two tasks that
+// run the same probe against the same repository produce byte-identical output,
+// so a content-addressed identity collided between them, and the second
+// publication was refused as conflicting with immutable metadata for an
+// artifact that already belonged to a different task.
+//
+// Attempt and step are what make it unique, and deriving it from them keeps it
+// stable: republishing the same attempt's evidence reuses the same identity
+// rather than creating a second record.
+func preflightArtifactID(attemptID, stepID string) string {
+	sum := sha256.Sum256([]byte(attemptID + "\x00" + stepID))
+	return "preflight-" + hex.EncodeToString(sum[:])[:16]
 }
 
 // preflightFinalizationArtifacts reads the retained preflight logs so they can

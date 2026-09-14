@@ -1,0 +1,77 @@
+# Three-node campaign: two independent analysis tasks and one join.
+#
+# The two analysis tasks read the repository and write a bounded artifact each.
+# Neither mutates anything, so they are safe to run at the same time on
+# different workers. The join task declares both artifacts through inputs_from,
+# verifies that they materialized, and emits one combined result.
+#
+# OPERATOR CONFIGURATION, NOT PORTABLE DEFAULTS.
+# environment.project, routes[].instance, routes[].model and routes[].quota_pool
+# below name one fleet's registered project, provider instance, model and quota
+# pool. Replace all four with the names your own steward is configured with
+# before submitting this directory; they resolve nowhere else. Every value in
+# this file that is operator configuration is marked with a trailing comment.
+
+version: 2
+name: three-node-example
+class: surplus
+
+environment:
+  project: example-project # operator configuration
+  type: git
+  scope: task
+  ref: main
+
+inputs:
+  - inputs/scope.md
+
+resources:
+  preset: light
+
+preflight:
+  steps:
+    - id: source
+      kind: context
+      probe: git_head
+      include: summary
+
+routes:
+  - instance: claudeAgent # operator configuration
+    model: claude-opus-5 # operator configuration
+    quota_pool: claude-main # operator configuration
+
+tasks:
+  interfaces:
+    prompt_file: prompts/interfaces.md
+    outputs: [interfaces.md]
+    verify:
+      - test -s interfaces.md
+      - git diff --quiet
+    importance: 3
+    difficulty: 2
+
+  tests:
+    prompt_file: prompts/tests.md
+    outputs: [tests.md]
+    verify:
+      - test -s tests.md
+      - git diff --quiet
+    importance: 3
+    difficulty: 2
+
+  join:
+    prompt_file: prompts/join.md
+    needs: [interfaces, tests]
+    inputs_from:
+      interfaces: [interfaces.md]
+      tests: [tests.md]
+    outputs: [combined.md]
+    verify:
+      - test -s .t3/dependencies/interfaces/interfaces.md
+      - test -s .t3/dependencies/tests/tests.md
+      - test -s combined.md
+    resources:
+      preset: build
+    importance: 4
+    difficulty: 3
+    max_turns: 8
