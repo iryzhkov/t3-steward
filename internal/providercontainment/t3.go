@@ -15,9 +15,11 @@ import (
 // T3Spec names operator-approved runtimes already mounted inside the namespace.
 // T3 state and credentials belong only to this execution's home/control mounts.
 type T3Spec struct {
-	Node  string
-	Entry string
-	Port  int
+	Node           string
+	Entry          string
+	Port           int
+	OpenCodeBinary string
+	OpenCodeModel  string
 }
 
 func (s T3Spec) validate() error {
@@ -28,6 +30,17 @@ func (s T3Spec) validate() error {
 	}
 	if s.Port < 1 || s.Port > 65535 || s.Port == 18080 {
 		return errors.New("invalid contained T3 port")
+	}
+	if (s.OpenCodeBinary == "") != (s.OpenCodeModel == "") {
+		return errors.New("contained OpenCode requires both binary and model")
+	}
+	if s.OpenCodeBinary != "" {
+		if !filepath.IsAbs(s.OpenCodeBinary) || filepath.Clean(s.OpenCodeBinary) != s.OpenCodeBinary || !strings.HasPrefix(s.OpenCodeBinary, "/runtime/") {
+			return errors.New("contained OpenCode requires a mounted absolute runtime path")
+		}
+		if strings.TrimSpace(s.OpenCodeModel) != s.OpenCodeModel || len(s.OpenCodeModel) > 256 || strings.ContainsAny(s.OpenCodeModel, "\x00\r\n\t ") {
+			return errors.New("invalid contained OpenCode model")
+		}
 	}
 	return nil
 }
@@ -91,6 +104,17 @@ func RunT3(ctx context.Context, spec T3Spec, streams Streams) error {
 			return fmt.Errorf("contained T3 session issuance failed: %w", err)
 		}
 		return publishToken("/control", token)
+	}
+	// A fresh dedicated server is preparation, never adoption of an unknown home.
+	// Refuse partial prior startup instead of replacing provider settings/state.
+	if err := os.Mkdir("/home/agent/t3", 0700); err != nil {
+		return err
+	}
+	if err := os.Mkdir("/home/agent/t3/userdata", 0700); err != nil {
+		return err
+	}
+	if err := prepareT3Settings("/home/agent/t3/userdata", spec); err != nil {
+		return err
 	}
 	if err := issue(); err != nil {
 		return err

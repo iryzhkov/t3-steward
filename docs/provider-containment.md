@@ -89,6 +89,17 @@ state. The namespace helper can provision T3 and its local token:
 /steward worker contained-t3 --node /runtime/0/bin/node --entry /runtime/0/lib/node_modules/t3/dist/bin.mjs --port 18881
 ```
 
+The helper creates a fresh private T3 state directory and refuses a prior or
+partial startup. Its initial settings disable all providers, browser access and
+provider update checks. To prepare the OpenCode lane, supply both
+`--opencode-binary /runtime/1/opencode` and `--opencode-model <approved-model>`
+with that reviewed runtime mount. Only OpenCode is enabled; its server URL and
+password are empty so T3 starts a namespace-local server. Text generation uses
+the same explicit model. No shared provider settings or credentials are copied.
+Existing settings are never overwritten. These settings do not prove provider
+network access, credential readiness, worker preparation or contained verification;
+the normal directory execution guard remains closed pending integration.
+
 Use this as the operator spec command with matching controlPort and a reviewed
 Node/T3 runtime mount. It issues a one-hour session in /home/agent/t3, atomically
 publishes /control/token, and refreshes after 48 minutes. Failed maintenance

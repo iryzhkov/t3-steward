@@ -81,6 +81,8 @@ func cmdContainedT3(args []string) error {
 	node := flags.String("node", "", "mounted Node executable")
 	entry := flags.String("entry", "", "mounted T3 entry point")
 	port := flags.Int("port", 0, "namespace-local API port")
+	opencode := flags.String("opencode-binary", "", "mounted OpenCode binary; requires --opencode-model")
+	model := flags.String("opencode-model", "", "explicit contained OpenCode model")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -89,7 +91,7 @@ func cmdContainedT3(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return providercontainment.RunT3(ctx, providercontainment.T3Spec{Node: *node, Entry: *entry, Port: *port}, providercontainment.Streams{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr})
+	return providercontainment.RunT3(ctx, providercontainment.T3Spec{Node: *node, Entry: *entry, Port: *port, OpenCodeBinary: *opencode, OpenCodeModel: *model}, providercontainment.Streams{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr})
 }
 
 func cmdContainedChild(args []string) error {
