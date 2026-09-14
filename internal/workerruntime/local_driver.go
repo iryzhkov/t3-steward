@@ -51,12 +51,15 @@ type T3Control interface {
 }
 
 type LocalDriverConfig struct {
-	CatalogRevision  string
-	ArtifactRoot     string
-	RunsRoot         string
-	StopTimeout      time.Duration
-	RetainWorkspaces bool
-	DryRun           bool
+	CatalogRevision string
+	ArtifactRoot    string
+	RunsRoot        string
+	StopTimeout     time.Duration
+	// PreflightFreshness bounds how long a preflight receipt may be reused for
+	// an unchanged identity. Zero uses DefaultPreflightFreshness.
+	PreflightFreshness time.Duration
+	RetainWorkspaces   bool
+	DryRun             bool
 }
 
 type LocalDriver struct {
@@ -67,10 +70,14 @@ type LocalDriver struct {
 	Source      ArtifactSource
 	Publisher   ArtifactPublisher
 	Credentials CredentialChecker
-	T3          T3Control
-	ScopedT3    ExecutionT3Provider
-	scoped      bool
-	Now         func() time.Time
+	// Preflight runs declared preflight steps inside the attempt environment.
+	// It is the same process abstraction verification uses, and a separate
+	// entry point because preflight runs before the provider session exists.
+	Preflight backlog.PreflightRunner
+	T3        T3Control
+	ScopedT3  ExecutionT3Provider
+	scoped    bool
+	Now       func() time.Time
 }
 
 func NewLocalDriver(driver LocalDriver) (*LocalDriver, error) {
@@ -304,7 +311,14 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 	if d.Config.DryRun {
 		return os.WriteFile(d.noEffectsThreadPath(pkg), []byte("active\n"), 0o600)
 	}
-	prompt, err := d.readCachedArtifact(pkg.Prompt, pkg.Limits.MaxArtifactBytes)
+	promptArtifact, err := d.readCachedArtifact(pkg.Prompt, pkg.Limits.MaxArtifactBytes)
+	if err != nil {
+		return err
+	}
+	// Preflight runs here: the workspace is prepared, inputs are materialized,
+	// and no provider session exists yet. A blocking outcome returns before the
+	// session is created, so a require-pass failure means no session at all.
+	prompt, err := d.runPreflight(ctx, pkg, workspace, string(promptArtifact))
 	if err != nil {
 		return err
 	}
@@ -346,7 +360,7 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 		ThreadID: pkg.Identity.ThreadID, DispatchToken: pkg.Identity.DispatchToken,
 		ProjectID: projectID, Title: pkg.Identity.TaskID,
 		ModelSelection: selection, RuntimeMode: "full-access", InteractionMode: "default",
-		WorktreePath: workspace, Prompt: string(prompt),
+		WorktreePath: workspace, Prompt: prompt,
 	})
 	if threadID != "" && threadID != pkg.Identity.ThreadID {
 		return errors.New("T3 returned a different deterministic thread identity")
@@ -450,6 +464,11 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 	})
 	if err != nil {
 		return err
+	}
+	// Preflight logs ride the existing result publication path: they are copied
+	// into the finalized capture and published with everything else.
+	if err := d.publishPreflightArtifacts(pkg, &finalized); err != nil {
+		return fmt.Errorf("publish preflight custody: %w", err)
 	}
 	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
 		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,

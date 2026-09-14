@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 // PreflightRunner executes one bounded preflight command inside the attempt
@@ -301,6 +302,44 @@ func preflightProcessID(request PreflightRequest, step ManifestPreflightStep) st
 		attempt = request.TaskID
 	}
 	return fmt.Sprintf("preflight-%s-%s", attempt, step.ID)
+}
+
+// PackagePreflightSteps converts declared steps into the execution-package wire
+// form. Defaults are applied first, so the worker receives complete bounds
+// rather than having to reapply the manifest defaults itself.
+func PackagePreflightSteps(steps []ManifestPreflightStep) []workerproto.PreflightStep {
+	if len(steps) == 0 {
+		return nil
+	}
+	declared := ManifestPreflight{Steps: clonePreflightSteps(steps)}
+	applyPreflightDefaults(&declared)
+	result := make([]workerproto.PreflightStep, 0, len(declared.Steps))
+	for _, step := range declared.Steps {
+		result = append(result, workerproto.PreflightStep{
+			ID: step.ID, Kind: step.Kind, Command: append([]string(nil), step.Command...),
+			Probe: step.Probe, FailurePolicy: step.FailurePolicy, Include: step.Include,
+			MaxOutputBytes: step.MaxOutputBytes, Timeout: step.Timeout, Required: step.Required,
+		})
+	}
+	return result
+}
+
+// PreflightStepsFromPackage converts wire steps back into declared steps.
+func PreflightStepsFromPackage(steps []workerproto.PreflightStep) []ManifestPreflightStep {
+	if len(steps) == 0 {
+		return nil
+	}
+	result := make([]ManifestPreflightStep, 0, len(steps))
+	for _, step := range steps {
+		result = append(result, ManifestPreflightStep{
+			ID: step.ID, Kind: step.Kind, Command: append([]string(nil), step.Command...),
+			Probe: step.Probe, FailurePolicy: step.FailurePolicy, Include: step.Include,
+			MaxOutputBytes: step.MaxOutputBytes, Timeout: step.Timeout, Required: step.Required,
+		})
+	}
+	declared := ManifestPreflight{Steps: result}
+	applyPreflightDefaults(&declared)
+	return declared.Steps
 }
 
 // PreflightReference is the stable name of one step's full output. The bytes

@@ -130,6 +130,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 			Processes: processes,
 		},
 		Finalizer:   backlog.AttemptFinalizer{Processes: processes, Now: options.Now},
+		Preflight:   processes,
 		Source:      custody,
 		Publisher:   custody,
 		Credentials: options.ProjectCredentials,

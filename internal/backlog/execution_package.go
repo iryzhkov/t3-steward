@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"time"
 
@@ -30,6 +31,18 @@ type CoordinatorOfferBuilder struct {
 	VerificationTimeout time.Duration
 	MaxArtifactBytes    int64
 	MaxTotalBytes       int64
+	// TaskPreflight carries the declared preflight steps of a task into its
+	// execution package, keyed by task ID. It is a builder input rather than a
+	// task field because the durable task record is owned by the placement
+	// lane; when that record carries the declaration, this map goes away and
+	// the builder reads the task directly.
+	TaskPreflight map[string][]workerproto.PreflightStep
+	// WorkerCapabilities is the capability list the selected worker advertised.
+	// A package that needs a capability the worker does not advertise is
+	// refused here, so the worker is never sent work whose evidence it cannot
+	// produce. An absent entry is treated as an unknown worker and refused for
+	// the same reason.
+	WorkerCapabilities map[string][]string
 }
 
 func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
@@ -127,6 +140,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		},
 		Verification: append([]string(nil), state.task.Verification...),
 		Outputs:      append([]domain.ArtifactDeclaration(nil), state.task.Outputs...),
+		Preflight:    append([]workerproto.PreflightStep(nil), b.TaskPreflight[state.task.ID]...),
 		NotBefore:    cloneTime(state.task.NotBefore),
 		Deadline:     cloneTime(state.task.Deadline),
 		ExpiresAt:    cloneTime(state.task.ExpiresAt),
@@ -137,11 +151,39 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		},
 		CreatedAt: assignment.CreatedAt,
 	}
+	if err := b.declarePackageCapabilities(&pkg); err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
 	manifest, err := workerproto.BuildExecutionPackageManifest(pkg)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, err
 	}
 	return workerproto.AssignmentOffer{Assignment: assignment, Package: manifest, ExpiresAt: expiresAt}, nil
+}
+
+// declarePackageCapabilities records what the package needs and refuses to
+// build one the selected worker cannot honour. Capability negotiation happens
+// before dispatch: a worker that does not understand preflight is never handed
+// a package whose evidence it would silently never produce.
+func (b CoordinatorOfferBuilder) declarePackageCapabilities(pkg *workerproto.ExecutionPackage) error {
+	if len(pkg.Preflight) == 0 {
+		return nil
+	}
+	pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityPreflight)
+	if b.WorkerCapabilities == nil {
+		// No advertisement was supplied, so nothing can be proven about the
+		// worker. Declared preflight is refused rather than assumed.
+		return fmt.Errorf("execution package builder: worker %q capabilities are unknown, required %q",
+			pkg.WorkerID, workerproto.PackageCapabilityPreflight)
+	}
+	advertised := b.WorkerCapabilities[pkg.WorkerID]
+	for _, capability := range pkg.RequiredCapabilities {
+		if !slices.Contains(advertised, capability) {
+			return fmt.Errorf("execution package builder: worker %q does not advertise capability %q",
+				pkg.WorkerID, capability)
+		}
+	}
+	return nil
 }
 
 type executionPackageState struct {

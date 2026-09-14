@@ -36,6 +36,10 @@ func (d *LocalDriver) scopedDriver(ctx context.Context, pkg workerproto.Executio
 	copy.scoped = true
 	if manager := d.containedManager(pkg); manager != nil {
 		copy.Finalizer.Processes = containedVerifier{manager: *manager, pkg: pkg}
+		// Preflight runs inside the same containment as verification, through a
+		// separate entry point: it must not assert a stopped supervisor, because
+		// it runs before the provider session exists.
+		copy.Preflight = containedPreflighter{manager: *manager, pkg: pkg}
 	}
 	return &copy, nil
 }

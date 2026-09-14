@@ -57,31 +57,64 @@ type DependencyInput struct {
 	Artifacts []ArtifactObject `json:"artifacts"`
 }
 
+// Package capabilities name behaviour a worker must implement to execute a
+// package faithfully. A package that declares one is only understood by a build
+// that supports it; see ValidateExecutionPackage.
+const PackageCapabilityPreflight = "preflight"
+
+// SupportedPackageCapabilities is what this build implements. A package that
+// requires anything else is refused by name instead of being run without the
+// evidence it promised to produce.
+func SupportedPackageCapabilities() []string {
+	return []string{PackageCapabilityPreflight}
+}
+
+// PreflightStep is one declared step the worker runs after the workspace is
+// prepared and strictly before the provider session is created. It mirrors the
+// manifest declaration; the backlog package converts between the two.
+type PreflightStep struct {
+	ID             string        `json:"id"`
+	Kind           string        `json:"kind"`
+	Command        []string      `json:"command,omitempty"`
+	Probe          string        `json:"probe,omitempty"`
+	FailurePolicy  string        `json:"failurePolicy"`
+	Include        string        `json:"include"`
+	MaxOutputBytes int           `json:"maxOutputBytes"`
+	Timeout        time.Duration `json:"timeout"`
+	Required       bool          `json:"required,omitempty"`
+}
+
 type ExecutionPackage struct {
-	Timeout          time.Duration                `json:"timeout,omitempty"`
-	GraphRevision    int64                        `json:"graphRevision,omitempty"`
-	TaskRevision     int64                        `json:"taskRevision,omitempty"`
-	TaskDigest       string                       `json:"taskDigest,omitempty"`
-	Version          int                          `json:"version"`
-	ID               string                       `json:"id"`
-	CoordinatorID    string                       `json:"coordinatorId"`
-	CoordinatorEpoch int64                        `json:"coordinatorEpoch"`
-	WorkerID         string                       `json:"workerId"`
-	WorkerEpoch      string                       `json:"workerEpoch"`
-	Identity         ExecutionIdentity            `json:"identity"`
-	Class            domain.TaskClass             `json:"class"`
-	Prompt           ArtifactObject               `json:"prompt"`
-	StaticInputs     []ArtifactObject             `json:"staticInputs,omitempty"`
-	Dependencies     []DependencyInput            `json:"dependencies,omitempty"`
-	Route            domain.ProviderRoute         `json:"route"`
-	Environment      EnvironmentReference         `json:"environment"`
-	Verification     []string                     `json:"verification,omitempty"`
-	Outputs          []domain.ArtifactDeclaration `json:"outputs,omitempty"`
-	NotBefore        *time.Time                   `json:"notBefore,omitempty"`
-	Deadline         *time.Time                   `json:"deadline,omitempty"`
-	ExpiresAt        *time.Time                   `json:"expiresAt,omitempty"`
-	Limits           ExecutionLimits              `json:"limits"`
-	CreatedAt        time.Time                    `json:"createdAt"`
+	Timeout          time.Duration        `json:"timeout,omitempty"`
+	GraphRevision    int64                `json:"graphRevision,omitempty"`
+	TaskRevision     int64                `json:"taskRevision,omitempty"`
+	TaskDigest       string               `json:"taskDigest,omitempty"`
+	Version          int                  `json:"version"`
+	ID               string               `json:"id"`
+	CoordinatorID    string               `json:"coordinatorId"`
+	CoordinatorEpoch int64                `json:"coordinatorEpoch"`
+	WorkerID         string               `json:"workerId"`
+	WorkerEpoch      string               `json:"workerEpoch"`
+	Identity         ExecutionIdentity    `json:"identity"`
+	Class            domain.TaskClass     `json:"class"`
+	Prompt           ArtifactObject       `json:"prompt"`
+	StaticInputs     []ArtifactObject     `json:"staticInputs,omitempty"`
+	Dependencies     []DependencyInput    `json:"dependencies,omitempty"`
+	Route            domain.ProviderRoute `json:"route"`
+	Environment      EnvironmentReference `json:"environment"`
+	Verification     []string             `json:"verification,omitempty"`
+	Preflight        []PreflightStep      `json:"preflight,omitempty"`
+	// RequiredCapabilities names what a worker must implement to run this
+	// package. The manifest content address already stops an older build from
+	// silently dropping a field it cannot decode; this list makes the refusal
+	// explicit and nameable.
+	RequiredCapabilities []string                     `json:"requiredCapabilities,omitempty"`
+	Outputs              []domain.ArtifactDeclaration `json:"outputs,omitempty"`
+	NotBefore            *time.Time                   `json:"notBefore,omitempty"`
+	Deadline             *time.Time                   `json:"deadline,omitempty"`
+	ExpiresAt            *time.Time                   `json:"expiresAt,omitempty"`
+	Limits               ExecutionLimits              `json:"limits"`
+	CreatedAt            time.Time                    `json:"createdAt"`
 }
 
 type ExecutionPackageManifest struct {
@@ -253,6 +286,73 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 	for _, value := range append(append([]string(nil), pkg.Environment.ResourceLocks...), pkg.Environment.RequiredCredentials...) {
 		if !identityPattern.MatchString(value) {
 			return errors.New("execution package: invalid catalog reference")
+		}
+	}
+	if err := validatePackageCapabilities(pkg); err != nil {
+		return err
+	}
+	return validatePackagePreflight(pkg.Preflight)
+}
+
+func validatePackageCapabilities(pkg ExecutionPackage) error {
+	supported := SupportedPackageCapabilities()
+	declared := make(map[string]struct{}, len(pkg.RequiredCapabilities))
+	for _, capability := range pkg.RequiredCapabilities {
+		if !slices.Contains(supported, capability) {
+			return fmt.Errorf("execution package: unsupported required capability %q", capability)
+		}
+		if _, duplicate := declared[capability]; duplicate {
+			return fmt.Errorf("execution package: duplicate required capability %q", capability)
+		}
+		declared[capability] = struct{}{}
+	}
+	if _, ok := declared[PackageCapabilityPreflight]; len(pkg.Preflight) != 0 && !ok {
+		return errors.New("execution package: preflight steps require the preflight capability")
+	}
+	return nil
+}
+
+func validatePackagePreflight(steps []PreflightStep) error {
+	if len(steps) > 32 {
+		return errors.New("execution package: too many preflight steps")
+	}
+	seen := make(map[string]struct{}, len(steps))
+	for index, step := range steps {
+		if !identityPattern.MatchString(step.ID) {
+			return fmt.Errorf("execution package: preflight step[%d] has an invalid id", index)
+		}
+		if _, duplicate := seen[step.ID]; duplicate {
+			return fmt.Errorf("execution package: duplicate preflight step %q", step.ID)
+		}
+		seen[step.ID] = struct{}{}
+		if !slices.Contains([]string{"check", "context"}, step.Kind) {
+			return fmt.Errorf("execution package: preflight step %q has an invalid kind", step.ID)
+		}
+		if !slices.Contains([]string{"record", "require-pass"}, step.FailurePolicy) {
+			return fmt.Errorf("execution package: preflight step %q has an invalid failure policy", step.ID)
+		}
+		if !slices.Contains([]string{"summary", "reference", "omit"}, step.Include) {
+			return fmt.Errorf("execution package: preflight step %q has an invalid include mode", step.ID)
+		}
+		switch {
+		case len(step.Command) == 0 && step.Probe == "":
+			return fmt.Errorf("execution package: preflight step %q sets neither command nor probe", step.ID)
+		case len(step.Command) != 0 && step.Probe != "":
+			return fmt.Errorf("execution package: preflight step %q sets both command and probe", step.ID)
+		}
+		for _, argument := range step.Command {
+			if strings.TrimSpace(argument) == "" || strings.ContainsRune(argument, 0) {
+				return fmt.Errorf("execution package: preflight step %q has an empty argument", step.ID)
+			}
+		}
+		if step.Probe != "" && !identityPattern.MatchString(step.Probe) {
+			return fmt.Errorf("execution package: preflight step %q has an invalid probe", step.ID)
+		}
+		if step.MaxOutputBytes <= 0 || step.Timeout <= 0 || step.Timeout > time.Hour {
+			return fmt.Errorf("execution package: preflight step %q has invalid bounds", step.ID)
+		}
+		if step.Kind == "context" && step.FailurePolicy == "require-pass" && !step.Required {
+			return fmt.Errorf("execution package: preflight step %q blocks without being required", step.ID)
 		}
 	}
 	return nil
