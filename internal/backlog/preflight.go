@@ -68,6 +68,12 @@ type PreflightRequest struct {
 	Tools             []string
 	Cached            []domain.PreflightReceipt
 	Freshness         time.Duration
+	// Repository, Ref and CredentialRefs describe the workspace the attempt was
+	// prepared for. Only the built-in repository-reachability probe reads them,
+	// and CredentialRefs carries references, never credential values.
+	Repository     string
+	Ref            string
+	CredentialRefs []string
 }
 
 // PreflightReport is the complete result of one preflight pass.
@@ -280,6 +286,10 @@ func (e PreflightEngine) invoke(ctx context.Context, request PreflightRequest, s
 			StepID:            step.ID,
 			Runner:            e.Runner,
 			Log:               request.Log,
+			Repository:        request.Repository,
+			Ref:               request.Ref,
+			CredentialRefs:    request.CredentialRefs,
+			MaxOutputBytes:    accumulationBound(step.MaxOutputBytes),
 		})
 		return result.Output, result.ExitCode, err
 	}
@@ -287,13 +297,29 @@ func (e PreflightEngine) invoke(ctx context.Context, request PreflightRequest, s
 		return "", 0, errors.New("preflight has no process runner")
 	}
 	result, err := e.Runner.Run(ctx, ProcessRequest{
-		ID:      preflightProcessID(request, step),
-		Dir:     request.WorkspaceDir,
-		Program: step.Command[0],
-		Args:    step.Command[1:],
-		Log:     request.Log,
+		ID:             preflightProcessID(request, step),
+		Dir:            request.WorkspaceDir,
+		Program:        step.Command[0],
+		Args:           step.Command[1:],
+		Log:            request.Log,
+		MaxOutputBytes: accumulationBound(step.MaxOutputBytes),
 	})
 	return result.Output, result.ExitCode, err
+}
+
+// accumulationHeadroom is how much more than the retained bound a command may
+// buffer. The engine redacts before it truncates, on purpose: truncating first
+// can cut a secret in half and leave a fragment no pattern matches. Bounding
+// accumulation exactly at the retained limit would reintroduce that cut, so the
+// runner keeps a little more than will be kept and the final truncation trims
+// the difference away.
+const accumulationHeadroom = 4096
+
+func accumulationBound(maxOutputBytes int) int {
+	if maxOutputBytes <= 0 {
+		return 0
+	}
+	return maxOutputBytes + accumulationHeadroom
 }
 
 func preflightProcessID(request PreflightRequest, step ManifestPreflightStep) string {
@@ -402,9 +428,15 @@ func validatePreflightRequest(request PreflightRequest) error {
 }
 
 // ProbeRequest is the bounded context one built-in probe may observe. A probe
-// receives no credentials and no network authority: it reads steward state or
-// runs a read-only command in the attempt workspace through the same runner the
-// commands use.
+// receives no credential values: it reads steward state or runs a read-only
+// command in the attempt workspace through the same runner the commands use.
+//
+// Probes grant no network authority, with exactly one documented exception. The
+// H3 ADR admits the built-in git_ls_remote probe, which reaches the project's
+// own repository so that a campaign naming a repository the worker cannot read
+// is refused before a workflow run exists rather than hours later. The exception
+// is narrow by construction: one built-in probe, one command shape, and
+// arguments a manifest cannot choose.
 type ProbeRequest struct {
 	Runner            PreflightRunner
 	Log               io.Writer
@@ -416,6 +448,17 @@ type ProbeRequest struct {
 	AttemptID         string
 	StepID            string
 	Tools             []string
+	// Repository and Ref are the resolved project workspace coordinates. Only
+	// the repository-reachability probe reads them, and it validates both before
+	// it builds an argument vector from them.
+	Repository string
+	Ref        string
+	// CredentialRefs names the credential references the real task would use.
+	// They are references, never values, and they appear in evidence keys so
+	// that rotating a credential invalidates a cached observation.
+	CredentialRefs []string
+	// MaxOutputBytes bounds what a probe command may accumulate.
+	MaxOutputBytes int
 }
 
 // ProbeResult is one probe's bounded output and exit status.
@@ -435,6 +478,7 @@ const (
 	ProbeGitDiffSummary = "git_diff_summary"
 	ProbeToolVersions   = "tool_versions"
 	ProbeWorkerIdentity = "worker_identity"
+	ProbeGitLsRemote    = "git_ls_remote"
 )
 
 // BuiltinProbes is the probe registry. It is an explicit map so that an unknown
@@ -446,6 +490,7 @@ func BuiltinProbes() map[string]Probe {
 		ProbeGitDiffSummary: gitProbe("diff", "--stat"),
 		ProbeToolVersions:   toolVersionsProbe,
 		ProbeWorkerIdentity: workerIdentityProbe,
+		ProbeGitLsRemote:    gitLsRemoteProbe,
 	}
 }
 
@@ -491,11 +536,12 @@ func runProbeCommand(ctx context.Context, request ProbeRequest, program string, 
 		return ProbeResult{}, fmt.Errorf("probe %s has no process runner", request.StepID)
 	}
 	result, err := request.Runner.Run(ctx, ProcessRequest{
-		ID:      fmt.Sprintf("probe-%s-%s", request.StepID, program),
-		Dir:     request.WorkspaceDir,
-		Program: program,
-		Args:    arguments,
-		Log:     request.Log,
+		ID:             fmt.Sprintf("probe-%s-%s", request.StepID, program),
+		Dir:            request.WorkspaceDir,
+		Program:        program,
+		Args:           arguments,
+		Log:            request.Log,
+		MaxOutputBytes: request.MaxOutputBytes,
 	})
 	return ProbeResult{Output: result.Output, ExitCode: result.ExitCode}, err
 }
