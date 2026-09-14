@@ -123,7 +123,7 @@ type coordinatorTransport struct {
 
 // adminCredentials resolves an admin credential reference. Tests replace it;
 // nothing else does.
-var adminCredentials backlogadmin.AdminCredentialResolver = backlogadmin.EnvironmentAdminCredentialResolver{}
+var adminCredentials backlogadmin.AdminCredentialResolver = backlogadmin.AdminResolver{}
 
 // missingCoordinatorClient names the configuration block to add. It never
 // suggests opening a shell on the coordinator host: that is the authority
