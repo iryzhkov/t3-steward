@@ -160,6 +160,13 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 			AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
 			AttemptRevision: attempt.Revision, Artifact: artifact,
 		}, bytes.NewReader(payloads[index]))
+		if errors.Is(err, sqlite.ErrArtifactConflict) {
+			// The artifact already exists with different immutable metadata, so
+			// this result names an identity that is not its own. No retry can
+			// resolve that, and leaving it retryable blocks every other result
+			// the worker holds.
+			return report, fmt.Errorf("%w: artifact %q: %w", ErrResultImportRejected, artifact.ID, err)
+		}
 		if err != nil {
 			return report, err
 		}
