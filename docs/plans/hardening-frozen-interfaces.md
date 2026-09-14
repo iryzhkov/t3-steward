@@ -58,7 +58,14 @@ Unclassified failures keep exit 1. `--json` errors are `{"version":"backlog.admi
 
 Forced command: `t3-steward coordinator-exchange <operation>`, operations `query`, `mutation`,
 `artifact`, `submission`, `schedule-definition`, `unknown-recovery`, `node-wait`,
-`graph-amendment`, `worker-enrollment`. Built as a sibling of `worker-exchange`: one positional
+`graph-amendment`, `worker-enrollment`, and `quarantine-release`.
+
+Amendment, 2026-09-14: the vocabulary was frozen at nine and is now ten. Releasing an intake
+quarantine is a mutation, but the quarantine record has no revision to fence against, so putting
+it on the revision-fenced mutation engine would have meant bolting a revision-less target onto a
+transaction whose whole purpose is that fence. A tenth word carrying its own authorization, audit
+record and replay protection is the smaller change. An older coordinator refuses the word, which
+is the correct answer from one that cannot perform it. Built as a sibling of `worker-exchange`: one positional
 operation, `--config` required and explicit, `SSH_ORIGINAL_COMMAND` never read.
 
 Configuration, new block on `BacklogV2`:
