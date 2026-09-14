@@ -452,7 +452,9 @@ func TestCampaignHelpTopicsComeFromTheProjection(t *testing.T) {
 // docs/plans/campaign-manager.md is what this test is here to prevent. Update
 // the digest together with the text.
 func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
-	const wantDigest = "d274a6a105ddc38f2088f265a89609822384f847a20a32b228e44c392c205871"
+	// Updated when the campaign help gained the short transport note that says
+	// which coordinator a submission reaches and what its exit codes mean.
+	const wantDigest = "7a2065a80e17193720c952a004c2a0475ad5b7102336634cf6ab962bfd3e3d31"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)

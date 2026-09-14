@@ -66,9 +66,31 @@ that isolation is not yet a current production guarantee.
 
 ### Admin versus worker
 
-The owner-only Unix admin socket authenticates kernel peer UID and replaces
-caller-supplied identity. CLI clients query and submit audited commands; they do
-not open coordinator SQLite. Mutation applies revision and effect-safety fences.
+Every coordinator-admin operation travels one interface,
+`backlogadmin.CoordinatorAdminTransport`, with two carriers behind it. CLI clients
+query and submit audited commands through it; they do not open coordinator
+SQLite. Mutation applies revision and effect-safety fences on either carrier.
+
+The local carrier is the owner-only Unix admin socket. It authenticates kernel
+peer UID, replaces caller-supplied identity and grants the `local-admin` role.
+
+The remote carrier is an SSH session to the restricted `coordinator-exchange`
+command, which a host selects by configuring a coordinator client. It carries the
+same operation envelope inside a signed frame with version, session, request ID,
+sequence, sent-at, deadline, payload digest and HMAC authentication, and it grants
+the weaker `remote-admin` role under the client's own principal. Both carriers
+overwrite whatever principal the request claimed. `remote-admin` is refused worker
+enrollment, the one admin operation that rewrites the coordinator's own identity
+and epoch. Replay protection for the remote carrier is durable: a request ID is
+answered once, the same ID with the same content returns the first answer, and the
+same ID with different content is refused. The restricted command never reads
+`SSH_ORIGINAL_COMMAND`; an operator's `authorized_keys` line pins the operation.
+
+Admin authority and worker authority never meet. Admin clients use
+`secretref:f03-admin/<client>` references and workers use
+`secretref:f02-protocol/<host>`; each side refuses the other's namespace, and the
+admin signature covers a domain tag the worker protocol does not sign, so one
+credential cannot be presented as the other even by accident.
 
 The worker protocol carries authenticated, versioned, sequenced, deadline-bounded
 envelopes, immutable execution packages and separately bounded artifact streams.
@@ -76,8 +98,9 @@ Worker credentials authorize observations and execution of durable assignments,
 not graph mutations, enrollment or arbitrary admin commands.
 
 S4 uses a separate owner-only worker socket carrying signed frames. Enrollment
-remains on the coordinator admin socket. Persistent SSH forwards frames to the
-existing worker process. Remote persistence is transport, not a new policy owner.
+remains on the coordinator admin socket, reachable only from the coordinator host.
+Persistent SSH forwards frames to the existing worker process. Remote persistence
+is transport, not a new policy owner.
 
 ### Persistence and external effects
 

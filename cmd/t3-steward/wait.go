@@ -18,7 +18,11 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/wait"
 )
 
-const waitUsage = `Usage: t3-steward wait <command> [flags]
+// Native waits reach the coordinator, so the wait help carries the short
+// transport note; shell checks stay entirely local to this host.
+const waitUsage = waitCommandUsage + coordinatorTransportSummary
+
+const waitCommandUsage = `Usage: t3-steward wait <command> [flags]
 
 Park a T3 thread until an external condition holds. The agent registers a
 check, ends its turn, and the steward runs the check periodically; when it

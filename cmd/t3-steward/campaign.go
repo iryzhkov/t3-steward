@@ -15,7 +15,12 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 )
 
-const campaignUsage = `Usage: t3-steward campaign <command> [args]
+// The campaign help contract asks for help concise enough to enter agent
+// context, so the campaign namespace carries the short transport note and
+// points at "t3-steward backlog help" for the full one.
+const campaignUsage = campaignCommandUsage + coordinatorTransportSummary
+
+const campaignCommandUsage = `Usage: t3-steward campaign <command> [args]
 
 A campaign is a version 2 workflow authored as a directory. The namespace is a
 facade: submit creates exactly one workflow and one run, and every lifecycle

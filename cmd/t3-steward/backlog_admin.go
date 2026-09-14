@@ -30,7 +30,12 @@ Read commands:
 Revision-fenced controls:
   run|enable|disable <schedule> --reason TEXT [--command-id ID] [--json]
   delay-next <schedule> --until RFC3339 --reason TEXT [--command-id ID] [--json]
-`
+
+Example:
+  t3-steward schedules put nightly-upkeep --name "nightly upkeep" \
+    --workflow workflow-1 --cron "0 3 * * *" --timezone Europe/Amsterdam \
+    --reason "restore the nightly pass" --request-id 2026-09-14-nightly --json
+` + coordinatorTransportHelp
 
 type localAdminAuthorizer struct{}
 

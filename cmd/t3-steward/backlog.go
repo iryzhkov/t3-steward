@@ -69,7 +69,11 @@ Legacy task-file helpers:
   list --all         Show the legacy local task files and configured remote lists.
 
 The runner is part of "run"; enable it with backlog.enabled: true.
-`
+The legacy task-file helpers above are offline: they touch no coordinator.
+
+Example:
+  t3-steward backlog submit ./bundle.tar --idempotency-key 2026-09-14-upkeeper --json
+` + coordinatorTransportHelp
 
 const taskTemplate = `---
 project: %s
