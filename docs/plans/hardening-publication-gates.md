@@ -25,6 +25,10 @@ database, or either historical campaign run.
 The seventeen cases required by the contract are the gate. Each must produce evidence that names
 the run, task, attempt and wait identities it exercised.
 
+The harness is `scripts/qualification/run.sh`; what it builds, what it proves and what it
+deliberately does not simulate are described in
+[the qualification harness](../qualification-harness.md).
+
 ## Gate 2: source publication
 
 1. Both branches rebased on current canonical `main` and reviewed as a whole diff.
