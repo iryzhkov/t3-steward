@@ -1,6 +1,10 @@
 //go:build unix
 
-package workerruntime
+// Package privatefile reads owner-only 0600 regular files whose content is
+// authority-bearing. It exists so that the worker bootstrap and the coordinator
+// client bootstrap are read under exactly the same rules rather than under two
+// copies of them.
+package privatefile
 
 import (
 	"errors"
@@ -9,7 +13,10 @@ import (
 	"syscall"
 )
 
-func readPrivateFile(path string, limit int64) ([]byte, error) {
+// Read returns the content of an owner-only regular 0600 file of at most limit
+// bytes. It refuses a symlink, a file that changed identity between the two
+// checks, a file owned by another user and an empty or oversized file.
+func Read(path string, limit int64) ([]byte, error) {
 	before, err := os.Lstat(path)
 	if err != nil {
 		return nil, err

@@ -131,6 +131,13 @@ backlog_v2:
   # "t3-steward campaign submit" instead of opening a shell on another host.
   # Leave it out on the coordinator itself, which administers itself over its
   # own owner-only socket.
+  #
+  # There are two places to configure it. A block written here is an operator
+  # override and always wins. When it is absent, the same settings are read
+  # from the UpKeeper-owned ~/.config/t3-steward/coordinator-client.json (mode
+  # 0600, schema_version 1, unknown fields refused), which keeps this file to
+  # one author. That file uses the same field names with credential_ref in
+  # place of credential.
   coordinator_client: {}
   #  coordinator_id: normandy-coordinator
   #  address: normandy              # ssh destination or alias

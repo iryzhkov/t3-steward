@@ -627,6 +627,9 @@ func LoadFile(path string) (Config, error) {
 	if err != nil {
 		return c, err
 	}
+	if err := c.applyCoordinatorClientBootstrap(coordinatorClientHome()); err != nil {
+		return c, err
+	}
 	if err := c.Validate(); err != nil {
 		return c, err
 	}
@@ -670,6 +673,12 @@ func Load(path string) (Config, error) {
 		return c, err
 	}
 	if err := c.applyEnv(); err != nil {
+		return c, err
+	}
+	// The UpKeeper-owned file fills the coordinator client only when
+	// config.yaml declares none, so the operator's file keeps one author and
+	// an explicit block there still wins.
+	if err := c.applyCoordinatorClientBootstrap(coordinatorClientHome()); err != nil {
 		return c, err
 	}
 	if err := c.Validate(); err != nil {

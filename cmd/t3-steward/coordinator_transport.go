@@ -53,9 +53,11 @@ func missingCoordinatorClient(path string) error {
 	return &backlogadmin.TransportError{
 		Class: backlogadmin.ClassClientConfiguration,
 		Err: fmt.Errorf(
-			"this host runs no coordinator (no admin socket at %s) and declares no coordinator client; "+
-				"add a backlog_v2.coordinator_client block naming the coordinator id, its ssh address and "+
-				"a secretref:f03-admin/<client> credential", path),
+			"this host runs no coordinator (no admin socket at %s) and has no coordinator client. "+
+				"Configure one in either place: a backlog_v2.coordinator_client block in the configuration "+
+				"file, which always wins, or the UpKeeper-owned ~/%s (mode 0600, schema_version 1). "+
+				"Both name the coordinator id, its ssh destination and a secretref:f03-admin/<client> credential",
+			path, config.CoordinatorClientBootstrapPath),
 	}
 }
 
