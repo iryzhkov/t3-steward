@@ -6,9 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.11.0-rc.46] - 2026-09-14
+## [0.11.0-rc.47] - 2026-09-14
 
 ### Fixed
+
+- The schedule lifecycle test no longer races the minute boundary. It read a
+  schedule's revision and submitted a command fenced on it; a trigger landing in
+  between moved the revision and the command was correctly rejected, failing CI
+  for a refusal that was the fence working.
 
 - An attempt whose result is rejected now settles with the rejection as its
   terminal failure. Discarding the result kept one bad result from blocking a
