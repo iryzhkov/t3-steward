@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -198,6 +200,42 @@ func TestCampaignSubmitAllowUnverifiedIsAuditedAndLoud(t *testing.T) {
 	for _, want := range []string{"warning", "local:1000", "coordinator is being rebuilt"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output %q does not contain %q", out.String(), want)
+		}
+	}
+}
+
+// D5. The warning is advice, not part of the result. Printed on stdout ahead of
+// the JSON document it made that document unparseable, which turns an advisory
+// into a failure for exactly the readers --json exists for.
+func TestCampaignSubmitJSONStaysParseableWithAllowUnverified(t *testing.T) {
+	root := campaignFixture(t)
+	fake := &fakeSubmissionService{}
+	var out, errs bytes.Buffer
+	cli := campaignTestCLI(t, &out)
+	cli.stderr = &errs
+	cli.submissions = func() (adminSubmissionService, error) { return fake, nil }
+	cli.principal = "local:1000"
+	if err := cli.run(context.Background(), []string{
+		"submit", root, "--idempotency-key", "campaign-1", "--json",
+		"--allow-unverified", "--reason", "coordinator is being rebuilt",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var document any
+	decoder := json.NewDecoder(bytes.NewReader(out.Bytes()))
+	if err := decoder.Decode(&document); err != nil {
+		t.Fatalf("stdout is not one JSON document: %v; stdout was %q", err, out.String())
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		t.Fatalf("stdout carries more than the result document: %q", out.String())
+	}
+	if strings.Contains(out.String(), "warning") {
+		t.Fatalf("the warning reached stdout: %q", out.String())
+	}
+	for _, want := range []string{"warning", "local:1000", "coordinator is being rebuilt"} {
+		if !strings.Contains(errs.String(), want) {
+			t.Fatalf("stderr %q does not contain %q", errs.String(), want)
 		}
 	}
 }

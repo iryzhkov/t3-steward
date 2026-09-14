@@ -136,8 +136,13 @@ type campaignValidation struct {
 // machine with no coordinator, and the lifecycle delegation is one call into
 // the existing admin path rather than a second client.
 type campaignCLI struct {
-	limits      campaign.Limits
-	stdout      io.Writer
+	limits campaign.Limits
+	stdout io.Writer
+	// stderr carries anything that is not part of the result. A human warning
+	// printed on stdout ahead of a --json document makes that document
+	// unparseable, which turns an advisory into a failure for the agents the
+	// JSON exists for.
+	stderr      io.Writer
 	submissions func() (adminSubmissionService, error)
 	admin       func(args []string) error
 	// viability is the readiness seam. It is separate from the submission and
@@ -182,6 +187,7 @@ func runCampaign(cfg config.Config, args []string) error {
 			MaxBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
 		},
 		stdout:      os.Stdout,
+		stderr:      os.Stderr,
 		submissions: func() (adminSubmissionService, error) { return newCampaignSubmissionClient(cfg) },
 		admin:       func(args []string) error { return runCoordinatorAdmin(cfg, args, false) },
 		viability: func(ctx context.Context, request backlogadmin.ViabilityRequest) (backlogadmin.ViabilityMatrix, error) {
@@ -383,7 +389,9 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 	// anyone finds out.
 	var matrix backlogadmin.ViabilityMatrix
 	if parsed.unverified {
-		if _, err := fmt.Fprintf(c.stdout,
+		// The warning goes to stderr so that --json output stays one document a
+		// strict reader can parse.
+		if _, err := fmt.Fprintf(c.warnings(),
 			"warning: skipping the live readiness check. principal=%s reason=%s\n"+
 				"The coordinator still refuses a permanently impossible campaign at acceptance.\n",
 			c.submissionPrincipal(), parsed.reason); err != nil {
@@ -593,6 +601,15 @@ func parseCampaignArgs(command string, args []string, allowDOT, requireKey bool)
 		return campaignArgs{}, errors.New("--reason is only meaningful with --allow-unverified")
 	}
 	return parsed, nil
+}
+
+// warnings is where advisory text goes. It falls back to stdout only when no
+// stderr was wired, which keeps a zero-valued campaignCLI usable in a test.
+func (c campaignCLI) warnings() io.Writer {
+	if c.stderr != nil {
+		return c.stderr
+	}
+	return c.stdout
 }
 
 func encodeCampaignJSON(out io.Writer, value any) error {
