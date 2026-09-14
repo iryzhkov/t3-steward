@@ -30,11 +30,12 @@ const (
 	localOperationNodeWait           = "node-wait"
 	localOperationGraphAmendment     = "graph-amendment"
 	localOperationWorkerEnrollment   = "worker-enrollment"
+	localOperationQuarantineRelease  = "quarantine-release"
 )
 
 // Operations is the complete coordinator-admin operation vocabulary, in the
-// order the H1 contract lists it. The restricted SSH command accepts exactly
-// these words and nothing else.
+// order the H1 contract lists it, followed by the operations added since. The
+// restricted SSH command accepts exactly these words and nothing else.
 func Operations() []string {
 	return []string{
 		localOperationQuery,
@@ -46,10 +47,11 @@ func Operations() []string {
 		localOperationNodeWait,
 		localOperationGraphAmendment,
 		localOperationWorkerEnrollment,
+		localOperationQuarantineRelease,
 	}
 }
 
-// ValidOperation reports whether name is one of the nine operations.
+// ValidOperation reports whether name is one of the operations above.
 func ValidOperation(name string) bool {
 	for _, operation := range Operations() {
 		if operation == name {
@@ -66,6 +68,7 @@ type LocalService interface {
 	SubmitArchive(context.Context, Principal, LocalSubmissionRequest, io.Reader) (LocalSubmissionResponse, error)
 	PutSchedule(context.Context, Principal, LocalScheduleDefinitionRequest) (LocalScheduleDefinitionResponse, error)
 	RecoverUnknown(context.Context, Principal, UnknownRecoveryRequest) (domain.UnknownAssignmentRecoveryDecision, error)
+	ReleaseQuarantine(context.Context, Principal, QuarantineReleaseRequest) (domain.QuarantineRelease, error)
 }
 
 type LocalSubmissionRequest struct {
@@ -151,6 +154,7 @@ type localRequest struct {
 	SubmissionSize     int64                           `json:"submissionSize,omitempty"`
 	ScheduleDefinition *LocalScheduleDefinitionRequest `json:"scheduleDefinition,omitempty"`
 	UnknownRecovery    *UnknownRecoveryRequest         `json:"unknownRecovery,omitempty"`
+	QuarantineRelease  *QuarantineReleaseRequest       `json:"quarantineRelease,omitempty"`
 }
 
 type localResponse struct {
@@ -165,6 +169,7 @@ type localResponse struct {
 	SubmissionResponse         *LocalSubmissionResponse                  `json:"submissionResponse,omitempty"`
 	ScheduleDefinitionResponse *LocalScheduleDefinitionResponse          `json:"scheduleDefinitionResponse,omitempty"`
 	UnknownRecoveryResponse    *domain.UnknownAssignmentRecoveryDecision `json:"unknownRecoveryResponse,omitempty"`
+	QuarantineReleaseResponse  *domain.QuarantineRelease                 `json:"quarantineReleaseResponse,omitempty"`
 	Error                      string                                    `json:"error,omitempty"`
 	// ErrorClass lets the server say whether it refused the principal, the
 	// frame or the request itself, so the client does not have to guess a
@@ -415,6 +420,18 @@ func (c LocalClient) RecoverUnknown(ctx context.Context, _ Principal, request Un
 		return domain.UnknownAssignmentRecoveryDecision{}, errors.New("local unknown recovery returned no response")
 	}
 	return *response.UnknownRecoveryResponse, nil
+}
+
+func (c LocalClient) ReleaseQuarantine(ctx context.Context, _ Principal, request QuarantineReleaseRequest) (domain.QuarantineRelease, error) {
+	local := localRequest{Version: LocalTransportVersion, Operation: localOperationQuarantineRelease, QuarantineRelease: &request}
+	var response localResponse
+	if err := c.call(ctx, local, &response); err != nil {
+		return domain.QuarantineRelease{}, err
+	}
+	if response.QuarantineReleaseResponse == nil {
+		return domain.QuarantineRelease{}, errors.New("local quarantine release returned no response")
+	}
+	return *response.QuarantineReleaseResponse, nil
 }
 
 func (c LocalClient) PutSchedule(

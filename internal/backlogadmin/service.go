@@ -35,6 +35,13 @@ type UnknownRecoveryWriter interface {
 	RecoverUnknownAssignment(context.Context, domain.UnknownAssignmentRecovery) (domain.UnknownAssignmentRecoveryDecision, error)
 }
 
+// QuarantineWriter clears one intake quarantine deliberately. It is a
+// capability of the reader for the same reason QuarantineReader is: a store
+// that predates the marker answers that it does not record one.
+type QuarantineWriter interface {
+	ReleaseQuarantinedSubmission(ctx context.Context, key, actor, reason string, at time.Time) (domain.QuarantineRelease, error)
+}
+
 // QuarantineReader lists the intake submissions that were refused permanently.
 // It is a capability of the reader rather than part of Reader, so a store that
 // predates the quarantine marker still satisfies the service and answers the
@@ -54,6 +61,7 @@ type Service struct {
 	runtime        RuntimeInfo
 	recovery       UnknownRecoveryWriter
 	quarantine     QuarantineReader
+	quarantineOps  QuarantineWriter
 
 	viabilitySettings ViabilitySettings
 }
@@ -80,6 +88,7 @@ func New(reader Reader, authorizer Authorizer) (*Service, error) {
 	service := &Service{reader: reader, authorizer: authorizer, now: time.Now}
 	service.recovery, _ = reader.(UnknownRecoveryWriter)
 	service.quarantine, _ = reader.(QuarantineReader)
+	service.quarantineOps, _ = reader.(QuarantineWriter)
 	return service, nil
 }
 

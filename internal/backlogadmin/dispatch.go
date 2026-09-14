@@ -52,7 +52,8 @@ func (d adminDispatch) handle(
 		d.nodeWait(ctx, principal, request, &response)
 	case localOperationQuery:
 		if request.Query == nil || request.Mutation != nil || request.ArtifactID != "" ||
-			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
+			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil ||
+			request.UnknownRecovery != nil || request.QuarantineRelease != nil {
 			response.Error = "malformed local admin query"
 			break
 		}
@@ -65,7 +66,8 @@ func (d adminDispatch) handle(
 		}
 	case localOperationMutation:
 		if request.Mutation == nil || request.Query != nil || request.ArtifactID != "" ||
-			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
+			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil ||
+			request.UnknownRecovery != nil || request.QuarantineRelease != nil {
 			response.Error = "malformed local admin mutation"
 			break
 		}
@@ -78,7 +80,8 @@ func (d adminDispatch) handle(
 		}
 	case localOperationArtifact:
 		if request.ArtifactID == "" || request.Query != nil || request.Mutation != nil ||
-			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
+			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil ||
+			request.UnknownRecovery != nil || request.QuarantineRelease != nil {
 			response.Error = "malformed local admin artifact request"
 			break
 		}
@@ -98,7 +101,8 @@ func (d adminDispatch) handle(
 	case localOperationSubmission:
 		if request.Submission == nil || request.Query != nil || request.Mutation != nil ||
 			request.ArtifactID != "" || request.SubmissionSize <= 0 ||
-			request.SubmissionSize > d.maxSubmissionBytes || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
+			request.SubmissionSize > d.maxSubmissionBytes || request.ScheduleDefinition != nil ||
+			request.UnknownRecovery != nil || request.QuarantineRelease != nil {
 			response.Error = "malformed or oversized local submission request"
 			break
 		}
@@ -113,7 +117,8 @@ func (d adminDispatch) handle(
 		}
 	case localOperationScheduleDefinition:
 		if request.ScheduleDefinition == nil || request.Query != nil || request.Mutation != nil ||
-			request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 || request.UnknownRecovery != nil {
+			request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 ||
+			request.UnknownRecovery != nil || request.QuarantineRelease != nil {
 			response.Error = "malformed local schedule definition request"
 			break
 		}
@@ -125,7 +130,8 @@ func (d adminDispatch) handle(
 		}
 	case localOperationUnknownRecovery:
 		if request.UnknownRecovery == nil || request.Query != nil || request.Mutation != nil ||
-			request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil {
+			request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 ||
+			request.ScheduleDefinition != nil || request.QuarantineRelease != nil {
 			response.Error = "malformed local unknown recovery request"
 			break
 		}
@@ -134,6 +140,19 @@ func (d adminDispatch) handle(
 			response.Error = recoveryErr.Error()
 		} else {
 			response.UnknownRecoveryResponse = &value
+		}
+	case localOperationQuarantineRelease:
+		if request.QuarantineRelease == nil || request.Query != nil || request.Mutation != nil ||
+			request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 ||
+			request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
+			response.Error = "malformed local quarantine release request"
+			break
+		}
+		value, releaseErr := d.service.ReleaseQuarantine(ctx, principal, *request.QuarantineRelease)
+		if releaseErr != nil {
+			response.Error = releaseErr.Error()
+		} else {
+			response.QuarantineReleaseResponse = &value
 		}
 	default:
 		response.Error = "unknown local admin operation"
@@ -150,7 +169,8 @@ func (d adminDispatch) enrollWorker(ctx context.Context, principal Principal, re
 	})
 	if !ok || request.WorkerEnrollment == nil || request.GraphAmendment != nil || request.NodeWait != nil ||
 		request.Query != nil || request.Mutation != nil || request.ArtifactID != "" || request.Submission != nil ||
-		request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
+		request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil ||
+		request.QuarantineRelease != nil {
 		response.Error = "malformed worker enrollment request"
 		return
 	}
@@ -168,7 +188,8 @@ func (d adminDispatch) amendGraph(ctx context.Context, principal Principal, requ
 	})
 	if !ok || request.GraphAmendment == nil || request.NodeWait != nil || request.Query != nil ||
 		request.Mutation != nil || request.ArtifactID != "" || request.Submission != nil ||
-		request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
+		request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil ||
+		request.QuarantineRelease != nil {
 		response.Error = "malformed graph amendment request"
 		return
 	}
@@ -186,7 +207,8 @@ func (d adminDispatch) nodeWait(ctx context.Context, principal Principal, reques
 	})
 	if !ok || request.NodeWait == nil || request.Query != nil || request.Mutation != nil ||
 		request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 ||
-		request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
+		request.ScheduleDefinition != nil || request.UnknownRecovery != nil ||
+		request.QuarantineRelease != nil {
 		response.Error = "malformed native wait request"
 		return
 	}

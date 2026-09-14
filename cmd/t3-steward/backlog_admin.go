@@ -69,6 +69,11 @@ func remoteAdminOperations() map[backlogadmin.QueryKind]bool {
 	return map[backlogadmin.QueryKind]bool{
 		"node-wait":       true,
 		"graph-amendment": true,
+		// Releasing a quarantine tells intake to read a file again. It creates
+		// nothing by itself, the coordinator still refuses content it cannot
+		// accept, and the operator who fixed the configuration is usually not
+		// sitting on the coordinator host.
+		backlogadmin.QuarantineReleaseKind: true,
 	}
 }
 
@@ -142,6 +147,10 @@ type adminRecoveryService interface {
 	RecoverUnknown(context.Context, backlogadmin.Principal, backlogadmin.UnknownRecoveryRequest) (domain.UnknownAssignmentRecoveryDecision, error)
 }
 
+type adminQuarantineService interface {
+	ReleaseQuarantine(context.Context, backlogadmin.Principal, backlogadmin.QuarantineReleaseRequest) (domain.QuarantineRelease, error)
+}
+
 type backlogAdminCLI struct {
 	service             adminQueryService
 	mutator             adminMutationService
@@ -149,6 +158,7 @@ type backlogAdminCLI struct {
 	submissions         adminSubmissionService
 	scheduleDefinitions adminScheduleDefinitionService
 	recovery            adminRecoveryService
+	quarantine          adminQuarantineService
 	principal           backlogadmin.Principal
 	stdout              io.Writer
 	newCommandID        func() (string, error)
@@ -166,6 +176,9 @@ func (c backlogAdminCLI) runBacklog(ctx context.Context, args []string) error {
 	}
 	if args[0] == "recover" {
 		return c.runUnknownRecovery(ctx, args)
+	}
+	if len(args) >= 2 && args[0] == "quarantine" && args[1] == "release" {
+		return c.runQuarantineRelease(ctx, args[2:])
 	}
 	if isBacklogMutation(args[0]) {
 		return c.runBacklogMutation(ctx, args)

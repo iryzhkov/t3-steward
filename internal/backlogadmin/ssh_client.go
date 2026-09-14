@@ -452,6 +452,19 @@ func (c *SSHClient) RecoverUnknown(ctx context.Context, _ Principal, request Unk
 	return *response.UnknownRecoveryResponse, nil
 }
 
+func (c *SSHClient) ReleaseQuarantine(ctx context.Context, _ Principal, request QuarantineReleaseRequest) (domain.QuarantineRelease, error) {
+	response, _, err := c.roundTrip(ctx, localRequest{
+		Version: LocalTransportVersion, Operation: localOperationQuarantineRelease, QuarantineRelease: &request,
+	}, nil, false)
+	if err != nil {
+		return domain.QuarantineRelease{}, err
+	}
+	if response.QuarantineReleaseResponse == nil {
+		return domain.QuarantineRelease{}, c.fail(ClassProtocol, localOperationQuarantineRelease, errors.New("coordinator quarantine release returned no response"))
+	}
+	return *response.QuarantineReleaseResponse, nil
+}
+
 func (c *SSHClient) PutSchedule(ctx context.Context, _ Principal, definition LocalScheduleDefinitionRequest) (LocalScheduleDefinitionResponse, error) {
 	response, _, err := c.roundTrip(ctx, localRequest{
 		Version: LocalTransportVersion, Operation: localOperationScheduleDefinition, ScheduleDefinition: &definition,

@@ -118,6 +118,11 @@ func (s *remoteFakeService) PutSchedule(_ context.Context, principal Principal, 
 	return LocalScheduleDefinitionResponse{Schedule: domain.Schedule{ID: request.ID}}, nil
 }
 
+func (s *remoteFakeService) ReleaseQuarantine(_ context.Context, principal Principal, request QuarantineReleaseRequest) (domain.QuarantineRelease, error) {
+	s.record(principal)
+	return domain.QuarantineRelease{Key: request.Key, Released: true}, nil
+}
+
 func (s *remoteFakeService) RecoverUnknown(_ context.Context, principal Principal, request UnknownRecoveryRequest) (domain.UnknownAssignmentRecoveryDecision, error) {
 	s.record(principal)
 	return domain.UnknownAssignmentRecoveryDecision{
