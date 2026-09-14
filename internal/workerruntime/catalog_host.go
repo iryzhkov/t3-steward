@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
@@ -39,6 +41,9 @@ type CatalogHost struct {
 	retained          *retainedCatalog
 	service           *WorkerService
 	activeCredentials ProtocolCredentials
+	// unusable records why the retained catalog could not be activated. The
+	// worker then serves no execution and waits for a republished catalog.
+	unusable error
 }
 
 func (h *CatalogHost) catalogPath() string {
@@ -64,8 +69,23 @@ func (h *CatalogHost) Load(ctx context.Context) error {
 		return errors.New("retained catalog has trailing data")
 	}
 	if err = h.activate(ctx, retained); err != nil {
-		return err
+		// A retained catalog this build cannot activate, such as one whose digest
+		// derivation changed across an upgrade, must not strand the worker. The
+		// worker keeps custody of its journal, serves no execution, and waits for
+		// the coordinator to publish a catalog again. The unusable projection is
+		// still remembered, so a replacement cannot skip the drain guard.
+		h.retained = &retained
+		h.service = nil
+		h.unusable = err
+		logger := h.Options.Logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("retained catalog is unusable; awaiting republication",
+			"worker", h.Bootstrap.WorkerID, "revision", retained.Projection.Revision, "error", err)
+		return nil
 	}
+	h.unusable = nil
 	return nil
 }
 func (h *CatalogHost) activate(ctx context.Context, c retainedCatalog) error {
@@ -189,7 +209,10 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 		return nil, err
 	}
 	projection := request.Projection
-	if h.retained != nil && h.retained.Projection.Revision != projection.Revision && request.ExpectedRevision != h.retained.Projection.Revision {
+	// An unusable retained catalog is no authority on revision identity, so it
+	// cannot fence the republication that recovers the worker. Epoch, signature
+	// and drain guards below still apply.
+	if h.retained != nil && h.unusable == nil && h.retained.Projection.Revision != projection.Revision && request.ExpectedRevision != h.retained.Projection.Revision {
 		return nil, errors.New("stale expected catalog revision")
 	}
 	settings, err := projection.Settings(h.Bootstrap, h.Home)
@@ -200,11 +223,11 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 		return nil, errors.New("catalog worker epoch mismatch")
 	}
 	if h.retained != nil && h.retained.Projection.Revision != projection.Revision {
-		state, err := h.service.Exchange.Runtime.journal.snapshot()
+		attempts, err := h.retainedAttempts(settings)
 		if err != nil {
 			return nil, err
 		}
-		for _, record := range state.Attempts {
+		for _, record := range attempts {
 			terminal := record.Phase == PhaseCompleted || record.Phase == PhaseFailed ||
 				(record.Phase == PhaseStopped && record.StopConfirmed && hasCommandRequest(record, domain.WorkerCommandStop))
 			if record.SettlePending || !terminal {
@@ -229,7 +252,7 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 		return nil, err
 	}
 	response, err := server.Handle(ctx, envelope, func(ctx context.Context, _ workerproto.Envelope) (workerproto.MessageType, any, error) {
-		if h.retained != nil && h.retained.Projection.Revision == projection.Revision && h.Options.CoordinatorEpoch == envelope.CoordinatorEpoch && reflect.DeepEqual(credentials, h.activeCredentials) {
+		if h.service != nil && h.retained != nil && h.retained.Projection.Revision == projection.Revision && h.Options.CoordinatorEpoch == envelope.CoordinatorEpoch && reflect.DeepEqual(credentials, h.activeCredentials) {
 			return MessageCatalog, map[string]string{"revision": projection.Revision, "workerId": h.Bootstrap.WorkerID}, nil
 		}
 		next := retainedCatalog{Projection: projection, CoordinatorEpoch: envelope.CoordinatorEpoch, AppliedAt: time.Now().UTC()}
@@ -249,6 +272,7 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 		h.service = candidate.service
 		h.activeCredentials = candidate.activeCredentials
 		h.Options = candidate.Options
+		h.unusable = nil
 		return MessageCatalog, map[string]string{"revision": projection.Revision, "workerId": h.Bootstrap.WorkerID}, nil
 	})
 	if err != nil {
@@ -258,6 +282,21 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 	var output bytes.Buffer
 	err = (workerproto.Codec{MaxBytes: 8 << 20}).Encode(&output, response)
 	return output.Bytes(), err
+}
+
+// retainedAttempts reads the attempt records the retained catalog still owns. A
+// catalog this build could not activate has no runtime to ask, so the journal is
+// read directly and the drain guard keeps its force.
+func (h *CatalogHost) retainedAttempts(settings config.BacklogV2) (map[string]AttemptRecord, error) {
+	if h.service != nil {
+		state, err := h.service.Exchange.Runtime.journal.snapshot()
+		if err != nil {
+			return nil, err
+		}
+		return state.Attempts, nil
+	}
+	_, _, root := WorkerRoots(settings, h.Bootstrap.WorkerID)
+	return JournalAttempts(root)
 }
 
 type fixedProtocolCredentials struct{ credentials ProtocolCredentials }

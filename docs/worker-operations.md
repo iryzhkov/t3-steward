@@ -65,6 +65,19 @@ A configured worker cannot receive new assignment offers until enrollment
 matches the effective requirement. Exact request replay is idempotent; changing
 its actor or body is rejected.
 
+Upgrading the worker binary is a lifecycle operation of its own: install the new
+release, then restart `t3-steward-worker.service`, or the host keeps serving the
+previous release against the new coordinator. `t3-steward worker inspect-journal`
+reports, read-only, how many attempts the durable journal still owns and how many
+of them are dispatched, so a restart can wait for dispatched work to settle.
+
+A release may derive catalog digests differently from the release that wrote the
+worker's retained catalog. The worker then starts, serves no execution, logs
+"retained catalog is unusable; awaiting republication", and waits for the
+coordinator to publish a catalog again; the coordinator's expected revision does
+not fence that republication. The drain guard still refuses a catalog change
+while the journal owns unsettled execution, so recovery never discards custody.
+
 To drain a persistent worker, set its coordinator `accept_backlog: false` and
 send SIGHUP to the coordinator process. Draining leaves execution identity and
 retained packages unchanged while closing new admission. The worker continues

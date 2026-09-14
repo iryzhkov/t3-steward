@@ -48,7 +48,7 @@ func cmdWorker(g globalFlags, args []string) error {
 		return cmdBacklog(g, append([]string{"workers"}, args[1:]...))
 	}
 	if len(args) != 1 {
-		return errors.New("worker requires inspect-bootstrap, serve, or bridge")
+		return errors.New("worker requires inspect-bootstrap, inspect-journal, serve, or bridge")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -69,6 +69,14 @@ func cmdWorker(g globalFlags, args []string) error {
 	switch args[0] {
 	case "inspect-bootstrap":
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"workerId": bootstrap.WorkerID, "coordinatorId": bootstrap.CoordinatorID, "bootstrapDigest": digest, "credentialRef": bootstrap.CredentialRef, "state": "configured", "enrolled": false})
+	case "inspect-journal":
+		// Read-only: an updater uses this to see whether restarting the worker
+		// would interrupt a dispatched execution.
+		summary, err := workerruntime.InspectWorkerJournal(home)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(summary)
 	case "bridge":
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
@@ -80,7 +88,7 @@ func cmdWorker(g globalFlags, args []string) error {
 		return workerruntime.BridgeWorkerStream(ctx, os.Stdin, os.Stdout, conn, (8<<20)+workerproto.StreamArtifactLimit, 2*time.Minute)
 	case "serve":
 	default:
-		return errors.New("worker requires inspect-bootstrap, serve, or bridge")
+		return errors.New("worker requires inspect-bootstrap, inspect-journal, serve, or bridge")
 	}
 	cfg, err := config.LoadFile(g.configPath)
 	if err != nil {

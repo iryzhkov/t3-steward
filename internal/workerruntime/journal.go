@@ -130,6 +130,24 @@ func JournalCoordinatorEpoch(root string) (int64, error) {
 	return state.CoordinatorEpoch, nil
 }
 
+// JournalAttempts reports the durable attempt records without adopting an
+// identity or epoch. A missing journal reports none.
+func JournalAttempts(root string) (map[string]AttemptRecord, error) {
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("worker journal: resolve root: %w", err)
+	}
+	journal := &Journal{root: absolute, path: filepath.Join(absolute, "journal.json"), lockPath: filepath.Join(absolute, "journal.lock")}
+	if _, err := os.Stat(journal.path); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	state, err := journal.read()
+	if err != nil {
+		return nil, err
+	}
+	return cloneState(state).Attempts, nil
+}
+
 func (j *Journal) snapshot() (journalState, error) {
 	var result journalState
 	err := j.withLock(func() error {
