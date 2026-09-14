@@ -124,6 +124,28 @@ output bounded during accumulation. Evidence key is
 `campaign submit` runs the check unless `--allow-unverified` is passed; the coordinator repeats
 the permanent checks inside `ingest` before any record is written.
 
+### Probe classification, measured
+
+Measured on omarchy-pc with git 2.x on 2026-09-14, `GIT_TERMINAL_PROMPT=0`. The classifier must
+be driven by these, not by guesses:
+
+| Case | Exit | Decisive stderr |
+| --- | --- | --- |
+| reachable, ref present | 0 | the ref line on stdout |
+| ref absent (`--exit-code`) | 2 | empty stdout |
+| no credentials for a private repository | 128 | `could not read Username for 'https://github.com': terminal prompts disabled` |
+| repository absent on Forgejo | 128 | `Forgejo: Cannot find repository: <owner>/<name>` then `Could not read from remote repository.` |
+| DNS failure | 128 | `Could not resolve host: <host>` |
+| option-shaped repository value | 128 | `fatal: strange pathname '--upload-pack=...' blocked` |
+
+Git's own refusal of an option-shaped pathname is a backstop, not the defence: the value is
+rejected by validation before `git` is executed, and the `--` separator is always present.
+
+One host fact worth knowing while testing: HTTPS to GitHub succeeds on these machines because
+`~/.config/git/config` delegates `credential.https://github.com.helper` to `gh auth
+git-credential`. Remove that helper from the probe's environment when testing the
+unauthenticated case, or the test proves nothing.
+
 ## H4 lifecycle (owner: C)
 
 ```go
