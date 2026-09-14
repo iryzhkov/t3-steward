@@ -326,9 +326,21 @@ are 0 answered, 3 client configuration, 4 authentication, 5 unavailable, 6
 timeout, 7 protocol, 8 refused by the coordinator, and 1 for anything else.
 
 A submission whose response is lost is retried with the same `--idempotency-key`.
-The coordinator's durable replay store answers the repeat with the first answer,
-so exactly one run exists; the same key with different content is refused rather
-than silently accepted.
+Exactly one run results. The guarantee comes from the submission service, which
+holds the key, the content digest and the result durably and refuses the same key
+carrying different content. The transport keeps its own short-lived copy of the
+answer so that the common retry costs nothing; that copy is a shield rather than
+the guarantee, and a coordinator-exchange process killed between the effect and
+its cache write will re-execute the operation, which the service then recognises
+as the same submission.
+
+The coordinator's CLI and its daemon must be the same build. The admin socket
+refuses a frame carrying fields it does not know, so an older CLI talking to a
+newer coordinator fails to decode the coordinator's error responses and reports a
+decode failure in place of the real refusal. The symptom is a `protocol` class
+and exit 7 with a message about an unknown field, on a command that ought to have
+reported something specific. Upgrade both together; UpKeeper already converges
+them as one unit.
 
 ## Recovery procedures
 
