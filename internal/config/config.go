@@ -286,24 +286,56 @@ type Archive struct {
 
 // BacklogV2 configures the disabled-by-default coordinator runtime.
 type BacklogV2 struct {
-	Mode             string                    `yaml:"mode"`
-	Coordinator      V2Coordinator             `yaml:"coordinator"`
-	LocalWorker      V2LocalWorker             `yaml:"local_worker"`
-	Workers          map[string]V2Worker       `yaml:"workers"`
-	Projects         map[string]V2Project      `yaml:"projects"`
-	SetupProfiles    map[string]V2SetupProfile `yaml:"setup_profiles"`
-	QuotaPools       map[string]V2QuotaPool    `yaml:"quota_pools"`
-	Storage          V2Storage                 `yaml:"storage"`
-	Transport        V2Transport               `yaml:"transport"`
-	MessageLimits    V2MessageLimits           `yaml:"message_limits"`
-	Freshness        V2Freshness               `yaml:"freshness"`
-	Leases           V2Leases                  `yaml:"leases"`
-	Scheduling       V2Scheduling              `yaml:"scheduling"`
-	StartupAdmission string                    `yaml:"startup_admission"`
+	Mode              string                    `yaml:"mode"`
+	Coordinator       V2Coordinator             `yaml:"coordinator"`
+	LocalWorker       V2LocalWorker             `yaml:"local_worker"`
+	Workers           map[string]V2Worker       `yaml:"workers"`
+	Projects          map[string]V2Project      `yaml:"projects"`
+	SetupProfiles     map[string]V2SetupProfile `yaml:"setup_profiles"`
+	QuotaPools        map[string]V2QuotaPool    `yaml:"quota_pools"`
+	CoordinatorClient V2CoordinatorClient       `yaml:"coordinator_client"`
+	Storage           V2Storage                 `yaml:"storage"`
+	Transport         V2Transport               `yaml:"transport"`
+	MessageLimits     V2MessageLimits           `yaml:"message_limits"`
+	Freshness         V2Freshness               `yaml:"freshness"`
+	Leases            V2Leases                  `yaml:"leases"`
+	Scheduling        V2Scheduling              `yaml:"scheduling"`
+	StartupAdmission  string                    `yaml:"startup_admission"`
 }
 
 type V2Coordinator struct {
 	ID string `yaml:"id"`
+	// AdminClients are the remote admin clients this coordinator will accept
+	// through the restricted coordinator-exchange command, by client
+	// principal. A client that is not listed here cannot be authenticated,
+	// because the coordinator would have no credential to verify it against.
+	AdminClients map[string]V2AdminClient `yaml:"admin_clients"`
+}
+
+// V2AdminClient is one remote admin client's credential reference. The value
+// behind the reference is resolved at use, never stored in configuration.
+type V2AdminClient struct {
+	Credential string `yaml:"credential"`
+}
+
+// V2CoordinatorClient points a host that is not the coordinator at the
+// coordinator it administers. Its presence is what selects the remote carrier;
+// a coordinator-local client keeps using its own owner-only socket.
+type V2CoordinatorClient struct {
+	CoordinatorID  string          `yaml:"coordinator_id"`
+	Address        string          `yaml:"address"`
+	Connection     string          `yaml:"connection"`
+	RemoteCommand  string          `yaml:"remote_command"`
+	Credential     string          `yaml:"credential"`
+	RequestTimeout Duration        `yaml:"request_timeout"`
+	MessageLimits  V2MessageLimits `yaml:"message_limits"`
+}
+
+// Configured reports whether an operator declared the block at all. A partly
+// filled block is a configuration error, not an absent one.
+func (c V2CoordinatorClient) Configured() bool {
+	return strings.TrimSpace(c.CoordinatorID) != "" || strings.TrimSpace(c.Address) != "" ||
+		strings.TrimSpace(c.Credential) != ""
 }
 
 // V2LocalWorker fixes the authority identity used by restricted worker commands.

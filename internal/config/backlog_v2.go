@@ -10,9 +10,22 @@ import (
 	"time"
 )
 
+// Credential namespaces. Admin clients and workers never share a reference, so
+// a worker credential can never authorize an admin operation and an admin
+// credential can never authorize worker execution.
+const (
+	adminCredentialPrefix  = "secretref:f03-admin/"
+	workerCredentialPrefix = "secretref:f02-protocol/"
+)
+
 func (c *Config) validateBacklogV2() error {
 	v := &c.BacklogV2
 	v.Mode = strings.ToLower(strings.TrimSpace(v.Mode))
+	// The client block is validated in every mode: the host that needs it is
+	// usually not running a coordinator or a worker at all.
+	if err := c.validateCoordinatorClient(); err != nil {
+		return err
+	}
 	switch v.Mode {
 	case "", "disabled":
 		v.Mode = "disabled"
@@ -20,6 +33,14 @@ func (c *Config) validateBacklogV2() error {
 	case "coordinator", "worker":
 	default:
 		return fmt.Errorf("backlog_v2: mode must be disabled, coordinator, or worker (got %q)", v.Mode)
+	}
+	for id, client := range v.Coordinator.AdminClients {
+		if strings.TrimSpace(id) != id || id == "" {
+			return fmt.Errorf("backlog_v2: coordinator.admin_clients key %q must be trimmed and non-empty", id)
+		}
+		if err := validateAdminCredentialReference(client.Credential); err != nil {
+			return fmt.Errorf("backlog_v2: coordinator.admin_clients %q: %w", id, err)
+		}
 	}
 	if v.Mode == "coordinator" && c.Backlog.Enabled {
 		return errors.New("backlog_v2: coordinator mode and legacy backlog.enabled are mutually exclusive")
@@ -78,6 +99,10 @@ func (c *Config) validateBacklogV2() error {
 			strings.TrimSpace(worker.Epoch) != worker.Epoch || worker.Epoch == "" ||
 			strings.TrimSpace(worker.Credential) == "" {
 			return fmt.Errorf("backlog_v2: worker %q requires address, epoch, and credential", id)
+		}
+		if strings.HasPrefix(worker.Credential, adminCredentialPrefix) {
+			return fmt.Errorf("backlog_v2: worker %q credential %q is a coordinator admin reference; workers need a %s reference",
+				id, worker.Credential, workerCredentialPrefix)
 		}
 		if !worker.AcceptBacklog && worker.Connection == "" {
 			return fmt.Errorf("backlog_v2: configured worker %q must accept backlog work", id)
@@ -172,6 +197,77 @@ func (c *Config) validateBacklogV2() error {
 		if v.Workers[local.ID].Epoch != local.Epoch {
 			return fmt.Errorf("backlog_v2: local worker %q epoch does not match its worker declaration", local.ID)
 		}
+	}
+	return nil
+}
+
+// validateAdminCredentialReference keeps admin authority in its own namespace
+// and names the worker namespace when an operator supplied the wrong one.
+func validateAdminCredentialReference(reference string) error {
+	switch {
+	case strings.TrimSpace(reference) != reference || reference == "":
+		return errors.New("credential reference must be trimmed and non-empty")
+	case strings.HasPrefix(reference, workerCredentialPrefix):
+		return fmt.Errorf("credential %q is a worker protocol reference; coordinator admin clients need a %s reference",
+			reference, adminCredentialPrefix)
+	case !strings.HasPrefix(reference, adminCredentialPrefix):
+		return fmt.Errorf("credential reference must start with %s (got %q)", adminCredentialPrefix, reference)
+	case len(reference) == len(adminCredentialPrefix):
+		return errors.New("credential reference must name a client")
+	}
+	return nil
+}
+
+// validateCoordinatorClient checks and completes the block that selects the
+// remote carrier. An absent block is not an error: a coordinator-local host
+// needs none.
+func (c *Config) validateCoordinatorClient() error {
+	client := &c.BacklogV2.CoordinatorClient
+	if !client.Configured() {
+		return nil
+	}
+	if c.BacklogV2.Mode == "coordinator" {
+		return errors.New("backlog_v2: a coordinator administers itself over its own socket; remove backlog_v2.coordinator_client")
+	}
+	if strings.TrimSpace(client.CoordinatorID) != client.CoordinatorID || client.CoordinatorID == "" {
+		return errors.New("backlog_v2: coordinator_client.coordinator_id is required and must be trimmed")
+	}
+	if strings.TrimSpace(client.Address) != client.Address || client.Address == "" {
+		return errors.New("backlog_v2: coordinator_client.address is required and must be trimmed")
+	}
+	if client.Connection == "" {
+		client.Connection = "ssh"
+	}
+	if client.Connection != "ssh" {
+		return fmt.Errorf("backlog_v2: coordinator_client.connection must be ssh (got %q)", client.Connection)
+	}
+	if client.RemoteCommand == "" {
+		client.RemoteCommand = "t3-steward"
+	}
+	if strings.TrimSpace(client.RemoteCommand) != client.RemoteCommand {
+		return errors.New("backlog_v2: coordinator_client.remote_command must be trimmed")
+	}
+	if err := validateAdminCredentialReference(client.Credential); err != nil {
+		return fmt.Errorf("backlog_v2: coordinator_client: %w", err)
+	}
+	if client.RequestTimeout.D() == 0 {
+		client.RequestTimeout = Duration(30 * time.Second)
+	}
+	if client.RequestTimeout.D() <= 0 {
+		return errors.New("backlog_v2: coordinator_client.request_timeout must be positive")
+	}
+	if client.MessageLimits.MaxBytes == 0 {
+		client.MessageLimits.MaxBytes = c.BacklogV2.MessageLimits.MaxBytes
+	}
+	if client.MessageLimits.MaxArtifactBytes == 0 {
+		client.MessageLimits.MaxArtifactBytes = c.BacklogV2.MessageLimits.MaxArtifactBytes
+	}
+	if client.MessageLimits.MaxFiles == 0 {
+		client.MessageLimits.MaxFiles = c.BacklogV2.MessageLimits.MaxFiles
+	}
+	if client.MessageLimits.MaxBytes <= 0 || client.MessageLimits.MaxArtifactBytes <= 0 ||
+		client.MessageLimits.MaxFiles <= 0 {
+		return errors.New("backlog_v2: coordinator_client.message_limits byte and file limits must be positive")
 	}
 	return nil
 }
