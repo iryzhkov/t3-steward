@@ -68,6 +68,14 @@ backlog_v2:
     message_limits: {max_bytes: 4194304, max_artifact_bytes: 1073741824}
 ```
 
+Amendment, 2026-09-14: the same settings must also load from an UpKeeper-owned file,
+`~/.config/t3-steward/coordinator-client.json`, mode 0600, `schema_version` 1, read the way
+`workerruntime.LoadWorkerBootstrap` reads `worker-bootstrap.json`, with unknown fields refused.
+An explicit `backlog_v2.coordinator_client` block in `config.yaml` is an operator override and
+wins; the file is used when the block is absent. This exists because a single key written into
+`config.yaml` would give that file two authors, which is the drift the fleet-configuration
+component exists to remove.
+
 Remote principal role is `remote-admin`; the local peer-UID role stays `local-admin`. The server
 overwrites any claimed principal on both carriers.
 
@@ -172,6 +180,24 @@ type TaskWait struct {
     RequestID        string   // idempotency
 }
 ```
+
+Amendments, 2026-09-14, from the first implementation pass:
+
+- `ExpectedRevision` is `int64`, matching `Attempt.Revision`.
+- The record additionally carries `RegisteredRevision`, `RegisteredAt`, `Deadline`, `Result`,
+  `SettledAt`, `WokenAt`, `Delivery`, `DeliveredAt`, `Name` and `Condition`. The frozen fields
+  above are present verbatim; a record without settlement and delivery state cannot be the
+  durable record this contract describes.
+- `all` is scoped to the attempt. Mixing `each` and `all` on one attempt is defined as: any
+  `each` that settles wakes the attempt.
+- Settlement ownership: the steward's existing wait runner reports check outcomes; the
+  coordinator owns expiry and wake.
+- `wait add --task current` is routed on the literal `current` before native-wait dispatch, so it
+  does not collide with `--task <run>/<task>`.
+- The worker learns that an assignment is parked through a first-class `workerproto` field the
+  coordinator sets in the exchange the worker already makes, carrying the fenced attempt
+  revision. The worker never queries coordinator state directly, and the coordinator refusal
+  remains the authority.
 
 Registration + transition to `waiting-external` commit in one fenced store call. A terminal
 attempt refuses registration with `attempt is terminal (<progress>); task-bound waits are refused`.
