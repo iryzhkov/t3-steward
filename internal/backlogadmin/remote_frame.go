@@ -231,14 +231,24 @@ func verifyRemoteFrame(frame remoteFrame, secret []byte) error {
 	return nil
 }
 
-// frameDigest identifies the exact request bytes behind one request id, so a
-// retry with the same id and different content can be refused.
+// frameDigest identifies the request behind one request id, so that a retry
+// with the same id and different content can be refused while an honest retry
+// of the same request is recognised.
+//
+// It deliberately covers the operation, the two identities and the payload
+// digest, and not the timestamps or the signature: a retry is a new frame sent
+// at a new time, and hashing that would make every retry look like a different
+// request. The submission archive bytes are not in it either; those are covered
+// by the submission service's own content digest, one layer up.
 func frameDigest(frame remoteFrame) (string, error) {
-	canonical, err := remoteSignatureBytes(frame)
+	canonical, err := json.Marshal([]string{
+		RemoteTransportVersion, frame.Operation, frame.Sender, frame.Recipient,
+		strings.ToLower(frame.PayloadSHA256),
+	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("admin frame: digest: %w", err)
 	}
-	sum := sha256.Sum256(canonical)
+	sum := sha256.Sum256(append([]byte(remoteSignatureDomain), canonical...))
 	return hex.EncodeToString(sum[:]), nil
 }
 

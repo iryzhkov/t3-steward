@@ -194,11 +194,14 @@ type remoteExchange struct {
 	cancel  context.CancelFunc
 }
 
+// Close waits for the session to finish before releasing the request context.
+// Cancelling first would kill a coordinator that is still writing its answer.
 func (e *remoteExchange) Close() error {
+	err := e.command.Wait()
 	if e.cancel != nil {
 		e.cancel()
 	}
-	return e.command.Wait()
+	return err
 }
 
 // roundTrip signs one request, runs the restricted command and authenticates
@@ -279,16 +282,21 @@ func (c *SSHClient) roundTrip(
 		err = c.fail(ClassUnavailable, operation, fmt.Errorf("write coordinator exchange request: %w", writeErr))
 	}
 	if err != nil {
+		// The request context is read before Close, which releases it: a
+		// deadline that expired must be reported as a deadline, not as the
+		// cancellation that tidying up produced.
+		causeCtx := requestCtx.Err()
 		_ = exchange.Close()
-		return localResponse{}, nil, c.exchangeError(requestCtx, operation, exchange, err)
+		return localResponse{}, nil, c.exchangeError(causeCtx, operation, exchange, err)
 	}
 	if err := c.validate(operation, response); err != nil {
 		_ = exchange.Close()
 		return localResponse{}, nil, err
 	}
 	if !stream {
+		causeCtx := requestCtx.Err()
 		if err := exchange.Close(); err != nil {
-			return localResponse{}, nil, c.exchangeError(requestCtx, operation, exchange,
+			return localResponse{}, nil, c.exchangeError(causeCtx, operation, exchange,
 				c.fail(ClassUnavailable, operation, fmt.Errorf("coordinator exchange: %w", err)))
 		}
 		return response, nil, nil
@@ -299,18 +307,23 @@ func (c *SSHClient) roundTrip(
 // exchangeError explains a failed session with the remote stderr and the
 // deadline, so a timeout is reported as a timeout rather than as a decode
 // error on an empty stream.
-func (c *SSHClient) exchangeError(ctx context.Context, operation string, exchange *remoteExchange, err error) error {
-	if ctx.Err() != nil {
+func (c *SSHClient) exchangeError(ctxErr error, operation string, exchange *remoteExchange, err error) error {
+	if ctxErr != nil {
 		class := ClassUnavailable
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if errors.Is(ctxErr, context.DeadlineExceeded) {
 			class = ClassTimeout
 		}
-		return c.fail(class, operation, fmt.Errorf("coordinator exchange: %w", ctx.Err()))
+		return c.fail(class, operation, fmt.Errorf("coordinator exchange: %w", ctxErr))
 	}
-	if detail := strings.TrimSpace(exchange.stderr.String()); detail != "" {
-		return classify(ClassOf(err), operation, c.config.CoordinatorID, fmt.Errorf("%w: %s", errors.Unwrap(err), detail))
+	detail := strings.TrimSpace(exchange.stderr.String())
+	if detail == "" {
+		return err
 	}
-	return err
+	cause := errors.Unwrap(err)
+	if cause == nil {
+		cause = err
+	}
+	return classify(ClassOf(err), operation, c.config.CoordinatorID, fmt.Errorf("%w: %s", cause, detail))
 }
 
 func (c *SSHClient) readResponse(exchange *remoteExchange, request remoteFrame) (localResponse, error) {
