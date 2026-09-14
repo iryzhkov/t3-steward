@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.41] - 2026-09-14
+
+### Fixed
+
+- A result that can never be imported is discarded once instead of retried
+  forever. The coordinator reconciles a worker in a single pass, so an import
+  error aborted that pass and blocked every other result the worker held: one
+  malformed result stalled an entire host. Superseded and rejected results stay
+  distinguishable, because they are discarded for different reasons.
+
 ## [0.11.0-rc.40] - 2026-09-14
 
 ### Fixed
