@@ -198,7 +198,10 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 	}
 	fail := func(cause error) (PreparedWorkspace, error) {
 		_ = logFile.Close()
-		retained, retainErr := retainPreparationLog(logPath, parent, request.Attempt.ID, 0o600)
+		// Read-only, like every other retained record and like the workflow
+		// path already wrote it. Evidence the failing thing can still edit is
+		// not the immutable evidence this is documented to be.
+		retained, retainErr := retainPreparationLog(logPath, parent, request.Attempt.ID, 0o400)
 		if retainErr != nil {
 			// The retention failure is reported after the failure that caused
 			// the preparation to fail, and never in place of it: the causal
@@ -614,8 +617,17 @@ func copyFileExclusive(source, destination string, mode os.FileMode) error {
 	}
 	_, copyErr := io.Copy(output, input)
 	closeErr := output.Close()
-	if copyErr != nil {
-		return copyErr
+	if copyErr != nil || closeErr != nil {
+		// A half-written file is worse than none: it occupies the ordinal, so
+		// the next attempt is refused the name and reads as if the evidence of
+		// this one were complete. Chmod first because the mode may be
+		// read-only, which does not stop the unlink but does stop a reader
+		// from mistaking the remains for a retained log.
+		_ = os.Chmod(destination, 0o600)
+		_ = os.Remove(destination)
+		if copyErr != nil {
+			return copyErr
+		}
 	}
 	return closeErr
 }

@@ -1,12 +1,14 @@
 package backlog
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -271,6 +273,19 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 	if !safePathComponent(workflowRunID) {
 		return fmt.Errorf("release campaign commits: workflow run ID %q is not a safe path component", workflowRunID)
 	}
+	// The unlocked look is only an early exit for a run that pinned nothing. It
+	// decides nothing: a publication that lands after it would have its record
+	// destroyed by the wholesale removal below and its ref left behind forever,
+	// so the list this acts on is read again under the lock that publication
+	// also takes.
+	if records, err := s.List(workflowRunID); err != nil || len(records) == 0 {
+		return err
+	}
+	lock, err := acquireFileLock(ctx, s.Root, "campaign-refs")
+	if err != nil {
+		return fmt.Errorf("lock campaign refs: %w", err)
+	}
+	defer lock.Close()
 	records, err := s.List(workflowRunID)
 	if err != nil {
 		return err
@@ -282,11 +297,6 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 	if err != nil {
 		return err
 	}
-	lock, err := acquireFileLock(ctx, s.Root, "campaign-refs")
-	if err != nil {
-		return fmt.Errorf("lock campaign refs: %w", err)
-	}
-	defer lock.Close()
 	for _, record := range records {
 		if err := runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir,
 			"update-ref", "-d", record.Ref); err != nil {
@@ -339,8 +349,15 @@ func (s CampaignRefStore) open(ctx context.Context, log io.Writer) (string, erro
 func (s CampaignRefStore) head(ctx context.Context, gitDir, ref string, log io.Writer) (string, bool, error) {
 	raw, err := runLoggedCommandOutput(ctx, log, "", s.git(), "--git-dir", gitDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	if err != nil {
-		// A missing ref is the ordinary case on first publication.
-		return "", false, nil
+		// With --quiet, a missing ref is exit 1 and no output, which is the
+		// ordinary case on first publication. Anything else is a store that
+		// could not answer, and reading that as "the ref is absent" would let
+		// a republication quietly redefine a ref a successor already resolved.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 && len(bytes.TrimSpace(raw)) == 0 {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("read campaign ref %s: %w", ref, err)
 	}
 	commit := strings.TrimSpace(string(raw))
 	if !validGitObjectID(commit) {

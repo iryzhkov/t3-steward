@@ -20,10 +20,16 @@ import (
 // parameter names (Action, ArtifactRequest, ArtifactStream and friends); those
 // types do not exist in this package, and the freeze also states that existing
 // method signatures are preserved verbatim, so the verbatim signatures win.
+//
+// Amendment: quarantine release is a tenth operation, added rather than folded
+// into an existing one because it mutates intake state that no other operation
+// owns. An older coordinator refuses the word, which is the correct answer from
+// a coordinator that cannot perform it.
 type CoordinatorAdminTransport interface {
 	Query(ctx context.Context, request Query) (Response, error)
 	Mutate(ctx context.Context, mutation Mutation) (MutationResponse, error)
 	RecoverUnknown(ctx context.Context, principal Principal, request UnknownRecoveryRequest) (domain.UnknownAssignmentRecoveryDecision, error)
+	ReleaseQuarantine(ctx context.Context, principal Principal, request QuarantineReleaseRequest) (domain.QuarantineRelease, error)
 	PutSchedule(ctx context.Context, principal Principal, request LocalScheduleDefinitionRequest) (LocalScheduleDefinitionResponse, error)
 	SubmitArchive(ctx context.Context, request LocalSubmissionRequest, body io.Reader, size int64) (LocalSubmissionResponse, error)
 	OpenArtifact(ctx context.Context, principal Principal, artifactID string) (ArtifactContent, error)

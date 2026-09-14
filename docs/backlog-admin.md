@@ -42,6 +42,17 @@ durable record, the content digest it was recorded for, the time and the
 reason, together with the rule that recovers it: change the file, because a
 different digest releases the marker and the submission is tried again.
 
+A refusal the file cannot fix, such as a project no alias mapped, is cleared
+deliberately once the configuration is right:
+
+```text
+t3-steward backlog quarantine release <key> --reason TEXT [--json]
+```
+
+The release is audited with the operator and the reason. Releasing a key that
+holds no marker reports that there was nothing to release rather than failing,
+so an ambiguous response is safe to repeat.
+
 Unknown assignments require a separate evidence-bound recovery operation:
 
 ```text

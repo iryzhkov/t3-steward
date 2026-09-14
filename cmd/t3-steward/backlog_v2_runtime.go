@@ -85,6 +85,14 @@ func (s coordinatorLocalService) RecoverUnknown(
 	return s.admin.RecoverUnknown(ctx, principal, request)
 }
 
+func (s coordinatorLocalService) ReleaseQuarantine(
+	ctx context.Context,
+	principal backlogadmin.Principal,
+	request backlogadmin.QuarantineReleaseRequest,
+) (domain.QuarantineRelease, error) {
+	return s.admin.ReleaseQuarantine(ctx, principal, request)
+}
+
 func (s coordinatorLocalService) PutSchedule(
 	ctx context.Context,
 	principal backlogadmin.Principal,
@@ -561,9 +569,9 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		workers: workers,
 		// The campaign ref store is the one this host's worker publishes into,
 		// a sibling of the repository cache under the same configured
-		// workspaces root. A worker on another host keeps its own store, which
-		// this coordinator cannot reach; releasing those needs a worker
-		// protocol message that does not exist yet.
+		// workspaces root. A worker on another host keeps its own store and
+		// releases it from the keep list this coordinator states on every
+		// snapshot exchange.
 		campaignRefs: &backlog.CampaignRefReleaseReconciler{
 			Records: store.LoadCoordinatorRecords,
 			Refs:    backlog.CampaignRefStore{Root: filepath.Join(cfg.BacklogV2.Storage.Workspaces, "campaign-refs")},

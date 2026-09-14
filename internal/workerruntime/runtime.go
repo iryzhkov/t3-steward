@@ -634,6 +634,23 @@ func (r *Runtime) prune(ctx context.Context, id string, record AttemptRecord) er
 	})
 }
 
+// setPrepareAttempts records how many preparation attempts have been spent on
+// one assignment. It is written before the attempt runs so that a worker which
+// dies inside it still comes back knowing the attempt happened.
+func (r *Runtime) setPrepareAttempts(id string, attempts int) error {
+	return r.journal.update(func(state *journalState) error {
+		current, ok := state.Attempts[id]
+		if !ok || current.PrepareAttempts == attempts {
+			return nil
+		}
+		current.PrepareAttempts = attempts
+		current.UpdatedAt = r.now()
+		state.Attempts[id] = current
+		state.Sequence++
+		return nil
+	})
+}
+
 func (r *Runtime) prepare(ctx context.Context, id string) error {
 	state, err := r.journal.snapshot()
 	if err != nil {
@@ -652,22 +669,52 @@ func (r *Runtime) prepare(ctx context.Context, id string) error {
 			return err
 		}
 	}
+	// The attempt is counted before it runs, not after it fails. A worker that
+	// restarts between the driver failing and the journal write would otherwise
+	// come back believing no attempt had been made: the budget would never
+	// terminate, and the preparation logs on disk would keep taking ordinals
+	// until retention itself failed.
+	attempts := record.PrepareAttempts + 1
+	if err := r.setPrepareAttempts(id, attempts); err != nil {
+		return err
+	}
 	workspace, err := r.driver.Prepare(ctx, record.Package.Package)
 	if err != nil {
 		if errors.Is(err, ErrContainedCustody) {
+			// An uncertain contained preparation must never spend budget: its
+			// outcome is unknown, and exhausting the budget would turn not
+			// knowing into a terminal decision. The reservation is therefore
+			// given back. A worker that dies inside this window keeps the
+			// reservation, which costs one attempt of an uncertain preparation
+			// and is the safe direction: the alternative, counting nothing
+			// until the driver reports, is what let an ordinary failure lose
+			// its count and the budget run forever.
+			if releaseErr := r.setPrepareAttempts(id, record.PrepareAttempts); releaseErr != nil {
+				return releaseErr
+			}
 			return err
 		}
-		attempts := record.PrepareAttempts + 1
 		// The first preparation failure is the one that explains why the
 		// repository could not be prepared; every later one often only
 		// reports the debris the first one left. Keep it durably, before
 		// the terminal decision, and quote both in the terminal reason.
+		//
+		// An earlier attempt that left no cause is one whose worker restarted
+		// inside that window. This error is then not the first one, and saying
+		// so is better than quoting it as if it were: the first cause is in the
+		// preparation log the lost attempt retained.
 		first := record.FirstPrepareFailure
-		if first == "" {
+		lostFirst := first == "" && record.PrepareAttempts > 0
+		if first == "" && !lostFirst {
 			first = err.Error()
 		}
 		if attempts >= MaxPrepareAttempts {
-			reason := fmt.Sprintf("preparation failed %d times; first error: %s; last error: %v", attempts, first, err)
+			quoted := first
+			if lostFirst {
+				quoted = fmt.Sprintf("not retained, the worker restarted before it was recorded; read %s",
+					backlog.PreparationLogName(record.Package.Package.Identity.AttemptID, 1))
+			}
+			reason := fmt.Sprintf("preparation failed %d times; first error: %s; last error: %v", attempts, quoted, err)
 			if markErr := r.markFailed(ctx, id, reason); markErr != nil {
 				return markErr
 			}

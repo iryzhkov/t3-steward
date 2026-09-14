@@ -24,6 +24,8 @@ type localTransportService struct {
 	submissionPrincipal Principal
 	schedulePrincipal   Principal
 	recoveryPrincipal   Principal
+	quarantinePrincipal Principal
+	quarantineRequest   QuarantineReleaseRequest
 	submissionRequest   LocalSubmissionRequest
 	submissionArchive   []byte
 	scheduleRequest     LocalScheduleDefinitionRequest
@@ -93,6 +95,18 @@ func (s *localTransportService) PutSchedule(
 			Revision: request.ExpectedRevision + 1,
 		},
 	}, nil
+}
+
+func (s *localTransportService) ReleaseQuarantine(
+	_ context.Context,
+	principal Principal,
+	request QuarantineReleaseRequest,
+) (domain.QuarantineRelease, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.quarantinePrincipal = principal
+	s.quarantineRequest = request
+	return domain.QuarantineRelease{Key: request.Key, Released: true, Reason: request.Reason}, nil
 }
 
 func (s *localTransportService) RecoverUnknown(

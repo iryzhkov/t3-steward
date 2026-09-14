@@ -293,7 +293,7 @@ func TestCampaignRefReleaseFailureIsReportedAndRetried(t *testing.T) {
 	records := sqlite.CoordinatorRecords{
 		WorkflowRuns: []domain.WorkflowRun{run}, Tasks: []domain.Task{task},
 	}
-	broken := &countingReleaser{err: errors.New("git refused")}
+	broken := &countingReleaser{held: []string{"run-1"}, err: errors.New("git refused")}
 	reconciler := &CampaignRefReleaseReconciler{
 		Records: func(context.Context) (sqlite.CoordinatorRecords, error) { return records, nil },
 		Refs:    broken,
@@ -310,14 +310,34 @@ func TestCampaignRefReleaseFailureIsReportedAndRetried(t *testing.T) {
 	}
 }
 
+// countingReleaser is a campaign ref store that holds named runs and records
+// what it was asked to release.
 type countingReleaser struct {
-	calls int
-	err   error
+	calls    int
+	held     []string
+	released []string
+	listErr  error
+	err      error
 }
 
-func (r *countingReleaser) ReleaseRun(_ context.Context, _ string, _ io.Writer) error {
+func (r *countingReleaser) Runs() ([]string, error) {
+	return append([]string(nil), r.held...), r.listErr
+}
+
+func (r *countingReleaser) ReleaseRun(_ context.Context, runID string, _ io.Writer) error {
 	r.calls++
-	return r.err
+	if r.err != nil {
+		return r.err
+	}
+	r.released = append(r.released, runID)
+	kept := r.held[:0]
+	for _, held := range r.held {
+		if held != runID {
+			kept = append(kept, held)
+		}
+	}
+	r.held = kept
+	return nil
 }
 
 // campaignRefCount reports how many campaign refs the store currently pins.

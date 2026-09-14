@@ -120,7 +120,8 @@ func rerunRequest(id, from string) domain.GraphAmendment {
 	}
 }
 
-// sourceSnapshot is every fact about the source run a rerun must not change.
+// sourceSnapshot is every fact about the source run a rerun must not change:
+// its run, tasks, attempts and artifacts, and the audit events that name it.
 func sourceSnapshot(t *testing.T, store *sqlite.Store) string {
 	t.Helper()
 	records, err := store.LoadCoordinatorRecords(context.Background())
@@ -142,6 +143,18 @@ func sourceSnapshot(t *testing.T, store *sqlite.Store) string {
 	for _, artifact := range records.Artifacts {
 		if artifact.WorkflowRunID == "run" {
 			kept.Artifacts = append(kept.Artifacts, artifact)
+		}
+	}
+	// The audit trail of the source run is part of what must not change: a
+	// rerun that quietly wrote an event against the run it read would be
+	// rewriting its history, and comparing only the records would not notice.
+	events, err := store.LoadAuditEvents(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.WorkflowRunID == "run" || event.TargetID == "run" {
+			kept.AuditEvents = append(kept.AuditEvents, event)
 		}
 	}
 	raw, err := json.Marshal(kept)
@@ -190,7 +203,10 @@ func TestRerunCreatesOneLinkedRunAndLeavesTheSourceAlone(t *testing.T) {
 	}
 }
 
-func TestRerunRerunsDescendantsAndCarriesAncestorOutputsByReference(t *testing.T) {
+// A first rerun of an original run. The rerun of a rerun, which is a different
+// path because the source's own tasks already carry inputs, is
+// TestARerunOfARerunCarriesTheInputsTheFirstRerunCarried.
+func TestAFirstRerunRerunsDescendantsAndCarriesAncestorOutputsByReference(t *testing.T) {
 	ctx := context.Background()
 	service, store, _ := rerunFixture(t)
 	result, err := service.AmendGraph(ctx, Principal{ID: "operator"}, rerunRequest("rerun-1", "implement"))
