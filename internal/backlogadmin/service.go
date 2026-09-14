@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
@@ -668,24 +669,67 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 	return explanation, true
 }
 
+// addWorkerBlocker explains placement through the same matcher the planner uses,
+// so a blocked task reports why each worker was excluded rather than only that
+// none was suitable.
+//
+// This deliberately does not reimplement eligibility. A second copy of the rules
+// drifts from the planner's, and it cannot report a reason the planner knows
+// about: an operator whose task requires a device no host provides was told
+// "no fresh ready worker satisfies placement", which names neither the
+// requirement nor the host that failed it.
 func (v view) addWorkerBlocker(explanation *Explanation, task domain.Task) {
-	eligible := false
+	// Staleness stays the view's own decision, which already accounts for the
+	// snapshot's validity window and the coordinator epoch. A stale worker is
+	// dropped here rather than re-judged by the matcher, so this change adds
+	// reasons without moving the freshness boundary.
+	inventories := make([]domain.WorkerInventory, 0)
+	var considered, stale int
 	for _, worker := range v.workersResponse(Filter{}) {
-		if worker.State != "observed" || worker.Stale || (worker.Requirement != nil && !worker.Enrolled) {
+		if worker.Snapshot.Inventory.ID == "" || (worker.Requirement != nil && !worker.Enrolled) {
 			continue
 		}
-		snapshot := worker.Snapshot
-		if len(task.Placement.Hosts) != 0 && !contains(task.Placement.Hosts, snapshot.WorkerID) {
+		considered++
+		if worker.State != "observed" || worker.Stale || !worker.Snapshot.Connected {
+			stale++
 			continue
 		}
-		if snapshot.Connected && !v.now.After(snapshot.ValidUntil) && snapshot.Inventory.AcceptBacklog &&
-			snapshot.Inventory.Health == domain.WorkerHealthReady && capabilitiesInclude(snapshot.Inventory.Capabilities, task.Placement.Capabilities) {
-			eligible = true
-			break
-		}
+		// Freshness has already been judged, so the inventory is presented as
+		// observed now. Leaving the original timestamp would let the matcher
+		// apply a second, different staleness rule and report a worker as stale
+		// that this view just accepted as fresh.
+		inventory := worker.Snapshot.Inventory
+		inventory.ObservedAt = v.now
+		inventories = append(inventories, inventory)
 	}
-	if !eligible {
-		explanation.Blockers = append(explanation.Blockers, Blocker{Code: "worker", Detail: "no fresh ready worker satisfies placement"})
+	if len(inventories) == 0 {
+		detail := "no enrolled worker has reported an inventory"
+		if considered != 0 {
+			detail = fmt.Sprintf("all %d enrolled worker(s) are stale or disconnected", stale)
+		}
+		explanation.Blockers = append(explanation.Blockers, Blocker{Code: "worker", Detail: detail})
+		return
+	}
+	// MatchWorkers requires a positive bound; freshness was applied above, so
+	// this one is deliberately not binding.
+	placement, err := backlog.MatchWorkers(backlog.WorkerPlacementRequest{
+		Task: task, Now: v.now, MaxSnapshotAge: time.Duration(1 << 62),
+	}, inventories)
+	if err != nil {
+		explanation.Blockers = append(explanation.Blockers, Blocker{
+			Code: "worker", Detail: "placement could not be evaluated: " + err.Error(),
+		})
+		return
+	}
+	if len(placement.EligibleWorkerIDs) != 0 {
+		return
+	}
+	for _, evaluation := range placement.Evaluations {
+		for _, exclusion := range evaluation.Exclusions {
+			explanation.Blockers = append(explanation.Blockers, Blocker{
+				Code: exclusion.Code, Detail: exclusion.Detail, WorkerID: evaluation.WorkerID,
+			})
+		}
 	}
 }
 
