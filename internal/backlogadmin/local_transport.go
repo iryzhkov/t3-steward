@@ -27,7 +27,37 @@ const (
 	localOperationSubmission         = "submission"
 	localOperationScheduleDefinition = "schedule-definition"
 	localOperationUnknownRecovery    = "unknown-recovery"
+	localOperationNodeWait           = "node-wait"
+	localOperationGraphAmendment     = "graph-amendment"
+	localOperationWorkerEnrollment   = "worker-enrollment"
 )
+
+// Operations is the complete coordinator-admin operation vocabulary, in the
+// order the H1 contract lists it. The restricted SSH command accepts exactly
+// these words and nothing else.
+func Operations() []string {
+	return []string{
+		localOperationQuery,
+		localOperationMutation,
+		localOperationArtifact,
+		localOperationSubmission,
+		localOperationScheduleDefinition,
+		localOperationUnknownRecovery,
+		localOperationNodeWait,
+		localOperationGraphAmendment,
+		localOperationWorkerEnrollment,
+	}
+}
+
+// ValidOperation reports whether name is one of the nine operations.
+func ValidOperation(name string) bool {
+	for _, operation := range Operations() {
+		if operation == name {
+			return true
+		}
+	}
+	return false
+}
 
 type LocalService interface {
 	Query(context.Context, Query) (Response, error)
@@ -70,7 +100,19 @@ type LocalScheduleDefinitionResponse struct {
 	Replay   bool            `json:"replay"`
 }
 
+// RemoteAdminAssertion is what the restricted SSH command states about the
+// remote client whose signed frame it has already verified. It is accepted
+// only over the owner-only socket, from a peer that already holds full local
+// admin authority, and it can only narrow that authority to the remote-admin
+// role. It never carries a credential or a credential reference.
+type RemoteAdminAssertion struct {
+	Principal   string `json:"principal"`
+	Coordinator string `json:"coordinator"`
+	RequestID   string `json:"requestId"`
+}
+
 type localRequest struct {
+	RemoteAdmin        *RemoteAdminAssertion           `json:"remoteAdmin,omitempty"`
 	WorkerEnrollment   *domain.WorkerEnrollmentRequest `json:"workerEnrollment,omitempty"`
 	GraphAmendment     *domain.GraphAmendment          `json:"graphAmendment,omitempty"`
 	NodeWait           *NodeWaitOperation              `json:"nodeWait,omitempty"`
@@ -214,157 +256,25 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 		_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: "unsupported local admin transport version", ErrorClass: ClassProtocol})
 		return
 	}
-	response := localResponse{Version: LocalTransportVersion}
-	if request.NodeWait != nil && request.Operation != "node-wait" {
-		response.Error = "unexpected native wait"
-		_ = writeLocalJSON(conn, response)
+	// A local peer may not assert a remote identity. The restricted SSH
+	// command is the only thing that may, and it does so on its own carrier.
+	if request.RemoteAdmin != nil {
+		_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: "local admin peers may not assert a remote principal", ErrorClass: ClassAuthentication})
 		return
 	}
-	if request.Operation != "graph-amendment" && request.GraphAmendment != nil {
-		response.Error = "unexpected graph amendment"
-		_ = writeLocalJSON(conn, response)
-		return
+	dispatch := adminDispatch{
+		service:            s.Service,
+		maxArtifactBytes:   s.MaxArtifactBytes,
+		maxSubmissionBytes: s.MaxSubmissionBytes,
 	}
-	if request.WorkerEnrollment != nil && request.Operation != "worker-enrollment" {
-		response.Error = "unexpected worker enrollment"
-		_ = writeLocalJSON(conn, response)
-		return
-	}
-	switch request.Operation {
-	case "worker-enrollment":
-		handler, ok := s.Service.(interface {
-			EnrollWorker(context.Context, Principal, domain.WorkerEnrollmentRequest) (domain.WorkerEnrollment, error)
-		})
-		if !ok || request.WorkerEnrollment == nil || request.GraphAmendment != nil || request.NodeWait != nil || request.Query != nil || request.Mutation != nil || request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
-			response.Error = "malformed worker enrollment request"
-			break
-		}
-		value, err := handler.EnrollWorker(ctx, principal, *request.WorkerEnrollment)
-		if err != nil {
-			response.Error = err.Error()
-		} else {
-			response.WorkerEnrollment = &value
-		}
-	case "graph-amendment":
-		handler, ok := s.Service.(interface {
-			AmendGraph(context.Context, Principal, domain.GraphAmendment) (domain.GraphAmendmentResult, error)
-		})
-		if !ok || request.GraphAmendment == nil || request.NodeWait != nil || request.Query != nil || request.Mutation != nil || request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
-			response.Error = "malformed graph amendment request"
-			break
-		}
-		value, err := handler.AmendGraph(ctx, principal, *request.GraphAmendment)
-		if err != nil {
-			response.Error = err.Error()
-		} else {
-			response.GraphAmendment = &value
-		}
-	case "node-wait":
-		handler, ok := s.Service.(interface {
-			NodeWait(context.Context, Principal, NodeWaitOperation) (NodeWaitResponse, error)
-		})
-		if !ok || request.NodeWait == nil || request.Query != nil || request.Mutation != nil || request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
-			response.Error = "malformed native wait request"
-			break
-		}
-		value, err := handler.NodeWait(ctx, principal, *request.NodeWait)
-		if err != nil {
-			response.Error = err.Error()
-		} else {
-			response.NodeWait = &value
-		}
-
-	case localOperationQuery:
-		if request.Query == nil || request.Mutation != nil || request.ArtifactID != "" ||
-			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
-			response.Error = "malformed local admin query"
-			break
-		}
-		request.Query.Principal = principal
-		value, queryErr := s.Service.Query(ctx, *request.Query)
-		if queryErr != nil {
-			response.Error = queryErr.Error()
-		} else {
-			response.Response = &value
-		}
-	case localOperationMutation:
-		if request.Mutation == nil || request.Query != nil || request.ArtifactID != "" ||
-			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
-			response.Error = "malformed local admin mutation"
-			break
-		}
-		request.Mutation.Principal = principal
-		value, mutationErr := s.Service.Mutate(ctx, *request.Mutation)
-		if mutationErr != nil {
-			response.Error = mutationErr.Error()
-		} else {
-			response.MutationResponse = &value
-		}
-	case localOperationArtifact:
-		if request.ArtifactID == "" || request.Query != nil || request.Mutation != nil ||
-			request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
-			response.Error = "malformed local admin artifact request"
-			break
-		}
-		value, artifactErr := s.Service.OpenArtifact(ctx, principal, request.ArtifactID)
-		if artifactErr != nil {
-			response.Error = artifactErr.Error()
-			break
-		}
-		defer value.Content.Close()
-		if value.Metadata.Size < 0 || value.Metadata.Size > s.MaxArtifactBytes {
-			response.Error = "artifact exceeds local transport limit"
-			break
-		}
-		response.ArtifactMetadata = &value.Metadata
-		response.ArtifactSize = value.Metadata.Size
+	response, artifact := dispatch.handle(ctx, principal, request, conn)
+	if artifact != nil {
+		defer artifact.Content.Close()
 		if err := writeLocalResponse(conn, response); err != nil {
 			return
 		}
-		_, _ = io.CopyN(conn, value.Content, value.Metadata.Size)
+		_, _ = io.CopyN(conn, artifact.Content, response.ArtifactSize)
 		return
-	case localOperationSubmission:
-		if request.Submission == nil || request.Query != nil || request.Mutation != nil ||
-			request.ArtifactID != "" || request.SubmissionSize <= 0 ||
-			request.SubmissionSize > s.MaxSubmissionBytes || request.ScheduleDefinition != nil || request.UnknownRecovery != nil {
-			response.Error = "malformed or oversized local submission request"
-			break
-		}
-		archive := &io.LimitedReader{R: conn, N: request.SubmissionSize}
-		value, submissionErr := s.Service.SubmitArchive(ctx, principal, *request.Submission, archive)
-		if submissionErr != nil {
-			response.Error = submissionErr.Error()
-		} else if archive.N != 0 {
-			response.Error = "submission archive ended before its declared size"
-		} else {
-			response.SubmissionResponse = &value
-		}
-	case localOperationScheduleDefinition:
-		if request.ScheduleDefinition == nil || request.Query != nil || request.Mutation != nil ||
-			request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 || request.UnknownRecovery != nil {
-			response.Error = "malformed local schedule definition request"
-			break
-		}
-		value, definitionErr := s.Service.PutSchedule(ctx, principal, *request.ScheduleDefinition)
-		if definitionErr != nil {
-			response.Error = definitionErr.Error()
-		} else {
-			response.ScheduleDefinitionResponse = &value
-		}
-	case localOperationUnknownRecovery:
-		if request.UnknownRecovery == nil || request.Query != nil || request.Mutation != nil ||
-			request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil {
-			response.Error = "malformed local unknown recovery request"
-			break
-		}
-		value, recoveryErr := s.Service.RecoverUnknown(ctx, principal, *request.UnknownRecovery)
-		if recoveryErr != nil {
-			response.Error = recoveryErr.Error()
-		} else {
-			response.UnknownRecoveryResponse = &value
-		}
-	default:
-		response.Error = "unknown local admin operation"
 	}
 	_ = writeLocalJSON(conn, response)
 }
