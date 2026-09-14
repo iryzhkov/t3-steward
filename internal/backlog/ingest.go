@@ -253,6 +253,12 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 		for _, output := range taskManifest.Outputs {
 			outputs = append(outputs, domain.ArtifactDeclaration{Name: output, MediaType: mediaType(output)})
 		}
+		for _, commit := range taskManifest.Commits {
+			outputs = append(outputs, domain.ArtifactDeclaration{
+				Name: commit.Name, MediaType: "application/json",
+				Commit: &domain.CommitOutput{Revision: commit.Revision},
+			})
+		}
 		routes := make([]domain.ProviderRoute, 0, len(taskManifest.Routes))
 		for _, route := range taskManifest.Routes {
 			routes = append(routes, domain.ProviderRoute{

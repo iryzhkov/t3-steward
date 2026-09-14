@@ -604,9 +604,16 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if err != nil {
 		return fmt.Errorf("collect preflight custody: %w", err)
 	}
+	// A task that declares a commit reports the pin its workspace started
+	// from. Its own HEAD has moved by now, so the pin is read back from the
+	// record preparation left in the workspace.
+	baseCommit, err := backlog.WorkspaceBaseCommit(workspace)
+	if err != nil {
+		return err
+	}
 	finalized, err := d.Finalizer.Finalize(ctx, backlog.AttemptFinalization{
 		Task: task, Attempt: attempt, WorkspaceDir: workspace, ExplicitSuccess: failure == "",
-		Extra: extras,
+		Extra: extras, Repository: pkg.Environment.Repository, BaseCommit: baseCommit,
 	})
 	if err != nil {
 		return err

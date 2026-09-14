@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A task may declare Git commits it produces with `commits`, and a successor may
+  consume one by name through `inputs_from`. The commit is kept reachable under
+  the durable ref `refs/campaigns/<workflow-run>/<task>/<name>`, which pruning
+  the repository cache does not touch, and its retained artifact is a provenance
+  record naming the producing task, the base commit, the repository and the ref.
+  The successor resolves the commit through that reference instead of finding it
+  in a shared cache that the next `git remote update --prune` may empty.
+
 ### Fixed
 
 - Each preparation attempt now retains its own evidence file,

@@ -121,6 +121,9 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 	if profile := options.Settings.Workers[options.WorkerID].Containment; profile != nil {
 		scoped.Profile = &ContainedProfile{RuntimePaths: append([]string(nil), profile.RuntimePaths...), Node: profile.Node, T3Entry: profile.T3Entry, OpenCodeBinary: profile.OpenCodeBinary, ProviderHosts: append([]string(nil), profile.ProviderHosts...)}
 	}
+	campaignRefs := backlog.CampaignRefStore{
+		Root: filepath.Join(options.Settings.Storage.Workspaces, "campaign-refs"),
+	}
 	driver, err := NewLocalDriver(LocalDriver{
 		Config: LocalDriverConfig{
 			CatalogRevision:  binding.CatalogRevision,
@@ -134,8 +137,12 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		Workspace: backlog.WorkspacePreparer{
 			Cache:     backlog.LocalRepositoryCache{Root: filepath.Join(options.Settings.Storage.Workspaces, "repository-cache")},
 			Processes: processes,
+			// The campaign ref store is a sibling of the repository cache,
+			// never a directory inside it: the cache is pruned and this is
+			// exactly what must survive pruning.
+			CampaignRefs: campaignRefs,
 		},
-		Finalizer:   backlog.AttemptFinalizer{Processes: processes, Now: options.Now},
+		Finalizer:   backlog.AttemptFinalizer{Processes: processes, Now: options.Now, CampaignRefs: campaignRefs},
 		Preflight:   processes,
 		Source:      custody,
 		Publisher:   custody,

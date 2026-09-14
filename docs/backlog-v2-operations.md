@@ -189,16 +189,64 @@ fields are `version`, `name`, `class`, `placement`, `environment`,
   `options`, and `quota_pool`. Task routes replace inherited workflow
   routes.
 - Each task declares `prompt_file`; optional fields include `needs`,
-  `inputs_from`, `outputs`, `verify`, placement, routes,
+  `inputs_from`, `outputs`, `commits`, `verify`, placement, routes,
   `resource_locks`, class, `importance`, `difficulty`,
   `estimated_cost`, `max_turns`, `not_before`, `deadline`, and
   `expires_at`.
+- `commits` declares Git commits a task produces for its successors. Each entry
+  has a `name`, which must be one safe path component, and an optional
+  `revision` resolved in the producing workspace, defaulting to `HEAD`. A
+  successor consumes a commit by that name through `inputs_from`, exactly as it
+  consumes a declared output.
 - Defaults are importance 3, difficulty 3, and max turns 3. Times are RFC 3339.
 - `inputs_from` may name only declared output paths from dependency ancestors.
   A dependency releases only after explicit success and successful verification.
 - All paths are relative to the bundle or workspace as appropriate. Absolute
   paths, traversal, unsafe globs, missing files, escaping symlinks, cycles,
   duplicate names, impossible placement, and unknown fields are rejected.
+
+### Campaign-scoped commits
+
+A commit a downstream task needs is represented explicitly. A task declares it,
+the coordinator keeps it reachable for the campaign's lifetime under the durable
+ref `refs/campaigns/<workflow-run>/<task>/<name>`, and the successor resolves it
+by that reference. Nothing searches the repository cache for it: the cache is
+refreshed with `git remote update --prune`, which deletes any ref the origin
+does not have, so a commit parked there survives only until the next task
+refreshes the cache.
+
+Declare the commit on the producing task and consume it by name:
+
+```yaml
+tasks:
+  implement:
+    prompt_file: prompts/implement.md
+    commits:
+      - name: implementation
+        revision: HEAD
+  review:
+    prompt_file: prompts/review.md
+    needs: [implement]
+    inputs_from:
+      implement: [implementation]
+```
+
+The retained artifact of a declared commit is its provenance record, a JSON
+document naming the producing task, the base commit the workspace was pinned to,
+the repository, the commit and its campaign ref. The successor receives it at
+`.t3/dependencies/implement/implementation` and starts with the commit already
+fetched into its own checkout under the same ref, so
+`git rev-parse refs/campaigns/<workflow-run>/implement/implementation` resolves
+there. Preparation records the pin it started from at `.t3/base-commit`.
+
+The refs live in a worker-owned store under `storage.workspaces/campaign-refs`,
+which is a sibling of the repository cache and is never pruned. Publishing the
+same commit again is idempotent; publishing a different commit under a ref that
+already exists is refused, because a successor has already been told what that
+ref means. The refs of a run are released together when its campaign lifetime
+ends. A task that promised a commit it did not produce fails with
+`declared commit "<name>": <cause>`, in the same way a missing declared output
+fails.
 
 ### Legacy intake quarantine
 
