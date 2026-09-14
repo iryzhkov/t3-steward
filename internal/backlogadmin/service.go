@@ -185,7 +185,7 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 	case QueryCommands:
 		response.Commands = view.commands(query)
 	case QueryViability:
-		if s.viabilitySettings.Catalog == nil {
+		if !s.viabilitySettings.configured() {
 			return Response{}, fmt.Errorf("%w: this coordinator has no project catalog to check against", ErrInvalidQuery)
 		}
 		matrix := view.viability(ctx, s.viabilitySettings, *query.Viability)

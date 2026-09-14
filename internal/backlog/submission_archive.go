@@ -16,6 +16,11 @@ import (
 type ArchiveSubmission struct {
 	IdempotencyKey string
 	Archive        io.Reader
+	// Principal, Unverified and UnverifiedReason are the audit facts the
+	// directory path records. They never change what is validated.
+	Principal        string
+	Unverified       bool
+	UnverifiedReason string
 }
 
 // SubmitArchive validates and expands one uncompressed tar bundle into a
@@ -47,8 +52,11 @@ func (s *SubmissionService) SubmitArchive(ctx context.Context, request ArchiveSu
 		return SubmissionResult{}, err
 	}
 	return s.SubmitDirectory(ctx, DirectorySubmission{
-		IdempotencyKey: request.IdempotencyKey,
-		BundleDir:      root,
+		IdempotencyKey:   request.IdempotencyKey,
+		BundleDir:        root,
+		Principal:        request.Principal,
+		Unverified:       request.Unverified,
+		UnverifiedReason: request.UnverifiedReason,
 	})
 }
 

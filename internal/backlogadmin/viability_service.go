@@ -34,10 +34,13 @@ type CredentialResolver interface {
 // ViabilitySettings is what a viability answer needs beyond the coordinator's
 // own records.
 type ViabilitySettings struct {
-	// Catalog is the project catalog this coordinator would resolve the
-	// campaign against. Without it the unknown-catalog-entry findings cannot be
-	// made, and a viability query is refused rather than answered incompletely.
-	Catalog *backlog.ProjectCatalog
+	// Projects and SetupProfiles are the catalog entries this coordinator is
+	// configured with. They are the definitions rather than a constructed
+	// ProjectCatalog on purpose: the catalog constructor refuses to hold a
+	// project whose repository syntax is wrong, and a project that exists and
+	// is misconfigured must be reported as misconfigured, never as unknown.
+	Projects      []backlog.ProjectDefinition
+	SetupProfiles []backlog.SetupProfile
 	// MaxBundleBytes and MaxBundleFiles are the coordinator's message limits.
 	MaxBundleBytes int64
 	MaxBundleFiles int
@@ -49,6 +52,31 @@ type ViabilitySettings struct {
 // needs. A coordinator that never sets them refuses the query rather than
 // answering it from an empty catalog.
 func (s *Service) SetViability(settings ViabilitySettings) { s.viabilitySettings = settings }
+
+// project returns one configured project by name.
+func (v ViabilitySettings) project(name string) (backlog.ProjectDefinition, bool) {
+	for _, project := range v.Projects {
+		if project.Name == name {
+			return project, true
+		}
+	}
+	return backlog.ProjectDefinition{}, false
+}
+
+// profile returns one configured setup profile by name.
+func (v ViabilitySettings) profile(name string) (backlog.SetupProfile, bool) {
+	for _, profile := range v.SetupProfiles {
+		if profile.Name == name {
+			return profile, true
+		}
+	}
+	return backlog.SetupProfile{}, false
+}
+
+// configured reports whether this coordinator can answer a viability query at
+// all. A coordinator with no configured project would report every campaign as
+// impossible, which is a fault in the coordinator, not in the campaign.
+func (v ViabilitySettings) configured() bool { return len(v.Projects) != 0 }
 
 // viability composes the per-task, per-worker matrix.
 func (v view) viability(ctx context.Context, settings ViabilitySettings, request ViabilityRequest) ViabilityMatrix {
@@ -130,14 +158,14 @@ func (v view) viabilityWorkers() []viabilityWorker {
 
 func (v view) viabilityTask(ctx context.Context, settings ViabilitySettings, task ViabilityTask, workers []viabilityWorker) ViabilityTaskResult {
 	result := ViabilityTaskResult{Task: task.Name, Candidates: make([]ViabilityCandidate, 0, len(workers))}
-	project, known := settings.Catalog.Project(task.Project)
+	project, known := settings.project(task.Project)
 	if !known {
 		result.Reasons = append(result.Reasons, newViabilityReason(ReasonUnknownProject,
 			fmt.Sprintf("this coordinator has no project %q", task.Project)))
 		result.Outcome = ViabilityImpossible
 		return result
 	}
-	if _, known := settings.Catalog.Profile(project.SetupProfile); !known {
+	if _, known := settings.profile(project.SetupProfile); !known {
 		result.Reasons = append(result.Reasons, newViabilityReason(ReasonUnknownSetupProfile,
 			fmt.Sprintf("project %q names setup profile %q, which this coordinator does not have",
 				task.Project, project.SetupProfile)))
@@ -186,6 +214,12 @@ func (v view) viabilityTask(ctx context.Context, settings ViabilitySettings, tas
 func taskOutcome(result ViabilityTaskResult) ViabilityOutcome {
 	if outcomeFor(result.Reasons) == ViabilityImpossible {
 		return ViabilityImpossible
+	}
+	if len(result.Candidates) == 0 {
+		// An empty fleet is not an impossible request. Nothing about the
+		// campaign is wrong; there is simply nobody to run it yet, and a worker
+		// enrolling fixes that.
+		return ViabilityAcceptedWaiting
 	}
 	best := ViabilityImpossible
 	for _, candidate := range result.Candidates {

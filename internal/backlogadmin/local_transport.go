@@ -70,6 +70,17 @@ type LocalService interface {
 
 type LocalSubmissionRequest struct {
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`
+	// Unverified says the client skipped its own live readiness check, and
+	// UnverifiedReason says why. They exist so that the escape hatch is loud in
+	// the coordinator's audit record rather than invisible once the run exists.
+	// Skipping the client check never skips the coordinator's own permanent
+	// validation at acceptance.
+	Unverified       bool   `json:"unverified,omitempty"`
+	UnverifiedReason string `json:"unverifiedReason,omitempty"`
+	// Principal is the identity the client claims. The coordinator overwrites
+	// it with the principal its own authentication produced, exactly as it does
+	// for every other operation, so a claimed identity is never trusted.
+	Principal string `json:"principal,omitempty"`
 }
 
 type LocalSubmissionResponse struct {

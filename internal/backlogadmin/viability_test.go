@@ -18,19 +18,29 @@ const (
 
 var viabilityNow = time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 
-func viabilityCatalog(t *testing.T, credentials ...string) *backlog.ProjectCatalog {
+func viabilityCatalog(t *testing.T, credentials ...string) ViabilitySettings {
 	t.Helper()
-	catalog, err := backlog.NewProjectCatalog(
-		[]backlog.ProjectDefinition{{
+	return ViabilitySettings{
+		Projects: []backlog.ProjectDefinition{{
 			Name: "t3-steward", Repository: "https://github.com/iryzhkov/t3-steward",
 			DefaultRef: "main", SetupProfile: "go", RequiredCredentials: credentials,
 		}},
-		[]backlog.SetupProfile{{Name: "go", Commands: []string{"go build ./..."}, Timeout: time.Minute}},
-	)
-	if err != nil {
-		t.Fatal(err)
+		SetupProfiles: []backlog.SetupProfile{{
+			Name: "go", Commands: []string{"go build ./..."}, Timeout: time.Minute,
+		}},
 	}
-	return catalog
+}
+
+// withRepositoryObserver adds one observer to the settings under test.
+func withRepositoryObserver(settings ViabilitySettings, observer RepositoryObserver) ViabilitySettings {
+	settings.Repository = observer
+	return settings
+}
+
+// withBundleLimits adds the coordinator's message limits.
+func withBundleLimits(settings ViabilitySettings, bytes int64, files int) ViabilitySettings {
+	settings.MaxBundleBytes, settings.MaxBundleFiles = bytes, files
+	return settings
 }
 
 // viabilityWorkerSnapshot is a fresh, connected, fully capable worker.
@@ -123,8 +133,7 @@ func candidateReason(t *testing.T, matrix ViabilityMatrix, code string) (Viabili
 
 func TestViabilityReportsAReadyFleet(t *testing.T) {
 	v := viabilityView(t, nil)
-	matrix := v.viability(context.Background(),
-		ViabilitySettings{Catalog: viabilityCatalog(t)},
+	matrix := v.viability(context.Background(), viabilityCatalog(t),
 		ViabilityRequest{Tasks: []ViabilityTask{viabilityTaskRequest()}})
 	if matrix.Outcome != ViabilityReady {
 		t.Fatalf("outcome = %q, reasons %+v", matrix.Outcome, matrix.Tasks[0].Candidates)
@@ -145,8 +154,7 @@ func TestViabilityReportsDriftAsDrift(t *testing.T) {
 	v := viabilityView(t, func(v *view) {
 		v.enrollments[0].Request.CatalogRevision = viabilityAcceptedDigest
 	})
-	matrix := v.viability(context.Background(),
-		ViabilitySettings{Catalog: viabilityCatalog(t)},
+	matrix := v.viability(context.Background(), viabilityCatalog(t),
 		ViabilityRequest{Tasks: []ViabilityTask{viabilityTaskRequest()}})
 
 	reason, found := candidateReason(t, matrix, ReasonCatalogDigestMismatch)
@@ -281,8 +289,7 @@ func TestViabilityFindings(t *testing.T) {
 			if test.task != nil {
 				test.task(&task)
 			}
-			matrix := v.viability(context.Background(),
-				ViabilitySettings{Catalog: viabilityCatalog(t)},
+			matrix := v.viability(context.Background(), viabilityCatalog(t),
 				ViabilityRequest{Tasks: []ViabilityTask{task}})
 			reason, found := candidateReason(t, matrix, test.code)
 			if !found {
@@ -330,7 +337,7 @@ func TestViabilityReportsRepositoryReachability(t *testing.T) {
 			observer := &stubRepositoryObserver{class: test.class}
 			v := viabilityView(t, nil)
 			matrix := v.viability(context.Background(),
-				ViabilitySettings{Catalog: viabilityCatalog(t, "git-github"), Repository: observer},
+				withRepositoryObserver(viabilityCatalog(t, "git-github"), observer),
 				ViabilityRequest{Tasks: []ViabilityTask{viabilityTaskRequest()}})
 			if matrix.Outcome != test.outcome {
 				t.Fatalf("outcome = %q, want %q (%+v)", matrix.Outcome, test.outcome, matrix.Tasks[0].Candidates)
@@ -362,7 +369,7 @@ func TestViabilityDoesNotProbeADriftedWorker(t *testing.T) {
 		v.enrollments[0].Request.CatalogRevision = viabilityAcceptedDigest
 	})
 	v.viability(context.Background(),
-		ViabilitySettings{Catalog: viabilityCatalog(t), Repository: observer},
+		withRepositoryObserver(viabilityCatalog(t), observer),
 		ViabilityRequest{Tasks: []ViabilityTask{viabilityTaskRequest()}})
 	if len(observer.keys) != 0 {
 		t.Fatalf("a drifted worker was probed: %+v", observer.keys)
@@ -390,8 +397,7 @@ func TestViabilityReportsAHeldLock(t *testing.T) {
 	}, nil)
 	task := viabilityTaskRequest()
 	task.ResourceLocks = []string{"repo:t3-steward"}
-	matrix := v.viability(context.Background(),
-		ViabilitySettings{Catalog: viabilityCatalog(t)},
+	matrix := v.viability(context.Background(), viabilityCatalog(t),
 		ViabilityRequest{Tasks: []ViabilityTask{task}})
 	reason, found := candidateReason(t, matrix, ReasonLockHeld)
 	if !found || reason.Permanent {
@@ -405,7 +411,7 @@ func TestViabilityReportsAHeldLock(t *testing.T) {
 func TestViabilityRefusesAnOversizedBundle(t *testing.T) {
 	v := viabilityView(t, nil)
 	matrix := v.viability(context.Background(),
-		ViabilitySettings{Catalog: viabilityCatalog(t), MaxBundleBytes: 1024, MaxBundleFiles: 10},
+		withBundleLimits(viabilityCatalog(t), 1024, 10),
 		ViabilityRequest{
 			Tasks:       []ViabilityTask{viabilityTaskRequest()},
 			BundleBytes: 4096, BundleFiles: 40,
@@ -428,8 +434,7 @@ func TestViabilityRefusesAnOversizedBundle(t *testing.T) {
 
 func TestViabilityRefusesACredentiallessWorker(t *testing.T) {
 	v := viabilityView(t, func(v *view) { v.enrollments[0].CredentialRef = "" })
-	matrix := v.viability(context.Background(),
-		ViabilitySettings{Catalog: viabilityCatalog(t, "git-github")},
+	matrix := v.viability(context.Background(), viabilityCatalog(t, "git-github"),
 		ViabilityRequest{Tasks: []ViabilityTask{viabilityTaskRequest()}})
 	reason, found := candidateReason(t, matrix, ReasonCredentialMissing)
 	if !found || !reason.Permanent {

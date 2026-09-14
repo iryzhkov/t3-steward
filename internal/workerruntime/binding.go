@@ -30,6 +30,66 @@ type WorkerBinding struct {
 	CredentialRef   string
 }
 
+// BuildFleetDefinitions is the coordinator's view of the same catalog
+// BuildWorkerBinding gives one worker: every configured project and setup
+// profile, with no per-worker filter.
+//
+// It returns definitions rather than a constructed catalog, and it drops
+// nothing. A project whose repository syntax is wrong must be reported as
+// having a wrong repository, not as a project this coordinator has never heard
+// of, and the catalog constructor cannot hold such a project at all.
+//
+// It lives beside BuildWorkerBinding so the two cannot drift about what a
+// project definition contains.
+func BuildFleetDefinitions(settings config.BacklogV2) ([]backlog.ProjectDefinition, []backlog.SetupProfile) {
+	profiles := fleetSetupProfiles(settings)
+	projectNames := make([]string, 0, len(settings.Projects))
+	for name := range settings.Projects {
+		projectNames = append(projectNames, name)
+	}
+	slices.Sort(projectNames)
+	projects := make([]backlog.ProjectDefinition, 0, len(projectNames))
+	for _, name := range projectNames {
+		project := settings.Projects[name]
+		setupProfile := project.SetupProfile
+		if setupProfile == "" {
+			setupProfile = implicitFreshSetupProfile
+			if !slices.ContainsFunc(profiles, func(p backlog.SetupProfile) bool { return p.Name == setupProfile }) {
+				profiles = append(profiles, backlog.SetupProfile{Name: setupProfile, Timeout: time.Minute})
+			}
+		}
+		projects = append(projects, backlog.ProjectDefinition{
+			DirectoryBindings: directoryresource.CloneBindings(project.DirectoryResources),
+			Type:              project.Type, Name: name, Repository: project.Repository,
+			DefaultRef: project.DefaultRef, T3ProjectTemplate: project.T3Project,
+			SetupProfile:        setupProfile,
+			ResourceLocks:       append([]string(nil), project.ResourceLocks...),
+			RequiredCredentials: append([]string(nil), project.Credentials...),
+		})
+	}
+	return projects, profiles
+}
+
+// implicitFreshSetupProfile is the profile a fresh-workspace project is given
+// when it declares none.
+const implicitFreshSetupProfile = "steward-fresh-empty"
+
+func fleetSetupProfiles(settings config.BacklogV2) []backlog.SetupProfile {
+	profileNames := make([]string, 0, len(settings.SetupProfiles))
+	for name := range settings.SetupProfiles {
+		profileNames = append(profileNames, name)
+	}
+	slices.Sort(profileNames)
+	profiles := make([]backlog.SetupProfile, 0, len(profileNames))
+	for _, name := range profileNames {
+		profile := settings.SetupProfiles[name]
+		profiles = append(profiles, backlog.SetupProfile{
+			Name: name, Commands: append([]string(nil), profile.Commands...), Timeout: profile.Timeout.D(),
+		})
+	}
+	return profiles
+}
+
 func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Time) (WorkerBinding, error) {
 	worker, ok := settings.Workers[workerID]
 	if !ok || workerID == "" {

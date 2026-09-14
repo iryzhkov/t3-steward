@@ -130,6 +130,68 @@ A plan never promises a worker, a route or quota. If the question is whether
 something can run now, it is an explain question.
 `
 
+// ReadinessHelp is the long help of the check command. It lives here rather
+// than in the command usage because the usage has to stay short enough to sit
+// in an agent's context, and these tables are what an agent reads once, when a
+// check has refused something.
+const ReadinessHelp = `Ask the coordinator whether a campaign could run, before submitting it.
+
+check is read-only and live. It creates no record, reserves nothing and sends no
+bundle: it sends the projected plan's requirements and asks for a per-task,
+per-worker answer about the fleet as it is now.
+
+For every task and every worker the coordinator reports worker freshness,
+enrollment and catalog-digest match, project and eligible-worker policy, CPU
+class, resource requirements, capabilities, required directories, setup profile,
+provider instance, model, quota pool, quota-snapshot freshness,
+credential-reference availability, repository and ref reachability, timing
+constraints, resource locks, and the coordinator's message limits.
+
+Outcomes:
+  ready             at least one worker can take every task now
+  accepted_waiting  no worker can now, and the obstruction is temporary, so
+                    submission proceeds and the reasons are reported
+  impossible        no worker can ever run it as written, so submission is
+                    refused and no workflow run is created
+
+Permanent reason codes. Waiting cannot change any of them, so submit refuses:
+  unknown-project, unknown-setup-profile, unknown-provider-instance,
+  unknown-model, unknown-quota-pool, worker-not-eligible, capability-missing,
+  cpu-class-impossible, resources-impossible, directory-impossible,
+  credential-missing, repository-syntax-invalid,
+  repository-authentication-failed, repository-not-found, ref-not-found,
+  no-configured-route, timing-window-closed, message-limit-exceeded.
+
+Temporary reason codes. Waiting is what fixes them, so submit proceeds:
+  quota-closed, worker-at-capacity, worker-offline, worker-stale,
+  network-unavailable, dns-failure, probe-timeout, snapshot-stale, lock-held,
+  timing-window-not-open, catalog-digest-mismatch.
+
+catalog-digest-mismatch is drift and is never reported as a missing worker. It
+carries the catalog digest the coordinator requires, the digest the worker
+actually accepted, and the enrollment revision to fence a re-enrolment against.
+
+Repository and ref reachability is observed by a bounded built-in probe
+equivalent to "git ls-remote --exit-code -- <repository> <ref>", run with the
+execution identity and credential references the real task would use. There is
+no shell and a manifest cannot choose the arguments. The result is retained for
+ten minutes, keyed on the worker, the catalog digest, the repository, the ref
+and the credential references, so rotating a credential or renaming a
+repository invalidates it. No credential value ever appears in the result.
+
+Recovery:
+  unknown-project            t3-steward backlog workers --json
+  repository-syntax-invalid  fix backlog_v2.projects.<name>.repository
+  ref-not-found              fix environment.ref in workflow.yaml
+  no-configured-route        add the instance and model to an eligible worker
+  catalog-digest-mismatch    t3-steward worker enroll <host>
+                               --catalog-revision <desired>
+
+Exit codes: 0 when the campaign is ready or accepted_waiting, 8 when it is
+impossible, and the transport classes 3 to 7 when the coordinator could not be
+reached. --json prints the whole matrix; read schemaVersion first.
+`
+
 // HelpTopic is one named block of help the command tree can attach wherever it
 // wants it.
 type HelpTopic struct {
@@ -144,5 +206,6 @@ func HelpTopics() []HelpTopic {
 		{Name: "graph", Body: GraphHelp},
 		{Name: "dag-semantics", Body: DAGSemanticsHelp},
 		{Name: "static-versus-dynamic", Body: StaticVersusDynamicHelp},
+		{Name: "readiness", Body: ReadinessHelp},
 	}
 }

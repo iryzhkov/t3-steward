@@ -90,33 +90,6 @@ func NewProjectCatalog(projects []ProjectDefinition, profiles []SetupProfile) (*
 	return catalog, nil
 }
 
-// Project returns one catalog project by name. It exists so that a caller which
-// must distinguish an unknown project from an unknown setup profile can ask
-// each question separately, instead of reading the answer out of the wording of
-// a Resolve error.
-func (c *ProjectCatalog) Project(name string) (ProjectDefinition, bool) {
-	if c == nil {
-		return ProjectDefinition{}, false
-	}
-	project, found := c.projects[name]
-	if !found {
-		return ProjectDefinition{}, false
-	}
-	return cloneProjectDefinition(project), true
-}
-
-// Profile returns one named setup profile.
-func (c *ProjectCatalog) Profile(name string) (SetupProfile, bool) {
-	if c == nil {
-		return SetupProfile{}, false
-	}
-	profile, found := c.profiles[name]
-	if !found {
-		return SetupProfile{}, false
-	}
-	return cloneSetupProfile(profile), true
-}
-
 // ValidateRepositorySyntax and ValidateRefSyntax expose the catalog's own
 // repository and ref rules so that a live readiness check applies exactly the
 // syntax the catalog applies, rather than a second, weaker copy of it.

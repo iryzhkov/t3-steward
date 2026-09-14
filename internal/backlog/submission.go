@@ -32,6 +32,24 @@ type SubmissionStore interface {
 type DirectorySubmission struct {
 	IdempotencyKey string
 	BundleDir      string
+	// Principal, Unverified and UnverifiedReason record who submitted and
+	// whether the client skipped its own live readiness check. They are audit
+	// facts; they never change what the coordinator validates.
+	Principal        string
+	Unverified       bool
+	UnverifiedReason string
+}
+
+// SubmissionAudit is one recorded submission decision. It exists so that a use
+// of the client-side escape hatch is loud rather than invisible once the run
+// exists.
+type SubmissionAudit struct {
+	Key              string
+	Digest           string
+	Principal        string
+	Unverified       bool
+	UnverifiedReason string
+	At               time.Time
 }
 
 // SubmissionResult is immutable for an idempotency key.
@@ -51,6 +69,10 @@ type SubmissionService struct {
 	MaxFiles          int
 	Now               func() time.Time
 	NewKey            func() string
+	// Permanent refuses a permanently impossible manifest during ingestion.
+	Permanent PermanentValidator
+	// Audit records every submission decision, including a skipped client check.
+	Audit func(context.Context, SubmissionAudit)
 
 	mu sync.Mutex
 }
@@ -87,6 +109,14 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 		State: domain.SubmissionPending, CreatedAt: createdAt,
 	}
 
+	if s.Audit != nil {
+		s.Audit(ctx, SubmissionAudit{
+			Key: key, Digest: digest, Principal: request.Principal,
+			Unverified: request.Unverified, UnverifiedReason: request.UnverifiedReason,
+			At: createdAt,
+		})
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	record, replay, err := s.Store.ReserveSubmission(ctx, proposed)
@@ -106,6 +136,7 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 		DirectoryCatalogs: s.DirectoryCatalogs,
 		StorageRoot:       s.StorageRoot,
 		Store:             s.Store,
+		Permanent:         s.Permanent,
 		Now:               func() time.Time { return record.CreatedAt },
 		NewTypedID:        submissionTypedIDGenerator(key),
 	}

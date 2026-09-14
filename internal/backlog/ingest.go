@@ -25,15 +25,26 @@ type CoordinatorRecordStore interface {
 	SaveCoordinatorRecords(context.Context, sqlite.CoordinatorRecords) error
 }
 
+// PermanentValidator refuses a manifest that can never run as written. It is
+// applied inside ingestion rather than only on the client, because a client
+// that skipped its own check, or a fleet that changed after the client checked,
+// must still not be able to create a structurally impossible run.
+type PermanentValidator interface {
+	ValidatePermanent(context.Context, Manifest) error
+}
+
 // BundleIngester copies a validated version 2 submission into coordinator-owned
 // storage and persists the corresponding immutable domain records.
 type BundleIngester struct {
 	DirectoryCatalogs map[string][]directoryresource.Binding
 	StorageRoot       string
 	Store             CoordinatorRecordStore
-	Now               func() time.Time
-	NewID             func() string
-	NewTypedID        func(string) string
+	// Permanent, when set, refuses a permanently impossible manifest before any
+	// record is built or any file is staged.
+	Permanent  PermanentValidator
+	Now        func() time.Time
+	NewID      func() string
+	NewTypedID func(string) string
 }
 
 // IngestedBundle identifies a successfully committed workflow submission.
@@ -64,6 +75,14 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 		return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: %w", err)
 	}
 	defer sourceRoot.Close()
+	// The permanent checks are repeated here, transactionally, before anything
+	// exists. A campaign that can never run must consume no run ID and occupy
+	// no place in the graph, whether or not the client checked first.
+	if i.Permanent != nil {
+		if err := i.Permanent.ValidatePermanent(ctx, manifest); err != nil {
+			return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: %w", err)
+		}
+	}
 	relativePaths, inputPaths, err := ingestionPaths(root, manifest)
 	if err != nil {
 		return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: %w", err)
