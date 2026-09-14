@@ -110,7 +110,7 @@ func viabilityTaskRequest() ViabilityTask {
 func candidateReason(t *testing.T, matrix ViabilityMatrix, code string) (ViabilityReason, bool) {
 	t.Helper()
 	for _, task := range matrix.Tasks {
-		for _, reason := range append(append([]ViabilityReason(nil), task.Reasons...)) {
+		for _, reason := range task.Reasons {
 			if reason.Code == code {
 				return reason, true
 			}

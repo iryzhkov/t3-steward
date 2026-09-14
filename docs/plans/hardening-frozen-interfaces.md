@@ -116,6 +116,15 @@ Reason codes, temporary: `quota-closed`, `worker-at-capacity`, `worker-offline`,
 Drift is its own code, `catalog-digest-mismatch`, temporary, and always carries `Desired`,
 `Observed` and `Revision`. It must never be reported as `worker-not-eligible`.
 
+Three codes are named by the implementation because the two lists above have nothing for a case
+the H3 ADR puts in the matrix. They are flagged here rather than folded into a neighbouring code:
+`timing-window-closed` (permanent) and `timing-window-not-open` (temporary) for a declared
+schedulable window, and `message-limit-exceeded` (permanent) for a bundle larger than the
+coordinator's message limits. `ViabilityTaskResult` and `ViabilityMatrix` also carry a `Reasons`
+field the frozen shapes do not have, for findings that belong to the task or to the request
+rather than to any one worker; copying a project-level finding onto every candidate would have
+said the same thing once per worker and implied it was a property of the worker.
+
 Probe: built-in name `git_ls_remote`, argv `git ls-remote --exit-code -- <repository> <ref>`,
 no shell, repository validated by `catalog.validateGitRepository`, ref by `catalog.validateGitRef`,
 output bounded during accumulation. Evidence key is
@@ -123,6 +132,38 @@ output bounded during accumulation. Evidence key is
 
 `campaign submit` runs the check unless `--allow-unverified` is passed; the coordinator repeats
 the permanent checks inside `ingest` before any record is written.
+
+## Probe classification, measured
+
+This section was referenced by the H3 brief and was missing from this file. It was written by
+measuring real `git ls-remote --exit-code` output on 2026-09-14 rather than by assuming it, and
+the classifier test pins every row to a verbatim excerpt of one of those runs.
+
+`git ls-remote --exit-code` reports 0 when at least one ref matched, 2 when the repository
+answered and no ref matched, and 128 for every transport, resolution, authentication and lookup
+failure alike, so everything except a missing ref has to be read out of the message. The
+lowercased message is tested against these substrings, in this order, because
+`Could not read from remote repository` accompanies both an authentication failure and a missing
+repository, so the specific evidence has to be tested before the generic wording.
+
+| Observation | Code |
+| --- | --- |
+| exit 0 | `authenticated-ok` |
+| exit 2 | `ref-not-found` |
+| `context.DeadlineExceeded` or `context.Canceled` | `timeout` |
+| `could not resolve host`, `name or service not known`, `no address associated with hostname`, `temporary failure in name resolution` | `dns-failure` |
+| `authentication failed`, `access denied`, `permission denied`, `invalid username or password`, `terminal prompts disabled`, `could not read username`, `403 forbidden`, `401 unauthorized` | `authentication-failed` |
+| `repository not found`, `does not appear to be a git repository`, `not found`, `404` | `repository-not-found` |
+| `failed to connect`, `could not connect to server`, `connection refused`, `connection timed out`, `network is unreachable`, `connection reset`, `ssl`, `tls` | `network-unavailable` |
+| anything else | `network-unavailable` |
+
+The last row is deliberate. An unrecognised failure is classified as temporary so that a Git
+message nobody has measured can never manufacture a permanent refusal.
+
+One ambiguity cannot be removed and should not be papered over: a forge that hides a private
+repository behind "Repository not found" is reported as `repository-not-found` even when the
+truth is `authentication-failed`. GitHub does this on purpose. Both codes are permanent, so the
+outcome and the submission decision are the same; only the wording of the reason can be wrong.
 
 ## H4 lifecycle (owner: C)
 
