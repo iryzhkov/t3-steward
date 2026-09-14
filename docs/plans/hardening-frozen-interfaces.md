@@ -224,6 +224,21 @@ T3_STEWARD_WORKFLOW_RUN_ID, T3_STEWARD_TASK_ID, T3_STEWARD_ATTEMPT_ID,
 T3_STEWARD_ATTEMPT_REVISION, T3_STEWARD_ASSIGNMENT_ID, T3_STEWARD_THREAD_ID
 ```
 
+Amendment, 2026-09-14, after the T3 protocol was checked: the primary channel for these six
+variables is a worker-written `.t3-steward/task.env` in the prepared workspace, mode 0600,
+created before dispatch. `resolveTaskIdentity` reads the process environment first and that file
+second. The contained path keeps its sandbox environment injection.
+
+`environment` on `thread.create` is not in the documented T3 contract, the compat range is pinned
+at 0.0.38..0.0.38, and `DispatchResult` carries no per-field acknowledgement, so the adapter
+cannot tell an honoured field from an ignored one. An ignored field would make identity injection
+inert, which is tolerable; a rejected field would fail every uncontained dispatch identically on
+retry, which is not. The field is therefore off by default behind an explicit setting, to be
+enabled only after verification against a disposable server of the deployed version.
+
+The file carries identity only: no dispatch token, no credential, and it must not travel with
+collected outputs or an archived workspace.
+
 `wait add --task current` uses them. Released while waiting: executor slot, CPU/memory/scratch
 reservation, provider slot, quota tally. Held: attempt, thread, workspace, artifacts, dependency
 mounts, assignment ownership, resource locks, directory bindings.
