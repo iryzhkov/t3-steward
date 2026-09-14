@@ -33,8 +33,10 @@ jobs:
         with:
           go-version-file: go.mod
           check-latest: true
-      - run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
-      - run: test -z "$(gofmt -l .)"
+      # Run the same pinned lint gate the Makefile defines, so that a local `make
+      # lint` and this job cannot disagree because of a floating analyzer release
+      # or a floating Go toolchain.
+      - run: make lint
   cross-build:
     runs-on: ubuntu-latest
     steps:
