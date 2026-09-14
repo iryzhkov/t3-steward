@@ -232,8 +232,18 @@ func resultArtifact(object workerproto.ArtifactObject, manifest workerproto.Arti
 			return domain.Artifact{}, errors.New("result import final summary identity mismatch")
 		}
 	}
-	if kind == domain.ArtifactLog && (object.ID != "thread-archive-"+attempt.ID || name != "thread.json" || object.MediaType != "application/json") {
-		return domain.Artifact{}, errors.New("result import thread archive identity mismatch")
+	if kind == domain.ArtifactLog {
+		// A log is either the thread archive or preflight evidence. Both have a
+		// fixed identity so that an attempt cannot smuggle arbitrary content in
+		// under a permissive kind, but they are different identities: preflight
+		// runs before the session exists and cannot be the thread archive.
+		archive := object.ID == "thread-archive-"+attempt.ID && name == "thread.json" && object.MediaType == "application/json"
+		preflight := strings.HasPrefix(object.ID, "preflight-") &&
+			strings.HasPrefix(name, "preflight/") &&
+			strings.HasPrefix(object.MediaType, "text/plain")
+		if !archive && !preflight {
+			return domain.Artifact{}, fmt.Errorf("result import log identity mismatch: id=%q name=%q mediaType=%q", object.ID, name, object.MediaType)
+		}
 	}
 	return domain.Artifact{ID: object.ID, WorkflowRunID: attempt.WorkflowRunID, TaskID: task.ID, AttemptID: attempt.ID,
 		Kind: kind, Name: name, MediaType: object.MediaType, Size: object.Size, SHA256: strings.ToLower(object.SHA256),
