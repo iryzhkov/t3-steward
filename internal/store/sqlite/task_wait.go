@@ -124,7 +124,7 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 	if attempt.Progress.Terminal() {
 		return wait, domain.TaskWaitTerminalRefusal(attempt.Progress)
 	}
-	if uint64(attempt.Revision) != request.ExpectedRevision {
+	if attempt.Revision != request.ExpectedRevision {
 		return wait, fmt.Errorf("%w: attempt %q is at revision %d, not %d",
 			domain.ErrTaskWaitStaleRevision, attempt.ID, attempt.Revision, request.ExpectedRevision)
 	}

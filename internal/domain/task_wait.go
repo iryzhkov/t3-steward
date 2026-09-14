@@ -44,6 +44,16 @@ const (
 	WakeAll WakeMode = "all"
 )
 
+// The wake condition is evaluated over all of one attempt's waits, not over a
+// named group: an attempt is parked or it is not, and there is nothing for a
+// second group on the same attempt to mean.
+//
+// Mixing the two modes on one attempt is defined rather than refused: any each
+// wait that settles wakes the attempt, and the all waits still live at that
+// moment are carried into the resumed turn unsettled. An agent that registers
+// one urgent check alongside a set it wants complete gets the urgent answer
+// when it arrives, which is the only reading under which each still means each.
+
 // TaskWaitOutcome is the immutable settlement of one task-bound wait.
 type TaskWaitOutcome string
 
@@ -73,11 +83,14 @@ type TaskWaitResult struct {
 // does not verify, and neither dependents nor the run sink settle while it is
 // live.
 type TaskWait struct {
-	ID               string        `json:"id"`
-	WorkflowRunID    string        `json:"workflowRunId"`
-	TaskID           string        `json:"taskId"`
-	AttemptID        string        `json:"attemptId"`
-	ExpectedRevision uint64        `json:"expectedRevision"`
+	ID            string `json:"id"`
+	WorkflowRunID string `json:"workflowRunId"`
+	TaskID        string `json:"taskId"`
+	AttemptID     string `json:"attemptId"`
+	// ExpectedRevision is the attempt revision the registration is fenced on.
+	// It is the same type as Attempt.Revision on purpose: a fence that needs a
+	// conversion to be compared is a fence with a place to go wrong.
+	ExpectedRevision int64         `json:"expectedRevision"`
 	ThreadID         string        `json:"threadId"`
 	Wake             WakeMode      `json:"wake"`
 	MaxDuration      time.Duration `json:"maxDuration"`
@@ -124,7 +137,7 @@ type TaskWaitRegistration struct {
 	WorkflowRunID    string        `json:"workflowRunId"`
 	TaskID           string        `json:"taskId"`
 	AttemptID        string        `json:"attemptId"`
-	ExpectedRevision uint64        `json:"expectedRevision"`
+	ExpectedRevision int64         `json:"expectedRevision"`
 	ThreadID         string        `json:"threadId"`
 	Wake             WakeMode      `json:"wake"`
 	MaxDuration      time.Duration `json:"maxDuration"`
@@ -163,6 +176,8 @@ func (r TaskWaitRegistration) Validate() error {
 		return errors.New("task-bound wait needs a request ID of at most 128 bytes")
 	case r.WorkflowRunID == "" || r.TaskID == "" || r.AttemptID == "":
 		return errors.New("task-bound wait needs a workflow run, task and attempt")
+	case r.ExpectedRevision < 0:
+		return errors.New("task-bound wait needs a non-negative attempt revision to fence on")
 	case r.ThreadID == "":
 		return errors.New("task-bound wait needs the canonical T3 thread")
 	case r.Wake != WakeEach && r.Wake != WakeAll:

@@ -25,7 +25,7 @@ type taskIdentity struct {
 	WorkflowRunID   string
 	TaskID          string
 	AttemptID       string
-	AttemptRevision uint64
+	AttemptRevision int64
 	AssignmentID    string
 	ThreadID        string
 }
@@ -49,7 +49,7 @@ func resolveTaskIdentity(getenv func(string) string) (taskIdentity, error) {
 		}
 		values[name] = value
 	}
-	revision, err := strconv.ParseUint(values[domain.TaskWaitEnvAttemptRevision], 10, 64)
+	revision, err := strconv.ParseInt(values[domain.TaskWaitEnvAttemptRevision], 10, 64)
 	if err != nil {
 		return identity, fmt.Errorf("%s is not a revision number: %w", domain.TaskWaitEnvAttemptRevision, err)
 	}

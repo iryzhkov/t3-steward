@@ -47,14 +47,14 @@ const MaxPrepareAttempts = 3
 
 type Config struct {
 	ObserveInventory func(context.Context, domain.WorkerInventory) (domain.WorkerInventory, error)
-	// LiveTaskWait reports whether the coordinator holds a live task-bound wait
-	// for this package's attempt. It is consulted before every collection: a
-	// thread that stopped because its task parked must not have its outputs
-	// collected, because it has not written them yet.
+	// LiveTaskWait overrides how the worker answers whether an attempt is
+	// parked on a task-bound wait. It exists for an embedded worker that can
+	// read coordinator state directly, and for tests.
 	//
-	// A worker without the seam collects as before. The coordinator refuses the
-	// resulting done marker anyway, so the two checks are defence in depth
-	// rather than one rule written twice.
+	// Leave it nil in production. The answer then comes from the coordinator's
+	// own statement, carried on the snapshot exchange the worker already makes,
+	// which keeps the restricted worker protocol restricted: the worker is told
+	// what is parked and never asks.
 	LiveTaskWait     func(context.Context, workerproto.ExecutionPackage) (bool, error)
 	WorkerID         string
 	WorkerEpoch      string
@@ -825,10 +825,7 @@ func (r *Runtime) confirmStop(id string) error {
 // lets the coordinator verify against them, which is precisely the failure this
 // path exists to prevent. Waiting one more reconcile costs nothing.
 func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record AttemptRecord) error {
-	if r.config.LiveTaskWait == nil {
-		return r.collect(ctx, id)
-	}
-	waiting, err := r.config.LiveTaskWait(ctx, record.Package.Package)
+	waiting, err := r.liveTaskWait(ctx, record)
 	if err != nil {
 		r.log.Warn("task-bound wait state is unavailable; collection deferred", "assignment", id, "error", err)
 		return nil

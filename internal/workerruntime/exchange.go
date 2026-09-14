@@ -33,6 +33,13 @@ func (e Exchange) handle(ctx context.Context, envelope workerproto.Envelope) (wo
 		if err := workerproto.DecodePayload(envelope, workerproto.MessageSnapshot, &request); err != nil {
 			return "", nil, err
 		}
+		// The coordinator's statement about parked assignments is applied before
+		// the reconcile that Snapshot performs, so this exchange already acts on
+		// it. That is what lets a worker which restarted mid-wait learn on its
+		// very next exchange that it must not collect.
+		if err := e.Runtime.ApplyParkedAssignments(request); err != nil {
+			return "", nil, err
+		}
 		snapshot, err := e.Runtime.Snapshot(ctx)
 		return workerproto.MessageObservations, workerproto.Observations{Snapshot: snapshot}, err
 	case workerproto.MessageOffers:

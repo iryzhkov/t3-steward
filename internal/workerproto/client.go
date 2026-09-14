@@ -96,9 +96,18 @@ func (c *Client) Catalog(ctx context.Context, request any) (map[string]string, e
 	return response, err
 }
 
-func (c *Client) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
+// WorkerID names the worker this session speaks to, so a caller can address a
+// coordinator-owned statement to exactly that worker's assignments.
+func (c *Client) WorkerID() string { return c.config.WorkerID }
+
+// Snapshot asks the worker to publish a fresh observation and, in the same
+// exchange, tells it which of its assignments are parked on a task-bound wait.
+func (c *Client) Snapshot(ctx context.Context, request SnapshotRequest) (domain.WorkerSnapshot, error) {
+	if err := ValidateSnapshotRequest(request); err != nil {
+		return domain.WorkerSnapshot{}, err
+	}
 	var observations Observations
-	if err := c.exchange(ctx, MessageSnapshot, MessageObservations, SnapshotRequest{}, &observations); err != nil {
+	if err := c.exchange(ctx, MessageSnapshot, MessageObservations, request, &observations); err != nil {
 		return domain.WorkerSnapshot{}, err
 	}
 	return observations.Snapshot, nil

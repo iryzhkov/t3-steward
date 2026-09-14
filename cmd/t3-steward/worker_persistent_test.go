@@ -11,6 +11,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
 
@@ -69,11 +70,11 @@ func TestPersistentCoordinatorCatalogAndExecutionSessionsShareWorker(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := session.Client.Snapshot(ctx)
+	first, err := session.Client.Snapshot(ctx, workerproto.SnapshotRequest{ParkedReported: true})
 	if err != nil {
 		t.Fatal("execution sequence after catalog", err)
 	}
-	second, err := session.Client.Snapshot(ctx)
+	second, err := session.Client.Snapshot(ctx, workerproto.SnapshotRequest{ParkedReported: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +89,7 @@ func TestPersistentCoordinatorCatalogAndExecutionSessionsShareWorker(t *testing.
 		t.Fatal(err)
 	}
 	defer reconnected.Close()
-	third, err := reconnected.Client.Snapshot(ctx)
+	third, err := reconnected.Client.Snapshot(ctx, workerproto.SnapshotRequest{ParkedReported: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -65,6 +65,19 @@ type journalState struct {
 	CoordinatorEpoch int64                    `json:"coordinatorEpoch"`
 	Sequence         int64                    `json:"sequence"`
 	Attempts         map[string]AttemptRecord `json:"attempts"`
+
+	// Parked is the coordinator's last complete statement of which assignments
+	// are parked on a task-bound wait, keyed by assignment ID. It is durable
+	// because a worker that restarts mid-wait would otherwise believe nothing
+	// is parked until its next exchange, and its own reconcile loop runs in
+	// between: it would collect the outputs of a task that has not written them.
+	Parked map[string]workerproto.ParkedAssignment `json:"parked,omitempty"`
+	// ParkedReported records that the coordinator reports parked assignments at
+	// all. Before the first report, an empty Parked map means "not known",
+	// which is not the same as "nothing is parked".
+	ParkedReported bool `json:"parkedReported,omitempty"`
+	// ParkedObservedAt bounds how long the last statement may be trusted.
+	ParkedObservedAt time.Time `json:"parkedObservedAt,omitempty"`
 }
 
 type Journal struct {

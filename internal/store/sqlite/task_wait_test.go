@@ -35,7 +35,7 @@ func taskWaitFixture(t *testing.T) (*Store, domain.Attempt, time.Time) {
 func taskWaitRegistration(attempt domain.Attempt, requestID string, wake domain.WakeMode) domain.TaskWaitRegistration {
 	return domain.TaskWaitRegistration{
 		RequestID: requestID, WorkflowRunID: attempt.WorkflowRunID, TaskID: attempt.TaskID,
-		AttemptID: attempt.ID, ExpectedRevision: uint64(attempt.Revision),
+		AttemptID: attempt.ID, ExpectedRevision: attempt.Revision,
 		ThreadID: attempt.ThreadID, Wake: wake, MaxDuration: time.Hour, Name: "ci",
 		Condition: "gh run view",
 	}
@@ -321,6 +321,42 @@ func TestTaskWaitEachAndAllWakeSemantics(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Mixing the modes on one attempt is defined, not refused: an each wait that
+// settles wakes the attempt, and the all waits still live are carried into the
+// resumed turn unsettled. Any other reading makes each stop meaning each.
+func TestTaskWaitMixedWakeModesWakeOnTheEachSettlement(t *testing.T) {
+	ctx := context.Background()
+	store, attempt, now := taskWaitFixture(t)
+	slow, err := store.RegisterTaskWait(ctx, taskWaitRegistration(attempt, "req-all", domain.WakeAll), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parked := loadAttempt(t, store, attempt.ID)
+	urgent, err := store.RegisterTaskWait(ctx, taskWaitRegistration(parked, "req-each", domain.WakeEach), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SettleTaskWait(ctx, urgent.ID, domain.TaskWaitResult{Outcome: domain.TaskWaitFailed, Reason: "the build broke"}, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	wakes, err := store.WakeTaskWaits(ctx, now.Add(time.Minute))
+	if err != nil || len(wakes) != 1 || len(wakes[0].Waits) != 1 || wakes[0].Waits[0].ID != urgent.ID {
+		t.Fatalf("the each settlement did not wake the attempt alone: %+v %v", wakes, err)
+	}
+	if resumed := loadAttempt(t, store, attempt.ID); resumed.Progress != domain.ProgressActive {
+		t.Fatalf("the attempt did not resume: %q", resumed.Progress)
+	}
+	waits, err := store.ListTaskWaits(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wait := range waits {
+		if wait.ID == slow.ID && (wait.Settled() || wait.Woken()) {
+			t.Fatal("the unsettled all wait was settled or woken by the each settlement")
+		}
 	}
 }
 
