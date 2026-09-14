@@ -14,10 +14,19 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 )
 
-var coordinatorExchangeUsage = `t3-steward coordinator-exchange <operation> --config PATH
+var coordinatorExchangeUsage = `t3-steward coordinator-exchange --config PATH [operation]
 
 The restricted SSH endpoint of the coordinator. It is invoked by a forced
 command in authorized_keys, never by a person and never by an agent.
+
+The flag comes before the optional operation word, because global flags are
+parsed after the command word.
+
+With no operation word one key serves a client for every operation, and the
+operation is taken from the signed request frame. With an operation word the key
+serves that one operation only, which is the tighter arrangement when an
+operator wants key-level narrowing; the client then needs one key per operation
+it uses.
 
 Operations: ` + coordinatorExchangeOperations + `
 
@@ -33,11 +42,16 @@ Exit codes: 0 answered, 1 refused.
 var coordinatorExchangeOperations = strings.Join(backlogadmin.Operations(), ", ")
 
 // cmdCoordinatorExchange is the fixed SSH-command boundary of the coordinator,
-// built as a sibling of worker-exchange. One positional operation word is its
-// only request-shaped argument; identity comes only from validated local
-// configuration, and no part of the SSH invocation reaches a shell.
+// built as a sibling of worker-exchange. Identity comes only from validated
+// local configuration, and no part of the SSH invocation reaches a shell.
+//
+// The operation word is optional. Omitted, the operation is taken from the
+// signed frame, which lets one key serve a client that needs more than one
+// operation; a client cannot vary its ssh destination per operation, so a
+// pinned word would otherwise limit it to one. Given, it pins the key to that
+// operation and the frame must agree.
 func cmdCoordinatorExchange(g globalFlags, operation string) error {
-	if !backlogadmin.ValidOperation(operation) {
+	if operation != "" && !backlogadmin.ValidOperation(operation) {
 		return fmt.Errorf("coordinator-exchange operation must be one of %s", coordinatorExchangeOperations)
 	}
 	if g.dryRun || g.noDryRun || g.logLevel != "" {
