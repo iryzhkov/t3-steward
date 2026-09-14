@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,7 +12,12 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
+
+// environmentAccessors are every way Go source reaches for an environment
+// variable. The restricted SSH endpoints must use none of them.
+var environmentAccessors = []string{"os.Getenv", "os.LookupEnv", "os.Environ", "syscall.Getenv"}
 
 // teachesRemoteShell reports whether a message would teach an agent to run
 // "ssh <coordinator> t3-steward ...". No help text, example or error may.
@@ -167,12 +174,59 @@ func TestCoordinatorExchangeRejectsAuthorityFlags(t *testing.T) {
 	}
 }
 
-func TestCoordinatorExchangeIgnoresSSHOriginalCommand(t *testing.T) {
-	// The variable is set to something that would be catastrophic if it were
-	// ever read and forwarded. The command must refuse on its own grounds.
+// The real property is that the source never reads the variable at all. A test
+// that only observes one refusal would keep passing if a later change read it
+// after that refusal, so the source is what is asserted.
+func TestCoordinatorExchangeNeverReadsSSHOriginalCommand(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var offenders []string
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") ||
+			strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			if !strings.Contains(line, "SSH_ORIGINAL_COMMAND") {
+				continue
+			}
+			for _, accessor := range environmentAccessors {
+				if strings.Contains(line, accessor) {
+					offenders = append(offenders, path+": "+strings.TrimSpace(line))
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(offenders) != 0 {
+		t.Fatalf("SSH_ORIGINAL_COMMAND is read in %v; the restricted endpoints must never read it", offenders)
+	}
+	// The restricted endpoints take no identity from the environment at all,
+	// so neither file may reach for it under any name.
+	for _, name := range []string{"coordinator_exchange.go", "worker_exchange.go"} {
+		raw, err := os.ReadFile(filepath.Join(root, "cmd", "t3-steward", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, accessor := range environmentAccessors {
+			if strings.Contains(string(raw), accessor) {
+				t.Fatalf("%s reads the environment through %s", name, accessor)
+			}
+		}
+	}
+	// And setting it changes nothing about how the command refuses.
 	t.Setenv("SSH_ORIGINAL_COMMAND", "rm -rf / ; t3-steward backlog cancel run/task")
-	err := cmdCoordinatorExchange(globalFlags{}, "query")
-	if err == nil || !strings.Contains(err.Error(), "explicit operator-controlled --config") {
+	if err := cmdCoordinatorExchange(globalFlags{}, "query"); err == nil ||
+		!strings.Contains(err.Error(), "explicit operator-controlled --config") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -188,6 +242,35 @@ func TestRemoteAdminRoleIsAuthorizedExceptForWorkerEnrollment(t *testing.T) {
 		if err := authorizer.Authorize(ctx, remote, backlogadmin.Action{Kind: kind}); err != nil {
 			t.Fatalf("remote-admin refused %q: %v", kind, err)
 		}
+	}
+	// A mutation names its verb in CommandKind, which is what must be examined:
+	// checking Kind alone would authorize every mutation by default.
+	for _, kind := range []domain.AdminCommandKind{
+		domain.AdminCommandStart, domain.AdminCommandDelay, domain.AdminCommandPause,
+		domain.AdminCommandResume, domain.AdminCommandCancel, domain.AdminCommandRetry,
+		domain.AdminCommandSkip, domain.AdminCommandScheduleRun, domain.AdminCommandDelayNext,
+		domain.AdminCommandEnable, domain.AdminCommandDisable,
+	} {
+		action := backlogadmin.Action{Kind: backlogadmin.QueryKind("command"), CommandKind: kind}
+		if err := authorizer.Authorize(ctx, remote, action); err != nil {
+			t.Fatalf("remote-admin refused command %q: %v", kind, err)
+		}
+	}
+	// A command kind that is not on the allowlist is refused rather than
+	// admitted, so adding one to the domain does not silently widen the role.
+	unknown := backlogadmin.Action{
+		Kind: backlogadmin.QueryKind("command"), CommandKind: domain.AdminCommandKind("rotate-coordinator-epoch"),
+	}
+	if err := authorizer.Authorize(ctx, remote, unknown); err == nil ||
+		!strings.Contains(err.Error(), "may not issue") {
+		t.Fatalf("unknown command kind error = %v", err)
+	}
+	if err := authorizer.Authorize(ctx, local, unknown); err != nil {
+		t.Fatalf("local-admin refused an unknown command kind: %v", err)
+	}
+	// An operation that is neither a read nor an allowed operation is refused.
+	if err := authorizer.Authorize(ctx, remote, backlogadmin.Action{Kind: backlogadmin.QueryKind("invented")}); err == nil {
+		t.Fatal("remote-admin was authorized for an unknown operation")
 	}
 	err := authorizer.Authorize(ctx, remote, backlogadmin.Action{Kind: "worker-enrollment"})
 	if err == nil || !strings.Contains(err.Error(), "may not enroll workers") {

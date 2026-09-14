@@ -1,6 +1,7 @@
 package backlogadmin
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -191,10 +192,14 @@ func TestCoordinatorExchangeHelperProcess(t *testing.T) {
 
 // remoteHarness wires a real local admin socket, a helper coordinator process
 // and an SSH client whose command factory records the argv it was given.
+//
+// newClient builds a further client against the same coordinator, which is what
+// a retry from a new CLI invocation actually is: a fresh session id.
 type remoteHarness struct {
-	client  *SSHClient
-	service *remoteFakeService
-	argv    *[][]string
+	client    *SSHClient
+	service   *remoteFakeService
+	argv      *[][]string
+	newClient func(*testing.T) *SSHClient
 }
 
 func newRemoteHarness(t *testing.T, replay bool) remoteHarness {
@@ -209,6 +214,7 @@ func newRemoteHarness(t *testing.T, replay bool) remoteHarness {
 	done := make(chan error, 1)
 	server := &LocalServer{
 		Listener: listener, Service: service, AllowedUID: uint32(os.Getuid()),
+		CoordinatorID:   testCoordinatorID,
 		MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
 		RequestTimeout: 10 * time.Second, MaxConcurrent: 8,
 	}
@@ -234,19 +240,23 @@ func newRemoteHarness(t *testing.T, replay bool) remoteHarness {
 		)
 		return command
 	}
-	client, err := NewSSHClient(SSHClientConfig{
-		CoordinatorID:    testCoordinatorID,
-		Address:          "normandy",
-		RemoteCommand:    "t3-steward",
-		Credentials:      testAdminCredentials(),
-		RequestTimeout:   30 * time.Second,
-		MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
-		Factory: factory,
-	})
-	if err != nil {
-		t.Fatal(err)
+	newClient := func(t *testing.T) *SSHClient {
+		t.Helper()
+		client, err := NewSSHClient(SSHClientConfig{
+			CoordinatorID:    testCoordinatorID,
+			Address:          "normandy",
+			RemoteCommand:    "t3-steward",
+			Credentials:      testAdminCredentials(),
+			RequestTimeout:   30 * time.Second,
+			MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
+			Factory: factory,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return client
 	}
-	return remoteHarness{client: client, service: service, argv: recorded}
+	return remoteHarness{client: newClient(t), service: service, argv: recorded, newClient: newClient}
 }
 
 func TestRemoteCarrierRoundTripAndPrincipalOverwrite(t *testing.T) {
@@ -339,22 +349,30 @@ func TestRemoteCarrierStreamsSubmissionBytesAfterTheFrame(t *testing.T) {
 	}
 }
 
-func TestRemoteCarrierReplayProducesExactlyOneRun(t *testing.T) {
+// A real retry is a new CLI process, so it is a new client with a new session
+// id. Reusing one client would hide the defect this test exists to catch: an
+// answer replayed inside the frame that carried the first one is bound to the
+// session of the request that was lost, and the retry rejects it.
+func TestRemoteCarrierReplayProducesExactlyOneRunAcrossProcesses(t *testing.T) {
 	harness := newRemoteHarness(t, true)
 	archive := "campaign-bundle"
-	submit := func() (LocalSubmissionResponse, error) {
-		return harness.client.SubmitArchive(context.Background(),
+	submit := func(client *SSHClient) (LocalSubmissionResponse, error) {
+		return client.SubmitArchive(context.Background(),
 			LocalSubmissionRequest{IdempotencyKey: "key-1"}, strings.NewReader(archive), int64(len(archive)))
 	}
-	first, err := submit()
+	first, err := submit(harness.client)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The caller lost the first answer and retried with the same idempotency
-	// key. It must get the first answer back, not a second run.
-	second, err := submit()
+	// key from a fresh invocation. It must get the first answer back.
+	retry := harness.newClient(t)
+	if retry.config.SessionID == harness.client.config.SessionID {
+		t.Fatal("the retry reused the first client's session id; it is not a retry")
+	}
+	second, err := submit(retry)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("retry from a new client: %v", err)
 	}
 	if first.RunID != second.RunID {
 		t.Fatalf("run ids = %q and %q", first.RunID, second.RunID)
@@ -364,19 +382,111 @@ func TestRemoteCarrierReplayProducesExactlyOneRun(t *testing.T) {
 	}
 }
 
-func TestRemoteCarrierRefusesReusedRequestIDWithDifferentContent(t *testing.T) {
+// Equal-length different content is the case a digest over the request envelope
+// alone cannot see, and it is exactly the case an agent hits when it edits one
+// character of a prompt and resubmits under the same key.
+func TestRemoteCarrierRefusesReusedKeyWithEqualLengthDifferentContent(t *testing.T) {
 	harness := newRemoteHarness(t, true)
 	if _, err := harness.client.SubmitArchive(context.Background(),
-		LocalSubmissionRequest{IdempotencyKey: "key-1"}, strings.NewReader("first"), 5); err != nil {
+		LocalSubmissionRequest{IdempotencyKey: "key-1"}, strings.NewReader("AAAAA"), 5); err != nil {
 		t.Fatal(err)
 	}
 	_, err := harness.client.SubmitArchive(context.Background(),
-		LocalSubmissionRequest{IdempotencyKey: "key-1"}, strings.NewReader("second"), 6)
+		LocalSubmissionRequest{IdempotencyKey: "key-1"}, strings.NewReader("BBBBB"), 5)
 	if err == nil || !strings.Contains(err.Error(), "reused with different content") {
 		t.Fatalf("error = %v", err)
 	}
 	if harness.service.submissions != 1 {
 		t.Fatalf("submissions = %d, want exactly 1", harness.service.submissions)
+	}
+	// The refusal is signed, so it carries its exact class rather than the
+	// coarse one an unsigned frame would allow.
+	if ClassOf(err) != ClassRejected {
+		t.Fatalf("class = %q (%v)", ClassOf(err), err)
+	}
+}
+
+// A second request that arrives while the first is still in flight must not
+// start a second effect. It is told to wait instead.
+//
+// The two are serialised through the durable pending row rather than through
+// the interprocess lock, because that is what a real second SSH session sees:
+// the first process holds the lock only while it touches the store, not for as
+// long as its handler runs.
+func TestRemoteCarrierRefusesAConcurrentDuplicateRequestID(t *testing.T) {
+	root := t.TempDir()
+	open := func() *RemoteReplayStore {
+		t.Helper()
+		store, err := OpenRemoteReplayStore(root, testCoordinatorID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store
+	}
+	inFlight, err := open().Begin("admin:omarchy-pc", "submission/key-1", "digest-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inFlight.Release(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = open().Begin("admin:omarchy-pc", "submission/key-1", "digest-1")
+	var protocolErr *workerproto.ProtocolError
+	if !errors.As(err, &protocolErr) || protocolErr.Code != workerproto.ErrorBackpressure {
+		t.Fatalf("concurrent duplicate error = %v", err)
+	}
+	if !protocolErr.Retryable {
+		t.Fatal("a duplicate that should be retried was not marked retryable")
+	}
+	// The same identity carrying different content is refused outright rather
+	// than told to wait, because no wait would make it the same request.
+	_, err = open().Begin("admin:omarchy-pc", "submission/key-1", "digest-2")
+	if !errors.As(err, &protocolErr) || protocolErr.Code != workerproto.ErrorReplay {
+		t.Fatalf("conflicting duplicate error = %v", err)
+	}
+}
+
+// A handler killed after the relay but before the cache write is the case the
+// transport store cannot cover. The operation re-executes, and what makes that
+// safe is the service's own idempotency key, not this store. Pinning the real
+// behaviour keeps the documentation honest.
+func TestRemoteCarrierReExecutesWhenTheAnswerWasNeverCached(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now()
+	open := func() *RemoteReplayStore {
+		store, err := OpenRemoteReplayStore(root, testCoordinatorID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store.now = func() time.Time { return now }
+		return store
+	}
+	// The handler claimed the request and died: the row stays pending and no
+	// answer was cached.
+	transaction, err := open().Begin("admin:omarchy-pc", "submission/key-1", "digest-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction.Release(); err != nil {
+		t.Fatal(err)
+	}
+	// Immediately afterwards the identity is still held, so a retry waits.
+	if _, err := open().Begin("admin:omarchy-pc", "submission/key-1", "digest-1"); err == nil {
+		t.Fatal("a retry claimed a pending request identity")
+	}
+	// After the abandoned interval the row is reclaimed and the operation runs
+	// again. This is the transport's real guarantee: a short-window shield,
+	// not exactly-once execution.
+	now = now.Add(remoteReplayAbandonedAge + time.Minute)
+	recovered, err := open().Begin("admin:omarchy-pc", "submission/key-1", "digest-1")
+	if err != nil {
+		t.Fatalf("the abandoned identity was never reclaimed: %v", err)
+	}
+	if cached, ok := recovered.Cached(); ok || cached != nil {
+		t.Fatal("a request that never completed reported a cached answer")
+	}
+	if err := recovered.Release(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -392,14 +502,253 @@ func TestRemoteCarrierRefusesOversizedSubmission(t *testing.T) {
 	}
 }
 
+// A deadline that expires is a timeout, exit 6, and not an outage: an agent
+// retries a timeout and reconfigures for an outage, so the two must not be
+// interchangeable.
 func TestRemoteCarrierTimesOut(t *testing.T) {
 	harness := newRemoteHarness(t, false)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
 	time.Sleep(5 * time.Millisecond)
 	_, err := harness.client.Query(ctx, Query{Version: Version, Kind: QueryStatus})
-	if class := ClassOf(err); class != ClassTimeout && class != ClassUnavailable {
-		t.Fatalf("class = %q (%v)", class, err)
+	if ClassOf(err) != ClassTimeout {
+		t.Fatalf("class = %q (%v)", ClassOf(err), err)
+	}
+	if ExitCodeFor(err) != 6 {
+		t.Fatalf("exit code = %d, want 6", ExitCodeFor(err))
+	}
+}
+
+// Every refusal must reach the client as its own class. Before this was true
+// they all arrived as protocol/exit 7, so a rotated credential looked like a
+// transient fault and an agent would have retried it forever.
+func TestRemoteCarrierClassifiesEveryServerRefusal(t *testing.T) {
+	tests := map[string]struct {
+		mutate func(*SSHClientConfig)
+		want   TransportClass
+		exit   int
+	}{
+		"wrong client secret": {
+			mutate: func(c *SSHClientConfig) { c.Credentials.ClientSecret = []byte("0123456789abcdef-wrong") },
+			want:   ClassAuthentication, exit: 4,
+		},
+		"unknown principal": {
+			mutate: func(c *SSHClientConfig) { c.Credentials.ClientPrincipal = "admin:stranger" },
+			want:   ClassAuthentication, exit: 4,
+		},
+		"wrong key id": {
+			mutate: func(c *SSHClientConfig) { c.Credentials.ClientKeyID = "admin-key-2" },
+			want:   ClassAuthentication, exit: 4,
+		},
+		"wrong coordinator": {
+			mutate: func(c *SSHClientConfig) { c.CoordinatorID = "someone-else" },
+			want:   ClassAuthentication, exit: 4,
+		},
+		"expired deadline": {
+			mutate: func(c *SSHClientConfig) {
+				// Sent from a clock far in the past, so the coordinator sees a
+				// deadline that has already gone by.
+				c.Now = func() time.Time { return time.Now().Add(-2 * time.Hour) }
+			},
+			want: ClassTimeout, exit: 6,
+		},
+		"unsupported frame limit": {
+			mutate: func(c *SSHClientConfig) { c.MaxResponseBytes = 48 },
+			want:   ClassProtocol, exit: 7,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			harness := newRemoteHarness(t, false)
+			config := harness.client.config
+			test.mutate(&config)
+			client, err := NewSSHClient(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.Query(context.Background(), Query{Version: Version, Kind: QueryStatus})
+			if err == nil {
+				t.Fatal("the coordinator answered a request it should have refused")
+			}
+			if ClassOf(err) != test.want {
+				t.Fatalf("class = %q, want %q (%v)", ClassOf(err), test.want, err)
+			}
+			if ExitCodeFor(err) != test.exit {
+				t.Fatalf("exit code = %d, want %d", ExitCodeFor(err), test.exit)
+			}
+		})
+	}
+}
+
+// The refusal text must not say whether the principal was configured. That
+// difference would answer, for anyone holding the SSH key, the question "who
+// else administers this coordinator".
+func TestRemoteCarrierDoesNotDistinguishUnknownPrincipalFromBadSignature(t *testing.T) {
+	harness := newRemoteHarness(t, false)
+	message := func(mutate func(*SSHClientConfig)) string {
+		t.Helper()
+		config := harness.client.config
+		mutate(&config)
+		client, err := NewSSHClient(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = client.Query(context.Background(), Query{Version: Version, Kind: QueryStatus})
+		if err == nil {
+			t.Fatal("the coordinator answered a request it should have refused")
+		}
+		var transportErr *TransportError
+		if !errors.As(err, &transportErr) {
+			t.Fatalf("unclassified error %v", err)
+		}
+		return transportErr.Err.Error()
+	}
+	unknown := message(func(c *SSHClientConfig) { c.Credentials.ClientPrincipal = "admin:stranger" })
+	forged := message(func(c *SSHClientConfig) { c.Credentials.ClientSecret = []byte("0123456789abcdef-wrong") })
+	if unknown != forged {
+		t.Fatalf("refusals differ: %q and %q", unknown, forged)
+	}
+	if !strings.Contains(unknown, authenticationFailed) {
+		t.Fatalf("refusal = %q", unknown)
+	}
+}
+
+// An unsigned frame can classify a failure and nothing else. One that claims
+// success, or a class only a verified coordinator could know, is refused.
+func TestClientAcceptsAnUnsignedFrameOnlyAsAClassification(t *testing.T) {
+	client, err := NewSSHClient(SSHClientConfig{
+		CoordinatorID: testCoordinatorID, Address: "normandy", RemoteCommand: "t3-steward",
+		Credentials: testAdminCredentials(), RequestTimeout: time.Second,
+		MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := Response{Version: Version, Kind: QueryStatus}
+	for name, test := range map[string]struct {
+		response localResponse
+		want     TransportClass
+	}{
+		"authentication passes through": {
+			response: localResponse{Version: LocalTransportVersion, Error: authenticationFailed, ErrorClass: ClassAuthentication},
+			want:     ClassAuthentication,
+		},
+		"timeout passes through": {
+			response: localResponse{Version: LocalTransportVersion, Error: "request deadline expired", ErrorClass: ClassTimeout},
+			want:     ClassTimeout,
+		},
+		"a claimed rejection is narrowed": {
+			// Only a verified coordinator can say it considered the request
+			// and refused it on its merits.
+			response: localResponse{Version: LocalTransportVersion, Error: "no", ErrorClass: ClassRejected},
+			want:     ClassProtocol,
+		},
+		"an answer without an error is not an answer": {
+			response: localResponse{Version: LocalTransportVersion, Response: &answer},
+			want:     ClassProtocol,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := client.unsignedRefusal(localOperationQuery, test.response)
+			if ClassOf(err) != test.want {
+				t.Fatalf("class = %q, want %q (%v)", ClassOf(err), test.want, err)
+			}
+		})
+	}
+}
+
+// A client that tries to name its own principal is refused; the coordinator
+// derives the principal from the signature and nothing else.
+func TestRemoteServerRefusesAClientSuppliedAssertion(t *testing.T) {
+	credentials := testAdminCredentials()
+	server, err := NewRemoteServer(RemoteServerConfig{
+		CoordinatorID:   testCoordinatorID,
+		Clients:         map[string]AdminCredentials{credentials.ClientPrincipal: credentials},
+		MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := localRequest{
+		Version: LocalTransportVersion, Operation: localOperationQuery,
+		Query:       &Query{Version: Version, Kind: QueryStatus},
+		RemoteAdmin: &RemoteAdminAssertion{Principal: "admin:root", Coordinator: testCoordinatorID, RequestID: "req/1"},
+	}
+	frame, err := newRemoteFrame(localOperationQuery, "session-1", "req/1",
+		credentials.ClientPrincipal, testCoordinatorID, 1, time.Now(), time.Now().Add(time.Minute), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signRemoteFrame(&frame, credentials.ClientPrincipal, credentials.ClientKeyID, credentials.ClientSecret); err != nil {
+		t.Fatal(err)
+	}
+	var input, out bytes.Buffer
+	if err := writeRemoteFrame(&input, frame, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	err = server.Serve(context.Background(), localOperationQuery, &input, &out)
+	if err == nil || !strings.Contains(err.Error(), "may not assert its own principal") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+// The local socket refuses a relayed assertion that names another coordinator,
+// so a client configured for one coordinator cannot have its request replayed
+// into a second one.
+func TestLocalServerRefusesAnAssertionForAnotherCoordinator(t *testing.T) {
+	service := &remoteFakeService{}
+	socketPath := filepath.Join(shortTempRoot(t), "admin.sock")
+	listener, err := ListenLocal(socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	server := &LocalServer{
+		Listener: listener, Service: service, AllowedUID: uint32(os.Getuid()),
+		CoordinatorID:   testCoordinatorID,
+		MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
+		RequestTimeout: 5 * time.Second, MaxConcurrent: 4,
+	}
+	go func() { done <- server.Serve(ctx) }()
+	defer stopLocalTransport(t, cancel, done)
+	client := LocalClient{
+		Path: socketPath, MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20,
+		MaxSubmissionBytes: 1 << 20, RequestTimeout: 5 * time.Second,
+	}
+	for name, assertion := range map[string]*RemoteAdminAssertion{
+		"another coordinator": {Principal: "admin:omarchy-pc", Coordinator: "someone-else", RequestID: "req/1"},
+		"no coordinator":      {Principal: "admin:omarchy-pc", RequestID: "req/1"},
+		"no principal":        {Coordinator: testCoordinatorID, RequestID: "req/1"},
+		"no request id":       {Principal: "admin:omarchy-pc", Coordinator: testCoordinatorID},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var response localResponse
+			err := client.call(context.Background(), localRequest{
+				Version: LocalTransportVersion, Operation: localOperationQuery,
+				Query: &Query{Version: Version, Kind: QueryStatus}, RemoteAdmin: assertion,
+			}, &response)
+			if ClassOf(err) != ClassAuthentication {
+				t.Fatalf("class = %q (%v)", ClassOf(err), err)
+			}
+		})
+	}
+	// The well-formed assertion for this coordinator is accepted and narrows
+	// the peer's authority to the remote-admin role.
+	var response localResponse
+	if err := client.call(context.Background(), localRequest{
+		Version: LocalTransportVersion, Operation: localOperationQuery,
+		Query: &Query{Version: Version, Kind: QueryStatus},
+		RemoteAdmin: &RemoteAdminAssertion{
+			Principal: "admin:omarchy-pc", Coordinator: testCoordinatorID, RequestID: "req/1",
+		},
+	}, &response); err != nil {
+		t.Fatal(err)
+	}
+	principal := service.lastPrincipal()
+	if principal.ID != "remote:admin:omarchy-pc" ||
+		len(principal.Roles) != 1 || principal.Roles[0] != RemoteAdminRole {
+		t.Fatalf("principal = %+v", principal)
 	}
 }
 
@@ -492,18 +841,35 @@ func TestRemoteServerRefusesForeignCredentials(t *testing.T) {
 	var out bytes.Buffer
 	err = server.Serve(context.Background(), localOperationQuery,
 		bytes.NewReader(signed(testWorkerSecret, credentials.ClientPrincipal)), &out)
-	if err == nil || !strings.Contains(err.Error(), "signature mismatch") {
+	if err == nil || !strings.Contains(err.Error(), authenticationFailed) {
 		t.Fatalf("worker secret error = %v", err)
 	}
-	// An unknown principal is refused before any secret is consulted.
+	// An unknown principal is refused identically, so the refusal says nothing
+	// about which principals this coordinator accepts.
 	out.Reset()
 	err = server.Serve(context.Background(), localOperationQuery,
 		bytes.NewReader(signed(credentials.ClientSecret, "worker:omarchy-pc")), &out)
-	if err == nil || !strings.Contains(err.Error(), "does not match a configured admin client") {
+	if err == nil || !strings.Contains(err.Error(), authenticationFailed) {
 		t.Fatalf("unknown principal error = %v", err)
 	}
-	if out.Len() != 0 {
-		t.Fatalf("refusal wrote %d bytes of answer", out.Len())
+	// The refusal is written back so the client can classify it, and it is
+	// unsigned, because there is no verified peer to sign for.
+	if out.Len() == 0 {
+		t.Fatal("an unauthenticated refusal wrote nothing back")
+	}
+	frame, err := readRemoteFrame(bufio.NewReader(bytes.NewReader(out.Bytes())), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frame.Authentication.Signature != "" {
+		t.Fatal("an unauthenticated refusal was signed")
+	}
+	var response localResponse
+	if err := json.Unmarshal(frame.Payload, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ErrorClass != ClassAuthentication || response.Response != nil {
+		t.Fatalf("refusal payload = %+v", response)
 	}
 }
 
@@ -545,19 +911,15 @@ func TestAdminFrameSignatureIsDomainSeparatedFromWorkerProtocol(t *testing.T) {
 	}
 }
 
+// The other direction, an admin reference offered where a worker credential is
+// expected, is enforced and tested in internal/config, which is where worker
+// credentials are declared.
 func TestAdminCredentialNamespaceIsDisjointFromWorkerNamespace(t *testing.T) {
 	if err := ValidateAdminCredentialReference("secretref:f02-protocol/omarchy-pc"); err == nil ||
 		!strings.Contains(err.Error(), "worker protocol credential") {
 		t.Fatalf("worker reference accepted as admin: %v", err)
 	}
-	if err := ValidateWorkerCredentialReference("secretref:f03-admin/omarchy-pc"); err == nil ||
-		!strings.Contains(err.Error(), "coordinator admin credential") {
-		t.Fatalf("admin reference accepted as worker: %v", err)
-	}
 	if err := ValidateAdminCredentialReference("secretref:f03-admin/omarchy-pc"); err != nil {
-		t.Fatal(err)
-	}
-	if err := ValidateWorkerCredentialReference("secretref:f02-protocol/omarchy-pc"); err != nil {
 		t.Fatal(err)
 	}
 }
