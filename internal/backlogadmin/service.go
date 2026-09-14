@@ -454,6 +454,8 @@ func (progress *Progress) add(state domain.ProgressState) {
 		progress.Active++
 	case domain.ProgressNeedsInput:
 		progress.NeedsInput++
+	case domain.ProgressWaitingExternal:
+		progress.WaitingExternal++
 	case domain.ProgressVerifying:
 		progress.Verifying++
 	case domain.ProgressSucceeded:

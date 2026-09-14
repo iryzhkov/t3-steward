@@ -313,6 +313,19 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 			c.logger.Error("node wait settlement failed", "error", err)
 		}
 	}
+	// Task-bound wait expiry is driven from here, not only from the watchdog's
+	// wait runner. A parked attempt holds its directory writer binding, and
+	// those have no deadline of their own, so a coordinator running without the
+	// watchdog would otherwise let one parked task block the fleet forever.
+	if store, ok := c.projection.(interface {
+		ExpireTaskWaits(context.Context, time.Time) ([]domain.TaskWait, error)
+	}); ok {
+		if expired, err := store.ExpireTaskWaits(ctx, time.Now().UTC()); err != nil {
+			c.logger.Error("task-bound wait expiry failed", "error", err)
+		} else if len(expired) != 0 {
+			c.logger.Warn("task-bound waits exceeded their maximum duration", "waits", len(expired))
+		}
+	}
 	quotaHealthy := true
 	quotaReport, err := c.quota.Tick(ctx)
 	if err != nil {

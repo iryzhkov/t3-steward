@@ -58,16 +58,21 @@ type Wait struct {
 	// RunTimeout bounds one execution of the command.
 	RunTimeout time.Duration `json:"runTimeout"`
 	Group      string        `json:"group,omitempty"`
-	Wake       WakeMode      `json:"wake"`
-	Status     Status        `json:"status"`
-	CreatedAt  time.Time     `json:"createdAt"`
-	LastRunAt  *time.Time    `json:"lastRunAt,omitempty"`
-	SettledAt  *time.Time    `json:"settledAt,omitempty"`
-	WokenAt    *time.Time    `json:"wokenAt,omitempty"`
-	Runs       int           `json:"runs"`
-	LastExit   int           `json:"lastExit"`
-	LastOutput string        `json:"lastOutput"`
-	Reason     string        `json:"reason,omitempty"`
+	// TaskWaitID names the coordinator-owned task-bound wait this check
+	// settles. When it is set the runner reports the outcome to the coordinator
+	// and never wakes the thread itself: waking a parked task also resumes its
+	// attempt and reacquires its capacity, and only the coordinator can do that.
+	TaskWaitID string     `json:"taskWaitId,omitempty"`
+	Wake       WakeMode   `json:"wake"`
+	Status     Status     `json:"status"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	LastRunAt  *time.Time `json:"lastRunAt,omitempty"`
+	SettledAt  *time.Time `json:"settledAt,omitempty"`
+	WokenAt    *time.Time `json:"wokenAt,omitempty"`
+	Runs       int        `json:"runs"`
+	LastExit   int        `json:"lastExit"`
+	LastOutput string     `json:"lastOutput"`
+	Reason     string     `json:"reason,omitempty"`
 }
 
 // Settled reports whether the wait has an outcome.
@@ -190,6 +195,7 @@ func (r *Runner) Tick(ctx context.Context, _ []domain.Thread, buckets []domain.B
 		}
 		r.runOnce(ctx, w, now)
 	}
+	r.tickTaskWaits(ctx, waits)
 	r.wake(ctx, waits, now)
 }
 
@@ -240,6 +246,12 @@ func (r *Runner) wake(ctx context.Context, waits []Wait, now time.Time) {
 		for _, w := range ws {
 			switch {
 			case w.Status == StatusCancelled || w.Status == StatusWoken:
+			case w.TaskWaitID != "":
+				// A task-bound wait is woken by the coordinator, which also
+				// resumes the attempt and reacquires its capacity. Waking the
+				// thread from here would restart the agent with no coordinator
+				// ownership of anything it then did, which is the failure this
+				// whole path exists to prevent.
 			case w.Wake == WakeAll && w.Group != "":
 				groups[w.Group] = append(groups[w.Group], w)
 			case w.Settled():
@@ -404,7 +416,8 @@ func ResolveThread(logDir, providerSessionID string) (string, error) {
 				name = name[:i]
 			}
 			if found != "" && found != name {
-				return "", fmt.Errorf("provider session matches multiple T3 threads (pass --thread)")
+				return "", fmt.Errorf("provider session %s matches several T3 threads, including %s and %s; pass --thread with the intended one",
+					providerSessionID, found, name)
 			}
 			found = name
 		}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -28,7 +29,10 @@ type WorkerExchangeStore interface {
 // WorkerControlTransport is one fresh, epoch-bound coordinator session.
 type WorkerControlTransport interface {
 	WorkerCommandTransport
-	Snapshot(context.Context) (domain.WorkerSnapshot, error)
+	// WorkerID names the worker on the far end, so the coordinator can build a
+	// statement about that worker's assignments and no others.
+	WorkerID() string
+	Snapshot(context.Context, workerproto.SnapshotRequest) (domain.WorkerSnapshot, error)
 	DeliverOffers(context.Context, []workerproto.AssignmentOffer) ([]domain.AssignmentClaimRequest, error)
 	DeliverLeaseRenewals(context.Context, []domain.AssignmentLeaseRenewal) (domain.WorkerSnapshot, error)
 	DeliverThrottle(context.Context, domain.WorkerSnapshot, []domain.ThrottleCommand) ([]domain.ThrottleAcknowledgement, error)
@@ -51,6 +55,71 @@ type WorkerExchangeReport struct {
 	Throttle    []ThrottleDeliveryReport
 	Imports     []ResultImportReport
 	Checkpoints []domain.Artifact
+}
+
+// TaskWaitParkStore exposes the live task-bound waits the coordinator owns. A
+// store that does not implement it has none, and every worker is told that
+// nothing is parked, which is exactly true for it.
+type TaskWaitParkStore interface {
+	LiveTaskWaitAttempts(context.Context) (map[string]string, error)
+	LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRecords, error)
+}
+
+// parkedAssignments states, for one worker, which of its claimed assignments
+// are parked on a live task-bound wait.
+//
+// The worker cannot ask: the restricted protocol gives it no read of
+// coordinator state, and widening it for this would trade a lifecycle bug for
+// an authority one. So the coordinator says it, in the exchange the worker
+// already makes, and scopes the statement to that worker's own assignments.
+//
+// The list is complete rather than incremental. A worker that receives it
+// replaces everything it believed, because an incremental list cannot express
+// "this one is no longer parked" without another message to lose.
+func (c FleetCoordinator) parkedAssignments(ctx context.Context, workerID string) (workerproto.SnapshotRequest, error) {
+	return parkedAssignmentsFor(ctx, c.Store, workerID)
+}
+
+func parkedAssignmentsFor(ctx context.Context, source any, workerID string) (workerproto.SnapshotRequest, error) {
+	request := workerproto.SnapshotRequest{ParkedReported: true}
+	waits, ok := source.(TaskWaitParkStore)
+	if !ok || workerID == "" {
+		return request, nil
+	}
+	live, err := waits.LiveTaskWaitAttempts(ctx)
+	if err != nil {
+		return workerproto.SnapshotRequest{}, fmt.Errorf("load live task waits: %w", err)
+	}
+	if len(live) == 0 {
+		return request, nil
+	}
+	records, err := waits.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		return workerproto.SnapshotRequest{}, err
+	}
+	revisions := make(map[string]int64, len(records.Attempts))
+	for _, attempt := range records.Attempts {
+		revisions[attempt.ID] = attempt.Revision
+	}
+	for _, assignment := range records.Assignments {
+		if assignment.WorkerID != workerID {
+			continue
+		}
+		waitID, parked := live[assignment.AttemptID]
+		if !parked {
+			continue
+		}
+		request.Parked = append(request.Parked, workerproto.ParkedAssignment{
+			AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
+			AttemptID: assignment.AttemptID, AttemptRevision: revisions[assignment.AttemptID],
+			WaitID: waitID,
+		})
+	}
+	sort.Slice(request.Parked, func(i, j int) bool { return request.Parked[i].AssignmentID < request.Parked[j].AssignmentID })
+	if len(request.Parked) > workerproto.MaxParkedAssignments {
+		return workerproto.SnapshotRequest{}, fmt.Errorf("worker %q has %d parked assignments, above the protocol limit", workerID, len(request.Parked))
+	}
+	return request, nil
 }
 
 // ReconcileWorker observes a worker, offers only assignments already committed
@@ -82,7 +151,11 @@ func (c FleetCoordinator) ReconcileWorker(
 	if err != nil {
 		return WorkerExchangeReport{}, err
 	}
-	snapshot, err := transport.Snapshot(ctx)
+	parked, err := c.parkedAssignments(ctx, transport.WorkerID())
+	if err != nil {
+		return WorkerExchangeReport{}, err
+	}
+	snapshot, err := transport.Snapshot(ctx, parked)
 	if err != nil {
 		return WorkerExchangeReport{}, err
 	}
@@ -147,7 +220,10 @@ func (c FleetCoordinator) ReconcileWorker(
 		if len(claimedIDs) != len(offered) {
 			slog.Warn("worker withheld some offers", "worker", snapshot.WorkerID, "claimed", len(claimedIDs), "offered", len(offered))
 		}
-		snapshot, err = transport.Snapshot(ctx)
+		if parked, err = c.parkedAssignments(ctx, transport.WorkerID()); err != nil {
+			return report, err
+		}
+		snapshot, err = transport.Snapshot(ctx, parked)
 		if err != nil {
 			return report, err
 		}

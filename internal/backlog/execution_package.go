@@ -123,7 +123,8 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		WorkerEpoch:      assignment.WorkerEpoch,
 		Identity: workerproto.ExecutionIdentity{
 			WorkflowID: state.workflow.ID, WorkflowRunID: state.run.ID, TaskID: state.task.ID,
-			AttemptID: assignment.AttemptID, AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
+			AttemptID: assignment.AttemptID, AttemptRevision: state.attempt.Revision,
+			AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
 			DispatchToken: assignment.DispatchToken, ThreadID: assignment.ThreadID,
 		},
 		Class:        state.task.Class,

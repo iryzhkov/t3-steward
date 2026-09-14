@@ -397,6 +397,10 @@ func (e *DAGExecution) runProgress() domain.ProgressState {
 			anyActive = true
 		case domain.ProgressReady, domain.ProgressQueued:
 			anyReady = true
+		case domain.ProgressWaitingExternal:
+			// A parked task is still executing work the run owns, so the run
+			// reads as active rather than needing anything from an operator.
+			anyActive = true
 		case domain.ProgressNeedsInput:
 			anyNeedsInput = true
 		case domain.ProgressFailed:

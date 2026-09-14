@@ -117,6 +117,7 @@ func cmdWorker(g globalFlags, args []string) error {
 		return err
 	}
 	control := t3control.New(client, logger, cfg.Policy.DryRun)
+	control.SendThreadEnvironment = cfg.T3.SendThreadEnvironment
 	host := &workerruntime.CatalogHost{Home: home, Bootstrap: bootstrap, Options: workerruntime.WorkerServiceOptions{
 		RuntimeIdentity:     &domain.WorkerRuntimeIdentity{Release: version, Commit: commit, BootstrapDigest: digest},
 		ProtocolCredentials: credentials, ProjectCredentials: workerruntime.EnvironmentCredentialChecker{},

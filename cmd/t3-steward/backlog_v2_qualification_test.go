@@ -251,7 +251,7 @@ func TestBacklogV2AuthorizedMultiHostCanary(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		snapshot, err := client.Snapshot(context.Background())
+		snapshot, err := client.Snapshot(context.Background(), workerproto.SnapshotRequest{ParkedReported: true})
 		if err != nil {
 			t.Fatalf("remote observation %d: %v", attempt, err)
 		}

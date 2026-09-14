@@ -16,7 +16,21 @@ type TurnOutcomeStore interface {
 	CommitTurnOutcomeTransitions(context.Context, []domain.TurnOutcomeTransition) error
 }
 
+// TaskWaitReader exposes the live task-bound waits a store owns, keyed by the
+// attempt they park. A store that does not implement it has no task-bound
+// waits, so every turn outcome is reconciled exactly as before.
+type TaskWaitReader interface {
+	LiveTaskWaitAttempts(context.Context) (map[string]string, error)
+	RecordTaskWaitReconciliations(context.Context, []domain.TaskWaitReconciliation) error
+}
+
 // ReconcileTurnOutcomes plans and atomically persists finished-turn outcomes.
+//
+// A done marker for an attempt that still holds a live task-bound wait is
+// refused before any transition is planned, and the contradiction is recorded.
+// That refusal is the fix for the observed failure: the worker reported a
+// finished turn for a thread that had merely parked, and the coordinator
+// verified the task against outputs that did not exist yet.
 func ReconcileTurnOutcomes(
 	ctx context.Context,
 	store TurnOutcomeStore,
@@ -30,9 +44,22 @@ func ReconcileTurnOutcomes(
 	if err != nil {
 		return nil, fmt.Errorf("load turn outcome state: %w", err)
 	}
-	transitions, err := PlanTurnOutcomes(attempts, throttleRecords, outcomes, now)
+	var liveTaskWaits map[string]string
+	waits, waitsKnown := store.(TaskWaitReader)
+	if waitsKnown {
+		if liveTaskWaits, err = waits.LiveTaskWaitAttempts(ctx); err != nil {
+			return nil, fmt.Errorf("load live task waits: %w", err)
+		}
+	}
+	transitions, refusals, err := PlanTurnOutcomesWithTaskWaits(attempts, throttleRecords, outcomes, liveTaskWaits, now)
 	if err != nil {
 		return nil, err
+	}
+	if waitsKnown && len(refusals) != 0 {
+		if err := waits.RecordTaskWaitReconciliations(ctx, refusals); err != nil {
+			return nil, fmt.Errorf("record task wait reconciliation: %w", err)
+		}
+		return nil, fmt.Errorf("%w: %s", ErrTurnOutcomeWaiting, refusals[0].Detail)
 	}
 	if len(transitions) == 0 {
 		return nil, nil
@@ -52,22 +79,43 @@ func PlanTurnOutcomes(
 	outcomes []domain.TurnOutcome,
 	now time.Time,
 ) ([]domain.TurnOutcomeTransition, error) {
+	transitions, _, err := PlanTurnOutcomesWithTaskWaits(attempts, throttleRecords, outcomes, nil, now)
+	return transitions, err
+}
+
+// PlanTurnOutcomesWithTaskWaits is the transition function, and the one place
+// the waiting invariant is stated: an attempt can never be both waiting on a
+// task-bound condition and terminal.
+//
+// liveTaskWaits maps an attempt ID to the ID of a live task-bound wait it
+// holds. A done marker for such an attempt is refused and returned as a
+// reconciliation record instead of being applied. The refusals are returned
+// rather than logged because the failure this guards against was invisible
+// exactly for want of a durable record where the two stories disagreed.
+func PlanTurnOutcomesWithTaskWaits(
+	attempts []domain.Attempt,
+	throttleRecords []domain.ThrottleAttemptRecord,
+	outcomes []domain.TurnOutcome,
+	liveTaskWaits map[string]string,
+	now time.Time,
+) ([]domain.TurnOutcomeTransition, []domain.TaskWaitReconciliation, error) {
+	var refusals []domain.TaskWaitReconciliation
 	if now.IsZero() {
-		return nil, fmt.Errorf("turn outcome reconciliation time must be set")
+		return nil, nil, fmt.Errorf("turn outcome reconciliation time must be set")
 	}
 	attemptByID := make(map[string]domain.Attempt, len(attempts))
 	for _, attempt := range attempts {
 		if attempt.ID == "" || attempt.Revision < 0 {
-			return nil, fmt.Errorf("turn outcome attempt identity and revision are invalid")
+			return nil, nil, fmt.Errorf("turn outcome attempt identity and revision are invalid")
 		}
 		if _, exists := attemptByID[attempt.ID]; exists {
-			return nil, fmt.Errorf("turn outcome attempts repeat %q", attempt.ID)
+			return nil, nil, fmt.Errorf("turn outcome attempts repeat %q", attempt.ID)
 		}
 		attemptByID[attempt.ID] = attempt
 	}
 	latestThrottle, err := latestThrottleRecordsByAttempt(throttleRecords)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sortedOutcomes := append([]domain.TurnOutcome(nil), outcomes...)
 	sort.Slice(sortedOutcomes, func(i, j int) bool {
@@ -81,19 +129,19 @@ func PlanTurnOutcomes(
 	var transitions []domain.TurnOutcomeTransition
 	for _, outcome := range sortedOutcomes {
 		if err := validateTurnOutcome(outcome); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if _, exists := seenAttempts[outcome.AttemptID]; exists {
-			return nil, fmt.Errorf("turn outcomes repeat attempt %q", outcome.AttemptID)
+			return nil, nil, fmt.Errorf("turn outcomes repeat attempt %q", outcome.AttemptID)
 		}
 		seenAttempts[outcome.AttemptID] = struct{}{}
 		attempt, exists := attemptByID[outcome.AttemptID]
 		if !exists {
-			return nil, fmt.Errorf("turn outcome %q names unknown attempt %q", outcome.ID, outcome.AttemptID)
+			return nil, nil, fmt.Errorf("turn outcome %q names unknown attempt %q", outcome.ID, outcome.AttemptID)
 		}
 		if attempt.LastTurnOutcomeID == outcome.ID {
 			if attempt.LastTurnOutcomeMarker != outcome.Marker {
-				return nil, fmt.Errorf("turn outcome %q marker changed from %q to %q",
+				return nil, nil, fmt.Errorf("turn outcome %q marker changed from %q to %q",
 					outcome.ID, attempt.LastTurnOutcomeMarker, outcome.Marker)
 			}
 			continue
@@ -102,9 +150,27 @@ func PlanTurnOutcomes(
 			continue
 		}
 
+		if waitID, live := liveTaskWaits[outcome.AttemptID]; live && outcome.Marker == domain.TurnOutcomeDone {
+			// The turn ended while a task-bound wait was still live. That is a
+			// contradiction, not a completion: the thread stopped because it
+			// parked. Honouring the marker here is what verified a task against
+			// outputs it had not written yet and left its thread running.
+			refusals = append(refusals, domain.TaskWaitReconciliation{
+				ID:        stableCoordinatorID("reconciliation", outcome.ID),
+				Kind:      domain.TaskWaitReconciliationDoneWhileWaiting,
+				AttemptID: outcome.AttemptID,
+				WaitID:    waitID,
+				ThreadID:  attempt.ThreadID,
+				Detail: fmt.Sprintf("turn outcome %q reported done while task-bound wait %q was live; refused",
+					outcome.ID, waitID),
+				ObservedAt: now,
+			})
+			continue
+		}
+
 		throttle, throttled := latestThrottle[outcome.AttemptID]
 		throttled = throttled && activeTurnThrottle(throttle)
-		if outcome.Marker != domain.TurnOutcomeDone && !throttled {
+		if outcome.Marker != domain.TurnOutcomeDone && outcome.Marker != domain.TurnOutcomeWaiting && !throttled {
 			continue
 		}
 
@@ -130,6 +196,10 @@ func PlanTurnOutcomes(
 					attempt.Failure = "verification failed"
 				}
 			}
+		} else if outcome.Marker == domain.TurnOutcomeWaiting {
+			attempt.Progress = domain.ProgressWaitingExternal
+			attempt.Control = domain.ControlWaitingExternal
+			attempt.CompletedAt = nil
 		} else {
 			attempt.Control = throttle.Control
 		}
@@ -156,7 +226,7 @@ func PlanTurnOutcomes(
 	sort.Slice(transitions, func(i, j int) bool {
 		return transitions[i].Attempt.ID < transitions[j].Attempt.ID
 	})
-	return transitions, nil
+	return transitions, refusals, nil
 }
 
 func latestThrottleRecordsByAttempt(
@@ -198,7 +268,7 @@ func validateTurnOutcome(outcome domain.TurnOutcome) error {
 	switch outcome.Marker {
 	case domain.TurnOutcomeDone:
 		return nil
-	case domain.TurnOutcomeContinue, domain.TurnOutcomeMissing:
+	case domain.TurnOutcomeContinue, domain.TurnOutcomeMissing, domain.TurnOutcomeWaiting:
 		if outcome.VerificationPassed || outcome.Failure != "" || outcome.FinalSummaryArtifactID != "" {
 			return fmt.Errorf("nonterminal turn outcome %q carries terminal result data", outcome.ID)
 		}

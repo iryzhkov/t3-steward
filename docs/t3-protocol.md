@@ -198,6 +198,28 @@ contacting a live T3 daemon. Acceptance by a newly supported T3 release must
 still be checked against that release's contracts as part of the version
 verification checklist.
 
+**Unverified, and off by default: `environment` on `thread.create`.** The
+control adapter can send an `environment` object carrying the six
+`T3_STEWARD_*` execution identity variables a backlog task needs in order to
+register a task-bound wait against itself. That field is not part of the
+contract verified against T3 0.0.38, the only version in the tested range, and
+`DispatchResult` carries a sequence number only, so a caller cannot tell from
+the response whether the field was honoured, ignored or would have been
+rejected. Two outcomes matter and they are not equally bad. If the server
+ignores unknown fields, the variables never reach the agent. If the server
+rejects unknown fields, `thread.create` fails and every uncontained dispatch
+fails with it, identically on every retry, because the command ID is derived
+deterministically from the dispatch token.
+
+So it is not sent unless `t3.send_thread_environment` is set. Nothing depends
+on it: the worker writes the same six variables into the prepared workspace as
+`.t3-steward/task.env`, mode 0600, before the thread is dispatched, and
+`wait add --task current` reads the environment first and that file otherwise.
+Contained execution additionally injects the variables into the sandbox
+environment, which is this repository's own code on both counts. Turn the
+setting on only after step 4 of the checklist below passes against the deployed
+version.
+
 Send a message (warn, drain, resume):
 
 ```json
@@ -239,7 +261,10 @@ watchdog detects manual interaction after its own stop.
    message; inject 96% (or let the grace period expire) and confirm
    `latestTurn.state` becomes `interrupted`; inject a reset snapshot below
    50% and confirm the resume prompt starts a new turn.
-4. Update `MinServerVersion` / `MaxServerVersion` in `internal/compat` and
+4. Confirm that `thread.create` accepts an `environment` object and that the
+   named variables reach the agent process, or record that it does not. Only
+   then may `t3.send_thread_environment` be turned on.
+5. Update `MinServerVersion` / `MaxServerVersion` in `internal/compat` and
    the README table.
 
 Injecting events for a test: point `t3.data_dir` at a scratch directory

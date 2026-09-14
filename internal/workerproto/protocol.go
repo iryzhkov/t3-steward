@@ -105,8 +105,65 @@ type Observations struct {
 	Snapshot domain.WorkerSnapshot `json:"snapshot"`
 }
 
-// SnapshotRequest asks the worker to publish a fresh durable observation.
-type SnapshotRequest struct{}
+// ParkedAssignment is the coordinator's statement that one claimed assignment
+// is parked on a live task-bound wait: its turn ended because the task is
+// waiting for an external condition, not because the task finished.
+//
+// It travels coordinator to worker so that the restricted worker protocol stays
+// restricted. A worker never queries coordinator state; it is told, in the
+// exchange it already makes, and it believes only what it was told.
+type ParkedAssignment struct {
+	AssignmentID    string `json:"assignmentId"`
+	AssignmentEpoch int64  `json:"assignmentEpoch"`
+	AttemptID       string `json:"attemptId"`
+	// AttemptRevision is the revision the park is fenced on. The worker keeps
+	// it so a later report naming an older revision than one already applied
+	// can be recognised as stale and ignored rather than acted on.
+	AttemptRevision int64  `json:"attemptRevision"`
+	WaitID          string `json:"waitId,omitempty"`
+}
+
+// SnapshotRequest asks the worker to publish a fresh durable observation, and
+// carries the coordinator's current statement of which of this worker's
+// assignments are parked.
+//
+// The list is complete for this worker: an assignment the coordinator omits is
+// not parked. ParkedReported distinguishes "nothing is parked" from "this
+// coordinator does not report parked assignments at all", which an older build
+// does not; without the flag an empty list from an old coordinator would read
+// as positive evidence that nothing is waiting.
+type SnapshotRequest struct {
+	ParkedReported bool               `json:"parkedReported,omitempty"`
+	Parked         []ParkedAssignment `json:"parked,omitempty"`
+}
+
+// MaxParkedAssignments bounds one report so a malformed or hostile coordinator
+// message cannot grow a worker's durable journal without limit.
+const MaxParkedAssignments = 1024
+
+// ValidateSnapshotRequest checks a parked-assignment report before a worker
+// stores it. A report that cannot be trusted whole is rejected whole: acting on
+// half of a complete list would turn a missing entry into "not parked".
+func ValidateSnapshotRequest(request SnapshotRequest) error {
+	if !request.ParkedReported && len(request.Parked) != 0 {
+		return errors.New("worker protocol: parked assignments listed without the reported flag")
+	}
+	if len(request.Parked) > MaxParkedAssignments {
+		return fmt.Errorf("worker protocol: %d parked assignments exceed the limit of %d", len(request.Parked), MaxParkedAssignments)
+	}
+	seen := make(map[string]struct{}, len(request.Parked))
+	for _, parked := range request.Parked {
+		if parked.AssignmentID == "" || parked.AssignmentEpoch < 1 ||
+			parked.AttemptID == "" || parked.AttemptRevision < 0 {
+			return errors.New("worker protocol: parked assignment identity is incomplete")
+		}
+		if _, duplicate := seen[parked.AssignmentID]; duplicate {
+			return fmt.Errorf("worker protocol: parked assignments repeat %q", parked.AssignmentID)
+		}
+		seen[parked.AssignmentID] = struct{}{}
+	}
+	return nil
+}
 
 // ThrottleDelivery carries durable quota-control commands to one worker.
 type ThrottleDelivery struct {

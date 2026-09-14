@@ -311,6 +311,7 @@ func (testOfferBuilder) BuildAssignmentOffer(_ context.Context, assignment domai
 }
 
 type exchangeTransport struct {
+	parked          []workerproto.SnapshotRequest
 	snapshots       []domain.WorkerSnapshot
 	renewalSnapshot *domain.WorkerSnapshot
 	offers          []workerproto.AssignmentOffer
@@ -339,7 +340,10 @@ func (t *exchangeTransport) DeliverThrottle(_ context.Context, _ domain.WorkerSn
 	return acks, nil
 }
 
-func (t *exchangeTransport) Snapshot(context.Context) (domain.WorkerSnapshot, error) {
+func (t *exchangeTransport) WorkerID() string { return "normandy" }
+
+func (t *exchangeTransport) Snapshot(_ context.Context, request workerproto.SnapshotRequest) (domain.WorkerSnapshot, error) {
+	t.parked = append(t.parked, request)
 	snapshot := t.snapshots[0]
 	t.snapshots = t.snapshots[1:]
 	return snapshot, nil

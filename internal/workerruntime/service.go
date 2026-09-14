@@ -28,10 +28,16 @@ type WorkerServiceOptions struct {
 	CoordinatorEpoch    int64
 	ProtocolCredentials ProtocolCredentialResolver
 	ProjectCredentials  CredentialChecker
-	T3                  T3Control
-	DryRun              bool
-	Now                 func() time.Time
-	Logger              *slog.Logger
+	// LiveTaskWait lets a worker ask whether the coordinator still holds a
+	// task-bound wait for an attempt before collecting its outputs. It is nil
+	// for a worker that cannot reach coordinator state, which is every worker
+	// behind the restricted command today; the coordinator's own refusal is
+	// then the only check, and it is the authoritative one.
+	LiveTaskWait func(context.Context, workerproto.ExecutionPackage) (bool, error)
+	T3           T3Control
+	DryRun       bool
+	Now          func() time.Time
+	Logger       *slog.Logger
 }
 
 // WorkerService owns the bounded codec and authenticated exchange used by the
@@ -152,6 +158,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		MaxPackageBytes:  options.Settings.MessageLimits.MaxBytes,
 		Inventory:        binding.Inventory,
 		ObserveInventory: observerForSettings(options),
+		LiveTaskWait:     options.LiveTaskWait,
 		Retention:        options.Settings.Storage.Retention.D(),
 		Now:              options.Now,
 		Logger:           options.Logger,

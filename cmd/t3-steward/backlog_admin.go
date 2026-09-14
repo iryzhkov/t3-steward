@@ -399,8 +399,8 @@ func parseWorkflowFilters(args []string) (backlogadmin.Filter, error) {
 func validProgress(value string) bool {
 	switch domain.ProgressState(value) {
 	case domain.ProgressQueued, domain.ProgressBlocked, domain.ProgressReady, domain.ProgressActive,
-		domain.ProgressNeedsInput, domain.ProgressVerifying, domain.ProgressSucceeded,
-		domain.ProgressFailed, domain.ProgressCancelled, domain.ProgressSkipped:
+		domain.ProgressNeedsInput, domain.ProgressWaitingExternal, domain.ProgressVerifying,
+		domain.ProgressSucceeded, domain.ProgressFailed, domain.ProgressCancelled, domain.ProgressSkipped:
 		return true
 	default:
 		return false

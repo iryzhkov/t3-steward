@@ -16,8 +16,32 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"golang.org/x/sys/unix"
 )
+
+// taskIdentityEnvironment renders the execution identity a contained task is
+// allowed to see.
+//
+// The list of names is closed, taken from the domain rather than from the spec,
+// and a value carrying a NUL or an equals sign is dropped. The contained
+// environment is otherwise fully enumerated by this file on purpose: an
+// agent process inside the sandbox must not be able to learn host state, and
+// "whatever the caller put in the map" is not a boundary.
+func taskIdentityEnvironment(values map[string]string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	rendered := make([]string, 0, len(domain.TaskWaitEnvironmentNames()))
+	for _, name := range domain.TaskWaitEnvironmentNames() {
+		value, ok := values[name]
+		if !ok || value == "" || strings.ContainsAny(value, "=\x00\n") {
+			continue
+		}
+		rendered = append(rendered, name+"="+value)
+	}
+	return rendered
+}
 
 func run(ctx context.Context, spec Spec, streams Streams) error {
 	if spec.WorkerID == "" || len(spec.Command) == 0 || !filepath.IsAbs(spec.Command[0]) {
@@ -171,6 +195,7 @@ func run(ctx context.Context, spec Spec, streams Streams) error {
 		mount(f, fmt.Sprintf("/runtime/%d", i), false)
 	}
 	environment := []string{"HOME=/home/agent", "USER=agent", "LOGNAME=agent", "PATH=/usr/bin:/bin", "LANG=C.UTF-8", "XDG_CONFIG_HOME=/home/agent/.config", "XDG_DATA_HOME=/home/agent/.local/share", "XDG_STATE_HOME=/home/agent/.local/state", "XDG_CACHE_HOME=/home/agent/.cache", "TMPDIR=/tmp", "T3_STEWARD_OUTPUT_DIR=/workspace"}
+	environment = append(environment, taskIdentityEnvironment(spec.TaskEnvironment)...)
 	command := append([]string(nil), spec.Command...)
 	if len(spec.ProviderHosts) > 0 {
 		gatewayCtx, cancel := context.WithCancel(ctx)

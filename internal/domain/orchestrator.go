@@ -26,11 +26,19 @@ const (
 	ProgressReady      ProgressState = "ready"
 	ProgressActive     ProgressState = "active"
 	ProgressNeedsInput ProgressState = "needs-input"
-	ProgressVerifying  ProgressState = "verifying"
-	ProgressSucceeded  ProgressState = "succeeded"
-	ProgressFailed     ProgressState = "failed"
-	ProgressCancelled  ProgressState = "cancelled"
-	ProgressSkipped    ProgressState = "skipped"
+	// ProgressWaitingExternal is an attempt whose current turn parked on a
+	// machine condition that has not settled: a build, a review, a deploy.
+	//
+	// It is deliberately not ProgressNeedsInput. Needs-input means a human must
+	// answer before the work can continue, and an operator reading a queue acts
+	// on those two facts differently: one is a question addressed to them, the
+	// other is a condition nobody has to do anything about yet.
+	ProgressWaitingExternal ProgressState = "waiting-external"
+	ProgressVerifying       ProgressState = "verifying"
+	ProgressSucceeded       ProgressState = "succeeded"
+	ProgressFailed          ProgressState = "failed"
+	ProgressCancelled       ProgressState = "cancelled"
+	ProgressSkipped         ProgressState = "skipped"
 )
 
 // Terminal reports whether no more execution can advance this progress state.
@@ -56,6 +64,14 @@ const (
 	ControlPausedUncheckpointed ControlState = "paused-uncheckpointed"
 	ControlResuming             ControlState = "resuming"
 	ControlStopped              ControlState = "stopped"
+	// ControlWaitingExternal is an attempt parked on a task-bound wait. The
+	// thread, workspace and assignment are still owned by the coordinator, but
+	// no provider slot and no executor capacity are held, because a wait on a
+	// build or a review lasts minutes to hours and holding a worker slot that
+	// long turns one parked task into a stalled queue.
+	//
+	// It is explicitly not a quiescent state: see RunExecutionsQuiescent.
+	ControlWaitingExternal ControlState = "waiting-external"
 )
 
 // HoldsProviderSlot reports whether the attempt occupies a provider concurrency

@@ -16,6 +16,21 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
+// currentTaskWaitArgs reports whether these are the arguments of a task-bound
+// wait. --task current names the task this process is executing, which is a
+// different thing from --task <run>/<task>, an observation of another node.
+func currentTaskWaitArgs(args []string) bool {
+	for index, arg := range args {
+		if arg == "--task=current" || arg == "-task=current" {
+			return true
+		}
+		if (arg == "--task" || arg == "-task") && index+1 < len(args) && args[index+1] == "current" {
+			return true
+		}
+	}
+	return false
+}
+
 func nativeWaitArgs(args []string) bool {
 	for _, arg := range args {
 		if arg == "--native" || arg == "--task" || strings.HasPrefix(arg, "--task=") || arg == "--run" || strings.HasPrefix(arg, "--run=") || strings.HasPrefix(arg, "nw-") {
@@ -42,6 +57,9 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 		timeout := fs.Duration("timeout", 24*time.Hour, "deadline")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
+		}
+		if *task == "current" {
+			return errors.New("--task current is a task-bound wait and is routed before this point")
 		}
 		if fs.NArg() != 0 || (*task == "") == (*run == "") {
 			return errors.New("native wait requires exactly one --task or --run and no shell command")

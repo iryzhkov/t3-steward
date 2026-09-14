@@ -68,7 +68,7 @@ func TestClientSequencesSignedTypedExchanges(t *testing.T) {
 		}
 	})
 	client := newProtocolClient(t, now, transport)
-	snapshot, err := client.Snapshot(context.Background())
+	snapshot, err := client.Snapshot(context.Background(), SnapshotRequest{ParkedReported: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,10 +105,10 @@ func TestClientPoisonsAmbiguousSessionAndRejectsWrongSnapshot(t *testing.T) {
 		calls++
 		return Envelope{}, errors.New("lost response")
 	}))
-	if _, err := client.Snapshot(context.Background()); err == nil {
+	if _, err := client.Snapshot(context.Background(), SnapshotRequest{ParkedReported: true}); err == nil {
 		t.Fatal("ambiguous exchange succeeded")
 	}
-	if _, err := client.Snapshot(context.Background()); err == nil {
+	if _, err := client.Snapshot(context.Background(), SnapshotRequest{ParkedReported: true}); err == nil {
 		t.Fatal("poisoned session was reused")
 	}
 	if calls != 1 {

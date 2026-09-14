@@ -24,6 +24,13 @@ t3:
   # T3's control protocol is internal. Control actions are refused when the
   # server version is outside the tested range unless this is true.
   allow_unsupported_version: false
+  # Add the task execution identity to thread.create as an environment object.
+  # No tested T3 release verifies that field and the dispatch result cannot
+  # report whether it was honoured, so a server that rejects unknown fields
+  # would fail every uncontained dispatch. Tasks do not need it: the worker
+  # writes the same identity into the prepared workspace. Turn it on only after
+  # verifying the field against the deployed version; see docs/t3-protocol.md.
+  send_thread_environment: false
   request_timeout: 30s
 
 # Shell and node wait notifications are independent of policy.dry_run.

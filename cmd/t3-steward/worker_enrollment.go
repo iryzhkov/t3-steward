@@ -12,6 +12,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 	"os"
 	"slices"
@@ -45,7 +46,10 @@ func coordinatorEnrollmentHandler(settings config.BacklogV2, store *sqlite.Store
 		if session.Close != nil {
 			defer session.Close()
 		}
-		snapshot, err := session.Client.Snapshot(ctx)
+		// Enrollment inspects readiness before any assignment exists, so it
+		// states that nothing is parked, which is true of a worker that has
+		// not been given work yet.
+		snapshot, err := session.Client.Snapshot(ctx, workerproto.SnapshotRequest{ParkedReported: true})
 		if err != nil {
 			return domain.WorkerEnrollment{}, err
 		}
