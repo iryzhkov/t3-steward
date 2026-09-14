@@ -129,6 +129,8 @@ type campaignSubmission struct {
 	backlogadmin.LocalSubmissionResponse
 	Outcome backlogadmin.ViabilityOutcome `json:"outcome,omitempty"`
 	Matrix  *backlogadmin.ViabilityMatrix `json:"matrix,omitempty"`
+	// Notify is present only when --notify-thread registered a wait.
+	Notify *campaignNotification `json:"notify,omitempty"`
 }
 
 // campaignWaitingMatrix returns the matrix only when it explains a wait. A

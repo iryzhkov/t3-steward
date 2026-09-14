@@ -192,6 +192,112 @@ impossible, and the transport classes 3 to 7 when the coordinator could not be
 reached. --json prints the whole matrix; read schemaVersion first.
 `
 
+// RerunHelp is the long help of the rerun command. It lives here, and not in
+// the campaign usage, because the usage is capped at a length that fits in an
+// agent's context and rerun is the verb an agent reads once, after something
+// has already failed.
+const RerunHelp = `Start a failed campaign again from one task, without touching what happened.
+
+rerun is mutating and live. It creates a new workflow run linked to the source
+run and never changes the source run: it stays failed, and it stays readable,
+because a run that pretends it did not fail is a run nobody can learn from.
+
+  t3-steward campaign rerun <run> --from <task> --idempotency-key KEY
+                                  [--reason TEXT] [--json]
+
+Scope is explicit rather than clever:
+
+  - the named task and every task that depends on it, directly or indirectly,
+    are rerun;
+  - every other task is reused. Its output artifacts are carried over by
+    reference: the new run points at the same stored content, and nothing is
+    copied. They arrive in the same place in the workspace they arrived in
+    before, so a prompt written against them still reads them;
+  - artifacts produced by the failed subtree are not carried over. They stay
+    under the source run as evidence of what happened, and they are not
+    visible as an input anywhere in the new run.
+
+The new run records its provenance: the source run, the source task, the source
+attempt, the idempotency key and the reason. Read it with
+"t3-steward campaign graph <new run> --json", under graph.rerunOf.
+
+Refusals, and what each one means:
+
+  the source run has not finished
+    Scope is read from which tasks succeeded, and that answer is not stable
+    while the run can still change it. Wait, or cancel the run first.
+  a task that would be reused did not succeed
+    Reusing it would start the rerun without an input that never existed. The
+    message names every such task; rerun from a task they all descend from.
+  an artifact is no longer retrievable
+    An ancestor output has been pruned or lost. The rerun refuses rather than
+    starting a task whose declared input is missing. Nothing is created.
+  a stale graph revision
+    The source run changed between being read and being reran from. Read it
+    again with "t3-steward campaign show <run>" and retry.
+
+Idempotency is the same everywhere: the same --idempotency-key with the same
+run, task and reason returns the same new run; the same key with different
+content is refused. A refused rerun creates nothing, so retrying after fixing
+the cause is safe.
+
+A complete example:
+  t3-steward campaign show run-42 --json
+  t3-steward campaign rerun run-42 --from implement \
+    --idempotency-key rerun-run-42-1 --reason 'clone failed on a stale ref' --json
+  t3-steward campaign show <new run>
+
+Required configuration: a reachable coordinator, exactly as submit needs one.
+No credential of its own: the admin transport's secretref:f03-admin/<client>
+reference is resolved at use.
+
+Exit codes: 0 on success, 1 on a usage error, and the transport classes 3 to 8;
+a refused rerun is class rejected, exit 8. --json prints a versioned document;
+read schemaVersion first.
+
+Safe recovery when a rerun refuses or its outcome is unclear:
+  t3-steward campaign show <source run> --json
+The source run is unchanged, so reading it is always the next safe step.
+`
+
+// NotifyHelp is the long help of submit --notify-thread.
+const NotifyHelp = `Be woken when a submitted campaign reaches a terminal outcome.
+
+  t3-steward campaign submit <directory> --idempotency-key KEY \
+    --notify-thread <current|id>
+
+submit --notify-thread registers a node wait on the new run's sink, bound to a
+T3 thread. When the run settles, the coordinator wakes that thread with the
+outcome. There is no SSH helper, no polling loop and no direct reading of
+coordinator state: it is the same durable wait "t3-steward wait add --run"
+registers, reached through the same admin transport.
+
+current names the calling agent's own canonical T3 thread. It is resolved, not
+assumed: inside a task from the injected execution identity, and otherwise from
+the caller's provider session, which is an input to the resolution and never a
+thread id of its own. A session that resolves to no thread, or to more than
+one, is an error; pass --notify-thread <id> with the intended thread.
+
+The thread is resolved before anything is submitted. An unresolvable
+--notify-thread therefore leaves no run behind, because a campaign nobody is
+listening for is worse than a campaign that was not submitted.
+
+The registration creates and alters no workflow state. It adds one wait record
+and holds the source run against retention; the run, its tasks and its attempts
+are exactly what they would have been without it.
+
+The registration ID is derived from the submission idempotency key, so
+re-running the same submit command registers the same wait rather than a second
+one. Registering a wait on a run that has already settled returns the terminal
+observation immediately.
+
+If submission succeeds and registration then fails, the error says so and names
+the run. The run exists; register the wait separately with
+  t3-steward wait add --run <run> --thread <id>
+
+After a successful registration, end the turn. The steward wakes the thread.
+`
+
 // HelpTopic is one named block of help the command tree can attach wherever it
 // wants it.
 type HelpTopic struct {
@@ -207,5 +313,7 @@ func HelpTopics() []HelpTopic {
 		{Name: "dag-semantics", Body: DAGSemanticsHelp},
 		{Name: "static-versus-dynamic", Body: StaticVersusDynamicHelp},
 		{Name: "readiness", Body: ReadinessHelp},
+		{Name: "rerun", Body: RerunHelp},
+		{Name: "notify", Body: NotifyHelp},
 	}
 }

@@ -486,8 +486,11 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// which coordinator a submission reaches and what its exit codes mean, and
 	// again when it gained the check verb, the three readiness outcomes, the
 	// permanent and temporary failure lists, the recovery commands, the
-	// required configuration and a complete copyable example.
-	const wantDigest = "306745b9b6aabafffeb105966efad92c1dd8ecd37f70bd2486a47b8a5a637b5a"
+	// required configuration and a complete copyable example, and again when it
+	// gained rerun and submit --notify-thread. The 100-line cap left no room
+	// for their detail, so the block names them and the "rerun" and "notify"
+	// help topics carry the contract.
+	const wantDigest = "4c833c08b94aa553b335cce78de824df2dfba905f10fa1637794472dd8dc598d"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)
@@ -515,6 +518,10 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 		"schemaVersion",
 		"docs/examples/campaign/single-lead",
 		"docs/examples/campaign/three-node",
+		"rerun    <run> --from TASK --idempotency-key KEY [--reason TEXT] [--json]",
+		"creates a second run and never changes the first",
+		"[--notify-thread <current|id>]",
+		"static-versus-dynamic, plan, graph, rerun, notify.",
 	} {
 		if !strings.Contains(campaignUsage, want) {
 			t.Fatalf("usage no longer covers %q", want)

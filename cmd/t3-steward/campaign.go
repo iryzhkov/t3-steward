@@ -13,6 +13,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/campaign"
 	"github.com/iryzhkov/t3-steward/internal/config"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // The campaign help contract asks for help concise enough to enter agent
@@ -24,8 +25,7 @@ const campaignCommandUsage = `Usage: t3-steward campaign <command> [args]
 
 A campaign is a version 2 workflow authored as a directory. The namespace is a
 facade: submit creates exactly one workflow and one run, every lifecycle command
-below is the existing backlog operation with the same JSON and exit codes, and
-there is no campaign record or state of its own.
+below is an existing backlog operation, and there is no campaign record of its own.
 
 Offline, reaches no coordinator:
   validate <directory|workflow.yaml> [--json]
@@ -35,6 +35,9 @@ Read-only and live, asks the coordinator and creates nothing:
 Mutating, checks first and creates one workflow and one run:
   submit   <directory|workflow.yaml> --idempotency-key KEY [--json]
            [--allow-unverified --reason TEXT]
+           [--notify-thread <current|id>]
+Mutating recovery, creates a second run and never changes the first:
+  rerun    <run> --from TASK --idempotency-key KEY [--reason TEXT] [--json]
 
 Lifecycle (delegated to backlog, unchanged; explain is read-only and live):
   list [--project P] [--progress STATES] [--class CLASS] [--json]
@@ -42,14 +45,14 @@ Lifecycle (delegated to backlog, unchanged; explain is read-only and live):
   graph <run> [--json|--dot]
   explain <run>/<task> [--json]
   cancel <run>/<task> --reason TEXT [--command-id ID] [--json]
-Recovery, graph amendment and artifact commands stay under "t3-steward backlog".
+Graph amendment and artifact commands stay under "t3-steward backlog".
 Graph fields: needs (run only after these succeed; acyclic), inputs_from (named
 artifacts from a direct dependency, read-only), outputs (the files a task
 promises), verify (commands that must exit zero).
 plan is static and explain is dynamic; check is dynamic too, before there is a
 run. plan reports waves, edges and the digest submit will send, and can never
 promise a worker, a route or quota. Help topics: readiness, dag-semantics,
-static-versus-dynamic, plan, graph.
+static-versus-dynamic, plan, graph, rerun, notify.
 
 check reports one outcome per task and per worker:
   ready             at least one worker can take every task now
@@ -60,22 +63,21 @@ instance, model or quota pool; no configured route; invalid repository syntax;
 repository-not-found, ref-not-found or authentication-failed; impossible cpu,
 resource, directory or capability requirements; a missing credential reference;
 a closed timing window. Everything else is temporary and submit proceeds,
-including catalog-digest-mismatch, which means re-enrolling a worker. Every
-code and its recovery command: t3-steward campaign help readiness.
+including catalog-digest-mismatch, which means re-enrolling a worker. Codes and
+recovery commands: t3-steward campaign help readiness.
 
 submit runs check first. --allow-unverified skips only the client-side check;
-the coordinator still refuses a permanently impossible campaign at acceptance,
-and every use is recorded with the principal and the --reason it was given.
-Agents should not use it. Use check, fix what it reports, and submit.
+the coordinator still refuses a permanently impossible campaign at acceptance
+and records the principal and --reason. Agents should not use it.
 accepted_waiting is a success: the run exists and stays queued, so an agent may
-end its turn and read it back later with campaign show <run>.
+end its turn, or pass --notify-thread to be woken when the run settles.
 
 class: surplus is the default and runs on spare provider quota, required is
 admitted ahead of it; placement.hosts and placement.requires narrow which
 workers are eligible and never choose one.
 Retrying is safe: the same --idempotency-key with the same directory returns the
 same run, the archive being packed deterministically; the same key with
-different content is refused. check is read-only and needs no key.
+different content is refused. rerun behaves the same way. check needs no key.
 
 A complete example, from an empty directory to a running campaign:
 mkdir -p demo/prompts && echo 'do the work' > demo/prompts/implement.md
@@ -90,18 +92,17 @@ t3-steward campaign submit demo --idempotency-key demo-1 --json
 t3-steward campaign show <run>
 
 Exit codes: 0 on success and 1 on any error, plus the transport classes below
-for check, submit and the lifecycle verbs; an impossible campaign is refused
-with class rejected, exit 8. validate and plan never use a transport class.
---json is on every verb; read schemaVersion first in validate, plan, check and
-submit output. Lifecycle JSON is unchanged.
+for check, submit, rerun and the lifecycle verbs; an impossible campaign is
+refused with class rejected, exit 8. validate and plan use no transport class.
+--json is on every verb; read schemaVersion first in validate, plan, check,
+submit and rerun output. Lifecycle JSON is unchanged.
 
 Required configuration: validate and plan need none; every other verb needs a
-coordinator, reached through its owner-only socket here or a
-backlog_v2.coordinator_client block or the UpKeeper-owned
-~/.config/t3-steward/coordinator-client.json elsewhere, whose credential is a
-secretref:f03-admin/<client> reference resolved at use. environment.project must
-exist in backlog_v2.projects with a repository, a default ref, a setup profile
-and credential references the worker can present.
+coordinator, through its owner-only socket here or a backlog_v2.coordinator_client
+block or the UpKeeper-owned ~/.config/t3-steward/coordinator-client.json, whose
+credential is a secretref:f03-admin/<client> reference resolved at use.
+environment.project must exist in backlog_v2.projects with a repository, a
+default ref, a setup profile and credential references the worker can present.
 
 Worked examples: docs/examples/campaign/single-lead and
 docs/examples/campaign/three-node
@@ -143,6 +144,18 @@ type campaignCLI struct {
 	// lifecycle seams so that the campaign test suite can keep proving that
 	// validate and plan reach no coordinator while check always does.
 	viability func(context.Context, backlogadmin.ViabilityRequest) (backlogadmin.ViabilityMatrix, error)
+	// amend applies one graph amendment. rerun is the only campaign verb that
+	// uses it, and it is a separate seam from submission because a rerun sends
+	// no bundle: it names a run the coordinator already holds.
+	amend func(context.Context, domain.GraphAmendment) (domain.GraphAmendmentResult, error)
+	// describe reads one run. rerun needs its graph revision to fence the
+	// amendment against a run that changed under it.
+	describe func(context.Context, string) (backlogadmin.WorkflowSummary, error)
+	// notify registers the node wait --notify-thread asks for, and resolveThread
+	// turns "current" into a canonical T3 thread id. They are separate seams so
+	// that a test can prove the registration creates no workflow state.
+	notify        func(context.Context, backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error)
+	resolveThread func(string) (string, error)
 	// principal names who is running the command. It appears in the audit
 	// record of a submission that skipped the live check.
 	principal string
@@ -174,6 +187,24 @@ func runCampaign(cfg config.Config, args []string) error {
 		viability: func(ctx context.Context, request backlogadmin.ViabilityRequest) (backlogadmin.ViabilityMatrix, error) {
 			return queryCampaignViability(ctx, cfg, request)
 		},
+		amend: func(ctx context.Context, request domain.GraphAmendment) (domain.GraphAmendmentResult, error) {
+			transport, err := newCoordinatorTransport(cfg)
+			if err != nil {
+				return domain.GraphAmendmentResult{}, err
+			}
+			return transport.client.AmendGraph(ctx, request)
+		},
+		describe: func(ctx context.Context, runID string) (backlogadmin.WorkflowSummary, error) {
+			return describeCampaignRun(ctx, cfg, runID)
+		},
+		notify: func(ctx context.Context, operation backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error) {
+			transport, err := newCoordinatorTransport(cfg)
+			if err != nil {
+				return backlogadmin.NodeWaitResponse{}, err
+			}
+			return transport.client.NodeWait(ctx, operation)
+		},
+		resolveThread: func(explicit string) (string, error) { return resolveThread(cfg, explicit) },
 	}
 	transport, err := newCoordinatorTransport(cfg)
 	if err == nil {
@@ -235,6 +266,8 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 		return c.runCheck(ctx, args[1:])
 	case "submit":
 		return c.runSubmit(ctx, args[1:])
+	case "rerun":
+		return c.runRerun(ctx, args[1:])
 	case "list", "show", "graph", "explain", "cancel":
 		// Aliases forward the arguments untouched. Parsing or rendering them
 		// here would be a second implementation of a command that already
@@ -339,6 +372,12 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The thread to notify is resolved before submission. An unresolvable
+	// --notify-thread must not leave a run behind that nobody is listening for.
+	notifyThread, err := c.campaignNotifyThread(parsed.notify)
+	if err != nil {
+		return err
+	}
 	// The live check runs before anything is packed and sent. A campaign that
 	// can never run must not consume a run ID and a place in the graph before
 	// anyone finds out.
@@ -377,11 +416,20 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	var notification *campaignNotification
+	if notifyThread != "" {
+		registered, err := c.registerCampaignNotification(ctx, parsed.key, response.RunID, notifyThread)
+		if err != nil {
+			return err
+		}
+		notification = &registered
+	}
 	if parsed.asJSON {
 		return encodeCampaignJSON(c.stdout, campaignSubmission{
 			LocalSubmissionResponse: response,
 			Outcome:                 matrix.Outcome,
 			Matrix:                  campaignWaitingMatrix(matrix),
+			Notify:                  notification,
 		})
 	}
 	if matrix.Outcome == backlogadmin.ViabilityAcceptedWaiting {
@@ -403,6 +451,14 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 		response.Key, response.WorkflowID, response.RunID, response.State, response.Replay, response.Digest,
 	); err != nil {
 		return err
+	}
+	if notification != nil {
+		if _, err := fmt.Fprintf(c.stdout,
+			"notification %s registered on %s for thread %s.\n"+
+				"End this turn now; the coordinator wakes the thread with the terminal outcome.\n",
+			notification.WaitID, notification.Target, notification.ThreadID); err != nil {
+			return err
+		}
 	}
 	_, err = fmt.Fprintf(c.stdout,
 		"next:\n  t3-steward campaign show %s\n  t3-steward campaign graph %s\n",
@@ -440,6 +496,9 @@ type campaignArgs struct {
 	// unverified skips the client-side readiness check. It never skips the
 	// coordinator's own permanent validation at acceptance.
 	unverified bool
+	// notify names the T3 thread a terminal outcome is delivered to, or
+	// "current" for the calling agent's own canonical thread.
+	notify string
 }
 
 func parseCampaignArgs(command string, args []string, allowDOT, requireKey bool) (campaignArgs, error) {
@@ -494,6 +553,15 @@ func parseCampaignArgs(command string, args []string, allowDOT, requireKey bool)
 			}
 			index++
 			parsed.reason = args[index]
+		case "--notify-thread":
+			if command != "submit" {
+				return campaignArgs{}, fmt.Errorf("campaign %s does not accept --notify-thread", command)
+			}
+			if parsed.notify != "" || index+1 >= len(args) || args[index+1] == "" {
+				return campaignArgs{}, errors.New("--notify-thread needs one value: current or a T3 thread id")
+			}
+			index++
+			parsed.notify = args[index]
 		default:
 			if strings.HasPrefix(argument, "-") {
 				return campaignArgs{}, fmt.Errorf("unknown campaign %s option %q", command, argument)
