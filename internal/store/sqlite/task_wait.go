@@ -370,6 +370,22 @@ func (s *Store) WakeTaskWaits(ctx context.Context, now time.Time) ([]domain.Task
 			}
 			continue
 		}
+		if settled, reason, err := taskWaitExecutionAbandonedTx(ctx, tx, attempt); err != nil {
+			return nil, err
+		} else if settled {
+			// The execution that owned this attempt is gone while the attempt is
+			// still parked. Resuming would hand a thread back work that no
+			// worker is holding, so the contradiction is settled the only honest
+			// way: the thread's authority is revoked before the attempt becomes
+			// terminal, never after.
+			if err := revokeTaskAuthorityTx(ctx, tx, attempt, reason, now); err != nil {
+				return nil, err
+			}
+			if err := markTaskWaitsWokenTx(ctx, tx, ready, now); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		expected := attempt.Revision
 		attempt.Revision++
 		attempt.Progress = domain.ProgressActive
@@ -507,13 +523,33 @@ func (s *Store) RevokeTaskAuthority(ctx context.Context, attemptID, reason strin
 	if attempt, err = loadAttemptTx(ctx, tx, attemptID); err != nil {
 		return attempt, err
 	}
+	if err = revokeTaskAuthorityTx(ctx, tx, attempt, reason, now); err != nil {
+		return attempt, err
+	}
+	if !attempt.Progress.Terminal() {
+		completed := now.UTC()
+		attempt.Revision++
+		attempt.Progress = domain.ProgressFailed
+		attempt.Control = domain.ControlStopped
+		attempt.Failure = reason
+		attempt.CompletedAt = &completed
+		attempt.UpdatedAt = completed
+	}
+	return attempt, tx.Commit()
+}
+
+// revokeTaskAuthorityTx invalidates the dispatch token and records why, then
+// fails the attempt. The statements run in this order inside one transaction:
+// a task must never be terminal while its thread is still authorized to act for
+// it, so the revocation is written first and the two commit together.
+func revokeTaskAuthorityTx(ctx context.Context, tx *sql.Tx, attempt domain.Attempt, reason string, now time.Time) error {
 	assignments, err := loadJSON[domain.Assignment](ctx, tx, "coordinator_assignments")
 	if err != nil {
-		return attempt, err
+		return err
 	}
 	threadID := attempt.ThreadID
 	for _, assignment := range assignments {
-		if assignment.AttemptID != attemptID || assignment.DispatchToken == "" {
+		if assignment.AttemptID != attempt.ID || assignment.DispatchToken == "" {
 			continue
 		}
 		if assignment.ThreadID != "" {
@@ -524,20 +560,20 @@ func (s *Store) RevokeTaskAuthority(ctx context.Context, attemptID, reason strin
 		assignment.UpdatedAt = now.UTC()
 		raw, err := json.Marshal(assignment)
 		if err != nil {
-			return attempt, err
+			return err
 		}
 		if _, err = tx.ExecContext(ctx, "UPDATE coordinator_assignments SET record=? WHERE id=?", raw, assignment.ID); err != nil {
-			return attempt, err
+			return err
 		}
 	}
 	if err = recordTaskWaitEventTx(ctx, tx, domain.TaskWaitReconciliation{
-		ID: "revocation:" + attemptID, Kind: domain.TaskWaitReconciliationAuthorityRevoked,
-		AttemptID: attemptID, ThreadID: threadID, Detail: reason, ObservedAt: now.UTC(),
+		ID: "revocation:" + attempt.ID, Kind: domain.TaskWaitReconciliationAuthorityRevoked,
+		AttemptID: attempt.ID, ThreadID: threadID, Detail: reason, ObservedAt: now.UTC(),
 	}); err != nil {
-		return attempt, err
+		return err
 	}
 	if attempt.Progress.Terminal() {
-		return attempt, tx.Commit()
+		return nil
 	}
 	expected := attempt.Revision
 	completed := now.UTC()
@@ -547,8 +583,31 @@ func (s *Store) RevokeTaskAuthority(ctx context.Context, attemptID, reason strin
 	attempt.Failure = reason
 	attempt.CompletedAt = &completed
 	attempt.UpdatedAt = completed
-	if err = saveAttemptFencedTx(ctx, tx, attempt, expected); err != nil {
-		return attempt, err
+	return saveAttemptFencedTx(ctx, tx, attempt, expected)
+}
+
+// taskWaitExecutionAbandonedTx reports whether the execution that owned a
+// parked attempt has settled underneath it.
+//
+// A worker that collected a parked attempt raced the registration and lost: the
+// coordinator refused its result, but the worker considers the assignment
+// finished and will never observe the resumed thread again. Resuming into that
+// state would produce exactly the failure this record exists to prevent, a
+// thread working with nobody owning what it does.
+func taskWaitExecutionAbandonedTx(ctx context.Context, tx *sql.Tx, attempt domain.Attempt) (bool, string, error) {
+	if attempt.AssignmentID == "" {
+		return false, "", nil
 	}
-	return attempt, tx.Commit()
+	assignment, err := loadAssignmentTx(ctx, tx, attempt.AssignmentID)
+	if err != nil {
+		return false, "", err
+	}
+	if assignment.AttemptID != attempt.ID {
+		return true, fmt.Sprintf("assignment %q no longer owns parked attempt %q", assignment.ID, attempt.ID), nil
+	}
+	if assignment.State == domain.AssignmentCompleted || assignment.State == domain.AssignmentReleased {
+		return true, fmt.Sprintf("assignment %q settled as %q while attempt %q was parked on a task-bound wait; the execution cannot be resumed",
+			assignment.ID, assignment.State, attempt.ID), nil
+	}
+	return false, "", nil
 }

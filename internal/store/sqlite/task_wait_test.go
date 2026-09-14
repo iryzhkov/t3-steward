@@ -380,6 +380,59 @@ func TestTaskWaitCancellationReleasesWithoutRetractingEvidence(t *testing.T) {
 	}
 }
 
+// A worker that collected a parked attempt raced the registration and lost. Its
+// assignment is settled, so the execution cannot be resumed. The wake must not
+// hand the thread its task back: the authority is revoked and the attempt fails
+// honestly instead.
+func TestWakeRevokesAuthorityWhenTheExecutionWasAbandoned(t *testing.T) {
+	ctx := context.Background()
+	store, attempt, now := taskWaitFixture(t)
+	wait, err := store.RegisterTaskWait(ctx, taskWaitRegistration(attempt, "req-1", domain.WakeEach), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := records.Assignments[0]
+	settled.State = domain.AssignmentCompleted
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Assignments: []domain.Assignment{settled}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SettleTaskWait(ctx, wait.ID, domain.TaskWaitResult{Outcome: domain.TaskWaitMet}, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	wakes, err := store.WakeTaskWaits(ctx, now.Add(time.Minute))
+	if err != nil || len(wakes) != 0 {
+		t.Fatalf("an abandoned execution was resumed: %v %v", wakes, err)
+	}
+	final := loadAttempt(t, store, attempt.ID)
+	if final.Progress != domain.ProgressFailed || final.Failure == "" {
+		t.Fatalf("the contradiction did not fail the attempt: %+v", final)
+	}
+	records, err = store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, assignment := range records.Assignments {
+		if assignment.AttemptID == attempt.ID && assignment.DispatchToken != "" {
+			t.Fatal("the abandoned thread kept its task authority")
+		}
+	}
+	events, err := store.ListTaskWaitReconciliations(ctx)
+	if err != nil || len(events) != 1 || events[0].Kind != domain.TaskWaitReconciliationAuthorityRevoked {
+		t.Fatalf("the contradiction was not recorded: %v %v", events, err)
+	}
+	// A second pass changes nothing further: one revocation, one terminal state.
+	if wakes, err := store.WakeTaskWaits(ctx, now.Add(time.Hour)); err != nil || len(wakes) != 0 {
+		t.Fatalf("a second pass acted again: %v %v", wakes, err)
+	}
+	if after := loadAttempt(t, store, attempt.ID); after.Revision != final.Revision {
+		t.Fatalf("a second pass moved the terminal attempt: %d then %d", final.Revision, after.Revision)
+	}
+}
+
 // A thread must lose its task authority before its task is marked terminal.
 func TestRevokeTaskAuthorityInvalidatesDispatchBeforeTerminal(t *testing.T) {
 	ctx := context.Background()
