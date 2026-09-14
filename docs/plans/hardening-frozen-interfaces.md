@@ -183,13 +183,30 @@ repository, so the specific evidence has to be tested before the generic wording
 | exit 2 | `ref-not-found` |
 | `context.DeadlineExceeded` or `context.Canceled` | `timeout` |
 | `could not resolve host`, `name or service not known`, `no address associated with hostname`, `temporary failure in name resolution` | `dns-failure` |
-| `authentication failed`, `access denied`, `permission denied`, `invalid username or password`, `terminal prompts disabled`, `could not read username`, `403 forbidden`, `401 unauthorized` | `authentication-failed` |
-| `repository not found`, `cannot find repository`, `does not appear to be a git repository`, `not found`, `404` | `repository-not-found` |
+| `authentication failed`, `access denied`, `permission denied`, `invalid username or password`, `terminal prompts disabled`, `could not read username`, `403 forbidden`, `401 unauthorized`, `unauthorized` | `authentication-failed` |
+| `repository not found`, `cannot find repository`, `could not be found`, `tf401019`, `does not exist or you do not have permissions`, `does not appear to be a git repository`, `not found`, `404` | `repository-not-found` |
 | `failed to connect`, `could not connect to server`, `connection refused`, `connection timed out`, `network is unreachable`, `connection reset`, `ssl`, `tls` | `network-unavailable` |
 | anything else | `network-unavailable` |
 
 The last row is deliberate. An unrecognised failure is classified as temporary so that a Git
 message nobody has measured can never manufacture a permanent refusal.
+
+Four of the substrings are forge-specific and none of them contains an earlier one, which is why
+each needs its own entry rather than falling through to `not found`:
+
+- `cannot find repository` is Forgejo, and was the message the motivating campaign received.
+- `could not be found` is GitLab, from "The project you were looking for could not be found or you
+  don't have permission to view it." Note that this string does **not** contain `not found`, and
+  does not contain `permission denied` either, so it reaches neither list without its own entry.
+- `tf401019` and `does not exist or you do not have permissions` are Azure DevOps.
+- `unauthorized` on its own is Gitea. It is in the authentication list, which is tested first.
+
+Provenance, because it differs by row. The GitHub, GitLab basic-auth, Azure DevOps organisation,
+Codeberg and sourcehut rows were measured directly with an anonymous read-only `git ls-remote`.
+The GitLab `could not be found`, Azure DevOps `TF401019` and Gitea `Unauthorized` rows were
+reported by review: all three are emitted only on an authenticated request, and reproducing them
+would have needed live credentials against a private repository. Their exact bytes are pinned in
+`TestClassifyForgeWordings`, so a later measurement either confirms them or fails that test.
 
 One ambiguity cannot be removed and should not be papered over: a forge that hides a private
 repository behind "Repository not found" is reported as `repository-not-found` even when the
