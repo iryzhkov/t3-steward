@@ -102,7 +102,7 @@ func (m *WorkflowWorkspaceManager) Prepare(ctx context.Context, workerID string,
 	} else if statErr != nil {
 		err = &PreparationError{Err: fmt.Errorf("inspect workflow workspace: %w", statErr)}
 	} else {
-		prepared, err = m.prepareExisting(request, rootDir)
+		prepared, err = m.prepareExisting(ctx, request, rootDir)
 	}
 	if err != nil {
 		return PreparedWorkspace{}, err
@@ -279,7 +279,7 @@ func (m *WorkflowWorkspaceManager) prepareInitial(ctx context.Context, request W
 	return preparedWorkflow(finalDir, request, metadata.Commit, prepared.CacheReused), nil
 }
 
-func (m *WorkflowWorkspaceManager) prepareExisting(request WorkspacePreparation, rootDir string) (PreparedWorkspace, error) {
+func (m *WorkflowWorkspaceManager) prepareExisting(ctx context.Context, request WorkspacePreparation, rootDir string) (PreparedWorkspace, error) {
 	metadata, err := readWorkflowMetadata(rootDir)
 	if err != nil {
 		return PreparedWorkspace{}, &PreparationError{Err: err}
@@ -289,10 +289,14 @@ func (m *WorkflowWorkspaceManager) prepareExisting(request WorkspacePreparation,
 		return PreparedWorkspace{}, &PreparationError{Err: errors.New("workflow workspace preparation contract changed")}
 	}
 
+	workspaceDir := filepath.Join(rootDir, "workspace")
 	viewDir := workflowAttemptView(rootDir, request.Task.ID, request.Attempt.ID)
 	dependenciesDir := filepath.Join(viewDir, "dependencies")
 	if info, statErr := os.Stat(dependenciesDir); statErr == nil && info.IsDir() {
-		if err := switchDependencyView(filepath.Join(rootDir, "workspace"), dependenciesDir); err != nil {
+		if err := switchDependencyView(workspaceDir, dependenciesDir); err != nil {
+			return PreparedWorkspace{}, &PreparationError{Err: err}
+		}
+		if err := m.Preparer.resolveDependencyCommits(ctx, dependenciesDir, workspaceDir, request, nil); err != nil {
 			return PreparedWorkspace{}, &PreparationError{Err: err}
 		}
 		return preparedWorkflow(rootDir, request, metadata.Commit, true), nil
@@ -321,8 +325,13 @@ func (m *WorkflowWorkspaceManager) prepareExisting(request WorkspacePreparation,
 	if err := makeIngestedTreeImmutable(dependenciesDir); err != nil {
 		return PreparedWorkspace{}, &PreparationError{Err: fmt.Errorf("protect task dependency view: %w", err)}
 	}
-	if err := switchDependencyView(filepath.Join(rootDir, "workspace"), dependenciesDir); err != nil {
+	if err := switchDependencyView(workspaceDir, dependenciesDir); err != nil {
 		_ = removeIngestedTree(viewDir)
+		return PreparedWorkspace{}, &PreparationError{Err: err}
+	}
+	// The shared workflow checkout is prepared once, so a task that joins it
+	// later resolves its own dependency commits here rather than at clone time.
+	if err := m.Preparer.resolveDependencyCommits(ctx, dependenciesDir, workspaceDir, request, nil); err != nil {
 		return PreparedWorkspace{}, &PreparationError{Err: err}
 	}
 	return preparedWorkflow(rootDir, request, metadata.Commit, true), nil

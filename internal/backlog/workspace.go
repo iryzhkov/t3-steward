@@ -257,7 +257,7 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 	if err := writeWorkspaceBaseCommit(workspaceDir, commit); err != nil {
 		return fail(err)
 	}
-	if err := p.resolveDependencyCommits(ctx, stageDir, workspaceDir, request, logFile); err != nil {
+	if err := p.resolveDependencyCommits(ctx, filepath.Join(stageDir, "dependencies"), workspaceDir, request, logFile); err != nil {
 		return fail(err)
 	}
 
@@ -435,11 +435,10 @@ func (p WorkspacePreparer) materializeDependencyView(stageDir string, request Wo
 // it, and the cache may have been pruned since the commit was produced.
 func (p WorkspacePreparer) resolveDependencyCommits(
 	ctx context.Context,
-	stageDir, workspaceDir string,
+	dependenciesDir, workspaceDir string,
 	request WorkspacePreparation,
 	log io.Writer,
 ) error {
-	dependenciesDir := filepath.Join(stageDir, "dependencies")
 	return filepath.WalkDir(dependenciesDir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
