@@ -114,7 +114,7 @@ Complete example, inside a task, waiting for CI on a pushed commit:
   t3-steward wait add --task current --name "CI on $(git rev-parse HEAD)" \\
     --every 60s --max-every 10m --timeout 2h --wake all \\
     --request-id ci-$T3_STEWARD_ATTEMPT_REVISION-$(git rev-parse --short HEAD) -- \\
-    sh -c 'gh run view --json status --jq \'.status == "completed"\' | grep -q true'
+    sh -c 'test "$(gh run view --json status --jq .status)" = completed'
 
 Then end the turn. Nothing is collected or verified until the steward resumes
 this same thread with the outcome.
