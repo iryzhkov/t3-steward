@@ -18,6 +18,7 @@ const (
 	workerStateObservedCompleted = "worker-observed-completed"
 	workerStateObservedAbsent    = "worker-observed-absent"
 	workerStateObservedUnknown   = "worker-observed-unknown"
+	workerStateObservedWaiting   = "worker-observed-waiting-external"
 	workerStateCommandRejected   = "worker-command-rejected"
 	workerStateDispatchAccepted  = "dispatch-accepted"
 	workerStateStopAccepted      = "stop-accepted"
@@ -127,7 +128,8 @@ func planWorkerStateTransition(
 			}
 			switch control {
 			case domain.ControlPreparing, domain.ControlRunning, domain.ControlDraining,
-				domain.ControlPaused, domain.ControlPausedUncheckpointed, domain.ControlResuming:
+				domain.ControlPaused, domain.ControlPausedUncheckpointed, domain.ControlResuming,
+				domain.ControlWaitingExternal:
 			default:
 				return assignment, attempt, "", false, fmt.Errorf("assignment %q has invalid observed control %q", assignment.ID, control)
 			}
@@ -146,10 +148,24 @@ func planWorkerStateTransition(
 			nextAttempt := attempt
 			nextAttempt.AssignmentID = assignment.ID
 			reason := workerStateObservedPresent
-			if attemptFinished {
+			switch {
+			case attemptFinished:
 				nextAttempt.Control = domain.ControlStopped
 				reason = "terminal-attempt-stop-required"
-			} else {
+			case attempt.Progress == domain.ProgressWaitingExternal:
+				// The coordinator owns the park, and the worker's view of a parked
+				// attempt lags it by at least one exchange. Letting a stale
+				// "running" observation flip the attempt back to active would
+				// un-park it behind the wait's back, which is how the race this
+				// state exists to close would come back.
+				nextAttempt.Progress = domain.ProgressWaitingExternal
+				nextAttempt.Control = domain.ControlWaitingExternal
+				reason = workerStateObservedWaiting
+			case control == domain.ControlWaitingExternal:
+				nextAttempt.Progress = domain.ProgressWaitingExternal
+				nextAttempt.Control = domain.ControlWaitingExternal
+				reason = workerStateObservedWaiting
+			default:
 				nextAttempt.Progress = domain.ProgressActive
 				nextAttempt.Control = control
 			}
@@ -227,7 +243,7 @@ func releasedWorkerState(
 	nextAssignment.LeaseExpiresAt = time.Time{}
 	nextAssignment.UpdatedAt = now
 	nextAttempt := attempt
-	if nextAttempt.Control != domain.ControlStopped {
+	if nextAttempt.Control != domain.ControlStopped && !waitingExternal(attempt) {
 		nextAttempt.Control = domain.ControlUnassigned
 		if !nextAttempt.Progress.Terminal() {
 			nextAttempt.Progress = domain.ProgressReady
@@ -254,6 +270,9 @@ func observedCompletedWorkerState(
 	}
 	nextAssignment.UpdatedAt = now
 	nextAttempt := attempt
+	if waitingExternal(attempt) {
+		return assignment, attempt, "", false, nil
+	}
 	if !nextAttempt.Progress.Terminal() && nextAttempt.CompletedAt == nil {
 		nextAttempt.Progress = domain.ProgressActive
 	}
@@ -280,6 +299,13 @@ func completedWorkerState(
 	}
 	nextAssignment.UpdatedAt = now
 	nextAttempt := attempt
+	if waitingExternal(attempt) {
+		// A worker that completed a parked attempt raced the registration and
+		// lost. Moving the attempt to verifying here is exactly the step that
+		// verified a task against outputs it had not written yet, so the
+		// observation is ignored and the wait keeps the attempt parked.
+		return assignment, attempt, "", false, nil
+	}
 	if !nextAttempt.Progress.Terminal() && nextAttempt.CompletedAt == nil {
 		nextAttempt.Progress = domain.ProgressVerifying
 	}
@@ -319,6 +345,15 @@ func acceptedWorkerCommand(records map[string]domain.WorkerCommandRecord, assign
 func rejectedWorkerCommand(records map[string]domain.WorkerCommandRecord, assignment domain.Assignment, kind domain.WorkerCommandKind) bool {
 	record, ok := records[workerCommandKey(assignment.ID, assignment.Epoch, kind)]
 	return ok && record.Acknowledgement != nil && !record.Acknowledgement.Accepted
+}
+
+// waitingExternal reports whether the coordinator has parked this attempt on a
+// task-bound wait. While it is parked, worker evidence updates identity and
+// lease fields but never the attempt's own progress: the wait record is the
+// authority for when the attempt resumes.
+func waitingExternal(attempt domain.Attempt) bool {
+	return attempt.Progress == domain.ProgressWaitingExternal ||
+		attempt.Control == domain.ControlWaitingExternal
 }
 
 func workerAssignmentKey(assignmentID string, assignmentEpoch int64) string {

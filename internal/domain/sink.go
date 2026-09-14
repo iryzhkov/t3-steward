@@ -33,6 +33,11 @@ func SinkTaskID(runID string) string { return "sink:" + runID }
 
 // RunExecutionsQuiescent includes old attempts: a retry never erases custody of
 // an earlier execution whose stop is still unproven.
+//
+// ControlWaitingExternal is not quiescent, and that is the whole point of the
+// state. Letting a parked attempt look settled is the observed bug wearing a
+// different name: the sink would publish a run result while a thread was still
+// waiting to be woken and carry on working.
 func RunExecutionsQuiescent(runID string, attempts []Attempt, assignments []Assignment) bool {
 	byID := make(map[string]Assignment, len(assignments))
 	owned := make(map[string]bool, len(attempts))

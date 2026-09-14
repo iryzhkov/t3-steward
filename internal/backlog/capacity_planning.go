@@ -47,6 +47,14 @@ func capacityOwners(attempts []domain.Attempt, assignments []domain.Assignment, 
 		if !exists || assignment.AttemptID != attempt.ID {
 			continue
 		}
+		if attempt.Control == domain.ControlWaitingExternal {
+			// A parked attempt keeps its assignment, its workspace and its locks,
+			// but releases the executor slot and the CPU, memory and scratch it
+			// reserved. A wait on a build or a review lasts minutes to hours, and
+			// holding a slot that long on a three-worker fleet turns one parked
+			// task into a stalled queue.
+			continue
+		}
 		task, _ := domain.TaskForAttempt(attempt, runs, tasks)
 		owners = append(owners, CapacityOwner{
 			AssignmentID: assignment.ID, AttemptID: attempt.ID,

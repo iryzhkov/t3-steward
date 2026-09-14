@@ -83,6 +83,9 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	if attempt.Progress.Terminal() && attempt.LastTurnOutcomeID != outcomeID {
 		return ResultImportReport{}, fmt.Errorf("%w: attempt %q already has a different terminal outcome", ErrResultImportSuperseded, attempt.ID)
 	}
+	if err := i.refuseWhileWaiting(ctx, attempt, outcomeID, now); err != nil {
+		return ResultImportReport{}, err
+	}
 
 	report := ResultImportReport{}
 	outputs := make(map[string]string)
@@ -180,6 +183,42 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		FinalSummaryArtifactID: summary.ID, ObservedAt: manifest.CreatedAt,
 	}}, now)
 	return report, err
+}
+
+// refuseWhileWaiting stops a worker result before any artifact enters
+// coordinator custody when the attempt is parked on a live task-bound wait.
+//
+// Waiting until the turn outcome is committed would be too late: by then the
+// outputs are published, and published artifacts are immutable. Collection
+// happens after the turn that ends with no live wait, and the outputs written
+// after the wake are the outputs collected.
+func (i CoordinatorResultImporter) refuseWhileWaiting(ctx context.Context, attempt domain.Attempt, outcomeID string, now time.Time) error {
+	reader, ok := i.Store.(TaskWaitReader)
+	if !ok {
+		return nil
+	}
+	live, err := reader.LiveTaskWaitAttempts(ctx)
+	if err != nil {
+		return fmt.Errorf("load live task waits: %w", err)
+	}
+	waitID, waiting := live[attempt.ID]
+	if !waiting {
+		return nil
+	}
+	refusal := domain.TaskWaitReconciliation{
+		ID:        stableCoordinatorID("reconciliation", outcomeID),
+		Kind:      domain.TaskWaitReconciliationDoneWhileWaiting,
+		AttemptID: attempt.ID,
+		WaitID:    waitID,
+		ThreadID:  attempt.ThreadID,
+		Detail: fmt.Sprintf("worker result for attempt %q arrived while task-bound wait %q was live; refused before collection",
+			attempt.ID, waitID),
+		ObservedAt: now,
+	}
+	if err := reader.RecordTaskWaitReconciliations(ctx, []domain.TaskWaitReconciliation{refusal}); err != nil {
+		return fmt.Errorf("record task wait reconciliation: %w", err)
+	}
+	return fmt.Errorf("%w: %s", ErrTurnOutcomeWaiting, refusal.Detail)
 }
 
 func validateWorkerUploadCustody(response workerproto.ArtifactUploadResponse, coordinatorID string) error {

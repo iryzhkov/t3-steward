@@ -139,11 +139,16 @@ type Progress struct {
 	Ready      int `json:"ready"`
 	Active     int `json:"active"`
 	NeedsInput int `json:"needsInput"`
-	Verifying  int `json:"verifying"`
-	Succeeded  int `json:"succeeded"`
-	Failed     int `json:"failed"`
-	Cancelled  int `json:"cancelled"`
-	Skipped    int `json:"skipped"`
+	// WaitingExternal counts attempts parked on a task-bound wait. They are
+	// reported apart from NeedsInput because an operator acts on the two
+	// differently: needs-input is a question addressed to a human, waiting is a
+	// machine condition nobody has to answer.
+	WaitingExternal int `json:"waitingExternal"`
+	Verifying       int `json:"verifying"`
+	Succeeded       int `json:"succeeded"`
+	Failed          int `json:"failed"`
+	Cancelled       int `json:"cancelled"`
+	Skipped         int `json:"skipped"`
 }
 
 type WorkflowSummary struct {
