@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
@@ -207,8 +208,69 @@ func (v view) viabilityTask(ctx context.Context, settings ViabilitySettings, tas
 		candidate := v.viabilityCandidate(ctx, settings, task, project, ref, repositoryUsable, domainTask, worker)
 		result.Candidates = append(result.Candidates, candidate)
 	}
+	result.Reasons = append(result.Reasons, repositoryVerdict(project.Repository, ref, result.Candidates)...)
 	result.Outcome = taskOutcome(result)
 	return result
+}
+
+// repositoryVerdict decides the task-level repository answer from the
+// candidates' observations.
+//
+// The rule is that a permanent repository verdict from at least one observed
+// candidate, with no candidate observing success, is permanent for the task.
+//
+// The reason this is not "permanent on every candidate" is that the second
+// condition is unsatisfiable whenever any candidate is unobserved, and on a
+// real fleet at least one candidate usually is: a worker with no snapshot, a
+// worker whose catalog has drifted, a worker that cannot be dialled, a worker
+// on an older build. Requiring unanimity let one non-answering worker mask a
+// confirmed permanent failure, and the run was created and died hours later
+// preparing its workspace, which is the failure this whole check exists to
+// prevent.
+//
+// An unobserved candidate is not contradicting evidence. It is named in the
+// reason so the basis of the verdict is visible, and "submit
+// --allow-unverified" remains the operator's escape for the rare case where an
+// unobserved worker would have succeeded.
+func repositoryVerdict(repository, ref string, candidates []ViabilityCandidate) []ViabilityReason {
+	var observing []string
+	var unobserved []string
+	code, class := "", ""
+	for _, candidate := range candidates {
+		observation := candidate.Repository
+		if observation == nil {
+			continue
+		}
+		if !observation.Observed {
+			unobserved = append(unobserved,
+				fmt.Sprintf("%s (%s)", candidate.Worker, observation.Unobserved))
+			continue
+		}
+		if backlog.RepositoryReachability(observation.Class) == backlog.RepositoryAuthenticatedOK {
+			// One candidate that can read the repository settles it: the work
+			// can be placed there, whatever the others reported.
+			return nil
+		}
+		if observed := repositoryReasonCode(backlog.RepositoryReachability(observation.Class)); PermanentViabilityReason(observed) {
+			observing = append(observing, candidate.Worker)
+			if code == "" {
+				code, class = observed, observation.Class
+			}
+		}
+	}
+	if code == "" {
+		return nil
+	}
+	basis := "every candidate was observed"
+	if len(unobserved) != 0 {
+		basis = "not observed: " + strings.Join(unobserved, ", ")
+	}
+	reason := newViabilityReason(code, fmt.Sprintf(
+		"%s observed %s for repository %s at %s, and no candidate observed success; %s",
+		strings.Join(observing, ", "), class, repository, ref, basis))
+	reason.Observed = class
+	reason.Desired = ref
+	return []ViabilityReason{reason}
 }
 
 func taskOutcome(result ViabilityTaskResult) ViabilityOutcome {
@@ -282,13 +344,20 @@ func (v view) viabilityCandidate(
 ) ViabilityCandidate {
 	candidate := ViabilityCandidate{Worker: worker.id}
 	candidate.Reasons = append(candidate.Reasons, enrollmentReasons(worker)...)
+	candidate.Unchecked = append(candidate.Unchecked, enrollmentUnchecked(worker)...)
 	drifted := false
 	for _, reason := range candidate.Reasons {
 		drifted = drifted || reason.Code == ReasonCatalogDigestMismatch
 	}
+	// Every exit from here on records a repository observation, including the
+	// early ones. A candidate with no observation at all would be invisible to
+	// the task-level verdict, which is exactly how one non-answering worker used
+	// to mask a confirmed permanent failure.
 	if !worker.hasSnapshot {
 		candidate.Reasons = append(candidate.Reasons, newViabilityReason(ReasonWorkerOffline,
 			fmt.Sprintf("worker %q has reported no inventory", worker.id)))
+		observation := unobservedRepository("worker %q has reported no inventory", worker.id)
+		candidate.Repository = &observation
 		candidate.Outcome = outcomeFor(candidate.Reasons)
 		return candidate
 	}
@@ -307,6 +376,9 @@ func (v view) viabilityCandidate(
 	if err != nil {
 		candidate.Reasons = append(candidate.Reasons, newViabilityReason(ReasonWorkerNotEligible,
 			"placement could not be evaluated: "+err.Error()))
+		observation := unobservedRepository(
+			"placement for worker %q could not be evaluated, so nothing was dialled", worker.id)
+		candidate.Repository = &observation
 		candidate.Outcome = outcomeFor(candidate.Reasons)
 		return candidate
 	}
@@ -319,11 +391,13 @@ func (v view) viabilityCandidate(
 
 	candidate.Reasons = append(candidate.Reasons, v.routeReasons(domainTask, worker)...)
 	candidate.Reasons = append(candidate.Reasons, v.quotaReasons(domainTask, worker)...)
-	candidate.Reasons = append(candidate.Reasons, v.credentialReasons(ctx, settings, project, worker)...)
-	if repositoryUsable {
-		candidate.Reasons = append(candidate.Reasons,
-			v.repositoryReasons(ctx, settings, project, ref, worker, drifted)...)
-	}
+	credentialReasons, credentialUnchecked := v.credentialReasons(ctx, settings, project, worker)
+	candidate.Reasons = append(candidate.Reasons, credentialReasons...)
+	candidate.Unchecked = append(candidate.Unchecked, credentialUnchecked...)
+	observation, repositoryReasons := v.repositoryReasons(
+		ctx, settings, project, ref, worker, drifted, repositoryUsable)
+	candidate.Repository = &observation
+	candidate.Reasons = append(candidate.Reasons, repositoryReasons...)
 	candidate.Outcome = outcomeFor(candidate.Reasons)
 	return candidate
 }
@@ -357,6 +431,22 @@ func enrollmentReasons(worker viabilityWorker) []ViabilityReason {
 		}
 		reasons = append(reasons, reason)
 	}
+	// The digest the worker is observably running is a third value, and it is
+	// the one the repository probe key is built from. A worker that enrolled
+	// against the right catalog and is running a different one would otherwise
+	// be probed under an identity nobody compared to anything.
+	if observed := worker.inventory.CatalogRevision; worker.hasSnapshot && observed != "" &&
+		observed != requirement.CatalogRevision && observed != enrollment.Request.CatalogRevision {
+		reason := newViabilityReason(ReasonCatalogDigestMismatch, fmt.Sprintf(
+			"worker %q is running catalog %s and the coordinator requires %s; re-enrol it",
+			requirement.WorkerID, shortDigest(observed), shortDigest(requirement.CatalogRevision)))
+		reason.Desired = requirement.CatalogRevision
+		reason.Observed = observed
+		if enrollment.Revision > 0 {
+			reason.Revision = uint64(enrollment.Revision)
+		}
+		reasons = append(reasons, reason)
+	}
 	if requirement.Draining || requirement.Connection == "removed" {
 		reasons = append(reasons, newViabilityReason(ReasonWorkerOffline,
 			fmt.Sprintf("worker %q is draining", requirement.WorkerID)))
@@ -369,6 +459,20 @@ func enrollmentReasons(worker viabilityWorker) []ViabilityReason {
 			fmt.Sprintf("worker %q enrollment does not match its requirement", requirement.WorkerID)))
 	}
 	return reasons
+}
+
+// enrollmentUnchecked names the comparisons that could not be made. A worker
+// with a snapshot and no requirement row is not managed by this coordinator's
+// fleet configuration, so there is no desired digest to compare its catalog
+// against; saying nothing would present an unchecked worker as a checked one.
+func enrollmentUnchecked(worker viabilityWorker) []string {
+	if worker.dto.Requirement != nil || !worker.hasSnapshot {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"worker %q has no requirement row, so the catalog %s it is running was not compared "+
+			"against a desired digest",
+		worker.id, shortDigest(worker.inventory.CatalogRevision))}
 }
 
 func shortDigest(digest string) string {
@@ -502,41 +606,87 @@ func (v view) admissionState(poolID string) (domain.AdmissionState, time.Time, b
 }
 
 // credentialReasons reports required credential references the worker cannot
-// present. It names references and never values.
-func (v view) credentialReasons(ctx context.Context, settings ViabilitySettings, project backlog.ProjectDefinition, worker viabilityWorker) []ViabilityReason {
+// present, and says plainly when it could not tell. It names references and
+// never values.
+//
+// Per-reference availability is not something the coordinator knows. A worker
+// inventory reports capabilities, projects and providers; it does not report
+// which references the worker's own secret store can resolve. Without a
+// resolver this answer therefore states that availability was not observed
+// rather than staying silent, because silence here reads as "checked and
+// fine".
+//
+// The case that is observable is worth reporting on its own: a worker enrolled
+// with no credential reference at all cannot present one, whatever its store
+// holds. When a worker does hold the wrong credential, the repository probe
+// observes authentication-failed on the worker itself, which is permanent and
+// is where that failure is actually caught.
+func (v view) credentialReasons(ctx context.Context, settings ViabilitySettings, project backlog.ProjectDefinition, worker viabilityWorker) ([]ViabilityReason, []string) {
 	if len(project.RequiredCredentials) == 0 {
-		return nil
+		return nil, nil
 	}
 	if worker.dto.Enrollment != nil && worker.dto.Enrollment.CredentialRef == "" {
 		return []ViabilityReason{newViabilityReason(ReasonCredentialMissing, fmt.Sprintf(
 			"worker %q is enrolled with no credential reference and project %q requires %d",
-			worker.id, project.Name, len(project.RequiredCredentials)))}
+			worker.id, project.Name, len(project.RequiredCredentials)))}, nil
 	}
 	if settings.Credentials == nil {
-		return nil
+		references := append([]string(nil), project.RequiredCredentials...)
+		sort.Strings(references)
+		return nil, []string{fmt.Sprintf(
+			"whether worker %q can present the credential references project %q requires (%s) "+
+				"was not observed: this coordinator has no credential resolver, and a worker "+
+				"inventory does not report its secret store",
+			worker.id, project.Name, strings.Join(references, ", "))}
 	}
 	missing, err := settings.Credentials.MissingCredentials(ctx, worker.id, project.RequiredCredentials)
 	if err != nil {
 		// An unanswered question is not a passed one, but it is also not proof
 		// that the credential is absent, so it is reported as temporary.
 		return []ViabilityReason{newViabilityReason(ReasonSnapshotStale,
-			fmt.Sprintf("credential availability for worker %q could not be read: %v", worker.id, err))}
+				fmt.Sprintf("credential availability for worker %q could not be read: %v", worker.id, err))},
+			[]string{fmt.Sprintf("credential availability for worker %q was not observed", worker.id)}
 	}
 	var reasons []ViabilityReason
 	for _, reference := range missing {
 		reasons = append(reasons, newViabilityReason(ReasonCredentialMissing,
 			fmt.Sprintf("worker %q cannot present credential reference %q", worker.id, reference)))
 	}
-	return reasons
+	return reasons, nil
 }
 
 // repositoryReasons observes whether the worker can read the project's
-// repository and ref. A worker whose catalog has drifted is not probed: the
-// answer would describe an execution identity the coordinator is already
-// replacing.
-func (v view) repositoryReasons(ctx context.Context, settings ViabilitySettings, project backlog.ProjectDefinition, ref string, worker viabilityWorker, drifted bool) []ViabilityReason {
-	if settings.Repository == nil || drifted || !worker.hasSnapshot {
-		return nil
+// repository and ref.
+//
+// It always says what it did, including when it did nothing. Returning silence
+// for an unobserved candidate read exactly like a candidate that had been
+// observed and was fine: illegible to an operator, and the wrong input for the
+// task-level verdict, which has to distinguish absence of evidence from
+// evidence of success.
+//
+// A worker whose catalog has drifted is not probed, because the answer would
+// describe an execution identity the coordinator is already replacing. That is
+// recorded as unobserved rather than passed.
+func (v view) repositoryReasons(
+	ctx context.Context,
+	settings ViabilitySettings,
+	project backlog.ProjectDefinition,
+	ref string,
+	worker viabilityWorker,
+	drifted bool,
+	repositoryUsable bool,
+) (ViabilityRepositoryObservation, []ViabilityReason) {
+	switch {
+	case !repositoryUsable && project.Type == backlog.EnvironmentFresh:
+		return unobservedRepository("project %q prepares a fresh workspace and has no repository to reach", project.Name), nil
+	case !repositoryUsable:
+		return unobservedRepository("the repository or ref syntax is invalid, so nothing was dialled"), nil
+	case settings.Repository == nil:
+		return unobservedRepository("this coordinator has no repository observer configured"), nil
+	case drifted:
+		return unobservedRepository("worker %q is running a catalog the coordinator has replaced, so its answer would describe an execution identity that is being retired", worker.id), nil
+	case !worker.hasSnapshot:
+		return unobservedRepository("worker %q has reported no inventory", worker.id), nil
 	}
 	key := backlog.RepositoryProbeKey{
 		WorkerID:       worker.id,
@@ -547,18 +697,28 @@ func (v view) repositoryReasons(ctx context.Context, settings ViabilitySettings,
 	}
 	observation, err := settings.Repository.ObserveRepository(ctx, key)
 	if err != nil {
-		return []ViabilityReason{newViabilityReason(ReasonNetworkUnavailable,
-			fmt.Sprintf("repository reachability on worker %q could not be observed: %v", worker.id, err))}
+		// The worker did not answer. That is a temporary finding for this
+		// candidate and no evidence at all about the repository, so it must not
+		// count as a candidate that observed success.
+		return unobservedRepository("worker %q could not be reached: %v", worker.id, err),
+			[]ViabilityReason{newViabilityReason(ReasonNetworkUnavailable,
+				fmt.Sprintf("repository reachability on worker %q could not be observed: %v", worker.id, err))}
 	}
+	seen := ViabilityRepositoryObservation{Observed: true, Class: string(observation.Class)}
 	code := repositoryReasonCode(observation.Class)
 	if code == "" {
-		return nil
+		return seen, nil
 	}
 	reason := newViabilityReason(code, fmt.Sprintf(
 		"worker %q reported %s for repository %s at %s",
 		worker.id, observation.Class, project.Repository, ref))
 	reason.Desired = ref
-	return []ViabilityReason{reason}
+	reason.Observed = string(observation.Class)
+	return seen, []ViabilityReason{reason}
+}
+
+func unobservedRepository(format string, args ...any) ViabilityRepositoryObservation {
+	return ViabilityRepositoryObservation{Unobserved: fmt.Sprintf(format, args...)}
 }
 
 func repositoryReasonCode(class backlog.RepositoryReachability) string {

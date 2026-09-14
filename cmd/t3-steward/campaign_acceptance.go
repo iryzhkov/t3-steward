@@ -23,22 +23,32 @@ type coordinatorPermanentValidator struct {
 	admin *backlogadmin.Service
 }
 
+// ValidatePermanent refuses a campaign that can never run, and refuses a
+// submission it could not judge at all.
+//
+// Every path that cannot produce a verdict returns ErrValidationUnavailable
+// and names what failed. None of them accepts. An acceptance gate that fails
+// open is not a gate: it is quiet on exactly the occasions it matters, and with
+// --allow-unverified it was the only remaining check.
 func (v coordinatorPermanentValidator) ValidatePermanent(ctx context.Context, manifest backlog.Manifest) error {
 	if v.admin == nil {
-		return nil
+		return fmt.Errorf("%w: this coordinator has no readiness service to validate against",
+			backlog.ErrValidationUnavailable)
 	}
 	plan, err := campaign.Project(manifest, campaign.Options{})
 	if err != nil {
-		// A manifest the projection cannot read has already passed the
-		// ingestion parser, so this is a fault in the readiness check rather
-		// than in the submission, and it must not refuse the submission.
-		return nil
+		// The manifest passed the ingestion parser and the projection cannot
+		// read it, so the two disagree. That is a fault in this coordinator,
+		// not a verdict about the campaign, and it is still a refusal.
+		return fmt.Errorf("%w: the manifest could not be projected for validation: %v",
+			backlog.ErrValidationUnavailable, err)
 	}
 	// Acceptance checks the manifest, not the packed bundle: the archive has
 	// already been accepted by the message limits that guard the transport.
 	request, err := campaignViabilityRequest(plan, 0, 0, "")
 	if err != nil {
-		return nil
+		return fmt.Errorf("%w: the readiness request could not be built: %v",
+			backlog.ErrValidationUnavailable, err)
 	}
 	response, err := v.admin.Query(ctx, backlogadmin.Query{
 		Version: backlogadmin.Version,
@@ -51,12 +61,17 @@ func (v coordinatorPermanentValidator) ValidatePermanent(ctx context.Context, ma
 		Viability: &request,
 	})
 	if err != nil {
-		// The coordinator could not answer its own question. Refusing here
-		// would turn an internal fault into a permanent verdict about the
-		// submission, which is the one thing a permanent verdict must never be.
-		return nil
+		// The coordinator could not answer its own question: no configured
+		// project, a store read that failed, an authorization refusal. Retrying
+		// with the same idempotency key is safe once it is repaired.
+		return fmt.Errorf("%w: the readiness query failed: %v",
+			backlog.ErrValidationUnavailable, err)
 	}
-	if response.Viability == nil || response.Viability.Outcome != backlogadmin.ViabilityImpossible {
+	if response.Viability == nil {
+		return fmt.Errorf("%w: the readiness query returned no matrix",
+			backlog.ErrValidationUnavailable)
+	}
+	if response.Viability.Outcome != backlogadmin.ViabilityImpossible {
 		return nil
 	}
 	lines := make([]string, 0)

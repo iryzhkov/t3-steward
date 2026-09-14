@@ -68,6 +68,11 @@ type RuntimeInfo struct {
 	Transport              string
 	MaxWorkerSnapshotAge   time.Duration
 	MaxQuotaObservationAge time.Duration
+	// CatalogIssues names the configuration this coordinator could not use, one
+	// line per problem. A misconfigured project is isolated so that it disables
+	// itself rather than the fleet, which means nothing else goes wrong to make
+	// the operator look; the coordinator has to say so instead.
+	CatalogIssues []string
 }
 
 func New(reader Reader, authorizer Authorizer) (*Service, error) {
@@ -398,6 +403,7 @@ func (v view) runtimeStatus() RuntimeStatus {
 			status.CustodyIncidentIDs = append(status.CustodyIncidentIDs, artifact.ID)
 		}
 	}
+	status.ReconciliationIssues = append(status.ReconciliationIssues, v.runtime.CatalogIssues...)
 	sort.Strings(status.ReconciliationIssues)
 	sort.Strings(status.UnknownExecutionIDs)
 	sort.Strings(status.CustodyIncidentIDs)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
@@ -28,6 +29,29 @@ type WorkerBinding struct {
 	Catalog         *backlog.ProjectCatalog
 	Inventory       domain.WorkerInventory
 	CredentialRef   string
+	// RejectedProjects names the configured projects this binding had to leave
+	// out, with the exact validation failure for each. The binding is usable
+	// without them; the operator still has to be told which project is broken
+	// and why, by name.
+	RejectedProjects []backlog.ProjectRejection
+}
+
+// CatalogIssues renders the rejected projects as one line each, for the health
+// surfaces that report configuration problems.
+func (b WorkerBinding) CatalogIssues() []string {
+	issues := make([]string, 0, len(b.RejectedProjects))
+	for _, rejection := range b.RejectedProjects {
+		issues = append(issues, "project:"+rejection.Name+":invalid: "+rejection.Reason)
+	}
+	return issues
+}
+
+func rejectionList(rejections []backlog.ProjectRejection) string {
+	parts := make([]string, 0, len(rejections))
+	for _, rejection := range rejections {
+		parts = append(parts, rejection.Error())
+	}
+	return strings.Join(parts, "; ")
 }
 
 // BuildFleetDefinitions is the coordinator's view of the same catalog
@@ -68,6 +92,23 @@ func BuildFleetDefinitions(settings config.BacklogV2) ([]backlog.ProjectDefiniti
 		})
 	}
 	return projects, profiles
+}
+
+// FleetCatalogIssues names every configured project this coordinator cannot
+// use, with the exact validation failure for each.
+//
+// It is computed from the fleet definitions rather than from one worker's
+// binding, so a project that is broken and assigned to no worker is still
+// reported. An isolated failure that nothing else notices has to be announced,
+// or the operator only learns about it from a refused submission.
+func FleetCatalogIssues(settings config.BacklogV2) []string {
+	projects, profiles := BuildFleetDefinitions(settings)
+	_, _, rejected := backlog.PartitionCatalog(projects, profiles)
+	issues := make([]string, 0, len(rejected))
+	for _, rejection := range rejected {
+		issues = append(issues, "project:"+rejection.Name+":invalid: "+rejection.Reason)
+	}
+	return issues
 }
 
 // implicitFreshSetupProfile is the profile a fresh-workspace project is given
@@ -161,6 +202,28 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 	if len(projects) == 0 {
 		return WorkerBinding{}, errors.New("worker binding: worker has no eligible projects")
 	}
+	// A project the catalog cannot hold is isolated rather than fatal. Failing
+	// the whole binding meant one malformed repository URL stopped every worker
+	// on the coordinator from reporting, which is a fleet outage caused by one
+	// project's configuration.
+	projects, profiles, rejected := backlog.PartitionCatalog(projects, profiles)
+	if len(rejected) != 0 {
+		usable := make([]domain.WorkerProjectInventory, 0, len(projects))
+		for _, entry := range inventoryProjects {
+			if slices.ContainsFunc(projects, func(p backlog.ProjectDefinition) bool { return p.Name == entry.Name }) {
+				usable = append(usable, entry)
+			}
+		}
+		// A project that cannot be prepared is not advertised as available. The
+		// worker would accept work for it and fail at preparation time, which is
+		// the class of failure this whole readiness path exists to move earlier.
+		inventoryProjects = usable
+	}
+	if len(projects) == 0 {
+		return WorkerBinding{}, fmt.Errorf(
+			"worker binding: every eligible project of worker %q is misconfigured: %s",
+			workerID, rejectionList(rejected))
+	}
 	catalog, err := backlog.NewProjectCatalog(projects, profiles)
 	if err != nil {
 		return WorkerBinding{}, err
@@ -198,6 +261,7 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 	revision := hex.EncodeToString(sum[:])
 	return WorkerBinding{
 		CatalogRevision: revision, Catalog: catalog, CredentialRef: worker.Credential,
+		RejectedProjects: rejected,
 		Inventory: domain.WorkerInventory{
 			ID: workerID, AcceptBacklog: worker.AcceptBacklog, Health: domain.WorkerHealthReady, CatalogRevision: revision,
 			Capabilities: append([]string(nil), worker.Capabilities...),

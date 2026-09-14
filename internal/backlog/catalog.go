@@ -90,6 +90,72 @@ func NewProjectCatalog(projects []ProjectDefinition, profiles []SetupProfile) (*
 	return catalog, nil
 }
 
+// ProjectNames lists the projects this catalog holds, sorted. It exists so that
+// a caller which isolated a broken project can assert what survived.
+func (c *ProjectCatalog) ProjectNames() []string {
+	if c == nil {
+		return nil
+	}
+	names := make([]string, 0, len(c.projects))
+	for name := range c.projects {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ProjectRejection is one catalog entry that could not be held, with the exact
+// validation failure that excluded it.
+type ProjectRejection struct {
+	Name   string
+	Reason string
+}
+
+// Error renders one rejection the way an operator needs to read it: the name of
+// the thing that is broken, then what is wrong with it.
+func (r ProjectRejection) Error() string { return r.Name + ": " + r.Reason }
+
+// PartitionCatalog splits catalog configuration into the parts a catalog can
+// hold and the parts it cannot.
+//
+// NewProjectCatalog is all-or-nothing on purpose: an explicitly constructed
+// catalog should not quietly contain less than it was given. That is the wrong
+// rule one level up. A single malformed repository URL made every worker
+// binding fail to build, so the coordinator held no worker snapshot at all and
+// scheduling stopped for every project, while the operator saw workers vanish
+// rather than a message naming the project.
+//
+// A misconfigured project must disable that project, not the fleet. What it
+// must never do is disappear: the rejections are returned so that the caller
+// reports them by name, and the viability matrix reports the same project as
+// having an invalid repository rather than as one nobody has heard of.
+func PartitionCatalog(projects []ProjectDefinition, profiles []SetupProfile) ([]ProjectDefinition, []SetupProfile, []ProjectRejection) {
+	var rejections []ProjectRejection
+	usableProfiles := make([]SetupProfile, 0, len(profiles))
+	for _, profile := range profiles {
+		if err := validateSetupProfile(profile); err != nil {
+			rejections = append(rejections, ProjectRejection{
+				Name: "setup profile " + profile.Name, Reason: err.Error(),
+			})
+			continue
+		}
+		usableProfiles = append(usableProfiles, profile)
+	}
+	usableProjects := make([]ProjectDefinition, 0, len(projects))
+	for _, project := range projects {
+		// Each project is offered to the real constructor on its own, so the
+		// rule that accepts or rejects it here is exactly the rule that would
+		// have accepted or rejected it in a whole catalog.
+		if _, err := NewProjectCatalog([]ProjectDefinition{project}, usableProfiles); err != nil {
+			rejections = append(rejections, ProjectRejection{Name: project.Name, Reason: err.Error()})
+			continue
+		}
+		usableProjects = append(usableProjects, project)
+	}
+	sort.Slice(rejections, func(i, j int) bool { return rejections[i].Name < rejections[j].Name })
+	return usableProjects, usableProfiles, rejections
+}
+
 // ValidateRepositorySyntax and ValidateRefSyntax expose the catalog's own
 // repository and ref rules so that a live readiness check applies exactly the
 // syntax the catalog applies, rather than a second, weaker copy of it.
