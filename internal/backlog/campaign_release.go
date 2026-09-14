@@ -11,11 +11,13 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
-// CampaignRefReleaser ends the declared campaign lifetime of one run's commits.
-// It is the CampaignRefStore in production and a recorder in tests, so that the
-// decision about which runs may be released can be exercised without a Git
-// repository.
+// CampaignRefReleaser is the store a reconciler converges: what it holds, and
+// how to let one run go. It is the CampaignRefStore in production and a
+// recorder in tests, so that the decision about which runs may be released can
+// be exercised without a Git repository.
 type CampaignRefReleaser interface {
+	// Runs reports the workflow runs the store currently holds commits for.
+	Runs() ([]string, error)
 	ReleaseRun(ctx context.Context, workflowRunID string, log io.Writer) error
 }
 
@@ -138,16 +140,17 @@ type CampaignRefReleaseReconciler struct {
 	Refs CampaignRefReleaser
 	// Log receives the Git output of a release, and may be nil.
 	Log io.Writer
-
-	// released remembers what this process already released, so a settled run
-	// is not walked again on every boundary. It is an optimisation and not the
-	// idempotency guarantee: ReleaseRun is itself idempotent, so a restart that
-	// loses this map releases nothing twice.
-	released map[string]struct{}
 }
 
-// Tick releases the campaign refs of every run whose declared commits nothing
-// can ask for any more.
+// Tick releases every run the store holds that the coordinator does not
+// retain.
+//
+// It converges on what the store holds rather than walking the runs the
+// coordinator still has records for, which is the same rule the worker applies
+// to the coordinator's keep list. A run whose records are gone — pruned,
+// restored from a backup taken before it existed, or never known to this
+// coordinator — is in neither half of the lifetime, and walking the records
+// would leave its refs pinned forever with nothing left to name them.
 func (r *CampaignRefReleaseReconciler) Tick(ctx context.Context) CampaignRefReleaseReport {
 	var report CampaignRefReleaseReport
 	if r == nil || r.Records == nil || r.Refs == nil {
@@ -158,19 +161,24 @@ func (r *CampaignRefReleaseReconciler) Tick(ctx context.Context) CampaignRefRele
 		report.Errors = append(report.Errors, fmt.Errorf("load records for campaign commit release: %w", err))
 		return report
 	}
-	if r.released == nil {
-		r.released = make(map[string]struct{})
+	held, err := r.Refs.Runs()
+	if err != nil {
+		report.Errors = append(report.Errors, fmt.Errorf("list campaign commit runs: %w", err))
+		return report
 	}
-	_, releasable := CampaignRefLifetime(records)
-	for _, runID := range releasable {
-		if _, done := r.released[runID]; done {
+	retainedRuns, _ := CampaignRefLifetime(records)
+	retained := make(map[string]struct{}, len(retainedRuns))
+	for _, runID := range retainedRuns {
+		retained[runID] = struct{}{}
+	}
+	for _, runID := range held {
+		if _, keep := retained[runID]; keep {
 			continue
 		}
 		if err := r.Refs.ReleaseRun(ctx, runID, r.Log); err != nil {
 			report.Errors = append(report.Errors, fmt.Errorf("release campaign commits of run %s: %w", runID, err))
 			continue
 		}
-		r.released[runID] = struct{}{}
 		report.Released = append(report.Released, runID)
 	}
 	return report
