@@ -171,7 +171,10 @@ func ClassifyRepositoryProbe(exitCode int, output string, err error) RepositoryR
 		return RepositoryDNSFailure
 	case containsAny(message, "authentication failed", "access denied", "permission denied", "invalid username or password", "terminal prompts disabled", "could not read username", "403 forbidden", "401 unauthorized"):
 		return RepositoryAuthenticationFailed
-	case containsAny(message, "repository not found", "does not appear to be a git repository", "not found", "404"):
+	// "cannot find repository" is Forgejo's wording, and it is the message the
+	// campaign that motivated this check actually received. Without it the
+	// motivating failure classifies as temporary and the submission proceeds.
+	case containsAny(message, "repository not found", "cannot find repository", "does not appear to be a git repository", "not found", "404"):
 		return RepositoryNotFound
 	case containsAny(message, "failed to connect", "could not connect to server", "connection refused", "connection timed out", "network is unreachable", "connection reset", "operation timed out", "ssl", "tls"):
 		return RepositoryNetworkUnavailable

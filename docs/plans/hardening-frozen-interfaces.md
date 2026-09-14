@@ -184,7 +184,7 @@ repository, so the specific evidence has to be tested before the generic wording
 | `context.DeadlineExceeded` or `context.Canceled` | `timeout` |
 | `could not resolve host`, `name or service not known`, `no address associated with hostname`, `temporary failure in name resolution` | `dns-failure` |
 | `authentication failed`, `access denied`, `permission denied`, `invalid username or password`, `terminal prompts disabled`, `could not read username`, `403 forbidden`, `401 unauthorized` | `authentication-failed` |
-| `repository not found`, `does not appear to be a git repository`, `not found`, `404` | `repository-not-found` |
+| `repository not found`, `cannot find repository`, `does not appear to be a git repository`, `not found`, `404` | `repository-not-found` |
 | `failed to connect`, `could not connect to server`, `connection refused`, `connection timed out`, `network is unreachable`, `connection reset`, `ssl`, `tls` | `network-unavailable` |
 | anything else | `network-unavailable` |
 

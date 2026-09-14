@@ -108,6 +108,16 @@ func TestClassifyRepositoryProbeTable(t *testing.T) {
 			err:    &ProcessExitError{ExitCode: 128}, want: RepositoryNotFound,
 		},
 		{
+			// The exact bytes the campaign that motivated this check received
+			// from ssh://git@git.ryzhkov.dev/igor/dev-fleet.git, re-measured on
+			// 2026-09-14. Forgejo does not say "repository not found", and
+			// without this row the motivating failure is temporary and the
+			// submission proceeds.
+			name: "a forge that says it cannot find the repository is not found", exitCode: 128,
+			output: "Forgejo: Cannot find repository: igor/dev-fleet\nfatal: Could not read from remote repository.\n",
+			err:    &ProcessExitError{ExitCode: 128}, want: RepositoryNotFound,
+		},
+		{
 			name: "a remote 404 is not found", exitCode: 128,
 			output: "remote: Repository not found.\nfatal: repository 'https://github.com/owner/absent/' not found\n",
 			err:    &ProcessExitError{ExitCode: 128}, want: RepositoryNotFound,
