@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.43] - 2026-09-14
+
+### Fixed
+
+- Preflight evidence is identified by attempt and step rather than by a prefix
+  of its own content hash. Two tasks running the same probe against the same
+  repository produced identical output and so claimed one identity, and the
+  second publication was refused as conflicting with immutable metadata
+  belonging to a different task.
+- A result that claims an artifact identity belonging to another attempt is
+  rejected and discarded once instead of retried forever, which previously
+  blocked every other result the worker held.
+
+### Changed
+
+- The submission digest has one exported implementation, so a caller predicting
+  the digest before submitting cannot drift from the one the coordinator
+  records.
+
 ## [0.11.0-rc.42] - 2026-09-14
 
 ### Fixed
