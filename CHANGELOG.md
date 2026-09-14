@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.48] - 2026-09-14
+
+### Fixed
+
+- A task may define success by its declared outputs alone. Requiring a
+  verification command made such a package unbuildable, so the campaign
+  validated and submitted but every offer was withheld and retried, with the
+  reason visible only in a coordinator warning.
+
 ## [0.11.0-rc.47] - 2026-09-14
 
 ### Fixed
