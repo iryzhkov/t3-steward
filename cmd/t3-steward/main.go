@@ -50,6 +50,7 @@ Commands:
   replay <file>      Feed recorded quota events through the policy engine (no T3 needed).
   report             Consumption by peak/off-peak hours, hour of day, model and thread.
   forecast           Interactive-demand map by weekday and hour, and current backlog headroom.
+  campaign           Author, inspect and submit a workflow from a campaign directory.
   backlog            Inspect and control coordinator workflows; includes legacy file helpers.
   diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
   schedules          Inspect and control schedules and trigger history.
@@ -131,7 +132,7 @@ func run(args []string) error {
 			return cmdUIArchive(g, sub)
 		}
 		return cmdArchive(g, sub)
-	case "backlog", "diagnose", "worker":
+	case "backlog", "diagnose", "worker", "campaign":
 		// Sub-commands parse their own arguments; only --config and
 		// --dry-run style globals are shared, taken from the environment here.
 		paths, err := config.DefaultPaths()
@@ -150,6 +151,9 @@ func run(args []string) error {
 		}
 		if cmd == "worker" {
 			return cmdWorker(g, sub)
+		}
+		if cmd == "campaign" {
+			return cmdCampaign(g, sub)
 		}
 		if cmd == "diagnose" {
 			sub = append([]string{"diagnose"}, sub...)
