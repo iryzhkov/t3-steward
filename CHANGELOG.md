@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.44] - 2026-09-14
+
+### Added
+
+- A `campaign` namespace for authoring a workflow as a directory rather than a
+  hand-assembled archive. `campaign validate` and `campaign plan` read the
+  directory and change nothing; `campaign submit` requires an idempotency key and
+  creates exactly one workflow and one run. `list`, `show`, `graph`, `explain`
+  and `cancel` delegate to the existing backlog operations unchanged, so their
+  JSON and exit codes are identical.
+- Packing is deterministic: two directories with identical content produce
+  identical bytes and the same digest the coordinator records, which is what
+  makes the idempotency key meaningful.
+- `campaign plan` renders the statically knowable execution plan as text, JSON or
+  DOT: waves, roots, leaves, edges, inherited versus task-level settings,
+  artifact bindings with their mount paths, and timing constraints. It does not
+  claim a worker, route or capacity will be available; that remains
+  `campaign explain` after submission.
+- Checked-in single-lead and three-node example campaigns under
+  `docs/examples/campaign/`, covered by tests.
+
 ## [0.11.0-rc.43] - 2026-09-14
 
 ### Fixed
