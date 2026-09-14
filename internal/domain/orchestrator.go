@@ -157,15 +157,18 @@ type Task struct {
 	Outputs            []ArtifactDeclaration       `json:"outputs,omitempty"`
 	Verification       []string                    `json:"verification,omitempty"`
 	Placement          Placement                   `json:"placement"`
-	Routes             []ProviderRoute             `json:"routes,omitempty"`
-	ResourceLocks      []string                    `json:"resourceLocks,omitempty"`
-	Importance         int                         `json:"importance"`
-	Difficulty         int                         `json:"difficulty"`
-	EstimatedCost      *float64                    `json:"estimatedCost,omitempty"`
-	MaxTurns           int                         `json:"maxTurns"`
-	NotBefore          *time.Time                  `json:"notBefore,omitempty"`
-	Deadline           *time.Time                  `json:"deadline,omitempty"`
-	ExpiresAt          *time.Time                  `json:"expiresAt,omitempty"`
+	// ResourceDemand sizes the task independently of the eligibility rules in
+	// Placement, which is why it is a sibling field rather than a member.
+	ResourceDemand ResourceDemand  `json:"resourceDemand,omitempty"`
+	Routes         []ProviderRoute `json:"routes,omitempty"`
+	ResourceLocks  []string        `json:"resourceLocks,omitempty"`
+	Importance     int             `json:"importance"`
+	Difficulty     int             `json:"difficulty"`
+	EstimatedCost  *float64        `json:"estimatedCost,omitempty"`
+	MaxTurns       int             `json:"maxTurns"`
+	NotBefore      *time.Time      `json:"notBefore,omitempty"`
+	Deadline       *time.Time      `json:"deadline,omitempty"`
+	ExpiresAt      *time.Time      `json:"expiresAt,omitempty"`
 }
 
 // Attempt is one try to complete a task in a workflow run.

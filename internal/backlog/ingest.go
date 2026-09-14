@@ -280,7 +280,8 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 				Hosts:        append([]string(nil), taskManifest.Placement.Hosts...),
 				Capabilities: append([]string(nil), taskManifest.Placement.Requires...),
 			},
-			Routes: routes, ResourceLocks: append([]string(nil), taskManifest.ResourceLocks...),
+			ResourceDemand: resourceDemandFor(taskManifest.Resources),
+			Routes:         routes, ResourceLocks: append([]string(nil), taskManifest.ResourceLocks...),
 			Importance: taskManifest.Importance, Difficulty: taskManifest.Difficulty,
 			EstimatedCost: taskManifest.EstimatedCost, MaxTurns: taskManifest.MaxTurns,
 			NotBefore: taskManifest.NotBefore, Deadline: taskManifest.Deadline, ExpiresAt: taskManifest.ExpiresAt,
@@ -428,6 +429,38 @@ func sortedKeys(values map[string]struct{}) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+// resourceDemandFor converts a parsed manifest resource declaration into the
+// internal demand a placement decision consumes.
+//
+// The manifest layer and the domain layer each declare their own CPU class
+// type on purpose. The manifest type is the wire shape an author writes in
+// YAML; the domain type is what placement reasons about. They currently share
+// the same three spellings, and this is the single point that depends on that,
+// so a future divergence — an alias an author may write, or a class the fleet
+// gains — is absorbed here rather than leaking into either layer.
+//
+// The manifest's numeric fields are pointers so that an explicit zero can be
+// rejected during validation; by this point validation has already run, so an
+// absent field and a zero mean the same thing to placement and both become the
+// zero value. A task that declares nothing produces a zero demand, which
+// constrains no worker.
+func resourceDemandFor(resources ManifestResources) domain.ResourceDemand {
+	demand := domain.ResourceDemand{
+		MinCPUClass:       domain.CPUClass(resources.MinCPUClass),
+		PreferredCPUClass: domain.CPUClass(resources.PreferredCPUClass),
+	}
+	if resources.CPUUnits != nil {
+		demand.CPUUnits = *resources.CPUUnits
+	}
+	if resources.MemoryMB != nil {
+		demand.MemoryMB = *resources.MemoryMB
+	}
+	if resources.ScratchMB != nil {
+		demand.ScratchMB = *resources.ScratchMB
+	}
+	return demand
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

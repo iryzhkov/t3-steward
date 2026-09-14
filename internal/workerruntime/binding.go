@@ -142,6 +142,18 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 			ID: workerID, AcceptBacklog: worker.AcceptBacklog, Health: domain.WorkerHealthReady, CatalogRevision: revision,
 			Capabilities: append([]string(nil), worker.Capabilities...),
 			Projects:     inventoryProjects, Providers: providers, ObservedAt: now.UTC(),
+			// The operator assigns the CPU class and the allocatable executor
+			// capacity; both are configuration, not measurements. Pressure is
+			// absent here on purpose: it is the worker's own live observation
+			// of itself and arrives with a capacity report, never from the
+			// coordinator's view of its own configuration file.
+			CPUClass: domain.CPUClass(worker.CPUClass),
+			Allocatable: domain.AllocatableCapacity{
+				ExecutorSlots: worker.Executors.Slots,
+				CPUUnits:      worker.Executors.CPUUnits,
+				MemoryMB:      worker.Executors.MemoryMB,
+				ScratchMB:     worker.Executors.ScratchMB,
+			},
 		},
 	}, nil
 }

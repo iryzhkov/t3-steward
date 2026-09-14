@@ -82,6 +82,13 @@ func (c *Config) validateBacklogV2() error {
 		if !worker.AcceptBacklog && worker.Connection == "" {
 			return fmt.Errorf("backlog_v2: configured worker %q must accept backlog work", id)
 		}
+		if !ValidCPUClass(worker.CPUClass) {
+			return fmt.Errorf("backlog_v2: worker %q cpu_class must be low, medium or high", id)
+		}
+		if worker.Executors.Slots < 0 || worker.Executors.CPUUnits < 0 ||
+			worker.Executors.MemoryMB < 0 || worker.Executors.ScratchMB < 0 {
+			return fmt.Errorf("backlog_v2: worker %q executor capacity must not be negative", id)
+		}
 		if len(worker.Providers) == 0 {
 			return fmt.Errorf("backlog_v2: worker %q requires at least one provider", id)
 		}

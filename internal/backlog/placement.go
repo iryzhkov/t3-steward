@@ -10,13 +10,62 @@ import (
 )
 
 const (
-	ExclusionBacklogDisabled    = "backlog-disabled"
-	ExclusionHostNotAllowed     = "host-not-allowed"
-	ExclusionMissingCapability  = "missing-capability"
-	ExclusionProjectUnavailable = "project-unavailable"
-	ExclusionWorkerHealth       = "worker-health"
-	ExclusionWorkerStale        = "worker-stale"
+	ExclusionBacklogDisabled       = "backlog-disabled"
+	ExclusionHostNotAllowed        = "host-not-allowed"
+	ExclusionMissingCapability     = "missing-capability"
+	ExclusionProjectUnavailable    = "project-unavailable"
+	ExclusionWorkerHealth          = "worker-health"
+	ExclusionWorkerStale           = "worker-stale"
+	ExclusionWorkerEpochSuperseded = "worker-epoch-superseded"
+	ExclusionCPUClassBelowMinimum  = "cpu-class-below-minimum"
+	ExclusionCPUClassUnknown       = "cpu-class-unknown"
+	ExclusionCapacityExhausted     = "capacity-exhausted"
 )
+
+// Preference component names. A component scores a surviving candidate; it can
+// never admit a worker that hard-constraint filtering rejected.
+//
+// The first three are weighted. The remainder are declared seams: they are
+// named and reported with zero weight so that an operator policy can weight
+// them later without changing the shape of a placement explanation, and they
+// do not influence the ranking today.
+const (
+	PreferenceCPUClassFit      = "cpu-class-fit"
+	PreferenceCPUHeadroom      = "cpu-headroom"
+	PreferenceDataLocality     = "data-locality"
+	PreferenceWarmCache        = "warm-cache"
+	PreferenceQueueDepth       = "queue-depth"
+	PreferenceEnergyCost       = "energy-cost"
+	PreferenceOperatorAffinity = "operator-affinity"
+)
+
+// DefaultPreferenceWeights is the shipped preference policy. Class fit
+// dominates so that work which does not need high performance leaves
+// high-class headroom free, and observed headroom breaks ties between workers
+// of an equally suitable class.
+func DefaultPreferenceWeights() map[string]float64 {
+	return map[string]float64{
+		PreferenceCPUClassFit:      1,
+		PreferenceCPUHeadroom:      0.5,
+		PreferenceDataLocality:     0.25,
+		PreferenceWarmCache:        0,
+		PreferenceQueueDepth:       0,
+		PreferenceEnergyCost:       0,
+		PreferenceOperatorAffinity: 0,
+	}
+}
+
+// preferenceOrder fixes the order components are reported in, so a placement
+// explanation is byte-stable for the same inputs.
+var preferenceOrder = []string{
+	PreferenceCPUClassFit,
+	PreferenceCPUHeadroom,
+	PreferenceDataLocality,
+	PreferenceWarmCache,
+	PreferenceQueueDepth,
+	PreferenceEnergyCost,
+	PreferenceOperatorAffinity,
+}
 
 // WorkerPlacementRequest is the immutable input to worker capability matching.
 type WorkerPlacementRequest struct {
@@ -24,6 +73,13 @@ type WorkerPlacementRequest struct {
 	Project        string
 	Now            time.Time
 	MaxSnapshotAge time.Duration
+	// ExpectedWorkerEpochs, when it names a worker, is the epoch the
+	// coordinator last accepted for it. A snapshot from any other epoch has
+	// been superseded and cannot admit work.
+	ExpectedWorkerEpochs map[string]string
+	// PreferenceWeights overrides DefaultPreferenceWeights for scoring. It
+	// never affects hard-constraint filtering.
+	PreferenceWeights map[string]float64
 }
 
 // WorkerExclusion explains one independent reason a worker cannot run a task.
@@ -139,6 +195,9 @@ func evaluateWorker(request WorkerPlacementRequest, worker domain.WorkerInventor
 		}
 	}
 
+	exclusions = append(exclusions, epochExclusions(request, worker)...)
+	exclusions = append(exclusions, capacityExclusions(request.Task.ResourceDemand, worker)...)
+
 	sort.Slice(exclusions, func(i, j int) bool {
 		if exclusions[i].Code == exclusions[j].Code {
 			return exclusions[i].Detail < exclusions[j].Detail
@@ -148,6 +207,90 @@ func evaluateWorker(request WorkerPlacementRequest, worker domain.WorkerInventor
 	return WorkerEvaluation{
 		WorkerID: worker.ID, Eligible: len(exclusions) == 0, Exclusions: exclusions,
 	}
+}
+
+// epochExclusions rejects a snapshot the coordinator has already superseded.
+// Staleness by age is reported separately, because an old snapshot and a
+// snapshot from a replaced worker epoch are different facts.
+func epochExclusions(request WorkerPlacementRequest, worker domain.WorkerInventory) []WorkerExclusion {
+	expected, declared := request.ExpectedWorkerEpochs[worker.ID]
+	if !declared || expected == worker.Epoch {
+		return nil
+	}
+	return []WorkerExclusion{{
+		Code: ExclusionWorkerEpochSuperseded,
+		Detail: fmt.Sprintf("worker %q reports epoch %q, superseded by %q",
+			worker.ID, worker.Epoch, expected),
+	}}
+}
+
+// capacityExclusions applies the CPU-class floor and the allocatable-capacity
+// constraints. A task that declares no demand constrains nothing, so a worker
+// is never excluded for capacity it was not asked to provide.
+//
+// Only the class floor and allocatable capacity are hard constraints here.
+// Observed pressure is deliberately absent: it is an observation that scores a
+// candidate, and admitting or refusing work on live load alone would make the
+// resource model a load average.
+func capacityExclusions(demand domain.ResourceDemand, worker domain.WorkerInventory) []WorkerExclusion {
+	if demand.IsZero() {
+		return nil
+	}
+	var exclusions []WorkerExclusion
+	if demand.MinCPUClass != "" {
+		switch {
+		case !worker.CPUClass.Valid():
+			exclusions = append(exclusions, WorkerExclusion{
+				Code: ExclusionCPUClassUnknown,
+				Detail: fmt.Sprintf("worker %q has no configured cpu class and the task requires at least %q",
+					worker.ID, string(demand.MinCPUClass)),
+			})
+		case worker.CPUClass.Compare(demand.MinCPUClass) < 0:
+			exclusions = append(exclusions, WorkerExclusion{
+				Code: ExclusionCPUClassBelowMinimum,
+				Detail: fmt.Sprintf("worker %q cpu class %q is below the required minimum %q",
+					worker.ID, string(worker.CPUClass), string(demand.MinCPUClass)),
+			})
+		}
+	}
+
+	snapshot := worker.CapacitySnapshot()
+	sized := demand.CPUUnits > 0 || demand.MemoryMB > 0 || demand.ScratchMB > 0
+	if sized && snapshot.Allocatable.IsZero() {
+		return append(exclusions, WorkerExclusion{
+			Code:   ExclusionCapacityExhausted,
+			Detail: fmt.Sprintf("worker %q declares no allocatable capacity for a sized task", worker.ID),
+		})
+	}
+	if sized && snapshot.FreeSlots() < 1 {
+		exclusions = append(exclusions, WorkerExclusion{
+			Code: ExclusionCapacityExhausted,
+			Detail: fmt.Sprintf("worker %q has no free executor slot of %d",
+				worker.ID, snapshot.Allocatable.ExecutorSlots),
+		})
+	}
+	if demand.CPUUnits > 0 && snapshot.FreeCPUUnits() < demand.CPUUnits {
+		exclusions = append(exclusions, WorkerExclusion{
+			Code: ExclusionCapacityExhausted,
+			Detail: fmt.Sprintf("worker %q has %v free cpu units of %v allocatable, task requires %v",
+				worker.ID, snapshot.FreeCPUUnits(), snapshot.Allocatable.CPUUnits, demand.CPUUnits),
+		})
+	}
+	if demand.MemoryMB > 0 && snapshot.FreeMemoryMB() < demand.MemoryMB {
+		exclusions = append(exclusions, WorkerExclusion{
+			Code: ExclusionCapacityExhausted,
+			Detail: fmt.Sprintf("worker %q has %d MB free memory of %d allocatable, task requires %d MB",
+				worker.ID, snapshot.FreeMemoryMB(), snapshot.Allocatable.MemoryMB, demand.MemoryMB),
+		})
+	}
+	if demand.ScratchMB > 0 && snapshot.FreeScratchMB() < demand.ScratchMB {
+		exclusions = append(exclusions, WorkerExclusion{
+			Code: ExclusionCapacityExhausted,
+			Detail: fmt.Sprintf("worker %q has %d MB free scratch of %d allocatable, task requires %d MB",
+				worker.ID, snapshot.FreeScratchMB(), snapshot.Allocatable.ScratchMB, demand.ScratchMB),
+		})
+	}
+	return exclusions
 }
 
 func validateWorkerInventory(worker domain.WorkerInventory) error {
@@ -182,6 +325,15 @@ func validateWorkerInventory(worker domain.WorkerInventory) error {
 	if duplicate := firstDuplicate(providerIDs); duplicate != "" {
 		return fmt.Errorf("match workers: worker %q repeats provider %q", worker.ID, duplicate)
 	}
+	if err := worker.CPUClass.Validate(); err != nil {
+		return fmt.Errorf("match workers: worker %q %w", worker.ID, err)
+	}
+	if err := worker.Allocatable.Validate(); err != nil {
+		return fmt.Errorf("match workers: worker %q %w", worker.ID, err)
+	}
+	if err := worker.Pressure.Validate(); err != nil {
+		return fmt.Errorf("match workers: worker %q %w", worker.ID, err)
+	}
 	return nil
 }
 
@@ -191,6 +343,181 @@ func stringSet(values []string) map[string]struct{} {
 		result[value] = struct{}{}
 	}
 	return result
+}
+
+// PlacementSelection is one complete placement: the independent per-worker
+// evaluation, the preference ranking of the survivors, and the durable
+// explanation a placement trace is read from.
+type PlacementSelection struct {
+	Placement WorkerPlacement          `json:"placement"`
+	Decision  domain.PlacementDecision `json:"decision"`
+}
+
+// SelectWorker runs the three placement phases in order: hard-constraint
+// filtering through MatchWorkers, then preference scoring of the survivors,
+// then selection of the worker a reservation should be acquired on. It does
+// not acquire the reservation: capacity is committed by the executor registry
+// in the same transaction that commits the assignment, and the reservation ID
+// is recorded on the returned decision with WithReservation.
+//
+// A selection with no eligible worker is not an error. It returns a decision
+// that names every candidate and every rejection, so a queued task explains
+// itself from the same durable evidence a placed task does.
+func SelectWorker(request WorkerPlacementRequest, inventory []domain.WorkerInventory) (PlacementSelection, error) {
+	if err := request.Task.ResourceDemand.Validate(); err != nil {
+		return PlacementSelection{}, fmt.Errorf("select worker: %w", err)
+	}
+	placement, err := MatchWorkers(request, inventory)
+	if err != nil {
+		return PlacementSelection{}, err
+	}
+
+	workers := make(map[string]domain.WorkerInventory, len(inventory))
+	for _, worker := range inventory {
+		workers[worker.ID] = worker
+	}
+	decision := domain.PlacementDecision{
+		TaskID: request.Task.ID, Demand: request.Task.ResourceDemand, DecidedAt: request.Now,
+	}
+	weights := request.PreferenceWeights
+	if weights == nil {
+		weights = DefaultPreferenceWeights()
+	}
+	for _, evaluation := range placement.Evaluations {
+		worker := workers[evaluation.WorkerID]
+		decision.CandidateIDs = append(decision.CandidateIDs, evaluation.WorkerID)
+		snapshot := worker.CapacitySnapshot()
+		decision.Snapshots = append(decision.Snapshots, domain.CapacitySnapshotRef{
+			WorkerID:    snapshot.WorkerID,
+			WorkerEpoch: snapshot.WorkerEpoch,
+			Sequence:    snapshot.Sequence,
+			ObservedAt:  snapshot.ObservedAt,
+		})
+		for _, exclusion := range evaluation.Exclusions {
+			decision.Rejections = append(decision.Rejections, domain.PlacementRejection{
+				WorkerID: evaluation.WorkerID, Code: exclusion.Code, Detail: exclusion.Detail,
+			})
+		}
+		if !evaluation.Eligible {
+			continue
+		}
+		decision.Scores = append(decision.Scores, scoreWorker(request.Task, worker, weights))
+	}
+
+	for _, score := range decision.Scores {
+		if decision.SelectedWorkerID == "" {
+			decision.SelectedWorkerID = score.WorkerID
+			continue
+		}
+		best := scoreFor(decision.Scores, decision.SelectedWorkerID)
+		// Evaluations are ordered by worker ID, so keeping the incumbent on a
+		// tie selects the lowest ID and makes the choice reproducible.
+		if score.Total > best.Total {
+			decision.SelectedWorkerID = score.WorkerID
+		}
+	}
+	if err := decision.Validate(); err != nil {
+		return PlacementSelection{}, fmt.Errorf("select worker: %w", err)
+	}
+	return PlacementSelection{Placement: placement, Decision: decision}, nil
+}
+
+// WithReservation records the reservation and assignment a committed placement
+// acquired, completing the explanation: rejected constraints, preference
+// scores, the selected worker and the reservation are then all recoverable
+// from one durable record.
+func (s PlacementSelection) WithReservation(reservation domain.ResourceReservation) (domain.PlacementDecision, error) {
+	decision := s.Decision
+	if decision.SelectedWorkerID == "" {
+		return domain.PlacementDecision{}, fmt.Errorf("placement decision has no selected worker to reserve for")
+	}
+	if reservation.WorkerID != decision.SelectedWorkerID {
+		return domain.PlacementDecision{}, fmt.Errorf(
+			"reservation %q is on worker %q but placement selected %q",
+			reservation.ID, reservation.WorkerID, decision.SelectedWorkerID)
+	}
+	decision.ReservationID = reservation.ID
+	decision.AssignmentID = reservation.AssignmentID
+	decision.AttemptID = reservation.AttemptID
+	if err := decision.Validate(); err != nil {
+		return domain.PlacementDecision{}, err
+	}
+	return decision, nil
+}
+
+func scoreFor(scores []domain.PlacementScore, workerID string) domain.PlacementScore {
+	for _, score := range scores {
+		if score.WorkerID == workerID {
+			return score
+		}
+	}
+	return domain.PlacementScore{}
+}
+
+// scoreWorker ranks one surviving candidate. Every component is reported, with
+// its weight, so that a placement trace shows why one eligible worker beat
+// another rather than only which one won.
+func scoreWorker(task domain.Task, worker domain.WorkerInventory, weights map[string]float64) domain.PlacementScore {
+	values := map[string]float64{
+		PreferenceCPUClassFit:  cpuClassFit(task.ResourceDemand, worker.CPUClass),
+		PreferenceCPUHeadroom:  worker.Pressure.Headroom(),
+		PreferenceDataLocality: dataLocality(task, worker.ID),
+	}
+	score := domain.PlacementScore{WorkerID: worker.ID}
+	for _, name := range preferenceOrder {
+		component := domain.PlacementScoreComponent{
+			Name: name, Weight: weights[name], Value: values[name],
+		}
+		score.Components = append(score.Components, component)
+		score.Total += component.Weight * component.Value
+	}
+	return score
+}
+
+// cpuClassFit scores how well a worker's class matches what the task wants. A
+// worker at the target class scores 1 and each class above it loses a quarter,
+// so work that does not need high performance ranks a suitable lower-class
+// worker first and leaves high-class headroom for work that needs it.
+//
+// A task that declares no class at all targets the lowest class, which is the
+// same rule stated for the case where nothing was asked for. A worker below
+// the target still scores, because a preferred class is a preference: the
+// hard floor is min_cpu_class and it was applied before scoring.
+func cpuClassFit(demand domain.ResourceDemand, class domain.CPUClass) float64 {
+	if !class.Valid() {
+		return 0
+	}
+	target := demand.TargetCPUClass()
+	targetRank := domain.CPUClassLow.Rank()
+	if target.Valid() {
+		targetRank = target.Rank()
+	}
+	distance := class.Rank() - targetRank
+	if distance < 0 {
+		distance = -distance
+	}
+	fit := 1 - 0.25*float64(distance)
+	if fit < 0 {
+		return 0
+	}
+	return fit
+}
+
+// dataLocality is the share of the task's approved directory bindings that
+// already resolve to this worker. It is a preference only: a binding that must
+// pin placement does so through the resource binding itself, not through this
+// score.
+func dataLocality(task domain.Task, workerID string) float64 {
+	if len(task.DirectoryBindings) == 0 {
+		return 0
+	}
+	local := 0
+	for _, binding := range task.DirectoryBindings {
+		if binding.Identity.Registration.WorkerID == workerID {
+			local++
+		}
+	}
+	return float64(local) / float64(len(task.DirectoryBindings))
 }
 
 func firstDuplicate(values []string) string {

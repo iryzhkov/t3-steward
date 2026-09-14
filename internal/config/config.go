@@ -333,6 +333,72 @@ type V2Worker struct {
 	Capabilities  []string              `yaml:"capabilities"`
 	Providers     map[string]V2Provider `yaml:"providers"`
 	Credential    string                `yaml:"credential"`
+	// CPUClass is the operator-assigned performance class of this host:
+	// low, medium or high. It is a static capability floor and a user
+	// decision. It is never computed from a benchmark and never derived from
+	// live load, and it is separate from Executors, which is what may be
+	// reserved, and from the pressure a worker observes about itself.
+	CPUClass string `yaml:"cpu_class"`
+	// Executors is this worker's allocatable executor capacity.
+	Executors V2Executors `yaml:"executors"`
+}
+
+// V2Executors is the allocatable capacity of one worker's executor pool: how
+// many attempts may run at once and the sized resources those slots draw from.
+//
+// This limit is independent of V2QuotaPool.MaxConcurrent, which bounds
+// provider sessions. An attempt holds both before it starts, and neither is
+// derived from the other.
+type V2Executors struct {
+	Slots     int     `yaml:"slots"`
+	CPUUnits  float64 `yaml:"cpu_units"`
+	MemoryMB  int     `yaml:"memory_mb"`
+	ScratchMB int     `yaml:"scratch_mb"`
+}
+
+// CPU class values an operator may assign to a worker.
+const (
+	CPUClassLow    = "low"
+	CPUClassMedium = "medium"
+	CPUClassHigh   = "high"
+)
+
+// FleetWorkerProfile is the initial operator-assigned capacity profile of one
+// fleet host.
+type FleetWorkerProfile struct {
+	CPUClass  string
+	Executors V2Executors
+}
+
+// FleetWorkerProfiles is the initial fleet mapping: normandy low, homelab
+// medium, omarchy-pc high, with the concurrency each host is expected to
+// sustain.
+//
+// This mapping is a user decision that describes intended use, not a benchmark
+// result, and nothing in the steward may change it: raising or lowering a
+// class is an operator edit to the catalog. The slot counts are the
+// qualification floors (two concurrent light attempts on normandy, four mixed
+// on homelab, eight light plus build work on omarchy-pc). They are floors to
+// sustain rather than ceilings to enforce, so a deployment may configure more.
+func FleetWorkerProfiles() map[string]FleetWorkerProfile {
+	return map[string]FleetWorkerProfile{
+		"normandy":   {CPUClass: CPUClassLow, Executors: V2Executors{Slots: 2}},
+		"homelab":    {CPUClass: CPUClassMedium, Executors: V2Executors{Slots: 4}},
+		"omarchy-pc": {CPUClass: CPUClassHigh, Executors: V2Executors{Slots: 8}},
+	}
+}
+
+// ValidCPUClass reports whether a configured class is one of the three values.
+// An unset class is accepted here and reported by placement instead, so that a
+// worker without a declared class is excluded by a named reason rather than
+// silently treated as capable.
+func ValidCPUClass(class string) bool {
+	switch class {
+	case "", CPUClassLow, CPUClassMedium, CPUClassHigh:
+		return true
+	default:
+		return false
+	}
 }
 
 type V2Provider struct {

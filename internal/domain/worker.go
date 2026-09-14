@@ -39,11 +39,41 @@ type WorkerInventory struct {
 	Runtime         *WorkerRuntimeIdentity    `json:"runtime,omitempty"`
 	CatalogRevision string                    `json:"catalogRevision,omitempty"`
 	ID              string                    `json:"id"`
+	Epoch           string                    `json:"epoch,omitempty"`
+	Sequence        int64                     `json:"sequence,omitempty"`
 	AcceptBacklog   bool                      `json:"acceptBacklog"`
 	Health          WorkerHealth              `json:"health"`
 	Capabilities    []string                  `json:"capabilities,omitempty"`
 	Projects        []WorkerProjectInventory  `json:"projects,omitempty"`
 	Providers       []WorkerProviderInventory `json:"providers,omitempty"`
 	WebBaseURL      string                    `json:"webBaseUrl,omitempty"`
-	ObservedAt      time.Time                 `json:"observedAt"`
+
+	// CPUClass, Allocatable and Pressure are the three separate capacity
+	// facts, deliberately not merged into one number. CPUClass is the static
+	// operator-assigned capability floor, Allocatable is the configured total
+	// the scheduler may reserve, Reserved is what is already committed, and
+	// Pressure is the worker's live observation of itself. Pressure never
+	// raises Allocatable and never redefines CPUClass.
+	CPUClass    CPUClass            `json:"cpuClass,omitempty"`
+	Allocatable AllocatableCapacity `json:"allocatable,omitempty"`
+	Reserved    ReservedCapacity    `json:"reserved,omitempty"`
+	Pressure    CPUPressure         `json:"pressure,omitempty"`
+
+	ObservedAt time.Time `json:"observedAt"`
+}
+
+// CapacitySnapshot projects the three capacity facts this inventory carries
+// into the snapshot identity placement reserves against. The projection copies
+// facts; it never computes one fact from another.
+func (w WorkerInventory) CapacitySnapshot() WorkerCapacitySnapshot {
+	return WorkerCapacitySnapshot{
+		WorkerID:    w.ID,
+		WorkerEpoch: w.Epoch,
+		Sequence:    w.Sequence,
+		CPUClass:    w.CPUClass,
+		Allocatable: w.Allocatable,
+		Reserved:    w.Reserved,
+		Pressure:    w.Pressure,
+		ObservedAt:  w.ObservedAt,
+	}
 }
