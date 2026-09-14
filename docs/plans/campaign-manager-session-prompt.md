@@ -45,8 +45,8 @@ Deliver:
    artifact bindings;
 7. excellent concise help and checked-in single-lead and three-node examples;
 8. focused, full, race, vet and pinned-lint validation;
-9. exact-commit CI, the next release candidate, UpKeeper publication and one small cheap-route
-   three-node dogfood campaign.
+9. exact-commit CI, the next release candidate, UpKeeper publication and two small dogfood
+   projects: a single-lead coding campaign and a parallel three-node artifact-join campaign.
 
 Execution discipline
 --------------------
@@ -84,14 +84,28 @@ fleet convergence. Do not capture hand-built or unvalidated binaries.
 
 Dogfood
 -------
-After deployment, submit one small three-node campaign through the new campaign command. It must
-have a parallel-capable static DAG with an artifact join, use a cheap demonstrated route, create
-exactly one workflow run, and settle without duplicate work. Do not pin hosts just to manufacture
-multi-host placement. Rerun at most once after a steward-blocking fix, using a new idempotency key.
+After deployment, run two small projects through the new campaign command, each from a preserved
+campaign directory and with a distinct idempotency key:
 
-Record operator time, interventions, run/task/thread IDs, placement, artifacts, terminal states and
-provider usage. Stop after this bounded evidence gate. Do not add cron, webhook, OV/Pensieve,
-dynamic-DAG, checkpoint, model-routing, credential, retention or UI work.
+1. Single-lead coding project: a disposable small Git repository with one bounded defect or feature.
+   The one lead task must return a verified commit, test receipt and concise handoff.
+2. Parallel DAG artifact project: two independent non-mutating analysis nodes produce different
+   bounded artifacts; one join/qualification node declares both with inputs_from, verifies their
+   materialization and emits a combined result.
+
+Prefer gpt-5.6-sol for one project and claude-opus-5 for the other when both configured routes are
+healthy. Either approved route may substitute when quota or availability requires it. Record the
+actual route; do not treat this as a model-quality comparison.
+
+Let ordinary placement choose workers and do not pin hosts merely to manufacture distribution. Each
+submission must create exactly one workflow run and settle without duplicate work. Rerun each
+project at most once after a campaign-blocking steward fix, using a new idempotency key and preserving
+the first result.
+
+Record campaign directories/digests, operator time, interventions, run/task/thread IDs, routes,
+placement, artifacts, terminal states and provider usage separately for both projects. Stop after
+this bounded evidence gate. Do not add cron, webhook, OV/Pensieve, dynamic-DAG, checkpoint,
+model-routing, credential, retention or UI work.
 
 User decisions
 --------------

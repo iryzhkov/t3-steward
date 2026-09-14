@@ -322,20 +322,35 @@ reading source code; malformed input identifies the file and field or path.
 
 Gate: full build, unit, race, vet, pinned lint and exact-commit GitHub CI pass.
 
-### CM5 — Publish and bounded dogfood
+### CM5 — Publish and two bounded dogfood projects
 
 - Publish the next release candidate and deploy it through UpKeeper with an exact reviewed manifest
   diff.
-- Submit one small three-node campaign through the new command on a cheap demonstrated route.
-- Use two compatible workers if placement naturally selects them; do not hard-code hosts merely to
-  manufacture distribution.
-- Record operator commands, intervention, run IDs, task placement, artifacts, total provider usage
-  and any steward-attributable failure.
-- Fix only failures that block the campaign contract, then rerun once from a new idempotency key.
+- Run both projects from checked-in or durably retained campaign directories with distinct
+  idempotency keys:
+  1. **Single-lead coding project.** Use a disposable small Git repository with one bounded defect or
+     feature. Submit a one-lead-task campaign whose required outputs are a verified commit, test
+     receipt and concise handoff. This proves the ordinary “give steward a plan and leave” path
+     without requiring artifact fan-out.
+  2. **Parallel DAG artifact project.** Submit two independent, non-mutating analysis nodes followed
+     by one join/qualification node. Each parent emits a different bounded artifact; the child
+     declares both through `inputs_from`, verifies their materialization and emits one combined
+     result. This proves parallel readiness, dependency release and artifact passing.
+- Prefer one project on `gpt-5.6-sol` and the other on `claude-opus-5` when both configured routes
+  are healthy. Either approved route may substitute when quota or availability requires it. This is
+  campaign qualification, not a model-quality comparison.
+- Let normal placement choose among compatible workers. Do not hard-code hosts merely to manufacture
+  distribution.
+- Record operator commands, intervention, campaign directories and digests, run/task/thread IDs,
+  actual model routes, task placement, artifacts, terminal states, total provider usage and any
+  steward-attributable failure separately for each project.
+- Fix only failures that block the campaign contract. Rerun each project at most once, using a new
+  idempotency key and preserving the first result.
 
-Gate: one directory submission completes unattended with correct DAG/artifact settlement and less
-than ten minutes of operator work. Broader Huyang-scale batching, cron and webhook integration remain
-separate decisions.
+Gate: both directory submissions complete unattended: the single-lead project returns a verified
+commit and handoff, and the parallel project settles the exact three-node DAG and artifact join.
+Total operator work across both is less than fifteen minutes. Broader Huyang-scale batching, cron and
+webhook integration remain separate decisions.
 
 ## Parallel execution ownership
 
