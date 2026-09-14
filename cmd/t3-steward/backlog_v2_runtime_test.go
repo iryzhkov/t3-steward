@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -406,6 +407,37 @@ func TestRunBacklogV2CoordinatorAcceptsNativeArchiveSubmissionAndReplay(t *testi
 	}
 }
 
+// awaitScheduleDisable waits for one disable command to reach a terminal state
+// and reports whether it applied. A rejection for a stale revision is not a
+// failure: the schedule fired and moved its revision, which is the fence doing
+// its job, so the caller resubmits against the revision it now has.
+func awaitScheduleDisable(client backlogadmin.LocalClient, commandID string) (bool, error) {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		response, err := client.Query(context.Background(), backlogadmin.Query{
+			Version: backlogadmin.Version, Kind: backlogadmin.QueryCommands,
+		})
+		if err != nil {
+			return false, err
+		}
+		for _, command := range response.Commands {
+			if command.ID != commandID {
+				continue
+			}
+			switch command.State {
+			case domain.AdminCommandApplied:
+				return true, nil
+			case domain.AdminCommandRejected:
+				return false, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return false, fmt.Errorf("command %q never reached a terminal state", commandID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands(t *testing.T) {
 	cfg := config.Default()
 	setCoordinatorTestRoots(t, &cfg)
@@ -491,18 +523,51 @@ func TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands(t *testing.T
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	response, err := client.Mutate(context.Background(), backlogadmin.Mutation{
-		Version: backlogadmin.Version, ID: "disable-minute",
-		Kind: domain.AdminCommandDisable, ScheduleID: schedule.ID,
-		ExpectedRevision: schedules.Schedules[0].Schedule.Revision, Reason: "runtime lifecycle test",
-	})
-	if err != nil {
-		cancel()
-		t.Fatal(err)
-	}
-	if response.Command.State != domain.AdminCommandPending {
-		cancel()
-		t.Fatalf("initial command state = %q", response.Command.State)
+	// The schedule fires every minute, so its revision can move between reading
+	// it and the coordinator applying a command fenced on it. That fence is
+	// correct and the test must not race it: a rejection for a stale revision is
+	// the system working, so re-read and resubmit rather than failing. Each
+	// attempt needs its own command ID, because a command is identified by it.
+	var commandID string
+	deadline = time.Now().Add(30 * time.Second)
+	for attempt := 1; ; attempt++ {
+		current, err := client.Query(context.Background(), backlogadmin.Query{
+			Version: backlogadmin.Version, Kind: backlogadmin.QuerySchedules,
+		})
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		if len(current.Schedules) != 1 {
+			cancel()
+			t.Fatalf("schedules = %+v", current.Schedules)
+		}
+		commandID = fmt.Sprintf("disable-minute-%d", attempt)
+		response, err := client.Mutate(context.Background(), backlogadmin.Mutation{
+			Version: backlogadmin.Version, ID: commandID,
+			Kind: domain.AdminCommandDisable, ScheduleID: schedule.ID,
+			ExpectedRevision: current.Schedules[0].Schedule.Revision, Reason: "runtime lifecycle test",
+		})
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		if response.Command.State != domain.AdminCommandPending {
+			cancel()
+			t.Fatalf("initial command state = %q", response.Command.State)
+		}
+		applied, err := awaitScheduleDisable(client, commandID)
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		if applied {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("disable never applied; the schedule revision kept moving")
+		}
 	}
 
 	reader, err := sqlite.Open(cfg.StatePath)
@@ -518,9 +583,13 @@ func TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands(t *testing.T
 			cancel()
 			t.Fatal(err)
 		}
-		if len(records.Triggers) >= 1 &&
-			len(records.AdminCommands) == 1 &&
-			records.AdminCommands[0].State == domain.AdminCommandApplied &&
+		applied := false
+		for _, command := range records.AdminCommands {
+			if command.ID == commandID && command.State == domain.AdminCommandApplied {
+				applied = true
+			}
+		}
+		if len(records.Triggers) >= 1 && applied &&
 			len(records.Schedules) == 1 && !records.Schedules[0].Enabled {
 			if len(records.Assignments) != 0 {
 				cancel()
