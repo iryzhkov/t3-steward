@@ -91,7 +91,11 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	for _, object := range manifest.Objects {
 		artifact, err := resultArtifact(object, manifest, attempt, task, manifest.CreatedAt)
 		if err != nil {
-			return report, err
+			// A result whose objects violate the contract will violate it on every
+			// retry, so returning a plain error made the worker's whole
+			// reconciliation pass fail forever and took unrelated results on that
+			// worker down with it.
+			return report, fmt.Errorf("%w: %w", ErrResultImportRejected, err)
 		}
 		artifacts = append(artifacts, artifact)
 		if artifact.Kind == domain.ArtifactOutput {
@@ -211,6 +215,15 @@ func resultImportBinding(records sqlite.CoordinatorRecords, manifest workerproto
 	}
 	return assignment, attempt, task, nil
 }
+
+// ErrResultImportRejected marks a result that can never be imported, because its
+// contents violate the import contract rather than arriving at a bad moment.
+//
+// It exists so that such a result is discarded once instead of retried forever.
+// One malformed result must not stop unrelated work: the coordinator reconciles
+// a worker in a single pass, so an error that aborts the pass blocks every other
+// result that worker is holding.
+var ErrResultImportRejected = errors.New("result import rejected")
 
 func resultArtifact(object workerproto.ArtifactObject, manifest workerproto.ArtifactTransferManifest, attempt domain.Attempt, task domain.Task, now time.Time) (domain.Artifact, error) {
 	if err := workerproto.ValidateArtifactObject(object, object.Size+1); err != nil {

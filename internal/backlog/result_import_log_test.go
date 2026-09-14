@@ -1,6 +1,8 @@
 package backlog
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +10,32 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
+
+// A result whose objects violate the contract can never import, so it must be
+// rejected in a way the caller can recognise and discard. The coordinator
+// reconciles a worker in one pass, so an ordinary error aborts that pass and
+// every other result the worker holds goes with it: one malformed result stalled
+// an entire host until it was cancelled by hand.
+func TestImportResultRejectsAnUnimportableObjectDistinguishably(t *testing.T) {
+	attempt := domain.Attempt{ID: "attempt-1", WorkflowRunID: "run-1"}
+	task := domain.Task{ID: "task-1"}
+	manifest := workerproto.ArtifactTransferManifest{WorkerID: "homelab"}
+	object := workerproto.ArtifactObject{
+		ID: "artifact-generic", Path: "results/preflight/state.log", Kind: string(domain.ArtifactLog),
+		MediaType: "text/plain; charset=utf-8", Size: 12, SHA256: strings.Repeat("a", 64),
+	}
+	_, err := resultArtifact(object, manifest, attempt, task, time.Now())
+	if err == nil {
+		t.Fatal("an artifact with no recognised log identity was accepted")
+	}
+	wrapped := fmt.Errorf("%w: %w", ErrResultImportRejected, err)
+	if !errors.Is(wrapped, ErrResultImportRejected) {
+		t.Fatal("a rejected result is not recognisable as rejected")
+	}
+	if errors.Is(wrapped, ErrResultImportSuperseded) {
+		t.Fatal("a rejected result must not look superseded; the two are discarded for different reasons")
+	}
+}
 
 // A log artifact is either the thread archive or preflight evidence. Preflight
 // runs before the provider session exists, so it can never be the thread
