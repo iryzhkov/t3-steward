@@ -20,7 +20,7 @@ import (
 type ArtifactCatalog interface {
 	CommitArtifactPublication(context.Context, domain.ArtifactPublication) (domain.Artifact, error)
 	LoadArtifacts(context.Context, []string) ([]domain.Artifact, error)
-	PruneArtifacts(context.Context, time.Time, []string) ([]domain.Artifact, error)
+	PruneArtifacts(context.Context, time.Time, []string) ([]domain.Artifact, []domain.ArtifactRetentionSkip, error)
 	ArtifactStoragePathReferenced(context.Context, string) (bool, error)
 }
 
@@ -212,19 +212,29 @@ func (s CoordinatorArtifactStore) FetchDependencies(
 }
 
 // Prune applies retention to metadata first, then removes blobs no retained
-// artifact references. A crash can leave an unreferenced blob, never dangling metadata.
-func (s CoordinatorArtifactStore) Prune(ctx context.Context, before time.Time, protectedRunIDs []string) ([]domain.Artifact, error) {
+// artifact references. A crash can leave an unreferenced blob, never dangling
+// metadata.
+//
+// It also reports the runs retention left alone and why. A pinned run is not a
+// failure of the pass: something still refers to it, the pass prunes everything
+// else, and the caller can say which run is holding what rather than seeing a
+// pass that pruned nothing.
+func (s CoordinatorArtifactStore) Prune(
+	ctx context.Context,
+	before time.Time,
+	protectedRunIDs []string,
+) ([]domain.Artifact, []domain.ArtifactRetentionSkip, error) {
 	if s.Catalog == nil {
-		return nil, errors.New("prune artifacts: catalog is required")
+		return nil, nil, errors.New("prune artifacts: catalog is required")
 	}
-	expired, err := s.Catalog.PruneArtifacts(ctx, before, protectedRunIDs)
+	expired, skipped, err := s.Catalog.PruneArtifacts(ctx, before, protectedRunIDs)
 	if err != nil {
-		return nil, fmt.Errorf("prune artifacts: %w", err)
+		return nil, skipped, fmt.Errorf("prune artifacts: %w", err)
 	}
 	for _, artifact := range expired {
 		referenced, err := s.Catalog.ArtifactStoragePathReferenced(ctx, artifact.StoragePath)
 		if err != nil {
-			return expired, fmt.Errorf("prune artifacts: check blob %q: %w", artifact.StoragePath, err)
+			return expired, skipped, fmt.Errorf("prune artifacts: check blob %q: %w", artifact.StoragePath, err)
 		}
 		if referenced {
 			continue
@@ -234,13 +244,13 @@ func (s CoordinatorArtifactStore) Prune(ctx context.Context, before time.Time, p
 			continue
 		}
 		if err != nil {
-			return expired, fmt.Errorf("prune artifacts: resolve blob %q: %w", artifact.StoragePath, err)
+			return expired, skipped, fmt.Errorf("prune artifacts: resolve blob %q: %w", artifact.StoragePath, err)
 		}
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return expired, fmt.Errorf("prune artifacts: remove blob %q: %w", artifact.StoragePath, err)
+			return expired, skipped, fmt.Errorf("prune artifacts: remove blob %q: %w", artifact.StoragePath, err)
 		}
 	}
-	return expired, nil
+	return expired, skipped, nil
 }
 
 func validatePublicationArtifact(artifact domain.Artifact) error {

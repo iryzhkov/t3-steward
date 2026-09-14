@@ -278,6 +278,26 @@ list does not name. The statement carries an explicit flag, so a coordinator
 that says nothing is not read as "release everything", and it is refused whole
 rather than applied in part.
 
+**Known limitation: nothing prunes coordinator artifacts yet.** Artifact
+retention exists as a function and is what campaign refs now follow, but no
+production path calls it: there is no scheduled retention pass, and no
+configured retention window. Campaign refs therefore persist for as long as
+their provenance records do, which today is indefinitely. What has changed is
+that they are no longer a separate store with a lifetime of their own — on the
+coordinator and on every worker they are released the moment the records they
+name are gone — so the bound arrives with a retention pass and needs no further
+work on the campaign side.
+
+Choosing a retention window is a policy decision about your data, which is why
+it is not shipped with a default. Whoever configures one must account for pinned
+runs: a rerun, a node wait, a cross-run edge and a clone each hold their source
+run against retention, and a pass reports those runs as skipped, with the owners
+holding them, instead of pruning them. A skipped run is not a failed pass; the
+rest of the fleet is pruned normally, and the run becomes prunable when the last
+thing referring to it is gone. Note also that a rerun's carried inputs keep the
+creation time of the artifacts they reference, so a window chosen by age alone
+will treat them as old on the new run's first pass.
+
 ### Legacy intake quarantine
 
 The drop directory is read-only to the coordinator: the coordinator re-reads it

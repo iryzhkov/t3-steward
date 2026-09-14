@@ -86,6 +86,34 @@ it resolves for waits, through the canonical thread identity rather than a provi
 ID. No SSH helper, no direct SQLite reading, and no requirement that the submitting agent already
 know its own thread ID.
 
+## Known limitation: the commit's lifetime is the record's, and nothing prunes yet
+
+Amendment, 2026-09-14, after implementation. "For the declared campaign
+lifetime" is implemented as the lifetime of the provenance record that names the
+commit: while the record is retained the commit must resolve, and when retention
+removes the record the ref is released, on the coordinator and on every worker.
+Settlement is deliberately not the boundary. A rerun may only be created from a
+run that has already finished, so releasing at settlement released exactly the
+commits a rerun was about to carry; tying the release to the record instead
+makes a rerun hold its source with the retention pin it already takes, and needs
+no republication and no special case.
+
+The limitation this leaves is that no production path prunes coordinator
+artifacts. The function exists and is the boundary, but nothing schedules it and
+no retention window is configured, so in a deployed fleet the records — and the
+commits — persist indefinitely. This ADR should not be read as delivering a
+bound today. What it delivers is that campaign commits are not a separate
+unbounded store with a lifetime of their own: they follow artifact retention
+automatically, so the bound arrives with a retention pass and requires no
+further work here.
+
+A retention window is not chosen here on purpose. It is a policy decision about
+an operator's data, and artifact retention policy is out of scope below;
+shipping an invented default under cover of this work would be setting that
+policy without saying so. Whoever configures a pass must account for pinned
+runs: a pass reports a pinned run as skipped, with the owners holding it, and
+prunes the rest rather than failing whole.
+
 ## Explicitly not in this work
 
 No retry-policy redesign, no artifact retention policy change beyond keeping a declared campaign
