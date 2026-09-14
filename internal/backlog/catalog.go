@@ -90,6 +90,14 @@ func NewProjectCatalog(projects []ProjectDefinition, profiles []SetupProfile) (*
 	return catalog, nil
 }
 
+// ValidateRepositorySyntax and ValidateRefSyntax expose the catalog's own
+// repository and ref rules so that a live readiness check applies exactly the
+// syntax the catalog applies, rather than a second, weaker copy of it.
+func ValidateRepositorySyntax(repository string) error { return validateGitRepository(repository) }
+
+// ValidateRefSyntax reports whether ref is a safe Git ref.
+func ValidateRefSyntax(ref string) error { return validateGitRef(ref) }
+
 // Resolve constructs the immutable environment for a workflow task. It applies
 // the catalog default ref only when the workflow did not request one explicitly.
 func (c *ProjectCatalog) Resolve(workflow domain.Workflow, task domain.Task) (ResolvedEnvironment, error) {

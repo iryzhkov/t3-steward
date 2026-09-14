@@ -53,9 +53,18 @@ type ResolvedProviderRoute struct {
 // ResolveProviderRoutePools uses the planner's canonical provider inventory and
 // fleet-pool mapping rules without requiring route estimates.
 func ResolveProviderRoutePools(task domain.Task, attempt domain.Attempt, workers []domain.WorkerInventory, pools []domain.QuotaPool) ([]ResolvedProviderRoute, error) {
+	resolved, _, err := ExplainProviderRoutePools(task, attempt, workers, pools)
+	return resolved, err
+}
+
+// ExplainProviderRoutePools is ResolveProviderRoutePools with the router's own
+// blockers preserved. A caller that must say why no route resolved reads them
+// from here rather than re-deriving the reason from the inventory, which would
+// be a second copy of the routing rules and would drift from this one.
+func ExplainProviderRoutePools(task domain.Task, attempt domain.Attempt, workers []domain.WorkerInventory, pools []domain.QuotaPool) ([]ResolvedProviderRoute, []PlanningBlocker, error) {
 	router, err := newProviderRouter(PlanInput{Workers: workers, QuotaPools: pools})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	workerIDs := make([]string, 0, len(workers))
 	for _, worker := range workers {
@@ -63,12 +72,15 @@ func ResolveProviderRoutePools(task domain.Task, attempt domain.Attempt, workers
 	}
 	sort.Strings(workerIDs)
 	var resolved []ResolvedProviderRoute
+	var blockers []PlanningBlocker
 	for _, candidate := range router.Candidates(task, attempt, workerIDs) {
 		usable := true
 		for _, blocker := range candidate.blockers {
 			if blocker.Code != PlanningBlockerRouteEstimateMissing && blocker.Code != PlanningBlockerPoolConcurrency {
 				usable = false
-				break
+			}
+			if blocker.Code != PlanningBlockerRouteEstimateMissing {
+				blockers = append(blockers, blocker)
 			}
 		}
 		if usable && candidate.candidate.Route != nil {
@@ -77,7 +89,7 @@ func ResolveProviderRoutePools(task domain.Task, attempt domain.Attempt, workers
 			})
 		}
 	}
-	return resolved, nil
+	return resolved, blockers, nil
 }
 
 func newProviderRouter(input PlanInput) (*providerRouter, error) {

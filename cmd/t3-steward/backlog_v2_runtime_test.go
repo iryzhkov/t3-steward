@@ -56,7 +56,7 @@ func setCoordinatorTestRoots(t *testing.T, cfg *config.Config) string {
 	}
 	cfg.BacklogV2.Projects = map[string]config.V2Project{
 		"steward": {
-			Repository: "test", DefaultRef: "main", T3Project: "t3-steward development",
+			Repository: "https://example.invalid/steward.git", DefaultRef: "main", T3Project: "t3-steward development",
 			Workers: []string{"normandy"},
 		},
 	}
@@ -236,7 +236,10 @@ func TestRunBacklogV2CoordinatorIngestsLegacyDropWithoutDispatch(t *testing.T) {
 	cfg.BacklogV2.Coordinator.ID = "normandy"
 	cfg.BacklogV2.StartupAdmission = "closed"
 	cfg.BacklogV2.Projects = map[string]config.V2Project{
-		"steward": {T3Project: "t3-steward development"},
+		"steward": {
+			Repository: "https://example.invalid/steward.git", DefaultRef: "main",
+			T3Project: "t3-steward development",
+		},
 	}
 	raw := "---\nproject: t3-steward development\ntitle: compatibility\nimportance: 5\ndifficulty: 5\nmax_turns: 3\ngate: false\n---\nlegacy prompt\n"
 	if err := os.WriteFile(filepath.Join(cfg.Backlog.Dir, "legacy.md"), []byte(raw), 0o600); err != nil {

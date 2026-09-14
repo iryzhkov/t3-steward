@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 type ProcessRequest struct {
@@ -17,11 +18,66 @@ type ProcessRequest struct {
 	Program string
 	Args    []string
 	Log     io.Writer
+	// MaxOutputBytes bounds the combined standard output and standard error
+	// while they are being accumulated, rather than after the process has
+	// finished. A command that writes far more than the caller will ever keep
+	// is otherwise buffered in full first and truncated afterwards, which turns
+	// a chatty remote into a memory hazard. Zero means unbounded, which is what
+	// every caller that does not care still gets.
+	MaxOutputBytes int
 }
 
 type ProcessResult struct {
 	ExitCode int
 	Output   string
+	// Truncated reports that the process wrote more than MaxOutputBytes and the
+	// remainder was discarded as it arrived. Output is never silently dropped.
+	Truncated bool
+}
+
+// boundedBuffer accumulates at most limit bytes and discards the rest as it
+// arrives. It always reports a successful write, because refusing one would
+// make the child process fail on a broken pipe when the only thing that went
+// wrong is that the caller has seen enough.
+type boundedBuffer struct {
+	builder   strings.Builder
+	limit     int
+	truncated bool
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 {
+		return b.builder.Write(p)
+	}
+	// The reported count is always the whole slice. Reporting the retained
+	// count instead would be a short write, and the child process would die of
+	// a pipe error for no reason other than that the caller has seen enough.
+	offered := len(p)
+	room := b.limit - b.builder.Len()
+	if room <= 0 {
+		b.truncated = true
+		return offered, nil
+	}
+	if len(p) > room {
+		b.truncated = true
+		p = p[:room]
+	}
+	if _, err := b.builder.Write(p); err != nil {
+		return 0, err
+	}
+	return offered, nil
+}
+
+// String returns the accumulated bytes without splitting a trailing rune.
+func (b *boundedBuffer) String() string {
+	value := b.builder.String()
+	if !b.truncated {
+		return value
+	}
+	for len(value) > 0 && !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 type ProcessExitError struct {
@@ -73,7 +129,7 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 	args = append(args, request.Args...)
 	fmt.Fprintf(log, "$ %s %s\n", r.systemdRun(), strings.Join(args, " "))
 
-	var output strings.Builder
+	output := boundedBuffer{limit: request.MaxOutputBytes}
 	command := exec.Command(r.systemdRun(), args...)
 	command.Stdout = &output
 	command.Stderr = &output
@@ -89,7 +145,7 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 	select {
 	case err := <-waited:
 		_, _ = io.WriteString(log, output.String())
-		result := ProcessResult{Output: output.String()}
+		result := ProcessResult{Output: output.String(), Truncated: output.truncated}
 		if err == nil {
 			return result, nil
 		}
@@ -106,9 +162,9 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 		<-waited
 		_, _ = io.WriteString(log, output.String())
 		if killErr != nil {
-			return ProcessResult{Output: output.String()}, errors.Join(ctx.Err(), fmt.Errorf("kill process scope %s: %w", unit, killErr))
+			return ProcessResult{Output: output.String(), Truncated: output.truncated}, errors.Join(ctx.Err(), fmt.Errorf("kill process scope %s: %w", unit, killErr))
 		}
-		return ProcessResult{Output: output.String()}, ctx.Err()
+		return ProcessResult{Output: output.String(), Truncated: output.truncated}, ctx.Err()
 	}
 }
 
@@ -148,6 +204,9 @@ func validateProcessRequest(request ProcessRequest) error {
 	}
 	if strings.TrimSpace(request.Program) != request.Program || request.Program == "" {
 		return errors.New("process program must be nonempty and trimmed")
+	}
+	if request.MaxOutputBytes < 0 {
+		return errors.New("process output bound cannot be negative")
 	}
 	return nil
 }

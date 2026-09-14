@@ -73,7 +73,29 @@ func campaignTestCLI(t *testing.T, out io.Writer) campaignCLI {
 			t.Fatalf("an authoring command called the coordinator admin path with %v", args)
 			return nil
 		},
+		viability: func(context.Context, backlogadmin.ViabilityRequest) (backlogadmin.ViabilityMatrix, error) {
+			t.Fatal("an authoring command asked the coordinator whether the campaign could run")
+			return backlogadmin.ViabilityMatrix{}, nil
+		},
 	}
+}
+
+// campaignReadyMatrix is what a coordinator answers for a campaign every task
+// of which has a viable candidate now.
+func campaignReadyMatrix(request backlogadmin.ViabilityRequest) backlogadmin.ViabilityMatrix {
+	matrix := backlogadmin.ViabilityMatrix{
+		SchemaVersion: backlogadmin.ViabilityMatrixSchemaVersion,
+		Outcome:       backlogadmin.ViabilityReady,
+	}
+	for _, task := range request.Tasks {
+		matrix.Tasks = append(matrix.Tasks, backlogadmin.ViabilityTaskResult{
+			Task: task.Name, Outcome: backlogadmin.ViabilityReady,
+			Candidates: []backlogadmin.ViabilityCandidate{{
+				Worker: "homelab", Outcome: backlogadmin.ViabilityReady,
+			}},
+		})
+	}
+	return matrix
 }
 
 func TestCampaignArgumentParsing(t *testing.T) {
@@ -310,6 +332,7 @@ func TestCampaignSubmitSendsThePackedArchive(t *testing.T) {
 	}
 	fake := &fakeSubmissionService{}
 	var out bytes.Buffer
+	var checked int
 	cli := campaignCLI{
 		limits:      campaignTestLimits,
 		stdout:      &out,
@@ -318,9 +341,16 @@ func TestCampaignSubmitSendsThePackedArchive(t *testing.T) {
 			t.Fatalf("submit called the admin path with %v", args)
 			return nil
 		},
+		viability: func(_ context.Context, request backlogadmin.ViabilityRequest) (backlogadmin.ViabilityMatrix, error) {
+			checked++
+			return campaignReadyMatrix(request), nil
+		},
 	}
 	if err := cli.run(context.Background(), []string{"submit", root, "--idempotency-key", "campaign-1"}); err != nil {
 		t.Fatal(err)
+	}
+	if checked != 1 {
+		t.Fatalf("submit ran the readiness check %d times, want 1", checked)
 	}
 	if fake.request.IdempotencyKey != "campaign-1" {
 		t.Fatalf("request = %+v", fake.request)
@@ -453,8 +483,11 @@ func TestCampaignHelpTopicsComeFromTheProjection(t *testing.T) {
 // the digest together with the text.
 func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// Updated when the campaign help gained the short transport note that says
-	// which coordinator a submission reaches and what its exit codes mean.
-	const wantDigest = "7a2065a80e17193720c952a004c2a0475ad5b7102336634cf6ab962bfd3e3d31"
+	// which coordinator a submission reaches and what its exit codes mean, and
+	// again when it gained the check verb, the three readiness outcomes, the
+	// permanent and temporary failure lists, the recovery commands, the
+	// required configuration and a complete copyable example.
+	const wantDigest = "306745b9b6aabafffeb105966efad92c1dd8ecd37f70bd2486a47b8a5a637b5a"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)

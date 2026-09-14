@@ -115,13 +115,18 @@ func (s coordinatorLocalService) OpenArtifact(
 
 func (s coordinatorLocalService) SubmitArchive(
 	ctx context.Context,
-	_ backlogadmin.Principal,
+	principal backlogadmin.Principal,
 	request backlogadmin.LocalSubmissionRequest,
 	archive io.Reader,
 ) (backlogadmin.LocalSubmissionResponse, error) {
 	result, err := s.submissions.SubmitArchive(ctx, backlog.ArchiveSubmission{
 		IdempotencyKey: request.IdempotencyKey,
 		Archive:        archive,
+		// The principal is the one this carrier authenticated, never the one
+		// the request claimed.
+		Principal:        principal.ID,
+		Unverified:       request.Unverified,
+		UnverifiedReason: request.UnverifiedReason,
 	})
 	if err != nil {
 		return backlogadmin.LocalSubmissionResponse{}, err
@@ -444,12 +449,31 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	for name, project := range cfg.BacklogV2.Projects {
 		directoryCatalogs[name] = directoryresource.CloneBindings(project.DirectoryResources)
 	}
+	fleetProjects, fleetProfiles := workerruntime.BuildFleetDefinitions(cfg.BacklogV2)
+	service.SetViability(backlogadmin.ViabilitySettings{
+		Projects:       fleetProjects,
+		SetupProfiles:  fleetProfiles,
+		MaxBundleBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
+		MaxBundleFiles: cfg.BacklogV2.MessageLimits.MaxFiles,
+	})
 	submissions := &backlog.SubmissionService{
 		DirectoryCatalogs: directoryCatalogs,
 		StorageRoot:       cfg.BacklogV2.Storage.Bundles,
 		Store:             store,
 		MaxBytes:          cfg.BacklogV2.MessageLimits.MaxBytes,
 		MaxFiles:          cfg.BacklogV2.MessageLimits.MaxFiles,
+		// The permanent part of the readiness check is repeated here, so a
+		// client that skipped it, or a fleet that changed after the client
+		// checked, still cannot create an impossible run.
+		Permanent: coordinatorPermanentValidator{admin: service},
+		Audit: func(_ context.Context, audit backlog.SubmissionAudit) {
+			if !audit.Unverified {
+				return
+			}
+			logger.Warn("campaign submitted without a client-side readiness check",
+				"key", audit.Key, "digest", audit.Digest,
+				"principal", audit.Principal, "reason", audit.UnverifiedReason)
+		},
 	}
 	service.SetWorkerEnrollmentHandler(coordinatorEnrollmentHandler(cfg.BacklogV2, store, epoch, artifactStore))
 	scheduleDefinitions := &backlog.ScheduleDefinitionService{Store: store}

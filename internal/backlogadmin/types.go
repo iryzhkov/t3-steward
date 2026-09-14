@@ -29,6 +29,10 @@ const (
 	QueryLocks        QueryKind = "locks"
 	QueryCommands     QueryKind = "commands"
 	QueryRecovery     QueryKind = "recovery"
+	// QueryViability asks whether a projected campaign could run. It is
+	// read-only and live: it consults the fleet as it is now and creates
+	// nothing.
+	QueryViability QueryKind = "viability"
 )
 
 type Principal struct {
@@ -55,6 +59,10 @@ type Query struct {
 	ArtifactID    string    `json:"artifactId,omitempty"`
 	CommandID     string    `json:"commandId,omitempty"`
 	Filter        Filter    `json:"filter,omitempty"`
+	// Viability carries the projected requirements of a campaign that has not
+	// been submitted. It is present only on a QueryViability query, and it
+	// never carries the bundle.
+	Viability *ViabilityRequest `json:"viability,omitempty"`
 }
 
 type Action struct {
@@ -102,6 +110,7 @@ type Response struct {
 	Reservations  []Reservation     `json:"reservations,omitempty"`
 	ResourceLocks []ResourceLock    `json:"resourceLocks,omitempty"`
 	Commands      []Command         `json:"commands,omitempty"`
+	Viability     *ViabilityMatrix  `json:"viability,omitempty"`
 }
 
 type Status struct {
