@@ -11,8 +11,15 @@ The ADRs are the reasoning: `adr-h1-coordinator-admin-transport.md`,
 
 ## H1 transport (owner: A)
 
+Correction, 2026-09-14: the sketch below was written from a reconnaissance summary and names
+several types that do not exist (`Action`, `ArtifactRequest`, `ArtifactStream`,
+`ScheduleDefinitionRequest`, `NodeWaitRequest`, `AmendmentRequest`, `WorkerEnrollmentRequest`),
+with return types that contradict the real methods. The binding rule is the prose, not the
+sketch: the interface is the union of the existing client methods with their signatures preserved
+verbatim, so that `LocalClient` satisfies it unchanged and no caller is rewritten.
+
 ```go
-// package backlogadmin
+// package backlogadmin, illustrative grouping only; real signatures win
 type CoordinatorAdminTransport interface {
     Query(ctx context.Context, request Query) (Response, error)
     Mutate(ctx context.Context, action Action) (Response, error)
@@ -75,6 +82,12 @@ An explicit `backlog_v2.coordinator_client` block in `config.yaml` is an operato
 wins; the file is used when the block is absent. This exists because a single key written into
 `config.yaml` would give that file two authors, which is the drift the fleet-configuration
 component exists to remove.
+
+The client bootstrap document is canonical JSON with the closed field set `schema_version`,
+`coordinator_id`, `address`, `connection`, `remote_command`, `credential_ref`, `request_timeout`,
+`message_limits`. `message_limits` uses t3-steward's own vocabulary, `max_bytes` (default
+4194304), `max_files` (default 1000) and `max_artifact_bytes` (default 1073741824), because the
+document is consumed as `V2MessageLimits`. Absent means the defaults, never unbounded.
 
 Remote principal role is `remote-admin`; the local peer-UID role stays `local-admin`. The server
 overwrites any claimed principal on both carriers.
