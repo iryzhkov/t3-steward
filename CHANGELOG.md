@@ -15,6 +15,16 @@ All notable changes to this project are documented here. The format follows
   record naming the producing task, the base commit, the repository and the ref.
   The successor resolves the commit through that reference instead of finding it
   in a shared cache that the next `git remote update --prune` may empty.
+  `campaign plan` reports the declarations in its text, JSON and DOT renderings,
+  and `campaign help commits` carries the field's contract.
+
+- `t3-steward backlog quarantine [--json]` lists the intake submissions the
+  coordinator refused permanently: the key, the digest the marker was recorded
+  for, when it was quarantined, the reason, and the fact that changed content is
+  tried again. The quarantine audit event names no workflow run, so the
+  run-scoped `backlog events <run>` view could not show it and the single log
+  line was the only report. The view is read-only and, like every other read,
+  works from a non-coordinator host.
 
 ### Fixed
 
@@ -30,6 +40,12 @@ All notable changes to this project are documented here. The format follows
   durable report instead of producing the same coordinator error on every
   cycle for as long as the coordinator runs. The marker records the digest of
   the file it refused, so changed content is attempted, and reported, again.
+
+- The campaign refs of a finished run are released, so declared commits stop
+  being pinned once the run's sink has settled. Nothing called the release
+  before, and the store grew without bound. A settled run is held back while
+  another run that has not settled carries one of its artifacts, which is how a
+  rerun consumes an ancestor's declared commit.
 
 ## [0.11.0-rc.48] - 2026-09-14
 
