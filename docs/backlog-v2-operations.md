@@ -414,27 +414,55 @@ references (`secretref:f02-protocol/...`) are refused in each other's place.
 
 The operator installs the `authorized_keys` entries. They are documented here and
 never generated: writing another account's `authorized_keys` is an operator
-decision. Each line pins one operation, because the operation word is an argument
-of the forced command and OpenSSH matches the first line that carries the
-presented key. Use one key per operation and grant only the operations that
-client needs; a read-only client needs `query` and `artifact` alone.
+decision.
+
+Install one line per client. The forced command names no operation, and the
+coordinator takes the operation from the signed request frame:
 
 ```text
-restrict,command="/home/igor/.local/bin/t3-steward --config /home/igor/.config/t3-steward/config.yaml coordinator-exchange query" ssh-ed25519 AAAA... omarchy-pc-admin-query
-restrict,command="/home/igor/.local/bin/t3-steward --config /home/igor/.config/t3-steward/config.yaml coordinator-exchange submission" ssh-ed25519 AAAA... omarchy-pc-admin-submission
+restrict,command="/home/igor/.local/bin/t3-steward coordinator-exchange --config /home/igor/.config/t3-steward/config.yaml" ssh-ed25519 AAAA... omarchy-pc-admin
 ```
 
-The remaining operations follow the same shape: `mutation`, `artifact`,
-`schedule-definition`, `unknown-recovery`, `node-wait` and `graph-amendment`.
-Do not install a `worker-enrollment` line: the `remote-admin` role is refused
-that operation, because enrollment rewrites the coordinator's own identity and
-epoch, and it must be run on the coordinator host.
+The flag follows the command word. Global flags are parsed after the command, so
+a line written as `t3-steward --config PATH coordinator-exchange` exits with
+`unknown command "--config"` and the client sees an unusable endpoint.
+
+One line per client is what an ordinary agent workflow needs. `campaign submit`
+performs two operations, the readiness query it runs first and the submission
+itself, and a coordinator client declares one ssh destination and one identity,
+so it presents the same key for both. A line that pinned an operation would
+confine that client to one of them.
+
+The operation is authenticated either way. It travels inside the signed frame,
+covered by the payload digest, so the coordinator reads it from evidence the
+client's own credential vouched for rather than from a word on a command line.
+What authority the client then has is decided by the `remote-admin` role, which
+refuses worker enrollment and any command kind outside its allowlist, on this
+carrier and on the local one alike.
+
+To narrow a key further, pin the operation as the last word. The key then serves
+that operation only and the coordinator refuses a frame naming another:
+
+```text
+restrict,command="/home/igor/.local/bin/t3-steward coordinator-exchange --config /home/igor/.config/t3-steward/config.yaml query" ssh-ed25519 AAAA... monitor-admin-query
+```
+
+This is the tighter arrangement for a client with one job, such as a monitor that
+only ever reads. A client that needs several operations needs one key and one
+`~/.ssh/config` alias per operation, and its `address` can name only one of them,
+so pin an operation only when the client genuinely performs exactly that one.
+
+The operations are `query`, `mutation`, `artifact`, `submission`,
+`schedule-definition`, `unknown-recovery`, `node-wait`, `graph-amendment` and
+`worker-enrollment`. Pinning `worker-enrollment` achieves nothing: the
+`remote-admin` role is refused that operation whatever the key allows, because
+enrollment binds a worker to the coordinator's own identity and epoch and stays
+an operator action performed on the coordinator itself.
 
 `restrict` disables port forwarding, agent forwarding, PTY allocation and X11.
 The `--config` path in the command is the operator's choice and is what supplies
 the coordinator identity and the accepted clients; the command never reads
-`SSH_ORIGINAL_COMMAND`. When the client selects a key per operation, point
-`address` at a `~/.ssh/config` host alias that names the right `IdentityFile`.
+`SSH_ORIGINAL_COMMAND`.
 
 Check the result before submitting anything:
 
