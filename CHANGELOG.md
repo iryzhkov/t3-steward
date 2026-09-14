@@ -6,6 +6,44 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.36] - 2026-09-14
+
+### Added
+
+- Workflow manifests declare resource demand and preflight steps. Resource
+  demand carries a minimum CPU class as a hard floor, a preferred class as a
+  preference, and CPU units, memory and scratch to reserve, with `build` and
+  `light` presets an explicit field always overrides. Preflight declares ordered
+  typed steps, each a check or a context probe with a failure policy, an output
+  byte limit, a timeout and whether its result belongs in the prompt.
+- Placement evaluates CPU class and capacity, and workers carry independent
+  executor capacity. CPU class, allocatable capacity and observed pressure are
+  three separate facts; none is derived from another. Executor capacity is
+  independent of provider-session concurrency and an attempt holds both. A
+  reservation is acquired atomically and released exactly once on settlement,
+  cancellation, failed preparation and lease recovery. Planning accounts for
+  capacity within a pass, so a batch is spread rather than over-assigned, and
+  chooses the highest-scoring eligible worker rather than the first.
+- Preflight runs on the worker after the workspace is prepared and strictly
+  before a provider session is created. A `require-pass` failure or an unrunnable
+  step means no session is created at all; a `record` failure launches with the
+  failing baseline in the prompt. Evidence is redacted before truncation,
+  custodied as artifacts through the existing result path, and reused only on an
+  exact identity match inside its freshness window.
+- Initial prompts are assembled as a bounded, versioned envelope carrying the
+  objective, constraints, mounted input digests, required outputs and compact
+  preflight results. A task declaring no preflight keeps its previous prompt
+  byte for byte.
+- Workers report the package capabilities their build implements, so the
+  coordinator excludes an incapable worker before assignment instead of
+  discovering the gap mid-attempt.
+
+### Fixed
+
+- The lint gate is pinned to an exact analyzer and toolchain. It previously ran
+  `staticcheck@latest`, so its result depended on the host's Go version and on
+  the day.
+
 ## [0.11.0-rc.29] - 2026-09-13
 
 ### Added
