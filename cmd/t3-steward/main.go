@@ -294,8 +294,13 @@ func run(args []string) error {
 			fmt.Print(coordinatorExchangeUsage)
 			return nil
 		}
-		if fs.NArg() != 1 {
-			return errors.New("coordinator-exchange needs exactly one fixed operation")
+		// No operation word serves every operation from one key, taking the
+		// operation from the signed frame; one word pins the key to it.
+		if fs.NArg() > 1 {
+			return errors.New("coordinator-exchange takes at most one fixed operation")
+		}
+		if fs.NArg() == 0 {
+			return cmdCoordinatorExchange(g, "")
 		}
 		return cmdCoordinatorExchange(g, fs.Arg(0))
 	default:

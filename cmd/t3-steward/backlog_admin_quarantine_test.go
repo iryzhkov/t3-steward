@@ -69,7 +69,7 @@ func TestBacklogQuarantineIsARemoteReadableRead(t *testing.T) {
 	if !isCoordinatorAdmin([]string{"quarantine"}) {
 		t.Fatal("quarantine does not reach the coordinator transport")
 	}
-	if !isReadQueryKind(backlogadmin.QueryQuarantine) {
+	if !backlogadmin.IsQueryKind(backlogadmin.QueryQuarantine) {
 		t.Fatal("the remote-admin role cannot read the quarantine view")
 	}
 	if err := authorizeRemoteAdmin(backlogadmin.Action{Kind: backlogadmin.QueryQuarantine}); err != nil {

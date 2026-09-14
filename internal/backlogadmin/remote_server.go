@@ -77,18 +77,35 @@ func NewRemoteServer(config RemoteServerConfig) (*RemoteServer, error) {
 // not as a transient protocol fault. A refusal after the signature verified is
 // signed; a refusal before it cannot be, and the client accepts an unsigned
 // frame only as a classification and never as an answer.
-func (s *RemoteServer) Serve(ctx context.Context, operation string, in io.Reader, out io.Writer) error {
-	if !ValidOperation(operation) {
-		return fmt.Errorf("coordinator-exchange: unknown operation %q", operation)
+// pinned is the operation word the forced command fixed, or empty when it fixed
+// none. An empty pin means the operation is taken from the verified frame.
+//
+// Reading it from the frame is not a relaxation. The operation sits inside the
+// signed payload digest, so it is evidence the client's own credential vouched
+// for, where a word on a command line arrives over a channel nobody signed.
+// What an operator gives up by leaving the pin off is key-level narrowing; the
+// narrowing that decides authority is enforced separately by the coordinator's
+// authorizer, by role and by command kind, on every carrier.
+//
+// It exists because one coordinator client declares one ssh destination and one
+// identity, so against a pinned forced command a client could reach exactly one
+// operation, and "campaign submit" needs two: the readiness query it runs first
+// and the submission itself.
+func (s *RemoteServer) Serve(ctx context.Context, pinned string, in io.Reader, out io.Writer) error {
+	if pinned != "" && !ValidOperation(pinned) {
+		return fmt.Errorf("coordinator-exchange: unknown operation %q", pinned)
 	}
 	buffered := bufio.NewReader(in)
 	frame, err := readRemoteFrame(buffered, s.config.MaxRequestBytes)
 	if err != nil {
 		// A frame that could not even be read has no request identity to echo,
 		// so the refusal carries the class alone.
-		return s.refuse(out, remoteFrame{Operation: operation}, operation, nil, asProtocolError(err))
+		return s.refuse(out, remoteFrame{Operation: pinned}, pinned, nil, asProtocolError(err))
 	}
-	request, credentials, verified, protocolErr := s.validate(operation, frame)
+	request, credentials, verified, protocolErr := s.validate(pinned, frame)
+	// From here on the operation is the frame's, which validate has checked is
+	// a known one and, when a pin was given, equal to it.
+	operation := frame.Operation
 	if protocolErr != nil {
 		if verified {
 			return s.refuse(out, frame, operation, &credentials, protocolErr)
@@ -185,7 +202,9 @@ func asProtocolError(err error) *workerproto.ProtocolError {
 //
 // The checks that do not depend on the principal run first, so that the order
 // in which a request fails says nothing about which principals are configured.
-func (s *RemoteServer) validate(operation string, frame remoteFrame) (localRequest, AdminCredentials, bool, *workerproto.ProtocolError) {
+//
+// pinned is the operation the forced command fixed, or empty when it fixed none.
+func (s *RemoteServer) validate(pinned string, frame remoteFrame) (localRequest, AdminCredentials, bool, *workerproto.ProtocolError) {
 	var request localRequest
 	var credentials AdminCredentials
 	refuse := func(code workerproto.ErrorCode, message string) (localRequest, AdminCredentials, bool, *workerproto.ProtocolError) {
@@ -197,7 +216,10 @@ func (s *RemoteServer) validate(operation string, frame remoteFrame) (localReque
 	if frame.SessionID == "" || frame.RequestID == "" || frame.Sequence < 1 {
 		return refuse(workerproto.ErrorMalformed, "session, request and positive sequence are required")
 	}
-	if frame.Operation != operation {
+	if !ValidOperation(frame.Operation) {
+		return refuse(workerproto.ErrorMalformed, "unknown admin frame operation")
+	}
+	if pinned != "" && frame.Operation != pinned {
 		return refuse(workerproto.ErrorMalformed, "frame operation does not match the invoked operation")
 	}
 	if frame.Recipient != s.config.CoordinatorID {
@@ -237,7 +259,7 @@ func (s *RemoteServer) validate(operation string, frame remoteFrame) (localReque
 	if err := decoder.Decode(&request); err != nil {
 		return signedRefusal(workerproto.ErrorMalformed, "invalid operation envelope: "+err.Error())
 	}
-	if request.Version != LocalTransportVersion || request.Operation != operation {
+	if request.Version != LocalTransportVersion || request.Operation != frame.Operation {
 		return signedRefusal(workerproto.ErrorMalformed, "operation envelope does not match the frame")
 	}
 	// The remote client does not get to say who it is. Its claimed principal
