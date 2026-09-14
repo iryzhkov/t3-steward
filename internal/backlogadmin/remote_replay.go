@@ -179,6 +179,14 @@ func (s *RemoteReplayStore) Begin(principal, requestID, digest string) (RemoteRe
 	if err := s.checkIdentity(db); err != nil {
 		return fail(err)
 	}
+	// A request whose handler died stops holding its own identity after the
+	// recovery interval. This runs before the identity is looked up, so that a
+	// caller retrying an abandoned request sees a free identity rather than
+	// being told forever that an identical request is in flight.
+	if _, err := db.Exec("DELETE FROM requests WHERE ready=0 AND started<?",
+		s.now().Add(-remoteReplayAbandonedAge).UnixNano()); err != nil {
+		return fail(err)
+	}
 	var storedDigest string
 	var ready bool
 	err = db.QueryRow("SELECT digest,ready FROM requests WHERE id=?", transaction.key).Scan(&storedDigest, &ready)
@@ -206,12 +214,6 @@ func (s *RemoteReplayStore) Begin(principal, requestID, digest string) (RemoteRe
 	}
 	defer tx.Rollback()
 	if err := s.prune(tx, 0); err != nil {
-		return fail(err)
-	}
-	// A request whose handler died stops blocking its own identity after the
-	// recovery interval; the caller may then claim it again.
-	if _, err := tx.Exec("DELETE FROM requests WHERE ready=0 AND started<?",
-		s.now().Add(-remoteReplayAbandonedAge).UnixNano()); err != nil {
 		return fail(err)
 	}
 	if _, err := tx.Exec("INSERT INTO requests VALUES(?,?,0,?)", transaction.key, digest, s.now().UnixNano()); err != nil {

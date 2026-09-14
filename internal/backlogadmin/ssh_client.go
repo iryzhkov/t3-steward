@@ -2,8 +2,10 @@ package backlogadmin
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -257,8 +259,11 @@ func (c *SSHClient) roundTrip(
 	stderr := &boundedStderr{limit: c.config.MaxStderrBytes}
 	command.Stderr = stderr
 	if err := command.Start(); err != nil {
+		// A deadline that had already passed when the session was about to
+		// start is a timeout, not an outage: nothing was unreachable.
+		class := contextClass(requestCtx.Err())
 		cancel()
-		return localResponse{}, nil, c.fail(ClassUnavailable, operation, fmt.Errorf("start coordinator exchange: %w", err))
+		return localResponse{}, nil, c.fail(class, operation, fmt.Errorf("start coordinator exchange: %w", err))
 	}
 	exchange := &remoteExchange{command: command, stdout: bufio.NewReader(stdout), stderr: stderr, cancel: cancel}
 	written := make(chan error, 1)
@@ -309,11 +314,7 @@ func (c *SSHClient) roundTrip(
 // error on an empty stream.
 func (c *SSHClient) exchangeError(ctxErr error, operation string, exchange *remoteExchange, err error) error {
 	if ctxErr != nil {
-		class := ClassUnavailable
-		if errors.Is(ctxErr, context.DeadlineExceeded) {
-			class = ClassTimeout
-		}
-		return c.fail(class, operation, fmt.Errorf("coordinator exchange: %w", ctxErr))
+		return c.fail(contextClass(ctxErr), operation, fmt.Errorf("coordinator exchange: %w", ctxErr))
 	}
 	detail := strings.TrimSpace(exchange.stderr.String())
 	if detail == "" {
@@ -331,6 +332,14 @@ func (c *SSHClient) readResponse(exchange *remoteExchange, request remoteFrame) 
 	if err != nil {
 		return localResponse{}, c.protocolFailure(request.Operation, err)
 	}
+	var response localResponse
+	if err := json.Unmarshal(frame.Payload, &response); err != nil {
+		return localResponse{}, c.fail(ClassProtocol, request.Operation,
+			fmt.Errorf("decode coordinator response: %w", err))
+	}
+	if frame.Authentication.Signature == "" {
+		return localResponse{}, c.unsignedRefusal(request.Operation, response)
+	}
 	if frame.Version != RemoteTransportVersion || frame.InReplyTo != request.RequestID ||
 		frame.SessionID != request.SessionID || frame.Operation != request.Operation ||
 		frame.Sender != c.config.CoordinatorID || frame.Recipient != request.Sender {
@@ -345,12 +354,40 @@ func (c *SSHClient) readResponse(exchange *remoteExchange, request remoteFrame) 
 	if err := verifyRemoteFrame(frame, c.config.Credentials.CoordinatorSecret); err != nil {
 		return localResponse{}, c.protocolFailure(request.Operation, err)
 	}
-	var response localResponse
-	if err := json.Unmarshal(frame.Payload, &response); err != nil {
-		return localResponse{}, c.fail(ClassProtocol, request.Operation,
-			fmt.Errorf("decode coordinator response: %w", err))
-	}
 	return response, nil
+}
+
+// unsignedRefusal reads an unsigned frame strictly as a failure classification.
+//
+// The coordinator cannot sign a refusal it produced before verifying who was
+// asking, and an agent still has to tell a rotated credential from a momentary
+// outage. So the class is allowed through while the frame's identity fields and
+// its payload are trusted for nothing else: an unsigned frame that does not
+// carry an error is refused outright, so it can never become an answer, and the
+// class is narrowed to the three a pre-verification refusal can legitimately
+// have. Substituting one of these for a real answer turns a success into a
+// reported failure, which the caller recovers by retrying with the same
+// idempotency key; it cannot turn a refusal into a success.
+func (c *SSHClient) unsignedRefusal(operation string, response localResponse) error {
+	if response.Error == "" {
+		return c.fail(ClassProtocol, operation,
+			errors.New("unsigned coordinator frame is not an answer"))
+	}
+	switch response.ErrorClass {
+	case ClassAuthentication, ClassProtocol, ClassTimeout:
+		return c.fail(response.ErrorClass, operation, errors.New(response.Error))
+	default:
+		return c.fail(ClassProtocol, operation, errors.New(response.Error))
+	}
+}
+
+// contextClass distinguishes a request whose deadline expired from one that was
+// cancelled, because an agent retries the first and stops for the second.
+func contextClass(err error) TransportClass {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ClassTimeout
+	}
+	return ClassUnavailable
 }
 
 // protocolFailure maps a wire error code onto the shared taxonomy.
@@ -467,6 +504,13 @@ func (c *SSHClient) EnrollWorker(ctx context.Context, request domain.WorkerEnrol
 	return *response.WorkerEnrollment, nil
 }
 
+// SubmitArchive sends the bundle with a digest of its bytes in the request, so
+// that the coordinator's replay store refuses the same idempotency key carrying
+// different content instead of answering it from the cache.
+//
+// Computing the digest means holding the archive in memory. That is bounded by
+// the same configured submission limit the coordinator enforces, four MiB by
+// default, and a submission that does not fit is refused before it is read.
 func (c *SSHClient) SubmitArchive(ctx context.Context, request LocalSubmissionRequest, archive io.Reader, size int64) (LocalSubmissionResponse, error) {
 	if archive == nil {
 		return LocalSubmissionResponse{}, c.fail(ClassClientConfiguration, localOperationSubmission, errors.New("submission archive is required"))
@@ -475,10 +519,17 @@ func (c *SSHClient) SubmitArchive(ctx context.Context, request LocalSubmissionRe
 		return LocalSubmissionResponse{}, c.fail(ClassClientConfiguration, localOperationSubmission,
 			fmt.Errorf("submission archive of %d bytes exceeds the configured limit of %d bytes", size, c.config.MaxSubmissionBytes))
 	}
+	raw := make([]byte, size)
+	if _, err := io.ReadFull(archive, raw); err != nil {
+		return LocalSubmissionResponse{}, c.fail(ClassClientConfiguration, localOperationSubmission,
+			fmt.Errorf("read submission archive: %w", err))
+	}
+	sum := sha256.Sum256(raw)
+	request.ArchiveSHA256 = hex.EncodeToString(sum[:])
 	response, _, err := c.roundTrip(ctx, localRequest{
 		Version: LocalTransportVersion, Operation: localOperationSubmission,
 		Submission: &request, SubmissionSize: size,
-	}, archive, false)
+	}, bytes.NewReader(raw), false)
 	if err != nil {
 		return LocalSubmissionResponse{}, err
 	}

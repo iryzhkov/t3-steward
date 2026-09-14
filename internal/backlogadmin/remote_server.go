@@ -13,6 +13,13 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
+// authenticationFailed is the one message every pre-verification identity
+// failure produces. Distinguishing "no such principal" from "bad signature"
+// would answer, for anyone holding the SSH key, the question "is this principal
+// configured here", which is a principal-enumeration oracle. The coordinator's
+// own log is where an operator learns which of the two it was.
+const authenticationFailed = "admin frame authentication failed"
+
 // RemoteServerConfig is what the restricted SSH command needs to answer one
 // exchange. Every identity in it comes from the coordinator's own validated
 // configuration; nothing is taken from the SSH invocation or its environment.
@@ -64,10 +71,12 @@ func NewRemoteServer(config RemoteServerConfig) (*RemoteServer, error) {
 // For an artifact read the raw content follows the response frame, exactly as
 // it does on the local carrier.
 //
-// A refusal is reported to the remote client as a signed error frame rather
-// than as a process failure, so the client can classify it. Only a failure
-// that cannot be attributed to an authenticated request is returned as an
-// error, because then there is nobody to sign an answer for.
+// Every outcome is reported to the remote client as a frame carrying its exact
+// failure class, never as bare process failure, because an agent branches on
+// that class: a rotated credential must read as permanent authentication and
+// not as a transient protocol fault. A refusal after the signature verified is
+// signed; a refusal before it cannot be, and the client accepts an unsigned
+// frame only as a classification and never as an answer.
 func (s *RemoteServer) Serve(ctx context.Context, operation string, in io.Reader, out io.Writer) error {
 	if !ValidOperation(operation) {
 		return fmt.Errorf("coordinator-exchange: unknown operation %q", operation)
@@ -75,49 +84,78 @@ func (s *RemoteServer) Serve(ctx context.Context, operation string, in io.Reader
 	buffered := bufio.NewReader(in)
 	frame, err := readRemoteFrame(buffered, s.config.MaxRequestBytes)
 	if err != nil {
-		return err
+		// A frame that could not even be read has no request identity to echo,
+		// so the refusal carries the class alone.
+		return s.refuse(out, remoteFrame{Operation: operation}, operation, nil, asProtocolError(err))
 	}
-	request, credentials, protocolErr := s.validate(operation, frame)
+	request, credentials, verified, protocolErr := s.validate(operation, frame)
 	if protocolErr != nil {
-		return s.refuse(operation, protocolErr)
+		if verified {
+			return s.refuse(out, frame, operation, &credentials, protocolErr)
+		}
+		return s.refuse(out, frame, operation, nil, protocolErr)
 	}
 	if s.config.Replay == nil || !mutatingOperation(operation) {
 		return s.relay(ctx, frame, operation, request, credentials, buffered, out)
 	}
 	digest, err := frameDigest(frame)
 	if err != nil {
-		return s.refuse(operation, &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: err.Error(), RequestID: frame.RequestID})
+		return s.refuse(out, frame, operation, &credentials,
+			&workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: err.Error(), RequestID: frame.RequestID})
 	}
 	transaction, err := s.config.Replay.Begin(credentials.ClientPrincipal, frame.RequestID, digest)
 	if err != nil {
-		var protocolErr *workerproto.ProtocolError
-		if errors.As(err, &protocolErr) {
-			return s.refuse(operation, protocolErr)
+		var replayErr *workerproto.ProtocolError
+		if errors.As(err, &replayErr) {
+			return s.refuse(out, frame, operation, &credentials, replayErr)
 		}
 		return err
 	}
 	defer transaction.Release()
 	if cached, ok := transaction.Cached(); ok {
-		// The first answer is authoritative. Repeating the request id with the
-		// same content must never create a second effect.
-		if _, err := out.Write(append(cached, '\n')); err != nil {
-			return err
+		// The first answer is authoritative: repeating the request id with the
+		// same content must never create a second effect. What is cached is the
+		// answer itself, not the frame that carried it, because a retry is a
+		// new CLI process with a new session id and would reject a frame bound
+		// to the session of the request that was lost.
+		response, err := decodeCachedResponse(cached)
+		if err != nil {
+			return s.refuse(out, frame, operation, &credentials,
+				&workerproto.ProtocolError{Code: workerproto.ErrorInternal, Message: err.Error(), RequestID: frame.RequestID})
 		}
-		return nil
+		return s.write(out, frame, operation, response, credentials)
 	}
-	response, _, err := s.answer(ctx, frame, operation, request, credentials, buffered)
-	if err != nil {
-		return err
-	}
+	response := s.respond(ctx, request, buffered, nil)
 	encoded, err := json.Marshal(response)
 	if err != nil {
 		return err
 	}
+	// The effect has already happened; caching it is what lets a lost answer
+	// be recovered. A crash between the two re-executes the operation, and the
+	// service's own idempotency key is what makes that safe.
 	if err := transaction.Complete(encoded); err != nil {
 		return err
 	}
-	_, err = out.Write(append(encoded, '\n'))
-	return err
+	return s.write(out, frame, operation, response, credentials)
+}
+
+// decodeCachedResponse reads back a cached answer strictly, so a corrupted row
+// is refused rather than replayed as something else.
+func decodeCachedResponse(raw []byte) (localResponse, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var response localResponse
+	if err := decoder.Decode(&response); err != nil {
+		return localResponse{}, fmt.Errorf("decode cached admin response: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return localResponse{}, errors.New("cached admin response has trailing content")
+	}
+	if response.Version != LocalTransportVersion {
+		return localResponse{}, errors.New("cached admin response has an unexpected version")
+	}
+	return response, nil
 }
 
 // mutatingOperation reports whether repeating an operation could repeat an
@@ -132,56 +170,80 @@ func mutatingOperation(operation string) bool {
 	}
 }
 
+func asProtocolError(err error) *workerproto.ProtocolError {
+	var protocolErr *workerproto.ProtocolError
+	if errors.As(err, &protocolErr) {
+		return protocolErr
+	}
+	return &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: err.Error()}
+}
+
 // validate checks the frame's authority and integrity before any local effect.
-func (s *RemoteServer) validate(operation string, frame remoteFrame) (localRequest, AdminCredentials, *workerproto.ProtocolError) {
+// Its second return is the credential the signature verified against and its
+// third says whether that verification succeeded, which decides whether a
+// refusal can be signed.
+//
+// The checks that do not depend on the principal run first, so that the order
+// in which a request fails says nothing about which principals are configured.
+func (s *RemoteServer) validate(operation string, frame remoteFrame) (localRequest, AdminCredentials, bool, *workerproto.ProtocolError) {
 	var request localRequest
 	var credentials AdminCredentials
+	refuse := func(code workerproto.ErrorCode, message string) (localRequest, AdminCredentials, bool, *workerproto.ProtocolError) {
+		return request, credentials, false, &workerproto.ProtocolError{Code: code, Message: message, RequestID: frame.RequestID}
+	}
 	if frame.Version != RemoteTransportVersion {
-		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorUnsupportedVersion, Message: "unsupported admin frame version", RequestID: frame.RequestID}
+		return refuse(workerproto.ErrorUnsupportedVersion, "unsupported admin frame version")
 	}
 	if frame.SessionID == "" || frame.RequestID == "" || frame.Sequence < 1 {
-		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: "session, request and positive sequence are required", RequestID: frame.RequestID}
+		return refuse(workerproto.ErrorMalformed, "session, request and positive sequence are required")
 	}
 	if frame.Operation != operation {
-		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: "frame operation does not match the invoked operation", RequestID: frame.RequestID}
+		return refuse(workerproto.ErrorMalformed, "frame operation does not match the invoked operation")
 	}
 	if frame.Recipient != s.config.CoordinatorID {
-		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorAuthorization, Message: "recipient is not this coordinator", RequestID: frame.RequestID}
-	}
-	// The claimed principal selects which configured credential to check
-	// against, exactly as a key id would. It proves nothing until the
-	// signature over that credential's secret verifies.
-	credentials, known := s.config.Clients[frame.Sender]
-	if !known || frame.Authentication.Principal != credentials.ClientPrincipal ||
-		frame.Authentication.KeyID != credentials.ClientKeyID {
-		return request, AdminCredentials{}, &workerproto.ProtocolError{Code: workerproto.ErrorAuthentication, Message: "principal or key id does not match a configured admin client", RequestID: frame.RequestID}
+		return refuse(workerproto.ErrorAuthorization, "recipient is not this coordinator")
 	}
 	now := s.config.Now()
 	if frame.Deadline.IsZero() || !now.Before(frame.Deadline) {
-		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorTimeout, Message: "request deadline expired", RequestID: frame.RequestID}
+		return refuse(workerproto.ErrorTimeout, "request deadline expired")
 	}
 	if frame.SentAt.IsZero() || frame.SentAt.Before(now.Add(-s.config.MaxClockSkew)) || frame.SentAt.After(now.Add(s.config.MaxClockSkew)) {
-		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorAuthentication, Message: "request timestamp is outside the allowed skew", RequestID: frame.RequestID}
+		return refuse(workerproto.ErrorAuthentication, "request timestamp is outside the allowed skew")
 	}
-	if err := verifyRemoteFrame(frame, credentials.ClientSecret); err != nil {
-		var protocolErr *workerproto.ProtocolError
-		if errors.As(err, &protocolErr) {
-			return request, credentials, protocolErr
+	// The claimed principal selects which configured credential to check
+	// against, exactly as a key id would. It proves nothing until the
+	// signature over that credential's secret verifies, and an unknown
+	// principal and a bad signature are reported identically.
+	known, exists := s.config.Clients[frame.Sender]
+	if !exists || frame.Authentication.Principal != known.ClientPrincipal ||
+		frame.Authentication.KeyID != known.ClientKeyID {
+		return refuse(workerproto.ErrorAuthentication, authenticationFailed)
+	}
+	if err := verifyRemoteFrame(frame, known.ClientSecret); err != nil {
+		var verifyErr *workerproto.ProtocolError
+		if errors.As(err, &verifyErr) && verifyErr.Code == workerproto.ErrorMalformed {
+			// A payload checksum mismatch is not an identity question.
+			return refuse(workerproto.ErrorMalformed, verifyErr.Message)
 		}
-		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorAuthentication, Message: err.Error(), RequestID: frame.RequestID}
+		return refuse(workerproto.ErrorAuthentication, authenticationFailed)
+	}
+	// Everything from here on is a refusal the coordinator can sign.
+	credentials = known
+	signedRefusal := func(code workerproto.ErrorCode, message string) (localRequest, AdminCredentials, bool, *workerproto.ProtocolError) {
+		return request, credentials, true, &workerproto.ProtocolError{Code: code, Message: message, RequestID: frame.RequestID}
 	}
 	decoder := json.NewDecoder(bytes.NewReader(frame.Payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: "invalid operation envelope: " + err.Error(), RequestID: frame.RequestID}
+		return signedRefusal(workerproto.ErrorMalformed, "invalid operation envelope: "+err.Error())
 	}
 	if request.Version != LocalTransportVersion || request.Operation != operation {
-		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorMalformed, Message: "operation envelope does not match the frame", RequestID: frame.RequestID}
+		return signedRefusal(workerproto.ErrorMalformed, "operation envelope does not match the frame")
 	}
 	// The remote client does not get to say who it is. Its claimed principal
 	// is discarded and replaced by the identity the signature proved.
 	if request.RemoteAdmin != nil {
-		return request, credentials, &workerproto.ProtocolError{Code: workerproto.ErrorAuthorization, Message: "a remote client may not assert its own principal", RequestID: frame.RequestID}
+		return signedRefusal(workerproto.ErrorAuthorization, "a remote client may not assert its own principal")
 	}
 	if request.Query != nil {
 		request.Query.Principal = Principal{}
@@ -189,13 +251,15 @@ func (s *RemoteServer) validate(operation string, frame remoteFrame) (localReque
 	if request.Mutation != nil {
 		request.Mutation.Principal = Principal{}
 	}
-	if request.Operation == localOperationSubmission &&
-		(request.SubmissionSize <= 0 || request.SubmissionSize > s.config.MaxSubmissionBytes) {
-		return request, credentials, &workerproto.ProtocolError{
-			Code: workerproto.ErrorLimit,
-			Message: fmt.Sprintf("submission archive of %d bytes exceeds this coordinator's limit of %d bytes",
-				request.SubmissionSize, s.config.MaxSubmissionBytes),
-			RequestID: frame.RequestID,
+	if request.Operation == localOperationSubmission {
+		if request.SubmissionSize <= 0 || request.SubmissionSize > s.config.MaxSubmissionBytes {
+			return signedRefusal(workerproto.ErrorLimit, fmt.Sprintf(
+				"submission archive of %d bytes exceeds this coordinator's limit of %d bytes",
+				request.SubmissionSize, s.config.MaxSubmissionBytes))
+		}
+		if request.Submission == nil || request.Submission.ArchiveSHA256 == "" {
+			return signedRefusal(workerproto.ErrorMalformed,
+				"a remote submission must declare its archive digest")
 		}
 	}
 	request.RemoteAdmin = &RemoteAdminAssertion{
@@ -203,53 +267,58 @@ func (s *RemoteServer) validate(operation string, frame remoteFrame) (localReque
 		Coordinator: s.config.CoordinatorID,
 		RequestID:   frame.RequestID,
 	}
-	return request, credentials, nil
+	return request, credentials, true, nil
 }
 
-// answer relays the verified request to the coordinator over its owner-only
-// socket and signs whatever came back.
-func (s *RemoteServer) answer(ctx context.Context, frame remoteFrame, operation string, request localRequest, credentials AdminCredentials, body io.Reader) (remoteFrame, io.ReadCloser, error) {
-	response, stream, err := s.config.Relay.exchange(ctx, request, body)
+// respond relays the verified request to the coordinator over its owner-only
+// socket and turns whatever came back into one answer payload. When stream is
+// non-nil it receives the artifact content the caller must read and close.
+func (s *RemoteServer) respond(ctx context.Context, request localRequest, body io.Reader, stream *io.ReadCloser) localResponse {
+	response, content, err := s.config.Relay.exchange(ctx, request, body)
 	if err != nil {
 		class := ClassOf(err)
 		if class == "" {
 			class = ClassRejected
 		}
-		response = localResponse{Version: LocalTransportVersion, Error: err.Error(), ErrorClass: class}
+		return localResponse{Version: LocalTransportVersion, Error: err.Error(), ErrorClass: class}
 	}
-	signed, signErr := s.sign(frame, operation, response, credentials)
-	if signErr != nil {
-		if stream != nil {
-			_ = stream.Close()
+	if content != nil {
+		if stream == nil {
+			_ = content.Close()
+		} else {
+			*stream = content
 		}
-		return remoteFrame{}, nil, signErr
 	}
-	return signed, stream, nil
+	return response
 }
 
 // relay answers an operation that is not replay-protected, streaming artifact
 // content after the response frame.
 func (s *RemoteServer) relay(ctx context.Context, frame remoteFrame, operation string, request localRequest, credentials AdminCredentials, body io.Reader, out io.Writer) error {
-	response, stream, err := s.answer(ctx, frame, operation, request, credentials, body)
-	if err != nil {
-		return err
-	}
+	var stream io.ReadCloser
+	response := s.respond(ctx, request, body, &stream)
 	if stream != nil {
 		defer stream.Close()
 	}
-	if err := writeRemoteFrame(out, response, s.config.MaxRequestBytes); err != nil {
+	if err := s.write(out, frame, operation, response, credentials); err != nil {
 		return err
 	}
 	if stream == nil {
 		return nil
 	}
-	var size int64
-	var decoded localResponse
-	if err := json.Unmarshal(response.Payload, &decoded); err == nil {
-		size = decoded.ArtifactSize
-	}
-	_, err = io.CopyN(out, stream, size)
+	_, err := io.CopyN(out, stream, response.ArtifactSize)
 	return err
+}
+
+// write signs one answer for the request in hand and emits it. The frame is
+// always built here rather than reused, so a replayed answer is bound to the
+// session and request id of the retry that asked for it.
+func (s *RemoteServer) write(out io.Writer, request remoteFrame, operation string, response localResponse, credentials AdminCredentials) error {
+	frame, err := s.sign(request, operation, response, credentials)
+	if err != nil {
+		return err
+	}
+	return writeRemoteFrame(out, frame, s.config.MaxRequestBytes)
 }
 
 func (s *RemoteServer) sign(request remoteFrame, operation string, response localResponse, credentials AdminCredentials) (remoteFrame, error) {
@@ -266,9 +335,32 @@ func (s *RemoteServer) sign(request remoteFrame, operation string, response loca
 	return frame, nil
 }
 
-// refuse answers an unauthenticated or malformed request. When the frame
-// itself could not be attributed the refusal goes back as a process error,
-// because signing an answer for an unknown peer would be a lie.
-func (s *RemoteServer) refuse(operation string, protocolErr *workerproto.ProtocolError) error {
+// refuse answers a request the coordinator will not serve. When the signature
+// verified, credentials is non-nil and the refusal is signed like any other
+// answer. When it did not, the refusal is unsigned: there is no verified peer
+// to sign for. The class still travels, because an agent has to tell a rotated
+// credential from a momentary outage, and an unsigned frame can only ever be
+// read as a failure, never as a result.
+func (s *RemoteServer) refuse(out io.Writer, request remoteFrame, operation string, credentials *AdminCredentials, protocolErr *workerproto.ProtocolError) error {
+	response := localResponse{
+		Version:    LocalTransportVersion,
+		Error:      protocolErr.Message,
+		ErrorClass: classOfProtocolError(protocolErr.Code),
+	}
+	if credentials != nil {
+		if err := s.write(out, request, operation, response, *credentials); err != nil {
+			return err
+		}
+		return fmt.Errorf("coordinator-exchange refused %s: %w", operation, protocolErr)
+	}
+	frame, err := newRemoteFrame(operation, request.SessionID, "response-"+request.RequestID,
+		s.config.CoordinatorID, request.Sender, request.Sequence, s.config.Now(), request.Deadline, response)
+	if err != nil {
+		return err
+	}
+	frame.InReplyTo = request.RequestID
+	if err := writeRemoteFrame(out, frame, s.config.MaxRequestBytes); err != nil {
+		return err
+	}
 	return fmt.Errorf("coordinator-exchange refused %s: %w", operation, protocolErr)
 }
