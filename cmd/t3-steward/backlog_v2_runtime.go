@@ -455,6 +455,13 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		SetupProfiles:  fleetProfiles,
 		MaxBundleBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
 		MaxBundleFiles: cfg.BacklogV2.MessageLimits.MaxFiles,
+		// Repository reachability is observed on the candidate worker, over the
+		// worker protocol, under the credential references the real task would
+		// use. Without this the readiness check reported nothing at all about the
+		// one failure it was built for: a campaign accepted against a repository
+		// that does not exist, which fails hours later in workspace preparation.
+		Repository: newCoordinatorRepositoryObserver(
+			cfg.BacklogV2, workerruntime.ProtocolResolver{}, epoch, nil),
 	})
 	submissions := &backlog.SubmissionService{
 		DirectoryCatalogs: directoryCatalogs,
