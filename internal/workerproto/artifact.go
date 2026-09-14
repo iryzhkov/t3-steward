@@ -207,13 +207,22 @@ func ValidateTarArchive(reader io.Reader, compressedSize int64, limits ArchiveLi
 		if entries > limits.MaxEntries {
 			return errors.New("artifact archive: entry limit exceeded")
 		}
-		if !safeRelativePath(header.Name) {
-			return errors.New("artifact archive: unsafe entry path")
+		// tar writes a directory as its path plus a trailing slash, which is
+		// what every ordinary `tar cf` of a bundle directory produces. The
+		// path rules below reject a name that is not already clean, so the
+		// slash is removed first rather than failing an archive for being
+		// written the normal way. Nothing else about the name is relaxed.
+		name := header.Name
+		if header.Typeflag == tar.TypeDir {
+			name = strings.TrimSuffix(name, "/")
 		}
-		if _, exists := seen[header.Name]; exists {
-			return errors.New("artifact archive: duplicate entry path")
+		if !safeRelativePath(name) {
+			return fmt.Errorf("artifact archive: unsafe entry path %q", header.Name)
 		}
-		seen[header.Name] = struct{}{}
+		if _, exists := seen[name]; exists {
+			return fmt.Errorf("artifact archive: duplicate entry path %q", name)
+		}
+		seen[name] = struct{}{}
 		switch header.Typeflag {
 		case tar.TypeReg, byte(0):
 			if header.Size < 0 || header.Size > limits.MaxBytes-total {

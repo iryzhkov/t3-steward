@@ -651,9 +651,18 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 			right.Code+"\x00"+right.Detail+"\x00"+right.DependsOn+"\x00"+right.Resource
 	})
 	explanation.Eligible = len(explanation.Blockers) == 0 && (attempt == nil || attempt.Control == domain.ControlUnassigned)
-	if explanation.Eligible {
+	switch {
+	case explanation.Eligible:
 		explanation.Summary = "task is eligible to start"
-	} else if explanation.Summary == "" {
+	case explanation.Summary != "":
+	case len(explanation.Blockers) == 0:
+		// Ineligible with nothing blocking it reads as a contradiction, so
+		// name the actual reason: the attempt is already under a control
+		// decision and is therefore not waiting on anything. Only an
+		// existing attempt can reach this case, because a task with no
+		// attempt and no blockers is eligible.
+		explanation.Summary = fmt.Sprintf("task is not waiting: its current attempt is %s", attempt.Control)
+	default:
 		explanation.Summary = fmt.Sprintf("task has %d blocker(s)", len(explanation.Blockers))
 	}
 	return explanation, true
