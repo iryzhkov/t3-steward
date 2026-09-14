@@ -392,6 +392,24 @@ type Artifact struct {
 	CreatedAt     time.Time    `json:"createdAt"`
 }
 
+// ArtifactRetentionSkip reports one run whose artifacts a retention pass left
+// alone, and why.
+//
+// A pinned run cannot be pruned: the pin is what a rerun, a node wait or a
+// cross-run edge holds so that the evidence it points at stays readable. A pass
+// that met one used to abort, which pruned nothing anywhere, so a single rerun
+// held the whole fleet's retention. Skipping and saying so is the difference
+// between a policy that is not applied here and a policy that is not applied at
+// all.
+type ArtifactRetentionSkip struct {
+	WorkflowRunID string `json:"workflowRunId"`
+	// Artifacts is how many of the run's artifacts were old enough to prune.
+	Artifacts int `json:"artifacts"`
+	// Reason names the owners of the pins that held them, so an operator can
+	// find what is still referring to the run rather than guessing.
+	Reason string `json:"reason"`
+}
+
 // AdminCommandState is the lifecycle of an audited mutation request.
 type AdminCommandState string
 

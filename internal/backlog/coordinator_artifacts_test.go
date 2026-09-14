@@ -175,12 +175,12 @@ func TestCoordinatorArtifactRetentionAndPathSafety(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if expired, err := service.Prune(ctx, coordinatorArtifactTime.Add(-24*time.Hour), []string{"run-1"}); err != nil || len(expired) != 0 {
-		t.Fatalf("protected prune = %#v, %v", expired, err)
+	if expired, skipped, err := service.Prune(ctx, coordinatorArtifactTime.Add(-24*time.Hour), []string{"run-1"}); err != nil || len(expired) != 0 || len(skipped) != 0 {
+		t.Fatalf("protected prune = %#v, %#v, %v", expired, skipped, err)
 	}
-	expired, err := service.Prune(ctx, coordinatorArtifactTime.Add(-24*time.Hour), nil)
-	if err != nil || len(expired) != 1 || expired[0].ID != oldArtifact.ID {
-		t.Fatalf("prune = %#v, %v", expired, err)
+	expired, skipped, err := service.Prune(ctx, coordinatorArtifactTime.Add(-24*time.Hour), nil)
+	if err != nil || len(expired) != 1 || expired[0].ID != oldArtifact.ID || len(skipped) != 0 {
+		t.Fatalf("prune = %#v, %#v, %v", expired, skipped, err)
 	}
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(oldArtifact.StoragePath))); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expired blob remains: %v", err)

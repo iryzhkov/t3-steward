@@ -182,8 +182,18 @@ func TestARerunAuthoredAfterSettlementStillResolvesTheCarriedCommit(t *testing.T
 	// its source, so the record it carried survives: whether the prune refuses
 	// or skips it, what matters is that the record and the commit are still
 	// there for the run that needs them.
-	if _, err := campaign.store.PruneArtifacts(ctx, commitCampaignTime.Add(24*time.Hour), nil); err != nil {
-		t.Logf("prune refused while the source was pinned: %v", err)
+	expired, skipped, err := campaign.store.PruneArtifacts(ctx, commitCampaignTime.Add(24*time.Hour), nil)
+	if err != nil {
+		t.Fatalf("a pinned run failed the whole retention pass: %v", err)
+	}
+	for _, artifact := range expired {
+		if artifact.WorkflowRunID == "run" {
+			t.Fatalf("retention pruned %s, an artifact of the pinned source run", artifact.ID)
+		}
+	}
+	if len(skipped) != 1 || skipped[0].WorkflowRunID != "run" ||
+		!strings.Contains(skipped[0].Reason, "rerun:rerun-1") {
+		t.Fatalf("skipped = %+v, want the pinned source named with its holder", skipped)
 	}
 	retained, releasable = campaign.lifetime(t)
 	if strings.Join(retained, ",") != "run" || len(releasable) != 0 {
@@ -203,8 +213,8 @@ func TestRetentionReleasesTheCampaignRefWithItsProvenanceRecord(t *testing.T) {
 	if !campaign.resolves(t) {
 		t.Fatal("the published commit does not resolve before retention")
 	}
-	if _, err := campaign.store.PruneArtifacts(ctx, commitCampaignTime.Add(24*time.Hour), nil); err != nil {
-		t.Fatalf("prune artifacts: %v", err)
+	if _, skipped, err := campaign.store.PruneArtifacts(ctx, commitCampaignTime.Add(24*time.Hour), nil); err != nil || len(skipped) != 0 {
+		t.Fatalf("prune artifacts: skipped %+v, err %v", skipped, err)
 	}
 	retained, releasable := campaign.lifetime(t)
 	if len(retained) != 0 || strings.Join(releasable, ",") != "run" {

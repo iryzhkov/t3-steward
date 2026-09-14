@@ -49,6 +49,13 @@ All notable changes to this project are documented here. The format follows
   retention, so a commit a rerun carries is kept for as long as the new run
   needs it.
 
+- A retention pass that meets a pinned run skips it and prunes everything else,
+  and reports which runs it skipped and which owners are holding them. A pin is
+  enforced by a trigger that aborts the delete, and one abort rolled back the
+  whole transaction, so a single rerun pin meant no artifact anywhere was ever
+  pruned. No production path prunes coordinator artifacts yet; this is what makes
+  the first one that does behave.
+
 - A worker on another host releases its own campaign refs. The coordinator
   states, on the snapshot exchange of every reconciliation pass, the complete
   list of runs whose commits that worker must keep, and the worker releases the
