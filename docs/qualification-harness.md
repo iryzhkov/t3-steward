@@ -24,9 +24,20 @@ the whole fleet:
 - A coordinator process, started from a binary built out of this worktree, with
   its own configuration, SQLite state, owner-only admin socket, bundle,
   artifact and workspace roots, and legacy drop directory.
-- Two worker processes, `worker-a` and `worker-b`, each a real
-  `t3-steward worker-exchange control` invoked by a real `sshd` forced command,
-  with its own configuration, storage roots, journals and secret store.
+- Two persistent worker daemons, `worker-a` and `worker-b`, each with its own
+  configuration, bootstrap document, storage roots, journals, secret store and
+  Unix socket, reached by the coordinator through a real `sshd` forced command
+  that runs `t3-steward worker bridge`.
+
+  The persistent connection is not a convenience. A coordinator dials one
+  address per worker, and a forced command pins one operation word, so a worker
+  key pinned to `worker-exchange control` can never take artifact delivery: the
+  assignment is withheld with `message kind is not a worker request`. The
+  persistent bridge multiplexes control, artifact-send and artifact-receive over
+  one stream, so one key serves the worker and real work can run.
+
+  Persistent workers must be enrolled, so the harness enrolls each one against
+  the coordinator's current catalog before any case runs.
 - A client host context: its own home, its own secret store, its own
   `backlog_v2.coordinator_client` configuration, and no access to the
   coordinator's socket.
@@ -36,8 +47,13 @@ the whole fleet:
 - Four throwaway bare Git repositories served over that `sshd` through forced
   `git-upload-pack` commands, plus one forced command that answers with
   Forgejo's exact "Cannot find repository" wording.
-- A synthetic T3 provider: a small HTTP stub that journals every request and
-  refuses every write.
+- A synthetic T3 provider: a small HTTP server that speaks the endpoints the
+  worker and the watchdog use, journals every request, and runs a *scripted
+  turn* in the prepared workspace whenever a turn starts. The script stands in
+  for the agent. That is what makes the lifecycle cases testable: turn one of a
+  parking scenario registers a task-bound wait with the real CLI against the
+  real coordinator and stops, and turn two, started by the steward's own wake
+  message, writes the declared outputs.
 
 Nothing under the real home is read or written. No live coordinator is
 contacted, no worker is enrolled, no provider turn is executed, and `upkeeper`
@@ -64,10 +80,16 @@ Real:
 
 Not real, and declared:
 
-- **The provider.** No agent turn is executed. The fleet's Claude and Codex
-  quota is live and shared and the contract calls for synthetic provider
-  observations, so the workers are pointed at a stub whose journal is checked
-  afterwards to confirm that nothing tried to start a turn.
+- **The provider.** No real agent turn is executed and no provider quota is
+  consumed. The fleet's Claude and Codex quota is live and shared and the
+  contract calls for synthetic provider observations, so the workers are pointed
+  at a stub. Every turn that ran is checked afterwards against the harness's own
+  scripts, so a turn that came from anywhere else would be visible.
+
+  What this does prove is everything on the steward's side of the provider
+  boundary: workspace preparation, dispatch, the parked lifecycle, collection,
+  verification and settlement all run for real. What it cannot prove is how a
+  real agent behaves when it is told to end its turn.
 - **Two wrappers around the forced commands.** Each forced command is a short
   script that replaces the login account's ambient environment with the
   disposable one and then executes exactly the documented command. It takes no
@@ -104,14 +126,20 @@ findings and do not need a candidate.
 
 ## Why the client has two configurations
 
-A coordinator client declares one SSH destination. The forced command pins one
-operation word, and OpenSSH selects the `authorized_keys` line by key, so one
-`backlog_v2.coordinator_client` block can reach exactly one
-`coordinator-exchange` operation. The harness writes `config-query.yaml` and
-`config-submission.yaml`, which differ only in the alias they name, and uses each
-for the operation its key is authorized for. This is a property of the product
-rather than of the harness; see the harness report for what it means for
-`campaign submit`, which needs both operations.
+Both documented shapes of the admin forced command are exercised, because both
+are supported and a harness that covered only one could not catch a regression
+in the other.
+
+`config-main.yaml` names the unpinned line, which carries no operation word and
+takes the operation from the signed frame. That is the ordinary agent path: one
+client block and one key serve `campaign check` and then `campaign submit`,
+which issues a viability query and a submission in turn.
+
+`config-pinned.yaml` names a line pinned to the `query` operation, which narrows
+that key to reads. `coordinator identity` runs over it.
+
+A client cannot vary its SSH destination per operation, so a client that needs
+several operations needs the unpinned line.
 
 ## The cases
 
@@ -125,7 +153,28 @@ rather than of the harness; see the harness report for what it means for
 | `case2-retry` | The same idempotency key leaves exactly one run. |
 | `case3-*` | Five impossible campaigns are classified permanent and create zero runs. |
 | `case4` | The per-worker candidate matrix distinguishes the worker that can read a private SSH repository from the one that cannot. |
-| `provider-turns` | The synthetic provider received no write request. |
+| `execution-path` | A campaign really runs: prepared workspace, dispatched thread, collected output, verification, success. |
+| `case11-park` | A task-bound wait moves the attempt to `waiting-external`. |
+| `case11-identity-revision` | The execution identity the worker wrote names the attempt revision the coordinator holds. |
+| `case11-quiet` | A parked attempt collects nothing, verifies nothing, and leaves its campaign non-terminal. |
+| `case11-capacity` | A parked attempt releases its provider slot. |
+| `case11-wake` | The same thread resumes, once. |
+| `case11-complete` | The woken task collects its output, verification runs exactly once, and the campaign succeeds. |
+| `case12` | Racing registration against turn completion never leaves an attempt both waiting and terminal. |
+| `case13` | A park survives a worker restart and a coordinator restart: one wake, one resumed turn, one verification. |
+| `case14` | A task-bound wait for a terminal attempt is refused and leaves nothing behind. |
+| `case15` | An interactive wait from outside task execution wakes its thread and changes no workflow state. |
+| `case7` | Three preparation failures keep three immutable logs and the first causal error. |
+| `case8` | A legacy intake conflict is reported once across restarts and shown by the quarantine view. |
+| `identity-survives-the-park` | The workspace identity record is still there for the turn that resumes. |
+| `attack-replayed-request-id` | Replaying a settled wait request id is refused rather than answered with the end-your-turn message. |
+| `synthetic-provider` | Every turn that ran came from a script in the harness root. |
+
+Some of those cases fail today, and they are meant to. A case that pins an open
+defect stays in the suite as a failing case rather than being removed or
+softened, so that the day the defect is fixed the suite turns green by itself and
+the day it comes back the suite says so. A red run is therefore read case by
+case: the report that accompanies a run names which failures are known.
 
 Each case prints its verdict and its evidence separately, so a reader can tell a
 proof from an assumption. With `--keep`, every command's output stays under
@@ -138,3 +187,12 @@ synthetic provider's journal.
 `curl`, a systemd user session, and outbound HTTPS to `github.com` for the
 unauthenticated private repository case. Override that repository with
 `T3_QUAL_PRIVATE_HTTPS` when the default stops being private.
+
+Two host facts the workers depend on, both reported rather than worked around:
+the worker runs its child processes in transient systemd user scopes, so a user
+manager must be reachable; and its capability probe asks
+`systemctl --user is-active huyang.service`, so a host without that unit
+reports the capability missing and enrollment is refused.
+
+`QUAL_RACE_ITERATIONS` sets how many iterations case 12 runs per bias; the
+default is three, so six in total, and each is a real campaign.

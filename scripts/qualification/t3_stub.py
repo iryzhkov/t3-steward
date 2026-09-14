@@ -20,7 +20,11 @@ The stub answers the endpoints the worker and the watchdog actually use, and
 appends every request to a JSONL journal so that a case which claims no turn was
 dispatched can be checked rather than believed.
 
-Usage: t3_stub.py PORT JOURNAL TURNS_ROOT
+Usage: t3_stub.py PORT JOURNAL TURNS_ROOT [PROJECT,...]
+
+The project list is seeded at start because a worker observes its own readiness
+by asking the provider which projects exist, and a project it cannot see makes
+the worker report the project unavailable.
 """
 
 import json
@@ -337,12 +341,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in (4, 5):
         print(__doc__, file=sys.stderr)
         return 2
     port = int(sys.argv[1])
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.fleet = Fleet(sys.argv[2], sys.argv[3])
+    for project in (sys.argv[4].split(",") if len(sys.argv) == 5 else []):
+        if project.strip():
+            server.fleet.project(project.strip())
     server.daemon_threads = True
     server.serve_forever()
     return 0

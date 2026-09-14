@@ -28,6 +28,16 @@ export HARNESS_DIR REPO_DIR
 . "$HARNESS_DIR/cases.sh"
 # shellcheck source=scripts/qualification/lifecycle.sh
 . "$HARNESS_DIR/lifecycle.sh"
+# shellcheck source=scripts/qualification/case11.sh
+. "$HARNESS_DIR/case11.sh"
+# shellcheck source=scripts/qualification/attacks.sh
+. "$HARNESS_DIR/attacks.sh"
+# shellcheck source=scripts/qualification/case13.sh
+. "$HARNESS_DIR/case13.sh"
+# shellcheck source=scripts/qualification/case12.sh
+. "$HARNESS_DIR/case12.sh"
+# shellcheck source=scripts/qualification/case15.sh
+. "$HARNESS_DIR/case15.sh"
 
 KEEP_ROOT=0
 ONLY=""
@@ -102,22 +112,53 @@ selected 2 && case_two
 selected 3 && case_three
 selected 4 && case_four
 
-selected 11 && case_execution_path
+if selected 11; then
+  case_execution_path && case_eleven
+fi
+selected 14 && case_fourteen
+selected 14 && case_attack_replay
+selected 15 && case_fifteen
+selected 7 && case_seven
+selected 13 && case_thirteen
+selected 12 && case_twelve
+selected 8 && case_eight
 
 if selected 3; then
   fleet_restart_coordinator malformed
   case_three_syntax
 fi
 
-# The synthetic provider is asked afterwards whether anything tried to start a
-# turn. No case in this gate dispatches work, so a non-empty write journal would
-# mean the harness did something it does not claim to do.
-TURNS=$(grep -c '"method": "POST"' "$ROOT/evidence/t3-stub.jsonl" 2>/dev/null || true)
-TURNS=${TURNS:-0}
-if [ "$TURNS" != 0 ]; then
-  record provider-turns FAIL "the synthetic provider received $TURNS write requests"
+# The synthetic provider is asked afterwards what it was made to do. Every turn
+# that ran came from a script this harness wrote into its own temporary root, so
+# a turn recorded with no script behind it would mean something reached a
+# provider the harness does not control.
+if [ ! -s "$ROOT/evidence/t3-stub.jsonl" ]; then
+  record synthetic-provider FAIL 'the synthetic provider recorded nothing at all'
 else
-  record provider-turns PASS "the synthetic provider received no write request"
+  PROVIDER_SUMMARY=$(python3 - "$ROOT/evidence/t3-stub.jsonl" "$ROOT/turns" <<'PY'
+import json, sys
+starts = scripts = foreign = 0
+for line in open(sys.argv[1], encoding="utf-8"):
+    try:
+        entry = json.loads(line)
+    except Exception:
+        continue
+    if (entry.get("command") or {}).get("type") == "thread.turn.start":
+        starts += 1
+    if entry.get("event") == "turn-script":
+        scripts += 1
+        if not (entry.get("script") or "").startswith(sys.argv[2]):
+            foreign += 1
+print("%d %d %d" % (starts, scripts, foreign))
+PY
+)
+  # shellcheck disable=SC2086 # three counted fields, split on purpose
+  set -- $PROVIDER_SUMMARY
+  if [ "${3:-1}" != 0 ]; then
+    record synthetic-provider FAIL "$3 turn(s) ran a script outside the harness root"
+  else
+    record synthetic-provider PASS "$1 turn start(s), $2 scripted turn(s), all from the harness root"
+  fi
 fi
 
 printf '\n===== qualification summary =====\n'

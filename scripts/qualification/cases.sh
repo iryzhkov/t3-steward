@@ -59,7 +59,8 @@ evidence_path() { printf '%s/evidence/%s' "$ROOT" "$1"; }
 case_one() {
   local identity
   identity=$(evidence_path case1-identity.json)
-  if ! fleet_client_cli query coordinator identity --json >"$identity" 2>"$identity.err"; then
+  # The pinned profile: one key narrowed to the query operation.
+  if ! fleet_client_cli pinned coordinator identity --json >"$identity" 2>"$identity.err"; then
     record case1-identity FAIL "coordinator identity failed: $(tail -n 3 "$identity.err")"
     return
   fi
@@ -78,9 +79,10 @@ case_one() {
   submission=$(evidence_path case1-submit.json)
   CASE1_KEY="qual-case1-$$"
   export CASE1_KEY
-  if ! fleet_client_cli submission campaign submit "$directory" \
-      --idempotency-key "$CASE1_KEY" --allow-unverified \
-      --reason 'qualification: one coordinator-exchange operation per client block' \
+  # The documented agent path: one client block, no --allow-unverified, so the
+  # readiness check and the submission both travel over the same key.
+  if ! fleet_client_cli main campaign submit "$directory" \
+      --idempotency-key "$CASE1_KEY" \
       --json >"$submission" 2>"$submission.err"; then
     record case1-submit FAIL "submission failed: $(tail -n 3 "$submission.err")"
     return
@@ -115,7 +117,7 @@ case_restricted_ssh() {
   local out
   out=$(evidence_path restricted-ssh.txt)
   T3_QUAL_SSH_CONFIG="$ROOT/client/ssh_config" "$ROOT/bin/ssh" \
-    -oBatchMode=yes qual-admin-query "touch $marker" </dev/null >"$out" 2>&1 || true
+    -oBatchMode=yes qual-admin "touch $marker" </dev/null >"$out" 2>&1 || true
   if [ -e "$marker" ]; then
     record restricted-ssh FAIL "the forced command ran an arbitrary command: $marker exists"
     return
@@ -155,9 +157,8 @@ case_two() {
       XDG_CONFIG_HOME="$ROOT/client/home/.config" \
       XDG_STATE_HOME="$ROOT/client/home/.local/state" \
       T3_QUAL_SSH_CONFIG="$ROOT/client/ssh_config" \
-      "$STEWARD" campaign --config "$ROOT/client/config-submission.yaml" \
-        submit "$directory" --idempotency-key "$key" --allow-unverified \
-        --reason 'qualification: lost response' --json \
+      "$STEWARD" campaign --config "$ROOT/client/config-main.yaml" \
+        submit "$directory" --idempotency-key "$key" --json \
     >"$interrupted" 2>"$interrupted.err" || true
   if [ ! -s "$interrupted" ]; then
     record case2-loss FAIL "the interrupter produced no report: $(tail -n 3 "$interrupted.err")"
@@ -179,9 +180,8 @@ case_two() {
 
   local second
   second=$(evidence_path case2-second.json)
-  if ! fleet_client_cli submission campaign submit "$directory" \
-      --idempotency-key "$key" --allow-unverified \
-      --reason 'qualification: lost response' --json \
+  if ! fleet_client_cli main campaign submit "$directory" \
+      --idempotency-key "$key" --json \
       >"$second" 2>"$second.err"; then
     record case2-retry FAIL "the retry with the same key failed: $(tail -n 3 "$second.err")"
     return
@@ -230,12 +230,9 @@ case_three_one() {
 
   check=$(evidence_path "case3-$project-check.json")
   # campaign check exits non-zero when the campaign is impossible, which is the
-  # expected outcome here, so its status is read rather than trusted.
-  #
-  # The check runs on the coordinator host, over its owner-only socket. It
-  # cannot run from the client host: the remote-admin role is refused the
-  # viability query. That refusal is itself a recorded case, remote-viability.
-  fleet_coordinator_cli campaign check "$directory" --json >"$check" 2>"$check.err" || true
+  # expected outcome here, so its status is read rather than trusted. It runs
+  # from the client host, which is where an agent would run it.
+  fleet_client_cli main campaign check "$directory" --json >"$check" 2>"$check.err" || true
   if [ ! -s "$check" ]; then
     record "case3-$project" FAIL "campaign check produced no matrix: $(tail -n 3 "$check.err")"
     return
@@ -264,10 +261,14 @@ EOF
 
   submit=$(evidence_path "case3-$project-submit.txt")
   local status=0
-  fleet_client_cli submission campaign submit "$directory" \
+  # --allow-unverified on purpose: it skips the client-side check, so what
+  # refuses the submission is the coordinator's own transactional validation at
+  # acceptance, which is the property this case is about. Streams are kept
+  # apart because the warning goes to standard error.
+  fleet_client_cli main campaign submit "$directory" \
     --idempotency-key "qual-case3-$project-$$" --allow-unverified \
     --reason 'qualification: the coordinator must refuse this at acceptance' \
-    --json >"$submit" 2>&1 || status=$?
+    --json >"$submit" 2>"$submit.err" || status=$?
   after=$(fleet_workflow_count)
   if [ "$status" -eq 0 ]; then
     record "case3-$project" FAIL "the coordinator accepted a permanently impossible campaign (runs $before->$after)"
@@ -294,7 +295,7 @@ case_remote_viability() {
   local directory out status=0
   directory=$(fleet_campaign remote-viability good)
   out=$(evidence_path remote-viability.txt)
-  fleet_client_cli query campaign check "$directory" --json >"$out" 2>&1 || status=$?
+  fleet_client_cli main campaign check "$directory" --json >"$out" 2>"$out.err" || status=$?
   local outcome
   outcome=$(json_after_preamble matrix outcome <"$out" 2>/dev/null || true)
   if [ -n "$outcome" ]; then
@@ -312,8 +313,7 @@ case_four() {
   local directory check
   directory=$(fleet_campaign case4 private)
   check=$(evidence_path case4-check.json)
-  # As in case 3, the readiness check runs on the coordinator host.
-  fleet_coordinator_cli campaign check "$directory" --json >"$check" 2>"$check.err" || true
+  fleet_client_cli main campaign check "$directory" --json >"$check" 2>"$check.err" || true
   if [ ! -s "$check" ]; then
     record case4 FAIL "campaign check produced no matrix: $(tail -n 3 "$check.err")"
     return

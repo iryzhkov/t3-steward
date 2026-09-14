@@ -53,6 +53,11 @@ PY
 
 fleet_secret() { head -c 32 /dev/urandom | base64 -w0; }
 
+# QUAL_T3_PROJECTS is every T3 project the configured catalog names. The
+# synthetic provider is seeded with them so that a worker observing its own
+# readiness finds them.
+QUAL_T3_PROJECTS="qual-good,qual-private,qual-missing-ref,qual-absent-forge,qual-private-https,qual-plain,qual-beside,qual-park,qual-park-restart,qual-race,qual-bad-setup,qual-bad-syntax,qual-argument-injection"
+
 # fleet_private_file writes content to a 0600 file, which is what both secret
 # stores require.
 fleet_private_file() {
@@ -118,7 +123,7 @@ fleet_build() {
 fleet_keys() {
   local name
   ssh-keygen -q -t ed25519 -N '' -f "$ROOT/ssh/host_key" -C qual-host
-  for name in admin-query admin-submission worker-a worker-b repo-good repo-noref repo-private repo-missing repo-unauthorized; do
+  for name in admin admin-query worker-a worker-b repo-good repo-noref repo-private repo-missing repo-unauthorized; do
     ssh-keygen -q -t ed25519 -N '' -f "$ROOT/keys/$name" -C "qual-$name"
   done
 }
@@ -286,22 +291,33 @@ fleet_forced_commands() {
 
   # The coordinator admin transport. One line per operation, exactly as the
   # operations runbook documents.
-  # The argument order is "<command> --config PATH <operation>". The operations
-  # runbook shows --config before the command word, which the CLI rejects with
-  # `unknown command "--config"`; see docs/qualification-harness.md.
+  # Both documented shapes of the admin forced command are installed, because
+  # both are supported and a harness that exercised only one could not catch a
+  # regression in the other.
+  #
+  # The unpinned line carries no operation word: the operation is taken from the
+  # signed frame, so one key serves a client that needs several operations. It
+  # is what an agent's ordinary "campaign submit" travels over, since submit
+  # issues a viability query and then a submission.
+  fleet_wrapper "$ROOT/forced/admin" "$ROOT/coordinator/home" "$ROOT/coordinator/ssh_config" \
+    "$STEWARD" coordinator-exchange --config "$ROOT/coordinator/config.yaml"
+  # The pinned line names one operation, which narrows the key to it.
   fleet_wrapper "$ROOT/forced/admin-query" "$ROOT/coordinator/home" "$ROOT/coordinator/ssh_config" \
     "$STEWARD" coordinator-exchange --config "$ROOT/coordinator/config.yaml" query
-  fleet_wrapper "$ROOT/forced/admin-submission" "$ROOT/coordinator/home" "$ROOT/coordinator/ssh_config" \
-    "$STEWARD" coordinator-exchange --config "$ROOT/coordinator/config.yaml" submission
+  fleet_authorize admin "$ROOT/forced/admin"
   fleet_authorize admin-query "$ROOT/forced/admin-query"
-  fleet_authorize admin-submission "$ROOT/forced/admin-submission"
 
-  # The two worker control endpoints.
+  # The two workers. Each is reached through one persistent bridge rather than
+  # through the three fixed worker-exchange operations, because a coordinator
+  # dials one address per worker while a forced command pins one operation word:
+  # a worker whose key is pinned to "control" can never take artifact delivery.
+  # The persistent connection multiplexes control, artifact-send and
+  # artifact-receive over one stream, so one key serves the worker.
   local worker
   for worker in worker-a worker-b; do
-    fleet_wrapper "$ROOT/forced/$worker-control" "$ROOT/$worker/home" "$ROOT/$worker/ssh_config" \
-      "$STEWARD" worker-exchange --config "$ROOT/$worker/config.yaml" control
-    fleet_authorize "$worker" "$ROOT/forced/$worker-control"
+    fleet_wrapper "$ROOT/forced/$worker-bridge" "$ROOT/$worker/home" "$ROOT/$worker/ssh_config" \
+      "$STEWARD" worker --config "$ROOT/$worker/config.yaml" bridge
+    fleet_authorize "$worker" "$ROOT/forced/$worker-bridge"
   done
 
   # The repositories. Each key serves exactly one repository through
@@ -372,7 +388,7 @@ fleet_t3_stub() {
   T3_PORT=$(fleet_free_port)
   export T3_PORT
   python3 "$HARNESS_DIR/t3_stub.py" "$T3_PORT" "$ROOT/evidence/t3-stub.jsonl" "$ROOT/turns" \
-    >"$ROOT/evidence/t3-stub.log" 2>&1 &
+    "$QUAL_T3_PROJECTS" >"$ROOT/evidence/t3-stub.log" 2>&1 &
   fleet_track "$!"
   local deadline=$((SECONDS + 10))
   until curl -sf "http://127.0.0.1:$T3_PORT/health" >/dev/null 2>&1; do
@@ -429,6 +445,13 @@ $(fleet_project_block)
   transport:
     kind: ssh
     request_timeout: 30s
+  message_limits:
+    max_bytes: 4194304
+    max_files: 1000
+    max_artifact_bytes: 16777216
+  freshness:
+    worker_max_age: 5m
+    quota_max_age: 8760h
   scheduling:
     interval: 2s
   startup_admission: closed
@@ -440,17 +463,150 @@ EOF
     "qual-repo-private=$repo_key"
 }
 
+# fleet_provider_cache writes the disposable T3 provider cache each worker reads
+# to observe which provider instances and models it can actually serve. Without
+# it the worker reports the configured route unavailable and enrollment is
+# refused, which is the correct behaviour and not what these cases are about.
+fleet_provider_cache() {
+  local worker=$1
+  mkdir -p "$ROOT/$worker/t3/caches"
+  cat >"$ROOT/$worker/t3/caches/synthetic.json" <<'EOF'
+{
+  "instanceId": "synthetic",
+  "enabled": true,
+  "installed": true,
+  "status": "ready",
+  "auth": {"status": "authenticated"},
+  "models": [{"slug": "synthetic-model"}]
+}
+EOF
+}
+
+# fleet_worker_bootstrap writes the UpKeeper-owned worker bootstrap document the
+# persistent worker reads at startup. It is a closed field set with a strict
+# decoder, so the capability and route lists must be sorted and the credential
+# reference must name this worker.
+fleet_worker_bootstrap() {
+  local worker=$1
+  printf '%s' "{\"schema_version\":1,\"worker_id\":\"$worker\",\"coordinator_id\":\"qual-coordinator\",\"transport\":\"ssh\",\"capabilities\":[\"git\",\"huyang\"],\"provider_routes\":[\"synthetic\"],\"credential_ref\":\"secretref:f02-protocol/$worker\"}" \
+    | fleet_private_file "$ROOT/$worker/home/.config/t3-steward/worker-bootstrap.json"
+}
+
+# fleet_start_workers starts one persistent worker daemon per worker. The daemon
+# owns the worker's Unix socket; the SSH bridge forced command is what the
+# coordinator reaches it through.
+fleet_start_workers() {
+  local worker
+  for worker in worker-a worker-b; do
+    (
+      cd "$ROOT/$worker"
+      HOME="$ROOT/$worker/home" \
+      XDG_CONFIG_HOME="$ROOT/$worker/home/.config" \
+      XDG_STATE_HOME="$ROOT/$worker/home/.local/state" \
+      XDG_DATA_HOME="$ROOT/$worker/home/.local/share" \
+      XDG_CACHE_HOME="$ROOT/$worker/home/.cache" \
+      XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
+      GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 \
+      T3_QUAL_SSH_CONFIG="$ROOT/$worker/ssh_config" \
+      PATH="$ROOT/bin:/usr/bin:/bin" \
+      exec "$STEWARD" worker --config "$ROOT/$worker/config.yaml" serve
+    ) >>"$ROOT/evidence/$worker.log" 2>&1 &
+    eval "${worker//-/_}_PID=\$!"
+    fleet_track "$!"
+    local socket="$ROOT/$worker/home/.local/state/t3-steward/worker/worker.sock"
+    local deadline=$((SECONDS + 30))
+    until [ -S "$socket" ]; do
+      [ "$SECONDS" -lt "$deadline" ] \
+        || fleet_fail "$worker did not open its socket: $(tail -n 10 "$ROOT/evidence/$worker.log")"
+      sleep 0.2
+    done
+    fleet_log "$worker serving on $socket"
+  done
+}
+
+# fleet_restart_worker stops one persistent worker daemon and starts it again.
+# The socket lock is released on exit, so the replacement can take it.
+fleet_restart_worker() {
+  local worker=$1
+  local variable="${worker//-/_}_PID"
+  local pid=${!variable:-}
+  if [ -n "$pid" ]; then
+    kill "$pid" 2>/dev/null || true
+    local deadline=$((SECONDS + 30))
+    while kill -0 "$pid" 2>/dev/null; do
+      [ "$SECONDS" -lt "$deadline" ] || { kill -9 "$pid" 2>/dev/null || true; break; }
+      sleep 0.2
+    done
+  fi
+  local socket="$ROOT/$worker/home/.local/state/t3-steward/worker/worker.sock"
+  rm -f "$socket"
+  (
+    cd "$ROOT/$worker"
+    HOME="$ROOT/$worker/home" \
+    XDG_CONFIG_HOME="$ROOT/$worker/home/.config" \
+    XDG_STATE_HOME="$ROOT/$worker/home/.local/state" \
+    XDG_DATA_HOME="$ROOT/$worker/home/.local/share" \
+    XDG_CACHE_HOME="$ROOT/$worker/home/.cache" \
+    XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
+    GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 \
+    T3_QUAL_SSH_CONFIG="$ROOT/$worker/ssh_config" \
+    PATH="$ROOT/bin:/usr/bin:/bin" \
+    exec "$STEWARD" worker --config "$ROOT/$worker/config.yaml" serve
+  ) >>"$ROOT/evidence/$worker.log" 2>&1 &
+  eval "$variable=\$!"
+  fleet_track "$!"
+  local deadline=$((SECONDS + 30))
+  until [ -S "$socket" ]; do
+    [ "$SECONDS" -lt "$deadline" ] || fleet_fail "$worker did not reopen its socket"
+    sleep 0.2
+  done
+  fleet_log "$worker restarted"
+}
+
+# fleet_enroll_workers admits each worker to the coordinator's current catalog.
+# Enrollment is an operator action on the coordinator host, and the persistent
+# path requires it before any assignment can be offered.
+fleet_enroll_workers() {
+  local worker digest deadline
+  for worker in worker-a worker-b; do
+    deadline=$((SECONDS + 60))
+    while :; do
+      digest=$(fleet_coordinator_cli backlog workers --json 2>/dev/null \
+        | python3 "$HARNESS_DIR/inspect.py" worker-catalog "$worker")
+      [ -n "$digest" ] && [ "$digest" != unreadable ] && break
+      [ "$SECONDS" -lt "$deadline" ] || fleet_fail "no catalog revision for $worker"
+      sleep 1
+    done
+    if ! fleet_coordinator_cli worker enroll "$worker" \
+        --request-id "qual-enroll-$worker" --catalog-revision "$digest" \
+        --reason 'disposable qualification fleet' --expected-revision 0 \
+        >"$ROOT/evidence/enroll-$worker.json" 2>&1; then
+      fleet_fail "enrolling $worker failed: $(tail -n 5 "$ROOT/evidence/enroll-$worker.json")"
+    fi
+    fleet_log "$worker enrolled against catalog $digest"
+  done
+}
+
 # fleet_worker_block is the shared worker catalog. Both workers and the
 # coordinator must agree on it.
 fleet_worker_block() {
-  local worker
+  local worker connection="      connection: persistent-ssh"
+  # The malformed catalog is served by a coordinator with no persistent worker.
+  # A project whose repository syntax is invalid makes the worker execution
+  # catalog fail to build, and with a persistent worker that happens while the
+  # coordinator is starting, so the coordinator exits instead of reporting the
+  # project as misconfigured.
+  if [ "${1:-clean}" = malformed ]; then
+    connection="      # no persistent connection in the malformed variant"
+  fi
   for worker in worker-a worker-b; do
     cat <<EOF
     $worker:
       address: qual-$worker
+$connection
       epoch: $worker-epoch-1
       accept_backlog: true
-      capabilities: [git]
+      capabilities: [git, huyang]
       credential: secretref:f02-protocol/$worker
       providers:
         synthetic:
@@ -508,6 +664,12 @@ fleet_project_block() {
       t3_project: qual-plain
       setup_profile: quick
       workers: [worker-a]
+    beside:
+      repository: ssh://qual-repo-good/good.git
+      default_ref: main
+      t3_project: qual-beside
+      setup_profile: quick
+      workers: [worker-b]
     park:
       repository: ssh://qual-repo-good/good.git
       default_ref: main
@@ -579,7 +741,7 @@ backlog_v2:
       $ADMIN_PRINCIPAL:
         credential: secretref:f03-admin/qual-client
   workers:
-$(fleet_worker_block)
+$(fleet_worker_block "$variant")
   projects:
 $(fleet_project_block "$variant")
   setup_profiles:
@@ -591,8 +753,11 @@ $(fleet_project_block "$variant")
       timeout: 1m
   quota_pools:
     synthetic-pool:
+      # One at a time on purpose: it is what makes "a parked attempt released
+      # its slot" observable, because a second campaign can only run while the
+      # first is parked if the slot really came back.
       provider: synthetic
-      max_concurrent: 2
+      max_concurrent: 1
   storage:
     bundles: $ROOT/coordinator/bundles
     artifacts: $ROOT/coordinator/artifacts
@@ -600,8 +765,14 @@ $(fleet_project_block "$variant")
   transport:
     kind: ssh
     request_timeout: 30s
+  message_limits:
+    max_bytes: 4194304
+    max_files: 1000
+    # A persistent connection caps the artifact limit at 16 MiB.
+    max_artifact_bytes: 16777216
   freshness:
-    worker_max_age: 10m
+    # A persistent connection caps worker freshness at five minutes.
+    worker_max_age: 5m
     # Quota observations never arrive: the fleet's provider is synthetic and
     # quota checks are off. A short bound would add a temporary reason to every
     # candidate and obscure the finding each case is about.
@@ -618,14 +789,17 @@ EOF
 # fleet_client_config writes the configuration of the host that is not the
 # coordinator.
 #
-# Two client configurations are written rather than one. A coordinator client
-# declares a single ssh destination, the forced command pins one operation, and
-# OpenSSH selects the authorized_keys line by key, so one client block can reach
-# exactly one coordinator-exchange operation. See the harness documentation.
+# Two profiles are written, one per documented forced-command shape. "main"
+# names the unpinned line and is the ordinary agent path: one client block, one
+# key, every operation. "pinned" names the line that pins the query operation,
+# so the narrower arrangement stays exercised as well.
 fleet_client_config() {
-  local name operation key
-  for name in query submission; do
-    key="admin-$name"
+  local name key
+  for name in main pinned; do
+    key=admin
+    if [ "$name" = pinned ]; then
+      key=admin-query
+    fi
     cat >"$ROOT/client/config-$name.yaml" <<EOF
 state_path: $ROOT/client/state.db
 log_level: info
@@ -640,7 +814,7 @@ backlog_v2:
   mode: disabled
   coordinator_client:
     coordinator_id: qual-coordinator
-    address: qual-admin-$name
+    address: qual-$key
     connection: ssh
     remote_command: $STEWARD
     credential: secretref:f03-admin/qual-client
@@ -652,8 +826,8 @@ backlog_v2:
 EOF
   done
   fleet_ssh_config "$ROOT/client/ssh_config" \
-    "qual-admin-query=admin-query" \
-    "qual-admin-submission=admin-submission"
+    "qual-admin=admin" \
+    "qual-admin-query=admin-query"
 }
 
 # fleet_start_coordinator starts the coordinator process and waits for its
@@ -696,7 +870,11 @@ fleet_restart_coordinator() {
     wait "$COORDINATOR_PID" 2>/dev/null || true
   fi
   fleet_coordinator_config "$variant"
-  mv "$ROOT/evidence/coordinator.log" "$ROOT/evidence/coordinator-clean.log" 2>/dev/null || true
+  # Each coordinator lifetime keeps its own log, so a case can count how many
+  # times something was reported across restarts.
+  FLEET_COORDINATOR_LIVES=$((${FLEET_COORDINATOR_LIVES:-1} + 1))
+  mv "$ROOT/evidence/coordinator.log" \
+    "$ROOT/evidence/coordinator-life$FLEET_COORDINATOR_LIVES.log" 2>/dev/null || true
   fleet_start_coordinator
   fleet_log "coordinator restarted with the $variant project catalog"
 }
@@ -715,9 +893,10 @@ fleet_coordinator_cli() {
 
 # fleet_client_cli runs the CLI as the non-coordinator host would: its own home,
 # its own secret store, its own coordinator client, and no access to the
-# coordinator's socket.
+# coordinator's socket. The first argument selects the client profile, "main"
+# or "pinned".
 fleet_client_cli() {
-  local operation=$1
+  local profile=$1
   shift
   env -i \
     PATH="$ROOT/bin:/usr/bin:/bin" \
@@ -725,7 +904,7 @@ fleet_client_cli() {
     XDG_CONFIG_HOME="$ROOT/client/home/.config" \
     XDG_STATE_HOME="$ROOT/client/home/.local/state" \
     T3_QUAL_SSH_CONFIG="$ROOT/client/ssh_config" \
-    "$STEWARD" "$1" --config "$ROOT/client/config-$operation.yaml" "${@:2}"
+    "$STEWARD" "$1" --config "$ROOT/client/config-$profile.yaml" "${@:2}"
 }
 
 # fleet_await_workers waits until both workers have reported an inventory the
@@ -742,7 +921,8 @@ try:
 except Exception:
     print(0); raise SystemExit
 workers = payload.get("workers") or []
-print(sum(1 for w in workers if (w.get("snapshot") or {}).get("connected") and not w.get("stale")))' 2>/dev/null || echo 0)
+print(sum(1 for w in workers
+         if (w.get("snapshot") or {}).get("connected") and not w.get("stale") and w.get("enrolled")))' 2>/dev/null || echo 0)
     [ "$observed" = "2" ] && break
     if [ "$SECONDS" -ge "$deadline" ]; then
       fleet_coordinator_cli backlog workers --json >"$ROOT/evidence/workers-at-timeout.json" 2>&1 || true
@@ -890,6 +1070,12 @@ fleet_setup() {
   fleet_worker_config worker-b repo-unauthorized
   fleet_client_config
   fleet_forced_commands
+  fleet_worker_bootstrap worker-a
+  fleet_worker_bootstrap worker-b
+  fleet_provider_cache worker-a
+  fleet_provider_cache worker-b
+  fleet_start_workers
   fleet_start_coordinator
+  fleet_enroll_workers
   fleet_await_workers
 }

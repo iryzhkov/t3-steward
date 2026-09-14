@@ -46,6 +46,8 @@ def reading_task_field(document, field):
     task = first_task(document)
     if task is None:
         return ""
+    if field == "taskId":
+        return (task.get("task") or {}).get("id") or ""
     attempt = task.get("attempt") or {}
     if field in attempt:
         return attempt.get(field) or ""
@@ -56,19 +58,53 @@ def reading_task_field(document, field):
 def reading_run_state(document):
     summary = (document.get("workflow") or {}).get("summary") or {}
     run = summary.get("run") or {}
-    return run.get("state") or "unknown"
+    sink = run.get("sink") or {}
+    return "%s/%s" % (run.get("progress") or "unknown", sink.get("progress") or "unknown")
+
+
+def artifact_label(artifact):
+    body = artifact.get("metadata") or artifact
+    return "%s:%s" % (body.get("kind") or "?", body.get("name") or "?")
 
 
 def reading_artifact_names(document):
     workflow = document.get("workflow") or {}
-    names = []
-    for artifact in workflow.get("artifacts") or []:
-        names.append("%s:%s" % (artifact.get("kind") or "?", artifact.get("name") or "?"))
+    names = [artifact_label(artifact) for artifact in workflow.get("artifacts") or []]
     task = first_task(document)
     if task:
-        for artifact in task.get("artifacts") or []:
-            names.append("%s:%s" % (artifact.get("kind") or "?", artifact.get("name") or "?"))
+        names.extend(artifact_label(artifact) for artifact in task.get("artifacts") or [])
     return " ".join(sorted(set(names)))
+
+
+def reading_output_count(document):
+    """Count the declared outputs collected for the task.
+
+    This is the reading a parked attempt has to answer zero for: an output that
+    exists means the worker collected while the task was supposed to be waiting.
+    """
+    task = first_task(document)
+    if task is None:
+        return "0"
+    count = 0
+    for artifact in task.get("artifacts") or []:
+        body = artifact.get("metadata") or artifact
+        if body.get("kind") == "output":
+            count += 1
+    return str(count)
+
+
+def reading_verification(document):
+    """Count verification report artifacts for the task."""
+    task = first_task(document)
+    if task is None:
+        return "0"
+    count = 0
+    for artifact in task.get("artifacts") or []:
+        body = artifact.get("metadata") or artifact
+        name = (body.get("name") or "").lower()
+        if body.get("kind") == "verification" or "verification" in name:
+            count += 1
+    return str(count)
 
 
 def reading_assignment_state(document):
@@ -96,6 +132,30 @@ def reading_quarantine(document):
     return "\n".join(out)
 
 
+def reading_worker_catalog(document, worker_id):
+    """Return the catalog revision the coordinator requires of one worker."""
+    for worker in document.get("workers") or []:
+        requirement = worker.get("requirement") or {}
+        if requirement.get("workerId") == worker_id:
+            return requirement.get("catalogRevision") or ""
+    return ""
+
+
+def reading_worker_states(document):
+    rows = []
+    for worker in document.get("workers") or []:
+        snapshot = worker.get("snapshot") or {}
+        rows.append(
+            "%s=%s/%s"
+            % (
+                snapshot.get("workerId") or "?",
+                worker.get("state") or "?",
+                "enrolled" if worker.get("enrolled") else "unenrolled",
+            )
+        )
+    return " ".join(sorted(rows))
+
+
 def reading_workflow_count(document):
     if document.get("kind") == "error" or document.get("version") != "backlog.admin/v1":
         return "-1"
@@ -121,6 +181,10 @@ def main():
         "events": lambda: reading_events(document, argument),
         "quarantine": lambda: reading_quarantine(document),
         "workflow-count": lambda: reading_workflow_count(document),
+        "worker-catalog": lambda: reading_worker_catalog(document, argument),
+        "worker-states": lambda: reading_worker_states(document),
+        "outputs": lambda: reading_output_count(document),
+        "verification": lambda: reading_verification(document),
     }
     if reading not in table:
         print("unknown reading %s" % reading, file=sys.stderr)
