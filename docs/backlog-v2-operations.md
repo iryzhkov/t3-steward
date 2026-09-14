@@ -205,6 +205,16 @@ Dependency artifacts appear in the successor workspace at
 capture, checksums, final messages, preparation logs, checkpoints, and other
 retained records belong to the coordinator recovery unit.
 
+A failed preparation retains its log next to the attempt directory as
+`<attempt>.preparation.<ordinal>.log`, with the ordinal counted from 1 in the
+order the preparation attempts ran. Every attempt keeps its own immutable file,
+so reading the first one shows why the preparation started failing rather than
+what the last retry tripped over. The terminal failure of an attempt that
+exhausted its preparation budget reads `preparation failed N times; first error:
+<first>; last error: <last>`; the first error is the causal one. When the log
+itself could not be retained, the retention failure is reported after the
+failure that caused the preparation to fail, never in place of it.
+
 ## Routine administration
 
 Use the commands in [Backlog administration](backlog-admin.md) while the selected

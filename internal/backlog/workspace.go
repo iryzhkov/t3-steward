@@ -195,9 +195,13 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 	}
 	fail := func(cause error) (PreparedWorkspace, error) {
 		_ = logFile.Close()
-		retained := filepath.Join(parent, request.Attempt.ID+".preparation.log")
-		if copyErr := copyFileExclusive(logPath, retained, 0o600); copyErr != nil {
-			cause = fmt.Errorf("%w (retain preparation log: %v)", cause, copyErr)
+		retained, retainErr := retainPreparationLog(logPath, parent, request.Attempt.ID, 0o600)
+		if retainErr != nil {
+			// The retention failure is reported after the failure that caused
+			// the preparation to fail, and never in place of it: the causal
+			// error is the one an operator has to read first, and it is the one
+			// that stays unwrappable.
+			cause = fmt.Errorf("%w (retain preparation log: %v)", cause, retainErr)
 			retained = ""
 		}
 		return PreparedWorkspace{}, &PreparationError{Err: cause, LogPath: retained}
@@ -478,6 +482,36 @@ func runLoggedCommandOutput(ctx context.Context, log io.Writer, dir, program str
 		fmt.Fprintf(log, "! %v\n", err)
 	}
 	return output, err
+}
+
+// MaxRetainedPreparationLogs bounds how many per-attempt preparation logs one
+// attempt can retain. It is deliberately larger than any retry budget so that a
+// retry never has to overwrite the evidence of the attempt before it.
+const MaxRetainedPreparationLogs = 64
+
+// PreparationLogName is the immutable evidence path one preparation attempt
+// writes, numbered from 1 in the order the attempts ran.
+func PreparationLogName(attemptID string, ordinal int) string {
+	return fmt.Sprintf("%s.preparation.%d.log", attemptID, ordinal)
+}
+
+// retainPreparationLog copies the staged log to the first unused ordinal for
+// this attempt. The attempt ID alone does not change between retries, so naming
+// the file from it would let the second preparation attempt collide with the
+// first and lose the evidence of the original cause. Each attempt therefore
+// gets its own immutable file and no attempt can overwrite its predecessor.
+func retainPreparationLog(source, parent, attemptID string, mode os.FileMode) (string, error) {
+	for ordinal := 1; ordinal <= MaxRetainedPreparationLogs; ordinal++ {
+		destination := filepath.Join(parent, PreparationLogName(attemptID, ordinal))
+		err := copyFileExclusive(source, destination, mode)
+		if err == nil {
+			return destination, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("attempt %q already retains %d preparation logs", attemptID, MaxRetainedPreparationLogs)
 }
 
 func copyFileExclusive(source, destination string, mode os.FileMode) error {

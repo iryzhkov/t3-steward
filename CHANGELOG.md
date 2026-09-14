@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Each preparation attempt now retains its own evidence file,
+  `<attempt>.preparation.<ordinal>.log`. The retained log was named from the
+  attempt ID alone, and the attempt ID does not change across retries, so the
+  second attempt could not create the file: the real Git error was wrapped in a
+  "file exists" complaint and the log pointer was dropped. The first causal
+  failure is also kept durably and quoted in the terminal reason as
+  `preparation failed N times; first error: <first>; last error: <last>`.
+
 ## [0.11.0-rc.48] - 2026-09-14
 
 ### Fixed

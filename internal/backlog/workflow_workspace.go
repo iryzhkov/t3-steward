@@ -337,8 +337,10 @@ func (m *WorkflowWorkspaceManager) retainInitialFailure(request WorkspacePrepara
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return &PreparationError{Err: fmt.Errorf("%w (create retained log directory: %v)", preparationErr.Err, err)}
 	}
-	retained := filepath.Join(parent, request.Attempt.ID+".preparation.log")
-	if err := copyFileExclusive(preparationErr.LogPath, retained, 0o400); err != nil {
+	retained, err := retainPreparationLog(preparationErr.LogPath, parent, request.Attempt.ID, 0o400)
+	if err != nil {
+		// Retention is evidence, not causation. The failure that made the
+		// preparation fail stays first and stays unwrappable.
 		return &PreparationError{Err: fmt.Errorf("%w (retain workflow preparation log: %v)", preparationErr.Err, err)}
 	}
 	return &PreparationError{Err: preparationErr.Err, LogPath: retained}
