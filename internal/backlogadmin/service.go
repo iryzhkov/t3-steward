@@ -637,6 +637,7 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 		}
 	}
 	v.addWorkerBlocker(&explanation, task)
+	v.addRouteBlocker(&explanation, task, attempt)
 	v.addQuotaBlocker(&explanation, task, attempt)
 	for _, lock := range v.locks(Filter{}) {
 		if contains(task.ResourceLocks, lock.Name) && lock.OwnerAttemptID != "" && (attempt == nil || lock.OwnerAttemptID != attempt.ID) {
@@ -731,6 +732,49 @@ func (v view) addWorkerBlocker(explanation *Explanation, task domain.Task) {
 			})
 		}
 	}
+}
+
+// addRouteBlocker explains a task that no configured provider route can serve.
+//
+// Placement and routing are separate decisions: a worker can satisfy every
+// capability, class and capacity requirement and still be unable to run a task
+// whose declared model it does not offer. Reporting only placement therefore
+// called such a task eligible, which is worse than saying nothing, because a
+// task that will never be assigned looked ready to start.
+func (v view) addRouteBlocker(explanation *Explanation, task domain.Task, attempt *domain.Attempt) {
+	if len(task.Routes) == 0 {
+		return
+	}
+	inventories := make([]domain.WorkerInventory, 0)
+	for _, worker := range v.workersResponse(Filter{}) {
+		if worker.Snapshot.Inventory.ID == "" || (worker.Requirement != nil && !worker.Enrolled) {
+			continue
+		}
+		if worker.State != "observed" || worker.Stale || !worker.Snapshot.Connected {
+			continue
+		}
+		inventories = append(inventories, worker.Snapshot.Inventory)
+	}
+	if len(inventories) == 0 {
+		return
+	}
+	current := domain.Attempt{}
+	if attempt != nil {
+		current = *attempt
+	}
+	resolved, err := backlog.ResolveProviderRoutePools(task, current, inventories, v.records.QuotaPools)
+	if err != nil || len(resolved) != 0 {
+		return
+	}
+	models := make([]string, 0, len(task.Routes))
+	for _, route := range task.Routes {
+		models = append(models, route.ProviderInstanceID+"/"+route.Model)
+	}
+	explanation.Blockers = append(explanation.Blockers, Blocker{
+		Code: "provider-route-unavailable",
+		Detail: fmt.Sprintf("no enrolled worker offers any declared route (%s)",
+			strings.Join(models, ", ")),
+	})
 }
 
 func (v view) addQuotaBlocker(explanation *Explanation, task domain.Task, attempt *domain.Attempt) {
