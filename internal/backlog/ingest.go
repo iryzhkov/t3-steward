@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -24,6 +25,22 @@ import (
 type CoordinatorRecordStore interface {
 	SaveCoordinatorRecords(context.Context, sqlite.CoordinatorRecords) error
 }
+
+// ErrValidationUnavailable marks a refusal the submission did not earn: the
+// coordinator could not run its own readiness validation at all.
+//
+// It is a distinct classification because the two refusals mean opposite things
+// to whoever reads them. "This campaign can never run" is about the campaign
+// and is fixed by changing it. "Validation was unavailable" is about this
+// coordinator and is fixed by repairing it, after which the same idempotency
+// key makes the retry safe and returns the same run.
+//
+// Accepting the submission instead was the earlier behaviour and was wrong. A
+// permanent verdict must not come from the coordinator failing to ask itself a
+// question, but silent acceptance is not the alternative to a wrong refusal: it
+// creates the run the gate exists to prevent, with no record of why the gate
+// did not run.
+var ErrValidationUnavailable = errors.New("readiness validation unavailable")
 
 // PermanentValidator refuses a manifest that can never run as written. It is
 // applied inside ingestion rather than only on the client, because a client
