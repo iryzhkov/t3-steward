@@ -189,6 +189,20 @@ type Binding struct {
 	// than a dependency path the author would have to guess.
 }
 
+// Commit is one Git commit a task declares it will produce. It is an output
+// like any other as far as the graph is concerned, and it is reported apart
+// from Outputs because what a successor receives is not a file the task wrote:
+// it is the commit's provenance record, and the commit itself arrives fetched
+// into the successor's checkout under a campaign-scoped ref.
+type Commit struct {
+	Name string `json:"name"`
+	// Revision is the revision the manifest declared, resolved in the producing
+	// workspace when the task finishes. It is absent when the manifest declared
+	// none, which the worker resolves as HEAD; the document reports the
+	// declaration and the text rendering names the default.
+	Revision string `json:"revision,omitempty"`
+}
+
 // Task is one projected node of the graph.
 type Task struct {
 	Name       string `json:"name"`
@@ -206,6 +220,7 @@ type Task struct {
 	Dependents    []string    `json:"dependents,omitempty"`
 	InputsFrom    []Binding   `json:"inputsFrom,omitempty"`
 	Outputs       []string    `json:"outputs,omitempty"`
+	Commits       []Commit    `json:"commits,omitempty"`
 	Verify        []string    `json:"verify,omitempty"`
 	Placement     Placement   `json:"placement"`
 	PlacementFrom Origin      `json:"placementFrom"`
@@ -276,6 +291,7 @@ type Totals struct {
 	InputPatterns     int `json:"inputPatterns"`
 	InputFiles        int `json:"inputFiles"`
 	Outputs           int `json:"outputs"`
+	Commits           int `json:"commits"`
 	ArtifactBindings  int `json:"artifactBindings"`
 	TimingConstrained int `json:"timingConstrained"`
 }
@@ -368,6 +384,7 @@ func Project(manifest backlog.Manifest, opts Options) (Plan, error) {
 			Dependents:    dependents[name],
 			InputsFrom:    projectBindings(source.InputsFrom),
 			Outputs:       cloneStrings(source.Outputs),
+			Commits:       projectCommits(source.Commits),
 			Verify:        cloneStrings(source.Verify),
 			Placement:     projectPlacement(source.Placement),
 			Resources:     projectResources(source.Resources),
@@ -562,6 +579,7 @@ func buildTotals(plan Plan) Totals {
 	}
 	for _, task := range plan.Tasks {
 		totals.Outputs += len(task.Outputs)
+		totals.Commits += len(task.Commits)
 		for _, binding := range task.InputsFrom {
 			totals.ArtifactBindings += len(binding.Artifacts)
 		}
@@ -680,6 +698,19 @@ func projectBindings(inputsFrom map[string][]string) []Binding {
 			_ = artifact
 		}
 		result = append(result, binding)
+	}
+	return result
+}
+
+// projectCommits reports the commits a task declared, in manifest order, which
+// is the order the author wrote and the order the finalizer publishes in.
+func projectCommits(commits []backlog.ManifestCommit) []Commit {
+	if len(commits) == 0 {
+		return nil
+	}
+	result := make([]Commit, 0, len(commits))
+	for _, commit := range commits {
+		result = append(result, Commit{Name: commit.Name, Revision: commit.Revision})
 	}
 	return result
 }
