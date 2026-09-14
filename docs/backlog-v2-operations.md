@@ -247,23 +247,36 @@ ref means. A task that promised a commit it did not produce fails with
 `declared commit "<name>": <cause>`, in the same way a missing declared output
 fails.
 
-The campaign lifetime ends when the run does. On every coordinator boundary,
-after the projection has advanced the sinks, the refs of every run whose sink is
-terminal are released together, so a finished campaign stops pinning commits and
-the store does not grow without bound. Releasing is idempotent, a run that
-declared no commit costs nothing, and a release that fails is logged as
-`campaign commit release failed` and retried on the next boundary: the run has
-already finished and nothing about its outcome depends on a ref being deleted.
+The campaign lifetime of a commit is the lifetime of the provenance record that
+names it. While that record is retained the commit must resolve, because the
+record is the only thing that ever asks for it; once retention has removed the
+record, nothing can ask again and the ref is released. Settlement is not the
+boundary: a rerun may only be created from a run that has already finished, so
+releasing at settlement would release exactly the commits a rerun is about to
+carry.
 
-A settled run is held back while another run that has not settled carries one of
-its artifacts by reference, which is how a rerun consumes an ancestor's declared
-commit. Two limits are worth knowing. The coordinator releases the refs in the
-store under its own `storage.workspaces`, so a worker on another host keeps its
-own store until a worker-protocol release exists. And a rerun may only be
-created from a run that has already finished, so a rerun authored well after its
-source settled finds the source's refs already released; a rerun that has to
-carry a declared commit should therefore be created while the source run's
-commits are still listed by `refs/campaigns/<source run>/`.
+A rerun needs no special case. It pins its source run against retention, a
+pinned run's artifacts cannot be pruned, and so the provenance record — and the
+commit it names — survive for as long as the new run does. A rerun authored
+after the record has been pruned is refused by the rerun itself, which reads the
+artifact before it creates anything, rather than failing hours later in
+preparation.
+
+On every coordinator boundary, after the projection has advanced the sinks, the
+refs of every run whose provenance records retention has removed are released
+together. A run whose sink is not yet terminal is never released, which covers
+the window between a worker publishing a commit and the coordinator recording
+the artifact that names it. Releasing is idempotent, a run that declared no
+commit costs nothing, and a release that fails is logged as `campaign commit
+release failed` and retried on the next boundary: the run has already finished
+and nothing about its outcome depends on a ref being deleted.
+
+Workers on other hosts keep their own stores. The coordinator states, on the
+snapshot exchange of every reconciliation pass, the complete list of runs whose
+commits that worker must keep; the worker releases every run it holds that the
+list does not name. The statement carries an explicit flag, so a coordinator
+that says nothing is not read as "release everything", and it is refused whole
+rather than applied in part.
 
 ### Legacy intake quarantine
 

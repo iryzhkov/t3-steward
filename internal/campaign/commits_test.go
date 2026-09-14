@@ -121,7 +121,7 @@ func TestCommitsAreDocumented(t *testing.T) {
 		"commits:", "inputs_from", "provenance record",
 		".t3/dependencies/<producer>/<name>",
 		"refs/campaigns/<run>/<task>/<name>",
-		"--prune", "released together once the run has settled",
+		"--prune", "A rerun pins its source run against retention",
 	} {
 		if !strings.Contains(topic, want) {
 			t.Fatalf("the commits topic does not cover %q", want)

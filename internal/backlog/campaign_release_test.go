@@ -15,11 +15,32 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
-// The store exists to keep a commit reachable for a campaign's lifetime, so the
-// property that matters is that the lifetime ends: several campaigns run to
-// completion one after another and the store holds the refs of at most the
-// campaign that is still running, never the sum of all of them.
-func TestCampaignRefReleaseBoundsTheStore(t *testing.T) {
+// campaignRunRecords is one settled campaign whose single task declared one
+// commit, together with the provenance record that names it.
+func campaignRunRecords(runID, taskID, name string) (domain.WorkflowRun, domain.Task, domain.Artifact) {
+	run := domain.WorkflowRun{ID: runID, WorkflowID: "workflow-1"}
+	task := domain.Task{
+		ID: taskID, WorkflowID: "workflow-1", RunID: runID, Name: "producer",
+		Outputs: []domain.ArtifactDeclaration{{Name: name, Commit: &domain.CommitOutput{}}},
+	}
+	artifact := domain.Artifact{
+		ID: "output-" + taskID, WorkflowRunID: runID, TaskID: taskID,
+		AttemptID: "attempt-" + taskID, Kind: domain.ArtifactOutput, Name: name,
+		MediaType: "application/json", Producer: "worker:test",
+	}
+	return run, task, artifact
+}
+
+func settle(run *domain.WorkflowRun) {
+	run.Sink = &domain.SinkTask{Name: domain.SinkTaskName, Progress: domain.ProgressSucceeded}
+}
+
+// The store exists to keep a commit reachable for as long as anything can ask
+// for it, and the thing that can ask is the provenance record. So the refs of a
+// settled campaign survive while its record is retained and go when retention
+// removes it, and across many completed campaigns the store holds the refs of
+// the campaigns whose records still exist rather than the sum of all of them.
+func TestCampaignRefReleaseFollowsArtifactRetention(t *testing.T) {
 	ctx := context.Background()
 	repository := newGitFixture(t)
 	refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "campaign-refs")}
@@ -28,122 +49,160 @@ func TestCampaignRefReleaseBoundsTheStore(t *testing.T) {
 		Records: func(context.Context) (sqlite.CoordinatorRecords, error) { return records, nil },
 		Refs:    refs,
 	}
+	// Retention removes a campaign's record one campaign after it finished, so
+	// at most two campaigns can be holding refs at any moment.
+	prune := func(runID string) {
+		kept := records.Artifacts[:0]
+		for _, artifact := range records.Artifacts {
+			if artifact.WorkflowRunID != runID {
+				kept = append(kept, artifact)
+			}
+		}
+		records.Artifacts = kept
+	}
 
 	peak := 0
 	for campaign := 1; campaign <= 5; campaign++ {
 		runID := fmt.Sprintf("run-%d", campaign)
-		taskID := fmt.Sprintf("task-%d", campaign)
 		writeGitFile(t, repository, "version.txt", fmt.Sprintf("campaign %d\n", campaign))
 		gitRun(t, repository, "add", "version.txt")
 		gitRun(t, repository, "commit", "-m", runID)
 		base := gitOutput(t, repository, "rev-parse", "HEAD~1")
+		taskID := fmt.Sprintf("task-%d", campaign)
 		if _, err := refs.Publish(ctx, PublishCommitRequest{
 			WorkflowRunID: runID, TaskID: taskID, Name: "handoff",
 			Repository: repository, WorkspaceDir: repository, Base: base,
 		}, nil); err != nil {
 			t.Fatalf("publish campaign %d: %v", campaign, err)
 		}
-		records.WorkflowRuns = append(records.WorkflowRuns, domain.WorkflowRun{ID: runID, WorkflowID: "workflow-1"})
-		records.Tasks = append(records.Tasks, domain.Task{
-			ID: taskID, WorkflowID: "workflow-1", RunID: runID, Name: "producer",
-			Outputs: []domain.ArtifactDeclaration{{Name: "handoff", Commit: &domain.CommitOutput{}}},
-		})
+		run, task, artifact := campaignRunRecords(runID, taskID, "handoff")
+		records.WorkflowRuns = append(records.WorkflowRuns, run)
+		records.Tasks = append(records.Tasks, task)
+		records.Artifacts = append(records.Artifacts, artifact)
+
+		// A live campaign is never released: its commit is the handoff its own
+		// successor is about to fetch.
+		if report := reconciler.Tick(ctx); len(report.Released) != 0 {
+			t.Fatalf("campaign %d was released while it was still running: %v", campaign, report.Released)
+		}
+		settle(&records.WorkflowRuns[campaign-1])
+		// Settling is not the boundary. The record still exists, so a rerun
+		// authored now would still find the commit.
+		if report := reconciler.Tick(ctx); len(report.Released) != 0 {
+			t.Fatalf("campaign %d was released while its provenance record was retained: %v", campaign, report.Released)
+		}
 		if live := campaignRefCount(t, refs); live > peak {
 			peak = live
 		}
-
-		// The campaign finishes: its sink settles and the next boundary runs.
-		records.WorkflowRuns[campaign-1].Sink = &domain.SinkTask{
-			Name: domain.SinkTaskName, Progress: domain.ProgressSucceeded,
+		if campaign == 1 {
+			continue
 		}
+		previous := fmt.Sprintf("run-%d", campaign-1)
+		prune(previous)
 		report := reconciler.Tick(ctx)
-		if len(report.Errors) != 0 {
-			t.Fatalf("release errors after campaign %d: %v", campaign, report.Errors)
-		}
-		if strings.Join(report.Released, ",") != runID {
-			t.Fatalf("released %v after campaign %d, want %s", report.Released, campaign, runID)
-		}
-		if live := campaignRefCount(t, refs); live != 0 {
-			t.Fatalf("campaign %d left %d ref(s) pinned", campaign, live)
+		if len(report.Errors) != 0 || strings.Join(report.Released, ",") != previous {
+			t.Fatalf("after pruning %s: released %v, errors %v", previous, report.Released, report.Errors)
 		}
 	}
-	if peak != 1 {
-		t.Fatalf("the store held %d refs at once; the test no longer proves a bound", peak)
+	prune("run-5")
+	if report := reconciler.Tick(ctx); len(report.Errors) != 0 || strings.Join(report.Released, ",") != "run-5" {
+		t.Fatalf("final release = %v, errors %v", report.Released, report.Errors)
+	}
+	if live := campaignRefCount(t, refs); live != 0 {
+		t.Fatalf("%d ref(s) outlived every provenance record", live)
+	}
+	if peak > 2 {
+		t.Fatalf("the store held %d refs at once under a two-campaign retention window", peak)
 	}
 	if entries, err := os.ReadDir(filepath.Join(refs.Root, "provenance")); err != nil || len(entries) != 0 {
 		t.Fatalf("provenance records after five campaigns = %v, %v", entries, err)
 	}
 }
 
-// A rerun consumes an ancestor's declared commit as a carried input, and the
-// carried record names the source run's campaign ref. Releasing the source
-// while the new run still needs it would take the commit away from a run that
-// has not started yet, so the source is held until the rerun settles too.
-func TestCampaignRefReleaseHoldsARerunsCarriedCommit(t *testing.T) {
+// The two lists are complements over the runs that declared a commit, because
+// the worker statement releases exactly what the coordinator did not retain.
+// A run that declared none is in neither: there is nothing to keep and nothing
+// to delete.
+func TestCampaignRefLifetimeSplitsOnlyTheRunsThatDeclaredCommits(t *testing.T) {
+	live, liveTask, liveArtifact := campaignRunRecords("run-live", "task-live", "handoff")
+	held, heldTask, heldArtifact := campaignRunRecords("run-held", "task-held", "handoff")
+	settle(&held)
+	gone, goneTask, _ := campaignRunRecords("run-gone", "task-gone", "handoff")
+	settle(&gone)
+	plain := domain.WorkflowRun{ID: "run-plain", WorkflowID: "workflow-1"}
+	settle(&plain)
+	plainTask := domain.Task{
+		ID: "task-plain", WorkflowID: "workflow-1", RunID: "run-plain", Name: "producer",
+		Outputs: []domain.ArtifactDeclaration{{Name: "report.md"}},
+	}
+	records := sqlite.CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{live, held, gone, plain},
+		Tasks:        []domain.Task{liveTask, heldTask, goneTask, plainTask},
+		Artifacts:    []domain.Artifact{liveArtifact, heldArtifact},
+	}
+	retained, releasable := CampaignRefLifetime(records)
+	if strings.Join(retained, ",") != "run-held,run-live" {
+		t.Fatalf("retained = %v", retained)
+	}
+	if strings.Join(releasable, ",") != "run-gone" {
+		t.Fatalf("releasable = %v", releasable)
+	}
+}
+
+// An input artifact of another run that happens to share the name is not this
+// run's provenance record: a rerun's carried reference belongs to the new run,
+// and what holds the source is the pin on it, not a name collision.
+func TestCampaignRefLifetimeCountsOnlyTheRunsOwnOutput(t *testing.T) {
+	run, task, artifact := campaignRunRecords("run-1", "task-1", "handoff")
+	settle(&run)
+	carried := artifact
+	carried.ID = "input:rerun:key:0"
+	carried.WorkflowRunID = "run:rerun:key"
+	carried.TaskID = "task:rerun:key:0"
+	carried.Kind = domain.ArtifactInput
+	records := sqlite.CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{run},
+		Tasks:        []domain.Task{task},
+		Artifacts:    []domain.Artifact{carried},
+	}
+	_, releasable := CampaignRefLifetime(records)
+	if strings.Join(releasable, ",") != "run-1" {
+		t.Fatalf("releasable = %v", releasable)
+	}
+}
+
+// Releasing twice is a no-op, and a reconciler that restarted and forgot what
+// it released reaches the store's own idempotent early return.
+func TestCampaignRefReleaseIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	repository := newGitFixture(t)
 	base := gitOutput(t, repository, "rev-parse", "HEAD")
 	refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "campaign-refs")}
 	if _, err := refs.Publish(ctx, PublishCommitRequest{
-		WorkflowRunID: "run-1", TaskID: "task-implement", Name: "implementation",
+		WorkflowRunID: "run-1", TaskID: "task-1", Name: "handoff",
 		Repository: repository, WorkspaceDir: repository, Base: base,
 	}, nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-
-	settled := &domain.SinkTask{Name: domain.SinkTaskName, Progress: domain.ProgressFailed}
+	run, task, _ := campaignRunRecords("run-1", "task-1", "handoff")
+	settle(&run)
 	records := sqlite.CoordinatorRecords{
-		WorkflowRuns: []domain.WorkflowRun{
-			{ID: "run-1", WorkflowID: "workflow-1", Sink: settled},
-			{ID: "run:rerun:key", WorkflowID: "workflow-1"},
-		},
-		Tasks: []domain.Task{
-			{
-				ID: "task-implement", WorkflowID: "workflow-1", RunID: "run-1", Name: "implement",
-				Outputs: []domain.ArtifactDeclaration{{Name: "implementation", Commit: &domain.CommitOutput{}}},
-			},
-			{ID: "task-review", WorkflowID: "workflow-1", RunID: "run-1", Name: "review"},
-			{
-				ID: "task:rerun:key:0", WorkflowID: "workflow-1", RunID: "run:rerun:key", Name: "review",
-				CarriedInputs: []domain.CarriedInput{{
-					Producer: "implement", ProducerTaskID: "task-implement",
-					Name: "implementation", ArtifactID: "input:rerun:key:0",
-				}},
-			},
-		},
+		WorkflowRuns: []domain.WorkflowRun{run}, Tasks: []domain.Task{task},
 	}
-	reconciler := &CampaignRefReleaseReconciler{
-		Records: func(context.Context) (sqlite.CoordinatorRecords, error) { return records, nil },
-		Refs:    refs,
+	load := func(context.Context) (sqlite.CoordinatorRecords, error) { return records, nil }
+	reconciler := &CampaignRefReleaseReconciler{Records: load, Refs: refs}
+	if report := reconciler.Tick(ctx); len(report.Errors) != 0 || strings.Join(report.Released, ",") != "run-1" {
+		t.Fatalf("first pass = %v, errors %v", report.Released, report.Errors)
 	}
 	if report := reconciler.Tick(ctx); len(report.Released) != 0 || len(report.Errors) != 0 {
-		t.Fatalf("released %v while the rerun still needs the commit (errors %v)", report.Released, report.Errors)
+		t.Fatalf("second pass = %v, errors %v", report.Released, report.Errors)
 	}
-	if _, err := refs.Resolve("run-1", "task-implement", "implementation"); err != nil {
-		t.Fatalf("the carried commit was released out from under the rerun: %v", err)
-	}
-
-	// The rerun settles, and now nothing needs the source run's commit.
-	records.WorkflowRuns[1].Sink = &domain.SinkTask{Name: domain.SinkTaskName, Progress: domain.ProgressSucceeded}
-	report := reconciler.Tick(ctx)
-	if len(report.Errors) != 0 || strings.Join(report.Released, ",") != "run-1,run:rerun:key" {
-		t.Fatalf("released %v, errors %v", report.Released, report.Errors)
+	restarted := &CampaignRefReleaseReconciler{Records: load, Refs: refs}
+	if report := restarted.Tick(ctx); len(report.Errors) != 0 {
+		t.Fatalf("a restarted reconciler failed to release nothing: %v", report.Errors)
 	}
 	if campaignRefCount(t, refs) != 0 {
-		t.Fatal("a settled campaign still pins its commit")
-	}
-	// Releasing again changes nothing and reports nothing: the reconciler is
-	// safe to run on every boundary, and a restart that forgets what it already
-	// released reaches the store's own idempotent no-op.
-	if report := reconciler.Tick(ctx); len(report.Released) != 0 || len(report.Errors) != 0 {
-		t.Fatalf("second pass released %v, errors %v", report.Released, report.Errors)
-	}
-	fresh := &CampaignRefReleaseReconciler{
-		Records: func(context.Context) (sqlite.CoordinatorRecords, error) { return records, nil },
-		Refs:    refs,
-	}
-	if report := fresh.Tick(ctx); len(report.Errors) != 0 {
-		t.Fatalf("a restarted reconciler failed to release nothing: %v", report.Errors)
+		t.Fatal("a released campaign still pins its commit")
 	}
 }
 
@@ -163,10 +222,11 @@ func TestCampaignRefReleaseOfARunWithoutCommitsTouchesNothing(t *testing.T) {
 // A failed release is an operational error: it is reported and the run it
 // belongs to is untouched, so the next boundary tries again.
 func TestCampaignRefReleaseFailureIsReportedAndRetried(t *testing.T) {
-	records := sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{{
-		ID: "run-1", WorkflowID: "workflow-1",
-		Sink: &domain.SinkTask{Name: domain.SinkTaskName, Progress: domain.ProgressSucceeded},
-	}}}
+	run, task, _ := campaignRunRecords("run-1", "task-1", "handoff")
+	settle(&run)
+	records := sqlite.CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{run}, Tasks: []domain.Task{task},
+	}
 	broken := &countingReleaser{err: errors.New("git refused")}
 	reconciler := &CampaignRefReleaseReconciler{
 		Records: func(context.Context) (sqlite.CoordinatorRecords, error) { return records, nil },

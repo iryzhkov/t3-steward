@@ -27,53 +27,74 @@ type CampaignRefReleaseReport struct {
 	Errors   []error
 }
 
-// PlanCampaignRefRelease names the runs whose declared commits may stop being
-// pinned. A run qualifies when its coordinator-owned sink is terminal, which is
-// the point at which the run is over and its outcome can no longer change.
+// CampaignRefLifetime divides the runs the coordinator knows into the ones
+// whose declared commits must stay reachable and the ones whose campaign refs
+// may be released. A run that declares no commit appears in neither list:
+// there is nothing to keep and nothing to delete.
 //
-// A run is held back while another run that has not settled carries one of its
-// artifacts by reference. That is how a rerun consumes an ancestor's declared
-// commit: the carried artifact is the commit's provenance record, and the
-// record names the source run's campaign ref, so releasing the source would
-// take the commit away from a run that still needs it. Any carried input holds
-// the producing run, not only one whose declaration says commit, because the
-// cost of holding a handful of refs for the life of a rerun is nothing and the
-// cost of being wrong is a rerun that cannot start.
+// The lifetime of a declared commit is the lifetime of the provenance record
+// that names it. That record is the run's retained artifact, so while it is
+// retained the commit it points at must resolve, and once retention has removed
+// it nothing can ask for the commit again. Settlement is the wrong boundary and
+// was the first attempt at this: a rerun may only be created from a run that
+// has already finished, so releasing at settlement released exactly the commits
+// a rerun was about to carry.
 //
-// Known gap, deliberately not papered over: a rerun may only be created from a
-// run that has already finished, so a rerun authored long after its source
-// settled finds the source's refs already released. Closing that needs either a
-// republication of the carried commit into the new run's own namespace or a
-// campaign-ref lifetime tied to artifact retention rather than to settlement.
-// Both are larger decisions than this function, and neither is made here.
-func PlanCampaignRefRelease(records sqlite.CoordinatorRecords) []string {
-	taskRun := make(map[string]string)
+// Tying the release to retention needs no special case for a rerun. A rerun
+// pins its source run against retention, and a pinned run's artifacts cannot be
+// pruned, so the provenance record survives for as long as the new run does and
+// this function keeps the source's refs for the same span. When the pin is gone
+// and retention removes the record, the same rule releases them. A rerun
+// authored after the record has been pruned is refused by the rerun itself,
+// which reads the artifact before it creates anything.
+//
+// A settled sink is still required before anything is released. It closes the
+// window between a worker publishing a commit and the coordinator recording the
+// artifact that names it: during that window the artifact is legitimately
+// missing, and only an unsettled run can be in it.
+func CampaignRefLifetime(records sqlite.CoordinatorRecords) (retained, releasable []string) {
 	for _, run := range records.WorkflowRuns {
-		for _, task := range domain.TasksForRun(run, records.Tasks) {
-			taskRun[task.ID] = run.ID
-		}
-	}
-	held := make(map[string]bool)
-	for _, run := range records.WorkflowRuns {
-		if runSettled(run) {
+		declared := declaredCommitNames(run, records.Tasks)
+		if len(declared) == 0 {
 			continue
 		}
-		for _, task := range domain.TasksForRun(run, records.Tasks) {
-			for _, carried := range task.CarriedInputs {
-				if producer := taskRun[carried.ProducerTaskID]; producer != "" {
-					held[producer] = true
-				}
+		if runSettled(run) && !commitRecordRetained(run.ID, declared, records.Artifacts) {
+			releasable = append(releasable, run.ID)
+			continue
+		}
+		retained = append(retained, run.ID)
+	}
+	sort.Strings(retained)
+	sort.Strings(releasable)
+	return retained, releasable
+}
+
+// declaredCommitNames indexes the (task, name) pairs of one run that name a
+// declared commit rather than a file the task wrote.
+func declaredCommitNames(run domain.WorkflowRun, templates []domain.Task) map[string]bool {
+	declared := map[string]bool{}
+	for _, task := range domain.TasksForRun(run, templates) {
+		for _, output := range task.Outputs {
+			if output.Commit != nil {
+				declared[task.ID+"\x00"+output.Name] = true
 			}
 		}
 	}
-	var release []string
-	for _, run := range records.WorkflowRuns {
-		if runSettled(run) && !held[run.ID] {
-			release = append(release, run.ID)
+	return declared
+}
+
+// commitRecordRetained reports whether any provenance record of a run's
+// declared commits is still retained. Only an output artifact of the run itself
+// counts: a reference carried into another run is that run's artifact and is
+// held by the pin on this one, not by this test.
+func commitRecordRetained(runID string, declared map[string]bool, artifacts []domain.Artifact) bool {
+	for _, artifact := range artifacts {
+		if artifact.WorkflowRunID == runID && artifact.Kind == domain.ArtifactOutput &&
+			declared[artifact.TaskID+"\x00"+artifact.Name] {
+			return true
 		}
 	}
-	sort.Strings(release)
-	return release
+	return false
 }
 
 // runSettled reports whether the coordinator-owned sink has reached a terminal
@@ -82,11 +103,13 @@ func runSettled(run domain.WorkflowRun) bool {
 	return run.Sink != nil && run.Sink.Progress.Terminal()
 }
 
-// CampaignRefReleaseReconciler releases the campaign refs of settled runs on
-// every coordinator boundary. It is a reconciler rather than a hook on the
-// settlement transition because a release can fail, and a durable state change
-// must not depend on a Git command succeeding; retrying on the next boundary is
-// both simpler and more honest than rolling settlement back.
+// CampaignRefReleaseReconciler releases the campaign refs whose provenance
+// records retention has removed, on every coordinator boundary. It is a
+// reconciler rather than a hook on the prune that removed them because a
+// release can fail, and a durable state change must not depend on a Git command
+// succeeding; retrying on the next boundary is both simpler and more honest
+// than rolling the prune back. Reconciling also converges on a prune performed
+// by a process that died before it could release anything.
 type CampaignRefReleaseReconciler struct {
 	// Records loads the coordinator snapshot the decision is read from.
 	Records func(context.Context) (sqlite.CoordinatorRecords, error)
@@ -102,7 +125,8 @@ type CampaignRefReleaseReconciler struct {
 	released map[string]struct{}
 }
 
-// Tick releases every settled run that nothing still needs.
+// Tick releases the campaign refs of every run whose declared commits nothing
+// can ask for any more.
 func (r *CampaignRefReleaseReconciler) Tick(ctx context.Context) CampaignRefReleaseReport {
 	var report CampaignRefReleaseReport
 	if r == nil || r.Records == nil || r.Refs == nil {
@@ -116,7 +140,8 @@ func (r *CampaignRefReleaseReconciler) Tick(ctx context.Context) CampaignRefRele
 	if r.released == nil {
 		r.released = make(map[string]struct{})
 	}
-	for _, runID := range PlanCampaignRefRelease(records) {
+	_, releasable := CampaignRefLifetime(records)
+	for _, runID := range releasable {
 		if _, done := r.released[runID]; done {
 			continue
 		}
