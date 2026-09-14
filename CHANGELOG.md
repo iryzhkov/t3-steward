@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.39] - 2026-09-14
+
+### Fixed
+
+- Preflight evidence imports as its own kind of log. The import contract treated
+  a log artifact as the thread archive and nothing else, so every preflight log
+  failed an identity check it could not pass and the coordinator refused whole
+  results in a retry loop. Both identities stay strict: a preflight log must
+  carry a preflight identity and live under the preflight tree.
+- A blocked task is explained through the planner's own placement matcher, so it
+  reports which worker lacked which capability or fell below which CPU class
+  instead of only that no worker was suitable. The admin view's separate copy of
+  the placement rules had drifted and knew nothing about class or capacity.
+
 ## [0.11.0-rc.38] - 2026-09-14
 
 ### Fixed
