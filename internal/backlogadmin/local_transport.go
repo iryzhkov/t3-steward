@@ -70,6 +70,13 @@ type LocalService interface {
 
 type LocalSubmissionRequest struct {
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`
+	// ArchiveSHA256 is the digest of the archive bytes that follow the
+	// request. The remote carrier fills it and folds it into the frame digest,
+	// which is what makes "the same idempotency key with different content is
+	// refused" true of the transport's replay store and not only of the
+	// submission service behind it. The local carrier leaves it empty: there
+	// is no transport replay store on that side to mislead.
+	ArchiveSHA256 string `json:"archiveSha256,omitempty"`
 }
 
 type LocalSubmissionResponse struct {
@@ -111,6 +118,14 @@ type RemoteAdminAssertion struct {
 	RequestID   string `json:"requestId"`
 }
 
+// valid reports whether an assertion is complete and names this coordinator.
+// A field that is carried but never checked is a field that will eventually be
+// wrong without anyone noticing.
+func (a *RemoteAdminAssertion) valid(coordinatorID string) bool {
+	return a != nil && a.Principal != "" && a.RequestID != "" &&
+		a.Coordinator != "" && a.Coordinator == coordinatorID
+}
+
 type localRequest struct {
 	RemoteAdmin        *RemoteAdminAssertion           `json:"remoteAdmin,omitempty"`
 	WorkerEnrollment   *domain.WorkerEnrollmentRequest `json:"workerEnrollment,omitempty"`
@@ -149,9 +164,13 @@ type localResponse struct {
 
 // LocalServer serves one bounded request per authenticated Unix connection.
 type LocalServer struct {
-	Listener           *net.UnixListener
-	Service            LocalService
-	AllowedUID         uint32
+	Listener   *net.UnixListener
+	Service    LocalService
+	AllowedUID uint32
+	// CoordinatorID is this coordinator's own identity. A relayed remote
+	// request must name it, so that a client configured for one coordinator
+	// cannot have its request replayed into another.
+	CoordinatorID      string
 	MaxRequestBytes    int64
 	MaxArtifactBytes   int64
 	MaxSubmissionBytes int64
@@ -263,8 +282,8 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 	// remote client's own name. The principal the request claimed is
 	// overwritten either way, on both carriers.
 	if request.RemoteAdmin != nil {
-		if request.RemoteAdmin.Principal == "" || request.RemoteAdmin.RequestID == "" {
-			_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: "remote admin assertion requires a principal and a request id", ErrorClass: ClassAuthentication})
+		if !request.RemoteAdmin.valid(s.CoordinatorID) {
+			_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: "remote admin assertion must name a principal, a request id and this coordinator", ErrorClass: ClassAuthentication})
 			return
 		}
 		principal = Principal{ID: "remote:" + request.RemoteAdmin.Principal, Roles: []string{RemoteAdminRole}}

@@ -72,14 +72,10 @@ func ValidateAdminCredentialReference(reference string) error {
 	return nil
 }
 
-// ValidateWorkerCredentialReference refuses an admin reference where a worker
-// credential is expected, which is the other half of the same rule.
-func ValidateWorkerCredentialReference(reference string) error {
-	if strings.HasPrefix(reference, AdminCredentialPrefix) {
-		return fmt.Errorf("%q is a coordinator admin credential; workers need a %s reference", reference, WorkerCredentialPrefix)
-	}
-	return nil
-}
+// The other half of this rule, refusing an admin reference where a worker
+// credential is expected, is enforced where worker credentials are actually
+// declared, in internal/config's backlog_v2 validation. It is not duplicated
+// here: an exported validator with no caller protects nothing.
 
 // AdminCredentials is the mutually authenticated identity material behind one
 // admin credential reference. Values are resolved on both ends and never
