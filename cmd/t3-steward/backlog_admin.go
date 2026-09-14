@@ -30,6 +30,10 @@ Read commands:
 Revision-fenced controls:
   run|enable|disable <schedule> --reason TEXT [--command-id ID] [--json]
   delay-next <schedule> --until RFC3339 --reason TEXT [--command-id ID] [--json]
+  delete <schedule> --reason TEXT [--command-id ID] [--json]
+      Remove the definition, its template versions and its occurrence records.
+      Refused while the schedule's own run is still open. Workflow runs it
+      already created, and the audit events of every firing, are kept.
 
 Example:
   t3-steward schedules put nightly-upkeep --name "nightly upkeep" \
@@ -58,6 +62,10 @@ func remoteAdminCommandKinds() map[domain.AdminCommandKind]bool {
 		domain.AdminCommandEnable:      true,
 		domain.AdminCommandDisable:     true,
 		domain.AdminCommandDelayNext:   true,
+		// Removing a schedule is a schedule mutation like the four above it. A
+		// client host that may create and modify schedules but not remove them
+		// would have to keep every mistake it ever made.
+		domain.AdminCommandScheduleDelete: true,
 	}
 }
 
@@ -65,6 +73,17 @@ func remoteAdminCommandKinds() map[domain.AdminCommandKind]bool {
 // revision-fenced commands. Worker enrollment is absent on purpose: it binds a
 // worker to this coordinator's id, epoch and credential reference, so it stays
 // an operation an operator performs on the coordinator host.
+//
+// Submission and schedule definition are absent for a different reason, and
+// their absence does not deny them. Neither reaches this authorizer at all:
+// the dispatch calls the submission and schedule-definition services directly
+// with the principal the carrier authenticated, and those services apply the
+// same rules to both carriers. A client host can therefore create and modify
+// schedules, which is deliberate and is pinned by
+// TestScheduleClientCanDefineModifyAndControlSchedules. Routing either one
+// through this function would refuse it for remote-admin, which is exactly the
+// kind of quiet change that has already made one operation unreachable from the
+// host that needed it; add the operation here first if that is ever done.
 func remoteAdminOperations() map[backlogadmin.QueryKind]bool {
 	return map[backlogadmin.QueryKind]bool{
 		"node-wait":       true,

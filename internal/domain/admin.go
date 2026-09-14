@@ -70,6 +70,12 @@ const (
 	AdminCommandDelayNext   AdminCommandKind = "delay-next"
 	AdminCommandEnable      AdminCommandKind = "enable"
 	AdminCommandDisable     AdminCommandKind = "disable"
+	// AdminCommandScheduleDelete removes a schedule definition. It is a command
+	// on the revision-fenced mutation engine rather than a transport operation of
+	// its own because a schedule row carries a revision, which is exactly the
+	// fence that engine exists to enforce, and because the removal has to be
+	// audited and replayable like every other schedule mutation.
+	AdminCommandScheduleDelete AdminCommandKind = "schedule-delete"
 )
 
 type AuditEvent struct {

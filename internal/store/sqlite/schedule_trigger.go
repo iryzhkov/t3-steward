@@ -94,7 +94,7 @@ func commitScheduleTriggerTx(ctx context.Context, tx *sql.Tx, request domain.Sch
 		NominalAt: request.NominalAt.UTC(), OccurrenceKey: occurrenceKey,
 		State: domain.TriggerSuppressed, Reason: reason, ObservedAt: request.ObservedAt.UTC(),
 	}
-	var workflowRun *domain.WorkflowRun
+	var seed *runSeed
 	if reason == "" {
 		trigger.State, trigger.WorkflowRunID = domain.TriggerAccepted, request.WorkflowRunID
 		run := domain.WorkflowRun{
@@ -102,33 +102,25 @@ func commitScheduleTriggerTx(ctx context.Context, tx *sql.Tx, request domain.Sch
 			TriggerID: trigger.ID, Progress: domain.ProgressQueued, Revision: 1,
 			CreatedAt: request.ObservedAt.UTC(), UpdatedAt: request.ObservedAt.UTC(),
 		}
-		tasks, err := loadWorkflowTasksTx(ctx, tx, run.WorkflowID)
+		// An occurrence that cannot be turned into an executable run is not a
+		// firing that happened. Returning the error rolls the whole transaction
+		// back, so no trigger row claims a success the coordinator did not
+		// achieve and the occurrence stays available to a later attempt.
+		prepared, err := scheduledRunSeed(ctx, tx, run, request.ObservedAt.UTC())
 		if err != nil {
-			return domain.ScheduleTriggerResult{}, err
+			return domain.ScheduleTriggerResult{}, fmt.Errorf("seed scheduled run for %q: %w", schedule.ID, err)
 		}
-		run, err = domain.BindRunSink(run, tasks)
-		if err != nil {
-			return domain.ScheduleTriggerResult{}, err
-		}
-		workflowRun = &run
+		seed = &prepared
 	}
 	if err := insertScheduleTrigger(ctx, tx, trigger); err != nil {
 		return domain.ScheduleTriggerResult{}, err
 	}
-	if workflowRun != nil {
-		if err := upsertJSON(ctx, tx, "workflow run", workflowRun.ID,
-			"INSERT INTO coordinator_workflow_runs(id, workflow_id, schedule_id, progress, revision, record) VALUES (?, ?, ?, ?, ?, ?)",
-			[]any{workflowRun.ID, workflowRun.WorkflowID, workflowRun.ScheduleID, workflowRun.Progress, workflowRun.Revision},
-			*workflowRun,
-		); err != nil {
-			return domain.ScheduleTriggerResult{}, err
+	var workflowRun *domain.WorkflowRun
+	if seed != nil {
+		if err := seedExecutableRunTx(ctx, tx, "scheduled", *seed); err != nil {
+			return domain.ScheduleTriggerResult{}, fmt.Errorf("seed scheduled run for %q: %w", schedule.ID, err)
 		}
-		if err := bindNodeEdgesTx(ctx, tx); err != nil {
-			return domain.ScheduleTriggerResult{}, err
-		}
-		if err := ensureInitialGraphsTx(ctx, tx); err != nil {
-			return domain.ScheduleTriggerResult{}, err
-		}
+		workflowRun = &seed.Run
 		schedule.ActiveRunID = workflowRun.ID
 		if schedule.NextNotBefore != nil && !request.NominalAt.Before(*schedule.NextNotBefore) {
 			schedule.NextNotBefore = nil

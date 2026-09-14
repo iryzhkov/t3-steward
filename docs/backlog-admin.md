@@ -19,11 +19,16 @@ t3-steward schedules put <schedule> --name TEXT --workflow ID \
 t3-steward schedules run <schedule> --reason TEXT
 t3-steward schedules delay-next <schedule> --until RFC3339 --reason TEXT
 t3-steward schedules enable|disable <schedule> --reason TEXT
+t3-steward schedules delete <schedule> --reason TEXT
 ```
 
 Every control accepts `--command-id ID` for exact replay and `--json` for machine-readable output. A command is stored before execution, then the coordinator applies or rejects it atomically with its audit event. Reusing a command ID with different intent is rejected. A stale target revision is recorded as a durable rejection rather than overwriting newer state.
 
 `start` bypasses normal timing, surplus admission, and ordering, but it still checks successful dependencies, live resource-lock owners, a fresh ready worker, and hard quota admission. It never bypasses draining or closed quota state. `resume` additionally requires the assigned worker and assigned quota route to remain safe. `pause` atomically records draining state and a worker delivery intent bound to the current assignment, thread, workspace, worker epoch, and provider route. Without `--now`, the worker is asked to checkpoint; with `--now`, it is asked to hard-stop. The attempt becomes `paused` or `paused-uncheckpointed` only after acknowledgement, and pending delivery survives restart. Cancelling a task also cancels unfinished descendants and updates the workflow-run projection in the same transaction. Manual schedule runs use the normal overlap and failure-hold policy and the transactional schedule-trigger path.
+
+`delete` removes a schedule definition. It is a revision-fenced command like the other schedule controls rather than a separate transport operation, because a schedule row carries the revision that fence needs. It is refused while the schedule's own run is still open, since removing the definition under a running occurrence would drop the overlap fence that refuses a second one. When it applies, the schedule row, its template versions and its trigger records are removed together: trigger occurrence keys are globally unique, so leaving them behind would make a schedule later recreated under the same identity replay the removed one's occurrences instead of firing its own. Workflow runs the schedule already created are untouched and keep naming it, and the audit event of every firing is immutable and stays, so the history of what ran is not lost with the definition.
+
+An accepted occurrence creates a run that can be executed, not only a run row: one first attempt per task, the workflow's prompt and input artifacts rebound into the new run's own custody, and the first immutable graph revision. It shares that machinery with the graph clone. If the run cannot be seeded, the whole firing is rolled back and no trigger claims a success, so the occurrence stays available to a later attempt.
 
 `backlog status` includes the active runtime mode, coordinator owner and epoch,
 transport kind, fresh/stale worker and quota counts, reconciliation issues,

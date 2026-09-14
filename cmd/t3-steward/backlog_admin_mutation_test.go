@@ -81,6 +81,7 @@ func TestParseScheduleMutations(t *testing.T) {
 		{command: "delay-next", kind: domain.AdminCommandDelayNext, extra: []string{"--until", "2026-09-11T10:00:00Z"}, payload: `{"until":"2026-09-11T10:00:00Z"}`},
 		{command: "enable", kind: domain.AdminCommandEnable},
 		{command: "disable", kind: domain.AdminCommandDisable},
+		{command: "delete", kind: domain.AdminCommandScheduleDelete},
 	}
 	for _, test := range tests {
 		t.Run(test.command, func(t *testing.T) {
@@ -115,6 +116,9 @@ func TestMutationParsingRejectsUnsafeOrIncompleteArguments(t *testing.T) {
 		{schedule: true, args: []string{"run", "bad/id", "--reason", "why"}},
 		{schedule: true, args: []string{"delay-next", "nightly", "--reason", "why"}},
 		{schedule: true, args: []string{"enable", "nightly", "--reason", "why", "--until", "2026-09-11T10:00:00Z"}},
+		{schedule: true, args: []string{"delete", "nightly"}},
+		{schedule: true, args: []string{"delete", "nightly", "--reason", "why", "--until", "2026-09-11T10:00:00Z"}},
+		{schedule: true, args: []string{"delete", "nightly", "--reason", "why", "--now"}},
 	}
 	for _, test := range tests {
 		var err error

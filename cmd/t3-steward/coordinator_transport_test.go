@@ -247,7 +247,7 @@ func TestRemoteAdminRoleIsAuthorizedExceptForWorkerEnrollment(t *testing.T) {
 		domain.AdminCommandStart, domain.AdminCommandDelay, domain.AdminCommandPause,
 		domain.AdminCommandResume, domain.AdminCommandCancel, domain.AdminCommandRetry,
 		domain.AdminCommandSkip, domain.AdminCommandScheduleRun, domain.AdminCommandDelayNext,
-		domain.AdminCommandEnable, domain.AdminCommandDisable,
+		domain.AdminCommandEnable, domain.AdminCommandDisable, domain.AdminCommandScheduleDelete,
 	} {
 		action := backlogadmin.Action{Kind: backlogadmin.QueryKind("command"), CommandKind: kind}
 		if err := authorizer.Authorize(ctx, remote, action); err != nil {

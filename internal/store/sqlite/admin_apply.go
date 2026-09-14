@@ -163,6 +163,13 @@ func (s *Store) ApplyAdminCommand(ctx context.Context, application domain.AdminC
 						return domain.AdminCommandDecision{}, err
 					}
 				}
+			} else if command.Kind == domain.AdminCommandScheduleDelete {
+				if application.Schedule != nil || application.ScheduleTrigger != nil {
+					return domain.AdminCommandDecision{}, errors.New("applied schedule delete has an unexpected target transition")
+				}
+				if err := deleteAdminScheduleTx(ctx, tx, command.TargetID, expectedTarget); err != nil {
+					return domain.AdminCommandDecision{}, err
+				}
 			} else {
 				if application.Schedule == nil || application.Schedule.ID != command.TargetID ||
 					application.Schedule.Revision != expectedTarget+1 {
@@ -399,6 +406,37 @@ func updateAdminWorkflowRunTx(ctx context.Context, tx *sql.Tx, run domain.Workfl
 	updated, err := result.RowsAffected()
 	if err != nil || updated != 1 {
 		return fmt.Errorf("stale workflow run %q revision", run.ID)
+	}
+	return nil
+}
+
+// deleteAdminScheduleTx removes one schedule definition under the same revision
+// fence every other schedule command is applied with.
+//
+// The schedule row, its template versions and its trigger rows go together. The
+// triggers go because their occurrence keys are globally unique: leaving them
+// behind would mean a schedule later recreated under the same identity replayed
+// the removed one's occurrences instead of firing its own. Nothing durable is
+// lost by removing them, because every accepted and suppressed trigger already
+// published an immutable audit event and those stay. Workflow runs the schedule
+// created are untouched and keep naming it, so their history still reads.
+func deleteAdminScheduleTx(ctx context.Context, tx *sql.Tx, scheduleID string, expectedRevision int64) error {
+	result, err := tx.ExecContext(ctx,
+		"DELETE FROM coordinator_schedules WHERE id = ? AND revision = ?", scheduleID, expectedRevision)
+	if err != nil {
+		return fmt.Errorf("delete schedule %q: %w", scheduleID, err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil || deleted != 1 {
+		return fmt.Errorf("stale schedule %q revision", scheduleID)
+	}
+	for _, statement := range []string{
+		"DELETE FROM coordinator_schedule_templates WHERE schedule_id = ?",
+		"DELETE FROM coordinator_triggers WHERE schedule_id = ?",
+	} {
+		if _, err := tx.ExecContext(ctx, statement, scheduleID); err != nil {
+			return fmt.Errorf("delete schedule %q occurrence state: %w", scheduleID, err)
+		}
 	}
 	return nil
 }

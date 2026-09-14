@@ -162,6 +162,11 @@ func planAdminCommand(records sqlite.CoordinatorRecords, workers []domain.Worker
 				return rejectApplication(application, err.Error()), nil, nil
 			}
 		}
+		if command.Kind == domain.AdminCommandScheduleDelete {
+			if err := scheduleDeletePolicy(records, schedule); err != nil {
+				return rejectApplication(application, err.Error()), nil, nil
+			}
+		}
 		next, trigger, err := planScheduleCommand(command, schedule, now)
 		if err != nil {
 			return rejectApplication(application, err.Error()), nil, nil
@@ -343,6 +348,28 @@ func manualScheduleRunPolicy(records sqlite.CoordinatorRecords, schedule domain.
 	return errors.New("manual schedule run refused because active run state is unavailable")
 }
 
+// scheduleDeletePolicy refuses to remove a schedule while the run it started is
+// still live. Removing the definition under a running occurrence would drop the
+// overlap fence that a second occurrence is refused by, and leave the run with
+// no definition an operator could read it against. A settled run is different:
+// its outcome is on the run itself and in the audit log, so the definition can
+// go without taking any evidence with it.
+func scheduleDeletePolicy(records sqlite.CoordinatorRecords, schedule domain.Schedule) error {
+	if schedule.ActiveRunID == "" {
+		return nil
+	}
+	for _, run := range records.WorkflowRuns {
+		if run.ID != schedule.ActiveRunID {
+			continue
+		}
+		if !run.Progress.Terminal() {
+			return errors.New("schedule delete refused while its run is open")
+		}
+		return nil
+	}
+	return errors.New("schedule delete refused because active run state is unavailable")
+}
+
 func planScheduleCommand(command domain.AdminCommand, schedule domain.Schedule, now time.Time) (*domain.Schedule, *domain.ScheduleTriggerRequest, error) {
 	next := schedule
 	next.Revision++
@@ -370,6 +397,10 @@ func planScheduleCommand(command domain.AdminCommand, schedule domain.Schedule, 
 			WorkflowRunID: stableAdminID("run", command.ID), NominalAt: command.CreatedAt.UTC(),
 			ObservedAt: now, Source: domain.ScheduleTriggerManual,
 		}, nil
+	case domain.AdminCommandScheduleDelete:
+		// A delete has no next state to plan. The store removes the row under
+		// the same revision fence every other schedule command is applied with.
+		return nil, nil, nil
 	default:
 		return nil, nil, fmt.Errorf("command %q is invalid for a schedule", command.Kind)
 	}

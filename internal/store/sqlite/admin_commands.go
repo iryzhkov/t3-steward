@@ -421,7 +421,8 @@ func validAdminCommandKind(targetType domain.AdminTargetType, kind domain.AdminC
 	case domain.AdminTargetSchedule:
 		switch kind {
 		case domain.AdminCommandScheduleRun, domain.AdminCommandDelayNext,
-			domain.AdminCommandEnable, domain.AdminCommandDisable:
+			domain.AdminCommandEnable, domain.AdminCommandDisable,
+			domain.AdminCommandScheduleDelete:
 			return true
 		}
 	}

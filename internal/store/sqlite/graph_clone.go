@@ -59,11 +59,7 @@ func (s *Store) CommitGraphClone(ctx context.Context, c GraphCommit) (domain.Gra
 	if err != nil {
 		return result, err
 	}
-	inputByID := map[string]domain.Artifact{}
 	for _, a := range c.Inputs {
-		if a.WorkflowRunID != run.ID || a.Kind != domain.ArtifactInput {
-			return result, errors.New("invalid cloned input")
-		}
 		// Match retained source content inside the transaction as well as the
 		// verified opener before it. No worker output is implicitly imported.
 		var count int
@@ -74,30 +70,12 @@ func (s *Store) CommitGraphClone(ctx context.Context, c GraphCommit) (domain.Gra
 		if count == 0 {
 			return result, errors.New("clone source input disappeared")
 		}
-		if err = insertImmutableJSON(ctx, tx, "clone input", a.ID, "INSERT INTO coordinator_artifacts(id,workflow_run_id,task_id,attempt_id,sha256,record) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING", []any{a.ID, a.WorkflowRunID, a.TaskID, a.AttemptID, a.SHA256}, "SELECT record FROM coordinator_artifacts WHERE id=?", []any{a.ID}, a); err != nil {
-			return result, err
-		}
-		inputByID[a.ID] = a
 	}
-	for _, task := range c.Tasks {
-		for _, id := range append([]string{task.PromptArtifactID}, task.InputArtifactIDs...) {
-			a, ok := inputByID[id]
-			if !ok || (a.TaskID != "" && a.TaskID != task.ID) {
-				return result, errors.New("clone input ownership mismatch")
-			}
-		}
-		a := domain.Attempt{ID: "attempt:" + task.ID + ":1", WorkflowRunID: run.ID, TaskID: task.ID, Number: 1, Revision: 1, Progress: domain.ProgressBlocked, Control: domain.ControlUnassigned, UpdatedAt: c.Now.UTC()}
-		if err = upsertJSON(ctx, tx, "clone attempt", a.ID, "INSERT INTO coordinator_attempts(id,workflow_run_id,task_id,number,revision,record) VALUES(?,?,?,?,?,?)", []any{a.ID, run.ID, task.ID, 1, 1}, a); err != nil {
-			return result, err
-		}
-	}
-	if err = upsertJSON(ctx, tx, "clone run", run.ID, "INSERT INTO coordinator_workflow_runs(id,workflow_id,schedule_id,progress,revision,record) VALUES(?,?,?,?,?,?)", []any{run.ID, run.WorkflowID, "", run.Progress, run.Revision}, run); err != nil {
-		return result, err
-	}
-	if err = validateRunGraphEdgesTx(ctx, tx); err != nil {
-		return result, err
-	}
-	if err = insertGraphTx(ctx, tx, graph); err != nil {
+	// A clone deliberately leaves schedule_id empty: it is an operator's copy of
+	// a definition, not an occurrence any schedule owns.
+	if err = seedExecutableRunTx(ctx, tx, "clone", runSeed{
+		Run: run, Tasks: c.Tasks, Inputs: c.Inputs, Graph: graph, Now: c.Now,
+	}); err != nil {
 		return result, err
 	}
 	if source.Run.Sink != nil {

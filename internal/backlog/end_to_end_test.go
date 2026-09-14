@@ -312,13 +312,35 @@ tasks:
 	}); err != nil {
 		t.Fatalf("persist schedule: %v", err)
 	}
-	first, err := store.CommitScheduleTrigger(ctx, domain.ScheduleTriggerRequest{
+	occurrence := domain.ScheduleTriggerRequest{
 		ScheduleID: schedule.ID, TriggerID: "trigger-first", WorkflowRunID: "scheduled-run-first",
 		NominalAt: now.Add(time.Hour), ObservedAt: now.Add(time.Hour), Source: domain.ScheduleTriggerScheduled,
-	})
+	}
+	first, err := store.CommitScheduleTrigger(ctx, occurrence)
 	if err != nil || first.Trigger.State != domain.TriggerAccepted || first.WorkflowRun == nil {
 		t.Fatalf("first trigger = %#v, err = %v", first, err)
 	}
+	// The property that matters is not that a row appeared. It is that the row
+	// is a run something will actually execute: attempts to plan, its own copies
+	// of the submitted prompts and inputs, and a graph revision to dispatch
+	// against.
+	seeded := assertScheduledRunIsExecutable(ctx, t, store, schedule, first, ingested.RunID)
+
+	// A re-delivered occurrence is the same firing, not a second one. It must
+	// not create a second set of attempts or bind the artifacts twice.
+	replay, err := store.CommitScheduleTrigger(ctx, occurrence)
+	if err != nil {
+		t.Fatalf("replayed occurrence: %v", err)
+	}
+	if !replay.Replay || replay.WorkflowRun == nil || replay.WorkflowRun.ID != first.WorkflowRun.ID ||
+		replay.Trigger.ID != first.Trigger.ID {
+		t.Fatalf("replayed occurrence = %#v", replay)
+	}
+	replayed := assertScheduledRunIsExecutable(ctx, t, store, schedule, replay, ingested.RunID)
+	if !reflect.DeepEqual(seeded, replayed) {
+		t.Fatalf("replay changed the seeded run: %#v then %#v", seeded, replayed)
+	}
+
 	second, err := store.CommitScheduleTrigger(ctx, domain.ScheduleTriggerRequest{
 		ScheduleID: schedule.ID, TriggerID: "trigger-second", WorkflowRunID: "scheduled-run-second",
 		NominalAt: now.Add(2 * time.Hour), ObservedAt: now.Add(2 * time.Hour), Source: domain.ScheduleTriggerScheduled,

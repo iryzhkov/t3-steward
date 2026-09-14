@@ -41,7 +41,7 @@ func isBacklogMutation(command string) bool {
 
 func isScheduleMutation(command string) bool {
 	switch command {
-	case "run", "delay-next", "enable", "disable":
+	case "run", "delay-next", "enable", "disable", "delete":
 		return true
 	default:
 		return false
@@ -70,14 +70,17 @@ func parseBacklogMutation(args []string) (adminMutationInvocation, error) {
 
 func parseScheduleMutation(args []string) (adminMutationInvocation, error) {
 	if len(args) < 2 || !isScheduleMutation(args[0]) {
-		return adminMutationInvocation{}, errors.New("schedule control usage: <run|delay-next|enable|disable> <schedule> --reason <reason>")
+		return adminMutationInvocation{}, errors.New("schedule control usage: <run|delay-next|enable|disable|delete> <schedule> --reason <reason>")
 	}
 	if strings.TrimSpace(args[1]) != args[1] || args[1] == "" || strings.Contains(args[1], "/") {
 		return adminMutationInvocation{}, fmt.Errorf("invalid schedule id %q", args[1])
 	}
 	kind := domain.AdminCommandKind(args[0])
-	if args[0] == "run" {
+	switch args[0] {
+	case "run":
 		kind = domain.AdminCommandScheduleRun
+	case "delete":
+		kind = domain.AdminCommandScheduleDelete
 	}
 	invocation := adminMutationInvocation{kind: kind, scheduleID: args[1]}
 	if err := parseMutationOptions(args[2:], &invocation); err != nil {
