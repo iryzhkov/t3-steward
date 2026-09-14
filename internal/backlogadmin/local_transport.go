@@ -475,6 +475,57 @@ func (c LocalClient) OpenArtifact(ctx context.Context, _ Principal, artifactID s
 	}}, nil
 }
 
+// exchange runs one prepared request over the local socket without choosing an
+// operation of its own. The restricted SSH command uses it to relay a verified
+// remote request: body carries the submission archive, and the returned stream
+// is the artifact content the caller must read and close.
+//
+// A refusal the coordinator wrote is returned inside the response, not as an
+// error, so the relay can hand it back to the remote client verbatim.
+func (c LocalClient) exchange(ctx context.Context, request localRequest, body io.Reader) (localResponse, io.ReadCloser, error) {
+	conn, err := c.dialOperation(ctx, request.Operation)
+	if err != nil {
+		return localResponse{}, nil, err
+	}
+	stopWatch := watchConnection(ctx, conn)
+	closeAll := func() {
+		stopWatch()
+		_ = conn.Close()
+	}
+	if err := writeLocalJSON(conn, request); err != nil {
+		closeAll()
+		return localResponse{}, nil, c.fail(ClassUnavailable, request.Operation, fmt.Errorf("write local admin request: %w", err))
+	}
+	if request.Operation == localOperationSubmission && request.SubmissionSize > 0 {
+		if body == nil {
+			closeAll()
+			return localResponse{}, nil, c.fail(ClassClientConfiguration, request.Operation, errors.New("local submission archive is required"))
+		}
+		if _, err := io.CopyN(conn, body, request.SubmissionSize); err != nil {
+			closeAll()
+			return localResponse{}, nil, c.fail(ClassUnavailable, request.Operation, fmt.Errorf("write local submission archive: %w", err))
+		}
+	}
+	var response localResponse
+	if err := readLocalJSON(conn, c.MaxResponseBytes, &response); err != nil {
+		closeAll()
+		return localResponse{}, nil, c.fail(ClassProtocol, request.Operation, err)
+	}
+	if response.Error != "" || request.Operation != localOperationArtifact {
+		closeAll()
+		return response, nil, nil
+	}
+	if response.ArtifactMetadata == nil || response.ArtifactSize < 0 ||
+		response.ArtifactSize != response.ArtifactMetadata.Size ||
+		response.ArtifactSize > c.MaxArtifactBytes {
+		closeAll()
+		return localResponse{}, nil, c.fail(ClassProtocol, request.Operation, errors.New("invalid local admin artifact response"))
+	}
+	return response, &exactReadCloser{
+		reader: conn, closer: conn, remaining: response.ArtifactSize, stopWatch: stopWatch,
+	}, nil
+}
+
 func (c LocalClient) call(ctx context.Context, request localRequest, destination *localResponse) error {
 	conn, err := c.dial(ctx)
 	if err != nil {
