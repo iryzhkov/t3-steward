@@ -68,6 +68,9 @@ func (s *Service) AmendGraph(ctx context.Context, p Principal, r domain.GraphAme
 	if r.Operation == "clone" {
 		return s.cloneGraph(ctx, p, r, records, run, workflow)
 	}
+	if r.Operation == "rerun" {
+		return s.rerunGraph(ctx, p, r, records, run, workflow)
+	}
 	canonical := r
 	if strings.Contains(r.Source, "/") {
 		ref, err := domain.ParseNodeRef(r.Source)

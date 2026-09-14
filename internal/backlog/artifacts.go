@@ -400,7 +400,7 @@ func (f AttemptFinalizer) newID(kind string) string {
 // MaterializeDependencies copies the selected immutable output artifacts into
 // .t3/dependencies/<producer>/ and verifies their size and checksum before publish.
 func MaterializeDependencies(workspaceDir, storageRoot, workflowRunID string, task domain.Task, tasks []domain.Task, artifacts []domain.Artifact) ([]string, error) {
-	if len(task.DependencyInputs) == 0 {
+	if len(task.DependencyInputs) == 0 && len(task.CarriedInputs) == 0 {
 		return nil, nil
 	}
 	if workspaceDir == "" || storageRoot == "" {
@@ -481,6 +481,47 @@ func MaterializeDependencies(workspaceDir, storageRoot, workflowRunID string, ta
 			}
 			selected = append(selected, selectedArtifact{producer: producer, artifact: artifact, source: relative})
 		}
+	}
+	// Carried inputs come from the source run of a rerun. Their producer is
+	// not a task here, so they are resolved by artifact ID; everything after
+	// this point treats them exactly like any other dependency file.
+	carried := append([]domain.CarriedInput(nil), task.CarriedInputs...)
+	sort.Slice(carried, func(i, j int) bool {
+		if carried[i].Producer != carried[j].Producer {
+			return carried[i].Producer < carried[j].Producer
+		}
+		return carried[i].Name < carried[j].Name
+	})
+	artifactByID := make(map[string]domain.Artifact, len(artifacts))
+	for _, artifact := range artifacts {
+		artifactByID[artifact.ID] = artifact
+	}
+	for _, item := range carried {
+		if !safePathComponent(item.Producer) {
+			return nil, fmt.Errorf("materialize dependencies: carried producer %q is not a safe path component", item.Producer)
+		}
+		if err := validateRelativePath(item.Name, false); err != nil {
+			return nil, fmt.Errorf("materialize dependencies: carried artifact %q: %w", item.Name, err)
+		}
+		artifact, exists := artifactByID[item.ArtifactID]
+		if !exists {
+			return nil, fmt.Errorf("materialize dependencies: missing carried output %q from %q", item.Name, item.Producer)
+		}
+		if artifact.WorkflowRunID != workflowRunID {
+			return nil, fmt.Errorf("materialize dependencies: carried output %q from %q belongs to run %q, want %q", item.Name, item.Producer, artifact.WorkflowRunID, workflowRunID)
+		}
+		resolved, err := safeBundleFile(storageRoot, filepath.FromSlash(artifact.StoragePath))
+		if err != nil {
+			return nil, fmt.Errorf("materialize dependencies: open carried output %q from %q: %w", item.Name, item.Producer, err)
+		}
+		relative, err := filepath.Rel(storageRoot, resolved)
+		if err != nil {
+			return nil, fmt.Errorf("materialize dependencies: carried output %q from %q: %w", item.Name, item.Producer, err)
+		}
+		selected = append(selected, selectedArtifact{producer: item.Producer, artifact: artifact, source: relative})
+	}
+	if len(selected) == 0 {
+		return nil, nil
 	}
 
 	storage, err := os.OpenRoot(storageRoot)
