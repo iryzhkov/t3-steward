@@ -18,6 +18,11 @@ type WorkerJournalSummary struct {
 	Dispatched      int            `json:"dispatched"`
 	SettlePending   int            `json:"settlePending"`
 	Phases          map[string]int `json:"phases"`
+	// CatalogActivatable reports whether this build can reproduce the retained
+	// projection's revision. False means the worker would start degraded and
+	// await republication. The attempt counts are still authoritative, because
+	// they come from the journal rather than from the catalog.
+	CatalogActivatable bool `json:"catalogActivatable"`
 }
 
 // InspectWorkerJournal reads the retained catalog and journal of the worker
@@ -44,9 +49,16 @@ func InspectWorkerJournal(home string) (WorkerJournalSummary, error) {
 	}
 	summary.CatalogRevision = retained.Projection.Revision
 	settings, err := retained.Projection.Settings(bootstrap, home)
-	if err != nil {
+	summary.CatalogActivatable = err == nil
+	if err != nil && !errors.Is(err, ErrCatalogProjectionDigestMismatch) {
 		return summary, err
 	}
+	// A retained catalog this build cannot activate must not hide the journal.
+	// An updater asks this question precisely when it is about to replace the
+	// binary, which is the case that changes how a revision is derived, so
+	// refusing here would deny the caller its answer exactly when it matters and
+	// would leave the upgrade stuck. The storage paths used below are derived
+	// from the host, not from the projection, so they remain valid.
 	_, _, root := WorkerRoots(settings, bootstrap.WorkerID)
 	attempts, err := JournalAttempts(root)
 	if err != nil {

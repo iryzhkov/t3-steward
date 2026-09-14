@@ -54,6 +54,14 @@ func BuildCatalogProjection(settings config.BacklogV2, workerID string) (Catalog
 	return copy, err
 }
 
+// ErrCatalogProjectionDigestMismatch reports that this build does not derive the
+// revision the retained projection names. Activation must refuse it, because a
+// projection this build cannot reproduce is not a catalog it can honour. A
+// read-only caller may continue: the settings returned alongside this error
+// carry host-derived storage paths, which do not depend on the projection being
+// reproducible.
+var ErrCatalogProjectionDigestMismatch = errors.New("catalog projection digest mismatch")
+
 func (p CatalogProjection) Settings(bootstrap WorkerBootstrap, home string) (config.BacklogV2, error) {
 	if p.SchemaVersion != 1 || p.WorkerID != bootstrap.WorkerID || p.CoordinatorID != bootstrap.CoordinatorID ||
 		p.Worker.Credential != bootstrap.CredentialRef || p.Worker.Epoch == "" || home == "" {
@@ -99,7 +107,7 @@ func (p CatalogProjection) Settings(bootstrap WorkerBootstrap, home string) (con
 		return settings, err
 	}
 	if binding.CatalogRevision != p.Revision {
-		return settings, errors.New("catalog projection digest mismatch")
+		return settings, ErrCatalogProjectionDigestMismatch
 	}
 	return settings, nil
 }
