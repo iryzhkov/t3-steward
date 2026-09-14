@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -39,19 +40,21 @@ var errNotInsideTask = errors.New(
 		"(T3_STEWARD_ATTEMPT_ID and friends). From an interactive session, register an ordinary " +
 		"wait with `t3-steward wait add -- <command>`, or name a task explicitly with --task <run>/<task>")
 
+// resolveTaskIdentity finds the execution identity of the task this process is
+// executing: from the injected environment when a contained execution provided
+// it, otherwise from the record the worker wrote into the prepared workspace.
+//
+// The environment wins when both are present. It is the more specific of the
+// two: a sandbox sets it for exactly one execution, while a workspace can in
+// principle be reached from a shell that belongs to another.
 func resolveTaskIdentity(getenv func(string) string) (taskIdentity, error) {
-	var identity taskIdentity
-	values := make(map[string]string, 6)
-	for _, name := range domain.TaskWaitEnvironmentNames() {
-		value := strings.TrimSpace(getenv(name))
-		if value == "" {
-			return identity, errNotInsideTask
-		}
-		values[name] = value
+	values, err := taskIdentityValues(getenv)
+	if err != nil {
+		return taskIdentity{}, err
 	}
 	revision, err := strconv.ParseInt(values[domain.TaskWaitEnvAttemptRevision], 10, 64)
 	if err != nil {
-		return identity, fmt.Errorf("%s is not a revision number: %w", domain.TaskWaitEnvAttemptRevision, err)
+		return taskIdentity{}, fmt.Errorf("%s is not a revision number: %w", domain.TaskWaitEnvAttemptRevision, err)
 	}
 	return taskIdentity{
 		WorkflowRunID:   values[domain.TaskWaitEnvWorkflowRunID],
@@ -61,6 +64,70 @@ func resolveTaskIdentity(getenv func(string) string) (taskIdentity, error) {
 		AssignmentID:    values[domain.TaskWaitEnvAssignmentID],
 		ThreadID:        values[domain.TaskWaitEnvThreadID],
 	}, nil
+}
+
+func taskIdentityValues(getenv func(string) string) (map[string]string, error) {
+	values := make(map[string]string, 6)
+	complete := true
+	for _, name := range domain.TaskWaitEnvironmentNames() {
+		value := strings.TrimSpace(getenv(name))
+		if value == "" {
+			complete = false
+			continue
+		}
+		values[name] = value
+	}
+	if complete {
+		return values, nil
+	}
+	fileValues, err := readTaskIdentityFile()
+	if err != nil {
+		return nil, err
+	}
+	return fileValues, nil
+}
+
+// readTaskIdentityFile reads the worker-written identity record from the
+// current directory or an ancestor, the way a tool finds the repository it is
+// inside.
+//
+// The file is accepted only as a private regular file owned by this user. It
+// decides which attempt a command speaks for, so a copy anyone could have
+// written, or a symlink pointing somewhere else, is refused rather than read.
+func readTaskIdentityFile() (map[string]string, error) {
+	directory, err := os.Getwd()
+	if err != nil {
+		return nil, errNotInsideTask
+	}
+	for {
+		path := filepath.Join(directory, filepath.FromSlash(domain.TaskIdentityFile))
+		info, statErr := os.Lstat(path)
+		switch {
+		case statErr != nil:
+		case !info.Mode().IsRegular():
+			return nil, fmt.Errorf("%s is not a regular file; refusing to read a task identity from it", path)
+		case info.Mode().Perm() != 0o600:
+			return nil, fmt.Errorf("%s has mode %04o, want 0600; refusing to read a task identity that is not private", path, info.Mode().Perm())
+		default:
+			if err := taskIdentityFileIsOwned(info); err != nil {
+				return nil, fmt.Errorf("%s: %w", path, err)
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil, readErr
+			}
+			values, parseErr := domain.ParseTaskIdentityFile(string(content))
+			if parseErr != nil {
+				return nil, fmt.Errorf("%s: %w", path, parseErr)
+			}
+			return values, nil
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			return nil, errNotInsideTask
+		}
+		directory = parent
+	}
 }
 
 // cmdTaskWaitAdd registers a task-bound wait: the coordinator parks this

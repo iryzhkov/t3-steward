@@ -70,6 +70,18 @@ type T3 struct {
 	// AllowUnsupportedVersion lets control actions run against a T3 server
 	// outside the tested compatibility range.
 	AllowUnsupportedVersion bool `yaml:"allow_unsupported_version"`
+	// SendThreadEnvironment adds the task execution identity to the
+	// thread.create command as an environment object.
+	//
+	// It is off by default because no tested T3 release verifies that field,
+	// and the dispatch result carries a sequence number only, so a caller
+	// cannot tell from the response whether it was honoured, ignored, or would
+	// have been rejected. A server that rejects unknown fields would fail every
+	// uncontained dispatch, identically on retry. Tasks do not need it: the
+	// worker writes the same identity into the prepared workspace. Turn it on
+	// only after verifying the field against the deployed T3 version, as
+	// docs/t3-protocol.md describes.
+	SendThreadEnvironment bool `yaml:"send_thread_environment"`
 	// RequestTimeout bounds each HTTP request.
 	RequestTimeout Duration `yaml:"request_timeout"`
 }

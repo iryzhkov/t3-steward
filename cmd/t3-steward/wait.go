@@ -14,7 +14,6 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/config"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
-	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
 	"github.com/iryzhkov/t3-steward/internal/wait"
@@ -68,8 +67,10 @@ add flags:
                      coordinator, because a parked task holds its directory
                      bindings and those have no deadline of their own.
   --run-timeout DUR  Bound one run of the check (default 1m).
-  --thread ID        T3 thread to wake. Default: the canonical thread injected
-                     into a task, otherwise resolved from CLAUDE_CODE_SESSION_ID,
+  --thread ID        T3 thread to wake. Default: the canonical thread of the
+                     task this process is executing, taken from the injected
+                     environment or from .t3-steward/task.env in the prepared
+                     workspace; otherwise resolved from CLAUDE_CODE_SESSION_ID,
                      CODEX_THREAD_ID or OPENCODE_SESSION_ID. A provider session
                      ID is an input to that resolution and never a thread ID; if
                      it is ambiguous the candidates are named and --thread is
@@ -308,8 +309,12 @@ func resolveThread(cfg config.Config, explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
-	if injected := strings.TrimSpace(os.Getenv(domain.TaskWaitEnvThreadID)); injected != "" {
-		return injected, nil
+	// Inside a task the canonical thread is known exactly, from the injected
+	// environment or from the identity record in the prepared workspace. A
+	// failure to read either is not fatal here: an interactive session in some
+	// unrelated directory still resolves through its provider.
+	if identity, err := resolveTaskIdentity(os.Getenv); err == nil {
+		return identity.ThreadID, nil
 	}
 	sessions, err := callerSessions(os.Getenv)
 	if err != nil {

@@ -34,6 +34,72 @@ func TaskWaitEnvironmentNames() []string {
 	}
 }
 
+// TaskIdentityDir and TaskIdentityFile name the worker-written record of the
+// same six variables, inside the prepared workspace.
+//
+// It is the primary mechanism, not a fallback. Passing an environment through
+// the provider would make identity depend on a field of the T3 create command
+// that no tested release verifies; a file the worker writes into a workspace it
+// already owns depends on nothing outside this repository, and can be tested
+// without a live provider.
+const (
+	TaskIdentityDir  = ".t3-steward"
+	TaskIdentityFile = TaskIdentityDir + "/task.env"
+)
+
+// RenderTaskIdentityFile writes the six identity variables in the order
+// TaskWaitEnvironmentNames gives, as KEY=value lines.
+//
+// It carries identity and nothing else. No dispatch token, no credential and no
+// lease: an agent reading it learns which attempt it is, never how to claim an
+// authority it was not given.
+func RenderTaskIdentityFile(values map[string]string) (string, error) {
+	var builder strings.Builder
+	builder.WriteString("# Written by t3-steward. Identity only: this file grants nothing.\n")
+	for _, name := range TaskWaitEnvironmentNames() {
+		value, ok := values[name]
+		if !ok || value == "" {
+			return "", fmt.Errorf("task identity file is missing %s", name)
+		}
+		if strings.ContainsAny(value, "\n\r\x00") {
+			return "", fmt.Errorf("task identity value for %s contains a line break", name)
+		}
+		fmt.Fprintf(&builder, "%s=%s\n", name, value)
+	}
+	return builder.String(), nil
+}
+
+// ParseTaskIdentityFile reads the rendered form back. Unknown keys are refused
+// rather than ignored: this file is a closed identity record, and a reader that
+// silently tolerates extra keys is a reader that can be fed something else.
+func ParseTaskIdentityFile(content string) (map[string]string, error) {
+	allowed := make(map[string]bool, 6)
+	for _, name := range TaskWaitEnvironmentNames() {
+		allowed[name] = true
+	}
+	values := make(map[string]string, 6)
+	for number, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		name, value, found := strings.Cut(line, "=")
+		if !found || !allowed[name] {
+			return nil, fmt.Errorf("task identity file line %d is not a known identity assignment", number+1)
+		}
+		if _, duplicate := values[name]; duplicate {
+			return nil, fmt.Errorf("task identity file repeats %s", name)
+		}
+		values[name] = value
+	}
+	for name := range allowed {
+		if values[name] == "" {
+			return nil, fmt.Errorf("task identity file is missing %s", name)
+		}
+	}
+	return values, nil
+}
+
 // WakeMode decides when a parked attempt resumes once it holds several waits.
 type WakeMode string
 

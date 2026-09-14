@@ -196,7 +196,11 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		if err := os.MkdirAll(filepath.Join(path, "workspace"), 0o700); err != nil {
 			return "", fmt.Errorf("worker no-effects preparation: %w", err)
 		}
-		return filepath.Join(path, "workspace"), nil
+		workspace := filepath.Join(path, "workspace")
+		if err := d.writeTaskIdentity(pkg, workspace); err != nil {
+			return "", err
+		}
+		return workspace, nil
 	}
 	if pkg.Identity.AssignmentEpoch > 1 {
 		attempt.ID = fmt.Sprintf("%s-e%d", attempt.ID, pkg.Identity.AssignmentEpoch)
@@ -207,6 +211,14 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		DependencyArtifacts: dependencyArtifacts,
 	})
 	if err != nil {
+		return "", err
+	}
+	// The identity record goes in with the workspace, which is the one moment
+	// the real directory is certainly present and certainly ours. Dispatch
+	// always follows preparation, so it is there before any thread exists, and
+	// a scoped execution sees it through the same directory under its own mount
+	// rather than needing a second copy written against a mapped path.
+	if err := d.writeTaskIdentity(pkg, prepared.WorkspaceDir); err != nil {
 		return "", err
 	}
 	if manager := d.containedManager(pkg); manager != nil {
@@ -300,6 +312,49 @@ func workerThreadTerminal(thread domain.Thread) bool {
 	default:
 		return false
 	}
+}
+
+// writeTaskIdentity records the attempt's identity inside the prepared
+// workspace, before any thread is dispatched, so an agent can name itself when
+// it registers a task-bound wait.
+//
+// It is written 0600 and holds identity only. A workspace that is archived must
+// not carry it, which is why Collect removes it before outputs are captured.
+func (d *LocalDriver) writeTaskIdentity(pkg workerproto.ExecutionPackage, workspace string) error {
+	if workspace == "" {
+		return errors.New("task identity needs a prepared workspace")
+	}
+	content, err := domain.RenderTaskIdentityFile(pkg.Identity.TaskEnvironment())
+	if err != nil {
+		return err
+	}
+	directory := filepath.Join(workspace, domain.TaskIdentityDir)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return fmt.Errorf("create task identity directory: %w", err)
+	}
+	path := filepath.Join(workspace, filepath.FromSlash(domain.TaskIdentityFile))
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return fmt.Errorf("write task identity: %w", err)
+	}
+	// WriteFile leaves an existing file's mode alone, and a resumed attempt
+	// rewrites this one, so the mode is asserted rather than assumed.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("restrict task identity: %w", err)
+	}
+	return nil
+}
+
+// removeTaskIdentity deletes the identity record before anything is captured
+// from the workspace. A parked turn never reaches here, so the file survives
+// for the turn that resumes after the wake.
+func (d *LocalDriver) removeTaskIdentity(workspace string) error {
+	if workspace == "" {
+		return nil
+	}
+	if err := os.RemoveAll(filepath.Join(workspace, domain.TaskIdentityDir)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove task identity: %w", err)
+	}
+	return nil
 }
 
 func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
@@ -412,6 +467,15 @@ func (d *LocalDriver) StopThread(ctx context.Context, pkg workerproto.ExecutionP
 
 func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
 	if !d.scoped {
+		// The identity record leaves before anything is captured from the
+		// workspace, so it cannot reach a declared output, a git-state
+		// artifact or an archived tree. It happens here, on the driver that
+		// holds the real host path, rather than inside a scoped execution that
+		// only sees the mapped one. A parked turn never reaches Collect, so
+		// the record survives for the turn that resumes after the wake.
+		if err := d.removeTaskIdentity(workspace); err != nil {
+			return err
+		}
 		if manager := d.containedManager(pkg); manager != nil {
 			if err := manager.Quiesce(ctx, pkg, false); err != nil {
 				return err

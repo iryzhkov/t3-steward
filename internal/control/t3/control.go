@@ -37,6 +37,10 @@ type Control struct {
 	log    *slog.Logger
 	// DryRun makes every mutating call log instead of dispatching.
 	DryRun bool
+	// SendThreadEnvironment adds NewThreadInput.Environment to thread.create.
+	// It is off unless an operator has verified that the deployed T3 version
+	// accepts the field; see docs/t3-protocol.md.
+	SendThreadEnvironment bool
 }
 
 // New wraps a client.
@@ -417,11 +421,12 @@ type NewThreadInput struct {
 	Branch          string
 	WorktreePath    string
 	Prompt          string
-	// Environment is extra process environment for the thread's agent. The
-	// steward uses it for the execution identity a task needs to name itself
-	// when it registers a task-bound wait; without it, "wait for this and park
-	// me" is not expressible from inside a task, because the identity otherwise
-	// stops at the worker.
+	// Environment is extra process environment for the thread's agent, carrying
+	// the execution identity a task needs to name itself. It is sent only when
+	// Control.SendThreadEnvironment is on, because no tested T3 release
+	// verifies the field. The identity reaches the agent through the workspace
+	// record the worker writes either way, so this is an optimisation and never
+	// the only path.
 	Environment map[string]string
 }
 
@@ -470,7 +475,7 @@ func (c *Control) CreateAndStartThread(ctx context.Context, in NewThreadInput) (
 		"worktreePath":    worktreePath,
 		"createdAt":       now(),
 	}
-	if len(in.Environment) != 0 {
+	if c.SendThreadEnvironment && len(in.Environment) != 0 {
 		create["environment"] = in.Environment
 	}
 	turn := map[string]any{

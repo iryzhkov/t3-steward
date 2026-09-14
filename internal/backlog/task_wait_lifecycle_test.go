@@ -3,6 +3,9 @@ package backlog
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,6 +108,54 @@ func TestWaitingTurnOutcomeParksTheAttempt(t *testing.T) {
 		ID: "o2", AttemptID: "a1", Marker: domain.TurnOutcomeWaiting, VerificationPassed: true, ObservedAt: now,
 	}}, nil, now); err == nil {
 		t.Fatal("a waiting outcome carrying a verification result was accepted")
+	}
+}
+
+// The identity record is never captured, even when the worker has not removed
+// it yet: only declared outputs are collected, and a task cannot declare a name
+// it does not write. This is the property the removal in Collect defends in
+// depth, not the only thing keeping the file out of coordinator custody.
+func TestIdentityRecordIsNeverCapturedAsAnArtifact(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, domain.TaskIdentityDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	identity := map[string]string{
+		domain.TaskWaitEnvWorkflowRunID: "run-1", domain.TaskWaitEnvTaskID: "task-build",
+		domain.TaskWaitEnvAttemptID: "attempt-1", domain.TaskWaitEnvAttemptRevision: "3",
+		domain.TaskWaitEnvAssignmentID: "assignment-1", domain.TaskWaitEnvThreadID: "thread-1",
+	}
+	content, err := domain.RenderTaskIdentityFile(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, filepath.FromSlash(domain.TaskIdentityFile)), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "report.md"), []byte("done"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	task := domain.Task{ID: "task-build", WorkflowID: "w", Name: "build",
+		Outputs: []domain.ArtifactDeclaration{{Name: "report.md", MediaType: "text/markdown"}}}
+	finalized, err := testFinalizer(t.TempDir()).Finalize(context.Background(), AttemptFinalization{
+		Task: task, Attempt: artifactTestAttempt(), WorkspaceDir: workspace, ExplicitSuccess: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupImmutable(t, finalized.StorageDir)
+	if !finalized.Completion.ExplicitSuccess || finalized.Completion.Failure != "" {
+		t.Fatalf("completion = %+v", finalized.Completion)
+	}
+	found := false
+	for _, artifact := range finalized.Artifacts {
+		if strings.Contains(artifact.Name, domain.TaskIdentityDir) {
+			t.Fatalf("the identity record was captured as %q", artifact.Name)
+		}
+		found = found || artifact.Name == "report.md"
+	}
+	if !found {
+		t.Fatalf("the declared output was not captured: %+v", finalized.Artifacts)
 	}
 }
 
