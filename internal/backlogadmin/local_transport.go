@@ -98,6 +98,11 @@ type localResponse struct {
 	ScheduleDefinitionResponse *LocalScheduleDefinitionResponse          `json:"scheduleDefinitionResponse,omitempty"`
 	UnknownRecoveryResponse    *domain.UnknownAssignmentRecoveryDecision `json:"unknownRecoveryResponse,omitempty"`
 	Error                      string                                    `json:"error,omitempty"`
+	// ErrorClass lets the server say whether it refused the principal, the
+	// frame or the request itself, so the client does not have to guess a
+	// class by matching prose. An absent class means the coordinator answered
+	// and refused the request.
+	ErrorClass TransportClass `json:"errorClass,omitempty"`
 }
 
 // LocalServer serves one bounded request per authenticated Unix connection.
@@ -197,16 +202,16 @@ func (s *LocalServer) Serve(ctx context.Context) error {
 func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 	var request localRequest
 	if err := readLocalJSON(conn, s.MaxRequestBytes, &request); err != nil {
-		_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: err.Error()})
+		_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: err.Error(), ErrorClass: ClassProtocol})
 		return
 	}
 	principal, err := localPeerPrincipal(conn, s.AllowedUID)
 	if err != nil {
-		_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: err.Error()})
+		_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: err.Error(), ErrorClass: ClassAuthentication})
 		return
 	}
 	if request.Version != LocalTransportVersion {
-		_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: "unsupported local admin transport version"})
+		_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: "unsupported local admin transport version", ErrorClass: ClassProtocol})
 		return
 	}
 	response := localResponse{Version: LocalTransportVersion}
@@ -415,10 +420,17 @@ func writeLocalResponse(writer io.Writer, response localResponse) error {
 // LocalClient sends coordinator admin requests without opening coordinator state.
 type LocalClient struct {
 	Path               string
+	CoordinatorID      string
 	MaxResponseBytes   int64
 	MaxArtifactBytes   int64
 	MaxSubmissionBytes int64
 	RequestTimeout     time.Duration
+}
+
+// Describe reports the owner-only socket this client dials. The local carrier
+// has no credential to leak here: file mode 0600 is its whole gate.
+func (c LocalClient) Describe() TransportDescription {
+	return TransportDescription{Carrier: CarrierLocal, CoordinatorID: c.CoordinatorID, Endpoint: c.Path}
 }
 
 func (c LocalClient) Query(ctx context.Context, query Query) (Response, error) {
@@ -483,16 +495,16 @@ func (c LocalClient) SubmitArchive(
 	size int64,
 ) (LocalSubmissionResponse, error) {
 	if archive == nil {
-		return LocalSubmissionResponse{}, errors.New("local submission archive is required")
+		return LocalSubmissionResponse{}, c.fail(ClassClientConfiguration, localOperationSubmission, errors.New("local submission archive is required"))
 	}
 	if c.MaxSubmissionBytes <= 0 || size <= 0 || size > c.MaxSubmissionBytes {
-		return LocalSubmissionResponse{}, errors.New("local submission archive exceeds configured limit")
+		return LocalSubmissionResponse{}, c.fail(ClassClientConfiguration, localOperationSubmission, errors.New("local submission archive exceeds configured limit"))
 	}
 	envelope := localRequest{
 		Version: LocalTransportVersion, Operation: localOperationSubmission,
 		Submission: &request, SubmissionSize: size,
 	}
-	conn, err := c.dial(ctx)
+	conn, err := c.dialOperation(ctx, localOperationSubmission)
 	if err != nil {
 		return LocalSubmissionResponse{}, err
 	}
@@ -500,27 +512,27 @@ func (c LocalClient) SubmitArchive(
 	stopWatch := watchConnection(ctx, conn)
 	defer stopWatch()
 	if err := writeLocalJSON(conn, envelope); err != nil {
-		return LocalSubmissionResponse{}, fmt.Errorf("write local submission request: %w", err)
+		return LocalSubmissionResponse{}, c.fail(ClassUnavailable, localOperationSubmission, fmt.Errorf("write local submission request: %w", err))
 	}
 	if _, err := io.CopyN(conn, archive, size); err != nil {
-		return LocalSubmissionResponse{}, fmt.Errorf("write local submission archive: %w", err)
+		return LocalSubmissionResponse{}, c.fail(ClassUnavailable, localOperationSubmission, fmt.Errorf("write local submission archive: %w", err))
 	}
 	var response localResponse
 	if err := readLocalJSON(conn, c.MaxResponseBytes, &response); err != nil {
-		return LocalSubmissionResponse{}, err
+		return LocalSubmissionResponse{}, c.fail(ClassProtocol, localOperationSubmission, err)
 	}
-	if err := validateLocalResponse(response); err != nil {
+	if err := c.validate(localOperationSubmission, response); err != nil {
 		return LocalSubmissionResponse{}, err
 	}
 	if response.SubmissionResponse == nil {
-		return LocalSubmissionResponse{}, errors.New("local submission returned no response")
+		return LocalSubmissionResponse{}, c.fail(ClassProtocol, localOperationSubmission, errors.New("local submission returned no response"))
 	}
 	return *response.SubmissionResponse, nil
 }
 
 func (c LocalClient) OpenArtifact(ctx context.Context, _ Principal, artifactID string) (ArtifactContent, error) {
 	request := localRequest{Version: LocalTransportVersion, Operation: localOperationArtifact, ArtifactID: artifactID}
-	conn, err := c.dial(ctx)
+	conn, err := c.dialOperation(ctx, localOperationArtifact)
 	if err != nil {
 		return ArtifactContent{}, err
 	}
@@ -531,14 +543,14 @@ func (c LocalClient) OpenArtifact(ctx context.Context, _ Principal, artifactID s
 	}
 	if err := writeLocalJSON(conn, request); err != nil {
 		closeOnError()
-		return ArtifactContent{}, fmt.Errorf("write local admin request: %w", err)
+		return ArtifactContent{}, c.fail(ClassUnavailable, localOperationArtifact, fmt.Errorf("write local admin request: %w", err))
 	}
 	var response localResponse
 	if err := readLocalJSON(conn, c.MaxResponseBytes, &response); err != nil {
 		closeOnError()
-		return ArtifactContent{}, err
+		return ArtifactContent{}, c.fail(ClassProtocol, localOperationArtifact, err)
 	}
-	if err := validateLocalResponse(response); err != nil {
+	if err := c.validate(localOperationArtifact, response); err != nil {
 		closeOnError()
 		return ArtifactContent{}, err
 	}
@@ -546,7 +558,7 @@ func (c LocalClient) OpenArtifact(ctx context.Context, _ Principal, artifactID s
 		response.ArtifactSize != response.ArtifactMetadata.Size ||
 		response.ArtifactSize > c.MaxArtifactBytes {
 		closeOnError()
-		return ArtifactContent{}, errors.New("invalid local admin artifact response")
+		return ArtifactContent{}, c.fail(ClassProtocol, localOperationArtifact, errors.New("invalid local admin artifact response"))
 	}
 	return ArtifactContent{Metadata: *response.ArtifactMetadata, Content: &exactReadCloser{
 		reader: conn, closer: conn, remaining: response.ArtifactSize, stopWatch: stopWatch,
@@ -562,40 +574,55 @@ func (c LocalClient) call(ctx context.Context, request localRequest, destination
 	stopWatch := watchConnection(ctx, conn)
 	defer stopWatch()
 	if err := writeLocalJSON(conn, request); err != nil {
-		return fmt.Errorf("write local admin request: %w", err)
+		return c.fail(ClassUnavailable, request.Operation, fmt.Errorf("write local admin request: %w", err))
 	}
 	if err := readLocalJSON(conn, c.MaxResponseBytes, destination); err != nil {
-		return err
+		return c.fail(ClassProtocol, request.Operation, err)
 	}
-	return validateLocalResponse(*destination)
+	return c.validate(request.Operation, *destination)
 }
 
 func (c LocalClient) dial(ctx context.Context) (net.Conn, error) {
+	return c.dialOperation(ctx, "")
+}
+
+func (c LocalClient) dialOperation(ctx context.Context, operation string) (net.Conn, error) {
 	if strings.TrimSpace(c.Path) != c.Path || c.Path == "" || !filepath.IsAbs(c.Path) {
-		return nil, errors.New("local admin socket path must be absolute and trimmed")
+		return nil, c.fail(ClassClientConfiguration, operation, errors.New("local admin socket path must be absolute and trimmed"))
 	}
 	if c.MaxResponseBytes <= 0 || c.MaxArtifactBytes <= 0 || c.RequestTimeout <= 0 {
-		return nil, errors.New("local admin client byte and timeout limits must be positive")
+		return nil, c.fail(ClassClientConfiguration, operation, errors.New("local admin client byte and timeout limits must be positive"))
 	}
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", c.Path)
 	if err != nil {
-		return nil, fmt.Errorf("connect to backlog-v2 coordinator: %w", err)
+		return nil, c.fail(ClassUnavailable, operation, fmt.Errorf("connect to backlog-v2 coordinator: %w", err))
 	}
 	if err := conn.SetDeadline(time.Now().Add(c.RequestTimeout)); err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("bound local admin request: %w", err)
+		return nil, c.fail(ClassClientConfiguration, operation, fmt.Errorf("bound local admin request: %w", err))
 	}
 	return conn, nil
 }
 
-func validateLocalResponse(response localResponse) error {
+func (c LocalClient) fail(class TransportClass, operation string, err error) error {
+	return classify(class, operation, c.CoordinatorID, err)
+}
+
+// validate turns a decoded response into a classified error. A version
+// mismatch is a protocol failure; a refusal the coordinator itself wrote is a
+// rejection, except when the coordinator refused the principal.
+func (c LocalClient) validate(operation string, response localResponse) error {
 	if response.Version != LocalTransportVersion {
-		return errors.New("invalid local admin response version")
+		return c.fail(ClassProtocol, operation, errors.New("invalid local admin response version"))
 	}
-	if response.Error != "" {
-		return errors.New(response.Error)
+	if response.Error == "" {
+		return nil
 	}
-	return nil
+	class := response.ErrorClass
+	if class == "" {
+		class = ClassRejected
+	}
+	return c.fail(class, operation, errors.New(response.Error))
 }
 
 func watchConnection(ctx context.Context, conn io.Closer) func() {
