@@ -40,6 +40,12 @@ func (e Exchange) handle(ctx context.Context, envelope workerproto.Envelope) (wo
 		if err := e.Runtime.ApplyParkedAssignments(request); err != nil {
 			return "", nil, err
 		}
+		// The campaign keep list is applied in the same exchange. A worker on
+		// another host has no other way to learn that a campaign is over, and
+		// without it its ref store grows for as long as the worker exists.
+		if err := e.Runtime.ReleaseUnretainedCampaignRuns(ctx, request); err != nil {
+			return "", nil, err
+		}
 		snapshot, err := e.Runtime.Snapshot(ctx)
 		return workerproto.MessageObservations, workerproto.Observations{Snapshot: snapshot}, err
 	case workerproto.MessageOffers:

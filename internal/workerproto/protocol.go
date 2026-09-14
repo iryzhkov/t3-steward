@@ -124,8 +124,10 @@ type ParkedAssignment struct {
 }
 
 // SnapshotRequest asks the worker to publish a fresh durable observation, and
-// carries the coordinator's current statement of which of this worker's
-// assignments are parked.
+// carries the coordinator's current statements about this worker: which of its
+// assignments are parked, and which campaign runs' commits it must still keep
+// reachable. Both travel coordinator to worker on an exchange the worker
+// already makes, so the restricted protocol stays restricted.
 //
 // The list is complete for this worker: an assignment the coordinator omits is
 // not parked. ParkedReported distinguishes "nothing is parked" from "this
@@ -135,11 +137,28 @@ type ParkedAssignment struct {
 type SnapshotRequest struct {
 	ParkedReported bool               `json:"parkedReported,omitempty"`
 	Parked         []ParkedAssignment `json:"parked,omitempty"`
+	// CampaignRefsReported says that RetainedCampaignRuns is a statement rather
+	// than an absence. It exists for the same reason ParkedReported does: an
+	// older coordinator sends no list, and reading that silence as "retain
+	// nothing" would delete every campaign commit on the worker.
+	CampaignRefsReported bool `json:"campaignRefsReported,omitempty"`
+	// RetainedCampaignRuns is the complete list of workflow runs whose declared
+	// commits this worker must keep reachable. It is a keep list and not a
+	// release list on purpose: a release list would have to name every run ever
+	// finished, forever, because the coordinator cannot know what a given worker
+	// still holds, while the keep list is bounded by the campaigns that are
+	// still alive and makes releasing idempotent by construction.
+	RetainedCampaignRuns []string `json:"retainedCampaignRuns,omitempty"`
 }
 
 // MaxParkedAssignments bounds one report so a malformed or hostile coordinator
 // message cannot grow a worker's durable journal without limit.
 const MaxParkedAssignments = 1024
+
+// MaxRetainedCampaignRuns bounds the keep list for the same reason, and is the
+// point at which a coordinator with an implausible number of live campaigns
+// stops rather than sending a message a worker must refuse.
+const MaxRetainedCampaignRuns = 1024
 
 // ValidateSnapshotRequest checks a parked-assignment report before a worker
 // stores it. A report that cannot be trusted whole is rejected whole: acting on
@@ -162,7 +181,46 @@ func ValidateSnapshotRequest(request SnapshotRequest) error {
 		}
 		seen[parked.AssignmentID] = struct{}{}
 	}
+	return validateRetainedCampaignRuns(request)
+}
+
+// validateRetainedCampaignRuns checks the campaign keep list. It is refused
+// whole for the same reason the parked list is: acting on half of a complete
+// list would turn an omission into a release, and a release is not reversible.
+func validateRetainedCampaignRuns(request SnapshotRequest) error {
+	if !request.CampaignRefsReported && len(request.RetainedCampaignRuns) != 0 {
+		return errors.New("worker protocol: retained campaign runs listed without the reported flag")
+	}
+	if len(request.RetainedCampaignRuns) > MaxRetainedCampaignRuns {
+		return fmt.Errorf("worker protocol: %d retained campaign runs exceed the limit of %d",
+			len(request.RetainedCampaignRuns), MaxRetainedCampaignRuns)
+	}
+	seen := make(map[string]struct{}, len(request.RetainedCampaignRuns))
+	for _, runID := range request.RetainedCampaignRuns {
+		if !safeCampaignRunID(runID) {
+			return fmt.Errorf("worker protocol: retained campaign run %q is not a safe identifier", runID)
+		}
+		if _, duplicate := seen[runID]; duplicate {
+			return fmt.Errorf("worker protocol: retained campaign runs repeat %q", runID)
+		}
+		seen[runID] = struct{}{}
+	}
 	return nil
+}
+
+// safeCampaignRunID accepts only what the worker can safely use as one path
+// component of its ref store. The worker applies its own validation again when
+// it releases; this one keeps an unusable identifier out of the message.
+func safeCampaignRunID(value string) bool {
+	if value == "" || len(value) > 256 || value == "." || value == ".." {
+		return false
+	}
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f || character == '/' || character == '\\' {
+			return false
+		}
+	}
+	return true
 }
 
 // ThrottleDelivery carries durable quota-control commands to one worker.

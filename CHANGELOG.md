@@ -41,11 +41,21 @@ All notable changes to this project are documented here. The format follows
   cycle for as long as the coordinator runs. The marker records the digest of
   the file it refused, so changed content is attempted, and reported, again.
 
-- The campaign refs of a finished run are released, so declared commits stop
-  being pinned once the run's sink has settled. Nothing called the release
-  before, and the store grew without bound. A settled run is held back while
-  another run that has not settled carries one of its artifacts, which is how a
-  rerun consumes an ancestor's declared commit.
+- The campaign refs of a run are released when retention removes the provenance
+  records that name its declared commits, so a finished campaign stops pinning
+  commits. Nothing called the release before, and the store grew without bound.
+  The lifetime is the record's rather than the run's: a rerun may only be created
+  from a run that has already finished, and a rerun pins its source against
+  retention, so a commit a rerun carries is kept for as long as the new run
+  needs it.
+
+- A worker on another host releases its own campaign refs. The coordinator
+  states, on the snapshot exchange of every reconciliation pass, the complete
+  list of runs whose commits that worker must keep, and the worker releases the
+  rest. The statement carries an explicit flag, so a coordinator that does not
+  send one is not read as "release everything", it is bounded and validated, and
+  it is refused whole rather than applied in part. Releasing stays idempotent and
+  a failure never fails the exchange.
 
 ## [0.11.0-rc.48] - 2026-09-14
 

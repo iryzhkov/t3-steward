@@ -8,6 +8,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 // CampaignRefReleaser ends the declared campaign lifetime of one run's commits.
@@ -101,6 +102,26 @@ func commitRecordRetained(runID string, declared map[string]bool, artifacts []do
 // state, which is the one durable statement that the run is over.
 func runSettled(run domain.WorkflowRun) bool {
 	return run.Sink != nil && run.Sink.Progress.Terminal()
+}
+
+// stateCampaignRefs adds the coordinator's statement of which campaign runs a
+// worker must keep commits for.
+//
+// The list is the retained half of CampaignRefLifetime, so a worker releases
+// exactly what the coordinator released locally, and a run the coordinator has
+// never heard of is released too: it cannot be needed by a campaign this
+// coordinator owns. The statement is only made from a snapshot that loaded,
+// because an empty list built from a failed read would tell every worker to
+// release everything.
+func stateCampaignRefs(request *workerproto.SnapshotRequest, records sqlite.CoordinatorRecords) error {
+	retained, _ := CampaignRefLifetime(records)
+	if len(retained) > workerproto.MaxRetainedCampaignRuns {
+		return fmt.Errorf("%d campaigns hold declared commits, above the protocol limit of %d",
+			len(retained), workerproto.MaxRetainedCampaignRuns)
+	}
+	request.CampaignRefsReported = true
+	request.RetainedCampaignRuns = retained
+	return nil
 }
 
 // CampaignRefReleaseReconciler releases the campaign refs whose provenance

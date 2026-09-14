@@ -13,6 +13,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 // campaignRunRecords is one settled campaign whose single task declared one
@@ -168,6 +169,71 @@ func TestCampaignRefLifetimeCountsOnlyTheRunsOwnOutput(t *testing.T) {
 	_, releasable := CampaignRefLifetime(records)
 	if strings.Join(releasable, ",") != "run-1" {
 		t.Fatalf("releasable = %v", releasable)
+	}
+}
+
+// The worker on another host is told what to keep, never what to release: the
+// statement is the retained half of the same rule the coordinator applies to
+// its own store, and it is a positive statement so that an older coordinator's
+// silence is not read as "release everything".
+func TestCampaignStatementNamesTheRunsAWorkerMustKeep(t *testing.T) {
+	live, liveTask, liveArtifact := campaignRunRecords("run-live", "task-live", "handoff")
+	done, doneTask, _ := campaignRunRecords("run-done", "task-done", "handoff")
+	settle(&done)
+	source := parkStore{live: map[string]string{}, records: sqlite.CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{live, done},
+		Tasks:        []domain.Task{liveTask, doneTask},
+		Artifacts:    []domain.Artifact{liveArtifact},
+	}}
+	request, err := parkedAssignmentsFor(context.Background(), source, "normandy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !request.CampaignRefsReported {
+		t.Fatal("the statement does not say it reports campaign refs, so an empty list would read as unknown")
+	}
+	if strings.Join(request.RetainedCampaignRuns, ",") != "run-live" {
+		t.Fatalf("retained campaign runs = %v", request.RetainedCampaignRuns)
+	}
+	if err := workerproto.ValidateSnapshotRequest(request); err != nil {
+		t.Fatalf("the coordinator built a statement its own worker would refuse: %v", err)
+	}
+	// A coordinator that cannot read its records makes no statement at all,
+	// rather than an empty one that would tell every worker to release
+	// everything.
+	if _, err := parkedAssignmentsFor(context.Background(),
+		parkStore{err: errors.New("database is locked")}, "normandy"); err == nil {
+		t.Fatal("an unreadable store still made a campaign statement")
+	}
+}
+
+// The worker answers the statement from what its store actually holds, so the
+// store has to be able to say.
+func TestCampaignRefStoreListsTheRunsItHolds(t *testing.T) {
+	ctx := context.Background()
+	repository := newGitFixture(t)
+	base := gitOutput(t, repository, "rev-parse", "HEAD")
+	refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "campaign-refs")}
+	if runs, err := refs.Runs(); err != nil || len(runs) != 0 {
+		t.Fatalf("an empty store reports %v, %v", runs, err)
+	}
+	for _, runID := range []string{"run-2", "run-1"} {
+		if _, err := refs.Publish(ctx, PublishCommitRequest{
+			WorkflowRunID: runID, TaskID: "task-1", Name: "handoff",
+			Repository: repository, WorkspaceDir: repository, Base: base,
+		}, nil); err != nil {
+			t.Fatalf("publish %s: %v", runID, err)
+		}
+	}
+	runs, err := refs.Runs()
+	if err != nil || strings.Join(runs, ",") != "run-1,run-2" {
+		t.Fatalf("runs = %v, %v", runs, err)
+	}
+	if err := refs.ReleaseRun(ctx, "run-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if runs, err = refs.Runs(); err != nil || strings.Join(runs, ",") != "run-2" {
+		t.Fatalf("runs after release = %v, %v", runs, err)
 	}
 }
 
