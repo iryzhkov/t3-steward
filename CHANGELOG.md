@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.38] - 2026-09-14
+
+### Fixed
+
+- Preflight evidence is captured with the attempt's declared outputs instead of
+  being copied in after the capture tree is sealed. Appending it afterwards hit
+  a read-only directory, so every attempt retried `permission denied` in the
+  collecting phase and no task could settle.
+- A bundle archived by an ordinary `tar` of its directory is accepted. Directory
+  entries carry a trailing slash, which the archive path rules rejected, and the
+  refusal named neither the entry nor the reason. Traversal, absolute paths and
+  escapes are still refused, and refusals now name the offending entry.
+- Explaining a task no longer reports `eligible: false` together with zero
+  blockers. That case means the attempt is already under a control decision, and
+  it now says so.
+
 ## [0.11.0-rc.37] - 2026-09-14
 
 ### Fixed
