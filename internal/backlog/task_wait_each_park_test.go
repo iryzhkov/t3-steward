@@ -72,6 +72,29 @@ func eachWakeFixture(t *testing.T, second domain.WakeMode) (*sqlite.Store, strin
 	return store, "attempt-1"
 }
 
+// deliverEveryTaskWake carries every pending wake through sending to delivered,
+// which is what the wait runner does once the message reaches the thread. Until
+// that happens the attempt is still parked on purpose, so a test that asserts
+// the resumed attempt is unparked has to get past it rather than around it.
+func deliverEveryTaskWake(ctx context.Context, t *testing.T, store *sqlite.Store) {
+	t.Helper()
+	at := time.Now().UTC()
+	pending, err := store.TaskWakesAwaitingDelivery(ctx, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wake := range pending {
+		for _, wait := range wake.Waits {
+			if _, err := store.TransitionTaskWake(ctx, wait.ID, wait.Delivery, "sending", at); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.TransitionTaskWake(ctx, wait.ID, "sending", "delivered", at); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
 // F6. An attempt resumed by an each settlement is not parked, however many of
 // its other waits are still live, and every consumer of "is this parked" must
 // agree with the attempt's own progress.
@@ -95,8 +118,23 @@ func TestAnEachWakeUnparksTheAttemptForEveryConsumer(t *testing.T) {
 				t.Fatalf("the resumed attempt is reported parked on %q", waitID)
 			}
 
+			// Until the wake reaches the thread the attempt is still parked, and
+			// must be: the turn that parked has ended and the resumed one has not
+			// begun, so a worker reading "not parked" here collects a task that is
+			// about to run again. This half and the one below are the two defects
+			// that met in this predicate; asserting only one of them is what let
+			// each fix reintroduce the other.
+			waking, err := ParkedAssignmentsFor(ctx, store, "worker-b")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(waking.Parked) != 1 {
+				t.Fatalf("an undelivered wake left the attempt unparked: %+v", waking.Parked)
+			}
+			deliverEveryTaskWake(ctx, t, store)
+
 			// What the worker is told, which is what re-parked the attempt.
-			statement, err := parkedAssignmentsFor(ctx, store, "worker-b")
+			statement, err := ParkedAssignmentsFor(ctx, store, "worker-b")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -178,7 +216,7 @@ func TestAParkedAttemptStillRefusesADoneMarker(t *testing.T) {
 	if err != nil || parked["attempt-1"] != "tw-ci" {
 		t.Fatalf("a parked attempt is not reported parked: %v %v", parked, err)
 	}
-	statement, err := parkedAssignmentsFor(ctx, store, "worker-b")
+	statement, err := ParkedAssignmentsFor(ctx, store, "worker-b")
 	if err != nil || len(statement.Parked) != 1 || statement.Parked[0].AssignmentID != "assign-1" {
 		t.Fatalf("the worker was not told its assignment is parked: %+v %v", statement, err)
 	}

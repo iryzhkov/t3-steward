@@ -282,12 +282,30 @@ func (s *Store) LiveTaskWaitAttempts(ctx context.Context) (map[string]string, er
 // settles, until the wake carrying that settlement has reached its thread: the
 // turn that parked has ended and the resumed turn has not begun, so a collector
 // that reads liveness there collects a task that is about to run again.
+// Two separate defects met in this function and each fix, applied alone,
+// reintroduced the other. A wait that is merely live does not park an attempt
+// an each settlement has already resumed, because the remaining waits stay live
+// by design; reading it as a park made the worker put the resumed turn straight
+// back into waiting-external. And an attempt whose progress has already moved on
+// is still parked while its wake sits undelivered, because the parked turn has
+// ended and the resumed one has not begun.
+//
+// So the attempt's own progress is the authority while it is parked, and the
+// delivery state is the authority once it has been woken. Neither alone is
+// enough: progress alone collects a task mid-wake, and wait liveness alone
+// re-parks a task that is already running again.
 func (s *Store) ParkedTaskWaitAttempts(ctx context.Context) (map[string]string, error) {
-	waits, err := s.ListTaskWaits(ctx)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	waits, err := loadJSON[domain.TaskWait](ctx, tx, "coordinator_task_waits")
 	if err != nil {
 		return nil, err
 	}
 	parked := make(map[string]string, len(waits))
+	waking := make(map[string]bool, len(waits))
 	for _, wait := range waits {
 		if !wait.Parking() {
 			continue
@@ -295,8 +313,29 @@ func (s *Store) ParkedTaskWaitAttempts(ctx context.Context) (map[string]string, 
 		if existing, ok := parked[wait.AttemptID]; !ok || wait.ID < existing {
 			parked[wait.AttemptID] = wait.ID
 		}
+		// A wake that has not reached the thread keeps the attempt parked on
+		// its own, whatever its progress now says.
+		if wait.Woken() {
+			waking[wait.AttemptID] = true
+		}
 	}
-	return parked, nil
+	for attemptID := range parked {
+		if waking[attemptID] {
+			continue
+		}
+		attempt, err := loadAttemptTx(ctx, tx, attemptID)
+		if errors.Is(err, sql.ErrNoRows) {
+			delete(parked, attemptID)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if attempt.Progress != domain.ProgressWaitingExternal {
+			delete(parked, attemptID)
+		}
+	}
+	return parked, tx.Commit()
 }
 
 // RecordTaskWaitReconciliations durably records lifecycle contradictions.
