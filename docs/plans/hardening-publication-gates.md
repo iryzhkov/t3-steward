@@ -129,10 +129,15 @@ Rollback is exercised on the canary before the fleet is expanded.
    worker bootstrap, to exact prior bytes or absence. Restart the coordinator and
    verify its prior catalog. Confirm the host converges to its prior
    `worker-configuration` v1 bytes.
-3. Restore the previous Steward release pin through UpKeeper and confirm running
-   version and commit. Obtain a fresh worker capability observation before any
-   new work so a stale same-epoch capability cannot send a newer protocol shape
-   to the older strict decoder.
+3. Restore a schema-compatible previous Steward release pin through UpKeeper and
+   confirm running version and commit. The live hardening migration advances the
+   database from schema 15 to 17; rc.48 explicitly refuses schema 17. Use the verified
+   rc.50 artifact as the binary rollback baseline, paired with the exact original
+   fleet-document absence and worker bytes. Keep coordinator history intact: never
+   lower the schema marker or restore an unrelated old database to force rc.48 to
+   start. Record this boundary separately from configuration rollback. Obtain a
+   fresh worker capability observation before any new work so a stale same-epoch
+   capability cannot send a newer protocol shape to an older strict decoder.
 4. Review and explicitly restore enrollment against the actual restored catalog
    revision if required. Confirm the coordinator schedules a new tiny task to the
    canary and it completes.

@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Task-bound wait registration and settlement use the configured coordinator
+  transport from worker hosts. Wake delivery follows the durable assignment owner,
+  including recovery when a local poll record is absent. Printed task-wait IDs
+  support list and cancellation through the same coordinator endpoint.
 - Campaign readiness recognizes full pinned Git object IDs in advertised refs.
   A commit SHA is no longer mistaken for a ref name; an unadvertised object
   remains unverified instead of being falsely reported missing.
