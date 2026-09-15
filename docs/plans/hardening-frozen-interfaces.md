@@ -340,6 +340,17 @@ actually proceeds, after the worker has established that the turn is terminal, n
 `Collect`. A collection that defers leaves the turn running, and a turn that may still park itself
 needs the record to name itself with.
 
+Amendment, 2026-09-14, after multi-process qualification: an attempt is parked when its own
+progress is `waiting-external`, and not merely because it holds a live task-bound wait. The two
+are written in one fenced transaction at registration, so they agree about a park that is in
+force; after an `each` wake they disagree on purpose, because that wake resumes the attempt while
+the rest of its waits stay live. Every consumer of "is this attempt parked" reads the attempt:
+the statement the coordinator makes to a worker about its own assignments, the refusal of a
+result before it enters coordinator custody, and the refusal of a `done` turn outcome. Reading
+"a wait is live" as "parked" made the coordinator keep calling a resumed assignment parked, so
+the worker returned the attempt to `waiting-external` as soon as the resumed turn ended and the
+task never finished: an `each` wake was undone as fast as it was applied.
+
 `wait add --task current` uses them. Released while waiting: executor slot, CPU/memory/scratch
 reservation, provider slot, quota tally. Held: attempt, thread, workspace, artifacts, dependency
 mounts, assignment ownership, resource locks, directory bindings.
