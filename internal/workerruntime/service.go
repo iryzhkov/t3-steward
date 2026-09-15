@@ -126,6 +126,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 	}
 	driver, err := NewLocalDriver(LocalDriver{
 		Config: LocalDriverConfig{
+			Authorization:    &binding.Inventory,
 			CatalogRevision:  binding.CatalogRevision,
 			ArtifactRoot:     artifactRoot,
 			RunsRoot:         runsRoot,

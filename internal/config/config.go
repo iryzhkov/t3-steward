@@ -509,6 +509,7 @@ type V2Scheduling struct {
 
 // Config is the full configuration.
 type Config struct {
+	coordinatorFleetApplied bool
 	// QuotaChecks controls this host watchdog and, on a coordinator, fleet-wide
 	// scheduler admission and throttling. Nil defaults to enabled.
 	QuotaChecks *bool `yaml:"quota_checks"`
@@ -639,6 +640,9 @@ func LoadFile(path string) (Config, error) {
 	if err != nil {
 		return c, err
 	}
+	if err := c.applyCoordinatorFleet(coordinatorClientHome()); err != nil {
+		return c, err
+	}
 	if err := c.applyCoordinatorClientBootstrap(coordinatorClientHome()); err != nil {
 		return c, err
 	}
@@ -690,6 +694,9 @@ func Load(path string) (Config, error) {
 	// The UpKeeper-owned file fills the coordinator client only when
 	// config.yaml declares none, so the operator's file keeps one author and
 	// an explicit block there still wins.
+	if err := c.applyCoordinatorFleet(coordinatorClientHome()); err != nil {
+		return c, err
+	}
 	if err := c.applyCoordinatorClientBootstrap(coordinatorClientHome()); err != nil {
 		return c, err
 	}

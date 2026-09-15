@@ -52,6 +52,8 @@ type T3Control interface {
 }
 
 type LocalDriverConfig struct {
+	// Authorization binds effects to the current authored routes, including empty revocations.
+	Authorization   *domain.WorkerInventory
 	CatalogRevision string
 	ArtifactRoot    string
 	RunsRoot        string
@@ -128,6 +130,9 @@ func NewLocalDriver(driver LocalDriver) (*LocalDriver, error) {
 }
 
 func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPackage) (string, error) {
+	if d.Config.Authorization != nil && !d.Config.Authorization.AuthorizesRoute(pkg.Route) {
+		return "", errors.New("execution package route is no longer authorized")
+	}
 	environment, task, attempt, err := d.executionRecords(pkg)
 	if err != nil {
 		return "", err
@@ -309,6 +314,41 @@ func (d *LocalDriver) ObserveThread(ctx context.Context, pkg workerproto.Executi
 	return backlog.DispatchThreadStopped, nil
 }
 
+// ObserveThreadTurn distinguishes stopped turns separated by an entirely
+// unobserved park and resume. A terminal state without an identity cannot
+// authorize collection.
+func (d *LocalDriver) ObserveThreadTurn(ctx context.Context, pkg workerproto.ExecutionPackage) (backlog.DispatchThreadState, string, error) {
+	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
+		return "", "", err
+	} else if scoped != nil {
+		return scoped.ObserveThreadTurn(ctx, pkg)
+	}
+	if d.Config.DryRun {
+		state, err := d.ObserveThread(ctx, pkg)
+		// No provider turn runs in no-effects mode; this local identity is never
+		// used as a substitute for a real provider observation.
+		return state, "no-effects:" + pkg.Identity.AttemptID, err
+	}
+	// Commanded collection can run without a reconcile pass.
+	if cache, ok := d.T3.(interface{ invalidate() }); ok {
+		cache.invalidate()
+	}
+	thread, err := d.T3.GetThread(ctx, pkg.Identity.ThreadID)
+	if err != nil {
+		return "", "", err
+	}
+	if thread == nil {
+		return backlog.DispatchThreadMissing, "", nil
+	}
+	if !workerThreadTerminal(*thread) {
+		return backlog.DispatchThreadActive, thread.TurnID, nil
+	}
+	if thread.TurnID == "" {
+		return "", "", errors.New("terminal T3 turn identity is unavailable; collection deferred")
+	}
+	return backlog.DispatchThreadStopped, thread.TurnID, nil
+}
+
 // A newly accepted T3 start may be visible before its turn and session.
 // Only positive terminal evidence permits collection or skipping containment.
 func workerThreadTerminal(thread domain.Thread) bool {
@@ -466,6 +506,10 @@ func (d *LocalDriver) removeTaskIdentity(pkg workerproto.ExecutionPackage, works
 }
 
 func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
+	if d.Config.Authorization != nil && !d.Config.Authorization.AuthorizesRoute(pkg.Route) {
+		return errors.New("execution package route is no longer authorized")
+	}
+
 	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
 		return err
 	} else if scoped != nil {
