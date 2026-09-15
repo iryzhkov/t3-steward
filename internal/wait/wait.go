@@ -116,6 +116,8 @@ type Control interface {
 type Runner struct {
 	// TaskStore optionally routes coordinator-owned task waits over a transport.
 	TaskStore TaskWaitStore
+	// DisableTaskWaitRuntime fences all task operations on invalid host identity.
+	DisableTaskWaitRuntime bool
 	// AssignedTaskWakesOnly confines delivery to the durable assignment owner.
 	AssignedTaskWakesOnly bool
 	TaskWorkerID          string
