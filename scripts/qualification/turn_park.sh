@@ -25,7 +25,7 @@ fi
 CURRENT=$("$STEWARD" backlog show --config "$COORDINATOR_CONFIG" "$T3_STEWARD_WORKFLOW_RUN_ID" --json 2>/dev/null | python3 "$QUAL_INSPECT" task-state | cut -d' ' -f3)
 printf 'workspace=%s coordinator=%s\n' "$T3_STEWARD_ATTEMPT_REVISION" "${CURRENT:-unknown}" >"$EVIDENCE/$QUAL_SIGNAL-revision.txt"
 
-if ! "$STEWARD" wait add --config "$COORDINATOR_CONFIG" --task current --name "$QUAL_SIGNAL" --every 30s --max-every 30s --timeout 10m -- test -f "$SIGNALS/$QUAL_SIGNAL" >"$EVIDENCE/$QUAL_SIGNAL-register.txt" 2>&1; then
+if ! "$STEWARD" wait add --config "$COORDINATOR_CONFIG" --task current --name "$QUAL_SIGNAL" --wake "${QUAL_FIRST_WAKE:-each}" --every 30s --max-every 30s --timeout 10m -- test -f "$SIGNALS/$QUAL_SIGNAL" >"$EVIDENCE/$QUAL_SIGNAL-register.txt" 2>&1; then
   # Say so in the final message rather than ending quietly. A turn that failed
   # to park and then stopped would otherwise look like an ordinary empty turn,
   # and the attempt would be collected and verified against nothing.

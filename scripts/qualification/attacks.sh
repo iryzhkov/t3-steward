@@ -159,7 +159,16 @@ case_attack_lease_expiry() {
     record attack-lease-expiry FAIL "the attempt never parked: \"$state\""
     return
   fi
-  # Stop the worker and keep it down for longer than the configured lease.
+  # Prove ownership before stopping the persistent worker. A stopped unrelated
+  # daemon does not exercise lease expiry.
+  local before worker
+  before=$(show_run "$run" "$(evidence_path attack-lease-before.json)")
+  worker=$(reading task-field workerId <"$before")
+  if [ "$worker" != worker-b ] || [ -z "${worker_b_PID:-}" ] ||
+     ! kill -0 "$worker_b_PID" 2>/dev/null; then
+    record attack-lease-expiry FAIL "parked assignment owner $worker is not the running persistent worker-b"
+    return
+  fi
   local pid=${worker_b_PID:-}
   if [ -n "$pid" ]; then
     kill "$pid" 2>/dev/null || true
@@ -175,7 +184,25 @@ case_attack_lease_expiry() {
   state=$(reading task-state <"$after")
   local assignment
   assignment=$(reading assignment-state <"$after")
+  # Check the coordinator's actual lease deadline, not merely a sleep.
+  local expired=0
+  python3 - "$before" "$after" <<'PY' && expired=1
+import datetime, json, sys
+def assignment(path):
+    tasks = json.load(open(path))["workflow"]["tasks"]
+    return next(t["assignment"] for t in tasks if not t.get("sink"))
+before, after = map(assignment, sys.argv[1:])
+assert before["workerId"] == after["workerId"] == "worker-b"
+assert before["id"] == after["id"], (before, after)
+expiry = datetime.datetime.fromisoformat(after["leaseExpiresAt"].replace("Z", "+00:00"))
+assert expiry < datetime.datetime.now(datetime.timezone.utc), after
+assert after["state"] == "unknown", after
+PY
   fleet_restart_worker worker-b
+  if [ "$expired" != 1 ]; then
+    record attack-lease-expiry FAIL "stopped owning worker but did not observe an expired assignment lease: $assignment"
+    return
+  fi
   if [ "$outputs" != 0 ] || [ "$verification" != 0 ]; then
     record attack-lease-expiry FAIL "an expired lease collected a parked attempt: $outputs output(s), $verification verification(s)"
     return
