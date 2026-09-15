@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Generated systemd user services preserve root-owned SSH configuration ownership.
+  `ProtectSystem=false` avoids the user mount namespace that OpenSSH rejects;
+  `NoNewPrivileges=true` remains enabled. Existing generated units need migration.
 - Task-bound wait registration and settlement use the configured coordinator
   transport from worker hosts. Wake delivery follows the durable assignment owner,
   including recovery when a local poll record is absent. Printed task-wait IDs
