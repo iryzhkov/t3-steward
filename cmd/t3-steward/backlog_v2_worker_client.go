@@ -444,7 +444,8 @@ func newCoordinatorWorkerSession(
 		},
 		Builder: coordinatorDeliveringOfferBuilder{
 			Base: backlog.CoordinatorOfferBuilder{
-				Store: store, Catalog: binding.Catalog, CatalogRevision: binding.CatalogRevision,
+				Authorization: &binding.Inventory,
+				Store:         store, Catalog: binding.Catalog, CatalogRevision: binding.CatalogRevision,
 				CoordinatorID: settings.Coordinator.ID, CoordinatorEpoch: coordinatorEpoch,
 				VerificationTimeout: requestTimeout,
 				MaxArtifactBytes:    settings.MessageLimits.MaxArtifactBytes,
