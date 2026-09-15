@@ -1,0 +1,9 @@
+# Supplemental recovery and provenance qualification
+
+Run `bash scripts/qualification/run-recovery-provenance.sh`. It builds this worktree and creates a separate disposable real-process fleet, retains its evidence root, and exits nonzero for any failed case. It does not touch an existing harness root or live fleet state.
+
+- Case 9 creates a successful ancestor, deliberately failed repair root, and blocked descendant. Remote `campaign rerun --from repair` creates a new subtree run. Assertions require provenance linkage, successful descendant execution, exactly one ancestor turn, preserved ancestor input bytes, and unchanged source run/tasks.
+- Case 10 supplies distinct synthetic Codex provider and canonical T3 identities through the native provider event-log projection. The client invokes `campaign submit --notify-thread current` with only `CODEX_THREAD_ID`. Registration must name the canonical thread and terminal notification must reach it exactly once. No SQLite is opened. The provider projection is a fixture; a real Codex turn is not executed.
+- Case 16 finalizes an ancestor's declared file and Git commit, pauses a middle task, copies the produced commit into a disposable repository-cache branch, then runs `remote update --prune`, reflog expiry and immediate GC. The branch and commit must disappear from that cache before the middle task releases the descendant. The descendant must receive the original file bytes and resolve the declared campaign ref to the original commit and payload.
+
+`evidence/supplemental-results.json` records verdicts; named `case9-*`, `case10-*`, and `case16-*` records retain the observations. `supplemental-cli.jsonl` records real CLI arguments, exits and responses. Provider and coordinator journals are retained by the shared fleet harness. Generated credentials remain only inside its owner-only disposable root.
