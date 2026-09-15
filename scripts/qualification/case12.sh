@@ -1,38 +1,17 @@
 #!/usr/bin/env bash
-# Case 12: race wait registration against agent-turn completion.
-#
-# The attempt must never be both waiting and terminal. The race is biased both
-# ways and run enough times to mean something: the report says how many
-# iterations ran and how many of each ordering were actually observed, because
-# an iteration that did not reach the ordering it intended proves nothing about
-# it.
-
+# Case 12 proves both sides of registration versus completion with real tasks.
 set -euo pipefail
-
-# QUAL_RACE_ITERATIONS is per bias, so the default is six runs in total. Each is
-# a real campaign, so raising it costs about a minute an iteration.
 QUAL_RACE_ITERATIONS=${QUAL_RACE_ITERATIONS:-3}
 
-# race_iteration runs one campaign under one bias and returns its observation as
-# "<bias> <registration> <final-state>".
 race_iteration() {
-  local bias=$1 index=$2
-  local signal="race-$bias-$index" project=qual-race delay=0
-  # The completion-first bias delays the registration past the point where the
-  # worker has reconciled the finished turn, which is the ordering that has to
-  # be reached rather than assumed.
-  if [ "$bias" = completion-first ]; then
-    delay=8
-  fi
-  rm -f "$ROOT/signals/$signal"
+  local bias=$1 index=$2 signal="race-$1-$2" project=qual-race
+  rm -f "$ROOT/signals/$signal" "$ROOT/signals/$signal-allow-registration"
   fleet_turn_script "$project" 1 <<EOF
 #!/bin/sh
 $(fleet_task_env)
 export STEWARD COORDINATOR_CONFIG SIGNALS EVIDENCE
 export QUAL_SIGNAL=$signal
 export QUAL_BIAS=$bias
-export QUAL_DELAY=$delay
-export QUAL_INSPECT=$HARNESS_DIR/inspect.py
 exec /bin/sh $HARNESS_DIR/turn_race.sh
 EOF
   fleet_turn_script "$project" 2 <<EOF
@@ -41,96 +20,57 @@ $(fleet_task_env)
 printf 'written after the wake\n' > result.txt
 echo "wrote result.txt after the wake"
 EOF
-
-  local directory submit run
+  local directory submit run state stopped samples=0 released=0
   directory=$(fleet_executable_campaign "race-$bias-$index" race)
   submit=$(evidence_path "case12-$signal-submit.json")
-  if ! fleet_submit_local "$directory" "qual-case12-$signal-$$" "$submit"; then
-    printf '%s submission-failed submission-failed' "$bias"
-    return 1
-  fi
+  fleet_submit_local "$directory" "qual-case12-$signal-$$" "$submit" || return 1
   run=$(run_of "$submit")
-
-  # Sample the attempt while the race resolves. The invariant is checked on
-  # every sample rather than only at the end, because "both at once" is a
-  # transient state if it happens at all.
-  local deadline=$((SECONDS + 150)) state violation="" seen=""
+  local deadline=$((SECONDS + 300))
   while [ "$SECONDS" -lt "$deadline" ]; do
-    state=$(fleet_coordinator_cli backlog show "$run" --json 2>/dev/null | reading task-state)
+    read -r state stopped < <(python3 "$HARNESS_DIR/race_observe.py" sample "$ROOT/coordinator/state.db" "$run" "$ROOT/evidence/$signal-samples.jsonl")
+    if [ "$bias" = registration-first ] && [ "$state" = waiting-external ] && [ "$stopped" = true ] &&
+       grep -q 'exit=0' "$ROOT/evidence/$signal-register.txt" 2>/dev/null; then
+      samples=$((samples + 1))
+      if [ "$samples" -ge 3 ]; then
+        : >"$ROOT/signals/$signal"
+      fi
+    fi
     case "$state" in
-      "waiting-external "*)
-        seen=waiting
-        # A parked attempt must not also carry a terminal control state.
-        case "$state" in
-          *" stopped "*|*" completed "*) violation="parked attempt carries a terminal control: $state" ;;
-        esac
-        ;;
-      succeeded*|failed*)
-        # Terminal. If a local check is still polling for this task's park, the
-        # attempt is terminal and waiting at the same time.
-        if fleet_coordinator_cli wait list --all 2>/dev/null | grep -q "$signal"; then
-          if fleet_coordinator_cli wait list --all 2>/dev/null | grep "$signal" | grep -qi waiting; then
-            violation="attempt is $state while a task-bound wait for it is still waiting"
-          fi
+      succeeded|failed)
+        if [ "$bias" = completion-first ] && [ "$released" = 0 ]; then
+          # The first check is already in flight, but cannot return until the
+          # coordinator has committed this terminal outcome.
+          printf '{"run":"%s","progress":"%s"}\n' "$run" "$state" >"$ROOT/evidence/$signal-release.json"
+          : >"$ROOT/signals/$signal-allow-registration"
+          released=1
         fi
-        break
+        if grep -q '^exit=' "$ROOT/evidence/$signal-register.txt" 2>/dev/null; then
+          break
+        fi
         ;;
     esac
-    sleep 1
+    sleep 5
   done
-  if [ -n "$seen" ]; then
-    : >"$ROOT/signals/$signal"
-    await_task "$run" 240 succeeded failed >/dev/null || true
-    state=$(fleet_coordinator_cli backlog show "$run" --json 2>/dev/null | reading task-state)
-  fi
-  local registration=none
-  if [ -s "$ROOT/evidence/$signal-register.txt" ]; then
-    if grep -q 'This task is now parked' "$ROOT/evidence/$signal-register.txt"; then
-      registration=parked
-    else
-      registration=refused
-    fi
-  fi
-  # The ordering that was actually reached, rather than the one that was
-  # intended: an iteration that never parked did reach completion first.
-  local ordering=registration-before-completion
-  if [ "$registration" != parked ]; then
-    ordering=completion-before-registration
-  fi
-  printf '%s %s %s %s %s' "$bias" "$ordering" "$registration" "${state%% *}" "${violation:-none}"
+  fleet_coordinator_cli backlog show "$run" --json >"$ROOT/evidence/$signal-final.json"
+  python3 "$HARNESS_DIR/race_observe.py" verdict "$ROOT/evidence" "$signal" "$bias" "$run"
 }
 
 case_twelve() {
-  local bias index observation
-  local iterations=0 parked=0 refused=0 none=0 violations=0
-  local before=0 after=0
-  local -a rows=()
+  local bias index observation failures=0
+  : >"$(evidence_path case12-observations.txt)"
   for bias in registration-first completion-first; do
-    index=1
-    while [ "$index" -le "$QUAL_RACE_ITERATIONS" ]; do
-      observation=$(race_iteration "$bias" "$index") || true
-      rows+=("$observation")
-      iterations=$((iterations + 1))
-      case "$observation" in
-        *" parked "*) parked=$((parked + 1)) ;;
-        *" refused "*) refused=$((refused + 1)) ;;
-        *" none "*) none=$((none + 1)) ;;
-      esac
-      case "$observation" in
-        *" none") ;;
-        *) violations=$((violations + 1)) ;;
-      esac
-      case "$observation" in
-        *" registration-before-completion "*) before=$((before + 1)) ;;
-        *" completion-before-registration "*) after=$((after + 1)) ;;
-      esac
-      index=$((index + 1))
+    for ((index=1; index<=QUAL_RACE_ITERATIONS; index++)); do
+      if observation=$(race_iteration "$bias" "$index"); then
+        printf '%s\n' "$observation" >>"$(evidence_path case12-observations.txt)"
+      else
+        failures=$((failures + 1))
+        printf '%s\n' "${observation:-unobserved iteration: $bias $index}" >>"$(evidence_path case12-observations.txt)"
+      fi
     done
   done
-  printf '%s\n' "${rows[@]}" >"$(evidence_path case12-observations.txt)"
-  if [ "$violations" -ne 0 ]; then
-    record case12 FAIL "$violations of $iterations iterations saw an attempt both waiting and terminal; see $(evidence_path case12-observations.txt)"
-    return
+  if [ "$QUAL_RACE_ITERATIONS" -lt 1 ] || [ "$failures" -ne 0 ]; then
+    record case12 FAIL "$failures incomplete/invalid race iterations; both observed orderings and successful terminal outcomes required; see $(evidence_path case12-observations.txt)"
+  else
+    record case12 PASS "$QUAL_RACE_ITERATIONS parked and $QUAL_RACE_ITERATIONS terminally refused registrations, both orderings proven, every task succeeded with output/verification evidence; see $(evidence_path case12-observations.txt)"
   fi
-  record case12 PASS "$iterations iterations ($QUAL_RACE_ITERATIONS per bias): orderings observed were $before registration-before-completion and $after completion-before-registration; $parked parked, $refused refused, $none without a registration record; no iteration saw an attempt both waiting and terminal. Observations in $(evidence_path case12-observations.txt)"
 }

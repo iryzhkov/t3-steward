@@ -23,7 +23,7 @@ printf '%s\n' "$T3_STEWARD_ATTEMPT_ID" >"$EVIDENCE/$QUAL_SIGNAL-attempt.txt"
 # ordering is reached: the turn has ended and the worker has already reconciled
 # the terminal thread by the time the registration arrives.
 register() {
-  "$STEWARD" wait add --config "$COORDINATOR_CONFIG" --task current --name "$QUAL_SIGNAL" --every 30s --max-every 30s --timeout 10m -- /bin/sh -c "sleep ${QUAL_DELAY:-0}; test -f '$SIGNALS/$QUAL_SIGNAL'" >"$EVIDENCE/$QUAL_SIGNAL-register.txt" 2>&1
+  "$STEWARD" wait add --config "$COORDINATOR_CONFIG" --task current --name "$QUAL_SIGNAL" --every 30s --max-every 30s --timeout 10m --run-timeout 5m -- /bin/sh -c "date -u +%FT%TZ > '$EVIDENCE/$QUAL_SIGNAL-check-started.txt'; if [ '$QUAL_BIAS' = completion-first ]; then n=0; until [ -f '$SIGNALS/$QUAL_SIGNAL-allow-registration' ]; do n=\$((n+1)); [ \$n -lt 240 ] || exit 2; sleep 1; done; fi; test -f '$SIGNALS/$QUAL_SIGNAL'" >"$EVIDENCE/$QUAL_SIGNAL-register.txt" 2>&1
   printf 'exit=%s\n' "$?" >>"$EVIDENCE/$QUAL_SIGNAL-register.txt"
 }
 
@@ -34,6 +34,7 @@ if [ "$QUAL_BIAS" = completion-first ]; then
   # Its descriptors are redirected away from the ones the provider is reading,
   # so the turn is reported complete without waiting for the registration.
   ( register </dev/null >/dev/null 2>&1 ) &
+  printf 'written before delayed registration\n' > result.txt
   echo "race: turn ended while the registration was in flight"
   exit 0
 fi
