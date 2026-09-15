@@ -39,7 +39,7 @@
         "git",
         "huyang"
       ],
-      "cpu_class": "build",
+      "cpu_class": "high",
       "executor_slots": 3,
       "models": {
         "claudeAgent": [
@@ -69,7 +69,7 @@
         "git",
         "huyang"
       ],
-      "cpu_class": "standard",
+      "cpu_class": "medium",
       "executor_slots": 2,
       "models": {
         "claudeAgent": [
