@@ -3,6 +3,7 @@
 import datetime
 import json
 from pathlib import Path
+import re
 import sqlite3
 import sys
 
@@ -55,8 +56,10 @@ def verdict(evidence, signal, bias, run):
     final = rows[-1]
     if len(final["attempts"]) != 1 or final["attempts"][0]["progress"] != "succeeded":
         errors.append("iteration did not succeed")
-    parked = "This task is now parked" in registration and "exit=0" in registration
-    refused = "attempt is terminal (succeeded); task-bound waits are refused" in registration and "exit=1" in registration
+    exit_match = re.search(r"(?m)^exit=(\d+)$", registration)
+    exit_code = int(exit_match[1]) if exit_match else None
+    parked = "This task is now parked" in registration and exit_code == 0
+    refused = "attempt is terminal (succeeded); task-bound waits are refused" in registration and exit_code is not None and exit_code != 0
     ordering = "unproven"
     if bias == "registration-first":
         if not parked or not any(row["attempts"] and row["attempts"][0]["progress"] == "waiting-external" and row["firstTurnEnded"] for row in rows):
@@ -84,7 +87,7 @@ def verdict(evidence, signal, bias, run):
     result = {"run": run, "signal": signal, "bias": bias, "attemptId": expected_id,
               "threadId": next(iter(identities))[1] if len(identities) == 1 else None,
               "ordering": ordering, "registration": "parked" if parked else "refused" if refused else "unproven",
-              "errors": sorted(set(errors)), "passed": not errors}
+              "registrationExit": exit_code, "errors": sorted(set(errors)), "passed": not errors}
     (root / (signal + "-verdict.json")).write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result))
     return 0 if not errors else 1
