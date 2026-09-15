@@ -1,10 +1,9 @@
 # Hardening qualification evidence index — 2026-09-15
 
-**Current gate: OPEN.** Cases 1–16 have the bounded process evidence below.
-Case 17 has passing limit/security/rollback subclaims, but a newly identified
-rollback gap remains: restoring a release without the fleet component can leave
-a newly created coordinator-client document behind. Receipt-backed restoration
-of its actual prior bytes or absence needs corrected process evidence.
+**Disposable qualification gate: PASS.** All seventeen cases have the bounded
+process evidence below. The final client rollback gap is repaired and proven:
+receipt-backed historical rollback restores exact prior client bytes or absence,
+refuses unexplained drift, and preserves unowned files. Live gates remain pending.
 
 This is a composite evidence index, not a claim that one binary ran all seventeen
 cases. Different revisions are retained deliberately. Later fixes replaced the
@@ -58,7 +57,7 @@ It is indexed independently below.
 | 14. Refuse terminal registration and replay | PASS | Main `case14-register.txt`, `case14-source.json`: explicit terminal-success refusal, exit 8, no new local wait. `replay-2-register.txt` additionally refuses settled `tw-qual-replayed-request`; it does not print the end-your-turn parked message. |
 | 15. Interactive wait remains independent | PASS | Main `case15-create.json`, `case15-register.txt`, provider journal: one wake to `thread-interactive-case15`, no workflow count change or other-thread wake. |
 | 16. Artifact and durable Git ref after cache pruning | PASS | Recovery `case16-{before-prune,pruning,consumer,after}.json`, producer commit/workspace records. Run `run-40e93501fada8011cd6c897bce204ae7`, commit `591b8b6a93cb546593a8e2bb2e76ca3fb6ca1853`; consumer receives original file and resolves `refs/campaigns/run-40e93501fada8011cd6c897bce204ae7/task-d15785f3ec7ed079cee795fc4eb2c7b0/implementation` after the commit is demonstrably gone from the pruned repository cache. |
-| 17. Limits, authorization and rollback | OPEN | Drift/limits corrected wire-role, oversized-frame, artifact cap, stale snapshot, actual 605-second repository-cache expiry and closed-quota assertions pass. Existing worker/client byte restoration and the Rollback set's historical coordinator document/absence/moved-owner assertions pass. Newly found missing-client-prior restoration on absent-component rollback is not covered by those passes and remains a gate blocker pending its corrected process test. |
+| 17. Limits, authorization and rollback | PASS | Drift/limits corrected wire-role, oversized-frame, artifact cap, stale snapshot, actual 605-second repository-cache expiry and closed-quota assertions pass. Existing worker/client byte restoration and the Rollback set's historical coordinator document/absence/moved-owner assertions pass. The final client rollback suite adds 28 passing assertions at `/tmp/t3-client-rollback.faiv37xr/evidence`; the coordinator suite passes 15 at `/tmp/t3-coordinator-rollback.ekkjobjm/evidence`. Both use clean UpKeeper `964f5a18ea802d0b4885a9cef7339fd9a141ec89` (integrated as `33d980c`). Original absence, exact legacy bytes, repeated rollback, drift/missing-proof refusals and unchanged adoption are covered. The baseline failed four restoration checks despite CLI exit 0; the fixed process suites exit 0 with every assertion passing. |
 
 ## Decisive supplemental wake evidence
 
@@ -100,9 +99,10 @@ They are supplemental safety checks, not substitutes for numbered cases.
   but substitutes local subprocess transport and absent-service observations.
   It does not replace the separately required live canary rollback, capability
   refresh, enrollment check or service convergence.
-- No requirement is satisfied by an unattempted case. Case 17 remains explicitly
-  open; the receipt-backed client-prior restoration proof is the outstanding
-  qualification work identified at this review.
+- No requirement is satisfied by an unattempted case. The final client-prior
+  restoration process proof closes case 17; its independent review also covered
+  bounded private reads, malformed receipts, symlink containment and crash windows.
+  See [the final client rollback report](qualification-client-rollback-result.md).
 
 Detailed companion reports: [ownership](qualification-case5-runtime-result.md),
 [drift and limits](qualification-fleet-limits-result.md),
