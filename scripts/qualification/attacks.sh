@@ -160,13 +160,13 @@ case_attack_lease_expiry() {
     return
   fi
   # Stop the worker and keep it down for longer than the configured lease.
-  local pid=${worker_a_PID:-}
+  local pid=${worker_b_PID:-}
   if [ -n "$pid" ]; then
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
   fi
-  rm -f "$ROOT/worker-a/home/.local/state/t3-steward/worker/worker.sock"
-  fleet_log 'worker-a stopped; waiting out the assignment lease'
+  rm -f "$ROOT/worker-b/home/.local/state/t3-steward/worker/worker.sock"
+  fleet_log 'worker-b stopped; waiting out the assignment lease'
   sleep 150
   local after outputs verification
   after=$(show_run "$run" "$(evidence_path attack-lease-run.json)")
@@ -175,7 +175,7 @@ case_attack_lease_expiry() {
   state=$(reading task-state <"$after")
   local assignment
   assignment=$(reading assignment-state <"$after")
-  fleet_restart_worker worker-a
+  fleet_restart_worker worker-b
   if [ "$outputs" != 0 ] || [ "$verification" != 0 ]; then
     record attack-lease-expiry FAIL "an expired lease collected a parked attempt: $outputs output(s), $verification verification(s)"
     return

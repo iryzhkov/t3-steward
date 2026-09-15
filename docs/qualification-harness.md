@@ -24,20 +24,25 @@ the whole fleet:
 - A coordinator process, started from a binary built out of this worktree, with
   its own configuration, SQLite state, owner-only admin socket, bundle,
   artifact and workspace roots, and legacy drop directory.
-- Two persistent worker daemons, `worker-a` and `worker-b`, each with its own
-  configuration, bootstrap document, storage roots, journals, secret store and
-  Unix socket, reached by the coordinator through a real `sshd` forced command
-  that runs `t3-steward worker bridge`.
+- Two workers, one per transport, because both are documented and neither
+  should lose coverage.
 
-  The persistent connection is not a convenience. A coordinator dials one
-  address per worker, and a forced command pins one operation word, so a worker
-  key pinned to `worker-exchange control` can never take artifact delivery: the
-  assignment is withheld with `message kind is not a worker request`. The
-  persistent bridge multiplexes control, artifact-send and artifact-receive over
-  one stream, so one key serves the worker and real work can run.
+  `worker-a` is the one-shot SSH path: one key, one `authorized_keys` line
+  running `t3-steward worker-exchange` with **no operation word**, and the
+  operation taken from the verified envelope. A pinned operation word narrows
+  that key to one operation, and a worker pinned to `control` cannot take
+  artifact delivery, so the lifecycle cases run over the unpinned form. It has
+  no daemon: `sshd` starts it once per request.
 
-  Persistent workers must be enrolled, so the harness enrolls each one against
-  the coordinator's current catalog before any case runs.
+  `worker-b` is the persistent bridge, a long-running `worker serve` daemon with
+  its own bootstrap document and Unix socket, reached through a forced command
+  that runs `t3-steward worker bridge`. It is what the fleet runs today.
+  Persistent workers must be enrolled, so the harness enrolls it against the
+  coordinator's current catalog before any case runs; the one-shot worker has
+  no enrollment requirement.
+
+  Each worker has its own configuration, storage roots, journals and secret
+  store.
 - A client host context: its own home, its own secret store, its own
   `backlog_v2.coordinator_client` configuration, and no access to the
   coordinator's socket.
@@ -116,13 +121,13 @@ Not real, and declared:
 
 ## Why the coordinator is restarted half way through
 
-A project whose repository syntax is invalid cannot coexist with working
-workers: building the worker execution-package catalog fails on it, so every
-worker reconciliation fails and the coordinator holds no worker snapshot at all.
-The harness therefore runs everything that needs observed workers against a
-coordinator whose catalog is clean, and then restarts the coordinator with the
-two malformed projects to prove the two syntax refusals, which are task-level
-findings and do not need a candidate.
+The two syntax sub-cases need projects whose repository values are invalid, and
+those projects must not be in the catalog while the other cases run: a campaign
+naming one of them would otherwise be indistinguishable from a campaign naming a
+good one. The harness therefore runs everything else against a clean catalog and
+then restarts the coordinator with the malformed projects added. The restart is
+otherwise ordinary: both workers keep their usual transports, because a
+malformed project no longer prevents the coordinator from starting.
 
 ## Why the client has two configurations
 
@@ -166,6 +171,11 @@ several operations needs the unpinned line.
 | `case15` | An interactive wait from outside task execution wakes its thread and changes no workflow state. |
 | `case7` | Three preparation failures keep three immutable logs and the first causal error. |
 | `case8` | A legacy intake conflict is reported once across restarts and shown by the quarantine view. |
+| `case16-multi-wait` | A second task-bound wait can be registered on an attempt that is already parked. |
+| `case16-wake-each` | Settling one wait of an `each` set wakes the attempt. |
+| `case16-wake-all` | An `all` set holds the park until every wait in it settles. |
+| `attack-commanded-collect` | A control command against a parked attempt collects nothing. |
+| `attack-lease-expiry` | An expired lease on a parked attempt collects nothing and does not make it succeed. |
 | `identity-survives-the-park` | The workspace identity record is still there for the turn that resumes. |
 | `attack-replayed-request-id` | Replaying a settled wait request id is refused rather than answered with the end-your-turn message. |
 | `synthetic-provider` | Every turn that ran came from a script in the harness root. |

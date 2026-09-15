@@ -41,7 +41,7 @@ for line in sys.stdin:
 print("")' "$project/turn1.sh" <"$ROOT/evidence/t3-stub.jsonl")
 
   # Both processes are replaced while the attempt is parked.
-  fleet_restart_worker worker-a
+  fleet_restart_worker worker-b
   fleet_restart_coordinator clean
   sleep 5
   local afterRestart

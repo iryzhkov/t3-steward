@@ -307,18 +307,21 @@ fleet_forced_commands() {
   fleet_authorize admin "$ROOT/forced/admin"
   fleet_authorize admin-query "$ROOT/forced/admin-query"
 
-  # The two workers. Each is reached through one persistent bridge rather than
-  # through the three fixed worker-exchange operations, because a coordinator
-  # dials one address per worker while a forced command pins one operation word:
-  # a worker whose key is pinned to "control" can never take artifact delivery.
-  # The persistent connection multiplexes control, artifact-send and
-  # artifact-receive over one stream, so one key serves the worker.
-  local worker
-  for worker in worker-a worker-b; do
-    fleet_wrapper "$ROOT/forced/$worker-bridge" "$ROOT/$worker/home" "$ROOT/$worker/ssh_config" \
-      "$STEWARD" worker --config "$ROOT/$worker/config.yaml" bridge
-    fleet_authorize "$worker" "$ROOT/forced/$worker-bridge"
-  done
+  # The two workers cover the two transports on purpose.
+  #
+  # worker-a is the one-shot SSH path an operator following the runbook builds:
+  # one key, one unpinned worker-exchange line, and the operation taken from the
+  # verified envelope. A pinned operation word would give that key one operation
+  # only, and a worker pinned to "control" cannot take artifact delivery.
+  #
+  # worker-b is the persistent bridge, which is what the fleet runs today and
+  # must not lose coverage.
+  fleet_wrapper "$ROOT/forced/worker-a-exchange" "$ROOT/worker-a/home" "$ROOT/worker-a/ssh_config" \
+    "$STEWARD" worker-exchange --config "$ROOT/worker-a/config.yaml"
+  fleet_authorize worker-a "$ROOT/forced/worker-a-exchange"
+  fleet_wrapper "$ROOT/forced/worker-b-bridge" "$ROOT/worker-b/home" "$ROOT/worker-b/ssh_config" \
+    "$STEWARD" worker --config "$ROOT/worker-b/config.yaml" bridge
+  fleet_authorize worker-b "$ROOT/forced/worker-b-bridge"
 
   # The repositories. Each key serves exactly one repository through
   # git-upload-pack, so a key that is not authorized cannot read any of them.
@@ -497,7 +500,9 @@ fleet_worker_bootstrap() {
 # coordinator reaches it through.
 fleet_start_workers() {
   local worker
-  for worker in worker-a worker-b; do
+  # Only the persistent worker needs a daemon. The one-shot worker is started
+  # by sshd for each request and holds no socket of its own.
+  for worker in worker-b; do
     (
       cd "$ROOT/$worker"
       HOME="$ROOT/$worker/home" \
@@ -568,7 +573,9 @@ fleet_restart_worker() {
 # path requires it before any assignment can be offered.
 fleet_enroll_workers() {
   local worker digest deadline
-  for worker in worker-a worker-b; do
+  # Enrollment is the persistent path's admission step; the one-shot worker has
+  # no enrollment requirement and is used from its configuration alone.
+  for worker in worker-b; do
     deadline=$((SECONDS + 60))
     while :; do
       digest=$(fleet_coordinator_cli backlog workers --json 2>/dev/null \
@@ -590,8 +597,14 @@ fleet_enroll_workers() {
 # fleet_worker_block is the shared worker catalog. Both workers and the
 # coordinator must agree on it.
 fleet_worker_block() {
-  local worker connection="      connection: persistent-ssh"
+  local worker connection
   for worker in worker-a worker-b; do
+    # worker-a is reached one SSH session per request; worker-b holds one
+    # persistent stream. Both are documented shapes and both are exercised.
+    connection="      # worker-a is the one-shot SSH transport"
+    if [ "$worker" = worker-b ]; then
+      connection="      connection: persistent-ssh"
+    fi
     cat <<EOF
     $worker:
       address: qual-$worker
@@ -673,7 +686,9 @@ fleet_project_block() {
       default_ref: main
       t3_project: qual-park-restart
       setup_profile: quick
-      workers: [worker-a]
+      # On the persistent worker, because restarting a worker process is the
+      # point of the case and the one-shot worker has no process to restart.
+      workers: [worker-b]
     race:
       repository: ssh://qual-repo-good/good.git
       default_ref: main
@@ -703,7 +718,9 @@ fleet_project_block() {
       default_ref: main
       t3_project: qual-lease
       setup_profile: quick
-      workers: [worker-a]
+      # On the persistent worker: stopping its daemon is how the lease is made
+      # to expire without the coordinator being told anything.
+      workers: [worker-b]
     bad-setup:
       repository: ssh://qual-repo-good/good.git
       default_ref: main
@@ -937,8 +954,15 @@ try:
 except Exception:
     print(0); raise SystemExit
 workers = payload.get("workers") or []
-print(sum(1 for w in workers
-         if (w.get("snapshot") or {}).get("connected") and not w.get("stale") and w.get("enrolled")))' 2>/dev/null || echo 0)
+# A worker counts when the coordinator has a usable observation of it. The
+# persistent worker must also be enrolled; the one-shot worker has no
+# enrollment requirement to satisfy.
+def usable(w):
+    snapshot = w.get("snapshot") or {}
+    if not snapshot.get("connected") or w.get("stale"):
+        return False
+    return w.get("enrolled") or w.get("requirement") is None
+print(sum(1 for w in workers if usable(w)))' 2>/dev/null || echo 0)
     [ "$observed" = "2" ] && break
     if [ "$SECONDS" -ge "$deadline" ]; then
       fleet_coordinator_cli backlog workers --json >"$ROOT/evidence/workers-at-timeout.json" 2>&1 || true
@@ -1086,9 +1110,7 @@ fleet_setup() {
   fleet_worker_config worker-b repo-unauthorized
   fleet_client_config
   fleet_forced_commands
-  fleet_worker_bootstrap worker-a
   fleet_worker_bootstrap worker-b
-  fleet_provider_cache worker-a
   fleet_provider_cache worker-b
   fleet_start_workers
   fleet_start_coordinator
