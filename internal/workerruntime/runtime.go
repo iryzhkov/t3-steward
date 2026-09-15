@@ -1139,6 +1139,7 @@ func (r *Runtime) finishThrottle(command domain.ThrottleCommand, accepted bool, 
 			case domain.ThrottleCommandHardStop:
 				record.Phase = PhaseStopped
 			case domain.ThrottleCommandResume:
+				record.StopObservedSequence = 0
 				record.Phase = PhaseRunning
 			}
 		}
