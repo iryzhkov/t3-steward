@@ -82,7 +82,20 @@ func (r *Runner) tickTaskWaits(ctx context.Context, waits []Wait) {
 // authorizes a second send that would start a second turn.
 func (r *Runner) deliverTaskWake(ctx context.Context, store TaskWaitStore, control NodeControl, wake domain.TaskWaitWakeContext, now time.Time) {
 	log := r.log.With("thread", wake.ThreadID, "attempt", wake.AttemptID)
+	seen := map[string]bool{}
 	for _, wait := range wake.Waits {
+		if wait.DeliveryID == "" {
+			log.Error("task wake lacks durable delivery identity", "wait", wait.ID)
+			continue
+		}
+		if seen[wait.DeliveryID] {
+			continue
+		}
+		seen[wait.DeliveryID] = true
+		if wait.Delivery == "manual-recovery-required" {
+			log.Error("task wake requires manual recovery: grouped payload coverage is unknown", "delivery", wait.DeliveryID)
+			continue
+		}
 		if wait.Delivery == "sending" || wait.Delivery == "recovery-required" {
 			found, err := control.ObserveNodeWake(ctx, wake.ThreadID, wait.DeliveryID)
 			if err != nil {
@@ -136,16 +149,21 @@ func (r *Runner) deliverTaskWake(ctx context.Context, store TaskWaitStore, contr
 	}
 }
 
-// taskWakeMessage renders one wait's outcome for the turn that receives it.
+// taskWakeMessage renders every outcome in one durable wake delivery.
 // A wake that resumed a parked attempt starts the next turn; one that did not
 // is evidence arriving mid-turn, and says so, because an agent acts on the two
 // differently.
 func taskWakeMessage(wake domain.TaskWaitWakeContext, wait domain.TaskWait) string {
-	single := domain.TaskWaitWakeContext{
+	group := domain.TaskWaitWakeContext{
 		AttemptID: wake.AttemptID, ThreadID: wake.ThreadID,
-		AttemptRevision: wake.AttemptRevision, Waits: []domain.TaskWait{wait},
+		AttemptRevision: wake.AttemptRevision,
 	}
-	return single.Prompt()
+	for _, member := range wake.Waits {
+		if member.DeliveryID == wait.DeliveryID {
+			group.Waits = append(group.Waits, member)
+		}
+	}
+	return group.Prompt()
 }
 
 // taskWaitResult translates a settled check into the structured evidence the
