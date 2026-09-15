@@ -48,6 +48,18 @@ func (f *fakeT3) remove(id string) {
 	delete(f.threads, id)
 }
 
+// deliveries keeps only the reset rollout's own messages, so that ladder
+// warnings prompted by a reading do not count as deliveries.
+func deliveries(warnings []string) []string {
+	var out []string
+	for _, w := range warnings {
+		if strings.HasPrefix(w, string(domain.ActionResetNotice)+":") {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
 // restart builds a second daemon over the same store and fake, as a restart
 // of the process would.
 func (h *harness) restart() *harness {
@@ -100,10 +112,11 @@ func TestWarnedThreadIsToldOnceWhenItsWindowResets(t *testing.T) {
 	// The advisory says what it knows and does not claim capacity.
 	text := h.fake.texts[len(h.fake.texts)-1]
 	for _, want := range []string{
-		"advisory",
+		"This message starts a turn: you may carry on",
 		"No fresh reading has confirmed the new window",
 		"provider's own metadata",
-		"grants no capacity, and nothing has been resumed on your behalf",
+		"no capacity has been granted",
+		"the first reading this turn produces is the first real evidence",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("advisory missing %q:\n%s", want, text)
@@ -229,40 +242,152 @@ func TestStoppedThreadIsToldWithoutBecomingResumeEligible(t *testing.T) {
 	}
 }
 
-// A thread automatic resume will resume is not told: the advisory would
-// start a turn, end the intent, and hand prose to a thread that was about to
-// get capacity on evidence.
-func TestThreadAutomaticResumeOwnsIsLeftToTheResumePath(t *testing.T) {
+// A thread automatic resume has already restarted needs no second turn.
+func TestAlreadyRestartedThreadIsNotDeliveredTo(t *testing.T) {
 	ctx := context.Background()
-	h := newHarness(t, nil) // resume enabled
+	h := newHarness(t, nil)
 	h.fake.add("a", "codex", "gpt", true)
 	reset := h.clock.Add(5 * time.Hour)
-	h.snap(codexPrimary, 96, reset, "1")
+	h.snap(codexPrimary, 86, reset, "1")
+	h.fake.idle("a")
+	// The resume path got there first.
+	resumed := reset.Add(time.Second)
+	if err := h.store.SaveResumeIntent(ctx, domain.ResumeIntent{
+		ThreadID: "a", Status: domain.ResumeResumed, StoppedAt: h.clock, ResumedAt: &resumed,
+		Buckets: []domain.BucketKey{codexPrimary},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(h.fake.warnings)
 	h.clock = reset.Add(time.Minute)
 	h.poll()
-	if len(h.fake.warnings) != 0 {
-		t.Fatalf("advisory sent to a thread the resume path owns: %v", h.fake.warnings)
+	if len(h.fake.warnings) != before {
+		t.Fatalf("delivered to a thread that was already restarted: %v", h.fake.warnings)
 	}
-	n, ok, err := h.store.QuotaResetNotice(ctx, "a", codexPrimary, domain.EpochFor(&reset))
-	if err != nil || !ok || n.NotifiedAt == nil || !strings.Contains(n.Outcome, "automatic resume owns this thread") {
-		t.Fatalf("notice = %+v ok=%v err=%v", n, ok, err)
-	}
-	// The resume path is untouched: it still probes after its own delay and
-	// resumes on the reading the probe produces.
-	h.clock = reset.Add(8 * time.Minute)
-	h.poll()
-	if fmt.Sprint(h.fake.resumes) != "[a]" {
-		t.Fatalf("probe resumes = %v", h.fake.resumes)
-	}
-	if len(h.fake.warnings) != 0 {
-		t.Fatalf("advisory sent after all: %v", h.fake.warnings)
+	n, ok, _ := h.store.QuotaResetNotice(ctx, "a", codexPrimary, domain.EpochFor(&reset))
+	if !ok || n.NotifiedAt == nil || !strings.Contains(n.Outcome, "already restarted this thread") {
+		t.Fatalf("notice = %+v", n)
 	}
 }
 
-// A thread that was only warned is never followed up by the resume path,
-// which creates intents only for threads it drained or stopped. It is told
-// whatever the resume settings are.
-func TestTheSelectorAcrossResumeSettings(t *testing.T) {
+// The rollout paces itself, its first turn is the probe, and a reading that
+// contradicts the reset stops the rest of it.
+func TestRolloutIsPacedAndHaltsOnAContradictingReading(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, nil)
+	for _, id := range []string{"a", "b", "c"} {
+		h.fake.add(id, "codex", "gpt", true)
+	}
+	reset := h.clock.Add(5 * time.Hour)
+	h.snap(codexPrimary, 86, reset, "1")
+	if len(h.fake.warnings) != 3 {
+		t.Fatalf("warnings = %v", h.fake.warnings)
+	}
+	for _, id := range []string{"a", "b", "c"} {
+		h.fake.idle(id)
+	}
+
+	// One turn per provider per interval, not three.
+	h.clock = reset.Add(time.Minute)
+	h.poll()
+	h.poll()
+	delivered := deliveries(h.fake.warnings)
+	if len(delivered) != 1 {
+		t.Fatalf("rollout was not paced: %v", delivered)
+	}
+	first := strings.TrimPrefix(delivered[0], string(domain.ActionResetNotice)+":")
+	// That first turn is registered as this provider's probe for the window,
+	// so the resume path does not start a second one for the same reading.
+	if got := h.d.probed["codex"]; !got.Equal(reset) {
+		t.Fatalf("probe not registered: %v", got)
+	}
+
+	// The probe's turn produces the reading, and it says the window is not
+	// clear after all. The rest of the rollout stops.
+	h.clock = reset.Add(2 * time.Minute)
+	h.snap(codexPrimary, 93, reset.Add(5*time.Hour), "2")
+	h.clock = reset.Add(10 * time.Minute)
+	h.poll()
+	h.clock = reset.Add(20 * time.Minute)
+	h.poll()
+	// The ladder acts on that reading through its own path; the rollout does
+	// not add to it.
+	if got := deliveries(h.fake.warnings); len(got) != 1 {
+		t.Fatalf("rollout continued against a contradicting reading: %v", got)
+	}
+	// The remaining advisories are owed, not settled, and the halt is in the
+	// audit log.
+	for _, id := range []string{"a", "b", "c"} {
+		if id == first {
+			continue
+		}
+		n, ok, _ := h.store.QuotaResetNotice(ctx, id, codexPrimary, domain.EpochFor(&reset))
+		if !ok || n.NotifiedAt != nil {
+			t.Fatalf("%s notice = %+v", id, n)
+		}
+	}
+	actions, _ := h.store.RecentActions(ctx, 50)
+	var halt string
+	for _, a := range actions {
+		if a.Kind == domain.ActionResetNotice && strings.HasPrefix(a.Detail, "rollout halted") {
+			halt = a.Detail
+		}
+	}
+	if !strings.Contains(halt, "93%") || !strings.Contains(halt, "still owed") {
+		t.Fatalf("halt not recorded: %q", halt)
+	}
+}
+
+// A stopped thread is restarted by the reset delivery itself rather than by
+// the resume path's probe, and that restart confirms nothing: the bucket is
+// untouched and its recovery still waits for a reading.
+func TestStoppedThreadIsRestartedByTheResetDelivery(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, nil)
+	h.fake.add("a", "codex", "gpt", true)
+	reset := h.clock.Add(5 * time.Hour)
+	h.snap(codexPrimary, 96, reset, "1")
+	if fmt.Sprint(h.fake.stops) != "[interrupt:a]" {
+		t.Fatalf("stops = %v", h.fake.stops)
+	}
+	h.clock = reset.Add(time.Minute)
+	h.poll()
+	if fmt.Sprint(h.fake.warnings) != "[reset-notice:a]" {
+		t.Fatalf("warnings = %v", h.fake.warnings)
+	}
+	if !strings.Contains(h.fake.texts[0], "stopped by the quota watchdog") ||
+		!strings.Contains(h.fake.texts[0], "This message starts a turn") {
+		t.Fatalf("delivery = %s", h.fake.texts[0])
+	}
+	st, err := h.store.LoadBucket(ctx, codexPrimary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.RecoveredAt != nil || st.Phase != domain.PhaseStopped {
+		t.Fatalf("the delivery changed the bucket: %+v", st)
+	}
+	// The thread is awake and owns its own continuation, so its intent ends
+	// as the new turn it started, and no resume is dispatched on top.
+	h.clock = reset.Add(10 * time.Minute)
+	h.poll()
+	intent, _, _ := h.store.LoadResumeIntent(ctx, "a")
+	if intent.Status != domain.ResumeCancelled {
+		t.Fatalf("intent = %+v", intent)
+	}
+	if len(h.fake.resumes) != 0 {
+		t.Fatalf("resumed on top of the delivery: %v", h.fake.resumes)
+	}
+	if len(h.fake.warnings) != 1 {
+		t.Fatalf("delivery repeated: %v", h.fake.warnings)
+	}
+}
+
+// Every alive, non-terminal thread that was warned, drained or stopped is
+// delivered to, whatever the resume settings say. A voluntarily paused
+// thread has no intent for the resume path to act on at all, and a stopped
+// one is restarted by this delivery rather than left waiting for a resume
+// that may never come.
+func TestEveryLiveThreadIsDeliveredToAcrossResumeSettings(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		enabled, coordinatorOnly bool
@@ -270,8 +395,8 @@ func TestTheSelectorAcrossResumeSettings(t *testing.T) {
 	}{
 		{enabled: false, coordinatorOnly: false, warnedOnly: true, stopped: true},
 		{enabled: false, coordinatorOnly: true, warnedOnly: true, stopped: true},
-		{enabled: true, coordinatorOnly: false, warnedOnly: true, stopped: false},
-		{enabled: true, coordinatorOnly: true, warnedOnly: true, stopped: false},
+		{enabled: true, coordinatorOnly: false, warnedOnly: true, stopped: true},
+		{enabled: true, coordinatorOnly: true, warnedOnly: true, stopped: true},
 	} {
 		name := fmt.Sprintf("enabled=%v/coordinator_only=%v", tc.enabled, tc.coordinatorOnly)
 		t.Run(name, func(t *testing.T) {

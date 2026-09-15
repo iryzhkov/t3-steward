@@ -71,6 +71,14 @@ func (f *fakeT3) WarnThread(_ context.Context, t domain.Thread, w domain.Warning
 	defer f.mu.Unlock()
 	f.warnings = append(f.warnings, string(w.Kind)+":"+t.ID)
 	f.texts = append(f.texts, w.Text)
+	// T3 has one way to deliver a message, thread.turn.start, so a message to
+	// an idle thread starts a turn. The fake models that, because the whole
+	// reset rollout rests on it.
+	if th, ok := f.threads[t.ID]; ok && !th.Running {
+		th.Running = true
+		th.TurnState = "running"
+		th.TurnID = "turn-message-" + t.ID
+	}
 	return nil
 }
 
@@ -159,7 +167,10 @@ func (h *harness) advance(d time.Duration) {
 func (h *harness) poll() { h.d.Poll(context.Background()) }
 
 func TestWarnDrainStopResumeFlow(t *testing.T) {
-	h := newHarness(t, nil)
+	// The reset rollout is off here so that this test stays about the resume
+	// path. With it on, the reset delivery restarts the stopped thread first
+	// and the probe resume never fires; that interaction has its own test.
+	h := newHarness(t, func(c *config.Config) { c.ResetNotice.Enabled = false })
 	h.fake.add("a", "codex", "gpt", true)
 	h.fake.add("b", "codex", "gpt", false)       // idle: never touched
 	h.fake.add("c", "claudeAgent", "opus", true) // other provider: never touched
@@ -296,7 +307,9 @@ func TestManualInteractionCancelsIntent(t *testing.T) {
 }
 
 func TestResumesAreStaggeredAndAbortWhenQuotaRises(t *testing.T) {
-	h := newHarness(t, nil)
+	// Resume staggering only; the reset rollout shares the same pacing and is
+	// exercised separately.
+	h := newHarness(t, func(c *config.Config) { c.ResetNotice.Enabled = false })
 	for i := 0; i < 10; i++ {
 		h.fake.add(fmt.Sprintf("t%d", i), "codex", "gpt", true)
 	}
@@ -451,7 +464,8 @@ func TestLateThreadsGetTheCurrentNotice(t *testing.T) {
 }
 
 func TestProbeResumeWhenNoReadingConfirmsTheReset(t *testing.T) {
-	h := newHarness(t, nil)
+	// The resume path's own probe, with the reset rollout out of the way.
+	h := newHarness(t, func(c *config.Config) { c.ResetNotice.Enabled = false })
 	h.fake.add("a", "codex", "gpt", true)
 	h.fake.add("b", "codex", "gpt", true)
 	reset := h.clock.Add(5 * time.Hour)

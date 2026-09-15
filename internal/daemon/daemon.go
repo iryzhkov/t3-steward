@@ -181,7 +181,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case <-prune.C:
 			_ = d.store.PruneEvents(ctx, d.now().Add(-7*24*time.Hour))
 			_ = d.store.PruneHistory(ctx, d.now().Add(-d.cfg.Policy.HistoryRetention.D()))
-			_ = d.store.PruneQuotaResetNotices(ctx, d.now().Add(-7*24*time.Hour))
+			_ = d.store.PruneQuotaResetNotices(ctx, d.now().Add(-d.resetNoticeRetention()))
 		}
 	}
 }

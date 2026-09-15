@@ -21,15 +21,30 @@ All notable changes to this project are documented here. The format follows
   deleted is not messaged. The new `reset_notice` configuration block enables it
   by default, because a missing notification was the defect.
 
-  Because T3 has no way to deliver a message without starting a turn, an
-  advisory and an automatic resume are alternatives rather than a sequence, and
-  the advisory goes only to threads automatic resume will not resume: threads it
-  never held an intent for because they were warned and not stopped, and every
-  thread when `resume.enabled` is off. A thread the resume path owns is left to
-  the reading it is waiting for, and coordinator-owned task threads are not
-  messaged from here at all, for the reason the node-wait path does not wake
-  them either. The audience is derived from the resume configuration rather than
-  described a second time.
+  A warning frequently makes a session pause of its own accord, and a voluntary
+  pause leaves no resume intent behind, so nothing was watching for it at all.
+  Because T3 delivers a message only as a turn start, the delivery to such a
+  thread is both the notice and the restart, and it is now treated as that
+  deliberately: every thread that is alive and not finished is delivered to,
+  warned, drained and stopped alike. It is bounded rather than broadcast. One
+  turn is started per provider instance per
+  `reset_notice.interval_between_threads`, counted against automatic resume's
+  dispatches as well; the first turn started for a window no reading has
+  confirmed is registered as that provider's probe, so the resume path does not
+  start a second one; and the moment a reading from the new window contradicts
+  the reset, by phase or by usage at the warn threshold, the rollout stops for
+  that window and the remaining deliveries stay owed. A window that did not
+  really reset therefore costs one turn rather than all of them. A thread
+  automatic resume has already restarted is not delivered to, and
+  coordinator-owned task threads are not messaged from here at all, for the
+  reason the node-wait path does not wake them either.
+
+  Where a delivered thread had a resume intent, the delivery supersedes it: the
+  thread is awake and owns its own continuation, its intent is cancelled as the
+  new turn it started, and no resume is dispatched on top. Automatic resume
+  still covers what the rollout does not reach and still resumes only on a fresh
+  reading. Every outcome is in the audit log: delivered and how, skipped and
+  why, or the rollout halted and by which reading.
 
 - A task may declare Git commits it produces with `commits`, and a successor may
   consume one by name through `inputs_from`. The commit is kept reachable under
@@ -202,6 +217,12 @@ All notable changes to this project are documented here. The format follows
   blocked every other result the worker held.
 
 ### Changed
+
+- `resume.coordinator_threads_only` is documented as what it is. It is retained
+  for compatibility and read nowhere, it refers to T3 parent and child threads,
+  of which T3 has one kind, and it does not mean that automatic resume skips
+  interactive threads. The previous comment read like a statement about
+  unattended work and had been taken as one. Its behaviour is unchanged.
 
 - The submission digest has one exported implementation, so a caller predicting
   the digest before submitting cannot drift from the one the coordinator

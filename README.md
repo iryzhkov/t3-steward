@@ -359,47 +359,63 @@ warning hears nothing more: the window reaches its reset time and nobody
 tells the agent that the reason it stopped has expired.
 
 When the reset time of a window a thread was warned, drained or stopped for
-passes, the steward sends that thread one advisory (`reset_notice.enabled`,
-on by default). The message names the window, the threshold that was
-crossed, the reset time the provider reported, and whether any reading has
-arrived since. It is advice, not permission: it confirms no capacity, it
-does not rearm the bucket, it does not record a recovery, and it does not
-make a resume intent eligible. Automatic resume still waits for a reading of
-its own.
+passes, the steward delivers one message to that thread
+(`reset_notice.enabled`, on by default). It names the window, the threshold
+that was crossed, the reset time the provider reported, and whether any
+reading has arrived since. It confirms nothing: it does not rearm the
+bucket, does not record a recovery and does not make a resume intent
+eligible. Only a reading does any of that.
 
-Who is told follows from who else will act. T3 offers no way to leave a
-message without starting a turn, so an advisory and an automatic resume are
-alternatives rather than a sequence. The steward therefore asks whether
-automatic resume is going to take the thread further by itself, which is the
-case when `resume.enabled` is on and the resume path holds a live intent for
-that thread — and it creates intents only for threads it drained or stopped.
+A warning often makes a session pause of its own accord, and a voluntary
+pause leaves no resume intent behind, so nothing is watching for it. Since
+T3 delivers a message only as a turn start, the delivery to such a thread is
+both the notice and the restart. That is deliberate here rather than
+incidental, which is why it is called a rollout and why it is bounded:
 
-- If automatic resume will resume the thread, it is left to it. An advisory
-  would start a turn, end that intent, and hand prose to a thread that was
-  about to be given capacity on evidence.
-- If it will not — resume is off, or the thread was only warned and so never
-  had an intent at all — the advisory is the only follow-up that exists, and
-  it is sent. This is the case the feature was written for.
-- Coordinator-owned task threads are never messaged from here, whatever the
-  resume settings. Nobody reads them, and a turn started from outside would
-  run with no coordinator ownership of what it then did, which is why the
-  node-wait path also refuses to wake them itself.
+- **Pace.** One turn is started per provider instance per
+  `reset_notice.interval_between_threads` (45 seconds), counted against the
+  resume path's own dispatches as well, so a window is never hit by a
+  broadcast. A message to a thread that is already running joins the turn it
+  is taking, costs no new capacity and is not paced.
+- **Probe.** The first turn started for a window that no reading has
+  confirmed is registered as that provider's probe, because that turn
+  produces exactly the reading the probe exists to obtain. The resume path
+  does not then start a second one for the same purpose.
+- **Evidence.** As soon as a reading from the new window contradicts the
+  reset — a phase that is not normal, or usage at or above the warn
+  threshold — the rollout stops for that window and the remaining deliveries
+  stay owed. The rollout generates its own evidence and obeys it, so a window
+  that did not really reset costs one turn rather than all of them. The
+  warning ladder then acts on that reading through its usual path.
 
-`resume.coordinator_threads_only` does not change this. The resume path
-ignores that flag (it is kept for configuration compatibility, because T3 has
-no child threads), so the selector cannot read an exclusion from it that the
-resume path does not honour; the interactive/unattended distinction comes
-from the dispatched-thread registry instead. `reset_notice.enabled` is still
-the master switch, but it is no longer how an operator protects automatic
-resume: the two no longer compete.
+Every thread that is alive and not finished is delivered to, whether it was
+warned, drained or stopped. Two exceptions stand: a thread automatic resume
+has already restarted needs no second turn, and coordinator-owned task
+threads are never messaged from here, because nobody reads them and a turn
+started from outside would run with no coordinator ownership of what it then
+did — the reason the node-wait path also refuses to wake them itself.
 
-One advisory goes out per thread, per bucket, per window, and the record of
+Where a thread has a resume intent, the delivery supersedes it: the thread is
+awake and owns its own continuation, so the intent is cancelled as the new
+turn it started, and no resume is dispatched on top. Automatic resume
+continues to cover what the rollout does not reach — threads stopped for a
+window the provider gave no reset time for, deliveries held by a halted
+rollout, coordinator-owned work, and everything when
+`reset_notice.enabled` is false — and its own evidence requirement is
+unchanged: it still resumes only on a fresh reading.
+
+`resume.coordinator_threads_only` plays no part in any of this. The resume
+path ignores that flag (it is kept for configuration compatibility, because
+T3 has no child threads), so nothing here may read an exclusion from it that
+the resume path does not honour; the interactive and unattended distinction
+comes from the dispatched-thread registry instead.
+
+One delivery goes out per thread, per bucket, per window, and the record of
 it lives in the state database, so a restart, a repeated tick or a re-read
 cannot repeat it. A thread that was archived, settled or deleted in the
-meantime is not messaged at all. Advisories to threads that are not running
-are staggered per provider instance by
-`reset_notice.interval_between_threads` (45 seconds), because each of them
-starts a turn.
+meantime is not messaged at all. Every outcome is in the audit log:
+delivered and how, skipped and why, or the rollout halted and by which
+reading.
 
 ### Automatic resume
 

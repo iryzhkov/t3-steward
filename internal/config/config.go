@@ -166,8 +166,12 @@ type Resume struct {
 	IntervalBetweenThreads Duration `yaml:"interval_between_threads"`
 	// MaxConcurrentPerProvider bounds resumes in flight per provider instance.
 	MaxConcurrentPerProvider int `yaml:"max_concurrent_per_provider"`
-	// CoordinatorThreadsOnly is kept for configuration compatibility. T3
-	// has no child threads, so every thread is a coordinator.
+	// CoordinatorThreadsOnly is kept for configuration compatibility and is
+	// read nowhere: T3 has no child threads, so every thread is a
+	// coordinator thread and the flag excludes nothing. In particular it
+	// does not mean that the resume path skips interactive threads, and
+	// nothing may treat it as though it did; automatic resume resumes every
+	// thread it drained or stopped, whatever this is set to.
 	CoordinatorThreadsOnly bool `yaml:"coordinator_threads_only"`
 	// RequireCheckpoint is reserved; the watchdog cannot verify checkpoints.
 	RequireCheckpoint bool `yaml:"require_checkpoint"`
@@ -182,19 +186,17 @@ type Resume struct {
 	ProbeAfterReset Duration `yaml:"probe_after_reset"`
 }
 
-// ResetNotice configures the advisory the watchdog sends to a thread when a
-// quota window that thread was warned or stopped for passes the reset time
-// the provider reported.
+// ResetNotice configures the rollout the watchdog performs when a quota
+// window that threads were warned, drained or stopped for passes the reset
+// time the provider reported.
 //
-// The advisory is not a resumption. It confirms no capacity, it never makes
-// a resume intent eligible and it never records a recovery: only a fresh
-// provider reading does that, which is what the resume path still requires.
-//
-// It goes only to threads automatic resume will not resume, because there is
-// no way to send a message without starting a turn: for a thread the resume
-// path owns, an advisory would replace capacity with prose. The audience is
-// therefore derived from Resume.Enabled and the live resume intents, not
-// configured a second time here.
+// T3 delivers a message only as a turn start, so the delivery is both the
+// notice and the restart for a thread that paused. That is deliberate: a
+// voluntary pause leaves no resume intent, so nothing else was watching for
+// it. It still confirms nothing — no recovery is recorded, no bucket is
+// rearmed and no resume intent becomes eligible — and it is bounded by
+// pacing, by counting the first turn as the provider's probe, and by
+// stopping as soon as a reading contradicts the reset.
 type ResetNotice struct {
 	// Enabled is on by default, because a missing notification is the defect
 	// this exists to fix: readings arrive only from running turns, so a

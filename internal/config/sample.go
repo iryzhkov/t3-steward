@@ -91,7 +91,13 @@ resume:
   reset_settle_delay: 2m
   interval_between_threads: 45s
   max_concurrent_per_provider: 1
+  # Retained for compatibility and not consulted anywhere. It does not mean
+  # the resume path skips interactive threads: it refers to T3 parent and
+  # child threads, of which T3 has only the one kind, so every thread is a
+  # coordinator thread and the flag excludes nothing. Automatic resume
+  # resumes every thread it drained or stopped, whichever value is set here.
   coordinator_threads_only: true
+  # Reserved; the watchdog cannot verify checkpoints.
   require_checkpoint: false
   # Intents older than this are cancelled.
   max_intent_age: 336h
@@ -103,13 +109,18 @@ resume:
   #   The provider quota has recovered. Resume from the latest checkpoint...
 
 reset_notice:
-  # When a window a thread was warned or stopped for passes the reset time
-  # the provider reported, tell that thread once. The message is advisory:
-  # it confirms no capacity, it resumes nothing, and automatic resume still
-  # waits for a fresh provider reading of its own.
+  # When a window that threads were warned, drained or stopped for passes the
+  # reset time the provider reported, tell each of those threads once. T3
+  # delivers a message only as a turn start, so for a thread that paused the
+  # message is also what starts it again. It confirms nothing: no recovery is
+  # recorded and no bucket is rearmed, and the first turn it starts is the
+  # reading that decides. The rollout stops for that window as soon as a
+  # reading contradicts the reset.
   enabled: true
-  # Delivering a message to an idle thread starts a turn, so advisories to
-  # idle threads of one provider instance are staggered by this.
+  # One turn started per provider instance per interval, counted against
+  # automatic resume's dispatches too, so a window is never hit by a
+  # broadcast. A message to an already running thread joins its turn and is
+  # not paced.
   interval_between_threads: 45s
 
 polling:
