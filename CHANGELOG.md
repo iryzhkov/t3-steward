@@ -8,6 +8,18 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Restricted coordinator-admin SSH transport supports campaign checks, submission,
+  diagnostics, recovery and notifications from non-coordinator hosts. Live readiness
+  checks include bounded repository probes and reject permanent failures before
+  creating a workflow.
+- UpKeeper-authored fleet projections now govern the coordinator's worker and
+  project membership and desired model authorization. Catalog changes require
+  explicit enrollment; desired configuration alone does not prove availability.
+- Task-bound waits preserve the attempt and workspace while releasing capacity,
+  then resume the same thread. Grouped `all` waits deliver one complete wake;
+  collection waits for a causally acknowledged provider turn. Downgrades require
+  drained waits and fresh worker capability observations.
+
 - A task may declare Git commits it produces with `commits`, and a successor may
   consume one by name through `inputs_from`. The commit is kept reachable under
   the durable ref `refs/campaigns/<workflow-run>/<task>/<name>`, which pruning
