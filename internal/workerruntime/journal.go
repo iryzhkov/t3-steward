@@ -43,19 +43,22 @@ const (
 type AttemptRecord struct {
 	// StopObservedSequence fences collection on a coordinator statement built
 	// after a snapshot that includes this stopped observation.
-	StopObservedSequence int64                                     `json:"stopObservedSequence,omitempty"`
-	Assignment           domain.Assignment                         `json:"assignment"`
-	Package              workerproto.ExecutionPackageManifest      `json:"package"`
-	Phase                Phase                                     `json:"phase"`
-	WorkspacePath        string                                    `json:"workspacePath,omitempty"`
-	ThreadID             string                                    `json:"threadId,omitempty"`
-	Failure              string                                    `json:"failure,omitempty"`
-	CommandRequests      map[string]domain.WorkerCommand           `json:"commandRequests,omitempty"`
-	CommandResults       map[string]domain.WorkerAcknowledgement   `json:"commandResults,omitempty"`
-	ThrottleRequests     map[string]domain.ThrottleCommand         `json:"throttleRequests,omitempty"`
-	ThrottleResults      map[string]domain.ThrottleAcknowledgement `json:"throttleResults,omitempty"`
-	PendingThrottle      *domain.ThrottleCommand                   `json:"pendingThrottle,omitempty"`
-	PrepareAttempts      int                                       `json:"prepareAttempts,omitempty"`
+	StopObservedSequence int64 `json:"stopObservedSequence,omitempty"`
+	// ObservedTurnID binds the stopped fence to a concrete provider turn even
+	// when a park and resume happen entirely between worker polls.
+	ObservedTurnID   string                                    `json:"observedTurnId,omitempty"`
+	Assignment       domain.Assignment                         `json:"assignment"`
+	Package          workerproto.ExecutionPackageManifest      `json:"package"`
+	Phase            Phase                                     `json:"phase"`
+	WorkspacePath    string                                    `json:"workspacePath,omitempty"`
+	ThreadID         string                                    `json:"threadId,omitempty"`
+	Failure          string                                    `json:"failure,omitempty"`
+	CommandRequests  map[string]domain.WorkerCommand           `json:"commandRequests,omitempty"`
+	CommandResults   map[string]domain.WorkerAcknowledgement   `json:"commandResults,omitempty"`
+	ThrottleRequests map[string]domain.ThrottleCommand         `json:"throttleRequests,omitempty"`
+	ThrottleResults  map[string]domain.ThrottleAcknowledgement `json:"throttleResults,omitempty"`
+	PendingThrottle  *domain.ThrottleCommand                   `json:"pendingThrottle,omitempty"`
+	PrepareAttempts  int                                       `json:"prepareAttempts,omitempty"`
 	// FirstPrepareFailure keeps the first causal preparation failure, which a
 	// later retry would otherwise overwrite in Failure.
 	FirstPrepareFailure string    `json:"firstPrepareFailure,omitempty"`

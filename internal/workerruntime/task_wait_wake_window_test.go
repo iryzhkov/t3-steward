@@ -66,7 +66,7 @@ func newWakeWindowFixture(t *testing.T) *wakeWindowFixture {
 		t.Fatal(err)
 	}
 
-	control := &recordingT3{thread: &domain.Thread{ID: pkg.Identity.ThreadID, Running: true}}
+	control := &recordingT3{thread: &domain.Thread{ID: pkg.Identity.ThreadID, TurnID: "turn-1", Running: true}}
 	publisher := &recordingPublisher{}
 	driver, err := NewLocalDriver(LocalDriver{
 		Config: LocalDriverConfig{
@@ -150,6 +150,7 @@ func (f *wakeWindowFixture) turnEnded() {
 }
 
 func (f *wakeWindowFixture) turnRunning() {
+	f.control.thread.TurnID += "-next"
 	f.control.thread.Running = true
 	f.control.thread.TurnState = ""
 }

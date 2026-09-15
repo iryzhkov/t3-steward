@@ -899,6 +899,36 @@ func (r *Runtime) confirmStop(id string) error {
 // the coordinator verify against them, and removes the identity record the
 // resumed turn needs. Waiting one more reconcile costs nothing.
 func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record AttemptRecord) error {
+	// Stopped/stopped observations cannot distinguish a task that parked and
+	// resumed entirely between polls. Bind this decision to the provider turn.
+	if observer, ok := r.driver.(interface {
+		ObserveThreadTurn(context.Context, workerproto.ExecutionPackage) (backlog.DispatchThreadState, string, error)
+	}); ok {
+		observed, turnID, err := observer.ObserveThreadTurn(ctx, record.Package.Package)
+		if err != nil {
+			r.log.Warn("provider turn identity is unavailable; collection deferred", "assignment", id, "error", err)
+			return nil
+		}
+		if observed == backlog.DispatchThreadActive {
+			return r.markPhase(id, PhaseRunning, "", record.WorkspacePath, record.ThreadID)
+		}
+		if observed != backlog.DispatchThreadStopped || turnID == "" {
+			return nil
+		}
+		if err := r.journal.update(func(state *journalState) error {
+			current := state.Attempts[id]
+			if current.ObservedTurnID != turnID {
+				current.ObservedTurnID = turnID
+				current.StopObservedSequence = 0
+				state.Attempts[id] = current
+				state.Sequence++
+			}
+			record = current
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
 	// The stopped observation must become durable before an empty coordinator
 	// statement can authorize collection. A report received earlier in this
 	// very exchange is insufficient even when its TTL has not elapsed.
