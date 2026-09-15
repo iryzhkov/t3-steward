@@ -27,13 +27,30 @@ register() {
   printf 'exit=%s\n' "$?" >>"$EVIDENCE/$QUAL_SIGNAL-register.txt"
 }
 
+if [ "${1:-}" = register ]; then
+  register
+  exit 0
+fi
+
 if [ "$QUAL_BIAS" = completion-first ]; then
-  # Detached, with its own descriptors, so ending this turn does not wait for it
-  # and the provider reports the turn complete while the registration is still
-  # in flight.
-  # Its descriptors are redirected away from the ones the provider is reading,
-  # so the turn is reported complete without waiting for the registration.
-  ( register </dev/null >/dev/null 2>&1 ) &
+  # Shell redirection alone leaves saved stdout/stderr descriptors open in a
+  # background function. The provider's capture waits for those pipes and the
+  # turn never ends before registration. A fresh process closes every extra FD.
+  python3 - "$0" "$EVIDENCE/$QUAL_SIGNAL-check-started.txt" <<'PY'
+import pathlib, subprocess, sys, time
+child = subprocess.Popen(["/bin/sh", sys.argv[1], "register"],
+    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    close_fds=True, start_new_session=True)
+for _ in range(150):
+    if pathlib.Path(sys.argv[2]).exists():
+        break
+    if child.poll() is not None:
+        raise SystemExit("registration child exited before starting its check")
+    time.sleep(0.1)
+else:
+    child.terminate()
+    raise SystemExit("registration check did not start")
+PY
   printf 'written before delayed registration\n' > result.txt
   echo "race: turn ended while the registration was in flight"
   exit 0
