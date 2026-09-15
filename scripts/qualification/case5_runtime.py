@@ -157,8 +157,11 @@ elif phase == "verify":
     observed = workers("case5-observed-before-enroll.json")
     effective = workers("case5-effective-workers.json")
     plan = json.loads((evidence / "case5-enrollment-plan.out").read_text())
-    verdict("case5-plan-explicit", plan["enrollment_plan"]["applied"] is False,
-            "real UpKeeper plan never applies enrollment")
+    expected_changes = [f"worker {worker} is authorized for synthetic model {model}"
+                        for worker in ("worker-a", "worker-b")]
+    verdict("case5-plan-explicit", plan["enrollment_plan"]["applied"] is False
+            and plan["enrollment_plan"]["authorization_changes"] == expected_changes,
+            "real UpKeeper plan shows exactly the two Opus authorizations and never applies enrollment")
     sets = {}
     for worker in ("worker-a", "worker-b"):
         desired = plan["hosts"][worker]["desired_models"]["synthetic"]
