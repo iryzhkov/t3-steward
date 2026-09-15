@@ -309,6 +309,41 @@ func (d *LocalDriver) ObserveThread(ctx context.Context, pkg workerproto.Executi
 	return backlog.DispatchThreadStopped, nil
 }
 
+// ObserveThreadTurn distinguishes stopped turns separated by an entirely
+// unobserved park and resume. A terminal state without an identity cannot
+// authorize collection.
+func (d *LocalDriver) ObserveThreadTurn(ctx context.Context, pkg workerproto.ExecutionPackage) (backlog.DispatchThreadState, string, error) {
+	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
+		return "", "", err
+	} else if scoped != nil {
+		return scoped.ObserveThreadTurn(ctx, pkg)
+	}
+	if d.Config.DryRun {
+		state, err := d.ObserveThread(ctx, pkg)
+		// No provider turn runs in no-effects mode; this local identity is never
+		// used as a substitute for a real provider observation.
+		return state, "no-effects:" + pkg.Identity.AttemptID, err
+	}
+	// Commanded collection can run without a reconcile pass.
+	if cache, ok := d.T3.(interface{ invalidate() }); ok {
+		cache.invalidate()
+	}
+	thread, err := d.T3.GetThread(ctx, pkg.Identity.ThreadID)
+	if err != nil {
+		return "", "", err
+	}
+	if thread == nil {
+		return backlog.DispatchThreadMissing, "", nil
+	}
+	if !workerThreadTerminal(*thread) {
+		return backlog.DispatchThreadActive, thread.TurnID, nil
+	}
+	if thread.TurnID == "" {
+		return "", "", errors.New("terminal T3 turn identity is unavailable; collection deferred")
+	}
+	return backlog.DispatchThreadStopped, thread.TurnID, nil
+}
+
 // A newly accepted T3 start may be visible before its turn and session.
 // Only positive terminal evidence permits collection or skipping containment.
 func workerThreadTerminal(thread domain.Thread) bool {

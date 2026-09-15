@@ -9,6 +9,18 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
+func TestTerminalProviderTurnWithoutIdentityDefersCollection(t *testing.T) {
+	f := newWakeWindowFixture(t)
+	f.turnEnded()
+	f.control.thread.TurnID = ""
+	if _, err := f.runtime.Snapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !f.identityPresent(t) || len(f.publisher.results) != 0 {
+		t.Fatal("a terminal provider turn without identity authorized collection")
+	}
+}
+
 func TestEntireParkResumeBetweenWorkerObservationsPreservesSecondPark(t *testing.T) {
 	f := newWakeWindowFixture(t)
 	ctx := context.Background()
@@ -35,6 +47,20 @@ func TestEntireParkResumeBetweenWorkerObservationsPreservesSecondPark(t *testing
 	}
 	if !f.identityPresent(t) {
 		t.Fatal("first pre-registration report collected")
+	}
+	// Reopen the durable journal: turn identity and its stopped fence must
+	// survive a worker process restart through this unobserved cycle.
+	journal, err := OpenJournal(f.runtime.journal.root, f.pkg.WorkerID, f.pkg.WorkerEpoch, f.pkg.CoordinatorEpoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := New(f.runtime.config, journal, f.driver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.runtime = restarted
+	if got := mustRecord(t, f.runtime, f.pkg.Identity.AssignmentID).ObservedTurnID; got != f.control.thread.TurnID {
+		t.Fatalf("turn identity lost across restart: %q", got)
 	}
 
 	// While the worker has no exchange, the coordinator settles the wait,

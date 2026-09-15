@@ -11,6 +11,14 @@ and returns that snapshot's worker epoch and sequence with its complete park rep
 An empty report authorizes collection only when this acknowledgement covers the
 stopped observation in the same worker epoch. A positive park takes effect immediately.
 
+Before collection, the production driver also reads the latest provider TurnID
+from a fresh T3 observation. The worker persists that ID in its journal; a changed
+ID clears the stopped fence even if the worker saw neither a park nor a running
+turn in between. Missing terminal TurnID defers collection. This closes the case
+where a first park and wake finish between polls, then the resumed turn registers
+a second wait before an old empty report arrives. Scoped drivers use the same
+observation; no-effects mode uses an explicit local identity and runs no provider.
+
 Observed resumption clears the stopped fence. Removing a previously reported park
 also clears it, covering a resumed turn that starts and ends between worker polls.
 The next stopped observation therefore requires another acknowledged snapshot.
