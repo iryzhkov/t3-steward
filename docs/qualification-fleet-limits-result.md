@@ -12,7 +12,7 @@ Binary build metadata saved there proves:
 
 ## Case verdicts
 
-**Case 5: FAIL.** The compiled UpKeeper CLI rendered an explicit unapplied
+**Case 5 at this old source: FAIL; superseded by [runtime ownership proof](qualification-case5-runtime-result.md).** The compiled UpKeeper CLI rendered an explicit unapplied
 enrollment plan with Opus desired on homelab and omarchy-pc and absent model
 observations represented as null. Compiled target-side processes applied each
 profile. Those are passing subclaims, but no runtime consumer connects the
@@ -31,7 +31,10 @@ and one scripted turn. There were zero drift-related repeated log messages;
 normal periodic worker-reconciliation INFO messages continue. No task was
 running at the moment the catalog changed.
 
-**Case 17: all named subclaims PASS across the recorded main run and corrected\nsecurity rerun.** This is not a claim that the final combined script had a wholly\ngreen rerun. The original main command exited 1 for case 5 and its two obsolete\nassertions described below. Measured subclaims:
+**Case 17: all named subclaims PASS across the recorded main run and corrected
+security rerun.** This is not a claim that the final combined script had a wholly
+green rerun. The original main command exited 1 for case 5 and its two obsolete
+assertions described below. Measured subclaims:
 
 - Actual admin forced command refuses a worker-credential-signed frame:
   `case17-wire-worker-role.*`.
@@ -42,7 +45,12 @@ running at the moment the catalog changed.
   `case17-artifact-refused.*`.
 - Expired disposable worker snapshots yield temporary `worker-stale`:
   `case17-stale-check.out`.
-- Good repository evidence remained cached immediately after the endpoint failed;\n  after an actual 605-second wait both workers re-probed and reported\n  `network-unavailable`, with overall `accepted_waiting`:\n  `case17-expiry-{prime,cached,after}.out`. Both expiry and temporary-network\n  assertions passed.\n- Fresh closed admission yields temporary `quota-closed` and
+- Good repository evidence remained cached immediately after the endpoint failed;
+  after an actual 605-second wait both workers re-probed and reported
+  `network-unavailable`, with overall `accepted_waiting`:
+  `case17-expiry-{prime,cached,after}.out`. Both expiry and temporary-network
+  assertions passed.
+- Fresh closed admission yields temporary `quota-closed` and
   `accepted_waiting`: `case17-closed-admission.out`.
 - UpKeeper earlier-intent reapplication restores worker and client documents
   byte-for-byte on both disposable hosts, after both documents changed:
