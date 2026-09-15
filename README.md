@@ -770,10 +770,14 @@ the window is not in `ignore_windows`, and that dry-run is off.
   tokens, message bodies, account identifiers or full provider events.
 - The state database records bucket percentages, thread ids and titles,
   and the audit log of actions. It is created with mode 0600.
-- The systemd unit runs unprivileged with `NoNewPrivileges` and
-  `ProtectSystem=full`. `ProtectHome` and `PrivateTmp` are deliberately not
-  set: the `t3` CLI writes T3's own database under `$HOME`, and wait checks
-  written by agents must see the same `/tmp` the agents use.
+- The systemd user unit runs unprivileged with `NoNewPrivileges=true`.
+  `ProtectSystem=false` preserves root ownership of `/etc/ssh` configuration:
+  the user mount namespace created by `ProtectSystem=full` can remap its
+  owner to uid 65534, causing OpenSSH to reject it. `ProtectHome` and
+  `PrivateTmp` are deliberately not set: the `t3` CLI writes T3's own database
+  under `$HOME`, and wait checks must see the same `/tmp` the agents use.
+  Regenerate an older generated unit with `t3-steward install-service --force`
+  and restart the service to apply the corrected settings.
 - Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
 ## Upgrade and rollback
