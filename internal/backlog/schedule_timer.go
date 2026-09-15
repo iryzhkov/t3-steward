@@ -3,6 +3,7 @@ package backlog
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -77,7 +78,15 @@ func (t ScheduleTimer) Tick(ctx context.Context) (ScheduleTickReport, error) {
 		// Whatever the schedule managed before it failed is still durable and
 		// still belongs in the report.
 		report.Results = append(report.Results, results...)
-		if err != nil {
+		switch {
+		case err == nil:
+		case errors.Is(err, sqlite.ErrScheduleNotFound):
+			// The schedule was deleted between the snapshot this tick read and
+			// the transaction that would have fired it. Nothing is wrong and
+			// there is nothing left to report on: announcing it would put a
+			// spurious issue in the operator's status for one tick, about a
+			// schedule that no longer exists.
+		default:
 			report.Issues = append(report.Issues, scheduleIssue(schedule.ID, err))
 		}
 	}

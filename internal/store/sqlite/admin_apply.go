@@ -413,13 +413,34 @@ func updateAdminWorkflowRunTx(ctx context.Context, tx *sql.Tx, run domain.Workfl
 // deleteAdminScheduleTx removes one schedule definition under the same revision
 // fence every other schedule command is applied with.
 //
-// The schedule row, its template versions and its trigger rows go together. The
-// triggers go because their occurrence keys are globally unique: leaving them
-// behind would mean a schedule later recreated under the same identity replayed
-// the removed one's occurrences instead of firing its own. Nothing durable is
-// lost by removing them, because every accepted and suppressed trigger already
-// published an immutable audit event and those stay. Workflow runs the schedule
-// created are untouched and keep naming it, so their history still reads.
+// The schedule row and its template versions go. The templates have to, because
+// they are immutable and keyed by (schedule_id, version): a schedule recreated
+// under the same identity starts again at version 1, and a surviving version 1
+// with different content would refuse the new definition outright.
+//
+// The trigger rows stay, and that is load-bearing rather than incidental.
+//
+// A trigger's occurrence key is the only thing that stops a second workflow run
+// being created for an occurrence that already has one. Both the trigger ID and
+// the run ID are derived from sha256(scheduleID + nominal), and the run row is
+// a bare INSERT against a TEXT PRIMARY KEY, while the runs a schedule created
+// are deliberately kept. Deleting the triggers would therefore leave the run
+// IDs allocated with nothing fencing them: if a schedule recreated under the
+// same identity ever reached a nominal time it had already fired, the seed
+// would hit a UNIQUE violation, the trigger transaction would roll back, and
+// because the timer regenerates that occurrence on every tick the schedule
+// would be permanently unable to fire.
+//
+// Keeping them costs nothing. They do not cause a recreated schedule to replay
+// the removed one's occurrences, which is the reason they were originally
+// deleted: the timer anchors each schedule at the latest nominal time it has a
+// trigger for, so an occurrence at or before a surviving trigger is never
+// generated in the first place. A surviving trigger is a record that the
+// occurrence happened and a reservation of the identity it used, and both of
+// those outlive the definition.
+//
+// Workflow runs the schedule created are untouched and keep naming it, so their
+// history still reads, and every firing's audit event is immutable and stays.
 func deleteAdminScheduleTx(ctx context.Context, tx *sql.Tx, scheduleID string, expectedRevision int64) error {
 	result, err := tx.ExecContext(ctx,
 		"DELETE FROM coordinator_schedules WHERE id = ? AND revision = ?", scheduleID, expectedRevision)
@@ -430,13 +451,9 @@ func deleteAdminScheduleTx(ctx context.Context, tx *sql.Tx, scheduleID string, e
 	if err != nil || deleted != 1 {
 		return fmt.Errorf("stale schedule %q revision", scheduleID)
 	}
-	for _, statement := range []string{
-		"DELETE FROM coordinator_schedule_templates WHERE schedule_id = ?",
-		"DELETE FROM coordinator_triggers WHERE schedule_id = ?",
-	} {
-		if _, err := tx.ExecContext(ctx, statement, scheduleID); err != nil {
-			return fmt.Errorf("delete schedule %q occurrence state: %w", scheduleID, err)
-		}
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM coordinator_schedule_templates WHERE schedule_id = ?", scheduleID); err != nil {
+		return fmt.Errorf("delete schedule %q templates: %w", scheduleID, err)
 	}
 	return nil
 }

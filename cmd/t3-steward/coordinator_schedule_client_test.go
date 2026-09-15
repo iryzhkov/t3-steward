@@ -392,16 +392,29 @@ func TestScheduleClientCanDefineModifyAndControlSchedules(t *testing.T) {
 	}
 
 	// Negative control. If this harness were somehow granting local-admin
-	// authority, every assertion above would pass for the wrong reason, so one
-	// command kind outside the remote allowlist must still be refused here.
-	_, reservedErr := harness.client.Mutate(ctx, backlogadmin.Mutation{
-		Version: backlogadmin.Version, ID: "client-reserved",
-		Kind: domain.AdminCommandKind("rotate-coordinator-epoch"), ScheduleID: "nightly",
-		ExpectedRevision: 1, Reason: "a kind no client may perform",
+	// authority, every assertion above would pass for the wrong reason.
+	//
+	// The control is worker enrollment rather than an invented command kind.
+	// An unknown kind proves only that the allowlist is consulted; enrollment
+	// is a real, implemented operation that this coordinator genuinely performs
+	// for a local operator and genuinely refuses to a remote client, because it
+	// binds a worker to the coordinator's own identity and epoch. Refusing it
+	// therefore distinguishes "restricted from remote-admin" from "not a thing".
+	_, enrollErr := harness.client.EnrollWorker(ctx, domain.WorkerEnrollmentRequest{
+		ID: "client-enrollment", WorkerID: "normandy", ExpectedRevision: 0,
+		CatalogRevision: "catalog-1", Reason: "a client host may not enroll a worker",
 	})
-	if reservedErr == nil ||
-		!strings.Contains(reservedErr.Error(), "not available to the remote-admin role") {
-		t.Fatalf("reserved command kind from a client host = %v", reservedErr)
+	if enrollErr == nil ||
+		!strings.Contains(enrollErr.Error(), "not available to the remote-admin role") {
+		t.Fatalf("worker enrollment from a client host = %v", enrollErr)
+	}
+	// The same operation is available to the coordinator's own local peer, which
+	// is what makes the refusal above a restriction rather than an absence.
+	if err := (localAdminAuthorizer{}).Authorize(ctx,
+		backlogadmin.Principal{ID: "local:1000", Roles: []string{backlogadmin.LocalAdminRole}},
+		backlogadmin.Action{Kind: "worker-enrollment"},
+	); err != nil {
+		t.Fatalf("local-admin was refused worker enrollment: %v", err)
 	}
 }
 

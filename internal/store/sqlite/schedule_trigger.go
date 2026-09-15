@@ -13,6 +13,11 @@ import (
 var (
 	ErrManualScheduleRunOpen = errors.New("manual schedule run refused while an open run exists")
 	ErrScheduleFailureHeld   = errors.New("schedule is held after a failed run")
+	// ErrScheduleNotFound means the schedule was removed between a caller
+	// reading it and this transaction locking it. It is named so that the timer
+	// can tell "deleted while I was working" apart from a real failure and stay
+	// quiet about it.
+	ErrScheduleNotFound = errors.New("schedule not found")
 )
 
 // CommitScheduleTrigger transactionally deduplicates and records a schedule firing.
@@ -47,7 +52,7 @@ func commitScheduleTriggerTx(ctx context.Context, tx *sql.Tx, request domain.Sch
 		return domain.ScheduleTriggerResult{}, fmt.Errorf("inspect schedule %q lock: %w", request.ScheduleID, err)
 	}
 	if affected == 0 {
-		return domain.ScheduleTriggerResult{}, fmt.Errorf("schedule %q not found", request.ScheduleID)
+		return domain.ScheduleTriggerResult{}, fmt.Errorf("%w: %q", ErrScheduleNotFound, request.ScheduleID)
 	}
 
 	occurrenceKey := request.OccurrenceKey()

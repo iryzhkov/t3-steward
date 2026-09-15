@@ -117,8 +117,15 @@ func TestApplyScheduleDeleteIsFencedIdempotentAndAudited(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(records.Schedules) != 0 || len(records.ScheduleTemplates) != 0 || len(records.Triggers) != 0 {
-			t.Fatalf("delete left schedule state behind: %#v", records)
+		if len(records.Schedules) != 0 || len(records.ScheduleTemplates) != 0 {
+			t.Fatalf("delete left the definition behind: %#v", records)
+		}
+		// The trigger rows stay. Their occurrence keys are what reserve the
+		// deterministic run identities of the occurrences that already fired,
+		// and the runs those identities name are deliberately kept, so removing
+		// the triggers would leave the identities allocated and unfenced.
+		if len(records.Triggers) != 1 || records.Triggers[0].ID != "trigger-past" {
+			t.Fatalf("delete removed the occurrence records: %#v", records.Triggers)
 		}
 		// The run the schedule created keeps its own history, and so does the
 		// audit trail of the firing that produced it.

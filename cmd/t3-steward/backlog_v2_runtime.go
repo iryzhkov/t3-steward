@@ -374,24 +374,29 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 	} else if len(quotaReport.Directives) != 0 {
 		c.logger.Info("backlog-v2 quota transitions reconciled", "directives", len(quotaReport.Directives))
 	}
-	if report, err := c.schedules.Tick(ctx); err != nil {
-		c.logger.Error("backlog-v2 schedule reconciliation failed", "error", err)
-	} else {
-		// A schedule that cannot fire is isolated: it no longer stops the
-		// schedules sorted after it. Nothing else then breaks to make an
-		// operator look, so the coordinator says so on every tick and keeps
-		// saying so in its status.
-		if c.scheduleHealth != nil {
-			c.scheduleHealth.SetScheduleIssues(report.Issues)
-		}
-		for _, issue := range report.Issues {
-			c.logger.Warn("backlog-v2 schedule could not fire",
-				"issue", issue,
-				"effect", "this schedule is not firing; every other schedule is unaffected")
-		}
-		if len(report.Results) != 0 {
-			c.logger.Info("backlog-v2 schedule occurrences reconciled", "results", len(report.Results))
-		}
+	// A schedule that cannot fire is isolated: it no longer stops the schedules
+	// sorted after it. Nothing else then breaks to make an operator look, so the
+	// coordinator says so on every tick and keeps saying so in its status. The
+	// report is published on both branches: a tick that fails outright fired
+	// nothing at all, and leaving the previous tick's issues standing would show
+	// an operator a stale list of named schedules while the real problem is that
+	// reconciliation itself stopped.
+	scheduleReport, scheduleErr := c.schedules.Tick(ctx)
+	scheduleIssues := scheduleReport.Issues
+	if scheduleErr != nil {
+		c.logger.Error("backlog-v2 schedule reconciliation failed", "error", scheduleErr)
+		scheduleIssues = []string{"schedules:reconciliation-failed: " + scheduleErr.Error()}
+	}
+	if c.scheduleHealth != nil {
+		c.scheduleHealth.SetScheduleIssues(scheduleIssues)
+	}
+	for _, issue := range scheduleReport.Issues {
+		c.logger.Warn("backlog-v2 schedule could not fire",
+			"issue", issue,
+			"effect", "this schedule is not firing; every other schedule is unaffected")
+	}
+	if scheduleErr == nil && len(scheduleReport.Results) != 0 {
+		c.logger.Info("backlog-v2 schedule occurrences reconciled", "results", len(scheduleReport.Results))
 	}
 	if quotaHealthy {
 		if report, err := c.planning.Tick(ctx, quotaReport); err != nil {
