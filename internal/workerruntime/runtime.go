@@ -130,6 +130,9 @@ func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
 // validates one, so this is the explanation, not the only defence.
 func advertisedCapabilities(configured []string) []string {
 	merged := append([]string(nil), configured...)
+	if !slices.Contains(merged, workerproto.CapabilityTaskWaitCollectionFence) {
+		merged = append(merged, workerproto.CapabilityTaskWaitCollectionFence)
+	}
 	for _, capability := range workerproto.SupportedPackageCapabilities() {
 		if !slices.Contains(merged, capability) {
 			merged = append(merged, capability)
@@ -896,6 +899,23 @@ func (r *Runtime) confirmStop(id string) error {
 // the coordinator verify against them, and removes the identity record the
 // resumed turn needs. Waiting one more reconcile costs nothing.
 func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record AttemptRecord) error {
+	// The stopped observation must become durable before an empty coordinator
+	// statement can authorize collection. A report received earlier in this
+	// very exchange is insufficient even when its TTL has not elapsed.
+	if r.config.LiveTaskWait == nil {
+		if err := r.journal.update(func(state *journalState) error {
+			current := state.Attempts[id]
+			if current.StopObservedSequence == 0 {
+				state.Sequence++
+				current.StopObservedSequence = state.Sequence
+				state.Attempts[id] = current
+			}
+			record = current
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
 	waiting, err := r.liveTaskWait(ctx, record)
 	if err != nil {
 		r.log.Warn("task-bound wait state is unavailable; collection deferred", "assignment", id, "error", err)
@@ -1135,6 +1155,9 @@ func (r *Runtime) markPhase(id string, phase Phase, failure, workspace, thread s
 		record, ok := state.Attempts[id]
 		if !ok {
 			return fmt.Errorf("worker journal: unknown assignment %q", id)
+		}
+		if phase == PhaseRunning {
+			record.StopObservedSequence = 0
 		}
 		record.Phase = phase
 		record.Failure = failure

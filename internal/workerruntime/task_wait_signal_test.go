@@ -86,6 +86,7 @@ func TestWorkerLearnsParkedAssignmentsFromTheCoordinatorStatement(t *testing.T) 
 	if err := runtime.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	acknowledgeStoppedSnapshot(t, runtime, driver)
 	if got := phaseOf(t, runtime, "assignment-1"); got != PhaseCompleted || driver.collectCalls != 1 {
 		t.Fatalf("the resumed turn produced %d collections in phase %q, want exactly one", driver.collectCalls, got)
 	}
@@ -151,6 +152,7 @@ func TestParkedStatementSurvivesRestartAndDefersWhileStale(t *testing.T) {
 	if err := restarted.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	acknowledgeStoppedSnapshot(t, restarted, driver)
 	if got := phaseOf(t, restarted, "assignment-1"); got != PhaseCompleted {
 		t.Fatalf("phase after the resumed turn = %q", got)
 	}
