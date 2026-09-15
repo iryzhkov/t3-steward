@@ -123,7 +123,7 @@ selected 16 && case_multi_wait
 selected 16 && case_wake_all
 selected 14 && case_attack_commanded_collect
 selected 14 && case_attack_lease_expiry
-selected lease && case_attack_lease_expiry
+[ "$ONLY" = lease ] && case_attack_lease_expiry
 selected 15 && case_fifteen
 selected 7 && case_seven
 selected 13 && case_thirteen

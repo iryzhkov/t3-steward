@@ -106,6 +106,11 @@ func (c *Config) ApplyCoordinatorFleet(fleet CoordinatorFleet) error {
 		providers := make(map[string]V2Provider, len(desired.ProviderInstances))
 		for _, instance := range desired.ProviderInstances {
 			provider, exists := worker.Providers[instance]
+			// An installed bootstrap route with no desired models grants no execution
+			// authorization and needs no invented local quota/provider binding.
+			if !exists && len(desired.DesiredModels[instance]) == 0 {
+				continue
+			}
 			if !exists || provider.QuotaPool == "" || !slices.Contains(desired.QuotaPools, provider.QuotaPool) {
 				return fmt.Errorf("fleet worker %q provider %q needs an explicit authorized quota binding", name, instance)
 			}

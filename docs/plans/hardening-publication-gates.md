@@ -102,7 +102,12 @@ Canary host: omarchy-pc only.
 
 1. Review the full `desired/release.json` candidate diff before anything is committed. Confirm
    that unrelated component pins, worker settings and secret references are unchanged.
-2. Apply the fleet configuration to the canary host alone.
+2. Apply a canary intent whose only authorization change is omarchy-pc. Install
+   its authored coordinator projection on normandy and its host projection on
+   omarchy-pc through UpKeeper. Preserve homelab authorization and enrollment.
+   Retain exact prior bytes or absence for every owned document. Restart the
+   coordinator to load its projection, then inspect its reported catalog before
+   any enrollment action. Applying the projection must not enroll workers.
 3. Inspect desired, observed and effective model sets and confirm they differ where they should.
 4. Produce the enrollment plan and review the authorization-relevant diff and digests.
 5. Apply enrollment explicitly, only after the plan is correct.
@@ -112,11 +117,23 @@ Canary host: omarchy-pc only.
 
 Rollback is exercised on the canary before the fleet is expanded.
 
-1. Restore the previous worker bootstrap from the retained prior document and confirm the host
-   converges back to the `worker-configuration` v1 bytes it had.
-2. Restore the previous Steward release pin and confirm the running binary reports it.
-3. Confirm the coordinator still schedules work to the canary host afterwards.
-4. Record what rollback did not restore, if anything.
+1. Finish the disposable canary work and confirm no active task-bound waits or
+   in-flight wake deliveries remain. Do not downgrade an active shared wake group:
+   old binaries cannot enforce the new whole-group recovery policy.
+2. Restore all retained fleet documents, including the coordinator projection and
+   worker bootstrap, to exact prior bytes or absence. Restart the coordinator and
+   verify its prior catalog. Confirm the host converges to its prior
+   `worker-configuration` v1 bytes.
+3. Restore the previous Steward release pin through UpKeeper and confirm running
+   version and commit. Obtain a fresh worker capability observation before any
+   new work so a stale same-epoch capability cannot send a newer protocol shape
+   to the older strict decoder.
+4. Review and explicitly restore enrollment against the actual restored catalog
+   revision if required. Confirm the coordinator schedules a new tiny task to the
+   canary and it completes.
+5. Record configuration, enrollment, binary and task evidence separately. Record
+   any state rollback did not restore; do not infer active-wait downgrade safety
+   from a drained canary rollback.
 
 ## Gate 7: fleet expansion and release capture
 
