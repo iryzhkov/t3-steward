@@ -99,7 +99,7 @@ func (p CatalogProjection) Settings(bootstrap WorkerBootstrap, home string) (con
 	}
 	c := config.Default()
 	c.BacklogV2 = settings
-	if err := c.Validate(); err != nil {
+	if err := c.ValidateWorkerCatalog(); err != nil {
 		return settings, err
 	}
 	binding, err := BuildWorkerBinding(settings, p.WorkerID, time.Now())
