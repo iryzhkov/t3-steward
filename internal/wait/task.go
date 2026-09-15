@@ -28,6 +28,9 @@ type TaskWaitStore interface {
 // the message is sent, so a lost response retries the message and never the
 // resumption: one wake, one resumed turn, one verification.
 func (r *Runner) tickTaskWaits(ctx context.Context, waits []Wait) {
+	if r.DisableTaskWaitRuntime {
+		return
+	}
 	store := r.TaskStore
 	if store == nil {
 		store, _ = r.store.(TaskWaitStore)

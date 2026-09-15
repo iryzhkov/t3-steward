@@ -19,6 +19,7 @@ import (
 var taskWaitWorkerHome = os.UserHomeDir
 
 func configureTaskWaitTransport(runner *wait.Runner, cfg config.Config) error {
+	runner.DisableTaskWaitRuntime = true
 	runner.AssignedTaskWakesOnly = true
 	runner.TaskWorkerID = cfg.BacklogV2.LocalWorker.ID
 	if cfg.BacklogV2.CoordinatorClient.Configured() {
@@ -41,6 +42,7 @@ func configureTaskWaitTransport(runner *wait.Runner, cfg config.Config) error {
 			runner.TaskWorkerID = bootstrap.WorkerID
 		}
 	}
+	runner.DisableTaskWaitRuntime = false
 	return nil
 }
 
