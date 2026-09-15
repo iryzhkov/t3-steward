@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"time"
 )
 
@@ -57,8 +56,8 @@ func (p HostInventoryProbe) Observe(ctx context.Context, wanted domain.WorkerInv
 		models, available := p.provider(provider.InstanceID)
 		result.Providers[i].Available = available
 		result.Providers[i].Models = nil
-		for _, model := range provider.Models {
-			if slices.Contains(models, model) {
+		for _, model := range models {
+			if available && domain.ModelAuthorized(provider.Models, model) {
 				result.Providers[i].Models = append(result.Providers[i].Models, model)
 			}
 		}

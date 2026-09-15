@@ -79,7 +79,7 @@ func DecodeCoordinatorFleet(raw []byte) (CoordinatorFleet, error) {
 			seen[provider] = true
 			models := map[string]bool{}
 			for _, model := range worker.DesiredModels[provider] {
-				if model == "" || models[model] {
+				if model == "" || models[model] || (model == "*" && len(worker.DesiredModels[provider]) != 1) {
 					return fleet, fmt.Errorf("fleet worker %q has empty or duplicate model authorization", name)
 				}
 				models[model] = true
