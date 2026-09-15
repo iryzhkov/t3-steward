@@ -44,6 +44,11 @@ func newWakeWindowFixture(t *testing.T) *wakeWindowFixture {
 	t.Cleanup(func() { _ = store.Close() })
 
 	pkg := testPackage()
+	for epoch := int64(1); epoch < pkg.CoordinatorEpoch; epoch++ {
+		if _, err := store.AdvanceCoordinatorEpoch(ctx, epoch); err != nil {
+			t.Fatal(err)
+		}
+	}
 	attempt := domain.Attempt{
 		ID: pkg.Identity.AttemptID, WorkflowRunID: pkg.Identity.WorkflowRunID, TaskID: pkg.Identity.TaskID,
 		Number: 1, Progress: domain.ProgressActive, Control: domain.ControlRunning, Revision: 9,
@@ -101,7 +106,7 @@ func newWakeWindowFixture(t *testing.T) *wakeWindowFixture {
 	}
 	// No LiveTaskWait override: the only thing this worker knows about parked
 	// assignments is what the coordinator tells it, which is the production path.
-	runtime, err := New(testConfig(func() time.Time { return now }), journal, driver)
+	runtime, err := New(testConfig(func() time.Time { now = now.Add(time.Millisecond); return now }), journal, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +135,11 @@ func (f *wakeWindowFixture) exchange(t *testing.T) {
 	if err := f.runtime.ApplyParkedAssignments(statement); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.runtime.Reconcile(ctx); err != nil {
+	snapshot, err := f.runtime.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -272,6 +281,11 @@ func TestParkedTaskKeepsItsIdentityThroughTheWakeWindow(t *testing.T) {
 		`"startedAt":"2026-09-13T05:00:00Z","completedAt":"2026-09-13T05:01:00Z"},` +
 		`"session":{"threadId":"thread-1","status":"ready","activeTurnId":null,"lastError":null}}}`)
 	f.turnEnded()
+	f.exchange(t)
+	if !f.identityPresent(t) || len(f.publisher.results) != 0 {
+		t.Fatal("pre-stop statement authorized collection before causal acknowledgement")
+	}
+	// The next exchange acknowledges the snapshot containing the stopped turn.
 	f.exchange(t)
 	if got := phaseOf(t, f.runtime, "assignment-1"); got != PhaseCompleted {
 		t.Fatalf("the finished turn was not collected: phase=%q", got)
