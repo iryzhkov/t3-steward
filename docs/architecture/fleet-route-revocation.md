@@ -6,6 +6,8 @@ An authored catalog change now fences three boundaries:
 - Offer construction validates the committed worker/provider/model/quota route against the current authored binding before packaging or input delivery.
 - The worker validates that same route before workspace preparation and again before thread creation. This second check covers a journal that already completed preparation.
 
+Thread creation also resolves the package against the current per-worker project catalog, including after recovery finds an already prepared workspace. Removing project eligibility or changing its resolved environment refuses a new provider turn. An unrelated catalog digest change does not invalidate a still-matching prepared environment.
+
 These authorization checks use authored inventories. Availability observations and draining are separate concerns and do not retroactively revoke authorized execution. Empty provider or model lists authorize no routes. Project authorization remains enforced by the per-worker project catalog.
 
 The protocol is unchanged. Production constructors always supply current authorization; the lower-level builder and driver retain optional authorization for existing embedding/test callers.
