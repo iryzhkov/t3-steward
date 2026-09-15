@@ -60,8 +60,13 @@ func (r *Runtime) ApplyParkedAssignments(request workerproto.SnapshotRequest) er
 	})
 }
 
-// liveTaskWait answers whether the coordinator still holds a task-bound wait
-// for one assignment.
+// liveTaskWait answers whether the coordinator still calls one assignment
+// parked on a task-bound wait.
+//
+// Parked is wider than "the wait is undecided": the coordinator keeps saying it
+// until the wake carrying the settlement has reached the thread, because until
+// then the attempt sits between two turns and collecting it would publish a
+// result for a task that is about to keep working.
 //
 // Config.LiveTaskWait overrides it for an embedded worker that can read
 // coordinator state directly. Otherwise the answer comes from the last

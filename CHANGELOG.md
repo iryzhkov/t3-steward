@@ -36,6 +36,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A resumed task keeps the identity record it needs to name itself, so it can
+  register a second task-bound wait. The coordinator reported an assignment
+  parked only while its wait was still undecided, but a settled wait does not
+  release the attempt: between the settlement and the moment the wake message
+  reaches the thread the parked turn has ended and the resumed turn has not
+  started. In that window the worker was told nothing was parked, saw a stopped
+  thread, and collected: it deleted `.t3-steward/task.env`, published a result
+  for outputs the task had not written, and the turn that resumed a moment later
+  could no longer name itself. The statement now stays true until the wake is
+  delivered or abandoned. Both the removal of an identity record and a deferred
+  collection are logged, because a workspace found without a record used to be
+  unexplained by any line in the journal.
+
 - `t3-steward wait add --task current` can park a task again. The coordinator
   stamps the attempt revision into the execution package and then advances the
   attempt itself, when the worker claims the assignment and again when it

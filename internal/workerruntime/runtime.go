@@ -882,13 +882,19 @@ func (r *Runtime) confirmStop(id string) error {
 	})
 }
 
-// collectUnlessWaiting parks the attempt instead of collecting it when the
-// coordinator still holds a live task-bound wait for it.
+// collectUnlessWaiting parks the attempt instead of collecting it while the
+// coordinator still calls it parked.
+//
+// Parked is the coordinator's word, not a reading of wait liveness: an attempt
+// whose wait has settled is still parked until the wake carrying that outcome
+// has reached its thread. Between the two the parked turn has ended and the
+// resumed one has not started, which looks exactly like a finished attempt from
+// here.
 //
 // A probe that cannot answer defers the decision. Collecting is the dangerous
-// direction: it publishes the outputs a parked task has not written yet and
-// lets the coordinator verify against them, which is precisely the failure this
-// path exists to prevent. Waiting one more reconcile costs nothing.
+// direction: it publishes the outputs a parked task has not written yet, lets
+// the coordinator verify against them, and removes the identity record the
+// resumed turn needs. Waiting one more reconcile costs nothing.
 func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record AttemptRecord) error {
 	waiting, err := r.liveTaskWait(ctx, record)
 	if err != nil {
@@ -900,6 +906,14 @@ func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record At
 			// The wake landed and the resumed turn has ended. The attempt leaves
 			// the parked phase through stopped, the one phase collection is
 			// valid from, so there is a single collection path either way.
+			//
+			// This is the step that ends a park and, through the driver, removes
+			// the task's identity record. It is logged because it is irreversible
+			// and because it used to happen in a window where the coordinator had
+			// settled the wait but the wake had not reached the thread.
+			r.log.Info("nothing parks this attempt any more; the park ends and the outputs are collected",
+				"assignment", id, "thread", record.Package.Package.Identity.ThreadID,
+				"workspace", record.WorkspacePath)
 			if err := r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.ThreadID); err != nil {
 				return err
 			}

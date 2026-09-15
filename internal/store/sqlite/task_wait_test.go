@@ -374,6 +374,93 @@ func assertOneConsistentOutcome(t *testing.T, store *Store, attemptID string, ex
 	}
 }
 
+// The park outlasts the settlement. Between the moment a wait settles and the
+// moment its wake reaches the thread the attempt has no running turn and one is
+// coming, so anything that decides whether to collect must still see it parked.
+// Reading liveness there is what collected a task mid-park, published a result
+// for outputs it had not written, and deleted the identity record the resumed
+// turn needed to name itself.
+func TestAnAttemptStaysParkedUntilItsWakeReachesTheThread(t *testing.T) {
+	ctx := context.Background()
+	store, attempt, now := taskWaitFixture(t)
+	wait, err := store.RegisterTaskWait(ctx, taskWaitRegistration(attempt, "req-1", domain.WakeEach), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertParkState := func(stage string, wantLive, wantParked bool) {
+		t.Helper()
+		live, err := store.LiveTaskWaitAttempts(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parked, err := store.ParkedTaskWaitAttempts(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, isLive := live[attempt.ID]
+		gotWaitID, isParked := parked[attempt.ID]
+		if isLive != wantLive || isParked != wantParked {
+			t.Fatalf("%s: live=%v parked=%v, want live=%v parked=%v", stage, isLive, isParked, wantLive, wantParked)
+		}
+		if isParked && gotWaitID != wait.ID {
+			t.Fatalf("%s: the park names wait %q, want %q", stage, gotWaitID, wait.ID)
+		}
+	}
+	assertParkState("registered", true, true)
+
+	if _, err := store.SettleTaskWait(ctx, wait.ID, domain.TaskWaitResult{Outcome: domain.TaskWaitMet}, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	// The condition is decided and nothing has been told yet.
+	assertParkState("settled", false, true)
+
+	wakes, err := store.WakeTaskWaits(ctx, now.Add(time.Minute))
+	if err != nil || len(wakes) != 1 {
+		t.Fatalf("wakes = %+v err=%v", wakes, err)
+	}
+	// The resumption is committed, and its message has still not been sent.
+	assertParkState("woken", false, true)
+
+	if claimed, err := store.TransitionTaskWake(ctx, wait.ID, "pending", "sending", now.Add(2*time.Minute)); err != nil || !claimed {
+		t.Fatalf("claimed=%v err=%v", claimed, err)
+	}
+	// A send that may or may not have landed is not evidence that it did.
+	assertParkState("sending", false, true)
+
+	if claimed, err := store.TransitionTaskWake(ctx, wait.ID, "sending", "delivered", now.Add(2*time.Minute)); err != nil || !claimed {
+		t.Fatalf("claimed=%v err=%v", claimed, err)
+	}
+	// The thread has the outcome, so this wait holds nothing any more.
+	assertParkState("delivered", false, false)
+}
+
+// A wake that cannot reach any turn stops parking the attempt rather than
+// holding it forever: an abandoned wake is a decided one.
+func TestAnAbandonedWakeStopsParkingTheAttempt(t *testing.T) {
+	ctx := context.Background()
+	store, attempt, now := taskWaitFixture(t)
+	wait, err := store.RegisterTaskWait(ctx, taskWaitRegistration(attempt, "req-1", domain.WakeEach), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SettleTaskWait(ctx, wait.ID, domain.TaskWaitResult{Outcome: domain.TaskWaitMet}, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.WakeTaskWaits(ctx, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionTaskWake(ctx, wait.ID, "pending", "abandoned", now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	parked, err := store.ParkedTaskWaitAttempts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := parked[attempt.ID]; held {
+		t.Fatalf("an abandoned wake still parks attempt %q", attempt.ID)
+	}
+}
+
 // A request ID names one park. Replaying it after the wait settled must never
 // report that the attempt is parked: the agent would end its turn, the worker
 // would collect, and verification would run against outputs never written.
@@ -517,6 +604,113 @@ func TestTaskWaitMixedWakeModesWakeOnTheEachSettlement(t *testing.T) {
 		if wait.ID == slow.ID && (wait.Settled() || wait.Woken()) {
 			t.Fatal("the unsettled all wait was settled or woken by the each settlement")
 		}
+	}
+}
+
+// all is proven here on its own, rather than by the absence of an each wait.
+//
+// One attempt holds an all set of two and one each wait. Settling a member of
+// the all set moves nothing, because its set is incomplete. Settling the each
+// wait resumes the attempt while a member of the all set is still live, and the
+// resumed turn is given the outcomes that had settled by then and nothing else.
+//
+// The distinction matters because "every wait must settle" would pass a test
+// that only ever settles a whole all set: it holds the park for the same
+// reason. Only an each settlement that resumes an attempt with a live all wait
+// beside it separates the two readings.
+func TestAllHoldsItsIncompleteSetWhileAnEachWaitStillWakesTheAttempt(t *testing.T) {
+	ctx := context.Background()
+	store, attempt, now := taskWaitFixture(t)
+	register := func(requestID string, wake domain.WakeMode) domain.TaskWait {
+		t.Helper()
+		// Every registration after the first parks an already-parked attempt,
+		// which is the shape the fleet registered in and the one that moves the
+		// attempt revision under the registration that follows it.
+		wait, err := store.RegisterTaskWait(ctx, taskWaitRegistration(loadAttempt(t, store, attempt.ID), requestID, wake), now)
+		if err != nil {
+			t.Fatalf("registering %s: %v", requestID, err)
+		}
+		return wait
+	}
+	firstOfSet := register("req-all-1", domain.WakeAll)
+	restOfSet := register("req-all-2", domain.WakeAll)
+	urgent := register("req-each", domain.WakeEach)
+
+	if _, err := store.SettleTaskWait(ctx, firstOfSet.ID, domain.TaskWaitResult{
+		Outcome: domain.TaskWaitMet, Reason: "the first of the set",
+	}, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if wakes, err := store.WakeTaskWaits(ctx, now.Add(time.Minute)); err != nil || len(wakes) != 0 {
+		t.Fatalf("an incomplete all set resumed the attempt: %v %v", wakes, err)
+	}
+	if held := loadAttempt(t, store, attempt.ID); held.Progress != domain.ProgressWaitingExternal {
+		t.Fatalf("an incomplete all set did not hold the park: %q", held.Progress)
+	}
+
+	// The each wait settles as a failure, not a success: an outcome is an
+	// outcome, and a failed condition wakes the task with its evidence.
+	if _, err := store.SettleTaskWait(ctx, urgent.ID, domain.TaskWaitResult{
+		Outcome: domain.TaskWaitFailed, ExitCode: 2, Reason: "the build broke",
+	}, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	wakes, err := store.WakeTaskWaits(ctx, now.Add(2*time.Minute))
+	if err != nil || len(wakes) != 1 {
+		t.Fatalf("the each settlement did not resume the attempt: %v %v", wakes, err)
+	}
+	resumed := loadAttempt(t, store, attempt.ID)
+	if resumed.Progress != domain.ProgressActive || resumed.Control != domain.ControlResuming {
+		t.Fatalf("the attempt did not resume: %q/%q", resumed.Progress, resumed.Control)
+	}
+	if prompt := wakes[0].Prompt(); !strings.Contains(prompt, "failed") || !strings.Contains(prompt, "the build broke") {
+		t.Fatalf("the resumed turn was not told what failed: %q", prompt)
+	}
+	if len(wakes[0].Waits) != 2 {
+		t.Fatalf("the resumed turn was given %d outcomes, want the two that had settled", len(wakes[0].Waits))
+	}
+	for _, wait := range wakes[0].Waits {
+		if wait.ID == restOfSet.ID {
+			t.Fatal("an unsettled wait was reported to the resumed turn as an outcome")
+		}
+	}
+
+	// The rest of the set is carried into the resumed turn exactly as it was:
+	// live, unsettled, and still polling.
+	waits, err := store.ListTaskWaits(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wait := range waits {
+		if wait.ID == restOfSet.ID && (!wait.Live() || wait.Woken()) {
+			t.Fatalf("the live member of the all set was settled or woken: %+v", wait)
+		}
+	}
+	// And the attempt it belongs to is running, not parked.
+	parked, err := store.LiveTaskWaitAttempts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waitID, ok := parked[attempt.ID]; ok {
+		t.Fatalf("the resumed attempt is reported parked on %q", waitID)
+	}
+
+	// When that last wait settles it reaches the turn that is already running,
+	// as evidence rather than as a resumption. Silence is not an outcome.
+	if _, err := store.SettleTaskWait(ctx, restOfSet.ID, domain.TaskWaitResult{
+		Outcome: domain.TaskWaitMet, Reason: "the rest of the set",
+	}, now.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	late, err := store.WakeTaskWaits(ctx, now.Add(3*time.Minute))
+	if err != nil || len(late) != 1 || len(late[0].Waits) != 1 || late[0].Waits[0].ID != restOfSet.ID {
+		t.Fatalf("the last settlement was not delivered: %+v %v", late, err)
+	}
+	if late[0].Resumption() {
+		t.Fatal("evidence for a running turn was recorded as a resumption")
+	}
+	if after := loadAttempt(t, store, attempt.ID); after.Revision != resumed.Revision {
+		t.Fatalf("delivering evidence moved the running attempt: %d then %d", resumed.Revision, after.Revision)
 	}
 }
 

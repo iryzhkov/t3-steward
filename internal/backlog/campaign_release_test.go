@@ -180,12 +180,12 @@ func TestCampaignStatementNamesTheRunsAWorkerMustKeep(t *testing.T) {
 	live, liveTask, liveArtifact := campaignRunRecords("run-live", "task-live", "handoff")
 	done, doneTask, _ := campaignRunRecords("run-done", "task-done", "handoff")
 	settle(&done)
-	source := parkStore{live: map[string]string{}, records: sqlite.CoordinatorRecords{
+	source := parkStore{parked: map[string]string{}, records: sqlite.CoordinatorRecords{
 		WorkflowRuns: []domain.WorkflowRun{live, done},
 		Tasks:        []domain.Task{liveTask, doneTask},
 		Artifacts:    []domain.Artifact{liveArtifact},
 	}}
-	request, err := parkedAssignmentsFor(context.Background(), source, "normandy")
+	request, err := ParkedAssignmentsFor(context.Background(), source, "normandy")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestCampaignStatementNamesTheRunsAWorkerMustKeep(t *testing.T) {
 	// A coordinator that cannot read its records makes no statement at all,
 	// rather than an empty one that would tell every worker to release
 	// everything.
-	if _, err := parkedAssignmentsFor(context.Background(),
+	if _, err := ParkedAssignmentsFor(context.Background(),
 		parkStore{err: errors.New("database is locked")}, "normandy"); err == nil {
 		t.Fatal("an unreadable store still made a campaign statement")
 	}

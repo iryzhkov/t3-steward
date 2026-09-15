@@ -57,16 +57,28 @@ type WorkerExchangeReport struct {
 	Checkpoints []domain.Artifact
 }
 
-// TaskWaitParkStore exposes the live task-bound waits the coordinator owns. A
-// store that does not implement it has none, and every worker is told that
-// nothing is parked, which is exactly true for it.
+// TaskWaitParkStore exposes the attempts the coordinator's task-bound waits
+// still park. A store that does not implement it has none, and every worker is
+// told that nothing is parked, which is exactly true for it.
 type TaskWaitParkStore interface {
-	LiveTaskWaitAttempts(context.Context) (map[string]string, error)
+	ParkedTaskWaitAttempts(context.Context) (map[string]string, error)
 	LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRecords, error)
 }
 
+// The coordinator's own store must satisfy it. The assertion below is what
+// makes that a compile error rather than a silent empty statement: a store that
+// does not implement the interface is told it has nothing parked, which is the
+// right answer for a store that holds no waits and the worst possible one for
+// the store that holds them all.
+var _ TaskWaitParkStore = (*sqlite.Store)(nil)
+
 // parkedAssignments states, for one worker, which of its claimed assignments
-// are parked on a live task-bound wait.
+// are parked on a task-bound wait.
+//
+// Parked outlasts the wait's own settlement: the statement stays true until the
+// wake reaches the thread, because until then the attempt has no running turn
+// and one is coming. Ending it at settlement told the worker nothing was parked
+// while the attempt sat between two turns, and it collected there.
 //
 // The worker cannot ask: the restricted protocol gives it no read of
 // coordinator state, and widening it for this would trade a lifecycle bug for
@@ -77,18 +89,22 @@ type TaskWaitParkStore interface {
 // replaces everything it believed, because an incremental list cannot express
 // "this one is no longer parked" without another message to lose.
 func (c FleetCoordinator) parkedAssignments(ctx context.Context, workerID string) (workerproto.SnapshotRequest, error) {
-	return parkedAssignmentsFor(ctx, c.Store, workerID)
+	return ParkedAssignmentsFor(ctx, c.Store, workerID)
 }
 
-func parkedAssignmentsFor(ctx context.Context, source any, workerID string) (workerproto.SnapshotRequest, error) {
+// ParkedAssignmentsFor builds the statement parkedAssignments sends, for any
+// store that can answer it. It is exported so that the worker side of the park
+// can be exercised against the statement the coordinator really produces,
+// rather than against a hand-written copy of it.
+func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (workerproto.SnapshotRequest, error) {
 	request := workerproto.SnapshotRequest{ParkedReported: true}
 	waits, ok := source.(TaskWaitParkStore)
 	if !ok || workerID == "" {
 		return request, nil
 	}
-	live, err := waits.LiveTaskWaitAttempts(ctx)
+	parked, err := waits.ParkedTaskWaitAttempts(ctx)
 	if err != nil {
-		return workerproto.SnapshotRequest{}, fmt.Errorf("load live task waits: %w", err)
+		return workerproto.SnapshotRequest{}, fmt.Errorf("load parked task waits: %w", err)
 	}
 	records, err := waits.LoadCoordinatorRecords(ctx)
 	if err != nil {
@@ -97,7 +113,7 @@ func parkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 	if err := stateCampaignRefs(&request, records); err != nil {
 		return workerproto.SnapshotRequest{}, err
 	}
-	if len(live) == 0 {
+	if len(parked) == 0 {
 		return request, nil
 	}
 	revisions := make(map[string]int64, len(records.Attempts))
@@ -108,8 +124,8 @@ func parkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 		if assignment.WorkerID != workerID {
 			continue
 		}
-		waitID, parked := live[assignment.AttemptID]
-		if !parked {
+		waitID, held := parked[assignment.AttemptID]
+		if !held {
 			continue
 		}
 		request.Parked = append(request.Parked, workerproto.ParkedAssignment{

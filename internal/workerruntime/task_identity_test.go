@@ -226,7 +226,7 @@ func TestIdentityRecordIsRemovedBeforeAnythingIsCollected(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "result.txt"), []byte("kept"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := driver.removeTaskIdentity(workspace); err != nil {
+	if err := driver.removeTaskIdentity(testPackage(), workspace); err != nil {
 		t.Fatal(err)
 	}
 	var remaining []string
@@ -248,7 +248,7 @@ func TestIdentityRecordIsRemovedBeforeAnythingIsCollected(t *testing.T) {
 		t.Fatalf("removal took the attempt's own files with it: %v", err)
 	}
 	// Removing it again is not an error: collection can be retried.
-	if err := driver.removeTaskIdentity(workspace); err != nil {
+	if err := driver.removeTaskIdentity(testPackage(), workspace); err != nil {
 		t.Fatal(err)
 	}
 }
