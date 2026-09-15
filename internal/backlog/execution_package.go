@@ -28,6 +28,8 @@ type ExecutionPackageRecordStore interface {
 // CoordinatorOfferBuilder resolves a committed assignment into the immutable
 // package understood by the selected worker.
 type CoordinatorOfferBuilder struct {
+	// Authorization is the current authored worker catalog, independent of observed snapshots.
+	Authorization       *domain.WorkerInventory
 	Store               ExecutionPackageRecordStore
 	Catalog             *ProjectCatalog
 	CatalogRevision     string
@@ -61,6 +63,9 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		assignment.ThreadID == "" || assignment.CreatedAt.IsZero() ||
 		!expiresAt.After(assignment.CreatedAt) || expiresAt.After(assignment.LeaseExpiresAt) {
 		return workerproto.AssignmentOffer{}, errors.New("execution package builder: invalid offered assignment or expiry")
+	}
+	if b.Authorization != nil && !b.Authorization.AuthorizesRoute(assignment.Route) {
+		return workerproto.AssignmentOffer{}, errors.New("execution package route is no longer authorized")
 	}
 	records, err := b.Store.LoadCoordinatorRecords(ctx)
 	if err != nil {

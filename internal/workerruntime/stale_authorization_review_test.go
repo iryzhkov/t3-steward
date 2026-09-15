@@ -3,6 +3,7 @@ package workerruntime
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +69,13 @@ func TestRevokedModelCannotDispatchFromPersistedOldSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got := AuthorizedPlanningSnapshots(cfg.BacklogV2, snapshots, now); len(got) != 0 {
+		t.Fatal("stale persisted snapshot authorized new placement")
+	}
+	snapshot.Inventory = after.Inventory
+	if got := AuthorizedPlanningSnapshots(cfg.BacklogV2, []domain.WorkerSnapshot{snapshot}, now); len(got) != 1 {
+		t.Fatal("current catalog snapshot withheld")
+	}
 	input, err := backlog.BuildCoordinatorPlanInput(backlog.CoordinatorPlanningStateInput{
 		Now: now, CoordinatorEpoch: epoch, Workflows: records.Workflows, WorkflowRuns: records.WorkflowRuns, Tasks: records.Tasks, Attempts: records.Attempts, WorkerSnapshots: snapshots,
 		QuotaPools:           []domain.QuotaPool{{ID: "pool", Provider: "codex", ProviderInstanceIDs: []string{"codex"}, MaxConcurrent: 2, Admission: domain.AdmissionOpen}},
@@ -81,24 +89,29 @@ func TestRevokedModelCannotDispatchFromPersistedOldSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Assignments) == 0 {
-		return
+	if len(report.Assignments) != 1 {
+		t.Fatalf("stale-snapshot fixture must plan one assignment, got %d", len(report.Assignments))
 	}
 	assignment := report.Assignments[0]
 	t.Logf("old snapshot planned revoked route %+v", assignment.Route)
 	builder := backlog.CoordinatorOfferBuilder{Store: store, Catalog: after.Catalog, CatalogRevision: after.CatalogRevision, CoordinatorID: "coordinator", CoordinatorEpoch: epoch, VerificationTimeout: time.Minute, MaxArtifactBytes: 1 << 20, MaxTotalBytes: 1 << 20}
 	// ReconcileWorker grants this lease before packaging an offered assignment.
 	assignment.LeaseExpiresAt = now.Add(2 * time.Minute)
+	builder.Authorization = &after.Inventory
+	if _, err := builder.BuildAssignmentOffer(ctx, assignment, now.Add(time.Minute)); err == nil || !strings.Contains(err.Error(), "no longer authorized") {
+		t.Fatalf("current builder must refuse revoked model: %v", err)
+	}
+	// A package from a previous coordinator still encounters independent worker authorization.
+	builder.Authorization = &before.Inventory
 	offer, err := builder.BuildAssignmentOffer(ctx, assignment, now.Add(time.Minute))
 	if err != nil {
-		t.Logf("offer refused: %v", err)
-		return
+		t.Fatalf("authorized positive-control offer failed: %v", err)
 	}
 	pkg := offer.Package.Package
 	t.Logf("package stamps current catalog=%s on revoked model=%s", pkg.Environment.CatalogRevision, pkg.Route.Model)
 	root := t.TempDir()
 	control := &recordingT3{}
-	driver, err := NewLocalDriver(LocalDriver{Config: LocalDriverConfig{CatalogRevision: after.CatalogRevision, ArtifactRoot: filepath.Join(root, "artifacts"), RunsRoot: filepath.Join(root, "runs")},
+	driver, err := NewLocalDriver(LocalDriver{Config: LocalDriverConfig{Authorization: &after.Inventory, CatalogRevision: after.CatalogRevision, ArtifactRoot: filepath.Join(root, "artifacts"), RunsRoot: filepath.Join(root, "runs")},
 		Catalog: after.Catalog, Workspace: backlog.WorkspacePreparer{Cache: staticRepositoryCache{path: repository}, Processes: successfulProcessRunner{}},
 		Finalizer: backlog.AttemptFinalizer{Processes: successfulProcessRunner{}}, Source: mapArtifactSource{"prompt": []byte("prompt")}, Publisher: &recordingPublisher{}, T3: control, Now: func() time.Time { return now }})
 	if err != nil {
@@ -114,17 +127,13 @@ func TestRevokedModelCannotDispatchFromPersistedOldSnapshot(t *testing.T) {
 	}
 	claims, err := runtime.AcceptOffers(ctx, workerproto.AssignmentOffers{Offers: []workerproto.AssignmentOffer{offer}})
 	if err != nil || len(claims.Claims) == 0 {
-		t.Logf("offer not claimed: %v", err)
-		return
+		t.Fatalf("fixture offer not claimed: %v", err)
 	}
-	workspace, err := driver.Prepare(ctx, pkg)
-	if err != nil {
-		t.Logf("prepare refused: %v", err)
-		return
+	if _, err := driver.Prepare(ctx, pkg); err == nil || !strings.Contains(err.Error(), "no longer authorized") {
+		t.Fatalf("prepare must refuse revoked route: %v", err)
 	}
-	if err := driver.CreateThread(ctx, pkg, workspace); err != nil {
-		t.Logf("dispatch refused: %v", err)
-		return
+	if err := driver.CreateThread(ctx, pkg, ""); err == nil || !strings.Contains(err.Error(), "no longer authorized") {
+		t.Fatalf("dispatch must refuse revoked route: %v", err)
 	}
 	if len(control.created) != 0 {
 		t.Fatalf("REVOKED MODEL DISPATCHED: %d T3 create calls for %v", len(control.created), control.created[0].ModelSelection)

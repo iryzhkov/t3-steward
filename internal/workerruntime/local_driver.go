@@ -52,6 +52,8 @@ type T3Control interface {
 }
 
 type LocalDriverConfig struct {
+	// Authorization binds effects to the current authored routes, including empty revocations.
+	Authorization   *domain.WorkerInventory
 	CatalogRevision string
 	ArtifactRoot    string
 	RunsRoot        string
@@ -128,6 +130,9 @@ func NewLocalDriver(driver LocalDriver) (*LocalDriver, error) {
 }
 
 func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPackage) (string, error) {
+	if d.Config.Authorization != nil && !d.Config.Authorization.AuthorizesRoute(pkg.Route) {
+		return "", errors.New("execution package route is no longer authorized")
+	}
 	environment, task, attempt, err := d.executionRecords(pkg)
 	if err != nil {
 		return "", err
@@ -501,6 +506,10 @@ func (d *LocalDriver) removeTaskIdentity(pkg workerproto.ExecutionPackage, works
 }
 
 func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
+	if d.Config.Authorization != nil && !d.Config.Authorization.AuthorizesRoute(pkg.Route) {
+		return errors.New("execution package route is no longer authorized")
+	}
+
 	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
 		return err
 	} else if scoped != nil {
