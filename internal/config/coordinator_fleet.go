@@ -36,6 +36,7 @@ type CoordinatorFleetWorker struct {
 	QuotaPools        []string            `json:"quota_pools"`
 }
 type CoordinatorFleetProject struct {
+	Type            string   `json:"type,omitempty"`
 	Repository      string   `json:"repository"`
 	DefaultRef      string   `json:"default_ref"`
 	SetupProfile    string   `json:"setup_profile"`
@@ -56,7 +57,7 @@ func DecodeCoordinatorFleet(raw []byte) (CoordinatorFleet, error) {
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		return fleet, errors.New("coordinator fleet projection must contain one JSON document")
 	}
-	if fleet.Kind != "steward-coordinator-catalog-input" || fleet.SchemaVersion != 1 || fleet.CoordinatorID == "" {
+	if fleet.Kind != "steward-coordinator-catalog-input" || (fleet.SchemaVersion != 1 && fleet.SchemaVersion != 2) || fleet.CoordinatorID == "" {
 		return fleet, errors.New("unsupported coordinator fleet projection identity or version")
 	}
 	if fleet.Workers == nil || fleet.Projects == nil {
@@ -86,6 +87,17 @@ func DecodeCoordinatorFleet(raw []byte) (CoordinatorFleet, error) {
 			}
 		}
 	}
+	for name, project := range fleet.Projects {
+		if fleet.SchemaVersion == 1 && project.Type != "" {
+			return fleet, fmt.Errorf("fleet v1 project %q cannot declare type", name)
+		}
+		if project.Type != "" && project.Type != "git" && project.Type != "fresh" {
+			return fleet, fmt.Errorf("fleet project %q has invalid type", name)
+		}
+		if project.Type == "fresh" && (project.Repository != "" || project.DefaultRef != "") {
+			return fleet, fmt.Errorf("fresh fleet project %q cannot name repository or ref", name)
+		}
+	}
 	return fleet, nil
 }
 
@@ -106,6 +118,11 @@ func (c *Config) ApplyCoordinatorFleet(fleet CoordinatorFleet) error {
 		providers := make(map[string]V2Provider, len(desired.ProviderInstances))
 		for _, instance := range desired.ProviderInstances {
 			provider, exists := worker.Providers[instance]
+			// An installed bootstrap route with no desired models grants no execution
+			// authorization and needs no invented local quota/provider binding.
+			if !exists && len(desired.DesiredModels[instance]) == 0 {
+				continue
+			}
 			if !exists || provider.QuotaPool == "" || !slices.Contains(desired.QuotaPools, provider.QuotaPool) {
 				return fmt.Errorf("fleet worker %q provider %q needs an explicit authorized quota binding", name, instance)
 			}
@@ -122,6 +139,18 @@ func (c *Config) ApplyCoordinatorFleet(fleet CoordinatorFleet) error {
 		project, exists := c.BacklogV2.Projects[name]
 		if !exists {
 			return fmt.Errorf("fleet project %q needs an explicit local execution binding", name)
+		}
+		if fleet.SchemaVersion == 2 {
+			actualType, desiredType := project.Type, desired.Type
+			if actualType == "" {
+				actualType = "git"
+			}
+			if desiredType == "" {
+				desiredType = "git"
+			}
+			if actualType != desiredType {
+				return fmt.Errorf("fleet project %q type does not match local execution binding", name)
+			}
 		}
 		if len(desired.EligibleWorkers) == 0 {
 			return fmt.Errorf("fleet project %q requires explicit eligible workers", name)
