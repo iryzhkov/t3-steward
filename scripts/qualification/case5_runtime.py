@@ -79,12 +79,45 @@ if phase == "prepare":
         inventory["all"]["hosts"][host] = host_spec
     dump(config / "inventory/hosts.yml", inventory)
     manifest = json.loads((config / "desired/release.json").read_text())
+    baseline = copy.deepcopy(intent)
+    for item in baseline["profiles"].values():
+        item["models"]["synthetic"] = ["synthetic-model"]
+    manifest["components"]["steward-fleet-configuration"] = baseline
+    dump(config / "desired/release.json", manifest)
+    # Previous authorization is immutable Git history in a disposable release checkout.
+    environment = env(root / "upkeeper-review-home")
+    command("case5-release-init", ["git", "init", "-q", str(config)], environment)
+    command("case5-release-add", ["git", "-C", str(config), "add", "."], environment)
+    command("case5-release-commit", ["git", "-C", str(config), "-c", "user.name=Qualification",
+            "-c", "user.email=qualification@invalid", "commit", "-qm", "Baseline synthetic authorization"], environment)
+    previous = command("case5-previous-release", ["git", "-C", str(config), "rev-parse", "HEAD"], environment).stdout.strip()
+    (evidence / "case5-previous-release.txt").write_text(previous)
+
+    payload = dict(run_id="qualification-case5-baseline", host=dict(name="qual-controller", os_id="linux"),
+                   components=["steward-fleet-configuration"],
+                   manifest=dict(components={"steward-fleet-configuration": baseline}),
+                   lock=dict(run_id="qualification-case5-baseline"), stored_files={})
+    command("case5-upkeeper-baseline-apply", [str(binary), "__agent"],
+            env(root / "coordinator/home"), json.dumps(payload))
+    projected = root / "coordinator/home/.config/t3-steward/coordinator-fleet.json"
+    assert projected.is_file(), "UpKeeper did not distribute the coordinator catalog"
+    assert projected.stat().st_mode & 0o777 == 0o600, "catalog is not owner-only"
+    shutil.copyfile(projected, evidence / "case5-baseline-coordinator-fleet.json")
+    for worker in ("worker-a", "worker-b"):
+        shutil.copyfile(root / worker / "t3/caches/synthetic.json",
+                        evidence / f"case5-observation-before-{worker}.json")
+
+elif phase == "enable":
+    binary = root / "bin/upkeeper"
+    config = root / "upkeeper-config"
+    intent = json.loads((evidence / "case5-authored-intent.json").read_text())
+    manifest = json.loads((config / "desired/release.json").read_text())
     manifest["components"]["steward-fleet-configuration"] = intent
     dump(config / "desired/release.json", manifest)
     environment = env(root / "upkeeper-review-home")
     environment["DEV_FLEET_CONFIG_ROOT"] = str(config)
-    command("case5-enrollment-plan", [str(binary), "fleet-plan", "--json"], environment)
-
+    previous = (evidence / "case5-previous-release.txt").read_text()
+    command("case5-enrollment-plan", [str(binary), "fleet-plan", "--previous", previous, "--json"], environment)
     payload = dict(run_id="qualification-case5-catalog", host=dict(name="qual-controller", os_id="linux"),
                    components=["steward-fleet-configuration"],
                    manifest=dict(components={"steward-fleet-configuration": intent}),
@@ -92,12 +125,8 @@ if phase == "prepare":
     command("case5-upkeeper-coordinator-apply", [str(binary), "__agent"],
             env(root / "coordinator/home"), json.dumps(payload))
     projected = root / "coordinator/home/.config/t3-steward/coordinator-fleet.json"
-    assert projected.is_file(), "UpKeeper did not distribute the coordinator catalog"
-    assert projected.stat().st_mode & 0o777 == 0o600, "catalog is not owner-only"
+    assert projected.stat().st_mode & 0o777 == 0o600
     shutil.copyfile(projected, evidence / "case5-applied-coordinator-fleet.json")
-    for worker in ("worker-a", "worker-b"):
-        shutil.copyfile(root / worker / "t3/caches/synthetic.json",
-                        evidence / f"case5-observation-before-{worker}.json")
 
 elif phase == "advertise":
     for worker in ("worker-a", "worker-b"):
