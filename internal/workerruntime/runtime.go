@@ -899,6 +899,12 @@ func (r *Runtime) confirmStop(id string) error {
 // the coordinator verify against them, and removes the identity record the
 // resumed turn needs. Waiting one more reconcile costs nothing.
 func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record AttemptRecord) error {
+	// Failed attempts have already fenced any task effects. Publishing their
+	// failure is not output collection and cannot depend on a provider turn that
+	// may never have started (for example, an exhausted preparation budget).
+	if record.Phase == PhaseFailed {
+		return r.collect(ctx, id)
+	}
 	// Stopped/stopped observations cannot distinguish a task that parked and
 	// resumed entirely between polls. Bind this decision to the provider turn.
 	if observer, ok := r.driver.(interface {
