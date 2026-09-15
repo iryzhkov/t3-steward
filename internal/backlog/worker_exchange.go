@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"slices"
 	"sort"
 	"time"
 
@@ -98,6 +99,24 @@ func (c FleetCoordinator) parkedAssignments(ctx context.Context, workerID string
 // rather than against a hand-written copy of it.
 func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (workerproto.SnapshotRequest, error) {
 	request := workerproto.SnapshotRequest{ParkedReported: true}
+	// Read the durable worker observation BEFORE the parked state. This ack
+	// proves that the report was constructed after that worker observation;
+	// receiving a recently-built empty list by itself provides no such fence.
+	if snapshots, ok := source.(interface {
+		LoadWorkerSnapshots(context.Context) ([]domain.WorkerSnapshot, error)
+	}); ok {
+		observed, err := snapshots.LoadWorkerSnapshots(ctx)
+		if err != nil {
+			return workerproto.SnapshotRequest{}, err
+		}
+		for _, snapshot := range observed {
+			if snapshot.WorkerID == workerID && snapshot.Sequence > 0 && slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityTaskWaitCollectionFence) {
+				request.ObservedWorkerEpoch = snapshot.WorkerEpoch
+				request.ObservedSequence = snapshot.Sequence
+				break
+			}
+		}
+	}
 	waits, ok := source.(TaskWaitParkStore)
 	if !ok || workerID == "" {
 		return request, nil

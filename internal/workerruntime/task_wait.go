@@ -52,6 +52,20 @@ func (r *Runtime) ApplyParkedAssignments(request workerproto.SnapshotRequest) er
 			}
 			next[parked.AssignmentID] = parked
 		}
+		// A wake may start and finish entirely between worker observations.
+		// Forget the old stopped fence when the coordinator removes a park, so
+		// that the resumed turn also requires a causally later statement.
+		for id := range state.Parked {
+			if _, parked := next[id]; !parked {
+				record := state.Attempts[id]
+				record.StopObservedSequence = 0
+				state.Attempts[id] = record
+			}
+		}
+		state.ParkedAcknowledgedSequence = 0
+		if request.ObservedWorkerEpoch == state.WorkerEpoch && request.ObservedSequence <= state.Sequence {
+			state.ParkedAcknowledgedSequence = request.ObservedSequence
+		}
 		state.Parked = next
 		state.ParkedReported = true
 		state.ParkedObservedAt = now
@@ -90,6 +104,9 @@ func (r *Runtime) liveTaskWait(ctx context.Context, record AttemptRecord) (bool,
 	}
 	parked, ok := state.Parked[record.Assignment.ID]
 	if !ok {
+		if record.StopObservedSequence == 0 || state.ParkedAcknowledgedSequence < record.StopObservedSequence {
+			return false, ErrParkedReportStale
+		}
 		return false, nil
 	}
 	if parked.AssignmentEpoch != record.Assignment.Epoch {

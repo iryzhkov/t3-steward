@@ -134,9 +134,17 @@ type ParkedAssignment struct {
 // coordinator does not report parked assignments at all", which an older build
 // does not; without the flag an empty list from an old coordinator would read
 // as positive evidence that nothing is waiting.
+// CapabilityTaskWaitCollectionFence advertises support for causal collection
+// acknowledgement fields in SnapshotRequest. It is supplied by the worker build.
+const CapabilityTaskWaitCollectionFence = "task-wait-collection-fence-v1"
+
 type SnapshotRequest struct {
-	ParkedReported bool               `json:"parkedReported,omitempty"`
-	Parked         []ParkedAssignment `json:"parked,omitempty"`
+	// ObservedWorkerEpoch and ObservedSequence acknowledge a durable snapshot
+	// read before the coordinator builds this parked-assignment statement.
+	ObservedWorkerEpoch string             `json:"observedWorkerEpoch,omitempty"`
+	ObservedSequence    int64              `json:"observedSequence,omitempty"`
+	ParkedReported      bool               `json:"parkedReported,omitempty"`
+	Parked              []ParkedAssignment `json:"parked,omitempty"`
 	// CampaignRefsReported says that RetainedCampaignRuns is a statement rather
 	// than an absence. It exists for the same reason ParkedReported does: an
 	// older coordinator sends no list, and reading that silence as "retain
@@ -164,6 +172,9 @@ const MaxRetainedCampaignRuns = 1024
 // stores it. A report that cannot be trusted whole is rejected whole: acting on
 // half of a complete list would turn a missing entry into "not parked".
 func ValidateSnapshotRequest(request SnapshotRequest) error {
+	if request.ObservedSequence < 0 || (request.ObservedWorkerEpoch == "") != (request.ObservedSequence == 0) {
+		return errors.New("worker protocol: snapshot acknowledgement requires an epoch and positive sequence")
+	}
 	if !request.ParkedReported && len(request.Parked) != 0 {
 		return errors.New("worker protocol: parked assignments listed without the reported flag")
 	}
