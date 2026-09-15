@@ -130,8 +130,9 @@ for scenario in ("existing", "absent", "moved"):
     forward = path.read_bytes()
     check(scenario+"-forward-changes", forward != prior and path.stat().st_mode & 0o777 == 0o600)
     siblings = [sibling, home / ".config/t3-steward/coordinator-client.json"]
-    if scenario != "existing":
-        siblings[1].write_bytes(b"unrelated client sentinel\n")
+    # Unknown pre-existing clients now require manual recovery; that refusal
+    # is covered by client_rollback.py. These positive coordinator cases keep
+    # their original client absence.
     sibling_bytes = {str(p): p.read_bytes() if p.exists() else None for p in siblings}
     result = run(scenario+"-rollback", [str(binary),"rollback","--to",previous,"--hosts","normandy",
         "--components",component,"--json"],controller,cwd=config)
