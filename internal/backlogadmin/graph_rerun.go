@@ -73,6 +73,16 @@ func (s *Service) rerunGraph(
 				return result, err
 			}
 		}
+		// Inputs the source run itself carried travel on. A rerun's graph holds
+		// only its own subtree, so the subtree root always carries what its
+		// reused ancestors produced; rerunning a rerun from the task that failed
+		// again therefore always meets them, and they name the source run's
+		// artifacts until they are referenced into this one.
+		for position, carried := range task.CarriedInputs {
+			if task.CarriedInputs[position].ArtifactID, err = builder.reference(ctx, carried.ArtifactID, task.ID); err != nil {
+				return result, err
+			}
+		}
 		if err = builder.detach(ctx, task, reused); err != nil {
 			return result, err
 		}

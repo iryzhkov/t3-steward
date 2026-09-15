@@ -418,9 +418,13 @@ func resolveGitDir(workspace string) (string, error) {
 	return filepath.Clean(pointer), nil
 }
 
-// removeTaskIdentity deletes the identity record before anything is captured
-// from the workspace. A parked turn never reaches here, so the file survives
-// for the turn that resumes after the wake.
+// removeTaskIdentity deletes the identity record. Its callers run it only once
+// a collection is going ahead and before anything is captured from the
+// workspace, so the record survives a parked turn and a deferred collection
+// alike, and the turn that resumes after a wake can still name itself.
+//
+// Removing nothing is not an error: the path may already be gone, and that is
+// cheaper than reasoning about which driver in the chain owns the real one.
 func (d *LocalDriver) removeTaskIdentity(workspace string) error {
 	if workspace == "" {
 		return nil
@@ -540,15 +544,6 @@ func (d *LocalDriver) StopThread(ctx context.Context, pkg workerproto.ExecutionP
 }
 
 func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
-	// The identity record leaves before anything is captured from the
-	// workspace, so it cannot reach a declared output, a git-state artifact or
-	// an archived tree. It runs on every driver, scoped or not: the path may
-	// already be gone, and removing nothing is cheaper than reasoning about
-	// which driver in the chain owns the real one. A parked turn never reaches
-	// Collect, so the record survives for the turn that resumes after the wake.
-	if err := d.removeTaskIdentity(workspace); err != nil {
-		return err
-	}
 	if !d.scoped {
 		if manager := d.containedManager(pkg); manager != nil {
 			if err := manager.Quiesce(ctx, pkg, false); err != nil {
@@ -562,7 +557,9 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 		return scoped.Collect(ctx, pkg, workspace)
 	}
 	if d.Config.DryRun {
-		return nil
+		// Nothing is captured in no-effects mode, but the collection is over,
+		// so the record leaves here for the same reason it does below.
+		return d.removeTaskIdentity(workspace)
 	}
 	thread, err := d.T3.GetThread(ctx, pkg.Identity.ThreadID)
 	if err != nil {
@@ -571,6 +568,18 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 	message, archive := "", []byte("{}")
 	if thread != nil && !workerThreadTerminal(*thread) {
 		return errors.New("T3 turn is not yet terminal; result collection deferred")
+	}
+	// The collection is going ahead, and the identity record leaves before
+	// anything is captured from the workspace, so it cannot reach a declared
+	// output, a git-state artifact or an archived tree.
+	//
+	// It is removed here, after the terminal check, and not on entry. A
+	// collection that defers returns above, and the turn it deferred on is
+	// still running: it may yet park itself on a task-bound wait, and a woken
+	// turn that cannot name itself cannot register anything. Removing the
+	// record on entry destroyed it on every deferred pass.
+	if err := d.removeTaskIdentity(workspace); err != nil {
+		return err
 	}
 	if thread != nil {
 		// T3 marks the turn completed slightly before the final assistant

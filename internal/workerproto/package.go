@@ -48,8 +48,14 @@ type ExecutionIdentity struct {
 	TaskID        string `json:"taskId"`
 	AttemptID     string `json:"attemptId"`
 	// AttemptRevision is the revision the attempt held when this package was
-	// built. A task-bound wait is fenced on it, so it has to travel with the
-	// rest of the identity rather than being looked up by the agent.
+	// built. It travels with the rest of the identity so a task can report what
+	// it was told, and it is recorded on a task-bound wait as evidence.
+	//
+	// It is not a fence and cannot be one: the coordinator advances the attempt
+	// after building this package, at the assignment claim and again when the
+	// worker reports the thread running, so this number is already behind by the
+	// time the turn starts. The registration resolves the live revision itself;
+	// see sqlite.RegisterTaskWait.
 	AttemptRevision int64  `json:"attemptRevision,omitempty"`
 	AssignmentID    string `json:"assignmentId"`
 	AssignmentEpoch int64  `json:"assignmentEpoch"`

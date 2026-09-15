@@ -249,6 +249,22 @@ func renderCampaignCheck(out interface{ Write([]byte) (int, error) }, document c
 			if _, err := fmt.Fprintf(out, "    %s  %s\n", candidate.Worker, candidate.Outcome); err != nil {
 				return err
 			}
+			// What was not checked is printed with what was. A reader of "ready"
+			// has to be able to tell a passed check from a question nobody asked.
+			if observation := candidate.Repository; observation != nil {
+				line := "      repository  observed: " + observation.Class + "\n"
+				if !observation.Observed {
+					line = "      repository  not observed: " + observation.Unobserved + "\n"
+				}
+				if _, err := fmt.Fprint(out, line); err != nil {
+					return err
+				}
+			}
+			for _, note := range candidate.Unchecked {
+				if _, err := fmt.Fprintf(out, "      unchecked   %s\n", note); err != nil {
+					return err
+				}
+			}
 			for _, reason := range candidate.Reasons {
 				line := fmt.Sprintf("      %s  %s: %s\n",
 					permanenceLabel(reason.Permanent), reason.Code, reason.Detail)

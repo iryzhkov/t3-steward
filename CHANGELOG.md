@@ -26,7 +26,65 @@ All notable changes to this project are documented here. The format follows
   line was the only report. The view is read-only and, like every other read,
   works from a non-coordinator host.
 
+- `t3-steward backlog quarantine release <key> --reason TEXT` clears an intake
+  quarantine deliberately. The automatic release is bound to the file's content
+  digest, so a submission refused for a reason outside the file, such as a
+  project no alias mapped, stayed quarantined after the configuration was fixed
+  because no byte of the file changed. The release is audited with the operator
+  and the reason, and releasing a key that holds no marker says so instead of
+  failing.
+
 ### Fixed
+
+- `t3-steward wait add --task current` can park a task again. The coordinator
+  stamps the attempt revision into the execution package and then advances the
+  attempt itself, when the worker claims the assignment and again when it
+  reports the thread running, so the revision the task was handed was always
+  behind by the time its turn started and every registration was refused as
+  stale. The registration now resolves the live revision itself and is fenced on
+  the attempt's own turn: the attempt must still have one, the registering
+  thread must be the attempt's thread, and the commit is a compare-and-set
+  against the revision read in the same transaction, so a registration racing a
+  turn completion is still refused. The injected revision is kept as evidence of
+  what the task was told, under its honest name `issuedRevision`.
+
+- A collection that defers no longer destroys the task identity record. The
+  worker removed `.t3-steward/` on entry to collection, before it had
+  established that the T3 turn was terminal, so a deferred collection deleted
+  the record permanently and the turn that resumed after a wake could not name
+  itself. The record is now removed only when a collection proceeds, which is
+  still before anything is captured from the workspace.
+
+- A rerun of a rerun is no longer refused. The second rerun's subtree root
+  carries what the first rerun's reused ancestors produced, and those carried
+  inputs named the first run's artifacts until they were referenced into the new
+  run, so the commonest recovery path there is — the fix did not work, run it
+  again — died with an internal ownership message.
+
+- A declared commit is no longer published for an attempt that has already
+  failed. The ref cannot be redefined, so the retry's different commit was
+  refused and the task became permanently unrunnable, with a complaint about the
+  ref in place of the failure that actually happened.
+
+- A preparation attempt is counted before it runs. A worker that died between
+  the driver failing and the journal write came back believing no attempt had
+  been made, so the retry budget never terminated and the preparation logs took
+  ordinals until retention failed. An uncertain contained preparation still
+  spends nothing, and a first cause lost to a crash is reported as not retained
+  rather than replaced by a later error.
+
+- Releasing a run's campaign refs reads the list it acts on under the lock a
+  publication takes. A publication that landed in between had its record
+  destroyed with the directory and its ref left behind forever.
+
+- The coordinator releases the campaign refs of a run it no longer has records
+  for, converging on what its store holds exactly as its workers do.
+
+- Per-attempt preparation logs are retained read-only, as the workflow path
+  already wrote them, and a copy that fails mid-write no longer leaves a
+  truncated file occupying the ordinal. A campaign ref store that cannot answer
+  is an error rather than "the ref is absent", which had let a republication
+  redefine a ref a successor already resolved.
 
 - Each preparation attempt now retains its own evidence file,
   `<attempt>.preparation.<ordinal>.log`. The retained log was named from the

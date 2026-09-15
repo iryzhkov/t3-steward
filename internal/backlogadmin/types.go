@@ -135,6 +135,16 @@ type Action struct {
 	Filter        Filter
 }
 
+// QuarantineReleaseRequest asks the coordinator to clear one intake
+// quarantine. It is mutating and deliberate: nothing about the file changed,
+// the operator changed something around it.
+type QuarantineReleaseRequest struct {
+	// Key is the intake idempotency key as the quarantine view reports it,
+	// without the namespace prefix of the record it is stored under.
+	Key    string `json:"key"`
+	Reason string `json:"reason"`
+}
+
 type UnknownRecoveryRequest struct {
 	ID                      string                        `json:"id"`
 	AssignmentID            string                        `json:"assignmentId"`

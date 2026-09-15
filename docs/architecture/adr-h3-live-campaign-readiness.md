@@ -92,9 +92,24 @@ The exception is narrow: one built-in probe, one command shape, arguments the ca
 
 Permanent, and therefore refused before a workflow exists: unknown catalog entries (project,
 setup profile, provider instance, model, quota pool); no configured route on any eligible worker;
-invalid repository syntax; confirmed authentication failure, repository-not-found or
-ref-not-found on every candidate; impossible CPU, resource, directory or capability requirements;
-and unavailable required credential references.
+invalid repository syntax; a confirmed authentication failure, repository-not-found or
+ref-not-found observed on at least one candidate with no candidate observing success; impossible
+CPU, resource, directory or capability requirements; and unavailable required credential
+references.
+
+That sentence originally read "on every candidate", which is unsatisfiable. A candidate can fail
+to be observed for entirely ordinary reasons — no snapshot yet, a catalog that has drifted, a
+worker that cannot be dialled, a worker on an older build — and on a fleet of three at least one
+usually is. Requiring unanimity let one non-answering worker mask a confirmed permanent failure,
+so the run was created and died hours later preparing its workspace, which is the failure this
+check exists to prevent.
+
+An unobserved candidate is therefore not contradicting evidence. It neither confirms the
+repository can be read nor argues against a verdict another candidate observed. Every unobserved
+candidate is named in the reason, with why it was not observed, so the basis of a refusal is
+visible; `--allow-unverified` remains the operator's escape for the rare case where an unobserved
+worker would have succeeded. One candidate that does observe success settles the task, because
+the work can be placed there.
 
 Temporary, and therefore compatible with asynchronous execution: quota currently closed; every
 eligible worker at capacity; an otherwise eligible worker briefly offline; temporary network
@@ -137,3 +152,11 @@ nobody asked, and would report success for a repository the worker cannot reach.
 Caching probe results for a long time was rejected. Reachability and authentication change
 exactly when a credential is rotated or a repository is renamed, which is when a stale positive
 is most expensive.
+
+The retention key is honest about what it can see. It contains the credential *references*, not
+their values, so re-enrolling a worker, renaming a repository, changing the ref or changing which
+references a project requires all produce a different key. Rotating the secret behind an
+unchanged reference does not: the key is identical and a positive observed before the rotation
+stays usable until it expires. That is a bounded staleness of at most the retention window, not
+an invalidation, and it is the reason the window is ten minutes rather than an hour. An earlier
+draft of this record claimed the key invalidated on rotation, which it cannot.

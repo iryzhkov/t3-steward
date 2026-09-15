@@ -229,6 +229,28 @@ type Attempt struct {
 	CompletedAt            *time.Time        `json:"completedAt,omitempty"`
 }
 
+// TurnLive reports whether this attempt currently has a turn that a thread is
+// executing for it, and that the thread may therefore still act on.
+//
+// A parked attempt counts. Its turn has not ended: the same thread resumes it
+// when the wait settles, which is why it may register a second wait. An attempt
+// that is being verified, released, paused or drained does not count, because
+// whatever its thread believes, the turn it belonged to is over or is being
+// taken away from it.
+func (a Attempt) TurnLive() bool {
+	switch a.Progress {
+	case ProgressActive, ProgressWaitingExternal:
+	default:
+		return false
+	}
+	switch a.Control {
+	case ControlPreparing, ControlRunning, ControlResuming, ControlWaitingExternal:
+		return true
+	default:
+		return false
+	}
+}
+
 // AssignmentState is the coordinator's knowledge of an assignment lease.
 type AssignmentState string
 

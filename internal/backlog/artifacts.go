@@ -217,6 +217,21 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		})
 	}
 
+	// A commit is published only for an attempt that is otherwise a success.
+	// Publishing one for an attempt that has already failed makes the task
+	// permanently unrunnable: the retry produces a different commit, the ref
+	// already names the first one, and the refusal to redefine it replaces the
+	// real cause with a complaint about a ref.
+	if len(commits) != 0 && len(failures) != 0 {
+		names := make([]string, 0, len(commits))
+		for _, declaration := range commits {
+			names = append(names, fmt.Sprintf("%q", declaration.Name))
+		}
+		failures = append(failures, fmt.Sprintf(
+			"declared commit %s not published because the attempt had already failed; the retry publishes it",
+			strings.Join(names, ", ")))
+		commits = nil
+	}
 	for _, declaration := range commits {
 		if f.CampaignRefs.Root == "" {
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt commit %q: campaign ref store is required", declaration.Name)

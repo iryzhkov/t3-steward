@@ -77,6 +77,24 @@ type SubmissionService struct {
 	mu sync.Mutex
 }
 
+// validatePermanent applies the permanent readiness validation to the bundle's
+// manifest without holding the publication lock. It parses the manifest a
+// second time on purpose: parsing is cheap next to dialling a fleet, and the
+// alternative was to keep the lock for the duration of the dialling.
+func (s *SubmissionService) validatePermanent(ctx context.Context, bundleDir string) error {
+	if s.Permanent == nil {
+		return nil
+	}
+	_, root, manifest, _, err := openIngestionBundle(bundleDir)
+	if err != nil {
+		// The bundle is unreadable. Ingestion reports that with its own wording
+		// and its own guards, so this path stays silent and lets it.
+		return nil
+	}
+	_ = root.Close()
+	return s.Permanent.ValidatePermanent(ctx, manifest)
+}
+
 func (s *SubmissionService) SubmitDirectory(ctx context.Context, request DirectorySubmission) (SubmissionResult, error) {
 	if s == nil || s.Store == nil {
 		return SubmissionResult{}, errors.New("submission store is required")
@@ -109,13 +127,16 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 		State: domain.SubmissionPending, CreatedAt: createdAt,
 	}
 
-	if s.Audit != nil {
-		s.Audit(ctx, SubmissionAudit{
-			Key: key, Digest: digest, Principal: request.Principal,
-			Unverified: request.Unverified, UnverifiedReason: request.UnverifiedReason,
-			At: createdAt,
-		})
-	}
+	// The permanent validation runs before the mutex is taken. It dials every
+	// candidate worker over SSH, serially, with a per-candidate timeout, and
+	// holding the publication lock across that made every submission on the
+	// coordinator queue behind one slow fleet.
+	//
+	// Its outcome is applied after the reservation rather than before it, so an
+	// idempotency key whose run already exists still returns that run. Refusing
+	// a replay of an accepted submission would break the guarantee that makes
+	// retrying safe.
+	validationErr := s.validatePermanent(ctx, request.BundleDir)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -127,6 +148,19 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 	if record.State == domain.SubmissionAccepted {
 		return SubmissionResult{Record: record, StorageDir: finalDir, Replay: true}, nil
 	}
+	if validationErr != nil {
+		return SubmissionResult{}, validationErr
+	}
+	// The audit record is written once the submission is going ahead. Recording
+	// it earlier logged a skipped client-side check for submissions that were
+	// then refused, which put an escape hatch nobody used into the record.
+	if s.Audit != nil {
+		s.Audit(ctx, SubmissionAudit{
+			Key: key, Digest: digest, Principal: request.Principal,
+			Unverified: request.Unverified, UnverifiedReason: request.UnverifiedReason,
+			At: createdAt,
+		})
+	}
 	if replay {
 		if err := recoverPendingSubmission(ctx, request.BundleDir, finalDir, digest, s.MaxBytes, s.MaxFiles); err != nil {
 			return SubmissionResult{}, err
@@ -136,9 +170,12 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 		DirectoryCatalogs: s.DirectoryCatalogs,
 		StorageRoot:       s.StorageRoot,
 		Store:             s.Store,
-		Permanent:         s.Permanent,
-		Now:               func() time.Time { return record.CreatedAt },
-		NewTypedID:        submissionTypedIDGenerator(key),
+		// Permanent is deliberately not passed on: this service has already
+		// applied it above, outside the lock, and applying it again here would
+		// dial every worker a second time. The ingester keeps the field for a
+		// caller that uses it directly.
+		Now:        func() time.Time { return record.CreatedAt },
+		NewTypedID: submissionTypedIDGenerator(key),
 	}
 	ingested, err := ingester.Ingest(ctx, request.BundleDir)
 	if err != nil {

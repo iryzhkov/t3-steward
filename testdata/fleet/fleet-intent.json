@@ -1,0 +1,108 @@
+{
+  "coordinator": {
+    "client_endpoint": {
+      "address": "normandy",
+      "connection": "ssh",
+      "message_limits": {
+        "max_artifact_bytes": 1073741824,
+        "max_bytes": 4194304
+      },
+      "remote_command": "t3-steward",
+      "request_timeout": "30s"
+    },
+    "coordinator_id": "normandy-coordinator",
+    "host": "normandy"
+  },
+  "hosts": {
+    "homelab": {
+      "admin_credential_ref": "secretref:f03-admin/homelab",
+      "credential_ref": "secretref:f02-protocol/homelab",
+      "profile": "standard",
+      "transport": "ssh",
+      "worker_id": "homelab"
+    },
+    "omarchy-pc": {
+      "admin_credential_ref": "secretref:f03-admin/omarchy-pc",
+      "credential_ref": "secretref:f02-protocol/omarchy-pc",
+      "exceptions": {
+        "executor_slots": 4
+      },
+      "profile": "build",
+      "transport": "ssh",
+      "worker_id": "omarchy-pc"
+    }
+  },
+  "kind": "steward-fleet-configuration",
+  "profiles": {
+    "build": {
+      "capabilities": [
+        "git",
+        "huyang"
+      ],
+      "cpu_class": "build",
+      "executor_slots": 3,
+      "models": {
+        "claudeAgent": [
+          "claude-haiku-4-5",
+          "claude-opus-4-5",
+          "claude-sonnet-4-5"
+        ],
+        "codex": [
+          "gpt-5-codex"
+        ],
+        "opencode": [
+          "glm-4.6"
+        ]
+      },
+      "provider_instances": [
+        "claudeAgent",
+        "codex",
+        "opencode"
+      ],
+      "quota_pools": [
+        "build",
+        "default"
+      ]
+    },
+    "standard": {
+      "capabilities": [
+        "git",
+        "huyang"
+      ],
+      "cpu_class": "standard",
+      "executor_slots": 2,
+      "models": {
+        "claudeAgent": [
+          "claude-opus-4-5",
+          "claude-sonnet-4-5"
+        ],
+        "codex": [
+          "gpt-5-codex"
+        ],
+        "opencode": [
+          "glm-4.6"
+        ]
+      },
+      "provider_instances": [
+        "claudeAgent",
+        "codex",
+        "opencode"
+      ],
+      "quota_pools": [
+        "default"
+      ]
+    }
+  },
+  "projects": {
+    "upkeeper": {
+      "default_ref": "main",
+      "eligible_workers": [
+        "homelab",
+        "omarchy-pc"
+      ],
+      "repository": "ssh://git@git.ryzhkov.dev/igor/upkeeper.git",
+      "setup_profile": "go"
+    }
+  },
+  "schema_version": 1
+}

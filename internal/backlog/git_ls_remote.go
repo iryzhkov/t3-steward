@@ -169,12 +169,17 @@ func ClassifyRepositoryProbe(exitCode int, output string, err error) RepositoryR
 	switch {
 	case containsAny(message, "could not resolve host", "name or service not known", "no address associated with hostname", "temporary failure in name resolution"):
 		return RepositoryDNSFailure
-	case containsAny(message, "authentication failed", "access denied", "permission denied", "invalid username or password", "terminal prompts disabled", "could not read username", "403 forbidden", "401 unauthorized"):
+	// "unauthorized" on its own is Gitea's wording. It is tested before the
+	// not-found list because a forge that says only that has said the one thing
+	// it knows: the identity was refused.
+	case containsAny(message, "authentication failed", "access denied", "permission denied", "invalid username or password", "terminal prompts disabled", "could not read username", "403 forbidden", "401 unauthorized", "unauthorized"):
 		return RepositoryAuthenticationFailed
-	// "cannot find repository" is Forgejo's wording, and it is the message the
-	// campaign that motivated this check actually received. Without it the
-	// motivating failure classifies as temporary and the submission proceeds.
-	case containsAny(message, "repository not found", "cannot find repository", "does not appear to be a git repository", "not found", "404"):
+	// Three of these are forge-specific and none of them contains "not found":
+	// "cannot find repository" is Forgejo, "could not be found" is GitLab, and
+	// TF401019 with "does not exist or you do not have permissions" is Azure
+	// DevOps. Without them each of these classifies as temporary and the
+	// submission proceeds, which is the motivating failure exactly.
+	case containsAny(message, "repository not found", "cannot find repository", "could not be found", "tf401019", "does not exist or you do not have permissions", "does not appear to be a git repository", "not found", "404"):
 		return RepositoryNotFound
 	case containsAny(message, "failed to connect", "could not connect to server", "connection refused", "connection timed out", "network is unreachable", "connection reset", "operation timed out", "ssl", "tls"):
 		return RepositoryNetworkUnavailable
@@ -195,9 +200,15 @@ func containsAny(haystack string, needles ...string) bool {
 }
 
 // RepositoryProbeKey identifies one reachability observation. A change to any
-// component invalidates the evidence, which is what makes a cached positive
-// safe: rotating a credential or renaming a repository produces a different
-// key rather than a stale answer.
+// component invalidates the evidence, so re-enrolling a worker, renaming a
+// repository, changing the ref or changing which credential references a
+// project requires all produce a different key rather than a stale answer.
+//
+// What the key cannot see is the value behind a credential reference. Rotating
+// the secret that secretref:f02-protocol/homelab resolves to leaves the key
+// identical, so a positive observed before the rotation stays usable until it
+// expires. That is the reason the retention window is ten minutes and not an
+// hour; it is a bounded staleness, not an invalidation.
 type RepositoryProbeKey struct {
 	WorkerID       string
 	CatalogDigest  string
@@ -230,12 +241,33 @@ type RepositoryProbeObservation struct {
 	ObservedAt time.Time
 }
 
+// maxRepositoryProbeEntries bounds the retained set. Entries are swept on every
+// write, so this bound is only reached by a caller producing distinct keys
+// faster than they expire; it exists so that such a caller cannot grow the
+// cache without limit.
+const maxRepositoryProbeEntries = 1024
+
 // RepositoryProbeCache retains observations for RepositoryProbeEvidenceTTL.
 type RepositoryProbeCache struct {
-	TTL     time.Duration
+	TTL time.Duration
+	// Now is the clock the retention window is measured on.
+	//
+	// Its readings must carry a monotonic component, which is why the default
+	// is time.Now rather than time.Now().UTC(): calling UTC strips the
+	// monotonic reading, after which the elapsed time between two readings is a
+	// wall-clock difference. A backwards NTP step then extends every live
+	// retention window by the size of the step, which is precisely when a stale
+	// positive is least welcome.
 	Now     func() time.Time
 	mu      sync.Mutex
-	entries map[string]RepositoryProbeObservation
+	entries map[string]repositoryProbeEntry
+}
+
+// repositoryProbeEntry is one retained observation and the instant it stops
+// being usable, computed once on the retention clock.
+type repositoryProbeEntry struct {
+	observation RepositoryProbeObservation
+	expiresAt   time.Time
 }
 
 func (c *RepositoryProbeCache) ttl() time.Duration {
@@ -249,7 +281,7 @@ func (c *RepositoryProbeCache) now() time.Time {
 	if c != nil && c.Now != nil {
 		return c.Now()
 	}
-	return time.Now().UTC()
+	return time.Now()
 }
 
 // Lookup returns a retained observation for key that is still inside its TTL.
@@ -259,18 +291,23 @@ func (c *RepositoryProbeCache) Lookup(key RepositoryProbeKey) (RepositoryProbeOb
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	observation, found := c.entries[key.Digest()]
+	entry, found := c.entries[key.Digest()]
 	if !found {
 		return RepositoryProbeObservation{}, false
 	}
-	if c.now().Sub(observation.ObservedAt) >= c.ttl() {
+	if !c.now().Before(entry.expiresAt) {
 		delete(c.entries, key.Digest())
 		return RepositoryProbeObservation{}, false
 	}
-	return observation, true
+	return entry.observation, true
 }
 
 // Store retains one observation under its key.
+//
+// Every write sweeps what has expired. Evicting only on lookup left the
+// entries of keys nobody asks about again in memory for the life of the
+// process, and a coordinator sees a new key whenever a worker re-enrols, a
+// project's ref changes or a campaign names a different repository.
 func (c *RepositoryProbeCache) Store(observation RepositoryProbeObservation) {
 	if c == nil {
 		return
@@ -278,12 +315,50 @@ func (c *RepositoryProbeCache) Store(observation RepositoryProbeObservation) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.entries == nil {
-		c.entries = make(map[string]RepositoryProbeObservation)
+		c.entries = make(map[string]repositoryProbeEntry)
 	}
+	now := c.now()
 	if observation.ObservedAt.IsZero() {
-		observation.ObservedAt = c.now()
+		observation.ObservedAt = now
 	}
-	c.entries[observation.Key.Digest()] = observation
+	c.sweepLocked(now)
+	c.entries[observation.Key.Digest()] = repositoryProbeEntry{
+		observation: observation, expiresAt: now.Add(c.ttl()),
+	}
+	c.evictOldestLocked()
+}
+
+// sweepLocked drops every entry whose retention window has closed.
+func (c *RepositoryProbeCache) sweepLocked(now time.Time) {
+	for digest, entry := range c.entries {
+		if !now.Before(entry.expiresAt) {
+			delete(c.entries, digest)
+		}
+	}
+}
+
+// evictOldestLocked enforces the bound by dropping whatever expires soonest.
+func (c *RepositoryProbeCache) evictOldestLocked() {
+	for len(c.entries) > maxRepositoryProbeEntries {
+		oldest, at := "", time.Time{}
+		for digest, entry := range c.entries {
+			if oldest == "" || entry.expiresAt.Before(at) {
+				oldest, at = digest, entry.expiresAt
+			}
+		}
+		delete(c.entries, oldest)
+	}
+}
+
+// Len reports how many observations are retained. It exists so that the growth
+// bound is a tested property rather than a claim in a comment.
+func (c *RepositoryProbeCache) Len() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
 }
 
 // ObserveRepository runs the built-in probe for key through runner and retains

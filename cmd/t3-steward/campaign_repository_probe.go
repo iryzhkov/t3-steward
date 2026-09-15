@@ -59,7 +59,9 @@ func newCoordinatorRepositoryObserver(
 ) *coordinatorRepositoryObserver {
 	observer := &coordinatorRepositoryObserver{
 		settings: settings, resolver: resolver, epoch: epoch, factory: factory,
-		now: func() time.Time { return time.Now().UTC() },
+		// time.Now rather than time.Now().UTC(): calling UTC strips the
+		// monotonic reading, and the retention window is an elapsed time.
+		now: time.Now,
 	}
 	observer.cache = &backlog.RepositoryProbeCache{
 		TTL: backlog.RepositoryProbeEvidenceTTL,

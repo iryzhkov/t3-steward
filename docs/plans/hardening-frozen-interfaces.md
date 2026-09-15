@@ -58,7 +58,14 @@ Unclassified failures keep exit 1. `--json` errors are `{"version":"backlog.admi
 
 Forced command: `t3-steward coordinator-exchange <operation>`, operations `query`, `mutation`,
 `artifact`, `submission`, `schedule-definition`, `unknown-recovery`, `node-wait`,
-`graph-amendment`, `worker-enrollment`. Built as a sibling of `worker-exchange`: one positional
+`graph-amendment`, `worker-enrollment`, and `quarantine-release`.
+
+Amendment, 2026-09-14: the vocabulary was frozen at nine and is now ten. Releasing an intake
+quarantine is a mutation, but the quarantine record has no revision to fence against, so putting
+it on the revision-fenced mutation engine would have meant bolting a revision-less target onto a
+transaction whose whole purpose is that fence. A tenth word carrying its own authorization, audit
+record and replay protection is the smaller change. An older coordinator refuses the word, which
+is the correct answer from one that cannot perform it. Built as a sibling of `worker-exchange`: one positional
 operation, `--config` required and explicit, `SSH_ORIGINAL_COMMAND` never read.
 
 Configuration, new block on `BacklogV2`:
@@ -86,8 +93,17 @@ component exists to remove.
 The client bootstrap document is canonical JSON with the closed field set `schema_version`,
 `coordinator_id`, `address`, `connection`, `remote_command`, `credential_ref`, `request_timeout`,
 `message_limits`. `message_limits` uses t3-steward's own vocabulary, `max_bytes` (default
-4194304), `max_files` (default 1000) and `max_artifact_bytes` (default 1073741824), because the
-document is consumed as `V2MessageLimits`. Absent means the defaults, never unbounded.
+4194304) and `max_artifact_bytes` (default 1073741824), because the document is consumed as
+`V2MessageLimits`. Absent means the defaults, never unbounded.
+
+Correction, 2026-09-14, after cross-repository verification: this paragraph previously listed
+`max_files` as a key of the document. Neither implementation accepts it there — both close the
+set at `max_bytes` and `max_artifact_bytes`, and `max_files` keeps its own default of 1000 from
+the configuration. The two implementations agreed with each other and only this plan was wrong,
+which is the mild version of the same failure that produced the `request_timeout` mismatch.
+
+`request_timeout` is a duration STRING (`"30s"`), not a number of seconds. That is steward's
+vocabulary everywhere else, and it is what the loader parses with `time.ParseDuration`.
 
 Remote principal role is `remote-admin`; the local peer-UID role stays `local-admin`. The server
 overwrites any claimed principal on both carriers.
@@ -183,13 +199,30 @@ repository, so the specific evidence has to be tested before the generic wording
 | exit 2 | `ref-not-found` |
 | `context.DeadlineExceeded` or `context.Canceled` | `timeout` |
 | `could not resolve host`, `name or service not known`, `no address associated with hostname`, `temporary failure in name resolution` | `dns-failure` |
-| `authentication failed`, `access denied`, `permission denied`, `invalid username or password`, `terminal prompts disabled`, `could not read username`, `403 forbidden`, `401 unauthorized` | `authentication-failed` |
-| `repository not found`, `cannot find repository`, `does not appear to be a git repository`, `not found`, `404` | `repository-not-found` |
+| `authentication failed`, `access denied`, `permission denied`, `invalid username or password`, `terminal prompts disabled`, `could not read username`, `403 forbidden`, `401 unauthorized`, `unauthorized` | `authentication-failed` |
+| `repository not found`, `cannot find repository`, `could not be found`, `tf401019`, `does not exist or you do not have permissions`, `does not appear to be a git repository`, `not found`, `404` | `repository-not-found` |
 | `failed to connect`, `could not connect to server`, `connection refused`, `connection timed out`, `network is unreachable`, `connection reset`, `ssl`, `tls` | `network-unavailable` |
 | anything else | `network-unavailable` |
 
 The last row is deliberate. An unrecognised failure is classified as temporary so that a Git
 message nobody has measured can never manufacture a permanent refusal.
+
+Four of the substrings are forge-specific and none of them contains an earlier one, which is why
+each needs its own entry rather than falling through to `not found`:
+
+- `cannot find repository` is Forgejo, and was the message the motivating campaign received.
+- `could not be found` is GitLab, from "The project you were looking for could not be found or you
+  don't have permission to view it." Note that this string does **not** contain `not found`, and
+  does not contain `permission denied` either, so it reaches neither list without its own entry.
+- `tf401019` and `does not exist or you do not have permissions` are Azure DevOps.
+- `unauthorized` on its own is Gitea. It is in the authentication list, which is tested first.
+
+Provenance, because it differs by row. The GitHub, GitLab basic-auth, Azure DevOps organisation,
+Codeberg and sourcehut rows were measured directly with an anonymous read-only `git ls-remote`.
+The GitLab `could not be found`, Azure DevOps `TF401019` and Gitea `Unauthorized` rows were
+reported by review: all three are emitted only on an authenticated request, and reproducing them
+would have needed live credentials against a private repository. Their exact bytes are pinned in
+`TestClassifyForgeWordings`, so a later measurement either confirms them or fails that test.
 
 One ambiguity cannot be removed and should not be papered over: a forge that hides a private
 repository behind "Repository not found" is reported as `repository-not-found` even when the
@@ -260,6 +293,21 @@ Amendments, 2026-09-14, from the first implementation pass:
   revision. The worker never queries coordinator state directly, and the coordinator refusal
   remains the authority.
 
+Amendment, 2026-09-14, after multi-process qualification: `ExpectedRevision` is renamed
+`IssuedRevision` (`issuedRevision` on the wire) and is no longer the fence. The coordinator
+stamps the attempt revision when it builds the execution package and then advances the attempt
+itself, on the assignment claim and again when the worker reports the thread running, so the
+number the task holds is always behind before its turn starts; fencing on equality refused every
+registration a real task could make. The field is kept as evidence of what the task was told, and
+a value ahead of the attempt's own revision is refused because the coordinator never issued it.
+
+What the registration is fenced on instead, all three inside the registering transaction: the
+attempt still has a live turn (`Attempt.TurnLive`: progress `active` or `waiting-external`, and
+control `preparing`, `running`, `resuming` or `waiting-external`); the registering thread is the
+attempt's own thread, when the attempt names one; and the write is a compare-and-set against the
+revision read in that transaction, so a registration racing a turn completion still loses exactly
+one of the two.
+
 Registration + transition to `waiting-external` commit in one fenced store call. A terminal
 attempt refuses registration with `attempt is terminal (<progress>); task-bound waits are refused`.
 A `done` marker observed while a live task wait exists is refused and recorded as a
@@ -286,6 +334,11 @@ enabled only after verification against a disposable server of the deployed vers
 
 The file carries identity only: no dispatch token, no credential, and it must not travel with
 collected outputs or an archived workspace.
+
+Amendment, 2026-09-14, after multi-process qualification: the record is removed when a collection
+actually proceeds, after the worker has established that the turn is terminal, not on entry to
+`Collect`. A collection that defers leaves the turn running, and a turn that may still park itself
+needs the record to name itself with.
 
 `wait add --task current` uses them. Released while waiting: executor slot, CPU/memory/scratch
 reservation, provider slot, quota tally. Held: attempt, thread, workspace, artifacts, dependency

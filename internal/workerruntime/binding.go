@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
@@ -28,6 +30,29 @@ type WorkerBinding struct {
 	Catalog         *backlog.ProjectCatalog
 	Inventory       domain.WorkerInventory
 	CredentialRef   string
+	// RejectedProjects names the configured projects this binding had to leave
+	// out, with the exact validation failure for each. The binding is usable
+	// without them; the operator still has to be told which project is broken
+	// and why, by name.
+	RejectedProjects []backlog.ProjectRejection
+}
+
+// CatalogIssues renders the rejected projects as one line each, for the health
+// surfaces that report configuration problems.
+func (b WorkerBinding) CatalogIssues() []string {
+	issues := make([]string, 0, len(b.RejectedProjects))
+	for _, rejection := range b.RejectedProjects {
+		issues = append(issues, "project:"+rejection.Name+":invalid: "+rejection.Reason)
+	}
+	return issues
+}
+
+func rejectionList(rejections []backlog.ProjectRejection) string {
+	parts := make([]string, 0, len(rejections))
+	for _, rejection := range rejections {
+		parts = append(parts, rejection.Error())
+	}
+	return strings.Join(parts, "; ")
 }
 
 // BuildFleetDefinitions is the coordinator's view of the same catalog
@@ -52,7 +77,12 @@ func BuildFleetDefinitions(settings config.BacklogV2) ([]backlog.ProjectDefiniti
 	for _, name := range projectNames {
 		project := settings.Projects[name]
 		setupProfile := project.SetupProfile
-		if setupProfile == "" {
+		// Only a fresh-workspace project gets the implicit profile, exactly as
+		// the worker binding assigns it. Inventing one for any project that
+		// declares none would have hidden a project the binding rejects, so the
+		// fleet view and the binding would have disagreed about which
+		// configuration is usable.
+		if setupProfile == "" && project.Type == backlog.EnvironmentFresh {
 			setupProfile = implicitFreshSetupProfile
 			if !slices.ContainsFunc(profiles, func(p backlog.SetupProfile) bool { return p.Name == setupProfile }) {
 				profiles = append(profiles, backlog.SetupProfile{Name: setupProfile, Timeout: time.Minute})
@@ -68,6 +98,23 @@ func BuildFleetDefinitions(settings config.BacklogV2) ([]backlog.ProjectDefiniti
 		})
 	}
 	return projects, profiles
+}
+
+// FleetCatalogIssues names every configured project this coordinator cannot
+// use, with the exact validation failure for each.
+//
+// It is computed from the fleet definitions rather than from one worker's
+// binding, so a project that is broken and assigned to no worker is still
+// reported. An isolated failure that nothing else notices has to be announced,
+// or the operator only learns about it from a refused submission.
+func FleetCatalogIssues(settings config.BacklogV2) []string {
+	projects, profiles := BuildFleetDefinitions(settings)
+	_, _, rejected := backlog.PartitionCatalog(projects, profiles)
+	issues := make([]string, 0, len(rejected))
+	for _, rejection := range rejected {
+		issues = append(issues, "project:"+rejection.Name+":invalid: "+rejection.Reason)
+	}
+	return issues
 }
 
 // implicitFreshSetupProfile is the profile a fresh-workspace project is given
@@ -117,35 +164,52 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 	slices.Sort(projectNames)
 	projects := make([]backlog.ProjectDefinition, 0, len(projectNames))
 	inventoryProjects := make([]domain.WorkerProjectInventory, 0, len(projectNames))
+	var rejected []backlog.ProjectRejection
 	for _, name := range projectNames {
 		project := settings.Projects[name]
 		if !slices.Contains(project.Workers, workerID) {
 			continue
 		}
+		// Every defect below belongs to one project and is recorded against it.
+		// Returning from here was the remaining half of the fleet outage: these
+		// checks run before the catalog is partitioned, so one project with no
+		// setup profile or an ineligible directory still stopped the whole
+		// binding from being built, and with it every worker that has a
+		// persistent connection and therefore binds at coordinator startup.
 		if project.SetupProfile == "" && project.Type == backlog.EnvironmentFresh {
-			const emptyProfile = "steward-fresh-empty"
-			if _, exists := settings.SetupProfiles[emptyProfile]; exists {
-				return WorkerBinding{}, errors.New("worker binding: steward-fresh-empty is reserved for implicit fresh setup")
+			if _, exists := settings.SetupProfiles[implicitFreshSetupProfile]; exists {
+				rejected = append(rejected, backlog.ProjectRejection{Name: name,
+					Reason: implicitFreshSetupProfile + " is reserved for implicit fresh setup"})
+				continue
 			}
-			project.SetupProfile = emptyProfile
-			if !slices.ContainsFunc(profiles, func(p backlog.SetupProfile) bool { return p.Name == emptyProfile }) {
-				profiles = append(profiles, backlog.SetupProfile{Name: emptyProfile, Timeout: time.Minute})
+			project.SetupProfile = implicitFreshSetupProfile
+			if !slices.ContainsFunc(profiles, func(p backlog.SetupProfile) bool { return p.Name == implicitFreshSetupProfile }) {
+				profiles = append(profiles, backlog.SetupProfile{Name: implicitFreshSetupProfile, Timeout: time.Minute})
 			}
 		}
 		if project.SetupProfile == "" {
-			return WorkerBinding{}, fmt.Errorf("worker binding: project %q has no setup profile", name)
+			rejected = append(rejected, backlog.ProjectRejection{Name: name, Reason: "has no setup profile"})
+			continue
 		}
 		if err := directoryresource.ValidateCatalog(project.DirectoryResources); err != nil {
-			return WorkerBinding{}, err
+			rejected = append(rejected, backlog.ProjectRejection{Name: name, Reason: err.Error()})
+			continue
 		}
 		var directories []directoryresource.Binding
+		ineligible := ""
 		for _, binding := range project.DirectoryResources {
 			if !slices.Contains(project.Workers, binding.Identity.Registration.WorkerID) {
-				return WorkerBinding{}, errors.New("directory worker is not eligible for project")
+				ineligible = binding.Identity.Registration.WorkerID
+				break
 			}
 			if binding.Identity.Registration.WorkerID == workerID {
 				directories = append(directories, binding)
 			}
+		}
+		if ineligible != "" {
+			rejected = append(rejected, backlog.ProjectRejection{Name: name,
+				Reason: "directory worker " + ineligible + " is not eligible for the project"})
+			continue
 		}
 		projects = append(projects, backlog.ProjectDefinition{
 			DirectoryBindings: directoryresource.CloneBindings(directories),
@@ -158,8 +222,32 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 			Name: name, Available: true, Revision: project.DefaultRef, UpdatedAt: now.UTC(),
 		})
 	}
-	if len(projects) == 0 {
+	if len(projects) == 0 && len(rejected) == 0 {
 		return WorkerBinding{}, errors.New("worker binding: worker has no eligible projects")
+	}
+	// A project the catalog cannot hold is isolated rather than fatal. Failing
+	// the whole binding meant one malformed repository URL stopped every worker
+	// on the coordinator from reporting, which is a fleet outage caused by one
+	// project's configuration.
+	projects, profiles, catalogRejections := backlog.PartitionCatalog(projects, profiles)
+	rejected = append(rejected, catalogRejections...)
+	sort.Slice(rejected, func(i, j int) bool { return rejected[i].Name < rejected[j].Name })
+	if len(rejected) != 0 {
+		usable := make([]domain.WorkerProjectInventory, 0, len(projects))
+		for _, entry := range inventoryProjects {
+			if slices.ContainsFunc(projects, func(p backlog.ProjectDefinition) bool { return p.Name == entry.Name }) {
+				usable = append(usable, entry)
+			}
+		}
+		// A project that cannot be prepared is not advertised as available. The
+		// worker would accept work for it and fail at preparation time, which is
+		// the class of failure this whole readiness path exists to move earlier.
+		inventoryProjects = usable
+	}
+	if len(projects) == 0 {
+		return WorkerBinding{}, fmt.Errorf(
+			"worker binding: every eligible project of worker %q is misconfigured: %s",
+			workerID, rejectionList(rejected))
 	}
 	catalog, err := backlog.NewProjectCatalog(projects, profiles)
 	if err != nil {
@@ -198,6 +286,7 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 	revision := hex.EncodeToString(sum[:])
 	return WorkerBinding{
 		CatalogRevision: revision, Catalog: catalog, CredentialRef: worker.Credential,
+		RejectedProjects: rejected,
 		Inventory: domain.WorkerInventory{
 			ID: workerID, AcceptBacklog: worker.AcceptBacklog, Health: domain.WorkerHealthReady, CatalogRevision: revision,
 			Capabilities: append([]string(nil), worker.Capabilities...),

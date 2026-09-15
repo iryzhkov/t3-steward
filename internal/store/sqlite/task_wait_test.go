@@ -35,7 +35,7 @@ func taskWaitFixture(t *testing.T) (*Store, domain.Attempt, time.Time) {
 func taskWaitRegistration(attempt domain.Attempt, requestID string, wake domain.WakeMode) domain.TaskWaitRegistration {
 	return domain.TaskWaitRegistration{
 		RequestID: requestID, WorkflowRunID: attempt.WorkflowRunID, TaskID: attempt.TaskID,
-		AttemptID: attempt.ID, ExpectedRevision: attempt.Revision,
+		AttemptID: attempt.ID, IssuedRevision: attempt.Revision,
 		ThreadID: attempt.ThreadID, Wake: wake, MaxDuration: time.Hour, Name: "ci",
 		Condition: "gh run view",
 	}
@@ -177,19 +177,86 @@ func TestTaskWaitRefusedOnTerminalAttempt(t *testing.T) {
 	}
 }
 
-// A registration that names a revision the attempt has moved past is refused
-// rather than applied to whatever the attempt has since become.
-func TestTaskWaitRefusesStaleAttemptRevision(t *testing.T) {
-	ctx := context.Background()
-	store, attempt, now := taskWaitFixture(t)
-	request := taskWaitRegistration(attempt, "req-1", domain.WakeEach)
-	attempt.Revision += 3
-	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Attempts: []domain.Attempt{attempt}}); err != nil {
-		t.Fatal(err)
+// The fence is on the attempt's live turn, not on the revision the task was
+// issued with.
+//
+// An attempt whose revision has merely moved on is what every real task holds,
+// because the coordinator advances the attempt after it builds the package, so
+// that registration must be accepted. An attempt that has moved on in a way
+// that means the turn is gone must still be refused, and so must a thread that
+// is not the one the attempt is running.
+func TestTaskWaitFencesOnTheLiveTurnNotOnTheIssuedRevision(t *testing.T) {
+	t.Run("an advanced revision still parks the attempt", func(t *testing.T) {
+		ctx := context.Background()
+		store, attempt, now := taskWaitFixture(t)
+		request := taskWaitRegistration(attempt, "req-1", domain.WakeEach)
+		advanced := attempt
+		advanced.Revision += 3
+		if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Attempts: []domain.Attempt{advanced}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.RegisterTaskWait(ctx, request, now); err != nil {
+			t.Fatalf("a task holding the revision it was issued could not park: %v", err)
+		}
+		parked := loadAttempt(t, store, attempt.ID)
+		if parked.Progress != domain.ProgressWaitingExternal || parked.Revision != advanced.Revision+1 {
+			t.Fatalf("the park did not fence on the live revision: %q at %d", parked.Progress, parked.Revision)
+		}
+	})
+
+	for name, moveOn := range map[string]func(*domain.Attempt){
+		"released back to the queue": func(a *domain.Attempt) {
+			a.Progress, a.Control, a.AssignmentID, a.ThreadID = domain.ProgressReady, domain.ControlUnassigned, "", ""
+		},
+		"its turn ended and is being verified": func(a *domain.Attempt) {
+			a.Progress, a.Control = domain.ProgressVerifying, domain.ControlStopped
+		},
+		"paused by an operator": func(a *domain.Attempt) {
+			a.Control = domain.ControlPaused
+		},
+		"draining under a quota throttle": func(a *domain.Attempt) {
+			a.Control = domain.ControlDraining
+		},
+	} {
+		t.Run(name+" is refused", func(t *testing.T) {
+			ctx := context.Background()
+			store, attempt, now := taskWaitFixture(t)
+			request := taskWaitRegistration(attempt, "req-1", domain.WakeEach)
+			moved := attempt
+			moveOn(&moved)
+			moved.Revision++
+			if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Attempts: []domain.Attempt{moved}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.RegisterTaskWait(ctx, request, now); !errors.Is(err, domain.ErrTaskWaitTurnNotLive) {
+				t.Fatalf("an attempt with no live turn accepted a wait: %v", err)
+			}
+			if waits, err := store.ListTaskWaits(ctx); err != nil || len(waits) != 0 {
+				t.Fatalf("a refused registration left a record: %v %v", waits, err)
+			}
+		})
 	}
-	if _, err := store.RegisterTaskWait(ctx, request, now); !errors.Is(err, domain.ErrTaskWaitStaleRevision) {
-		t.Fatalf("stale registration accepted: %v", err)
-	}
+
+	t.Run("another thread cannot park this attempt", func(t *testing.T) {
+		ctx := context.Background()
+		store, attempt, now := taskWaitFixture(t)
+		request := taskWaitRegistration(attempt, "req-1", domain.WakeEach)
+		request.ThreadID = "thread-elsewhere"
+		if _, err := store.RegisterTaskWait(ctx, request, now); !errors.Is(err, domain.ErrTaskWaitForeignThread) {
+			t.Fatalf("a foreign thread parked the attempt: %v", err)
+		}
+	})
+
+	t.Run("a revision the coordinator never reached is refused", func(t *testing.T) {
+		ctx := context.Background()
+		store, attempt, now := taskWaitFixture(t)
+		request := taskWaitRegistration(attempt, "req-1", domain.WakeEach)
+		request.IssuedRevision = attempt.Revision + 10
+		if _, err := store.RegisterTaskWait(ctx, request, now); err == nil ||
+			!strings.Contains(err.Error(), "ahead of attempt") {
+			t.Fatalf("a revision from the future was accepted: %v", err)
+		}
+	})
 }
 
 // The dangerous interleaving: a wait is registered at about the moment the turn

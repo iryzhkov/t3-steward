@@ -45,8 +45,27 @@ contained execution path's environment allowlist is widened by exactly those ent
 else.
 
 Registration and the transition to `waiting_external` are one operation: atomic, idempotent under
-a repeated request ID, and fenced on the attempt revision. A registration that names a stale
-attempt revision is refused rather than applied to whatever the attempt has since become.
+a repeated request ID, and fenced on the attempt. A registration that names an attempt which has
+moved on is refused rather than applied to whatever the attempt has since become.
+
+Amendment, 2026-09-14, after multi-process qualification. The first implementation read "fenced on
+the attempt revision" as equality with the revision injected into the task, and that fence could
+never pass: the coordinator stamps that revision when it builds the execution package and then
+advances the attempt itself, on the assignment claim and again when the worker reports the thread
+running. Every registration from a real task was refused as stale. The injected revision is kept,
+renamed `IssuedRevision`, as evidence of what the task was told.
+
+The fence is on the attempt's turn, evaluated inside the registering transaction:
+
+- the attempt still has a live turn — progress `active` or `waiting-external`, control
+  `preparing`, `running`, `resuming` or `waiting-external`. An attempt being verified, released,
+  paused or drained has moved on underneath the registering thread;
+- the registering thread is the attempt's own thread, when the attempt names one;
+- the commit is a compare-and-set on the revision read in that same transaction.
+
+The protection the original fence was written for is unchanged, and now it is the property that
+is actually checked: a registration cannot be applied to an attempt that has moved on, and a
+registration racing a turn completion still loses exactly one of the two.
 
 A terminal attempt refuses new task-bound waits, with a structured error saying the attempt is
 terminal and naming its outcome. That refusal is what stops a thread that has already lost its
@@ -55,7 +74,7 @@ task authority from quietly acquiring a new reason to keep working.
 ## The race, and who wins
 
 The dangerous interleaving is the observed one: a wait is registered at about the same moment the
-turn ends. Both paths are fenced on the attempt revision, so exactly one commits first.
+turn ends. Both paths compare-and-set the attempt revision, so exactly one commits first.
 
 - **Wait first.** The attempt is `waiting_external` when the ended turn is observed. The worker
   does not collect, the coordinator does not verify, dependents and the sink do not settle. A

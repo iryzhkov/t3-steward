@@ -332,6 +332,21 @@ its digest changes, the marker is released, and the submission is attempted
 again and reported again. Removing the file also ends the reports, and the
 marker then stays in the journal as the record of why the intake refused it.
 
+A quarantine the file cannot fix is cleared deliberately:
+
+```
+t3-steward backlog quarantine release <key> --reason TEXT [--json]
+```
+
+This is the way out of a refusal that was never about the content — a project
+no alias mapped is the ordinary one — because adding the alias changes no byte
+of the file, so its digest is unchanged and intake stays silent. The release is
+audited with the operator and the reason as `submission-quarantine-released`,
+and releasing a key that holds no marker reports exactly that instead of
+failing, so an ambiguous response is safe to retry. It creates nothing: the next
+cycle reads the file again and the coordinator refuses it again if it is still
+impossible.
+
 Dependency artifacts appear in the successor workspace at
 `.t3/dependencies/<task>/<output>`. Declared verification commands, output
 capture, checksums, final messages, preparation logs, checkpoints, and other

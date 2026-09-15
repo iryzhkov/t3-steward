@@ -145,9 +145,14 @@ func (s *Store) LoadArtifacts(ctx context.Context, ids []string) ([]domain.Artif
 // A pinned run is skipped rather than attempted. The pin is enforced by a
 // trigger that aborts the delete, and one abort rolls back the whole
 // transaction, so a pass that met a single pinned run pruned nothing anywhere:
-// one rerun held the retention of every campaign on the fleet. The pins are read
-// inside the transaction that does the deleting, so a pin taken while the pass
-// is running cannot be missed.
+// one rerun held the retention of every campaign on the fleet.
+//
+// The pins are read inside the transaction that does the deleting. That a pin
+// taken while the pass runs cannot be missed depends on this store opening its
+// database with SetMaxOpenConns(1): writers are serialised, so no other
+// transaction can commit between the read and the deletes. Raising the pool
+// would reopen that window, and this claim would have to be re-earned with an
+// explicit locking mode.
 func (s *Store) PruneArtifacts(
 	ctx context.Context,
 	before time.Time,

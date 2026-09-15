@@ -44,8 +44,7 @@ Coordinator read commands:
   command show <command> [--json]
   quarantine [--json]   Intake the coordinator refused permanently and is now
                         silent about: key, digest, when and why. It names no
-                        run, so "events" cannot show it. Read-only: editing the
-                        file is what retries it.
+                        run, so "events" cannot show it.
 
 Graph amendments (all require --expected-revision N --request-id ID --reason TEXT):
   task add <run>/<name> --provider INSTANCE --model MODEL --prompt TEXT --verify COMMAND
@@ -61,6 +60,10 @@ Revision-fenced controls:
   start|resume|cancel|retry|skip <workflow-run>/<task> --reason TEXT [--command-id ID] [--json]
   delay <workflow-run>/<task> --until RFC3339 --reason TEXT [--command-id ID] [--json]
   pause <workflow-run>/<task> [--now] --reason TEXT [--command-id ID] [--json]
+  quarantine release <key> --reason TEXT [--json]
+      Clear one intake quarantine after fixing what caused it. Editing the file
+      clears it by itself; this is for a refusal the file cannot fix, such as a
+      project no alias mapped.
   recover <assignment> --outcome stopped|failed --coordinator-epoch N
       --assignment-epoch N --attempt-revision N --evidence-id ID
       --evidence-sha256 HEX --reason TEXT [--recovery-id ID] [--json]
@@ -149,6 +152,7 @@ func runCoordinatorAdmin(cfg config.Config, args []string, schedules bool) error
 		submissions:         client,
 		scheduleDefinitions: client,
 		recovery:            client,
+		quarantine:          client,
 		principal:           transport.principal,
 		stdout:              os.Stdout,
 	}

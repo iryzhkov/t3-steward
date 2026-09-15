@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
@@ -74,6 +75,102 @@ func TestQuarantineQueryShowsWhatIntakeRefused(t *testing.T) {
 	released, err := service.Query(ctx, query)
 	if err != nil || len(released.Quarantine) != 0 {
 		t.Fatalf("quarantine after release = %+v, %v", released.Quarantine, err)
+	}
+}
+
+// A quarantine caused by configuration cannot be cleared by editing the file:
+// adding the missing project alias changes no byte of it, so the digest is
+// unchanged and intake stays silent forever. The deliberate release is the way
+// out, and it is audited with the operator's reason because the operator, not
+// the content, is what changed.
+func TestQuarantineReleaseClearsAMarkerAndIsSafeToRepeat(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	service, err := New(store, graphAuthorizer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 9, 14, 8, 30, 0, 0, time.UTC)
+	service.SetClock(func() time.Time { return at.Add(time.Hour) })
+	const digest = "7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed"
+	const reason = "legacy submission references an unmapped project"
+	if _, _, err := store.QuarantineSubmission(ctx, "legacy-abc", digest, reason, at); err != nil {
+		t.Fatal(err)
+	}
+
+	principal := Principal{ID: "operator"}
+	release, err := service.ReleaseQuarantine(ctx, principal, QuarantineReleaseRequest{
+		Key: "legacy-abc", Reason: "mapped the project",
+	})
+	if err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if !release.Released || release.Key != "legacy-abc" || release.Digest != digest || release.Reason != reason {
+		t.Fatalf("release = %+v", release)
+	}
+	response, err := service.Query(ctx, Query{
+		Version: Version, Kind: QueryQuarantine, Principal: principal,
+	})
+	if err != nil || len(response.Quarantine) != 0 {
+		t.Fatalf("quarantine after release = %+v, %v", response.Quarantine, err)
+	}
+
+	// Repeating it says there was nothing to release rather than inventing a
+	// failure, which is what makes an ambiguous response safe to retry.
+	again, err := service.ReleaseQuarantine(ctx, principal, QuarantineReleaseRequest{
+		Key: "legacy-abc", Reason: "mapped the project",
+	})
+	if err != nil || again.Released {
+		t.Fatalf("second release = %+v, %v", again, err)
+	}
+
+	// The release is audited against the submission, with the operator and the
+	// reason they gave.
+	events, err := store.LoadAuditEvents(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Kind != "submission-quarantine-released" {
+			continue
+		}
+		found = true
+		if event.TargetType != domain.AuditTargetSubmission || event.TargetID != "legacy-abc" ||
+			event.Actor != principal.ID || event.Reason != "mapped the project" {
+			t.Fatalf("audit event = %+v", event)
+		}
+	}
+	if !found {
+		t.Fatal("the release was not audited")
+	}
+}
+
+// A release needs a key and a reason, and is refused without them.
+func TestQuarantineReleaseRefusesAnIncompleteRequest(t *testing.T) {
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	service, err := New(store, graphAuthorizer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, request := range map[string]QuarantineReleaseRequest{
+		"no key":        {Reason: "mapped the project"},
+		"no reason":     {Key: "legacy-abc"},
+		"untrimmed key": {Key: " legacy-abc", Reason: "mapped the project"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := service.ReleaseQuarantine(context.Background(), Principal{ID: "operator"}, request); err == nil {
+				t.Fatal("an incomplete release was accepted")
+			}
+		})
 	}
 }
 

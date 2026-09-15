@@ -120,6 +120,74 @@ func (s *Store) ReleaseSubmissionQuarantine(ctx context.Context, key string) err
 	return nil
 }
 
+// ReleaseQuarantinedSubmission clears one marker on an operator's instruction
+// and records why, so that the next cycle reads the file again.
+//
+// It exists because the automatic release is bound to the content digest: a
+// submission quarantined for a reason outside the file, such as a project no
+// alias mapped, stays quarantined after the configuration is fixed, because the
+// bytes did not change. Releasing a key that holds no marker is not an error;
+// it reports that there was nothing to release, which is what makes repeating
+// the operation safe.
+func (s *Store) ReleaseQuarantinedSubmission(
+	ctx context.Context,
+	key, actor, reason string,
+	at time.Time,
+) (domain.QuarantineRelease, error) {
+	if strings.TrimSpace(key) != key || key == "" {
+		return domain.QuarantineRelease{}, errors.New("quarantined submission key must be trimmed and nonempty")
+	}
+	if strings.TrimSpace(actor) != actor || actor == "" {
+		return domain.QuarantineRelease{}, errors.New("quarantine release actor is required")
+	}
+	if strings.TrimSpace(reason) != reason || reason == "" {
+		return domain.QuarantineRelease{}, errors.New("quarantine release reason is required")
+	}
+	if at.IsZero() {
+		return domain.QuarantineRelease{}, errors.New("quarantine release time is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.QuarantineRelease{}, fmt.Errorf("begin quarantine release: %w", err)
+	}
+	defer tx.Rollback()
+	record, found, err := loadSubmissionIfExistsTx(ctx, tx, QuarantineKey(key))
+	if err != nil {
+		return domain.QuarantineRelease{}, err
+	}
+	if !found || record.State != domain.SubmissionQuarantined {
+		return domain.QuarantineRelease{Key: key, ReleasedAt: at.UTC()}, tx.Commit()
+	}
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM coordinator_submissions WHERE key = ? AND state = ?",
+		QuarantineKey(key), domain.SubmissionQuarantined); err != nil {
+		return domain.QuarantineRelease{}, fmt.Errorf("release submission quarantine %q: %w", key, err)
+	}
+	release := domain.QuarantineRelease{
+		Key: key, Released: true, Digest: record.Digest,
+		Reason: record.Reason, ReleasedAt: at.UTC(),
+	}
+	detail, err := json.Marshal(release)
+	if err != nil {
+		return domain.QuarantineRelease{}, fmt.Errorf("encode quarantine release %q detail: %w", key, err)
+	}
+	// The event identity includes the digest that was released, so releasing
+	// the same marker twice is the same observation and a marker recorded again
+	// for new content is a new one.
+	event := domain.AuditEvent{
+		ID:   "submission-quarantine-released:" + key + ":" + record.Digest,
+		Kind: "submission-quarantine-released", TargetType: domain.AuditTargetSubmission,
+		TargetID: key, Actor: actor, Reason: reason, Detail: detail, CreatedAt: release.ReleasedAt,
+	}
+	if _, err := insertAuditEventTx(ctx, tx, event); err != nil {
+		return domain.QuarantineRelease{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.QuarantineRelease{}, fmt.Errorf("commit quarantine release %q: %w", key, err)
+	}
+	return release, nil
+}
+
 // ListQuarantinedSubmissions returns every quarantine marker, oldest first, so
 // that an operator can see what intake is refusing and why.
 func (s *Store) ListQuarantinedSubmissions(ctx context.Context) ([]domain.SubmissionRecord, error) {
