@@ -21,6 +21,7 @@ type fakeT3 struct {
 	mu       sync.Mutex
 	threads  map[string]*domain.Thread
 	warnings []string // "kind:threadID"
+	texts    []string // the text of each warning, in the same order
 	stops    []string // "mode:threadID"
 	resumes  []string
 	// stopFails makes StopThread a no-op for the listed threads.
@@ -69,6 +70,7 @@ func (f *fakeT3) WarnThread(_ context.Context, t domain.Thread, w domain.Warning
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.warnings = append(f.warnings, string(w.Kind)+":"+t.ID)
+	f.texts = append(f.texts, w.Text)
 	return nil
 }
 

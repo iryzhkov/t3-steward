@@ -182,6 +182,26 @@ type Resume struct {
 	ProbeAfterReset Duration `yaml:"probe_after_reset"`
 }
 
+// ResetNotice configures the advisory the watchdog sends to a thread when a
+// quota window that thread was warned or stopped for passes the reset time
+// the provider reported.
+//
+// The advisory is not a resumption. It confirms no capacity, it never makes
+// a resume intent eligible and it never records a recovery: only a fresh
+// provider reading does that, which is what the resume path still requires.
+type ResetNotice struct {
+	// Enabled is on by default, because a missing notification is the defect
+	// this exists to fix: readings arrive only from running turns, so a
+	// thread that stopped after a warning is never told anything otherwise.
+	Enabled bool `yaml:"enabled"`
+	// IntervalBetweenThreads staggers advisories to threads of one provider
+	// instance that are not running. T3 offers no way to leave a message
+	// without starting a turn, so notifying several idle threads at once
+	// would start several turns at once against a window no reading has
+	// confirmed. Zero sends them all in the same pass.
+	IntervalBetweenThreads Duration `yaml:"interval_between_threads"`
+}
+
 // Polling configures how often the watchdog reads T3 state.
 type Polling struct {
 	// SnapshotInterval is how often the shell snapshot is fetched.
@@ -522,6 +542,7 @@ type Config struct {
 	T3            T3            `yaml:"t3"`
 	Policy        Policy        `yaml:"policy"`
 	Resume        Resume        `yaml:"resume"`
+	ResetNotice   ResetNotice   `yaml:"reset_notice"`
 	Polling       Polling       `yaml:"polling"`
 	Overrides     []Override    `yaml:"overrides"`
 	Messages      Messages      `yaml:"messages"`
@@ -593,6 +614,8 @@ func Default() Config {
 	c.Resume.Prompt = DefaultResumePrompt
 	c.Resume.MaxIntentAge = Duration(14 * 24 * time.Hour)
 	c.Resume.ProbeAfterReset = Duration(5 * time.Minute)
+	c.ResetNotice.Enabled = true
+	c.ResetNotice.IntervalBetweenThreads = Duration(45 * time.Second)
 	c.Polling.SnapshotInterval = Duration(15 * time.Second)
 	c.Polling.ReconnectMaxDelay = Duration(30 * time.Second)
 	c.Polling.LogScanInterval = Duration(10 * time.Second)
@@ -838,6 +861,9 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(r.Prompt) == "" {
 		return errors.New("resume: prompt must not be empty")
+	}
+	if c.ResetNotice.IntervalBetweenThreads < 0 {
+		return errors.New("reset_notice: interval_between_threads must not be negative")
 	}
 	if c.UIArchive.Enabled && (c.UIArchive.BackgroundAfter.D() <= 0 || c.UIArchive.UserAfter.D() <= 0 || c.UIArchive.MaxPerPass < 1 || c.UIArchive.MaxPerPass > 100) {
 		return errors.New("ui_archive: positive delays and max_per_pass 1..100 are required")

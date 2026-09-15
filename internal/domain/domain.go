@@ -159,6 +159,14 @@ type BucketState struct {
 	ETAStrikes int `json:"etaStrikes,omitempty"`
 }
 
+// PhaseStale reports whether the phase describes a window that has already
+// ended: the reported reset time has passed and no reading has arrived since.
+// A stale phase is not recovery. The wall clock proves nothing about the new
+// window; it only means the recorded phase belongs to the window before it.
+func (s BucketState) PhaseStale(now time.Time) bool {
+	return s.ResetsAt != nil && !s.ResetsAt.After(now) && !s.ObservedAt.After(*s.ResetsAt)
+}
+
 // Reading is one usage reading kept for rate estimation.
 type Reading struct {
 	At   time.Time `json:"at"`
@@ -175,6 +183,11 @@ const (
 	ActionRearm ActionKind = "rearm"
 	// ActionResume is produced by the resume scheduler, not the policy engine.
 	ActionResume ActionKind = "resume"
+	// ActionResetNotice is the advisory sent to a thread when the quota window
+	// it was warned or stopped for passes the reset time the provider itself
+	// reported. It is produced by the clock, not by the policy engine, and it
+	// is advice rather than permission: it confirms no capacity.
+	ActionResetNotice ActionKind = "reset-notice"
 )
 
 // Action is one instruction from the policy engine.
@@ -292,6 +305,38 @@ type ResumeIntent struct {
 	UpdatedAt time.Time   `json:"updatedAt"`
 	// ResumedAt is set once the resume prompt was dispatched.
 	ResumedAt *time.Time `json:"resumedAt,omitempty"`
+}
+
+// QuotaResetNotice is the durable record of one notice the watchdog
+// delivered to a thread about one quota window, and of the single advisory
+// owed to that thread when the window's reset time passes.
+//
+// Its identity is the thread, the bucket and the window (Epoch), so a
+// restart, a repeated tick or a re-read cannot deliver the advisory twice.
+type QuotaResetNotice struct {
+	ThreadID string    `json:"threadId"`
+	Key      BucketKey `json:"key"`
+	// Epoch identifies the reset window, exactly as BucketState.Epoch does.
+	Epoch string `json:"epoch"`
+	// Kind is the strongest notice this thread received for this window.
+	Kind      ActionKind `json:"kind"`
+	LimitName string     `json:"limitName"`
+	// Threshold is the configured percentage the notice fired at, and
+	// UsedPercent the reading that crossed it.
+	Threshold   float64 `json:"threshold"`
+	UsedPercent float64 `json:"usedPercent"`
+	// WarnedAt is when the thread was first told about this window.
+	WarnedAt time.Time `json:"warnedAt"`
+	// ResetsAt is the reset time the provider reported for the window.
+	ResetsAt time.Time `json:"resetsAt"`
+	// StoppedByWatchdog is true when the watchdog stopped the thread rather
+	// than only warning it. It changes the wording of the advisory and
+	// nothing else: the resume decision is made elsewhere, on evidence.
+	StoppedByWatchdog bool `json:"stoppedByWatchdog"`
+	// NotifiedAt is set once the advisory was settled, whether it was sent
+	// or deliberately skipped. Outcome says which.
+	NotifiedAt *time.Time `json:"notifiedAt,omitempty"`
+	Outcome    string     `json:"outcome,omitempty"`
 }
 
 // ActionRecord is one row of the audit log.

@@ -69,6 +69,22 @@ var migrations = []string{
 		at TEXT NOT NULL,
 		PRIMARY KEY (thread_id, bucket, epoch, kind)
 	);`,
+	`CREATE TABLE IF NOT EXISTS quota_reset_notices (
+		thread_id TEXT NOT NULL,
+		bucket TEXT NOT NULL,
+		epoch TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		limit_name TEXT NOT NULL,
+		threshold REAL NOT NULL,
+		used_percent REAL NOT NULL,
+		warned_at TEXT NOT NULL,
+		resets_at TEXT NOT NULL,
+		stopped INTEGER NOT NULL,
+		notified_at TEXT,
+		outcome TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (thread_id, bucket, epoch)
+	);`,
+	`CREATE INDEX IF NOT EXISTS quota_reset_notices_pending ON quota_reset_notices(notified_at, resets_at);`,
 	`CREATE TABLE IF NOT EXISTS kv (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL

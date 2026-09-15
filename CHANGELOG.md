@@ -8,6 +8,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- When a provider quota window resets, the threads that were warned, drained or
+  stopped because of it are told. Every delivered notice is now recorded against
+  the thread, the bucket and the reset window it belongs to, and when the clock
+  passes that window's reset time each of those threads receives exactly one
+  advisory: the window reset according to the provider's own metadata, whether a
+  fresh reading has arrived since, and that the message grants no capacity. The
+  advisory is not a resumption. It never records a recovery and never makes a
+  resume intent eligible, so automatic resume keeps its evidence requirement and
+  its probe unchanged. Delivery is idempotent per thread, per bucket and per
+  window across restarts, and a thread that has been archived, settled or
+  deleted is not messaged. The new `reset_notice` configuration block enables it
+  by default, because a missing notification was the defect.
+
 - A task may declare Git commits it produces with `commits`, and a successor may
   consume one by name through `inputs_from`. The commit is kept reachable under
   the durable ref `refs/campaigns/<workflow-run>/<task>/<name>`, which pruning
@@ -35,6 +48,12 @@ All notable changes to this project are documented here. The format follows
   failing.
 
 ### Fixed
+
+- `t3-steward status` no longer presents a bucket's old phase as current fact
+  after its window has rolled over. A bucket whose reported reset time has
+  passed with no newer reading is shown as `stale`, keeping the age of the last
+  observation and naming the phase of the window that ended, so a window that
+  has reset can no longer look like an ongoing warning.
 
 - A rerun of a rerun is no longer refused. The second rerun's subtree root
   carries what the first rerun's reused ancestors produced, and those carried

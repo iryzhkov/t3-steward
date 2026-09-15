@@ -342,12 +342,40 @@ normal -> warned -> draining -> stopped -> (reset confirmed) -> normal
 - **Reset**: the bucket rearms when the provider's reset time has passed
   *and* a fresh snapshot shows usage below `rearm_percent`. Buckets without
   a reset time rearm after two consecutive low observations. The wall clock
-  alone never rearms anything; usage merely decreasing does not either.
+  alone never rearms anything; usage merely decreasing does not either. Until
+  a reading arrives, `t3-steward status` shows such a bucket as `stale` with
+  the age of its last observation, instead of repeating the phase of the
+  window that ended as if it were current.
 
 For Claude threads the warn and drain messages are steered into the running
 turn. For Codex threads T3 forwards them as a new turn start; in testing the
 Codex agent picked the message up mid-turn and stopped at a checkpoint on
 its own.
+
+### Telling a thread that its window reset
+
+Readings arrive only from running turns, so a thread that stopped after a
+warning hears nothing more: the window reaches its reset time and nobody
+tells the agent that the reason it stopped has expired.
+
+When the reset time of a window a thread was warned, drained or stopped for
+passes, the steward sends that thread one advisory (`reset_notice.enabled`,
+on by default). The message names the window, the threshold that was
+crossed, the reset time the provider reported, and whether any reading has
+arrived since. It is advice, not permission: it confirms no capacity, it
+does not rearm the bucket, it does not record a recovery, and it does not
+make a resume intent eligible. Automatic resume still waits for a reading of
+its own.
+
+One advisory goes out per thread, per bucket, per window, and the record of
+it lives in the state database, so a restart, a repeated tick or a re-read
+cannot repeat it. A thread that was archived, settled or deleted in the
+meantime is not messaged at all. T3 offers no way to leave a message without
+starting a turn, so advisories to threads that are not running are staggered
+per provider instance by `reset_notice.interval_between_threads` (45
+seconds); a thread that acts on its advisory is awake and owns its own
+continuation, and any resume intent it still had is cancelled as the new
+turn it started.
 
 ### Automatic resume
 

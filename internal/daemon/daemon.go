@@ -78,6 +78,10 @@ type Daemon struct {
 	// probed records, per provider instance, the reset time a probe resume
 	// was sent for.
 	probed map[string]time.Time
+	// lastNotice is the last quota reset advisory that started a turn, per
+	// provider instance. It staggers advisories to idle threads and is kept
+	// apart from lastResume so that advice never consumes a resume slot.
+	lastNotice map[string]time.Time
 }
 
 // New builds a daemon.
@@ -97,6 +101,7 @@ func New(cfg config.Config, logger *slog.Logger, store *sqlite.Store, control Co
 		engines:        map[domain.BucketKey]*policy.Engine{},
 		lastResume:     map[string]time.Time{},
 		probed:         map[string]time.Time{},
+		lastNotice:     map[string]time.Time{},
 		threadModels:   map[string]string{},
 	}
 }
@@ -176,6 +181,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case <-prune.C:
 			_ = d.store.PruneEvents(ctx, d.now().Add(-7*24*time.Hour))
 			_ = d.store.PruneHistory(ctx, d.now().Add(-d.cfg.Policy.HistoryRetention.D()))
+			_ = d.store.PruneQuotaResetNotices(ctx, d.now().Add(-7*24*time.Hour))
 		}
 	}
 }
@@ -432,6 +438,9 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 	}
 	if d.cfg.QuotaChecksEnabled() {
 		d.advanceResumes(ctx, threads, states)
+		// After the resume decision, which is made on readings: the advisory
+		// below is made on the clock and must not influence it.
+		d.deliverResetNotices(ctx, threads, states)
 	}
 	if d.Backlog != nil {
 		d.Backlog.Tick(ctx, threads, states)

@@ -99,6 +99,11 @@ func (d *Daemon) warnThreads(ctx context.Context, threads []domain.Thread, a dom
 			rec.Err = err.Error()
 		}
 		d.record(ctx, rec)
+		if rec.Err == "" {
+			// The thread now knows about this window, so it is owed a notice
+			// when the window ends; nothing else would ever tell it.
+			d.recordNoticeDelivery(ctx, t, a.Kind, state, d.now())
+		}
 		if a.Kind == domain.ActionDrain && rec.Err == "" {
 			// The drain request asks the thread to checkpoint and stop on
 			// its own. A thread that complies was stopped by the watchdog
@@ -182,6 +187,10 @@ func (d *Daemon) stopThreads(ctx context.Context, threads []domain.Thread, a dom
 		if _, ok := stopped[t.ID]; ok {
 			d.record(ctx, rec)
 			d.saveIntent(ctx, t, a, state, d.now(), false)
+			// A stopped thread is owed the same notice when the window ends.
+			// It is recorded separately from the resume intent above and read
+			// separately: telling a thread is not resuming it.
+			d.recordNoticeDelivery(ctx, t, domain.ActionStop, state, d.now())
 			continue
 		}
 		rec.Err = "thread still running after retries"

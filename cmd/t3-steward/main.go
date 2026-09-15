@@ -725,11 +725,7 @@ func cmdStatus(g globalFlags, limit int, asJSON, showAll bool) error {
 	fmt.Printf("Buckets (%d):\n", len(buckets))
 	now := time.Now()
 	for _, b := range buckets {
-		reset := "no reset time"
-		if b.ResetsAt != nil {
-			reset = fmt.Sprintf("resets %s (%s)", b.ResetsAt.Local().Format("2006-01-02 15:04"), relative(*b.ResetsAt, now))
-		}
-		fmt.Printf("  %-45s %5.0f%%  %-9s %s  observed %s\n", b.Key, b.UsedPercent, b.Phase, reset, relative(b.ObservedAt, now))
+		fmt.Println(bucketLine(b, now))
 	}
 	fmt.Printf("\nResume intents (%d):\n", len(intents))
 	for _, i := range intents {
@@ -748,6 +744,27 @@ func cmdStatus(g globalFlags, limit int, asJSON, showAll bool) error {
 		fmt.Printf("  %s  %-6s%s %s %s %s%s\n", a.At.Local().Format("01-02 15:04:05"), a.Kind, dry, a.Bucket, a.ThreadID, a.Detail, e)
 	}
 	return nil
+}
+
+// bucketLine renders one bucket for the status output.
+//
+// A bucket whose reset time has passed with no newer reading is shown as
+// stale rather than in its recorded phase: a window that has rolled over
+// cannot still be in the previous window's warned or stopped phase, and
+// presenting the old phase as current fact is what made a reset look like
+// an ongoing warning. The recorded phase and the observation age are kept,
+// because they say which window the figures come from.
+func bucketLine(b domain.BucketState, now time.Time) string {
+	reset := "no reset time"
+	if b.ResetsAt != nil {
+		reset = fmt.Sprintf("resets %s (%s)", b.ResetsAt.Local().Format("2006-01-02 15:04"), relative(*b.ResetsAt, now))
+	}
+	phase, note := string(b.Phase), ""
+	if b.PhaseStale(now) {
+		phase = "stale"
+		note = fmt.Sprintf("  (no reading since the reset; %s was the phase of the window that ended)", b.Phase)
+	}
+	return fmt.Sprintf("  %-45s %5.0f%%  %-9s %s  observed %s%s", b.Key, b.UsedPercent, phase, reset, relative(b.ObservedAt, now), note)
 }
 
 func relative(t, now time.Time) string {

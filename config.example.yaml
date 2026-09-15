@@ -94,6 +94,16 @@ resume:
   # prompt: |
   #   The provider quota has recovered. Resume from the latest checkpoint...
 
+reset_notice:
+  # When a window a thread was warned or stopped for passes the reset time
+  # the provider reported, tell that thread once. The message is advisory:
+  # it confirms no capacity, it resumes nothing, and automatic resume still
+  # waits for a fresh provider reading of its own.
+  enabled: true
+  # Delivering a message to an idle thread starts a turn, so advisories to
+  # idle threads of one provider instance are staggered by this.
+  interval_between_threads: 45s
+
 polling:
   # How often the T3 thread list is read.
   snapshot_interval: 15s
