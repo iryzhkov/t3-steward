@@ -58,6 +58,7 @@ T3_PORT=$WORKER_B_T3_PORT
 fleet_worker_config worker-b repo-unauthorized
 python3 "$HARNESS_DIR/remote_wait.py" configure "$ROOT" "$COORDINATOR_T3_PORT" "$WORKER_A_T3_PORT" "$WORKER_B_T3_PORT"
 fleet_forced_commands
+fleet_worker_bootstrap worker-a
 fleet_worker_bootstrap worker-b
 fleet_provider_cache worker-b
 fleet_provider_cache worker-a
