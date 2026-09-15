@@ -102,9 +102,14 @@ Canary host: omarchy-pc only.
 
 1. Review the full `desired/release.json` candidate diff before anything is committed. Confirm
    that unrelated component pins, worker settings and secret references are unchanged.
-2. Apply a canary intent whose only authorization change is omarchy-pc. Install
-   its authored coordinator projection on normandy and its host projection on
-   omarchy-pc through UpKeeper. Preserve homelab authorization and enrollment.
+2. Apply the authored coordinator projection on normandy and the host projection
+   on omarchy-pc through UpKeeper. The user authorized removing legacy workers and
+   projects, including `s5a-fresh`, which was eligible on both workers. This changes
+   both catalog digests. Preserve homelab's model authorization and existing
+   enrollment record; let its stale catalog fence further dispatch during the
+   canary. Explicitly enroll only omarchy-pc at this stage. Restore homelab's prior
+   catalog during rollback, then enroll both workers against final intent only
+   after rollback passes. Do not recreate legacy projects to hide the drift.
    Retain exact prior bytes or absence for every owned document. Restart the
    coordinator to load its projection, then inspect its reported catalog before
    any enrollment action. Applying the projection must not enroll workers.
