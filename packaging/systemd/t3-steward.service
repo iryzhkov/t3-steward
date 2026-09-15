@@ -24,7 +24,8 @@ RestartSec=5
 Environment=PATH=%h/.local/share/mise/shims:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
 NoNewPrivileges=true
-ProtectSystem=full
+# User mount namespaces remap root-owned SSH includes, which OpenSSH rejects.
+ProtectSystem=false
 
 [Install]
 WantedBy=default.target
