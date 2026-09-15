@@ -222,9 +222,8 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 			Name: name, Available: true, Revision: project.DefaultRef, UpdatedAt: now.UTC(),
 		})
 	}
-	if len(projects) == 0 && len(rejected) == 0 {
-		return WorkerBinding{}, errors.New("worker binding: worker has no eligible projects")
-	}
+	// No eligible projects is an explicit idle catalog, not a malformed one.
+	// Keeping its binding lets authenticated revocation reach an existing worker.
 	// A project the catalog cannot hold is isolated rather than fatal. Failing
 	// the whole binding meant one malformed repository URL stopped every worker
 	// on the coordinator from reporting, which is a fleet outage caused by one
@@ -244,7 +243,7 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 		// the class of failure this whole readiness path exists to move earlier.
 		inventoryProjects = usable
 	}
-	if len(projects) == 0 {
+	if len(projects) == 0 && len(rejected) != 0 {
 		return WorkerBinding{}, fmt.Errorf(
 			"worker binding: every eligible project of worker %q is misconfigured: %s",
 			workerID, rejectionList(rejected))
@@ -263,7 +262,7 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 		provider := worker.Providers[instance]
 		providers = append(providers, domain.WorkerProviderInventory{
 			InstanceID: instance, Models: append([]string(nil), provider.Models...),
-			QuotaPoolID: provider.QuotaPool, Available: true,
+			QuotaPoolID: provider.QuotaPool, Available: len(provider.Models) != 0,
 		})
 	}
 	revisionInput := struct {

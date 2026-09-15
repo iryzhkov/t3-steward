@@ -51,7 +51,10 @@ func (c *Config) validateBacklogV2() error {
 	if v.Mode == "coordinator" && v.StartupAdmission != "closed" {
 		return errors.New("backlog_v2: startup_admission must be closed")
 	}
-	if len(v.Workers) == 0 || len(v.Projects) == 0 || len(v.QuotaPools) == 0 {
+	// Explicit fleet revocation is a valid idle coordinator. Ordinary local and
+	// worker configurations retain their completeness checks.
+	fleetRevocation := c.coordinatorFleetApplied
+	if !fleetRevocation && (len(v.Workers) == 0 || len(v.Projects) == 0 || len(v.QuotaPools) == 0) {
 		return errors.New("backlog_v2: workers, projects, and quota_pools are required")
 	}
 	if v.Transport.Kind != "ssh" {
@@ -114,11 +117,11 @@ func (c *Config) validateBacklogV2() error {
 			worker.Executors.MemoryMB < 0 || worker.Executors.ScratchMB < 0 {
 			return fmt.Errorf("backlog_v2: worker %q executor capacity must not be negative", id)
 		}
-		if len(worker.Providers) == 0 {
+		if len(worker.Providers) == 0 && !fleetRevocation {
 			return fmt.Errorf("backlog_v2: worker %q requires at least one provider", id)
 		}
 		for instance, provider := range worker.Providers {
-			if strings.TrimSpace(instance) == "" || len(provider.Models) == 0 {
+			if strings.TrimSpace(instance) == "" || (len(provider.Models) == 0 && !fleetRevocation) {
 				return fmt.Errorf("backlog_v2: worker %q provider %q requires models", id, instance)
 			}
 			if _, ok := v.QuotaPools[provider.QuotaPool]; !ok {
@@ -132,7 +135,7 @@ func (c *Config) validateBacklogV2() error {
 		}
 	}
 	for poolID := range v.QuotaPools {
-		if !usedQuotaPools[poolID] {
+		if !usedQuotaPools[poolID] && !fleetRevocation {
 			return fmt.Errorf("backlog_v2: quota pool %q has no provider instances", poolID)
 		}
 	}
