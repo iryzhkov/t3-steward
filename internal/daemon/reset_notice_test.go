@@ -103,7 +103,7 @@ func TestWarnedThreadIsToldOnceWhenItsWindowResets(t *testing.T) {
 		"advisory",
 		"No fresh reading has confirmed the new window",
 		"provider's own metadata",
-		"grants no capacity and resumes nothing",
+		"grants no capacity, and nothing has been resumed on your behalf",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("advisory missing %q:\n%s", want, text)
@@ -183,7 +183,8 @@ func TestResetNoticeSkipsThreadsThatAreGone(t *testing.T) {
 
 func TestStoppedThreadIsToldWithoutBecomingResumeEligible(t *testing.T) {
 	ctx := context.Background()
-	h := newHarness(t, nil)
+	// Automatic resume is off, so nothing else will follow this thread up.
+	h := newHarness(t, func(c *config.Config) { c.Resume.Enabled = false })
 	h.fake.add("a", "codex", "gpt", true)
 	reset := h.clock.Add(5 * time.Hour)
 	h.snap(codexPrimary, 96, reset, "1")
@@ -216,15 +217,119 @@ func TestStoppedThreadIsToldWithoutBecomingResumeEligible(t *testing.T) {
 		t.Fatalf("the advisory changed the bucket: %+v", st)
 	}
 
-	// The resume path is unchanged: it still waits for the probe delay and
-	// then resumes on the reading the probe produces, not on the clock.
+	// The advisory is not a resumption, and with resume off nothing else
+	// happens however long the clock runs.
+	h.clock = reset.Add(8 * time.Minute)
+	h.poll()
+	if len(h.fake.resumes) != 0 {
+		t.Fatalf("resumed with automatic resume off: %v", h.fake.resumes)
+	}
+	if len(h.fake.warnings) != 1 {
+		t.Fatalf("the advisory was repeated: %v", h.fake.warnings)
+	}
+}
+
+// A thread automatic resume will resume is not told: the advisory would
+// start a turn, end the intent, and hand prose to a thread that was about to
+// get capacity on evidence.
+func TestThreadAutomaticResumeOwnsIsLeftToTheResumePath(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, nil) // resume enabled
+	h.fake.add("a", "codex", "gpt", true)
+	reset := h.clock.Add(5 * time.Hour)
+	h.snap(codexPrimary, 96, reset, "1")
+	h.clock = reset.Add(time.Minute)
+	h.poll()
+	if len(h.fake.warnings) != 0 {
+		t.Fatalf("advisory sent to a thread the resume path owns: %v", h.fake.warnings)
+	}
+	n, ok, err := h.store.QuotaResetNotice(ctx, "a", codexPrimary, domain.EpochFor(&reset))
+	if err != nil || !ok || n.NotifiedAt == nil || !strings.Contains(n.Outcome, "automatic resume owns this thread") {
+		t.Fatalf("notice = %+v ok=%v err=%v", n, ok, err)
+	}
+	// The resume path is untouched: it still probes after its own delay and
+	// resumes on the reading the probe produces.
 	h.clock = reset.Add(8 * time.Minute)
 	h.poll()
 	if fmt.Sprint(h.fake.resumes) != "[a]" {
 		t.Fatalf("probe resumes = %v", h.fake.resumes)
 	}
-	if len(h.fake.warnings) != 1 {
-		t.Fatalf("the advisory was repeated: %v", h.fake.warnings)
+	if len(h.fake.warnings) != 0 {
+		t.Fatalf("advisory sent after all: %v", h.fake.warnings)
+	}
+}
+
+// A thread that was only warned is never followed up by the resume path,
+// which creates intents only for threads it drained or stopped. It is told
+// whatever the resume settings are.
+func TestTheSelectorAcrossResumeSettings(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		enabled, coordinatorOnly bool
+		warnedOnly, stopped      bool // whether each is told
+	}{
+		{enabled: false, coordinatorOnly: false, warnedOnly: true, stopped: true},
+		{enabled: false, coordinatorOnly: true, warnedOnly: true, stopped: true},
+		{enabled: true, coordinatorOnly: false, warnedOnly: true, stopped: false},
+		{enabled: true, coordinatorOnly: true, warnedOnly: true, stopped: false},
+	} {
+		name := fmt.Sprintf("enabled=%v/coordinator_only=%v", tc.enabled, tc.coordinatorOnly)
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, func(c *config.Config) {
+				c.Resume.Enabled = tc.enabled
+				c.Resume.CoordinatorThreadsOnly = tc.coordinatorOnly
+				c.ResetNotice.IntervalBetweenThreads = 0
+			})
+			h.fake.add("warned", "codex", "gpt", true)
+			reset := h.clock.Add(5 * time.Hour)
+			h.snap(codexPrimary, 86, reset, "1")
+			h.fake.idle("warned")
+			// A second thread starts and is stopped outright, so it has a
+			// resume intent and the first thread does not.
+			h.fake.add("stopped", "codex", "gpt", true)
+			h.advance(10 * time.Minute)
+			h.snap(codexPrimary, 96, reset, "2")
+			if _, ok, _ := h.store.LoadResumeIntent(ctx, "stopped"); !ok {
+				t.Fatal("no resume intent for the stopped thread")
+			}
+			before := len(h.fake.warnings)
+			h.clock = reset.Add(time.Minute)
+			h.poll()
+			got := map[string]bool{}
+			for _, w := range h.fake.warnings[before:] {
+				got[w] = true
+			}
+			if got["reset-notice:warned"] != tc.warnedOnly {
+				t.Fatalf("warned-only thread told = %v, want %v (%v)", got["reset-notice:warned"], tc.warnedOnly, h.fake.warnings[before:])
+			}
+			if got["reset-notice:stopped"] != tc.stopped {
+				t.Fatalf("stopped thread told = %v, want %v (%v)", got["reset-notice:stopped"], tc.stopped, h.fake.warnings[before:])
+			}
+		})
+	}
+}
+
+// Coordinator-owned work is never messaged from here, whatever the resume
+// settings: nobody reads it, and a turn started from outside would run with
+// no coordinator ownership of what it did.
+func TestCoordinatorOwnedThreadIsNotMessaged(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, func(c *config.Config) { c.Resume.Enabled = false })
+	h.fake.add("task", "codex", "gpt", true)
+	if err := h.store.RegisterDispatchedThread(ctx, "task", "backlog-7", "proj", h.clock); err != nil {
+		t.Fatal(err)
+	}
+	reset := h.clock.Add(5 * time.Hour)
+	h.snap(codexPrimary, 86, reset, "1")
+	h.fake.idle("task")
+	h.clock = reset.Add(time.Minute)
+	h.poll()
+	if fmt.Sprint(h.fake.warnings) != "[warn:task]" {
+		t.Fatalf("advisory sent to coordinator-owned work: %v", h.fake.warnings)
+	}
+	n, ok, _ := h.store.QuotaResetNotice(ctx, "task", codexPrimary, domain.EpochFor(&reset))
+	if !ok || n.NotifiedAt == nil || !strings.Contains(n.Outcome, "coordinator-owned task thread backlog-7") {
+		t.Fatalf("notice = %+v", n)
 	}
 }
 
@@ -235,7 +340,7 @@ func TestStoppedThreadIsToldWithoutBecomingResumeEligible(t *testing.T) {
 // excuse the advisory.
 func TestAThreadThatActsOnTheAdvisoryEndsItsResumeIntent(t *testing.T) {
 	ctx := context.Background()
-	h := newHarness(t, nil)
+	h := newHarness(t, func(c *config.Config) { c.Resume.Enabled = false })
 	h.fake.add("a", "codex", "gpt", true)
 	reset := h.clock.Add(5 * time.Hour)
 	h.snap(codexPrimary, 96, reset, "1")

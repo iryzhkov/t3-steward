@@ -21,6 +21,16 @@ All notable changes to this project are documented here. The format follows
   deleted is not messaged. The new `reset_notice` configuration block enables it
   by default, because a missing notification was the defect.
 
+  Because T3 has no way to deliver a message without starting a turn, an
+  advisory and an automatic resume are alternatives rather than a sequence, and
+  the advisory goes only to threads automatic resume will not resume: threads it
+  never held an intent for because they were warned and not stopped, and every
+  thread when `resume.enabled` is off. A thread the resume path owns is left to
+  the reading it is waiting for, and coordinator-owned task threads are not
+  messaged from here at all, for the reason the node-wait path does not wake
+  them either. The audience is derived from the resume configuration rather than
+  described a second time.
+
 - A task may declare Git commits it produces with `commits`, and a successor may
   consume one by name through `inputs_from`. The commit is kept reachable under
   the durable ref `refs/campaigns/<workflow-run>/<task>/<name>`, which pruning

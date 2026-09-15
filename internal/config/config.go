@@ -189,6 +189,12 @@ type Resume struct {
 // The advisory is not a resumption. It confirms no capacity, it never makes
 // a resume intent eligible and it never records a recovery: only a fresh
 // provider reading does that, which is what the resume path still requires.
+//
+// It goes only to threads automatic resume will not resume, because there is
+// no way to send a message without starting a turn: for a thread the resume
+// path owns, an advisory would replace capacity with prose. The audience is
+// therefore derived from Resume.Enabled and the live resume intents, not
+// configured a second time here.
 type ResetNotice struct {
 	// Enabled is on by default, because a missing notification is the defect
 	// this exists to fix: readings arrive only from running turns, so a

@@ -32,6 +32,16 @@ func (d *Daemon) deliverResetNotices(ctx context.Context, threads []domain.Threa
 	if len(pending) == 0 {
 		return
 	}
+	dispatched, err := d.store.DispatchedThreads(ctx)
+	if err != nil {
+		d.log.Error("list dispatched threads", "err", err)
+		return
+	}
+	live, err := d.liveResumeIntents(ctx)
+	if err != nil {
+		d.log.Error("list resume intents", "err", err)
+		return
+	}
 	byID := map[string]domain.Thread{}
 	for _, t := range threads {
 		byID[t.ID] = t
@@ -55,6 +65,20 @@ func (d *Daemon) deliverResetNotices(ctx context.Context, threads []domain.Threa
 			continue
 		case !d.ControlAllowed:
 			d.skipResetNotice(ctx, n, now, "control disabled: "+d.ControlReason)
+			continue
+		case dispatched[n.ThreadID] != "":
+			// Coordinator-owned work. Nobody reads its messages, and a turn
+			// started from outside would run with no coordinator ownership
+			// of what it then did, which is why the node-wait path refuses
+			// to wake a task-bound thread itself.
+			d.skipResetNotice(ctx, n, now, "coordinator-owned task thread "+dispatched[n.ThreadID])
+			continue
+		}
+		if owned, why := d.resumeWillFollowUp(n.ThreadID, live); owned {
+			// The resume path will take this thread further on evidence. An
+			// advisory would start a turn, cancel its intent and give it
+			// prose where it was going to get capacity.
+			d.skipResetNotice(ctx, n, now, why)
 			continue
 		}
 		// A message to a running thread joins the turn it is already taking.
@@ -94,6 +118,50 @@ func (d *Daemon) deliverResetNotices(ctx context.Context, threads []domain.Threa
 		d.record(ctx, rec)
 		log.Info("quota reset notice delivered", "kind", string(n.Kind), "resets_at", n.ResetsAt.UTC().Format(time.RFC3339))
 	}
+}
+
+// liveResumeIntents maps each thread automatic resume still has work for to
+// the status of that work.
+func (d *Daemon) liveResumeIntents(ctx context.Context) (map[string]domain.ResumeStatus, error) {
+	intents, err := d.store.ListResumeIntents(ctx, domain.ResumePending, domain.ResumeEligible, domain.ResumeResuming)
+	if err != nil {
+		return nil, err
+	}
+	live := make(map[string]domain.ResumeStatus, len(intents))
+	for _, intent := range intents {
+		live[intent.ThreadID] = intent.Status
+	}
+	return live, nil
+}
+
+// resumeWillFollowUp reports whether automatic resume is going to take this
+// thread further by itself, in which case it is not told anything: the
+// advisory and the resume are alternatives, not a sequence, because the
+// advisory starts a turn and a started turn ends the intent.
+//
+// The question is answered from what the resume path actually does. It
+// resumes a thread only when resume is enabled and it holds a live intent
+// for it, which it creates only for threads it drained or stopped. A thread
+// that was merely warned is therefore never followed up, which is the gap
+// this feature exists to close, and it is told.
+//
+// resume.coordinator_threads_only does not narrow this. The resume path
+// ignores it (it is kept for configuration compatibility, because T3 has no
+// child threads and every thread is a coordinator thread in that sense), so
+// reading it here would claim an exclusion the resume path does not honour.
+// The interactive/unattended distinction the flag is sometimes read as
+// making is taken from the dispatched-thread registry instead, above.
+func (d *Daemon) resumeWillFollowUp(threadID string, live map[string]domain.ResumeStatus) (bool, string) {
+	if !d.cfg.Resume.Enabled {
+		// Nothing is resumed automatically, so everything owed an advisory
+		// gets one.
+		return false, ""
+	}
+	status, ok := live[threadID]
+	if !ok {
+		return false, ""
+	}
+	return true, fmt.Sprintf("automatic resume owns this thread (intent %s) and waits for a reading of its own", status)
 }
 
 // skipResetNotice settles an advisory that must not be sent, so that it is
@@ -185,9 +253,10 @@ func resetNoticeText(n domain.QuotaResetNotice, st domain.BucketState, haveState
 		n.ResetsAt.In(now.Location()).Format("2006-01-02 15:04 MST"),
 		humanDuration(now.Sub(n.ResetsAt).Round(time.Minute)))
 	b.WriteString(resetNoticeEvidence(n, st, haveState, now))
-	b.WriteString("\n\nThis message is advisory. It grants no capacity and resumes nothing, and nothing has been " +
-		"resumed on your behalf. Decide for yourself whether to continue; the watchdog keeps its thresholds " +
-		"and will warn, ask you to drain, or stop this thread again from the new window's readings.")
+	b.WriteString("\n\nThis message is advisory. It grants no capacity, and nothing has been resumed on your " +
+		"behalf. The watchdog keeps its thresholds and will warn, ask you to drain, or stop this thread again " +
+		"from the new window's readings, so if the window has not in fact reset, the first reading of the next " +
+		"turn will show it and the watchdog will act on that.")
 	return b.String()
 }
 

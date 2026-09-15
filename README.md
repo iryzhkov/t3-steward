@@ -367,15 +367,39 @@ does not rearm the bucket, it does not record a recovery, and it does not
 make a resume intent eligible. Automatic resume still waits for a reading of
 its own.
 
+Who is told follows from who else will act. T3 offers no way to leave a
+message without starting a turn, so an advisory and an automatic resume are
+alternatives rather than a sequence. The steward therefore asks whether
+automatic resume is going to take the thread further by itself, which is the
+case when `resume.enabled` is on and the resume path holds a live intent for
+that thread — and it creates intents only for threads it drained or stopped.
+
+- If automatic resume will resume the thread, it is left to it. An advisory
+  would start a turn, end that intent, and hand prose to a thread that was
+  about to be given capacity on evidence.
+- If it will not — resume is off, or the thread was only warned and so never
+  had an intent at all — the advisory is the only follow-up that exists, and
+  it is sent. This is the case the feature was written for.
+- Coordinator-owned task threads are never messaged from here, whatever the
+  resume settings. Nobody reads them, and a turn started from outside would
+  run with no coordinator ownership of what it then did, which is why the
+  node-wait path also refuses to wake them itself.
+
+`resume.coordinator_threads_only` does not change this. The resume path
+ignores that flag (it is kept for configuration compatibility, because T3 has
+no child threads), so the selector cannot read an exclusion from it that the
+resume path does not honour; the interactive/unattended distinction comes
+from the dispatched-thread registry instead. `reset_notice.enabled` is still
+the master switch, but it is no longer how an operator protects automatic
+resume: the two no longer compete.
+
 One advisory goes out per thread, per bucket, per window, and the record of
 it lives in the state database, so a restart, a repeated tick or a re-read
 cannot repeat it. A thread that was archived, settled or deleted in the
-meantime is not messaged at all. T3 offers no way to leave a message without
-starting a turn, so advisories to threads that are not running are staggered
-per provider instance by `reset_notice.interval_between_threads` (45
-seconds); a thread that acts on its advisory is awake and owns its own
-continuation, and any resume intent it still had is cancelled as the new
-turn it started.
+meantime is not messaged at all. Advisories to threads that are not running
+are staggered per provider instance by
+`reset_notice.interval_between_threads` (45 seconds), because each of them
+starts a turn.
 
 ### Automatic resume
 
