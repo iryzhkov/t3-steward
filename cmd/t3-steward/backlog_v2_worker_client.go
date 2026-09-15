@@ -19,10 +19,14 @@ import (
 )
 
 const (
-	coordinatorWorkerRemoteCommand            = "worker-exchange"
-	coordinatorWorkerControlOperation         = "control"
-	coordinatorWorkerArtifactSendOperation    = "artifact-send"
-	coordinatorWorkerArtifactReceiveOperation = "artifact-receive"
+	coordinatorWorkerRemoteCommand = "worker-exchange"
+	// The coordinator still names the operation it wants. A forced command
+	// that pinned one accepts only that one, and a forced command that pinned
+	// none ignores the client's argument entirely and reads the operation from
+	// the signed envelope, so naming it is correct either way.
+	coordinatorWorkerControlOperation         = workerruntime.OperationControl
+	coordinatorWorkerArtifactSendOperation    = workerruntime.OperationArtifactSend
+	coordinatorWorkerArtifactReceiveOperation = workerruntime.OperationArtifactReceive
 )
 
 type coordinatorWorkerSession struct {

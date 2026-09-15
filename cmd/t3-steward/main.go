@@ -285,8 +285,13 @@ func run(args []string) error {
 	case "uninstall-service":
 		return cmdUninstallService()
 	case "worker-exchange":
-		if fs.NArg() != 1 {
-			return errors.New("worker-exchange needs exactly one fixed operation")
+		// No operation word serves every operation from one key, taking the
+		// operation from the signed envelope; one word pins the key to it.
+		if fs.NArg() > 1 {
+			return errors.New("worker-exchange takes at most one fixed operation")
+		}
+		if fs.NArg() == 0 {
+			return cmdWorkerExchange(g, "")
 		}
 		return cmdWorkerExchange(g, fs.Arg(0))
 	case "coordinator-exchange":

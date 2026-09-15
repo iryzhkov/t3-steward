@@ -141,13 +141,38 @@ remain compatible, and backlog-v2 is disabled by default.
   it; coordinator startup uses the explicit migration path.
 
 The forced worker command must be installed with an absolute, operator-owned
-configuration path, for example
-`t3-steward worker-exchange --config /etc/t3-steward/worker.yaml control`.
-Configure a separate forced command for each artifact operation; never forward
-`SSH_ORIGINAL_COMMAND` to a shell. The endpoint ignores general configuration
-environment overrides and command-line dry-run/log-level overrides. Envelope
-and project secrets remain worker-managed named credentials and never enter
-workflow bundles, execution packages, journals, or error text.
+configuration path, and it names no operation:
+
+```text
+restrict,command="/usr/local/bin/t3-steward worker-exchange --config /etc/t3-steward/worker.yaml" ssh-ed25519 AAAA... normandy-coordinator
+```
+
+Install one line per worker, not one per operation. A worker carries three
+operations: `control`, which delivers commands and collects observations, and
+`artifact-receive` and `artifact-send`, which move an assignment's inputs and
+results. The coordinator reaches all three at the one `address` that worker
+declares, and OpenSSH selects the `authorized_keys` line by the key presented,
+so a line that pinned an operation would confine that worker to one of the
+three. A worker pinned to `control` accepts no delivery of the inputs its
+assignments need, so no work runs on it at all.
+
+The operation is taken from the signed request envelope. Its message type is
+covered by the same signature as the rest of the envelope, so only a coordinator
+holding this worker's credential can choose which of the three it asks for, and
+what the worker will accept is fixed by its own allowlist regardless of how the
+endpoint was invoked. Pinning an operation as a last word still works and still
+refuses a request of any other kind; it is useful only for a worker that
+genuinely performs one, which an executing worker never is.
+
+The flag follows the command word. Global flags are parsed after the command, so
+a line written as `t3-steward --config PATH worker-exchange` exits with
+`unknown command "--config"`.
+
+Never forward `SSH_ORIGINAL_COMMAND` to a shell; the endpoint never reads it.
+The endpoint ignores general configuration environment overrides and
+command-line dry-run/log-level overrides. Envelope and project secrets remain
+worker-managed named credentials and never enter workflow bundles, execution
+packages, journals, or error text.
 
 Coordinator-mode admin clients connect to `<resolved-state-path>.admin.sock`,
 which is created mode 0600 and authenticates the kernel peer UID. They query or

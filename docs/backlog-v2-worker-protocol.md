@@ -14,8 +14,15 @@ production-binding plan:
 - OpenSSH is invoked without a shell, with a validated destination, fixed
   remote command, and one validated fixed operation argument; BatchMode,
   strict host-key checking, and a bounded connect timeout remain mandatory.
-- The worker executable accepts exactly one fixed operation: `control`,
-  `artifact-receive`, or `artifact-send`. It requires an explicit local
+- The worker executable carries three operations: `control`,
+  `artifact-receive` and `artifact-send`. They are stream disciplines, not
+  authority levels. The forced command names none of them, and the operation
+  comes from the request envelope's signed message type; a coordinator reaches
+  one worker address for all three, so a forced command that pinned one would
+  leave the other two unreachable. Pinning an operation remains supported and
+  refuses a request of any other kind. What a worker accepts is fixed by its
+  own message allowlist either way, and every entrypoint verifies the envelope
+  signature before any effect. The endpoint requires an explicit local
   configuration path; general `T3_STEWARD_*` configuration overrides and
   authority-changing flags are rejected. Only separately named credential
   references are resolved from the worker-managed environment.
