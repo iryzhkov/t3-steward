@@ -54,10 +54,16 @@ func setCoordinatorTestRoots(t *testing.T, cfg *config.Config) string {
 			},
 		},
 	}
+	// The project declares a setup profile because a git project without one
+	// cannot be prepared on any worker, and the readiness check now says so at
+	// submission rather than letting a worker discover it hours later.
+	cfg.BacklogV2.SetupProfiles = map[string]config.V2SetupProfile{
+		"go": {Commands: []string{"go build ./..."}, Timeout: config.Duration(time.Minute)},
+	}
 	cfg.BacklogV2.Projects = map[string]config.V2Project{
 		"steward": {
 			Repository: "https://example.invalid/steward.git", DefaultRef: "main", T3Project: "t3-steward development",
-			Workers: []string{"normandy"},
+			SetupProfile: "go", Workers: []string{"normandy"},
 		},
 	}
 	if err := os.MkdirAll(cfg.Backlog.Dir, 0o700); err != nil {
@@ -238,7 +244,7 @@ func TestRunBacklogV2CoordinatorIngestsLegacyDropWithoutDispatch(t *testing.T) {
 	cfg.BacklogV2.Projects = map[string]config.V2Project{
 		"steward": {
 			Repository: "https://example.invalid/steward.git", DefaultRef: "main",
-			T3Project: "t3-steward development",
+			SetupProfile: "go", T3Project: "t3-steward development",
 		},
 	}
 	raw := "---\nproject: t3-steward development\ntitle: compatibility\nimportance: 5\ndifficulty: 5\nmax_turns: 3\ngate: false\n---\nlegacy prompt\n"

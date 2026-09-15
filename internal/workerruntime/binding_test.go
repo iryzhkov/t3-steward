@@ -1,6 +1,8 @@
 package workerruntime
 
 import (
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,9 +82,26 @@ func TestBuildWorkerBindingIsDeterministicAndWorkerScoped(t *testing.T) {
 	if fresh.CatalogRevision == managed.CatalogRevision {
 		t.Fatal("fresh project did not change target catalog")
 	}
+	// Declaring the reserved implicit profile still refuses the project that
+	// would have used it, but it no longer refuses the whole binding: one
+	// project's configuration must not take the worker, and with it every other
+	// project, out of the fleet.
 	settings.SetupProfiles["steward-fresh-empty"] = config.V2SetupProfile{Commands: []string{"false"}, Timeout: config.Duration(time.Minute)}
-	if _, err := BuildWorkerBinding(settings, "normandy", runtimeTestNow); err == nil {
-		t.Fatal("implicit setup can be shadowed")
+	shadowed, err := BuildWorkerBinding(settings, "normandy", runtimeTestNow)
+	if err != nil {
+		t.Fatalf("a shadowed implicit profile disabled the worker: %v", err)
+	}
+	shadowedProject := ""
+	for _, rejection := range shadowed.RejectedProjects {
+		if strings.Contains(rejection.Reason, "reserved for implicit fresh setup") {
+			shadowedProject = rejection.Name
+		}
+	}
+	if shadowedProject == "" {
+		t.Fatalf("implicit setup can be shadowed without being reported: %+v", shadowed.RejectedProjects)
+	}
+	if slices.Contains(shadowed.Catalog.ProjectNames(), shadowedProject) {
+		t.Fatal("a project that would use the shadowed implicit profile stayed in the catalog")
 	}
 	if _, err := BuildWorkerBinding(settings, "missing", runtimeTestNow); err == nil {
 		t.Fatal("unknown worker accepted")

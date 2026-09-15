@@ -88,6 +88,80 @@ func TestOneMalformedProjectDoesNotDisableTheWorker(t *testing.T) {
 	}
 }
 
+// TestPerProjectDefectsAreIsolatedNotFatal covers the defects the worker
+// binding used to return on directly, before the catalog was ever partitioned.
+//
+// These run inside the per-project loop, so one project with no setup profile
+// or an ineligible directory still stopped the whole binding from being built.
+// On a worker with a persistent connection the binding is built during
+// coordinator startup, so that stopped the coordinator itself.
+func TestPerProjectDefectsAreIsolatedNotFatal(t *testing.T) {
+	tests := []struct {
+		name    string
+		breakIt func(*config.BacklogV2)
+		want    string
+	}{
+		{
+			name: "no setup profile",
+			breakIt: func(settings *config.BacklogV2) {
+				project := settings.Projects["broken"]
+				project.SetupProfile = ""
+				settings.Projects["broken"] = project
+			},
+			want: "has no setup profile",
+		},
+		{
+			name: "a setup profile this coordinator does not have",
+			breakIt: func(settings *config.BacklogV2) {
+				project := settings.Projects["broken"]
+				project.SetupProfile = "absent"
+				settings.Projects["broken"] = project
+			},
+			want: "unknown setup profile",
+		},
+		{
+			name: "the reserved implicit profile is declared",
+			breakIt: func(settings *config.BacklogV2) {
+				project := settings.Projects["broken"]
+				project.SetupProfile = ""
+				project.Type = "fresh"
+				project.Repository = ""
+				project.DefaultRef = ""
+				settings.Projects["broken"] = project
+				settings.SetupProfiles["steward-fresh-empty"] = config.V2SetupProfile{
+					Commands: []string{"true"}, Timeout: config.Duration(time.Minute),
+				}
+			},
+			want: "reserved for implicit fresh setup",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			settings := isolationSettings("https://github.com/iryzhkov/upkeeper")
+			test.breakIt(&settings)
+			binding, err := BuildWorkerBinding(settings, "homelab", time.Now())
+			if err != nil {
+				t.Fatalf("one defective project disabled the worker: %v", err)
+			}
+			names := binding.Catalog.ProjectNames()
+			if len(names) != 1 || names[0] != "healthy" {
+				t.Fatalf("catalog holds %v, want only the healthy project", names)
+			}
+			if len(binding.RejectedProjects) != 1 || binding.RejectedProjects[0].Name != "broken" {
+				t.Fatalf("rejections = %+v", binding.RejectedProjects)
+			}
+			if !strings.Contains(binding.RejectedProjects[0].Reason, test.want) {
+				t.Fatalf("reason %q does not say %q", binding.RejectedProjects[0].Reason, test.want)
+			}
+			for _, project := range binding.Inventory.Projects {
+				if project.Name == "broken" {
+					t.Fatal("a project that cannot be prepared was advertised as available")
+				}
+			}
+		})
+	}
+}
+
 // TestAHealthyFleetReportsNoCatalogIssues states the quiet case, so the health
 // surface cannot become noise that an operator learns to ignore.
 func TestAHealthyFleetReportsNoCatalogIssues(t *testing.T) {
