@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Campaign readiness recognizes full pinned Git object IDs in advertised refs.
+  A commit SHA is no longer mistaken for a ref name; an unadvertised object
+  remains unverified instead of being falsely reported missing.
+
 ### Added
 
 - Restricted coordinator-admin SSH transport supports campaign checks, submission,
