@@ -20,6 +20,7 @@ export STEWARD COORDINATOR_CONFIG SIGNALS EVIDENCE
 export QUAL_SIGNAL=$signal
 export QUAL_SECOND_WAIT=$second
 export QUAL_WAKE=$wake
+export QUAL_FIRST_WAKE=$wake
 export QUAL_INSPECT=$HARNESS_DIR/inspect.py
 exec /bin/sh $HARNESS_DIR/turn_park.sh
 EOF
@@ -76,44 +77,94 @@ case_multi_wait() {
   record case16-wake-each PASS "one of two each waits settled and the attempt resumed and $woken"
 }
 
-# case_wake_all proves that an all set does not wake until every wait settles.
+# Native coordinator records prove settlement; elapsed time alone cannot.
+all_wait_phase() {
+  local run=$1 phase=$2 evidence=$3
+  # The CLI native list currently exposes node waits only. Read coordinator
+  # task-wait records in a read-only SQLite snapshot for this assertion.
+  python3 - "$ROOT/coordinator/state.db" "$evidence" <<'PY'
+import json, sqlite3, sys
+with sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True) as db:
+    rows = [json.loads(row[0]) for row in db.execute("SELECT record FROM coordinator_task_waits")]
+with open(sys.argv[2], "w") as output:
+    json.dump({"taskWaits": rows}, output)
+PY
+  python3 - "$run" "$phase" "$evidence" <<'PY'
+import json, sys
+rows = [w for w in json.load(open(sys.argv[3])).get("taskWaits", [])
+        if w.get("workflowRunId") == sys.argv[1]]
+assert len(rows) == 2 and all(w["wake"] == "all" for w in rows), rows
+first = next(w for w in rows if w["name"] == "wake-all")
+second = next(w for w in rows if w["name"] == "wake-all-second")
+if sys.argv[2] == "registered":
+    assert all(not w.get("settledAt") for w in rows), rows
+elif sys.argv[2] == "held":
+    assert (first.get("result") or {}).get("outcome") == "met", rows
+    assert not second.get("settledAt"), rows
+    assert all(not w.get("wokenAt") for w in rows), rows
+else:
+    assert all((w.get("result") or {}).get("outcome") == "met" for w in rows), rows
+    assert all(w.get("delivery") == "delivered" for w in rows), rows
+assert len({w["threadId"] for w in rows}) == 1, rows
+print(first["threadId"])
+PY
+}
+
 case_wake_all() {
   local signal=wake-all second=wake-all-2 project=qual-wake-all
   park_two_waits "$project" "$signal" "$second" all
-  local directory submit run
+  local directory submit run state thread
   directory=$(fleet_executable_campaign wakeall wake-all)
   submit=$(evidence_path case16-all-submit.json)
   if ! fleet_submit_local "$directory" "qual-case16-all-$$" "$submit"; then
-    record case16-wake-all FAIL "submission failed: $(tail -n 3 "$submit.err")"
+    record case16-wake-all FAIL "submission failed"
     return
   fi
   run=$(run_of "$submit")
-  local state
   if ! state=$(await_task "$run" 300 waiting-external); then
-    record case16-wake-all FAIL "the attempt never parked: \"$state\""
+    record case16-wake-all FAIL "the attempt never parked: $state"
     return
   fi
-  # Settle only the all wait. The attempt must stay parked: the other wait of
-  # the set is still outstanding.
-  : >"$ROOT/signals/$second"
-  local held deadline=$((SECONDS + 120))
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    held=$(fleet_coordinator_cli backlog show "$run" --json 2>/dev/null | reading task-state)
-    case "$held" in
-      "waiting-external "*) ;;
-      *)
-        record case16-wake-all FAIL "an all wait woke the attempt before the rest of its set settled: \"$held\""
-        return
-        ;;
-    esac
-    sleep 5
+  local deadline=$((SECONDS + 60))
+  until thread=$(all_wait_phase "$run" registered "$(evidence_path case16-all-registered.json)" 2>/dev/null); do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      record case16-wake-all FAIL "two live all waits were not registered"
+      return
+    fi
+    sleep 1
   done
-  # Now settle the remaining wait; the attempt must resume.
   : >"$ROOT/signals/$signal"
-  local woken
-  if ! woken=$(await_task "$run" 300 succeeded failed); then
-    record case16-wake-all FAIL "the attempt did not resume after every wait settled: \"$woken\""
+  deadline=$((SECONDS + 90))
+  until all_wait_phase "$run" held "$(evidence_path case16-all-held.json)" >/dev/null 2>&1; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      record case16-wake-all FAIL "first all wait did not settle while second remained pending"
+      return
+    fi
+    sleep 1
+  done
+  # Observe another coordinator cycle after confirmed settlement.
+  sleep 5
+  local held
+  held=$(show_run "$run" "$(evidence_path case16-all-held-run.json)")
+  if [ "$(reading task-state <"$held" | cut -d' ' -f1)" != waiting-external ] ||
+     [ "$(turn_starts "$thread")" != 1 ] ||
+     [ "$(reading outputs <"$held")" != 0 ] ||
+     [ "$(reading verification <"$held")" != 0 ]; then
+    record case16-wake-all FAIL "confirmed first settlement resumed or collected before remaining wait"
     return
   fi
-  record case16-wake-all PASS "an all wait held the park for 120s while its set was incomplete, then the attempt resumed and $woken"
+  : >"$ROOT/signals/$second"
+  if ! state=$(await_task "$run" 300 succeeded failed) || [ "${state%% *}" != succeeded ]; then
+    record case16-wake-all FAIL "all-set resumption did not succeed: $state"
+    return
+  fi
+  local final finalThread
+  final=$(show_run "$run" "$(evidence_path case16-all-final.json)")
+  finalThread=$(reading task-field threadId <"$final")
+  if ! all_wait_phase "$run" delivered "$(evidence_path case16-all-delivered.json)" >/dev/null ||
+     [ "$finalThread" != "$thread" ] || [ "$(turn_starts "$thread")" != 2 ]; then
+    record case16-wake-all FAIL "waits not delivered once to the original thread"
+    return
+  fi
+  record case16-wake-all PASS "two pure all waits: first demonstrably met while second pending and no collection; remaining met; same thread $thread resumed exactly once and succeeded"
 }
