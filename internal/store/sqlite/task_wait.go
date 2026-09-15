@@ -220,10 +220,33 @@ func (s *Store) ListTaskWaits(ctx context.Context) ([]domain.TaskWait, error) {
 	return waits, tx.Commit()
 }
 
-// LiveTaskWaitAttempts maps every attempt parked on a task-bound wait to one of
-// the waits parking it. It is what makes a done marker refusable.
+// LiveTaskWaitAttempts maps every attempt that is parked on a task-bound wait
+// to one of the waits parking it. It is what makes a done marker refusable,
+// what the worker is told about its own assignments, and what refuses a result
+// before any artifact enters coordinator custody.
+//
+// A live wait is not by itself a park, and reading it as one is what made an
+// each wake come undone. Under each the first settlement resumes the attempt
+// while the rest of its waits stay live and unsettled, by design: the resumed
+// turn is an ordinary running turn that must be observed, collected and
+// verified like any other. While "any live wait" stood for "parked", the
+// coordinator went on telling the worker that the resumed assignment was
+// parked, so the worker put the attempt back into waiting-external the moment
+// that turn ended, the result was refused, and the task never finished. From
+// outside it looked exactly as if the each settlement had not woken it.
+//
+// The attempt's own progress is therefore the authority on whether it is
+// parked, and the wait records say why. The two are written in one fenced
+// transaction at registration, so they cannot disagree about a park that is in
+// force; after a wake they disagree on purpose, and this is the side that is
+// right. A wait whose attempt has been removed parks nothing.
 func (s *Store) LiveTaskWaitAttempts(ctx context.Context) (map[string]string, error) {
-	waits, err := s.ListTaskWaits(ctx)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	waits, err := loadJSON[domain.TaskWait](ctx, tx, "coordinator_task_waits")
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +259,20 @@ func (s *Store) LiveTaskWaitAttempts(ctx context.Context) (map[string]string, er
 			live[wait.AttemptID] = wait.ID
 		}
 	}
-	return live, nil
+	for attemptID := range live {
+		attempt, err := loadAttemptTx(ctx, tx, attemptID)
+		if errors.Is(err, sql.ErrNoRows) {
+			delete(live, attemptID)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if attempt.Progress != domain.ProgressWaitingExternal {
+			delete(live, attemptID)
+		}
+	}
+	return live, tx.Commit()
 }
 
 // RecordTaskWaitReconciliations durably records lifecycle contradictions.
