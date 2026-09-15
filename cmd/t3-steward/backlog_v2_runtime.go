@@ -189,6 +189,7 @@ type coordinatorPlanningTicker interface {
 }
 
 type coordinatorPlanner struct {
+	settings               *config.BacklogV2
 	store                  *sqlite.Store
 	coordinator            backlog.FleetCoordinator
 	epoch                  int64
@@ -216,6 +217,9 @@ func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeR
 	snapshots, err := p.store.LoadWorkerSnapshots(ctx)
 	if err != nil {
 		return backlog.AssignmentPlanningReport{}, fmt.Errorf("load planning worker snapshots: %w", err)
+	}
+	if p.settings != nil {
+		snapshots = workerruntime.AuthorizedPlanningSnapshots(*p.settings, snapshots, now)
 	}
 	input, err := backlog.BuildCoordinatorPlanInput(backlog.CoordinatorPlanningStateInput{
 		Now: now, CoordinatorEpoch: p.epoch,
@@ -553,7 +557,8 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		}},
 		schedules: backlog.ScheduleTimer{Store: store, CatchUpMax: cfg.BacklogV2.Scheduling.CatchUpMax},
 		planning: coordinatorPlanner{
-			store: store, coordinator: backlog.FleetCoordinator{Store: store}, epoch: epoch,
+			settings: &cfg.BacklogV2,
+			store:    store, coordinator: backlog.FleetCoordinator{Store: store}, epoch: epoch,
 			maxWorkerSnapshotAge:   cfg.BacklogV2.Freshness.WorkerMaxAge.D(),
 			maxQuotaObservationAge: cfg.BacklogV2.Freshness.QuotaMaxAge.D(),
 			deadlineRiskWindow:     24 * time.Hour,
