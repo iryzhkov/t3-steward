@@ -3,7 +3,9 @@
 # stop without writing anything.
 #
 # The synthetic provider runs this in place of an agent, with the prepared
-# workspace as the working directory. Everything it calls is the real product.
+# workspace as the working directory. Everything it calls is the real product,
+# and nothing about the execution identity is corrected: the task parks itself
+# with exactly what it was given, which is the property the case exists for.
 # The caller exports STEWARD, COORDINATOR_CONFIG, SIGNALS, EVIDENCE,
 # QUAL_SIGNAL and QUAL_INSPECT.
 set -u
@@ -16,26 +18,12 @@ if [ ! -f ./.t3-steward/task.env ]; then
 fi
 . ./.t3-steward/task.env
 
-# The revision in that record is compared with the revision the coordinator
-# actually holds. They disagree: the execution package carries the attempt
-# revision as of its construction, and the attempt has advanced by the time this
-# turn runs, so the fence the product sends is stale. The comparison is recorded
-# for the case11-identity-revision case, and the registration below proceeds
-# with the current revision so that the rest of the lifecycle can be exercised.
+# The revision the workspace record names is compared with the revision the
+# coordinator holds, and recorded. It is evidence only: the registration below
+# uses the workspace value unchanged, so a mismatch that still parks is the fix
+# working, and a mismatch that refuses is the defect returning.
 CURRENT=$("$STEWARD" backlog show --config "$COORDINATOR_CONFIG" "$T3_STEWARD_WORKFLOW_RUN_ID" --json 2>/dev/null | python3 "$QUAL_INSPECT" task-state | cut -d' ' -f3)
 printf 'workspace=%s coordinator=%s\n' "$T3_STEWARD_ATTEMPT_REVISION" "${CURRENT:-unknown}" >"$EVIDENCE/$QUAL_SIGNAL-revision.txt"
-
-export T3_STEWARD_WORKFLOW_RUN_ID T3_STEWARD_TASK_ID T3_STEWARD_ATTEMPT_ID
-export T3_STEWARD_ASSIGNMENT_ID T3_STEWARD_THREAD_ID
-export T3_STEWARD_ATTEMPT_REVISION
-
-# When the two revisions differ, the unmodified path is run first and its
-# refusal is kept. That refusal is the evidence for the defect; it cannot park
-# anything, so running it costs the case nothing.
-if [ -n "${CURRENT:-}" ] && [ "$CURRENT" != 0 ] && [ "$CURRENT" != "$T3_STEWARD_ATTEMPT_REVISION" ]; then
-  "$STEWARD" wait add --config "$COORDINATOR_CONFIG" --task current --name "$QUAL_SIGNAL-unpatched" --every 30s --max-every 30s --timeout 10m -- test -f "$SIGNALS/$QUAL_SIGNAL" >"$EVIDENCE/$QUAL_SIGNAL-register-unpatched.txt" 2>&1
-  T3_STEWARD_ATTEMPT_REVISION=$CURRENT
-fi
 
 if ! "$STEWARD" wait add --config "$COORDINATOR_CONFIG" --task current --name "$QUAL_SIGNAL" --every 30s --max-every 30s --timeout 10m -- test -f "$SIGNALS/$QUAL_SIGNAL" >"$EVIDENCE/$QUAL_SIGNAL-register.txt" 2>&1; then
   # Say so in the final message rather than ending quietly. A turn that failed
@@ -43,6 +31,15 @@ if ! "$STEWARD" wait add --config "$COORDINATOR_CONFIG" --task current --name "$
   # and the attempt would be collected and verified against nothing.
   echo "backlog status: failed task-bound wait registration failed"
   exit 0
+fi
+
+# A second wait on the same attempt, registered while the first is live. The
+# first registration advances the attempt revision, so this is exactly the
+# registration that was impossible while the fence was an equality test. It is
+# optional: a scenario that does not want it does not set QUAL_SECOND_WAIT.
+if [ -n "${QUAL_SECOND_WAIT:-}" ]; then
+  "$STEWARD" wait add --config "$COORDINATOR_CONFIG" --task current --name "$QUAL_SIGNAL-second" --wake "${QUAL_WAKE:-each}" --every 30s --max-every 30s --timeout 10m -- test -f "$SIGNALS/$QUAL_SECOND_WAIT" >"$EVIDENCE/$QUAL_SIGNAL-register-second.txt" 2>&1
+  printf 'exit=%s\n' "$?" >>"$EVIDENCE/$QUAL_SIGNAL-register-second.txt"
 fi
 
 # The registration printed the instruction to end the turn. Ending here is the

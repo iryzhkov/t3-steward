@@ -14,13 +14,7 @@ if [ ! -f ./.t3-steward/task.env ]; then
 fi
 . ./.t3-steward/task.env
 
-CURRENT=$("$STEWARD" backlog show --config "$COORDINATOR_CONFIG" "$T3_STEWARD_WORKFLOW_RUN_ID" --json 2>/dev/null | python3 "$QUAL_INSPECT" task-state | cut -d' ' -f3)
-export T3_STEWARD_WORKFLOW_RUN_ID T3_STEWARD_TASK_ID T3_STEWARD_ATTEMPT_ID
-export T3_STEWARD_ASSIGNMENT_ID T3_STEWARD_THREAD_ID
-if [ -n "${CURRENT:-}" ] && [ "$CURRENT" != 0 ]; then
-  T3_STEWARD_ATTEMPT_REVISION=$CURRENT
-fi
-export T3_STEWARD_ATTEMPT_REVISION
+# The identity is used exactly as the workspace record gives it.
 
 printf '%s\n' "$T3_STEWARD_ATTEMPT_ID" >"$EVIDENCE/$QUAL_SIGNAL-attempt.txt"
 

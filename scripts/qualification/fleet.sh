@@ -56,7 +56,7 @@ fleet_secret() { head -c 32 /dev/urandom | base64 -w0; }
 # QUAL_T3_PROJECTS is every T3 project the configured catalog names. The
 # synthetic provider is seeded with them so that a worker observing its own
 # readiness finds them.
-QUAL_T3_PROJECTS="qual-good,qual-private,qual-missing-ref,qual-absent-forge,qual-private-https,qual-plain,qual-beside,qual-park,qual-park-restart,qual-race,qual-bad-setup,qual-bad-syntax,qual-argument-injection"
+QUAL_T3_PROJECTS="qual-good,qual-private,qual-missing-ref,qual-absent-forge,qual-private-https,qual-plain,qual-beside,qual-park,qual-park-restart,qual-race,qual-wake-each,qual-wake-all,qual-commanded,qual-lease,qual-bad-setup,qual-bad-syntax,qual-argument-injection"
 
 # fleet_private_file writes content to a 0600 file, which is what both secret
 # stores require.
@@ -591,14 +591,6 @@ fleet_enroll_workers() {
 # coordinator must agree on it.
 fleet_worker_block() {
   local worker connection="      connection: persistent-ssh"
-  # The malformed catalog is served by a coordinator with no persistent worker.
-  # A project whose repository syntax is invalid makes the worker execution
-  # catalog fail to build, and with a persistent worker that happens while the
-  # coordinator is starting, so the coordinator exits instead of reporting the
-  # project as misconfigured.
-  if [ "${1:-clean}" = malformed ]; then
-    connection="      # no persistent connection in the malformed variant"
-  fi
   for worker in worker-a worker-b; do
     cat <<EOF
     $worker:
@@ -686,6 +678,30 @@ fleet_project_block() {
       repository: ssh://qual-repo-good/good.git
       default_ref: main
       t3_project: qual-race
+      setup_profile: quick
+      workers: [worker-a]
+    wake-each:
+      repository: ssh://qual-repo-good/good.git
+      default_ref: main
+      t3_project: qual-wake-each
+      setup_profile: quick
+      workers: [worker-a]
+    wake-all:
+      repository: ssh://qual-repo-good/good.git
+      default_ref: main
+      t3_project: qual-wake-all
+      setup_profile: quick
+      workers: [worker-a]
+    commanded:
+      repository: ssh://qual-repo-good/good.git
+      default_ref: main
+      t3_project: qual-commanded
+      setup_profile: quick
+      workers: [worker-a]
+    lease:
+      repository: ssh://qual-repo-good/good.git
+      default_ref: main
+      t3_project: qual-lease
       setup_profile: quick
       workers: [worker-a]
     bad-setup:

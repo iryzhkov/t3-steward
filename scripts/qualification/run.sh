@@ -38,6 +38,8 @@ export HARNESS_DIR REPO_DIR
 . "$HARNESS_DIR/case12.sh"
 # shellcheck source=scripts/qualification/case15.sh
 . "$HARNESS_DIR/case15.sh"
+# shellcheck source=scripts/qualification/case16.sh
+. "$HARNESS_DIR/case16.sh"
 
 KEEP_ROOT=0
 ONLY=""
@@ -117,6 +119,10 @@ if selected 11; then
 fi
 selected 14 && case_fourteen
 selected 14 && case_attack_replay
+selected 16 && case_multi_wait
+selected 16 && case_wake_all
+selected 14 && case_attack_commanded_collect
+selected 14 && case_attack_lease_expiry
 selected 15 && case_fifteen
 selected 7 && case_seven
 selected 13 && case_thirteen

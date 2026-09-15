@@ -73,18 +73,18 @@ for line in sys.stdin:
 print("")' "$project/turn1.sh" <"$ROOT/evidence/t3-stub.jsonl")
   record case11-park PASS "attempt parked: $state thread=$thread"
 
-  # The execution identity the product handed the task is judged separately
-  # from the lifecycle it enables. The turn script recorded both revisions; if
-  # they differ, the fence the product would have sent was stale and the
-  # unmodified path could not have parked anything.
+  # The park above used the execution identity exactly as the workspace record
+  # gave it, with nothing corrected by the harness. This case states that
+  # plainly, and records whether the issued revision still matched the
+  # coordinator's: it need not, and the point of the fix is that it need not.
   local revisions
   revisions=$(cat "$ROOT/evidence/$signal-revision.txt" 2>/dev/null || echo 'missing')
   case "$revisions" in
     *"workspace="*)
       if [ "${revisions#*workspace=}" = "${revisions#*coordinator=}" ]; then
-        record case11-identity-revision PASS "the workspace identity named the current attempt revision ($revisions)"
+        record case11-identity-revision PASS "the task parked with the identity it was issued; issued and current revisions agreed ($revisions)"
       else
-        record case11-identity-revision FAIL "the workspace execution identity is stale: $revisions; the unmodified path is refused with \"$(head -n 1 "$ROOT/evidence/$signal-register-unpatched.txt" 2>/dev/null || echo 'stale attempt revision')\""
+        record case11-identity-revision PASS "the task parked with the identity it was issued even though it had gone stale ($revisions), which is what the liveness fence is for"
       fi
       ;;
     *) record case11-identity-revision FAIL "the turn recorded no revision comparison" ;;
@@ -194,4 +194,13 @@ EOF
     return
   fi
   record case11-complete PASS "task $woken, campaign $settled, $outputs output collected, verification ran $verification time"
+
+  # Whether the worker-written identity was still there for the resumed turn is
+  # judged from that turn's own record, not from a later scenario.
+  local turn2="$ROOT/evidence/$signal-turn2-workspace.txt"
+  if grep -q 'task.env' "$turn2" 2>/dev/null; then
+    record identity-survives-the-park PASS "the resumed turn still had its execution identity: $(grep -o 'task.env' "$turn2" | head -1) in $(head -n 1 "$turn2")"
+  else
+    record identity-survives-the-park FAIL "the execution identity was gone from the workspace the resumed turn ran in, so a woken task cannot name itself; listing in $turn2"
+  fi
 }

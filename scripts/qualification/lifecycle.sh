@@ -88,6 +88,13 @@ EOF
   fleet_turn_script "$project" 2 <<EOF
 #!/bin/sh
 $(fleet_task_env)
+# The resumed turn records whether the execution identity is still there. A
+# woken task that cannot name itself cannot register anything, so this is
+# evidence the lifecycle cases need and not decoration.
+{
+  printf 'pwd=%s\n' "\$(pwd)"
+  ls -la ./.t3-steward 2>&1 | head -5
+} >"\$EVIDENCE/$signal-turn2-workspace.txt" 2>&1
 printf 'written after the wake\n' > result.txt
 echo "wrote result.txt after the wake"
 EOF

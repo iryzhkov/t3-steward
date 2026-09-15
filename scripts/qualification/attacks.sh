@@ -67,11 +67,8 @@ EOF
     fi
     sleep 2
   done
-  if grep -q 'task.env' "$workspace" 2>/dev/null; then
-    record identity-survives-the-park PASS 'the worker-written execution identity was still in the workspace for the resumed turn'
-  else
-    record identity-survives-the-park FAIL "the execution identity is gone from the workspace the resumed turn ran in, so a woken task cannot name itself; workspace listing in $workspace"
-    record attack-replayed-request-id FAIL 'not reached: the resumed turn could not name its own attempt, so no request id could be replayed'
+  if ! grep -q 'task.env' "$workspace" 2>/dev/null; then
+    record attack-replayed-request-id FAIL "not reached: the resumed turn could not name its own attempt, so no request id could be replayed; listing in $workspace"
     return
   fi
   deadline=$((SECONDS + 120))
@@ -91,6 +88,105 @@ EOF
     return
   fi
   record attack-replayed-request-id FAIL "the replay produced neither a refusal nor a park: $(head -c 200 "$second" | tr '\n' ' ')"
+}
+
+# ---------------------------------------------------------------------------
+# attack-commanded-collect
+#
+# A coordinator-issued control command against a parked attempt must not end up
+# collecting it. Whatever the command does to the attempt's state, the workspace
+# has no outputs in it, so publishing any would be publishing work that was
+# never done, and verifying them would be verifying nothing.
+# ---------------------------------------------------------------------------
+case_attack_commanded_collect() {
+  local signal=commanded project=qual-commanded
+  park_turn_scripts "$project" "$signal"
+  rm -f "$ROOT/signals/$signal"
+  local directory submit run
+  directory=$(fleet_executable_campaign commanded commanded)
+  submit=$(evidence_path attack-commanded-submit.json)
+  if ! fleet_submit_local "$directory" "qual-attack-commanded-$$" "$submit"; then
+    record attack-commanded-collect FAIL "submission failed: $(tail -n 3 "$submit.err")"
+    return
+  fi
+  run=$(run_of "$submit")
+  local state
+  if ! state=$(await_task "$run" 300 waiting-external); then
+    record attack-commanded-collect FAIL "the attempt never parked: \"$state\""
+    return
+  fi
+  local task
+  task=$(fleet_coordinator_cli backlog show "$run" --json 2>/dev/null | reading task-field taskId)
+  local out
+  out=$(evidence_path attack-commanded-cancel.txt)
+  fleet_coordinator_cli backlog cancel "$run/$task" \
+    --reason 'qualification: command a parked attempt' \
+    --command-id "qual-commanded-$$" >"$out" 2>&1 || true
+  sleep 20
+  local after outputs verification
+  after=$(show_run "$run" "$(evidence_path attack-commanded-run.json)")
+  outputs=$(reading outputs <"$after")
+  verification=$(reading verification <"$after")
+  state=$(reading task-state <"$after")
+  if [ "$outputs" != 0 ] || [ "$verification" != 0 ]; then
+    record attack-commanded-collect FAIL "a commanded parked attempt was collected: $outputs output(s), $verification verification(s), state \"$state\""
+    return
+  fi
+  record attack-commanded-collect PASS "cancel against a parked attempt collected nothing: 0 outputs, 0 verifications, state \"$state\"; command output $(head -c 120 "$out" | tr '\n' ' ')"
+}
+
+# ---------------------------------------------------------------------------
+# attack-lease-expiry
+#
+# The worker holding a parked attempt is stopped, so its lease is never renewed
+# and expires. The coordinator may do what it likes with the assignment; what it
+# may not do is treat the expiry as the task having finished.
+# ---------------------------------------------------------------------------
+case_attack_lease_expiry() {
+  local signal=lease project=qual-lease
+  park_turn_scripts "$project" "$signal"
+  rm -f "$ROOT/signals/$signal"
+  local directory submit run
+  directory=$(fleet_executable_campaign lease lease)
+  submit=$(evidence_path attack-lease-submit.json)
+  if ! fleet_submit_local "$directory" "qual-attack-lease-$$" "$submit"; then
+    record attack-lease-expiry FAIL "submission failed: $(tail -n 3 "$submit.err")"
+    return
+  fi
+  run=$(run_of "$submit")
+  local state
+  if ! state=$(await_task "$run" 300 waiting-external); then
+    record attack-lease-expiry FAIL "the attempt never parked: \"$state\""
+    return
+  fi
+  # Stop the worker and keep it down for longer than the configured lease.
+  local pid=${worker_a_PID:-}
+  if [ -n "$pid" ]; then
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+  rm -f "$ROOT/worker-a/home/.local/state/t3-steward/worker/worker.sock"
+  fleet_log 'worker-a stopped; waiting out the assignment lease'
+  sleep 150
+  local after outputs verification
+  after=$(show_run "$run" "$(evidence_path attack-lease-run.json)")
+  outputs=$(reading outputs <"$after")
+  verification=$(reading verification <"$after")
+  state=$(reading task-state <"$after")
+  local assignment
+  assignment=$(reading assignment-state <"$after")
+  fleet_restart_worker worker-a
+  if [ "$outputs" != 0 ] || [ "$verification" != 0 ]; then
+    record attack-lease-expiry FAIL "an expired lease collected a parked attempt: $outputs output(s), $verification verification(s)"
+    return
+  fi
+  case "$state" in
+    succeeded*)
+      record attack-lease-expiry FAIL "an expired lease made a parked attempt succeed without any output: \"$state\""
+      return
+      ;;
+  esac
+  record attack-lease-expiry PASS "lease expired with the worker down: 0 outputs, 0 verifications, attempt \"$state\", assignment \"$assignment\""
 }
 
 # ---------------------------------------------------------------------------
