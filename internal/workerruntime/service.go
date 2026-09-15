@@ -150,6 +150,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		T3:          t3,
 		ScopedT3:    scoped,
 		Now:         options.Now,
+		Log:         options.Logger.With("component", "worker-driver"),
 	})
 	if err != nil {
 		return nil, err

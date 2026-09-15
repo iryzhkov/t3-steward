@@ -165,13 +165,13 @@ func TestIdentityRecordIsNeverCapturedAsAnArtifact(t *testing.T) {
 // parkStore is the narrow view parkedAssignments needs: which attempts are
 // parked, and the records that map them to assignments.
 type parkStore struct {
-	live    map[string]string
+	parked  map[string]string
 	records sqlite.CoordinatorRecords
 	err     error
 }
 
-func (s parkStore) LiveTaskWaitAttempts(context.Context) (map[string]string, error) {
-	return s.live, s.err
+func (s parkStore) ParkedTaskWaitAttempts(context.Context) (map[string]string, error) {
+	return s.parked, s.err
 }
 
 func (s parkStore) LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRecords, error) {
@@ -183,7 +183,7 @@ func (s parkStore) LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRe
 // that worker: a worker learns nothing about another worker's executions.
 func TestParkedAssignmentsAreScopedToOneWorker(t *testing.T) {
 	store := parkStore{
-		live: map[string]string{"a1": "tw-ci", "a3": "tw-review"},
+		parked: map[string]string{"a1": "tw-ci", "a3": "tw-review"},
 		records: sqlite.CoordinatorRecords{
 			Attempts: []domain.Attempt{
 				{ID: "a1", Revision: 12}, {ID: "a2", Revision: 3}, {ID: "a3", Revision: 7},
@@ -195,7 +195,7 @@ func TestParkedAssignmentsAreScopedToOneWorker(t *testing.T) {
 			},
 		},
 	}
-	request, err := parkedAssignmentsFor(context.Background(), store, "normandy")
+	request, err := ParkedAssignmentsFor(context.Background(), store, "normandy")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,19 +211,19 @@ func TestParkedAssignmentsAreScopedToOneWorker(t *testing.T) {
 		t.Fatalf("parked = %+v", parked)
 	}
 	// A worker with nothing parked is told so positively, not by silence.
-	empty, err := parkedAssignmentsFor(context.Background(), store, "unrelated")
+	empty, err := ParkedAssignmentsFor(context.Background(), store, "unrelated")
 	if err != nil || !empty.ParkedReported || len(empty.Parked) != 0 {
 		t.Fatalf("empty statement = %+v err=%v", empty, err)
 	}
 	// A store with no task-bound waits at all still reports, because it truly
 	// has nothing parked.
-	none, err := parkedAssignmentsFor(context.Background(), parkStore{live: map[string]string{}}, "normandy")
+	none, err := ParkedAssignmentsFor(context.Background(), parkStore{parked: map[string]string{}}, "normandy")
 	if err != nil || !none.ParkedReported || len(none.Parked) != 0 {
 		t.Fatalf("statement without waits = %+v err=%v", none, err)
 	}
 	// A store that cannot answer fails the exchange rather than claiming that
 	// nothing is parked.
-	if _, err := parkedAssignmentsFor(context.Background(), parkStore{err: errors.New("database is locked")}, "normandy"); err == nil {
+	if _, err := ParkedAssignmentsFor(context.Background(), parkStore{err: errors.New("database is locked")}, "normandy"); err == nil {
 		t.Fatal("an unreadable store reported that nothing is parked")
 	}
 }

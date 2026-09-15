@@ -239,6 +239,30 @@ func (s *Store) LiveTaskWaitAttempts(ctx context.Context) (map[string]string, er
 	return live, nil
 }
 
+// ParkedTaskWaitAttempts maps every attempt a task-bound wait still parks to
+// one of the waits parking it. It is what makes collection refusable.
+//
+// It is not LiveTaskWaitAttempts. An attempt stays parked after its wait
+// settles, until the wake carrying that settlement has reached its thread: the
+// turn that parked has ended and the resumed turn has not begun, so a collector
+// that reads liveness there collects a task that is about to run again.
+func (s *Store) ParkedTaskWaitAttempts(ctx context.Context) (map[string]string, error) {
+	waits, err := s.ListTaskWaits(ctx)
+	if err != nil {
+		return nil, err
+	}
+	parked := make(map[string]string, len(waits))
+	for _, wait := range waits {
+		if !wait.Parking() {
+			continue
+		}
+		if existing, ok := parked[wait.AttemptID]; !ok || wait.ID < existing {
+			parked[wait.AttemptID] = wait.ID
+		}
+	}
+	return parked, nil
+}
+
 // RecordTaskWaitReconciliations durably records lifecycle contradictions.
 func (s *Store) RecordTaskWaitReconciliations(ctx context.Context, events []domain.TaskWaitReconciliation) error {
 	if len(events) == 0 {

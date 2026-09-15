@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -78,6 +79,17 @@ type LocalDriver struct {
 	ScopedT3  ExecutionT3Provider
 	scoped    bool
 	Now       func() time.Time
+	// Log records the decisions that change what a running task can still do,
+	// above all the removal of its identity record. Nil uses the default
+	// logger; nothing here is silent.
+	Log *slog.Logger
+}
+
+func (d *LocalDriver) logger() *slog.Logger {
+	if d.Log != nil {
+		return d.Log
+	}
+	return slog.Default()
 }
 
 func NewLocalDriver(driver LocalDriver) (*LocalDriver, error) {
@@ -421,15 +433,33 @@ func resolveGitDir(workspace string) (string, error) {
 // removeTaskIdentity deletes the identity record. Its callers run it only once
 // a collection is going ahead and before anything is captured from the
 // workspace, so the record survives a parked turn and a deferred collection
-// alike, and the turn that resumes after a wake can still name itself.
+// alike.
+//
+// That is necessary and was never sufficient. Whether the record survives a
+// park is decided before this driver is reached, by whether the runtime
+// collects at all, and that in turn by the coordinator's statement of which
+// assignments are parked. Defending the file here against a collection that
+// should not have started would only hide the premature collection, which
+// publishes a result for a task that is about to keep working.
 //
 // Removing nothing is not an error: the path may already be gone, and that is
 // cheaper than reasoning about which driver in the chain owns the real one.
-func (d *LocalDriver) removeTaskIdentity(workspace string) error {
+//
+// A removal that does happen is logged. This is the one act that takes a task's
+// ability to name itself away, so a workspace found without a record is either
+// explained by a line here or by something outside this program, and the next
+// person diagnosing it does not have to guess which.
+func (d *LocalDriver) removeTaskIdentity(pkg workerproto.ExecutionPackage, workspace string) error {
 	if workspace == "" {
 		return nil
 	}
-	if err := os.RemoveAll(filepath.Join(workspace, domain.TaskIdentityDir)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	directory := filepath.Join(workspace, domain.TaskIdentityDir)
+	if _, err := os.Lstat(directory); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	d.logger().Info("removing the task identity record; this attempt can no longer name itself",
+		"attempt", pkg.Identity.AttemptID, "thread", pkg.Identity.ThreadID, "workspace", workspace)
+	if err := os.RemoveAll(directory); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove task identity: %w", err)
 	}
 	return nil
@@ -559,7 +589,7 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if d.Config.DryRun {
 		// Nothing is captured in no-effects mode, but the collection is over,
 		// so the record leaves here for the same reason it does below.
-		return d.removeTaskIdentity(workspace)
+		return d.removeTaskIdentity(pkg, workspace)
 	}
 	thread, err := d.T3.GetThread(ctx, pkg.Identity.ThreadID)
 	if err != nil {
@@ -567,6 +597,12 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 	}
 	message, archive := "", []byte("{}")
 	if thread != nil && !workerThreadTerminal(*thread) {
+		// The deferral is logged for the same reason the removal below is: the
+		// two together are the whole story of what happened to a workspace, and
+		// a deferral that says nothing is indistinguishable from a pass that
+		// never ran.
+		d.logger().Info("T3 turn is not terminal; collection deferred and the task identity record is kept",
+			"attempt", pkg.Identity.AttemptID, "thread", pkg.Identity.ThreadID, "workspace", workspace)
 		return errors.New("T3 turn is not yet terminal; result collection deferred")
 	}
 	// The collection is going ahead, and the identity record leaves before
@@ -578,7 +614,7 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 	// still running: it may yet park itself on a task-bound wait, and a woken
 	// turn that cannot name itself cannot register anything. Removing the
 	// record on entry destroyed it on every deferred pass.
-	if err := d.removeTaskIdentity(workspace); err != nil {
+	if err := d.removeTaskIdentity(pkg, workspace); err != nil {
 		return err
 	}
 	if thread != nil {

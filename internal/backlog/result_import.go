@@ -190,8 +190,13 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 //
 // Waiting until the turn outcome is committed would be too late: by then the
 // outputs are published, and published artifacts are immutable. Collection
-// happens after the turn that ends with no live wait, and the outputs written
-// after the wake are the outputs collected.
+// happens after the turn that ends with nothing parking the attempt, and the
+// outputs written after the wake are the outputs collected.
+//
+// This refusal is about a live wait, which is a narrower question than whether
+// the attempt is parked: a wait that has settled but whose wake has not reached
+// the thread still parks it. Keeping the worker from collecting in that window
+// is the coordinator's parked statement, not this check.
 func (i CoordinatorResultImporter) refuseWhileWaiting(ctx context.Context, attempt domain.Attempt, outcomeID string, now time.Time) error {
 	reader, ok := i.Store.(TaskWaitReader)
 	if !ok {

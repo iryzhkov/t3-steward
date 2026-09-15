@@ -219,6 +219,38 @@ func (w TaskWait) Settled() bool { return w.SettledAt != nil }
 // restart, worker restart and duplicate delivery idempotent.
 func (w TaskWait) Woken() bool { return w.WokenAt != nil }
 
+// Parking reports whether this wait still holds its attempt parked.
+//
+// It is deliberately wider than Live. A wait stops holding its attempt when the
+// outcome reaches the thread, not when the condition settles. In between, the
+// turn that parked has ended and the turn that will read the outcome has not
+// started, so the attempt is parked with no live wait and no running thread.
+// Reading Live there says "not parked" about an attempt that is about to run
+// again, and whoever acts on that answer collects a task mid-park.
+//
+// The two questions are separate on purpose. Live answers "is the condition
+// still undecided", which is what refusing a completion marker turns on.
+// Parking answers "will this attempt run again", which is what deciding to
+// collect it turns on.
+func (w TaskWait) Parking() bool {
+	switch {
+	case w.Live():
+		return true
+	case !w.Woken():
+		// Settled, and the coordinator has not yet decided what the settlement
+		// does to the attempt. Until it has, the park stands.
+		return true
+	case !w.Resumption:
+		// This wake carries evidence to a turn that is already running. It
+		// holds nothing, and never did.
+		return false
+	default:
+		// A resumption wake holds the attempt until its message has reached the
+		// thread, or until it is abandoned because no turn can receive it.
+		return w.Delivery != "delivered" && w.Delivery != "abandoned"
+	}
+}
+
 // TaskWaitRegistration is the request to park an attempt on a condition.
 type TaskWaitRegistration struct {
 	RequestID     string `json:"requestId"`
@@ -395,6 +427,6 @@ func (c TaskWaitWakeContext) Prompt() string {
 		}
 	}
 	builder.WriteString("\nContinue the task. Write every declared output before ending the turn; ")
-	builder.WriteString("the outputs collected are the ones present when the turn ends with no live wait.\n")
+	builder.WriteString("the outputs collected are the ones present when a turn ends with nothing parking this task.\n")
 	return builder.String()
 }

@@ -43,9 +43,10 @@ func phaseOf(t *testing.T, runtime *Runtime, id string) Phase {
 	return state.Attempts[id].Phase
 }
 
-// The whole worker-side park and resume: a stopped thread with a live wait is
-// parked rather than collected, an active thread means the wake landed, and the
-// outputs are collected only once the resumed turn ends with no live wait.
+// The whole worker-side park and resume: a stopped thread the coordinator calls
+// parked is parked rather than collected, an active thread means the wake
+// landed, and the outputs are collected only once the resumed turn ends with
+// nothing parking the attempt.
 func TestWorkerParksInsteadOfCollectingWhileATaskWaitIsLive(t *testing.T) {
 	root := t.TempDir()
 	now := runtimeTestNow

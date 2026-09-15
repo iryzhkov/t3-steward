@@ -42,7 +42,9 @@ that parks safely and a task that is verified against work it has not done.
       dependency mounts, assignment ownership, resource locks and directory
       bindings are held. On settlement the same thread and the same attempt
       resume with the outcome in the initial context, and verification runs
-      once, at the end of the turn that ends with no live wait.
+      once, at the end of the turn that ends with nothing parking the task:
+      no wait still undecided, and no settled wait whose outcome has yet to
+      reach the thread.
       Only valid inside a task: outside one it is an error that says so.
 
   INTERACTIVE WAIT  (no --task, or --task <run>/<task>, or --run <run>)
