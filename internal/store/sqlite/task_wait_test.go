@@ -706,6 +706,9 @@ func TestAllHoldsItsIncompleteSetWhileAnEachWaitStillWakesTheAttempt(t *testing.
 	if err != nil || len(late) != 1 || len(late[0].Waits) != 1 || late[0].Waits[0].ID != restOfSet.ID {
 		t.Fatalf("the last settlement was not delivered: %+v %v", late, err)
 	}
+	if wakes[0].Waits[0].DeliveryID == late[0].Waits[0].DeliveryID {
+		t.Fatal("later each evidence reused the earlier group's delivery identity")
+	}
 	if late[0].Resumption() {
 		t.Fatal("evidence for a running turn was recorded as a resumption")
 	}
