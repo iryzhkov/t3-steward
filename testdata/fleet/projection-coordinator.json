@@ -1,0 +1,78 @@
+{
+  "coordinator_id": "normandy-coordinator",
+  "kind": "steward-coordinator-catalog-input",
+  "projects": {
+    "upkeeper": {
+      "default_ref": "main",
+      "eligible_workers": [
+        "homelab",
+        "omarchy-pc"
+      ],
+      "repository": "ssh://git@git.ryzhkov.dev/igor/upkeeper.git",
+      "setup_profile": "go"
+    }
+  },
+  "schema_version": 1,
+  "workers": {
+    "homelab": {
+      "capabilities": [
+        "git",
+        "huyang"
+      ],
+      "cpu_class": "medium",
+      "desired_models": {
+        "claudeAgent": [
+          "claude-opus-4-5",
+          "claude-sonnet-4-5"
+        ],
+        "codex": [
+          "gpt-5-codex"
+        ],
+        "opencode": [
+          "glm-4.6"
+        ]
+      },
+      "executor_slots": 2,
+      "provider_instances": [
+        "claudeAgent",
+        "codex",
+        "opencode"
+      ],
+      "quota_pools": [
+        "default"
+      ],
+      "worker_id": "homelab"
+    },
+    "omarchy-pc": {
+      "capabilities": [
+        "git",
+        "huyang"
+      ],
+      "cpu_class": "high",
+      "desired_models": {
+        "claudeAgent": [
+          "claude-haiku-4-5",
+          "claude-opus-4-5",
+          "claude-sonnet-4-5"
+        ],
+        "codex": [
+          "gpt-5-codex"
+        ],
+        "opencode": [
+          "glm-4.6"
+        ]
+      },
+      "executor_slots": 4,
+      "provider_instances": [
+        "claudeAgent",
+        "codex",
+        "opencode"
+      ],
+      "quota_pools": [
+        "build",
+        "default"
+      ],
+      "worker_id": "omarchy-pc"
+    }
+  }
+}

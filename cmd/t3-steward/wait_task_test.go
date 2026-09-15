@@ -252,21 +252,28 @@ func TestCallerSessionNamesConflictingProviders(t *testing.T) {
 // The injected canonical thread wins over provider session resolution, and is
 // the only value used as a thread ID.
 func TestResolveThreadPrefersTheInjectedCanonicalThread(t *testing.T) {
+	// Never resolve the harness's real provider session or inspect its T3 data.
+	for _, key := range providerSessionKeys {
+		t.Setenv(key, "")
+	}
+	t.Chdir(t.TempDir())
+	cfg := config.Config{}
+	cfg.T3.DataDir = t.TempDir()
 	for name, value := range injectedIdentity() {
 		t.Setenv(name, value)
 	}
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "claude-session")
-	got, err := resolveThread(config.Config{}, "")
+	got, err := resolveThread(cfg, "")
 	if err != nil || got != "thread-1" {
 		t.Fatalf("%q %v", got, err)
 	}
 	// A partial injection is not a task, so it falls through to the provider
 	// session rather than waking a thread named by half an identity.
 	t.Setenv(domain.TaskWaitEnvAttemptID, "")
-	if _, err := resolveThread(config.Config{}, ""); err == nil {
+	if _, err := resolveThread(cfg, ""); err == nil {
 		t.Fatal("a partial identity resolved a thread")
 	}
-	if got, err := resolveThread(config.Config{}, "explicit"); err != nil || got != "explicit" {
+	if got, err := resolveThread(cfg, "explicit"); err != nil || got != "explicit" {
 		t.Fatalf("an explicit --thread was not honoured: %q %v", got, err)
 	}
 }
