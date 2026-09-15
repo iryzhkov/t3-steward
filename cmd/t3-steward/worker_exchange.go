@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -16,17 +17,33 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
 
+// The operation words, taken from the runtime that defines what each one does,
+// so the endpoint and the dispatch cannot drift apart.
 const (
-	workerOperationControl         = "control"
-	workerOperationArtifactReceive = "artifact-receive"
-	workerOperationArtifactSend    = "artifact-send"
+	workerOperationControl         = workerruntime.OperationControl
+	workerOperationArtifactReceive = workerruntime.OperationArtifactReceive
+	workerOperationArtifactSend    = workerruntime.OperationArtifactSend
 )
 
 // cmdWorkerExchange is the fixed SSH-command boundary. Identity and epochs come
 // only from validated local configuration; the SSH request may select no worker.
-func cmdWorkerExchange(g globalFlags, operation string) error {
-	switch operation {
-	case workerOperationControl, workerOperationArtifactReceive, workerOperationArtifactSend:
+//
+// pinned is the operation word the forced command fixed, or empty when it fixed
+// none. A coordinator dials one worker.Address for control and for both
+// artifact directions, and OpenSSH selects the authorized_keys line by key, so
+// a pinned word confines a worker to one of the three and it can never both run
+// work and take delivery of its inputs. Omitted, the operation is derived from
+// the envelope instead.
+//
+// That derivation is not a relaxation. The message type is inside the signature,
+// so it is evidence the coordinator's credential vouched for, where a word on a
+// command line arrives over a channel nobody signed. It also decides nothing
+// about authority: every message type this worker will accept is fixed in the
+// allowlist NewWorkerService builds, independently of how the process was
+// invoked, and each entrypoint verifies the signature before any effect.
+func cmdWorkerExchange(g globalFlags, pinned string) error {
+	switch pinned {
+	case "", workerOperationControl, workerOperationArtifactReceive, workerOperationArtifactSend:
 	default:
 		return errors.New("worker-exchange operation must be control, artifact-receive, or artifact-send")
 	}
@@ -89,14 +106,21 @@ func cmdWorkerExchange(g globalFlags, operation string) error {
 	if err != nil {
 		return err
 	}
+	// The operation the envelope calls for. A pinned forced command must agree
+	// with it: that is the key-level narrowing an operator asked for, and it is
+	// refused here rather than further in, where it surfaced as the message
+	// kind being unknown to a handler that was never meant to see it.
+	operation := workerruntime.OperationFor(envelope.Type)
+	if pinned != "" && operation != pinned {
+		return fmt.Errorf("worker-exchange was invoked as %s but the request is a %s message, which %s carries",
+			pinned, envelope.Type, operation)
+	}
 	switch operation {
-	case workerOperationControl:
-		return service.ServeEnvelope(ctx, envelope, os.Stdout)
 	case workerOperationArtifactReceive:
 		return service.ServeArtifactReceiveEnvelope(ctx, envelope, buffered, os.Stdout)
 	case workerOperationArtifactSend:
 		return service.ServeArtifactSendEnvelope(ctx, envelope, buffered, os.Stdout)
 	default:
-		return errors.New("worker-exchange operation must be control, artifact-receive, or artifact-send")
+		return service.ServeEnvelope(ctx, envelope, os.Stdout)
 	}
 }
