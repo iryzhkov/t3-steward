@@ -208,15 +208,11 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 		return errors.New("the check exits 2 (give up) right away; fix it before registering")
 	}
 
-	path, err := resolveBacklogV2AdminSocketPath(cfg)
+	transport, err := newCoordinatorTransport(cfg)
 	if err != nil {
 		return err
 	}
-	client := backlogadmin.LocalClient{
-		Path: path, MaxResponseBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
-		MaxArtifactBytes: cfg.BacklogV2.MessageLimits.MaxArtifactBytes,
-		RequestTimeout:   cfg.BacklogV2.Transport.RequestTimeout.D(),
-	}
+	client := transport.client
 	// The coordinator record is written first. It is what parks the attempt, so
 	// a failure here must leave no local poll behind that nothing is waiting on.
 	// The reverse order would let the attempt keep running while a check quietly
@@ -256,11 +252,13 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 	defer store.Close()
 	now := time.Now()
 	local.TaskWaitID = registered.ID
+	// A registration retry must never create a second poll or reset a settled one.
+	local.ID = "w-" + registered.ID
 	local.LastRunAt = &now
 	local.Runs = 1
 	local.LastExit = code
 	local.LastOutput = out
-	if err := store.SaveWait(ctx, local); err != nil {
+	if err := saveRegisteredTaskCheck(ctx, store, local); err != nil {
 		// The attempt is parked and the coordinator owns its maximum duration,
 		// so an unpolled wait expires with a structured timeout rather than
 		// stranding the task. Report the failure honestly instead of implying

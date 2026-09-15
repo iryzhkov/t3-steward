@@ -28,8 +28,11 @@ type TaskWaitStore interface {
 // the message is sent, so a lost response retries the message and never the
 // resumption: one wake, one resumed turn, one verification.
 func (r *Runner) tickTaskWaits(ctx context.Context, waits []Wait) {
-	store, ok := r.store.(TaskWaitStore)
-	if !ok {
+	store := r.TaskStore
+	if store == nil {
+		store, _ = r.store.(TaskWaitStore)
+	}
+	if store == nil {
 		return
 	}
 	now := r.now()
@@ -69,6 +72,9 @@ func (r *Runner) tickTaskWaits(ctx context.Context, waits []Wait) {
 		return
 	}
 	for _, wake := range pending {
+		if r.AssignedTaskWakesOnly && (wake.WorkerID == "" || wake.WorkerID != r.TaskWorkerID) {
+			continue
+		}
 		r.deliverTaskWake(ctx, store, control, wake, now)
 	}
 }

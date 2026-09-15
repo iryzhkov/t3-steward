@@ -377,6 +377,9 @@ type TaskWaitReconciliation struct {
 
 // TaskWaitWakeContext is the evidence handed to the resumed turn.
 type TaskWaitWakeContext struct {
+	// WorkerID is derived from the durable assignment when listing pending wakes.
+	// It is transport metadata, never a new persisted wait field.
+	WorkerID  string `json:"workerId,omitempty"`
 	AttemptID string `json:"attemptId"`
 	ThreadID  string `json:"threadId"`
 	// AttemptRevision is the revision this wake belongs to. Delivery is
