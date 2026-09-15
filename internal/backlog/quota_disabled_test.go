@@ -14,8 +14,21 @@ func TestDisabledQuotaIsFleetWideAndRetainsConcurrency(t *testing.T) {
 	}
 	// No observation store is available, and retained throttle records are
 	// contradictory. Neither is consulted while quota checks are disabled.
+	//
+	// The assignment is presented with the attempt that owns it. Occupancy is
+	// now reconstructed by the same derivation the enabled path uses, and that
+	// derivation asks what the attempt is doing rather than only what state the
+	// assignment row is in.
 	report, err := bridge.ReconcileState(context.Background(), QuotaPlanningStateInput{
-		Assignments:     []domain.Assignment{{ID: "busy", State: domain.AssignmentUnknown, Route: domain.ProviderRoute{QuotaPoolID: "pool"}}},
+		Tasks: []domain.Task{{ID: "alpha", Class: domain.TaskClassRequired}},
+		Attempts: []domain.Attempt{{
+			ID: "alpha-1", TaskID: "alpha", AssignmentID: "busy",
+			Progress: domain.ProgressActive, Control: domain.ControlRunning,
+		}},
+		Assignments: []domain.Assignment{{
+			ID: "busy", AttemptID: "alpha-1", State: domain.AssignmentUnknown,
+			Route: domain.ProviderRoute{QuotaPoolID: "pool"},
+		}},
 		ThrottleRecords: []domain.ThrottleAttemptRecord{{}, {}},
 	})
 	if err != nil {

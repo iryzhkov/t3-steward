@@ -156,7 +156,7 @@ func (b QuotaBridge) Reconcile(ctx context.Context, reservations []QuotaResumeRe
 // from one durable coordinator snapshot before changing admission.
 func (b QuotaBridge) ReconcileState(ctx context.Context, input QuotaPlanningStateInput) (QuotaBridgeReport, error) {
 	if b.Disabled {
-		return b.disabledReport(input.Assignments)
+		return b.disabledReport(input)
 	}
 	pools, _, err := quotaBridgePools(b.Pools)
 	if err != nil {
