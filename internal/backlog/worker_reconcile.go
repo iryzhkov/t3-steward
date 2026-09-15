@@ -162,9 +162,12 @@ func planWorkerStateTransition(
 				nextAttempt.Control = domain.ControlWaitingExternal
 				reason = workerStateObservedWaiting
 			case control == domain.ControlWaitingExternal:
-				nextAttempt.Progress = domain.ProgressWaitingExternal
-				nextAttempt.Control = domain.ControlWaitingExternal
-				reason = workerStateObservedWaiting
+				// Only coordinator registration starts a park. The worker can
+				// still report the old parked phase in the exchange carrying a
+				// completed wake. Preserve the coordinator's current state so
+				// that stale observation cannot undo the wake.
+				nextAttempt.Progress = attempt.Progress
+				nextAttempt.Control = attempt.Control
 			default:
 				nextAttempt.Progress = domain.ProgressActive
 				nextAttempt.Control = control

@@ -41,6 +41,12 @@ const (
 )
 
 type AttemptRecord struct {
+	// StopObservedSequence fences collection on a coordinator statement built
+	// after a snapshot that includes this stopped observation.
+	StopObservedSequence int64 `json:"stopObservedSequence,omitempty"`
+	// ObservedTurnID binds the stopped fence to a concrete provider turn even
+	// when a park and resume happen entirely between worker polls.
+	ObservedTurnID   string                                    `json:"observedTurnId,omitempty"`
 	Assignment       domain.Assignment                         `json:"assignment"`
 	Package          workerproto.ExecutionPackageManifest      `json:"package"`
 	Phase            Phase                                     `json:"phase"`
@@ -80,7 +86,8 @@ type journalState struct {
 	// which is not the same as "nothing is parked".
 	ParkedReported bool `json:"parkedReported,omitempty"`
 	// ParkedObservedAt bounds how long the last statement may be trusted.
-	ParkedObservedAt time.Time `json:"parkedObservedAt,omitempty"`
+	ParkedObservedAt           time.Time `json:"parkedObservedAt,omitempty"`
+	ParkedAcknowledgedSequence int64     `json:"parkedAcknowledgedSequence,omitempty"`
 }
 
 type Journal struct {
