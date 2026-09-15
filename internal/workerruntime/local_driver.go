@@ -509,6 +509,19 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 	if d.Config.Authorization != nil && !d.Config.Authorization.AuthorizesRoute(pkg.Route) {
 		return errors.New("execution package route is no longer authorized")
 	}
+	// Recovery may reuse a workspace without calling Prepare. Recheck the
+	// current per-worker project binding before attachment, preflight or a new
+	// provider effect. A digest change for another project is not revocation.
+	if d.Catalog == nil && d.Config.Authorization != nil {
+		return errors.New("execution package environment authorization is unavailable")
+	}
+	// Constructor-backed drivers always have a catalog. A raw embedded driver
+	// with neither authored inventory nor catalog retains its existing API.
+	if d.Catalog != nil {
+		if _, _, _, err := d.executionRecords(pkg); err != nil {
+			return fmt.Errorf("execution package environment is no longer authorized: %w", err)
+		}
+	}
 
 	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
 		return err
