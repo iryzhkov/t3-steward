@@ -589,16 +589,17 @@ func replaySettledOutcome(wait domain.TaskWait) domain.TaskWaitOutcome {
 
 func markTaskWaitsWokenTx(ctx context.Context, tx *sql.Tx, waits []domain.TaskWait, attempt domain.Attempt, delivery string, resumption bool, now time.Time) error {
 	woken := now.UTC()
-	for _, wait := range waits {
+	for index, wait := range waits {
 		wait.WokenAt = &woken
 		wait.Delivery = delivery
 		wait.WakeRevision = attempt.Revision
 		wait.Resumption = resumption
 		if wait.DeliveryID == "" {
-			// Derived once and stored, so a retry sends the same command
-			// instead of a new one that would start a second turn.
-			wait.DeliveryID = fmt.Sprintf("task-wake:%s:%d", wait.ID, attempt.Revision)
+			// Every member of this committed set shares one stable message.
+			// Per-wait IDs would start a separate turn for each all member.
+			wait.DeliveryID = fmt.Sprintf("task-wake:%s:%d", waits[0].ID, attempt.Revision)
 		}
+		waits[index] = wait
 		if err := saveTaskWaitTx(ctx, tx, wait); err != nil {
 			return err
 		}
@@ -633,13 +634,30 @@ func (s *Store) TransitionTaskWake(ctx context.Context, id, from, to string, now
 	if !allowed {
 		return false, fmt.Errorf("invalid task wake transition %s to %s", from, to)
 	}
-	wait.Delivery = to
-	if to == "delivered" {
-		delivered := now.UTC()
-		wait.DeliveredAt = &delivered
-	}
-	if err = saveTaskWaitTx(ctx, tx, wait); err != nil {
+	// One committed wake set owns one message. Claim and settle every member
+	// atomically, including recovery after an uncertain send.
+	members, err := loadJSON[domain.TaskWait](ctx, tx, "coordinator_task_waits")
+	if err != nil {
 		return false, err
+	}
+	for _, member := range members {
+		sameDelivery := wait.DeliveryID != "" && member.DeliveryID == wait.DeliveryID &&
+			member.AttemptID == wait.AttemptID && member.ThreadID == wait.ThreadID &&
+			member.WakeRevision == wait.WakeRevision
+		if member.ID != wait.ID && !sameDelivery {
+			continue
+		}
+		if member.Delivery != from {
+			return false, nil
+		}
+		member.Delivery = to
+		if to == "delivered" {
+			delivered := now.UTC()
+			member.DeliveredAt = &delivered
+		}
+		if err = saveTaskWaitTx(ctx, tx, member); err != nil {
+			return false, err
+		}
 	}
 	return true, tx.Commit()
 }
@@ -659,6 +677,9 @@ func (s *Store) TaskWakesAwaitingDelivery(ctx context.Context, now time.Time) ([
 	defer tx.Rollback()
 	waits, err := loadJSON[domain.TaskWait](ctx, tx, "coordinator_task_waits")
 	if err != nil {
+		return nil, err
+	}
+	if err := reconcileTaskWakeGroupsTx(ctx, tx, waits, now); err != nil {
 		return nil, err
 	}
 	byAttempt := make(map[string][]domain.TaskWait)
