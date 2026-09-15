@@ -95,7 +95,9 @@ const defaultGitLsRemoteOutputBytes = 64 << 10
 // would use.
 //
 // The argument vector is fixed: git ls-remote --exit-code -- <repository>
-// <ref>. There is no shell, and a manifest cannot supply the argv. Both values
+// <ref> for named refs. Full object IDs use the bounded advertisement without
+// a ref-name filter and compare its object-ID column. There is no shell, and
+// a manifest cannot supply the argv. Both values
 // are validated by the same validators the project catalog applies before any
 // argument vector is built, so a repository or ref that begins with a dash is
 // refused as a value rather than passed where Git would read it as an option.
@@ -114,7 +116,39 @@ func gitLsRemoteProbe(ctx context.Context, request ProbeRequest) (ProbeResult, e
 		ctx, cancel = context.WithTimeout(ctx, defaultGitLsRemoteTimeout)
 		defer cancel()
 	}
-	return runProbeCommand(ctx, bounded, "git", "ls-remote", "--exit-code", "--", request.Repository, request.Ref)
+	if !isFullGitObjectID(request.Ref) {
+		return runProbeCommand(ctx, bounded, "git", "ls-remote", "--exit-code", "--", request.Repository, request.Ref)
+	}
+	// ls-remote patterns match ref names, not object IDs. Filtering by a commit
+	// would incorrectly turn even the advertised branch tip into exit status 2.
+	result, err := runProbeCommand(ctx, bounded, "git", "ls-remote", "--exit-code", "--", request.Repository)
+	var exitError *ProcessExitError
+	if result.ExitCode == 2 && (err == nil || errors.As(err, &exitError)) {
+		return result, errors.New("pinned commit reachability is unobserved: repository advertises no refs")
+	}
+	if err != nil || result.ExitCode != 0 {
+		return result, err
+	}
+	// Only complete records count: a bounded/truncated final line proves nothing.
+	// Absence from advertisements does not prove absence of an ancestor or hidden
+	// object. Keep that case unobserved instead of inventing a permanent refusal.
+	lines := strings.Split(result.Output, "\n")
+	for _, line := range lines[:len(lines)-1] {
+		fields := strings.Split(line, "\t")
+		if len(fields) == 2 && strings.EqualFold(fields[0], request.Ref) &&
+			(fields[1] == "HEAD" || strings.HasPrefix(fields[1], "refs/")) {
+			return result, nil
+		}
+	}
+	return result, errors.New("pinned commit reachability is unobserved: object is not in the bounded ref advertisement")
+}
+
+func isFullGitObjectID(ref string) bool {
+	if len(ref) != 40 && len(ref) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(ref)
+	return err == nil
 }
 
 // ValidateRepositoryProbeArguments refuses anything the probe may not turn into
