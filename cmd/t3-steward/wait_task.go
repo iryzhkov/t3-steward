@@ -225,7 +225,7 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 		Action: "register-task",
 		Task: &domain.TaskWaitRegistration{
 			RequestID: *requestID, WorkflowRunID: identity.WorkflowRunID, TaskID: identity.TaskID,
-			AttemptID: identity.AttemptID, ExpectedRevision: identity.AttemptRevision,
+			AttemptID: identity.AttemptID, IssuedRevision: identity.AttemptRevision,
 			ThreadID: identity.ThreadID, Wake: domain.WakeMode(*wakeMode), MaxDuration: *timeout,
 			Name: *name, Condition: strings.Join(command, " "),
 		},

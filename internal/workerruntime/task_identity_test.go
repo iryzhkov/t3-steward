@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -80,6 +82,67 @@ func TestCollectRemovesTheIdentityRecordBeforeCapturing(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(workspace, domain.TaskIdentityDir)); !os.IsNotExist(err) {
 		t.Fatalf("Collect left the identity record in the workspace: %v", err)
+	}
+}
+
+// A collection that defers leaves the identity record in place, because the
+// turn it deferred on has not ended: it may still park itself, and the turn
+// that resumes after the wake has to be able to name itself. The record leaves
+// only when a collection actually goes through.
+func TestDeferredCollectionKeepsTheIdentityRecordForTheResumedTurn(t *testing.T) {
+	ctx := context.Background()
+	workspace := t.TempDir()
+	pkg := testPackage()
+	control := &recordingT3{thread: &domain.Thread{ID: pkg.Identity.ThreadID, Running: true}}
+	publisher := &recordingPublisher{}
+	driver := &LocalDriver{
+		T3: control, Publisher: publisher, Now: func() time.Time { return runtimeTestNow },
+		Finalizer: backlog.AttemptFinalizer{
+			StorageRoot: filepath.Join(artifactTestRoot(t), "artifacts"),
+			Processes:   &countingProcessRunner{}, Now: func() time.Time { return runtimeTestNow },
+			NewID: func(string) string { return "verification-1" },
+		},
+	}
+	if err := driver.writeTaskIdentity(pkg, workspace); err != nil {
+		t.Fatal(err)
+	}
+
+	err := driver.Collect(ctx, pkg, workspace)
+	if err == nil || !strings.Contains(err.Error(), "result collection deferred") {
+		t.Fatalf("collection of a running turn = %v, want a deferral", err)
+	}
+	if len(publisher.results) != 0 {
+		t.Fatalf("a deferred collection published a result: %+v", publisher.results)
+	}
+	raw, err := os.ReadFile(filepath.Join(workspace, filepath.FromSlash(domain.TaskIdentityFile)))
+	if err != nil {
+		t.Fatalf("the deferred collection destroyed the identity record: %v", err)
+	}
+	values, err := domain.ParseTaskIdentityFile(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values[domain.TaskWaitEnvAttemptID] != pkg.Identity.AttemptID ||
+		values[domain.TaskWaitEnvThreadID] != pkg.Identity.ThreadID {
+		t.Fatalf("the surviving record does not name this attempt: %+v", values)
+	}
+
+	// The turn really ends. Now the collection goes through, and the record
+	// leaves with it.
+	control.thread.Running = false
+	control.thread.TurnState = "completed"
+	control.message = "done"
+	control.archive = []byte(`{"thread":{"id":"thread-1","latestTurn":{"turnId":"turn-1","state":"completed",` +
+		`"startedAt":"2026-09-13T05:00:00Z","completedAt":"2026-09-13T05:01:00Z"},` +
+		`"session":{"threadId":"thread-1","status":"ready","activeTurnId":null,"lastError":null}}}`)
+	if err := driver.Collect(ctx, pkg, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if len(publisher.results) != 1 {
+		t.Fatalf("the completed turn was not collected once: %+v", publisher.results)
+	}
+	if _, err := os.Lstat(filepath.Join(workspace, domain.TaskIdentityDir)); !os.IsNotExist(err) {
+		t.Fatalf("a completed collection left the identity record behind: %v", err)
 	}
 }
 
@@ -188,6 +251,23 @@ func TestIdentityRecordIsRemovedBeforeAnythingIsCollected(t *testing.T) {
 	if err := driver.removeTaskIdentity(workspace); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// artifactTestRoot is a temporary directory whose captured artifact trees can
+// still be removed: a published capture is made read-only on purpose, and the
+// default cleanup cannot delete through a read-only directory.
+func artifactTestRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err == nil && entry.IsDir() {
+				_ = os.Chmod(path, 0o700)
+			}
+			return nil
+		})
+	})
+	return root
 }
 
 func TestTaskIdentityFileRendersAndParsesTheSixNames(t *testing.T) {

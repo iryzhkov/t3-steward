@@ -78,11 +78,32 @@ func recordTaskWaitEventTx(ctx context.Context, tx *sql.Tx, event domain.TaskWai
 // waiting-external in one fenced, idempotent transaction.
 //
 // Registration is the evidence that the current turn is parking rather than
-// completing, so it cannot be a second write that a crash could lose. A stale
-// attempt revision is refused rather than applied to whatever the attempt has
-// since become, and a terminal attempt is refused by name: that refusal is what
-// stops a thread which has already lost its task authority from quietly
-// acquiring a new reason to keep working.
+// completing, so it cannot be a second write that a crash could lose. A
+// terminal attempt is refused by name: that refusal is what stops a thread
+// which has already lost its task authority from quietly acquiring a new
+// reason to keep working.
+//
+// The fence is on the attempt's turn, and it is three separate statements,
+// because the failures they catch are different and only one of them used to
+// be checked:
+//
+//   - The attempt must still have a live turn (domain.Attempt.TurnLive). An
+//     attempt that is being verified, was released, paused or drained has moved
+//     on underneath the registering thread, whatever that thread believes.
+//   - The registering thread must be the one the attempt runs on, when the
+//     attempt names one at all. A thread may only park its own turn.
+//   - The write itself is a compare-and-set against the revision read inside
+//     this transaction, so a registration racing a turn completion still loses
+//     exactly one of the two: whichever commits second is refused.
+//
+// What is deliberately not a fence is the revision the task was handed with its
+// execution package. The coordinator stamps that when the package is built and
+// then advances the attempt itself, when the worker claims the assignment and
+// again when it reports the thread running, so the number the task holds is
+// always behind by the time the turn starts. Requiring equality with it did not
+// protect the attempt from anything: it refused every registration a real task
+// could make, and the refusal it produced said "stale revision" for a number
+// that was stale the moment it was written.
 func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitRegistration, now time.Time) (domain.TaskWait, error) {
 	var wait domain.TaskWait
 	if err := request.Validate(); err != nil {
@@ -142,16 +163,27 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 	if attempt.Progress.Terminal() {
 		return wait, domain.TaskWaitTerminalRefusal(attempt.Progress)
 	}
-	if attempt.Revision != request.ExpectedRevision {
-		return wait, fmt.Errorf("%w: attempt %q is at revision %d, not %d",
-			domain.ErrTaskWaitStaleRevision, attempt.ID, attempt.Revision, request.ExpectedRevision)
+	if !attempt.TurnLive() {
+		return wait, fmt.Errorf("%w: attempt %q is %q/%q",
+			domain.ErrTaskWaitTurnNotLive, attempt.ID, attempt.Progress, attempt.Control)
+	}
+	if attempt.ThreadID != "" && attempt.ThreadID != request.ThreadID {
+		return wait, fmt.Errorf("%w: attempt %q runs on thread %q, not %q",
+			domain.ErrTaskWaitForeignThread, attempt.ID, attempt.ThreadID, request.ThreadID)
+	}
+	if request.IssuedRevision > attempt.Revision {
+		// The coordinator never issued this number: it is ahead of anything the
+		// attempt has reached. Something rewrote the identity record, so it is
+		// refused rather than read as an unusually fresh one.
+		return wait, fmt.Errorf("task-bound wait names attempt revision %d, ahead of attempt %q at revision %d",
+			request.IssuedRevision, attempt.ID, attempt.Revision)
 	}
 
 	expected := attempt.Revision
 	id := taskWaitID(request.RequestID)
 	wait = domain.TaskWait{
 		ID: id, WorkflowRunID: request.WorkflowRunID, TaskID: request.TaskID,
-		AttemptID: request.AttemptID, ExpectedRevision: request.ExpectedRevision,
+		AttemptID: request.AttemptID, IssuedRevision: request.IssuedRevision,
 		ThreadID: request.ThreadID, Wake: request.Wake, MaxDuration: request.MaxDuration,
 		RequestID: request.RequestID, Name: request.Name, Condition: request.Condition,
 		RegisteredRevision: expected + 1,

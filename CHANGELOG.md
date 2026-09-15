@@ -36,6 +36,25 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `t3-steward wait add --task current` can park a task again. The coordinator
+  stamps the attempt revision into the execution package and then advances the
+  attempt itself, when the worker claims the assignment and again when it
+  reports the thread running, so the revision the task was handed was always
+  behind by the time its turn started and every registration was refused as
+  stale. The registration now resolves the live revision itself and is fenced on
+  the attempt's own turn: the attempt must still have one, the registering
+  thread must be the attempt's thread, and the commit is a compare-and-set
+  against the revision read in the same transaction, so a registration racing a
+  turn completion is still refused. The injected revision is kept as evidence of
+  what the task was told, under its honest name `issuedRevision`.
+
+- A collection that defers no longer destroys the task identity record. The
+  worker removed `.t3-steward/` on entry to collection, before it had
+  established that the T3 turn was terminal, so a deferred collection deleted
+  the record permanently and the turn that resumed after a wake could not name
+  itself. The record is now removed only when a collection proceeds, which is
+  still before anything is captured from the workspace.
+
 - A rerun of a rerun is no longer refused. The second rerun's subtree root
   carries what the first rerun's reused ancestors produced, and those carried
   inputs named the first run's artifacts until they were referenced into the new

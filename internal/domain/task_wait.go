@@ -153,14 +153,20 @@ type TaskWait struct {
 	WorkflowRunID string `json:"workflowRunId"`
 	TaskID        string `json:"taskId"`
 	AttemptID     string `json:"attemptId"`
-	// ExpectedRevision is the attempt revision the registration is fenced on.
-	// It is the same type as Attempt.Revision on purpose: a fence that needs a
-	// conversion to be compared is a fence with a place to go wrong.
-	ExpectedRevision int64         `json:"expectedRevision"`
-	ThreadID         string        `json:"threadId"`
-	Wake             WakeMode      `json:"wake"`
-	MaxDuration      time.Duration `json:"maxDuration"`
-	RequestID        string        `json:"requestId"`
+	// IssuedRevision is the attempt revision the task was told by its execution
+	// package. It is evidence of what the task was given, not a fence.
+	//
+	// It cannot be a fence. The coordinator stamps it when the package is built
+	// and then advances the attempt itself, at least when the worker claims the
+	// assignment and again when it reports the thread running, so the number in
+	// the task's hands is already behind before the turn starts. Fencing on it
+	// meant no task-bound wait could ever be registered. What the registration
+	// is fenced on instead is the attempt's own live turn; see RegisterTaskWait.
+	IssuedRevision int64         `json:"issuedRevision"`
+	ThreadID       string        `json:"threadId"`
+	Wake           WakeMode      `json:"wake"`
+	MaxDuration    time.Duration `json:"maxDuration"`
+	RequestID      string        `json:"requestId"`
 
 	// Name and Condition describe what is being waited for, for the operator
 	// reading a queue and for the wake message the agent receives.
@@ -215,16 +221,18 @@ func (w TaskWait) Woken() bool { return w.WokenAt != nil }
 
 // TaskWaitRegistration is the request to park an attempt on a condition.
 type TaskWaitRegistration struct {
-	RequestID        string        `json:"requestId"`
-	WorkflowRunID    string        `json:"workflowRunId"`
-	TaskID           string        `json:"taskId"`
-	AttemptID        string        `json:"attemptId"`
-	ExpectedRevision int64         `json:"expectedRevision"`
-	ThreadID         string        `json:"threadId"`
-	Wake             WakeMode      `json:"wake"`
-	MaxDuration      time.Duration `json:"maxDuration"`
-	Name             string        `json:"name,omitempty"`
-	Condition        string        `json:"condition,omitempty"`
+	RequestID     string `json:"requestId"`
+	WorkflowRunID string `json:"workflowRunId"`
+	TaskID        string `json:"taskId"`
+	AttemptID     string `json:"attemptId"`
+	// IssuedRevision is the attempt revision the task read from its own
+	// identity. It is recorded rather than fenced on; see TaskWait.
+	IssuedRevision int64         `json:"issuedRevision"`
+	ThreadID       string        `json:"threadId"`
+	Wake           WakeMode      `json:"wake"`
+	MaxDuration    time.Duration `json:"maxDuration"`
+	Name           string        `json:"name,omitempty"`
+	Condition      string        `json:"condition,omitempty"`
 }
 
 // MaxTaskWaitDuration bounds any single task-bound wait. Directory writer
@@ -242,10 +250,25 @@ func TaskWaitTerminalRefusal(progress ProgressState) error {
 	return fmt.Errorf("%w (%s); task-bound waits are refused", ErrTaskWaitTerminalAttempt, progress)
 }
 
-// ErrTaskWaitStaleRevision reports a registration that named an attempt
-// revision the attempt has since moved past. It is refused rather than applied
-// to whatever the attempt has become.
+// ErrTaskWaitStaleRevision reports a registration that lost a race: the attempt
+// changed between the moment the registration read it and the moment it tried
+// to commit. It is refused rather than applied to whatever the attempt has
+// since become.
 var ErrTaskWaitStaleRevision = errors.New("task-bound wait names a stale attempt revision")
+
+// ErrTaskWaitTurnNotLive reports a registration whose attempt has no live turn
+// to park: it has been released, paused, drained, or has finished its turn and
+// is being verified.
+//
+// This is the refusal that means "the attempt moved on underneath you". It is a
+// statement about the attempt's own state, so it stays true however long the
+// task took to ask, which a revision handed out at dispatch never could.
+var ErrTaskWaitTurnNotLive = errors.New("task-bound wait names an attempt with no live turn")
+
+// ErrTaskWaitForeignThread reports a registration from a thread that is not the
+// one the attempt is running on. A thread may only park the attempt it is
+// executing.
+var ErrTaskWaitForeignThread = errors.New("task-bound wait names an attempt running on another thread")
 
 // ErrTaskWaitReplayChanged reports a repeated request ID whose registration
 // differs from the one already committed.
@@ -272,8 +295,8 @@ func (r TaskWaitRegistration) Validate() error {
 		return errors.New("task-bound wait needs a request ID of at most 128 bytes")
 	case r.WorkflowRunID == "" || r.TaskID == "" || r.AttemptID == "":
 		return errors.New("task-bound wait needs a workflow run, task and attempt")
-	case r.ExpectedRevision < 0:
-		return errors.New("task-bound wait needs a non-negative attempt revision to fence on")
+	case r.IssuedRevision < 0:
+		return errors.New("task-bound wait needs a non-negative issued attempt revision")
 	case r.ThreadID == "":
 		return errors.New("task-bound wait needs the canonical T3 thread")
 	case r.Wake != WakeEach && r.Wake != WakeAll:

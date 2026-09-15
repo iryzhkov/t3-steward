@@ -293,6 +293,21 @@ Amendments, 2026-09-14, from the first implementation pass:
   revision. The worker never queries coordinator state directly, and the coordinator refusal
   remains the authority.
 
+Amendment, 2026-09-14, after multi-process qualification: `ExpectedRevision` is renamed
+`IssuedRevision` (`issuedRevision` on the wire) and is no longer the fence. The coordinator
+stamps the attempt revision when it builds the execution package and then advances the attempt
+itself, on the assignment claim and again when the worker reports the thread running, so the
+number the task holds is always behind before its turn starts; fencing on equality refused every
+registration a real task could make. The field is kept as evidence of what the task was told, and
+a value ahead of the attempt's own revision is refused because the coordinator never issued it.
+
+What the registration is fenced on instead, all three inside the registering transaction: the
+attempt still has a live turn (`Attempt.TurnLive`: progress `active` or `waiting-external`, and
+control `preparing`, `running`, `resuming` or `waiting-external`); the registering thread is the
+attempt's own thread, when the attempt names one; and the write is a compare-and-set against the
+revision read in that transaction, so a registration racing a turn completion still loses exactly
+one of the two.
+
 Registration + transition to `waiting-external` commit in one fenced store call. A terminal
 attempt refuses registration with `attempt is terminal (<progress>); task-bound waits are refused`.
 A `done` marker observed while a live task wait exists is refused and recorded as a
@@ -319,6 +334,11 @@ enabled only after verification against a disposable server of the deployed vers
 
 The file carries identity only: no dispatch token, no credential, and it must not travel with
 collected outputs or an archived workspace.
+
+Amendment, 2026-09-14, after multi-process qualification: the record is removed when a collection
+actually proceeds, after the worker has established that the turn is terminal, not on entry to
+`Collect`. A collection that defers leaves the turn running, and a turn that may still park itself
+needs the record to name itself with.
 
 `wait add --task current` uses them. Released while waiting: executor slot, CPU/memory/scratch
 reservation, provider slot, quota tally. Held: attempt, thread, workspace, artifacts, dependency
