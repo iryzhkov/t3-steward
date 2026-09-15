@@ -33,7 +33,7 @@ func currentTaskWaitArgs(args []string) bool {
 
 func nativeWaitArgs(args []string) bool {
 	for _, arg := range args {
-		if arg == "--native" || arg == "--task" || strings.HasPrefix(arg, "--task=") || arg == "--run" || strings.HasPrefix(arg, "--run=") || strings.HasPrefix(arg, "nw-") {
+		if arg == "--native" || arg == "--task" || strings.HasPrefix(arg, "--task=") || arg == "--run" || strings.HasPrefix(arg, "--run=") || strings.HasPrefix(arg, "nw-") || strings.HasPrefix(arg, "tw-") {
 			return true
 		}
 	}
@@ -105,7 +105,7 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 		}
 	case "cancel", "run-now":
 		for _, arg := range args[1:] {
-			if arg != "--native" {
+			if arg != "--native" && arg != "--json" {
 				if op.ID != "" {
 					return errors.New("one native wait ID required")
 				}
@@ -115,12 +115,25 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 		if op.ID == "" {
 			return errors.New("native wait ID required")
 		}
+		if strings.HasPrefix(op.ID, "tw-") {
+			if op.Action == "run-now" {
+				return errors.New("task-bound checks run on their owning worker; run-now is not supported for a task-bound wait")
+			}
+			op.Action = "cancel-task"
+		}
 	default:
 		return errors.New("unknown native wait command")
 	}
 	result, err := client.NodeWait(ctx, op)
 	if err != nil {
 		return err
+	}
+	if op.Action == "list" {
+		tasks, err := client.NodeWait(ctx, backlogadmin.NodeWaitOperation{Action: "list-task"})
+		if err != nil {
+			return err
+		}
+		result.TaskWaits = tasks.TaskWaits
 	}
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")

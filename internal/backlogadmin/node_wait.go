@@ -16,11 +16,16 @@ type NodeWaitOperation struct {
 	// Task carries a task-bound registration. It rides the node-wait operation
 	// rather than a new transport method because the two are the same admin
 	// privilege over the same coordinator records; only what they park differs.
-	Task *domain.TaskWaitRegistration `json:"task,omitempty"`
+	Task   *domain.TaskWaitRegistration `json:"task,omitempty"`
+	Result *domain.TaskWaitResult       `json:"result,omitempty"`
+	From   string                       `json:"from,omitempty"`
+	To     string                       `json:"to,omitempty"`
 }
 type NodeWaitResponse struct {
-	Waits     []domain.NodeWait `json:"waits"`
-	TaskWaits []domain.TaskWait `json:"taskWaits,omitempty"`
+	Waits     []domain.NodeWait            `json:"waits"`
+	TaskWaits []domain.TaskWait            `json:"taskWaits,omitempty"`
+	TaskWakes []domain.TaskWaitWakeContext `json:"taskWakes,omitempty"`
+	Changed   bool                         `json:"changed,omitempty"`
 }
 type nodeWaitStore interface {
 	RegisterNodeWait(context.Context, domain.NodeWaitRequest, string, string, time.Time) (domain.NodeWait, error)
@@ -43,6 +48,9 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 	}
 	if err := s.authorizer.Authorize(ctx, principal, action); err != nil {
 		return result, err
+	}
+	if op.Action == "settle-task" || op.Action == "expire-task" || op.Action == "wake-task" || op.Action == "pending-task" || op.Action == "transition-task" {
+		return s.taskWaitRuntime(ctx, op)
 	}
 	if op.Action == "register-task" || op.Action == "list-task" || op.Action == "cancel-task" {
 		return s.taskWait(ctx, op)

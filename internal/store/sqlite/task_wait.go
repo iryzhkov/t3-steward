@@ -756,7 +756,12 @@ func (s *Store) TaskWakesAwaitingDelivery(ctx context.Context, now time.Time) ([
 			continue
 		}
 		sort.Slice(live, func(i, j int) bool { return live[i].ID < live[j].ID })
+		assignment, err := loadAssignmentTx(ctx, tx, attempt.AssignmentID)
+		if err != nil {
+			return nil, err
+		}
 		pending = append(pending, domain.TaskWaitWakeContext{
+			WorkerID:  assignment.WorkerID,
 			AttemptID: attemptID, ThreadID: attempt.ThreadID,
 			AttemptRevision: attempt.Revision, Waits: live,
 		})

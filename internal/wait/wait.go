@@ -114,10 +114,15 @@ type Control interface {
 
 // Runner polls the waits and wakes threads.
 type Runner struct {
-	store   Store
-	control Control
-	log     *slog.Logger
-	now     func() time.Time
+	// TaskStore optionally routes coordinator-owned task waits over a transport.
+	TaskStore TaskWaitStore
+	// AssignedTaskWakesOnly confines delivery to the durable assignment owner.
+	AssignedTaskWakesOnly bool
+	TaskWorkerID          string
+	store                 Store
+	control               Control
+	log                   *slog.Logger
+	now                   func() time.Time
 	// Exec runs a command and returns its combined output and exit code;
 	// replaceable in tests.
 	Exec       func(ctx context.Context, w Wait) (string, int, error)

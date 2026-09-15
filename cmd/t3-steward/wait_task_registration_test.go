@@ -73,7 +73,7 @@ func taskWaitCLIFixture(t *testing.T) (config.Config, *sqlite.Store) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	server := &backlogadmin.LocalServer{
-		Listener: listener, Service: coordinatorLocalService{admin: service},
+		Listener: listener, Service: coordinatorLocalService{admin: service}, CoordinatorID: "test-coordinator",
 		AllowedUID: uint32(os.Getuid()), MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20,
 		MaxSubmissionBytes: 1 << 20, RequestTimeout: 10 * time.Second, MaxConcurrent: 8,
 	}
