@@ -46,6 +46,7 @@ for worker in worker-a worker-b; do
 done
 fleet_start_workers
 fleet_restart_worker worker-a
+python3 "$HARNESS_DIR/case5_runtime.py" prepare "$ROOT" "${UPKEEPER_SOURCE:?set UPKEEPER_SOURCE to validated source}"
 fleet_start_coordinator
 sleep 4
 for worker in worker-a worker-b; do
@@ -56,7 +57,7 @@ for worker in worker-a worker-b; do
 done
 fleet_await_workers
 fleet_coordinator_cli backlog workers --json >"$ROOT/evidence/case5-initial-workers.json"
-python3 "$HARNESS_DIR/case5_runtime.py" prepare "$ROOT" "${UPKEEPER_SOURCE:?set UPKEEPER_SOURCE to validated source}"
+python3 "$HARNESS_DIR/case5_runtime.py" enable "$ROOT"
 # Applying intent must not have touched the existing worker enrollment.
 fleet_coordinator_cli backlog workers --json >"$ROOT/evidence/case5-after-apply-before-restart.json"
 kill "$COORDINATOR_PID"
