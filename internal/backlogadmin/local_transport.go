@@ -336,7 +336,7 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 			_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: "remote admin assertion must name a principal, a request id, this coordinator and at most the supervisor role", ErrorClass: ClassAuthentication})
 			return
 		}
-		principal = Principal{ID: "remote:" + request.RemoteAdmin.Principal, Roles: []string{request.RemoteAdmin.role()}}
+		principal = Principal{ID: RelayedPrincipalID(request.RemoteAdmin.Principal), Roles: []string{request.RemoteAdmin.role()}}
 		request.RemoteAdmin = nil
 	}
 	dispatch := adminDispatch{

@@ -472,10 +472,14 @@ func TestActivationTransitionTable(t *testing.T) {
 			want:  ActivationTransitionResult{State: ActivationRevoked, Epoch: 3},
 		},
 		{
-			name: "active, operator takeover revokes the epoch", state: ActivationActive,
+			// Takeover raises the epoch as well as revoking, so a decision the
+			// replaced overseer had already formed names an epoch that is no
+			// longer current and is fenced out rather than landing after the
+			// operator and reversing it.
+			name: "active, operator takeover revokes and raises the epoch", state: ActivationActive,
 			event:  ActivationEventOperatorTakeover,
 			mutate: func(in *ActivationTransitionInput) { in.Actor = testOperator() },
-			want:   ActivationTransitionResult{State: ActivationRevoked, Epoch: 3},
+			want:   ActivationTransitionResult{State: ActivationRevoked, Epoch: 4},
 		},
 		{
 			name: "active, an overseer cannot take supervision over from itself", state: ActivationActive,

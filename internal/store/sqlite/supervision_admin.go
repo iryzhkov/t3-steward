@@ -141,6 +141,11 @@ func (s *Store) SupervisorScopeForPrincipal(ctx context.Context, principal strin
 	if principal == "" {
 		return "", 0, nil
 	}
+	// Pending-dispatch is included so that a worker which has been handed the
+	// activation can read the run while its first turn starts. Both states still
+	// require a live lease: a lease that expired revokes decision authority at
+	// the moment it expired, and scope that outlived it would let the read half
+	// of the capability survive the write half.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT run_id, epoch, record FROM coordinator_supervision_activations
 		WHERE state IN (?, ?) ORDER BY epoch DESC`,
@@ -149,6 +154,9 @@ func (s *Store) SupervisorScopeForPrincipal(ctx context.Context, principal strin
 		return "", 0, fmt.Errorf("load live supervision activations: %w", err)
 	}
 	defer rows.Close()
+	now := s.now().UTC()
+	var scopedRun string
+	var scopedEpoch int64
 	for rows.Next() {
 		var runID string
 		var epoch int64
@@ -160,11 +168,28 @@ func (s *Store) SupervisorScopeForPrincipal(ctx context.Context, principal strin
 		if err := json.Unmarshal(raw, &activation); err != nil {
 			return "", 0, err
 		}
-		if activation.Principal == principal {
-			return runID, epoch, nil
+		if activation.Principal != principal ||
+			!domain.ActivationLeaseLive(activation, now) ||
+			domain.ActivationPastDeadline(activation, now) {
+			continue
+		}
+		if scopedRun != "" && scopedRun != runID {
+			// One principal live on two runs is a configuration this coordinator
+			// cannot resolve: picking the higher epoch would silently decide
+			// which run a credential may act on. Refusing both is the answer
+			// that cannot be wrong.
+			return "", 0, fmt.Errorf(
+				"supervisor %q holds live activations on runs %q and %q; a supervisor capability is bound to one run",
+				principal, scopedRun, runID)
+		}
+		if epoch > scopedEpoch {
+			scopedRun, scopedEpoch = runID, epoch
 		}
 	}
-	return "", 0, rows.Err()
+	if err := rows.Err(); err != nil {
+		return "", 0, err
+	}
+	return scopedRun, scopedEpoch, nil
 }
 
 // ArtifactRun resolves an artifact to the run that owns it.

@@ -183,10 +183,15 @@ type SupervisionProjection struct {
 // decides: the run, its supervision record, the readiness snapshot built from
 // the same rows, and the run's effective task set for closure computation.
 type supervisionContext struct {
-	Run      domain.WorkflowRun
-	Record   domain.SupervisionRecord
-	Snapshot domain.SupervisionSnapshot
-	Tasks    []domain.Task
+	Run    domain.WorkflowRun
+	Record domain.SupervisionRecord
+	// Activation is the run's activation at the record's current epoch, or the
+	// zero value when no activation exists at it. An overseer's authority is a
+	// property of that row -- its state, its lease and its deadline -- and not of
+	// the epoch number alone, so the decision transaction has to read it.
+	Activation domain.Activation
+	Snapshot   domain.SupervisionSnapshot
+	Tasks      []domain.Task
 }
 
 // supervisionStateTx assembles the run's supervision snapshot inside the
@@ -239,6 +244,15 @@ func supervisionContextTx(ctx context.Context, tx *sql.Tx, runID string, withTas
 		record.RunID = runID
 	}
 	state.Record = record
+	activations, err := loadSupervisionActivationsTx(ctx, tx, runID)
+	if err != nil {
+		return state, false, err
+	}
+	for _, activation := range activations {
+		if activation.Epoch == record.ActivationEpoch {
+			state.Activation = activation
+		}
+	}
 	gates, err := loadSupervisionGatesTx(ctx, tx, runID)
 	if err != nil {
 		return state, false, err
@@ -815,12 +829,23 @@ func releaseNarrowedOffersTx(ctx context.Context, tx *sql.Tx, snapshot domain.Su
 }
 
 // supervisionActorCoversRun reports whether the acting capability is scoped to
-// this run. An operator principal is authenticated by the admin transport and
-// is not epoch-bound; an overseer acts only at the record's current activation
-// epoch, which is how a decision from a revoked epoch is fenced out.
-func supervisionActorCoversRun(record domain.SupervisionRecord, actor domain.Actor) bool {
-	if actor.Kind == domain.ActorOperator {
-		return true
+// this run right now.
+//
+// It asks domain.AuthorizeSupervisionActor rather than comparing epochs itself.
+// An epoch is not authority: a revoked activation, an expired lease and a review
+// past its deadline all leave the epoch where it was, and this is the only
+// authority check inside the decision transaction, so anything it does not ask
+// is not asked at all.
+func supervisionActorCoversRun(state supervisionContext, actor domain.Actor, now time.Time) bool {
+	return domain.AuthorizeSupervisionActor(state.Record, state.Activation, actor, now) == nil
+}
+
+// supervisionDecisionTime is the moment a decision's authority is judged at: the
+// time the request named, or this store's clock when it named none. A lease is
+// live or expired at a moment, so every authority check has to have one.
+func supervisionDecisionTime(s *Store, requested time.Time) time.Time {
+	if requested.IsZero() {
+		return s.now().UTC()
 	}
-	return actor.Kind == domain.ActorOverseer && actor.ActivationEpoch == record.ActivationEpoch
+	return requested.UTC()
 }

@@ -207,9 +207,9 @@ func (s *Store) DecideGate(ctx context.Context, request GateDecisionRequest) (Su
 			if err := request.Actor.Validate(); err != nil {
 				return SupervisionDecision{}, err
 			}
-			if !supervisionActorCoversRun(state.Record, request.Actor) {
-				return SupervisionDecision{}, fmt.Errorf("%w: actor is not scoped to run %q at epoch %d",
-					domain.ErrSupervisionUnauthorizedActor, request.RunID, state.Record.ActivationEpoch)
+			if err := domain.AuthorizeSupervisionActor(state.Record, state.Activation, request.Actor,
+				supervisionDecisionTime(s, request.DecidedAt)); err != nil {
+				return SupervisionDecision{}, fmt.Errorf("%w: %v", domain.ErrSupervisionUnauthorizedActor, err)
 			}
 			gate, err := loadSupervisionGateTx(ctx, tx, request.RunID, request.GateID)
 			if err != nil {
@@ -426,7 +426,7 @@ func (s *Store) PlaceHold(ctx context.Context, request HoldRequest) (Supervision
 				Hold:                hold,
 				Event:               domain.HoldEventPlace,
 				Actor:               request.Actor,
-				ActorScopeCoversRun: supervisionActorCoversRun(state.Record, request.Actor),
+				ActorScopeCoversRun: supervisionActorCoversRun(state, request.Actor, placedAt),
 				BranchRootExists:    rootExists,
 				ClosureRecomputed:   true,
 			})
@@ -466,9 +466,9 @@ func (s *Store) ReleaseHold(ctx context.Context, request HoldReleaseRequest) (Su
 				return SupervisionDecision{}, fmt.Errorf("%w: hold %q of run %q",
 					ErrSupervisionRecordNotFound, request.HoldID, request.RunID)
 			}
-			if !supervisionActorCoversRun(state.Record, request.Actor) {
-				return SupervisionDecision{}, fmt.Errorf("%w: actor is not scoped to run %q at epoch %d",
-					domain.ErrSupervisionUnauthorizedActor, request.RunID, state.Record.ActivationEpoch)
+			if err := domain.AuthorizeSupervisionActor(state.Record, state.Activation, request.Actor,
+				supervisionDecisionTime(s, request.ReleasedAt)); err != nil {
+				return SupervisionDecision{}, fmt.Errorf("%w: %v", domain.ErrSupervisionUnauthorizedActor, err)
 			}
 			next, err := domain.HoldTransition(domain.HoldTransitionInput{
 				Hold: hold, Event: domain.HoldEventRelease, Actor: request.Actor,
@@ -785,7 +785,7 @@ func (s *Store) OpenReviewIncident(ctx context.Context, request IncidentRequest)
 			next, err := domain.IncidentTransition(domain.IncidentTransitionInput{
 				Incident: domain.ReviewIncident{}, Event: domain.IncidentEventRaise, Actor: request.Actor,
 				ReasonChangedOrThresholdCrossed: fresh,
-				ActorScopeCoversRun:             supervisionActorCoversRun(state.Record, request.Actor),
+				ActorScopeCoversRun:             supervisionActorCoversRun(state, request.Actor, openedAt),
 			})
 			if err != nil {
 				return SupervisionDecision{}, err
@@ -843,10 +843,11 @@ func (s *Store) ResolveReviewIncident(ctx context.Context, request IncidentResol
 				Event:                           request.Event,
 				Actor:                           request.Actor,
 				ReasonChangedOrThresholdCrossed: true,
-				ActorScopeCoversRun:             supervisionActorCoversRun(state.Record, request.Actor),
-				MatchingGateIncident:            request.GateID != "" && incident.GateID == request.GateID,
-				TaskTerminallyFailed:            terminallyFailed,
-				ExpectedRevision:                request.ExpectedRevision,
+				ActorScopeCoversRun: supervisionActorCoversRun(state, request.Actor,
+					supervisionDecisionTime(s, request.ResolvedAt)),
+				MatchingGateIncident: request.GateID != "" && incident.GateID == request.GateID,
+				TaskTerminallyFailed: terminallyFailed,
+				ExpectedRevision:     request.ExpectedRevision,
 			})
 			if err != nil {
 				return SupervisionDecision{}, err

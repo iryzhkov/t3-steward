@@ -392,6 +392,13 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 	} else if len(report.Results) != 0 {
 		c.logger.Info("backlog-v2 schedule occurrences reconciled", "results", len(report.Results))
 	}
+	// An overseer obeys the same automatic admission gates as every other
+	// route, so activation dispatch runs only with a current quota answer.
+	// Without one the gate stays closed, which is the plan's own rule for an
+	// unavailable supervisor route rather than a special case.
+	if quotaHealthy && c.supervision != nil {
+		c.supervision.DispatchActivations(ctx, backlog.WorkerAdmissionPolicyFromQuotaReport(quotaReport))
+	}
 	if quotaHealthy {
 		if report, err := c.planning.Tick(ctx, quotaReport); err != nil {
 			c.logger.Error("backlog-v2 assignment planning failed", "error", err)
@@ -572,11 +579,26 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	defer workers.close()
 	supervisionStore := backlog.CoordinatorSupervisionStore{Store: store}
 	service.SetSupervisionStore(backlogadmin.CoordinatorSupervisionStore{Store: store})
+	supervisorPrincipal, supervisorCredential, err := coordinatorSupervisorClient(cfg.BacklogV2.Coordinator.AdminClients)
+	if err != nil {
+		// Ambiguous supervisor configuration disables activation dispatch and
+		// says so. Every other boundary keeps running: a supervised run then
+		// waits for an operator decision instead of getting an overseer whose
+		// authority nobody can name.
+		logger.Error("campaign supervision activations are disabled", "error", err)
+	}
 	cycle := coordinatorBoundaryCycle{
 		projection: supervisionStore,
 		supervision: &coordinatorSupervision{
 			store: supervisionStore, logger: logger,
-			workers: store.LoadWorkerSnapshots,
+			workers:     store.LoadWorkerSnapshots,
+			activations: backlog.SupervisionActivationService{Store: supervisionStore},
+			settings: coordinatorActivationSettings{
+				CoordinatorID:                 cfg.BacklogV2.Coordinator.ID,
+				CoordinatorEpoch:              epoch,
+				SupervisorClient:              supervisorPrincipal,
+				SupervisorCredentialReference: supervisorCredential,
+			},
 		},
 		quota: coordinatorQuotaReconciler{store: store, bridge: backlog.QuotaBridge{
 			Store: store, Pools: coordinatorQuotaPoolBindings(cfg), Disabled: !cfg.QuotaChecksEnabled(),

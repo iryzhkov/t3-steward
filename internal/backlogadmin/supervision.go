@@ -979,6 +979,30 @@ type SupervisorScopeSource interface {
 // on the run it was woken for is a property of this authorizer rather than of
 // the secret. See docs/backlog-v2-operations.md for what that does and does
 // not contain.
+// relayedPrincipalPrefix marks a principal the coordinator accepted through a
+// relay rather than from its own socket peer.
+const relayedPrincipalPrefix = "remote:"
+
+// RelayedPrincipalID is the identity a relayed admin client is known by inside
+// the coordinator.
+//
+// Both carriers reach the coordinator through the same local server, which
+// rewrites the claimed principal to this form, and the supervisor authorizer
+// resolves scope under it. Anything that has to match that identity from the
+// outside -- above all the principal recorded on an activation, which is what
+// binds a supervisor credential to one run and one epoch -- must derive it here
+// rather than spell the prefix again. The two spellings drifting apart is not a
+// compile error: it is a supervisor that is silently refused every operation.
+func RelayedPrincipalID(client string) string {
+	if client == "" {
+		return ""
+	}
+	if strings.HasPrefix(client, relayedPrincipalPrefix) {
+		return client
+	}
+	return relayedPrincipalPrefix + client
+}
+
 type SupervisorAuthorizer struct {
 	Scope    SupervisorScopeSource
 	Delegate Authorizer

@@ -127,6 +127,16 @@ func RunExecutionsQuiescent(runID string, attempts []Attempt, assignments []Assi
 		if attempt.WorkflowRunID != runID {
 			continue
 		}
+		// A live overseer activation does not keep the run's own work from
+		// being quiescent. It is not that work: it holds no task's workspace
+		// and publishes no result, and the settlement barrier that does keep a
+		// supervised run open -- an unresolved review incident or an
+		// unaccepted final gate -- is expressed separately and honestly. Were
+		// an activation counted here, an overseer would be waiting for a
+		// settlement that was waiting for the overseer.
+		if attempt.IsSupervisionActivation() {
+			continue
+		}
 		owned[attempt.ID] = true
 		if attempt.Control != "" && attempt.Control != ControlStopped && attempt.Control != ControlUnassigned {
 			return false

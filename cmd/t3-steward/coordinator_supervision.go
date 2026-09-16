@@ -33,6 +33,11 @@ type coordinatorSupervision struct {
 	// from. It is a function rather than a snapshot so each boundary reads what
 	// the fleet looks like now.
 	workers func(context.Context) ([]domain.WorkerSnapshot, error)
+	// activations drives the overseer activation lifecycle. A zero value
+	// disables activation dispatch and leaves the observations above unchanged,
+	// which is the deployment that has no supervisor credential configured.
+	activations backlog.SupervisionActivationService
+	settings    coordinatorActivationSettings
 }
 
 func (c coordinatorSupervision) at() time.Time {

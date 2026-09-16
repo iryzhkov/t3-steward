@@ -329,19 +329,13 @@ func ActivationDispatchIdentity(runID string, epoch int64) string {
 // live at the given moment. Expiry revokes decision authority immediately: it is
 // not a grace period and not a warning.
 func ActivationLeaseValid(activation domain.Activation, now time.Time) bool {
-	if strings.TrimSpace(activation.LeaseToken) == "" || activation.LeaseExpiresAt == nil {
-		return false
-	}
-	return now.UTC().Before(activation.LeaseExpiresAt.UTC())
+	return domain.ActivationLeaseLive(activation, now)
 }
 
 // ActivationExpired reports whether the activation is past its maximum elapsed
 // time.
 func ActivationExpired(activation domain.Activation, now time.Time) bool {
-	if activation.Deadline == nil {
-		return false
-	}
-	return !now.UTC().Before(activation.Deadline.UTC())
+	return domain.ActivationPastDeadline(activation, now)
 }
 
 // SupervisionActivationState is everything one run's activation decision reads.
@@ -384,6 +378,12 @@ type ActivationSignal struct {
 	// OperatorAuthorized and GrantActivations carry an operator continuation.
 	OperatorAuthorized bool
 	GrantActivations   int
+	// Principal is the admin principal the dispatched overseer will
+	// authenticate as. It is recorded on the activation when one is created, so
+	// that the coordinator's own authorizer resolves that principal's scope from
+	// the activation it issued rather than from the credential's own claims.
+	// Between activations the same principal resolves to no run at all.
+	Principal string
 	// Outcome overrides the recorded outcome when the caller knows it, for
 	// example decided rather than no-decision on a spent activation.
 	Outcome   domain.ActivationOutcome
@@ -507,6 +507,7 @@ func PlanActivation(state SupervisionActivationState, signal ActivationSignal, n
 			}
 			next = newActivation(record, result.Epoch, inbox.HighWaterMark, recovered)
 			next.IncidentID = signal.IncidentID
+			next.Principal = signal.Principal
 			plan.Dispatch = issueActivationLease(&next, record, now, false)
 		}
 	case domain.ActivationEventDispatchUndelivered:
@@ -678,32 +679,12 @@ func issueActivationLease(activation *domain.Activation, record domain.Supervisi
 // record revision, an activation that is not active, or an overseer acting for
 // a different run.
 func AuthorizeActivationDecision(state SupervisionActivationState, actor domain.Actor, expectedEpoch, expectedRevision int64, now time.Time) error {
-	if err := actor.Validate(); err != nil {
+	if err := domain.AuthorizeSupervisionActor(state.Record, state.Activation, actor, now); err != nil {
 		return err
 	}
-	if actor.Kind == domain.ActorOperator {
-		// An operator is authenticated by the admin transport and is not fenced
-		// by the overseer's lease; it is still fenced by the record revision.
-		if expectedRevision != state.Record.Revision {
-			return fmt.Errorf("%w: decision names record revision %d, the record is at %d",
-				domain.ErrSupervisionStaleRevision, expectedRevision, state.Record.Revision)
-		}
-		return nil
-	}
-	activation := state.Activation
-	if activation.State != domain.ActivationActive {
-		return fmt.Errorf("%w: the activation is %s, not active", domain.ErrSupervisionPrerequisite, activation.State)
-	}
-	if !ActivationLeaseValid(activation, now) {
-		return fmt.Errorf("%w: the activation lease expired, so its decision authority is revoked",
-			domain.ErrSupervisionPrerequisite)
-	}
-	if ActivationExpired(activation, now) {
-		return fmt.Errorf("%w: the activation passed its maximum elapsed time", domain.ErrSupervisionPrerequisite)
-	}
-	if expectedEpoch != activation.Epoch || actor.ActivationEpoch != activation.Epoch {
+	if actor.Kind == domain.ActorOverseer && expectedEpoch != state.Activation.Epoch {
 		return fmt.Errorf("%w: decision names epoch %d, the activation is at %d",
-			domain.ErrSupervisionStaleRevision, expectedEpoch, activation.Epoch)
+			domain.ErrSupervisionStaleRevision, expectedEpoch, state.Activation.Epoch)
 	}
 	if expectedRevision != state.Record.Revision {
 		return fmt.Errorf("%w: decision names record revision %d, the record is at %d",

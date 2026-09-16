@@ -133,6 +133,12 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	if d.Config.Authorization != nil && !d.Config.Authorization.AuthorizesRoute(pkg.Route) {
 		return "", errors.New("execution package route is no longer authorized")
 	}
+	if pkg.IsActivation() {
+		// An activation has no declared task, so there is nothing to resolve
+		// against the catalog and nothing to check out. See
+		// supervision_activation.go for why its workspace is empty.
+		return d.prepareActivation(pkg)
+	}
 	environment, task, attempt, err := d.executionRecords(pkg)
 	if err != nil {
 		return "", err
@@ -506,6 +512,9 @@ func (d *LocalDriver) removeTaskIdentity(pkg workerproto.ExecutionPackage, works
 }
 
 func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
+	if pkg.IsActivation() {
+		return d.createActivationThread(ctx, pkg, workspace)
+	}
 	if d.Config.Authorization != nil && !d.Config.Authorization.AuthorizesRoute(pkg.Route) {
 		return errors.New("execution package route is no longer authorized")
 	}
@@ -631,6 +640,9 @@ func (d *LocalDriver) StopThread(ctx context.Context, pkg workerproto.ExecutionP
 }
 
 func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
+	if pkg.IsActivation() {
+		return d.collectActivation(ctx, pkg, workspace)
+	}
 	if !d.scoped {
 		if manager := d.containedManager(pkg); manager != nil {
 			if err := manager.Quiesce(ctx, pkg, false); err != nil {

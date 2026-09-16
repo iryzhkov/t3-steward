@@ -72,11 +72,16 @@ func TestSupervisionActivationCommitFencesOnTheRecordRevision(t *testing.T) {
 	}
 	record := state.Record
 	record.ActivationsUsed++
+	liveLease := supervisionTestTime.Add(time.Hour)
 	commit := SupervisionActivationRowCommit{
 		RunID: "run-1", ExpectedRecordRevision: state.Record.Revision, Record: record,
 		Activation: domain.Activation{
 			ID: "activation-1", RunID: "run-1", Epoch: state.Record.ActivationEpoch,
 			DispatchIdentity: "dispatch-1", State: domain.ActivationActive, Principal: "overseer-1",
+			// Scope follows the lease, so the activation carries one. An
+			// activation without a live lease resolves to no run at all, which
+			// is asserted below.
+			LeaseToken: "lease-1", LeaseExpiresAt: &liveLease,
 		},
 		ConsumedThrough: 1, CursorAdvanced: true,
 		Outbox: []SupervisionOutboxRow{{
@@ -115,6 +120,22 @@ func TestSupervisionActivationCommitFencesOnTheRecordRevision(t *testing.T) {
 	}
 	if runID, _, err := store.SupervisorScopeForPrincipal(ctx, "someone-else"); err != nil || runID != "" {
 		t.Fatalf("an unrelated principal resolved to run %q (err %v)", runID, err)
+	}
+	// An expired lease revokes the capability immediately, the read half
+	// included: the activation row is still active, and it still resolves to no
+	// run at all.
+	expired := after.Activation
+	expiredAt := supervisionTestTime.Add(-time.Minute)
+	expired.LeaseExpiresAt = &expiredAt
+	stale := SupervisionActivationRowCommit{
+		RunID: "run-1", ExpectedRecordRevision: after.Record.Revision, Record: after.Record,
+		Activation: expired, CommittedAt: supervisionTestTime,
+	}
+	if err := store.CommitSupervisionActivationRows(ctx, stale); err != nil {
+		t.Fatalf("commit the expired lease: %v", err)
+	}
+	if runID, epoch, err := store.SupervisorScopeForPrincipal(ctx, "overseer-1"); err != nil || runID != "" || epoch != 0 {
+		t.Fatalf("an expired lease still resolved to run %q at epoch %d (err %v)", runID, epoch, err)
 	}
 }
 

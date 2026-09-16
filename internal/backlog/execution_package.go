@@ -46,6 +46,15 @@ type CoordinatorOfferBuilder struct {
 	// here, so the worker is never sent work whose evidence it cannot produce.
 	// An unknown worker is refused for the same reason: silence is not consent.
 	WorkerCapabilities map[string][]string
+	// Supervision reads the activation state an overseer package is rendered
+	// from. It is nil in a deployment that runs no supervised campaign, and an
+	// activation assignment is then refused rather than built as a task.
+	Supervision SupervisionOfferSource
+	// SupervisorPrincipal and SupervisorCredentialReference describe the admin
+	// client an overseer authenticates as on the worker host. See the
+	// co-tenancy limitation recorded on workerproto.SupervisionActivation.
+	SupervisorPrincipal           string
+	SupervisorCredentialReference string
 }
 
 func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
@@ -70,6 +79,16 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 	records, err := b.Store.LoadCoordinatorRecords(ctx)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, err
+	}
+	// An overseer activation is offered through this same builder, so that one
+	// offer path, one manifest content address and one capability negotiation
+	// serve both kinds of work. What it is not is a task, so it leaves before
+	// the task resolution below, which would look for a declared task an
+	// activation deliberately does not have.
+	for _, attempt := range records.Attempts {
+		if attempt.ID == assignment.AttemptID && attempt.IsSupervisionActivation() {
+			return b.buildActivationOffer(ctx, records, attempt, assignment, expiresAt)
+		}
 	}
 	state, err := resolveExecutionPackageState(records, assignment)
 	if err != nil {

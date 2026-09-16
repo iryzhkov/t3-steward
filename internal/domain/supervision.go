@@ -1069,7 +1069,15 @@ func ActivationTransition(in ActivationTransitionInput) (ActivationTransitionRes
 				return ActivationTransitionResult{}, fmt.Errorf("%w: only an operator may take over supervision",
 					ErrSupervisionUnauthorizedActor)
 			}
-			return stay(ActivationRevoked)
+			// Takeover raises the epoch as well as revoking. Revocation alone
+			// leaves the record at the epoch the replaced overseer still
+			// names, and every authority check that compares a decision's
+			// epoch against the record's would keep agreeing with it: a
+			// decision already formed before the takeover would land after
+			// it and reverse the operator. Raising the epoch is what "late
+			// decisions from this epoch are fenced out" means once the fence
+			// is a number rather than an intention.
+			return ActivationTransitionResult{State: ActivationRevoked, Epoch: epoch + 1}, nil
 		case ActivationEventThreadLost:
 			if !in.RuntimeProvenStopped {
 				return stay(ActivationRecoveryRequired)

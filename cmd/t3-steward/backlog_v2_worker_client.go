@@ -366,6 +366,14 @@ func newCoordinatorWorkerSession(
 			_ = closeTransport()
 		}
 	}()
+	// The supervisor principal is resolved here rather than passed in so that
+	// the offer builder and the coordinator's activation boundary read the one
+	// configuration entry. An ambiguous or absent supervisor leaves it empty,
+	// which refuses an activation offer instead of guessing an identity.
+	supervisorPrincipal, supervisorCredential, err := coordinatorSupervisorClient(settings.Coordinator.AdminClients)
+	if err != nil {
+		supervisorPrincipal, supervisorCredential = "", ""
+	}
 	client, err := workerproto.NewClient(workerproto.ClientConfig{
 		CoordinatorID: settings.Coordinator.ID, WorkerID: workerID,
 		CoordinatorEpoch: coordinatorEpoch, WorkerEpoch: worker.Epoch, SessionID: sessionID,
@@ -453,6 +461,14 @@ func newCoordinatorWorkerSession(
 				// WorkerCapabilities stays nil on purpose: the builder then reads
 				// what the worker reported about itself, which is the only source
 				// that knows which build is running on that host.
+				//
+				// Supervision lets this builder also render an overseer
+				// activation, so one offer path serves both kinds of work. The
+				// supervisor principal is read from configuration, because the
+				// coordinator has to be told which admin client it will see.
+				Supervision:                   backlog.CoordinatorSupervisionStore{Store: store},
+				SupervisorPrincipal:           supervisorPrincipal,
+				SupervisorCredentialReference: supervisorCredential,
 			},
 			Transport: inputTransport, Artifacts: artifacts,
 			CoordinatorID: settings.Coordinator.ID, CoordinatorEpoch: coordinatorEpoch,

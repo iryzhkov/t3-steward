@@ -106,7 +106,12 @@ func ProjectWorkflowRuns(ctx context.Context, store ProjectionStore, now time.Ti
 		}
 		owned := make(map[string]bool)
 		before.Tasks = domain.TasksForRun(run, records.Tasks)
-		for _, attempt := range records.Attempts {
+		// The projection is over the run's declared graph. An overseer
+		// activation runs as assigned work but is not a node of that graph:
+		// it names no declared task, so a DAG built with it would refuse to
+		// validate, and a sink that waited for it would wait for the thing
+		// that has to decide whether the run may settle.
+		for _, attempt := range domain.DeclaredTaskAttempts(records.Attempts) {
 			if attempt.WorkflowRunID == run.ID {
 				before.Attempts = append(before.Attempts, attempt)
 				owned[attempt.ID] = true
