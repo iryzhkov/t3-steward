@@ -504,6 +504,25 @@ func (c *SSHClient) AmendGraph(ctx context.Context, amendment domain.GraphAmendm
 	return *response.GraphAmendment, nil
 }
 
+// Supervise sends one supervision operation under the word its own operation
+// selects, so that a key pinned to supervision-show cannot carry a decision.
+func (c *SSHClient) Supervise(ctx context.Context, request SupervisionRequest) (SupervisionResponse, error) {
+	operation := localOperationSupervisionShow
+	if request.Operation.Mutating() {
+		operation = localOperationSupervisionDecision
+	}
+	response, _, err := c.roundTrip(ctx, localRequest{
+		Version: LocalTransportVersion, Operation: operation, Supervision: &request,
+	}, nil, false)
+	if err != nil {
+		return SupervisionResponse{}, err
+	}
+	if response.SupervisionResponse == nil {
+		return SupervisionResponse{}, c.fail(ClassProtocol, operation, errors.New("coordinator supervision returned no response"))
+	}
+	return *response.SupervisionResponse, nil
+}
+
 func (c *SSHClient) EnrollWorker(ctx context.Context, request domain.WorkerEnrollmentRequest) (domain.WorkerEnrollment, error) {
 	response, _, err := c.roundTrip(ctx, localRequest{
 		Version: LocalTransportVersion, Operation: localOperationWorkerEnrollment, WorkerEnrollment: &request,

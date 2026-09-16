@@ -31,6 +31,13 @@ const (
 	localOperationGraphAmendment     = "graph-amendment"
 	localOperationWorkerEnrollment   = "worker-enrollment"
 	localOperationQuarantineRelease  = "quarantine-release"
+	// Supervision arrives as two words rather than one. Showing a run's
+	// supervision is a read and carries no effect to replay; deciding a gate,
+	// holding, releasing, escalating and resolving are effects. Two words let
+	// an authorized_keys line pin a key to reading supervision without
+	// granting it the authority to decide.
+	localOperationSupervisionShow     = "supervision-show"
+	localOperationSupervisionDecision = "supervision-decision"
 )
 
 // Operations is the complete coordinator-admin operation vocabulary, in the
@@ -48,7 +55,15 @@ func Operations() []string {
 		localOperationGraphAmendment,
 		localOperationWorkerEnrollment,
 		localOperationQuarantineRelease,
+		localOperationSupervisionShow,
+		localOperationSupervisionDecision,
 	}
+}
+
+// supervisionOperation reports whether name is one of the two supervision
+// words.
+func supervisionOperation(name string) bool {
+	return name == localOperationSupervisionShow || name == localOperationSupervisionDecision
 }
 
 // ValidOperation reports whether name is one of the operations above.
@@ -130,14 +145,31 @@ type RemoteAdminAssertion struct {
 	Principal   string `json:"principal"`
 	Coordinator string `json:"coordinator"`
 	RequestID   string `json:"requestId"`
+	// Role narrows the granted role further still. Empty means the ordinary
+	// remote-admin role; the only other accepted value is SupervisorRole,
+	// which is strictly weaker. It can never widen: local-admin is not
+	// accepted here, and the assertion is only honoured from a peer that
+	// already holds local-admin authority through its UID.
+	Role string `json:"role,omitempty"`
 }
 
 // valid reports whether an assertion is complete and names this coordinator.
 // A field that is carried but never checked is a field that will eventually be
 // wrong without anyone noticing.
 func (a *RemoteAdminAssertion) valid(coordinatorID string) bool {
-	return a != nil && a.Principal != "" && a.RequestID != "" &&
-		a.Coordinator != "" && a.Coordinator == coordinatorID
+	if a == nil || a.Principal == "" || a.RequestID == "" ||
+		a.Coordinator == "" || a.Coordinator != coordinatorID {
+		return false
+	}
+	return a.Role == "" || a.Role == SupervisorRole
+}
+
+// role is the role this assertion narrows authority to.
+func (a *RemoteAdminAssertion) role() string {
+	if a.Role == SupervisorRole {
+		return SupervisorRole
+	}
+	return RemoteAdminRole
 }
 
 type localRequest struct {
@@ -155,6 +187,7 @@ type localRequest struct {
 	ScheduleDefinition *LocalScheduleDefinitionRequest `json:"scheduleDefinition,omitempty"`
 	UnknownRecovery    *UnknownRecoveryRequest         `json:"unknownRecovery,omitempty"`
 	QuarantineRelease  *QuarantineReleaseRequest       `json:"quarantineRelease,omitempty"`
+	Supervision        *SupervisionRequest             `json:"supervision,omitempty"`
 }
 
 type localResponse struct {
@@ -170,6 +203,7 @@ type localResponse struct {
 	ScheduleDefinitionResponse *LocalScheduleDefinitionResponse          `json:"scheduleDefinitionResponse,omitempty"`
 	UnknownRecoveryResponse    *domain.UnknownAssignmentRecoveryDecision `json:"unknownRecoveryResponse,omitempty"`
 	QuarantineReleaseResponse  *domain.QuarantineRelease                 `json:"quarantineReleaseResponse,omitempty"`
+	SupervisionResponse        *SupervisionResponse                      `json:"supervisionResponse,omitempty"`
 	Error                      string                                    `json:"error,omitempty"`
 	// ErrorClass lets the server say whether it refused the principal, the
 	// frame or the request itself, so the client does not have to guess a
@@ -299,10 +333,10 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 	// overwritten either way, on both carriers.
 	if request.RemoteAdmin != nil {
 		if !request.RemoteAdmin.valid(s.CoordinatorID) {
-			_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: "remote admin assertion must name a principal, a request id and this coordinator", ErrorClass: ClassAuthentication})
+			_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: "remote admin assertion must name a principal, a request id, this coordinator and at most the supervisor role", ErrorClass: ClassAuthentication})
 			return
 		}
-		principal = Principal{ID: "remote:" + request.RemoteAdmin.Principal, Roles: []string{RemoteAdminRole}}
+		principal = Principal{ID: "remote:" + request.RemoteAdmin.Principal, Roles: []string{request.RemoteAdmin.role()}}
 		request.RemoteAdmin = nil
 	}
 	dispatch := adminDispatch{
@@ -432,6 +466,25 @@ func (c LocalClient) ReleaseQuarantine(ctx context.Context, _ Principal, request
 		return domain.QuarantineRelease{}, errors.New("local quarantine release returned no response")
 	}
 	return *response.QuarantineReleaseResponse, nil
+}
+
+// Supervise sends one supervision operation. The word it travels under is
+// decided by the operation itself, so a read cannot be smuggled in as a
+// decision or the other way round.
+func (c LocalClient) Supervise(ctx context.Context, request SupervisionRequest) (SupervisionResponse, error) {
+	operation := localOperationSupervisionShow
+	if request.Operation.Mutating() {
+		operation = localOperationSupervisionDecision
+	}
+	local := localRequest{Version: LocalTransportVersion, Operation: operation, Supervision: &request}
+	var response localResponse
+	if err := c.call(ctx, local, &response); err != nil {
+		return SupervisionResponse{}, err
+	}
+	if response.SupervisionResponse == nil {
+		return SupervisionResponse{}, errors.New("local supervision returned no response")
+	}
+	return *response.SupervisionResponse, nil
 }
 
 func (c LocalClient) PutSchedule(
