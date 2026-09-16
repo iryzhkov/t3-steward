@@ -209,6 +209,9 @@ func normalizeCodex(raw json.RawMessage, base domain.QuotaSnapshot) ([]domain.Qu
 		}
 		if w.WindowDurationMins != nil {
 			s.WindowDuration = time.Duration(*w.WindowDurationMins * float64(time.Minute))
+			if s.WindowDuration == 7*24*time.Hour {
+				s.LimitName = fmt.Sprintf("%s weekly quota (%s window)", limitName, window)
+			}
 		}
 		if w.ResetsAt != nil && *w.ResetsAt > 0 {
 			t := time.Unix(*w.ResetsAt, 0).UTC()

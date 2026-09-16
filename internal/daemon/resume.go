@@ -240,7 +240,7 @@ func (d *Daemon) resumeOne(ctx context.Context, intent domain.ResumeIntent, thre
 		intent.Status = domain.ResumeResumed
 		intent.ResumedAt = &now
 		if !d.cfg.Policy.DryRun {
-			d.notifier.Send(ctx, "T3 quota watchdog: thread resumed", thread.Title)
+			d.notifier.Send(ctx, "T3 steward: thread resumed", thread.Title)
 		}
 	}
 	intent.UpdatedAt = now

@@ -124,6 +124,8 @@ type BucketState struct {
 	// Epoch identifies the reset window the phase belongs to. It is derived
 	// from ResetsAt; an empty epoch means the provider reported no reset time.
 	Epoch string `json:"epoch"`
+	// WindowDuration preserves the reported length for timer-driven policy checks.
+	WindowDuration time.Duration `json:"windowDuration,omitempty"`
 	// LimitName is the last human-readable name seen for the bucket.
 	LimitName     string     `json:"limitName"`
 	ModelSelector string     `json:"modelSelector"`

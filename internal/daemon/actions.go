@@ -71,7 +71,7 @@ func (d *Daemon) warnThreads(ctx context.Context, threads []domain.Thread, a dom
 	if a.Kind == domain.ActionDrain {
 		tmpl = d.cfg.Messages.Drain
 	}
-	engine := d.engineFor(a.Bucket, a.Snapshot.LimitName)
+	engine := d.engineFor(a.Bucket, a.Snapshot.LimitName, a.Snapshot.WindowDuration)
 	text, err := renderMessage(tmpl, a.Snapshot, engine.Thresholds().GracePeriod, d.now())
 	if err != nil {
 		d.log.Error("render message", "err", err)
@@ -186,7 +186,7 @@ func (d *Daemon) stopThreads(ctx context.Context, threads []domain.Thread, a dom
 		}
 		rec.Err = "thread still running after retries"
 		d.record(ctx, rec)
-		d.notifier.Send(ctx, "T3 quota watchdog: stop failed",
+		d.notifier.Send(ctx, "T3 steward: stop failed",
 			fmt.Sprintf("Thread %q is still running after %d attempts (%s).", t.Title, attempts, a.Bucket))
 	}
 	if !dry && len(stopped) > 0 {
@@ -194,7 +194,7 @@ func (d *Daemon) stopThreads(ctx context.Context, threads []domain.Thread, a dom
 		for _, t := range stopped {
 			names = append(names, t.Title)
 		}
-		d.notifier.Send(ctx, "T3 quota watchdog: threads stopped",
+		d.notifier.Send(ctx, "T3 steward: threads stopped",
 			fmt.Sprintf("%s at %.0f%%. Stopped: %s", a.Snapshot.LimitName, a.Snapshot.UsedPercent, strings.Join(names, ", ")))
 	}
 }

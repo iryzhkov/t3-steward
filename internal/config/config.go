@@ -202,6 +202,9 @@ type Override struct {
 		LimitName string `yaml:"limit_name"`
 		// Window matches the window name (glob, case-insensitive).
 		Window string `yaml:"window"`
+		// MinWindowDuration matches a reported window length at least this long.
+		// Zero disables the duration filter; unknown durations do not match.
+		MinWindowDuration Duration `yaml:"min_window_duration"`
 	} `yaml:"match"`
 	WarnPercent  *float64  `yaml:"warn_percent"`
 	DrainPercent *float64  `yaml:"drain_percent"`
@@ -542,13 +545,13 @@ type Config struct {
 }
 
 // DefaultWarnMessage is the warning delivered at the warn threshold.
-const DefaultWarnMessage = `Provider quota warning from the T3 quota watchdog: "{{.LimitName}}" is at {{.UsedPercent}}% and resets at {{.ResetsAt}}. Do not start new subagents. Ask active subagents to checkpoint and return their results, consolidate the current work, then stop at a clean point.`
+const DefaultWarnMessage = `T3 steward quota advisory: "{{.LimitName}}" is at {{.UsedPercent}}% and resets at {{.ResetsAt}}. Continue the current user task and keep work focused. This advisory does not ask you to stop, checkpoint, or cancel active subagents. A separate drain notice will explicitly request a checkpoint and stop if quota becomes critically low.`
 
 // DefaultDrainMessage is the message delivered at the drain threshold.
-const DefaultDrainMessage = `Provider quota is nearly exhausted (T3 quota watchdog): "{{.LimitName}}" is at {{.UsedPercent}}% and resets at {{.ResetsAt}}. Stop spawning subagents now. Cancel or finish active subagents, collect their results, write a short checkpoint of the current state and remaining work, then stop. The session will be interrupted in {{.GracePeriod}} if it is still running.`
+const DefaultDrainMessage = `T3 steward quota drain: checkpoint and pause. "{{.LimitName}}" is at {{.UsedPercent}}% and resets at {{.ResetsAt}}. Do not start new work or subagents. Ask active subagents to checkpoint and return partial results promptly. Preserve completed work and write a brief checkpoint covering current state, partial results, and remaining work. Then end your turn. T3 steward will interrupt any still-running turn in {{.GracePeriod}}.`
 
 // DefaultResumePrompt is sent to a resumed thread.
-const DefaultResumePrompt = `The provider quota has recovered (T3 quota watchdog). Resume the interrupted task from the latest checkpoint. First inspect the current thread, repository state, and any partial results. Do not assume previous subagents are still running. Continue only the unfinished work, and create new subagents only when needed.`
+const DefaultResumePrompt = `T3 steward quota recovery: quota is available again. Resume the unfinished user task from the latest checkpoint. First inspect current user instructions, repository state, and saved partial results. Verify whether previous subagents are still running before relying on them. Continue only unfinished work within the current authorized scope.`
 
 // QuotaChecksEnabled is independent of simulation/dry-run policy.
 func (c Config) QuotaChecksEnabled() bool { return c.QuotaChecks == nil || *c.QuotaChecks }
@@ -677,6 +680,7 @@ func loadFile(path string) (Config, error) {
 			return c, fmt.Errorf("read %s: %w", path, err)
 		}
 	}
+	c.migrateQuotaDefaults()
 	return c, nil
 }
 
@@ -816,6 +820,9 @@ func (c *Config) Validate() error {
 		return errors.New("policy: stop_retries must not be negative")
 	}
 	for i, o := range c.Overrides {
+		if o.Match.MinWindowDuration < 0 {
+			return fmt.Errorf("overrides[%d]: min_window_duration must not be negative", i)
+		}
 		warn, drain, stop := p.WarnPercent, p.DrainPercent, p.StopPercent
 		if o.WarnPercent != nil {
 			warn = *o.WarnPercent
@@ -829,8 +836,8 @@ func (c *Config) Validate() error {
 		if !(warn < drain && drain < stop && stop <= 100) {
 			return fmt.Errorf("overrides[%d]: warn < drain < stop <= 100 is required after applying the override (got %v, %v, %v)", i, warn, drain, stop)
 		}
-		if o.Match.Provider == "" && o.Match.LimitName == "" && o.Match.Window == "" {
-			return fmt.Errorf("overrides[%d]: match needs at least one of provider, limit_name, window", i)
+		if o.Match.Provider == "" && o.Match.LimitName == "" && o.Match.Window == "" && o.Match.MinWindowDuration == 0 {
+			return fmt.Errorf("overrides[%d]: match needs at least one of provider, limit_name, window, min_window_duration", i)
 		}
 	}
 	r := c.Resume

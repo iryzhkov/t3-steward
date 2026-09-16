@@ -45,8 +45,9 @@ buckets although they draw on one quota.
 
 Can:
 
-- Track every window each provider reports, independently: Codex `primary`
-  (5 hours), `secondary` (7 days) and spend controls; Claude `five_hour`,
+- Track every window each provider reports, independently: Codex `primary`,
+  `secondary` and spend controls (window duration is provider-reported, and
+  `primary` can be weekly); Claude `five_hour`,
   `seven_day` and model-specific weekly windows such as `seven_day_opus`.
 - Send a warning message into every running thread of the affected provider
   at 85%, a "stop spawning subagents, checkpoint, then stop" message at 90%,
@@ -284,7 +285,18 @@ applies to it.
   provider instance.
 - **Rolling and weekly windows** are just buckets with different reset
   times. The watchdog uses the duration and reset time the provider
-  reported; it never assumes "primary means five hours".
+  reported; it never assumes "primary means five hours". For weekly Codex
+  thresholds, reuse the existing `overrides` ladder (95/97/99) with
+  `match: {provider: codex, min_window_duration: 168h}` in place of
+  `window: secondary`. Duration matches require a known reported length;
+  they do not use time remaining until reset. Match fields combine with AND,
+  and the first matching override wins.
+- **Warnings are advisory**: continue the current user task with focused work.
+  The separate drain notice requests checkpointing and stopping. Existing
+  configurations using the exact old shipped warning and Codex secondary
+  95/97/99 override are upgraded in memory on load, without rewriting the
+  file. Customized messages and overrides are preserved. To adopt the new
+  wording for a custom configuration, omit `messages.warn` to use the default.
 - **Model-specific limits** (Claude `seven_day_opus`, `seven_day_sonnet`)
   apply only to threads whose selected model id contains that name.
 - **Spending limits** (Codex `individualLimit`, reported as remaining

@@ -125,7 +125,7 @@ overrides:
     stop_percent: 99
   - match:
       provider: codex
-      window: secondary
+      min_window_duration: 168h # weekly, whether primary or secondary
     warn_percent: 95
     drain_percent: 97
     stop_percent: 99
@@ -134,9 +134,9 @@ overrides:
 # .Window .Provider
 messages:
   warn: |
-    Provider quota warning from the T3 quota watchdog: "{{.LimitName}}" is at {{.UsedPercent}}% and resets at {{.ResetsAt}}. Do not start new subagents. Ask active subagents to checkpoint and return their results, consolidate the current work, then stop at a clean point.
+    T3 steward quota advisory: "{{.LimitName}}" is at {{.UsedPercent}}% and resets at {{.ResetsAt}}. Continue the current user task and keep work focused. This advisory does not ask you to stop, checkpoint, or cancel active subagents. A separate drain notice will explicitly request a checkpoint and stop if quota becomes critically low.
   drain: |
-    Provider quota is nearly exhausted (T3 quota watchdog): "{{.LimitName}}" is at {{.UsedPercent}}% and resets at {{.ResetsAt}}. Stop spawning subagents now. Cancel or finish active subagents, collect their results, write a short checkpoint of the current state and remaining work, then stop. The session will be interrupted in {{.GracePeriod}} if it is still running.
+    T3 steward quota drain: checkpoint and pause. "{{.LimitName}}" is at {{.UsedPercent}}% and resets at {{.ResetsAt}}. Do not start new work or subagents. Ask active subagents to checkpoint and return partial results promptly. Preserve completed work and write a brief checkpoint covering current state, partial results, and remaining work. Then end your turn. T3 steward will interrupt any still-running turn in {{.GracePeriod}}.
 
 report:
   # Hours treated as "peak" by "t3-steward report" (local time).

@@ -357,6 +357,7 @@ func (e *Engine) Evaluate(snap domain.QuotaSnapshot, prev domain.BucketState, no
 		}
 	}
 
+	state.WindowDuration = snap.WindowDuration
 	state.LimitName = snap.LimitName
 	state.ModelSelector = snap.ModelSelector
 	state.UsedPercent = snap.UsedPercent
@@ -401,7 +402,7 @@ func (e *Engine) Tick(prev domain.BucketState, now time.Time) domain.Decision {
 	snap := domain.QuotaSnapshot{
 		Key: state.Key, LimitName: state.LimitName, UsedPercent: state.UsedPercent,
 		ResetsAt: state.ResetsAt, ModelSelector: state.ModelSelector, ObservedAt: state.ObservedAt,
-		SourceEventID: state.LastEventID,
+		SourceEventID: state.LastEventID, WindowDuration: state.WindowDuration,
 	}
 	return domain.Decision{
 		State: state,

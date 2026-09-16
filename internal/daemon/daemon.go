@@ -182,12 +182,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 // engineFor returns the policy engine for a bucket, applying the first
 // matching override.
-func (d *Daemon) engineFor(key domain.BucketKey, limitName string) *policy.Engine {
+func (d *Daemon) engineFor(key domain.BucketKey, limitName string, duration time.Duration) *policy.Engine {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if e, ok := d.engines[key]; ok {
-		return e
-	}
 	t := policy.Thresholds{
 		WarnPercent:       d.cfg.Policy.WarnPercent,
 		DrainPercent:      d.cfg.Policy.DrainPercent,
@@ -204,7 +201,7 @@ func (d *Daemon) engineFor(key domain.BucketKey, limitName string) *policy.Engin
 		RunwayMargin:      d.cfg.Policy.RunwayMargin,
 	}
 	for _, o := range d.cfg.Overrides {
-		if !overrideMatches(o, key, limitName) {
+		if !overrideMatches(o, key, limitName, duration) {
 			continue
 		}
 		if o.WarnPercent != nil {
@@ -219,15 +216,21 @@ func (d *Daemon) engineFor(key domain.BucketKey, limitName string) *policy.Engin
 		if o.GracePeriod != nil {
 			t.GracePeriod = o.GracePeriod.D()
 		}
-		d.log.Info("threshold override applied", "bucket", key.String(), "warn", t.WarnPercent, "drain", t.DrainPercent, "stop", t.StopPercent)
 		break
 	}
+	if e, ok := d.engines[key]; ok && e.Thresholds() == t {
+		return e
+	}
+	d.log.Debug("bucket thresholds selected", "bucket", key.String(), "duration", duration, "warn", t.WarnPercent, "drain", t.DrainPercent, "stop", t.StopPercent)
 	e := policy.New(t)
 	d.engines[key] = e
 	return e
 }
 
-func overrideMatches(o config.Override, key domain.BucketKey, limitName string) bool {
+func overrideMatches(o config.Override, key domain.BucketKey, limitName string, duration time.Duration) bool {
+	if o.Match.MinWindowDuration > 0 && duration < o.Match.MinWindowDuration.D() {
+		return false
+	}
 	match := func(pattern, value string) bool {
 		if pattern == "" {
 			return true
@@ -291,7 +294,7 @@ func (d *Daemon) HandleSnapshot(ctx context.Context, snap domain.QuotaSnapshot) 
 		log.Error("load bucket state", "err", err)
 		return
 	}
-	engine := d.engineFor(snap.Key, snap.LimitName)
+	engine := d.engineFor(snap.Key, snap.LimitName, snap.WindowDuration)
 	decision := engine.Evaluate(snap, prev, now)
 	if decision.Ignored != "" {
 		log.Debug("snapshot ignored", "reason", decision.Ignored)
@@ -338,7 +341,7 @@ func (d *Daemon) tickBuckets(ctx context.Context) {
 		if st.Phase != domain.PhaseDraining {
 			continue
 		}
-		decision := d.engineFor(st.Key, st.LimitName).Tick(st, now)
+		decision := d.engineFor(st.Key, st.LimitName, st.WindowDuration).Tick(st, now)
 		if decision.Ignored != "" {
 			d.log.Info("grace period expired without a stop", "bucket", st.Key.String(), "reason", decision.Ignored)
 			_ = d.store.SaveBucket(ctx, decision.State)
@@ -451,6 +454,7 @@ func snapshotFromState(st domain.BucketState) domain.QuotaSnapshot {
 	return domain.QuotaSnapshot{
 		Key: st.Key, LimitName: st.LimitName, UsedPercent: st.UsedPercent, ResetsAt: st.ResetsAt,
 		ModelSelector: st.ModelSelector, ObservedAt: st.ObservedAt, SourceEventID: st.LastEventID,
+		WindowDuration: st.WindowDuration,
 	}
 }
 
