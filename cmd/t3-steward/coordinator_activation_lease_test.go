@@ -148,7 +148,7 @@ func (f *activationLeaseFixture) activate(t *testing.T) domain.Activation {
 				WorkerID: activationLeaseWorker, ProviderInstanceID: "claudeAgent",
 				Model: "claude-fable-5-1", QuotaPoolID: "claude-main",
 			},
-		}, f.now)
+		}, 4, f.now)
 	if err != nil {
 		t.Fatalf("build the activation assignment: %v", err)
 	}

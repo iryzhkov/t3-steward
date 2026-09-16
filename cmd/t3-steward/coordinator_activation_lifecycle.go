@@ -110,7 +110,7 @@ func (c coordinatorSupervision) activationLifecycleSignal(
 			if err != nil {
 				return signal, false, err
 			}
-			outcome, reason, err := c.activationTurnOutcome(attempt, known, decisions)
+			outcome, reason, err := c.activationTurnOutcome(attempt, known, decisions, activation.OperatorDecisions)
 			if err != nil {
 				return signal, false, err
 			}
@@ -146,14 +146,27 @@ func (c coordinatorSupervision) activationLifecycleSignal(
 // A successful exit with no recorded decision is no-decision. It is never
 // acceptance, and the count that could make it "decided" is supplied by the
 // caller from durable decision rows.
+//
+// operatorDecisions is the same question asked of the other actor: gates the
+// activation was woken for that an operator decided while it was live. Such an
+// activation decided nothing itself, so calling it decided would credit it with
+// a decision it did not make, and calling it no-decision reads as a review that
+// left the gate where it found it. Neither is what happened, which is why the
+// outcome says decided-by-operator instead.
 func (c coordinatorSupervision) activationTurnOutcome(
 	attempt domain.Attempt,
 	known bool,
 	decisions int,
+	operatorDecisions int,
 ) (domain.ActivationOutcome, string, error) {
 	if decisions > 0 {
 		return domain.ActivationOutcomeDecided,
 			fmt.Sprintf("the activation recorded %d decision(s)", decisions), nil
+	}
+	if operatorDecisions > 0 {
+		return domain.ActivationOutcomeDecidedByOperator,
+			fmt.Sprintf("an operator recorded %d decision(s) at this activation's epoch; the overseer recorded none",
+				operatorDecisions), nil
 	}
 	if known && attempt.Progress == domain.ProgressSucceeded {
 		return domain.ActivationOutcomeNoDecision,

@@ -509,6 +509,16 @@ const (
 	ActivationOutcomeExpired    ActivationOutcome = "expired"
 	ActivationOutcomeRevoked    ActivationOutcome = "revoked"
 	ActivationOutcomeClosed     ActivationOutcome = "closed"
+	// ActivationOutcomeDecidedByOperator records that the gate this activation
+	// was woken for was decided while it was live, but by an operator rather
+	// than by the overseer itself.
+	//
+	// It exists because the two honest statements were indistinguishable. An
+	// activation whose gate an operator decided had recorded no decision of its
+	// own, so it was written down as no-decision, which reads as a review that
+	// produced nothing; and calling it decided would credit the overseer with a
+	// decision it did not make. This says what happened instead.
+	ActivationOutcomeDecidedByOperator ActivationOutcome = "decided-by-operator"
 )
 
 // Activation is one bounded, schedulable supervision unit. Correctness comes
@@ -546,6 +556,14 @@ type Activation struct {
 	// MaxAutoRecoveredActivationsPerIncident.
 	TurnsUsed      int `json:"turnsUsed"`
 	RecoveredCount int `json:"recoveredCount"`
+	// OperatorDecisions counts the gate decisions recorded at this activation's
+	// epoch by an operator rather than by the overseer.
+	//
+	// An operator keeps full authority over a run it supervises, so such a
+	// decision is accepted rather than fenced out. Recording it here is what
+	// keeps the activation's own receipt honest: the overseer did not decide,
+	// and the review it was woken for is nonetheless settled.
+	OperatorDecisions int `json:"operatorDecisions,omitempty"`
 	// ConsumedEventCursor is the high-water mark this activation consumed,
 	// recorded atomically with Outcome. Events arriving meanwhile stay pending.
 	ConsumedEventCursor int64             `json:"consumedEventCursor"`

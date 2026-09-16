@@ -52,6 +52,7 @@ func (c CoordinatorSupervisionStore) LoadSupervision(ctx context.Context, runID 
 			ProducersVerified:         gate.ProducersVerified,
 			SuccessorOfferedOrStarted: gate.SuccessorOfferedOrStarted,
 			Evidence:                  gate.Evidence,
+			LastDecision:              gate.LastDecision,
 		})
 	}
 	for _, incident := range facts.Incidents {

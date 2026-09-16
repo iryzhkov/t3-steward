@@ -26,6 +26,12 @@ type SupervisionGateFacts struct {
 	ProducersVerified         bool
 	SuccessorOfferedOrStarted bool
 	Evidence                  *domain.EvidenceSnapshot
+	// LastDecision is the most recent decision recorded against this gate, or
+	// nil when none was. It is here because the gate itself records only what it
+	// became, and the question an operator asks about a decided gate is who
+	// decided it: an overseer acting as itself and an operator acting for it
+	// leave the same accepted gate behind.
+	LastDecision *domain.GateDecision
 }
 
 // SupervisionIncidentFacts is one incident plus the one fact conclude-failure
@@ -74,6 +80,17 @@ func (s *Store) LoadSupervisionAdminState(ctx context.Context, runID string) (Su
 			state.Activation = candidate
 		}
 	}
+	decisions, err := loadSupervisionDecisionsTx(ctx, tx, runID)
+	if err != nil {
+		return SupervisionAdminState{}, err
+	}
+	lastDecision := make(map[string]domain.GateDecision, len(decisions))
+	for _, decision := range decisions {
+		current, seen := lastDecision[decision.GateID]
+		if !seen || !decision.DecidedAt.Before(current.DecidedAt) {
+			lastDecision[decision.GateID] = decision
+		}
+	}
 	for _, gate := range contextState.Snapshot.Gates {
 		evidence, verified, err := supervisionGateEvidenceTx(ctx, tx, runID, gate)
 		if err != nil {
@@ -87,6 +104,10 @@ func (s *Store) LoadSupervisionAdminState(ctx context.Context, runID string) (Su
 		if verified {
 			bound := evidence
 			facts.Evidence = &bound
+		}
+		if decision, decided := lastDecision[gate.Definition.ID]; decided {
+			bound := decision
+			facts.LastDecision = &bound
 		}
 		state.Gates = append(state.Gates, facts)
 	}

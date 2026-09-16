@@ -266,6 +266,20 @@ func (s *Store) DecideGate(ctx context.Context, request GateDecisionRequest) (Su
 			if err := appendGateDecisionTx(ctx, tx, recorded); err != nil {
 				return SupervisionDecision{}, err
 			}
+			// An operator deciding a gate while an overseer is live keeps its
+			// authority: the decision stands. What the activation records is
+			// that the decision was not its own, so its outcome can say
+			// decided-by-operator rather than the no-decision that reads as a
+			// review which produced nothing.
+			activation := state.Activation
+			if request.Actor.Kind == domain.ActorOperator &&
+				activation.ID != "" && activation.Epoch == state.Record.ActivationEpoch &&
+				(activation.State == domain.ActivationActive || activation.State == domain.ActivationPendingDispatch) {
+				activation.OperatorDecisions++
+				if err := saveSupervisionActivationTx(ctx, tx, activation); err != nil {
+					return SupervisionDecision{}, err
+				}
+			}
 			decision := SupervisionDecision{Gate: &gate, GateDecision: &recorded}
 			if next == domain.GateAccepted && strings.TrimSpace(request.IncidentID) != "" {
 				incident, err := loadSupervisionIncidentTx(ctx, tx, request.RunID, request.IncidentID)

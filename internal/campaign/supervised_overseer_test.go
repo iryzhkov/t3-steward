@@ -131,7 +131,8 @@ func (r *overseerRun) dispatch(t *testing.T, plan backlog.ActivationPlan, worker
 	if err != nil {
 		t.Fatalf("place the activation: %v", err)
 	}
-	attempt, assignment, err := backlog.ActivationAssignment(plan.Activation, *plan.Dispatch, placement, r.now)
+	attempt, assignment, err := backlog.ActivationAssignment(plan.Activation, *plan.Dispatch, placement,
+		r.maxTurnsPerActivation(t), r.now)
 	if err != nil {
 		t.Fatalf("build the activation assignment: %v", err)
 	}
@@ -145,6 +146,17 @@ func (r *overseerRun) dispatch(t *testing.T, plan backlog.ActivationPlan, worker
 		t.Fatalf("commit the activation assignment: %v", err)
 	}
 	return attempt, committed
+}
+
+// maxTurnsPerActivation is the run's own declared turn budget, which is what
+// the activation's durable cost estimate is derived from.
+func (r *overseerRun) maxTurnsPerActivation(t *testing.T) int {
+	t.Helper()
+	run := supervisedRun(t, reload(context.Background(), t, r.fixture.store), r.fixture.supervised)
+	if run.Supervision == nil {
+		t.Fatal("the supervised run carries no supervision record")
+	}
+	return run.Supervision.Config.MaxTurnsPerActivation
 }
 
 func (r *overseerRun) placementRequest(t *testing.T, workers []domain.WorkerSnapshot) backlog.ActivationPlacementRequest {
@@ -297,7 +309,7 @@ func TestSupervisedGateIsDecidedByAnActivationDispatchedAsAssignedWork(t *testin
 		plan.Activation, *plan.Dispatch, backlog.ActivationPlacement{
 			WorkerID: incapableWorker, WorkerEpoch: "worker-epoch-0", SnapshotSequence: 1,
 			Route: placement.Route,
-		}, run.now)
+		}, 2, run.now)
 	if err != nil {
 		t.Fatal(err)
 	}

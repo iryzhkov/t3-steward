@@ -8,6 +8,34 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- An overseer activation now carries its supervisor identity in the activation
+  workspace, as an owner-only `.t3-steward/supervisor.env` the worker writes
+  before the thread starts, and the supervision commands discover it by walking
+  up from the working directory. The identity previously reached the overseer
+  only through T3's thread environment, which is sent only when
+  `t3.send_thread_environment` is on; that setting is off by default and off on
+  the fleet, so the CLI fell back to the host's own coordinator client and every
+  gate the overseer accepted was recorded with actor kind operator. The
+  environment remains as an additional channel, an explicit
+  `--supervisor-credential` still wins over both, and the activation prompt now
+  states that flag in full. The discovered identity reaches the supervision
+  verbs and no other command.
+- A gate decided by an operator while an overseer activation is live is still
+  accepted, and the activation now records that the decision was not its own.
+  Its outcome is the new `decided-by-operator` rather than `no-decision`, which
+  read as a review that produced nothing, and `campaign supervision show`
+  displays which principal decided each gate.
+- An activation is closed when its run settles, clearing its lease. The dispatch
+  pass skipped a terminal run entirely, so the last activation of every
+  supervised run stayed `active` with a live lease and no turns after the run
+  finished.
+- Overseer activations are admitted and forecast by quota planning through the
+  same predicate as every other route, with a durable remaining-cost estimate
+  derived from the overseer route and `max_turns_per_activation`. Quota planning
+  previously logged two warnings about an inconsistent attempt for every
+  activation on every tick, and left the pool slot the activation held
+  uncounted.
+
 - Generated systemd user services preserve root-owned SSH configuration ownership.
   `ProtectSystem=false` avoids the user mount namespace that OpenSSH rejects;
   `NoNewPrivileges=true` remains enabled. Existing generated units need migration.

@@ -20,6 +20,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
@@ -91,6 +92,88 @@ func (s supervisorIdentity) checkResolved(credentials backlogadmin.AdminCredenti
 			"the supervisor credential %q resolves to admin client %q, but this activation authenticates as %q",
 			s.CredentialReference, credentials.ClientPrincipal, s.ExpectedPrincipal),
 	}
+}
+
+// supervisorIdentityFromWorkspace reads the record the worker wrote into the
+// activation workspace, from the current directory or an ancestor, the way a
+// tool finds the repository it is inside.
+//
+// This is the channel that does not depend on the provider. The environment
+// above reaches the CLI only when t3.send_thread_environment is on, which it is
+// not by default and was not on the fleet, and an overseer with neither channel
+// silently signs its decisions as the host's own coordinator client.
+//
+// The record is accepted only as a private regular file owned by this user. It
+// decides which admin client a command presents, so a copy anyone could have
+// written, or a symlink pointing somewhere else, is refused rather than read.
+func supervisorIdentityFromWorkspace() (supervisorIdentity, error) {
+	directory, err := os.Getwd()
+	if err != nil {
+		return supervisorIdentity{}, nil
+	}
+	for {
+		path := filepath.Join(directory, filepath.FromSlash(workerproto.SupervisorIdentityFile))
+		info, statErr := os.Lstat(path)
+		switch {
+		case statErr != nil:
+		case !info.Mode().IsRegular():
+			return supervisorIdentity{}, fmt.Errorf(
+				"%s is not a regular file; refusing to read a supervisor identity from it", path)
+		case info.Mode().Perm() != 0o600:
+			return supervisorIdentity{}, fmt.Errorf(
+				"%s has mode %04o, want 0600; refusing to read a supervisor identity that is not private",
+				path, info.Mode().Perm())
+		default:
+			if err := taskIdentityFileIsOwned(info); err != nil {
+				return supervisorIdentity{}, fmt.Errorf("%s: %w", path, err)
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return supervisorIdentity{}, readErr
+			}
+			values, parseErr := workerproto.ParseSupervisorIdentityFile(string(content))
+			if parseErr != nil {
+				return supervisorIdentity{}, fmt.Errorf("%s: %w", path, parseErr)
+			}
+			return supervisorIdentity{
+				CredentialReference: strings.TrimSpace(values[workerproto.SupervisorCredentialEnvironment]),
+				ExpectedPrincipal:   strings.TrimSpace(values[workerproto.SupervisorClientEnvironment]),
+			}, nil
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			// No record anywhere above this directory. That is the ordinary case
+			// for a task workspace and for an interactive session, and it leaves
+			// the command as this host's own admin client.
+			return supervisorIdentity{}, nil
+		}
+		directory = parent
+	}
+}
+
+// resolveSupervisorIdentity decides the client identity one supervision command
+// presents, from the three channels in the order of how specific they are.
+//
+// An explicit flag wins, so an operator can decide a gate by hand from a host
+// whose overseer thread has an identity of its own. The thread environment
+// comes next, because a sandbox sets it for exactly one execution. The
+// workspace record is last and is the one that always exists inside an
+// activation, because a workspace can in principle be reached from a shell that
+// belongs to another execution.
+//
+// It is called from the supervision verbs and from nowhere else, which is what
+// keeps the strongest credential on a worker host out of every command that
+// starts or amends work. A malformed or unsafe workspace record is a refusal
+// here rather than a silent fall back to the host's admin client: falling back
+// is exactly the failure this whole path exists to end.
+func resolveSupervisorIdentity(flagCredential string) (supervisorIdentity, error) {
+	if reference := strings.TrimSpace(flagCredential); reference != "" {
+		return supervisorIdentity{CredentialReference: reference}, nil
+	}
+	if identity := supervisorIdentityFromEnvironment(nil); identity.declared() {
+		return identity, nil
+	}
+	return supervisorIdentityFromWorkspace()
 }
 
 // supervisorCredentialFlag is the operator's spelling of the same override, for
