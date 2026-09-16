@@ -888,6 +888,10 @@ No. The fleet advertises `claude-haiku-4-5`, `claude-sonnet-5`, `gpt-5.6-sol` an
 one, and let the operator choose. Qualify with the overseer on `codex-main`/`gpt-5.6-sol` and workers
 on `claude-main`, so pool separation is exercised even when model strength is not. Ask the user which
 registered model they meant before the qualification gate.
+*Decision (2026-09-16)*: the overseer route is `claudeAgent` / `claude-fable-5-1` / `claude-main`.
+Workers in the supervised example and the qualification campaign run on `codex` / `gpt-5.6-sol` /
+`codex-main`. Both models are advertised by the live fleet since the catalog moved to the `"*"`
+policy on steward rc.56.
 
 **6. Should a held task be a stored progress state or a derived label?**
 *Recommended default*: derived. A stored state has to be understood by `Terminal()`,
