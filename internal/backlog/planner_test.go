@@ -246,7 +246,7 @@ func TestBuildPlanWithholdsSupervisedTaskAndProposesUnrelatedOne(t *testing.T) {
 	}
 	for _, test := range []struct {
 		name     string
-		snapshot *domain.SupervisionSnapshot
+		snapshot *domain.SupervisionSnapshot //nolint:staticcheck // one optional snapshot per case
 		wantCode string
 		wantGate string
 		wantHold string
@@ -273,7 +273,11 @@ func TestBuildPlanWithholdsSupervisedTaskAndProposesUnrelatedOne(t *testing.T) {
 				[]domain.Task{testTask("alpha"), testTask("beta")},
 				[]domain.WorkerInventory{plannerWorker("worker-a")},
 			)
-			input.SupervisionSnapshot = test.snapshot
+			if test.snapshot != nil {
+				input.SupervisionSnapshots = map[string]domain.SupervisionSnapshot{
+					test.snapshot.RunID: *test.snapshot,
+				}
+			}
 			plan, err := BuildPlan(input)
 			if err != nil {
 				t.Fatalf("BuildPlan: %v", err)
@@ -313,9 +317,15 @@ func TestBuildPlanWithholdsSupervisedTaskAndProposesUnrelatedOne(t *testing.T) {
 
 func TestBuildPlanRefusesSupervisionSnapshotWithoutARun(t *testing.T) {
 	input := plannerInput([]domain.Task{testTask("alpha")}, []domain.WorkerInventory{plannerWorker("worker-a")})
-	input.SupervisionSnapshot = &domain.SupervisionSnapshot{Supervised: true}
+	input.SupervisionSnapshots = map[string]domain.SupervisionSnapshot{"": {Supervised: true}}
 	if _, err := BuildPlan(input); err == nil {
 		t.Fatal("accepted a supervision snapshot without a run")
+	}
+	input.SupervisionSnapshots = map[string]domain.SupervisionSnapshot{
+		"run": {RunID: "other-run", Supervised: true},
+	}
+	if _, err := BuildPlan(input); err == nil {
+		t.Fatal("accepted a supervision snapshot keyed by another run")
 	}
 }
 

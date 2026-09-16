@@ -28,6 +28,10 @@ type CoordinatorPlanningStateInput struct {
 	MaxQuotaObservationAge time.Duration
 	DeadlineRiskWindow     time.Duration
 	CheckpointMargin       time.Duration
+	// SupervisionSnapshots is the supervision state of every supervised run in
+	// this pass, keyed by run ID, already resolved against the store. An absent
+	// run is unsupervised.
+	SupervisionSnapshots map[string]domain.SupervisionSnapshot
 }
 
 // BuildCoordinatorPlanInput reconstructs DAGs, ownership, cold-start route
@@ -247,6 +251,7 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 			executorPools(workers),
 			capacityOwners(input.Attempts, input.Assignments, input.WorkflowRuns, input.Tasks),
 		)},
+		SupervisionSnapshots: input.SupervisionSnapshots,
 		Ordering: PlanningOrderingInput{
 			DeadlineRiskWindow: input.DeadlineRiskWindow, Attempts: ordering,
 		},

@@ -331,6 +331,13 @@ type V2Coordinator struct {
 // behind the reference is resolved at use, never stored in configuration.
 type V2AdminClient struct {
 	Credential string `yaml:"credential"`
+	// Supervisor marks a client that acts as a campaign overseer. Such a client
+	// is relayed under the supervisor role instead of remote-admin, which is
+	// strictly narrower: the coordinator's own authorizer binds it to the one
+	// run and the one activation epoch it was woken for, and refuses every
+	// coordinator command outright. The default is false, which is the ordinary
+	// deployment in which no client is a supervisor.
+	Supervisor bool `yaml:"supervisor"`
 }
 
 // V2CoordinatorClient points a host that is not the coordinator at the

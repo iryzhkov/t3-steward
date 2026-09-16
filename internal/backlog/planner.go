@@ -47,14 +47,16 @@ type PlanInput struct {
 	ResourceOwners         map[string]string
 	WorkflowCheckoutOwners map[string]string
 	Constraints            []PlanningConstraint
-	// SupervisionSnapshot is the supervision state of the one supervised run
-	// being planned, or nil when no run in this plan is supervised. It is
-	// handed to the planner the way ResourceOwners is: BuildPlan is pure and
-	// reads no store. The snapshot names its run, and tasks of every other run
-	// in the same plan are unsupervised, so one held run never withholds an
-	// unrelated one.
-	SupervisionSnapshot *domain.SupervisionSnapshot
-	Ordering            PlanningOrderingInput
+	// SupervisionSnapshots is the supervision state of every supervised run
+	// being planned, keyed by run ID. An absent run is unsupervised, which is
+	// every run that exists today. They are handed to the planner the way
+	// ResourceOwners is: BuildPlan is pure and reads no store.
+	//
+	// It is a map rather than one pointer because one planning pass covers the
+	// whole fleet, and two supervised campaigns running at once is ordinary. A
+	// single snapshot would have made the second one silently unsupervised.
+	SupervisionSnapshots map[string]domain.SupervisionSnapshot
+	Ordering             PlanningOrderingInput
 }
 
 type PlanningOrderingInput struct {
@@ -400,7 +402,7 @@ func planTask(input PlanInput, router *providerRouter, constraints []PlanningCon
 	// Supervision is a property of the task, not of a candidate worker or
 	// route, so it is evaluated once here beside the dependency blockers
 	// rather than repeated for every candidate by a PlanningConstraint.
-	decision.Blockers = append(decision.Blockers, supervisionBlockers(input.SupervisionSnapshot, state.Run.ID, task)...)
+	decision.Blockers = append(decision.Blockers, supervisionBlockers(input.SupervisionSnapshots, state.Run.ID, task)...)
 
 	locks, err := planningResourceLocks(task.ResourceLocks)
 	if err != nil {
@@ -508,8 +510,13 @@ func validatePlanInput(input PlanInput) error {
 			return errors.New("plan input contains a nil planning constraint")
 		}
 	}
-	if input.SupervisionSnapshot != nil && strings.TrimSpace(input.SupervisionSnapshot.RunID) == "" {
-		return errors.New("plan supervision snapshot must name its workflow run")
+	for runID, snapshot := range input.SupervisionSnapshots {
+		if strings.TrimSpace(snapshot.RunID) == "" {
+			return errors.New("plan supervision snapshot must name its workflow run")
+		}
+		if snapshot.RunID != runID {
+			return fmt.Errorf("plan supervision snapshot keyed %q names run %q", runID, snapshot.RunID)
+		}
 	}
 	seenRuns := make(map[string]struct{}, len(input.Workflows))
 	for _, workflow := range input.Workflows {
@@ -578,14 +585,15 @@ func progressBlockers(state DAGState, task domain.Task, attempt domain.Attempt) 
 }
 
 // supervisionBlockers evaluates the shared supervision predicate once for one
-// task and renders its verdict as planning blockers. A nil snapshot, or a
-// snapshot belonging to a different run, blocks nothing: supervision of one run
-// never withholds another run's work.
-func supervisionBlockers(snapshot *domain.SupervisionSnapshot, runID string, task domain.Task) []PlanningBlocker {
-	if snapshot == nil || snapshot.RunID != runID {
+// task and renders its verdict as planning blockers. A run with no snapshot is
+// unsupervised and is blocked by nothing: supervision of one run never
+// withholds another run's work.
+func supervisionBlockers(snapshots map[string]domain.SupervisionSnapshot, runID string, task domain.Task) []PlanningBlocker {
+	snapshot, supervised := snapshots[runID]
+	if !supervised {
 		return nil
 	}
-	verdict := domain.SupervisionAdmits(*snapshot, domain.SupervisionQuery{TaskID: task.ID})
+	verdict := domain.SupervisionAdmits(snapshot, domain.SupervisionQuery{TaskID: task.ID})
 	if verdict.Admitted {
 		return nil
 	}

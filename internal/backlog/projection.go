@@ -19,6 +19,18 @@ type ProjectionStore interface {
 	CommitWorkflowProjection(context.Context, sqlite.WorkflowProjectionSnapshot, domain.WorkflowRun, []domain.Attempt, time.Time) error
 }
 
+// SupervisionReadSetSource is the optional fenced supervision read set of one
+// run.
+//
+// It is separate from SupervisionProjectionSource because the two answer
+// different questions. The projection source answers what supervision says about
+// the run; this one answers exactly what the store will compare the publication
+// against. A projection that fills one and not the other never commits a
+// supervised run, because the fence compares a read set the caller never read.
+type SupervisionReadSetSource interface {
+	SupervisionReadSet(context.Context, string) (*sqlite.SupervisionReadSet, error)
+}
+
 // SupervisionProjectionSource is the optional supervision read set of one run.
 // A ProjectionStore that does not implement it projects every run as
 // unsupervised, which is exactly today's behaviour.
@@ -85,6 +97,13 @@ func ProjectWorkflowRuns(ctx context.Context, store ProjectionStore, now time.Ti
 			continue
 		}
 		before := sqlite.WorkflowProjectionSnapshot{Run: run}
+		if source, ok := store.(SupervisionReadSetSource); ok {
+			read, err := source.SupervisionReadSet(ctx, run.ID)
+			if err != nil {
+				return report, fmt.Errorf("load supervision read set of run %q: %w", run.ID, err)
+			}
+			before.Supervision = read
+		}
 		owned := make(map[string]bool)
 		before.Tasks = domain.TasksForRun(run, records.Tasks)
 		for _, attempt := range records.Attempts {

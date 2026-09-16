@@ -30,6 +30,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 const (
@@ -38,6 +39,16 @@ const (
 	baselineInstance    = "claudeAgent"
 	baselineModel       = "claude-opus-5"
 	baselinePool        = "claude-main"
+	// The supervised example runs its workers on one provider and its overseer
+	// on another, so pool separation between the two is exercised rather than
+	// assumed: a busy worker pool cannot starve reviews and a busy overseer
+	// cannot starve the workers.
+	baselineSupervisedInstance = "codex"
+	baselineSupervisedModel    = "gpt-5.6-sol"
+	baselineSupervisedPool     = "codex-main"
+	baselineOverseerInstance   = "claudeAgent"
+	baselineOverseerModel      = "claude-fable-5-1"
+	baselineOverseerPool       = "claude-main"
 )
 
 var baselineTime = time.Date(2026, time.September, 16, 9, 0, 0, 0, time.UTC)
@@ -373,9 +384,17 @@ func baselineSnapshot() domain.WorkerSnapshot {
 			Projects: []domain.WorkerProjectInventory{{
 				Name: "example-project", Available: true, UpdatedAt: baselineTime,
 			}},
+			// The worker advertises both example routes and the campaign
+			// supervision capability, so one fixture serves the unsupervised
+			// baseline and the supervised path without either pretending the
+			// fleet is narrower than it is.
+			Capabilities: []string{workerproto.CapabilityCampaignSupervision},
 			Providers: []domain.WorkerProviderInventory{{
-				InstanceID: baselineInstance, Models: []string{baselineModel},
+				InstanceID: baselineInstance, Models: []string{baselineModel, baselineOverseerModel},
 				QuotaPoolID: baselinePool, Available: true,
+			}, {
+				InstanceID: baselineSupervisedInstance, Models: []string{baselineSupervisedModel},
+				QuotaPoolID: baselineSupervisedPool, Available: true,
 			}},
 			ObservedAt: baselineTime,
 		},
@@ -387,6 +406,12 @@ func baselineSnapshot() domain.WorkerSnapshot {
 func baselineQuotaPool() domain.QuotaPool {
 	return domain.QuotaPool{
 		ID: baselinePool, ProviderInstanceIDs: []string{baselineInstance}, MaxConcurrent: 4,
+	}
+}
+
+func baselineSupervisedQuotaPool() domain.QuotaPool {
+	return domain.QuotaPool{
+		ID: baselineSupervisedPool, ProviderInstanceIDs: []string{baselineSupervisedInstance}, MaxConcurrent: 4,
 	}
 }
 

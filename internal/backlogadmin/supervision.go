@@ -585,7 +585,7 @@ func (s *Service) Supervise(ctx context.Context, principal Principal, request Su
 	if err != nil {
 		return empty, err
 	}
-	store, ok := s.reader.(SupervisionStore)
+	store, ok := s.supervisionStore()
 	if !ok {
 		return empty, fmt.Errorf("%w: this coordinator store records no supervision", ErrSupervisionUnavailable)
 	}
@@ -764,7 +764,7 @@ func (s *Service) placeHold(
 	}
 	branchExists, closureRecomputed := false, false
 	if request.Hold.Scope.Kind == domain.HoldScopeBranch {
-		store, ok := s.reader.(SupervisionStore)
+		store, ok := s.supervisionStore()
 		if !ok {
 			return fmt.Errorf("%w: this coordinator store resolves no branch", ErrSupervisionUnavailable)
 		}

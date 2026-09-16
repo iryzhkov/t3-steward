@@ -71,12 +71,16 @@ func cmdCoordinatorExchange(g globalFlags, operation string) error {
 		return errors.New("coordinator-exchange requires at least one backlog_v2.coordinator.admin_clients entry")
 	}
 	clients := make(map[string]backlogadmin.AdminCredentials, len(cfg.BacklogV2.Coordinator.AdminClients))
+	supervisors := make(map[string]bool)
 	for principal, client := range cfg.BacklogV2.Coordinator.AdminClients {
 		credentials, err := adminCredentials.ResolveAdmin(client.Credential)
 		if err != nil {
 			return err
 		}
 		clients[principal] = credentials
+		if client.Supervisor {
+			supervisors[principal] = true
+		}
 	}
 	socketPath, err := resolveBacklogV2AdminSocketPath(cfg)
 	if err != nil {
@@ -89,6 +93,7 @@ func cmdCoordinatorExchange(g globalFlags, operation string) error {
 	server, err := backlogadmin.NewRemoteServer(backlogadmin.RemoteServerConfig{
 		CoordinatorID: cfg.BacklogV2.Coordinator.ID,
 		Clients:       clients,
+		Supervisors:   supervisors,
 		Replay:        replay,
 		Relay: backlogadmin.LocalClient{
 			Path:               socketPath,

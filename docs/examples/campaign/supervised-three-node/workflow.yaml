@@ -58,9 +58,9 @@ preflight:
       include: summary
 
 routes:
-  - instance: claudeAgent # operator configuration
-    model: claude-sonnet-5 # operator configuration
-    quota_pool: claude-main # operator configuration
+  - instance: codex # operator configuration
+    model: gpt-5.6-sol # operator configuration
+    quota_pool: codex-main # operator configuration
 
 # The overseer's route is declared once and is not a list: an alternative would
 # make the effective overseer route ambiguous. It is a different provider
@@ -68,9 +68,9 @@ routes:
 # cannot starve reviews and a busy overseer cannot starve the workers.
 supervision:
   route:
-    instance: codexAgent # operator configuration
-    model: gpt-5.6-sol # operator configuration
-    quota_pool: codex-main # operator configuration
+    instance: claudeAgent # operator configuration
+    model: claude-fable-5-1 # operator configuration
+    quota_pool: claude-main # operator configuration
   prompt_file: prompts/overseer.md
   max_activations: 8
   max_turns_per_activation: 3

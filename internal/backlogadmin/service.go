@@ -62,6 +62,10 @@ type Service struct {
 	recovery       UnknownRecoveryWriter
 	quarantine     QuarantineReader
 	quarantineOps  QuarantineWriter
+	// supervision is the durable half of the supervision family. It is set
+	// explicitly rather than asserted from the reader because the binding is
+	// phrased in this package's types and the store cannot name them.
+	supervision SupervisionStore
 
 	viabilitySettings ViabilitySettings
 }
@@ -95,6 +99,21 @@ func New(reader Reader, authorizer Authorizer) (*Service, error) {
 	service.quarantine, _ = reader.(QuarantineReader)
 	service.quarantineOps, _ = reader.(QuarantineWriter)
 	return service, nil
+}
+
+// SetSupervisionStore binds the durable supervision operations. A service with
+// no supervision store answers the operation as unavailable rather than
+// failing, which is what a coordinator store that predates supervision gets.
+func (s *Service) SetSupervisionStore(store SupervisionStore) { s.supervision = store }
+
+// supervisionStore returns the bound store, or the reader when it happens to
+// satisfy the interface itself, which is what an in-process test fixture does.
+func (s *Service) supervisionStore() (SupervisionStore, bool) {
+	if s.supervision != nil {
+		return s.supervision, true
+	}
+	store, ok := s.reader.(SupervisionStore)
+	return store, ok
 }
 
 func (s *Service) SetClock(now func() time.Time) {

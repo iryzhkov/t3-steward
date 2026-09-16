@@ -178,6 +178,7 @@ func execCommand(ctx context.Context, w Wait) (string, int, error) {
 func (r *Runner) Tick(ctx context.Context, _ []domain.Thread, buckets []domain.BucketState) {
 	r.buckets = buckets
 	r.tickNodes(ctx)
+	r.tickSupervisionEscalations(ctx)
 	waits, err := r.store.ListWaits(ctx, "")
 	if err != nil {
 		r.log.Error("list waits", "err", err)

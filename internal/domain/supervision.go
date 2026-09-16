@@ -179,6 +179,29 @@ type SupervisionEscalation struct {
 	ThreadID     string `json:"threadId,omitempty"`
 }
 
+// SupervisionEscalationDelivery is one escalation waiting to reach the
+// configured notify thread.
+//
+// It is declared here, in the shared vocabulary, because the store that records
+// escalations and the wait runner that delivers them cannot name each other's
+// types. It carries no body: an escalation says which incident of which run
+// needs a human and why, and the operator reads the rest with
+// "campaign supervision show".
+type SupervisionEscalationDelivery struct {
+	// ID is the outbox entry, and DeliveryID is what a delivered message is
+	// recognised by when a send is interrupted and has to be reconciled.
+	ID         string `json:"id"`
+	DeliveryID string `json:"deliveryId"`
+	RunID      string `json:"runId"`
+	IncidentID string `json:"incidentId"`
+	ThreadID   string `json:"threadId"`
+	Reason     string `json:"reason,omitempty"`
+	// Delivery is the outbox delivery state as the store holds it, which is the
+	// value a compare-and-set claim must name.
+	Delivery string `json:"delivery"`
+	Attempts int    `json:"attempts,omitempty"`
+}
+
 // SupervisionConfig is the declared supervision of one workflow, carried
 // unchanged from the manifest into the run. A clone or rerun inherits this
 // record and inherits no acceptances, no holds and no incidents.
@@ -497,16 +520,30 @@ type Activation struct {
 	Epoch int64  `json:"epoch"`
 	// DispatchIdentity is deterministic. A provably undelivered dispatch is
 	// retried with this same identity rather than a new one.
-	DispatchIdentity string          `json:"dispatchIdentity"`
-	State            ActivationState `json:"state"`
+	DispatchIdentity string `json:"dispatchIdentity"`
+	// Principal is the admin principal this activation's supervisor capability
+	// authenticates as, recorded when the activation is dispatched. The
+	// authorizer reads the run and epoch a principal may act on from here, so
+	// the scope is the coordinator's own conclusion rather than a property of
+	// the credential.
+	Principal string          `json:"principal,omitempty"`
+	State     ActivationState `json:"state"`
 	// LeaseToken and LeaseExpiresAt carry the coordinator-issued renewable
 	// lease. Expiry revokes decision authority immediately.
 	LeaseToken     string     `json:"leaseToken,omitempty"`
 	LeaseExpiresAt *time.Time `json:"leaseExpiresAt,omitempty"`
 	// Deadline is the maximum elapsed time for this activation.
 	Deadline *time.Time `json:"deadline,omitempty"`
+	// IncidentID is the review incident this activation was woken for, when it
+	// was woken for one. It is what makes
+	// MaxAutoRecoveredActivationsPerIncident enforceable rather than merely
+	// declared: the recovery counter belongs to one incident, so a fresh
+	// incident starts a fresh recovery budget and a repeatedly failing one does
+	// not respawn forever.
+	IncidentID string `json:"incidentId,omitempty"`
 	// TurnsUsed counts turns against MaxTurnsPerActivation; RecoveredCount
-	// counts automatic recoveries against MaxAutoRecoveredActivationsPerIncident.
+	// counts automatic recoveries of this incident against
+	// MaxAutoRecoveredActivationsPerIncident.
 	TurnsUsed      int `json:"turnsUsed"`
 	RecoveredCount int `json:"recoveredCount"`
 	// ConsumedEventCursor is the high-water mark this activation consumed,

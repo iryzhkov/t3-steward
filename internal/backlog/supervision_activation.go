@@ -498,7 +498,15 @@ func PlanActivation(state SupervisionActivationState, signal ActivationSignal, n
 	switch signal.Event {
 	case domain.ActivationEventTriggerFired:
 		if result.State == domain.ActivationPendingDispatch {
-			next = newActivation(record, result.Epoch, inbox.HighWaterMark, activation.RecoveredCount)
+			// The recovery budget belongs to one incident. A wake for a different
+			// incident starts a fresh one; a wake for the same incident keeps the
+			// count, which is what bounds automatic recovery per incident.
+			recovered := activation.RecoveredCount
+			if signal.IncidentID != activation.IncidentID {
+				recovered = 0
+			}
+			next = newActivation(record, result.Epoch, inbox.HighWaterMark, recovered)
+			next.IncidentID = signal.IncidentID
 			plan.Dispatch = issueActivationLease(&next, record, now, false)
 		}
 	case domain.ActivationEventDispatchUndelivered:
@@ -527,6 +535,7 @@ func PlanActivation(state SupervisionActivationState, signal ActivationSignal, n
 				break
 			}
 			next = newActivation(record, result.Epoch, activation.ConsumedEventCursor, recovered)
+			next.IncidentID = activation.IncidentID
 			next.State = domain.ActivationIdle
 			next.LeaseToken, next.LeaseExpiresAt = "", nil
 		}

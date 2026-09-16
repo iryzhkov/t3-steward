@@ -221,6 +221,10 @@ func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeR
 	if p.settings != nil {
 		snapshots = workerruntime.AuthorizedPlanningSnapshots(*p.settings, snapshots, now)
 	}
+	supervision, err := coordinatorSupervisionSnapshots(ctx, p.store, records.WorkflowRuns, snapshots)
+	if err != nil {
+		return backlog.AssignmentPlanningReport{}, err
+	}
 	input, err := backlog.BuildCoordinatorPlanInput(backlog.CoordinatorPlanningStateInput{
 		Now: now, CoordinatorEpoch: p.epoch,
 		Workflows: records.Workflows, WorkflowRuns: records.WorkflowRuns,
@@ -230,6 +234,9 @@ func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeR
 		MaxWorkerSnapshotAge:   p.maxWorkerSnapshotAge,
 		MaxQuotaObservationAge: p.maxQuotaObservationAge,
 		DeadlineRiskWindow:     p.deadlineRiskWindow, CheckpointMargin: p.checkpointMargin,
+		// Supervision is resolved per run and fenced on nothing here: BuildPlan
+		// is pure, so the snapshot it reasons from is read once, now.
+		SupervisionSnapshots: supervision,
 	})
 	if err != nil {
 		return backlog.AssignmentPlanningReport{}, err
@@ -308,7 +315,11 @@ type coordinatorBoundaryCycle struct {
 	legacy       coordinatorLegacyTicker
 	workers      coordinatorWorkerTicker
 	campaignRefs coordinatorCampaignRefTicker
-	logger       *slog.Logger
+	// supervision advances gates, raises review incidents and escalates a
+	// supervisor route nobody can run. A nil value is the unsupervised
+	// deployment and changes nothing.
+	supervision *coordinatorSupervision
+	logger      *slog.Logger
 }
 
 func (c coordinatorBoundaryCycle) Tick(ctx context.Context) {
@@ -327,6 +338,13 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 		if _, err := backlog.ProjectWorkflowRuns(ctx, c.projection, time.Now().UTC()); err != nil {
 			c.logger.Error("workflow run projection failed", "error", err)
 		}
+	}
+	// Supervision runs after the projection and before worker exchange: a gate
+	// whose producers just succeeded becomes reviewable on the same boundary
+	// that recorded their success, and before anything the gate protects could
+	// be offered.
+	if c.supervision != nil {
+		c.supervision.Tick(ctx)
 	}
 	if store, ok := c.projection.(interface {
 		SettleNodeWaits(context.Context, time.Time) error
@@ -431,7 +449,14 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 }
 
 func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger *slog.Logger, store *sqlite.Store, epoch int64, ready func()) error {
-	service, err := backlogadmin.New(store, localAdminAuthorizer{})
+	// A supervisor capability is enforced server-side, around the ordinary
+	// authorizer rather than instead of it: every other principal is delegated
+	// unchanged, and a supervisor is bound to the one run and epoch the
+	// coordinator's own activation records say it was woken for.
+	service, err := backlogadmin.New(store, backlogadmin.SupervisorAuthorizer{
+		Scope:    backlogadmin.CoordinatorSupervisionStore{Store: store},
+		Delegate: localAdminAuthorizer{},
+	})
 	if err != nil {
 		return err
 	}
@@ -545,8 +570,14 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		return err
 	}
 	defer workers.close()
+	supervisionStore := backlog.CoordinatorSupervisionStore{Store: store}
+	service.SetSupervisionStore(backlogadmin.CoordinatorSupervisionStore{Store: store})
 	cycle := coordinatorBoundaryCycle{
-		projection: store,
+		projection: supervisionStore,
+		supervision: &coordinatorSupervision{
+			store: supervisionStore, logger: logger,
+			workers: store.LoadWorkerSnapshots,
+		},
 		quota: coordinatorQuotaReconciler{store: store, bridge: backlog.QuotaBridge{
 			Store: store, Pools: coordinatorQuotaPoolBindings(cfg), Disabled: !cfg.QuotaChecksEnabled(),
 			MaxObservationAge:       cfg.BacklogV2.Freshness.QuotaMaxAge.D(),

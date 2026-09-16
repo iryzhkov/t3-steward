@@ -87,9 +87,10 @@ func (s *Store) PutSupervision(ctx context.Context, materialization SupervisionM
 			if gate.State == "" {
 				gate.State = domain.GatePendingEvidence
 			}
-			if gate.GraphRevision == 0 {
-				gate.GraphRevision = record.Revision
-			}
+			// The graph revision is the caller's to state: a gate is part of the
+			// effective graph, so it is at the graph's revision and not at the
+			// supervision record's. A new run is at revision zero, which is a real
+			// revision rather than a missing one.
 			gate.Revision = 1
 			gate.UpdatedAt = now
 		default:
@@ -119,6 +120,26 @@ func (s *Store) LoadSupervisionSnapshot(ctx context.Context, runID string) (doma
 		return domain.SupervisionSnapshot{}, err
 	}
 	return snapshot, tx.Commit()
+}
+
+// SupervisionReadSet returns the run-local supervision state the workflow
+// projection fences on, or nil for an unsupervised run.
+//
+// The projection's read set includes supervision so that a decision landing
+// mid-pass invalidates the settlement it would have changed. That only works if
+// the caller reads the same set it will be fenced against, which is what this
+// exists for.
+func (s *Store) SupervisionReadSet(ctx context.Context, runID string) (*SupervisionReadSet, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	read, err := supervisionReadSetTx(ctx, tx, runID)
+	if err != nil {
+		return nil, err
+	}
+	return read, tx.Commit()
 }
 
 // LoadSupervisionProjection returns the full supervision read set plus its
@@ -472,15 +493,35 @@ func (s *Store) ReleaseHold(ctx context.Context, request HoldReleaseRequest) (Su
 // supervisionBranchClosure resolves a branch root to the root plus every task
 // that transitively depends on it, at the task set the caller read in this
 // transaction. It also reports whether the root exists at all.
+//
+// The root may be named by task ID or by the task name the manifest declared,
+// because those are the two identities a person and a machine respectively have
+// for the same task. The resolved set is always task IDs, which is what
+// Hold.Covers is asked about.
+//
+// A dependency edge names the upstream task by name, not by ID, so the walk
+// translates through the name index rather than comparing a need to an ID. That
+// translation is the whole reason this is not a three-line loop: without it a
+// branch hold would resolve to its root alone and cover no descendant at all.
 func supervisionBranchClosure(tasks []domain.Task, root string) ([]string, bool) {
-	if strings.TrimSpace(root) == "" {
+	root = strings.TrimSpace(root)
+	if root == "" {
 		return nil, false
+	}
+	idByName := make(map[string]string, len(tasks))
+	for _, task := range tasks {
+		idByName[task.Name] = task.ID
 	}
 	exists := false
 	for _, task := range tasks {
 		if task.ID == root {
 			exists = true
 			break
+		}
+	}
+	if !exists {
+		if id, named := idByName[root]; named {
+			root, exists = id, true
 		}
 	}
 	if !exists {
@@ -494,7 +535,10 @@ func supervisionBranchClosure(tasks []domain.Task, root string) ([]string, bool)
 				continue
 			}
 			for _, need := range task.Needs {
-				if closure[need] {
+				// A dependency edge names its upstream task by the name the
+				// manifest declared. An imported or synthetic run may name it by
+				// ID instead, so both are accepted and neither is guessed at.
+				if closure[idByName[need]] || closure[need] {
 					closure[task.ID] = true
 					changed = true
 					break
@@ -763,6 +807,11 @@ type IncidentResolutionRequest struct {
 	RequestID  string
 	Actor      domain.Actor
 	Event      domain.IncidentEvent
+	// GateID names the gate a gate-acceptance resolution closes the incident
+	// for. A resolution matches by gate rather than by the mere presence of a
+	// gate on the incident, so accepting one gate cannot close another gate's
+	// review incident.
+	GateID string
 	// ExpectedRevision fences the resolution against a later observation on the
 	// same incident.
 	ExpectedRevision   int64
@@ -795,7 +844,7 @@ func (s *Store) ResolveReviewIncident(ctx context.Context, request IncidentResol
 				Actor:                           request.Actor,
 				ReasonChangedOrThresholdCrossed: true,
 				ActorScopeCoversRun:             supervisionActorCoversRun(state.Record, request.Actor),
-				MatchingGateIncident:            incident.GateID != "",
+				MatchingGateIncident:            request.GateID != "" && incident.GateID == request.GateID,
 				TaskTerminallyFailed:            terminallyFailed,
 				ExpectedRevision:                request.ExpectedRevision,
 			})

@@ -225,6 +225,57 @@ func campaignImpossible(matrix backlogadmin.ViabilityMatrix) error {
 	}
 }
 
+// campaignSupervisionVerdict is the supervision sibling of campaignImpossible:
+// it turns one refusal into the single error a caller branches on. The two live
+// together because they answer the same question for a caller, "what is this
+// refusal and can I do anything about it", and a second convention for that
+// answer would be a second thing to learn.
+//
+// The supervision class is the distinction the caller reads, so it is named in
+// the message and preserved verbatim. The exit code is the frozen transport
+// numbering and is not extended: rejected on the merits is 8 for supervision
+// exactly as it is for an impossible campaign, unauthorized scope is the
+// authentication code 4, an unavailable coordinator is 5, and a request that
+// was wrong in itself is the protocol code 7. stale-evidence and
+// unmet-prerequisite therefore share exit 8; the class word tells them apart,
+// in the message and in the --json error document built from it.
+func campaignSupervisionVerdict(operation backlogadmin.SupervisionOperation, err error) error {
+	if err == nil {
+		return nil
+	}
+	class := backlogadmin.ClassifySupervisionError(err)
+	if class == backlogadmin.SupervisionErrorMalformed {
+		// A refusal that crossed a carrier arrives as prose with its sentinels
+		// gone, so it would classify as malformed whatever it was. When it
+		// already carries a transport class, that class is the honest answer and
+		// inventing a supervision one over it would be worse than saying less.
+		if carried := backlogadmin.ClassOf(err); carried != "" && carried != backlogadmin.ClassOK {
+			return err
+		}
+	}
+	return &backlogadmin.TransportError{
+		Class:     campaignSupervisionTransportClass(class),
+		Operation: "campaign supervision " + string(operation),
+		Err:       fmt.Errorf("%s: %w", class, err),
+	}
+}
+
+// campaignSupervisionTransportClass maps a supervision class onto the frozen
+// transport class whose exit code it shares.
+func campaignSupervisionTransportClass(class backlogadmin.SupervisionErrorClass) backlogadmin.TransportClass {
+	switch class {
+	case backlogadmin.SupervisionErrorUnauthorizedScope:
+		return backlogadmin.ClassAuthentication
+	case backlogadmin.SupervisionErrorUnavailable:
+		return backlogadmin.ClassUnavailable
+	case backlogadmin.SupervisionErrorMalformed:
+		return backlogadmin.ClassProtocol
+	default:
+		// stale-evidence and unmet-prerequisite are both refusals on the merits.
+		return backlogadmin.ClassRejected
+	}
+}
+
 func renderCampaignCheck(out interface{ Write([]byte) (int, error) }, document campaignCheck) error {
 	if _, err := fmt.Fprintf(out, "campaign %s is %s\n", document.Name, document.Matrix.Outcome); err != nil {
 		return err

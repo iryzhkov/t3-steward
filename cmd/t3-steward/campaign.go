@@ -34,17 +34,19 @@ Read-only and live, asks the coordinator and creates nothing:
   check    <directory|workflow.yaml> [--json] [--task NAME]
 Mutating, checks first and creates one workflow and one run:
   submit   <directory|workflow.yaml> --idempotency-key KEY [--json]
-           [--allow-unverified --reason TEXT]
-           [--notify-thread <current|id>]
+           [--allow-unverified --reason TEXT] [--notify-thread <current|id>]
 Mutating recovery, creates a second run and never changes the first:
   rerun    <run> --from TASK --idempotency-key KEY [--reason TEXT] [--json]
 
 Lifecycle (delegated to backlog, unchanged; explain is read-only and live):
   list [--project P] [--progress STATES] [--class CLASS] [--json]
-  show <run> [--json]
-  graph <run> [--json|--dot]
+  show <run> [--json]                 graph <run> [--json|--dot]
   explain <run>/<task> [--json]
   cancel <run>/<task> --reason TEXT [--command-id ID] [--json]
+Supervised runs, structured decisions only and never prose:
+  supervision <show|decide|hold|release|escalate|resolve> <run> [flags] [--json]
+  Mutating verbs need --request-id KEY, --reason TEXT and --expected-revision N.
+  Flags and refusal classes: t3-steward campaign supervision --help
 Graph amendment and artifact commands stay under "t3-steward backlog".
 Graph fields: needs (run only after these succeed; acyclic), inputs_from (named
 artifacts from a direct dependency, read-only), outputs (the files a task
@@ -69,10 +71,9 @@ including catalog-digest-mismatch, which means re-enrolling a worker. Codes and
 recovery commands: t3-steward campaign help readiness.
 
 submit runs check first. --allow-unverified skips only the client-side check; the
-coordinator still refuses an impossible campaign and records the principal and
---reason. Agents should not use it. accepted_waiting is a success: the run exists
-and stays queued, so an agent may end its turn, or pass --notify-thread to be
-woken when the run settles.
+coordinator still refuses an impossible campaign and records the principal and --reason.
+Agents should not use it. accepted_waiting is a success: the run exists and stays
+queued, so an agent may end its turn or pass --notify-thread to be woken when it ends.
 
 class: surplus is the default and runs on spare quota, required is admitted first;
 placement.hosts and placement.requires narrow eligible workers, never choose one.
@@ -92,11 +93,10 @@ t3-steward campaign check demo --json
 t3-steward campaign submit demo --idempotency-key demo-1 --json
 t3-steward campaign show <run>
 
-Exit codes: 0 on success and 1 on any error, plus the transport classes below
-for check, submit, rerun and the lifecycle verbs; an impossible campaign is
-refused with class rejected, exit 8. validate and plan use no transport class.
---json is on every verb; read schemaVersion first in validate, plan, check,
-submit and rerun output. Lifecycle JSON is unchanged.
+Exit codes: 0 on success and 1 on any error, plus the transport classes below for
+check, submit, rerun and the lifecycle verbs; an impossible campaign is refused with
+class rejected, exit 8. validate and plan use no transport class. --json is on every
+verb; read schemaVersion first in validate, plan, check, submit and rerun output.
 
 Required configuration: validate and plan need none; every other verb needs a
 coordinator, through its owner-only socket here or a backlog_v2.coordinator_client
@@ -161,6 +161,12 @@ type campaignCLI struct {
 	// that a test can prove the registration creates no workflow state.
 	notify        func(context.Context, backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error)
 	resolveThread func(string) (string, error)
+	// supervise carries one structured supervision operation. It is its own
+	// seam because supervision travels over an optional interface the carrier
+	// may not implement: a coordinator client that predates supervision has to
+	// report the operation as unavailable, which is a property of this seam and
+	// not of the verb that used it.
+	supervise func(context.Context, backlogadmin.SupervisionRequest) (backlogadmin.SupervisionResponse, error)
 	// principal names who is running the command. It appears in the audit
 	// record of a submission that skipped the live check.
 	principal string
@@ -211,6 +217,22 @@ func runCampaign(cfg config.Config, args []string) error {
 			return transport.client.NodeWait(ctx, operation)
 		},
 		resolveThread: func(explicit string) (string, error) { return resolveThread(cfg, explicit) },
+		supervise: func(ctx context.Context, request backlogadmin.SupervisionRequest) (backlogadmin.SupervisionResponse, error) {
+			transport, err := newCoordinatorTransport(cfg)
+			if err != nil {
+				return backlogadmin.SupervisionResponse{}, err
+			}
+			// Supervision is an optional interface on the carrier. A client that
+			// predates it is asserted for rather than assumed, so an older
+			// coordinator client reports an unavailable operation instead of
+			// panicking on a type it never promised to be.
+			carrier, ok := transport.client.(backlogadmin.SupervisionTransport)
+			if !ok {
+				return backlogadmin.SupervisionResponse{}, fmt.Errorf(
+					"%w: this coordinator client carries no supervision", backlogadmin.ErrSupervisionUnavailable)
+			}
+			return carrier.Supervise(ctx, request)
+		},
 	}
 	transport, err := newCoordinatorTransport(cfg)
 	if err == nil {
@@ -274,7 +296,9 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 		return c.runSubmit(ctx, args[1:])
 	case "rerun":
 		return c.runRerun(ctx, args[1:])
-	case "list", "show", "graph", "explain", "cancel":
+	case "supervision":
+		return c.runSupervision(ctx, args[1:])
+	case "list", "graph", "cancel":
 		// Aliases forward the arguments untouched. Parsing or rendering them
 		// here would be a second implementation of a command that already
 		// exists, and the two would answer differently the day one changed.
@@ -282,6 +306,20 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 			return errors.New("coordinator admin transport is unavailable")
 		}
 		return c.admin(args)
+	case "show", "explain":
+		// These two forward exactly as the aliases above do, and then add the
+		// supervision projection underneath the answer. The addition is an
+		// appendix rather than a rewrite: the forwarded command's own output and
+		// exit code are what they always were, and a run that is not supervised
+		// prints nothing extra.
+		if c.admin == nil {
+			return errors.New("coordinator admin transport is unavailable")
+		}
+		if err := c.admin(args); err != nil {
+			return err
+		}
+		c.supervisionAppendix(ctx, args)
+		return nil
 	default:
 		return fmt.Errorf("unknown campaign command %q; recovery and graph amendment stay under \"t3-steward backlog\"", args[0])
 	}
@@ -289,6 +327,12 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 
 func printCampaignHelp(out io.Writer, args []string) error {
 	if len(args) > 1 {
+		// The supervision family carries its own flag contract, which is too
+		// long for the capped usage block and does not come from the campaign
+		// projection's help topics.
+		if args[1] == "supervision" {
+			return printCampaignSupervisionHelp(out)
+		}
 		for _, topic := range campaign.HelpTopics() {
 			if topic.Name == args[1] {
 				_, err := fmt.Fprint(out, topic.Body)

@@ -530,7 +530,17 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// "authoring" topic, which carries the rest. The three lines it costs were
 	// paid for by tightening the --allow-unverified and class paragraphs and by
 	// putting both worked examples on one line, so the cap is unchanged.
-	const wantDigest = "0f86986a48d8a305ebdf2274830ea46a8f768e33ddbfd6ebd6a77180b8d83ec4"
+	//
+	// Updated again when campaign supervision arrived: the block names the verb
+	// family, the run positional and the three fields every mutating verb
+	// needs, and points at "t3-steward campaign supervision --help" for the
+	// per-verb flags and the refusal classes. Four lines is what the cap can
+	// pay for, so the contract itself is in that help and not here. The four
+	// lines were paid for by putting show beside graph and the two optional
+	// submit flag groups on one line, by reflowing the --allow-unverified
+	// paragraph, and by dropping "Lifecycle JSON is unchanged" from the exit-code
+	// paragraph, which the lifecycle heading three lines up already says.
+	const wantDigest = "2e58027183fc76bc293eaad0325d10d810a7980941a460c691d1f631de5615ac"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)
