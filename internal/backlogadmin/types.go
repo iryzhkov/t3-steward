@@ -133,6 +133,16 @@ type Action struct {
 	OutcomeState  domain.AdminCommandState
 	AssignmentID  string
 	Filter        Filter
+	// The fields below are the scope a run-and-epoch-bound capability is
+	// checked against. An Authorizer sees nothing but an Action, so a scope
+	// the Action cannot carry is a scope nobody can enforce.
+	//
+	// ActivationEpoch is the epoch the caller claims to act under. Zero means
+	// the caller named none, which only an operator may do.
+	ActivationEpoch int64
+	GateID          string
+	HoldID          string
+	IncidentID      string
 }
 
 // QuarantineReleaseRequest asks the coordinator to clear one intake

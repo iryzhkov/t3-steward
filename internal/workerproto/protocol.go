@@ -138,6 +138,20 @@ type ParkedAssignment struct {
 // acknowledgement fields in SnapshotRequest. It is supplied by the worker build.
 const CapabilityTaskWaitCollectionFence = "task-wait-collection-fence-v1"
 
+// CapabilityCampaignSupervision advertises that this worker build understands a
+// campaign supervision activation: that it can run an overseer activation as
+// ordinary assigned work and report its turn without the coordinator verifying
+// that turn as a task result.
+//
+// It is a worker inventory capability rather than a package capability because
+// the question it answers is "which build is running on that host", which only
+// the worker can answer. Placement must exclude a worker that does not
+// advertise it from supervision activations, the way worker_exchange.go gates
+// causal acknowledgement on CapabilityTaskWaitCollectionFence: an older worker
+// handed an activation would execute it as a task, produce a turn, and let the
+// coordinator try to verify a review as worker output.
+const CapabilityCampaignSupervision = "campaign-supervision-v1"
+
 type SnapshotRequest struct {
 	// ObservedWorkerEpoch and ObservedSequence acknowledge a durable snapshot
 	// read before the coordinator builds this parked-assignment statement.

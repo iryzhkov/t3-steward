@@ -235,6 +235,25 @@ func inventory(root string, manifest backlog.Manifest, manifestBytes []byte, lim
 			roles[relative] = RolePrompt
 		}
 	}
+	// The overseer prompt is a prompt like a task's, and a gate rubric is review
+	// input. Both are referenced by the manifest, so both have to travel in the
+	// archive; a referenced file that is not packed is a campaign that validates
+	// here and fails on arrival.
+	if supervision, ok := manifest.SupervisionConfig(); ok {
+		relative := filepath.ToSlash(filepath.Clean(supervision.PromptArtifactID))
+		if _, exists := roles[relative]; !exists {
+			roles[relative] = RolePrompt
+		}
+	}
+	for _, gate := range manifest.GateDefinitions() {
+		if gate.RubricArtifactID == "" {
+			continue
+		}
+		relative := filepath.ToSlash(filepath.Clean(gate.RubricArtifactID))
+		if _, exists := roles[relative]; !exists {
+			roles[relative] = RoleInput
+		}
+	}
 	for _, pattern := range manifest.Inputs {
 		matches, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(pattern)))
 		if err != nil {

@@ -49,6 +49,94 @@ func TestSinkAggregatesLatestOutcomesAndPreservesCancellation(t *testing.T) {
 	}
 }
 
+func TestSupervisionSettlementBarrier(t *testing.T) {
+	finalGate := func(state GateState) Gate {
+		return Gate{Definition: GateDefinition{ID: "final", Name: "final", ObservedTaskIDs: []string{"a"}, Final: true}, State: state}
+	}
+	protecting := Gate{
+		Definition: GateDefinition{ID: "ship", Name: "ship", ObservedTaskIDs: []string{"a"}, ProtectedTaskIDs: []string{"b"}},
+		State:      GateReadyForReview,
+	}
+	open := ReviewIncident{ID: "incident", State: IncidentOpen, RequiredDisposition: DispositionConcludeFailure}
+	escalated := ReviewIncident{ID: "incident", State: IncidentEscalated, RequiredDisposition: DispositionOperatorAction}
+	resolved := ReviewIncident{ID: "incident", State: IncidentResolved, RequiredDisposition: DispositionGateDecision}
+	for _, tc := range []struct {
+		name      string
+		barrier   SupervisionBarrier
+		runFailed bool
+		settles   bool
+		reason    SinkBarrierReason
+	}{
+		{name: "unsupervised settles", barrier: SupervisionBarrier{Gates: []Gate{finalGate(GatePendingEvidence)}, Incidents: []ReviewIncident{open}}, settles: true},
+		{name: "open incident withholds", barrier: SupervisionBarrier{Supervised: true, Incidents: []ReviewIncident{open}}, reason: SinkBarrierUnresolvedIncident},
+		{name: "escalated incident withholds", barrier: SupervisionBarrier{Supervised: true, Incidents: []ReviewIncident{escalated}}, reason: SinkBarrierUnresolvedIncident},
+		{name: "open incident withholds a failed run too", barrier: SupervisionBarrier{Supervised: true, Incidents: []ReviewIncident{open}}, runFailed: true, reason: SinkBarrierUnresolvedIncident},
+		{name: "resolved incident settles", barrier: SupervisionBarrier{Supervised: true, Incidents: []ReviewIncident{resolved}}, settles: true},
+		{name: "unaccepted final gate withholds", barrier: SupervisionBarrier{Supervised: true, Gates: []Gate{finalGate(GateReadyForReview)}}, reason: SinkBarrierFinalGateUnaccepted},
+		{name: "accepted final gate settles", barrier: SupervisionBarrier{Supervised: true, Gates: []Gate{finalGate(GateAccepted)}}, settles: true},
+		{name: "cancelled final gate settles", barrier: SupervisionBarrier{Supervised: true, Gates: []Gate{finalGate(GateCancelled)}}, settles: true},
+		{name: "failed run is not kept alive for a summary", barrier: SupervisionBarrier{Supervised: true, Gates: []Gate{finalGate(GatePendingEvidence)}}, runFailed: true, settles: true},
+		{name: "a gate protecting a task never withholds settlement", barrier: SupervisionBarrier{Supervised: true, Gates: []Gate{protecting}}, settles: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SupervisionSettlementBarrier(tc.barrier, tc.runFailed)
+			if got.Settles != tc.settles || got.Reason != tc.reason {
+				t.Fatalf("verdict = %+v, want settles %v reason %q", got, tc.settles, tc.reason)
+			}
+		})
+	}
+}
+
+func TestSupervisedSinkWaitsForIncidentsAndFinalGate(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	tasks := []Task{{ID: "a", Name: "a", WorkflowID: "w"}}
+	succeeded := []Attempt{{ID: "a1", TaskID: "a", WorkflowRunID: "r", Number: 1, Progress: ProgressSucceeded, Control: ControlStopped}}
+	run := WorkflowRun{ID: "r", WorkflowID: "w"}
+	barrier := SupervisionBarrier{
+		Supervised: true,
+		Gates: []Gate{{
+			Definition: GateDefinition{ID: "final", Name: "final", ObservedTaskIDs: []string{"a"}, Final: true},
+			State:      GateReadyForReview,
+		}},
+		Incidents: []ReviewIncident{{ID: "incident", RunID: "r", GateID: "final", State: IncidentOpen, RequiredDisposition: DispositionGateDecision}},
+	}
+	held, err := ProjectSupervisedRunSink(run, tasks, succeeded, nil, barrier, now)
+	if err != nil || held.Sink.Progress.Terminal() {
+		t.Fatalf("unresolved incident settled: %+v %v", held.Sink, err)
+	}
+	barrier.Incidents[0].State = IncidentResolved
+	stillHeld, err := ProjectSupervisedRunSink(run, tasks, succeeded, nil, barrier, now)
+	if err != nil || stillHeld.Sink.Progress.Terminal() {
+		t.Fatalf("unaccepted final gate settled: %+v %v", stillHeld.Sink, err)
+	}
+	barrier.Gates[0].State = GateAccepted
+	settled, err := ProjectSupervisedRunSink(run, tasks, succeeded, nil, barrier, now)
+	if err != nil || settled.Sink.Progress != ProgressSucceeded || settled.Progress != ProgressSucceeded {
+		t.Fatalf("resolved decisions did not settle: %+v %v", settled.Sink, err)
+	}
+
+	// A failed campaign is never kept alive solely for an optional summary.
+	failed := []Attempt{{ID: "a1", TaskID: "a", WorkflowRunID: "r", Number: 1, Progress: ProgressFailed, Control: ControlStopped}}
+	optional := SupervisionBarrier{Supervised: true, Gates: []Gate{{
+		Definition: GateDefinition{ID: "final", Name: "final", ObservedTaskIDs: []string{"a"}, Final: true},
+		State:      GatePendingEvidence,
+	}}}
+	concluded, err := ProjectSupervisedRunSink(run, tasks, failed, nil, optional, now)
+	if err != nil || concluded.Sink.Progress != ProgressFailed || concluded.Progress != ProgressFailed {
+		t.Fatalf("failed run held open for a summary: %+v %v", concluded.Sink, err)
+	}
+
+	// An unsupervised run settles exactly as it always has.
+	plain, err := ProjectRunSink(run, tasks, succeeded, nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero, err := ProjectSupervisedRunSink(run, tasks, succeeded, nil, SupervisionBarrier{}, now)
+	if err != nil || !reflect.DeepEqual(plain, zero) {
+		t.Fatalf("zero barrier changed settlement: %+v %+v %v", plain, zero, err)
+	}
+}
+
 func TestSinkWaitsForEveryExecutionIncludingOldAttempts(t *testing.T) {
 	now := time.Now()
 	tasks := []Task{{ID: "t", Name: "task", WorkflowID: "w"}}

@@ -165,7 +165,7 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 	}
 
 	now := i.now()
-	records, err := i.buildRecords(manifest, workflowID, runID, inputPaths, files, directoryBindings, now)
+	records, supervision, err := i.buildRecords(manifest, workflowID, runID, inputPaths, files, directoryBindings, now)
 	if err != nil {
 		return IngestedBundle{}, fmt.Errorf("ingest sink: %w", err)
 	}
@@ -175,6 +175,19 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 	}
 	keepStage = true
 
+	// Supervision is materialized before the run exists. A gate row belonging to
+	// a run that was never created is inert, because a supervision snapshot of a
+	// run with no run row is unsupervised; the reverse order would leave a real
+	// run supervised in name with no gate to withhold anything.
+	if supervision != nil {
+		materializer, ok := i.Store.(SupervisionMaterializer)
+		if !ok {
+			return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: this coordinator store records no supervision")
+		}
+		if _, err := materializer.PutSupervision(ctx, *supervision); err != nil {
+			return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: materialize supervision: %w", err)
+		}
+	}
 	if err := i.Store.SaveCoordinatorRecords(ctx, records); err != nil {
 		if cleanupErr := removeIngestedTree(finalDir); cleanupErr != nil {
 			return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: persist metadata: %w (cleanup failed: %v)", err, cleanupErr)
@@ -236,17 +249,31 @@ func openIngestionBundle(bundleDir string) (string, *os.Root, Manifest, []byte, 
 	return root, sourceRoot, manifest, raw, nil
 }
 
-func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string, inputPaths []string, files map[string]ingestedFile, directoryBindings map[string][]directoryresource.Binding, now time.Time) (sqlite.CoordinatorRecords, error) {
+func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string, inputPaths []string, files map[string]ingestedFile, directoryBindings map[string][]directoryresource.Binding, now time.Time) (sqlite.CoordinatorRecords, *sqlite.SupervisionMaterialization, error) {
 	records := sqlite.CoordinatorRecords{}
+	artifactIDByPath := make(map[string]string, len(files))
 	manifestArtifact := i.artifact(runID, "", files["workflow.yaml"], now)
 	records.Artifacts = append(records.Artifacts, manifestArtifact)
+	artifactIDByPath["workflow.yaml"] = manifestArtifact.ID
 	workflowInputIDs := []string{manifestArtifact.ID}
 	taskInputIDs := make([]string, 0, len(inputPaths))
 	for _, relative := range inputPaths {
 		artifact := i.artifact(runID, "", files[relative], now)
 		records.Artifacts = append(records.Artifacts, artifact)
+		artifactIDByPath[relative] = artifact.ID
 		workflowInputIDs = append(workflowInputIDs, artifact.ID)
 		taskInputIDs = append(taskInputIDs, artifact.ID)
+	}
+	// The overseer prompt and every gate rubric are retained as run inputs, so a
+	// review reads the exact bytes the submission declared.
+	for _, relative := range supervisionBundleFiles(manifest) {
+		relative = filepath.Clean(relative)
+		if _, retained := artifactIDByPath[relative]; retained {
+			continue
+		}
+		artifact := i.artifact(runID, "", files[relative], now)
+		records.Artifacts = append(records.Artifacts, artifact)
+		artifactIDByPath[relative] = artifact.ID
 	}
 
 	taskNames := make([]string, 0, len(manifest.Tasks))
@@ -277,11 +304,13 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 		InputArtifactIDs: append([]string(nil), workflowInputIDs...), Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}}
 
+	taskIDsByName := make(map[string]string, len(taskNames))
 	for index, name := range taskNames {
 		taskManifest := manifest.Tasks[name]
 		taskID := taskIDs[index]
 		promptArtifact := i.artifact(runID, taskID, files[filepath.Clean(taskManifest.PromptFile)], now)
 		records.Artifacts = append(records.Artifacts, promptArtifact)
+		taskIDsByName[name] = taskID
 		var outputs []domain.ArtifactDeclaration
 		if len(taskManifest.Outputs) != 0 {
 			outputs = make([]domain.ArtifactDeclaration, 0, len(taskManifest.Outputs))
@@ -340,10 +369,22 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 	}
 	run, err := domain.BindRunSink(records.WorkflowRuns[0], records.Tasks)
 	if err != nil {
-		return sqlite.CoordinatorRecords{}, err
+		return sqlite.CoordinatorRecords{}, nil, err
+	}
+	supervision, err := buildSupervision(manifest, runID, taskIDsByName, artifactIDByPath, run.GraphRevision, now)
+	if err != nil {
+		return sqlite.CoordinatorRecords{}, nil, err
+	}
+	if supervision != nil {
+		// The run carries its declared record from creation, so a supervised run
+		// is supervised before any supervision transaction has run. The gate rows
+		// are materialized separately, and before the run exists, so no window
+		// leaves a supervised run with no gates.
+		declared := supervision.Record
+		run.Supervision = &declared
 	}
 	records.WorkflowRuns[0] = run
-	return records, nil
+	return records, supervision, nil
 }
 
 func (i BundleIngester) artifact(runID, taskID string, file ingestedFile, now time.Time) domain.Artifact {
@@ -376,6 +417,12 @@ func ingestionPaths(root string, manifest Manifest) ([]string, []string, error) 
 	all := map[string]struct{}{"workflow.yaml": {}}
 	for _, task := range manifest.Tasks {
 		all[filepath.Clean(task.PromptFile)] = struct{}{}
+	}
+	// The overseer prompt and the gate rubrics are retained exactly like a task
+	// prompt: they are the evidence a later reader needs to know what the review
+	// was asked to apply.
+	for _, relative := range supervisionBundleFiles(manifest) {
+		all[filepath.Clean(relative)] = struct{}{}
 	}
 	inputSet := make(map[string]struct{})
 	for _, pattern := range manifest.Inputs {

@@ -28,7 +28,13 @@ type RemoteServerConfig struct {
 	// Clients are the admin clients this coordinator accepts, by principal.
 	// A frame naming a principal that is not here cannot be authenticated,
 	// because there is no credential to verify it against.
-	Clients            map[string]AdminCredentials
+	Clients map[string]AdminCredentials
+	// Supervisors are the admin clients that act as campaign overseers. A
+	// principal named here is relayed under the supervisor role instead of
+	// remote-admin, which is strictly narrower: bound to one run and one
+	// activation epoch by the coordinator's own authorizer. An empty map is
+	// the ordinary deployment, in which no client is a supervisor.
+	Supervisors        map[string]bool
 	Relay              LocalClient
 	Replay             *RemoteReplayStore
 	MaxRequestBytes    int64
@@ -180,8 +186,14 @@ func decodeCachedResponse(raw []byte) (localResponse, error) {
 // and an artifact read streams bytes that no cache could replay.
 func mutatingOperation(operation string) bool {
 	switch operation {
-	case localOperationQuery, localOperationArtifact:
+	case localOperationQuery, localOperationArtifact, localOperationSupervisionShow:
 		return false
+	case localOperationSupervisionDecision:
+		// A supervision decision is an effect: accepting a gate releases a
+		// protected task, and replaying it must return the first answer rather
+		// than deciding twice. The default below already says so; naming it
+		// here records that the classification was made rather than inherited.
+		return true
 	default:
 		return true
 	}
@@ -284,11 +296,15 @@ func (s *RemoteServer) validate(pinned string, frame remoteFrame) (localRequest,
 				"a remote submission must declare its archive digest")
 		}
 	}
-	request.RemoteAdmin = &RemoteAdminAssertion{
+	assertion := &RemoteAdminAssertion{
 		Principal:   credentials.ClientPrincipal,
 		Coordinator: s.config.CoordinatorID,
 		RequestID:   frame.RequestID,
 	}
+	if s.config.Supervisors[credentials.ClientPrincipal] {
+		assertion.Role = SupervisorRole
+	}
+	request.RemoteAdmin = assertion
 	return request, credentials, true, nil
 }
 

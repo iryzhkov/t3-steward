@@ -18,6 +18,17 @@ const (
 	PlanningBlockerCandidatePolicy  = "candidate-policy"
 	PlanningBlockerResource         = "resource-busy"
 	PlanningBlockerCheckout         = "workflow-checkout-busy"
+	// PlanningBlockerSupervisionGate reports a supervision gate that has not
+	// admitted the task: pending evidence, awaiting review, held, escalated,
+	// cancelled, or undecidable because the supervisor route is unavailable.
+	PlanningBlockerSupervisionGate = "supervision-gate"
+	// PlanningBlockerSupervisionHold reports an active run-wide or branch hold
+	// covering the task.
+	PlanningBlockerSupervisionHold = "supervision-hold"
+	// PlanningBlockerSupervisionRun reports a run-level supervision refusal
+	// that is about neither one gate nor one hold: the run was cancelled, the
+	// run settled, or the snapshot is not at the expected graph revision.
+	PlanningBlockerSupervisionRun = "supervision-run"
 )
 
 type PlanningWorkflow struct {
@@ -36,7 +47,16 @@ type PlanInput struct {
 	ResourceOwners         map[string]string
 	WorkflowCheckoutOwners map[string]string
 	Constraints            []PlanningConstraint
-	Ordering               PlanningOrderingInput
+	// SupervisionSnapshots is the supervision state of every supervised run
+	// being planned, keyed by run ID. An absent run is unsupervised, which is
+	// every run that exists today. They are handed to the planner the way
+	// ResourceOwners is: BuildPlan is pure and reads no store.
+	//
+	// It is a map rather than one pointer because one planning pass covers the
+	// whole fleet, and two supervised campaigns running at once is ordinary. A
+	// single snapshot would have made the second one silently unsupervised.
+	SupervisionSnapshots map[string]domain.SupervisionSnapshot
+	Ordering             PlanningOrderingInput
 }
 
 type PlanningOrderingInput struct {
@@ -81,19 +101,25 @@ type PlanningConstraintSession interface {
 }
 
 type PlanningBlocker struct {
-	Code               string                `json:"code"`
-	Detail             string                `json:"detail"`
-	WorkerID           string                `json:"workerId,omitempty"`
-	Resource           string                `json:"resource,omitempty"`
-	OwnerID            string                `json:"ownerId,omitempty"`
-	DependsOn          string                `json:"dependsOn,omitempty"`
-	ProviderInstanceID string                `json:"providerInstanceId,omitempty"`
-	Model              string                `json:"model,omitempty"`
-	RouteOrdinal       int                   `json:"routeOrdinal,omitempty"`
-	QuotaPoolID        string                `json:"quotaPoolId,omitempty"`
-	QuotaWindowID      string                `json:"quotaWindowId,omitempty"`
-	Admission          domain.AdmissionState `json:"admission,omitempty"`
-	RequiredCost       float64               `json:"requiredCost,omitempty"`
+	Code      string `json:"code"`
+	Detail    string `json:"detail"`
+	WorkerID  string `json:"workerId,omitempty"`
+	Resource  string `json:"resource,omitempty"`
+	OwnerID   string `json:"ownerId,omitempty"`
+	DependsOn string `json:"dependsOn,omitempty"`
+	// SupervisionCode, GateID and HoldID carry the supervision refusal as the
+	// domain predicate reported it, so explain output names the gate or the
+	// hold rather than only saying that supervision said no.
+	SupervisionCode    domain.SupervisionBlockerCode `json:"supervisionCode,omitempty"`
+	GateID             string                        `json:"gateId,omitempty"`
+	HoldID             string                        `json:"holdId,omitempty"`
+	ProviderInstanceID string                        `json:"providerInstanceId,omitempty"`
+	Model              string                        `json:"model,omitempty"`
+	RouteOrdinal       int                           `json:"routeOrdinal,omitempty"`
+	QuotaPoolID        string                        `json:"quotaPoolId,omitempty"`
+	QuotaWindowID      string                        `json:"quotaWindowId,omitempty"`
+	Admission          domain.AdmissionState         `json:"admission,omitempty"`
+	RequiredCost       float64                       `json:"requiredCost,omitempty"`
 	// Dimension and Required describe a nonquota limit, such as an executor
 	// pool's slots or a worker's allocatable memory. RequiredCost stays the
 	// quota cost it has always been, so the two are never confused.
@@ -373,6 +399,10 @@ func planTask(input PlanInput, router *providerRouter, constraints []PlanningCon
 		AttemptID: attempt.ID, Progress: attempt.Progress, Order: order, Placement: placement,
 	}
 	decision.Blockers = append(decision.Blockers, progressBlockers(state, task, attempt)...)
+	// Supervision is a property of the task, not of a candidate worker or
+	// route, so it is evaluated once here beside the dependency blockers
+	// rather than repeated for every candidate by a PlanningConstraint.
+	decision.Blockers = append(decision.Blockers, supervisionBlockers(input.SupervisionSnapshots, state.Run.ID, task)...)
 
 	locks, err := planningResourceLocks(task.ResourceLocks)
 	if err != nil {
@@ -480,6 +510,14 @@ func validatePlanInput(input PlanInput) error {
 			return errors.New("plan input contains a nil planning constraint")
 		}
 	}
+	for runID, snapshot := range input.SupervisionSnapshots {
+		if strings.TrimSpace(snapshot.RunID) == "" {
+			return errors.New("plan supervision snapshot must name its workflow run")
+		}
+		if snapshot.RunID != runID {
+			return fmt.Errorf("plan supervision snapshot keyed %q names run %q", runID, snapshot.RunID)
+		}
+	}
 	seenRuns := make(map[string]struct{}, len(input.Workflows))
 	for _, workflow := range input.Workflows {
 		if workflow.Workflow.ID == "" || workflow.State.Run.ID == "" {
@@ -546,6 +584,58 @@ func progressBlockers(state DAGState, task domain.Task, attempt domain.Attempt) 
 	}}
 }
 
+// supervisionBlockers evaluates the shared supervision predicate once for one
+// task and renders its verdict as planning blockers. A run with no snapshot is
+// unsupervised and is blocked by nothing: supervision of one run never
+// withholds another run's work.
+func supervisionBlockers(snapshots map[string]domain.SupervisionSnapshot, runID string, task domain.Task) []PlanningBlocker {
+	snapshot, supervised := snapshots[runID]
+	if !supervised {
+		return nil
+	}
+	verdict := domain.SupervisionAdmits(snapshot, domain.SupervisionQuery{TaskID: task.ID})
+	if verdict.Admitted {
+		return nil
+	}
+	blockers := make([]PlanningBlocker, 0, len(verdict.Blockers))
+	for _, blocker := range verdict.Blockers {
+		blockers = append(blockers, PlanningBlocker{
+			Code:            planningSupervisionCode(blocker.Code),
+			SupervisionCode: blocker.Code,
+			GateID:          blocker.GateID,
+			HoldID:          blocker.HoldID,
+			Detail:          supervisionBlockerDetail(blocker),
+		})
+	}
+	return blockers
+}
+
+func planningSupervisionCode(code domain.SupervisionBlockerCode) string {
+	switch code {
+	case domain.SupervisionBlockerBranchHold, domain.SupervisionBlockerRunHold:
+		return PlanningBlockerSupervisionHold
+	case domain.SupervisionBlockerRunCancelled, domain.SupervisionBlockerRunTerminal,
+		domain.SupervisionBlockerStaleSnapshot:
+		return PlanningBlockerSupervisionRun
+	default:
+		return PlanningBlockerSupervisionGate
+	}
+}
+
+func supervisionBlockerDetail(blocker domain.SupervisionBlocker) string {
+	detail := fmt.Sprintf("supervision withholds dispatch (%s)", blocker.Code)
+	switch {
+	case blocker.GateID != "":
+		detail = fmt.Sprintf("%s: gate %q", detail, blocker.GateID)
+	case blocker.HoldID != "":
+		detail = fmt.Sprintf("%s: hold %q", detail, blocker.HoldID)
+	}
+	if reason := strings.TrimSpace(blocker.Reason); reason != "" {
+		detail = detail + ": " + reason
+	}
+	return detail
+}
+
 func currentPlanningAttempt(attempts []domain.Attempt, taskID string) domain.Attempt {
 	var current domain.Attempt
 	for _, attempt := range attempts {
@@ -589,11 +679,13 @@ func sortPlanningBlockers(blockers []PlanningBlocker) {
 		left, right := blockers[i], blockers[j]
 		leftFields := []string{
 			left.Code, left.WorkerID, left.Resource, left.Dimension, left.OwnerID, left.DependsOn,
+			string(left.SupervisionCode), left.GateID, left.HoldID,
 			left.ProviderInstanceID, left.Model, left.QuotaPoolID, left.QuotaWindowID, string(left.Admission),
 			planningTimeKey(left.ObservedAt), planningTimeKey(left.EarliestAt), planningTimeKey(left.DeadlineAt), left.Detail,
 		}
 		rightFields := []string{
 			right.Code, right.WorkerID, right.Resource, right.Dimension, right.OwnerID, right.DependsOn,
+			string(right.SupervisionCode), right.GateID, right.HoldID,
 			right.ProviderInstanceID, right.Model, right.QuotaPoolID, right.QuotaWindowID, string(right.Admission),
 			planningTimeKey(right.ObservedAt), planningTimeKey(right.EarliestAt), planningTimeKey(right.DeadlineAt), right.Detail,
 		}

@@ -1,0 +1,51 @@
+campaign three-node-example
+source       docs/examples/campaign/three-node
+digest       4a4868309b521aa6444fb86e73a2317f40d312bcd9c63140e0e5dda2b782636b
+class        surplus
+environment  project example-project, git, scope task, ref main
+graph        3 tasks, 2 edges, 2 waves, 2 roots, 1 leaf, 1 component, 2 artifact bindings
+sink         __sink waits for every task in the run, not only the leaves; the coordinator creates and settles it
+resources    preset light, min cpu low
+routes       claudeAgent/claude-opus-5, pool claude-main
+preflight    source: context probe git_head, on failure record, include summary
+inputs       inputs/scope.md -> inputs/scope.md
+
+wave 0 (2 tasks may start together)
+  interfaces [root]
+    prompt      prompts/interfaces.md
+    class       surplus (inherited)
+    outputs     interfaces.md
+    verify      git diff --quiet
+    unblocks    join
+    resources   preset light, min cpu low (inherited)
+    routes      inherited, 1 candidate(s)
+    preflight   inherited, 1 step(s)
+    effort      importance 3, difficulty 2, max turns 3
+  tests [root]
+    prompt      prompts/tests.md
+    class       surplus (inherited)
+    outputs     tests.md
+    verify      git diff --quiet
+    unblocks    join
+    resources   preset light, min cpu low (inherited)
+    routes      inherited, 1 candidate(s)
+    preflight   inherited, 1 step(s)
+    effort      importance 3, difficulty 2, max turns 3
+
+wave 1 (1 task)
+  join [leaf]
+    prompt      prompts/join.md
+    class       surplus (inherited)
+    needs       interfaces, tests
+    inputs from interfaces: interfaces.md
+                tests: tests.md
+    outputs     combined.md
+    verify      test -s combined.md
+    resources   preset build, min cpu medium, prefer cpu high (task)
+    routes      inherited, 1 candidate(s)
+    preflight   inherited, 1 step(s)
+    effort      importance 4, difficulty 3, max turns 8
+
+static plan only: waves say what may start together once dependencies succeed,
+not when a worker, provider route or quota will be free. After submission,
+`campaign explain <run>/<task>` is the authoritative dynamic answer.

@@ -1,6 +1,15 @@
 You are the only task in this campaign. You own the repository change from start
 to finish, and nothing downstream will clean up after you.
 
+Being the only task is this campaign's declared shape, not permission to invent
+more of it. Do not spawn native subagents to split, parallelize or review this
+work. Work delegated that way has no task record, no dependency edge, no quota
+admission of its own, no verification, no artifact and no retry boundary, so it
+is not separately scheduled work however it is reported. If the plan turns out
+to need several units of work, say so in `handoff.md`: the answer is a campaign
+that declares them as tasks with `needs` and `inputs_from`, not a hidden graph
+inside this session.
+
 Read the frozen plan at `.t3/inputs/plan.md` first. It states the objective, the
 boundaries and what done means; treat it as authoritative and do not widen the
 scope it sets. The preflight evidence you were given already reports the

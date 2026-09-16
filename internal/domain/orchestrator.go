@@ -118,19 +118,25 @@ type Workflow struct {
 
 // WorkflowRun is one execution of a workflow definition.
 type WorkflowRun struct {
-	Graph            *GraphDefinition `json:"graph,omitempty"`
-	ID               string           `json:"id"`
-	WorkflowID       string           `json:"workflowId"`
-	GraphRevision    int64            `json:"graphRevision,omitempty"`
-	Sink             *SinkTask        `json:"sink,omitempty"`
-	ScheduleID       string           `json:"scheduleId,omitempty"`
-	TriggerID        string           `json:"triggerId,omitempty"`
-	Progress         ProgressState    `json:"progress"`
-	InputArtifactIDs []string         `json:"inputArtifactIds,omitempty"`
-	Revision         int64            `json:"revision"`
-	CreatedAt        time.Time        `json:"createdAt"`
-	UpdatedAt        time.Time        `json:"updatedAt"`
-	CompletedAt      *time.Time       `json:"completedAt,omitempty"`
+	Graph         *GraphDefinition `json:"graph,omitempty"`
+	ID            string           `json:"id"`
+	WorkflowID    string           `json:"workflowId"`
+	GraphRevision int64            `json:"graphRevision,omitempty"`
+	Sink          *SinkTask        `json:"sink,omitempty"`
+	// Supervision is the run's durable supervision record, or nil for an
+	// unsupervised run, which is every run that exists today. It sits beside
+	// the sink because both are coordinator-owned state that belongs to the
+	// run rather than to any task, and outside the worker DAG so an overseer
+	// cannot deadlock behind its own review gate.
+	Supervision      *SupervisionRecord `json:"supervision,omitempty"`
+	ScheduleID       string             `json:"scheduleId,omitempty"`
+	TriggerID        string             `json:"triggerId,omitempty"`
+	Progress         ProgressState      `json:"progress"`
+	InputArtifactIDs []string           `json:"inputArtifactIds,omitempty"`
+	Revision         int64              `json:"revision"`
+	CreatedAt        time.Time          `json:"createdAt"`
+	UpdatedAt        time.Time          `json:"updatedAt"`
+	CompletedAt      *time.Time         `json:"completedAt,omitempty"`
 }
 
 // ArtifactDeclaration names an output a task promises to retain.
@@ -207,26 +213,43 @@ type Task struct {
 }
 
 // Attempt is one try to complete a task in a workflow run.
+//
+// An attempt that carries a supervision activation is the one exception to
+// "one attempt per declared task": see SupervisionActivationID.
 type Attempt struct {
-	ID                     string            `json:"id"`
-	WorkflowRunID          string            `json:"workflowRunId"`
-	TaskID                 string            `json:"taskId"`
-	Number                 int               `json:"number"`
-	Progress               ProgressState     `json:"progress"`
-	Control                ControlState      `json:"control"`
-	Revision               int64             `json:"revision"`
-	LastTurnOutcomeID      string            `json:"lastTurnOutcomeId,omitempty"`
-	LastTurnOutcomeMarker  TurnOutcomeMarker `json:"lastTurnOutcomeMarker,omitempty"`
-	AssignmentID           string            `json:"assignmentId,omitempty"`
-	ThreadID               string            `json:"threadId,omitempty"`
-	CheckpointArtifactID   string            `json:"checkpointArtifactId,omitempty"`
-	FinalSummaryArtifactID string            `json:"finalSummaryArtifactId,omitempty"`
-	AdminNotBefore         *time.Time        `json:"adminNotBefore,omitempty"`
-	AdminForceStart        bool              `json:"adminForceStart,omitempty"`
-	Failure                string            `json:"failure,omitempty"`
-	StartedAt              *time.Time        `json:"startedAt,omitempty"`
-	UpdatedAt              time.Time         `json:"updatedAt"`
-	CompletedAt            *time.Time        `json:"completedAt,omitempty"`
+	// SupervisionActivationID names the overseer activation this attempt
+	// executes, and SupervisionActivationEpoch the epoch it was issued at. Both
+	// are empty and zero on every attempt of a declared task, which is every
+	// attempt an unsupervised run has.
+	//
+	// An activation runs as ordinary assigned work so that it reuses the
+	// offer, claim, dispatch and recovery machinery a task uses, and therefore
+	// needs an attempt to hang an assignment on. It is still not a task: it is
+	// absent from the run's task graph, from its sink aggregate and from the
+	// gates and holds the run declares, because an overseer that could be
+	// withheld by its own gate would deadlock. DeclaredTaskAttempts is the
+	// filter every aggregate over a run's attempts applies.
+	SupervisionActivationID    string            `json:"supervisionActivationId,omitempty"`
+	SupervisionActivationEpoch int64             `json:"supervisionActivationEpoch,omitempty"`
+	ID                         string            `json:"id"`
+	WorkflowRunID              string            `json:"workflowRunId"`
+	TaskID                     string            `json:"taskId"`
+	Number                     int               `json:"number"`
+	Progress                   ProgressState     `json:"progress"`
+	Control                    ControlState      `json:"control"`
+	Revision                   int64             `json:"revision"`
+	LastTurnOutcomeID          string            `json:"lastTurnOutcomeId,omitempty"`
+	LastTurnOutcomeMarker      TurnOutcomeMarker `json:"lastTurnOutcomeMarker,omitempty"`
+	AssignmentID               string            `json:"assignmentId,omitempty"`
+	ThreadID                   string            `json:"threadId,omitempty"`
+	CheckpointArtifactID       string            `json:"checkpointArtifactId,omitempty"`
+	FinalSummaryArtifactID     string            `json:"finalSummaryArtifactId,omitempty"`
+	AdminNotBefore             *time.Time        `json:"adminNotBefore,omitempty"`
+	AdminForceStart            bool              `json:"adminForceStart,omitempty"`
+	Failure                    string            `json:"failure,omitempty"`
+	StartedAt                  *time.Time        `json:"startedAt,omitempty"`
+	UpdatedAt                  time.Time         `json:"updatedAt"`
+	CompletedAt                *time.Time        `json:"completedAt,omitempty"`
 }
 
 // TurnLive reports whether this attempt currently has a turn that a thread is

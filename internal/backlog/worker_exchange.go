@@ -218,6 +218,9 @@ func (c FleetCoordinator) ReconcileWorker(
 		if err == nil {
 			err = validateBuiltOffer(offer, leased, now)
 		}
+		if err == nil {
+			err = requireOfferedCapabilities(offer, snapshot)
+		}
 		if err != nil {
 			// An assignment that cannot be packaged must not block offers,
 			// commands, or collection for every other assignment.
@@ -434,6 +437,35 @@ func offeredAssignmentsForWorker(assignments []domain.Assignment, snapshot domai
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result
+}
+
+// requireOfferedCapabilities is the exchange-side capability gate: an offer is
+// withheld from a worker whose durable snapshot inventory does not advertise
+// what the package requires.
+//
+// It reads snapshot.Inventory.Capabilities, the durable observation, and not
+// the handshake negotiation, for the same reason the causal acknowledgement
+// fields do: a handshake capability is a claim made in passing, while the
+// inventory is the worker's own published statement about the build running on
+// that host.
+//
+// The gate is deliberately narrow. Placement is where a worker that cannot run
+// an activation stops being a candidate, and campaign check is where an
+// unsatisfiable requirement is reported as impossible before a run exists.
+// This is the last boundary before the package crosses the wire, and it exists
+// so that an activation can never reach an older worker through any path that
+// skipped the earlier two, including a plan committed before the worker was
+// downgraded to a build that no longer advertises the capability.
+func requireOfferedCapabilities(offer workerproto.AssignmentOffer, snapshot domain.WorkerSnapshot) error {
+	if !offer.Package.Package.IsActivation() {
+		return nil
+	}
+	if !slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityCampaignSupervision) {
+		return fmt.Errorf(
+			"worker %q does not advertise capability %q; a supervision activation is not offered to it",
+			snapshot.WorkerID, workerproto.CapabilityCampaignSupervision)
+	}
+	return nil
 }
 
 func validateBuiltOffer(offer workerproto.AssignmentOffer, assignment domain.Assignment, now time.Time) error {

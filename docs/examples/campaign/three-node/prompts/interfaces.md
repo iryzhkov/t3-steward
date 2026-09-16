@@ -2,6 +2,14 @@ You are one of two independent analysis tasks in this campaign. The other one is
 reading the same subject from a different angle and you cannot see its work, so
 write for a reader who has only your file.
 
+Each task in this campaign is a separate Steward-scheduled T3 session, declared
+in the campaign's static graph. Do not spawn native subagents to do this
+analysis, split it or review it. Work delegated that way has no task record, no
+verification, no artifact and no retry boundary, so it is not separately
+scheduled work no matter how it is reported. If this analysis turns out to need
+work of its own, say so in your file and let the campaign be reauthored with
+that work declared as a task.
+
 Read the brief at `.t3/inputs/scope.md` for the subject and its boundaries.
 
 This task is read-only. Do not edit, stage, commit or delete anything. A

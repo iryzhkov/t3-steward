@@ -38,6 +38,12 @@ type WorkflowProjectionSnapshot struct {
 	Tasks        []domain.Task
 	Attempts     []domain.Attempt
 	Assignments  []domain.Assignment
+	// Supervision is the run's gates, holds, activations and incidents, nil for
+	// every unsupervised run. It is part of the fenced read set because a
+	// supervision barrier that a concurrent decision can change without
+	// invalidating a settlement projection is a race, and because explain and
+	// status read the same snapshot the sink was computed from.
+	Supervision *SupervisionReadSet
 }
 
 func loadWorkflowTasksTx(ctx context.Context, tx *sql.Tx, workflowID string) ([]domain.Task, error) {
@@ -81,13 +87,34 @@ func loadWorkflowProjectionTx(ctx context.Context, tx *sql.Tx, runID string) (Wo
 		return snapshot, err
 	}
 	snapshot.Tasks = domain.TasksForRun(snapshot.Run, snapshot.Tasks)
-	snapshot.Attempts, err = loadProjectionRecords[domain.Attempt](ctx, tx, "SELECT record FROM coordinator_attempts WHERE workflow_run_id=? ORDER BY id", runID)
+	attempts, err := loadProjectionRecords[domain.Attempt](ctx, tx, "SELECT record FROM coordinator_attempts WHERE workflow_run_id=? ORDER BY id", runID)
 	if err != nil {
 		return snapshot, err
 	}
-	snapshot.Assignments, err = loadProjectionRecords[domain.Assignment](ctx, tx, `SELECT assignment.record FROM coordinator_assignments AS assignment
+	assignments, err := loadProjectionRecords[domain.Assignment](ctx, tx, `SELECT assignment.record FROM coordinator_assignments AS assignment
 		JOIN coordinator_attempts AS attempt ON attempt.id=assignment.attempt_id
 		WHERE attempt.workflow_run_id=? ORDER BY assignment.id`, runID)
+	if err != nil {
+		return snapshot, err
+	}
+	// The read set describes the run's declared graph, because that is what the
+	// sink projection is computed over. An overseer activation runs as assigned
+	// work on these same two tables and is not part of that graph, so leaving its
+	// attempt and assignment here would make this snapshot disagree with the one
+	// the caller built and fail the fence on every pass: a supervised run with a
+	// live overseer could then never settle.
+	snapshot.Attempts = domain.DeclaredTaskAttempts(attempts)
+	declared := make(map[string]bool, len(snapshot.Attempts))
+	for _, attempt := range snapshot.Attempts {
+		declared[attempt.ID] = true
+	}
+	snapshot.Assignments = make([]domain.Assignment, 0, len(assignments))
+	for _, assignment := range assignments {
+		if declared[assignment.AttemptID] {
+			snapshot.Assignments = append(snapshot.Assignments, assignment)
+		}
+	}
+	snapshot.Supervision, err = supervisionReadSetTx(ctx, tx, runID)
 	if err != nil {
 		return snapshot, err
 	}

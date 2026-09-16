@@ -52,7 +52,14 @@ type GraphCommit struct {
 	// Rerun is the provenance a rerun records on the run it creates. It is
 	// set only by CommitGraphRerun.
 	Rerun *domain.RerunProvenance
-	Now   time.Time
+	// TaskIDRemap maps a source run's task IDs to the task IDs the clone or
+	// rerun rebuilt them as. Only the clone and rerun paths set it, and only
+	// they know it: the new IDs are minted where the new tasks are built. It is
+	// what moves an inherited gate definition onto the new run's tasks; a task
+	// the operation reused rather than rebuilt is absent from it and keeps its
+	// own ID.
+	TaskIDRemap map[string]string
+	Now         time.Time
 }
 
 // CommitGraphAmendment publishes the complete candidate and input metadata in
@@ -217,6 +224,21 @@ func (s *Store) CommitGraphAmendment(ctx context.Context, c GraphCommit) (domain
 		return result, err
 	}
 	if err = insertGraphTx(ctx, tx, graph); err != nil {
+		return result, err
+	}
+	// Supervision, when the run has it, absorbs the change in this same
+	// transaction: hold closures and gate protection are recomputed, affected
+	// acceptances are invalidated or carried forward against a receipt, narrowed
+	// offers are released and the supervision revision is bumped. A refusal here
+	// rolls the whole amendment back. An unsupervised run is untouched.
+	changedTaskIDs := make([]string, 0, len(changed))
+	for id := range changed {
+		changedTaskIDs = append(changedTaskIDs, id)
+	}
+	if err = applySupervisionAmendmentTx(ctx, tx, supervisionAmendment{
+		Run: run, Tasks: c.Tasks, ChangedTaskIDs: changedTaskIDs,
+		RequestID: c.Request.ID, Actor: c.Actor, Reason: c.Request.Reason, Now: c.Now.UTC(),
+	}); err != nil {
 		return result, err
 	}
 	event := nativeAuditInput{ID: "graph-amended:" + c.Request.ID, Kind: "graph-amended", WorkflowRunID: run.ID, TargetType: domain.AdminTargetWorkflowRun, TargetID: run.ID, Actor: c.Actor, Reason: c.Request.Reason, CreatedAt: c.Now.UTC(), Detail: nativeAuditDetail{ExpectedRevision: graph.Parent, Revision: graph.Revision, IdempotencyIdentity: c.Request.ID, Outcome: graph.Digest}}

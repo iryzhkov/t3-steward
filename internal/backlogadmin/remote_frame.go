@@ -56,6 +56,13 @@ const RemoteAdminRole = "remote-admin"
 // LocalAdminRole is the role the owner-only socket grants its peer.
 const LocalAdminRole = "local-admin"
 
+// SupervisorRole is the role a campaign overseer acts under. It is the third
+// and narrowest role: where local-admin is everything and remote-admin is
+// reads plus an allowlist, a supervisor is bound to one run and one activation
+// epoch, and the binding is enforced by the coordinator's own authorizer
+// rather than by anything the credential carries. See SupervisorAuthorizer.
+const SupervisorRole = "supervisor"
+
 // ValidateAdminCredentialReference refuses anything outside the admin
 // namespace, and says so by name when a worker reference was supplied.
 func ValidateAdminCredentialReference(reference string) error {

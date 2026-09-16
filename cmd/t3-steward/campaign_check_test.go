@@ -6,11 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/campaign"
+	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 // campaignCheckCLI arms the readiness seam and leaves the submission seam
@@ -136,6 +140,169 @@ func TestCampaignCheckRefusesAnImpossibleCampaign(t *testing.T) {
 	if document.SchemaVersion != campaignCheckSchemaVersion ||
 		document.Matrix.Outcome != backlogadmin.ViabilityImpossible {
 		t.Fatalf("document = %+v", document)
+	}
+}
+
+const campaignSupervisedFixtureManifest = `version: 2
+name: supervised-example
+environment:
+  project: t3-steward
+inputs:
+  - inputs/plan.md
+routes:
+  - instance: codex
+    model: gpt-5.6-sol
+    quota_pool: codex-main
+supervision:
+  route:
+    instance: claudeAgent
+    model: claude-fable-5-1
+    quota_pool: claude-main
+  prompt_file: prompts/overseer.md
+  max_activations: 4
+  max_turns_per_activation: 3
+  activation_deadline: 2h
+gates:
+  review_gate:
+    after: [review]
+    before: [implement]
+tasks:
+  review:
+    prompt_file: prompts/review.md
+    outputs: [review.md]
+  implement:
+    prompt_file: prompts/implement.md
+    needs: [review]
+    inputs_from:
+      review: [review.md]
+`
+
+// campaignSupervisedFixture is the same small campaign with an overseer and one
+// gate, which is the only difference the supervision half of check reads.
+func campaignSupervisedFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	for name, content := range map[string]string{
+		"workflow.yaml":        campaignSupervisedFixtureManifest,
+		"inputs/plan.md":       "the plan\n",
+		"prompts/review.md":    "review the plan\n",
+		"prompts/implement.md": "implement the plan\n",
+		"prompts/overseer.md":  "decide the review gate on the evidence\n",
+	} {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// campaignOverseerFleet is one worker hosting the overseer route, with the
+// campaign supervision capability or without it.
+func campaignOverseerFleet(capable bool) []domain.WorkerInventory {
+	inventory := domain.WorkerInventory{
+		ID: "homelab", AcceptBacklog: true, Health: domain.WorkerHealthReady,
+		Providers: []domain.WorkerProviderInventory{{
+			InstanceID: "claudeAgent", Models: []string{"claude-fable-5-1"},
+			QuotaPoolID: "claude-main", Available: true,
+		}, {
+			InstanceID: "codex", Models: []string{"gpt-5.6-sol"},
+			QuotaPoolID: "codex-main", Available: true,
+		}},
+	}
+	if capable {
+		inventory.Capabilities = []string{workerproto.CapabilityCampaignSupervision}
+	}
+	return []domain.WorkerInventory{inventory}
+}
+
+// campaignSupervisionMatrix answers a check with the coordinator's own
+// supervision evaluation over one fleet, so this test exercises the rule rather
+// than a hand-written verdict.
+func campaignSupervisionMatrix(fleet []domain.WorkerInventory) func(backlogadmin.ViabilityRequest) backlogadmin.ViabilityMatrix {
+	return func(request backlogadmin.ViabilityRequest) backlogadmin.ViabilityMatrix {
+		matrix := campaignReadyMatrix(request)
+		if request.Supervision == nil {
+			return matrix
+		}
+		matrix.Reasons = backlogadmin.SupervisionViabilityReasons(*request.Supervision, fleet)
+		for _, reason := range matrix.Reasons {
+			if reason.Permanent {
+				matrix.Outcome = backlogadmin.ViabilityImpossible
+			}
+		}
+		return matrix
+	}
+}
+
+// TestCampaignCheckRefusesSupervisionNoWorkerCanRun is the admission half of the
+// overseer route: a campaign whose gates no configured worker could ever decide
+// is impossible, not merely waiting, because no amount of waiting installs a
+// capability on a host.
+func TestCampaignCheckRefusesSupervisionNoWorkerCanRun(t *testing.T) {
+	root := campaignSupervisedFixture(t)
+	var out bytes.Buffer
+	cli, requests := campaignCheckCLI(t, &out, campaignSupervisionMatrix(campaignOverseerFleet(false)))
+	err := cli.run(context.Background(), []string{"check", root})
+	if err == nil {
+		t.Fatal("a campaign whose overseer no worker can run was reported as acceptable")
+	}
+	if class := backlogadmin.ClassOf(err); class != backlogadmin.ClassRejected {
+		t.Fatalf("class = %q, want %q", class, backlogadmin.ClassRejected)
+	}
+	if backlogadmin.ExitCodeFor(err) != 8 {
+		t.Fatalf("exit code = %d, want 8", backlogadmin.ExitCodeFor(err))
+	}
+	for _, want := range []string{backlogadmin.ReasonCapabilityMissing, workerproto.CapabilityCampaignSupervision} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not name %q", err.Error(), want)
+		}
+	}
+
+	// The requirement the coordinator was asked about is the declared overseer
+	// route, carried once for the run rather than per task.
+	if len(*requests) != 1 {
+		t.Fatalf("viability queries = %d, want 1", len(*requests))
+	}
+	supervision := (*requests)[0].Supervision
+	if supervision == nil {
+		t.Fatal("the request said nothing about the campaign's declared overseer")
+	}
+	if supervision.Route.ProviderInstanceID != "claudeAgent" || supervision.Route.Model != "claude-fable-5-1" ||
+		supervision.RequiredCapability != workerproto.CapabilityCampaignSupervision {
+		t.Fatalf("supervision requirement = %+v", *supervision)
+	}
+}
+
+// TestCampaignCheckAcceptsSupervisionOneWorkerCanRun is the same campaign on a
+// fleet that can run it, which is what keeps the refusal above from being a
+// refusal of supervision itself.
+func TestCampaignCheckAcceptsSupervisionOneWorkerCanRun(t *testing.T) {
+	root := campaignSupervisedFixture(t)
+	var out bytes.Buffer
+	cli, _ := campaignCheckCLI(t, &out, campaignSupervisionMatrix(campaignOverseerFleet(true)))
+	if err := cli.run(context.Background(), []string{"check", root}); err != nil {
+		t.Fatalf("a runnable supervised campaign was refused: %v", err)
+	}
+	if !strings.Contains(out.String(), "supervised-example is ready") {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+// TestCampaignCheckUnsupervisedSaysNothingAboutSupervision keeps the request
+// unchanged for every campaign that declares no overseer.
+func TestCampaignCheckUnsupervisedSaysNothingAboutSupervision(t *testing.T) {
+	root := campaignFixture(t)
+	var out bytes.Buffer
+	cli, requests := campaignCheckCLI(t, &out, campaignSupervisionMatrix(campaignOverseerFleet(false)))
+	if err := cli.run(context.Background(), []string{"check", root}); err != nil {
+		t.Fatal(err)
+	}
+	if (*requests)[0].Supervision != nil {
+		t.Fatalf("an unsupervised campaign asked about an overseer: %+v", (*requests)[0].Supervision)
 	}
 }
 

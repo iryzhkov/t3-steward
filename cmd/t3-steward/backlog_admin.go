@@ -74,6 +74,13 @@ func remoteAdminOperations() map[backlogadmin.QueryKind]bool {
 		// accept, and the operator who fixed the configuration is usually not
 		// sitting on the coordinator host.
 		backlogadmin.QuarantineReleaseKind: true,
+		// Supervision is an operator authority as much as an overseer one: an
+		// operator inspects a supervised run, takes over, accepts with the same
+		// evidence checks, escalates or resolves, and is usually not sitting on
+		// the coordinator host. The narrower supervisor role is a separate
+		// role, not a separate operation; see backlogadmin.SupervisorAuthorizer.
+		backlogadmin.SupervisionShowKind:     true,
+		backlogadmin.SupervisionDecisionKind: true,
 	}
 }
 

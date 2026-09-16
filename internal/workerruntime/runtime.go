@@ -133,6 +133,9 @@ func advertisedCapabilities(configured []string) []string {
 	if !slices.Contains(merged, workerproto.CapabilityTaskWaitCollectionFence) {
 		merged = append(merged, workerproto.CapabilityTaskWaitCollectionFence)
 	}
+	if !slices.Contains(merged, workerproto.CapabilityCampaignSupervision) {
+		merged = append(merged, workerproto.CapabilityCampaignSupervision)
+	}
 	for _, capability := range workerproto.SupportedPackageCapabilities() {
 		if !slices.Contains(merged, capability) {
 			merged = append(merged, capability)

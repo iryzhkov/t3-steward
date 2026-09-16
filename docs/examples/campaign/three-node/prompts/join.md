@@ -26,3 +26,12 @@ wholesale: a reader who wanted the parts would read the parts.
 
 This task is a synthesis. Do not edit the subject, and do not start the work you
 recommend.
+
+The two analyses reached you because they were declared as tasks and ran as
+their own Steward-scheduled T3 sessions, and their artifacts crossed the
+dependency edges this task declares with `inputs_from`. Hold to that shape: do
+not spawn native subagents to re-read the subject, to check a disagreement or to
+carry out anything in your "Next" section. Such work is invisible to the
+Steward, which is the whole reason the analyses were tasks. Work you recommend
+belongs in a campaign where it is declared as a task with its own `needs` and
+`inputs_from`.

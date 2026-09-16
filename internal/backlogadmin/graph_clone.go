@@ -92,5 +92,8 @@ func (s *Service) cloneGraph(ctx context.Context, p Principal, r domain.GraphAme
 			return result, err
 		}
 	}
-	return writer.CommitGraphClone(ctx, sqlite.GraphCommit{Request: r, Actor: p.ID, Before: source, Tasks: tasks, Inputs: inputs, Now: now})
+	// idMap is the only place the source-to-clone task identity is known, so it
+	// travels to the store, which needs it to move inherited gate definitions
+	// onto the cloned tasks.
+	return writer.CommitGraphClone(ctx, sqlite.GraphCommit{Request: r, Actor: p.ID, Before: source, Tasks: tasks, Inputs: inputs, TaskIDRemap: idMap, Now: now})
 }

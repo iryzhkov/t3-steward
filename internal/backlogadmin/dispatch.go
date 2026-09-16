@@ -43,7 +43,13 @@ func (d adminDispatch) handle(
 		response.Error = "unexpected worker enrollment"
 		return response, nil
 	}
+	if request.Supervision != nil && !supervisionOperation(request.Operation) {
+		response.Error = "unexpected supervision request"
+		return response, nil
+	}
 	switch request.Operation {
+	case localOperationSupervisionShow, localOperationSupervisionDecision:
+		d.supervise(ctx, principal, request, &response)
 	case localOperationWorkerEnrollment:
 		d.enrollWorker(ctx, principal, request, &response)
 	case localOperationGraphAmendment:

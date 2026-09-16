@@ -130,13 +130,17 @@ type ExecutionPackage struct {
 	// package. The manifest content address already stops an older build from
 	// silently dropping a field it cannot decode; this list makes the refusal
 	// explicit and nameable.
-	RequiredCapabilities []string                     `json:"requiredCapabilities,omitempty"`
-	Outputs              []domain.ArtifactDeclaration `json:"outputs,omitempty"`
-	NotBefore            *time.Time                   `json:"notBefore,omitempty"`
-	Deadline             *time.Time                   `json:"deadline,omitempty"`
-	ExpiresAt            *time.Time                   `json:"expiresAt,omitempty"`
-	Limits               ExecutionLimits              `json:"limits"`
-	CreatedAt            time.Time                    `json:"createdAt"`
+	RequiredCapabilities []string `json:"requiredCapabilities,omitempty"`
+	// Supervision makes this package an overseer activation rather than a
+	// declared task. It is nil for every task package, which is every package
+	// an unsupervised run produces. See SupervisionActivation.
+	Supervision *SupervisionActivation       `json:"supervision,omitempty"`
+	Outputs     []domain.ArtifactDeclaration `json:"outputs,omitempty"`
+	NotBefore   *time.Time                   `json:"notBefore,omitempty"`
+	Deadline    *time.Time                   `json:"deadline,omitempty"`
+	ExpiresAt   *time.Time                   `json:"expiresAt,omitempty"`
+	Limits      ExecutionLimits              `json:"limits"`
+	CreatedAt   time.Time                    `json:"createdAt"`
 }
 
 type ExecutionPackageManifest struct {
@@ -318,13 +322,24 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 	if err := validatePackageCapabilities(pkg); err != nil {
 		return err
 	}
+	if err := validateSupervisionActivation(pkg); err != nil {
+		return err
+	}
 	return validatePackagePreflight(pkg.Preflight)
 }
 
 func validatePackageCapabilities(pkg ExecutionPackage) error {
-	supported := SupportedPackageCapabilities()
+	// The campaign-supervision capability is a worker inventory capability, not
+	// a package capability: it says which build is running on the host rather
+	// than which behaviour this package needs. An activation package names it
+	// anyway, so that a worker validating a package it should never have been
+	// offered refuses it by name instead of running a review as a task.
+	supported := append(SupportedPackageCapabilities(), CapabilityCampaignSupervision)
 	declared := make(map[string]struct{}, len(pkg.RequiredCapabilities))
 	for _, capability := range pkg.RequiredCapabilities {
+		if capability == CapabilityCampaignSupervision && pkg.Supervision == nil {
+			return errors.New("execution package: only an activation may require the campaign supervision capability")
+		}
 		if !slices.Contains(supported, capability) {
 			return fmt.Errorf("execution package: unsupported required capability %q", capability)
 		}

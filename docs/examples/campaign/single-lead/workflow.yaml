@@ -1,6 +1,16 @@
 # Single-lead campaign: one implementation task that owns the repository change
 # from start to finish and must leave evidence that it worked.
 #
+# One task is a legitimate authoring choice, not a fallback: use it when the
+# work is a single unit of judgement, when splitting it would only manufacture a
+# handoff for the next task to reconstruct the reasoning from, or when every
+# part would mutate the same repository with no isolated worktree and no
+# integration task. When the work has separable parts, author it as a static
+# multi-task DAG instead; ../three-node is that template. What this task must
+# not do is fan its work out to native subagents: that delegation is invisible
+# to the Steward, is not separately scheduled work, and is exactly the graph
+# this file would then be failing to declare.
+#
 # OPERATOR CONFIGURATION, NOT PORTABLE DEFAULTS.
 # environment.project, routes[].instance, routes[].model and routes[].quota_pool
 # below name one fleet's registered project, provider instance, model and quota

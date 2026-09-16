@@ -263,6 +263,19 @@ func (s *Store) IntegrityCheck(ctx context.Context) error {
 // Migrate explicitly advances the database through every supported schema
 // version. It is a coordinator-owned lifecycle operation.
 func (s *Store) Migrate() error {
+	return s.migrateThrough(currentSchemaVersion)
+}
+
+// migrateThrough applies every migration up to and including target and stops
+// there. Production always passes currentSchemaVersion; a compatibility test
+// passes an older version to build a database exactly as a previous release
+// left it, so that the forward migration under test runs against real state
+// rather than a reconstruction of it.
+//
+// Refusing a database newer than this binary is judged against
+// currentSchemaVersion and not against target, because that refusal is a
+// statement about what this build can understand at all.
+func (s *Store) migrateThrough(target int) error {
 	for _, stmt := range migrations {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("migrate state database: %w", err)
@@ -298,29 +311,8 @@ func (s *Store) Migrate() error {
 	if version > currentSchemaVersion {
 		return fmt.Errorf("state database schema version %d is newer than supported version %d", version, currentSchemaVersion)
 	}
-	versioned := []struct {
-		version int
-		ddl     string
-	}{
-		{2, coordinatorMigrationV2},
-		{3, coordinatorMigrationV3},
-		{4, coordinatorMigrationV4},
-		{5, coordinatorMigrationV5},
-		{6, coordinatorMigrationV6},
-		{7, coordinatorMigrationV7},
-		{8, coordinatorMigrationV8},
-		{9, coordinatorMigrationV9},
-		{10, coordinatorMigrationV10},
-		{11, coordinatorMigrationV11},
-		{12, coordinatorMigrationV12},
-		{13, coordinatorMigrationV13},
-		{14, coordinatorMigrationV14},
-		{15, coordinatorMigrationV15},
-		{16, coordinatorMigrationV16},
-		{17, coordinatorMigrationV17},
-	}
-	for _, migration := range versioned {
-		if version >= migration.version {
+	for _, migration := range versionedMigrations {
+		if version >= migration.version || migration.version > target {
 			continue
 		}
 		if err := s.applyVersionedMigration(migration.version, migration.ddl); err != nil {
@@ -329,6 +321,36 @@ func (s *Store) Migrate() error {
 		version = migration.version
 	}
 	return s.backfillGraphHistory(context.Background())
+}
+
+// versionedMigrations is the ordered list of schema versions above 1 and the
+// DDL that reaches each one. Migrate walks it in order and stops at
+// currentSchemaVersion, which is the newest entry this binary knows about.
+//
+// The list is a package variable rather than a literal inside Migrate so that a
+// compatibility test can build a database at an older version and then migrate
+// it forward through the same code the coordinator runs.
+var versionedMigrations = []struct {
+	version int
+	ddl     string
+}{
+	{2, coordinatorMigrationV2},
+	{3, coordinatorMigrationV3},
+	{4, coordinatorMigrationV4},
+	{5, coordinatorMigrationV5},
+	{6, coordinatorMigrationV6},
+	{7, coordinatorMigrationV7},
+	{8, coordinatorMigrationV8},
+	{9, coordinatorMigrationV9},
+	{10, coordinatorMigrationV10},
+	{11, coordinatorMigrationV11},
+	{12, coordinatorMigrationV12},
+	{13, coordinatorMigrationV13},
+	{14, coordinatorMigrationV14},
+	{15, coordinatorMigrationV15},
+	{16, coordinatorMigrationV16},
+	{17, coordinatorMigrationV17},
+	{18, coordinatorMigrationV18},
 }
 
 func (s *Store) applyVersionedMigration(version int, ddl string) error {

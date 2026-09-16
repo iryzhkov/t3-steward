@@ -271,6 +271,17 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 			skip(err.Error())
 			continue
 		}
+		// Supervision is the fourth per-item fence, read and enforced in the
+		// transaction that commits the offer. A gate or a hold is not an
+		// error, so a refused item is skipped and the rest of the plan still
+		// commits; the planner re-evaluates it next cycle.
+		if err := requireSupervisionAdmitsTx(ctx, tx, attempt.WorkflowRunID, attempt.TaskID, 0); err != nil {
+			if !errors.Is(err, ErrSupervisionBlocked) {
+				return nil, err
+			}
+			skip(err.Error())
+			continue
+		}
 		if attempt.Progress.Terminal() || attempt.Control != domain.ControlUnassigned {
 			skip("attempt is not assignable")
 			continue
@@ -448,8 +459,30 @@ func (s *Store) ClaimAssignment(ctx context.Context, request domain.AssignmentCl
 		attempt.Control != domain.ControlUnassigned {
 		return domain.Assignment{}, fmt.Errorf("%w: attempt %q is not claimable", ErrAssignmentClaim, attempt.ID)
 	}
-	if err := requireExternalSuccessTx(ctx, tx, attempt); err != nil {
-		return domain.Assignment{}, fmt.Errorf("%w: %v", ErrAssignmentClaim, err)
+	// An overseer activation passes neither of the next two fences, and the
+	// exemption is the whole point rather than a shortcut. It has no declared
+	// dependency to have succeeded, and the gates and holds the supervision
+	// predicate enforces are exactly what it was woken to decide: an activation
+	// refused at start authorization by its own run's gate could never release
+	// that gate, which is a deadlock the run has no way out of. Every other
+	// fence above -- coordinator epoch, worker snapshot identity, worker
+	// readiness, assignment identity, the offered-state compare-and-set and the
+	// attempt revision -- still applies unchanged.
+	if !attempt.IsSupervisionActivation() {
+		if err := requireExternalSuccessTx(ctx, tx, attempt); err != nil {
+			return domain.Assignment{}, fmt.Errorf("%w: %v", ErrAssignmentClaim, err)
+		}
+		// Start authorization repeats the supervision predicate, fenced against
+		// the graph revision the offer was bound to: a gate or hold that committed
+		// after the offer refuses the claim, and an amendment that moved the graph
+		// underneath the offer refuses it as a stale snapshot. A claim is a single
+		// request, so a refusal is told to the worker rather than skipped.
+		if err := requireSupervisionAdmitsTx(ctx, tx, attempt.WorkflowRunID, attempt.TaskID, assignment.GraphRevision); err != nil {
+			if !errors.Is(err, ErrSupervisionBlocked) {
+				return domain.Assignment{}, err
+			}
+			return domain.Assignment{}, fmt.Errorf("%w: %v", ErrAssignmentClaim, err)
+		}
 	}
 	assignment.State = domain.AssignmentClaimed
 	assignment.LeaseExpiresAt = request.LeaseExpiresAt

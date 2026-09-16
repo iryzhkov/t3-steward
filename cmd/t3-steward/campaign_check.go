@@ -10,6 +10,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/campaign"
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 // campaignCheckSchemaVersion versions the check document.
@@ -46,6 +47,16 @@ func campaignViabilityRequest(plan campaign.Plan, bundleBytes int64, bundleFiles
 			ExpiresAt:     task.Timing.ExpiresAt,
 			Outputs:       len(task.Outputs),
 		})
+	}
+	if plan.Supervision != nil {
+		// A supervised campaign asks for one thing none of its tasks asks for: a
+		// worker that hosts the overseer route and advertises the supervision
+		// capability. It travels with the request so that a campaign whose gates
+		// nobody could ever decide is refused here rather than accepted and held.
+		request.Supervision = &backlogadmin.ViabilitySupervision{
+			Route:              campaignProviderRoutes([]campaign.Route{plan.Supervision.Route})[0],
+			RequiredCapability: workerproto.CapabilityCampaignSupervision,
+		}
 	}
 	if len(request.Tasks) == 0 {
 		if only != "" {
@@ -222,6 +233,57 @@ func campaignImpossible(matrix backlogadmin.ViabilityMatrix) error {
 		Operation: "campaign check",
 		Err: fmt.Errorf("this campaign can never run as written:\n  %s",
 			strings.Join(lines, "\n  ")),
+	}
+}
+
+// campaignSupervisionVerdict is the supervision sibling of campaignImpossible:
+// it turns one refusal into the single error a caller branches on. The two live
+// together because they answer the same question for a caller, "what is this
+// refusal and can I do anything about it", and a second convention for that
+// answer would be a second thing to learn.
+//
+// The supervision class is the distinction the caller reads, so it is named in
+// the message and preserved verbatim. The exit code is the frozen transport
+// numbering and is not extended: rejected on the merits is 8 for supervision
+// exactly as it is for an impossible campaign, unauthorized scope is the
+// authentication code 4, an unavailable coordinator is 5, and a request that
+// was wrong in itself is the protocol code 7. stale-evidence and
+// unmet-prerequisite therefore share exit 8; the class word tells them apart,
+// in the message and in the --json error document built from it.
+func campaignSupervisionVerdict(operation backlogadmin.SupervisionOperation, err error) error {
+	if err == nil {
+		return nil
+	}
+	class := backlogadmin.ClassifySupervisionError(err)
+	if class == backlogadmin.SupervisionErrorMalformed {
+		// A refusal that crossed a carrier arrives as prose with its sentinels
+		// gone, so it would classify as malformed whatever it was. When it
+		// already carries a transport class, that class is the honest answer and
+		// inventing a supervision one over it would be worse than saying less.
+		if carried := backlogadmin.ClassOf(err); carried != "" && carried != backlogadmin.ClassOK {
+			return err
+		}
+	}
+	return &backlogadmin.TransportError{
+		Class:     campaignSupervisionTransportClass(class),
+		Operation: "campaign supervision " + string(operation),
+		Err:       fmt.Errorf("%s: %w", class, err),
+	}
+}
+
+// campaignSupervisionTransportClass maps a supervision class onto the frozen
+// transport class whose exit code it shares.
+func campaignSupervisionTransportClass(class backlogadmin.SupervisionErrorClass) backlogadmin.TransportClass {
+	switch class {
+	case backlogadmin.SupervisionErrorUnauthorizedScope:
+		return backlogadmin.ClassAuthentication
+	case backlogadmin.SupervisionErrorUnavailable:
+		return backlogadmin.ClassUnavailable
+	case backlogadmin.SupervisionErrorMalformed:
+		return backlogadmin.ClassProtocol
+	default:
+		// stale-evidence and unmet-prerequisite are both refusals on the merits.
+		return backlogadmin.ClassRejected
 	}
 }
 

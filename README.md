@@ -556,6 +556,81 @@ offers, the options are ones the model knows. It reads T3's provider caches
 knows, Codex, Claude and OpenCode alike. The runner runs the same check
 before a dispatch and parks an invalid task as `failed: invalid: ...`.
 
+### Campaigns
+
+A campaign is a multi-task job authored as a directory rather than as a single
+Markdown task. It belongs to the backlog-v2 fleet orchestrator, so it needs a
+configured coordinator; the shipped host-local backlog above is unaffected by
+everything in this section.
+
+The directory holds a `workflow.yaml` naming the tasks, the `needs` edges between
+them, the artifacts each task promises and the artifacts its successors read.
+The coordinator schedules every task as its own agent session, in dependency
+order, and settles the run when all of them are terminal. Worked examples are in
+[docs/examples/campaign](docs/examples/campaign/README.md).
+
+```sh
+t3-steward campaign validate ./my-campaign      # offline, reaches no coordinator
+t3-steward campaign plan ./my-campaign          # offline; waves, edges, digest
+t3-steward campaign check ./my-campaign         # live and read-only; creates nothing
+t3-steward campaign submit ./my-campaign --idempotency-key KEY
+```
+
+`plan` is static and `check` is dynamic. `plan` says what may start together once
+dependencies succeed; it can never promise a worker, a provider route or quota.
+`check` asks the live coordinator and reports `ready`, `accepted_waiting` or
+`impossible` per task, and `submit` refuses an `impossible` campaign rather than
+creating a run that cannot finish.
+
+#### Optional supervision
+
+A campaign may declare an overseer: a separately routed agent that reviews the
+work at named points before it continues. Supervision is entirely optional, and
+a campaign that does not declare it behaves exactly as it did before the feature
+existed.
+
+Two optional top-level keys turn it on. `supervision` declares the overseer's
+provider route, its prompt, and the limits on how often and how long it may run;
+the route is deliberately a different provider instance and quota pool from the
+workers, so a busy worker pool cannot starve reviews. `gates` declares the review
+points: each gate observes the tasks named in `after` and withholds the tasks
+named in `before` until it is accepted. A gate with no `before` and `final: true`
+guards run settlement instead of a downstream task.
+
+```yaml
+supervision:
+  route:
+    instance: claudeAgent
+    model: claude-fable-5-1
+    quota_pool: claude-main
+  prompt_file: prompts/overseer.md
+  max_activations: 8
+  activation_deadline: 2h
+
+gates:
+  analysis_review:
+    after: [interfaces, tests]
+    before: [synthesis]
+    rubric_file: rubrics/analysis.md
+```
+
+Nothing downstream of a gate dispatches before a valid acceptance is recorded,
+and a rejection holds that branch while unrelated branches continue. Decisions
+are structured and revision-fenced: an acceptance names the gate, the evidence it
+reviewed and the revisions it expects, and prose never becomes an outcome. An
+operator can read and decide everything the overseer can, with
+`t3-steward campaign supervision show <run>` and the `decide`, `hold`, `release`,
+`escalate` and `resolve` verbs beside it.
+
+Two requirements are worth knowing before authoring one. Every worker that may
+run an overseer activation has to be on a release advertising the
+`campaign-supervision-v1` capability, and `campaign check` reports `impossible`
+when none does. And the supervisor credential on a worker host is not isolated
+from the campaign tasks running on that host: its authority is bounded
+server-side to one run and one activation epoch, which is a real bound, but it is
+not isolation. Both are covered in
+[Backlog-v2 operations](docs/backlog-v2-operations.md).
+
 ### Inspecting and amending a coordinator run
 
 Coordinator mode supports live amendments through its owner-authenticated admin

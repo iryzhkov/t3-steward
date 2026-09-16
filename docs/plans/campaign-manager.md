@@ -1,5 +1,14 @@
 # Campaign manager: bounded authoring and DAG workflow
 
+> **Superseded guidance.** This plan is retained as historical evidence of the campaign
+> façade as it was designed and delivered. Its guidance on native subagents inside a lead
+> task, and on when a campaign should be authored as one task rather than a DAG, has been
+> superseded by `docs/plans/campaign-supervision.md`. Read that document for the current
+> authoring discipline: multi-task work is authored as a static version-2 DAG whose tasks
+> run as separate Steward-scheduled T3 sessions, and a task prompt does not use native
+> subagents as a substitute for declared campaign tasks. Nothing else in this file is
+> rewritten.
+
 Status: ready for execution
 Date: 2026-09-14
 Base: t3-steward `f86c420` (`v0.11.0-rc.38`)

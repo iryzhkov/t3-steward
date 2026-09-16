@@ -132,6 +132,17 @@ func (s *Store) CommitGraphRerun(ctx context.Context, c GraphCommit) (domain.Gra
 			return result, err
 		}
 	}
+	// The rerun inherits the supervision configuration and the gate definitions
+	// remapped onto its own tasks, and inherits no acceptance, hold or incident:
+	// the evidence an acceptance was about belongs to the run that failed.
+	inherited, err := inheritSupervisionTx(ctx, tx, source.Run, run, c.TaskIDRemap, c.Tasks, c.Now.UTC())
+	if err != nil {
+		return result, err
+	}
+	if inherited != nil {
+		record := inherited.Record
+		run.Supervision = &record
+	}
 	if err = upsertJSON(ctx, tx, "rerun run", run.ID,
 		"INSERT INTO coordinator_workflow_runs(id,workflow_id,schedule_id,progress,revision,record) VALUES(?,?,?,?,?,?)",
 		[]any{run.ID, run.WorkflowID, "", run.Progress, run.Revision}, run); err != nil {
@@ -141,6 +152,9 @@ func (s *Store) CommitGraphRerun(ctx context.Context, c GraphCommit) (domain.Gra
 		return result, err
 	}
 	if err = insertGraphTx(ctx, tx, graph); err != nil {
+		return result, err
+	}
+	if err = saveInheritedSupervisionTx(ctx, tx, inherited); err != nil {
 		return result, err
 	}
 	// Hold the source run against retention for as long as the new run exists:

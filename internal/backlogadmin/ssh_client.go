@@ -410,7 +410,9 @@ func (c *SSHClient) validate(operation string, response localResponse) error {
 	if class == "" {
 		class = ClassRejected
 	}
-	return c.fail(class, operation, errors.New(response.Error))
+	// The supervision class rides only on a verified coordinator answer, which
+	// this is: an unsigned refusal never reaches here.
+	return classifySupervision(class, response.SupervisionClass, operation, c.config.CoordinatorID, errors.New(response.Error))
 }
 
 func (c *SSHClient) Query(ctx context.Context, query Query) (Response, error) {
@@ -502,6 +504,25 @@ func (c *SSHClient) AmendGraph(ctx context.Context, amendment domain.GraphAmendm
 		return domain.GraphAmendmentResult{}, c.fail(ClassProtocol, localOperationGraphAmendment, errors.New("coordinator graph amendment returned no response"))
 	}
 	return *response.GraphAmendment, nil
+}
+
+// Supervise sends one supervision operation under the word its own operation
+// selects, so that a key pinned to supervision-show cannot carry a decision.
+func (c *SSHClient) Supervise(ctx context.Context, request SupervisionRequest) (SupervisionResponse, error) {
+	operation := localOperationSupervisionShow
+	if request.Operation.Mutating() {
+		operation = localOperationSupervisionDecision
+	}
+	response, _, err := c.roundTrip(ctx, localRequest{
+		Version: LocalTransportVersion, Operation: operation, Supervision: &request,
+	}, nil, false)
+	if err != nil {
+		return SupervisionResponse{}, err
+	}
+	if response.SupervisionResponse == nil {
+		return SupervisionResponse{}, c.fail(ClassProtocol, operation, errors.New("coordinator supervision returned no response"))
+	}
+	return *response.SupervisionResponse, nil
 }
 
 func (c *SSHClient) EnrollWorker(ctx context.Context, request domain.WorkerEnrollmentRequest) (domain.WorkerEnrollment, error) {

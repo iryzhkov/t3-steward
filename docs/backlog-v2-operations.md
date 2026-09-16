@@ -431,6 +431,139 @@ worker and reapplies current quota admission immediately before offers and
 prepare/dispatch delivery. A failed quota reconstruction is equivalent to no
 open pools; observation, stop, and collection remain available.
 
+### Campaign supervision
+
+A supervised campaign is decided through two operations on this same transport.
+`supervision-show` is read-only and returns the run's supervision record, its
+gates, its holds and its open review incidents. `supervision-decision` carries
+the five mutations: accepting or rejecting a gate, placing a hold, releasing a
+hold, escalating an incident and resolving one. They are two operation words
+rather than one so that a key may be pinned to reading supervision without also
+granting the authority to decide it.
+
+Every decision is structured and nothing is inferred from prose. A gate
+decision names the gate, the outcome, the evidence snapshot it reviewed, the
+graph revision and the gate revision it expects, the activation epoch it acts
+under, an idempotency request key and a reason. The reason is recorded as audit
+evidence and grants nothing: a request missing any of the structured fields is
+refused however it is worded, and a supervisor process that merely exits
+successfully has accepted nothing.
+
+An ambiguous response is recovered by repeating the request with the same
+request key. The same key carrying the same decision replays the original
+answer; the same key carrying a different decision is refused rather than
+applied. Version 1 resolves one named incident at a time, and a request naming
+several is refused.
+
+Refusals carry a class, so an agent branches on it instead of reading prose:
+`stale-evidence` (a lost race against a newer snapshot, revision or epoch),
+`unauthorized-scope` (outside the capability's run, epoch or action list),
+`unmet-prerequisite` (the state machine has the transition but a precondition
+is not satisfied), `temporarily-unavailable` (retry this one) and
+`malformed-request`.
+
+#### Deciding a supervised run from the command line
+
+The operator-facing surface is the `campaign supervision` family, which reaches
+the coordinator over the same transport as every other campaign command. Its
+full flag contract is in `t3-steward campaign supervision --help`; what matters
+operationally is the shape.
+
+```sh
+t3-steward campaign supervision show <run> --json
+t3-steward campaign supervision decide <run> --gate ID --accept \
+    --evidence SNAPSHOT --expected-revision N --graph-revision N \
+    --request-id KEY --reason TEXT
+t3-steward campaign supervision hold <run> --scope run \
+    --expected-revision N --request-id KEY --reason TEXT
+t3-steward campaign supervision release <run> --hold ID \
+    --expected-revision N --request-id KEY --reason TEXT
+t3-steward campaign supervision escalate <run> --incident ID \
+    --expected-revision N --request-id KEY --reason TEXT
+t3-steward campaign supervision resolve <run> --incident ID \
+    --outcome conclude-failure --expected-revision N --request-id KEY --reason TEXT
+```
+
+Read every revision from `show --json` before acting on it. `--expected-revision`
+is the revision of the record the verb targets: the gate's revision for `decide`,
+the supervision record's revision for `hold` and `release`, and the incident's
+revision for `escalate` and `resolve`. `--request-id` is the idempotency key, so
+an ambiguous answer is recovered by repeating the identical command rather than
+by composing a new one. `--reason` is recorded as evidence and grants nothing.
+
+An operator may always act. A supervisor additionally passes `--activation EPOCH`
+to name the epoch it holds authority under; a decision naming a stale epoch, or
+one whose activation lease has expired, is refused rather than applied late.
+
+#### The worker capability
+
+A worker executes an overseer activation only if its durable inventory
+advertises `campaign-supervision-v1`. The capability describes the build running
+on that host, so only the worker can report it, and the coordinator reads it from
+the worker's published snapshot inventory rather than from the handshake.
+
+Three boundaries enforce it, in this order. Placement does not consider a worker
+that lacks the capability a candidate for an activation. `campaign check` reports
+`impossible` when no eligible worker advertises it, so a supervised campaign is
+refused at submission rather than stalling after admission. The worker exchange
+withholds the offer as a last boundary before the package crosses the wire, which
+covers a worker downgraded after the plan was committed; withholding is not
+cancelling, and the same activation is offered again once the worker advertises
+the capability.
+
+To find out whether the fleet can run a supervised campaign before submitting
+one, ask the coordinator:
+
+```sh
+t3-steward campaign check docs/examples/campaign/supervised-three-node --json
+```
+
+The check is read-only and creates nothing. A fleet one release behind
+advertises `git`, `huyang`, `preflight` and `task-wait-collection-fence-v1` and
+no `campaign-supervision-v1`, so the check reports `impossible` and `submit`
+refuses. Upgrade the workers first. Ordinary unsupervised campaigns are
+unaffected and require no capability.
+
+#### What the supervisor capability is, and what it is not
+
+A campaign overseer authenticates as an ordinary admin client and is then
+granted the `supervisor` role instead of `remote-admin`, by naming it in the
+coordinator's own configuration. The role is bound, server-side, to one run and
+one activation epoch: on every request the coordinator compares the run and
+epoch the request names against the activation its own supervision record
+currently considers valid. A supervisor may read that run's workflow, graph,
+tasks, explanations, events and artifacts, and may act on that run's gates and
+holds. It may not issue any coordinator command kind at all, which means it
+cannot skip a task, mark one successful, retry, pause, cancel, or start work
+around quota admission; it cannot modify verification, amend a graph, enroll a
+worker, alter routes, clear an operator's hold, or read another run's artifacts
+through the ordinary admin APIs, because an artifact read is resolved to its
+run before it is authorized. An operator may take over, which revokes the old
+activation so that a decision formed under it can no longer be applied late.
+
+**What is enforced, and what is not.** The run-and-epoch scope above is
+enforced by the coordinator, on every request, on both carriers. Credential
+placement is not a boundary. The admin credential is an owner-only 0600 file
+under `~/.config/upkeeper/secrets/f03-admin/<client>`, and campaign tasks run
+as full-access agent sessions under the same user on the same host, so any
+campaign task on a host that also holds an admin credential can read that file
+and present itself as that client. This is a known limitation of the current
+deployment and it is stated here rather than worked around: supervision
+credentials are **not** isolated from worker-task environments.
+
+What that exposure amounts to in practice is bounded by the server-side scope.
+A task that reads a supervisor credential gains the authority to decide its own
+run's gates while an activation of that run is live, which is wrong but is not
+a cross-run compromise; between activations the epoch fence makes the
+credential useless, and it never confers any authority over another run.
+
+Two deployments remove the exposure rather than bounding it: run supervision on
+a host that executes no campaign tasks, or run campaign tasks under contained
+execution, which passes only the task identity environment into the process and
+drops every credential reference. Contained execution is currently an operator
+qualification path and not what ordinary tasks take. Until one of those holds,
+do not describe supervision credentials as isolated.
+
 ### Administering the coordinator from another host
 
 A host that is not the coordinator reaches it through the restricted
@@ -513,8 +646,9 @@ only ever reads. A client that needs several operations needs one key and one
 so pin an operation only when the client genuinely performs exactly that one.
 
 The operations are `query`, `mutation`, `artifact`, `submission`,
-`schedule-definition`, `unknown-recovery`, `node-wait`, `graph-amendment` and
-`worker-enrollment`. Pinning `worker-enrollment` achieves nothing: the
+`schedule-definition`, `unknown-recovery`, `node-wait`, `graph-amendment`,
+`worker-enrollment`, `quarantine-release`, `supervision-show` and
+`supervision-decision`. Pinning `worker-enrollment` achieves nothing: the
 `remote-admin` role is refused that operation whatever the key allows, because
 enrollment binds a worker to the coordinator's own identity and epoch and stays
 an operator action performed on the coordinator itself.
@@ -663,6 +797,16 @@ the whole recovery unit before publishing either target, then opens the restored
 database read-only for integrity and exact schema checks. Point the disposable
 test configuration at absent destinations; never test restore over live roots.
 
+Campaign supervision needs no change to this procedure and no additional step.
+The snapshot copies the whole stopped database file, so the nine tables schema
+18 adds are captured by construction: the supervision record, its activations,
+gates, holds, incidents, the append-only decision history, the wake outbox, the
+event inbox and the idempotency receipts. There is no table enumeration to keep
+in step with the schema, and a supervised run restored from a snapshot comes
+back with its accepted gates still accepted, its holds still held, its open
+incidents still withholding settlement and its request keys still answering
+replays with the original answer.
+
 ## Rollback and point of no return
 
 Before the new coordinator dispatches or resumes any assignment, rollback is:
@@ -686,6 +830,50 @@ task-specific idempotency or manual verification.
 Never use deletion of the state database as backlog-v2 rollback; it discards
 assignment identity, schedule singleton state, reservations, audit events, and
 resume intent needed to prevent duplicate execution.
+
+### Rolling back the campaign supervision migration (schema 18)
+
+The coordinator schema is forward-only. There is no reverse migration from 18 to
+17, and none is planned: the store has no reverse-migration mechanism at all,
+and `Migrate` refuses to open a database whose recorded version is newer than
+the binary rather than degrading it. An older binary started against a migrated
+database therefore fails to start with
+`state database schema version 18 is newer than supported version 17`, which is
+the intended behaviour and not a fault to work around.
+
+Rolling back a coordinator that has already migrated to 18 means restoring the
+coherent stopped backup taken before the migration, with the old binary and its
+configuration, using the procedure above. The consequences have to be stated
+plainly rather than discovered during the rollback.
+
+**The loss window is everything the coordinator recorded between the backup and
+the moment the candidate was stopped.** That is not limited to supervision
+state. It includes every workflow run, task attempt, assignment, artifact
+metadata record, admin command, schedule trigger and quota observation written
+in that interval, because the restore replaces the whole database and the whole
+artifact tree as one consistency unit. Supervision state written in that window
+is lost along with the rest: a gate accepted after the backup is unaccepted
+again, a hold placed after it is gone, an open review incident disappears, and
+an idempotency receipt written after it no longer suppresses a repeated request.
+
+Because of that last point, a supervision request whose answer was lost with the
+receipt may be applied a second time if the client repeats it after the
+rollback. Treat every supervision request key issued after the backup as
+unanswered, and reconcile the decisions actually recorded in the restored
+database against what the overseer and the operators believe they decided,
+before reopening admission.
+
+The operational point of no return above applies unchanged, and one supervision
+specific case is worth naming: once a gate acceptance has released a protected
+task and that task has dispatched, restoring a pre-acceptance backup does not
+un-dispatch the work. Inventory the workers, prove what executed, and repair
+forward rather than assuming the restored gate state describes the world.
+
+If a rollback to 17 is needed but the backup is older than is acceptable, the
+supported answer is to stay on the newer binary and fix forward. Downgrading the
+binary against a migrated database is never the answer, and copying a schema 18
+database to a 17 host produces the refusal above rather than a working
+coordinator.
 
 ## Deployment order after a future GO decision
 

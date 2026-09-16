@@ -55,6 +55,11 @@ func capacityOwners(attempts []domain.Attempt, assignments []domain.Assignment, 
 			// task into a stalled queue.
 			continue
 		}
+		// An overseer activation is an owner like any other, which is the
+		// adopted cost of running it as assigned work: an active review occupies
+		// one executor slot on its worker until it ends, bounded by the
+		// activation deadline. It names no declared task, so it reserves no CPU,
+		// memory or scratch beyond the slot itself.
 		task, _ := domain.TaskForAttempt(attempt, runs, tasks)
 		owners = append(owners, CapacityOwner{
 			AssignmentID: assignment.ID, AttemptID: attempt.ID,

@@ -43,6 +43,14 @@ type Manifest struct {
 	Inputs      []string                `yaml:"inputs"`
 	Routes      []ManifestRoute         `yaml:"routes"`
 	Tasks       map[string]ManifestTask `yaml:"tasks"`
+	// Supervision declares the optional campaign overseer. A nil pointer is the
+	// unsupervised case and is exactly today's behaviour; no empty record is
+	// ever created for it.
+	Supervision *ManifestSupervision `yaml:"supervision"`
+	// Gates are the declared review gates, keyed by gate name. They are part of
+	// the effective graph rather than of any task definition, and they require
+	// Supervision to be present.
+	Gates map[string]ManifestGate `yaml:"gates"`
 }
 
 // ManifestPlacement limits eligible hosts and names capabilities that a worker
@@ -180,6 +188,7 @@ func applyManifestDefaults(manifest *Manifest) {
 	// task sees the same values the workflow author would read back.
 	expandResourcePreset(&manifest.Resources)
 	applyPreflightDefaults(&manifest.Preflight)
+	applyManifestSupervisionDefaults(manifest)
 	for name, task := range manifest.Tasks {
 		if task.Class == "" {
 			task.Class = manifest.Class
@@ -336,7 +345,9 @@ func validateManifest(manifest Manifest) error {
 			return err
 		}
 	}
-	return nil
+	// Supervision and gates are validated last: gate scopes are resolved against
+	// the task graph, which has to be known good first.
+	return validateManifestSupervision(manifest, taskNames)
 }
 
 func validClass(class domain.TaskClass) bool {
@@ -668,6 +679,11 @@ func validateManifestFiles(root string, manifest Manifest) error {
 	for name, task := range manifest.Tasks {
 		if _, err := safeBundleFile(root, task.PromptFile); err != nil {
 			return fmt.Errorf("task %s prompt_file: %w", name, err)
+		}
+	}
+	for _, relative := range supervisionBundleFiles(manifest) {
+		if _, err := safeBundleFile(root, relative); err != nil {
+			return fmt.Errorf("supervision file %q: %w", relative, err)
 		}
 	}
 	for _, pattern := range manifest.Inputs {

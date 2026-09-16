@@ -28,6 +28,10 @@ type CoordinatorPlanningStateInput struct {
 	MaxQuotaObservationAge time.Duration
 	DeadlineRiskWindow     time.Duration
 	CheckpointMargin       time.Duration
+	// SupervisionSnapshots is the supervision state of every supervised run in
+	// this pass, keyed by run ID, already resolved against the store. An absent
+	// run is unsupervised.
+	SupervisionSnapshots map[string]domain.SupervisionSnapshot
 }
 
 // BuildCoordinatorPlanInput reconstructs DAGs, ownership, cold-start route
@@ -82,7 +86,13 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 		}
 		runByID[run.ID] = run
 	}
-	for _, attempt := range input.Attempts {
+	// Planning is over declared tasks. An overseer activation is already
+	// assigned when it exists at all -- the supervision boundary dispatches
+	// it directly, because it answers to the activation budget rather than to
+	// the task planner -- and it names no task of this workflow, so leaving it
+	// in would fail the ownership check below and exclude the whole run from
+	// scheduling.
+	for _, attempt := range domain.DeclaredTaskAttempts(input.Attempts) {
 		if attempt.ID == "" || attempt.WorkflowRunID == "" || attempt.TaskID == "" {
 			return PlanInput{}, fmt.Errorf("coordinator planning attempt identity is required")
 		}
@@ -247,6 +257,7 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 			executorPools(workers),
 			capacityOwners(input.Attempts, input.Assignments, input.WorkflowRuns, input.Tasks),
 		)},
+		SupervisionSnapshots: input.SupervisionSnapshots,
 		Ordering: PlanningOrderingInput{
 			DeadlineRiskWindow: input.DeadlineRiskWindow, Attempts: ordering,
 		},

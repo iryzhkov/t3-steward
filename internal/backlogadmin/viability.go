@@ -121,6 +121,24 @@ type ViabilityRequest struct {
 	// coordinator would refuse on arrival is refused before a run exists.
 	BundleBytes int64 `json:"bundleBytes,omitempty"`
 	BundleFiles int   `json:"bundleFiles,omitempty"`
+	// Supervision is the overseer a supervised campaign declares, and is absent
+	// for every unsupervised one. It is a property of the request rather than of
+	// any task: the overseer decides the run's gates and runs no task at all.
+	Supervision *ViabilitySupervision `json:"supervision,omitempty"`
+}
+
+// ViabilitySupervision is the declared overseer's own requirement.
+//
+// It exists because a supervised campaign asks for something no task of it asks
+// for: a worker that hosts the overseer route and advertises the campaign
+// supervision capability. Without one, every gate the manifest declares is a
+// gate nobody can decide, so the campaign is refused before a run exists rather
+// than submitted and held forever.
+type ViabilitySupervision struct {
+	Route domain.ProviderRoute `json:"route"`
+	// RequiredCapability is the worker inventory capability an activation needs.
+	// An empty value means the campaign supervision capability.
+	RequiredCapability string `json:"requiredCapability,omitempty"`
 }
 
 // ViabilityTask is one projected task's requirements.

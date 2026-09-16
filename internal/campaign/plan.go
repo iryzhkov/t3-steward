@@ -18,7 +18,15 @@ import (
 // campaign contract from the first release: an agent that parses a plan reads
 // this number before it trusts any other field, and a breaking change to the
 // document raises it.
-const PlanSchemaVersion = 1
+//
+// Version 2 adds the optional supervision projection: the top-level
+// "supervision" and "gates" members, the per-task "observedBy" and "heldBy"
+// members, and the "gates" and "heldTasks" totals. Every addition is omitted
+// from an unsupervised plan, so a version 1 reader sees the same document it saw
+// before for every campaign it could already read; the number is raised anyway,
+// because a reader that ignores the new members would report a gated campaign as
+// ungated.
+const PlanSchemaVersion = 2
 
 // DependencyMountPrefix is the workspace-relative directory under which the
 // coordinator materializes a dependency's declared outputs for a successor.
@@ -87,7 +95,14 @@ type Plan struct {
 	Leaves        []string    `json:"leaves"`
 	Components    []Component `json:"components"`
 	Sink          Sink        `json:"sink"`
-	Totals        Totals      `json:"totals"`
+	// Supervision is absent unless the manifest declared an overseer. Its
+	// absence is the unsupervised case, which is every campaign that ran before
+	// supervision existed.
+	Supervision *Supervision `json:"supervision,omitempty"`
+	// Gates are the declared review boundaries, ordered by the earliest wave in
+	// which each can become ready for review and then by name.
+	Gates  []Gate `json:"gates,omitempty"`
+	Totals Totals `json:"totals"`
 }
 
 // Environment is the project workspace every task of the run is prepared in.
@@ -242,6 +257,13 @@ type Task struct {
 	Root bool `json:"root"`
 	// Leaf is true when no other task in this workflow depends on the task.
 	Leaf bool `json:"leaf"`
+	// ObservedBy names the gates that review this task's results.
+	ObservedBy []string `json:"observedBy,omitempty"`
+	// HeldBy names the gates that must be accepted before this task can be
+	// dispatched. It includes a gate that protects an ancestor of the task
+	// rather than the task itself, because a descendant of a held task is held
+	// by ordinary dependency semantics.
+	HeldBy []string `json:"heldBy,omitempty"`
 }
 
 // Wave is a set of tasks whose in-workflow dependencies all sit in earlier
@@ -294,6 +316,11 @@ type Totals struct {
 	Commits           int `json:"commits"`
 	ArtifactBindings  int `json:"artifactBindings"`
 	TimingConstrained int `json:"timingConstrained"`
+	// Gates counts the declared review gates and HeldTasks counts the tasks at
+	// least one gate holds, descendants included. Both are zero for an
+	// unsupervised campaign.
+	Gates     int `json:"gates"`
+	HeldTasks int `json:"heldTasks"`
 }
 
 // Project builds the static plan of an already-defaulted manifest, as returned
@@ -422,6 +449,14 @@ func Project(manifest backlog.Manifest, opts Options) (Plan, error) {
 		}
 		return plan.Tasks[i].Name < plan.Tasks[j].Name
 	})
+
+	supervision, gates, observedBy, heldBy := projectSupervision(manifest, plan.Tasks, depth, dependents)
+	plan.Supervision = supervision
+	plan.Gates = gates
+	for i := range plan.Tasks {
+		plan.Tasks[i].ObservedBy = cloneStrings(observedBy[plan.Tasks[i].Name])
+		plan.Tasks[i].HeldBy = cloneStrings(heldBy[plan.Tasks[i].Name])
+	}
 
 	plan.Waves = buildWaves(plan.Tasks)
 	plan.Edges = buildEdges(names, needs, external)
@@ -586,7 +621,11 @@ func buildTotals(plan Plan) Totals {
 		if task.Timing.Declared() {
 			totals.TimingConstrained++
 		}
+		if len(task.HeldBy) > 0 {
+			totals.HeldTasks++
+		}
 	}
+	totals.Gates = len(plan.Gates)
 	return totals
 }
 
