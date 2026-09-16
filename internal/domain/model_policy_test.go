@@ -35,3 +35,24 @@ func TestModelPolicyPreservesProviderWorkerAndQuotaBoundaries(t *testing.T) {
 		t.Fatal("revoked models authorized")
 	}
 }
+
+func TestModelsObservedHonoursWildcardAndExplicitPolicies(t *testing.T) {
+	cases := []struct {
+		name       string
+		authorized []string
+		observed   []string
+		want       bool
+	}{
+		{"wildcard with observed models", []string{"*"}, []string{"new-model"}, true},
+		{"wildcard without observations", []string{"*"}, nil, false},
+		{"wildcard mixed with names is invalid", []string{"*", "old"}, []string{"old"}, false},
+		{"explicit models all observed", []string{"old", "new"}, []string{"new", "old", "extra"}, true},
+		{"explicit model missing", []string{"old", "new"}, []string{"old"}, false},
+		{"empty policy authorizes nothing", nil, []string{"old"}, false},
+	}
+	for _, tc := range cases {
+		if got := ModelsObserved(tc.authorized, tc.observed); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
