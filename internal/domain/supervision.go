@@ -1093,7 +1093,14 @@ func ActivationTransition(in ActivationTransitionInput) (ActivationTransitionRes
 				return ActivationTransitionResult{}, fmt.Errorf("%w: effect-safe recovery has not completed",
 					ErrSupervisionPrerequisite)
 			}
-			return stay(ActivationIdle)
+			// Idle at epoch+1, for the reason spelled out on the spent case
+			// below: the activation this one replaces already exists at the
+			// current epoch, and every identity the replacement would derive is
+			// derived from (run, epoch). A lease that expired revokes without
+			// raising the epoch, so without this the epoch would be raised only
+			// by a takeover and a recovered run would keep reusing the identity
+			// of the activation whose authority it just revoked.
+			return ActivationTransitionResult{State: ActivationIdle, Epoch: epoch + 1}, nil
 		case ActivationEventReconciliationAmbiguous:
 			return stay(ActivationRecoveryRequired)
 		}
@@ -1104,7 +1111,21 @@ func ActivationTransition(in ActivationTransitionInput) (ActivationTransitionRes
 		if !in.ActivationBudgetRemaining {
 			return stay(ActivationEscalated)
 		}
-		return stay(ActivationIdle)
+		// A spent activation returns to idle at epoch+1, so the next wake is a
+		// new activation rather than the same one again.
+		//
+		// Everything an activation is made of is derived from (run, epoch): its
+		// own ID, its dispatch identity, the attempt that carries it, that
+		// attempt's assignment and the T3 thread the assignment names. Returning
+		// to idle at the same epoch would therefore recompute the identities the
+		// spent activation already used, and the second review round would
+		// collide with the first instead of being a second turn: the assignment
+		// commit would find a row that already exists, and the record's epoch
+		// fence could not tell a late decision of the first round from a
+		// decision of the second. Raising the epoch here is what lets a run that
+		// needs two review rounds get a second overseer without an operator
+		// takeover, which is the only other transition that raises it.
+		return ActivationTransitionResult{State: ActivationIdle, Epoch: epoch + 1}, nil
 	case ActivationRecoveryRequired, ActivationEscalated:
 		// Both wait for an operator. Only run settlement and an authorized
 		// continuation, handled above, move them.

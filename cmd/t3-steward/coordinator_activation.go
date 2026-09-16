@@ -240,13 +240,20 @@ func (c coordinatorSupervision) activationSignal(
 		return signal, false, nil
 	}
 	switch state.Activation.State {
-	case "", domain.ActivationIdle, domain.ActivationSpent:
+	case "", domain.ActivationIdle:
+		signal.Event = domain.ActivationEventTriggerFired
+	case domain.ActivationSpent:
+		// A spent activation has finished its turn, and a trigger aimed at one
+		// is an illegal transition rather than a second wake. What new events
+		// do to a spent activation is return the run to idle at a fresh epoch;
+		// the trigger that dispatches the replacement is then the next
+		// boundary's, against an identity the spent activation never used.
+		signal.Event = domain.ActivationEventEventsArrived
 	default:
 		// Active, revoked, recovery-required, escalated and closed all mean
 		// something other than this boundary owns the next move.
 		return signal, false, nil
 	}
-	signal.Event = domain.ActivationEventTriggerFired
 	signal.ExpectedEpoch = state.Activation.Epoch
 	signal.IncidentID = firstIncidentOfInbox(inbox)
 	signal.Reason = fmt.Sprintf("%d supervision event(s) are waiting for review", len(inbox.EventIDs()))

@@ -545,6 +545,29 @@ func PlanActivation(state SupervisionActivationState, signal ActivationSignal, n
 			next.State = domain.ActivationIdle
 			next.LeaseToken, next.LeaseExpiresAt = "", nil
 		}
+	case domain.ActivationEventEventsArrived, domain.ActivationEventReconciliationAcknowledged:
+		if result.State == domain.ActivationIdle {
+			// The machine raised the epoch, so this is a new activation rather
+			// than the old one at a new number. Minting the record here is what
+			// keeps the derived identities and the epoch in agreement: carrying
+			// the spent or revoked row forward would leave an activation whose
+			// ID and dispatch identity name the previous epoch, and the next
+			// dispatch would be planned against them.
+			//
+			// The recovery counter follows the incident. A reconciled revocation
+			// is still the same incident being retried, so its count carries; a
+			// spent activation ended its own turn and whatever arrives next
+			// starts a fresh count, which the trigger path re-derives from the
+			// incident it wakes for anyway.
+			recovered := 0
+			if signal.Event == domain.ActivationEventReconciliationAcknowledged {
+				recovered = activation.RecoveredCount
+			}
+			next = newActivation(record, result.Epoch, activation.ConsumedEventCursor, recovered)
+			next.IncidentID = activation.IncidentID
+			next.State = domain.ActivationIdle
+			next.LeaseToken, next.LeaseExpiresAt = "", nil
+		}
 	case domain.ActivationEventOperatorContinuation:
 		granted := signal.GrantActivations
 		if granted <= 0 {

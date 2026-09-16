@@ -499,10 +499,12 @@ func TestActivationTransitionTable(t *testing.T) {
 			want:  ActivationTransitionResult{State: ActivationRecoveryRequired, Epoch: 3},
 		},
 		{
-			name: "revoked, reconciliation acknowledged releases reservations", state: ActivationRevoked,
+			// Idle at epoch+1: the replacement must not derive the identity of
+			// the activation whose authority was just revoked.
+			name: "revoked, reconciliation acknowledged releases reservations at a fresh epoch", state: ActivationRevoked,
 			event:  ActivationEventReconciliationAcknowledged,
 			mutate: func(in *ActivationTransitionInput) { in.RecoveryComplete = true },
-			want:   ActivationTransitionResult{State: ActivationIdle, Epoch: 3},
+			want:   ActivationTransitionResult{State: ActivationIdle, Epoch: 4},
 		},
 		{
 			name: "revoked, reconciliation before recovery completes", state: ActivationRevoked,
@@ -514,10 +516,14 @@ func TestActivationTransitionTable(t *testing.T) {
 			want:  ActivationTransitionResult{State: ActivationRecoveryRequired, Epoch: 3},
 		},
 		{
-			name: "spent, new events with budget remaining", state: ActivationSpent,
+			// Idle at epoch+1. An activation's ID, dispatch identity, attempt,
+			// assignment and thread are all derived from (run, epoch), so
+			// returning to idle at the same epoch would make the second review
+			// round recompute the first one instead of starting a new one.
+			name: "spent, new events with budget remaining wake a fresh epoch", state: ActivationSpent,
 			event:  ActivationEventEventsArrived,
 			mutate: func(in *ActivationTransitionInput) { in.ActivationBudgetRemaining = true },
-			want:   ActivationTransitionResult{State: ActivationIdle, Epoch: 3},
+			want:   ActivationTransitionResult{State: ActivationIdle, Epoch: 4},
 		},
 		{
 			name: "spent, new events without budget escalate once", state: ActivationSpent,
