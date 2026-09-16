@@ -866,6 +866,16 @@ func (s *Store) ResolveReviewIncident(ctx context.Context, request IncidentResol
 			if next == domain.IncidentResolved {
 				incident.Resolution = &receipt
 			}
+			if next == domain.IncidentEscalated {
+				// Reason is the incident's current block reason, and for an
+				// escalated incident that is why it was escalated, not why it was
+				// opened. Keeping the opening reason here left every escalation
+				// reading "gate X is ready for review", which is exactly what an
+				// operator already knew and says nothing about what went wrong.
+				// The opening reason is preserved on the supervision event that
+				// raised the incident.
+				incident.Reason = request.Reason
+			}
 			if err := saveSupervisionIncidentTx(ctx, tx, incident); err != nil {
 				return SupervisionDecision{}, err
 			}

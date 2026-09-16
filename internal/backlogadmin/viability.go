@@ -41,6 +41,12 @@ const (
 	ReasonRepositoryNotFound      = "repository-not-found"
 	ReasonRefNotFound             = "ref-not-found"
 	ReasonNoConfiguredRoute       = "no-configured-route"
+	// ReasonSupervisorClientMissing means the coordinator has no admin client
+	// with supervisor: true, so it would dispatch no overseer for this campaign
+	// and every gate the manifest declares would wait for an operator. It is
+	// permanent for the same reason no-configured-route is: waiting does not
+	// change the answer, a configuration change does.
+	ReasonSupervisorClientMissing = "supervisor-client-missing"
 )
 
 // Temporary reason codes. Every one of them is compatible with asynchronous
@@ -101,6 +107,7 @@ var permanentReasons = map[string]bool{
 	ReasonRepositoryNotFound:      true,
 	ReasonRefNotFound:             true,
 	ReasonNoConfiguredRoute:       true,
+	ReasonSupervisorClientMissing: true,
 	ReasonTimingWindowClosed:      true,
 	ReasonMessageLimitExceeded:    true,
 }

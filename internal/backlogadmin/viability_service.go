@@ -48,6 +48,11 @@ type ViabilitySettings struct {
 	MaxBundleFiles int
 	Repository     RepositoryObserver
 	Credentials    CredentialResolver
+	// SupervisorClientConfigured reports that this coordinator has an admin
+	// client with supervisor: true. A supervised campaign checked against a
+	// coordinator without one is reported as impossible here rather than
+	// accepted and then held forever on a gate nobody can decide.
+	SupervisorClientConfigured bool
 }
 
 // SetViability supplies the catalog, limits and observers a viability query
@@ -102,7 +107,8 @@ func (v view) viability(ctx context.Context, settings ViabilitySettings, request
 			}
 		}
 		matrix.Reasons = append(matrix.Reasons,
-			SupervisionViabilityReasons(*request.Supervision, inventories)...)
+			SupervisionViabilityReasons(*request.Supervision, inventories,
+				settings.SupervisorClientConfigured)...)
 	}
 	for _, task := range request.Tasks {
 		matrix.Tasks = append(matrix.Tasks, v.viabilityTask(ctx, settings, task, workers))
@@ -121,7 +127,19 @@ func (v view) viability(ctx context.Context, settings ViabilitySettings, request
 // either. A fleet with no inventory at all is therefore reported as no
 // supervision finding rather than as an impossible campaign, because the
 // question was not actually answered.
-func SupervisionViabilityReasons(supervision ViabilitySupervision, inventories []domain.WorkerInventory) []ViabilityReason {
+func SupervisionViabilityReasons(
+	supervision ViabilitySupervision,
+	inventories []domain.WorkerInventory,
+	supervisorClientConfigured bool,
+) []ViabilityReason {
+	if !supervisorClientConfigured {
+		// This is reported before the fleet is examined, because it is true
+		// whatever the fleet looks like: with no supervisor principal the
+		// coordinator dispatches no activation at all.
+		return []ViabilityReason{newViabilityReason(ReasonSupervisorClientMissing,
+			"this coordinator declares no backlog_v2.coordinator.admin_clients entry with supervisor: true, "+
+				"so no overseer would be dispatched and this campaign's gates could only be decided by an operator")}
+	}
 	capability := strings.TrimSpace(supervision.RequiredCapability)
 	if capability == "" {
 		capability = backlog.SupervisionWorkerCapability

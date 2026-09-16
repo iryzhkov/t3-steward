@@ -20,12 +20,21 @@ import (
 // what any store would have done with it.
 type fakeSupervisionTransport struct {
 	requests []backlogadmin.SupervisionRequest
-	response backlogadmin.SupervisionResponse
-	err      error
+	// identities records the client identity each request would have been signed
+	// under, which is what proves a supervisor credential reaches supervision
+	// and nothing else.
+	identities []supervisorIdentity
+	response   backlogadmin.SupervisionResponse
+	err        error
 }
 
-func (f *fakeSupervisionTransport) supervise(_ context.Context, request backlogadmin.SupervisionRequest) (backlogadmin.SupervisionResponse, error) {
+func (f *fakeSupervisionTransport) supervise(
+	_ context.Context,
+	identity supervisorIdentity,
+	request backlogadmin.SupervisionRequest,
+) (backlogadmin.SupervisionResponse, error) {
 	f.requests = append(f.requests, request)
+	f.identities = append(f.identities, identity)
 	if f.err != nil {
 		return backlogadmin.SupervisionResponse{}, f.err
 	}
@@ -43,7 +52,7 @@ func (f *fakeSupervisionTransport) supervise(_ context.Context, request backloga
 }
 
 func supervisionTestCLI(out *bytes.Buffer, transport *fakeSupervisionTransport) campaignCLI {
-	return campaignCLI{stdout: out, stderr: out, supervise: transport.supervise}
+	return campaignCLI{stdout: out, stderr: out, superviseAs: transport.supervise}
 }
 
 func supervisionTestState() backlogadmin.SupervisionState {

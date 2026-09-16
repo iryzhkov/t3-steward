@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -201,6 +202,16 @@ type SupervisionState struct {
 	// SinkSettled reports terminal settlement, after which every mutating
 	// supervision capability is revoked.
 	SinkSettled bool `json:"sinkSettled"`
+	// RouteAvailable reports whether an overseer could be dispatched to decide
+	// this run's gates right now, and RouteBlockReason says why not when it
+	// could not.
+	//
+	// They are here because show is the command an operator runs when a gate is
+	// not moving, and the most common reason it is not moving is not visible in
+	// any gate, hold or incident: no worker hosts the overseer route, or this
+	// coordinator has no supervisor admin client at all.
+	RouteAvailable   bool   `json:"routeAvailable"`
+	RouteBlockReason string `json:"routeBlockReason,omitempty"`
 }
 
 // SupervisionBranch is the dependency closure of one branch root, resolved by
@@ -607,6 +618,7 @@ func (s *Service) Supervise(ctx context.Context, principal Principal, request Su
 		Actor:       actor,
 	}
 	if !request.Operation.Mutating() {
+		s.describeSupervisionRoute(ctx, &state)
 		response.State = &state
 		return response, nil
 	}
@@ -669,6 +681,28 @@ func (s *Service) Supervise(ctx context.Context, principal Principal, request Su
 		return response, nil
 	}
 	return receipt.Response, nil
+}
+
+// describeSupervisionRoute answers, on a show, whether an overseer could be
+// dispatched for this run right now.
+//
+// A failure to read the fleet is reported as an unanswered question rather than
+// as an available route, for the same reason the readiness matrix reports an
+// unobserved repository as unobserved: a check nobody performed must never read
+// as a check that passed.
+func (s *Service) describeSupervisionRoute(ctx context.Context, state *SupervisionState) {
+	workers, err := s.reader.LoadWorkerSnapshots(ctx)
+	if err != nil {
+		state.RouteBlockReason = "the worker inventory could not be read, so supervisor route availability is unknown"
+		return
+	}
+	state.RouteAvailable = backlog.SupervisionRouteAvailable(backlog.SupervisionRouteRequest{
+		Route: state.Record.Config.Route, Workers: workers,
+		SupervisorClientConfigured: s.supervisorClientConfigured,
+	})
+	if !state.RouteAvailable {
+		state.RouteBlockReason = backlog.SupervisionRouteBlockCause(s.supervisorClientConfigured)
+	}
 }
 
 func (s *Service) decideGate(
@@ -909,7 +943,16 @@ func (d adminDispatch) supervise(ctx context.Context, principal Principal, reque
 	handler, ok := d.service.(interface {
 		Supervise(context.Context, Principal, SupervisionRequest) (SupervisionResponse, error)
 	})
-	if !ok || request.Supervision == nil || request.GraphAmendment != nil || request.NodeWait != nil ||
+	if !ok {
+		// A service that carries no supervision is a deployment fact, not a
+		// malformed request, and reporting it as one sent an operator looking at
+		// a request that was correct. This branch was the whole of defect 3: the
+		// coordinator's local service simply did not forward Supervise.
+		response.Error = "this coordinator does not carry supervision"
+		response.SupervisionClass = SupervisionErrorUnavailable
+		return
+	}
+	if request.Supervision == nil || request.GraphAmendment != nil || request.NodeWait != nil ||
 		request.WorkerEnrollment != nil || request.Query != nil || request.Mutation != nil ||
 		request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 ||
 		request.ScheduleDefinition != nil || request.UnknownRecovery != nil ||

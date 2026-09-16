@@ -66,6 +66,10 @@ type Service struct {
 	// explicitly rather than asserted from the reader because the binding is
 	// phrased in this package's types and the store cannot name them.
 	supervision SupervisionStore
+	// supervisorClientConfigured reports that this coordinator has a supervisor
+	// admin client and can therefore dispatch an overseer at all. It is
+	// configuration, not state, so it is supplied rather than read.
+	supervisorClientConfigured bool
 
 	viabilitySettings ViabilitySettings
 }
@@ -105,6 +109,80 @@ func New(reader Reader, authorizer Authorizer) (*Service, error) {
 // no supervision store answers the operation as unavailable rather than
 // failing, which is what a coordinator store that predates supervision gets.
 func (s *Service) SetSupervisionStore(store SupervisionStore) { s.supervision = store }
+
+// SetSupervisorClientConfigured records whether this coordinator has exactly
+// one backlog_v2.coordinator.admin_clients entry with supervisor: true.
+//
+// Without one no activation is ever dispatched, so every gate of a supervised
+// run waits for an operator. Explain, the readiness matrix and "campaign
+// supervision show" all have to say so, and none of them can discover it: the
+// admin clients are the coordinator process's own configuration and appear in
+// no record a query reads.
+func (s *Service) SetSupervisorClientConfigured(configured bool) {
+	s.supervisorClientConfigured = configured
+}
+
+// SupervisionSnapshotSource is the optional readiness snapshot of one run.
+//
+// It is separate from SupervisionStore because it answers a different question
+// with a different cost: LoadSupervision reads the whole reviewable picture for
+// one run an operator asked about, while this reads the compact predicate input
+// for every supervised run an explanation may touch.
+type SupervisionSnapshotSource interface {
+	LoadSupervisionSnapshot(ctx context.Context, runID string) (domain.SupervisionSnapshot, error)
+}
+
+// supervisionSnapshots resolves the readiness snapshot of every supervised run,
+// with RouteAvailable answered honestly.
+//
+// The store reports RouteAvailable true because provider admission is not
+// observable from a database. It is observable here, from the same worker
+// snapshots and the same rule the planner's own pass uses, so explain reports
+// the supervision blocker the planner applied instead of reporting a
+// gate-protected task as eligible to start.
+func (s *Service) supervisionSnapshots(
+	ctx context.Context,
+	records sqlite.CoordinatorRecords,
+	workers []domain.WorkerSnapshot,
+) (map[string]domain.SupervisionSnapshot, error) {
+	source, ok := s.supervisionSnapshotSource()
+	if !ok {
+		return nil, nil
+	}
+	var snapshots map[string]domain.SupervisionSnapshot
+	for _, run := range records.WorkflowRuns {
+		if run.Supervision == nil {
+			continue
+		}
+		snapshot, err := source.LoadSupervisionSnapshot(ctx, run.ID)
+		if err != nil {
+			return nil, fmt.Errorf("load supervision snapshot of run %q: %w", run.ID, err)
+		}
+		if !snapshot.Supervised {
+			continue
+		}
+		snapshot.RouteAvailable = backlog.SupervisionRouteAvailable(backlog.SupervisionRouteRequest{
+			Route: run.Supervision.Config.Route, Workers: workers,
+			SupervisorClientConfigured: s.supervisorClientConfigured,
+		})
+		if snapshots == nil {
+			snapshots = make(map[string]domain.SupervisionSnapshot)
+		}
+		snapshots[run.ID] = snapshot
+	}
+	return snapshots, nil
+}
+
+// supervisionSnapshotSource prefers the explicitly bound supervision store and
+// falls back to the reader, which is how every other optional capability of
+// this service is reached.
+func (s *Service) supervisionSnapshotSource() (SupervisionSnapshotSource, bool) {
+	if source, ok := s.supervision.(SupervisionSnapshotSource); ok {
+		return source, true
+	}
+	source, ok := s.reader.(SupervisionSnapshotSource)
+	return source, ok
+}
 
 // supervisionStore returns the bound store, or the reader when it happens to
 // satisfy the interface itself, which is what an in-process test fixture does.
@@ -258,6 +336,10 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 		return view{}, fmt.Errorf("load quota admissions: %w", err)
 	}
 	loaded := newView(records, workers, admissions, s.runtime, s.now().UTC())
+	loaded.supervisorClientConfigured = s.supervisorClientConfigured
+	if loaded.supervision, err = s.supervisionSnapshots(ctx, records, workers); err != nil {
+		return view{}, err
+	}
 	if reader, ok := s.reader.(interface {
 		LoadWorkerRequirements(context.Context) ([]domain.WorkerRequirement, error)
 		LoadWorkerEnrollments(context.Context) ([]domain.WorkerEnrollment, error)
@@ -316,6 +398,13 @@ type view struct {
 	attempts     map[string][]domain.Attempt
 	assignments  map[string]domain.Assignment
 	runtime      RuntimeInfo
+	// supervision is the readiness snapshot of every supervised run in records,
+	// keyed by run ID. An absent run is unsupervised, which is every run on a
+	// coordinator that has never accepted a supervised campaign.
+	supervision map[string]domain.SupervisionSnapshot
+	// supervisorClientConfigured is this coordinator's own configuration; see
+	// Service.SetSupervisorClientConfigured.
+	supervisorClientConfigured bool
 }
 
 func newView(records sqlite.CoordinatorRecords, workers []domain.WorkerSnapshot, admissions []domain.QuotaAdmissionRecord, runtime RuntimeInfo, now time.Time) view {
@@ -709,6 +798,7 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 			explanation.Blockers = append(explanation.Blockers, Blocker{Code: "cross-run-dependency", Detail: "source has not succeeded", DependsOn: ref.String()})
 		}
 	}
+	v.addSupervisionBlocker(&explanation, runID, task)
 	v.addWorkerBlocker(&explanation, task)
 	v.addRouteBlocker(&explanation, task, attempt)
 	v.addQuotaBlocker(&explanation, task, attempt)
@@ -741,6 +831,31 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 		explanation.Summary = fmt.Sprintf("task has %d blocker(s)", len(explanation.Blockers))
 	}
 	return explanation, true
+}
+
+// addSupervisionBlocker reports the supervision verdict the planner applied to
+// this task, through the planner's own function rather than through a second
+// implementation of the gate and hold rules.
+//
+// A second implementation is exactly what was missing. The planner withheld a
+// gate-protected task while explain, which consulted no supervision state at
+// all, reported the same task as "eligible to start" with no blockers, so the
+// one command an operator runs to find out why nothing is happening said the
+// opposite of what was happening.
+func (v view) addSupervisionBlocker(explanation *Explanation, runID string, task domain.Task) {
+	for _, blocker := range backlog.SupervisionPlanningBlockers(v.supervision, runID, task) {
+		detail := blocker.Detail
+		if blocker.SupervisionCode == domain.SupervisionBlockerRouteUnavailable {
+			// The route-unavailable blocker is the one whose remedy is not on the
+			// run at all, so it names the cause an operator can act on.
+			detail = detail + ": " +
+				backlog.SupervisionRouteBlockCause(v.supervisorClientConfigured)
+		}
+		explanation.Blockers = append(explanation.Blockers, Blocker{
+			Code: blocker.Code, Detail: detail, SupervisionCode: blocker.SupervisionCode,
+			GateID: blocker.GateID, HoldID: blocker.HoldID,
+		})
+	}
 }
 
 // addWorkerBlocker explains placement through the same matcher the planner uses,

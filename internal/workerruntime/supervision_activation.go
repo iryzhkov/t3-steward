@@ -112,12 +112,21 @@ func (d *LocalDriver) createActivationThread(ctx context.Context, pkg workerprot
 		return err
 	}
 	selection := map[string]any{"instanceId": pkg.Route.ProviderInstanceID, "model": pkg.Route.Model}
+	// The overseer's CLI has to authenticate as the supervisor client rather
+	// than as this host's own coordinator client, and the activation is the only
+	// place that says which one that is. Naming it in the prompt alone left the
+	// CLI with no way to act on it; see
+	// workerproto.SupervisorCredentialEnvironment.
+	environment := pkg.Identity.TaskEnvironment()
+	for name, value := range activation.ActivationEnvironment() {
+		environment[name] = value
+	}
 	threadID, err := d.T3.CreateAndStartThread(ctx, t3control.NewThreadInput{
 		ThreadID: pkg.Identity.ThreadID, DispatchToken: pkg.Identity.DispatchToken,
 		ProjectID: projectID, Title: activation.ActivationID,
 		ModelSelection: selection, RuntimeMode: "full-access", InteractionMode: "default",
 		WorktreePath: workspace, Prompt: ActivationPrompt(*activation),
-		Environment: pkg.Identity.TaskEnvironment(),
+		Environment: environment,
 	})
 	if threadID != "" && threadID != pkg.Identity.ThreadID {
 		return errors.New("T3 returned a different deterministic thread identity")

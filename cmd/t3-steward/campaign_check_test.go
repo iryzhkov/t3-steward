@@ -228,7 +228,9 @@ func campaignSupervisionMatrix(fleet []domain.WorkerInventory) func(backlogadmin
 		if request.Supervision == nil {
 			return matrix
 		}
-		matrix.Reasons = backlogadmin.SupervisionViabilityReasons(*request.Supervision, fleet)
+		// This fleet has a supervisor admin client, so the fleet's own capability
+		// is what these cases are about.
+		matrix.Reasons = backlogadmin.SupervisionViabilityReasons(*request.Supervision, fleet, true)
 		for _, reason := range matrix.Reasons {
 			if reason.Permanent {
 				matrix.Outcome = backlogadmin.ViabilityImpossible

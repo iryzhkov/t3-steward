@@ -73,6 +73,22 @@ func (s coordinatorLocalService) Query(ctx context.Context, query backlogadmin.Q
 	return s.admin.Query(ctx, query)
 }
 
+// Supervise answers one supervision operation.
+//
+// It is forwarded explicitly, like every other capability above, because the
+// local transport reaches supervision through an optional interface on this
+// type. Omitting it did not fail to compile: it made every supervision request
+// on both carriers answer "malformed supervision request", because the type
+// assertion that looks for this method was the same branch that reports a
+// request whose shape is wrong.
+func (s coordinatorLocalService) Supervise(
+	ctx context.Context,
+	principal backlogadmin.Principal,
+	request backlogadmin.SupervisionRequest,
+) (backlogadmin.SupervisionResponse, error) {
+	return s.admin.Supervise(ctx, principal, request)
+}
+
 func (s coordinatorLocalService) Mutate(ctx context.Context, mutation backlogadmin.Mutation) (backlogadmin.MutationResponse, error) {
 	return s.admin.Mutate(ctx, mutation)
 }
@@ -197,7 +213,11 @@ type coordinatorPlanner struct {
 	maxQuotaObservationAge time.Duration
 	deadlineRiskWindow     time.Duration
 	checkpointMargin       time.Duration
-	now                    func() time.Time
+	// supervisorClientConfigured is the third condition of supervisor route
+	// availability, which the planner cannot read from the store. See
+	// backlog.SupervisionRouteRequest.
+	supervisorClientConfigured bool
+	now                        func() time.Time
 }
 
 func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeReport) (backlog.AssignmentPlanningReport, error) {
@@ -221,7 +241,8 @@ func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeR
 	if p.settings != nil {
 		snapshots = workerruntime.AuthorizedPlanningSnapshots(*p.settings, snapshots, now)
 	}
-	supervision, err := coordinatorSupervisionSnapshots(ctx, p.store, records.WorkflowRuns, snapshots)
+	supervision, err := coordinatorSupervisionSnapshots(
+		ctx, p.store, records.WorkflowRuns, snapshots, p.supervisorClientConfigured)
 	if err != nil {
 		return backlog.AssignmentPlanningReport{}, err
 	}
@@ -523,6 +544,25 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		directoryCatalogs[name] = directoryresource.CloneBindings(project.DirectoryResources)
 	}
 	fleetProjects, fleetProfiles := workerruntime.BuildFleetDefinitions(cfg.BacklogV2)
+	// The supervisor admin client is resolved here, before anything that
+	// reports on supervision is composed, because its absence is not a detail of
+	// activation dispatch alone: it is the answer the readiness matrix, the
+	// explanation blockers and "campaign supervision show" each have to give.
+	supervisorPrincipal, supervisorCredential, err := coordinatorSupervisorClient(cfg.BacklogV2.Coordinator.AdminClients)
+	if err != nil {
+		// Ambiguous supervisor configuration disables activation dispatch and
+		// says so. Every other boundary keeps running: a supervised run then
+		// waits for an operator decision instead of getting an overseer whose
+		// authority nobody can name.
+		logger.Error("campaign supervision activations are disabled", "error", err)
+	}
+	if supervisorPrincipal == "" {
+		// Said once at startup, where an operator reading the coordinator's first
+		// lines learns it before a campaign is ever submitted.
+		logger.Warn("campaign supervision activations are disabled",
+			"reason", backlog.SupervisionNoSupervisorClient,
+			"remedy", "declare exactly one backlog_v2.coordinator.admin_clients entry with supervisor: true")
+	}
 	service.SetViability(backlogadmin.ViabilitySettings{
 		Projects:       fleetProjects,
 		SetupProfiles:  fleetProfiles,
@@ -535,7 +575,13 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		// that does not exist, which fails hours later in workspace preparation.
 		Repository: newCoordinatorRepositoryObserver(
 			cfg.BacklogV2, workerruntime.ProtocolResolver{}, epoch, nil),
+		SupervisorClientConfigured: supervisorPrincipal != "",
 	})
+	// Every supervision answer this coordinator gives -- the readiness matrix
+	// above, the explanation blockers and "campaign supervision show" -- has to
+	// know whether an overseer could be dispatched at all, and none of them can
+	// discover it from a record.
+	service.SetSupervisorClientConfigured(supervisorPrincipal != "")
 	submissions := &backlog.SubmissionService{
 		DirectoryCatalogs: directoryCatalogs,
 		StorageRoot:       cfg.BacklogV2.Storage.Bundles,
@@ -579,20 +625,13 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	defer workers.close()
 	supervisionStore := backlog.CoordinatorSupervisionStore{Store: store}
 	service.SetSupervisionStore(backlogadmin.CoordinatorSupervisionStore{Store: store})
-	supervisorPrincipal, supervisorCredential, err := coordinatorSupervisorClient(cfg.BacklogV2.Coordinator.AdminClients)
-	if err != nil {
-		// Ambiguous supervisor configuration disables activation dispatch and
-		// says so. Every other boundary keeps running: a supervised run then
-		// waits for an operator decision instead of getting an overseer whose
-		// authority nobody can name.
-		logger.Error("campaign supervision activations are disabled", "error", err)
-	}
 	cycle := coordinatorBoundaryCycle{
 		projection: supervisionStore,
 		supervision: &coordinatorSupervision{
 			store: supervisionStore, logger: logger,
-			workers:     store.LoadWorkerSnapshots,
-			activations: backlog.SupervisionActivationService{Store: supervisionStore},
+			workers:                  store.LoadWorkerSnapshots,
+			activations:              backlog.SupervisionActivationService{Store: supervisionStore},
+			warnedNoSupervisorClient: make(map[string]bool),
 			settings: coordinatorActivationSettings{
 				CoordinatorID:                 cfg.BacklogV2.Coordinator.ID,
 				CoordinatorEpoch:              epoch,
@@ -612,10 +651,11 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		planning: coordinatorPlanner{
 			settings: &cfg.BacklogV2,
 			store:    store, coordinator: backlog.FleetCoordinator{Store: store}, epoch: epoch,
-			maxWorkerSnapshotAge:   cfg.BacklogV2.Freshness.WorkerMaxAge.D(),
-			maxQuotaObservationAge: cfg.BacklogV2.Freshness.QuotaMaxAge.D(),
-			deadlineRiskWindow:     24 * time.Hour,
-			checkpointMargin:       cfg.BacklogV2.Leases.RenewInterval.D(),
+			maxWorkerSnapshotAge:       cfg.BacklogV2.Freshness.WorkerMaxAge.D(),
+			maxQuotaObservationAge:     cfg.BacklogV2.Freshness.QuotaMaxAge.D(),
+			deadlineRiskWindow:         24 * time.Hour,
+			checkpointMargin:           cfg.BacklogV2.Leases.RenewInterval.D(),
+			supervisorClientConfigured: supervisorPrincipal != "",
 		},
 		admin: service,
 		legacy: backlog.LegacySubmissionSource{
