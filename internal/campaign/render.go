@@ -63,6 +63,7 @@ func RenderText(plan Plan) string {
 		}
 		header(&out, width, label, describeInput(input))
 	}
+	writeSupervision(&out, width, plan)
 	if len(plan.Components) > 1 {
 		for i, component := range plan.Components {
 			label := ""
@@ -89,6 +90,7 @@ func RenderText(plan Plan) string {
 			writeTask(&out, byName[name])
 		}
 	}
+	writeGates(&out, plan)
 	out.WriteString("\n" + staticFooter + "\n")
 	return out.String()
 }
@@ -194,6 +196,13 @@ func writeTask(out *strings.Builder, task Task) {
 			value += ", " + directory.Access
 		}
 		field(out, width, label, value)
+	}
+	if len(task.ObservedBy) > 0 {
+		field(out, width, "reviewed by", strings.Join(task.ObservedBy, ", "))
+	}
+	if len(task.HeldBy) > 0 {
+		field(out, width, "held by", strings.Join(task.HeldBy, ", ")+
+			" -- no dispatch before every one of them is accepted")
 	}
 	if task.Timing.Declared() {
 		field(out, width, "timing", describeTiming(task.Timing))
@@ -436,6 +445,8 @@ func RenderDOT(plan Plan) string {
 		}
 		fmt.Fprintf(&out, "  %s -> %s [%s];\n", quoteDOT(edge.From), quoteDOT(edge.To), strings.Join(attributes, ", "))
 	}
+
+	writeSupervisionDOT(&out, plan)
 
 	fmt.Fprintf(&out, "  %s [shape=ellipse, style=dashed, label=\"%s (coordinator settlement)\"];\n",
 		quoteDOT(plan.Sink.Name), plan.Sink.Name)

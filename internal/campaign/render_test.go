@@ -56,7 +56,7 @@ func TestRenderJSONNamesTheSchemaVersionFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if !strings.HasPrefix(string(encoded), "{\n  \"schemaVersion\": 1,\n") {
+	if !strings.HasPrefix(string(encoded), "{\n  \"schemaVersion\": 2,\n") {
 		t.Fatalf("document starts with %.40q", encoded)
 	}
 	if !strings.HasSuffix(string(encoded), "}\n") {

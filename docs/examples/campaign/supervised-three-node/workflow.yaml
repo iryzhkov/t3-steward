@@ -1,0 +1,127 @@
+# Supervised three-node campaign: two analysis tasks, a review gate, one
+# downstream synthesis task, and a final-settlement gate.
+#
+# This is the three-node template with supervision added. Everything the
+# unsupervised template says still applies: every task below runs as its own
+# Steward-scheduled T3 session, the graph is static and fixed at submission, and
+# a task prompt must not use native subagents as a substitute for a declared
+# task, because hidden native delegation is not separately scheduled work.
+#
+# What supervision adds is an overseer and two gates. The overseer is a separate
+# session on its own route. It does not execute any task, it cannot retry or
+# rewrite one, and it cannot mark work successful: it accepts, holds or escalates
+# a gate against the evidence the workers produced. A successful worker result
+# and a supervisory acceptance are separate facts.
+#
+# analysis_review observes both analyses and protects synthesis: synthesis is not
+# dispatched until the gate is accepted. final_report observes synthesis and is a
+# final-settlement gate: it guards run settlement rather than a downstream task,
+# which is why it declares no `before` and sets `final: true`. A dummy agent task
+# would have been the wrong way to express that.
+#
+# Omit `supervision` and `gates` and this file is an ordinary campaign again.
+# Absent supervision is exactly the unsupervised behaviour. `gates` without
+# `supervision` is refused, because a gate nothing can release is a campaign that
+# is permanently held.
+#
+# OPERATOR CONFIGURATION, NOT PORTABLE DEFAULTS.
+# environment.project, routes[].instance, routes[].model, routes[].quota_pool and
+# every field of supervision.route below name one fleet's registered project,
+# provider instance, model and quota pool. THE OVERSEER ROUTE IS OPERATOR
+# CONFIGURATION TOO, and deliberately so: the plan requires the overseer to be
+# independently configured, not to be some particular model. Replace all of them
+# with the names your own steward is configured with before submitting this
+# directory; they resolve nowhere else. Every value in this file that is operator
+# configuration is marked with a trailing comment.
+
+version: 2
+name: supervised-three-node-example
+class: surplus
+
+environment:
+  project: example-project # operator configuration
+  type: git
+  scope: task
+  ref: main
+
+inputs:
+  - inputs/scope.md
+
+resources:
+  preset: light
+
+preflight:
+  steps:
+    - id: source
+      kind: context
+      probe: git_head
+      include: summary
+
+routes:
+  - instance: claudeAgent # operator configuration
+    model: claude-sonnet-5 # operator configuration
+    quota_pool: claude-main # operator configuration
+
+# The overseer's route is declared once and is not a list: an alternative would
+# make the effective overseer route ambiguous. It is a different provider
+# instance and quota pool from the worker route above, so a busy worker pool
+# cannot starve reviews and a busy overseer cannot starve the workers.
+supervision:
+  route:
+    instance: codexAgent # operator configuration
+    model: gpt-5.6-sol # operator configuration
+    quota_pool: codex-main # operator configuration
+  prompt_file: prompts/overseer.md
+  max_activations: 8
+  max_turns_per_activation: 3
+  activation_deadline: 2h
+  idle_escalation_after: 24h
+  escalation:
+    notify_thread: true
+
+gates:
+  analysis_review:
+    after: [interfaces, tests]
+    before: [synthesis]
+    rubric_file: rubrics/analysis.md
+
+  final_report:
+    after: [synthesis]
+    rubric_file: rubrics/settlement.md
+    final: true
+
+tasks:
+  interfaces:
+    prompt_file: prompts/interfaces.md
+    outputs: [interfaces.md]
+    verify:
+      - git diff --quiet
+    importance: 3
+    difficulty: 2
+
+  tests:
+    prompt_file: prompts/tests.md
+    outputs: [tests.md]
+    verify:
+      - git diff --quiet
+    importance: 3
+    difficulty: 2
+
+  synthesis:
+    prompt_file: prompts/synthesis.md
+    # The gate does not create this dependency and could not: a gate constrains
+    # dispatch, it never carries an artifact. needs and inputs_from are what make
+    # the two analyses reach this task, and the manifest is refused if a gate
+    # protects a task that does not already depend on what the gate observes.
+    needs: [interfaces, tests]
+    inputs_from:
+      interfaces: [interfaces.md]
+      tests: [tests.md]
+    outputs: [combined.md]
+    verify:
+      - test -s combined.md
+    resources:
+      preset: build
+    importance: 4
+    difficulty: 3
+    max_turns: 8

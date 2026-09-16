@@ -1,6 +1,6 @@
 # Campaign examples
 
-Two checked-in campaign directories, both submittable as they stand once their operator
+Three checked-in campaign directories, all submittable as they stand once their operator
 configuration is replaced:
 
 - `three-node/` — **the recommended multi-task template.** Two independent analysis tasks
@@ -9,6 +9,10 @@ configuration is replaced:
   unit of judgement.
 - `single-lead/` — one task that owns a repository change from start to finish. A
   legitimate choice, not a fallback; see "When one task is the right answer" below.
+- `supervised-three-node/` — the same shape with an overseer: two analyses, a review gate
+  over both of them, one downstream synthesis task, and a final-settlement gate guarding
+  the run's settlement. Use it when a result needs judgement before the next task is
+  dispatched. See "Supervised campaigns" below.
 
 ## How multi-task campaigns are authored
 
@@ -57,12 +61,44 @@ parts is what the DAG is for: separate sessions fail independently, are retried
 independently, are explained independently and cannot silently consume each other's
 context.
 
-## Before submitting either directory
+## Supervised campaigns
+
+`supervised-three-node/` adds two optional top-level keys to the same version 2 schema.
+Omit both and the campaign behaves exactly as an unsupervised one, which is what every
+campaign that ran before supervision existed does.
+
+`supervision` declares the overseer: one route, one overseer prompt, and the bounds the run
+holds it to. `gates` declares the review boundaries: each gate observes named producers
+through `after` and holds named downstream tasks through `before`, and a gate with no
+`before` and `final: true` guards the run's settlement instead of a task.
+
+Four rules are worth knowing before you author one:
+
+- `gates` without `supervision` is refused. A gate nothing can release is a campaign that is
+  permanently held.
+- A gate cannot replace a `needs` edge. Every protected task must already depend on
+  everything the gate observes, and the manifest is refused otherwise. A gate constrains
+  dispatch; it never carries an artifact.
+- A gate holds the tasks it names **and their dependency descendants**. `campaign plan`
+  prints that closure, so check it rather than inferring it.
+- The overseer accepts, holds or escalates. It cannot retry, rewrite or skip a task, and it
+  cannot make failed work successful. A supervisory acceptance and a successful worker
+  result are separate facts.
+
+The overseer prompt and every gate rubric are ordinary bundle files: they are validated and
+packed like a task prompt, and they are where the review standard is actually written.
+
+## Before submitting any of these directories
 
 `environment.project`, `routes[].instance`, `routes[].model` and `routes[].quota_pool` name
 one fleet's registered project, provider instance, model and quota pool. Replace all four
 with the names your own Steward is configured with; every such value is marked with a
 trailing `# operator configuration` comment.
+
+The same applies to `supervision.route` in the supervised example. It is operator
+configuration, not a portable default and not a recommendation of a particular model: what
+the design requires is that the overseer route is configured independently of the task
+routes, and which route that is, is yours to choose.
 
 ```sh
 t3-steward campaign validate three-node        # offline
