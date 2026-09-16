@@ -57,18 +57,25 @@ func (d *Daemon) advanceResumes(ctx context.Context, threads []domain.Thread, st
 			continue
 		// In dry-run mode nothing was stopped, so the thread is expected to
 		// keep running; only real stops watch for manual interaction.
-		case !dry && thread.TurnID != "" && intent.StoppedTurnID != "" && thread.TurnID != intent.StoppedTurnID:
-			cancel("a new turn started after the watchdog stop")
-			continue
+		//
+		// Only a user message counts as the user taking the thread over. A
+		// turn that starts without one is the harness continuing on its own:
+		// a background task or subagent finishing wakes the thread for a
+		// turn that lasts milliseconds, and an interrupted turn is often
+		// followed by such a turn within one poll. Cancelling on the turn id
+		// alone made every stop of a thread with background work cancel its
+		// own resume before anyone had acted.
+		//
 		// The watchdog's own warn and drain messages are user messages too,
 		// hence the tolerance around the stop time.
 		case !dry && thread.LatestUserMessageAt != nil && thread.LatestUserMessageAt.After(intent.StoppedAt.Add(10*time.Second)):
 			cancel("a user message arrived after the watchdog stop")
 			continue
 		case !dry && thread.Running:
-			// Same turn, still running: a thread finishing its checkpoint
-			// after the drain request. Wait for it to stop.
-			log.Debug("resume deferred: thread still running its drained turn")
+			// Still running, in the drained turn or in a turn the harness
+			// started on its own: wait for it to stop. A turn started while
+			// the bucket is still stopped is stopped again by pollThreads.
+			log.Debug("resume deferred: thread still running")
 			continue
 		}
 		if !d.cfg.Resume.Enabled {
