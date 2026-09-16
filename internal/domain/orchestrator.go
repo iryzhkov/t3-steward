@@ -118,19 +118,25 @@ type Workflow struct {
 
 // WorkflowRun is one execution of a workflow definition.
 type WorkflowRun struct {
-	Graph            *GraphDefinition `json:"graph,omitempty"`
-	ID               string           `json:"id"`
-	WorkflowID       string           `json:"workflowId"`
-	GraphRevision    int64            `json:"graphRevision,omitempty"`
-	Sink             *SinkTask        `json:"sink,omitempty"`
-	ScheduleID       string           `json:"scheduleId,omitempty"`
-	TriggerID        string           `json:"triggerId,omitempty"`
-	Progress         ProgressState    `json:"progress"`
-	InputArtifactIDs []string         `json:"inputArtifactIds,omitempty"`
-	Revision         int64            `json:"revision"`
-	CreatedAt        time.Time        `json:"createdAt"`
-	UpdatedAt        time.Time        `json:"updatedAt"`
-	CompletedAt      *time.Time       `json:"completedAt,omitempty"`
+	Graph         *GraphDefinition `json:"graph,omitempty"`
+	ID            string           `json:"id"`
+	WorkflowID    string           `json:"workflowId"`
+	GraphRevision int64            `json:"graphRevision,omitempty"`
+	Sink          *SinkTask        `json:"sink,omitempty"`
+	// Supervision is the run's durable supervision record, or nil for an
+	// unsupervised run, which is every run that exists today. It sits beside
+	// the sink because both are coordinator-owned state that belongs to the
+	// run rather than to any task, and outside the worker DAG so an overseer
+	// cannot deadlock behind its own review gate.
+	Supervision      *SupervisionRecord `json:"supervision,omitempty"`
+	ScheduleID       string             `json:"scheduleId,omitempty"`
+	TriggerID        string             `json:"triggerId,omitempty"`
+	Progress         ProgressState      `json:"progress"`
+	InputArtifactIDs []string           `json:"inputArtifactIds,omitempty"`
+	Revision         int64              `json:"revision"`
+	CreatedAt        time.Time          `json:"createdAt"`
+	UpdatedAt        time.Time          `json:"updatedAt"`
+	CompletedAt      *time.Time         `json:"completedAt,omitempty"`
 }
 
 // ArtifactDeclaration names an output a task promises to retain.
