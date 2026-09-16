@@ -3,6 +3,7 @@ package backlogadmin
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -93,11 +94,81 @@ func (v view) viability(ctx context.Context, settings ViabilitySettings, request
 				request.BundleFiles, settings.MaxBundleFiles)))
 	}
 	workers := v.viabilityWorkers()
+	if request.Supervision != nil {
+		inventories := make([]domain.WorkerInventory, 0, len(workers))
+		for _, worker := range workers {
+			if worker.hasSnapshot {
+				inventories = append(inventories, worker.inventory)
+			}
+		}
+		matrix.Reasons = append(matrix.Reasons,
+			SupervisionViabilityReasons(*request.Supervision, inventories)...)
+	}
 	for _, task := range request.Tasks {
 		matrix.Tasks = append(matrix.Tasks, v.viabilityTask(ctx, settings, task, workers))
 	}
 	matrix.Outcome = matrixOutcome(matrix)
 	return matrix
+}
+
+// SupervisionViabilityReasons reports why this fleet could never run the
+// declared overseer, and reports nothing when it could.
+//
+// It is answered from the workers' own inventories, because the supervision
+// capability describes the build running on a host and only that host can
+// report it. A worker the coordinator has no inventory for says nothing either
+// way and is not counted: silence is not consent, and it is not a refusal
+// either. A fleet with no inventory at all is therefore reported as no
+// supervision finding rather than as an impossible campaign, because the
+// question was not actually answered.
+func SupervisionViabilityReasons(supervision ViabilitySupervision, inventories []domain.WorkerInventory) []ViabilityReason {
+	capability := strings.TrimSpace(supervision.RequiredCapability)
+	if capability == "" {
+		capability = backlog.SupervisionWorkerCapability
+	}
+	route := supervision.Route
+	if route.ProviderInstanceID == "" || route.Model == "" {
+		return []ViabilityReason{newViabilityReason(ReasonNoConfiguredRoute,
+			"the supervision block names no overseer provider instance and model")}
+	}
+	if len(inventories) == 0 {
+		return nil
+	}
+	hosts := 0
+	for _, inventory := range inventories {
+		if route.WorkerID != "" && inventory.ID != route.WorkerID {
+			continue
+		}
+		if !supervisionInventoryHostsRoute(inventory, route) {
+			continue
+		}
+		hosts++
+		if slices.Contains(inventory.Capabilities, capability) {
+			return nil
+		}
+	}
+	if hosts == 0 {
+		return []ViabilityReason{newViabilityReason(ReasonNoConfiguredRoute, fmt.Sprintf(
+			"no configured worker hosts the overseer route %s/%s, so this campaign's gates could never be decided",
+			route.ProviderInstanceID, route.Model))}
+	}
+	return []ViabilityReason{newViabilityReason(ReasonCapabilityMissing, fmt.Sprintf(
+		"no worker hosting the overseer route %s/%s advertises capability %q, so this campaign's gates could never be decided",
+		route.ProviderInstanceID, route.Model, capability))}
+}
+
+// supervisionInventoryHostsRoute reports whether this worker serves the overseer
+// route's provider instance and model.
+func supervisionInventoryHostsRoute(inventory domain.WorkerInventory, route domain.ProviderRoute) bool {
+	for _, provider := range inventory.Providers {
+		if provider.InstanceID != route.ProviderInstanceID {
+			continue
+		}
+		if slices.Contains(provider.Models, route.Model) {
+			return true
+		}
+	}
+	return false
 }
 
 func matrixOutcome(matrix ViabilityMatrix) ViabilityOutcome {

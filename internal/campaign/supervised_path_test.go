@@ -335,9 +335,13 @@ func supervisedPlanInput(
 		workflows = append(workflows, backlog.PlanningWorkflow{
 			Workflow: workflow,
 			State: backlog.DAGState{
-				Run:      run,
-				Tasks:    domain.TasksForRun(run, records.Tasks),
-				Attempts: attemptsOfRun(records.Attempts, run.ID),
+				Run:   run,
+				Tasks: domain.TasksForRun(run, records.Tasks),
+				// The DAG is the run's declared graph. An overseer activation is
+				// assigned work with an attempt of its own and no declared task,
+				// so the coordinator filters it out of planning input and so does
+				// this projection of the same records.
+				Attempts: domain.DeclaredTaskAttempts(attemptsOfRun(records.Attempts, run.ID)),
 			},
 		})
 		snapshot, err := store.LoadSupervisionSnapshot(ctx, run.ID)
@@ -443,7 +447,7 @@ func supervisedFinalize(ctx context.Context, t *testing.T, fixture supervisedFix
 	tasks := supervisedTasksByName(records, fixture.supervised)
 	execution, err := backlog.NewDAGExecution(backlog.DAGState{
 		Run: run, Tasks: domain.TasksForRun(run, records.Tasks),
-		Attempts: attemptsOfRun(records.Attempts, run.ID),
+		Attempts: domain.DeclaredTaskAttempts(attemptsOfRun(records.Attempts, run.ID)),
 	})
 	if err != nil {
 		t.Fatal(err)

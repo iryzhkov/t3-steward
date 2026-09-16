@@ -353,6 +353,11 @@ type SupervisionActivationState struct {
 	// Outbox is this run's live delivery intents, used to deduplicate a
 	// re-escalation of an incident that was already notified.
 	Outbox []SupervisionOutboxEntry
+	// SubmitterThreadID is the thread the submission asked to be woken, when it
+	// asked for one. It is the escalation destination of a manifest that
+	// requests a notification without naming a thread; see
+	// SupervisionEscalationThread.
+	SubmitterThreadID string
 }
 
 // ActivationSignal is one event applied to one run's activation, with the facts
@@ -602,7 +607,8 @@ func PlanActivation(state SupervisionActivationState, signal ActivationSignal, n
 		if strings.TrimSpace(reason) == "" {
 			reason = fmt.Sprintf("supervision activation escalated after %s", signal.Event)
 		}
-		if entry, ok := EscalationOutboxEntry(record, incident, reason, inbox.EventIDs(), now); ok {
+		threadID, _ := SupervisionEscalationThread(record, state.SubmitterThreadID)
+		if entry, ok := EscalationOutboxEntry(record, threadID, incident, reason, inbox.EventIDs(), now); ok {
 			if _, added := AppendSupervisionOutbox(state.Outbox, entry); added {
 				plan.Outbox = append(plan.Outbox, entry)
 			}

@@ -10,6 +10,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/campaign"
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 // campaignCheckSchemaVersion versions the check document.
@@ -46,6 +47,16 @@ func campaignViabilityRequest(plan campaign.Plan, bundleBytes int64, bundleFiles
 			ExpiresAt:     task.Timing.ExpiresAt,
 			Outputs:       len(task.Outputs),
 		})
+	}
+	if plan.Supervision != nil {
+		// A supervised campaign asks for one thing none of its tasks asks for: a
+		// worker that hosts the overseer route and advertises the supervision
+		// capability. It travels with the request so that a campaign whose gates
+		// nobody could ever decide is refused here rather than accepted and held.
+		request.Supervision = &backlogadmin.ViabilitySupervision{
+			Route:              campaignProviderRoutes([]campaign.Route{plan.Supervision.Route})[0],
+			RequiredCapability: workerproto.CapabilityCampaignSupervision,
+		}
 	}
 	if len(request.Tasks) == 0 {
 		if only != "" {

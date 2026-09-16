@@ -85,6 +85,23 @@ func (c coordinatorSupervision) activationLifecycleSignal(
 			return signal, true, nil
 		}
 		switch assignment.State {
+		case domain.AssignmentClaimed:
+			// The overseer is still working and the coordinator's own decision
+			// rows are the only evidence that it is. Each decision it records
+			// renews the lease, which is why the lease is short and the deadline
+			// is not: a renewal extends how long the coordinator believes in this
+			// overseer, never how long the review may take.
+			decisions, err := c.activationDecisionCount(ctx, state.Record.RunID, activation.Epoch)
+			if err != nil {
+				return signal, false, err
+			}
+			if decisions <= activation.TurnsUsed {
+				return signal, false, nil
+			}
+			signal.Event = domain.ActivationEventDecisionRecorded
+			signal.ExecutionObserved = true
+			signal.Reason = fmt.Sprintf("the activation recorded %d decision(s)", decisions)
+			return signal, true, nil
 		case domain.AssignmentCompleted:
 			// The turn is over and the slot is released, both acknowledged by
 			// the assignment reaching a terminal state. What it decided is the
