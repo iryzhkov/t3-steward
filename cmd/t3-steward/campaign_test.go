@@ -477,6 +477,32 @@ func TestCampaignHelpTopicsComeFromTheProjection(t *testing.T) {
 	}
 }
 
+// The authoring topic carries the discipline the usage block only names: a
+// campaign's declared tasks are its only fan-out, each runs as its own
+// Steward-scheduled T3 session, and one task is a choice rather than a
+// fallback. Losing any of those makes the help agree with the behaviour it is
+// meant to prevent.
+func TestCampaignAuthoringTopicStatesTheDiscipline(t *testing.T) {
+	var out bytes.Buffer
+	cli := campaignTestCLI(t, &out)
+	if err := cli.run(context.Background(), []string{"help", "authoring"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Multi-task work is authored as a static version 2 DAG",
+		"run in its own T3 session",
+		"must not use native subagents as a substitute for declared",
+		"Hidden native delegation\nis not separately scheduled work",
+		"Declare the work a task would fan out as tasks, joined with needs and\ninputs_from",
+		"One task is a legitimate authoring choice, not a fallback",
+		"docs/examples/campaign/three-node   the recommended multi-task template",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("the authoring topic no longer covers %q", want)
+		}
+	}
+}
+
 // The usage text is part of the product and enters an agent's context, so it is
 // pinned. Changing it is fine; changing it without reading the help contract in
 // docs/plans/campaign-manager.md is what this test is here to prevent. Update
@@ -496,7 +522,15 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// topic list gains "commits". The usage was already 99 of its 100 permitted
 	// lines, so the field's contract is in the "commits" help topic and not one
 	// word of it is here.
-	const wantDigest = "e394af8c5175fee1dae44f61cc349e99a41f8223ebbe36c5362a7f2d27618ce1"
+	//
+	// Updated again when the authoring discipline became part of the product: a
+	// campaign's declared tasks are its only fan-out, each one is a separate
+	// Steward-scheduled T3 session, and a task prompt may not use native
+	// subagents in their place. The block states the rule and names the new
+	// "authoring" topic, which carries the rest. The three lines it costs were
+	// paid for by tightening the --allow-unverified and class paragraphs and by
+	// putting both worked examples on one line, so the cap is unchanged.
+	const wantDigest = "0f86986a48d8a305ebdf2274830ea46a8f768e33ddbfd6ebd6a77180b8d83ec4"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)
@@ -529,6 +563,11 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 		"[--notify-thread <current|id>]",
 		"static-versus-dynamic, plan, graph, commits, rerun, notify.",
 		"commits (a Git commit a successor needs)",
+		"Multi-task work is a static DAG",
+		"is its own Steward-scheduled T3 session",
+		"must not use native",
+		"subagents in place of declared tasks",
+		"Help topics: authoring, readiness,",
 	} {
 		if !strings.Contains(campaignUsage, want) {
 			t.Fatalf("usage no longer covers %q", want)

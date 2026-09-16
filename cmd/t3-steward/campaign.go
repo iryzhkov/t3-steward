@@ -51,8 +51,10 @@ artifacts from a direct dependency, read-only), outputs (the files a task
 promises), commits (a Git commit a successor needs), verify (must exit zero).
 plan is static and explain is dynamic; check is dynamic too, before there is a
 run. plan reports waves, edges and the digest submit will send, and can never
-promise a worker, a route or quota. Help topics: readiness, dag-semantics,
-static-versus-dynamic, plan, graph, commits, rerun, notify.
+promise a worker, a route or quota. Multi-task work is a static DAG: each task
+is its own Steward-scheduled T3 session, and a task prompt must not use native
+subagents in place of declared tasks. Help topics: authoring, readiness,
+dag-semantics, static-versus-dynamic, plan, graph, commits, rerun, notify.
 
 check reports one outcome per task and per worker:
   ready             at least one worker can take every task now
@@ -66,15 +68,14 @@ a closed timing window. Everything else is temporary and submit proceeds,
 including catalog-digest-mismatch, which means re-enrolling a worker. Codes and
 recovery commands: t3-steward campaign help readiness.
 
-submit runs check first. --allow-unverified skips only the client-side check;
-the coordinator still refuses a permanently impossible campaign at acceptance
-and records the principal and --reason. Agents should not use it.
-accepted_waiting is a success: the run exists and stays queued, so an agent may
-end its turn, or pass --notify-thread to be woken when the run settles.
+submit runs check first. --allow-unverified skips only the client-side check; the
+coordinator still refuses an impossible campaign and records the principal and
+--reason. Agents should not use it. accepted_waiting is a success: the run exists
+and stays queued, so an agent may end its turn, or pass --notify-thread to be
+woken when the run settles.
 
-class: surplus is the default and runs on spare provider quota, required is
-admitted ahead of it; placement.hosts and placement.requires narrow which
-workers are eligible and never choose one.
+class: surplus is the default and runs on spare quota, required is admitted first;
+placement.hosts and placement.requires narrow eligible workers, never choose one.
 Retrying is safe: the same --idempotency-key with the same directory returns the
 same run, the archive being packed deterministically; the same key with
 different content is refused. rerun behaves the same way. check needs no key.
@@ -104,8 +105,7 @@ credential is a secretref:f03-admin/<client> reference resolved at use.
 environment.project must exist in backlog_v2.projects with a repository, a
 default ref, a setup profile and credential references the worker can present.
 
-Worked examples: docs/examples/campaign/single-lead and
-docs/examples/campaign/three-node
+Worked examples: docs/examples/campaign/single-lead, docs/examples/campaign/three-node
 `
 
 // campaignValidationSchemaVersion versions the validate document. The agent

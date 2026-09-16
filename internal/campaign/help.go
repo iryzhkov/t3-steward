@@ -36,8 +36,67 @@ Output:
   --dot      Graphviz digraph; nodes are manifest task names
 
 Worked examples:
+  docs/examples/campaign/three-node   two analysis tasks joined by a third; the
+                                      recommended multi-task template
   docs/examples/campaign/single-lead  one lead task: commit, test receipt, handoff
-  docs/examples/campaign/three-node   two analysis tasks joined by a third
+
+How many tasks a campaign should have, and why a task prompt may not replace a
+declared task with a native subagent: t3-steward campaign help authoring.
+`
+
+// AuthoringHelp is the topic an author reads before writing a manifest: how
+// many tasks a campaign should have, and why a task prompt may not replace a
+// declared task with a native subagent. It is a help topic rather than part of
+// the usage block because the usage has to stay short enough to sit in an
+// agent's context, and this is read once, while authoring.
+const AuthoringHelp = `How many tasks a campaign should have, and what a task may not delegate.
+
+Multi-task work is authored as a static version 2 DAG. Every task declared in
+workflow.yaml becomes a task the Steward schedules: it is admitted against quota
+on its own, placed on a worker on its own, and run in its own T3 session with
+its own prompt, verification and retained artifacts. Dependencies are declared
+with needs, and the files that cross them with outputs and inputs_from. The
+graph is fixed at submission. The Steward never invents a task, and neither may
+a running one.
+
+A task prompt must not use native subagents as a substitute for declared
+campaign tasks. Most harnesses can spawn helper agents inside one session, and
+work delegated that way is invisible here: no task record, no dependency edge,
+no quota admission of its own, no placement decision, no verification, no
+artifact, no retry boundary and no separate T3 session. Hidden native delegation
+is not separately scheduled work, however the session reports it, and a campaign
+whose lead fans work out that way is a one-task campaign that looks like
+several. Declare the work a task would fan out as tasks, joined with needs and
+inputs_from.
+
+Say this in the prompt as well as meaning it in the schema. The manifest
+declares the discipline, the prompt is where the agent is actually told, and
+nothing in the coordinator can prevent a harness tool from spawning a helper.
+Where a runtime supports disabling that capability, disable it.
+
+What a task does inside its own session is unaffected: reading, searching,
+building, running tests and calling tools are how a task does its own job.
+
+One task is a legitimate authoring choice, not a fallback. Author a single-task
+campaign when:
+
+  - the work is one unit of judgement, and splitting it would leave one half
+    waiting on context no artifact can carry;
+  - the split would only manufacture a handoff the next task has to reconstruct
+    the reasoning from;
+  - one commit, one verification run and one handoff are the whole result;
+  - every part would mutate the same repository and there is no isolated
+    worktree or branch per task and no explicit integration task.
+
+Size alone is not a reason. Work with separable parts belongs in a DAG, where
+the parts fail, retry and are explained independently.
+
+Templates:
+  docs/examples/campaign/three-node   the recommended multi-task template
+  docs/examples/campaign/single-lead  one task that owns a repository change
+  docs/examples/campaign/README.md    how to choose between them
+
+See also: t3-steward campaign help dag-semantics.
 `
 
 // GraphHelp is the long help of the graph command, which reads a submitted run
@@ -117,6 +176,11 @@ A useful shape is: each task emits a small, named, verified artifact, and the
 task that needs it declares it through inputs_from. Keep repository mutation in
 one task unless separate tasks own isolated worktrees or branches and an
 explicit integration task joins them.
+
+These four fields are the only way work is fanned out. A task that spawns native
+subagents instead of declaring tasks produces no node, no edge, no artifact and
+no separate T3 session, so nothing above applies to what it delegated. See
+"t3-steward campaign help authoring".
 `
 
 // CommitsHelp is the long help of the commits field. It lives here because the
@@ -371,6 +435,7 @@ type HelpTopic struct {
 // HelpTopics returns the campaign plan and graph help blocks in a stable order.
 func HelpTopics() []HelpTopic {
 	return []HelpTopic{
+		{Name: "authoring", Body: AuthoringHelp},
 		{Name: "plan", Body: PlanHelp},
 		{Name: "graph", Body: GraphHelp},
 		{Name: "dag-semantics", Body: DAGSemanticsHelp},

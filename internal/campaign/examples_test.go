@@ -127,6 +127,58 @@ func TestExamplesMarkOperatorConfiguration(t *testing.T) {
 	}
 }
 
+// The examples are where an author reads the authoring discipline, so the
+// discipline has to be in them. A prompt that stops saying it is a prompt that
+// invites the fan-out the campaign graph exists to make visible.
+func TestExamplesStateTheSubagentDiscipline(t *testing.T) {
+	prompts := map[string][]string{
+		"single-lead": {"prompts/implement.md"},
+		"three-node":  {"prompts/interfaces.md", "prompts/tests.md", "prompts/join.md"},
+	}
+	for name, files := range prompts {
+		for _, file := range append(files, "workflow.yaml") {
+			path := filepath.Join(exampleRoot(name), filepath.FromSlash(file))
+			content, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			if !strings.Contains(string(content), "native subagent") {
+				t.Fatalf("%s no longer says that native subagents do not replace declared tasks", path)
+			}
+		}
+	}
+	// The three-node example is the recommended multi-task template, and the
+	// single-lead example says when one task is the right answer instead.
+	threeNode, err := os.ReadFile(filepath.Join(exampleRoot("three-node"), "workflow.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(threeNode), "RECOMMENDED TEMPLATE FOR MULTI-TASK WORK") {
+		t.Fatal("the three-node example no longer presents itself as the recommended multi-task template")
+	}
+	singleLead, err := os.ReadFile(filepath.Join(exampleRoot("single-lead"), "workflow.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(singleLead), "legitimate authoring choice") {
+		t.Fatal("the single-lead example no longer says when one task is the right choice")
+	}
+	readme, err := os.ReadFile(filepath.Join(exampleRoot(""), "README.md"))
+	if err != nil {
+		t.Fatalf("the campaign examples have no README: %v", err)
+	}
+	for _, want := range []string{
+		"recommended multi-task template",
+		"must not use native subagents as a substitute for declared campaign tasks",
+		"Hidden native delegation is not separately scheduled work",
+		"When one task is the right answer",
+	} {
+		if !strings.Contains(string(readme), want) {
+			t.Fatalf("the examples README no longer covers %q", want)
+		}
+	}
+}
+
 func TestExamplesRenderInEveryFormat(t *testing.T) {
 	for _, name := range []string{"single-lead", "three-node"} {
 		t.Run(name, func(t *testing.T) {

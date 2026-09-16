@@ -1,5 +1,15 @@
 # Three-node campaign: two independent analysis tasks and one join.
 #
+# THIS IS THE RECOMMENDED TEMPLATE FOR MULTI-TASK WORK.
+# Copy this directory when work is more than one unit of judgement. Every task
+# declared below runs as its own Steward-scheduled T3 session, with its own
+# prompt, quota admission, placement, verification and artifacts, and the graph
+# is static: it is fixed at submission and no task may extend it. A task prompt
+# must not use native subagents as a substitute for a declared task here, since
+# hidden native delegation is not separately scheduled work. Declare the work a
+# task would fan out as tasks, joined with needs and inputs_from, as join does
+# below. See ../README.md and "t3-steward campaign help authoring".
+#
 # The two analysis tasks read the repository and write a bounded artifact each.
 # Neither mutates anything, so they are safe to run at the same time on
 # different workers. The join task declares both artifacts through inputs_from,
