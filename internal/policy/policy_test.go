@@ -70,11 +70,47 @@ func TestLadder(t *testing.T) {
 	if st.Phase != domain.PhaseStopped || st.DrainDeadline != nil || st.Healthy {
 		t.Fatalf("state after stop = %+v", st)
 	}
-	// Usage decreasing without a reset does not rearm.
-	d = e.Evaluate(snap(40, base.Add(40*time.Minute), &r, "6"), st, base.Add(40*time.Minute))
+	// Usage decreasing without a reset does not rearm while it stays within
+	// ExtensionMargin of the warn threshold.
+	d = e.Evaluate(snap(82, base.Add(40*time.Minute), &r, "6"), st, base.Add(40*time.Minute))
 	only(t, d)
 	if d.State.Phase != domain.PhaseStopped {
-		t.Fatalf("decrease without reset rearmed: %s", d.State.Phase)
+		t.Fatalf("small decrease without reset rearmed: %s", d.State.Phase)
+	}
+}
+
+func TestQuotaExtensionRearms(t *testing.T) {
+	e := New(DefaultThresholds())
+	r := resetAt
+	d := e.Evaluate(snap(97, base, &r, "1"), domain.BucketState{}, base)
+	only(t, d, domain.ActionStop)
+	st := d.State
+	// The provider raised the limit: same reset time, usage drops well below
+	// the warn threshold. The bucket rearms in the same window.
+	d = e.Evaluate(snap(66, base.Add(time.Minute), &r, "2"), st, base.Add(time.Minute))
+	only(t, d, domain.ActionRearm)
+	st = d.State
+	if st.Phase != domain.PhaseNormal || !st.Healthy || st.RecoveredAt == nil || st.Epoch != domain.EpochFor(&r) {
+		t.Fatalf("state after extension = %+v", st)
+	}
+	if len(st.Recent) != 1 {
+		t.Fatalf("readings from before the extension kept: %+v", st.Recent)
+	}
+	// The ladder fires again once usage climbs back.
+	d = e.Evaluate(snap(90, base.Add(20*time.Minute), &r, "3"), st, base.Add(20*time.Minute))
+	only(t, d, domain.ActionDrain)
+}
+
+func TestLowReadingAfterProjectionStopDoesNotRearm(t *testing.T) {
+	// A bucket stopped below the warn threshold on projected exhaustion
+	// stays stopped while usage keeps climbing: nothing was extended.
+	e := New(DefaultThresholds())
+	r := resetAt
+	st := domain.BucketState{Key: key, Phase: domain.PhaseStopped, UsedPercent: 63, ResetsAt: &r, ObservedAt: base}
+	d := e.Evaluate(snap(64, base.Add(time.Minute), &r, "2"), st, base.Add(time.Minute))
+	only(t, d)
+	if d.State.Phase != domain.PhaseStopped {
+		t.Fatalf("rising usage rearmed: %s", d.State.Phase)
 	}
 }
 
@@ -172,7 +208,9 @@ func TestResetTimeJitterIsNotAReset(t *testing.T) {
 	d := e.Evaluate(snap(96, base, &r, "1"), domain.BucketState{}, base)
 	st := d.State
 	jitter := resetAt.Add(-time.Second)
-	d = e.Evaluate(snap(30, base.Add(time.Minute), &jitter, "2"), st, base.Add(time.Minute))
+	// 82% is within ExtensionMargin of the warn threshold, so only the reset
+	// time could rearm here, and jitter is not a reset.
+	d = e.Evaluate(snap(82, base.Add(time.Minute), &jitter, "2"), st, base.Add(time.Minute))
 	only(t, d)
 	if d.State.Phase != domain.PhaseStopped {
 		t.Fatalf("jitter rearmed: %s", d.State.Phase)

@@ -95,6 +95,12 @@ func (t Thresholds) Validate() error {
 	return nil
 }
 
+// ExtensionMargin is how many percentage points below the warn threshold a
+// reading must land, after dropping since the previous reading, for the
+// engine to conclude that the provider extended the quota mid-window and
+// rearm the bucket without waiting for the reset time.
+const ExtensionMargin = 5
+
 // Engine evaluates snapshots against bucket states.
 type Engine struct {
 	t Thresholds
@@ -433,6 +439,13 @@ func (e *Engine) detectReset(snap domain.QuotaSnapshot, prev domain.BucketState)
 		// alerts are over, but the bucket is not healthy. Treat it as a fresh
 		// epoch so the ladder can fire again.
 		return true, fmt.Sprintf("new window (reset %s) starts at %.0f%%", domain.EpochFor(snap.ResetsAt), snap.UsedPercent)
+	case prev.Phase != domain.PhaseNormal && snap.UsedPercent < prev.UsedPercent && snap.UsedPercent < e.t.WarnPercent-ExtensionMargin:
+		// Usage never falls within a window unless the provider raised the
+		// limit. A drop that lands well below the warn threshold means the
+		// quota was extended; a drop that stays near the threshold, or a
+		// reading that is merely low after a projection-based stop, does not.
+		return true, fmt.Sprintf("provider extended the quota: usage fell from %.0f%% to %.0f%%, more than %d points below the warn threshold of %.0f%%",
+			prev.UsedPercent, snap.UsedPercent, ExtensionMargin, e.t.WarnPercent)
 	}
 	return false, ""
 }

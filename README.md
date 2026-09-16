@@ -355,6 +355,12 @@ normal -> warned -> draining -> stopped -> (reset confirmed) -> normal
   *and* a fresh snapshot shows usage below `rearm_percent`. Buckets without
   a reset time rearm after two consecutive low observations. The wall clock
   alone never rearms anything; usage merely decreasing does not either.
+- **Quota extension**: usage never falls within a window unless the
+  provider raised the limit. A warned, draining or stopped bucket rearms in
+  the same window when a fresh reading is lower than the previous one and
+  more than 5 points below the warn threshold. A drop that stays near the
+  threshold, or a low reading that is still climbing after a
+  projection-based stop, does not.
 
 For Claude threads the warn and drain messages are steered into the running
 turn. For Codex threads T3 forwards them as a new turn start; in testing the
