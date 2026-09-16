@@ -76,15 +76,24 @@ func (c coordinatorSupervision) advanceRun(
 	run domain.WorkflowRun,
 	workers []domain.WorkerSnapshot,
 	now time.Time,
-) error {
+) (err error) {
 	advanced, err := c.store.AdvanceSupervisionGates(ctx, run.ID, now)
 	if err != nil {
 		return err
 	}
+	routeAvailable := supervisionRouteAvailable(run.Supervision.Config.Route, workers)
+	// Route availability is a condition of every boundary while a gate awaits
+	// review, not only of the boundary that made one ready: the worker that
+	// would decide an open gate can be decommissioned at any later tick, and
+	// the run would otherwise wait forever with nobody told.
+	defer func() {
+		if sweepErr := c.escalateRouteBlock(ctx, run, routeAvailable, now); sweepErr != nil && err == nil {
+			err = sweepErr
+		}
+	}()
 	if len(advanced) == 0 {
 		return nil
 	}
-	routeAvailable := supervisionRouteAvailable(run.Supervision.Config.Route, workers)
 	for _, gate := range advanced {
 		incidentID := supervisionGateIncidentID(run.ID, gate.Gate.Definition.ID, gate.Evidence.ID)
 		eventID := "supervision-event:" + incidentID
@@ -126,24 +135,74 @@ func (c coordinatorSupervision) advanceRun(
 	return nil
 }
 
+// escalateRouteBlock raises one escalation for every open gate review this run
+// cannot obtain, once the block has persisted past the configured threshold.
+//
+// The threshold is idle_escalation_after: a review nobody can perform is
+// exactly the idle the author configured it for. A run that configured none
+// escalates on the boundary that observes the block.
+func (c coordinatorSupervision) escalateRouteBlock(
+	ctx context.Context,
+	run domain.WorkflowRun,
+	routeAvailable bool,
+	now time.Time,
+) error {
+	if routeAvailable || run.Supervision == nil {
+		return nil
+	}
+	projection, err := c.store.SupervisionProjection(ctx, run.ID)
+	if err != nil {
+		return err
+	}
+	snapshot := projection.Snapshot
+	snapshot.RouteAvailable = routeAvailable
+	threshold := run.Supervision.Config.IdleEscalationAfter
+	for _, incident := range backlog.RouteBlockEscalations(snapshot, projection.Incidents, threshold, now) {
+		reason := fmt.Sprintf(
+			"the supervisor route cannot be admitted, so gate %s has waited for a review since %s and no activation can decide it",
+			incident.GateID, incident.OpenedAt.UTC().Format(time.RFC3339))
+		if err := c.escalate(ctx, *run.Supervision, incident.ID, incident.SourceEventID, reason, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (c coordinatorSupervision) escalate(
 	ctx context.Context,
 	record domain.SupervisionRecord,
 	incidentID, eventID, reason string,
 	now time.Time,
 ) error {
-	_, err := c.store.ResolveReviewIncident(ctx, sqlite.IncidentResolutionRequest{
+	// The destination is resolved before the incident is escalated, so that an
+	// escalation nobody will receive says so in the reason it is recorded with.
+	// That reason is what explain and status show.
+	submitterThread, err := c.store.SubmitterNotifyThread(ctx, record.RunID)
+	if err != nil {
+		return err
+	}
+	threadID, undeliverable := backlog.SupervisionEscalationThread(record, submitterThread)
+	recorded := reason
+	if undeliverable != "" {
+		recorded = reason + "; " + undeliverable
+	}
+	_, err = c.store.ResolveReviewIncident(ctx, sqlite.IncidentResolutionRequest{
 		RunID: record.RunID, IncidentID: incidentID, RequestID: "escalate:" + incidentID,
 		Actor: domain.Actor{Kind: domain.ActorOperator, Principal: coordinatorSupervisionPrincipal},
-		Event: domain.IncidentEventEscalate, Reason: reason, ResolvedAt: now,
+		Event: domain.IncidentEventEscalate, Reason: recorded, ResolvedAt: now,
 	})
 	if err != nil && !errors.Is(err, sqlite.ErrSupervisionRequestConflict) {
 		return err
 	}
-	entry, wanted := backlog.EscalationOutboxEntry(record, incidentID, reason, []string{eventID}, now)
+	entry, wanted := backlog.EscalationOutboxEntry(record, threadID, incidentID, recorded, []string{eventID}, now)
 	if !wanted {
-		// The run configured no notify thread. The escalation stays visible in
-		// status and nothing is sent; discovering a recipient is forbidden.
+		// Either the run asked for no notification at all, or it asked for one
+		// and named no destination. Both leave the escalation visible on its
+		// incident and send nothing; discovering a recipient is forbidden.
+		if undeliverable != "" {
+			c.logger.Warn("supervision escalation is undeliverable",
+				"run", record.RunID, "incident", incidentID, "reason", undeliverable)
+		}
 		return nil
 	}
 	_, err = c.store.AppendSupervisionOutbox(ctx, record.RunID, []backlog.SupervisionOutboxEntry{entry})

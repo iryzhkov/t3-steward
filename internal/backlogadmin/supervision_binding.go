@@ -96,9 +96,20 @@ func (c CoordinatorSupervisionStore) CommitSupervision(ctx context.Context, comm
 	case SupervisionDecide:
 		decision, err = c.decide(ctx, commit, request)
 	case SupervisionHold:
+		// A branch hold's closure was resolved against one graph revision in an
+		// earlier transaction. Naming it here is what makes the claim in the
+		// comment on SupervisionBranch true: an amendment that landed in between
+		// refuses the placement instead of committing a closure computed against
+		// a graph that has moved. A run-wide hold resolves no closure and carries
+		// revision zero, which does not fence.
+		expectedGraphRevision := int64(0)
+		if commit.Hold != nil {
+			expectedGraphRevision = commit.Hold.GraphRevision
+		}
 		decision, err = c.Store.PlaceHold(ctx, sqlite.HoldRequest{
 			RunID: commit.RunID, HoldID: commit.RequestKey, RequestID: commit.RequestKey,
 			Actor: commit.Actor, Scope: request.Hold.Scope, Reason: commit.Reason, PlacedAt: commit.Now,
+			ExpectedGraphRevision: expectedGraphRevision,
 		})
 	case SupervisionRelease:
 		decision, err = c.Store.ReleaseHold(ctx, sqlite.HoldReleaseRequest{

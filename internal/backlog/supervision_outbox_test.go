@@ -10,7 +10,7 @@ import (
 func TestEscalationOutboxEntryUsesConfiguredNotifyThread(t *testing.T) {
 	now := supervisionTestTime()
 	record := supervisionTestRecord()
-	entry, ok := EscalationOutboxEntry(record, "incident-1", "gate review timed out", []string{"event-1"}, now)
+	entry, ok := EscalationOutboxEntry(record, "thread-notify", "incident-1", "gate review timed out", []string{"event-1"}, now)
 	if !ok {
 		t.Fatal("a run with a configured notify thread must produce an escalation")
 	}
@@ -23,27 +23,72 @@ func TestEscalationOutboxEntryUsesConfiguredNotifyThread(t *testing.T) {
 	if entry.Delivery != SupervisionDeliveryPending {
 		t.Fatalf("delivery = %q, want pending", entry.Delivery)
 	}
-	again, _ := EscalationOutboxEntry(record, "incident-1", "other wording", nil, now.Add(time.Hour))
+	again, _ := EscalationOutboxEntry(record, "thread-notify", "incident-1", "other wording", nil, now.Add(time.Hour))
 	if again.ID != entry.ID {
 		t.Fatal("the escalation identity must be derived from the run and incident, not from the moment")
 	}
 
 	unconfigured := record
 	unconfigured.Config.Escalation = domain.SupervisionEscalation{}
-	if _, ok := EscalationOutboxEntry(unconfigured, "incident-1", "reason", nil, now); ok {
+	if _, ok := EscalationOutboxEntry(unconfigured, "", "incident-1", "reason", nil, now); ok {
 		t.Fatal("an unconfigured destination sends nothing; it never discovers a recipient")
+	}
+}
+
+// A manifest that asks for a thread notification without naming a thread is the
+// configuration the shipped example uses. It must bind to the thread the
+// submitter asked to be woken, and when there is none it must say the
+// escalation is undeliverable rather than drop it.
+func TestEscalationBindsTheSubmitterThreadOrReportsItUndeliverable(t *testing.T) {
+	now := supervisionTestTime()
+	record := supervisionTestRecord()
+	record.Config.Escalation = domain.SupervisionEscalation{NotifyThread: true}
+
+	thread, undeliverable := SupervisionEscalationThread(record, "thread-submitter")
+	if thread != "thread-submitter" || undeliverable != "" {
+		t.Fatalf("thread = %q undeliverable = %q, want the submitter's notify thread", thread, undeliverable)
+	}
+	entry, ok := EscalationOutboxEntry(record, thread, "incident-1", "the overseer route is gone", nil, now)
+	if !ok || entry.ThreadID != "thread-submitter" {
+		t.Fatalf("entry = %+v ok = %v, want an escalation addressed to the submitter", entry, ok)
+	}
+	if err := entry.Validate(); err != nil {
+		t.Fatalf("validate entry: %v", err)
+	}
+
+	// No manifest thread and no submitter thread: undeliverable, with a reason
+	// an operator can read, and nothing sent.
+	thread, undeliverable = SupervisionEscalationThread(record, "")
+	if thread != "" || undeliverable != SupervisionUndeliverableEscalation {
+		t.Fatalf("thread = %q undeliverable = %q, want the undeliverable explanation", thread, undeliverable)
+	}
+	if _, ok := EscalationOutboxEntry(record, thread, "incident-1", "reason", nil, now); ok {
+		t.Fatal("an escalation with no destination must send nothing")
+	}
+
+	// The manifest's own thread still wins over the submitter's.
+	declared := supervisionTestRecord()
+	if thread, _ := SupervisionEscalationThread(declared, "thread-submitter"); thread != "thread-notify" {
+		t.Fatalf("thread = %q, want the thread the manifest declared", thread)
+	}
+	// A run that asked for no notification at all is not undeliverable: it asked
+	// for nothing.
+	silent := supervisionTestRecord()
+	silent.Config.Escalation = domain.SupervisionEscalation{}
+	if thread, undeliverable := SupervisionEscalationThread(silent, "thread-submitter"); thread != "" || undeliverable != "" {
+		t.Fatalf("thread = %q undeliverable = %q, want silence", thread, undeliverable)
 	}
 }
 
 func TestAppendSupervisionOutboxDeduplicatesOnIncident(t *testing.T) {
 	now := supervisionTestTime()
 	record := supervisionTestRecord()
-	first, _ := EscalationOutboxEntry(record, "incident-1", "first", nil, now)
+	first, _ := EscalationOutboxEntry(record, "thread-notify", "incident-1", "first", nil, now)
 	entries, added := AppendSupervisionOutbox(nil, first)
 	if !added || len(entries) != 1 {
 		t.Fatalf("entries = %+v added = %v, want the first escalation stored", entries, added)
 	}
-	repeat, _ := EscalationOutboxEntry(record, "incident-1", "again", nil, now.Add(time.Minute))
+	repeat, _ := EscalationOutboxEntry(record, "thread-notify", "incident-1", "again", nil, now.Add(time.Minute))
 	entries, added = AppendSupervisionOutbox(entries, repeat)
 	if added || len(entries) != 1 {
 		t.Fatalf("entries = %+v added = %v, want no second notification for one incident", entries, added)
@@ -63,7 +108,7 @@ func TestAppendSupervisionOutboxDeduplicatesOnIncident(t *testing.T) {
 		t.Fatal("a delivered escalation must not be re-sent for the same incident")
 	}
 
-	other, _ := EscalationOutboxEntry(record, "incident-2", "different condition", nil, now)
+	other, _ := EscalationOutboxEntry(record, "thread-notify", "incident-2", "different condition", nil, now)
 	if entries, added = AppendSupervisionOutbox(entries, other); !added || len(entries) != 2 {
 		t.Fatalf("entries = %+v added = %v, want a new incident to notify", entries, added)
 	}
@@ -71,7 +116,7 @@ func TestAppendSupervisionOutboxDeduplicatesOnIncident(t *testing.T) {
 
 func TestSupervisionDeliveryTransitionsAreIdempotent(t *testing.T) {
 	now := supervisionTestTime()
-	entry, _ := EscalationOutboxEntry(supervisionTestRecord(), "incident-1", "reason", nil, now)
+	entry, _ := EscalationOutboxEntry(supervisionTestRecord(), "thread-notify", "incident-1", "reason", nil, now)
 	sending, changed, err := TransitionSupervisionDelivery(entry, SupervisionDeliverySending, now)
 	if err != nil || !changed || sending.Attempts != 1 {
 		t.Fatalf("sending = %+v changed = %v err = %v", sending, changed, err)
@@ -97,7 +142,7 @@ func TestSupervisionDeliveryTransitionsAreIdempotent(t *testing.T) {
 
 func TestSupervisionDeliveryRecoveryRequiresPositiveObservation(t *testing.T) {
 	now := supervisionTestTime()
-	entry, _ := EscalationOutboxEntry(supervisionTestRecord(), "incident-1", "reason", nil, now)
+	entry, _ := EscalationOutboxEntry(supervisionTestRecord(), "thread-notify", "incident-1", "reason", nil, now)
 	sending, _, err := TransitionSupervisionDelivery(entry, SupervisionDeliverySending, now)
 	if err != nil {
 		t.Fatalf("send: %v", err)

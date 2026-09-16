@@ -210,6 +210,12 @@ type localResponse struct {
 	// class by matching prose. An absent class means the coordinator answered
 	// and refused the request.
 	ErrorClass TransportClass `json:"errorClass,omitempty"`
+	// SupervisionClass is the supervision refusal class of a supervision
+	// answer. It travels beside ErrorClass because the two answer different
+	// questions: the transport class says how far the request got, and this
+	// says why supervision refused it. The error sentinels themselves do not
+	// survive serialization, so the class is what a remote client branches on.
+	SupervisionClass SupervisionErrorClass `json:"supervisionClass,omitempty"`
 }
 
 // LocalServer serves one bounded request per authenticated Unix connection.
@@ -691,7 +697,7 @@ func (c LocalClient) validate(operation string, response localResponse) error {
 	if class == "" {
 		class = ClassRejected
 	}
-	return c.fail(class, operation, errors.New(response.Error))
+	return classifySupervision(class, response.SupervisionClass, operation, c.CoordinatorID, errors.New(response.Error))
 }
 
 func watchConnection(ctx context.Context, conn io.Closer) func() {

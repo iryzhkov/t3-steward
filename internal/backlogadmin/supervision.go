@@ -342,6 +342,12 @@ const (
 // whole point of the guard sentinels: a race must never read as a permission
 // problem, and a permission problem must never read as something to retry.
 func ClassifySupervisionError(err error) SupervisionErrorClass {
+	// A refusal that crossed a carrier has lost its sentinels, and carries the
+	// class the coordinator decided on the transport error instead.
+	var transportErr *TransportError
+	if err != nil && errors.As(err, &transportErr) && transportErr.SupervisionClass != "" {
+		return transportErr.SupervisionClass
+	}
 	switch {
 	case err == nil:
 		return ""
@@ -909,16 +915,19 @@ func (d adminDispatch) supervise(ctx context.Context, principal Principal, reque
 		request.ScheduleDefinition != nil || request.UnknownRecovery != nil ||
 		request.QuarantineRelease != nil {
 		response.Error = "malformed supervision request"
+		response.SupervisionClass = SupervisionErrorMalformed
 		return
 	}
 	decision := request.Supervision.Operation.Mutating()
 	if decision != (request.Operation == localOperationSupervisionDecision) {
 		response.Error = "supervision operation word does not match the request"
+		response.SupervisionClass = SupervisionErrorMalformed
 		return
 	}
 	value, err := handler.Supervise(ctx, principal, *request.Supervision)
 	if err != nil {
 		response.Error = err.Error()
+		response.SupervisionClass = ClassifySupervisionError(err)
 		return
 	}
 	response.SupervisionResponse = &value
@@ -1074,12 +1083,28 @@ func (a SupervisorAuthorizer) Authorize(ctx context.Context, principal Principal
 // inherit.
 func (a SupervisorAuthorizer) authorizeRun(ctx context.Context, scope SupervisorScope, action Action) error {
 	runID := action.WorkflowRunID
-	if action.Kind == QueryArtifact && runID == "" {
+	// An artifact carries its own run, and that run is the one that decides
+	// access. Resolving it only when the request named no run would let a
+	// supervisor name its own run and any other run's artifact in the same
+	// request, because the handler reads the artifact by ID and ignores the run
+	// entirely. So the artifact's owning run is checked against the scope
+	// whenever an artifact is named, in addition to the named run.
+	if action.ArtifactID != "" {
 		resolved, err := a.Scope.ArtifactRun(ctx, action.ArtifactID)
 		if err != nil {
 			return fmt.Errorf("%w: %s", ErrSupervisionUnavailable, err)
 		}
-		runID = resolved
+		if resolved == "" {
+			return fmt.Errorf("%w: artifact %s belongs to no run this capability can name",
+				domain.ErrSupervisionUnauthorizedActor, action.ArtifactID)
+		}
+		if resolved != scope.RunID {
+			return fmt.Errorf("%w: this capability is bound to run %s and artifact %s belongs to %s",
+				domain.ErrSupervisionUnauthorizedActor, scope.RunID, action.ArtifactID, resolved)
+		}
+		if runID == "" {
+			runID = resolved
+		}
 	}
 	if runID == "" {
 		return fmt.Errorf("%w: a supervisor acts on one named run, and %q names none",

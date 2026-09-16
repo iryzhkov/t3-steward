@@ -95,21 +95,52 @@ func (e SupervisionOutboxEntry) Validate() error {
 	return nil
 }
 
-// EscalationOutboxEntry builds the escalation delivery intent for one incident.
+// SupervisionUndeliverableEscalation is the explanation recorded on an incident
+// whose escalation asked for a notification that has no destination. It is
+// phrased for the operator who reads it in explain or status.
+const SupervisionUndeliverableEscalation = "escalation is undeliverable: the manifest asks for a thread notification, " +
+	"the supervision block names no thread_id and this run was submitted without --notify-thread"
+
+// SupervisionEscalationThread resolves where an escalation for this run is
+// delivered, and explains it when there is nowhere to deliver it.
 //
-// It reports false when the run configured no notify thread. That is not an
-// error: an unconfigured destination means the escalation is recorded in the
-// supervision record and visible in status, and nothing is sent. The plan
-// forbids discovering a recipient instead.
+// The manifest's own escalation.thread_id wins, because it is the destination
+// the campaign author chose. A manifest that asks for a notification without
+// naming a thread binds to the thread the submitter asked to be woken, which is
+// the one recipient the coordinator already knows and is allowed to use; the
+// plan forbids discovering any other. When neither exists the escalation is
+// undeliverable, and the returned reason says so rather than letting it be
+// dropped silently.
+func SupervisionEscalationThread(record domain.SupervisionRecord, submitterThreadID string) (string, string) {
+	escalation := record.Config.Escalation
+	if !escalation.NotifyThread {
+		return "", ""
+	}
+	if thread := strings.TrimSpace(escalation.ThreadID); thread != "" {
+		return thread, ""
+	}
+	if thread := strings.TrimSpace(submitterThreadID); thread != "" {
+		return thread, ""
+	}
+	return "", SupervisionUndeliverableEscalation
+}
+
+// EscalationOutboxEntry builds the escalation delivery intent for one incident,
+// addressed to the thread SupervisionEscalationThread resolved.
+//
+// It reports false when there is no destination. That is not an error: an
+// undeliverable escalation is recorded on its incident and visible in status,
+// and nothing is sent. The plan forbids discovering a recipient instead.
 func EscalationOutboxEntry(
 	record domain.SupervisionRecord,
+	threadID string,
 	incidentID, reason string,
 	eventIDs []string,
 	now time.Time,
 ) (SupervisionOutboxEntry, bool) {
 	incidentID = strings.TrimSpace(incidentID)
-	escalation := record.Config.Escalation
-	if incidentID == "" || !escalation.NotifyThread || strings.TrimSpace(escalation.ThreadID) == "" {
+	threadID = strings.TrimSpace(threadID)
+	if incidentID == "" || !record.Config.Escalation.NotifyThread || threadID == "" {
 		return SupervisionOutboxEntry{}, false
 	}
 	return SupervisionOutboxEntry{
@@ -119,7 +150,7 @@ func EscalationOutboxEntry(
 		DedupeKey:  incidentID,
 		IncidentID: incidentID,
 		Epoch:      record.ActivationEpoch,
-		ThreadID:   escalation.ThreadID,
+		ThreadID:   threadID,
 		Reason:     reason,
 		EventIDs:   append([]string(nil), eventIDs...),
 		Delivery:   SupervisionDeliveryPending,

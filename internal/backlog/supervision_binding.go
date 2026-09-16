@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
@@ -41,6 +42,38 @@ func (c CoordinatorSupervisionStore) SupervisionProjection(ctx context.Context, 
 	return SupervisionProjection{Snapshot: snapshot, Incidents: projection.Incidents}, nil
 }
 
+// SubmitterNotifyThread reports the T3 thread the submitter of this run asked
+// to be woken, or an empty string when the run was submitted without
+// --notify-thread.
+//
+// It reads the node wait the submission registered on the run's sink, which is
+// where that request is already durable. This is a lookup of a recipient the
+// coordinator was given, not discovery of one: no thread is derived from a
+// session, a host or an actor.
+func (c CoordinatorSupervisionStore) SubmitterNotifyThread(ctx context.Context, runID string) (string, error) {
+	waits, err := c.Store.ListNodeWaits(ctx)
+	if err != nil {
+		return "", err
+	}
+	settled := ""
+	for _, wait := range waits {
+		target := wait.Request.Target
+		if target.RunID != runID || target.TaskID != domain.SinkTaskName || wait.Request.ThreadID == "" {
+			continue
+		}
+		// A wait that has not settled yet is the live one. A settled wait still
+		// names the thread that asked about this run, so it is the fallback
+		// rather than nothing.
+		if wait.SettledAt == nil {
+			return wait.Request.ThreadID, nil
+		}
+		if settled == "" {
+			settled = wait.Request.ThreadID
+		}
+	}
+	return settled, nil
+}
+
 // LoadSupervisionActivationState reads one run's activation decision state.
 func (c CoordinatorSupervisionStore) LoadSupervisionActivationState(ctx context.Context, runID string) (SupervisionActivationState, error) {
 	rows, err := c.Store.LoadSupervisionActivationRows(ctx, runID)
@@ -50,10 +83,15 @@ func (c CoordinatorSupervisionStore) LoadSupervisionActivationState(ctx context.
 	if !rows.Supervised {
 		return SupervisionActivationState{}, fmt.Errorf("%w: run %q", ErrSupervisionNotConfigured, runID)
 	}
+	submitterThread, err := c.SubmitterNotifyThread(ctx, runID)
+	if err != nil {
+		return SupervisionActivationState{}, err
+	}
 	state := SupervisionActivationState{
 		Record:               rows.Record,
 		Activation:           rows.Activation,
 		OtherValidActivation: rows.OtherValidActivation,
+		SubmitterThreadID:    submitterThread,
 	}
 	for _, row := range rows.Inbox {
 		var event SupervisionEvent

@@ -74,6 +74,12 @@ type TransportError struct {
 	Operation   string
 	Coordinator string
 	Err         error
+	// SupervisionClass carries the supervision refusal class the coordinator
+	// named, when it named one. The sentinels ClassifySupervisionError matches
+	// on do not survive serialization, so without this field a remote overseer
+	// could not tell stale evidence from an unauthorized scope. It is set only
+	// from a verified coordinator answer.
+	SupervisionClass SupervisionErrorClass
 }
 
 func (e *TransportError) Error() string {
@@ -189,6 +195,26 @@ func classify(class TransportClass, operation, coordinator string, err error) er
 		return err
 	}
 	return &TransportError{Class: class, Operation: operation, Coordinator: coordinator, Err: err}
+}
+
+// classifySupervision is classify for an answer that also named a supervision
+// refusal class, so a client branches on the class the coordinator decided
+// rather than on the prose of its message.
+func classifySupervision(
+	class TransportClass,
+	supervision SupervisionErrorClass,
+	operation, coordinator string,
+	err error,
+) error {
+	classified := classify(class, operation, coordinator, err)
+	if supervision == "" {
+		return classified
+	}
+	var transportErr *TransportError
+	if errors.As(classified, &transportErr) && transportErr.SupervisionClass == "" {
+		transportErr.SupervisionClass = supervision
+	}
+	return classified
 }
 
 var _ CoordinatorAdminTransport = LocalClient{}

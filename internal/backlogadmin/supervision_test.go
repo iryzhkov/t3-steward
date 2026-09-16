@@ -526,6 +526,20 @@ func TestSupervisorCannotReadAnotherRunsArtifacts(t *testing.T) {
 	if class := ClassifySupervisionError(err); class != SupervisionErrorUnauthorizedScope {
 		t.Fatalf("another run's artifact: class = %q (%v)", class, err)
 	}
+	// Naming its own run does not launder a foreign artifact: the handler reads
+	// the artifact by ID and never looks at the run, so the artifact's own run
+	// is what the capability is compared against.
+	err = authorizer.Authorize(ctx, supervisorPrincipal(),
+		Action{Kind: QueryArtifact, WorkflowRunID: "run-1", ArtifactID: "artifact-theirs"})
+	if class := ClassifySupervisionError(err); class != SupervisionErrorUnauthorizedScope {
+		t.Fatalf("foreign artifact under its own run: class = %q (%v)", class, err)
+	}
+	// An artifact no run owns is refused too, rather than being read because a
+	// permitted run was named beside it.
+	if err := authorizer.Authorize(ctx, supervisorPrincipal(),
+		Action{Kind: QueryArtifact, WorkflowRunID: "run-1", ArtifactID: "artifact-unknown"}); err == nil {
+		t.Fatal("an unresolvable artifact was permitted under its own run")
+	}
 }
 
 // The allowlist is a closed set. Everything outside it is refused, including

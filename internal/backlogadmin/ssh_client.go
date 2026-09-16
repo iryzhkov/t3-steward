@@ -410,7 +410,9 @@ func (c *SSHClient) validate(operation string, response localResponse) error {
 	if class == "" {
 		class = ClassRejected
 	}
-	return c.fail(class, operation, errors.New(response.Error))
+	// The supervision class rides only on a verified coordinator answer, which
+	// this is: an unsigned refusal never reaches here.
+	return classifySupervision(class, response.SupervisionClass, operation, c.config.CoordinatorID, errors.New(response.Error))
 }
 
 func (c *SSHClient) Query(ctx context.Context, query Query) (Response, error) {

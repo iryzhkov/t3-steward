@@ -417,16 +417,25 @@ func saveSupervisionGateTx(ctx context.Context, tx *sql.Tx, gate domain.Gate) er
 	if err != nil {
 		return fmt.Errorf("encode gate %q: %w", gate.Definition.ID, err)
 	}
-	_, err = tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		INSERT INTO coordinator_supervision_gates(id, run_id, state, graph_revision, revision, evidence_snapshot_id, record)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			state = excluded.state, graph_revision = excluded.graph_revision,
 			revision = excluded.revision, evidence_snapshot_id = excluded.evidence_snapshot_id,
-			record = excluded.record`,
+			record = excluded.record
+		WHERE coordinator_supervision_gates.run_id = excluded.run_id`,
 		gate.Definition.ID, gate.RunID, gate.State, gate.GraphRevision, gate.Revision, gate.EvidenceSnapshotID, raw)
 	if err != nil {
 		return fmt.Errorf("save gate %q: %w", gate.Definition.ID, err)
+	}
+	// The upsert is keyed by gate ID alone, so a row minted for another run
+	// would otherwise be silently rewritten here, taking its accepted state and
+	// its protected set with it. The conflict clause declines that update; an
+	// untouched row means the identity belongs to a different run, and the whole
+	// transaction must fail rather than lose a decision.
+	if affected, affectedErr := result.RowsAffected(); affectedErr == nil && affected == 0 {
+		return fmt.Errorf("%w: gate %q already belongs to another run", ErrSupervisionRequestConflict, gate.Definition.ID)
 	}
 	return nil
 }

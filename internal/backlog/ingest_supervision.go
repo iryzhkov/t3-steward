@@ -87,6 +87,12 @@ func buildSupervision(
 			return nil, err
 		}
 		definition.ObservedTaskIDs, definition.ProtectedTaskIDs = observed, protected
+		// The gate row is keyed by this ID, so it must name the run. The manifest
+		// only knows the authored name, which two runs of the same campaign, and
+		// two different campaigns using the same word, both share. The clone and
+		// rerun path mints the same run-scoped identity; Name stays the authored
+		// word so blockers and CLI output remain readable.
+		definition.ID = runID + ":" + definition.Name
 		if definition.RubricArtifactID != "" {
 			rubricID, err := artifactFor("rubric", definition.RubricArtifactID)
 			if err != nil {
