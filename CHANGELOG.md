@@ -19,8 +19,44 @@ All notable changes to this project are documented here. The format follows
   A commit SHA is no longer mistaken for a ref name; an unadvertised object
   remains unverified instead of being falsely reported missing.
 
+### Changed
+
+- The coordinator schema is version 18. The migration adds the nine campaign
+  supervision tables and rewrites nothing: an existing run gets no supervision
+  record, because the absence of one is the unsupervised case. Migration is
+  forward-only and there is no reverse migration; an older binary refuses a
+  migrated database rather than degrading it. Rolling back after migrating means
+  restoring the coherent stopped backup taken before it, which loses everything
+  the coordinator recorded in between. See the rollback section of
+  [Backlog-v2 operations](docs/backlog-v2-operations.md) for the loss window and
+  the reconciliation it requires. Backup and restore need no new step: the
+  snapshot copies the whole stopped database, so the new tables, the decision
+  history and the idempotency receipts are captured by construction.
+- The `campaign plan --json` document is schema version 2. It gained optional
+  `supervision` and `gates` sections, and `totals` gained the `gates` and
+  `heldTasks` counters, which are zero for a campaign that declares no
+  supervision. The human-readable `campaign plan` output is unchanged byte for
+  byte for an unsupervised campaign, including its content digest.
+
 ### Added
 
+- A campaign may declare an optional overseer. Two new top-level keys in
+  `workflow.yaml`, `supervision` and `gates`, put a separately routed agent
+  session in front of named tasks: a gate observes the producers named in `after`
+  and withholds the tasks named in `before` until an authorized acceptance is
+  recorded, and a final gate guards run settlement instead of a downstream task.
+  Decisions are structured and revision-fenced rather than inferred from prose,
+  a rejection holds that branch while unrelated branches continue, and an
+  unresolved review incident keeps a supervised run from settling. Operators read
+  and decide the same state with `t3-steward campaign supervision`. Both keys are
+  optional and a campaign that omits them is unchanged.
+- Workers advertise the `campaign-supervision-v1` capability, which says that
+  this build can run an overseer activation as ordinary assigned work. A worker
+  that does not advertise it is never offered one: placement excludes it,
+  `campaign check` reports `impossible` when no eligible worker advertises it,
+  and the worker exchange withholds the offer as a last boundary. Upgrade workers
+  before submitting a supervised campaign; unsupervised campaigns need no
+  capability.
 - Restricted coordinator-admin SSH transport supports campaign checks, submission,
   diagnostics, recovery and notifications from non-coordinator hosts. Live readiness
   checks include bounded repository probes and reject permanent failures before

@@ -83,3 +83,43 @@ until the stable T3 message ID is observed; it is never blindly retried.
 
 **Recovery-required**: An uncertainty requiring evidence or operator reconciliation.
 It is not success, a free resource, or permission to repeat an external effect.
+
+**Supervision record**: The coordinator-owned statement that one workflow run is
+supervised, holding the overseer route, the activation limits, the prompt artifact,
+the current activation epoch and the supervision revision. Absence of the record is
+the unsupervised case, which is every run authored without a `supervision` block;
+no empty record is ever created. Avoid: supervision config (the manifest block is
+the authoring form, the record is the durable one).
+
+**Overseer**: The independently routed agent session that reviews a supervised run.
+It runs as ordinary assigned work on a worker that advertises the campaign
+supervision capability, on a provider instance and quota pool separate from the
+run's own tasks, and it authenticates to the coordinator as a supervisor principal
+scoped to one run and one activation epoch. It is not a second coordinator and it
+issues no admin command. Avoid: supervisor agent, reviewer bot.
+
+**Gate**: A declared review point that withholds dispatch of named downstream tasks
+until an authorized acceptance is recorded. A gate observes the producers named in
+`after` and protects the tasks named in `before`; a final gate protects run
+settlement instead of a downstream task. A rejected gate becomes held rather than
+re-armed, and reconsideration is an explicit operator transition. Avoid: approval,
+checkpoint (a checkpoint is durable evidence of incomplete work).
+
+**Hold**: A dispatch block placed by an overseer or an operator over a whole run or
+over one branch and its dependency closure at a recorded graph revision. It is
+nonterminal state, not failed verification, and it is owned by whoever placed it:
+an overseer cannot clear an operator's hold. Avoid: pause (pause is an admin
+command on scheduler intent), block.
+
+**Supervision activation**: One bounded, schedulable turn of the overseer, carrying
+its own epoch, lease, deadline and turn budget. An idle overseer holds nothing; an
+active one occupies one executor slot for its duration. Correctness comes from the
+activation record and the snapshot it is handed, never from conversation history,
+so a replacement is started at a new epoch rather than resumed. Avoid: overseer
+session, review run.
+
+**Review incident**: A durable statement that something needs an overseer or an
+operator decision, with a stable ID, the source event and task attempt that raised
+it, a revision, a required disposition and an open, escalated or resolved state. An
+unresolved or escalated incident withholds run settlement. An ordinary gate
+acceptance closes only its own matching incident. Avoid: alert, review request.

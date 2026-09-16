@@ -1,0 +1,273 @@
+{
+  "schemaVersion": 1,
+  "name": "three-node-example",
+  "source": "docs/examples/campaign/three-node",
+  "digest": "4a4868309b521aa6444fb86e73a2317f40d312bcd9c63140e0e5dda2b782636b",
+  "class": "surplus",
+  "environment": {
+    "project": "example-project",
+    "type": "git",
+    "scope": "task",
+    "ref": "main"
+  },
+  "placement": {},
+  "resources": {
+    "preset": "light",
+    "minCpuClass": "low"
+  },
+  "routes": [
+    {
+      "instance": "claudeAgent",
+      "model": "claude-opus-5",
+      "quotaPool": "claude-main"
+    }
+  ],
+  "preflight": [
+    {
+      "id": "source",
+      "kind": "context",
+      "probe": "git_head",
+      "failurePolicy": "record",
+      "include": "summary",
+      "maxOutputBytes": 65536,
+      "timeout": "2m0s"
+    }
+  ],
+  "inputs": [
+    {
+      "pattern": "inputs/scope.md",
+      "files": [
+        "inputs/scope.md"
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "name": "interfaces",
+      "wave": 0,
+      "promptFile": "prompts/interfaces.md",
+      "class": "surplus",
+      "classFrom": "inherited",
+      "dependents": [
+        "join"
+      ],
+      "outputs": [
+        "interfaces.md"
+      ],
+      "verify": [
+        "git diff --quiet"
+      ],
+      "placement": {},
+      "placementFrom": "unset",
+      "resources": {
+        "preset": "light",
+        "minCpuClass": "low"
+      },
+      "resourcesFrom": "inherited",
+      "routes": [
+        {
+          "instance": "claudeAgent",
+          "model": "claude-opus-5",
+          "quotaPool": "claude-main"
+        }
+      ],
+      "routesFrom": "inherited",
+      "preflight": [
+        {
+          "id": "source",
+          "kind": "context",
+          "probe": "git_head",
+          "failurePolicy": "record",
+          "include": "summary",
+          "maxOutputBytes": 65536,
+          "timeout": "2m0s"
+        }
+      ],
+      "preflightFrom": "inherited",
+      "importance": 3,
+      "difficulty": 2,
+      "maxTurns": 3,
+      "timing": {},
+      "root": true,
+      "leaf": false
+    },
+    {
+      "name": "tests",
+      "wave": 0,
+      "promptFile": "prompts/tests.md",
+      "class": "surplus",
+      "classFrom": "inherited",
+      "dependents": [
+        "join"
+      ],
+      "outputs": [
+        "tests.md"
+      ],
+      "verify": [
+        "git diff --quiet"
+      ],
+      "placement": {},
+      "placementFrom": "unset",
+      "resources": {
+        "preset": "light",
+        "minCpuClass": "low"
+      },
+      "resourcesFrom": "inherited",
+      "routes": [
+        {
+          "instance": "claudeAgent",
+          "model": "claude-opus-5",
+          "quotaPool": "claude-main"
+        }
+      ],
+      "routesFrom": "inherited",
+      "preflight": [
+        {
+          "id": "source",
+          "kind": "context",
+          "probe": "git_head",
+          "failurePolicy": "record",
+          "include": "summary",
+          "maxOutputBytes": 65536,
+          "timeout": "2m0s"
+        }
+      ],
+      "preflightFrom": "inherited",
+      "importance": 3,
+      "difficulty": 2,
+      "maxTurns": 3,
+      "timing": {},
+      "root": true,
+      "leaf": false
+    },
+    {
+      "name": "join",
+      "wave": 1,
+      "promptFile": "prompts/join.md",
+      "class": "surplus",
+      "classFrom": "inherited",
+      "needs": [
+        "interfaces",
+        "tests"
+      ],
+      "inputsFrom": [
+        {
+          "producer": "interfaces",
+          "artifacts": [
+            "interfaces.md"
+          ]
+        },
+        {
+          "producer": "tests",
+          "artifacts": [
+            "tests.md"
+          ]
+        }
+      ],
+      "outputs": [
+        "combined.md"
+      ],
+      "verify": [
+        "test -s combined.md"
+      ],
+      "placement": {},
+      "placementFrom": "unset",
+      "resources": {
+        "preset": "build",
+        "minCpuClass": "medium",
+        "preferredCpuClass": "high"
+      },
+      "resourcesFrom": "task",
+      "routes": [
+        {
+          "instance": "claudeAgent",
+          "model": "claude-opus-5",
+          "quotaPool": "claude-main"
+        }
+      ],
+      "routesFrom": "inherited",
+      "preflight": [
+        {
+          "id": "source",
+          "kind": "context",
+          "probe": "git_head",
+          "failurePolicy": "record",
+          "include": "summary",
+          "maxOutputBytes": 65536,
+          "timeout": "2m0s"
+        }
+      ],
+      "preflightFrom": "inherited",
+      "importance": 4,
+      "difficulty": 3,
+      "maxTurns": 8,
+      "timing": {},
+      "root": false,
+      "leaf": true
+    }
+  ],
+  "waves": [
+    {
+      "index": 0,
+      "tasks": [
+        "interfaces",
+        "tests"
+      ]
+    },
+    {
+      "index": 1,
+      "tasks": [
+        "join"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "interfaces",
+      "to": "join"
+    },
+    {
+      "from": "tests",
+      "to": "join"
+    }
+  ],
+  "roots": [
+    "interfaces",
+    "tests"
+  ],
+  "leaves": [
+    "join"
+  ],
+  "components": [
+    {
+      "tasks": [
+        "interfaces",
+        "join",
+        "tests"
+      ]
+    }
+  ],
+  "sink": {
+    "name": "__sink",
+    "needs": [
+      "interfaces",
+      "join",
+      "tests"
+    ]
+  },
+  "totals": {
+    "tasks": 3,
+    "edges": 2,
+    "externalEdges": 0,
+    "waves": 2,
+    "roots": 2,
+    "leaves": 1,
+    "components": 1,
+    "inputPatterns": 1,
+    "inputFiles": 1,
+    "outputs": 3,
+    "commits": 0,
+    "artifactBindings": 2,
+    "timingConstrained": 0
+  }
+}

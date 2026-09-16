@@ -88,6 +88,13 @@ Four rules are worth knowing before you author one:
 The overseer prompt and every gate rubric are ordinary bundle files: they are validated and
 packed like a task prompt, and they are where the review standard is actually written.
 
+One fleet requirement applies only to supervised campaigns. A worker may run an overseer
+activation only if its build advertises the `campaign-supervision-v1` capability, so every
+worker that might be chosen has to be on a release that has it. `campaign check` reports
+`impossible` when no eligible worker advertises it, and `campaign submit` then refuses, so
+an out-of-date fleet is a refusal before submission rather than a run that stalls after it.
+Unsupervised campaigns require no capability and are unaffected.
+
 ## Before submitting any of these directories
 
 `environment.project`, `routes[].instance`, `routes[].model` and `routes[].quota_pool` name

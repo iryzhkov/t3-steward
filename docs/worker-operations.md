@@ -65,6 +65,34 @@ A configured worker cannot receive new assignment offers until enrollment
 matches the effective requirement. Exact request replay is idempotent; changing
 its actor or body is rejected.
 
+## Advertised capabilities and campaign supervision
+
+A worker advertises two kinds of capability in one list. The configured kind
+describes the host, such as `git`, `huyang` and `preflight`, and comes from the
+bootstrap file. The build kind describes the binary running on that host, and is
+appended by the worker itself, because a coordinator reading its own
+configuration cannot know which release the far end is running.
+
+`campaign-supervision-v1` is a build capability. It says that this worker
+understands a campaign supervision activation: that it can run an overseer
+activation as ordinary assigned work and report the resulting turn without the
+coordinator treating that turn as a task result. Every worker built from this
+release advertises it automatically; nothing has to be configured, and it cannot
+be configured on for a build that does not implement it.
+
+The practical consequence is a deployment ordering rule. A supervised campaign
+is only admitted when at least one eligible worker advertises the capability, so
+upgrade the workers before submitting supervised work. A fleet one release
+behind advertises `git`, `huyang`, `preflight` and
+`task-wait-collection-fence-v1` and nothing else, and
+`t3-steward campaign check` reports `impossible` for a supervised campaign
+against it, which is a refusal at admission rather than a stall after it. A
+worker that is downgraded while a supervised run is live is not sent the
+activation either: the worker exchange withholds the offer and leaves the
+assignment outstanding, so the same activation is offered again once the worker
+is back on a capable release. Unsupervised campaigns are unaffected and require
+no capability at all.
+
 Upgrading the worker binary is a lifecycle operation of its own: install the new
 release, then restart `t3-steward-worker.service`, or the host keeps serving the
 previous release against the new coordinator. `t3-steward worker inspect-journal`

@@ -160,6 +160,63 @@ inside a media-typed manifest containing exact size and SHA-256. Every custody
 change validates the package again and verifies its content address. The JSON
 golden is the compatibility contract for field names and encoding.
 
+## Worker capability strings
+
+`CapabilityNegotiation.Capabilities` in the handshake is advisory metadata. The
+enforced set is the capability list in the worker's durable snapshot inventory,
+which is what the coordinator reads before it changes behaviour for a worker.
+That distinction matters: a handshake capability is a claim made in passing, and
+no gate is decided on it.
+
+Two capability strings are defined.
+
+`task-wait-collection-fence-v1` says the worker understands the causal
+acknowledgement fields in `SnapshotRequest`. The coordinator sets those fields
+only for a worker whose inventory contains it.
+
+`campaign-supervision-v1` says the worker understands a campaign supervision
+activation. A worker that does not advertise it is never offered one: placement
+does not consider it a candidate, `campaign check` reports `impossible` when no
+eligible worker advertises it, and the worker exchange withholds the offer as a
+last boundary before the package crosses the wire. It is a worker inventory
+capability rather than a package capability because the question it answers is
+which build is running on that host, which only the worker can answer.
+
+## Activation package
+
+An execution package carrying a `supervision` object is an activation package
+rather than a task package. It is the same version 1 package, the same manifest,
+the same content address and the same validation path; the object is what makes
+it an activation, and it is absent from every package an unsupervised run
+produces.
+
+An activation package declares no outputs, no verification, no dependencies and
+no preflight, and validation refuses one that declares any of them. Each would
+be silently unmet: nothing collects an activation's outputs, nothing runs its
+verification, and it has no producers to take dependencies from. It runs in a
+fresh task-scoped workspace and holds no resource lock, so an overseer never
+waits on a lock held by the task it is reviewing. It must list
+`campaign-supervision-v1` in `requiredCapabilities`, and validation refuses one
+that does not.
+
+The `supervision` object carries the activation and run identities, the epoch,
+the supervision record revision and the graph revision every decision must name,
+the supervisor principal, a credential reference by name, the coordinator-issued
+lease token and its expiry, the activation deadline, the turn budget, the
+rendered activation snapshot and the exact set of scoped actions with their
+argument vectors. The snapshot is bounded at 64 KiB and travels in the package
+rather than as an artifact, because it is built for one activation at one epoch
+and is never read again.
+
+Credential values remain forbidden from the package: `credentialReference` is a
+name the worker resolves locally, and it does not isolate the credential. Scope
+is enforced server-side by the coordinator's authorizer, which binds a
+supervisor principal to one run and one activation epoch.
+
+An activation turn is not a task result. The coordinator takes the decisions it
+records from its own durable records rather than from the transcript, publishes
+no outputs for the activation and releases no dependents from it.
+
 ## Artifact transfer and custody
 
 An artifact object has an immutable ID, safe relative materialization path, kind,
