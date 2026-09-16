@@ -107,6 +107,21 @@ func (s *Store) ApplyAdminCommand(ctx context.Context, application domain.AdminC
 			application.Attempt, application.RelatedAttempts, application.NewAttempt, application.WorkflowRun = nil, nil, nil, nil
 		}
 	}
+	// A manual start carries a user-authorized quota waiver by design. It must
+	// not thereby become a gate or hold waiver, so the same predicate the offer
+	// and claim paths use is evaluated here, in the transaction that applies
+	// the command.
+	if application.State == domain.AdminCommandApplied && command.Kind == domain.AdminCommandStart &&
+		command.TargetType == domain.AdminTargetAttempt {
+		if err := requireSupervisionAdmitsTx(ctx, tx, contextFields.WorkflowRunID, contextFields.TaskID, 0); err != nil {
+			if !errors.Is(err, ErrSupervisionBlocked) {
+				return domain.AdminCommandDecision{}, err
+			}
+			application.State = domain.AdminCommandRejected
+			application.Failure = err.Error()
+			application.Attempt, application.RelatedAttempts, application.NewAttempt, application.WorkflowRun = nil, nil, nil, nil
+		}
+	}
 	currentTarget := (*domain.AdminTargetSnapshot)(nil)
 	expectedTarget := application.ExpectedTargetRevision
 	if expectedTarget != command.ExpectedRevision || target.Revision != expectedTarget {

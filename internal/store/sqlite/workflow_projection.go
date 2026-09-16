@@ -38,6 +38,12 @@ type WorkflowProjectionSnapshot struct {
 	Tasks        []domain.Task
 	Attempts     []domain.Attempt
 	Assignments  []domain.Assignment
+	// Supervision is the run's gates, holds, activations and incidents, nil for
+	// every unsupervised run. It is part of the fenced read set because a
+	// supervision barrier that a concurrent decision can change without
+	// invalidating a settlement projection is a race, and because explain and
+	// status read the same snapshot the sink was computed from.
+	Supervision *SupervisionReadSet
 }
 
 func loadWorkflowTasksTx(ctx context.Context, tx *sql.Tx, workflowID string) ([]domain.Task, error) {
@@ -88,6 +94,10 @@ func loadWorkflowProjectionTx(ctx context.Context, tx *sql.Tx, runID string) (Wo
 	snapshot.Assignments, err = loadProjectionRecords[domain.Assignment](ctx, tx, `SELECT assignment.record FROM coordinator_assignments AS assignment
 		JOIN coordinator_attempts AS attempt ON attempt.id=assignment.attempt_id
 		WHERE attempt.workflow_run_id=? ORDER BY assignment.id`, runID)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.Supervision, err = supervisionReadSetTx(ctx, tx, runID)
 	if err != nil {
 		return snapshot, err
 	}
