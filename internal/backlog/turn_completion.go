@@ -5,7 +5,41 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
+
+// ActivationTurnOutcome reports how one supervision activation's turn ended.
+//
+// An activation is not a task, and its turn completion is not a task result. It
+// publishes no outputs, releases no dependents and satisfies no verification.
+// The one thing it establishes is whether the overseer process ran to the end
+// of its turn without the provider failing or leaving work in flight, which is
+// why the provider-level check is the same one tasks use.
+//
+// What it deliberately cannot establish is a decision. A supervisor process
+// exiting successfully is not gate acceptance: acceptance exists only where the
+// coordinator recorded a structured decision under a live lease, a matching
+// epoch and an expected revision. That count is passed in by the caller from
+// its own decision records, never read out of the transcript, so no amount of
+// agreeable prose in the summary can turn a no-decision activation into a
+// decided one.
+//
+// The returned reason is empty when the turn itself was clean; it explains the
+// provider-level failure otherwise. An activation whose turn failed still ends
+// with an outcome, because the activation record must say how it ended.
+func ActivationTurnOutcome(archive []byte, threadID, summary string, recordedDecisions int) (domain.ActivationOutcome, string, error) {
+	reason, err := ResultCompletionFailure(archive, threadID, summary)
+	if err != nil {
+		return domain.ActivationOutcomeNone, "", err
+	}
+	if recordedDecisions > 0 {
+		// The decisions are already durable, so the turn's own ending cannot
+		// retract them; a failed turn after a recorded decision is still decided.
+		return domain.ActivationOutcomeDecided, reason, nil
+	}
+	return domain.ActivationOutcomeNoDecision, reason, nil
+}
 
 // ResultCompletionFailure validates provider completion independently of prose.
 // A legacy done marker is optional and never overrides unsuccessful execution.
