@@ -31,6 +31,85 @@ type SinkResult struct {
 
 func SinkTaskID(runID string) string { return "sink:" + runID }
 
+// SinkBarrierReason names the supervision condition that keeps a supervised run
+// nonterminal. It is empty exactly when settlement proceeds.
+type SinkBarrierReason string
+
+const (
+	// SinkBarrierUnresolvedIncident reports a review incident that is still
+	// open or escalated. A reviewable condition must not settle before the
+	// authorized actor has recorded its permitted disposition.
+	SinkBarrierUnresolvedIncident SinkBarrierReason = "supervision-unresolved-incident"
+	// SinkBarrierFinalGateUnaccepted reports a final-settlement gate that has
+	// not been accepted.
+	SinkBarrierFinalGateUnaccepted SinkBarrierReason = "supervision-final-gate-unaccepted"
+)
+
+// SupervisionBarrier is the supervision state the settlement barrier reads. Its
+// zero value is the unsupervised run, which settles exactly as it always has.
+type SupervisionBarrier struct {
+	// Supervised is false for every run without a supervision record, which is
+	// every run that exists today. A false value never withholds settlement.
+	Supervised bool `json:"supervised"`
+	// Gates are the run's gates. Only a final-settlement gate can withhold
+	// settlement; a gate protecting a downstream task withholds that task's
+	// dispatch instead, through SupervisionAdmits.
+	Gates []Gate `json:"gates,omitempty"`
+	// Incidents are the run's review incidents, resolved ones included.
+	Incidents []ReviewIncident `json:"incidents,omitempty"`
+}
+
+// SinkBarrierVerdict is settle-or-not with the identity behind the refusal, so
+// a status renderer can say which incident or which gate is holding the run
+// open rather than only that something is.
+type SinkBarrierVerdict struct {
+	Settles    bool              `json:"settles"`
+	Reason     SinkBarrierReason `json:"reason,omitempty"`
+	IncidentID string            `json:"incidentId,omitempty"`
+	GateID     string            `json:"gateId,omitempty"`
+}
+
+// SupervisionSettlementBarrier reports whether supervision permits terminal
+// sink settlement of a run that is otherwise ready to settle.
+//
+// Two conditions withhold settlement, and only these two. An unresolved review
+// incident withholds it, because a reviewable condition must not settle before
+// the authorized actor records its permitted disposition. An unaccepted
+// final-settlement gate withholds it, because that gate guards settlement
+// itself rather than a downstream task.
+//
+// A run whose outcome already failed or was cancelled is never held open by a
+// final gate alone: final reporting is an optional read-only delivery from the
+// terminal snapshot, and the plan forbids keeping a failed campaign alive to
+// obtain one. An unresolved incident still withholds such a run, because its
+// disposition is a decision the overseer is required to record and is bounded
+// by escalation rather than open-ended.
+//
+// It is pure: no I/O, no clock, no mutation.
+func SupervisionSettlementBarrier(barrier SupervisionBarrier, runFailed bool) SinkBarrierVerdict {
+	if !barrier.Supervised {
+		return SinkBarrierVerdict{Settles: true}
+	}
+	for _, incident := range barrier.Incidents {
+		if incident.State == IncidentOpen || incident.State == IncidentEscalated {
+			return SinkBarrierVerdict{Reason: SinkBarrierUnresolvedIncident, IncidentID: incident.ID, GateID: incident.GateID}
+		}
+	}
+	if runFailed {
+		return SinkBarrierVerdict{Settles: true}
+	}
+	for _, gate := range barrier.Gates {
+		if !gate.Definition.Final {
+			continue
+		}
+		if gate.State == GateAccepted || gate.State == GateCancelled {
+			continue
+		}
+		return SinkBarrierVerdict{Reason: SinkBarrierFinalGateUnaccepted, GateID: gate.Definition.ID}
+	}
+	return SinkBarrierVerdict{Settles: true}
+}
+
 // RunExecutionsQuiescent includes old attempts: a retry never erases custody of
 // an earlier execution whose stop is still unproven.
 //
@@ -144,6 +223,18 @@ func BindRunSink(run WorkflowRun, tasks []Task) (WorkflowRun, error) {
 // the run is proven quiescent. Missing assignment evidence is not containment.
 // Failed earlier attempts do not poison a task that subsequently succeeded.
 func ProjectRunSink(run WorkflowRun, tasks []Task, attempts []Attempt, assignments []Assignment, now time.Time) (WorkflowRun, error) {
+	return ProjectSupervisedRunSink(run, tasks, attempts, assignments, SupervisionBarrier{}, now)
+}
+
+// ProjectSupervisedRunSink is ProjectRunSink with the supervision settlement
+// barrier applied. A zero barrier is the unsupervised run and behaves exactly
+// like ProjectRunSink, so an unsupervised projection is unchanged.
+//
+// The barrier is evaluated after the ordinary settlement conditions, never
+// before them: quiescence and terminal predecessors still decide whether there
+// is anything to settle, and supervision only decides whether a run that would
+// otherwise settle may do so yet.
+func ProjectSupervisedRunSink(run WorkflowRun, tasks []Task, attempts []Attempt, assignments []Assignment, barrier SupervisionBarrier, now time.Time) (WorkflowRun, error) {
 	run, err := BindRunSink(run, tasks)
 	if err != nil || run.Sink.Progress.Terminal() {
 		return run, err
@@ -176,6 +267,9 @@ func ProjectRunSink(run WorkflowRun, tasks []Task, attempts []Attempt, assignmen
 			result.SkippedTaskIDs = append(result.SkippedTaskIDs, id)
 		}
 		allSucceeded = allSucceeded && attempt.Progress == ProgressSucceeded
+	}
+	if verdict := SupervisionSettlementBarrier(barrier, len(result.FailedTaskIDs) > 0 || len(result.CancelledTaskIDs) > 0); !verdict.Settles {
+		return run, nil
 	}
 	if now.IsZero() {
 		return run, errors.New("sink settlement requires a timestamp")

@@ -231,6 +231,106 @@ func TestBuildPlanAppliesCandidateConstraintsDeterministically(t *testing.T) {
 	}
 }
 
+func TestBuildPlanWithholdsSupervisedTaskAndProposesUnrelatedOne(t *testing.T) {
+	gate := domain.Gate{
+		Definition: domain.GateDefinition{
+			ID: "gate-alpha", Name: "alpha review",
+			ObservedTaskIDs: []string{"task-beta"}, ProtectedTaskIDs: []string{"task-alpha"},
+		},
+		RunID: "run", State: domain.GateReadyForReview,
+	}
+	hold := domain.Hold{
+		ID: "hold-alpha", RunID: "run", State: domain.HoldActive, Reason: "operator paused the branch",
+		Scope:           domain.HoldScope{Kind: domain.HoldScopeBranch, BranchRootTaskID: "task-alpha"},
+		ResolvedTaskIDs: []string{"task-alpha"},
+	}
+	for _, test := range []struct {
+		name     string
+		snapshot *domain.SupervisionSnapshot
+		wantCode string
+		wantGate string
+		wantHold string
+		withheld bool
+	}{
+		{
+			name:     "gate awaiting review",
+			snapshot: &domain.SupervisionSnapshot{RunID: "run", Supervised: true, RouteAvailable: true, Gates: []domain.Gate{gate}},
+			wantCode: PlanningBlockerSupervisionGate, wantGate: "gate-alpha", withheld: true,
+		},
+		{
+			name:     "branch hold",
+			snapshot: &domain.SupervisionSnapshot{RunID: "run", Supervised: true, RouteAvailable: true, Holds: []domain.Hold{hold}},
+			wantCode: PlanningBlockerSupervisionHold, wantHold: "hold-alpha", withheld: true,
+		},
+		{
+			name:     "supervision of another run",
+			snapshot: &domain.SupervisionSnapshot{RunID: "other-run", Supervised: true, RouteAvailable: true, Gates: []domain.Gate{gate}},
+		},
+		{name: "unsupervised"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := plannerInput(
+				[]domain.Task{testTask("alpha"), testTask("beta")},
+				[]domain.WorkerInventory{plannerWorker("worker-a")},
+			)
+			input.SupervisionSnapshot = test.snapshot
+			plan, err := BuildPlan(input)
+			if err != nil {
+				t.Fatalf("BuildPlan: %v", err)
+			}
+			alpha := plannerDecision(t, plan, "alpha")
+			beta := plannerDecision(t, plan, "beta")
+			if !beta.Proposed {
+				t.Fatalf("unrelated task did not proceed: %#v", beta)
+			}
+			if !test.withheld {
+				if !alpha.Proposed {
+					t.Fatalf("task withheld without applicable supervision: %#v", alpha)
+				}
+				return
+			}
+			if alpha.Proposed {
+				t.Fatalf("supervised task proposed: %#v", alpha)
+			}
+			for _, proposal := range plan.Proposals {
+				if proposal.TaskID == "task-alpha" {
+					t.Fatalf("supervised task reached the proposals: %#v", proposal)
+				}
+			}
+			if !hasSupervisionBlocker(alpha.Blockers, test.wantCode, test.wantGate, test.wantHold) {
+				t.Fatalf("blockers = %#v, want code %q gate %q hold %q", alpha.Blockers, test.wantCode, test.wantGate, test.wantHold)
+			}
+			for _, candidate := range alpha.Candidates {
+				for _, blocker := range candidate.Blockers {
+					if blocker.SupervisionCode != "" {
+						t.Fatalf("supervision evaluated per candidate: %#v", candidate)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestBuildPlanRefusesSupervisionSnapshotWithoutARun(t *testing.T) {
+	input := plannerInput([]domain.Task{testTask("alpha")}, []domain.WorkerInventory{plannerWorker("worker-a")})
+	input.SupervisionSnapshot = &domain.SupervisionSnapshot{Supervised: true}
+	if _, err := BuildPlan(input); err == nil {
+		t.Fatal("accepted a supervision snapshot without a run")
+	}
+}
+
+func hasSupervisionBlocker(blockers []PlanningBlocker, code, gateID, holdID string) bool {
+	for _, blocker := range blockers {
+		if blocker.Code != code || blocker.GateID != gateID || blocker.HoldID != holdID {
+			continue
+		}
+		if blocker.SupervisionCode != "" && blocker.Detail != "" {
+			return true
+		}
+	}
+	return false
+}
+
 type planningConstraintFunc func(PlanningCandidate) []PlanningBlocker
 
 func (constraint planningConstraintFunc) StartPlan(time.Time) PlanningConstraintSession {
