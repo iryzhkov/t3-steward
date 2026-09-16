@@ -161,12 +161,17 @@ type campaignCLI struct {
 	// that a test can prove the registration creates no workflow state.
 	notify        func(context.Context, backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error)
 	resolveThread func(string) (string, error)
-	// supervise carries one structured supervision operation. It is its own
-	// seam because supervision travels over an optional interface the carrier
-	// may not implement: a coordinator client that predates supervision has to
-	// report the operation as unavailable, which is a property of this seam and
-	// not of the verb that used it.
-	supervise func(context.Context, backlogadmin.SupervisionRequest) (backlogadmin.SupervisionResponse, error)
+	// superviseAs carries one structured supervision operation, under an
+	// optional supervisor client identity. It is its own seam because
+	// supervision travels over an optional interface the carrier may not
+	// implement: a coordinator client that predates supervision has to report
+	// the operation as unavailable, which is a property of this seam and not of
+	// the verb that used it.
+	//
+	// The identity is a parameter of this seam and of no other, which is how the
+	// CLI refuses to sign anything but supervision with a supervisor credential:
+	// no other command family can reach a transport built from one.
+	superviseAs func(context.Context, supervisorIdentity, backlogadmin.SupervisionRequest) (backlogadmin.SupervisionResponse, error)
 	// principal names who is running the command. It appears in the audit
 	// record of a submission that skipped the live check.
 	principal string
@@ -217,8 +222,10 @@ func runCampaign(cfg config.Config, args []string) error {
 			return transport.client.NodeWait(ctx, operation)
 		},
 		resolveThread: func(explicit string) (string, error) { return resolveThread(cfg, explicit) },
-		supervise: func(ctx context.Context, request backlogadmin.SupervisionRequest) (backlogadmin.SupervisionResponse, error) {
-			transport, err := newCoordinatorTransport(cfg)
+		superviseAs: func(ctx context.Context, identity supervisorIdentity, request backlogadmin.SupervisionRequest) (backlogadmin.SupervisionResponse, error) {
+			// This is the only construction in the CLI that may carry a supervisor
+			// credential, and it is reached only from the supervision verbs.
+			transport, err := newCoordinatorTransportAs(cfg, identity)
 			if err != nil {
 				return backlogadmin.SupervisionResponse{}, err
 			}

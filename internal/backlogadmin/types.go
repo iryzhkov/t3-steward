@@ -312,6 +312,17 @@ type Blocker struct {
 	Resource    string     `json:"resource,omitempty"`
 	OwnerID     string     `json:"ownerId,omitempty"`
 	EarliestAt  *time.Time `json:"earliestAt,omitempty"`
+	// GateID and HoldID name the supervision record a supervision blocker is
+	// about. An operator reading explain has to learn which gate is waiting, not
+	// only that supervision said no, and the gate ID is what the decide command
+	// takes.
+	GateID string `json:"gateId,omitempty"`
+	HoldID string `json:"holdId,omitempty"`
+	// SupervisionCode is the stable domain code behind a supervision blocker,
+	// kept beside the coarser planning code so that a caller can distinguish
+	// supervision-route-unavailable from supervision-gate-awaiting-review
+	// without parsing the detail sentence.
+	SupervisionCode domain.SupervisionBlockerCode `json:"supervisionCode,omitempty"`
 }
 
 type Explanation struct {

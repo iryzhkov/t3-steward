@@ -26,6 +26,14 @@ type CoordinatorSupervisionStore struct {
 	Store *sqlite.Store
 }
 
+// LoadSupervisionSnapshot reads one run's compact readiness snapshot, which is
+// what the shared supervision predicate consumes. It satisfies
+// SupervisionSnapshotSource, so an explanation reports the supervision blockers
+// the planner applies.
+func (c CoordinatorSupervisionStore) LoadSupervisionSnapshot(ctx context.Context, runID string) (domain.SupervisionSnapshot, error) {
+	return c.Store.LoadSupervisionSnapshot(ctx, runID)
+}
+
 // LoadSupervision reads one run's whole supervision state.
 func (c CoordinatorSupervisionStore) LoadSupervision(ctx context.Context, runID string) (SupervisionState, error) {
 	facts, err := c.Store.LoadSupervisionAdminState(ctx, runID)

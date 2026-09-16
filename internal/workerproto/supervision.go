@@ -88,6 +88,46 @@ type SupervisionActivation struct {
 	SubagentsDisabled bool `json:"subagentsDisabled,omitempty"`
 }
 
+// The two environment variables an overseer thread is started with, naming the
+// admin client its CLI must present to the coordinator.
+//
+// They exist because the prompt was not enough. An activation told the overseer
+// "admin credential reference: X" in prose, and the CLI had no way to act on
+// it: on a worker host the CLI authenticates with the credential named in
+// backlog_v2.coordinator_client, which the coordinator knows as that host's
+// ordinary remote-admin client. Since exactly one supervisor client exists
+// fleet-wide, no configuration of two worker hosts could make an overseer on
+// either of them authenticate as the supervisor, so every decision it tried was
+// refused for unauthorized scope.
+//
+// They are a selector, never a secret. The value is a credential reference the
+// CLI resolves through the same admin credential store it already uses, and a
+// host without that secret fails to resolve it rather than gaining authority.
+const (
+	// SupervisorCredentialEnvironment names the admin credential reference the
+	// CLI resolves for supervision commands, in place of this host's own
+	// coordinator client credential.
+	SupervisorCredentialEnvironment = "T3_STEWARD_SUPERVISOR_CREDENTIAL"
+	// SupervisorClientEnvironment names the admin client the resolved credential
+	// must belong to. The CLI refuses a credential that resolves to a different
+	// principal, so a stale or mismatched reference is a refusal on this host
+	// rather than an unauthorized-scope refusal one round trip later.
+	SupervisorClientEnvironment = "T3_STEWARD_SUPERVISOR_CLIENT"
+)
+
+// ActivationEnvironment is the supervisor identity as the environment an
+// overseer thread is started with. It is empty when the activation names no
+// credential, which is the deployment that configured none.
+func (a SupervisionActivation) ActivationEnvironment() map[string]string {
+	if a.CredentialReference == "" {
+		return nil
+	}
+	return map[string]string{
+		SupervisorCredentialEnvironment: a.CredentialReference,
+		SupervisorClientEnvironment:     a.Principal,
+	}
+}
+
 // IsActivation reports whether this package carries an overseer activation
 // rather than a declared task.
 func (p ExecutionPackage) IsActivation() bool {

@@ -42,6 +42,13 @@ revision for decide, the supervision record's revision for hold and release,
 and the incident's revision for escalate and resolve. Read all of them with
 "t3-steward campaign supervision show <run> --json".
 
+--supervisor-credential REFERENCE authenticates as the fleet's supervisor admin
+client instead of this host's own coordinator client, which is what a decision
+from a worker host needs: the coordinator authorizes supervision by principal
+against the activation it recorded, and it knows exactly one supervisor
+principal. An overseer thread receives the same value in its environment and
+needs no flag. It is accepted on these verbs and on no other command.
+
 --json prints the versioned backlog.admin.supervision/v1 response document.
 Read its version field first.
 
@@ -64,19 +71,24 @@ type campaignSupervisionArgs struct {
 	// accept and reject are separate booleans rather than one string, so that
 	// naming neither and naming both are both refused here instead of one of
 	// them silently becoming a default.
-	accept           bool
-	reject           bool
-	gate             string
-	evidence         string
-	incident         string
-	scope            string
-	hold             string
-	outcome          string
-	requestID        string
-	reason           string
-	expectedRevision int64
-	graphRevision    int64
-	activation       int64
+	accept    bool
+	reject    bool
+	gate      string
+	evidence  string
+	incident  string
+	scope     string
+	hold      string
+	outcome   string
+	requestID string
+	reason    string
+	// supervisorCredential is the admin credential reference this command
+	// authenticates with, overriding this host's own coordinator client. It is
+	// accepted on the supervision verbs and on no other command, which is what
+	// keeps the strongest credential on a worker host out of "backlog start".
+	supervisorCredential string
+	expectedRevision     int64
+	graphRevision        int64
+	activation           int64
 }
 
 // campaignSupervisionFlags is the flag vocabulary of one verb. A flag that
@@ -84,7 +96,10 @@ type campaignSupervisionArgs struct {
 // --outcome on a hold is told which verb owns it rather than told it is
 // unknown.
 func campaignSupervisionFlags(operation backlogadmin.SupervisionOperation) map[string]bool {
-	allowed := map[string]bool{"--json": true}
+	// Every supervision verb accepts the supervisor credential override,
+	// including show: an overseer reads the revisions it is about to decide
+	// against under the same identity it decides under.
+	allowed := map[string]bool{"--json": true, supervisorCredentialFlag: true}
 	if operation.Mutating() {
 		for _, flag := range []string{"--expected-revision", "--activation", "--request-id", "--reason"} {
 			allowed[flag] = true
@@ -194,6 +209,8 @@ func parseCampaignSupervisionArgs(operation backlogadmin.SupervisionOperation, a
 			err = text(argument, &parsed.requestID)
 		case "--reason":
 			err = text(argument, &parsed.reason)
+		case supervisorCredentialFlag:
+			err = text(argument, &parsed.supervisorCredential)
 		case "--expected-revision":
 			err = number(argument, &parsed.expectedRevision)
 		case "--graph-revision":
@@ -395,11 +412,17 @@ func (c campaignCLI) runSupervision(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if c.supervise == nil {
+	if c.superviseAs == nil {
 		return campaignSupervisionVerdict(operation, fmt.Errorf(
 			"%w: no coordinator transport carries supervision here", backlogadmin.ErrSupervisionUnavailable))
 	}
-	response, err := c.supervise(ctx, request)
+	// An explicit flag wins over the activation environment, so an operator can
+	// decide a gate by hand from a host whose overseer thread set one.
+	identity := supervisorIdentityFromEnvironment(nil)
+	if parsed.supervisorCredential != "" {
+		identity = supervisorIdentity{CredentialReference: parsed.supervisorCredential}
+	}
+	response, err := c.superviseAs(ctx, identity, request)
 	if err != nil {
 		return campaignSupervisionVerdict(operation, err)
 	}
@@ -496,6 +519,19 @@ func renderCampaignSupervisionState(out io.Writer, runID string, state backlogad
 		state.Activation.Epoch, state.Activation.TurnsUsed); err != nil {
 		return err
 	}
+	// Route availability is printed before the records, because a gate that is
+	// not moving is most often not moving for a reason no gate, hold or incident
+	// mentions, and the operator reading show is asking exactly that.
+	if state.RouteAvailable {
+		if _, err := fmt.Fprint(out, "  supervisor   an overseer can be dispatched for this run\n"); err != nil {
+			return err
+		}
+	} else {
+		if _, err := fmt.Fprintf(out, "  supervisor   no overseer can be dispatched: %s\n",
+			campaignSupervisionValue(state.RouteBlockReason)); err != nil {
+			return err
+		}
+	}
 	if state.SinkSettled {
 		if _, err := fmt.Fprint(out, "  settled      the run is settled; supervision is closed\n"); err != nil {
 			return err
@@ -553,7 +589,7 @@ func campaignSupervisionValue(value string) string {
 // the supervision state as a result, with its own refusal classes, asks for it
 // with "campaign supervision show".
 func (c campaignCLI) supervisionAppendix(ctx context.Context, args []string) {
-	if c.supervise == nil {
+	if c.superviseAs == nil {
 		return
 	}
 	for _, argument := range args {
@@ -567,7 +603,10 @@ func (c campaignCLI) supervisionAppendix(ctx context.Context, args []string) {
 	if run == "" {
 		return
 	}
-	response, err := c.supervise(ctx, backlogadmin.SupervisionRequest{
+	// The appendix runs under whatever identity the thread already has, which is
+	// the supervisor client inside an overseer thread and this host's own admin
+	// client anywhere else.
+	response, err := c.superviseAs(ctx, supervisorIdentityFromEnvironment(nil), backlogadmin.SupervisionRequest{
 		Version:   backlogadmin.SupervisionVersion,
 		Operation: backlogadmin.SupervisionShow,
 		RunID:     run,

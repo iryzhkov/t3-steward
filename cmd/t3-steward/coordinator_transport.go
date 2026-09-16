@@ -144,12 +144,41 @@ func missingCoordinatorClient(path string) error {
 // block selects the remote carrier; a coordinator-local client keeps the
 // owner-only socket.
 func newCoordinatorTransport(cfg config.Config) (coordinatorTransport, error) {
+	// No override: every command family other than supervision reaches the
+	// coordinator as this host's own admin client, which is what keeps a
+	// supervisor credential out of operations it must never sign.
+	return newCoordinatorTransportAs(cfg, supervisorIdentity{})
+}
+
+// newCoordinatorTransportAs selects the carrier, optionally under a supervisor
+// client identity.
+//
+// The override reaches only the remote carrier's credential. Everything else
+// about the client -- the coordinator it names, its address and its restricted
+// remote command -- is this host's configuration and is unchanged, because the
+// override answers "who is calling", not "which coordinator".
+//
+// On the coordinator's own owner-only socket the override is inert, and
+// deliberately so: that carrier authenticates by peer UID and already grants
+// the full local-admin role, which is strictly stronger than any supervisor
+// credential. Presenting one there would narrow nothing and prove nothing.
+func newCoordinatorTransportAs(cfg config.Config, identity supervisorIdentity) (coordinatorTransport, error) {
+	if err := identity.validate(); err != nil {
+		return coordinatorTransport{}, err
+	}
 	if client := cfg.BacklogV2.CoordinatorClient; client.Configured() {
-		credentials, err := adminCredentials.ResolveAdmin(client.Credential)
+		reference := client.Credential
+		if identity.declared() {
+			reference = identity.CredentialReference
+		}
+		credentials, err := adminCredentials.ResolveAdmin(reference)
 		if err != nil {
 			return coordinatorTransport{}, &backlogadmin.TransportError{
 				Class: backlogadmin.ClassClientConfiguration, Coordinator: client.CoordinatorID, Err: err,
 			}
+		}
+		if err := identity.checkResolved(credentials); err != nil {
+			return coordinatorTransport{}, err
 		}
 		remote, err := backlogadmin.NewSSHClient(backlogadmin.SSHClientConfig{
 			CoordinatorID:      client.CoordinatorID,

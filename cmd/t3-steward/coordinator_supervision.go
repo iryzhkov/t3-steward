@@ -5,13 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
-	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 // The coordinator-side supervision boundary.
@@ -38,6 +36,55 @@ type coordinatorSupervision struct {
 	// which is the deployment that has no supervisor credential configured.
 	activations backlog.SupervisionActivationService
 	settings    coordinatorActivationSettings
+	// warnedNoSupervisorClient remembers the runs this process has already
+	// warned about, so a deployment with no supervisor client says so once per
+	// run rather than once per boundary. The boundary runs on the interval the
+	// scheduler is configured with, and a log line at that rate is noise an
+	// operator learns to filter, which is the same silence it replaced.
+	//
+	// It is deliberately in memory only. The warning is about this process's
+	// configuration, so a restart that still has no supervisor client should say
+	// so again; the durable half of the report is the escalated incident.
+	warnedNoSupervisorClient map[string]bool
+}
+
+// supervisorClientConfigured reports whether an overseer could be dispatched at
+// all. It is the third condition of route availability; see
+// backlog.SupervisionRouteRequest.
+func (c coordinatorSupervision) supervisorClientConfigured() bool { return c.settings.configured() }
+
+// routeBlockCause names why the supervisor route cannot run, in the wording
+// every surface reports.
+func (c coordinatorSupervision) routeBlockCause() string {
+	return backlog.SupervisionRouteBlockCause(c.supervisorClientConfigured())
+}
+
+// warnMissingSupervisorClientOnce says, once per run, that a gate is waiting
+// for a review nobody can perform because this coordinator has no supervisor
+// admin client.
+//
+// Saying it at all is the point. Before this the coordinator dispatched no
+// activation, logged nothing and left the gate looking merely pending, so the
+// only evidence that anything was wrong was work that never started.
+func (c coordinatorSupervision) warnMissingSupervisorClientOnce(runID string) {
+	if c.warnedNoSupervisorClient == nil || c.warnedNoSupervisorClient[runID] {
+		return
+	}
+	c.warnedNoSupervisorClient[runID] = true
+	c.logger.Warn("supervised run has a gate ready for review and no supervisor client is configured",
+		"run", runID, "reason", backlog.SupervisionNoSupervisorClient,
+		"remedy", "declare exactly one backlog_v2.coordinator.admin_clients entry with supervisor: true")
+}
+
+// supervisionAwaitsReview reports whether any gate of this run is ready for a
+// decision right now.
+func supervisionAwaitsReview(snapshot domain.SupervisionSnapshot) bool {
+	for _, gate := range snapshot.Gates {
+		if gate.State == domain.GateReadyForReview {
+			return true
+		}
+	}
+	return false
 }
 
 func (c coordinatorSupervision) at() time.Time {
@@ -81,7 +128,10 @@ func (c coordinatorSupervision) advanceRun(
 	if err != nil {
 		return err
 	}
-	routeAvailable := supervisionRouteAvailable(run.Supervision.Config.Route, workers)
+	routeAvailable := backlog.SupervisionRouteAvailable(backlog.SupervisionRouteRequest{
+		Route: run.Supervision.Config.Route, Workers: workers,
+		SupervisorClientConfigured: c.supervisorClientConfigured(),
+	})
 	// Route availability is a condition of every boundary while a gate awaits
 	// review, not only of the boundary that made one ready: the worker that
 	// would decide an open gate can be decommissioned at any later tick, and
@@ -128,7 +178,7 @@ func (c coordinatorSupervision) advanceRun(
 		// nobody would ever be told why. One escalation says so, deduplicated on
 		// the incident.
 		if err := c.escalate(ctx, *run.Supervision, incidentID, eventID,
-			"the supervisor route cannot be admitted, so "+reason+" and no activation can decide it", now); err != nil {
+			c.routeBlockCause()+", so "+reason+" and no activation can decide it", now); err != nil {
 			return err
 		}
 	}
@@ -156,11 +206,14 @@ func (c coordinatorSupervision) escalateRouteBlock(
 	}
 	snapshot := projection.Snapshot
 	snapshot.RouteAvailable = routeAvailable
+	if !c.supervisorClientConfigured() && supervisionAwaitsReview(snapshot) {
+		c.warnMissingSupervisorClientOnce(run.ID)
+	}
 	threshold := run.Supervision.Config.IdleEscalationAfter
 	for _, incident := range backlog.RouteBlockEscalations(snapshot, projection.Incidents, threshold, now) {
 		reason := fmt.Sprintf(
-			"the supervisor route cannot be admitted, so gate %s has waited for a review since %s and no activation can decide it",
-			incident.GateID, incident.OpenedAt.UTC().Format(time.RFC3339))
+			"%s, so gate %s has waited for a review since %s and no activation can decide it",
+			c.routeBlockCause(), incident.GateID, incident.OpenedAt.UTC().Format(time.RFC3339))
 		if err := c.escalate(ctx, *run.Supervision, incident.ID, incident.SourceEventID, reason, now); err != nil {
 			return err
 		}
@@ -218,51 +271,20 @@ func supervisionGateIncidentID(runID, gateID, evidenceID string) string {
 	return "incident:" + runID + ":" + gateID + ":" + evidenceID
 }
 
-// supervisionRouteAvailable reports whether some fresh worker can actually run
-// this run's overseer: it must host the configured provider instance and model,
-// and it must advertise the campaign-supervision capability.
-//
-// The snapshot inventory is the authority, not the coordinator's configuration,
-// because the capability describes the build running on that host. This is the
-// same rule worker_exchange.go applies before it sets a causal acknowledgement.
-func supervisionRouteAvailable(route domain.ProviderRoute, workers []domain.WorkerSnapshot) bool {
-	for _, worker := range workers {
-		if route.WorkerID != "" && worker.WorkerID != route.WorkerID {
-			continue
-		}
-		if !slices.Contains(worker.Inventory.Capabilities, workerproto.CapabilityCampaignSupervision) {
-			continue
-		}
-		if supervisionWorkerServesRoute(worker, route) {
-			return true
-		}
-	}
-	return false
-}
-
-func supervisionWorkerServesRoute(worker domain.WorkerSnapshot, route domain.ProviderRoute) bool {
-	for _, provider := range worker.Inventory.Providers {
-		if provider.InstanceID != route.ProviderInstanceID {
-			continue
-		}
-		if route.Model == "" || slices.Contains(provider.Models, route.Model) {
-			return true
-		}
-	}
-	return false
-}
-
 // coordinatorSupervisionSnapshots resolves the supervision snapshot of every
 // supervised run for one planning pass, and answers RouteAvailable honestly.
 //
 // The store reports RouteAvailable true because provider admission is not
 // observable from a database. Here it is: a gate nobody can decide is reported
-// as blocked on its supervisor route rather than as merely waiting.
+// as blocked on its supervisor route rather than as merely waiting. A
+// coordinator with no supervisor admin client answers false for the same
+// reason, because it will dispatch no overseer at all.
 func coordinatorSupervisionSnapshots(
 	ctx context.Context,
 	store *sqlite.Store,
 	runs []domain.WorkflowRun,
 	workers []domain.WorkerSnapshot,
+	supervisorClientConfigured bool,
 ) (map[string]domain.SupervisionSnapshot, error) {
 	var snapshots map[string]domain.SupervisionSnapshot
 	for _, run := range runs {
@@ -276,7 +298,10 @@ func coordinatorSupervisionSnapshots(
 		if !snapshot.Supervised {
 			continue
 		}
-		snapshot.RouteAvailable = supervisionRouteAvailable(run.Supervision.Config.Route, workers)
+		snapshot.RouteAvailable = backlog.SupervisionRouteAvailable(backlog.SupervisionRouteRequest{
+			Route: run.Supervision.Config.Route, Workers: workers,
+			SupervisorClientConfigured: supervisorClientConfigured,
+		})
 		if snapshots == nil {
 			snapshots = make(map[string]domain.SupervisionSnapshot)
 		}

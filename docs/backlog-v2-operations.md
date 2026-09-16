@@ -524,6 +524,63 @@ no `campaign-supervision-v1`, so the check reports `impossible` and `submit`
 refuses. Upgrade the workers first. Ordinary unsupervised campaigns are
 unaffected and require no capability.
 
+#### The supervisor admin client, and what happens without one
+
+A supervised campaign needs exactly one deployment-wide admin client declared as
+the supervisor. Declare it on the coordinator, in
+`backlog_v2.coordinator.admin_clients`, as a single entry with `supervisor: true`
+and a `secretref:f03-admin/<name>` credential:
+
+```yaml
+backlog_v2:
+  coordinator:
+    admin_clients:
+      supervisor:normandy:
+        credential: secretref:f03-admin/supervisor-normandy
+        supervisor: true
+```
+
+Exactly one, because the coordinator authorizes supervision by principal and
+binds that principal to one run and one activation epoch. Two supervisor entries
+would make the identity an overseer authenticates as ambiguous, so the
+coordinator names the ambiguity and dispatches nothing rather than silently
+choosing one.
+
+The secret that reference resolves to must exist, as an owner-only 0600 file
+under `~/.config/upkeeper/secrets/f03-admin/<name>`, on the coordinator host
+**and on every worker host that may run an overseer**. The coordinator needs it
+to verify the frames the overseer signs; the worker host needs it because the
+overseer's CLI presents that client rather than the host's own admin client. The
+admin client name and the `clientPrincipal` inside the secret bundle must be the
+same string, because the coordinator selects the configured credential by the
+sender name on the frame.
+
+The overseer does not have to be told any of this. The coordinator records the
+credential reference on the activation it dispatches, the worker starts the
+overseer's thread with `T3_STEWARD_SUPERVISOR_CREDENTIAL` and
+`T3_STEWARD_SUPERVISOR_CLIENT` set from it, and `t3-steward campaign supervision`
+picks them up. An operator deciding a gate by hand from a host that is not the
+coordinator passes `--supervisor-credential secretref:f03-admin/<name>` instead.
+The override applies to the `campaign supervision` verbs and to no other command,
+and it is inert on the coordinator's own socket, which already authorizes its
+peer by UID.
+
+**When there is no supervisor entry**, nothing silently waits. The coordinator
+warns at startup and once per affected run; the supervisor route is reported as
+unavailable, so the planner withholds every gate-protected task with a
+`supervision-route-unavailable` blocker rather than one that reads as a gate
+merely pending; `t3-steward campaign explain <run>/<task>` names that blocker and
+the missing configuration; `t3-steward campaign supervision show <run>` prints
+`no overseer can be dispatched: no supervisor client configured; operator
+decision required`; the run's open review incident is escalated with the same
+reason; and `t3-steward campaign check` reports a supervised campaign as
+`impossible` with the permanent reason `supervisor-client-missing`, so one is
+refused at submission instead of stalling after admission.
+
+A run already accepted in that state is not stuck. Every gate can still be
+decided by an operator, through the same `campaign supervision` verbs, without
+`--activation`.
+
 #### What the supervisor capability is, and what it is not
 
 A campaign overseer authenticates as an ordinary admin client and is then
