@@ -281,15 +281,113 @@ func TestManualInteractionCancelsIntent(t *testing.T) {
 	h.fake.add("a", "codex", "gpt", true)
 	reset := h.clock.Add(5 * time.Hour)
 	h.snap(codexPrimary, 96, reset, "1")
-	// The user sends a message: the turn id changes and it runs again.
+	// The user sends a message a minute after the stop: the thread is
+	// theirs again, whether or not the new turn is still running.
+	h.clock = h.clock.Add(time.Minute)
+	sent := h.clock
 	h.fake.mu.Lock()
-	h.fake.threads["a"].Running = true
+	h.fake.threads["a"].Running = false
+	h.fake.threads["a"].TurnState = "completed"
 	h.fake.threads["a"].TurnID = "turn-manual"
+	h.fake.threads["a"].LatestUserMessageAt = &sent
 	h.fake.mu.Unlock()
 	h.poll()
 	intent, _, _ := h.store.LoadResumeIntent(context.Background(), "a")
 	if intent.Status != domain.ResumeCancelled {
 		t.Fatalf("intent = %+v", intent)
+	}
+}
+
+// A turn the harness starts on its own after the stop, such as a background
+// task finishing, is not the user taking over: the intent survives it and
+// the thread is resumed after the reset.
+func TestAutomatedTurnAfterStopKeepsIntent(t *testing.T) {
+	h := newHarness(t, nil)
+	h.fake.add("a", "codex", "gpt", true)
+	reset := h.clock.Add(5 * time.Hour)
+	h.snap(codexPrimary, 96, reset, "1")
+	if fmt.Sprint(h.fake.stops) != "[interrupt:a]" {
+		t.Fatalf("stops = %v", h.fake.stops)
+	}
+	// A notification wakes the thread for a turn that completes at once,
+	// with no user message.
+	h.clock = h.clock.Add(15 * time.Second)
+	h.fake.mu.Lock()
+	h.fake.threads["a"].TurnID = "turn-notification"
+	h.fake.threads["a"].TurnState = "completed"
+	h.fake.threads["a"].Running = false
+	h.fake.mu.Unlock()
+	h.poll()
+	intent, _, _ := h.store.LoadResumeIntent(context.Background(), "a")
+	if intent.Status != domain.ResumePending {
+		t.Fatalf("an automated turn cancelled the intent: %+v", intent)
+	}
+	// The window resets and a fresh reading confirms it: the thread resumes.
+	h.clock = reset.Add(time.Minute)
+	h.snap(codexPrimary, 1, reset.Add(5*time.Hour), "2")
+	h.clock = h.clock.Add(3 * time.Minute)
+	h.poll()
+	if fmt.Sprint(h.fake.resumes) != "[a]" {
+		t.Fatalf("resumes = %v", h.fake.resumes)
+	}
+}
+
+// A thread stopped once in a window that starts a new turn while the bucket
+// is still stopped is stopped again and gets a fresh intent, even when the
+// earlier intent was cancelled by a user message.
+func TestNewTurnInStoppedWindowIsStoppedAgainWithFreshIntent(t *testing.T) {
+	h := newHarness(t, nil)
+	h.fake.add("a", "codex", "gpt", true)
+	reset := h.clock.Add(5 * time.Hour)
+	h.snap(codexPrimary, 96, reset, "1")
+	if fmt.Sprint(h.fake.stops) != "[interrupt:a]" {
+		t.Fatalf("stops = %v", h.fake.stops)
+	}
+	// The user asks a question an hour later: the first intent is cancelled.
+	h.clock = h.clock.Add(time.Hour)
+	asked := h.clock
+	h.fake.mu.Lock()
+	h.fake.threads["a"].TurnID = "turn-question"
+	h.fake.threads["a"].TurnState = "completed"
+	h.fake.threads["a"].Running = false
+	h.fake.threads["a"].LatestUserMessageAt = &asked
+	h.fake.mu.Unlock()
+	h.poll()
+	intent, _, _ := h.store.LoadResumeIntent(context.Background(), "a")
+	if intent.Status != domain.ResumeCancelled {
+		t.Fatalf("intent = %+v", intent)
+	}
+	// Then the user says continue: a new turn runs while the bucket is
+	// still stopped. It is stopped like any new session and the intent is
+	// pending again, for this turn.
+	h.clock = h.clock.Add(time.Minute)
+	continued := h.clock
+	h.fake.mu.Lock()
+	h.fake.threads["a"].TurnID = "turn-continue"
+	h.fake.threads["a"].TurnState = "running"
+	h.fake.threads["a"].Running = true
+	h.fake.threads["a"].LatestUserMessageAt = &continued
+	h.fake.mu.Unlock()
+	h.poll()
+	if fmt.Sprint(h.fake.stops) != "[interrupt:a interrupt:a]" {
+		t.Fatalf("stops = %v", h.fake.stops)
+	}
+	intent, _, _ = h.store.LoadResumeIntent(context.Background(), "a")
+	if intent.Status != domain.ResumePending || intent.StoppedTurnID != "turn-continue" {
+		t.Fatalf("intent = %+v", intent)
+	}
+	// The same turn is not stopped twice.
+	h.poll()
+	if len(h.fake.stops) != 2 {
+		t.Fatalf("stops = %v", h.fake.stops)
+	}
+	// After the reset the thread resumes.
+	h.clock = reset.Add(time.Minute)
+	h.snap(codexPrimary, 1, reset.Add(5*time.Hour), "2")
+	h.clock = h.clock.Add(3 * time.Minute)
+	h.poll()
+	if fmt.Sprint(h.fake.resumes) != "[a]" {
+		t.Fatalf("resumes = %v", h.fake.resumes)
 	}
 }
 

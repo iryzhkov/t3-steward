@@ -116,13 +116,19 @@ func (d *Daemon) stopThreads(ctx context.Context, threads []domain.Thread, a dom
 	now := d.now()
 	var targets []domain.Thread
 	for _, t := range threads {
-		fresh, err := d.store.MarkThreadNotice(ctx, t.ID, a.Bucket, state.Epoch, domain.ActionStop, now)
+		// A stop is recorded per turn, not per thread. A thread that starts
+		// another turn while the bucket is still stopped is a new session in
+		// every sense that matters: it is stopped again and gets a fresh
+		// resume intent, instead of running into the provider's limit and
+		// leaving nothing behind for the reset to resume. Retries of one
+		// stop, and the hard stop after a drain, still share the turn.
+		fresh, err := d.store.MarkThreadNotice(ctx, t.ID, a.Bucket, stopNoticeEpoch(state.Epoch, t), domain.ActionStop, now)
 		if err != nil {
 			d.log.Error("record thread notice", "thread", t.ID, "err", err)
 			continue
 		}
 		if !fresh {
-			d.log.Debug("thread already stopped this epoch", "thread", t.ID)
+			d.log.Debug("thread turn already stopped this epoch", "thread", t.ID, "turn", t.TurnID)
 			continue
 		}
 		targets = append(targets, t)
@@ -238,6 +244,16 @@ func (d *Daemon) waitStopped(ctx context.Context, remaining, stopped map[string]
 		case <-time.After(left):
 		}
 	}
+}
+
+// stopNoticeEpoch scopes a stop notice to the turn that was stopped. The
+// bucket epoch alone would let a thread that starts a new turn in a stopped
+// window run unstopped, because its first stop already used the epoch.
+func stopNoticeEpoch(epoch string, t domain.Thread) string {
+	if t.TurnID == "" {
+		return epoch
+	}
+	return epoch + "/" + t.TurnID
 }
 
 func (d *Daemon) saveIntent(ctx context.Context, t domain.Thread, a domain.Action, state domain.BucketState, now time.Time, drain bool) {
