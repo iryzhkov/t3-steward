@@ -39,7 +39,7 @@ func graphTaskValidator(settings config.BacklogV2) func(domain.Workflow, domain.
 					continue
 				}
 				provider, ok := worker.Providers[route.ProviderInstanceID]
-				if !ok || !slices.Contains(provider.Models, route.Model) {
+				if !ok || !domain.ModelAuthorized(provider.Models, route.Model) {
 					continue
 				}
 				if route.QuotaPoolID != "" && route.QuotaPoolID != provider.QuotaPool {

@@ -67,12 +67,9 @@ func coordinatorEnrollmentHandler(settings config.BacklogV2, store *sqlite.Store
 				if available.InstanceID != instance || !available.Available {
 					continue
 				}
-				found = true
-				for _, model := range route.Models {
-					if !slices.Contains(available.Models, model) {
-						found = false
-					}
-				}
+				// The authored policy may be a sole "*"; the observation
+				// holds concrete models only, so compare through the policy.
+				found = domain.ModelsObserved(route.Models, available.Models)
 			}
 			if !found {
 				return domain.WorkerEnrollment{}, errors.New("configured provider route is unavailable on worker")

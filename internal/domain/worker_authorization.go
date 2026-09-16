@@ -9,6 +9,28 @@ func ModelAuthorized(allowed []string, model string) bool {
 	return model != "" && model != "*" && ((len(allowed) == 1 && allowed[0] == "*") || slices.Contains(allowed, model))
 }
 
+// ModelsObserved reports whether a worker observation satisfies an authored
+// model policy: every concrete authorized model must be observed, and a sole
+// "*" is satisfied by any non-empty observation. An empty policy authorizes
+// nothing and is never satisfied.
+func ModelsObserved(authorized, observed []string) bool {
+	if len(authorized) == 0 {
+		return false
+	}
+	for _, model := range authorized {
+		if model == "*" {
+			if len(authorized) != 1 || len(observed) == 0 {
+				return false
+			}
+			continue
+		}
+		if !slices.Contains(observed, model) {
+			return false
+		}
+	}
+	return true
+}
+
 // AuthorizesRoute checks an operator-authored inventory, never a worker observation.
 // Empty provider/model lists revoke authorization; draining does not revoke existing work.
 func (i WorkerInventory) AuthorizesRoute(route ProviderRoute) bool {
