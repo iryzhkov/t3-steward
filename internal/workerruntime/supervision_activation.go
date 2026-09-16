@@ -86,7 +86,64 @@ func (d *LocalDriver) prepareActivation(pkg workerproto.ExecutionPackage) (strin
 	if err := ensureRealDirectory(workspace); err != nil {
 		return "", fmt.Errorf("prepare supervision activation workspace: %w", err)
 	}
+	if err := d.writeSupervisionIdentity(pkg, workspace); err != nil {
+		return "", err
+	}
 	return workspace, nil
+}
+
+// writeSupervisionIdentity records which admin client the overseer's CLI must
+// present, inside the activation workspace, before any thread is dispatched.
+//
+// This is how the identity actually reaches the CLI. The thread environment
+// carries the same two selectors, but only when the deployment turned
+// t3.send_thread_environment on, and a fleet that has not verified that field
+// against its T3 release leaves it off; the overseer then authenticated as its
+// host's own coordinator client and decided gates as an operator. The record is
+// written 0600 and carries no secret, so a host without the named credential
+// fails to resolve it rather than gaining authority.
+func (d *LocalDriver) writeSupervisionIdentity(pkg workerproto.ExecutionPackage, workspace string) error {
+	if pkg.Supervision == nil {
+		return nil
+	}
+	if workspace == "" {
+		return errors.New("supervision identity needs a prepared activation workspace")
+	}
+	content, declared, err := pkg.Supervision.ActivationIdentityRecord()
+	if err != nil {
+		return err
+	}
+	if !declared {
+		// The deployment configured no supervisor credential. Writing an empty
+		// record would say the CLI has an identity to present when it has none.
+		return nil
+	}
+	directory := filepath.Join(workspace, workerproto.SupervisorIdentityDir)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return fmt.Errorf("create supervision identity directory: %w", err)
+	}
+	path := filepath.Join(workspace, filepath.FromSlash(workerproto.SupervisorIdentityFile))
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return fmt.Errorf("write supervision identity: %w", err)
+	}
+	// WriteFile leaves an existing file's mode alone, and a re-prepared
+	// activation rewrites this one, so the mode is asserted rather than assumed.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("restrict supervision identity: %w", err)
+	}
+	return nil
+}
+
+// removeSupervisionIdentity takes the record out of the workspace before
+// anything is finalized from it.
+func (d *LocalDriver) removeSupervisionIdentity(workspace string) error {
+	if workspace == "" {
+		return nil
+	}
+	if err := os.RemoveAll(filepath.Join(workspace, workerproto.SupervisorIdentityDir)); err != nil {
+		return fmt.Errorf("remove supervision identity: %w", err)
+	}
+	return nil
 }
 
 // createActivationThread starts the overseer's T3 session.
@@ -173,6 +230,11 @@ func (d *LocalDriver) collectActivation(ctx context.Context, pkg workerproto.Exe
 	d.logger().Info("supervision activation turn ended",
 		"activation", pkg.Supervision.ActivationID, "run", pkg.Supervision.RunID,
 		"epoch", pkg.Supervision.Epoch, "outcome", outcome, "reason", failure)
+	// The identity record leaves the workspace before anything is finalized
+	// from it, for the same reason a task's does.
+	if err := d.removeSupervisionIdentity(workspace); err != nil {
+		return err
+	}
 	task, attempt := packageRecords(pkg, d.Now().UTC())
 	finalized, err := d.Finalizer.Finalize(ctx, backlog.AttemptFinalization{
 		Task: task, Attempt: attempt, WorkspaceDir: workspace, ExplicitSuccess: failure == "",

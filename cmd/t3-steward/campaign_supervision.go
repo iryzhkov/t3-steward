@@ -7,6 +7,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -416,11 +417,13 @@ func (c campaignCLI) runSupervision(ctx context.Context, args []string) error {
 		return campaignSupervisionVerdict(operation, fmt.Errorf(
 			"%w: no coordinator transport carries supervision here", backlogadmin.ErrSupervisionUnavailable))
 	}
-	// An explicit flag wins over the activation environment, so an operator can
-	// decide a gate by hand from a host whose overseer thread set one.
-	identity := supervisorIdentityFromEnvironment(nil)
-	if parsed.supervisorCredential != "" {
-		identity = supervisorIdentity{CredentialReference: parsed.supervisorCredential}
+	// The flag, then the thread environment, then the record the worker wrote
+	// into the activation workspace. Inside an overseer thread the last of the
+	// three always exists, which is what stops the CLI falling back to this
+	// host's own coordinator client and deciding a gate as an operator.
+	identity, err := resolveSupervisorIdentity(parsed.supervisorCredential)
+	if err != nil {
+		return campaignSupervisionVerdict(operation, err)
 	}
 	response, err := c.superviseAs(ctx, identity, request)
 	if err != nil {
@@ -519,6 +522,13 @@ func renderCampaignSupervisionState(out io.Writer, runID string, state backlogad
 		state.Activation.Epoch, state.Activation.TurnsUsed); err != nil {
 		return err
 	}
+	if state.Activation.OperatorDecisions > 0 {
+		if _, err := fmt.Fprintf(out,
+			"  operator     %d decision(s) at this activation's epoch were recorded by an operator, not by the overseer\n",
+			state.Activation.OperatorDecisions); err != nil {
+			return err
+		}
+	}
 	// Route availability is printed before the records, because a gate that is
 	// not moving is most often not moving for a reason no gate, hold or incident
 	// mentions, and the operator reading show is asking exactly that.
@@ -551,6 +561,17 @@ func renderCampaignSupervisionRecords(out io.Writer, state backlogadmin.Supervis
 			view.Gate.Revision, view.Gate.GraphRevision,
 			campaignSupervisionValue(view.Gate.EvidenceSnapshotID), final); err != nil {
 			return err
+		}
+		// Who decided a gate is a separate question from what the gate became.
+		// An overseer deciding as itself and an operator deciding while that
+		// overseer was live leave the same accepted gate, and only the actor on
+		// the decision tells the two apart.
+		if view.LastDecision != nil {
+			if _, err := fmt.Fprintf(out, "    decided %s by %s at %s\n",
+				view.LastDecision.Outcome, campaignSupervisionActorLabel(view.LastDecision.Actor),
+				view.LastDecision.DecidedAt.UTC().Format(time.RFC3339)); err != nil {
+				return err
+			}
 		}
 	}
 	for _, hold := range state.Holds {
@@ -605,8 +626,13 @@ func (c campaignCLI) supervisionAppendix(ctx context.Context, args []string) {
 	}
 	// The appendix runs under whatever identity the thread already has, which is
 	// the supervisor client inside an overseer thread and this host's own admin
-	// client anywhere else.
-	response, err := c.superviseAs(ctx, supervisorIdentityFromEnvironment(nil), backlogadmin.SupervisionRequest{
+	// client anywhere else. It stays silent about every failure, so an
+	// unreadable record leaves the forwarded command's output untouched.
+	identity, identityErr := resolveSupervisorIdentity("")
+	if identityErr != nil {
+		return
+	}
+	response, err := c.superviseAs(ctx, identity, backlogadmin.SupervisionRequest{
 		Version:   backlogadmin.SupervisionVersion,
 		Operation: backlogadmin.SupervisionShow,
 		RunID:     run,

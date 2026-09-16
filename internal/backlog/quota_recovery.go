@@ -137,6 +137,33 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 		if !attempt.Control.HoldsProviderSlot() && !pausedControl(attempt.Control) {
 			continue
 		}
+		if attempt.IsSupervisionActivation() {
+			// An overseer activation is admitted through the same predicate as
+			// every other route and draws on its own pool, so it holds a slot
+			// here. It names itself as its own task rather than a declared one,
+			// and it is never throttled and resumed: a lost activation is
+			// replaced at a new epoch from its durable record. Reading it through
+			// the declared-task path below called every activation attempt an
+			// inconsistent one, on every tick, and left its slot uncounted.
+			assignment, exists := assignments[attempt.AssignmentID]
+			if !exists || assignment.AttemptID != attempt.ID {
+				skip(attempt, "activation has no matching assignment")
+				continue
+			}
+			if assignment.State == domain.AssignmentReleased || assignment.State == domain.AssignmentCompleted {
+				skip(attempt, fmt.Sprintf("activation uses settled assignment %q", assignment.ID))
+				continue
+			}
+			poolIndex, exists := poolByID[assignment.Route.QuotaPoolID]
+			if !exists {
+				skip(attempt, fmt.Sprintf("activation assignment names unknown pool %q", assignment.Route.QuotaPoolID))
+				continue
+			}
+			if attempt.Control.HoldsProviderSlot() {
+				pools[poolIndex].ActiveAssignments++
+			}
+			continue
+		}
 		task, exists := tasks[attempt.TaskID]
 		if !exists {
 			skip(attempt, fmt.Sprintf("names unknown task %q", attempt.TaskID))

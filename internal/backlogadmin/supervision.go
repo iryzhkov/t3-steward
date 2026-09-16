@@ -179,6 +179,11 @@ type SupervisionGateView struct {
 	SuccessorOfferedOrStarted bool `json:"successorOfferedOrStarted"`
 	// Evidence is the snapshot the gate currently holds, when one exists.
 	Evidence *domain.EvidenceSnapshot `json:"evidence,omitempty"`
+	// LastDecision is the most recent decision recorded against this gate. It
+	// names the actor, so show answers who decided a gate rather than only what
+	// the gate became: an overseer acting as itself and an operator acting while
+	// that overseer was live leave the same accepted gate behind.
+	LastDecision *domain.GateDecision `json:"lastDecision,omitempty"`
 }
 
 // SupervisionIncidentView is one incident plus the one fact conclude-failure

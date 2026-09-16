@@ -352,7 +352,19 @@ func ActivationPromptConstraints(input ActivationPackageInput) []string {
 	}
 	if input.SupervisorCredentialReference != "" {
 		constraints = append(constraints,
-			"admin credential reference: "+input.SupervisorCredentialReference)
+			"admin credential reference: "+input.SupervisorCredentialReference,
+			// The CLI discovers this identity by itself, from the record the worker
+			// wrote into this activation's workspace. The flag is stated in full
+			// because the discovery depends on the working directory: a command run
+			// from outside the workspace, or in a shell that changed directory, has
+			// to name the credential or it will be signed as this host's own admin
+			// client and recorded as an operator decision rather than yours.
+			"run every command below from this activation's workspace, where the steward wrote "+
+				workerproto.SupervisorIdentityFile+", so the CLI authenticates as the supervisor; "+
+				"from anywhere else add the exact flag "+
+				"--supervisor-credential "+input.SupervisorCredentialReference,
+			"check the actor on the receipt: a decision recorded with actor kind operator was not "+
+				"recorded as yours, and the activation records that an operator decided it")
 	}
 	return constraints
 }

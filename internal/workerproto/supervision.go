@@ -128,6 +128,99 @@ func (a SupervisionActivation) ActivationEnvironment() map[string]string {
 	}
 }
 
+// SupervisorIdentityDir and SupervisorIdentityFile name the worker-written
+// record of the same two selectors, inside the activation workspace.
+//
+// It is the primary mechanism, and the thread environment stays as an
+// additional channel. Passing an environment through the provider makes the
+// overseer's identity depend on a field of the T3 create command that no tested
+// release verifies, and which is therefore off by default and off on the fleet;
+// an overseer started that way fell back to its host's own coordinator client
+// and decided gates with full operator authority. A file the worker writes into
+// a workspace it already owns depends on nothing outside this repository, and
+// the CLI discovers it the way it already discovers a task's identity record.
+//
+// The directory is the one a task identity record already uses, so a workspace
+// holds one private steward directory rather than two.
+const (
+	SupervisorIdentityDir  = ".t3-steward"
+	SupervisorIdentityFile = SupervisorIdentityDir + "/supervisor.env"
+)
+
+// SupervisorIdentityNames lists the recorded selectors in a stable order.
+func SupervisorIdentityNames() []string {
+	return []string{SupervisorCredentialEnvironment, SupervisorClientEnvironment}
+}
+
+// RenderSupervisorIdentityFile writes the two selectors as KEY=value lines.
+//
+// It carries selectors and nothing else. No secret, no lease and no dispatch
+// token: an overseer reading it learns which admin client to resolve, never how
+// to claim an authority it was not given, and a host without that credential
+// fails to resolve it rather than gaining one.
+func RenderSupervisorIdentityFile(values map[string]string) (string, error) {
+	var builder strings.Builder
+	builder.WriteString("# Written by t3-steward. Selectors only: this file grants nothing.\n")
+	for _, name := range SupervisorIdentityNames() {
+		value, ok := values[name]
+		if !ok || strings.TrimSpace(value) == "" {
+			return "", fmt.Errorf("supervision identity record is missing %s", name)
+		}
+		if strings.ContainsAny(value, "\n\r\x00") {
+			return "", fmt.Errorf("supervision identity value for %s contains a line break", name)
+		}
+		fmt.Fprintf(&builder, "%s=%s\n", name, value)
+	}
+	return builder.String(), nil
+}
+
+// ParseSupervisorIdentityFile reads the rendered form back. Unknown keys are
+// refused rather than ignored: this file decides which client a command speaks
+// for, and a reader that tolerates extra keys is a reader that can be fed
+// something else.
+func ParseSupervisorIdentityFile(content string) (map[string]string, error) {
+	allowed := make(map[string]bool, len(SupervisorIdentityNames()))
+	for _, name := range SupervisorIdentityNames() {
+		allowed[name] = true
+	}
+	values := make(map[string]string, len(allowed))
+	for number, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		name, value, found := strings.Cut(line, "=")
+		if !found || !allowed[name] {
+			return nil, fmt.Errorf("supervision identity record line %d is not a known selector", number+1)
+		}
+		if _, duplicate := values[name]; duplicate {
+			return nil, fmt.Errorf("supervision identity record repeats %s", name)
+		}
+		values[name] = value
+	}
+	for name := range allowed {
+		if strings.TrimSpace(values[name]) == "" {
+			return nil, fmt.Errorf("supervision identity record is missing %s", name)
+		}
+	}
+	return values, nil
+}
+
+// ActivationIdentityRecord renders this activation's supervision identity
+// record, or reports that the activation names no credential and therefore has
+// no record to write.
+func (a SupervisionActivation) ActivationIdentityRecord() (string, bool, error) {
+	environment := a.ActivationEnvironment()
+	if len(environment) == 0 {
+		return "", false, nil
+	}
+	content, err := RenderSupervisorIdentityFile(environment)
+	if err != nil {
+		return "", false, err
+	}
+	return content, true, nil
+}
+
 // IsActivation reports whether this package carries an overseer activation
 // rather than a declared task.
 func (p ExecutionPackage) IsActivation() bool {

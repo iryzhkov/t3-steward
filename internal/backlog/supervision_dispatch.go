@@ -180,10 +180,41 @@ type ActivationAssignmentCommit struct {
 // the same attempt, the same assignment, the same lease and dispatch tokens and
 // the same T3 thread. That is what makes a retry of an undelivered dispatch a
 // retry rather than a second overseer.
+// ActivationEstimate is the durable remaining-cost and runtime estimate of one
+// activation on its overseer route.
+//
+// The overseer has its own quota pool and route and obeys the same automatic
+// admission gates as every other work, so it is forecast the same way rather
+// than excluded from the forecast: an activation with no estimate was skipped
+// by quota planning on every tick, which both logged an inconsistent attempt
+// for work that was perfectly consistent and left its pool slot uncounted.
+//
+// The shape mirrors a task's. A review is a short unit of work, so it is
+// estimated at the lowest difficulty seed, and its runtime is that seed's
+// minutes for each turn the activation may take. It carries no checkpoint
+// margin because an activation is never checkpointed and resumed: a lost one is
+// replaced at a new epoch from its durable record.
+func ActivationEstimate(maxTurns int) domain.TaskAdmissionEstimate {
+	turns := maxTurns
+	if turns < 1 {
+		turns = 1
+	}
+	return domain.TaskAdmissionEstimate{
+		RemainingCost:   SeedCost(activationDifficulty),
+		ExpectedRuntime: time.Duration(SeedMinutes(activationDifficulty) * float64(time.Minute) * float64(turns)),
+	}
+}
+
+// activationDifficulty is the seed an activation is estimated at: a review
+// reads evidence and records a decision, which is the shortest class of work
+// this steward schedules.
+const activationDifficulty = 1
+
 func ActivationAssignment(
 	activation domain.Activation,
 	dispatch ActivationDispatch,
 	placement ActivationPlacement,
+	maxTurns int,
 	now time.Time,
 ) (domain.Attempt, domain.Assignment, error) {
 	switch {
@@ -216,12 +247,17 @@ func ActivationAssignment(
 		UpdatedAt: now,
 	}
 	assignmentID := stableCoordinatorID("assignment", attemptID)
+	estimate := ActivationEstimate(maxTurns)
 	assignment := domain.Assignment{
 		ID:        assignmentID,
 		AttemptID: attemptID,
 		WorkerID:  placement.WorkerID,
 		Route:     placement.Route,
-		State:     domain.AssignmentOffered,
+		// The estimate is durable on the assignment, as a task's is, because the
+		// coordinator reconstructs every pool's reservation from these rows after
+		// a restart and an assignment without one is not plannable.
+		Estimate: &estimate,
+		State:    domain.AssignmentOffered,
 		// The assignment epoch is the activation epoch. An activation at a new
 		// epoch is a different attempt with a different assignment, so the two
 		// counters cannot disagree.

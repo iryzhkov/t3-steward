@@ -612,7 +612,7 @@ func PlanActivation(state SupervisionActivationState, signal ActivationSignal, n
 		next.LeaseToken, next.LeaseExpiresAt = "", nil
 	}
 	if next.Outcome == domain.ActivationOutcomeDecided || next.Outcome == domain.ActivationOutcomeNoDecision ||
-		next.Outcome == domain.ActivationOutcomeExpired {
+		next.Outcome == domain.ActivationOutcomeDecidedByOperator || next.Outcome == domain.ActivationOutcomeExpired {
 		record.EventCursor = next.ConsumedEventCursor
 		plan.CursorAdvanced = true
 	}

@@ -111,7 +111,18 @@ func (c coordinatorSupervision) DispatchActivations(ctx context.Context, admissi
 	}
 	now := c.at()
 	for _, run := range records.WorkflowRuns {
-		if run.Supervision == nil || run.Progress.Terminal() {
+		if run.Supervision == nil {
+			continue
+		}
+		if run.Progress.Terminal() {
+			// A settled run wakes no overseer, and skipping it entirely is what
+			// left the last activation of a settled run active with a live lease
+			// forever: nothing else observes it, because every other lifecycle
+			// signal is derived from an assignment this loop no longer reads.
+			// Settlement is therefore the event that closes it.
+			if err := c.closeSettledActivation(ctx, run); err != nil {
+				c.logger.Error("closing the activation of a settled run failed", "run", run.ID, "error", err)
+			}
 			continue
 		}
 		if err := c.dispatchRun(ctx, records, run, workers, admission, now); err != nil {
@@ -180,7 +191,8 @@ func (c coordinatorSupervision) dispatchRun(
 	if plan.Dispatch == nil {
 		return nil
 	}
-	attempt, assignment, err := backlog.ActivationAssignment(plan.Activation, *plan.Dispatch, placement, now)
+	attempt, assignment, err := backlog.ActivationAssignment(plan.Activation, *plan.Dispatch, placement,
+		run.Supervision.Config.MaxTurnsPerActivation, now)
 	if err != nil {
 		return err
 	}
@@ -202,6 +214,48 @@ func (c coordinatorSupervision) dispatchRun(
 		"run", run.ID, "activation", plan.Activation.ID, "epoch", plan.Activation.Epoch,
 		"worker", committed.WorkerID, "assignment", committed.ID, "thread", committed.ThreadID,
 		"retry", plan.Dispatch.Retry)
+	return nil
+}
+
+// closeSettledActivation closes the activation of a run that has settled.
+//
+// A settled run revokes every mutating supervision capability, so an activation
+// still recorded as pending-dispatch or active holds a lease nobody may use and
+// claims an overseer nobody is waiting for. Its own lifecycle never notices,
+// because every other signal is read from an assignment that is gone by then.
+// Closing it here clears the lease and records the outcome, and the transition
+// is idempotent: a closed activation is skipped on the next boundary rather
+// than closed twice.
+func (c coordinatorSupervision) closeSettledActivation(ctx context.Context, run domain.WorkflowRun) error {
+	state, err := c.activations.Store.LoadSupervisionActivationState(ctx, run.ID)
+	if errors.Is(err, backlog.ErrSupervisionNotConfigured) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	switch state.Activation.State {
+	case domain.ActivationPendingDispatch, domain.ActivationActive:
+	default:
+		// Idle, spent, revoked, escalated, recovery-required and closed all
+		// hold no live overseer, so settlement has nothing to close.
+		return nil
+	}
+	plan, err := c.activations.Advance(ctx, run.ID, backlog.ActivationSignal{
+		Event:                  domain.ActivationEventRunSettled,
+		Actor:                  domain.Actor{Kind: domain.ActorOperator, Principal: coordinatorSupervisionPrincipal},
+		ExpectedEpoch:          state.Activation.Epoch,
+		ExpectedRecordRevision: state.Record.Revision,
+		Principal:              c.settings.principalID(),
+		IncidentID:             state.Activation.IncidentID,
+		Reason:                 "the run settled, so this activation holds no decision authority",
+	})
+	if err != nil {
+		return err
+	}
+	c.logger.Info("supervision activation closed on run settlement",
+		"run", run.ID, "activation", plan.Activation.ID, "epoch", plan.Activation.Epoch,
+		"state", plan.Activation.State, "outcome", plan.Activation.Outcome)
 	return nil
 }
 
