@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,6 +118,61 @@ func TestOwnershipReadFailureDegradesToUnowned(t *testing.T) {
 	}
 	if !h.d.ownershipWarned {
 		t.Fatal("the degradation was not recorded for the once-only log")
+	}
+}
+
+// A turn the user starts after the watchdog stopped the bucket is theirs: it
+// is left running while the phase is stopped, and its readings are what rearm
+// or re-stop the bucket. The S-18 session was re-stopped three times in a row
+// on turns the user had started deliberately.
+func TestUserStartedTurnIsNotReStoppedWhileBucketStopped(t *testing.T) {
+	h := newHarness(t, nil)
+	h.fake.add("a", "codex", "gpt", true)
+	reset := h.clock.Add(5 * time.Hour)
+	h.snap(codexPrimary, 96, reset, "1")
+	if fmt.Sprint(h.fake.stops) != "[interrupt:a]" {
+		t.Fatalf("stops = %v", h.fake.stops)
+	}
+	// A fresh thread the user starts while the bucket is stopped is not held.
+	h.clock = h.clock.Add(time.Minute)
+	sent := h.clock
+	h.fake.add("user", "codex", "gpt", true)
+	h.fake.mu.Lock()
+	h.fake.threads["user"].LatestUserMessageAt = &sent
+	h.fake.mu.Unlock()
+	h.poll()
+	if fmt.Sprint(h.fake.stops) != "[interrupt:a]" {
+		t.Fatalf("a user-started thread was stopped: %v", h.fake.stops)
+	}
+	// Its reading, still in the stopped range, keeps the bucket stopped; a
+	// harness-started thread with no user message is held.
+	h.snap(codexPrimary, 97, reset, "2")
+	h.fake.add("harness", "codex", "gpt", true)
+	h.poll()
+	if fmt.Sprint(h.fake.stops) != "[interrupt:a interrupt:harness]" {
+		t.Fatalf("stops = %v", h.fake.stops)
+	}
+}
+
+// The drain notice says how long the session has at the current rate and
+// that the provider ends it at 100%.
+func TestDrainNoticeNamesTimeToExhaustion(t *testing.T) {
+	h := newHarness(t, nil)
+	h.fake.add("a", "codex", "gpt", true)
+	reset := h.clock.Add(112 * time.Minute)
+	h.snap(codexPrimary, 78.4, reset, "s0")
+	h.clock = h.clock.Add(time.Minute)
+	h.snap(codexPrimary, 82.2, reset, "s1")
+	h.clock = h.clock.Add(time.Minute)
+	h.snap(codexPrimary, 86, reset, "s2")
+	h.clock = h.clock.Add(5 * time.Second)
+	h.snap(codexPrimary, 86.3, reset, "s3")
+	if fmt.Sprint(h.fake.warnings) != "[warn:a drain:a]" || len(h.fake.stops) != 0 {
+		t.Fatalf("warnings = %v stops = %v", h.fake.warnings, h.fake.stops)
+	}
+	text := h.fake.texts["a"]
+	if !strings.Contains(text, "exhausted in about") || !strings.Contains(text, "ends the session at 100%") {
+		t.Fatalf("drain text = %q", text)
 	}
 }
 

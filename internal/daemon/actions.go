@@ -79,6 +79,9 @@ func (d *Daemon) warnThreads(ctx context.Context, threads []domain.Thread, a dom
 		d.record(ctx, domain.ActionRecord{Kind: a.Kind, Bucket: a.Bucket.String(), Detail: a.Reason, Err: err.Error()})
 		return
 	}
+	if a.Kind == domain.ActionDrain {
+		text += exhaustionNote(state)
+	}
 	for _, t := range threads {
 		fresh, err := d.store.MarkThreadNotice(ctx, t.ID, a.Bucket, state.Epoch, a.Kind, d.now())
 		if err != nil {

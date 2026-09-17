@@ -145,7 +145,11 @@ type BucketState struct {
 	Healthy bool `json:"healthy"`
 	// RecoveredAt is when the bucket last rearmed.
 	RecoveredAt *time.Time `json:"recoveredAt"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
+	// StoppedAt is when the bucket entered the stopped phase of the current
+	// window; nil in every other phase. A turn whose latest user message is
+	// newer than it was started by the user knowingly and is not held.
+	StoppedAt *time.Time `json:"stoppedAt,omitempty"`
+	UpdatedAt time.Time  `json:"updatedAt"`
 	// Recent holds the last readings of the current window, for the burn
 	// rate.
 	Recent []Reading `json:"recent,omitempty"`

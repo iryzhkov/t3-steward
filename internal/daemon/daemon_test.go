@@ -21,14 +21,16 @@ type fakeT3 struct {
 	mu       sync.Mutex
 	threads  map[string]*domain.Thread
 	warnings []string // "kind:threadID"
-	stops    []string // "mode:threadID"
-	resumes  []string
+	// texts keeps the last warning text per thread.
+	texts   map[string]string
+	stops   []string // "mode:threadID"
+	resumes []string
 	// stopFails makes StopThread a no-op for the listed threads.
 	stopFails map[string]bool
 }
 
 func newFakeT3() *fakeT3 {
-	return &fakeT3{threads: map[string]*domain.Thread{}, stopFails: map[string]bool{}}
+	return &fakeT3{threads: map[string]*domain.Thread{}, stopFails: map[string]bool{}, texts: map[string]string{}}
 }
 
 func (f *fakeT3) add(id, instance, model string, running bool) {
@@ -69,6 +71,7 @@ func (f *fakeT3) WarnThread(_ context.Context, t domain.Thread, w domain.Warning
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.warnings = append(f.warnings, string(w.Kind)+":"+t.ID)
+	f.texts[t.ID] = w.Text
 	return nil
 }
 
@@ -358,8 +361,8 @@ func TestNewTurnInStoppedWindowIsStoppedAgainWithFreshIntent(t *testing.T) {
 		t.Fatalf("intent = %+v", intent)
 	}
 	// Then the user says continue: a new turn runs while the bucket is
-	// still stopped. It is stopped like any new session and the intent is
-	// pending again, for this turn.
+	// still stopped. The user chose to spend the quota, so the turn is left
+	// alone (S-18); only a turn the harness starts on its own is held.
 	h.clock = h.clock.Add(time.Minute)
 	continued := h.clock
 	h.fake.mu.Lock()
@@ -369,11 +372,24 @@ func TestNewTurnInStoppedWindowIsStoppedAgainWithFreshIntent(t *testing.T) {
 	h.fake.threads["a"].LatestUserMessageAt = &continued
 	h.fake.mu.Unlock()
 	h.poll()
+	if fmt.Sprint(h.fake.stops) != "[interrupt:a]" {
+		t.Fatalf("a user-started turn was re-stopped: %v", h.fake.stops)
+	}
+	// The turn ends and the harness starts another one on its own, on a
+	// thread whose last user message predates the stop: that one is stopped
+	// like any new session and gets a fresh intent for this turn.
+	h.clock = h.clock.Add(time.Minute)
+	earlier := reset.Add(-6 * time.Hour)
+	h.fake.mu.Lock()
+	h.fake.threads["a"].TurnID = "turn-background"
+	h.fake.threads["a"].LatestUserMessageAt = &earlier
+	h.fake.mu.Unlock()
+	h.poll()
 	if fmt.Sprint(h.fake.stops) != "[interrupt:a interrupt:a]" {
 		t.Fatalf("stops = %v", h.fake.stops)
 	}
 	intent, _, _ = h.store.LoadResumeIntent(context.Background(), "a")
-	if intent.Status != domain.ResumePending || intent.StoppedTurnID != "turn-continue" {
+	if intent.Status != domain.ResumePending || intent.StoppedTurnID != "turn-background" {
 		t.Fatalf("intent = %+v", intent)
 	}
 	// The same turn is not stopped twice.

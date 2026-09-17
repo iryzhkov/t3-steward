@@ -434,6 +434,14 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 			if !d.cfg.Policy.StopNewSessions {
 				continue
 			}
+			// A turn the user started after the stop is the user choosing
+			// to spend the quota; it is left running and its readings rearm
+			// or re-stop the bucket. Only turns the harness starts on its
+			// own are held.
+			running = harnessStartedThreads(running, st.StoppedAt)
+			if len(running) == 0 {
+				continue
+			}
 			d.stopThreads(ctx, running, domain.Action{
 				Kind: domain.ActionStop, Bucket: st.Key, Snapshot: snap,
 				Reason: fmt.Sprintf("thread started while %s is stopped at %.0f%%", st.Key, st.UsedPercent),
@@ -465,6 +473,22 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 	if d.Archive != nil {
 		d.Archive.Tick(ctx, threads, states)
 	}
+}
+
+// harnessStartedThreads drops the threads whose latest user message is newer
+// than the bucket's stop: the user started those turns knowingly.
+func harnessStartedThreads(threads []domain.Thread, stoppedAt *time.Time) []domain.Thread {
+	if stoppedAt == nil {
+		return threads
+	}
+	out := make([]domain.Thread, 0, len(threads))
+	for _, t := range threads {
+		if t.LatestUserMessageAt != nil && t.LatestUserMessageAt.After(*stoppedAt) {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 func snapshotFromState(st domain.BucketState) domain.QuotaSnapshot {
