@@ -71,6 +71,15 @@ const (
 	ReasonCatalogDigestMismatch = "catalog-digest-mismatch"
 )
 
+// ReasonProjectBindingDefaulted is an informational detail, not a reason. It
+// is carried on a candidate's Unchecked list when the coordinator loaded the
+// task's project with a default local binding (no backlog_v2.projects entry:
+// no credentials, resource locks or directory resources). The project runs; a
+// reader is told that nothing host-local was checked for it because nothing
+// host-local is bound. It belongs to neither reason set on purpose, so it can
+// never turn a ready fleet into accepted_waiting or refuse a submission.
+const ReasonProjectBindingDefaulted = "project-binding-defaulted"
+
 // Reason codes the frozen contract does not name.
 //
 // The H3 ADR puts timing constraints and artifact and message limits in the

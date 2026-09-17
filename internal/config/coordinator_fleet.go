@@ -123,10 +123,21 @@ func (c *Config) ApplyCoordinatorFleet(fleet CoordinatorFleet) error {
 		worker.Capabilities = slices.Clone(desired.Capabilities)
 		workers[name] = worker
 	}
+	var defaulted []string
 	for name, desired := range fleet.Projects {
 		project, exists := c.BacklogV2.Projects[name]
 		if !exists {
-			return fmt.Errorf("fleet project %q needs an explicit local execution binding", name)
+			// A project the projection names and backlog_v2.projects does not
+			// is loaded with an empty local binding: no credentials, no
+			// resource locks, no directory resources, and the type left to
+			// the ordinary defaulting. Nothing in the local binding is
+			// required for a plain Git project, and refusing the whole
+			// configuration here took every coordinator admin query down
+			// the first time a project was published before it was bound.
+			// The name is recorded so the coordinator can say so at startup
+			// and the readiness check can annotate the project's candidates.
+			project = V2Project{}
+			defaulted = append(defaulted, name)
 		}
 		if len(desired.EligibleWorkers) == 0 {
 			return fmt.Errorf("fleet project %q requires explicit eligible workers", name)
@@ -142,10 +153,21 @@ func (c *Config) ApplyCoordinatorFleet(fleet CoordinatorFleet) error {
 		project.Workers = slices.Clone(desired.EligibleWorkers)
 		projects[name] = project
 	}
+	slices.Sort(defaulted)
 	c.BacklogV2.Workers = workers
 	c.BacklogV2.Projects = projects
 	c.coordinatorFleetApplied = true
+	c.defaultedFleetProjects = defaulted
 	return nil
+}
+
+// DefaultedFleetProjects names, sorted, the fleet projects that were loaded
+// with a default local binding because backlog_v2.projects has no entry for
+// them. It is empty when no projection was applied or every project is bound.
+// The coordinator logs one warning per name at startup; the readiness check
+// reports the same names as an informational detail on their candidates.
+func (c Config) DefaultedFleetProjects() []string {
+	return slices.Clone(c.defaultedFleetProjects)
 }
 
 func (c *Config) applyCoordinatorFleet(home string) error {

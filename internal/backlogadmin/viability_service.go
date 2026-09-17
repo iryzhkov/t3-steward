@@ -43,6 +43,11 @@ type ViabilitySettings struct {
 	// is misconfigured must be reported as misconfigured, never as unknown.
 	Projects      []backlog.ProjectDefinition
 	SetupProfiles []backlog.SetupProfile
+	// DefaultedProjects names the projects the coordinator loaded with a
+	// default local binding (config.Config.DefaultedFleetProjects). A task on
+	// one of them carries ReasonProjectBindingDefaulted as an informational
+	// detail on every candidate.
+	DefaultedProjects []string
 	// MaxBundleBytes and MaxBundleFiles are the coordinator's message limits.
 	MaxBundleBytes int64
 	MaxBundleFiles int
@@ -78,6 +83,12 @@ func (v ViabilitySettings) profile(name string) (backlog.SetupProfile, bool) {
 		}
 	}
 	return backlog.SetupProfile{}, false
+}
+
+// defaulted reports whether the coordinator loaded a project with a default
+// local binding.
+func (v ViabilitySettings) defaulted(name string) bool {
+	return slices.Contains(v.DefaultedProjects, name)
 }
 
 // configured reports whether this coordinator can answer a viability query at
@@ -434,6 +445,12 @@ func (v view) viabilityCandidate(
 	candidate := ViabilityCandidate{Worker: worker.id}
 	candidate.Reasons = append(candidate.Reasons, enrollmentReasons(worker)...)
 	candidate.Unchecked = append(candidate.Unchecked, enrollmentUnchecked(worker)...)
+	if settings.defaulted(task.Project) {
+		candidate.Unchecked = append(candidate.Unchecked, fmt.Sprintf(
+			"%s: project %q has no backlog_v2.projects entry on this coordinator, so it runs "+
+				"with default local bindings and no credentials, resource locks or directory "+
+				"resources were checked for it", ReasonProjectBindingDefaulted, task.Project))
+	}
 	drifted := false
 	for _, reason := range candidate.Reasons {
 		drifted = drifted || reason.Code == ReasonCatalogDigestMismatch
