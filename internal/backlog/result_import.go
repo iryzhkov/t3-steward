@@ -77,6 +77,10 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	}
 	assignment, attempt, task, err := resultImportBinding(records, manifest)
 	if err != nil {
+		if errors.Is(err, errResultImportTaskMissing) {
+			return i.rejectResult(ctx, ResultImportReport{}, stableCoordinatorID("outcome", manifest.ID),
+				attempt, manifest.CreatedAt, now, err)
+		}
 		return ResultImportReport{}, err
 	}
 	outcomeID := stableCoordinatorID("outcome", manifest.ID)
@@ -270,12 +274,31 @@ func resultImportBinding(records sqlite.CoordinatorRecords, manifest workerproto
 		(!attempt.Progress.Terminal() && attempt.Progress != domain.ProgressVerifying) {
 		return assignment, attempt, domain.Task{}, fmt.Errorf("result import attempt binding is stale: assignment=%q attempt=%q progress=%q", attempt.AssignmentID, attempt.ID, attempt.Progress)
 	}
+	if attempt.IsSupervisionActivation() {
+		// An overseer activation is dispatched as ordinary assigned work and
+		// therefore returns an ordinary result, but it is deliberately not a node
+		// of the run's graph, so there is no declared task to bind it to. Its
+		// contract is the decision protocol rather than declared outputs and
+		// verification commands: what it may return is a final message and a
+		// thread archive, which the object identities below already constrain.
+		//
+		// Looking for a declared task here is what jammed a worker: the lookup
+		// failed on every pass, and because the coordinator reconciles a worker
+		// in one pass, every unrelated result that worker held stayed stuck
+		// behind it.
+		return assignment, attempt, domain.Task{ID: attempt.TaskID, WorkflowID: attempt.WorkflowRunID}, nil
+	}
 	task, _ := domain.TaskForAttempt(attempt, records.WorkflowRuns, records.Tasks)
 	if task.ID == "" {
-		return assignment, attempt, task, errors.New("result import task is missing")
+		return assignment, attempt, task, fmt.Errorf("%w: attempt %q names task %q", errResultImportTaskMissing, attempt.ID, attempt.TaskID)
 	}
 	return assignment, attempt, task, nil
 }
+
+// errResultImportTaskMissing marks a result whose attempt names a task the
+// coordinator does not have. Task deletion is unsupported, so this cannot
+// resolve by waiting and the result is dead-lettered rather than retried.
+var errResultImportTaskMissing = errors.New("result import task is missing")
 
 // rejectResult settles an attempt whose result can never be imported.
 //
