@@ -64,8 +64,8 @@ func supervisorIdentityTestConfig(t *testing.T) config.Config {
 // may act on the run, read from the activation it recorded.
 type supervisorIdentityScope struct{ principal string }
 
-func (s supervisorIdentityScope) SupervisorScope(_ context.Context, principal string) (backlogadmin.SupervisorScope, error) {
-	if principal != s.principal {
+func (s supervisorIdentityScope) SupervisorScope(_ context.Context, principal, runID string) (backlogadmin.SupervisorScope, error) {
+	if principal != s.principal || runID != supervisorIdentityTestRun {
 		return backlogadmin.SupervisorScope{}, nil
 	}
 	return backlogadmin.SupervisorScope{RunID: supervisorIdentityTestRun, ActivationEpoch: 2}, nil

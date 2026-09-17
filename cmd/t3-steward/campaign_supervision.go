@@ -31,6 +31,7 @@ evidence and is never parsed into an outcome.
   escalate <run> --incident ID --expected-revision N
   resolve  <run> --incident ID --expected-revision N
            --outcome (conclude-failure|remediated|cancelled)
+  reassess <run> --expected-revision N
 
 Every mutating verb requires --request-id KEY and --reason TEXT, and accepts
 --activation EPOCH. --request-id is the idempotency key: repeating a verb with
@@ -39,9 +40,17 @@ carrying a different payload is refused rather than answered from the receipt.
 --activation names the epoch a supervisor acts under; an operator may omit it.
 
 --expected-revision is the revision of the record the verb targets: the gate's
-revision for decide, the supervision record's revision for hold and release,
-and the incident's revision for escalate and resolve. Read all of them with
-"t3-steward campaign supervision show <run> --json".
+revision for decide, the supervision record's revision for hold, release and
+reassess, and the incident's revision for escalate and resolve. Read all of
+them with "t3-steward campaign supervision show <run> --json".
+
+reassess is the operator's re-arming verb, and only an operator may use it. An
+overseer that ends its activation without deciding leaves the run waiting: the
+coordinator escalates the open review incident and starts no replacement, since
+repeating the same review automatically is a spin rather than a decision.
+reassess records an operator-reassessment trigger, and the next coordinator
+boundary wakes a fresh activation at the next epoch, spending one of the run's
+declared activations. It is refused once that budget is exhausted.
 
 --supervisor-credential REFERENCE authenticates as the fleet's supervisor admin
 client instead of this host's own coordinator client, which is what a decision
@@ -122,6 +131,9 @@ func campaignSupervisionFlags(operation backlogadmin.SupervisionOperation) map[s
 	case backlogadmin.SupervisionResolve:
 		allowed["--incident"] = true
 		allowed["--outcome"] = true
+	case backlogadmin.SupervisionReassess:
+		// Reassessment names no record of its own, so it adds no flag beyond the
+		// audit fields every mutating verb carries.
 	}
 	return allowed
 }
@@ -476,6 +488,8 @@ func campaignSupervisionChange(response backlogadmin.SupervisionResponse) string
 		return fmt.Sprintf("hold %s is %s", response.Hold.ID, response.Hold.State)
 	case backlogadmin.SupervisionEscalate:
 		return fmt.Sprintf("incident %s is %s", response.IncidentID, response.IncidentState)
+	case backlogadmin.SupervisionReassess:
+		return "a reassessment was requested, so the next coordinator boundary wakes a fresh overseer activation"
 	case backlogadmin.SupervisionResolve:
 		outcome := ""
 		if response.Resolution != nil {
@@ -485,6 +499,16 @@ func campaignSupervisionChange(response backlogadmin.SupervisionResponse) string
 	default:
 		return "nothing named"
 	}
+}
+
+// supervisionAwaitsOperator reports the one activation outcome that no
+// automatic boundary will move: a turn that ended without a decision. The
+// coordinator escalates it and deliberately starts no replacement, so the run
+// is waiting for an operator's reassessment and every surface that shows
+// supervision has to say so.
+func supervisionAwaitsOperator(activation domain.Activation) bool {
+	return activation.State == domain.ActivationSpent &&
+		activation.Outcome == domain.ActivationOutcomeNoDecision
 }
 
 func campaignSupervisionScopeLabel(scope domain.HoldScope) string {
@@ -521,6 +545,19 @@ func renderCampaignSupervisionState(out io.Writer, runID string, state backlogad
 		campaignSupervisionValue(state.Activation.ID), campaignSupervisionValue(string(state.Activation.State)),
 		state.Activation.Epoch, state.Activation.TurnsUsed); err != nil {
 		return err
+	}
+	// A review that ended without deciding is the one activation outcome that
+	// leaves the run waiting for a person rather than for the coordinator, and
+	// nothing else on this page says so: the activation reads as spent, the gate
+	// as ready for review and the incident as escalated, which is what a run
+	// waiting for its overseer looks like too.
+	if supervisionAwaitsOperator(state.Activation) {
+		if _, err := fmt.Fprintf(out,
+			"  waiting      the overseer ended activation %s without a decision; this run waits for an operator to run "+
+				"\"t3-steward campaign supervision reassess %s --request-id KEY --reason TEXT\"\n",
+			campaignSupervisionValue(state.Activation.ID), runID); err != nil {
+			return err
+		}
 	}
 	if state.Activation.OperatorDecisions > 0 {
 		if _, err := fmt.Fprintf(out,
@@ -645,6 +682,14 @@ func (c campaignCLI) supervisionAppendix(ctx context.Context, args []string) {
 		campaignSupervisionValue(string(state.Activation.State)), state.Record.ActivationEpoch,
 		state.Record.ActivationsUsed, state.Record.BudgetGrantedActivations); err != nil {
 		return
+	}
+	if supervisionAwaitsOperator(state.Activation) {
+		if _, err := fmt.Fprintf(c.stdout,
+			"  the overseer ended activation %s without a decision; this run waits for an operator to run "+
+				"\"t3-steward campaign supervision reassess %s\"\n",
+			campaignSupervisionValue(state.Activation.ID), run); err != nil {
+			return
+		}
 	}
 	for _, view := range state.Gates {
 		if _, err := fmt.Fprintf(c.stdout, "  gate %s %q %s  revision %d\n",

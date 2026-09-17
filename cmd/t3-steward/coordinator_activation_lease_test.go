@@ -31,6 +31,9 @@ const (
 	activationLeaseGate     = "gate-review"
 	activationLeaseEvidence = "evidence-lease"
 	activationLeaseClient   = "campaign-supervisor"
+	activationLeaseIncident = "incident-review"
+	activationLeaseEvent    = "event-review-ready"
+	activationLeaseThread   = "thread-notify"
 )
 
 // activationLeaseFixture is one supervised run with a reviewable gate, its
@@ -54,9 +57,12 @@ func newActivationLeaseFixture(t *testing.T) *activationLeaseFixture {
 	store.SetClock(func() time.Time { return fixture.now })
 	fixture.supervision = backlog.CoordinatorSupervisionStore{Store: store}
 	fixture.coordinator = coordinatorSupervision{
-		store:       fixture.supervision,
-		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		now:         func() time.Time { return fixture.now },
+		store:  fixture.supervision,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		now:    func() time.Time { return fixture.now },
+		workers: func(ctx context.Context) ([]domain.WorkerSnapshot, error) {
+			return store.LoadWorkerSnapshots(ctx)
+		},
 		activations: backlog.SupervisionActivationService{Store: fixture.supervision, Now: func() time.Time { return fixture.now }},
 		settings: coordinatorActivationSettings{
 			CoordinatorID: "coordinator-1", CoordinatorEpoch: 1, SupervisorClient: activationLeaseClient,
@@ -97,6 +103,13 @@ func newActivationLeaseFixture(t *testing.T) *activationLeaseFixture {
 		Inventory: domain.WorkerInventory{
 			ID: activationLeaseWorker, AcceptBacklog: true, Health: domain.WorkerHealthReady,
 			Capabilities: []string{workerproto.CapabilityCampaignSupervision}, ObservedAt: fixture.now,
+			// The overseer route has to be hosted here, or the dispatch pass
+			// stops at placement and never observes the activation's own
+			// lifecycle.
+			Providers: []domain.WorkerProviderInventory{{
+				InstanceID: "claudeAgent", Models: []string{"claude-fable-5-1"},
+				QuotaPoolID: "claude-main", Available: true,
+			}},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -108,6 +121,9 @@ func newActivationLeaseFixture(t *testing.T) *activationLeaseFixture {
 			MaxActivations:        5,
 			MaxTurnsPerActivation: 4,
 			ActivationDeadline:    time.Hour,
+			// A destination is configured so an escalation this fixture provokes
+			// leaves an observable delivery intent rather than only an incident.
+			Escalation: domain.SupervisionEscalation{NotifyThread: true, ThreadID: activationLeaseThread},
 		}},
 		Gates: []domain.Gate{{
 			RunID: activationLeaseRun, State: domain.GateReadyForReview, GraphRevision: 1,
@@ -119,10 +135,22 @@ func newActivationLeaseFixture(t *testing.T) *activationLeaseFixture {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// The review incident the overseer is woken to close. Every wake belongs to
+	// one, which is what an escalation is recorded against.
+	if _, err := store.OpenReviewIncident(ctx, sqlite.IncidentRequest{
+		RunID: activationLeaseRun, IncidentID: activationLeaseIncident, RequestID: activationLeaseIncident,
+		Actor:         domain.Actor{Kind: domain.ActorOperator, Principal: coordinatorSupervisionPrincipal},
+		SourceEventID: activationLeaseEvent, GateID: activationLeaseGate,
+		RequiredDisposition: domain.DispositionGateDecision,
+		Reason:              "the review gate is ready", OpenedAt: fixture.now,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := fixture.supervision.AppendSupervisionEvents(ctx, activationLeaseRun,
 		[]backlog.SupervisionEvent{{
-			ID: "event-review-ready", RunID: activationLeaseRun, Kind: backlog.TriggerGateReviewReady,
-			Reason: "the review gate is ready", GateID: activationLeaseGate, OccurredAt: fixture.now,
+			ID: activationLeaseEvent, RunID: activationLeaseRun, Kind: backlog.TriggerGateReviewReady,
+			Reason: "the review gate is ready", GateID: activationLeaseGate,
+			IncidentID: activationLeaseIncident, OccurredAt: fixture.now,
 		}}); err != nil {
 		t.Fatal(err)
 	}
@@ -186,6 +214,7 @@ func (f *activationLeaseFixture) signal(t *testing.T, event domain.ActivationEve
 		ExpectedEpoch:          state.Activation.Epoch,
 		ExpectedRecordRevision: state.Record.Revision,
 		Principal:              f.coordinator.settings.principalID(),
+		IncidentID:             activationLeaseIncident,
 		Reason:                 string(event),
 	}
 }

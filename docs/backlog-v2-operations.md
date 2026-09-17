@@ -482,6 +482,8 @@ t3-steward campaign supervision escalate <run> --incident ID \
     --expected-revision N --request-id KEY --reason TEXT
 t3-steward campaign supervision resolve <run> --incident ID \
     --outcome conclude-failure --expected-revision N --request-id KEY --reason TEXT
+t3-steward campaign supervision reassess <run> \
+    --expected-revision N --request-id KEY --reason TEXT
 ```
 
 Read every revision from `show --json` before acting on it. `--expected-revision`
@@ -540,11 +542,18 @@ backlog_v2:
         supervisor: true
 ```
 
-Exactly one, because the coordinator authorizes supervision by principal and
-binds that principal to one run and one activation epoch. Two supervisor entries
-would make the identity an overseer authenticates as ambiguous, so the
-coordinator names the ambiguity and dispatches nothing rather than silently
-choosing one.
+Exactly one, because the coordinator records that principal on every activation
+it dispatches and authorizes supervision against those activations. Two
+supervisor entries would make the identity an overseer authenticates as
+ambiguous, so the coordinator names the ambiguity and dispatches nothing rather
+than silently choosing one.
+
+One supervisor client serves any number of concurrent runs. The capability is
+resolved per activation, not per principal: on each request the coordinator asks
+whether this principal holds a live activation on the run the request names, and
+a live activation on some other run is neither authority here nor a reason to
+refuse here. So two supervised campaigns reviewed at the same time each get their
+own overseer under the same admin client, and each decides only its own run.
 
 The secret that reference resolves to must exist, as an owner-only 0600 file
 under `~/.config/upkeeper/secrets/f03-admin/<name>`, on the coordinator host
@@ -581,14 +590,47 @@ A run already accepted in that state is not stuck. Every gate can still be
 decided by an operator, through the same `campaign supervision` verbs, without
 `--activation`.
 
+#### When an overseer ends its turn without deciding
+
+An activation whose turn finishes with no decision recorded is not an
+acceptance and not a failure; it is a review that produced nothing. The
+coordinator deliberately starts no replacement on the same evidence, because
+repeating a review that already declined to decide is a spin that spends the
+run's bounded activations without anything new to decide about.
+
+What it does instead is escalate, once: the run's open review incident moves to
+`escalated` with the reason `overseer activation <id> ended without a decision`,
+and, when the campaign asked for a notification and named a destination, one
+delivery intent is queued for the notify thread. `t3-steward campaign
+supervision show <run>` and `t3-steward campaign explain <run>/<task>` both say
+that the run waits for an operator, and name the command that re-arms it.
+
+That command is:
+
+```sh
+t3-steward campaign supervision reassess <run> \
+  --expected-revision N --request-id KEY --reason TEXT
+```
+
+`--expected-revision` is the supervision record's revision, which `campaign
+supervision show <run> --json` prints. Reassessment records the
+operator-reassessment trigger, and the next coordinator boundary raises the
+epoch and dispatches a fresh activation there, spending one of the run's
+declared activations. Only an operator may ask for it: an overseer re-arming
+itself is exactly the automatic spin above. Once the run's activation budget is
+exhausted, reassess is refused and the run escalates instead; raising the budget
+is a separate decision.
+
 #### What the supervisor capability is, and what it is not
 
 A campaign overseer authenticates as an ordinary admin client and is then
 granted the `supervisor` role instead of `remote-admin`, by naming it in the
-coordinator's own configuration. The role is bound, server-side, to one run and
-one activation epoch: on every request the coordinator compares the run and
-epoch the request names against the activation its own supervision record
-currently considers valid. A supervisor may read that run's workflow, graph,
+coordinator's own configuration. The role is bound, server-side, to one
+activation, which is a pair of a run and an activation epoch: on every request
+the coordinator looks up the live activation it dispatched to this principal on
+the run the request names, and compares the epoch the request names against that
+activation's. A request that names no run is refused outright, and a principal
+holding activations on several runs at once is authorized separately on each. A supervisor may read that run's workflow, graph,
 tasks, explanations, events and artifacts, and may act on that run's gates and
 holds. It may not issue any coordinator command kind at all, which means it
 cannot skip a task, mark one successful, retry, pause, cancel, or start work

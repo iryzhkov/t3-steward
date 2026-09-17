@@ -188,6 +188,9 @@ func (c coordinatorSupervision) dispatchRun(
 	c.logger.Info("supervision activation advanced",
 		"run", run.ID, "event", signal.Event, "state", plan.Activation.State,
 		"outcome", plan.Activation.Outcome, "reason", signal.Reason)
+	if err := c.escalateNoDecision(ctx, run, plan, now); err != nil {
+		return err
+	}
 	if plan.Dispatch == nil {
 		return nil
 	}
@@ -215,6 +218,47 @@ func (c coordinatorSupervision) dispatchRun(
 		"worker", committed.WorkerID, "assignment", committed.ID, "thread", committed.ThreadID,
 		"retry", plan.Dispatch.Retry)
 	return nil
+}
+
+// escalateNoDecision asks a human to act when an overseer's turn ended without
+// deciding anything.
+//
+// docs/plans/campaign-supervision.md forbids an automatic spin, so the run is
+// not woken again on the same evidence: repeating the turn would spend the run's
+// bounded activations on a review that already declined to decide, and it would
+// do so without anything new to decide about. The activation's own bookkeeping
+// consumes the inbox it reviewed, so nothing wakes a replacement either, and
+// before this the run simply stopped with its review incident open and nobody
+// told. One escalation is what turns that silence into a request for an
+// operator; re-arming is the operator's own "campaign supervision reassess",
+// which is the operator-reassessment trigger of seams section 3.3.
+//
+// It escalates once, because a spent activation produces no further lifecycle
+// signal, and because both halves of the escalation are already idempotent: the
+// incident resolution is keyed on the incident and the outbox entry's identity
+// is derived from the run and the incident.
+func (c coordinatorSupervision) escalateNoDecision(
+	ctx context.Context,
+	run domain.WorkflowRun,
+	plan backlog.ActivationPlan,
+	now time.Time,
+) error {
+	if run.Supervision == nil || plan.Activation.Outcome != domain.ActivationOutcomeNoDecision {
+		return nil
+	}
+	incidentID := plan.Activation.IncidentID
+	if incidentID == "" {
+		// An activation woken for no particular incident has no open review to
+		// escalate, and inventing one would report an incident nothing raised.
+		c.logger.Warn("supervision activation ended without a decision and names no incident",
+			"run", run.ID, "activation", plan.Activation.ID, "epoch", plan.Activation.Epoch)
+		return nil
+	}
+	reason := fmt.Sprintf("overseer activation %s ended without a decision", plan.Activation.ID)
+	c.logger.Warn("supervision activation ended without a decision; escalating",
+		"run", run.ID, "activation", plan.Activation.ID, "epoch", plan.Activation.Epoch,
+		"incident", incidentID)
+	return c.escalate(ctx, *run.Supervision, incidentID, plan.Inbox.EventIDs(), reason, now)
 }
 
 // closeSettledActivation closes the activation of a run that has settled.

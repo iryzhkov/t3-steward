@@ -177,7 +177,7 @@ func (c coordinatorSupervision) advanceRun(
 		// No worker can run this run's overseer, so the gate stays closed and
 		// nobody would ever be told why. One escalation says so, deduplicated on
 		// the incident.
-		if err := c.escalate(ctx, *run.Supervision, incidentID, eventID,
+		if err := c.escalate(ctx, *run.Supervision, incidentID, []string{eventID},
 			c.routeBlockCause()+", so "+reason+" and no activation can decide it", now); err != nil {
 			return err
 		}
@@ -214,17 +214,24 @@ func (c coordinatorSupervision) escalateRouteBlock(
 		reason := fmt.Sprintf(
 			"%s, so gate %s has waited for a review since %s and no activation can decide it",
 			c.routeBlockCause(), incident.GateID, incident.OpenedAt.UTC().Format(time.RFC3339))
-		if err := c.escalate(ctx, *run.Supervision, incident.ID, incident.SourceEventID, reason, now); err != nil {
+		if err := c.escalate(ctx, *run.Supervision, incident.ID, []string{incident.SourceEventID}, reason, now); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// escalate records one escalation on its incident and, when the run asked for a
+// notification and named a destination, queues one delivery intent for it.
+//
+// eventIDs are the supervision events the escalation is about. They travel with
+// the delivery so the thread that receives it can name what went unreviewed.
 func (c coordinatorSupervision) escalate(
 	ctx context.Context,
 	record domain.SupervisionRecord,
-	incidentID, eventID, reason string,
+	incidentID string,
+	eventIDs []string,
+	reason string,
 	now time.Time,
 ) error {
 	// The destination is resolved before the incident is escalated, so that an
@@ -247,7 +254,7 @@ func (c coordinatorSupervision) escalate(
 	if err != nil && !errors.Is(err, sqlite.ErrSupervisionRequestConflict) {
 		return err
 	}
-	entry, wanted := backlog.EscalationOutboxEntry(record, threadID, incidentID, recorded, []string{eventID}, now)
+	entry, wanted := backlog.EscalationOutboxEntry(record, threadID, incidentID, recorded, eventIDs, now)
 	if !wanted {
 		// Either the run asked for no notification at all, or it asked for one
 		// and named no destination. Both leave the escalation visible on its

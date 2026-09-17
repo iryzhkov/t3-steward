@@ -48,6 +48,10 @@ func supervisionCommandLines() map[backlogadmin.SupervisionOperation][]string {
 			"--outcome", "remediated",
 			"--request-id", "key-5", "--reason", "the correction landed",
 		},
+		backlogadmin.SupervisionReassess: {
+			"run-1", "--expected-revision", "7",
+			"--request-id", "key-6", "--reason", "the overseer ended without deciding",
+		},
 	}
 }
 

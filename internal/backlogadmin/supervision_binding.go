@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
@@ -127,6 +128,11 @@ func (c CoordinatorSupervisionStore) CommitSupervision(ctx context.Context, comm
 		})
 	case SupervisionEscalate, SupervisionResolve:
 		decision, err = c.resolveIncident(ctx, commit, request)
+	case SupervisionReassess:
+		// Reassessment changes no gate, hold or incident, so it has no decision
+		// row to compose an answer from. It appends one trigger and records the
+		// receipt, and the answer is the response the service computed.
+		return c.requestReassessment(ctx, commit, response)
 	default:
 		return SupervisionReceipt{}, fmt.Errorf("%w: supervision operation %q commits nothing", ErrInvalidQuery, commit.Operation)
 	}
@@ -187,6 +193,33 @@ func (c CoordinatorSupervisionStore) decide(
 	})
 }
 
+// requestReassessment records the operator-reassessment trigger that re-arms a
+// run, and the receipt that makes the request key idempotent.
+//
+// The trigger's identity is derived from the run and the request key, so a
+// retried reassessment under the same key appends nothing a second time even if
+// the receipt was never written.
+func (c CoordinatorSupervisionStore) requestReassessment(
+	ctx context.Context,
+	commit SupervisionCommit,
+	response SupervisionResponse,
+) (SupervisionReceipt, error) {
+	events := backlog.CoordinatorSupervisionStore{Store: c.Store}
+	if _, err := events.AppendSupervisionEvents(ctx, commit.RunID, []backlog.SupervisionEvent{{
+		ID:         "supervision-event:reassess:" + commit.RunID + ":" + commit.RequestKey,
+		RunID:      commit.RunID,
+		Kind:       backlog.TriggerOperatorReassessment,
+		Reason:     commit.Reason,
+		OccurredAt: commit.Now,
+	}}); err != nil {
+		return SupervisionReceipt{}, supervisionNotFound(err, commit.RunID)
+	}
+	if err := c.Store.RecordSupervisionReceipt(ctx, commit.RunID, commit.RequestKey, commit.PayloadDigest, response); err != nil {
+		return SupervisionReceipt{}, err
+	}
+	return SupervisionReceipt{PayloadDigest: commit.PayloadDigest, Response: response}, nil
+}
+
 func (c CoordinatorSupervisionStore) resolveIncident(
 	ctx context.Context,
 	commit SupervisionCommit,
@@ -229,16 +262,17 @@ func (c CoordinatorSupervisionStore) resolveIncident(
 	})
 }
 
-// SupervisorScope answers what one supervisor principal may act on right now.
-// It is read from the coordinator's own activation records: the credential
-// proves which client is calling, and the coordinator decides what that client
-// may touch.
-func (c CoordinatorSupervisionStore) SupervisorScope(ctx context.Context, principal string) (SupervisorScope, error) {
-	runID, epoch, err := c.Store.SupervisorScopeForPrincipal(ctx, principal)
+// SupervisorScope answers whether one supervisor principal holds a live
+// activation on one named run, and at which epoch. It is read from the
+// coordinator's own activation records: the credential proves which client is
+// calling, the request names the run, and the coordinator decides whether that
+// client may touch it.
+func (c CoordinatorSupervisionStore) SupervisorScope(ctx context.Context, principal, runID string) (SupervisorScope, error) {
+	resolved, epoch, err := c.Store.SupervisorScopeForActivation(ctx, principal, runID)
 	if err != nil {
 		return SupervisorScope{}, err
 	}
-	return SupervisorScope{RunID: runID, ActivationEpoch: epoch}, nil
+	return SupervisorScope{RunID: resolved, ActivationEpoch: epoch}, nil
 }
 
 // ArtifactRun resolves an artifact to the run it belongs to, so a capability

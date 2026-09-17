@@ -630,9 +630,10 @@ func TestSupervisionLateApprovalAfterTakeoverAndAfterCancellation(t *testing.T) 
 	}
 }
 
-// A supervisor principal resolves to the one run its own live activation names.
-// A second run is not reachable by naming it, and neither is any run once the
-// activation that granted the capability stops being live.
+// A supervisor principal resolves, on each run it names, to its own live
+// activation there. A run it holds no activation on is not reachable by naming
+// it, and neither is any run once the activation that granted the capability
+// stops being live.
 func TestSupervisorPrincipalIsScopedToItsOwnLiveActivation(t *testing.T) {
 	store := openSupervisionStore(t, filepath.Join(t.TempDir(), "state.db"))
 	ctx := context.Background()
@@ -641,7 +642,7 @@ func TestSupervisorPrincipalIsScopedToItsOwnLiveActivation(t *testing.T) {
 	const principal = "remote:campaign-supervisor"
 
 	liveActivationOnRun(t, store, "run-a", principal, supervisionTestTime.Add(time.Hour))
-	runID, epoch, err := store.SupervisorScopeForPrincipal(ctx, principal)
+	runID, epoch, err := store.SupervisorScopeForActivation(ctx, principal, "run-a")
 	if err != nil {
 		t.Fatalf("resolve supervisor scope: %v", err)
 	}
@@ -649,9 +650,9 @@ func TestSupervisorPrincipalIsScopedToItsOwnLiveActivation(t *testing.T) {
 		t.Fatalf("scope = %q epoch %d, want run-a at epoch 1", runID, epoch)
 	}
 	// Naming the other run does not reach it: the scope is the coordinator's
-	// conclusion about the credential, not a field of the request.
-	if runID == "run-b" {
-		t.Fatal("the supervisor resolved to a run it holds no activation on")
+	// conclusion about the activation it dispatched, not a field of the request.
+	if other, _, err := store.SupervisorScopeForActivation(ctx, principal, "run-b"); err != nil || other != "" {
+		t.Fatalf("scope on run-b = %q (err %v), want no activation at all", other, err)
 	}
 	// The decision path refuses the other run for the same reason: run-b has no
 	// activation at all, so no overseer actor covers it.
@@ -673,8 +674,38 @@ func TestSupervisorPrincipalIsScopedToItsOwnLiveActivation(t *testing.T) {
 	// An expired lease ends the read half of the capability at the same moment
 	// it ends the write half.
 	liveActivationOnRun(t, store, "run-a", principal, supervisionTestTime.Add(-time.Minute))
-	if runID, _, err = store.SupervisorScopeForPrincipal(ctx, principal); err != nil || runID != "" {
+	if runID, _, err = store.SupervisorScopeForActivation(ctx, principal, "run-a"); err != nil || runID != "" {
 		t.Fatalf("expired scope = %q (err %v), want no run at all", runID, err)
+	}
+}
+
+// The live defect this replaced: one fleet-wide supervisor client holds a live
+// activation on every run under review at once, and resolving its capability by
+// principal alone refused every command of every one of them, show and escalate
+// included, so both runs were stranded with nobody told.
+func TestOneSupervisorPrincipalServesConcurrentRuns(t *testing.T) {
+	store := openSupervisionStore(t, filepath.Join(t.TempDir(), "state.db"))
+	ctx := context.Background()
+	seedNamedSupervisedRun(t, store, "run-a", runScopedGate("run-a"))
+	seedNamedSupervisedRun(t, store, "run-b", runScopedGate("run-b"))
+	const principal = "remote:supervisor:fleet"
+	liveActivationOnRun(t, store, "run-a", principal, supervisionTestTime.Add(time.Hour))
+	liveActivationOnRun(t, store, "run-b", principal, supervisionTestTime.Add(time.Hour))
+
+	for _, runID := range []string{"run-a", "run-b"} {
+		resolved, epoch, err := store.SupervisorScopeForActivation(ctx, principal, runID)
+		if err != nil {
+			t.Fatalf("resolve the scope of %q on %s: %v", principal, runID, err)
+		}
+		if resolved != runID || epoch != 1 {
+			t.Fatalf("scope on %s = %q epoch %d, want %s at epoch 1", runID, resolved, epoch, runID)
+		}
+	}
+	// The refusal that produced the defect named both runs in one message. It
+	// must not be reachable at all: a second live activation is now an ordinary
+	// deployment rather than an unresolvable configuration.
+	if _, _, err := store.SupervisorScopeForActivation(ctx, principal, "run-a"); err != nil {
+		t.Fatalf("a second concurrent activation refused the first run: %v", err)
 	}
 }
 
