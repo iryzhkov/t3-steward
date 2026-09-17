@@ -12,14 +12,26 @@ type WorkerSnapshot struct {
 	Connected        bool                          `json:"connected"`
 	Inventory        WorkerInventory               `json:"inventory"`
 	Assignments      []WorkerAssignmentObservation `json:"assignments,omitempty"`
-	ObservedAt       time.Time                     `json:"observedAt"`
-	ValidUntil       time.Time                     `json:"validUntil"`
+	// QuotaObservations are the provider buckets the worker's host watchdog
+	// observes. Present only when the coordinator asked for them on the
+	// snapshot exchange and the worker build advertises the capability, so an
+	// older peer on either side never sees the field.
+	QuotaObservations []WorkerQuotaObservation `json:"quotaObservations,omitempty"`
+	ObservedAt        time.Time                `json:"observedAt"`
+	ValidUntil        time.Time                `json:"validUntil"`
 }
 
 // WorkerAssignmentObservation is the worker's view of one assigned attempt.
 type WorkerJournalExcerpt struct {
-	Phase         string    `json:"phase"`
-	Failure       string    `json:"failure,omitempty"`
+	Phase   string `json:"phase"`
+	Failure string `json:"failure,omitempty"`
+	// PauseReason names the bucket that paused the attempt on the worker
+	// host, for example "claudeAgent/claude/seven_day at 97%", while a local
+	// quota pause is in force.
+	PauseReason string `json:"pauseReason,omitempty"`
+	// ThreadState is the worker's last observation of the T3 thread: active,
+	// stopped or missing.
+	ThreadState   string    `json:"threadState,omitempty"`
 	PackageSHA256 string    `json:"packageSha256"`
 	GraphRevision int64     `json:"graphRevision"`
 	TaskRevision  int64     `json:"taskRevision"`

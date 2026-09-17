@@ -29,6 +29,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
 	"github.com/iryzhkov/t3-steward/internal/wait"
+	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
 
 // Set by GoReleaser through -ldflags.
@@ -57,6 +58,7 @@ Commands:
   diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
   schedules          Inspect and control schedules and trigger history.
   wait               Park a thread until a check succeeds; the steward wakes it (add, list, cancel).
+  thread             Operate on a local T3 thread (stop <thread-id> [--session]).
   archive            Cold storage for finished threads (candidates, run, list, restore).
   export             Print this host's readings and token samples as JSON for another host's report.
   install-service    Install a per-user background service (Linux systemd).
@@ -106,7 +108,7 @@ func run(args []string) error {
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil
-	case "wait":
+	case "wait", "thread":
 		paths, err := config.DefaultPaths()
 		if err != nil {
 			return err
@@ -120,6 +122,9 @@ func run(args []string) error {
 				continue
 			}
 			sub = append(sub, rest[i])
+		}
+		if cmd == "thread" {
+			return cmdThread(g, sub)
 		}
 		return cmdWait(g, sub)
 	case "archive", "ui-archive":
@@ -600,6 +605,12 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, 
 		Usage:        usageCh,
 	}, store))
 	d.Usage = usageCh
+	// Threads a live steward attempt owns on this host are the worker's to
+	// pause and resume; the watchdog reads the ownership from the worker's
+	// journal on every tick. A host without a worker bootstrap owns nothing.
+	if home, homeErr := os.UserHomeDir(); homeErr == nil {
+		d.Ownership = workerruntime.JournalThreadOwnership{Home: home}
+	}
 	// Wait delivery is explicitly requested by registration, independent of
 	// watchdog enforcement. Its client must use the same delivery policy.
 	waitDryRun := cfg.Wait.DryRun != nil && *cfg.Wait.DryRun

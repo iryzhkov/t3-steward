@@ -57,6 +57,15 @@ type QuotaBridgeReport struct {
 // pools. It never sums observations: a bucket identity appears once in a pool,
 // while duplicate reports remain available to conservative conflict handling.
 func (b QuotaBridge) Reconcile(ctx context.Context, reservations []QuotaResumeReservation) (QuotaBridgeReport, error) {
+	return b.ReconcileObservations(ctx, reservations, nil)
+}
+
+// ReconcileObservations is Reconcile with the bucket observations workers
+// reported from their hosts merged in. The coordinator's own host is often
+// not the one consuming a pool, so its reading ages past the freshness limit
+// while a worker has a fresh one; per bucket the freshest reading wins, and
+// a pool closes at its stop threshold whichever host observed it.
+func (b QuotaBridge) ReconcileObservations(ctx context.Context, reservations []QuotaResumeReservation, workers []domain.WorkerSnapshot) (QuotaBridgeReport, error) {
 	if b.Store == nil {
 		return QuotaBridgeReport{}, fmt.Errorf("quota bridge store is required")
 	}
@@ -75,6 +84,7 @@ func (b QuotaBridge) Reconcile(ctx context.Context, reservations []QuotaResumeRe
 	if err != nil {
 		return QuotaBridgeReport{}, fmt.Errorf("load quota observations: %w", err)
 	}
+	states = MergeWorkerQuotaObservations(states, workers)
 	sort.Slice(states, func(i, j int) bool {
 		if states[i].Key.String() != states[j].Key.String() {
 			return states[i].Key.String() < states[j].Key.String()
@@ -167,7 +177,7 @@ func (b QuotaBridge) ReconcileState(ctx context.Context, input QuotaPlanningStat
 	if err != nil {
 		return QuotaBridgeReport{}, fmt.Errorf("reconstruct quota planning state: %w", err)
 	}
-	report, err := b.Reconcile(ctx, state.ResumeReservations)
+	report, err := b.ReconcileObservations(ctx, state.ResumeReservations, input.WorkerSnapshots)
 	if err != nil {
 		return QuotaBridgeReport{}, err
 	}
@@ -180,6 +190,60 @@ func (b QuotaBridge) ReconcileState(ctx context.Context, input QuotaPlanningStat
 	report.Pools = state.QuotaPools
 	report.Windows = state.QuotaWindows
 	return report, nil
+}
+
+// MergeWorkerQuotaObservations folds the bucket observations workers reported
+// into the coordinator's own bucket states. For each bucket key the freshest
+// observation wins: a worker reading newer than every local reading of the
+// same key replaces them, an older or equally old one is dropped, and a key
+// no local reading has is added. Duplicate local readings of one key are kept
+// as they were, for the conflict handling downstream.
+func MergeWorkerQuotaObservations(local []domain.BucketState, workers []domain.WorkerSnapshot) []domain.BucketState {
+	newestLocal := make(map[domain.BucketKey]time.Time, len(local))
+	for _, state := range local {
+		if state.ObservedAt.After(newestLocal[state.Key]) {
+			newestLocal[state.Key] = state.ObservedAt
+		}
+	}
+	fresher := make(map[domain.BucketKey]domain.BucketState)
+	for _, worker := range workers {
+		for _, observed := range worker.QuotaObservations {
+			if observed.ObservedAt.IsZero() {
+				continue
+			}
+			if localAt, ok := newestLocal[observed.Key]; ok && !observed.ObservedAt.After(localAt) {
+				continue
+			}
+			if current, ok := fresher[observed.Key]; ok && !observed.ObservedAt.After(current.ObservedAt) {
+				continue
+			}
+			fresher[observed.Key] = domain.BucketState{
+				Key: observed.Key, Phase: observed.Phase, Epoch: observed.Epoch,
+				LimitName: observed.LimitName, ModelSelector: observed.ModelSelector,
+				UsedPercent: observed.UsedPercent, ResetsAt: observed.ResetsAt,
+				ObservedAt: observed.ObservedAt, Healthy: observed.Healthy, UpdatedAt: observed.ObservedAt,
+			}
+			if fresher[observed.Key].Epoch == "" {
+				state := fresher[observed.Key]
+				state.Epoch = domain.EpochFor(observed.ResetsAt)
+				fresher[observed.Key] = state
+			}
+		}
+	}
+	if len(fresher) == 0 {
+		return local
+	}
+	merged := make([]domain.BucketState, 0, len(local)+len(fresher))
+	for _, state := range local {
+		if _, replaced := fresher[state.Key]; replaced {
+			continue
+		}
+		merged = append(merged, state)
+	}
+	for _, state := range fresher {
+		merged = append(merged, state)
+	}
+	return merged
 }
 
 // bucketGovernsPool reports whether an observed bucket bears on a pool's

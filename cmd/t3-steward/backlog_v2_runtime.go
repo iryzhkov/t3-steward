@@ -187,9 +187,14 @@ func (r coordinatorQuotaReconciler) Tick(ctx context.Context) (backlog.QuotaBrid
 	if err != nil {
 		return backlog.QuotaBridgeReport{}, fmt.Errorf("load quota throttle snapshot: %w", err)
 	}
+	workers, err := r.store.LoadWorkerSnapshots(ctx)
+	if err != nil {
+		return backlog.QuotaBridgeReport{}, fmt.Errorf("load quota worker snapshots: %w", err)
+	}
 	report, err := r.bridge.ReconcileState(ctx, backlog.QuotaPlanningStateInput{
 		Tasks: records.Tasks, Attempts: records.Attempts,
 		Assignments: records.Assignments, ThrottleRecords: throttleRecords,
+		WorkerSnapshots: workers,
 	})
 	if err != nil {
 		return backlog.QuotaBridgeReport{}, err

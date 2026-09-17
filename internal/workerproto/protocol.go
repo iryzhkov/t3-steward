@@ -152,6 +152,13 @@ const CapabilityTaskWaitCollectionFence = "task-wait-collection-fence-v1"
 // coordinator try to verify a review as worker output.
 const CapabilityCampaignSupervision = "campaign-supervision-v1"
 
+// CapabilityQuotaObservations advertises that this worker build reports its
+// host watchdog's bucket observations on the snapshot exchange when asked.
+// The coordinator asks only a worker that advertises it, and a worker reports
+// only when asked, so neither an older coordinator nor an older worker ever
+// meets the field; that is why the wire version is unchanged.
+const CapabilityQuotaObservations = "quota-observations-v1"
+
 type SnapshotRequest struct {
 	// ObservedWorkerEpoch and ObservedSequence acknowledge a durable snapshot
 	// read before the coordinator builds this parked-assignment statement.
@@ -171,6 +178,10 @@ type SnapshotRequest struct {
 	// still holds, while the keep list is bounded by the campaigns that are
 	// still alive and makes releasing idempotent by construction.
 	RetainedCampaignRuns []string `json:"retainedCampaignRuns,omitempty"`
+	// QuotaObservationsWanted asks the worker to include its host's bucket
+	// observations in the snapshot. It is sent only to a worker advertising
+	// CapabilityQuotaObservations.
+	QuotaObservationsWanted bool `json:"quotaObservationsWanted,omitempty"`
 }
 
 // MaxParkedAssignments bounds one report so a malformed or hostile coordinator

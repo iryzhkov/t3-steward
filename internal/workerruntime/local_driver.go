@@ -640,6 +640,18 @@ func (d *LocalDriver) StopThread(ctx context.Context, pkg workerproto.ExecutionP
 }
 
 func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
+	return d.collect(ctx, pkg, workspace, "")
+}
+
+// CollectAfterPause is Collect for an attempt whose thread was paused by the
+// quota watchdog on this host. A provider session that is not ready then
+// names the pause in the failure text instead of reading as an unexplained
+// session failure.
+func (d *LocalDriver) CollectAfterPause(ctx context.Context, pkg workerproto.ExecutionPackage, workspace, pauseReason string) error {
+	return d.collect(ctx, pkg, workspace, pauseReason)
+}
+
+func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPackage, workspace, pauseReason string) error {
 	if pkg.IsActivation() {
 		return d.collectActivation(ctx, pkg, workspace)
 	}
@@ -653,7 +665,7 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
 		return err
 	} else if scoped != nil {
-		return scoped.Collect(ctx, pkg, workspace)
+		return scoped.collect(ctx, pkg, workspace, pauseReason)
 	}
 	if d.Config.DryRun {
 		// Nothing is captured in no-effects mode, but the collection is over,
@@ -707,7 +719,7 @@ func (d *LocalDriver) Collect(ctx context.Context, pkg workerproto.ExecutionPack
 			return fmt.Errorf("collect thread archive: %w", err)
 		}
 	}
-	failure, err := backlog.ResultCompletionFailure(archive, pkg.Identity.ThreadID, message)
+	failure, err := backlog.ResultCompletionFailureWithPause(archive, pkg.Identity.ThreadID, message, pauseReason)
 	if err != nil {
 		return err
 	}

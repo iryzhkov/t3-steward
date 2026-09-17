@@ -41,6 +41,24 @@ func ActivationTurnOutcome(archive []byte, threadID, summary string, recordedDec
 	return domain.ActivationOutcomeNoDecision, reason, nil
 }
 
+// SessionNotReadyFailure is the reason a result is refused when the provider
+// session did not end its turn cleanly.
+const SessionNotReadyFailure = "provider session is not ready without an active turn or error"
+
+// ResultCompletionFailureWithPause is ResultCompletionFailure for an attempt
+// whose thread was paused by the quota watchdog on the worker host. The
+// refusal of a session that is not ready stands, but it names the pause,
+// so that "paused by quota watchdog: claudeAgent/claude/seven_day at 97%"
+// is read instead of an unexplained session failure. pauseReason is the
+// worker's pause summary; empty means no pause was recorded.
+func ResultCompletionFailureWithPause(archive []byte, threadID, summary, pauseReason string) (string, error) {
+	reason, err := ResultCompletionFailure(archive, threadID, summary)
+	if err != nil || reason != SessionNotReadyFailure || strings.TrimSpace(pauseReason) == "" {
+		return reason, err
+	}
+	return "paused by quota watchdog: " + strings.TrimSpace(pauseReason) + "; " + reason, nil
+}
+
 // ResultCompletionFailure validates provider completion independently of prose.
 // A legacy done marker is optional and never overrides unsuccessful execution.
 func ResultCompletionFailure(archive []byte, threadID, summary string) (string, error) {
@@ -89,7 +107,7 @@ func ResultCompletionFailure(archive []byte, threadID, summary string) (string, 
 	}
 	session := thread.Session
 	if session == nil || session.ThreadID != threadID || session.Status != "ready" || session.ActiveTurnID != nil || (session.LastError != nil && *session.LastError != "") {
-		return "provider session is not ready without an active turn or error", nil
+		return SessionNotReadyFailure, nil
 	}
 	if thread.HasPendingApprovals || thread.HasPendingUserInput || (thread.BackgroundLiveness != nil && *thread.BackgroundLiveness == "working") {
 		return "thread still has pending input, approval, or background work", nil

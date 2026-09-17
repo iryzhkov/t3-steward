@@ -20,6 +20,10 @@ type QuotaPlanningStateInput struct {
 	RouteEstimates  []RouteEstimate
 	QuotaPools      []domain.QuotaPool
 	QuotaWindows    []QuotaWindowBudget
+	// WorkerSnapshots carry the bucket observations workers report from
+	// their own hosts; the bridge merges them with the coordinator's own by
+	// bucket key, keeping the freshest. Older workers report none.
+	WorkerSnapshots []domain.WorkerSnapshot
 }
 
 // QuotaPlanningState contains detached, deterministic planner inputs. Pool

@@ -40,10 +40,47 @@ const (
 	PhaseUnknown Phase = "unknown"
 )
 
+// LocalThrottleRequest is a quota pause the worker runtime applied to one of
+// its own threads because the host watchdog's bucket for the attempt's route
+// reached the drain or stop phase. It is the worker-side counterpart of a
+// coordinator ThrottleCommand: the durable intent before the effect, and the
+// evidence the pause reports upward while it is in force.
+type LocalThrottleRequest struct {
+	// Kind is drain (a checkpoint request) or hard-stop.
+	Kind        domain.ThrottleCommandKind `json:"kind"`
+	Bucket      domain.BucketKey           `json:"bucket"`
+	Phase       domain.Phase               `json:"phase"`
+	UsedPercent float64                    `json:"usedPercent"`
+	LimitName   string                     `json:"limitName,omitempty"`
+	ResetsAt    *time.Time                 `json:"resetsAt,omitempty"`
+	ObservedAt  time.Time                  `json:"observedAt"`
+	// Reason is the pause summary reported to the coordinator, for example
+	// "claudeAgent/claude/seven_day at 97%".
+	Reason      string    `json:"reason"`
+	RequestedAt time.Time `json:"requestedAt"`
+	// StoppedAt is when the thread was observed stopped after the request.
+	StoppedAt  *time.Time                 `json:"stoppedAt,omitempty"`
+	Checkpoint *domain.CheckpointMetadata `json:"checkpoint,omitempty"`
+	// ResumedAt is set once the worker resumed the thread; the request then
+	// moves to LastLocalThrottle.
+	ResumedAt *time.Time `json:"resumedAt,omitempty"`
+}
+
 type AttemptRecord struct {
 	// StopObservedSequence fences collection on a coordinator statement built
 	// after a snapshot that includes this stopped observation.
 	StopObservedSequence int64 `json:"stopObservedSequence,omitempty"`
+	// LocalThrottle is the quota pause in force for this attempt, applied by
+	// the worker runtime itself rather than delivered by the coordinator.
+	// While it is set the attempt reports ControlPaused and nothing is
+	// collected; it is cleared by the worker's own resume.
+	LocalThrottle *LocalThrottleRequest `json:"localThrottle,omitempty"`
+	// LastLocalThrottle is the most recent local pause that ended, kept so a
+	// later collection can name it when the provider session is not ready.
+	LastLocalThrottle *LocalThrottleRequest `json:"lastLocalThrottle,omitempty"`
+	// ObservedThreadState is the last T3 observation of the attempt's thread
+	// (active, stopped, missing), reported for operators.
+	ObservedThreadState string `json:"observedThreadState,omitempty"`
 	// ObservedTurnID binds the stopped fence to a concrete provider turn even
 	// when a park and resume happen entirely between worker polls.
 	ObservedTurnID   string                                    `json:"observedTurnId,omitempty"`
