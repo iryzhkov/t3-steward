@@ -334,6 +334,58 @@ func openScheduleTriggerStore(
 	return store
 }
 
+// A scheduled occurrence has to arrive plannable. Every task of the workflow
+// needs its first attempt, exactly as a submission creates one, or the planner
+// refuses the whole run with "task has no attempt" on every cycle and the
+// schedule fires into nothing.
+func TestAScheduledRunArrivesWithAnAttemptForEveryTask(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	store := openScheduleTriggerStore(t, path, domain.ScheduleFailureNextCycle, nil)
+	defer store.Close()
+
+	now := scheduleTriggerTestTime
+	if err := store.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{Tasks: []domain.Task{
+		{ID: "task-root", WorkflowID: "workflow-1", Name: "root"},
+		{ID: "task-child", WorkflowID: "workflow-1", Name: "child", Needs: []string{"root"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := scheduleTriggerRequest("trigger-with-tasks", "run-with-tasks", now)
+	if _, err := store.CommitScheduleTrigger(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	progressByTask := map[string]domain.ProgressState{}
+	for _, attempt := range records.Attempts {
+		if attempt.WorkflowRunID != request.WorkflowRunID {
+			continue
+		}
+		if _, duplicate := progressByTask[attempt.TaskID]; duplicate {
+			t.Fatalf("task %q received more than one attempt", attempt.TaskID)
+		}
+		progressByTask[attempt.TaskID] = attempt.Progress
+	}
+	if progressByTask["task-root"] != domain.ProgressReady || progressByTask["task-child"] != domain.ProgressBlocked {
+		t.Fatalf("attempts = %#v", progressByTask)
+	}
+
+	// A replayed firing is the same occurrence, so it writes the same rows.
+	if _, err := store.CommitScheduleTrigger(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := store.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replayed.Attempts) != len(records.Attempts) {
+		t.Fatalf("replay changed the attempt count from %d to %d", len(records.Attempts), len(replayed.Attempts))
+	}
+}
+
 func scheduleTriggerRequest(triggerID, runID string, nominal time.Time) domain.ScheduleTriggerRequest {
 	return domain.ScheduleTriggerRequest{
 		ScheduleID: "schedule-1", TriggerID: triggerID, WorkflowRunID: runID,
