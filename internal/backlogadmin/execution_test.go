@@ -884,6 +884,48 @@ func TestPlanAdminCancelCascadesThroughDAGAndProjectsRun(t *testing.T) {
 	}
 }
 
+// A supervised run owns an overseer activation attempt that is not a node of
+// its graph. Handing that attempt to the cancellation DAG refused the whole
+// plan, so a supervised run could not be cancelled once its overseer had run.
+func TestPlanAdminCancelIgnoresAnOverseerActivationAttempt(t *testing.T) {
+	now := adminTestNow
+	records := sqlite.CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{{
+			ID: "run-1", WorkflowID: "workflow-1", Progress: domain.ProgressActive, Revision: 7,
+		}},
+		Tasks: []domain.Task{
+			{ID: "task-root", WorkflowID: "workflow-1", Name: "root"},
+			{ID: "task-child", WorkflowID: "workflow-1", Name: "child", Needs: []string{"root"}},
+		},
+		Attempts: []domain.Attempt{
+			{ID: "attempt-root", WorkflowRunID: "run-1", TaskID: "task-root", Number: 1, Progress: domain.ProgressActive, Control: domain.ControlRunning, Revision: 3},
+			{ID: "attempt-child", WorkflowRunID: "run-1", TaskID: "task-child", Number: 1, Progress: domain.ProgressBlocked, Control: domain.ControlUnassigned, Revision: 5},
+			{
+				ID: "activation-attempt-1", WorkflowRunID: "run-1", TaskID: "activation-1",
+				SupervisionActivationID: "activation-1", Number: 1, Progress: domain.ProgressVerifying,
+				Control: domain.ControlStopped, Revision: 2,
+			},
+		},
+	}
+	command := domain.AdminCommand{
+		ID: "cancel-root", Kind: domain.AdminCommandCancel, TargetType: domain.AdminTargetAttempt,
+		TargetID: "attempt-root", ExpectedRevision: 3, State: domain.AdminCommandPending, CreatedAt: now,
+	}
+	application, _, err := planAdminCommand(records, nil, nil, command, now)
+	if err != nil {
+		t.Fatalf("cancelling a supervised run: %v", err)
+	}
+	if application.State != domain.AdminCommandApplied || application.Attempt == nil ||
+		application.Attempt.Progress != domain.ProgressCancelled {
+		t.Fatalf("target application = %#v", application)
+	}
+	for _, related := range application.RelatedAttempts {
+		if related.ID == "activation-attempt-1" {
+			t.Fatalf("the cancellation cascaded into an overseer activation: %#v", related)
+		}
+	}
+}
+
 func TestPlanAdminScheduleCommandsUseDeterministicManualIDs(t *testing.T) {
 	now := adminTestNow
 	records := sqlite.CoordinatorRecords{Schedules: []domain.Schedule{{
