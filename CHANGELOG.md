@@ -28,7 +28,7 @@ All notable changes to this project are documented here. The format follows
   not produced evidence yet. Both appear in the JSON document as `waits` and
   `gates` on the workflow detail.
 - `campaign help dag-semantics` documents both mounts a task reads files from:
-  static inputs at `.t3/inputs/<declared path>` and dependency artifacts at
+  static inputs at `.t3/inputs/<path relative to inputs/>` and dependency artifacts at
   `.t3/dependencies/<producer task id>/<artifact>`, with the note that the
   producer id is assigned at ingestion and must be listed rather than
   hard-coded.

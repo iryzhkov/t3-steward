@@ -145,13 +145,14 @@ inputs
   The static files a campaign ships, listed under the top-level inputs: field
   as paths relative to the campaign directory (globs are allowed). They are
   retained as artifacts of the run and mounted read-only in every task's
-  workspace, at their declared path, under
+  workspace at
 
-      .t3/inputs/<declared path>
+      .t3/inputs/<path relative to the campaign's inputs/ directory>
 
-  so a file declared as inputs/plan.md is read at .t3/inputs/inputs/plan.md.
-  The declared path is kept in full; nothing is stripped from it. A prompt can
-  name these paths outright, because they are fixed at authoring time.
+  so a file declared as inputs/plan.md is read at .t3/inputs/plan.md. An input
+  declared outside inputs/, such as fixtures/data.json, keeps its full declared
+  path: .t3/inputs/fixtures/data.json. A prompt can name these paths outright,
+  because they are fixed at authoring time.
 
 inputs_from
   Dependencies release a task; inputs_from is how the task receives the work.

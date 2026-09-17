@@ -181,7 +181,8 @@ func TestHelpTopicsAreNonEmptyAndDistinct(t *testing.T) {
 		// producer task id that is assigned at ingestion and must be listed,
 		// not hard-coded.
 		"\ninputs\n",
-		".t3/inputs/<declared path>",
+		".t3/inputs/<path relative to the campaign's inputs/ directory>",
+		"inputs/plan.md is read at .t3/inputs/plan.md",
 		".t3/dependencies/<producer task id>/<artifact>",
 		"assigned at ingestion",
 	} {
