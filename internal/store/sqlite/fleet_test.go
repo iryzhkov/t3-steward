@@ -226,6 +226,35 @@ func TestWorkerSnapshotsAreMonotonicAndEpochBound(t *testing.T) {
 	}
 }
 
+// A worker that rotates its epoch reports a sequence well past one, because its
+// own parked-assignment report advances the counter before the first snapshot
+// leaves the host. The record it replaces was written under the old epoch, so
+// the only thing that has to move forward is the observation time.
+func TestARotatedWorkerReplacesItsRecordWithoutRestartingAtSequenceOne(t *testing.T) {
+	store := openFleetTestStore(t)
+	old := fleetSnapshot(1, "worker-epoch-1", 63077, true, fleetTestTime.Add(time.Minute))
+	saveFleetSnapshot(t, store, old)
+
+	rotated := fleetSnapshot(1, "worker-epoch-2", 12, true, fleetTestTime.Add(2*time.Minute))
+	rotated.ObservedAt = fleetTestTime.Add(time.Minute)
+	saveFleetSnapshot(t, store, rotated)
+	snapshots, err := store.LoadWorkerSnapshots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots) != 1 || snapshots[0].WorkerEpoch != "worker-epoch-2" || snapshots[0].Sequence != 12 {
+		t.Fatalf("the rotated worker did not replace its record: %#v", snapshots)
+	}
+
+	// The new epoch is not a way around replay protection: an observation older
+	// than the one on record is still refused, whatever epoch it names.
+	backwards := fleetSnapshot(1, "worker-epoch-3", 13, true, fleetTestTime.Add(2*time.Minute))
+	backwards.ObservedAt = fleetTestTime.Add(time.Second)
+	if err := store.SaveWorkerSnapshot(context.Background(), backwards); !errors.Is(err, ErrStaleWorkerSnapshot) {
+		t.Fatalf("an older observation under a new epoch was accepted: %v", err)
+	}
+}
+
 func TestAssignmentPlanSkipsStaleAttemptsAndCommitsTheRest(t *testing.T) {
 	store := openFleetTestStore(t)
 	saveFleetAttempt(t, store, fleetAttempt("attempt-1"))
