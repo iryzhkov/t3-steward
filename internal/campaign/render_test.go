@@ -174,7 +174,17 @@ func TestHelpTopicsAreNonEmptyAndDistinct(t *testing.T) {
 		seen[topic.Name] = true
 	}
 	// The help has to carry the facts an author cannot guess from the schema.
-	for _, want := range []string{"needs", "inputs_from", ".t3/dependencies/", "outputs", "verify"} {
+	for _, want := range []string{
+		"needs", "inputs_from", "outputs", "verify",
+		// Both mounts, spelled the way a prompt has to spell them: the static
+		// inputs at their declared path, and dependency artifacts under a
+		// producer task id that is assigned at ingestion and must be listed,
+		// not hard-coded.
+		"\ninputs\n",
+		".t3/inputs/<declared path>",
+		".t3/dependencies/<producer task id>/<artifact>",
+		"assigned at ingestion",
+	} {
 		if !strings.Contains(DAGSemanticsHelp, want) {
 			t.Fatalf("DAG help is missing %q", want)
 		}
