@@ -340,6 +340,13 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 	if loaded.supervision, err = s.supervisionSnapshots(ctx, records, workers); err != nil {
 		return view{}, err
 	}
+	if waits, ok := s.reader.(interface {
+		ListTaskWaits(context.Context) ([]domain.TaskWait, error)
+	}); ok {
+		if loaded.taskWaits, err = waits.ListTaskWaits(ctx); err != nil {
+			return view{}, fmt.Errorf("load task-bound waits: %w", err)
+		}
+	}
 	if reader, ok := s.reader.(interface {
 		LoadWorkerRequirements(context.Context) ([]domain.WorkerRequirement, error)
 		LoadWorkerEnrollments(context.Context) ([]domain.WorkerEnrollment, error)
@@ -405,6 +412,10 @@ type view struct {
 	// supervisorClientConfigured is this coordinator's own configuration; see
 	// Service.SetSupervisorClientConfigured.
 	supervisorClientConfigured bool
+	// taskWaits are every task-bound wait the reader owns, live or settled.
+	// A reader that owns none, which is every reader that is not the
+	// coordinator store, leaves it nil.
+	taskWaits []domain.TaskWait
 }
 
 func newView(records sqlite.CoordinatorRecords, workers []domain.WorkerSnapshot, admissions []domain.QuotaAdmissionRecord, runtime RuntimeInfo, now time.Time) view {
@@ -654,7 +665,76 @@ func (v view) workflowDetail(runID string) (WorkflowDetail, bool) {
 	}
 	detail.ResourceLocks = filterLocksForRun(detail.ResourceLocks, detail.Tasks)
 	detail.Reservations = filterReservationsForRun(detail.Reservations, runID)
+	detail.Waits = v.runWaits(runID)
+	detail.Gates = v.runGates(runID)
 	return detail, true
+}
+
+// runWaits lists the live task-bound waits of one run, oldest registration
+// first. A settled wait has an outcome and no longer parks its attempt, so it
+// is not a reason the run is waiting and is left out.
+func (v view) runWaits(runID string) []TaskWaitDetail {
+	var waits []TaskWaitDetail
+	for _, wait := range v.taskWaits {
+		if wait.WorkflowRunID != runID || !wait.Live() {
+			continue
+		}
+		detail := TaskWaitDetail{
+			ID: wait.ID, TaskID: wait.TaskID, TaskName: v.tasks[wait.TaskID].Name, AttemptID: wait.AttemptID,
+			Name: wait.Name, Condition: wait.Condition,
+			RegisteredAt: wait.RegisteredAt, Deadline: wait.Deadline,
+		}
+		if wait.Result != nil {
+			code := wait.Result.ExitCode
+			detail.LastExitCode = &code
+		}
+		waits = append(waits, detail)
+	}
+	sort.SliceStable(waits, func(i, j int) bool {
+		if !waits[i].RegisteredAt.Equal(waits[j].RegisteredAt) {
+			return waits[i].RegisteredAt.Before(waits[j].RegisteredAt)
+		}
+		return waits[i].ID < waits[j].ID
+	})
+	return waits
+}
+
+// runGates lists the gates of a supervised run by name, each with the
+// observed tasks it is still missing evidence from. The gate state comes from
+// the same readiness snapshot explain and the planner use; the evidence gaps
+// are read off the attempt records, where a task counts as having produced
+// evidence once its latest attempt succeeded.
+func (v view) runGates(runID string) []GateDetail {
+	snapshot, ok := v.supervision[runID]
+	if !ok || !snapshot.Supervised {
+		return nil
+	}
+	gates := make([]GateDetail, 0, len(snapshot.Gates))
+	for _, gate := range snapshot.Gates {
+		detail := GateDetail{
+			ID: gate.Definition.ID, Name: gate.Definition.Name, State: gate.State, Final: gate.Definition.Final,
+			ObservedTaskIDs:  append([]string(nil), gate.Definition.ObservedTaskIDs...),
+			ProtectedTaskIDs: append([]string(nil), gate.Definition.ProtectedTaskIDs...),
+		}
+		if detail.State == "" {
+			detail.State = domain.GatePendingEvidence
+		}
+		for _, taskID := range gate.Definition.ObservedTaskIDs {
+			progress := domain.ProgressQueued
+			if attempt := latestAttempt(v.attempts[runID+"\x00"+taskID]); attempt != nil {
+				progress = attempt.Progress
+			}
+			if progress == domain.ProgressSucceeded {
+				continue
+			}
+			detail.MissingEvidence = append(detail.MissingEvidence, GateEvidenceGap{
+				TaskID: taskID, TaskName: v.tasks[taskID].Name, Progress: progress,
+			})
+		}
+		gates = append(gates, detail)
+	}
+	sort.SliceStable(gates, func(i, j int) bool { return gates[i].Name < gates[j].Name })
+	return gates
 }
 
 func (v view) runTasks(runID string) []domain.Task {

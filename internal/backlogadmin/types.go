@@ -253,6 +253,55 @@ type WorkflowDetail struct {
 	Artifacts     []Artifact      `json:"artifacts,omitempty"`
 	ResourceLocks []ResourceLock  `json:"resourceLocks,omitempty"`
 	Reservations  []Reservation   `json:"reservations,omitempty"`
+	// Waits are the live task-bound waits parking attempts of this run, one
+	// entry per wait, each naming its task. A settled wait no longer parks
+	// anything and is not listed.
+	Waits []TaskWaitDetail `json:"waits,omitempty"`
+	// Gates are the declared gates of a supervised run with their current
+	// state. An unsupervised run has none.
+	Gates []GateDetail `json:"gates,omitempty"`
+}
+
+// TaskWaitDetail is one live task-bound wait as "campaign show" reports it:
+// what the task is waiting for, on which attempt, and until when.
+type TaskWaitDetail struct {
+	ID           string    `json:"id"`
+	TaskID       string    `json:"taskId"`
+	TaskName     string    `json:"taskName,omitempty"`
+	AttemptID    string    `json:"attemptId"`
+	Name         string    `json:"name,omitempty"`
+	Condition    string    `json:"condition,omitempty"`
+	RegisteredAt time.Time `json:"registeredAt"`
+	Deadline     time.Time `json:"deadline"`
+	// LastExitCode is the exit code of the condition the coordinator has
+	// recorded, which it does only when the wait settles. A wait that is
+	// still polling has no exit code here: the polling happens on the worker
+	// host, whose check row the coordinator does not hold.
+	LastExitCode *int `json:"lastExitCode,omitempty"`
+}
+
+// GateDetail is one gate of a supervised run and, while it is pending, the
+// observed tasks it is still missing evidence from.
+type GateDetail struct {
+	ID               string           `json:"id"`
+	Name             string           `json:"name"`
+	State            domain.GateState `json:"state"`
+	Final            bool             `json:"final,omitempty"`
+	ObservedTaskIDs  []string         `json:"observedTaskIds"`
+	ProtectedTaskIDs []string         `json:"protectedTaskIds,omitempty"`
+	// MissingEvidence names each observed task whose latest attempt has not
+	// succeeded, in the gate's observed order. It is empty once every observed
+	// task succeeded, whatever the gate's state. It is derived from the
+	// attempt records the query already reads, not from the store's evidence
+	// computation, so it can lag one boundary cycle behind the gate state.
+	MissingEvidence []GateEvidenceGap `json:"missingEvidence,omitempty"`
+}
+
+// GateEvidenceGap is one observed task a gate has no evidence from yet.
+type GateEvidenceGap struct {
+	TaskID   string               `json:"taskId"`
+	TaskName string               `json:"taskName,omitempty"`
+	Progress domain.ProgressState `json:"progress"`
 }
 
 type TaskDetail struct {

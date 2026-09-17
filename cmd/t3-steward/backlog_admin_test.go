@@ -323,6 +323,61 @@ func TestHumanRenderersExposeCoordinatorDetails(t *testing.T) {
 	}
 }
 
+// A parked task shows the wait it is parked on, and a supervised run's gates
+// say which observed task has not produced evidence yet. "waiting-external"
+// and "pending-evidence" on their own sent the operator to the store.
+func TestRenderWorkflowShowsWaitsAndGateEvidenceGaps(t *testing.T) {
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	parked := domain.Attempt{
+		ID: "attempt-nest", WorkflowRunID: "run-1", TaskID: "task-nest",
+		Number: 1, Progress: domain.ProgressWaitingExternal, Control: domain.ControlWaitingExternal,
+	}
+	exit := 7
+	detail := &backlogadmin.WorkflowDetail{
+		Summary: backlogadmin.WorkflowSummary{
+			Run:      domain.WorkflowRun{ID: "run-1", Progress: domain.ProgressActive},
+			Workflow: domain.Workflow{ID: "workflow-1", Name: "ha-rebuild-prep", Project: "home-assistant"},
+		},
+		Tasks: []backlogadmin.TaskDetail{
+			{Task: domain.Task{ID: "task-analyse", Name: "analyse"}},
+			{Task: domain.Task{ID: "task-nest", Name: "s17-nest-model"}, Attempt: &parked},
+			{Task: domain.Task{ID: "task-publish", Name: "publish"}},
+		},
+		Waits: []backlogadmin.TaskWaitDetail{{
+			ID: "w-tw-nest-model-1", TaskID: "task-nest", TaskName: "s17-nest-model", AttemptID: "attempt-nest",
+			Name: "nest model answered", Condition: "jocasta exists home-assistant/inputs/nest-model.md",
+			RegisteredAt: now, Deadline: now.Add(24 * time.Hour), LastExitCode: &exit,
+		}},
+		Gates: []backlogadmin.GateDetail{{
+			ID: "gate-1", Name: "analysis_review", State: domain.GatePendingEvidence,
+			ObservedTaskIDs: []string{"task-analyse", "task-nest"}, ProtectedTaskIDs: []string{"task-publish"},
+			MissingEvidence: []backlogadmin.GateEvidenceGap{
+				{TaskID: "task-analyse", TaskName: "analyse", Progress: domain.ProgressQueued},
+				{TaskID: "task-nest", TaskName: "s17-nest-model", Progress: domain.ProgressWaitingExternal},
+			},
+		}},
+	}
+	var out bytes.Buffer
+	renderWorkflow(&out, detail)
+	for _, want := range []string{
+		"  s17-nest-model (task-nest): waiting-external waiting-external attempt=attempt-nest\n" +
+			"    wait w-tw-nest-model-1 \"nest model answered\": jocasta exists home-assistant/inputs/nest-model.md (deadline 2026-09-18T12:00:00Z, last exit 7)\n",
+		"gates:\n",
+		"  analysis_review (gate-1): pending-evidence; protects publish; missing evidence: analyse (queued), s17-nest-model (waiting-external)\n",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output %q does not contain %q", out.String(), want)
+		}
+	}
+	// A run with neither waits nor gates renders as it always did.
+	out.Reset()
+	detail.Waits, detail.Gates = nil, nil
+	renderWorkflow(&out, detail)
+	if strings.Contains(out.String(), "gates:") || strings.Contains(out.String(), "wait ") {
+		t.Fatalf("output %q mentions waits or gates it has none of", out.String())
+	}
+}
+
 func TestLocalAdminAuthorizerFailsClosed(t *testing.T) {
 	authorizer := localAdminAuthorizer{}
 	if err := authorizer.Authorize(context.Background(), backlogadmin.Principal{}, backlogadmin.Action{}); err == nil {
