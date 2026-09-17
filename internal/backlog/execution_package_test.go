@@ -64,6 +64,52 @@ func TestCoordinatorOfferBuilderAssemblesReplayStablePackage(t *testing.T) {
 	}
 }
 
+// A schedule creates a new run of a workflow whose prompt and static inputs were
+// retained under the run that submitted them. Demanding the executing run's own
+// ID for those made every scheduled occurrence undispatchable, with the builder
+// refusing its own workflow's prompt as belonging to another run.
+func TestCoordinatorOfferBuilderAcceptsADefinitionRetainedUnderAnEarlierRun(t *testing.T) {
+	now := time.Date(2026, 9, 10, 22, 0, 0, 0, time.UTC)
+	records, assignment := packageBuilderFixture(now)
+
+	// Re-stage the fixture as a second run of the same workflow: the run that
+	// executes is new, the definition artifacts stay where submission left them.
+	submission := records.WorkflowRuns[0]
+	scheduled := submission
+	scheduled.ID = "run-2"
+	records.WorkflowRuns = []domain.WorkflowRun{submission, scheduled}
+	for index := range records.Attempts {
+		records.Attempts[index].WorkflowRunID = scheduled.ID
+	}
+	for index := range records.Artifacts {
+		if records.Artifacts[index].Kind == domain.ArtifactOutput {
+			records.Artifacts[index].WorkflowRunID = scheduled.ID
+		}
+	}
+
+	builder := packageBuilder(t, records)
+	offer, err := builder.BuildAssignmentOffer(context.Background(), assignment, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("a scheduled occurrence could not be packaged: %v", err)
+	}
+	if offer.Package.Package.Prompt.Path != "prompt/tasks/consumer.md" {
+		t.Fatalf("prompt = %+v", offer.Package.Package.Prompt)
+	}
+
+	// A definition from a different workflow is still refused.
+	foreign := records
+	foreign.Artifacts = append([]domain.Artifact(nil), records.Artifacts...)
+	for index := range foreign.Artifacts {
+		if foreign.Artifacts[index].ID == "prompt-1" {
+			foreign.Artifacts[index].WorkflowRunID = "run-of-another-workflow"
+		}
+	}
+	if _, err := packageBuilder(t, foreign).BuildAssignmentOffer(context.Background(), assignment, now.Add(time.Minute)); err == nil ||
+		!strings.Contains(err.Error(), "not a run of workflow") {
+		t.Fatalf("a foreign prompt was accepted: %v", err)
+	}
+}
+
 func TestCoordinatorOfferBuilderFailsClosedOnBrokenDurableLinks(t *testing.T) {
 	now := time.Date(2026, 9, 10, 22, 0, 0, 0, time.UTC)
 	tests := map[string]func(*sqlite.CoordinatorRecords){

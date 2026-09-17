@@ -101,7 +101,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 	if environment.Setup.Timeout <= 0 {
 		return workerproto.AssignmentOffer{}, errors.New("execution package builder: setup profile timeout is required")
 	}
-	promptArtifact, err := requiredArtifact(state.artifacts, state.task.PromptArtifactID, state.run.ID)
+	promptArtifact, err := requiredDefinitionArtifact(state, state.task.PromptArtifactID)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: prompt: %w", err)
 	}
@@ -119,7 +119,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 			return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: repeated static input %q", id)
 		}
 		seenInputs[id] = struct{}{}
-		artifact, err := requiredArtifact(state.artifacts, id, state.run.ID)
+		artifact, err := requiredDefinitionArtifact(state, id)
 		if err != nil {
 			return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: static input: %w", err)
 		}
@@ -285,6 +285,11 @@ type executionPackageState struct {
 	attempt   domain.Attempt
 	tasks     []domain.Task
 	artifacts map[string]domain.Artifact
+	// definitionRuns holds every run of this workflow. A task's prompt and its
+	// static inputs are the workflow's definition, retained under the run that
+	// submitted them, and every later run of that workflow executes those same
+	// bytes. Outputs stay strictly run-scoped; only the definition is shared.
+	definitionRuns map[string]struct{}
 }
 
 func resolveExecutionPackageState(records sqlite.CoordinatorRecords, assignment domain.Assignment) (executionPackageState, error) {
@@ -365,6 +370,12 @@ func resolveExecutionPackageState(records sqlite.CoordinatorRecords, assignment 
 	if assignment.TaskDigest != "" && assignment.TaskDigest != domain.TaskDigest(state.task) {
 		return state, errors.New("assignment task definition digest changed")
 	}
+	state.definitionRuns = make(map[string]struct{}, 2)
+	for _, run := range records.WorkflowRuns {
+		if run.WorkflowID == state.workflow.ID {
+			state.definitionRuns[run.ID] = struct{}{}
+		}
+	}
 	state.artifacts = make(map[string]domain.Artifact, len(records.Artifacts))
 	for _, artifact := range records.Artifacts {
 		if artifact.ID == "" {
@@ -378,13 +389,22 @@ func resolveExecutionPackageState(records sqlite.CoordinatorRecords, assignment 
 	return state, nil
 }
 
-func requiredArtifact(artifacts map[string]domain.Artifact, id, runID string) (domain.Artifact, error) {
-	artifact, exists := artifacts[id]
+// requiredDefinitionArtifact resolves a prompt or a static input, which belong
+// to the workflow rather than to one of its runs.
+//
+// Demanding the executing run's own ID here made every scheduled occurrence
+// undispatchable: a schedule creates a new run of an existing workflow, whose
+// prompt was retained under the run that submitted it, so the package builder
+// refused its own workflow's prompt as belonging to another run. The artifact
+// must still belong to this workflow, which is what the run set expresses.
+func requiredDefinitionArtifact(state executionPackageState, id string) (domain.Artifact, error) {
+	artifact, exists := state.artifacts[id]
 	if !exists || id == "" {
 		return domain.Artifact{}, fmt.Errorf("missing artifact %q", id)
 	}
-	if artifact.WorkflowRunID != runID {
-		return domain.Artifact{}, fmt.Errorf("artifact %q belongs to run %q", id, artifact.WorkflowRunID)
+	if _, ours := state.definitionRuns[artifact.WorkflowRunID]; !ours {
+		return domain.Artifact{}, fmt.Errorf("artifact %q belongs to run %q, which is not a run of workflow %q",
+			id, artifact.WorkflowRunID, state.workflow.ID)
 	}
 	return artifact, nil
 }
