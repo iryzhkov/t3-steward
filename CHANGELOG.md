@@ -22,13 +22,13 @@ All notable changes to this project are documented here. The format follows
   ERROR lines reading `context canceled`. Every other tick failure keeps its
   severity.
 - `campaign show` and `backlog show` list, under a parked task, the live
-  task-bound waits parking it (id, name, condition, deadline and the recorded
-  exit code when the coordinator holds one), and for a supervised run list each
+  task-bound waits parking it (id, name, condition, deadline), and for a
+  supervised run list each
   gate with its state and, while it is pending, the observed tasks that have
   not produced evidence yet. Both appear in the JSON document as `waits` and
   `gates` on the workflow detail.
 - `campaign help dag-semantics` documents both mounts a task reads files from:
-  static inputs at `.t3/inputs/<path relative to inputs/>` and dependency artifacts at
+  static inputs at `.t3/inputs/<declared path>` and dependency artifacts at
   `.t3/dependencies/<producer task id>/<artifact>`, with the note that the
   producer id is assigned at ingestion and must be listed rather than
   hard-coded.

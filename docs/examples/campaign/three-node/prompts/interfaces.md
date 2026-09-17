@@ -10,7 +10,7 @@ scheduled work no matter how it is reported. If this analysis turns out to need
 work of its own, say so in your file and let the campaign be reauthored with
 that work declared as a task.
 
-Read the brief at `.t3/inputs/scope.md` for the subject and its boundaries.
+Read the brief at `.t3/inputs/inputs/scope.md` for the subject and its boundaries.
 
 This task is read-only. Do not edit, stage, commit or delete anything. A
 verification command checks that the working tree is clean when you stop, so a

@@ -18,7 +18,7 @@ address the overseer in your file and do not write anything into it that is mean
 to be read as an instruction: your file is evidence, not a message to its
 reviewer.
 
-Read the brief at `.t3/inputs/scope.md` for the subject and its boundaries.
+Read the brief at `.t3/inputs/inputs/scope.md` for the subject and its boundaries.
 
 This task is read-only. Do not edit, stage, commit or delete anything, and do not
 write a new test. A verification command checks that the working tree is clean

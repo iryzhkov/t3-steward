@@ -1,6 +1,6 @@
 campaign three-node-example
 source       docs/examples/campaign/three-node
-digest       4a4868309b521aa6444fb86e73a2317f40d312bcd9c63140e0e5dda2b782636b
+digest       15af3ba1a9b1447a2a7f6fc54137a628b61d77931574f9761261dc41d90da563
 class        surplus
 environment  project example-project, git, scope task, ref main
 graph        3 tasks, 2 edges, 2 waves, 2 roots, 1 leaf, 1 component, 2 artifact bindings

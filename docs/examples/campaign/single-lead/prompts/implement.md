@@ -10,7 +10,7 @@ to need several units of work, say so in `handoff.md`: the answer is a campaign
 that declares them as tasks with `needs` and `inputs_from`, not a hidden graph
 inside this session.
 
-Read the frozen plan at `.t3/inputs/plan.md` first. It states the objective, the
+Read the frozen plan at `.t3/inputs/inputs/plan.md` first. It states the objective, the
 boundaries and what done means; treat it as authoritative and do not widen the
 scope it sets. The preflight evidence you were given already reports the
 repository's HEAD and the baseline test result, so start from those facts rather
