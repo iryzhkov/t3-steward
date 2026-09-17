@@ -146,7 +146,7 @@ func (m Manager) Verify(ctx context.Context, snapshot string) (Manifest, error) 
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return Manifest{}, fmt.Errorf("%w: snapshot root must be a real directory", ErrInvalidSnapshot)
 	}
-	manifest, err := readManifest(filepath.Join(snapshot, "manifest.json"))
+	manifest, err := readManifest(filepath.Join(snapshot, "manifest.json"), m.manifestReadLimit())
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -529,13 +529,27 @@ func writeManifest(path string, manifest Manifest) error {
 	return nil
 }
 
-func readManifest(path string) (Manifest, error) {
+// manifestReadLimit bounds the manifest by the snapshot it describes rather
+// than by a flat megabyte. One entry is a path, a size and a hex digest, so a
+// kilobyte apiece is generous; the flat bound silently truncated the manifest
+// of any snapshot past a few thousand files, and verification then failed with
+// "decode manifest: unexpected EOF" on a snapshot that was perfectly good.
+func (m Manager) manifestReadLimit() int64 {
+	return int64(m.Limits.MaxFiles)*manifestEntryBound + manifestHeaderBound
+}
+
+const (
+	manifestEntryBound  = 1 << 10
+	manifestHeaderBound = 1 << 20
+)
+
+func readManifest(path string, limit int64) (Manifest, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return Manifest{}, fmt.Errorf("%w: open manifest: %v", ErrInvalidSnapshot, err)
 	}
 	defer file.Close()
-	decoder := json.NewDecoder(bufio.NewReader(io.LimitReader(file, 1<<20)))
+	decoder := json.NewDecoder(bufio.NewReader(io.LimitReader(file, limit)))
 	decoder.DisallowUnknownFields()
 	var manifest Manifest
 	if err := decoder.Decode(&manifest); err != nil {
