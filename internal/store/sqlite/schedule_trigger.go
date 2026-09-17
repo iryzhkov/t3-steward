@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
@@ -35,6 +36,34 @@ func (s *Store) CommitScheduleTrigger(ctx context.Context, request domain.Schedu
 		return domain.ScheduleTriggerResult{}, fmt.Errorf("commit schedule trigger: %w", err)
 	}
 	return result, nil
+}
+
+// insertScheduledRunAttemptsTx gives a scheduled occurrence the attempt every
+// task needs to be planned.
+//
+// A submitted run gets these at ingestion. A scheduled one did not, so the
+// planner found a task with no attempt, refused to plan the whole run and said
+// so once per cycle forever: every schedule this coordinator has ever fired
+// produced a run that could never start. The attempt identity is derived from
+// the run and the task, so a replayed trigger writes the same rows.
+func insertScheduledRunAttemptsTx(ctx context.Context, tx *sql.Tx, run domain.WorkflowRun, tasks []domain.Task, now time.Time) error {
+	for _, task := range tasks {
+		progress := domain.ProgressReady
+		if len(task.Needs) != 0 {
+			progress = domain.ProgressBlocked
+		}
+		attempt := domain.Attempt{
+			ID: "attempt:" + run.ID + ":" + task.ID + ":1", WorkflowRunID: run.ID, TaskID: task.ID,
+			Number: 1, Revision: 1, Progress: progress, Control: domain.ControlUnassigned, UpdatedAt: now,
+		}
+		if err := upsertJSON(ctx, tx, "scheduled attempt", attempt.ID,
+			"INSERT INTO coordinator_attempts(id,workflow_run_id,task_id,number,revision,record) VALUES(?,?,?,?,?,?)",
+			[]any{attempt.ID, run.ID, task.ID, attempt.Number, attempt.Revision}, attempt,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func commitScheduleTriggerTx(ctx context.Context, tx *sql.Tx, request domain.ScheduleTriggerRequest) (domain.ScheduleTriggerResult, error) {
@@ -95,6 +124,7 @@ func commitScheduleTriggerTx(ctx context.Context, tx *sql.Tx, request domain.Sch
 		State: domain.TriggerSuppressed, Reason: reason, ObservedAt: request.ObservedAt.UTC(),
 	}
 	var workflowRun *domain.WorkflowRun
+	var scheduledTasks []domain.Task
 	if reason == "" {
 		trigger.State, trigger.WorkflowRunID = domain.TriggerAccepted, request.WorkflowRunID
 		run := domain.WorkflowRun{
@@ -110,7 +140,7 @@ func commitScheduleTriggerTx(ctx context.Context, tx *sql.Tx, request domain.Sch
 		if err != nil {
 			return domain.ScheduleTriggerResult{}, err
 		}
-		workflowRun = &run
+		workflowRun, scheduledTasks = &run, tasks
 	}
 	if err := insertScheduleTrigger(ctx, tx, trigger); err != nil {
 		return domain.ScheduleTriggerResult{}, err
@@ -121,6 +151,9 @@ func commitScheduleTriggerTx(ctx context.Context, tx *sql.Tx, request domain.Sch
 			[]any{workflowRun.ID, workflowRun.WorkflowID, workflowRun.ScheduleID, workflowRun.Progress, workflowRun.Revision},
 			*workflowRun,
 		); err != nil {
+			return domain.ScheduleTriggerResult{}, err
+		}
+		if err := insertScheduledRunAttemptsTx(ctx, tx, *workflowRun, scheduledTasks, request.ObservedAt.UTC()); err != nil {
 			return domain.ScheduleTriggerResult{}, err
 		}
 		if err := bindNodeEdgesTx(ctx, tx); err != nil {
