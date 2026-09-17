@@ -85,8 +85,8 @@ func (r *supervisionReader) CommitSupervision(_ context.Context, commit Supervis
 
 // SupervisorScope and ArtifactRun make the same fake the coordinator's scope
 // source, so a test states one truth about who may act on what.
-func (r *supervisionReader) SupervisorScope(_ context.Context, principal string) (SupervisorScope, error) {
-	if principal != "remote:overseer" {
+func (r *supervisionReader) SupervisorScope(_ context.Context, principal, runID string) (SupervisorScope, error) {
+	if principal != "remote:overseer" || runID != r.state.Record.RunID {
 		return SupervisorScope{}, nil
 	}
 	return SupervisorScope{RunID: r.state.Record.RunID, ActivationEpoch: r.state.Record.ActivationEpoch}, nil
@@ -235,6 +235,9 @@ func TestSupervisorIsRefusedEveryOperationOutsideItsRun(t *testing.T) {
 			request.Incident = &SupervisionIncidentRequest{
 				IncidentID: "incident-1", Outcome: domain.IncidentOutcomeConcludeFailure,
 			}
+		case SupervisionReassess:
+			// Reassessment names no record of its own, so it carries no payload.
+			request.Gate = nil
 		}
 		_, err := service.Supervise(context.Background(), supervisorPrincipal(), request)
 		if err == nil {

@@ -114,11 +114,11 @@ func TestSupervisionActivationCommitFencesOnTheRecordRevision(t *testing.T) {
 	}
 	// The activation's principal is what binds a supervisor capability to one
 	// run and one epoch, and it is read from the coordinator's own record.
-	runID, epoch, err := store.SupervisorScopeForPrincipal(ctx, "overseer-1")
+	runID, epoch, err := store.SupervisorScopeForActivation(ctx, "overseer-1", "run-1")
 	if err != nil || runID != "run-1" || epoch != after.Activation.Epoch {
 		t.Fatalf("supervisor scope = %q at epoch %d (err %v)", runID, epoch, err)
 	}
-	if runID, _, err := store.SupervisorScopeForPrincipal(ctx, "someone-else"); err != nil || runID != "" {
+	if runID, _, err := store.SupervisorScopeForActivation(ctx, "someone-else", "run-1"); err != nil || runID != "" {
 		t.Fatalf("an unrelated principal resolved to run %q (err %v)", runID, err)
 	}
 	// An expired lease revokes the capability immediately, the read half
@@ -134,7 +134,7 @@ func TestSupervisionActivationCommitFencesOnTheRecordRevision(t *testing.T) {
 	if err := store.CommitSupervisionActivationRows(ctx, stale); err != nil {
 		t.Fatalf("commit the expired lease: %v", err)
 	}
-	if runID, epoch, err := store.SupervisorScopeForPrincipal(ctx, "overseer-1"); err != nil || runID != "" || epoch != 0 {
+	if runID, epoch, err := store.SupervisorScopeForActivation(ctx, "overseer-1", "run-1"); err != nil || runID != "" || epoch != 0 {
 		t.Fatalf("an expired lease still resolved to run %q at epoch %d (err %v)", runID, epoch, err)
 	}
 }

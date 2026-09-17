@@ -150,16 +150,24 @@ func (s *Store) SupervisionBranchClosure(ctx context.Context, runID, rootTaskID 
 	return exists, state.Run.GraphRevision, resolved, tx.Commit()
 }
 
-// SupervisorScopeForPrincipal answers which run and activation epoch one
-// supervisor principal may act on right now.
+// SupervisorScopeForActivation answers whether one supervisor principal holds a
+// live activation on one named run, and at which epoch.
 //
 // The answer comes from the activation the coordinator itself dispatched to
-// that principal, and only while that activation is live. Between activations a
-// stolen credential resolves to no run at all, and an operator takeover raises
-// the epoch, so a decision the replaced supervisor had already formed arrives
-// naming an epoch that is no longer valid.
-func (s *Store) SupervisorScopeForPrincipal(ctx context.Context, principal string) (string, int64, error) {
-	if principal == "" {
+// that principal on that run, and only while that activation is live. Between
+// activations a stolen credential resolves to no run at all, and an operator
+// takeover raises the epoch, so a decision the replaced supervisor had already
+// formed arrives naming an epoch that is no longer valid.
+//
+// The capability is resolved per activation rather than per principal. One
+// fleet-wide supervisor client is the normal deployment, and it holds a live
+// activation on every run under review at the same time; every supervision
+// request names the run it acts on, so the run is an input here rather than
+// something this query has to guess. Resolving by principal alone refused every
+// command of every concurrent overseer, show included, as soon as a second run
+// came under review, which stranded both runs.
+func (s *Store) SupervisorScopeForActivation(ctx context.Context, principal, runID string) (string, int64, error) {
+	if principal == "" || runID == "" {
 		return "", 0, nil
 	}
 	// Pending-dispatch is included so that a worker which has been handed the
@@ -168,21 +176,19 @@ func (s *Store) SupervisorScopeForPrincipal(ctx context.Context, principal strin
 	// the moment it expired, and scope that outlived it would let the read half
 	// of the capability survive the write half.
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT run_id, epoch, record FROM coordinator_supervision_activations
-		WHERE state IN (?, ?) ORDER BY epoch DESC`,
-		string(domain.ActivationActive), string(domain.ActivationPendingDispatch))
+		SELECT epoch, record FROM coordinator_supervision_activations
+		WHERE run_id = ? AND state IN (?, ?) ORDER BY epoch DESC`,
+		runID, string(domain.ActivationActive), string(domain.ActivationPendingDispatch))
 	if err != nil {
-		return "", 0, fmt.Errorf("load live supervision activations: %w", err)
+		return "", 0, fmt.Errorf("load live supervision activations of run %q: %w", runID, err)
 	}
 	defer rows.Close()
 	now := s.now().UTC()
-	var scopedRun string
 	var scopedEpoch int64
 	for rows.Next() {
-		var runID string
 		var epoch int64
 		var raw []byte
-		if err := rows.Scan(&runID, &epoch, &raw); err != nil {
+		if err := rows.Scan(&epoch, &raw); err != nil {
 			return "", 0, err
 		}
 		var activation domain.Activation
@@ -194,23 +200,17 @@ func (s *Store) SupervisorScopeForPrincipal(ctx context.Context, principal strin
 			domain.ActivationPastDeadline(activation, now) {
 			continue
 		}
-		if scopedRun != "" && scopedRun != runID {
-			// One principal live on two runs is a configuration this coordinator
-			// cannot resolve: picking the higher epoch would silently decide
-			// which run a credential may act on. Refusing both is the answer
-			// that cannot be wrong.
-			return "", 0, fmt.Errorf(
-				"supervisor %q holds live activations on runs %q and %q; a supervisor capability is bound to one run",
-				principal, scopedRun, runID)
-		}
 		if epoch > scopedEpoch {
-			scopedRun, scopedEpoch = runID, epoch
+			scopedEpoch = epoch
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return "", 0, err
 	}
-	return scopedRun, scopedEpoch, nil
+	if scopedEpoch == 0 {
+		return "", 0, nil
+	}
+	return runID, scopedEpoch, nil
 }
 
 // ArtifactRun resolves an artifact to the run that owns it.

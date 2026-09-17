@@ -68,6 +68,16 @@ const (
 	SupervisionRelease  SupervisionOperation = "release"
 	SupervisionEscalate SupervisionOperation = "escalate"
 	SupervisionResolve  SupervisionOperation = "resolve"
+	// SupervisionReassess is the operator's re-arming verb. It records the
+	// operator-reassessment trigger, which the next coordinator boundary turns
+	// into a fresh activation at the next epoch, within the run's existing
+	// activation budget.
+	//
+	// It exists because nothing else re-arms a run whose overseer ended its
+	// activation without deciding. No automatic spin is allowed there, so the
+	// coordinator escalates and stops; this is the explicit operator decision
+	// that a second review is worth one more activation.
+	SupervisionReassess SupervisionOperation = "reassess"
 )
 
 // SupervisionOperations is every declared supervision operation, in the order
@@ -76,6 +86,7 @@ func SupervisionOperations() []SupervisionOperation {
 	return []SupervisionOperation{
 		SupervisionShow, SupervisionDecide, SupervisionHold,
 		SupervisionRelease, SupervisionEscalate, SupervisionResolve,
+		SupervisionReassess,
 	}
 }
 
@@ -441,6 +452,15 @@ func (r SupervisionRequest) Validate() error {
 			carried++
 		}
 	}
+	if r.Operation == SupervisionReassess {
+		// Reassessment names no record of its own: it asks for another look at
+		// the whole run, fenced on the supervision record's revision. A payload
+		// beside it would be a decision wearing the re-arming verb's name.
+		if carried != 0 {
+			return fmt.Errorf("%w: a reassessment carries no gate, hold or incident payload", ErrInvalidQuery)
+		}
+		return nil
+	}
 	if carried != 1 {
 		return fmt.Errorf("%w: a supervision decision carries exactly one payload", ErrInvalidQuery)
 	}
@@ -668,6 +688,8 @@ func (s *Service) Supervise(ctx context.Context, principal Principal, request Su
 		err = s.releaseHold(actor, state, request, &commit)
 	case SupervisionEscalate, SupervisionResolve:
 		err = s.decideIncident(actor, state, request, &commit)
+	case SupervisionReassess:
+		err = s.requestReassessment(actor, state, request, &commit)
 	}
 	if err != nil {
 		return empty, err
@@ -874,6 +896,41 @@ func (s *Service) releaseHold(
 	return nil
 }
 
+// requestReassessment re-arms a run whose overseer stopped without deciding.
+//
+// It records nothing about any gate, hold or incident. What it produces is one
+// operator-reassessment trigger, and the coordinator's own activation boundary
+// turns that into a fresh activation at the next epoch. Raising the epoch is the
+// existing spent-to-idle transition's job, not this one's, so re-arming spends
+// one activation of the run's declared budget and no more.
+//
+// Two refusals are the whole of its authority. Only an operator may ask: an
+// overseer re-arming itself is the automatic spin the plan forbids, wearing an
+// operator's verb. And an exhausted activation budget refuses rather than
+// granting a continuation, because raising a budget is a separate, receipted
+// decision.
+func (s *Service) requestReassessment(
+	actor domain.Actor,
+	state SupervisionState,
+	request SupervisionRequest,
+	commit *SupervisionCommit,
+) error {
+	_ = commit
+	if actor.Kind != domain.ActorOperator {
+		return fmt.Errorf("%w: only an operator asks for a reassessment",
+			domain.ErrSupervisionUnauthorizedActor)
+	}
+	if state.Record.Revision != request.ExpectedRevision {
+		return fmt.Errorf("%w: reassessment names record revision %d, the record is at %d",
+			domain.ErrSupervisionStaleRevision, request.ExpectedRevision, state.Record.Revision)
+	}
+	if !state.Record.ActivationBudgetRemaining() {
+		return fmt.Errorf("%w: run %s has used all %d of its granted activations",
+			domain.ErrSupervisionBudgetExhausted, request.RunID, state.Record.ActivationsUsed)
+	}
+	return nil
+}
+
 func (s *Service) decideIncident(
 	actor domain.Actor,
 	state SupervisionState,
@@ -982,13 +1039,14 @@ func (d adminDispatch) supervise(ctx context.Context, principal Principal, reque
 }
 
 // SupervisorScope is the run and activation epoch the coordinator currently
-// considers valid for one supervisor principal, plus the actions that
-// principal may perform.
+// considers valid for one supervisor principal on one named run, plus the
+// actions that principal may perform there.
 //
 // It is read from the coordinator's own supervision record, never from the
 // request and never from the credential. That is the whole of the run-and-epoch
-// binding: the credential proves which client is calling, and the coordinator
-// decides what that client may touch right now.
+// binding: the credential proves which client is calling, the request names the
+// run it acts on, and the coordinator decides whether that client holds a live
+// activation on that run right now.
 type SupervisorScope struct {
 	RunID           string      `json:"runId"`
 	ActivationEpoch int64       `json:"activationEpoch"`
@@ -1014,15 +1072,21 @@ func SupervisorActions() []QueryKind {
 	}
 }
 
-// SupervisorScopeSource answers what a supervisor principal may act on right
-// now, and which run an artifact belongs to.
+// SupervisorScopeSource answers whether a supervisor principal may act on one
+// named run right now, and which run an artifact belongs to.
+//
+// The run is an argument because the capability is one activation, not one
+// credential. A single fleet-wide supervisor client serves every supervised run
+// at once, so "what may this principal act on" has as many answers as there are
+// live activations; "may this principal act on this run" has exactly one, and
+// every supervision request names its run.
 //
 // The artifact question exists because an artifact read is authorized by
 // artifact ID alone. Without resolving the artifact to its run, a capability
 // bound to one run could read another run's outputs through an admin API it
 // was never meant to reach.
 type SupervisorScopeSource interface {
-	SupervisorScope(ctx context.Context, principal string) (SupervisorScope, error)
+	SupervisorScope(ctx context.Context, principal, runID string) (SupervisorScope, error)
 	ArtifactRun(ctx context.Context, artifactID string) (string, error)
 }
 
@@ -1089,13 +1153,24 @@ func (a SupervisorAuthorizer) Authorize(ctx context.Context, principal Principal
 	if a.Scope == nil {
 		return fmt.Errorf("%w: no supervision scope source is configured", ErrSupervisionUnavailable)
 	}
-	scope, err := a.Scope.SupervisorScope(ctx, principal.ID)
+	// The run comes first, because the capability is resolved per activation and
+	// an activation is a pair of a principal and a run. A request that names no
+	// run is refused before any scope is read: a run-less read of a fleet-wide
+	// view is exactly the cross-run access this capability must not inherit.
+	runID, err := a.requestedRun(ctx, action)
+	if err != nil {
+		return err
+	}
+	scope, err := a.Scope.SupervisorScope(ctx, principal.ID, runID)
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrSupervisionUnavailable, err)
 	}
 	if strings.TrimSpace(scope.RunID) == "" {
-		return fmt.Errorf("%w: %q holds no live supervision capability",
-			domain.ErrSupervisionUnauthorizedActor, principal.ID)
+		// Holding a live activation on some other run is not authority here, and
+		// holding one on another run is not a reason to refuse this one either:
+		// this refusal is about this run alone.
+		return fmt.Errorf("%w: %q holds no live supervision activation on run %s",
+			domain.ErrSupervisionUnauthorizedActor, principal.ID, runID)
 	}
 	// A command kind is a coordinator control: pause, resume, retry, skip,
 	// cancel, start. A supervisor has none of them, so the refusal is by
@@ -1119,50 +1194,44 @@ func (a SupervisorAuthorizer) Authorize(ctx context.Context, principal Principal
 		return fmt.Errorf("%w: a supervisor may not perform %q",
 			domain.ErrSupervisionUnauthorizedActor, action.Kind)
 	}
-	if err := a.authorizeRun(ctx, scope, action); err != nil {
-		return err
+	if runID != scope.RunID {
+		return fmt.Errorf("%w: this activation is bound to run %s and not to %s",
+			domain.ErrSupervisionUnauthorizedActor, scope.RunID, runID)
 	}
 	return authorizeSupervisorEpoch(scope, action)
 }
 
-// authorizeRun refuses anything outside the one run the capability is bound
-// to, including a request that names no run at all: a run-less read of a
-// fleet-wide view is exactly the cross-run access this capability must not
-// inherit.
-func (a SupervisorAuthorizer) authorizeRun(ctx context.Context, scope SupervisorScope, action Action) error {
+// requestedRun names the one run this action acts on, and refuses an action
+// that names none.
+//
+// An artifact carries its own run, and that run is the one that decides access.
+// Resolving it only when the request named no run would let a supervisor name
+// its own run and any other run's artifact in the same request, because the
+// handler reads the artifact by ID and ignores the run entirely. So the
+// artifact's owning run is resolved whenever an artifact is named, and it is
+// the run the scope is then read for.
+func (a SupervisorAuthorizer) requestedRun(ctx context.Context, action Action) (string, error) {
 	runID := action.WorkflowRunID
-	// An artifact carries its own run, and that run is the one that decides
-	// access. Resolving it only when the request named no run would let a
-	// supervisor name its own run and any other run's artifact in the same
-	// request, because the handler reads the artifact by ID and ignores the run
-	// entirely. So the artifact's owning run is checked against the scope
-	// whenever an artifact is named, in addition to the named run.
 	if action.ArtifactID != "" {
 		resolved, err := a.Scope.ArtifactRun(ctx, action.ArtifactID)
 		if err != nil {
-			return fmt.Errorf("%w: %s", ErrSupervisionUnavailable, err)
+			return "", fmt.Errorf("%w: %s", ErrSupervisionUnavailable, err)
 		}
 		if resolved == "" {
-			return fmt.Errorf("%w: artifact %s belongs to no run this capability can name",
+			return "", fmt.Errorf("%w: artifact %s belongs to no run this capability can name",
 				domain.ErrSupervisionUnauthorizedActor, action.ArtifactID)
 		}
-		if resolved != scope.RunID {
-			return fmt.Errorf("%w: this capability is bound to run %s and artifact %s belongs to %s",
-				domain.ErrSupervisionUnauthorizedActor, scope.RunID, action.ArtifactID, resolved)
+		if runID != "" && runID != resolved {
+			return "", fmt.Errorf("%w: the request names run %s and artifact %s belongs to %s",
+				domain.ErrSupervisionUnauthorizedActor, runID, action.ArtifactID, resolved)
 		}
-		if runID == "" {
-			runID = resolved
-		}
+		runID = resolved
 	}
-	if runID == "" {
-		return fmt.Errorf("%w: a supervisor acts on one named run, and %q names none",
+	if strings.TrimSpace(runID) == "" {
+		return "", fmt.Errorf("%w: a supervisor acts on one named run, and %q names none",
 			domain.ErrSupervisionUnauthorizedActor, action.Kind)
 	}
-	if runID != scope.RunID {
-		return fmt.Errorf("%w: this capability is bound to run %s and not to %s",
-			domain.ErrSupervisionUnauthorizedActor, scope.RunID, runID)
-	}
-	return nil
+	return runID, nil
 }
 
 // authorizeSupervisorEpoch refuses a decision named under an epoch that is no
