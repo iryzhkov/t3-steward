@@ -33,8 +33,12 @@ type Diagnosis struct {
 	Assignments   []Assignment            `json:"assignments"`
 	Commands      []Command               `json:"commands"`
 	Waits         []domain.NodeWait       `json:"waits"`
-	Workers       []DiagnosticWorker      `json:"workers"`
-	Unavailable   []string                `json:"unavailable,omitempty"`
+	// TaskWaits are the coordinator-owned waits that park this run's attempts:
+	// id, task, attempt, name, condition, registration, deadline and outcome.
+	// A parked attempt with no live entry here is parked on nothing.
+	TaskWaits   []domain.TaskWait  `json:"taskWaits"`
+	Workers     []DiagnosticWorker `json:"workers"`
+	Unavailable []string           `json:"unavailable,omitempty"`
 }
 
 type DiagnosticWorker struct {
@@ -98,6 +102,19 @@ func (s *Service) diagnose(ctx context.Context, v view, runID string) (Diagnosis
 		}
 	} else {
 		result.Unavailable = append(result.Unavailable, "native wait registry")
+	}
+	if reader, ok := s.reader.(taskWaitStore); ok {
+		waits, err := reader.ListTaskWaits(ctx)
+		if err != nil {
+			return Diagnosis{}, fmt.Errorf("diagnose task waits: %w", err)
+		}
+		for _, wait := range waits {
+			if wait.WorkflowRunID == runID {
+				result.TaskWaits = append(result.TaskWaits, wait)
+			}
+		}
+	} else {
+		result.Unavailable = append(result.Unavailable, "task-bound wait registry")
 	}
 	if reader, ok := s.reader.(interface {
 		LoadGraphRevisions(context.Context, string) ([]domain.GraphDefinition, error)

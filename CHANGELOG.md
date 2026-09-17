@@ -8,6 +8,37 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `t3-steward wait cancel <id>` on a local check bound to a task-bound wait
+  now cancels the coordinator's wait first, through the configured transport,
+  and marks the local check only once the coordinator has settled it. The
+  attempt resumes on the coordinator's next tick with the cancellation as its
+  wait outcome. Before, only the local row was marked and the attempt stayed
+  parked in `waiting-external` on a live coordinator wait that nothing would
+  settle until its 24 h deadline. If the coordinator cannot be reached nothing
+  changes and the command fails with the transport exit code. `wait cancel
+  <tw-id>` by the coordinator id also marks the local check on this host.
+- `diagnose` lists the run's task-bound waits (`taskWaits`: id, task, attempt,
+  name, condition, registration, deadline, outcome) beside its node waits, so a
+  parked attempt is no longer reported with `"waits": null`.
+- `wait add` reports the registration probe's exit code and first output line
+  in every mode, including `--json` (`firstExit`, `firstOutputLine`), and warns
+  on stderr when the first exit is neither 0, 1 nor 2: the protocol treats it
+  as "not yet", and a check that fails the same way forever polls until its
+  timeout. The registration is not refused, because an exit such as 7 can be a
+  legitimate not-yet.
+- An interactive `wait add` on a host whose `t3` CLI has disappeared now says
+  that resolving the caller's thread needs the T3 API token and how to supply
+  one (`t3.token` or the new `t3.token_file` in the configuration,
+  `T3_STEWARD_T3_TOKEN` in the environment, or the CLI), instead of the bare
+  "t3 CLI not found on PATH". `t3.token_file` names a private (mode 0600) file
+  holding the token and is read at load when `t3.token` is empty.
+
+### Added
+
+- `wait list --json` for the local checks; the human list names the
+  coordinator task wait each task-bound check settles.
+- `wait add --json` for interactive waits.
+
 - An overseer activation now carries its supervisor identity in the activation
   workspace, as an owner-only `.t3-steward/supervisor.env` the worker writes
   before the thread starts, and the supervision commands discover it by walking

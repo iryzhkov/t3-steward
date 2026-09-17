@@ -84,12 +84,18 @@ func (c *CommandToken) Invalidate() {
 	c.mu.Unlock()
 }
 
+// ErrT3CLINotFound is the failure every lookup of the t3 CLI wraps. A caller
+// that needs the CLI only as a token source matches it to say which operation
+// needed the token and what else would supply one, rather than repeating the
+// lookup's own wording.
+var ErrT3CLINotFound = errors.New("t3 CLI not found")
+
 // FindT3Binary locates the t3 CLI: the explicit path, PATH, then the usual
 // per-user install locations of mise and npm.
 func FindT3Binary(explicit string) (string, error) {
 	if explicit != "" {
 		if _, err := os.Stat(explicit); err != nil {
-			return "", fmt.Errorf("t3 binary %q: %w", explicit, err)
+			return "", fmt.Errorf("%w: t3 binary %q: %v", ErrT3CLINotFound, explicit, err)
 		}
 		return explicit, nil
 	}
@@ -102,7 +108,7 @@ func FindT3Binary(explicit string) (string, error) {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", errors.New("t3 CLI not found on PATH")
+		return "", fmt.Errorf("%w on PATH", ErrT3CLINotFound)
 	}
 	candidates := []string{
 		filepath.Join(home, ".local", "share", "mise", "shims", "t3"),
@@ -118,5 +124,5 @@ func FindT3Binary(explicit string) (string, error) {
 			return c, nil
 		}
 	}
-	return "", errors.New("t3 CLI not found on PATH or in the usual install locations; set t3.t3_binary")
+	return "", fmt.Errorf("%w on PATH or in the usual install locations; set t3.t3_binary", ErrT3CLINotFound)
 }

@@ -811,6 +811,27 @@ missing or contradictory estimates fail reconciliation closed. Resume only the
 same thread and route after admission is recovering/open and every apply-time fence
 still matches. A cancel command suppresses automatic resume.
 
+### Cancelling a task-bound wait
+
+A task-bound wait is two records: the coordinator's `TaskWait`, which parks the
+attempt in `waiting-external`, and the local check on the worker that runs the
+shell condition and settles it. `t3-steward wait list` on the worker shows the
+local check with the coordinator id it is bound to; `diagnose --json` on any
+admin host lists the run's task waits under `taskWaits`.
+
+Cancel through either id: `t3-steward wait cancel w-tw-<id>` (the local check)
+or `t3-steward wait cancel tw-<id>` (the coordinator wait). Both settle the
+coordinator wait as cancelled first and mark the local check afterwards; the
+attempt resumes on the coordinator's next tick with the cancellation as its
+wait outcome, and the resumed turn is told so. A wait that already had an
+outcome keeps it and the command says which outcome stands. If the coordinator
+cannot be reached the local check is left untouched and the command fails with
+the transport exit code; retry rather than assuming the wait is gone.
+
+Answering in the task's thread does not cancel the wait; the attempt stays
+parked until the condition settles, the wait is cancelled or its deadline
+passes.
+
 ### Schedule overlap or failure hold
 
 A schedule has at most one open workflow run. Duplicate occurrences are
