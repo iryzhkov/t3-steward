@@ -45,7 +45,6 @@ func TestWorkflowDetailCarriesLiveWaitsAndGateEvidenceGaps(t *testing.T) {
 		},
 		RunID: "run-1", State: domain.GatePendingEvidence, GraphRevision: 12, Revision: 1,
 	}}
-	exit := 7
 	reader.waits = []domain.TaskWait{
 		{
 			ID: "w-tw-nest-model-1", WorkflowRunID: "run-1", TaskID: "task-nest", AttemptID: "attempt-nest",
@@ -56,7 +55,7 @@ func TestWorkflowDetailCarriesLiveWaitsAndGateEvidenceGaps(t *testing.T) {
 			// A settled wait no longer parks anything and is not reported.
 			ID: "w-tw-old", WorkflowRunID: "run-1", TaskID: "task-nest", AttemptID: "attempt-nest",
 			Name: "earlier", Condition: "true", RegisteredAt: now.Add(-2 * time.Hour), Deadline: now,
-			SettledAt: &now, Result: &domain.TaskWaitResult{Outcome: domain.TaskWaitMet, ExitCode: exit},
+			SettledAt: &now, Result: &domain.TaskWaitResult{Outcome: domain.TaskWaitMet, ExitCode: 0},
 		},
 		{
 			// Another run's wait is not this run's business.
@@ -92,7 +91,7 @@ func TestWorkflowDetailCarriesLiveWaitsAndGateEvidenceGaps(t *testing.T) {
 	if wait.ID != "w-tw-nest-model-1" || wait.TaskID != "task-nest" || wait.TaskName != "nest-model" ||
 		wait.AttemptID != "attempt-nest" || wait.Name != "nest model answered" ||
 		wait.Condition != "jocasta exists home-assistant/inputs/nest-model.md" ||
-		!wait.Deadline.Equal(now.Add(23*time.Hour)) || wait.LastExitCode != nil {
+		!wait.Deadline.Equal(now.Add(23*time.Hour)) {
 		t.Fatalf("wait = %#v", wait)
 	}
 	if len(detail.Gates) != 1 {
@@ -112,9 +111,8 @@ func TestWorkflowDetailCarriesLiveWaitsAndGateEvidenceGaps(t *testing.T) {
 	}
 }
 
-// A settled wait carries the exit code the coordinator recorded, and a gate
-// whose observed tasks all succeeded reports nothing missing.
-func TestWorkflowDetailReportsSettledExitCodeAndCompleteEvidence(t *testing.T) {
+// A gate whose observed tasks all succeeded reports nothing missing.
+func TestWorkflowDetailReportsCompleteEvidence(t *testing.T) {
 	now := explainTestNow
 	reader := waitsReader{explainReader: explainFixture(true)}
 	reader.explainReader.records.Tasks = []domain.Task{
@@ -125,13 +123,6 @@ func TestWorkflowDetailReportsSettledExitCodeAndCompleteEvidence(t *testing.T) {
 		{ID: "attempt-analyse", WorkflowRunID: "run-1", TaskID: "task-analyse", Number: 1,
 			Progress: domain.ProgressSucceeded, Control: domain.ControlStopped, Revision: 9},
 	}
-	// A live wait whose result the coordinator already holds is the case of a
-	// settled condition whose wake has not been applied yet.
-	reader.waits = []domain.TaskWait{{
-		ID: "w-tw-1", WorkflowRunID: "run-1", TaskID: "task-analyse", AttemptID: "attempt-analyse",
-		Name: "ci", Condition: "gh run view 1 --exit-status", RegisteredAt: now, Deadline: now.Add(time.Hour),
-		Result: &domain.TaskWaitResult{Outcome: domain.TaskWaitFailed, ExitCode: 2},
-	}}
 	service, err := New(reader, &allowAuthorizer{})
 	if err != nil {
 		t.Fatal(err)
@@ -147,8 +138,8 @@ func TestWorkflowDetailReportsSettledExitCodeAndCompleteEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	detail := response.Workflow
-	if len(detail.Waits) != 1 || detail.Waits[0].LastExitCode == nil || *detail.Waits[0].LastExitCode != 2 {
-		t.Fatalf("waits = %#v", detail.Waits)
+	if len(detail.Waits) != 0 {
+		t.Fatalf("waits = %#v, want none", detail.Waits)
 	}
 	if len(detail.Gates) != 1 || len(detail.Gates[0].MissingEvidence) != 0 || detail.Gates[0].State != domain.GateReadyForReview {
 		t.Fatalf("gates = %#v", detail.Gates)

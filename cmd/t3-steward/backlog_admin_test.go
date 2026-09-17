@@ -332,7 +332,6 @@ func TestRenderWorkflowShowsWaitsAndGateEvidenceGaps(t *testing.T) {
 		ID: "attempt-nest", WorkflowRunID: "run-1", TaskID: "task-nest",
 		Number: 1, Progress: domain.ProgressWaitingExternal, Control: domain.ControlWaitingExternal,
 	}
-	exit := 7
 	detail := &backlogadmin.WorkflowDetail{
 		Summary: backlogadmin.WorkflowSummary{
 			Run:      domain.WorkflowRun{ID: "run-1", Progress: domain.ProgressActive},
@@ -346,7 +345,7 @@ func TestRenderWorkflowShowsWaitsAndGateEvidenceGaps(t *testing.T) {
 		Waits: []backlogadmin.TaskWaitDetail{{
 			ID: "w-tw-nest-model-1", TaskID: "task-nest", TaskName: "s17-nest-model", AttemptID: "attempt-nest",
 			Name: "nest model answered", Condition: "jocasta exists home-assistant/inputs/nest-model.md",
-			RegisteredAt: now, Deadline: now.Add(24 * time.Hour), LastExitCode: &exit,
+			RegisteredAt: now, Deadline: now.Add(24 * time.Hour),
 		}},
 		Gates: []backlogadmin.GateDetail{{
 			ID: "gate-1", Name: "analysis_review", State: domain.GatePendingEvidence,
@@ -361,7 +360,7 @@ func TestRenderWorkflowShowsWaitsAndGateEvidenceGaps(t *testing.T) {
 	renderWorkflow(&out, detail)
 	for _, want := range []string{
 		"  s17-nest-model (task-nest): waiting-external waiting-external attempt=attempt-nest\n" +
-			"    wait w-tw-nest-model-1 \"nest model answered\": jocasta exists home-assistant/inputs/nest-model.md (deadline 2026-09-18T12:00:00Z, last exit 7)\n",
+			"    wait w-tw-nest-model-1 \"nest model answered\": jocasta exists home-assistant/inputs/nest-model.md (deadline 2026-09-18T12:00:00Z)\n",
 		"gates:\n",
 		"  analysis_review (gate-1): pending-evidence; protects publish; missing evidence: analyse (queued), s17-nest-model (waiting-external)\n",
 	} {

@@ -672,23 +672,19 @@ func (v view) workflowDetail(runID string) (WorkflowDetail, bool) {
 
 // runWaits lists the live task-bound waits of one run, oldest registration
 // first. A settled wait has an outcome and no longer parks its attempt, so it
-// is not a reason the run is waiting and is left out.
+// is not a reason the run is waiting and is left out; that is also why no
+// exit code is reported, since the coordinator records one only at settlement.
 func (v view) runWaits(runID string) []TaskWaitDetail {
 	var waits []TaskWaitDetail
 	for _, wait := range v.taskWaits {
 		if wait.WorkflowRunID != runID || !wait.Live() {
 			continue
 		}
-		detail := TaskWaitDetail{
+		waits = append(waits, TaskWaitDetail{
 			ID: wait.ID, TaskID: wait.TaskID, TaskName: v.tasks[wait.TaskID].Name, AttemptID: wait.AttemptID,
 			Name: wait.Name, Condition: wait.Condition,
 			RegisteredAt: wait.RegisteredAt, Deadline: wait.Deadline,
-		}
-		if wait.Result != nil {
-			code := wait.Result.ExitCode
-			detail.LastExitCode = &code
-		}
-		waits = append(waits, detail)
+		})
 	}
 	sort.SliceStable(waits, func(i, j int) bool {
 		if !waits[i].RegisteredAt.Equal(waits[j].RegisteredAt) {

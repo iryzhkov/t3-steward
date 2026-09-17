@@ -273,11 +273,10 @@ type TaskWaitDetail struct {
 	Condition    string    `json:"condition,omitempty"`
 	RegisteredAt time.Time `json:"registeredAt"`
 	Deadline     time.Time `json:"deadline"`
-	// LastExitCode is the exit code of the condition the coordinator has
-	// recorded, which it does only when the wait settles. A wait that is
-	// still polling has no exit code here: the polling happens on the worker
-	// host, whose check row the coordinator does not hold.
-	LastExitCode *int `json:"lastExitCode,omitempty"`
+	// There is no last exit code here. The condition is polled on the worker
+	// host, whose local check row holds the last exit code and output; the
+	// coordinator records an exit code only when the wait settles, at which
+	// point the wait no longer parks anything and is not listed.
 }
 
 // GateDetail is one gate of a supervised run and, while it is pending, the

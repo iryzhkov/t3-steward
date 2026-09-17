@@ -616,11 +616,7 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 			if wait.TaskID != task.Task.ID {
 				continue
 			}
-			fmt.Fprintf(out, "    wait %s %q: %s (deadline %s", wait.ID, wait.Name, wait.Condition, formatTime(wait.Deadline))
-			if wait.LastExitCode != nil {
-				fmt.Fprintf(out, ", last exit %d", *wait.LastExitCode)
-			}
-			fmt.Fprintln(out, ")")
+			fmt.Fprintf(out, "    wait %s %q: %s (deadline %s)\n", wait.ID, wait.Name, wait.Condition, formatTime(wait.Deadline))
 		}
 	}
 	if len(detail.Gates) != 0 {

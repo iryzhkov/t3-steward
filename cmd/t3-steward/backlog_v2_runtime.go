@@ -361,6 +361,10 @@ func (c coordinatorBoundaryCycle) TickWithWorkers(ctx context.Context) {
 // operator does have to read. Those are reported at INFO as shutdown; every
 // other failure keeps its severity.
 func logTickFailure(ctx context.Context, logger *slog.Logger, msg string, err error, attrs ...any) {
+	// The cycle's own context is the authoritative signal. The error is also
+	// checked because a store call that observed the cancellation returns it
+	// wrapped, sometimes before ctx.Err() is visible to this goroutine; no tick
+	// path returns context.Canceled from a per-request context of its own.
 	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 		logger.Info("shutting down: "+msg, append(attrs, "error", err)...)
 		return
