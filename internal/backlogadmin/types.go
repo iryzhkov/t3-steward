@@ -256,13 +256,39 @@ type WorkflowDetail struct {
 }
 
 type TaskDetail struct {
-	Sink          *domain.SinkTask `json:"sink,omitempty"`
-	Task          domain.Task      `json:"task"`
-	Attempt       *domain.Attempt  `json:"attempt,omitempty"`
-	Assignment    *Assignment      `json:"assignment,omitempty"`
-	ThreadURL     string           `json:"threadUrl,omitempty"`
+	Sink       *domain.SinkTask `json:"sink,omitempty"`
+	Task       domain.Task      `json:"task"`
+	Attempt    *domain.Attempt  `json:"attempt,omitempty"`
+	Assignment *Assignment      `json:"assignment,omitempty"`
+	ThreadURL  string           `json:"threadUrl,omitempty"`
+	// Evidence is what the assigned worker last reported about the attempt's
+	// execution: the thread, the worker, the observed session state and any
+	// quota pause in force. It is absent for an attempt no worker holds.
+	Evidence      *AttemptEvidence `json:"evidence,omitempty"`
 	Artifacts     []Artifact       `json:"artifacts,omitempty"`
 	ResourceLocks []string         `json:"resourceLocks,omitempty"`
+}
+
+// AttemptEvidence is the worker's last word on an attempt, as carried by its
+// snapshot: enough for an operator to find the thread and see why it is not
+// running without reading the T3 database.
+type AttemptEvidence struct {
+	ThreadID string `json:"threadId,omitempty"`
+	WorkerID string `json:"workerId,omitempty"`
+	// Control is the control state the worker observed for the attempt.
+	Control domain.ControlState `json:"control,omitempty"`
+	// Phase is the worker journal phase.
+	Phase string `json:"phase,omitempty"`
+	// ThreadState is the worker's last observation of the T3 thread: active,
+	// stopped or missing.
+	ThreadState string `json:"threadState,omitempty"`
+	// PauseReason names the bucket that paused the attempt on the worker
+	// host while a quota pause is in force.
+	PauseReason string `json:"pauseReason,omitempty"`
+	Failure     string `json:"failure,omitempty"`
+	// ObservedAt is when the worker reported this; zero when the worker has
+	// not reported the assignment yet.
+	ObservedAt time.Time `json:"observedAt,omitzero"`
 }
 
 type Assignment struct {

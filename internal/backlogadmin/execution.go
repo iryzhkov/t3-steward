@@ -52,7 +52,20 @@ func (s *Service) ExecutePendingCommands(ctx context.Context) (CommandExecutionR
 			return report, nil
 		}
 		command := pending[0]
-		application, trigger, err := planAdminCommand(records, workers, admissions, command, s.now().UTC())
+		var liveWaits map[string]string
+		if command.Kind == domain.AdminCommandRewake {
+			// A rewake is refused while a task-bound wait is live for the
+			// attempt, so the planner needs the coordinator's wait records.
+			if waits, ok := s.reader.(interface {
+				LiveTaskWaitAttempts(context.Context) (map[string]string, error)
+			}); ok {
+				liveWaits, err = waits.LiveTaskWaitAttempts(ctx)
+				if err != nil {
+					return report, fmt.Errorf("load live task waits for %q: %w", command.ID, err)
+				}
+			}
+		}
+		application, trigger, err := planAdminCommandWithWaits(records, workers, admissions, liveWaits, command, s.now().UTC())
 		if err != nil {
 			return report, fmt.Errorf("plan admin command %q: %w", command.ID, err)
 		}
@@ -85,6 +98,12 @@ func pendingAdminCommands(commands []domain.AdminCommand) []domain.AdminCommand 
 }
 
 func planAdminCommand(records sqlite.CoordinatorRecords, workers []domain.WorkerSnapshot, admissions []domain.QuotaAdmissionRecord, command domain.AdminCommand, now time.Time) (domain.AdminCommandApplication, *domain.ScheduleTriggerRequest, error) {
+	return planAdminCommandWithWaits(records, workers, admissions, nil, command, now)
+}
+
+// planAdminCommandWithWaits is planAdminCommand with the coordinator's live
+// task-bound waits (attempt id to wait id), which only a rewake consults.
+func planAdminCommandWithWaits(records sqlite.CoordinatorRecords, workers []domain.WorkerSnapshot, admissions []domain.QuotaAdmissionRecord, liveWaits map[string]string, command domain.AdminCommand, now time.Time) (domain.AdminCommandApplication, *domain.ScheduleTriggerRequest, error) {
 	application := domain.AdminCommandApplication{
 		CommandID: command.ID, ExpectedCommandState: domain.AdminCommandPending,
 		ExpectedTargetRevision: command.ExpectedRevision, State: domain.AdminCommandApplied, AppliedAt: now,
@@ -112,7 +131,7 @@ func planAdminCommand(records sqlite.CoordinatorRecords, workers []domain.Worker
 			}
 			application.Attempt, application.WorkflowRun = next, nextRun
 		default:
-			next, newAttempt, nextRun, planErr := planAttemptCommand(records, workers, admissions, command, attempt, task, run, now)
+			next, newAttempt, nextRun, planErr := planAttemptCommand(records, workers, admissions, liveWaits, command, attempt, task, run, now)
 			if planErr != nil {
 				return rejectApplication(application, planErr.Error()), nil, nil
 			}
@@ -175,17 +194,18 @@ func planAdminCommand(records sqlite.CoordinatorRecords, workers []domain.Worker
 	return application, nil, nil
 }
 
-func planAttemptCommand(records sqlite.CoordinatorRecords, workers []domain.WorkerSnapshot, admissions []domain.QuotaAdmissionRecord, command domain.AdminCommand, attempt domain.Attempt, task domain.Task, run domain.WorkflowRun, now time.Time) (*domain.Attempt, *domain.Attempt, *domain.WorkflowRun, error) {
+func planAttemptCommand(records sqlite.CoordinatorRecords, workers []domain.WorkerSnapshot, admissions []domain.QuotaAdmissionRecord, liveWaits map[string]string, command domain.AdminCommand, attempt domain.Attempt, task domain.Task, run domain.WorkflowRun, now time.Time) (*domain.Attempt, *domain.Attempt, *domain.WorkflowRun, error) {
 	if run.Sink != nil && run.Sink.Progress.Terminal() {
 		return nil, nil, nil, errors.New("run sink is final; submit a new workflow")
 	}
 	next := attempt
 	next.Revision++
 	next.UpdatedAt = now
+	invalid := func() error { return invalidTransition(command.Kind, attempt, liveWaits) }
 	switch command.Kind {
 	case domain.AdminCommandStart:
 		if attempt.Progress.Terminal() || attempt.Control != domain.ControlUnassigned {
-			return nil, nil, nil, fmt.Errorf("start is invalid from %s/%s", attempt.Progress, attempt.Control)
+			return nil, nil, nil, invalid()
 		}
 		if blocker := commandSafetyBlocker(records, workers, admissions, attempt, task, now, false); blocker != "" {
 			return nil, nil, nil, errors.New(blocker)
@@ -196,7 +216,7 @@ func planAttemptCommand(records sqlite.CoordinatorRecords, workers []domain.Work
 		next.AdminForceStart = true
 	case domain.AdminCommandDelay:
 		if attempt.Progress.Terminal() || attempt.Control != domain.ControlUnassigned {
-			return nil, nil, nil, fmt.Errorf("delay is invalid from %s/%s", attempt.Progress, attempt.Control)
+			return nil, nil, nil, invalid()
 		}
 		until, err := commandUntil(command.Payload, now)
 		if err != nil {
@@ -205,16 +225,16 @@ func planAttemptCommand(records sqlite.CoordinatorRecords, workers []domain.Work
 		next.AdminNotBefore = &until
 		next.AdminForceStart = false
 	case domain.AdminCommandPause:
-		if attempt.Progress.Terminal() || (attempt.Control != domain.ControlPreparing && attempt.Control != domain.ControlRunning && attempt.Control != domain.ControlResuming) {
-			return nil, nil, nil, fmt.Errorf("pause is invalid from %s/%s", attempt.Progress, attempt.Control)
+		if !pauseAllowed(attempt) {
+			return nil, nil, nil, invalid()
 		}
 		if _, err := commandPauseNow(command.Payload); err != nil {
 			return nil, nil, nil, err
 		}
 		next.Control = domain.ControlDraining
 	case domain.AdminCommandResume:
-		if attempt.Progress.Terminal() || (attempt.Control != domain.ControlPaused && attempt.Control != domain.ControlPausedUncheckpointed) {
-			return nil, nil, nil, fmt.Errorf("resume is invalid from %s/%s", attempt.Progress, attempt.Control)
+		if !resumeAllowed(attempt) {
+			return nil, nil, nil, invalid()
 		}
 		if blocker := commandSafetyBlocker(records, workers, admissions, attempt, task, now, true); blocker != "" {
 			return nil, nil, nil, errors.New(blocker)
@@ -222,19 +242,37 @@ func planAttemptCommand(records sqlite.CoordinatorRecords, workers []domain.Work
 		next.Control = domain.ControlResuming
 	case domain.AdminCommandCancel:
 		if attempt.Progress.Terminal() {
-			return nil, nil, nil, fmt.Errorf("cancel is invalid from terminal progress %s", attempt.Progress)
+			return nil, nil, nil, invalid()
 		}
 		next.Progress, next.Control = domain.ProgressCancelled, domain.ControlStopped
 		next.Failure, next.CompletedAt, next.AdminForceStart = "", timePtr(now), false
 	case domain.AdminCommandSkip:
-		if attempt.Progress == domain.ProgressSucceeded || attempt.Progress == domain.ProgressSkipped {
-			return nil, nil, nil, fmt.Errorf("skip is invalid from progress %s", attempt.Progress)
+		if !skipAllowed(attempt) {
+			return nil, nil, nil, invalid()
 		}
 		next.Progress, next.Control = domain.ProgressSkipped, domain.ControlStopped
 		next.Failure, next.CompletedAt, next.AdminForceStart = "", timePtr(now), false
+	case domain.AdminCommandRewake:
+		if !parkedAttempt(attempt) {
+			return nil, nil, nil, invalid()
+		}
+		if waitID, live := liveWaits[attempt.ID]; live {
+			return nil, nil, nil, fmt.Errorf("rewake is invalid while task wait %s is live for %s/%s; cancel it (t3-steward wait cancel %s) or let it settle; allowed: %s",
+				waitID, attempt.Progress, attempt.Control, waitID, allowedAttemptCommands(attempt, liveWaits))
+		}
+		assignment, found := assignmentByID(records.Assignments, attempt.AssignmentID)
+		if !found || assignment.State != domain.AssignmentClaimed {
+			return nil, nil, nil, fmt.Errorf("rewake requires a claimed assignment, and the execution that parked %s/%s is gone; allowed: cancel", attempt.Progress, attempt.Control)
+		}
+		// The same transition a settled wait's wake applies: the attempt runs
+		// again on its own thread, and the worker moves it to running when
+		// it observes the thread active.
+		next.Progress, next.Control = domain.ProgressActive, domain.ControlResuming
+		next.LastTurnOutcomeID, next.LastTurnOutcomeMarker = "", ""
+		next.Failure = ""
 	case domain.AdminCommandRetry:
-		if attempt.Progress != domain.ProgressFailed && attempt.Progress != domain.ProgressCancelled {
-			return nil, nil, nil, fmt.Errorf("retry is invalid from progress %s", attempt.Progress)
+		if !retryAllowed(attempt) {
+			return nil, nil, nil, invalid()
 		}
 		retry := domain.Attempt{
 			ID: stableAdminID("attempt", command.ID), WorkflowRunID: attempt.WorkflowRunID,
@@ -250,9 +288,77 @@ func planAttemptCommand(records sqlite.CoordinatorRecords, workers []domain.Work
 	return &next, nil, nil, nil
 }
 
+// The transition predicates below are the one place that says which admin
+// command is valid from which attempt state. A rejection names the commands
+// that are valid from the current state (S-5), and the predicates are what
+// that list is computed from, so the message cannot drift from the rule.
+
+func startAllowed(attempt domain.Attempt) bool {
+	return !attempt.Progress.Terminal() && attempt.Control == domain.ControlUnassigned
+}
+
+func pauseAllowed(attempt domain.Attempt) bool {
+	return !attempt.Progress.Terminal() && (attempt.Control == domain.ControlPreparing || attempt.Control == domain.ControlRunning || attempt.Control == domain.ControlResuming)
+}
+
+func resumeAllowed(attempt domain.Attempt) bool {
+	return !attempt.Progress.Terminal() && (attempt.Control == domain.ControlPaused || attempt.Control == domain.ControlPausedUncheckpointed)
+}
+
+func skipAllowed(attempt domain.Attempt) bool {
+	return attempt.Progress != domain.ProgressSucceeded && attempt.Progress != domain.ProgressSkipped
+}
+
+func retryAllowed(attempt domain.Attempt) bool {
+	return attempt.Progress == domain.ProgressFailed || attempt.Progress == domain.ProgressCancelled
+}
+
+// parkedAttempt reports whether the attempt is parked in waiting-external.
+func parkedAttempt(attempt domain.Attempt) bool {
+	return !attempt.Progress.Terminal() && (attempt.Progress == domain.ProgressWaitingExternal || attempt.Control == domain.ControlWaitingExternal)
+}
+
+// allowedAttemptCommands lists the commands valid from the attempt's state,
+// in the order an operator would try them.
+func allowedAttemptCommands(attempt domain.Attempt, liveWaits map[string]string) string {
+	var allowed []string
+	if startAllowed(attempt) {
+		allowed = append(allowed, "start", "delay")
+	}
+	if pauseAllowed(attempt) {
+		allowed = append(allowed, "pause")
+	}
+	if resumeAllowed(attempt) {
+		allowed = append(allowed, "resume")
+	}
+	if _, live := liveWaits[attempt.ID]; parkedAttempt(attempt) && !live {
+		allowed = append(allowed, "rewake")
+	}
+	if !attempt.Progress.Terminal() {
+		allowed = append(allowed, "cancel")
+	}
+	if retryAllowed(attempt) {
+		allowed = append(allowed, "retry")
+	}
+	if skipAllowed(attempt) {
+		allowed = append(allowed, "skip")
+	}
+	if len(allowed) == 0 {
+		return "none (the attempt is final; submit a new workflow)"
+	}
+	return strings.Join(allowed, ", ")
+}
+
+// invalidTransition is the rejection for a command the attempt's state does
+// not admit. It names what is allowed instead, for example
+// "resume is invalid from waiting-external/waiting-external; allowed: rewake, cancel".
+func invalidTransition(kind domain.AdminCommandKind, attempt domain.Attempt, liveWaits map[string]string) error {
+	return fmt.Errorf("%s is invalid from %s/%s; allowed: %s", kind, attempt.Progress, attempt.Control, allowedAttemptCommands(attempt, liveWaits))
+}
+
 func planDAGCancellation(records sqlite.CoordinatorRecords, attempt domain.Attempt, task domain.Task, run domain.WorkflowRun, now time.Time) (*domain.Attempt, []domain.Attempt, *domain.WorkflowRun, error) {
 	if attempt.Progress.Terminal() {
-		return nil, nil, nil, fmt.Errorf("cancel is invalid from terminal progress %s", attempt.Progress)
+		return nil, nil, nil, invalidTransition(domain.AdminCommandCancel, attempt, nil)
 	}
 	state := backlog.DAGState{Run: run}
 	state.Tasks = domain.TasksForRun(run, records.Tasks)
