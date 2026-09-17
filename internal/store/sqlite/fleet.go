@@ -103,7 +103,19 @@ func (s *Store) AdvanceCoordinatorEpoch(ctx context.Context, expected int64) (in
 }
 
 // SaveWorkerSnapshot stores a monotonic report for the current coordinator
-// epoch. A restarted worker begins a new worker epoch at sequence one.
+// epoch. Sequence monotonicity is what rejects a replayed report, and it only
+// means anything inside one worker epoch: the counter belongs to the worker's
+// durable journal, and a new epoch opens a new journal with a new counter.
+//
+// This once demanded sequence one from a new epoch, which no real worker can
+// deliver. The runtime reports its parked assignments before its first
+// snapshot, and that report advances the same counter, so the first snapshot a
+// rotated worker sends is already past one. A worker whose epoch changed could
+// therefore never replace its own record, and a host that had ever reported
+// under an older epoch could not rejoin the fleet without deleting that record
+// by hand. Across epochs the guard is the observation time, which must still
+// move forward, and the authorization is the catalog and the explicit
+// enrollment that named the new epoch in the first place.
 func (s *Store) SaveWorkerSnapshot(ctx context.Context, snapshot domain.WorkerSnapshot) error {
 	if err := validateWorkerSnapshot(snapshot); err != nil {
 		return err
@@ -133,7 +145,6 @@ func (s *Store) SaveWorkerSnapshot(ctx context.Context, snapshot domain.WorkerSn
 		}
 		sameEpoch := current.WorkerEpoch == snapshot.WorkerEpoch
 		if (sameEpoch && snapshot.Sequence <= current.Sequence) ||
-			(!sameEpoch && snapshot.Sequence != 1) ||
 			!snapshot.ObservedAt.After(current.ObservedAt) {
 			return fmt.Errorf("%w: worker %q epoch %q sequence %d", ErrStaleWorkerSnapshot, snapshot.WorkerID, snapshot.WorkerEpoch, snapshot.Sequence)
 		}
