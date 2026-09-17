@@ -68,6 +68,13 @@ type Daemon struct {
 	Archive BacklogRunner
 	// UIArchive reversibly hides settled sessions on each thread poll.
 	UIArchive BacklogRunner
+	// Ownership, when set, names the threads a live steward attempt owns on
+	// this host. They are excluded from every watchdog action; see
+	// ThreadOwnership.
+	Ownership ThreadOwnership
+	// ownershipWarned records that an unreadable ownership source has been
+	// logged, so the degradation is reported once rather than every tick.
+	ownershipWarned bool
 
 	mu      sync.Mutex
 	engines map[domain.BucketKey]*policy.Engine
@@ -251,8 +258,14 @@ func overrideMatches(o config.Override, key domain.BucketKey, limitName string, 
 }
 
 func (d *Daemon) ignoredWindow(window string) bool {
+	return ignoredWindowIn(d.cfg.Policy.IgnoreWindows, window)
+}
+
+// ignoredWindowIn reports whether a window name matches one of the
+// policy.ignore_windows globs.
+func ignoredWindowIn(patterns []string, window string) bool {
 	w := strings.ToLower(window)
-	for _, ig := range d.cfg.Policy.IgnoreWindows {
+	for _, ig := range patterns {
 		if ig == "" {
 			continue
 		}
@@ -381,6 +394,10 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 		return
 	}
 	now := d.now()
+	// Threads a live steward attempt owns are the worker runtime's to pause
+	// and resume; the watchdog neither notifies nor stops them, and any
+	// resume intent recorded for them is cancelled below.
+	owned := d.ownedThreads(ctx)
 	stoppedAny := false
 	for _, st := range states {
 		if !d.cfg.QuotaChecksEnabled() || st.Phase == domain.PhaseNormal || d.ignoredWindow(st.Key.Window) {
@@ -391,7 +408,7 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 			continue
 		}
 		var running []domain.Thread
-		for _, t := range threads {
+		for _, t := range unownedThreads(threads, owned) {
 			if t.Running && t.MatchesBucket(st.Key, st.ModelSelector) {
 				running = append(running, t)
 			}
@@ -434,7 +451,7 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 		}
 	}
 	if d.cfg.QuotaChecksEnabled() {
-		d.advanceResumes(ctx, threads, states)
+		d.advanceResumes(ctx, threads, states, owned)
 	}
 	if d.Backlog != nil {
 		d.Backlog.Tick(ctx, threads, states)

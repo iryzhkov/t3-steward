@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"time"
 
@@ -10,8 +9,10 @@ import (
 )
 
 // advanceResumes cancels stale intents, marks eligible ones, and resumes
-// them one provider instance at a time with staggering.
-func (d *Daemon) advanceResumes(ctx context.Context, threads []domain.Thread, states []domain.BucketState) {
+// them one provider instance at a time with staggering. An intent for a
+// thread in owned is cancelled: that thread belongs to a steward attempt and
+// the worker runtime decides when it resumes.
+func (d *Daemon) advanceResumes(ctx context.Context, threads []domain.Thread, states []domain.BucketState, owned map[string]string) {
 	intents, err := d.store.ListResumeIntents(ctx, domain.ResumePending, domain.ResumeEligible)
 	if err != nil {
 		d.log.Error("list resume intents", "err", err)
@@ -44,6 +45,13 @@ func (d *Daemon) advanceResumes(ctx context.Context, threads []domain.Thread, st
 				log.Error("save resume intent", "err", err)
 			}
 			d.record(ctx, domain.ActionRecord{Kind: domain.ActionResume, ThreadID: intent.ThreadID, Detail: "cancelled: " + reason})
+		}
+		if attemptID, ownedThread := owned[intent.ThreadID]; ownedThread {
+			// Evaluated on every tick, so an intent recorded before ownership
+			// was consulted, or before the attempt claimed the thread, is
+			// cancelled on the first tick that sees the ownership.
+			cancel(OwnedThreadReason(attemptID))
+			continue
 		}
 		switch {
 		case !ok:
@@ -145,51 +153,15 @@ func (d *Daemon) advanceResumes(ctx context.Context, threads []domain.Thread, st
 // resumeEligible checks every bucket that caused the stop and every other
 // applicable bucket.
 func (d *Daemon) resumeEligible(intent domain.ResumeIntent, thread domain.Thread, byKey map[domain.BucketKey]domain.BucketState, now time.Time) (bool, string) {
-	for _, key := range intent.Buckets {
-		st, ok := byKey[key]
-		if !ok {
-			return false, fmt.Sprintf("no state for %s", key)
-		}
-		if st.RecoveredAt == nil || !st.RecoveredAt.After(intent.StoppedAt) {
-			// No fresh reading has confirmed the reset. Readings only come
-			// from running turns, so after the reset time has passed by
-			// probe_after_reset one thread per provider is resumed as a
-			// probe; its first call yields the reading that rearms the
-			// bucket, or gets it stopped again at once.
-			if d.probeAllowed(st, now) {
-				continue
-			}
-			return false, fmt.Sprintf("%s has not recovered since the stop", key)
-		}
-		if st.Phase != domain.PhaseNormal {
-			return false, fmt.Sprintf("%s is in phase %s", key, st.Phase)
-		}
-		if st.UsedPercent >= d.cfg.Resume.BelowPercent {
-			return false, fmt.Sprintf("%s is at %.0f%%, above below_percent %.0f%%", key, st.UsedPercent, d.cfg.Resume.BelowPercent)
-		}
-		// RecoveredAt is only ever set while evaluating a fresh provider
-		// snapshot, so reset_confirmation_required holds by construction:
-		// the wall clock passing resetsAt never sets it.
-		if now.Before(st.RecoveredAt.Add(d.cfg.Resume.ResetSettleDelay.D())) {
-			return false, fmt.Sprintf("%s recovered at %s; waiting for the settle delay", key, st.RecoveredAt.Format(time.RFC3339))
-		}
-	}
-	return d.applicableHealthy(thread, byKey)
+	return BucketsRecovered(d.cfg, intent.Buckets, intent.StoppedAt, thread, byKey, now, func(st domain.BucketState) bool {
+		return d.probeAllowed(st, now)
+	})
 }
 
 // probeAllowed reports whether a bucket whose reset time has passed without
 // a fresh reading may be probed by resuming one thread.
 func (d *Daemon) probeAllowed(st domain.BucketState, now time.Time) bool {
-	probe := d.cfg.Resume.ProbeAfterReset.D()
-	if probe <= 0 || st.ResetsAt == nil {
-		return false
-	}
-	if now.Before(st.ResetsAt.Add(probe + d.cfg.Resume.ResetSettleDelay.D())) {
-		return false
-	}
-	// A reading newer than the reset would have rearmed or re-stopped the
-	// bucket; if one exists the probe is not needed.
-	if st.ObservedAt.After(*st.ResetsAt) {
+	if !ProbeWindowOpen(d.cfg, st, now) {
 		return false
 	}
 	d.mu.Lock()
@@ -204,23 +176,7 @@ func (d *Daemon) probeAllowed(st domain.BucketState, now time.Time) bool {
 // applicableHealthy requires every bucket that applies to the thread to be
 // in the normal phase below the warning threshold.
 func (d *Daemon) applicableHealthy(thread domain.Thread, byKey map[domain.BucketKey]domain.BucketState) (bool, string) {
-	for key, st := range byKey {
-		if d.ignoredWindow(key.Window) {
-			continue
-		}
-		if !thread.MatchesBucket(key, st.ModelSelector) {
-			continue
-		}
-		if st.ResetsAt != nil && !st.ResetsAt.After(d.now()) {
-			// Window expired with no fresh data: whatever phase it was in
-			// belongs to the old window, so it is not a blocker.
-			continue
-		}
-		if !st.Healthy {
-			return false, fmt.Sprintf("%s is %s at %.0f%%", key, st.Phase, st.UsedPercent)
-		}
-	}
-	return true, ""
+	return ApplicableHealthy(d.cfg, thread, byKey, d.now())
 }
 
 func (d *Daemon) resumeOne(ctx context.Context, intent domain.ResumeIntent, thread domain.Thread, now time.Time) {

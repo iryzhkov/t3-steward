@@ -50,14 +50,15 @@ func (d *Daemon) execute(ctx context.Context, a domain.Action, state domain.Buck
 	}
 }
 
-// affectedThreads lists running threads the bucket applies to.
+// affectedThreads lists running threads the bucket applies to. Threads a live
+// steward attempt owns are not the watchdog's to act on and are left out.
 func (d *Daemon) affectedThreads(ctx context.Context, a domain.Action) ([]domain.Thread, error) {
 	threads, err := d.control.ListThreads(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var out []domain.Thread
-	for _, t := range threads {
+	for _, t := range unownedThreads(threads, d.ownedThreads(ctx)) {
 		if t.Running && t.MatchesBucket(a.Bucket, a.Snapshot.ModelSelector) {
 			out = append(out, t)
 		}
