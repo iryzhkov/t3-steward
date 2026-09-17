@@ -15,7 +15,9 @@ All notable changes to this project are documented here. The format follows
   readiness detail string. `--all --current-catalog` re-enrolls every configured
   worker whose accepted digest is stale and prints one line per worker
   (enrolled, already current, or refused with the reason). `--request-id`
-  defaults to `enroll-<worker>-<digest12>-rev<N>` in that form. The fenced
+  defaults to `enroll-<worker>-<digest12>-rev<N>` in that form; it replays a
+  refused attempt (same `--reason`) and, after a success, the next run enrolls
+  again at the advanced revision. The fenced
   `--catalog-revision` and `--expected-revision` remain and cannot be combined
   with `--current-catalog`. Enrollment still runs on the coordinator host and
   is still refused to the remote-admin role.
@@ -28,9 +30,10 @@ All notable changes to this project are documented here. The format follows
   binding` when a project was published before it was bound. Such a project is
   loaded with an empty local binding (no credentials, resource locks or
   directory resources), the coordinator logs one warning naming it at startup,
-  `Config.DefaultedFleetProjects()` lists it, and `campaign check` carries the
-  informational `project-binding-defaulted` detail on its candidates without
-  changing the outcome. Workers and providers keep failing closed.
+  `Config.DefaultedFleetProjects()` lists it, and both `campaign check` (on
+  each candidate's `unchecked` list) and `explain` (in a new `details` list)
+  carry the informational `project-binding-defaulted` detail without changing
+  the outcome. Workers and providers keep failing closed.
 
 - An overseer activation now carries its supervisor identity in the activation
   workspace, as an owner-only `.t3-steward/supervisor.env` the worker writes

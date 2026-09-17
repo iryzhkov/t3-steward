@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -242,6 +243,9 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		return Response{}, err
 	}
 	view.includeSink = query.IncludeSink
+	// The explanation reports the same defaulted-binding detail the readiness
+	// matrix does, from the same configured list.
+	view.defaultedProjects = s.viabilitySettings.DefaultedProjects
 	response := Response{Version: Version, Kind: query.Kind, GeneratedAt: view.now}
 
 	switch query.Kind {
@@ -405,6 +409,9 @@ type view struct {
 	// supervisorClientConfigured is this coordinator's own configuration; see
 	// Service.SetSupervisorClientConfigured.
 	supervisorClientConfigured bool
+	// defaultedProjects is ViabilitySettings.DefaultedProjects, the projects
+	// the coordinator loaded with default local bindings.
+	defaultedProjects []string
 }
 
 func newView(records sqlite.CoordinatorRecords, workers []domain.WorkerSnapshot, admissions []domain.QuotaAdmissionRecord, runtime RuntimeInfo, now time.Time) view {
@@ -752,6 +759,9 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 		return Explanation{}, false
 	}
 	explanation := Explanation{WorkflowRunID: runID, TaskID: task.ID, Blockers: make([]Blocker, 0)}
+	if project := v.workflows[v.runs[runID].WorkflowID].Project; slices.Contains(v.defaultedProjects, project) {
+		explanation.Details = append(explanation.Details, projectBindingDefaultedDetail(project))
+	}
 	if sink := v.runs[runID].Sink; sink != nil && task.ID == sink.ID {
 		explanation.Summary = "coordinator sink waits for all predecessors to be terminal and execution to be quiescent"
 		if sink.Progress.Terminal() {

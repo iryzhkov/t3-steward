@@ -22,10 +22,11 @@ and the type left to the ordinary defaulting (a Git project). Nothing in the loc
 binding is required for a plain Git project, and refusing the whole configuration for
 one unbound project took every coordinator admin query down once. The coordinator logs
 one warning per such project at startup, `Config.DefaultedFleetProjects()` names them,
-and the readiness check (`campaign check`) carries `project-binding-defaulted` as an
-informational detail on every candidate for a task on that project. The detail is not a
-reason: it never turns a ready fleet into `accepted_waiting` and never refuses a
-submission. An explicit `backlog_v2.projects` entry, when present, is preserved exactly
+and both the readiness check (`campaign check`, on each candidate's `unchecked` list) and
+`explain` (in the explanation's `details` list) carry `project-binding-defaulted` as an
+informational detail for a task on that project. The detail is neither a reason nor a
+blocker: it never turns a ready fleet into `accepted_waiting`, never refuses a submission
+and never changes a task's eligibility. An explicit `backlog_v2.projects` entry, when present, is preserved exactly
 as before and is still the only way to bind credentials, locks or directories.
 
 Desired models are authorization, not proof that a provider offers them. Provider

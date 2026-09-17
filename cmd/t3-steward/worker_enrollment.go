@@ -105,8 +105,12 @@ the required one, printing one line per worker: enrolled, already current, or
 refused with the reason; any refusal fails the command after every worker was
 tried. --request-id then defaults to a stable id derived from the worker id, the
 first twelve characters of the required digest and the fenced revision
-(enroll-<worker>-<digest12>-rev<N>), so repeating the command after the same
-catalog change replays the first answer instead of enrolling twice.
+(enroll-<worker>-<digest12>-rev<N>). That id replays the first answer only while
+no enrollment has committed: a retry after a refusal reuses it, and a retry must
+pass the same --reason, because the replay compares the whole request. Once an
+enrollment succeeds the coordinator advances the worker's revision, so running
+the single-worker form again derives a new id and enrolls again (harmless: the
+same digest at the next revision); --all skips a worker that is already current.
 
 Fenced form. --catalog-revision and --expected-revision pin the exact digest and
 revision the enrollment is fenced against; they are for a deliberate fence read

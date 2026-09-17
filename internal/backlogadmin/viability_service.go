@@ -85,6 +85,14 @@ func (v ViabilitySettings) profile(name string) (backlog.SetupProfile, bool) {
 	return backlog.SetupProfile{}, false
 }
 
+// projectBindingDefaultedDetail is the one sentence the readiness matrix and
+// the explanation both carry for a project loaded with default local bindings.
+func projectBindingDefaultedDetail(project string) string {
+	return fmt.Sprintf("%s: project %q has no backlog_v2.projects entry on this coordinator, so it runs "+
+		"with default local bindings and no credentials, resource locks or directory "+
+		"resources were checked for it", ReasonProjectBindingDefaulted, project)
+}
+
 // defaulted reports whether the coordinator loaded a project with a default
 // local binding.
 func (v ViabilitySettings) defaulted(name string) bool {
@@ -446,10 +454,7 @@ func (v view) viabilityCandidate(
 	candidate.Reasons = append(candidate.Reasons, enrollmentReasons(worker)...)
 	candidate.Unchecked = append(candidate.Unchecked, enrollmentUnchecked(worker)...)
 	if settings.defaulted(task.Project) {
-		candidate.Unchecked = append(candidate.Unchecked, fmt.Sprintf(
-			"%s: project %q has no backlog_v2.projects entry on this coordinator, so it runs "+
-				"with default local bindings and no credentials, resource locks or directory "+
-				"resources were checked for it", ReasonProjectBindingDefaulted, task.Project))
+		candidate.Unchecked = append(candidate.Unchecked, projectBindingDefaultedDetail(task.Project))
 	}
 	drifted := false
 	for _, reason := range candidate.Reasons {
