@@ -1,6 +1,7 @@
 package backlog
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,7 +82,14 @@ func TestPreSupervisionPeerRefusesASupervisedManifest(t *testing.T) {
 // binary. A field this build does not know about is refused by name and by
 // line, which is exactly what supervision and gates were to the previous
 // release.
+//
+// Since the version-aware refusal, the message also names the release that
+// refused the field and says that a newer release may be required, and it
+// keeps the yaml decoder's own text after that, so the recorded refusal above
+// stays recognisable in what a newer binary prints.
 func TestUnknownTopLevelManifestFieldIsRefusedByName(t *testing.T) {
+	t.Cleanup(func() { SetReleaseVersion("dev") })
+	SetReleaseVersion("0.11.0-rc.99-test")
 	raw := strings.Join([]string{
 		"version: 2",
 		"name: unknown-field-example",
@@ -100,12 +108,63 @@ func TestUnknownTopLevelManifestFieldIsRefusedByName(t *testing.T) {
 	}
 	for _, fragment := range []string{
 		"decode workflow manifest",
-		"line 7",
-		"field supervision_from_a_later_release not found in type backlog.Manifest",
+		"field supervision_from_a_later_release (line 7) is not supported by this release 0.11.0-rc.99-test; a newer t3-steward release may be required",
+		"line 7: field supervision_from_a_later_release not found in type backlog.Manifest",
 	} {
 		if !strings.Contains(err.Error(), fragment) {
 			t.Fatalf("refusal %q is missing %q", err, fragment)
 		}
+	}
+	if strings.Index(err.Error(), "is not supported by this release") > strings.Index(err.Error(), "not found in type") {
+		t.Fatalf("the version advice must come before the yaml text: %q", err)
+	}
+}
+
+// preSupervisionManifest is the manifest shape of the release before campaign
+// supervision: every field of Manifest except supervision and gates. Decoding
+// the supervised example into it is what an older binary does, so the refusal
+// it produces is the refusal an older binary built from this code would print.
+type preSupervisionManifest struct {
+	Version     int                     `yaml:"version"`
+	Name        string                  `yaml:"name"`
+	Class       string                  `yaml:"class"`
+	Placement   ManifestPlacement       `yaml:"placement"`
+	Resources   ManifestResources       `yaml:"resources"`
+	Preflight   ManifestPreflight       `yaml:"preflight"`
+	Environment ManifestEnvironment     `yaml:"environment"`
+	Inputs      []string                `yaml:"inputs"`
+	Routes      []ManifestRoute         `yaml:"routes"`
+	Tasks       map[string]ManifestTask `yaml:"tasks"`
+}
+
+// TestPreSupervisionShapedDecoderRefusesTheSupervisedExampleByVersion proves
+// the two halves of the compatibility contract together: an older-shaped
+// decoder still refuses the supervised example outright, and the refusal it
+// prints names the release that refused it and the two unknown fields with
+// their lines, followed by the decoder text the recorded refusal was made of.
+func TestPreSupervisionShapedDecoderRefusesTheSupervisedExampleByVersion(t *testing.T) {
+	t.Cleanup(func() { SetReleaseVersion("dev") })
+	SetReleaseVersion("0.11.0-rc.56")
+	var older preSupervisionManifest
+	err := decodeManifestStrict(supervisedExampleManifest(t), &older)
+	if err == nil {
+		t.Fatal("an older-shaped decoder accepted the supervised example")
+	}
+	for _, fragment := range []string{
+		"decode workflow manifest",
+		"field supervision (line 69) is not supported by this release 0.11.0-rc.56; a newer t3-steward release may be required",
+		"field gates (line 82) is not supported by this release 0.11.0-rc.56; a newer t3-steward release may be required",
+		"yaml: unmarshal errors:",
+		"line 69: field supervision not found in type backlog.preSupervisionManifest",
+		"line 82: field gates not found in type backlog.preSupervisionManifest",
+	} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Fatalf("refusal %q is missing %q", err, fragment)
+		}
+	}
+	var unknown *UnknownManifestFieldError
+	if !errors.As(err, &unknown) || len(unknown.Fields) != 2 || unknown.Fields[0] != "supervision" || unknown.Fields[1] != "gates" {
+		t.Fatalf("refusal does not carry the unknown fields structurally: %#v", err)
 	}
 }
 

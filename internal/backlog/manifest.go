@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -112,21 +113,109 @@ type ManifestCommit struct {
 	Revision string `yaml:"revision"`
 }
 
-// ParseManifest strictly decodes, defaults, and validates a version 2
-// workflow manifest. Referenced files are checked by LoadManifest.
-func ParseManifest(raw []byte) (Manifest, error) {
-	var manifest Manifest
+// releaseVersion is the version string the running binary reports, the same
+// value "t3-steward version" prints. The binary's main sets it through
+// SetReleaseVersion; tests and library callers see "dev". It exists so that a
+// manifest refusal can name the release that refused it.
+var releaseVersion = "dev"
+
+// SetReleaseVersion records the running release for manifest refusals. An
+// empty value is ignored, so a caller that has no version keeps "dev".
+func SetReleaseVersion(version string) {
+	if strings.TrimSpace(version) != "" {
+		releaseVersion = strings.TrimSpace(version)
+	}
+}
+
+// ReleaseVersion reports the version SetReleaseVersion recorded.
+func ReleaseVersion() string { return releaseVersion }
+
+// unknownFieldPattern matches one line of the yaml decoder's strict-mode
+// refusal, "line N: field NAME not found in type PKG.TYPE".
+var unknownFieldPattern = regexp.MustCompile(`^line (\d+): field (\S+) not found in type \S+$`)
+
+// UnknownManifestFieldError is the refusal of a manifest that declares a field
+// this release does not know. Its message names each field with its line and
+// the running release, says that a newer release may be required, and keeps
+// the decoder's own text after that, so an operator reading an older binary's
+// output can tell a manifest from a newer release apart from a typo.
+type UnknownManifestFieldError struct {
+	// Fields are the unknown field names in the order the decoder reported
+	// them.
+	Fields []string
+	// Lines are the manifest lines of Fields, index for index.
+	Lines []int
+	// Release is the version the refusal was made by.
+	Release string
+	// Cause is the decoder's own error, kept for errors.Is and errors.As.
+	Cause error
+}
+
+func (e *UnknownManifestFieldError) Error() string {
+	var text strings.Builder
+	for index, field := range e.Fields {
+		fmt.Fprintf(&text, "field %s (line %d) is not supported by this release %s; a newer t3-steward release may be required\n",
+			field, e.Lines[index], e.Release)
+	}
+	text.WriteString(e.Cause.Error())
+	return text.String()
+}
+
+func (e *UnknownManifestFieldError) Unwrap() error { return e.Cause }
+
+// describeUnknownFields rewrites a strict-mode decode refusal into an
+// UnknownManifestFieldError when it names unknown fields, and returns any other
+// error unchanged.
+func describeUnknownFields(err error) error {
+	var typeErr *yaml.TypeError
+	if !errors.As(err, &typeErr) {
+		return err
+	}
+	unknown := &UnknownManifestFieldError{Release: releaseVersion, Cause: err}
+	for _, line := range typeErr.Errors {
+		match := unknownFieldPattern.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		number, convErr := strconv.Atoi(match[1])
+		if convErr != nil {
+			continue
+		}
+		unknown.Fields = append(unknown.Fields, match[2])
+		unknown.Lines = append(unknown.Lines, number)
+	}
+	if len(unknown.Fields) == 0 {
+		return err
+	}
+	return unknown
+}
+
+// decodeManifestStrict decodes exactly one YAML document into the given
+// manifest shape, refusing unknown fields by name, line and release. It is the
+// one decoder ParseManifest uses; the compatibility tests also point it at an
+// older manifest shape to reproduce what an older binary prints.
+func decodeManifestStrict(raw []byte, into any) error {
 	decoder := yaml.NewDecoder(bytes.NewReader(raw))
 	decoder.KnownFields(true)
-	if err := decoder.Decode(&manifest); err != nil {
-		return manifest, fmt.Errorf("decode workflow manifest: %w", err)
+	if err := decoder.Decode(into); err != nil {
+		return fmt.Errorf("decode workflow manifest: %w", describeUnknownFields(err))
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return manifest, errors.New("decode workflow manifest: multiple YAML documents are not allowed")
+			return errors.New("decode workflow manifest: multiple YAML documents are not allowed")
 		}
-		return manifest, fmt.Errorf("decode workflow manifest: %w", err)
+		return fmt.Errorf("decode workflow manifest: %w", err)
+	}
+	return nil
+}
+
+// ParseManifest strictly decodes, defaults, and validates a version 2
+// workflow manifest. Referenced files are checked by LoadManifest.
+func ParseManifest(raw []byte) (Manifest, error) {
+	var manifest Manifest
+	if err := decodeManifestStrict(raw, &manifest); err != nil {
+		return manifest, err
 	}
 
 	applyManifestDefaults(&manifest)
