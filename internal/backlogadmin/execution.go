@@ -257,7 +257,11 @@ func planDAGCancellation(records sqlite.CoordinatorRecords, attempt domain.Attem
 	state := backlog.DAGState{Run: run}
 	state.Tasks = domain.TasksForRun(run, records.Tasks)
 	original := make(map[string]domain.Attempt)
-	for _, candidate := range records.Attempts {
+	// The DAG is the run's declared work. An overseer activation owns an attempt
+	// but no task in that graph, so handing it to the execution refused the whole
+	// plan — a supervised run could not be cancelled at all once it had activated
+	// its overseer once.
+	for _, candidate := range domain.DeclaredTaskAttempts(records.Attempts) {
 		if candidate.WorkflowRunID == run.ID {
 			state.Attempts = append(state.Attempts, candidate)
 			original[candidate.ID] = candidate
@@ -299,7 +303,7 @@ func planDAGCancellation(records sqlite.CoordinatorRecords, attempt domain.Attem
 func planDAGSkip(records sqlite.CoordinatorRecords, attempt domain.Attempt, task domain.Task, run domain.WorkflowRun, now time.Time) (*domain.Attempt, *domain.WorkflowRun, error) {
 	state := backlog.DAGState{Run: run}
 	state.Tasks = domain.TasksForRun(run, records.Tasks)
-	for _, candidate := range records.Attempts {
+	for _, candidate := range domain.DeclaredTaskAttempts(records.Attempts) {
 		if candidate.WorkflowRunID == run.ID {
 			state.Attempts = append(state.Attempts, candidate)
 		}
