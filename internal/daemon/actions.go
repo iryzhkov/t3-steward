@@ -66,8 +66,27 @@ func (d *Daemon) affectedThreads(ctx context.Context, a domain.Action) ([]domain
 	return out, nil
 }
 
-// warnThreads sends the warn or drain message once per thread and epoch.
+// warnThreads sends the warn or drain message once per thread and epoch. A
+// thread the user resumed after the bucket's stop is never drained: it gets
+// the advisory warning instead, once in the epoch, and no resume intent.
 func (d *Daemon) warnThreads(ctx context.Context, threads []domain.Thread, a domain.Action, state domain.BucketState) {
+	threads, userResumed := d.splitUserResumed(ctx, threads, state)
+	d.notifyThreads(ctx, threads, a, state)
+	if len(userResumed) == 0 {
+		return
+	}
+	advisory := a
+	advisory.Kind = domain.ActionWarn
+	advisory.Reason += " (user-resumed thread: advisory warning only)"
+	d.notifyThreads(ctx, userResumed, advisory, state)
+}
+
+// notifyThreads delivers one warn or drain action to threads, once per
+// thread, kind and epoch.
+func (d *Daemon) notifyThreads(ctx context.Context, threads []domain.Thread, a domain.Action, state domain.BucketState) {
+	if len(threads) == 0 {
+		return
+	}
 	tmpl := d.cfg.Messages.Warn
 	if a.Kind == domain.ActionDrain {
 		tmpl = d.cfg.Messages.Drain
@@ -115,9 +134,11 @@ func (d *Daemon) warnThreads(ctx context.Context, threads []domain.Thread, a dom
 
 // stopThreads dispatches stops to every thread, verifies they left the
 // running state, retries with escalation, and records resume intents for
-// the threads it actually stopped.
+// the threads it actually stopped. A thread the user resumed after the
+// bucket's stop is left running, whichever path asked for the stop.
 func (d *Daemon) stopThreads(ctx context.Context, threads []domain.Thread, a domain.Action, state domain.BucketState) {
 	now := d.now()
+	threads, _ = d.splitUserResumed(ctx, threads, state)
 	var targets []domain.Thread
 	for _, t := range threads {
 		// A stop is recorded per turn, not per thread. A thread that starts

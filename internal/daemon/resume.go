@@ -85,7 +85,7 @@ func (d *Daemon) advanceResumes(ctx context.Context, threads []domain.Thread, st
 		//
 		// The watchdog's own warn and drain messages are user messages too,
 		// hence the tolerance around the stop time.
-		case !dry && thread.LatestUserMessageAt != nil && thread.LatestUserMessageAt.After(intent.StoppedAt.Add(10*time.Second)):
+		case !dry && thread.LatestUserMessageAt != nil && thread.LatestUserMessageAt.After(intent.StoppedAt.Add(userMessageTolerance)):
 			cancel("a user message arrived after the watchdog stop")
 			continue
 		case !dry && thread.Running:

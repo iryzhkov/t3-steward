@@ -627,6 +627,31 @@ func (s *Store) MarkThreadNotice(ctx context.Context, threadID string, bucket do
 	return n == 1, nil
 }
 
+// ThreadNotices returns the threads that received a notice of one kind for a
+// bucket epoch, each with the time recorded for it.
+func (s *Store) ThreadNotices(ctx context.Context, bucket domain.BucketKey, epoch string, kind domain.ActionKind) (map[string]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT thread_id, at FROM thread_notices WHERE bucket = ? AND epoch = ? AND kind = ?`,
+		bucket.String(), epoch, string(kind))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var threadID, at string
+		if err := rows.Scan(&threadID, &at); err != nil {
+			return nil, err
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, at)
+		if err != nil {
+			return nil, fmt.Errorf("decode notice time for %s: %w", threadID, err)
+		}
+		out[threadID] = parsed
+	}
+	return out, rows.Err()
+}
+
 // ClearThreadNotices forgets notices for a bucket, used when a bucket rearms.
 func (s *Store) ClearThreadNotices(ctx context.Context, bucket domain.BucketKey) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM thread_notices WHERE bucket = ?`, bucket.String())

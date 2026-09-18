@@ -204,6 +204,12 @@ const (
 	ActionRearm ActionKind = "rearm"
 	// ActionResume is produced by the resume scheduler, not the policy engine.
 	ActionResume ActionKind = "resume"
+	// NoticeUserResumed is not an action but a thread notice kind: the
+	// thread's user resumed or started it by hand after the bucket's stop,
+	// and the notice time is that user message. For the rest of the epoch
+	// the watchdog neither stops nor drains the thread and warns it at most
+	// once (S-18).
+	NoticeUserResumed ActionKind = "user-resumed"
 )
 
 // Action is one instruction from the policy engine.

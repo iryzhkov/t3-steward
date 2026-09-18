@@ -393,9 +393,10 @@ func TestNewTurnInStoppedWindowIsStoppedAgainWithFreshIntent(t *testing.T) {
 	if fmt.Sprint(h.fake.stops) != "[interrupt:a]" {
 		t.Fatalf("a user-started turn was re-stopped: %v", h.fake.stops)
 	}
-	// The turn ends and the harness starts another one on its own, on a
-	// thread whose last user message predates the stop: that one is stopped
-	// like any new session and gets a fresh intent for this turn.
+	// The thread is recorded as user-resumed for this epoch: a turn the
+	// harness starts on it later in the same window is left alone too, even
+	// if the thread's latest user message no longer reads newer than the
+	// stop (the interactive override is per thread and epoch, S-18).
 	h.clock = h.clock.Add(time.Minute)
 	earlier := reset.Add(-6 * time.Hour)
 	h.fake.mu.Lock()
@@ -403,24 +404,32 @@ func TestNewTurnInStoppedWindowIsStoppedAgainWithFreshIntent(t *testing.T) {
 	h.fake.threads["a"].LatestUserMessageAt = &earlier
 	h.fake.mu.Unlock()
 	h.poll()
-	if fmt.Sprint(h.fake.stops) != "[interrupt:a interrupt:a]" {
+	if fmt.Sprint(h.fake.stops) != "[interrupt:a]" {
+		t.Fatalf("a user-resumed thread was stopped again in the same window: %v", h.fake.stops)
+	}
+	// Another thread whose last user message predates the stop is a new
+	// session in every sense: it is stopped and gets a fresh intent for its
+	// turn, and the same turn is not stopped twice.
+	h.fake.add("b", "codex", "gpt", true)
+	h.fake.mu.Lock()
+	h.fake.threads["b"].LatestUserMessageAt = &earlier
+	h.fake.mu.Unlock()
+	h.poll()
+	h.poll()
+	if fmt.Sprint(h.fake.stops) != "[interrupt:a interrupt:b]" {
 		t.Fatalf("stops = %v", h.fake.stops)
 	}
-	intent, _, _ = h.store.LoadResumeIntent(context.Background(), "a")
-	if intent.Status != domain.ResumePending || intent.StoppedTurnID != "turn-background" {
+	intent, _, _ = h.store.LoadResumeIntent(context.Background(), "b")
+	if intent.Status != domain.ResumePending || intent.StoppedTurnID != "turn-b" {
 		t.Fatalf("intent = %+v", intent)
 	}
-	// The same turn is not stopped twice.
-	h.poll()
-	if len(h.fake.stops) != 2 {
-		t.Fatalf("stops = %v", h.fake.stops)
-	}
-	// After the reset the thread resumes.
+	// After the reset the stopped thread resumes; the user-resumed one has
+	// no intent (the user's message cancelled it) and is not resumed.
 	h.clock = reset.Add(time.Minute)
 	h.snap(codexPrimary, 1, reset.Add(5*time.Hour), "2")
 	h.clock = h.clock.Add(3 * time.Minute)
 	h.poll()
-	if fmt.Sprint(h.fake.resumes) != "[a]" {
+	if fmt.Sprint(h.fake.resumes) != "[b]" {
 		t.Fatalf("resumes = %v", h.fake.resumes)
 	}
 }
