@@ -15,10 +15,12 @@ All notable changes to this project are documented here. The format follows
   `unchanged`), `error`, `configurationDigest` (effective after the request),
   `previousDigest`, `release` and, on a rejection, `blockers`. An unchanged
   file no longer restarts the configuration services. The status query's
-  runtime block carries the receipt as `lastReload` (the activation time is
-  now `activatedAt`), and `t3-steward coordinator identity` prints it as
-  `lastReload` with `--json` and as reload lines in text. The coordinator
-  also writes `coordinator.pid` beside the receipt (F-3, contract 2).
+  runtime block carries the receipt under the new key `lastReloadReceipt`;
+  `lastReload` stays the activation time it has been since rc.56, so an older
+  admin client still decodes the status document. `t3-steward coordinator
+  identity` prints the receipt as `lastReloadReceipt` with `--json` and as
+  reload lines in text. The coordinator also writes `coordinator.pid` beside
+  the receipt (F-3, contract 2).
 - `t3-steward coordinator reload [--json] [--wait DURATION]` sends SIGHUP to
   the coordinator on this host, waits (default 10s) for a receipt requested at
   or after the signal and prints it: exit 0 for `accepted` and `unchanged`, 8

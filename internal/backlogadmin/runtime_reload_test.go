@@ -8,8 +8,9 @@ import (
 )
 
 // F-3: the status query's runtime block carries the coordinator's last reload
-// receipt, read at query time so it follows every SIGHUP, and omits the field
-// before the first one.
+// receipt as lastReloadReceipt, read at query time so it follows every SIGHUP,
+// and omits the field before the first one. lastReload stays the activation
+// time it has always been.
 func TestAdminStatusCarriesTheLastReloadReceipt(t *testing.T) {
 	store := openAdminTestStore(t)
 	seedAdminTestStore(t, store)
@@ -21,8 +22,8 @@ func TestAdminStatusCarriesTheLastReloadReceipt(t *testing.T) {
 	var current *ReloadReceipt
 	service.SetRuntimeInfo(RuntimeInfo{
 		Mode: "coordinator", Owner: "coordinator-1", Epoch: 7, Transport: "ssh",
-		Release: "rc.69", ConfigurationDigest: "digest-1", ActivatedAt: adminTestNow.Add(-time.Hour),
-		LastReload: func() *ReloadReceipt { return current },
+		Release: "rc.69", ConfigurationDigest: "digest-1", LastReload: adminTestNow.Add(-time.Hour),
+		LastReloadReceipt: func() *ReloadReceipt { return current },
 	})
 	query := Query{Version: Version, Kind: QueryStatus, Principal: Principal{ID: "operator-1", Roles: []string{"backlog-reader"}}}
 
@@ -30,11 +31,11 @@ func TestAdminStatusCarriesTheLastReloadReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.Status.Runtime.LastReload != nil {
-		t.Fatalf("a coordinator that was never signalled reports a reload: %+v", response.Status.Runtime.LastReload)
+	if response.Status.Runtime.LastReloadReceipt != nil {
+		t.Fatalf("a coordinator that was never signalled reports a reload: %+v", response.Status.Runtime.LastReloadReceipt)
 	}
-	if response.Status.Runtime.ActivatedAt != adminTestNow.Add(-time.Hour) {
-		t.Fatalf("activatedAt = %v", response.Status.Runtime.ActivatedAt)
+	if response.Status.Runtime.LastReload != adminTestNow.Add(-time.Hour) {
+		t.Fatalf("lastReload = %v", response.Status.Runtime.LastReload)
 	}
 	raw, err := json.Marshal(response.Status.Runtime)
 	if err != nil {
@@ -44,8 +45,11 @@ func TestAdminStatusCarriesTheLastReloadReceipt(t *testing.T) {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		t.Fatal(err)
 	}
-	if _, present := fields["lastReload"]; present {
-		t.Fatalf("lastReload is present before the first reload: %s", raw)
+	if _, present := fields["lastReloadReceipt"]; present {
+		t.Fatalf("lastReloadReceipt is present before the first reload: %s", raw)
+	}
+	if _, isTime := fields["lastReload"].(string); !isTime {
+		t.Fatalf("lastReload is not the activation time: %s", raw)
 	}
 
 	current = &ReloadReceipt{
@@ -58,9 +62,9 @@ func TestAdminStatusCarriesTheLastReloadReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := response.Status.Runtime.LastReload
+	got := response.Status.Runtime.LastReloadReceipt
 	if got == nil || got.Outcome != ReloadRejected || got.Error != current.Error || len(got.Blockers) != 1 || got.Blockers[0].AttemptID != "attempt-1" {
-		t.Fatalf("lastReload = %+v", got)
+		t.Fatalf("lastReloadReceipt = %+v", got)
 	}
 	raw, err = json.Marshal(response.Status.Runtime)
 	if err != nil {
@@ -69,10 +73,13 @@ func TestAdminStatusCarriesTheLastReloadReceipt(t *testing.T) {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		t.Fatal(err)
 	}
-	last, _ := fields["lastReload"].(map[string]any)
+	if _, isTime := fields["lastReload"].(string); !isTime {
+		t.Fatalf("lastReload stopped being the activation time after a reload: %s", raw)
+	}
+	last, _ := fields["lastReloadReceipt"].(map[string]any)
 	for _, key := range []string{"requestedAt", "completedAt", "outcome", "error", "configurationDigest", "previousDigest", "release", "blockers"} {
 		if _, present := last[key]; !present {
-			t.Fatalf("lastReload lacks %q: %s", key, raw)
+			t.Fatalf("lastReloadReceipt lacks %q: %s", key, raw)
 		}
 	}
 }

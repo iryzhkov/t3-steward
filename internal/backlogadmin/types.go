@@ -207,14 +207,18 @@ type Status struct {
 type RuntimeStatus struct {
 	Release             string `json:"release,omitempty"`
 	ConfigurationDigest string `json:"configurationDigest,omitempty"`
-	// ActivatedAt is when the effective configuration was activated: at
-	// startup, or by the last accepted reload.
-	ActivatedAt time.Time `json:"activatedAt,omitzero"`
-	// LastReload is the receipt of the last SIGHUP the coordinator handled,
-	// absent until the first one. It is the same record the coordinator writes
-	// to its state directory, so a remote admin host reads the verdict without
-	// a shell on the coordinator host.
-	LastReload           *ReloadReceipt `json:"lastReload,omitempty"`
+	// LastReload is when the effective configuration was activated: at
+	// startup, or by the last accepted reload. It has been a time under this
+	// key since v0.11.0-rc.56 and every deployed admin client decodes it as
+	// one, so its type is part of the wire contract; the receipt travels under
+	// LastReloadReceipt instead.
+	LastReload time.Time `json:"lastReload,omitzero"`
+	// LastReloadReceipt is the receipt of the last SIGHUP the coordinator
+	// handled, absent until the first one. It is the same record the
+	// coordinator writes to its state directory, so a remote admin host reads
+	// the verdict without a shell on the coordinator host. A new key, so an
+	// older client ignores it rather than failing on it.
+	LastReloadReceipt    *ReloadReceipt `json:"lastReloadReceipt,omitempty"`
 	Mode                 string         `json:"mode"`
 	Owner                string         `json:"owner"`
 	Epoch                int64          `json:"epoch"`

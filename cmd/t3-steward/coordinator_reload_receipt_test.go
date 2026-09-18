@@ -298,9 +298,9 @@ func TestCoordinatorStateDirectoryFollowsTheStatePath(t *testing.T) {
 	}
 }
 
-// The same receipt is carried by "coordinator identity": as the lastReload
-// field with --json, and as reload lines in text, with the error on a
-// rejection.
+// The same receipt is carried by "coordinator identity": as the
+// lastReloadReceipt field with --json, and as reload lines in text, with the
+// error on a rejection.
 func TestCoordinatorIdentityCarriesTheLastReload(t *testing.T) {
 	completed := time.Date(2026, 9, 18, 3, 4, 5, 0, time.UTC)
 	receipt := &backlogadmin.ReloadReceipt{
@@ -310,7 +310,7 @@ func TestCoordinatorIdentityCarriesTheLastReload(t *testing.T) {
 		Blockers: []backlogadmin.ReloadBlocker{{WorkerID: "normandy", AssignmentID: "assignment-1", AttemptID: "attempt-1", Unblock: "t3-steward backlog cancel run-1/implement --reason TEXT"}},
 	}
 	status := backlogadmin.Status{Runtime: backlogadmin.RuntimeStatus{
-		Owner: "coordinator", Release: "rc.69", ConfigurationDigest: "digest-before", Epoch: 3, Health: "healthy", LastReload: receipt,
+		Owner: "coordinator", Release: "rc.69", ConfigurationDigest: "digest-before", Epoch: 3, Health: "healthy", LastReloadReceipt: receipt,
 	}}
 	description := backlogadmin.TransportDescription{Carrier: backlogadmin.CarrierLocal, CoordinatorID: "coordinator", Endpoint: "/run/state.db.admin.sock"}
 
@@ -322,9 +322,9 @@ func TestCoordinatorIdentityCarriesTheLastReload(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &document); err != nil {
 		t.Fatalf("invalid JSON %q: %v", out.String(), err)
 	}
-	last, _ := document["lastReload"].(map[string]any)
+	last, _ := document["lastReloadReceipt"].(map[string]any)
 	if last["outcome"] != "rejected" || last["error"] != receipt.Error || last["configurationDigest"] != "digest-before" {
-		t.Fatalf("lastReload = %#v", document["lastReload"])
+		t.Fatalf("lastReloadReceipt = %#v", document["lastReloadReceipt"])
 	}
 	blockers, _ := last["blockers"].([]any)
 	if len(blockers) != 1 {
@@ -348,7 +348,7 @@ func TestCoordinatorIdentityCarriesTheLastReload(t *testing.T) {
 	}
 
 	// Before the first reload there is no receipt and no reload line.
-	status.Runtime.LastReload = nil
+	status.Runtime.LastReloadReceipt = nil
 	out.Reset()
 	if err := renderCoordinatorIdentity(&out, false, coordinatorIdentityFrom(description, status)); err != nil {
 		t.Fatal(err)

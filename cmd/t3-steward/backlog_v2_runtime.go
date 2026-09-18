@@ -528,7 +528,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			"effect", "this project cannot be scheduled; every other project is unaffected")
 	}
 	service.SetRuntimeInfo(backlogadmin.RuntimeInfo{
-		Release: version, ConfigurationDigest: configurationDigest, ActivatedAt: appliedAt, LastReload: receipts.Last,
+		Release: version, ConfigurationDigest: configurationDigest, LastReload: appliedAt, LastReloadReceipt: receipts.Last,
 		Mode: "coordinator", Owner: cfg.BacklogV2.Coordinator.ID, Epoch: epoch,
 		Transport:              cfg.BacklogV2.Transport.Kind,
 		MaxWorkerSnapshotAge:   cfg.BacklogV2.Freshness.WorkerMaxAge.D(),

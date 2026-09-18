@@ -35,9 +35,10 @@ Example:
   t3-steward coordinator identity --json
   t3-steward coordinator reload --json --wait 30s
 
-The identity view carries the coordinator's last reload receipt as lastReload
-(--json) or as reload lines (text): the outcome, when it completed, the digest
-effective after it, and the error and blockers of a rejection.
+The identity view carries the coordinator's last reload receipt as
+lastReloadReceipt (--json) or as reload lines (text): the outcome, when it
+completed, the digest effective after it, and the error and blockers of a
+rejection.
 
 Configuration on a host that is not the coordinator:
   backlog_v2.coordinator_client.coordinator_id, .address and a
@@ -96,11 +97,13 @@ type CoordinatorIdentity struct {
 	ConfigurationDigest string `json:"configurationDigest,omitempty"`
 	Epoch               int64  `json:"epoch"`
 	Health              string `json:"health"`
-	// LastReload is the coordinator's receipt for its last SIGHUP, absent
-	// before the first one. It is the record the coordinator wrote to its
-	// state directory, carried here so a remote admin host reads the verdict.
-	LastReload *backlogadmin.ReloadReceipt       `json:"lastReload,omitempty"`
-	Transport  backlogadmin.TransportDescription `json:"transport"`
+	// LastReloadReceipt is the coordinator's receipt for its last SIGHUP,
+	// absent before the first one. It is the record the coordinator wrote to
+	// its state directory, carried here so a remote admin host reads the
+	// verdict. The key matches the status document's, where lastReload stays
+	// the activation time.
+	LastReloadReceipt *backlogadmin.ReloadReceipt       `json:"lastReloadReceipt,omitempty"`
+	Transport         backlogadmin.TransportDescription `json:"transport"`
 }
 
 func runCoordinatorIdentity(ctx context.Context, cfg config.Config, out io.Writer, asJSON bool) error {
@@ -135,7 +138,7 @@ func coordinatorIdentityFrom(description backlogadmin.TransportDescription, stat
 		ConfigurationDigest: runtime.ConfigurationDigest,
 		Epoch:               runtime.Epoch,
 		Health:              runtime.Health,
-		LastReload:          runtime.LastReload,
+		LastReloadReceipt:   runtime.LastReloadReceipt,
 		Transport:           description,
 	}
 }
@@ -152,8 +155,8 @@ func renderCoordinatorIdentity(out io.Writer, asJSON bool, identity CoordinatorI
 	fmt.Fprintf(out, "config       %s\n", identity.ConfigurationDigest)
 	fmt.Fprintf(out, "epoch        %d\n", identity.Epoch)
 	fmt.Fprintf(out, "health       %s\n", identity.Health)
-	if identity.LastReload != nil {
-		writeReloadReceiptLines(out, "reload       ", "             ", *identity.LastReload)
+	if identity.LastReloadReceipt != nil {
+		writeReloadReceiptLines(out, "reload       ", "             ", *identity.LastReloadReceipt)
 	}
 	fmt.Fprintf(out, "carrier      %s via %s\n", identity.Transport.Carrier, identity.Transport.Endpoint)
 	return nil

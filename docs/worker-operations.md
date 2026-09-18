@@ -123,7 +123,7 @@ names. A failed activation restores the prior configuration. Every signal is
 answered with a receipt at
 `~/.local/state/t3-steward/coordinator/reload-receipt.json` (`accepted`,
 `unchanged` or `rejected` with the blockers), carried by the status query as
-`lastReload` and by `t3-steward coordinator identity`; on the coordinator host
+`lastReloadReceipt` and by `t3-steward coordinator identity`; on the coordinator host
 `t3-steward coordinator reload` sends the signal and prints the receipt. Status
 also exposes the effective configuration digest, release, and activation time;
 successful activation has a native audit event. See "Reloading the coordinator"

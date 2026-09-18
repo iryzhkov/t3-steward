@@ -32,7 +32,7 @@ The verb runs on the coordinator host only: it finds the process through the
 pid file the coordinator writes beside its receipt, under the state directory
 (<state dir>/coordinator/coordinator.pid and reload-receipt.json). From any
 other host, read the same receipt with "t3-steward coordinator identity --json"
-(field lastReload).
+(field lastReloadReceipt).
 
 Flags:
   --json          Print the receipt as one JSON document.

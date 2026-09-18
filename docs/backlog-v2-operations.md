@@ -535,7 +535,8 @@ effect after the request), `previousDigest`, `release` and, on a rejection,
   they were, and `configurationDigest` equals `previousDigest` to say so.
 
 A receipt is never older than the one before it. The same record is carried
-in the status query's runtime block as `lastReload`, so
+in the status query's runtime block as `lastReloadReceipt` (`lastReload`
+stays the activation time, as every earlier release reports it), so
 `t3-steward coordinator identity --json` shows the last verdict from any
 admin host, and the text form prints it as `reload <outcome> at <time>
 (<digest>)` with the error and blockers of a rejection. On the coordinator
