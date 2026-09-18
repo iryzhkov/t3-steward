@@ -61,7 +61,7 @@ All notable changes to this project are documented here. The format follows
   own records with no local check on any host: `node` (`--node <run>[/<task>]
   --state terminal|succeeded|paused|waiting-external|active`; `run= task=
   attempt= revision= progress=` and, for a terminal run, `failed=` and
-  `result="t3-steward result <run>"`) and `quota` (`--quota <pool> --below N |
+  `result="t3-steward task result <run>"`) and `quota` (`--quota <pool> --below N |
   --phase normal | --reset`, from the merged bucket observations; `pool=
   phase= percent=`). Every kind works interactively and with `--task current`,
   where a coordinator kind is a task wait with a structured condition. The

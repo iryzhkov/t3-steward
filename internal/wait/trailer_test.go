@@ -15,7 +15,7 @@ func TestWakeTrailerRendersAndParsesEveryKind(t *testing.T) {
 		{"shell", "met", "w-1", []Field{F("exit", "0")}},
 		{"time", "met", "w-2", []Field{F("at", "2030-01-01T00:00:00Z")}},
 		{"github", "failed", "w-3", []Field{F("target", "run:123"), F("state", "completed"), F("conclusion", "failure"), F("url", "https://github.com/o/r/actions/runs/123")}},
-		{"node", "met", "nw-4", []Field{F("run", "run-1"), F("task", "sink:run-1"), F("attempt", ""), F("revision", "7"), F("progress", "succeeded"), F("result", "t3-steward result run-1")}},
+		{"node", "met", "nw-4", []Field{F("run", "run-1"), F("task", "sink:run-1"), F("attempt", ""), F("revision", "7"), F("progress", "succeeded"), F("result", "t3-steward task result run-1")}},
 		{"quota", "met", "tw-5", []Field{F("pool", "claude"), F("phase", "normal"), F("percent", "42")}},
 	}
 	for _, c := range cases {
@@ -51,15 +51,15 @@ func TestWakeTrailerRendersAndParsesEveryKind(t *testing.T) {
 // A value with a space is quoted, and a reader that ignores unknown keys still
 // gets the known ones.
 func TestWakeTrailerQuotesValuesWithSpacesAndIgnoresUnknownKeys(t *testing.T) {
-	line := WakeTrailer("node", "met", "nw-1", F("result", "t3-steward result run-1"), F("failed", "a,b"))
-	if !strings.Contains(line, `result="t3-steward result run-1"`) {
+	line := WakeTrailer("node", "met", "nw-1", F("result", "t3-steward task result run-1"), F("failed", "a,b"))
+	if !strings.Contains(line, `result="t3-steward task result run-1"`) {
 		t.Fatalf("a value with a space is not quoted: %q", line)
 	}
 	if !strings.Contains(line, " failed=a,b") {
 		t.Fatalf("a value without a space is quoted: %q", line)
 	}
 	parsed, ok := ParseWakeTrailer(line + " future=\"some new key\" other=1")
-	if !ok || parsed["result"] != "t3-steward result run-1" || parsed["failed"] != "a,b" || parsed["future"] != "some new key" {
+	if !ok || parsed["result"] != "t3-steward task result run-1" || parsed["failed"] != "a,b" || parsed["future"] != "some new key" {
 		t.Fatalf("parsed %v ok=%v", parsed, ok)
 	}
 	if _, ok := ParseWakeTrailer("Wait finished (T3 steward): something"); ok {

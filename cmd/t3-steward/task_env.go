@@ -60,7 +60,7 @@ func cmdTask(g globalFlags, args []string) error {
 	case "result":
 		return cmdTaskResult(g, args[1:])
 	}
-	return fmt.Errorf("unknown task command %q; the commands are run, result and env (try task --help)", args[0])
+	return fmt.Errorf("%w %q; the commands are run, result and env (try task --help)", errUnknownTaskCommand, args[0])
 }
 
 // runTaskEnv prints the task identity the way wait resolves it: the injected

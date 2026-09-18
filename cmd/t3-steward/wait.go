@@ -99,7 +99,7 @@ task-bound, is one parseable line:
 plus kind-specific pairs: shell exit=; time at=; github target=run:<id>|pr:<n>
 state= conclusion= url=; node run= task= attempt= revision= progress=
 [control= pauseReason=] and, for a terminal run, failed=<comma list> and
-result="t3-steward result <run>"; quota pool= phase= percent=. Values with a
+result="t3-steward task result <run>"; quota pool= phase= percent=. Values with a
 space are quoted, unknown keys are to be ignored, key order is not promised. A
 blank line and the prose follow.
 

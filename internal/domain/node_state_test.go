@@ -95,7 +95,7 @@ func TestResolveNodeStateOnASinkAndTheDefault(t *testing.T) {
 		t.Fatalf("default state on a failed run: %+v err=%v", obs, err)
 	}
 	fields := NodeTrailerFields(obs)
-	if fields["failed"] != "t" || fields["result"] != "t3-steward result r" || fields["run"] != "r" {
+	if fields["failed"] != "t" || fields["result"] != "t3-steward task result r" || fields["run"] != "r" {
 		t.Fatalf("fields = %v", fields)
 	}
 	if _, err := ResolveNodeState(sink, NodeStatePaused, runs, tasks, attempts, assignments, workers); err == nil || !strings.Contains(err.Error(), "sink") {

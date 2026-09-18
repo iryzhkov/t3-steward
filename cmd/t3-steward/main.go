@@ -114,6 +114,16 @@ func run(args []string) error {
 	return reportJSONError(args, dispatch(args))
 }
 
+// errUnknownCommand and errUnknownTaskCommand mark the two refusals the
+// dispatcher makes when it is handed a name it does not route. They are
+// sentinels so that a test can ask "does this CLI dispatch this verb?" -- for
+// example about a verb a wake trailer tells an agent to run -- without running
+// the verb and without pasting the verb's spelling into the test.
+var (
+	errUnknownCommand     = errors.New("unknown command")
+	errUnknownTaskCommand = errors.New("unknown task command")
+)
+
 func dispatch(args []string) error {
 	// A manifest refusal names the release that refused it, so the version
 	// the linker set is handed to the manifest parser before any command runs.
@@ -346,7 +356,7 @@ func dispatch(args []string) error {
 		}
 		return cmdCoordinatorExchange(g, fs.Arg(0))
 	default:
-		return fmt.Errorf("unknown command %q (try --help)", cmd)
+		return fmt.Errorf("%w %q (try --help)", errUnknownCommand, cmd)
 	}
 }
 
