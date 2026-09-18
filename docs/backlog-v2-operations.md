@@ -424,6 +424,90 @@ A forced start bypasses ordinary ordering and timing only. Dependencies, live
 locks, fresh worker identity, route compatibility, and hard draining/closed
 quota admission remain authoritative. There is no administrative quota bypass.
 
+### Starting one task from a session
+
+An agent in a session starts one task on the fleet with one call, from the
+checkout the work is about:
+
+```sh
+t3-steward task run --model claude-haiku-4-5 -- "summarise the open PRs"
+t3-steward task run --model t3-primary/opus --prompt-file plan.md --json
+t3-steward task run --model opus --fan-out prompts/*.md      # one run, one task per file
+```
+
+The CLI derives, the coordinator validates, and the coordinator never chooses a
+route. Nothing new crosses the wire: `task run` composes the `projects` query,
+`campaign check`, `campaign submit --notify-thread current` and the artifact
+verbs, and what it submits is exactly what `campaign submit` would submit from a
+directory written by hand.
+
+Derived in this order, each printed in the record:
+
+| Value | Derived from |
+| --- | --- |
+| project | `--project`, else this checkout's `origin` remote normalised and matched against `t3-steward backlog projects`; exactly one match |
+| ref | `--ref`, else the current branch when it has an upstream and is not ahead of it; `--fresh` takes a scratch workspace instead |
+| route | `--model INSTANCE/MODEL` exactly, or `--model MODEL` when exactly one advertised instance offers it, else `backlog_v2.coordinator_client.defaults.model`; the quota pool is the one the instance advertises |
+| worker | `--worker` pins one; otherwise any eligible worker |
+| idempotency key | `--idempotency-key`, else `run-` plus sixteen hex characters of a digest over project, ref, instance, model, the prompts, outputs, verify commands, class and max turns |
+| name | `--name`, else the prompt's first line, as a manifest-legal slug |
+| notification | the calling thread, as `campaign submit --notify-thread current` resolves it |
+
+Refused, each naming what to pass instead: a remote zero or several projects
+match; a model several instances offer; a detached HEAD or a branch ahead of
+its upstream ("push first or pass --ref"); more than one prompt source; no
+route and no `defaults.model`. A dirty working tree is a warning and not a
+refusal: uncommitted changes are not sent, the worker fetches the ref.
+
+A start is refused when no thread resolves, unless `--no-notify` says that a
+run nobody will hear about is intended. `check` reports `ready` or
+`accepted_waiting` and both are success: the run exists either way.
+
+What the fleet can run right now:
+
+```sh
+t3-steward models [--project NAME] [--json]
+```
+
+One row per `instance/model`, in the form `--model` takes, with the pool, the
+pool's admission state, the phase and used percent of its worst bucket, and how
+many of the workers that advertise it are ready. An instance the fleet catalog
+authorises that nobody advertises, and one a worker advertises that the catalog
+authorises in no pool (`missingBinding`), are listed with that as their status
+rather than omitted: a route that cannot run is what the caller most needs to
+see.
+
+On the wake, whose first line is the structured trailer
+(`t3-steward-wait kind=node outcome=... result="t3-steward task result <run>"`):
+
+```sh
+t3-steward task result <run>[/<task>] [--output DIR] [--json]
+```
+
+It writes `final-message.md` and every declared output under
+`./.t3/results/<run>/<task>/`, each under the name the task declared, and
+collects nothing else; the thread archive and the verification records stay
+behind `backlog artifacts`. The exit code is the task's own verdict: 0
+succeeded, 2 failed or cancelled with whatever exists still written, 1 not
+terminal with the progress printed. `--json` inlines the final message.
+
+To stop a run:
+
+```sh
+t3-steward campaign cancel <run> --reason TEXT [--json]     # every non-terminal task
+t3-steward campaign cancel <run>/<task> --reason TEXT       # one task and its dependents
+```
+
+The run form is one command with one revision fence per attempt, which is what
+a fan-out run needs: its tasks depend on each other for nothing, so cancelling
+one of them cascades to nothing.
+
+A task that declares no route at all is refused as permanent `no-route`, at
+`check` and at intake, with the instance/model pairs its project's eligible
+workers advertise. The legacy single-task adapter refuses a submission with no
+instance and model the same way, which quarantines the file once instead of
+reporting it on every cycle.
+
 ### Where the logs are
 
 Every role runs in the same per-user unit, `t3-steward.service`: the quota

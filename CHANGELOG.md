@@ -8,6 +8,45 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `t3-steward task run` starts one task on the fleet from a checkout, with the
+  project, the ref, the route, the idempotency key and the wake derived and
+  every derived value printed: the project from `--project` or the checkout's
+  `origin` remote matched against the new `projects` query, the ref from
+  `--ref` or the current branch when it is pushed (a detached HEAD or an
+  unpushed branch is refused with "push first or pass --ref"; a dirty tree is a
+  warning), the route from `--model [INSTANCE/]MODEL` against what the
+  project's eligible workers advertise, with the quota pool the instance
+  advertises and never an invented one, or from the new optional
+  `backlog_v2.coordinator_client.defaults.model`. The calling thread is
+  notified by default and a start is refused when none resolves unless
+  `--no-notify`. `--fan-out GLOB` starts one run with one task per file. A
+  repeat replays the same run and prints `replayed: true`. It composes the
+  existing campaign path: what it submits is what `campaign submit` would
+  submit. The verb is under `task`, beside `task env`; `t3-steward run` is
+  still the watchdog's foreground command and is unchanged.
+- `t3-steward task result <run>[/<task>] [--output DIR] [--json]` collects a
+  finished task in one call: `final-message.md` and every declared output,
+  written under `./.t3/results/<run>/<task>/`. It exits 0 for a succeeded task,
+  2 for a failed or cancelled one with whatever exists still written, and 1
+  for one that is not terminal, with its progress printed. `--json` inlines the
+  final message.
+- `t3-steward models [--project NAME] [--json]` lists every provider route the
+  fleet can run now, one row per `instance/model`, joining three facts that
+  fail separately: authorisation from the fleet catalog's quota pools,
+  advertisement from the workers' inventories, and the pool's admission state
+  with the phase and used percent of its worst bucket. An instance that is
+  authorised and advertised by nobody, and one advertised with no authorised
+  pool (`missingBinding`), are listed with that as their status rather than
+  omitted.
+- A `projects` query kind, rendered by `t3-steward backlog projects
+  [--project NAME] [--json]`: per project the repository, default ref, type and
+  setup profile, and per eligible worker whether it is configured for the
+  project, whether its inventory advertises it, whether it is enrolled and
+  ready, and the instance/model/pool routes it advertises.
+- `t3-steward campaign cancel <run> --reason TEXT` cancels every non-terminal
+  task of a run with one command, one application and one revision fence per
+  attempt. The `<run>/<task>` form is unchanged.
+
 - Every wait has a kind, and every wake message begins with one parseable
   line, `t3-steward-wait kind=<kind> outcome=<outcome> wait=<id> ...`, with
   kind-specific pairs after it (contract 3 of the agent-experience campaign).
@@ -50,6 +89,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- A version 2 task that declares no provider route at all is refused as
+  permanent `no-route`, at `campaign check` and at intake, with the
+  instance/model pairs its project's eligible workers advertise. The
+  coordinator never chooses a route; before this, such a task was accepted and
+  then made every eligible worker a candidate with a nil route, which failed
+  the assignment-planning report for the whole fleet on every tick until the
+  run was cancelled. The legacy single-task adapter refuses a submission with
+  no instance and model the same way, as a content conflict, so its source
+  quarantines the file once instead of reporting it on every cycle.
 - Waits are named for the family they hold in every document, and a settled
   task wait is no longer dropped. A run document (`backlog show`, `campaign
   show`) gains `taskWaits`, every task-bound wait of the run with its `kind`

@@ -573,6 +573,41 @@ offers, the options are ones the model knows. It reads T3's provider caches
 knows, Codex, Claude and OpenCode alike. The runner runs the same check
 before a dispatch and parks an invalid task as `failed: invalid: ...`.
 
+### Starting one task on the fleet
+
+From a checkout on any host with a configured coordinator:
+
+```sh
+t3-steward task run --model claude-haiku-4-5 -- "summarise the open PRs"
+t3-steward task run --model opus --fan-out prompts/*.md --json
+```
+
+The CLI derives what the campaign path made you invent, and prints every
+derived value: the fleet project from the checkout's `origin` remote matched
+against `t3-steward backlog projects`, the ref from the current branch when it
+is pushed, the route from `--model` against what the project's eligible workers
+advertise (with the quota pool the instance advertises, never an invented one),
+the idempotency key from a digest of all of that plus the prompt, and the wake.
+The coordinator validates; it never chooses a route.
+
+`t3-steward models [--project NAME]` lists every route the fleet can run now,
+one row per `instance/model`, with its pool, quota phase and workers.
+
+The calling thread is woken when the run ends, and a start is refused when no
+thread resolves unless `--no-notify` says that is intended. On wake:
+
+```sh
+t3-steward task result <run>          # final message and declared outputs
+```
+
+It writes `./.t3/results/<run>/<task>/` and exits 0 for a succeeded task, 2 for
+a failed or cancelled one, 1 while it is not terminal. To stop a run,
+`t3-steward campaign cancel <run> --reason TEXT` cancels every non-terminal task
+of it with one command.
+
+A repeat of the same command replays the same run and prints `replayed: true`,
+so a retry after an ambiguous failure never starts a second one.
+
 ### Campaigns
 
 A campaign is a multi-task job authored as a directory rather than as a single
@@ -828,7 +863,15 @@ t3-steward replay FILE [--resume] [--speed 0.1]
 t3-steward report [--days 14] [--peak "Mon-Fri 09:00-17:00"] [--bucket TEXT] [--from-logs] [--import] [--remotes a,b] [--local] [--json]
 t3-steward export [--days 14] [--from-logs]
 t3-steward forecast [--days 56] [--bucket TEXT] [--from-logs] [--remotes a,b] [--json]
+t3-steward task run [--project NAME] [--ref REF | --fresh] [--model [INSTANCE/]MODEL] [--worker W]
+                    [--name TEXT] [--outputs a.md,b.md] [--verify CMD]... [--class surplus|required]
+                    [--max-turns N] [--idempotency-key KEY] [--no-notify] [--json]
+                    (-- PROMPT | --prompt-file FILE | --fan-out GLOB | stdin)
+t3-steward task result RUN[/TASK] [--output DIR] [--json]
+t3-steward models [--project NAME] [--json]
+t3-steward backlog projects [--project NAME] [--json]
 t3-steward backlog list [--all]|new ID|check FILE|show ID|retry ID|cancel ID|receive ID|path
+t3-steward campaign cancel RUN[/TASK] --reason TEXT [--command-id ID] [--json]
 t3-steward wait add [--task current] [--name TEXT] [--timeout 24h] [--or-timeout] [--group G --wake all] -- CMD...
 t3-steward wait add [--task current] --at RFC3339 | --for DURATION
 t3-steward wait add [--task current] --github run ID | pr N [--state completed|merged|reviewed|checks-passed] [--repo owner/name]
