@@ -60,7 +60,8 @@ Commands:
   diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
   schedules          Inspect and control schedules and trigger history.
   wait               Park a thread until a check succeeds; the steward wakes it (add, list, cancel).
-  task               Inside a task workspace: print this attempt's identity (env [--get NAME]).
+  task               run: start one task on the fleet from this checkout, with the project,
+                     ref, route and wake derived; env [--get NAME]: this attempt's identity.
   thread             Operate on a local T3 thread (stop <thread-id> [--session]).
   bucket             Inspect and rearm this host's quota buckets (list, rearm <key> --reason TEXT).
   archive            Cold storage for finished threads (candidates, run, list, restore).
@@ -125,10 +126,7 @@ func dispatch(args []string) error {
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil
-	case "task":
-		// Reads only the workspace identity record; no configuration is needed.
-		return cmdTask(rest)
-	case "wait", "thread", "bucket":
+	case "task", "wait", "thread", "bucket":
 		paths, err := config.DefaultPaths()
 		if err != nil {
 			return err
@@ -148,6 +146,10 @@ func dispatch(args []string) error {
 			return cmdThread(g, sub)
 		case "bucket":
 			return cmdBucket(g, sub)
+		case "task":
+			// task env reads only the workspace identity record and loads no
+			// configuration; task run and task result reach the coordinator.
+			return cmdTask(g, sub)
 		}
 		return cmdWait(g, sub)
 	case "archive", "ui-archive":

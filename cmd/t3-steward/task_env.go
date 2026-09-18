@@ -13,6 +13,10 @@ import (
 const taskUsage = `Usage: t3-steward task <command> [flags]
 
 Commands:
+  run                Start one task on the fleet from this checkout, with the
+                     project, ref, route, idempotency key and wake derived, and
+                     be notified in this thread when it ends.
+                     t3-steward task run --help is the whole contract.
   env                Print the identity of the task this shell runs inside, as
                      "export NAME=value" lines for the six T3_STEWARD_* variables,
                      read from .t3-steward/task.env in the prepared workspace
@@ -37,15 +41,21 @@ var taskIdentityShortNames = map[string]string{
 	"thread":     domain.TaskWaitEnvThreadID,
 }
 
-func cmdTask(args []string) error {
+// cmdTask dispatches the task family. "env" reads only the workspace identity
+// record and needs no configuration; "run" and "result" reach the coordinator
+// and take the shared global flags, which is why they are dispatched with them.
+func cmdTask(g globalFlags, args []string) error {
 	if len(args) == 0 || isHelp(args[0]) {
 		fmt.Print(taskUsage)
 		return nil
 	}
-	if args[0] != "env" {
-		return fmt.Errorf("unknown task command %q; the commands are env (try task --help)", args[0])
+	switch args[0] {
+	case "env":
+		return runTaskEnv(args[1:], os.Getenv, os.Stdout)
+	case "run":
+		return cmdTaskRun(g, args[1:])
 	}
-	return runTaskEnv(args[1:], os.Getenv, os.Stdout)
+	return fmt.Errorf("unknown task command %q; the commands are run and env (try task --help)", args[0])
 }
 
 // runTaskEnv prints the task identity the way wait resolves it: the injected

@@ -189,6 +189,15 @@ func cmdCampaign(g globalFlags, args []string) error {
 }
 
 func runCampaign(cfg config.Config, args []string) error {
+	return campaignCLIFor(cfg).run(context.Background(), args)
+}
+
+// campaignCLIFor builds the campaign CLI with its real transports. It is a
+// function of its own because "task run" composes the same seams: the single
+// task start is the campaign path with the authoring removed, and a second
+// construction of check, submit and notify would be a second behaviour to keep
+// in agreement.
+func campaignCLIFor(cfg config.Config) campaignCLI {
 	cli := campaignCLI{
 		// The coordinator's own message limits decide what a campaign may
 		// contain, so a directory this command accepts cannot be refused for
@@ -245,7 +254,7 @@ func runCampaign(cfg config.Config, args []string) error {
 	if err == nil {
 		cli.principal = transport.principal.ID
 	}
-	return cli.run(context.Background(), args)
+	return cli
 }
 
 // queryCampaignViability asks the coordinator whether a projected campaign
