@@ -179,6 +179,14 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		return wait, fmt.Errorf("task-bound wait names attempt revision %d, ahead of attempt %q at revision %d",
 			request.IssuedRevision, attempt.ID, attempt.Revision)
 	}
+	if request.Kind.Coordinator() {
+		// A coordinator kind is checked against the records it will be settled
+		// from, so a condition that can never settle, or already holds, is
+		// refused before anything is parked, as a local check would be.
+		if err := validateStructuredRegistrationTx(ctx, tx, &request); err != nil {
+			return wait, err
+		}
+	}
 
 	expected := attempt.Revision
 	id := taskWaitID(request.RequestID)
@@ -187,7 +195,7 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		AttemptID: request.AttemptID, IssuedRevision: request.IssuedRevision,
 		ThreadID: request.ThreadID, Wake: request.Wake, MaxDuration: request.MaxDuration,
 		RequestID: request.RequestID, Name: request.Name, Condition: request.Condition,
-		Kind: request.Kind.OrShell(), OrTimeout: request.OrTimeout,
+		Kind: request.Kind.OrShell(), OrTimeout: request.OrTimeout, Node: request.Node,
 		RegisteredRevision: expected + 1,
 		RegisteredAt:       now.UTC(),
 		Deadline:           now.Add(request.MaxDuration).UTC(),
@@ -206,6 +214,42 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		return domain.TaskWait{}, err
 	}
 	return wait, tx.Commit()
+}
+
+// validateStructuredRegistrationTx checks a coordinator-kind registration
+// against the records it will be settled from, canonicalises its target and
+// fills the condition text and name when the caller gave none.
+func validateStructuredRegistrationTx(ctx context.Context, tx *sql.Tx, request *domain.TaskWaitRegistration) error {
+	records, err := nodeStateRecordsTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	switch {
+	case request.Node != nil:
+		if request.Node.State == "" {
+			request.Node.State = domain.NodeStateTerminal
+		}
+		obs, err := resolveNodeState(*request.Node, records)
+		if err != nil {
+			return fmt.Errorf("node wait target: %w", err)
+		}
+		if request.Node.Target.RunID == request.WorkflowRunID && obs.Target.TaskID == domain.SinkTaskID(request.WorkflowRunID) {
+			return fmt.Errorf("a task cannot wait for its own run %s to settle: the run cannot settle while this attempt is parked; wait for a sibling task with --node %s/<task>", request.WorkflowRunID, request.WorkflowRunID)
+		}
+		if obs.Outcome != "" {
+			return fmt.Errorf("the condition already holds (%s is %s: %s), so there is nothing to park for", request.Node.Target, obs.Progress, obs.Reason)
+		}
+		request.Node.Target = obs.Target
+		if request.Condition == "" {
+			request.Condition = request.Node.String()
+		}
+	default:
+		return fmt.Errorf("a %s wait needs its structured condition", request.Kind)
+	}
+	if request.Name == "" {
+		request.Name = request.Condition
+	}
+	return nil
 }
 
 // ListTaskWaits returns every task-bound wait the coordinator owns.
@@ -404,8 +448,17 @@ func (s *Store) SettleTaskWait(ctx context.Context, id string, result domain.Tas
 	if err = json.Unmarshal(raw, &wait); err != nil {
 		return wait, err
 	}
+	if wait, err = settleTaskWaitTx(ctx, tx, wait, result, now); err != nil {
+		return wait, err
+	}
+	return wait, tx.Commit()
+}
+
+// settleTaskWaitTx records one immutable outcome inside a transaction; a
+// wait that is already settled is returned as it is.
+func settleTaskWaitTx(ctx context.Context, tx *sql.Tx, wait domain.TaskWait, result domain.TaskWaitResult, now time.Time) (domain.TaskWait, error) {
 	if wait.Settled() {
-		return wait, tx.Commit()
+		return wait, nil
 	}
 	settled := now.UTC()
 	if result.ObservedAt.IsZero() {
@@ -416,10 +469,7 @@ func (s *Store) SettleTaskWait(ctx context.Context, id string, result domain.Tas
 	}
 	wait.Result = &result
 	wait.SettledAt = &settled
-	if err = saveTaskWaitTx(ctx, tx, wait); err != nil {
-		return wait, err
-	}
-	return wait, tx.Commit()
+	return wait, saveTaskWaitTx(ctx, tx, wait)
 }
 
 // ExpireTaskWaits enforces every wait's maximum duration.

@@ -52,6 +52,43 @@ func nodeRecordsTx(ctx context.Context, tx *sql.Tx) (CoordinatorRecords, error) 
 func resolveNodeRecords(ref domain.NodeRef, r CoordinatorRecords) (domain.NodeObservation, error) {
 	return domain.ResolveNode(ref, r.WorkflowRuns, r.Tasks, r.Attempts, r.Assignments)
 }
+
+// nodeStateRecords is what a node wait with a --state is evaluated against:
+// the coordinator records plus the workers' last reports, which carry the
+// pause evidence.
+type nodeStateRecords struct {
+	CoordinatorRecords
+	Workers []domain.WorkerSnapshot
+}
+
+func nodeStateRecordsTx(ctx context.Context, tx *sql.Tx) (nodeStateRecords, error) {
+	var r nodeStateRecords
+	var err error
+	if r.CoordinatorRecords, err = nodeRecordsTx(ctx, tx); err != nil {
+		return r, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT record FROM coordinator_worker_snapshots ORDER BY worker_id`)
+	if err != nil {
+		return r, fmt.Errorf("load worker snapshots: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return r, err
+		}
+		var snapshot domain.WorkerSnapshot
+		if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+			return r, fmt.Errorf("decode worker snapshot: %w", err)
+		}
+		r.Workers = append(r.Workers, snapshot)
+	}
+	return r, rows.Err()
+}
+
+func resolveNodeState(condition domain.NodeWaitCondition, r nodeStateRecords) (domain.NodeObservation, error) {
+	return domain.ResolveNodeState(condition.Target, condition.State, r.WorkflowRuns, r.Tasks, r.Attempts, r.Assignments, r.Workers)
+}
 func saveNodeWaitTx(ctx context.Context, tx *sql.Tx, w domain.NodeWait) error {
 	raw, err := json.Marshal(w)
 	if err != nil {
@@ -90,11 +127,11 @@ func (s *Store) RegisterNodeWait(ctx context.Context, request domain.NodeWaitReq
 	if !errors.Is(err, sql.ErrNoRows) {
 		return w, err
 	}
-	records, err := nodeRecordsTx(ctx, tx)
+	records, err := nodeStateRecordsTx(ctx, tx)
 	if err != nil {
 		return w, err
 	}
-	observation, err := resolveNodeRecords(request.Target, records)
+	observation, err := resolveNodeState(domain.NodeWaitCondition{Target: request.Target, State: request.State}, records)
 	if err != nil {
 		return w, err
 	}
@@ -126,7 +163,10 @@ func (s *Store) ListNodeWaits(ctx context.Context) ([]domain.NodeWait, error) {
 	return values, tx.Commit()
 }
 
-// SettleNodeWaits observes and publishes under one transaction, fencing retries.
+// SettleNodeWaits observes and publishes under one transaction, fencing
+// retries. It is the coordinator's settlement pass for every coordinator
+// kind: the interactive node waits, and the task-bound waits whose condition
+// is structured (node, quota), which have no local check anywhere.
 func (s *Store) SettleNodeWaits(ctx context.Context, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -137,7 +177,7 @@ func (s *Store) SettleNodeWaits(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	records, err := nodeRecordsTx(ctx, tx)
+	records, err := nodeStateRecordsTx(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -145,13 +185,14 @@ func (s *Store) SettleNodeWaits(ctx context.Context, now time.Time) error {
 		if w.SettledAt != nil || w.Delivery == "cancelled" {
 			continue
 		}
-		obs, e := resolveNodeRecords(w.Request.Target, records)
+		obs, e := resolveNodeState(domain.NodeWaitCondition{Target: w.Request.Target, State: w.Request.State}, records)
 		if e != nil {
-			obs = domain.NodeObservation{Target: w.Request.Target, ExitCode: 2, Reason: e.Error()}
+			obs = domain.NodeObservation{Target: w.Request.Target, ExitCode: 2, Reason: e.Error(), Outcome: domain.TaskWaitGaveUp}
 		}
 		if !now.Before(w.Deadline) {
 			obs.ExitCode = 2
 			obs.Reason = "timed out"
+			obs.Outcome = domain.TaskWaitTimedOut
 		}
 		if obs.ExitCode == 1 {
 			continue
@@ -163,7 +204,46 @@ func (s *Store) SettleNodeWaits(ctx context.Context, now time.Time) error {
 			return err
 		}
 	}
+	if err := settleStructuredTaskWaitsTx(ctx, tx, records, now); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+// settleStructuredTaskWaitsTx settles the live task-bound waits of the
+// coordinator kinds from the coordinator's own records. Expiry is left to
+// ExpireTaskWaits, which knows about --or-timeout.
+func settleStructuredTaskWaitsTx(ctx context.Context, tx *sql.Tx, records nodeStateRecords, now time.Time) error {
+	waits, err := loadJSON[domain.TaskWait](ctx, tx, "coordinator_task_waits")
+	if err != nil {
+		return err
+	}
+	for _, wait := range waits {
+		if !wait.Live() || !wait.Kind.Coordinator() {
+			continue
+		}
+		var result *domain.TaskWaitResult
+		switch {
+		case wait.Node != nil:
+			obs, err := resolveNodeState(*wait.Node, records)
+			switch {
+			case err != nil:
+				// The target is gone from the coordinator's records: nothing
+				// will ever settle the condition, so the wait gives up.
+				result = &domain.TaskWaitResult{Outcome: domain.TaskWaitGaveUp, ExitCode: 2, Reason: err.Error(),
+					Fields: domain.NodeTrailerFields(domain.NodeObservation{Target: wait.Node.Target})}
+			case obs.Outcome != "":
+				result = &domain.TaskWaitResult{Outcome: obs.Outcome, ExitCode: obs.ExitCode, Reason: obs.Reason, Fields: domain.NodeTrailerFields(obs)}
+			}
+		}
+		if result == nil {
+			continue
+		}
+		if _, err := settleTaskWaitTx(ctx, tx, wait, *result, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // TransitionNodeWake fences delivery ownership. Once sending is durable, lost

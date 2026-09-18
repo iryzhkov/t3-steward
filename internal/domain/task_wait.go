@@ -187,6 +187,9 @@ type TaskWait struct {
 	// OrTimeout makes the deadline a normal outcome: the wake still says
 	// timed-out, but as an expected end rather than a failure.
 	OrTimeout bool `json:"orTimeout,omitempty"`
+	// Node is the structured condition of a node wait, settled by the
+	// coordinator's node settlement pass with no local check.
+	Node *NodeWaitCondition `json:"node,omitempty"`
 
 	// RegisteredRevision is the attempt revision this registration produced. It
 	// is the fence a later wake is checked against.
@@ -283,6 +286,8 @@ type TaskWaitRegistration struct {
 	// Kind is the wait kind; empty means shell.
 	Kind      WaitKind `json:"kind,omitempty"`
 	OrTimeout bool     `json:"orTimeout,omitempty"`
+	// Node is the structured condition of a node wait.
+	Node *NodeWaitCondition `json:"node,omitempty"`
 }
 
 // MaxTaskWaitDuration bounds any single task-bound wait. Directory writer
@@ -357,6 +362,15 @@ func (r TaskWaitRegistration) Validate() error {
 		return errors.New("task-bound wait name or condition is too long")
 	case !r.Kind.Local() && !r.Kind.Coordinator():
 		return fmt.Errorf("task-bound wait kind %q is not one of %v", r.Kind, WaitKinds())
+	case r.Kind == WaitKindNode && (r.Node == nil || r.Node.Target.RunID == "" || r.Node.Target.TaskID == ""):
+		return errors.New("a node wait needs a target run and task")
+	case r.Kind != WaitKindNode && r.Node != nil:
+		return fmt.Errorf("a %s wait carries no node condition", r.Kind.OrShell())
+	}
+	if r.Node != nil {
+		if _, err := ParseNodeWaitState(string(r.Node.State)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

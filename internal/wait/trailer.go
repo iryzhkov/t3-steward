@@ -188,13 +188,7 @@ func nodeTrailer(w domain.NodeWait) string {
 	observation := *w.Observation
 	fields := FieldsOf(observation.Fields)
 	if kind == domain.WaitKindNode {
-		fields = append(fields,
-			F("run", observation.Target.RunID), F("task", observation.Target.TaskID),
-			F("attempt", observation.AttemptID), F("revision", strconv.FormatInt(observation.RunRevision, 10)),
-			F("progress", string(observation.Progress)))
-		if observation.Progress.Terminal() {
-			fields = append(fields, F("result", "t3-steward result "+observation.Target.RunID))
-		}
+		fields = FieldsOf(domain.NodeTrailerFields(observation))
 	}
 	return WakeTrailer(string(kind), string(domain.NodeObservationOutcome(observation)), w.Request.ID, fields...)
 }

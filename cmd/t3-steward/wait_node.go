@@ -33,7 +33,7 @@ func currentTaskWaitArgs(args []string) bool {
 
 func nativeWaitArgs(args []string) bool {
 	for _, arg := range args {
-		if arg == "--native" || arg == "--task" || strings.HasPrefix(arg, "--task=") || arg == "--run" || strings.HasPrefix(arg, "--run=") || strings.HasPrefix(arg, "nw-") || strings.HasPrefix(arg, "tw-") {
+		if arg == "--native" || arg == "--task" || strings.HasPrefix(arg, "--task=") || arg == "--run" || strings.HasPrefix(arg, "--run=") || arg == "--node" || strings.HasPrefix(arg, "--node=") || strings.HasPrefix(arg, "nw-") || strings.HasPrefix(arg, "tw-") {
 			return true
 		}
 	}
@@ -51,6 +51,8 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 		fs := flag.NewFlagSet("wait add", flag.ContinueOnError)
 		task := fs.String("task", "", "run/task")
 		run := fs.String("run", "", "run sink")
+		node := fs.String("node", "", "<run>[/<task>]")
+		state := fs.String("state", "", "node state")
 		thread := fs.String("thread", "", "thread")
 		name := fs.String("name", "", "name")
 		id := fs.String("request-id", "nw-"+strings.TrimPrefix(newWaitID(), "w-"), "stable registration ID")
@@ -61,17 +63,33 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 		if *task == "current" {
 			return errors.New("--task current is a task-bound wait and is routed before this point")
 		}
-		if fs.NArg() != 0 || (*task == "") == (*run == "") {
-			return errors.New("native wait requires exactly one --task or --run and no shell command")
+		named := 0
+		for _, value := range []string{*task, *run, *node} {
+			if value != "" {
+				named++
+			}
+		}
+		if fs.NArg() != 0 || named != 1 {
+			return errors.New("a node wait names exactly one of --node <run>[/<task>], --task <run>/<task> or --run <run>, and takes no shell command")
 		}
 		var ref domain.NodeRef
-		if *run != "" {
+		switch {
+		case *run != "":
 			ref = domain.NodeRef{RunID: *run, TaskID: domain.SinkTaskName}
-		} else {
+		case *node != "":
+			ref, err = parseNodeTarget(*node)
+			if err != nil {
+				return err
+			}
+		default:
 			ref, err = domain.ParseNodeRef(*task)
 			if err != nil {
 				return err
 			}
+		}
+		nodeState, err := domain.ParseNodeWaitState(*state)
+		if err != nil {
+			return err
 		}
 		threadID, err := resolveThread(cfg, *thread)
 		if err != nil {
@@ -96,6 +114,11 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 		}
 		op.Action = "register"
 		op.Request = domain.NodeWaitRequest{ID: *id, ThreadID: threadID, Name: *name, Target: ref, Timeout: *timeout}
+		if nodeState != domain.NodeStateTerminal {
+			// The default is left empty so a registration from an older client
+			// and one from this client replay as the same request.
+			op.Request.State = nodeState
+		}
 	case "list":
 		op.Action = "list"
 		for _, arg := range args[1:] {

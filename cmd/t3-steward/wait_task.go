@@ -154,6 +154,9 @@ func taskWaitRequestID(explicit string, identity taskIdentity, warnings io.Write
 }
 
 func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error {
+	if coordinatorWaitArgs(args) {
+		return cmdTaskCoordinatorWaitAdd(ctx, cfg, args)
+	}
 	now := time.Now()
 	spec, err := parseLocalWaitSpec(args, now)
 	if err != nil {

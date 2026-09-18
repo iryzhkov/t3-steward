@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -38,6 +39,137 @@ type NodeObservation struct {
 	// Fields are extra kind-specific pairs for the wake trailer, such as the
 	// failed task list of a terminal run or the pause reason of a paused one.
 	Fields map[string]string `json:"fields,omitempty"`
+}
+
+// ResolveNodeState is ResolveNode for a node wait with a --state: it reports
+// the requested state as met, still pending, or unreachable, and carries the
+// evidence the wake trailer needs. ExitCode keeps the check-protocol reading
+// (0 met, 1 pending, 2 settled against the waiter); Outcome is the wake
+// outcome, which for --state terminal is met on any terminal progress except
+// cancelled, with the failed task list in Fields.
+func ResolveNodeState(ref NodeRef, state NodeWaitState, runs []WorkflowRun, tasks []Task, attempts []Attempt, assignments []Assignment, workers []WorkerSnapshot) (NodeObservation, error) {
+	if state == "" {
+		state = NodeStateTerminal
+	}
+	if _, err := ParseNodeWaitState(string(state)); err != nil {
+		return NodeObservation{Target: ref, ExitCode: 1, Reason: "pending"}, err
+	}
+	out, err := ResolveNode(ref, runs, tasks, attempts, assignments)
+	if err != nil {
+		return out, err
+	}
+	var run *WorkflowRun
+	for i := range runs {
+		if runs[i].ID == ref.RunID {
+			run = &runs[i]
+		}
+	}
+	isSink := run != nil && run.Sink != nil && out.Target.TaskID == run.Sink.ID
+	if isSink && !state.Terminal() {
+		return out, fmt.Errorf("--state %s needs a task: a run's sink has no attempt to be %s; name <run>/<task>, or wait for the run with --state terminal or succeeded", state, state)
+	}
+	out.Fields = map[string]string{}
+	if run != nil && run.Sink != nil && run.Sink.Progress.Terminal() && run.Sink.Result != nil && len(run.Sink.Result.FailedTaskIDs) != 0 {
+		out.Fields["failed"] = strings.Join(run.Sink.Result.FailedTaskIDs, ",")
+	}
+	terminal := out.ExitCode != 1
+	switch state {
+	case NodeStateTerminal, NodeStateSucceeded:
+		if !terminal {
+			return out, nil
+		}
+		switch {
+		case out.Progress == ProgressCancelled:
+			out.Outcome = TaskWaitCancelled
+		case out.Progress == ProgressSucceeded || state == NodeStateTerminal:
+			out.Outcome = TaskWaitMet
+		default:
+			out.Outcome = TaskWaitFailed
+		}
+		return out, nil
+	}
+	// An attempt state. The latest attempt is the one ResolveNode reported.
+	var latest *Attempt
+	for i := range attempts {
+		if attempts[i].ID == out.AttemptID {
+			latest = &attempts[i]
+		}
+	}
+	if terminal || (latest != nil && latest.Progress.Terminal()) {
+		out.ExitCode = 2
+		out.Outcome = TaskWaitFailed
+		out.Reason = fmt.Sprintf("the node reached %s before it was %s", out.Progress, state)
+		return out, nil
+	}
+	if latest == nil {
+		out.ExitCode, out.Reason = 1, "pending: no attempt yet"
+		return out, nil
+	}
+	out.Fields["control"] = string(latest.Control)
+	met := false
+	switch state {
+	case NodeStateWaitingExternal:
+		met = latest.Progress == ProgressWaitingExternal || latest.Control == ControlWaitingExternal
+	case NodeStateActive:
+		met = latest.Progress == ProgressActive && latest.Control.HoldsProviderSlot()
+	case NodeStatePaused:
+		met = latest.Control == ControlPaused || latest.Control == ControlPausedUncheckpointed
+		if reason := attemptPauseReason(*latest, assignments, workers); reason != "" {
+			out.Fields["pauseReason"] = reason
+			met = true
+		}
+	}
+	if !met {
+		out.ExitCode, out.Reason = 1, fmt.Sprintf("pending: attempt is %s/%s", latest.Progress, latest.Control)
+		return out, nil
+	}
+	out.ExitCode, out.Outcome = 0, TaskWaitMet
+	out.Reason = fmt.Sprintf("attempt is %s/%s", latest.Progress, latest.Control)
+	return out, nil
+}
+
+// attemptPauseReason is the quota pause the assigned worker last reported for
+// the attempt, or empty.
+func attemptPauseReason(attempt Attempt, assignments []Assignment, workers []WorkerSnapshot) string {
+	var assignment *Assignment
+	for i := range assignments {
+		if assignments[i].ID == attempt.AssignmentID && assignments[i].AttemptID == attempt.ID {
+			assignment = &assignments[i]
+		}
+	}
+	if assignment == nil {
+		return ""
+	}
+	for _, worker := range workers {
+		if worker.WorkerID != assignment.WorkerID {
+			continue
+		}
+		for _, observed := range worker.Assignments {
+			if observed.AssignmentID == assignment.ID && observed.AssignmentEpoch == assignment.Epoch && observed.Journal != nil {
+				return observed.Journal.PauseReason
+			}
+		}
+	}
+	return ""
+}
+
+// NodeTrailerFields are the wake trailer pairs of a node observation: run,
+// task, attempt, revision, progress, the observation's own fields (failed,
+// control, pauseReason) and, for a terminal run, the result verb.
+func NodeTrailerFields(o NodeObservation) map[string]string {
+	fields := make(map[string]string, len(o.Fields)+6)
+	for key, value := range o.Fields {
+		fields[key] = value
+	}
+	fields["run"] = o.Target.RunID
+	fields["task"] = o.Target.TaskID
+	fields["attempt"] = o.AttemptID
+	fields["revision"] = strconv.FormatInt(o.RunRevision, 10)
+	fields["progress"] = string(o.Progress)
+	if o.Progress.Terminal() {
+		fields["result"] = "t3-steward result " + o.Target.RunID
+	}
+	return fields
 }
 
 // NodeObservationOutcome is the wake outcome of a settled observation, derived
@@ -136,6 +268,8 @@ type NodeWaitRequest struct {
 	Name     string        `json:"name"`
 	Target   NodeRef       `json:"target"`
 	Timeout  time.Duration `json:"timeout"`
+	// State is the node state waited for; empty is terminal.
+	State NodeWaitState `json:"state,omitempty"`
 }
 
 // Kind is the wait kind of a coordinator-settled interactive wait.
