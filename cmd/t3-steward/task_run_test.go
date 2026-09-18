@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,6 +50,11 @@ type taskRunHarness struct {
 	viability []backlogadmin.ViabilityRequest
 	notified  []backlogadmin.NodeWaitOperation
 	replay    bool
+	// accepted is what the coordinator has already recorded under each key,
+	// so that a second submission is answered by the coordinator's own rule:
+	// the same key with the same content replays, the same key with different
+	// content is refused.
+	accepted map[string]string
 }
 
 func newTaskRunHarness() *taskRunHarness {
@@ -99,9 +105,20 @@ func (h *taskRunHarness) cli() taskRunCLI {
 					if h.submitErr != nil {
 						return backlogadmin.LocalSubmissionResponse{}, h.submitErr
 					}
+					digest := fmt.Sprintf("%x", sha256.Sum256(raw))
+					if h.accepted == nil {
+						h.accepted = map[string]string{}
+					}
+					recorded, known := h.accepted[request.IdempotencyKey]
+					switch {
+					case known && recorded != digest:
+						return backlogadmin.LocalSubmissionResponse{}, domain.ErrSubmissionConflict
+					case !known:
+						h.accepted[request.IdempotencyKey] = digest
+					}
 					return backlogadmin.LocalSubmissionResponse{
 						Key: request.IdempotencyKey, WorkflowID: "workflow-1", RunID: "run-1",
-						State: "accepted", Replay: h.replay, Digest: "digest-1",
+						State: "accepted", Replay: h.replay || known, Digest: digest,
 					}, nil
 				}), nil
 			},
@@ -168,8 +185,18 @@ func (h *taskRunHarness) manifest(t *testing.T) (backlog.Manifest, map[string]st
 	if len(h.archives) != 1 {
 		t.Fatalf("archives submitted = %d, want 1", len(h.archives))
 	}
+	return h.archiveAt(t, 0)
+}
+
+// archiveAt reads back one of several submitted archives, for a test that
+// starts the same task twice and compares what each start sent.
+func (h *taskRunHarness) archiveAt(t *testing.T, index int) (backlog.Manifest, map[string]string) {
+	t.Helper()
+	if index >= len(h.archives) {
+		t.Fatalf("archive %d was never submitted; %d were", index, len(h.archives))
+	}
 	files := map[string]string{}
-	reader := tar.NewReader(bytes.NewReader(h.archives[0]))
+	reader := tar.NewReader(bytes.NewReader(h.archives[index]))
 	for {
 		header, err := reader.Next()
 		if errors.Is(err, io.EOF) {
@@ -280,6 +307,40 @@ func TestTaskRunIdempotencyKeyIsStableAndPromptSensitive(t *testing.T) {
 	}
 	if !keyAgain.Replayed {
 		t.Fatal("a replayed submission did not report replayed: true")
+	}
+}
+
+// The key covers what will run and not how the route was found, so the archive
+// must not vary by that either. These two commands are the same task to the
+// caller and to the key -- the same project, ref, instance, model, prompt,
+// class and turns -- so if the path that derived the route changes the
+// submitted manifest, the second start is refused for a difference the caller
+// never made, and the refusal blames --worker and --name, which are not the
+// cause.
+func TestTaskRunSubmitsOneArchiveWhicheverPathDerivedTheRoute(t *testing.T) {
+	h := newTaskRunHarness()
+	if err := h.run("--model", "opus", "--", "work"); err != nil {
+		t.Fatalf("the catalog-derived start failed: %v", err)
+	}
+	h.stdout.Reset()
+	if err := h.run("--project", "steward", "--model", "t3-primary/opus", "--json", "--", "work"); err != nil {
+		t.Fatalf("the same task started with an explicit route was refused: %v", err)
+	}
+	if len(h.requests) != 2 || len(h.archives) != 2 {
+		t.Fatalf("submissions = %d, archives = %d, want 2 of each", len(h.requests), len(h.archives))
+	}
+	if h.requests[0].IdempotencyKey != h.requests[1].IdempotencyKey {
+		t.Fatalf("the two starts carry keys %q and %q, so this test no longer says anything",
+			h.requests[0].IdempotencyKey, h.requests[1].IdempotencyKey)
+	}
+	if !bytes.Equal(h.archives[0], h.archives[1]) {
+		catalog, _ := h.archiveAt(t, 0)
+		explicit, _ := h.archiveAt(t, 1)
+		t.Fatalf("one key %s, two archives: the catalog path submitted route %+v and the explicit path %+v",
+			h.requests[0].IdempotencyKey, catalog.Routes, explicit.Routes)
+	}
+	if record := h.record(t); !record.Replayed {
+		t.Fatalf("the second start did not replay the first: %+v", record)
 	}
 }
 
@@ -530,21 +591,25 @@ func TestTaskRunUsesTheConfiguredDefaultModel(t *testing.T) {
 // ErrInvalidQuery), so this is what the client has to recognise.
 var errRC69RefusesTheProjectsQuery = errors.New(`coordinator refused the query: invalid query: kind "projects" or target is invalid`)
 
-// A start that names its project and its whole route derives nothing from the
-// catalog, so it must not ask for it: the projects query is the one thing in
-// this verb that a coordinator of the previous release cannot answer, and a
-// mixed-release fleet is exactly when starting one task matters.
-func TestTaskRunSkipsTheProjectsQueryWhenTheRouteIsFullyExplicit(t *testing.T) {
+// A start that names its project and its whole route needs nothing from the
+// catalog to decide what will run, so a coordinator that cannot answer the
+// projects query must not stop it: that query is the one thing in this verb a
+// coordinator of the previous release does not have, and a mixed-release fleet
+// is exactly when starting one task matters. The catalog is still asked, for
+// the quota pool alone, so that this path and the derived path submit the same
+// archive; here the refusal is swallowed and the pool stays empty.
+func TestTaskRunStartsAFullyExplicitRouteWhenTheCatalogIsRefused(t *testing.T) {
 	h := newTaskRunHarness()
-	// Any projects query at all now fails, so success proves none was sent.
 	h.projectsErr = errRC69RefusesTheProjectsQuery
 	if err := h.run("--project", "steward", "--model", "t3-primary/claude-haiku-4-5",
 		"--worker", "omarchy-pc", "--json", "--", "summarise the diff"); err != nil {
 		t.Fatal(err)
 	}
+	// The refusal costs nothing beyond the one query: it is never explained,
+	// because nothing on this path was waiting for the answer.
 	for _, kind := range h.queries {
-		if kind == backlogadmin.QueryProjects {
-			t.Fatalf("a fully explicit start asked for the catalog: %v", h.queries)
+		if kind == backlogadmin.QueryStatus {
+			t.Fatalf("the swallowed refusal was explained anyway: %v", h.queries)
 		}
 	}
 	record := h.record(t)
@@ -566,15 +631,34 @@ func TestTaskRunSkipsTheProjectsQueryWhenTheRouteIsFullyExplicit(t *testing.T) {
 }
 
 // A qualified defaults.model names the route as completely as the flag does.
-func TestTaskRunSkipsTheProjectsQueryForAQualifiedDefaultModel(t *testing.T) {
+func TestTaskRunStartsAQualifiedDefaultModelWhenTheCatalogIsRefused(t *testing.T) {
 	h := newTaskRunHarness()
 	h.projectsErr = errRC69RefusesTheProjectsQuery
 	h.defaultModel = "t3-primary/opus"
 	if err := h.run("--project", "steward", "--json", "--", "work"); err != nil {
 		t.Fatal(err)
 	}
-	if record := h.record(t); record.Route.Instance != "t3-primary" || record.Route.Model != "opus" {
+	if record := h.record(t); record.Route.Instance != "t3-primary" ||
+		record.Route.Model != "opus" || record.Route.QuotaPool != "" {
 		t.Fatalf("route = %+v", record.Route)
+	}
+}
+
+// The same explicit start against a coordinator that does answer the catalog
+// reads the pool the instance advertises, which is what makes the two paths
+// submit one archive.
+func TestTaskRunReadsTheAdvertisedPoolForAnExplicitRoute(t *testing.T) {
+	h := newTaskRunHarness()
+	if err := h.run("--project", "steward", "--model", "t3-primary/claude-haiku-4-5",
+		"--json", "--", "summarise the diff"); err != nil {
+		t.Fatal(err)
+	}
+	if record := h.record(t); record.Route.QuotaPool != "pool-claude" {
+		t.Fatalf("route = %+v, want the pool the instance advertises", record.Route)
+	}
+	manifest, _ := h.manifest(t)
+	if len(manifest.Routes) != 1 || manifest.Routes[0].QuotaPool != "pool-claude" {
+		t.Fatalf("manifest route = %+v", manifest.Routes)
 	}
 }
 

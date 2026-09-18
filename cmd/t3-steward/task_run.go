@@ -69,11 +69,12 @@ printed "t3-steward task result <run>" command.
   t3-steward models                 the routes this fleet can run now
   t3-steward backlog projects       the projects and their eligible workers
 
---project NAME with --model INSTANCE/MODEL derives nothing from the
-coordinator's catalog, so no projects query is sent and the start works against
-a coordinator older than that query. The route then carries no quota pool: the
-coordinator resolves it from the worker's inventory rather than the CLI naming
-one it did not read.
+--project NAME with --model INSTANCE/MODEL decides what will run without the
+coordinator's catalog, so the start works against a coordinator older than the
+projects query. The catalog is still asked for one thing, the route's quota
+pool, and a coordinator that refuses that query leaves the pool empty for the
+coordinator to resolve from the worker's inventory. Both ways of naming a route
+read the pool the same way, so both submit the same archive under the same key.
 ` + coordinatorTransportHelp
 
 // taskRunSchemaVersion versions the record run prints.
@@ -342,6 +343,8 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 		if route, err = deriveTaskRunRoute(parsed.model, parsed.worker, c.defaultModel, project); err != nil {
 			return err
 		}
+	} else {
+		route = c.advertisedTaskRunRoute(ctx, parsed, route)
 	}
 	key := parsed.key
 	if key == "" {
@@ -434,13 +437,12 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 // taken from the linker.
 const taskRunProjectsQueryRelease = "v0.11.0-rc.70"
 
-// explicitTaskRunRoute is the start that derives nothing from the catalog:
-// --project names the project and --model INSTANCE/MODEL names the whole
-// route, optionally pinned to a worker. The quota pool is left unset rather
-// than guessed, and the coordinator resolves it from the worker's inventory,
-// which is the same pool the catalog would have named. The effective model is
-// the flag or the configured default, because a qualified default names a
-// route just as completely as the flag does.
+// explicitTaskRunRoute is the start that derives nothing it needs from the
+// catalog: --project names the project and --model INSTANCE/MODEL names the
+// whole route, optionally pinned to a worker. It does not settle the quota
+// pool; advertisedTaskRunRoute does, the same way the catalog path does. The
+// effective model is the flag or the configured default, because a qualified
+// default names a route just as completely as the flag does.
 func explicitTaskRunRoute(parsed taskRunArgs, defaultModel string) (backlogadmin.Project, taskRunRoute, bool) {
 	model := strings.TrimSpace(parsed.model)
 	if model == "" {
@@ -452,6 +454,44 @@ func explicitTaskRunRoute(parsed taskRunArgs, defaultModel string) (backlogadmin
 	}
 	return backlogadmin.Project{Name: parsed.project},
 		taskRunRoute{Worker: parsed.worker, Instance: instance, Model: name}, true
+}
+
+// advertisedTaskRunRoute settles a route the caller named in full against the
+// catalog, so that both paths derive the quota pool the same way.
+//
+// The pool is in the submitted manifest and deliberately not in the
+// idempotency key, which covers what will run. A pool one path fills and the
+// other leaves empty therefore gives two different archives one key: the
+// second start is refused as the same key with different content, for a
+// difference the caller never made and cannot see. Both paths read the pool
+// from the instance the catalog advertises, and both leave it empty when the
+// catalog cannot be read.
+//
+// Every refusal here is swallowed on purpose. A coordinator older than the
+// projects query is exactly what this path exists for, and it cannot answer
+// the catalog path at all, so the two cannot disagree there; a project or a
+// route the catalog does not know is not refused here either, because this
+// path validates nothing. A coordinator that cannot be reached at all fails
+// the readiness check a moment later, with its own message.
+func (c taskRunCLI) advertisedTaskRunRoute(ctx context.Context, parsed taskRunArgs, route taskRunRoute) taskRunRoute {
+	if c.query == nil {
+		return route
+	}
+	response, err := c.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryProjects})
+	if err != nil {
+		return route
+	}
+	for _, project := range response.Projects {
+		if project.Name != strings.TrimSpace(parsed.project) {
+			continue
+		}
+		advertised, err := deriveTaskRunRoute(route.Instance+"/"+route.Model, parsed.worker, "", project)
+		if err != nil {
+			return route
+		}
+		return advertised
+	}
+	return route
 }
 
 // projects asks the coordinator for its catalog. It is one query: the project

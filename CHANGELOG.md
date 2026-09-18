@@ -24,12 +24,17 @@ All notable changes to this project are documented here. The format follows
   existing campaign path: what it submits is what `campaign submit` would
   submit. The verb is under `task`, beside `task env`; `t3-steward run` is
   still the watchdog's foreground command and is unchanged. `--project NAME`
-  with `--model INSTANCE/MODEL` derives nothing from the catalog and sends no
-  `projects` query, so it starts a task against a coordinator older than that
-  query; the route then carries no quota pool and the coordinator resolves it
-  from the worker's inventory. A start that does need the catalog and meets a
-  coordinator without the query is refused with that coordinator's release, the
-  release the query needs and those two flags.
+  with `--model INSTANCE/MODEL` decides what will run without the catalog, so
+  it starts a task against a coordinator older than the `projects` query: that
+  query is then sent only for the route's quota pool, and a coordinator that
+  refuses it leaves the pool empty for the coordinator to resolve from the
+  worker's inventory. Both ways of naming a route read the pool the same way,
+  so both submit the same archive: the idempotency key covers the instance and
+  the model and not the pool, so a pool present on one path and absent on the
+  other would give one key two archives and the second start would be refused.
+  A start that does need the catalog and meets a coordinator without the query
+  is refused with that coordinator's release, the release the query needs and
+  those two flags.
 - `t3-steward task result <run>[/<task>] [--output DIR] [--json]` collects a
   finished task in one call: `final-message.md` and every declared output,
   written under `./.t3/results/<run>/<task>/`. It exits 0 for a succeeded task,

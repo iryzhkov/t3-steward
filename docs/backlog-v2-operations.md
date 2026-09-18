@@ -471,13 +471,17 @@ run nobody will hear about is intended. `check` reports `ready` or
 `accepted_waiting` and both are success: the run exists either way.
 
 Against a coordinator older than the `projects` query, `--project NAME` with
-`--model INSTANCE/MODEL` starts a task unchanged: the catalog is what the
-derivation would have read, and naming both leaves nothing to derive, so no
-`projects` query is sent. The route then carries no quota pool and the
-coordinator resolves it from the worker's inventory, which is where the catalog
-reads it too. A start that does need the catalog is refused with the release
-the coordinator reports, the release the query needs and those two flags,
-rather than with the coordinator's bare "invalid query".
+`--model INSTANCE/MODEL` starts a task unchanged: naming both leaves nothing
+about what will run to derive. The catalog is still asked for one thing, the
+route's quota pool, and a coordinator that refuses that query leaves the pool
+empty and resolves it from the worker's inventory, which is where the catalog
+reads it too. Both ways of naming a route read the pool the same way because
+the idempotency key covers the instance and the model and not the pool: a pool
+present on one path and absent on the other would give one key two archives,
+and the second start of the same task would be refused. A start that does need
+the catalog is refused with the release the coordinator reports, the release
+the query needs and those two flags, rather than with the coordinator's bare
+"invalid query".
 
 What the fleet can run right now:
 
