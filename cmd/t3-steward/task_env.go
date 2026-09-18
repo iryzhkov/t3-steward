@@ -17,6 +17,9 @@ Commands:
                      project, ref, route, idempotency key and wake derived, and
                      be notified in this thread when it ends.
                      t3-steward task run --help is the whole contract.
+  result             Collect a finished task: its final message and every output
+                     it declared, written under ./.t3/results/<run>/<task>/.
+                     Exits 0 succeeded, 2 failed or cancelled, 1 not terminal.
   env                Print the identity of the task this shell runs inside, as
                      "export NAME=value" lines for the six T3_STEWARD_* variables,
                      read from .t3-steward/task.env in the prepared workspace
@@ -54,8 +57,10 @@ func cmdTask(g globalFlags, args []string) error {
 		return runTaskEnv(args[1:], os.Getenv, os.Stdout)
 	case "run":
 		return cmdTaskRun(g, args[1:])
+	case "result":
+		return cmdTaskResult(g, args[1:])
 	}
-	return fmt.Errorf("unknown task command %q; the commands are run and env (try task --help)", args[0])
+	return fmt.Errorf("unknown task command %q; the commands are run, result and env (try task --help)", args[0])
 }
 
 // runTaskEnv prints the task identity the way wait resolves it: the injected

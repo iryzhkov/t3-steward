@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
-	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/compat"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
@@ -61,7 +60,8 @@ Commands:
   schedules          Inspect and control schedules and trigger history.
   wait               Park a thread until a check succeeds; the steward wakes it (add, list, cancel).
   task               run: start one task on the fleet from this checkout, with the project,
-                     ref, route and wake derived; env [--get NAME]: this attempt's identity.
+                     ref, route and wake derived; result <run>[/<task>]: collect its final
+                     message and outputs; env [--get NAME]: this attempt's identity.
   thread             Operate on a local T3 thread (stop <thread-id> [--session]).
   bucket             Inspect and rearm this host's quota buckets (list, rearm <key> --reason TEXT).
   archive            Cold storage for finished threads (candidates, run, list, restore).
@@ -90,8 +90,10 @@ func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		// A transport failure exits with its class so that automation can
-		// branch without parsing prose. Everything else keeps exit 1.
-		os.Exit(backlogadmin.ExitCodeFor(err))
+		// branch without parsing prose. A verb that owns its own verdict, such
+		// as "task result", carries its exit code on the error. Everything else
+		// keeps exit 1.
+		os.Exit(exitCodeFor(err))
 	}
 }
 
