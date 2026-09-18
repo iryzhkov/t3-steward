@@ -122,6 +122,15 @@ All notable changes to this project are documented here. The format follows
   run was cancelled. The legacy single-task adapter refuses a submission with
   no instance and model the same way, as a content conflict, so its source
   quarantines the file once instead of reporting it on every cycle.
+  **Upgrading: check the drop directories first.** The legacy adapter defaults
+  neither `instance` nor `model`, so every drop file already sitting in a
+  `backlog.dir` without both of them is quarantined on the first cycle after
+  this release starts, not only new ones. Nothing is lost and nothing retries
+  itself: `t3-steward backlog quarantine` lists them with the reason, and each
+  file has to be given an `instance` and a `model`. That edit changes the
+  file's content, so its digest changes, the marker is released and the next
+  cycle submits it again -- no `quarantine release` is needed for this one.
+  `t3-steward models` lists the instance/model pairs the fleet can run.
 - Waits are named for the family they hold in every document, and a settled
   task wait is no longer dropped. A run document (`backlog show`, `campaign
   show`) gains `taskWaits`, every task-bound wait of the run with its `kind`
