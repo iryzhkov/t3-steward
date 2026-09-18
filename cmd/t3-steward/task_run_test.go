@@ -348,6 +348,65 @@ func TestTaskRunPrintsWhetherTheStartWasAReplayInBothForms(t *testing.T) {
 	}
 }
 
+// Contract 4 lists the route as {worker, instance, model, quotaPool}. When the
+// route was not pinned the JSON form dropped the worker key altogether while
+// the text form printed "route any t3-primary/...", so a caller reading the
+// document could not tell an unpinned run from a field nobody had implemented.
+// Both forms name the worker now, and they name the same one.
+func TestTaskRunNamesTheRouteWorkerInBothFormsPinnedOrNot(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"unpinned", nil, unpinnedWorker},
+		{"pinned with --worker", []string{"--worker", "omarchy-pc"}, "omarchy-pc"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newTaskRunHarness()
+			// Two eligible workers advertising the same instance and model is
+			// what leaves the derived worker empty. A single eligible worker
+			// decides the route by itself and is not the unpinned case.
+			h.projects[0].Workers = append(h.projects[0].Workers, backlogadmin.ProjectWorker{
+				Worker: "normandy", Advertises: true, Enrolled: true, Ready: true, State: "observed",
+				Routes: []backlogadmin.ProjectRoute{{Instance: "t3-primary", Model: "opus", QuotaPool: "pool-claude"}},
+			})
+			args := append(append([]string{}, test.args...), "--model", "opus", "--json", "--", "a prompt")
+			if err := h.run(args...); err != nil {
+				t.Fatal(err)
+			}
+			// Read the document as a document: a decode into taskRunRecord would
+			// fill the field with the zero value and hide an omitted key.
+			var document map[string]any
+			if err := json.Unmarshal(h.stdout.Bytes(), &document); err != nil {
+				t.Fatal(err)
+			}
+			route, ok := document["route"].(map[string]any)
+			if !ok {
+				t.Fatalf("the record carries no route object:\n%s", h.stdout.String())
+			}
+			worker, present := route["worker"]
+			if !present {
+				t.Fatalf("the JSON route omits the worker key:\n%s", h.stdout.String())
+			}
+			if worker != test.want {
+				t.Fatalf("the JSON route worker = %v, want %q", worker, test.want)
+			}
+			record := h.record(t)
+			if record.Route.Worker != test.want {
+				t.Fatalf("route worker = %q, want %q (%+v)", record.Route.Worker, test.want, record.Route)
+			}
+			var text bytes.Buffer
+			if err := renderTaskRunRecord(&text, record); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(text.String(), "route "+test.want+" t3-primary/opus@pool-claude\n") {
+				t.Fatalf("the text form does not name worker %q:\n%s", test.want, text.String())
+			}
+		})
+	}
+}
+
 // The key covers what will run and not how the route was found, so the archive
 // must not vary by that either. These two commands are the same task to the
 // caller and to the key -- the same project, ref, instance, model, prompt,
