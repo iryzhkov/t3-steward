@@ -170,6 +170,19 @@ func (c Config) DefaultedFleetProjects() []string {
 	return slices.Clone(c.defaultedFleetProjects)
 }
 
+// LifecycleView returns the configuration with the state derived from a fleet
+// projection cleared, so that two loads of the same operator file compare
+// equal whatever the projection defaulted. The coordinator's reload check
+// compares everything outside backlog_v2 with reflect.DeepEqual to tell a
+// catalog change from a lifecycle change; with the derived list included, the
+// first projection that added a project without a local binding was refused
+// as a lifecycle change and the project stayed unknown until a restart.
+func (c Config) LifecycleView() Config {
+	c.defaultedFleetProjects = nil
+	c.coordinatorFleetApplied = false
+	return c
+}
+
 func (c *Config) applyCoordinatorFleet(home string) error {
 	if c.BacklogV2.Mode != "coordinator" || home == "" {
 		return nil

@@ -128,7 +128,7 @@ func loadCoordinatorReload(ctx context.Context, current config.Config, store *sq
 }
 
 func validateCoordinatorReload(current, next config.Config) error {
-	oldOuter, newOuter := current, next
+	oldOuter, newOuter := current.LifecycleView(), next.LifecycleView()
 	oldOuter.BacklogV2 = config.BacklogV2{}
 	newOuter.BacklogV2 = config.BacklogV2{}
 	if !reflect.DeepEqual(oldOuter, newOuter) {

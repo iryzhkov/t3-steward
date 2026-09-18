@@ -46,6 +46,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A `SIGHUP` reload that brings in a fleet projection whose new project has no
+  local binding is accepted as a catalog change. The list of defaulted projects
+  the load records had leaked into the lifecycle comparison, so the first such
+  reload was refused with `host lifecycle settings require restart` and the
+  project stayed unknown to the coordinator until a restart.
 - `t3-steward wait cancel <id>` on a local check bound to a task-bound wait
   now cancels the coordinator's wait first, through the configured transport,
   and marks the local check only once the coordinator has settled it. The
