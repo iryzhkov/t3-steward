@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -67,30 +68,8 @@ func rc69RunDocument() rc69WorkflowDetail {
 	}
 }
 
-// A mixed-version window is the normal state during a release, and it runs in
-// both directions: the deprecated key exists so that an rc.69 client can read
-// an rc.70 coordinator, and this is the other half, an rc.70 client reading an
-// rc.69 coordinator. The renderers read only the new keys, so a parked task
-// would be shown as parked with nothing to say about what it is parked on.
-func TestTheRenderersReadTheDeprecatedWaitsKeyOfAnOlderCoordinator(t *testing.T) {
-	raw, err := json.Marshal(rc69RunDocument())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var detail backlogadmin.WorkflowDetail
-	if err := json.Unmarshal(raw, &detail); err != nil {
-		t.Fatal(err)
-	}
-	if len(detail.TaskWaits) != 0 {
-		t.Fatalf("an rc.69 run document carries taskWaits: %+v", detail.TaskWaits)
-	}
-	var out bytes.Buffer
-	renderWorkflow(&out, &detail)
-	if want := `wait tw-live "ci": gh run view (deadline 2026-09-18T13:00:00Z)`; !strings.Contains(out.String(), want) {
-		t.Fatalf("the run text does not contain %q:\n%s", want, out.String())
-	}
-
-	diagnosis := rc69Diagnosis{
+func rc69DiagnosisDocument() rc69Diagnosis {
+	return rc69Diagnosis{
 		GraphRevision: 3, GeneratedAt: waitRenderCompatNow,
 		Workflow: rc69RunDocument(),
 		Waits: []domain.NodeWait{{
@@ -108,34 +87,158 @@ func TestTheRenderersReadTheDeprecatedWaitsKeyOfAnOlderCoordinator(t *testing.T)
 			Deadline:     waitRenderCompatNow.Add(time.Hour),
 		}},
 	}
-	if raw, err = json.Marshal(diagnosis); err != nil {
+}
+
+// decodeInto is the one thing a transport does with a coordinator's bytes
+// (internal/backlogadmin/ssh_client.go: plain json.Unmarshal), so it is what
+// turns an older release's document into this release's types.
+func decodeInto(t *testing.T, document, target any) {
+	t.Helper()
+	raw, err := json.Marshal(document)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var current backlogadmin.Diagnosis
-	if err := json.Unmarshal(raw, &current); err != nil {
+	if err := json.Unmarshal(raw, target); err != nil {
 		t.Fatal(err)
-	}
-	if len(current.NodeWaits) != 0 {
-		t.Fatalf("an rc.69 diagnosis carries nodeWaits: %+v", current.NodeWaits)
-	}
-	out.Reset()
-	renderDiagnosis(&out, &current)
-	for _, want := range []string{
-		"node waits:\n",
-		`  nw-1 "until alpha" thread=thread-x host=omarchy-pc delivery=pending (deadline 2026-09-18T14:00:00Z)`,
-		// taskWaits is not renamed in a diagnosis: rc.69 emits it under this
-		// name already, so only the node waits need the fallback here.
-		`  tw-live task=task-1 attempt=attempt-1 "ci": gh run view`,
-	} {
-		if !strings.Contains(out.String(), want) {
-			t.Fatalf("the diagnosis text does not contain %q:\n%s", want, out.String())
-		}
 	}
 }
 
+// rc69RunAnswer and rc69DiagnosisAnswer are what this CLI holds after a
+// coordinator of the previous release has answered. A fresh value is built per
+// call, because the CLI fills the renamed keys of the document it was given.
+func rc69RunAnswer(t *testing.T) backlogadmin.Response {
+	t.Helper()
+	var detail backlogadmin.WorkflowDetail
+	decodeInto(t, rc69RunDocument(), &detail)
+	if len(detail.TaskWaits) != 0 {
+		t.Fatalf("an rc.69 run document carries taskWaits: %+v", detail.TaskWaits)
+	}
+	return backlogadmin.Response{Kind: backlogadmin.QueryWorkflow, Workflow: &detail}
+}
+
+func rc69DiagnosisAnswer(t *testing.T) backlogadmin.Response {
+	t.Helper()
+	var diagnosis backlogadmin.Diagnosis
+	decodeInto(t, rc69DiagnosisDocument(), &diagnosis)
+	if len(diagnosis.NodeWaits) != 0 {
+		t.Fatalf("an rc.69 diagnosis carries nodeWaits: %+v", diagnosis.NodeWaits)
+	}
+	return backlogadmin.Response{Kind: backlogadmin.QueryDiagnose, Diagnosis: &diagnosis}
+}
+
+// answeredWith runs one admin command against a coordinator that answers with
+// that document. The whole command is exercised rather than a renderer,
+// because the defect this pins is that the text form and the --json form read
+// the answer differently.
+func answeredWith(t *testing.T, response backlogadmin.Response, args ...string) string {
+	t.Helper()
+	var out bytes.Buffer
+	cli := backlogAdminCLI{
+		service:   &fakeAdminMutationService{queryResponse: response},
+		principal: backlogadmin.Principal{ID: "operator"},
+		stdout:    &out,
+	}
+	if err := cli.runBacklog(context.Background(), args); err != nil {
+		t.Fatal(err)
+	}
+	return out.String()
+}
+
+// waitIDs and nodeWaitIDs keep a failure readable: what matters is which key
+// carries which wait, not the rest of a run document.
+func waitIDs(waits []backlogadmin.TaskWaitDetail) []string {
+	ids := make([]string, 0, len(waits))
+	for _, wait := range waits {
+		ids = append(ids, wait.ID)
+	}
+	return ids
+}
+
+func nodeWaitIDs(waits []domain.NodeWait) []string {
+	ids := make([]string, 0, len(waits))
+	for _, wait := range waits {
+		ids = append(ids, wait.Request.ID)
+	}
+	return ids
+}
+
+// printedDocument is what an agent parses out of a --json answer.
+func printedDocument(t *testing.T, printed string) backlogadmin.Response {
+	t.Helper()
+	var response backlogadmin.Response
+	if err := json.Unmarshal([]byte(printed), &response); err != nil {
+		t.Fatalf("--json did not print one document: %v\n%s", err, printed)
+	}
+	return response
+}
+
+// A mixed-version window is the normal state during a release, and it runs in
+// both directions: the deprecated key exists so that an rc.69 client can read
+// an rc.70 coordinator, and this is the other half, an rc.70 client reading an
+// rc.69 coordinator. This client reads only the new keys, so a parked task
+// would be shown as parked with nothing to say about what it is parked on, and
+// --json -- the form the skills tell an agent to use -- would print
+// "taskWaits": null and "nodeWaits": null beside a populated "waits", which
+// errors nowhere and reads as a run parked on nothing.
+func TestTheCLIReadsTheDeprecatedWaitsKeyOfAnOlderCoordinator(t *testing.T) {
+	t.Run("run text", func(t *testing.T) {
+		text := answeredWith(t, rc69RunAnswer(t), "show", "run-1")
+		if want := `wait tw-live "ci": gh run view (deadline 2026-09-18T13:00:00Z)`; !strings.Contains(text, want) {
+			t.Fatalf("the run text does not contain %q:\n%s", want, text)
+		}
+	})
+	t.Run("run json", func(t *testing.T) {
+		document := printedDocument(t, answeredWith(t, rc69RunAnswer(t), "show", "run-1", "--json"))
+		if document.Workflow == nil {
+			t.Fatal("--json printed no run document")
+		}
+		if len(document.Workflow.TaskWaits) != 1 || document.Workflow.TaskWaits[0].ID != "tw-live" {
+			t.Fatalf("taskWaits = %v beside waits = %v, want the wait the older coordinator sent",
+				waitIDs(document.Workflow.TaskWaits), waitIDs(document.Workflow.Waits))
+		}
+		// The deprecated key keeps what it carried: this release still emits it
+		// so that a client of the previous release can read this coordinator.
+		if len(document.Workflow.Waits) != 1 {
+			t.Fatalf("waits = %+v, want the deprecated key left populated", document.Workflow.Waits)
+		}
+	})
+	t.Run("diagnosis text", func(t *testing.T) {
+		text := answeredWith(t, rc69DiagnosisAnswer(t), "diagnose", "run-1")
+		for _, want := range []string{
+			"node waits:\n",
+			`  nw-1 "until alpha" thread=thread-x host=omarchy-pc delivery=pending (deadline 2026-09-18T14:00:00Z)`,
+			// taskWaits is not renamed in a diagnosis: rc.69 emits it under this
+			// name already, so only the node waits need the fallback here.
+			`  tw-live task=task-1 attempt=attempt-1 "ci": gh run view`,
+		} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("the diagnosis text does not contain %q:\n%s", want, text)
+			}
+		}
+	})
+	t.Run("diagnosis json", func(t *testing.T) {
+		document := printedDocument(t, answeredWith(t, rc69DiagnosisAnswer(t), "diagnose", "run-1", "--json"))
+		if document.Diagnosis == nil {
+			t.Fatal("--json printed no diagnosis")
+		}
+		if len(document.Diagnosis.NodeWaits) != 1 || document.Diagnosis.NodeWaits[0].Request.ID != "nw-1" {
+			t.Fatalf("nodeWaits = %v beside waits = %v, want the node wait the older coordinator sent",
+				nodeWaitIDs(document.Diagnosis.NodeWaits), nodeWaitIDs(document.Diagnosis.Waits))
+		}
+		if len(document.Diagnosis.Waits) != 1 {
+			t.Fatalf("waits = %+v, want the deprecated key left populated", document.Diagnosis.Waits)
+		}
+		// The run document nested in a diagnosis is the same document and is
+		// normalised the same way.
+		if len(document.Diagnosis.Workflow.TaskWaits) != 1 {
+			t.Fatalf("the nested run document's taskWaits = %+v", document.Diagnosis.Workflow.TaskWaits)
+		}
+	})
+}
+
 // The fallback is a fallback: when this release's own documents carry both
-// keys, the new one is what is rendered and no wait is printed twice.
-func TestTheRenderersPreferTheNewWaitKeysWhenBothArePresent(t *testing.T) {
+// keys, the new one is what is read and no wait is printed twice.
+func TestTheCLIPrefersTheNewWaitKeysWhenBothArePresent(t *testing.T) {
 	settledAt := waitRenderCompatNow.Add(-time.Hour)
 	live := backlogadmin.TaskWaitDetail{
 		ID: "tw-live", TaskID: "task-1", AttemptID: "attempt-1", Name: "ci",
@@ -156,13 +259,14 @@ func TestTheRenderersPreferTheNewWaitKeysWhenBothArePresent(t *testing.T) {
 		}},
 		Waits: []backlogadmin.TaskWaitDetail{live},
 	}
-	var out bytes.Buffer
-	renderWorkflow(&out, &detail)
-	if got := strings.Count(out.String(), "wait tw-live "); got != 1 {
-		t.Fatalf("the live wait is printed %d times:\n%s", got, out.String())
+	text := answeredWith(t, backlogadmin.Response{
+		Kind: backlogadmin.QueryWorkflow, Workflow: &detail,
+	}, "show", "run-1")
+	if got := strings.Count(text, "wait tw-live "); got != 1 {
+		t.Fatalf("the live wait is printed %d times:\n%s", got, text)
 	}
-	if !strings.Contains(out.String(), "wait tw-settled ") {
-		t.Fatalf("the settled wait, which only taskWaits carries, is not printed:\n%s", out.String())
+	if !strings.Contains(text, "wait tw-settled ") {
+		t.Fatalf("the settled wait, which only taskWaits carries, is not printed:\n%s", text)
 	}
 
 	nodeWait := domain.NodeWait{
@@ -174,9 +278,16 @@ func TestTheRenderersPreferTheNewWaitKeysWhenBothArePresent(t *testing.T) {
 		NodeWaits: []domain.NodeWait{nodeWait},
 		Waits:     []domain.NodeWait{nodeWait},
 	}
-	out.Reset()
-	renderDiagnosis(&out, &diagnosis)
-	if got := strings.Count(out.String(), "nw-1 "); got != 1 {
-		t.Fatalf("the node wait is printed %d times:\n%s", got, out.String())
+	text = answeredWith(t, backlogadmin.Response{
+		Kind: backlogadmin.QueryDiagnose, Diagnosis: &diagnosis,
+	}, "diagnose", "run-1")
+	if got := strings.Count(text, "nw-1 "); got != 1 {
+		t.Fatalf("the node wait is printed %d times:\n%s", got, text)
+	}
+	document := printedDocument(t, answeredWith(t, backlogadmin.Response{
+		Kind: backlogadmin.QueryDiagnose, Diagnosis: &diagnosis,
+	}, "diagnose", "run-1", "--json"))
+	if len(document.Diagnosis.NodeWaits) != 1 || len(document.Diagnosis.Workflow.TaskWaits) != 2 {
+		t.Fatalf("a document that carries both keys was changed by normalisation: %+v", document.Diagnosis)
 	}
 }

@@ -247,12 +247,39 @@ func (c backlogAdminCLI) queryAndRender(ctx context.Context, query backlogadmin.
 			return err
 		}
 	}
+	response = adoptDeprecatedWaitKeys(response)
 	if asJSON {
 		encoder := json.NewEncoder(c.stdout)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(response)
 	}
 	return renderAdminResponse(c.stdout, response, selector)
+}
+
+// adoptDeprecatedWaitKeys gives a document decoded from an older coordinator
+// the content of its renamed wait keys, once, where the answer arrives.
+//
+// A coordinator of the previous release sends only the deprecated waits key,
+// and this release reads taskWaits in a run document and nodeWaits in a
+// diagnosis. Doing this in the renderers alone would fix the text and leave
+// --json printing "taskWaits": null and "nodeWaits": null beside a populated
+// "waits", because that form re-encodes the decoded response rather than
+// passing the coordinator's bytes through -- a silent misread on the path the
+// skills tell an agent to use. Normalising here means the renderer and the
+// encoder see one document.
+//
+// The deprecated key is left populated: this release still emits it so that a
+// client of the previous release can read this coordinator, and both go away
+// together.
+func adoptDeprecatedWaitKeys(response backlogadmin.Response) backlogadmin.Response {
+	if detail := response.Workflow; detail != nil {
+		detail.TaskWaits = workflowTaskWaits(detail)
+	}
+	if diagnosis := response.Diagnosis; diagnosis != nil {
+		diagnosis.NodeWaits = diagnosisNodeWaits(diagnosis)
+		diagnosis.Workflow.TaskWaits = workflowTaskWaits(&diagnosis.Workflow)
+	}
+	return response
 }
 
 func parseBacklogAdminQuery(args []string) (backlogadmin.Query, bool, error) {
@@ -710,8 +737,9 @@ func renderWorkflows(out io.Writer, workflows []backlogadmin.WorkflowSummary) {
 // coordinator of the previous release sends only the deprecated waits key, and
 // a mixed-version window is the normal state during a release, so without the
 // fallback "campaign show" against an older coordinator would print a parked
-// task with nothing to say about what it is parked on. The fallback goes away
-// with the deprecated key.
+// task with nothing to say about what it is parked on. Only
+// adoptDeprecatedWaitKeys calls this, so that the text and the JSON forms
+// cannot disagree; the fallback goes away with the deprecated key.
 func workflowTaskWaits(detail *backlogadmin.WorkflowDetail) []backlogadmin.TaskWaitDetail {
 	if len(detail.TaskWaits) != 0 {
 		return detail.TaskWaits
@@ -744,7 +772,7 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 		// satisfy or cancel.
 		// A settled wait is listed too, with its outcome: it is what became
 		// of the wait the previous answer reported as live.
-		for _, wait := range workflowTaskWaits(detail) {
+		for _, wait := range detail.TaskWaits {
 			if wait.TaskID != task.Task.ID {
 				continue
 			}
@@ -996,7 +1024,8 @@ func renderSchedules(out io.Writer, schedules []backlogadmin.Schedule, selector 
 // whichever key the coordinator that answered uses. In a diagnosis the
 // deprecated waits key is the node waits, and a coordinator of the previous
 // release sends only that one; taskWaits is not renamed here, so it needs no
-// fallback. The fallback goes away with the deprecated key.
+// fallback. Only adoptDeprecatedWaitKeys calls this, so that the text and the
+// JSON forms cannot disagree; the fallback goes away with the deprecated key.
 func diagnosisNodeWaits(diagnosis *backlogadmin.Diagnosis) []domain.NodeWait {
 	if len(diagnosis.NodeWaits) != 0 {
 		return diagnosis.NodeWaits
@@ -1032,7 +1061,7 @@ func renderDiagnosis(out io.Writer, diagnosis *backlogadmin.Diagnosis) {
 		live++
 		fmt.Fprintf(out, "  %s task=%s attempt=%s %q: %s (deadline %s)\n", wait.ID, wait.TaskID, wait.AttemptID, wait.Name, wait.Condition, formatTime(wait.Deadline))
 	}
-	if nodeWaits := diagnosisNodeWaits(diagnosis); len(nodeWaits) != 0 {
+	if nodeWaits := diagnosis.NodeWaits; len(nodeWaits) != 0 {
 		fmt.Fprintln(out, "node waits:")
 		for _, wait := range nodeWaits {
 			fmt.Fprintf(out, "  %s %q thread=%s host=%s delivery=%s (deadline %s)\n", wait.Request.ID, wait.Request.Name, wait.Request.ThreadID, wait.Host, wait.Delivery, formatTime(wait.Deadline))
