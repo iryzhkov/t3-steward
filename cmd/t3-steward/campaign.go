@@ -42,7 +42,7 @@ Lifecycle (delegated to backlog, unchanged; explain is read-only and live):
   list [--project P] [--progress STATES] [--class CLASS] [--json]
   show <run> [--json]                 graph <run> [--json|--dot]
   explain <run>/<task> [--json]
-  cancel <run>/<task> --reason TEXT [--command-id ID] [--json]
+  cancel <run>[/<task>] --reason TEXT [--command-id ID] [--json]   no task = whole run
 Supervised runs, structured decisions only and never prose:
   supervision <show|decide|hold|release|escalate|resolve> <run> [flags] [--json]
   Mutating verbs need --request-id KEY, --reason TEXT and --expected-revision N.
@@ -156,6 +156,12 @@ type campaignCLI struct {
 	// describe reads one run. rerun needs its graph revision to fence the
 	// amendment against a run that changed under it.
 	describe func(context.Context, string) (backlogadmin.WorkflowSummary, error)
+	// detail reads one run with its tasks and attempts, and mutate sends one
+	// revision-fenced admin command. They are the two seams the run form of
+	// cancel needs: it fences on an attempt it has to read first, and it sends
+	// one command rather than forwarding a command line.
+	detail func(context.Context, string) (backlogadmin.WorkflowDetail, error)
+	mutate func(context.Context, backlogadmin.Mutation) (backlogadmin.MutationResponse, error)
 	// notify registers the node wait --notify-thread asks for, and resolveThread
 	// turns "current" into a canonical T3 thread id. They are separate seams so
 	// that a test can prove the registration creates no workflow state.
@@ -222,6 +228,17 @@ func campaignCLIFor(cfg config.Config) campaignCLI {
 		},
 		describe: func(ctx context.Context, runID string) (backlogadmin.WorkflowSummary, error) {
 			return describeCampaignRun(ctx, cfg, runID)
+		},
+		detail: func(ctx context.Context, runID string) (backlogadmin.WorkflowDetail, error) {
+			return describeCampaignRunDetail(ctx, cfg, runID)
+		},
+		mutate: func(ctx context.Context, mutation backlogadmin.Mutation) (backlogadmin.MutationResponse, error) {
+			transport, err := newCoordinatorTransport(cfg)
+			if err != nil {
+				return backlogadmin.MutationResponse{}, err
+			}
+			mutation.Principal = transport.principal
+			return transport.client.Mutate(ctx, mutation)
 		},
 		notify: func(ctx context.Context, operation backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error) {
 			transport, err := newCoordinatorTransport(cfg)
@@ -315,6 +332,12 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 	case "supervision":
 		return c.runSupervision(ctx, args[1:])
 	case "list", "graph", "cancel":
+		if args[0] == "cancel" && isCampaignRunCancel(args) {
+			// "cancel <run>" is a command of its own: one revision-fenced
+			// cancellation of every non-terminal task. "cancel <run>/<task>"
+			// stays the forwarded alias it has always been.
+			return c.runCampaignCancelRun(ctx, args)
+		}
 		// Aliases forward the arguments untouched. Parsing or rendering them
 		// here would be a second implementation of a command that already
 		// exists, and the two would answer differently the day one changed.

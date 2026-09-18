@@ -130,6 +130,12 @@ func mutationReplayMatches(records sqlite.CoordinatorRecords, request Mutation, 
 	if command.TargetType == domain.AdminTargetWorkflowRun {
 		return request.TaskID == "" && command.TargetID == request.WorkflowRunID
 	}
+	if scoped, err := runScopedCommand(request.Kind, request.Payload); err == nil && scoped {
+		// A run-scoped cancel names no task, so the task rule below cannot
+		// judge it; what has to hold is that the command's anchor attempt
+		// belongs to the run the request names.
+		return runCancelReplayMatches(records, request, command)
+	}
 	if command.TargetType != domain.AdminTargetAttempt || request.TaskID == "" {
 		return false
 	}
@@ -169,6 +175,16 @@ func resolveMutationTarget(records sqlite.CoordinatorRecords, request Mutation) 
 	}
 	if request.WorkflowRunID == "" {
 		return "", "", fmt.Errorf("%w: workflow run or schedule target is required", ErrInvalidQuery)
+	}
+	scoped, err := runScopedCommand(request.Kind, request.Payload)
+	if err != nil {
+		return "", "", err
+	}
+	if scoped {
+		if request.TaskID != "" {
+			return "", "", fmt.Errorf("%w: a run-scoped cancel names no task; it cancels every non-terminal task of the run", ErrInvalidQuery)
+		}
+		return resolveRunCancelTarget(records, request.WorkflowRunID)
 	}
 	if request.TaskID == "" {
 		for _, run := range records.WorkflowRuns {

@@ -172,7 +172,15 @@ func planAdminCommandWithWaits(records sqlite.CoordinatorRecords, workers []doma
 		}
 		switch command.Kind {
 		case domain.AdminCommandCancel:
-			next, related, nextRun, cancelErr := planDAGCancellation(records, attempt, task, run, now)
+			scoped, scopeErr := runScopedCommand(command.Kind, command.Payload)
+			if scopeErr != nil {
+				return rejectApplication(application, scopeErr.Error()), nil, nil
+			}
+			plan := planDAGCancellation
+			if scoped {
+				plan = planRunCancellation
+			}
+			next, related, nextRun, cancelErr := plan(records, attempt, task, run, now)
 			if cancelErr != nil {
 				return rejectApplication(application, cancelErr.Error()), nil, nil
 			}
@@ -434,29 +442,79 @@ func planDAGCancellation(records sqlite.CoordinatorRecords, attempt domain.Attem
 		return nil, nil, nil, err
 	}
 	snapshot := execution.Snapshot()
-	var target *domain.Attempt
-	var related []domain.Attempt
-	for _, candidate := range snapshot.Attempts {
-		previous, found := original[candidate.ID]
-		if !found || previous.Progress.Terminal() || candidate.Progress != domain.ProgressCancelled {
-			continue
-		}
-		candidate.Revision = previous.Revision + 1
-		candidate.AdminForceStart = false
-		candidate.AdminNotBefore = nil
-		if candidate.ID == attempt.ID {
-			item := candidate
-			target = &item
-		} else {
-			related = append(related, candidate)
-		}
-	}
+	target, related := collectCancelledAttempts(snapshot, original, attempt.ID)
 	if target == nil {
 		return nil, nil, nil, errors.New("cancellation DAG did not update the target attempt")
 	}
-	sort.Slice(related, func(i, j int) bool { return related[i].ID < related[j].ID })
 	nextRun := snapshot.Run
 	return target, related, &nextRun, nil
+}
+
+// planRunCancellation cancels every non-terminal task of the run in one
+// application. It exists because a fan-out run's tasks need each other for
+// nothing, so cancelling one cascaded to nothing and an operator had to send
+// one command per task and reconcile a partial failure by hand.
+//
+// The anchor attempt is the command's target and carries the caller's fence;
+// every other cancelled attempt travels as a related attempt, each applied
+// against its own revision, so a task that moved under the caller fails the
+// application rather than being overwritten.
+func planRunCancellation(records sqlite.CoordinatorRecords, attempt domain.Attempt, _ domain.Task, run domain.WorkflowRun, now time.Time) (*domain.Attempt, []domain.Attempt, *domain.WorkflowRun, error) {
+	if attempt.Progress.Terminal() {
+		return nil, nil, nil, invalidTransition(domain.AdminCommandCancel, attempt, nil)
+	}
+	state := backlog.DAGState{Run: run}
+	state.Tasks = domain.TasksForRun(run, records.Tasks)
+	original := make(map[string]domain.Attempt)
+	var pending []domain.Attempt
+	for _, candidate := range domain.DeclaredTaskAttempts(records.Attempts) {
+		if candidate.WorkflowRunID != run.ID {
+			continue
+		}
+		state.Attempts = append(state.Attempts, candidate)
+		original[candidate.ID] = candidate
+		if !candidate.Progress.Terminal() {
+			pending = append(pending, candidate)
+		}
+	}
+	execution, err := backlog.NewDAGExecution(state)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("build cancellation DAG: %w", err)
+	}
+	sort.Slice(pending, func(i, j int) bool { return pending[i].ID < pending[j].ID })
+	for _, candidate := range pending {
+		// One task's cancellation cascades to its dependents, so a task may
+		// already be cancelled by the time its turn comes; cancelling it again
+		// would be an invalid transition on an attempt that is already final.
+		if cancelledInSnapshot(execution.Snapshot(), candidate.ID) {
+			continue
+		}
+		if err := execution.CancelTask(candidate.TaskID, now); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	snapshot := execution.Snapshot()
+	target, related := collectCancelledAttempts(snapshot, original, attempt.ID)
+	if target == nil {
+		return nil, nil, nil, errors.New("run cancellation did not update the anchor attempt")
+	}
+	nextRun := snapshot.Run
+	// The DAG advances the run's revision once per cancelled task. This is one
+	// application of one command, so the run moves exactly one revision from
+	// the one it was read at, whatever the DAG counted along the way.
+	nextRun.Revision = run.Revision + 1
+	return target, related, &nextRun, nil
+}
+
+// cancelledInSnapshot reports whether the attempt is already terminal in the
+// cancellation being planned.
+func cancelledInSnapshot(snapshot backlog.DAGState, attemptID string) bool {
+	for _, candidate := range snapshot.Attempts {
+		if candidate.ID == attemptID {
+			return candidate.Progress.Terminal()
+		}
+	}
+	return false
 }
 
 func planDAGSkip(records sqlite.CoordinatorRecords, attempt domain.Attempt, task domain.Task, run domain.WorkflowRun, now time.Time) (*domain.Attempt, *domain.WorkflowRun, error) {

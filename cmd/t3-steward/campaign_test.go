@@ -547,7 +547,11 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// readable where the exit code is explained. It was paid for by reflowing
 	// the paragraph to the full width and by shortening "a missing credential
 	// reference" and "Codes and recovery commands", so the cap is unchanged.
-	const wantDigest = "82ec51f7ed4ebcb3eb22e23e1f66f5f7d1e7a63a3319ba5ae9943b6ba0877805"
+	//
+	// Updated again when cancel gained its run form: the lifecycle line now
+	// reads "cancel <run>[/<task>]" and says that naming no task cancels the
+	// whole run in one command. It cost no line at all.
+	const wantDigest = "0612812650c31e3d50a923f17f4a2b57b6d165b251366b5223929fd236ca49f9"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)
@@ -558,7 +562,8 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 		"validate <directory|workflow.yaml> [--json]",
 		"plan     <directory|workflow.yaml> [--json|--dot]",
 		"submit   <directory|workflow.yaml> --idempotency-key KEY [--json]",
-		"cancel <run>/<task> --reason TEXT",
+		"cancel <run>[/<task>] --reason TEXT",
+		"no task = whole run",
 		"workflow.yaml",
 		"version: 2",
 		"needs",
