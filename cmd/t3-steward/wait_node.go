@@ -78,7 +78,7 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 			return err
 		}
 		logger := newLogger("error")
-		t3, _, err := connect(cfg, logger)
+		t3, _, err := connectForCallerThread(cfg, logger)
 		if err != nil {
 			return err
 		}
@@ -127,6 +127,20 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 	result, err := client.NodeWait(ctx, op)
 	if err != nil {
 		return err
+	}
+	if op.Action == "cancel-task" && len(result.TaskWaits) == 1 {
+		// The coordinator has settled the wait; the local check on this host,
+		// if there is one, is now polling for nothing. Failing to mark it is
+		// reported, not fatal: the coordinator's outcome already stands and a
+		// later local settlement cannot overwrite it.
+		settled := result.TaskWaits[0]
+		localID, err := cancelLocalTaskCheck(ctx, cfg, settled)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: the local check bound to %s could not be marked cancelled: %v\n", settled.ID, err)
+		}
+		// This command prints its result as JSON, so the human report goes to
+		// stderr.
+		reportTaskWaitCancelled(os.Stderr, localID, settled)
 	}
 	if op.Action == "list" {
 		tasks, err := client.NodeWait(ctx, backlogadmin.NodeWaitOperation{Action: "list-task"})

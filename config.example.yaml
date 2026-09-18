@@ -15,6 +15,10 @@ t3:
   # short-lived token by running "t3 auth session issue --token-only" and
   # refreshes it before it expires. Nothing long-lived is stored on disk.
   token: ""
+  # A private file (mode 0600, owner only) holding the bearer token, read
+  # when token is empty. Lets a host whose t3 CLI has gone away keep
+  # reaching its T3 server. T3_STEWARD_T3_TOKEN overrides both.
+  token_file: ""
   # Alternative token source: an argv (no shell) that prints a token.
   # token_command: ["/usr/local/bin/my-token-helper"]
   # Lifetime requested for minted tokens and the refresh interval.

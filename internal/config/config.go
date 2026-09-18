@@ -58,6 +58,11 @@ type T3 struct {
 	// Token is a bearer access token. Prefer TokenCommand so that nothing
 	// long-lived sits in the configuration file.
 	Token string `yaml:"token"`
+	// TokenFile names a private file (mode 0600) whose content is the bearer
+	// token. It is read at load when Token is empty, so a host whose t3 CLI
+	// has gone away can still reach its T3 server without putting the token
+	// in the configuration file itself.
+	TokenFile string `yaml:"token_file"`
 	// TokenCommand is a shell-free argv that prints a bearer token on stdout.
 	// Empty means run `t3 auth session issue --token-only --ttl <ttl>`.
 	TokenCommand []string `yaml:"token_command"`
@@ -702,6 +707,9 @@ func Load(path string) (Config, error) {
 	if err := c.applyEnv(); err != nil {
 		return c, err
 	}
+	if err := c.T3.loadTokenFile(); err != nil {
+		return c, err
+	}
 	// The UpKeeper-owned file fills the coordinator client only when
 	// config.yaml declares none, so the operator's file keeps one author and
 	// an explicit block there still wins.
@@ -715,6 +723,46 @@ func Load(path string) (Config, error) {
 		return c, err
 	}
 	return c, nil
+}
+
+// loadTokenFile fills Token from TokenFile when no token was given directly.
+// A token given in the file or the environment wins, so the file is the
+// fallback for a host that keeps the secret out of its configuration file.
+//
+// The file must be a private regular file: it grants access to the T3 server,
+// so one that anyone else could read or replace is refused rather than read.
+func (t *T3) loadTokenFile() error {
+	if t.Token != "" || t.TokenFile == "" {
+		return nil
+	}
+	path := t.TokenFile
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("t3: token_file %s: %w", path, err)
+		}
+		path = filepath.Join(home, path[2:])
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("t3: token_file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("t3: token_file %s is not a regular file", path)
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		return fmt.Errorf("t3: token_file %s has mode %04o, want 0600; refusing to read a token that is not private", path, perm)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("t3: token_file: %w", err)
+	}
+	token := strings.TrimSpace(string(content))
+	if token == "" || strings.ContainsAny(token, "\r\n") {
+		return fmt.Errorf("t3: token_file %s must contain one non-empty token", path)
+	}
+	t.Token = token
+	return nil
 }
 
 // applyEnv overrides fields from T3_STEWARD_* variables.
@@ -763,6 +811,7 @@ func (c *Config) applyEnv() error {
 	str("T3_URL", &c.T3.URL)
 	str("T3_DATA_DIR", &c.T3.DataDir)
 	str("T3_TOKEN", &c.T3.Token)
+	str("T3_TOKEN_FILE", &c.T3.TokenFile)
 	str("T3_BINARY", &c.T3.T3Binary)
 	str("STATE_PATH", &c.StatePath)
 	str("LOG_LEVEL", &c.LogLevel)

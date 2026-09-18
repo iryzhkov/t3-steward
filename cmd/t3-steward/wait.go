@@ -4,16 +4,20 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
 	"github.com/iryzhkov/t3-steward/internal/wait"
@@ -59,9 +63,20 @@ Commands:
   add --task <run>/<task> [--thread ID] [--name TEXT] [--timeout 24h] [--request-id ID]
                                 Interactive wait on another task's outcome.
   add --run <run> [flags]       Interactive wait on a run sink; no shell command.
-  list [--thread ID] [--all]    Waits of this thread, or of every thread.
+  list [--thread ID] [--all] [--json]
+                                Waits of this thread, or of every thread. A
+                                check bound to a task-bound wait names it.
   list --native [--json]        Native waits, outcomes and delivery state.
-  cancel <id> | run-now <id>    Control an interactive wait.
+  cancel <id> | run-now <id>    Control an interactive wait or a local check.
+  cancel <w-tw-id> | cancel <tw-id>
+                                Cancel a task-bound wait, by its local check or
+                                by its coordinator id. The coordinator settles
+                                the wait as cancelled first, and only then is
+                                the local check marked; the attempt resumes
+                                with the cancellation as its wait outcome. If
+                                the coordinator cannot be reached nothing is
+                                changed and the command fails with the
+                                transport exit code.
   cancel|run-now <nw-id>        Control a native wait through the admin socket.
 
 add flags:
@@ -92,12 +107,20 @@ add flags:
                      not a standing permission to park again. Include
                      $T3_STEWARD_ATTEMPT_REVISION so each park gets its own ID.
                      A repeated ID with different contents is also refused.
-  --json             Print the registered wait as JSON (--task current).
+  --json             Print the registered wait as JSON, with firstExit and
+                     firstOutputLine from the registration probe.
 
 Check protocol: exit 0 = condition met, wake. Exit 2 = give up, wake with the
 failure. Any other exit = not yet, keep polling. The check is run once at
 registration: a command that cannot run, exits 2, or already exits 0 is not
-registered and nothing is parked.
+registered and nothing is parked. The first run's exit code and first output
+line are reported in every mode. An exit other than 1 is registered as "not
+yet" and warned about on stderr, because the protocol cannot tell a not-yet
+from a command that will fail the same way forever.
+
+Verifying the caller's thread for an interactive wait needs the T3 API token:
+t3.token or t3.token_file in the configuration, T3_STEWARD_T3_TOKEN in the
+environment, or the t3 CLI, in that order.
 
 On failure or timeout the wait still wakes you, with structured evidence:
 which wait, which condition, which exit status and how long it ran. A
@@ -151,55 +174,179 @@ func cmdWait(g globalFlags, args []string) error {
 	case "add":
 		return cmdWaitAdd(ctx, cfg, store, args[1:])
 	case "list":
-		fs := flag.NewFlagSet("wait list", flag.ContinueOnError)
-		thread := fs.String("thread", "", "thread id")
-		all := fs.Bool("all", false, "every thread")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		if *thread == "" && !*all {
-			*thread, _ = resolveThread(cfg, "")
-		}
-		waits, err := store.ListWaits(ctx, *thread)
-		if err != nil {
-			return err
-		}
-		if len(waits) == 0 {
-			fmt.Println("No waits.")
-			return nil
-		}
-		fmt.Printf("%-10s %-36s %-10s %-6s %-8s %s\n", "id", "thread", "status", "runs", "exit", "name / command")
-		for _, w := range waits {
-			fmt.Printf("%-10s %-36s %-10s %-6d %-8d %s: %s\n", w.ID, w.ThreadID, w.Status, w.Runs, w.LastExit, w.Name, strings.Join(w.Command, " "))
-			if w.Reason != "" {
-				fmt.Printf("%-10s %s\n", "", w.Reason)
-			}
-		}
-		return nil
+		return cmdWaitList(ctx, cfg, store, args[1:], os.Stdout)
 	case "cancel", "run-now":
 		if len(args) != 2 {
 			return fmt.Errorf("%s needs a wait id", args[0])
 		}
-		waits, err := store.ListWaits(ctx, "")
-		if err != nil {
-			return err
+		return cmdWaitControl(ctx, cfg, store, args[0], args[1])
+	default:
+		return fmt.Errorf("unknown wait command %q", args[0])
+	}
+}
+
+// cmdWaitList prints the local checks: this thread's, or every thread's.
+func cmdWaitList(ctx context.Context, cfg config.Config, store *sqlite.Store, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("wait list", flag.ContinueOnError)
+	thread := fs.String("thread", "", "thread id")
+	all := fs.Bool("all", false, "every thread")
+	asJSON := fs.Bool("json", false, "print the list as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *thread == "" && !*all {
+		*thread, _ = resolveThread(cfg, "")
+	}
+	waits, err := store.ListWaits(ctx, *thread)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		if waits == nil {
+			waits = []wait.Wait{}
 		}
-		for _, w := range waits {
-			if w.ID != args[1] {
-				continue
-			}
-			if args[0] == "cancel" {
-				w.Status, w.Reason = wait.StatusCancelled, "cancelled manually"
-				return store.SaveWait(ctx, w)
-			}
+		encoder := json.NewEncoder(out)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(waits)
+	}
+	if len(waits) == 0 {
+		fmt.Fprintln(out, "No waits.")
+		return nil
+	}
+	fmt.Fprintf(out, "%-14s %-36s %-10s %-6s %-8s %-14s %s\n", "id", "thread", "status", "runs", "exit", "task-wait", "name / command")
+	for _, w := range waits {
+		bound := "-"
+		if w.TaskWaitID != "" {
+			bound = w.TaskWaitID
+		}
+		fmt.Fprintf(out, "%-14s %-36s %-10s %-6d %-8d %-14s %s: %s\n", w.ID, w.ThreadID, w.Status, w.Runs, w.LastExit, bound, w.Name, strings.Join(w.Command, " "))
+		if w.Reason != "" {
+			fmt.Fprintf(out, "%-14s %s\n", "", w.Reason)
+		}
+	}
+	return nil
+}
+
+// cmdWaitControl cancels or re-runs one local check.
+//
+// A check bound to a task-bound wait is half of a park; the coordinator's
+// record is the half that holds the attempt. Cancelling the local half alone
+// left the attempt parked on a wait nothing would settle until its deadline,
+// so the coordinator is told first, and the local row changes only once the
+// coordinator has settled the wait. A coordinator that cannot be reached
+// changes nothing: the failure keeps its transport class so the operator
+// retries instead of believing the wait is gone.
+func cmdWaitControl(ctx context.Context, cfg config.Config, store *sqlite.Store, action, id string) error {
+	waits, err := store.ListWaits(ctx, "")
+	if err != nil {
+		return err
+	}
+	for _, w := range waits {
+		if w.ID != id {
+			continue
+		}
+		if action == "run-now" {
 			out, code, err := runCheck(ctx, w)
 			fmt.Printf("exit %d\n%s", code, out)
 			return err
 		}
-		return fmt.Errorf("no wait %q", args[1])
-	default:
-		return fmt.Errorf("unknown wait command %q", args[0])
+		if w.Status != wait.StatusWaiting {
+			// A settled or already cancelled row keeps its outcome: overwriting a
+			// met check as cancelled would misreport what the runner observed.
+			return fmt.Errorf("wait %s is already %s; nothing to cancel", w.ID, w.Status)
+		}
+		if w.TaskWaitID == "" {
+			w.Status, w.Reason = wait.StatusCancelled, "cancelled manually"
+			if err := store.SaveWait(ctx, w); err != nil {
+				return err
+			}
+			fmt.Printf("wait %s cancelled.\n", w.ID)
+			return nil
+		}
+		settled, err := cancelTaskWait(ctx, cfg, w.TaskWaitID)
+		if err != nil {
+			return err
+		}
+		w.Status = wait.StatusCancelled
+		w.Reason = fmt.Sprintf("cancelled manually; coordinator wait %s settled as %s", settled.ID, taskWaitOutcome(settled))
+		if err := store.SaveWait(ctx, w); err != nil {
+			return fmt.Errorf("task-bound wait %s is settled on the coordinator, but the local check %s could not be marked: %w", settled.ID, w.ID, err)
+		}
+		reportTaskWaitCancelled(os.Stdout, w.ID, settled)
+		return nil
 	}
+	return fmt.Errorf("no wait %q", id)
+}
+
+// cancelTaskWait settles a coordinator task-bound wait as cancelled through
+// the configured transport and returns the record as the coordinator holds it.
+// A wait that already has an outcome keeps it: cancellation never retracts
+// evidence, and the returned record says which outcome stands.
+func cancelTaskWait(ctx context.Context, cfg config.Config, id string) (domain.TaskWait, error) {
+	transport, err := newCoordinatorTransport(cfg)
+	if err != nil {
+		return domain.TaskWait{}, err
+	}
+	response, err := transport.client.NodeWait(ctx, backlogadmin.NodeWaitOperation{Action: "cancel-task", ID: id})
+	if err != nil {
+		return domain.TaskWait{}, err
+	}
+	if len(response.TaskWaits) != 1 {
+		return domain.TaskWait{}, errors.New("the coordinator did not return exactly one task-bound wait")
+	}
+	return response.TaskWaits[0], nil
+}
+
+func taskWaitOutcome(w domain.TaskWait) string {
+	if w.Result == nil {
+		return "live"
+	}
+	return string(w.Result.Outcome)
+}
+
+// reportTaskWaitCancelled says what was cancelled and what happens next. The
+// attempt is resumed by the coordinator's own tick, not by this command, and
+// the message says so rather than implying the thread is already running.
+func reportTaskWaitCancelled(out io.Writer, localID string, settled domain.TaskWait) {
+	outcome := taskWaitOutcome(settled)
+	fmt.Fprintf(out, "task-bound wait %s settled as %s on the coordinator", settled.ID, outcome)
+	if localID != "" {
+		fmt.Fprintf(out, "; local check %s cancelled", localID)
+	}
+	fmt.Fprintln(out, ".")
+	if outcome == string(domain.TaskWaitCancelled) {
+		fmt.Fprintf(out, "Attempt %s resumes on the coordinator's next tick with the cancellation as its wait outcome.\n", settled.AttemptID)
+		return
+	}
+	fmt.Fprintf(out, "The wait had already settled as %s before the cancel; attempt %s resumes with that outcome.\n", outcome, settled.AttemptID)
+}
+
+// cancelLocalTaskCheck marks the local check bound to a coordinator wait as
+// cancelled, once the coordinator has settled that wait. A host that holds
+// no such check, or whose check has already settled, is left as it is.
+func cancelLocalTaskCheck(ctx context.Context, cfg config.Config, settled domain.TaskWait) (string, error) {
+	statePath, err := cfg.ResolveStatePath()
+	if err != nil {
+		return "", err
+	}
+	store, err := sqlite.Open(statePath)
+	if err != nil {
+		return "", err
+	}
+	defer store.Close()
+	waits, err := store.ListWaits(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	for _, w := range waits {
+		if w.TaskWaitID != settled.ID || w.Status != wait.StatusWaiting {
+			continue
+		}
+		w.Status = wait.StatusCancelled
+		w.Reason = fmt.Sprintf("cancelled manually; coordinator wait %s settled as %s", settled.ID, taskWaitOutcome(settled))
+		return w.ID, store.SaveWait(ctx, w)
+	}
+	return "", nil
 }
 
 func runCheck(ctx context.Context, w wait.Wait) (string, int, error) {
@@ -218,6 +365,7 @@ func cmdWaitAdd(ctx context.Context, cfg config.Config, store *sqlite.Store, arg
 	dir := fs.String("dir", "", "working directory")
 	group := fs.String("group", "", "group name")
 	wakeMode := fs.String("wake", "each", "each or all")
+	asJSON := fs.Bool("json", false, "print the registered wait as JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -258,7 +406,7 @@ func cmdWaitAdd(ctx context.Context, cfg config.Config, store *sqlite.Store, arg
 	}
 	// The thread must exist on this host's T3.
 	logger := newLogger("error")
-	client, _, err := connect(cfg, logger)
+	client, _, err := connectForCallerThread(cfg, logger)
 	if err != nil {
 		return err
 	}
@@ -278,17 +426,10 @@ func cmdWaitAdd(ctx context.Context, cfg config.Config, store *sqlite.Store, arg
 	}
 	// Verify the check runs before accepting the wait.
 	out, code, err := runCheck(ctx, w)
-	switch {
-	case err != nil:
-		fmt.Fprintf(os.Stderr, "%s", out)
-		return fmt.Errorf("check cannot run: %v", err)
-	case code == 0:
-		fmt.Fprintf(os.Stderr, "%s", out)
-		return errors.New("the check already exits 0: the condition is met, nothing to wait for")
-	case code == 2:
-		fmt.Fprintf(os.Stderr, "%s", out)
-		return errors.New("the check exits 2 (give up) right away; fix it before registering")
+	if err := refuseFirstRun(os.Stderr, out, code, err, "nothing to wait for"); err != nil {
+		return err
 	}
+	firstLine := firstOutputLine(out)
 	now := time.Now()
 	w.LastRunAt = &now
 	w.Runs = 1
@@ -297,8 +438,22 @@ func cmdWaitAdd(ctx context.Context, cfg config.Config, store *sqlite.Store, arg
 	if err := store.SaveWait(ctx, w); err != nil {
 		return err
 	}
-	fmt.Printf("wait %s registered for thread %s (%s): first check exited %d; polling every %s, backing off to %s, up to %s.\n",
-		w.ID, threadID, t.Title, code, *every, *maxEvery, *timeout)
+	warnUnconventionalFirstExit(os.Stderr, code, firstLine)
+	if *asJSON {
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(struct {
+			wait.Wait
+			FirstExit       int    `json:"firstExit"`
+			FirstOutputLine string `json:"firstOutputLine"`
+		}{w, code, firstLine}); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stderr, "End this turn now; the steward wakes the thread with the outcome.")
+		return nil
+	}
+	fmt.Printf("wait %s registered for thread %s (%s): %s; polling every %s, backing off to %s, up to %s.\n",
+		w.ID, threadID, t.Title, firstRunSummary(code, firstLine), *every, *maxEvery, *timeout)
 	fmt.Println("End this turn now; the steward wakes the thread with the outcome.")
 	return nil
 }

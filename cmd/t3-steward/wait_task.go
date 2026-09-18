@@ -196,17 +196,10 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 	// cannot run, gives up at once, or is already true would otherwise park a
 	// task for a wake that is either immediate or never coming.
 	out, code, err := runCheck(ctx, local)
-	switch {
-	case err != nil:
-		fmt.Fprintf(os.Stderr, "%s", out)
-		return fmt.Errorf("check cannot run: %v", err)
-	case code == 0:
-		fmt.Fprintf(os.Stderr, "%s", out)
-		return errors.New("the check already exits 0: the condition is met, so there is nothing to park for")
-	case code == 2:
-		fmt.Fprintf(os.Stderr, "%s", out)
-		return errors.New("the check exits 2 (give up) right away; fix it before registering")
+	if err := refuseFirstRun(os.Stderr, out, code, err, "so there is nothing to park for"); err != nil {
+		return err
 	}
+	firstLine := firstOutputLine(out)
 
 	transport, err := newCoordinatorTransport(cfg)
 	if err != nil {
@@ -266,13 +259,23 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 		return fmt.Errorf("task-bound wait %s is registered and this attempt is parked, but the local check could not be saved, so the wait will only settle when it times out after %s: %w",
 			registered.ID, registered.MaxDuration, err)
 	}
+	warnUnconventionalFirstExit(os.Stderr, code, firstLine)
 	if *asJSON {
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
-		return encoder.Encode(registered)
+		if err := encoder.Encode(struct {
+			domain.TaskWait
+			FirstExit       int    `json:"firstExit"`
+			FirstOutputLine string `json:"firstOutputLine"`
+		}{registered, code, firstLine}); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stderr, "This task is now parked. End this turn now: nothing is collected and nothing is verified")
+		fmt.Fprintln(os.Stderr, "until the steward resumes this same thread with the outcome.")
+		return nil
 	}
-	fmt.Printf("task-bound wait %s registered for attempt %s on thread %s: first check exited %d; polling every %s, backing off to %s, giving up after %s.\n",
-		registered.ID, registered.AttemptID, registered.ThreadID, code, *every, *maxEvery, *timeout)
+	fmt.Printf("task-bound wait %s registered for attempt %s on thread %s: %s; polling every %s, backing off to %s, giving up after %s.\n",
+		registered.ID, registered.AttemptID, registered.ThreadID, firstRunSummary(code, firstLine), *every, *maxEvery, *timeout)
 	fmt.Println("This task is now parked. End this turn now: nothing is collected and nothing is verified")
 	fmt.Println("until the steward resumes this same thread with the outcome.")
 	return nil
