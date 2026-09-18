@@ -16,8 +16,12 @@ func (d *Daemon) execute(ctx context.Context, a domain.Action, state domain.Buck
 	switch a.Kind {
 	case domain.ActionRearm:
 		log.Info("bucket rearmed")
-		if err := d.store.ClearThreadNotices(ctx, a.Bucket); err != nil {
-			log.Error("clear thread notices", "err", err)
+		// The thread notices are the epoch's: a reset's rearm clears them
+		// with the epoch, a load-time lowering inside the epoch keeps them.
+		if !a.EpochUnchanged {
+			if err := d.store.ClearThreadNotices(ctx, a.Bucket); err != nil {
+				log.Error("clear thread notices", "err", err)
+			}
 		}
 		d.record(ctx, domain.ActionRecord{Kind: a.Kind, Bucket: a.Bucket.String(), Detail: a.Reason})
 		return

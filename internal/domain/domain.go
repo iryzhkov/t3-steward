@@ -220,6 +220,12 @@ type Action struct {
 	// accepted one for timer-driven actions.
 	Snapshot QuotaSnapshot
 	Reason   string
+	// EpochUnchanged marks a rearm that lowers a phase inside the bucket's
+	// current epoch, the load-time re-derivation, rather than opening a new
+	// one. The epoch's thread notices (the user-resumed record, the warn and
+	// drain notices) belong to that epoch and are kept; a rearm from a reset
+	// clears them with the epoch.
+	EpochUnchanged bool
 }
 
 // Decision is the output of one policy evaluation.

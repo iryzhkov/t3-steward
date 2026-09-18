@@ -91,7 +91,9 @@ All notable changes to this project are documented here. The format follows
   `stop_new_sessions`), never drained, warned at most once, and given no
   resume intent. rc.68 exempted it only in the stopped-phase poll and the
   resume intent (omarchy-pc, 2026-09-17 10:11 to 10:13). A rearm clears the
-  record with the epoch; owned threads are excluded before the rule.
+  record with the epoch, and the load-time re-derivation, which keeps the
+  epoch, keeps the record and the warn notices; owned threads are excluded
+  before the rule.
 - A `SIGHUP` reload that brings in a fleet projection whose new project has no
   local binding is accepted as a catalog change. The list of defaulted projects
   the load records had leaked into the lifecycle comparison, so the first such

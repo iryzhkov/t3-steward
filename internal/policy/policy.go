@@ -462,7 +462,7 @@ func (e *Engine) Rederive(prev domain.BucketState, now time.Time) domain.Decisio
 	return domain.Decision{
 		State: state,
 		Actions: []domain.Action{{
-			Kind: domain.ActionRearm, Bucket: prev.Key, Snapshot: snap,
+			Kind: domain.ActionRearm, Bucket: prev.Key, Snapshot: snap, EpochUnchanged: true,
 			Reason: fmt.Sprintf("re-derived at load: %s at %.0f%% is %s under thresholds warn/drain/stop %s, not %s as stored under %s",
 				describe(snap), prev.UsedPercent, want, state.AppliedThresholds, prev.Phase, before),
 		}},

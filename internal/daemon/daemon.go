@@ -355,8 +355,8 @@ func (d *Daemon) HandleSnapshot(ctx context.Context, snap domain.QuotaSnapshot) 
 // thresholds would not produce from the stored percentage (F-1). It runs
 // once at start, before the first poll, and is the second of the three
 // writers of a bucket's phase: it records a rearm naming both threshold
-// sets, never raises a phase, and leaves the stored state untouched when the
-// save fails. A bucket whose reset time has passed is left to the next
+// sets, never raises a phase, keeps the epoch and with it the epoch's thread
+// notices, and leaves the stored state untouched when the save fails. A bucket whose reset time has passed is left to the next
 // reading, which rearms or re-stops it. Exposed for tests and replay.
 func (d *Daemon) Rederive(ctx context.Context) {
 	states, err := d.store.ListBuckets(ctx)

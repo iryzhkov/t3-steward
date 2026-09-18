@@ -119,6 +119,40 @@ func TestLoadNeverRaisesAStoredPhase(t *testing.T) {
 	}
 }
 
+// A load-time lowering keeps the epoch, so it keeps the epoch's thread
+// notices: the user-resumed record and the warn notice survive a restart that
+// lowers a projection stop at 87% to warned under unchanged thresholds.
+// Otherwise the next raise to stopped would stop the user-resumed thread and
+// warn it a second time in the same window. A real reset still clears them
+// (TestUserResumedExemptionEndsWithTheEpoch).
+func TestLoadKeepsThreadNoticesWhenTheEpochIsUnchanged(t *testing.T) {
+	h := newHarness(t, nil)
+	stopped := h.clock.Add(-time.Hour)
+	st := h.stoppedBucket(codexPrimary, 87, stopped)
+	for _, kind := range []domain.ActionKind{domain.NoticeUserResumed, domain.ActionWarn} {
+		if _, err := h.store.MarkThreadNotice(context.Background(), "user", codexPrimary, st.Epoch, kind, stopped.Add(30*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.d.Rederive(context.Background())
+	after := h.loadBucket(codexPrimary)
+	if after.Phase != domain.PhaseWarned || after.Epoch != st.Epoch {
+		t.Fatalf("after load: phase %s epoch %q, want warned in epoch %q", after.Phase, after.Epoch, st.Epoch)
+	}
+	if actions, _ := h.store.RecentActions(context.Background(), 10); len(actions) != 1 || actions[0].Kind != domain.ActionRearm {
+		t.Fatalf("actions = %+v, want one rearm", actions)
+	}
+	for _, kind := range []domain.ActionKind{domain.NoticeUserResumed, domain.ActionWarn} {
+		notices, err := h.store.ThreadNotices(context.Background(), codexPrimary, st.Epoch, kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := notices["user"]; !ok {
+			t.Fatalf("the %s notice was dropped by the load-time re-derivation", kind)
+		}
+	}
+}
+
 // A bucket of a past epoch is not re-derived: its phase belongs to a window
 // that is over, and a fresh reading rearms or re-stops it.
 func TestLoadSkipsExpiredEpochs(t *testing.T) {

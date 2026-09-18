@@ -992,7 +992,8 @@ that raises the phase, not the drain grace timer, not `stop_new_sessions`. It
 receives the advisory warning at most once and gets no resume intent. The
 record is evidence, not a change of phase: a rearm clears the notices with
 the epoch, and a stop in the next window holds the thread again until the
-user acts. Threads a live steward attempt owns are excluded before this rule
+user acts. The load-time re-derivation keeps the epoch, so it keeps the
+record and the warn notices too. Threads a live steward attempt owns are excluded before this rule
 applies; they are the worker's.
 
 ### Parked attempt with no live wait
