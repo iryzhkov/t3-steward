@@ -56,6 +56,8 @@ type Wait struct {
 	Kind    domain.WaitKind `json:"kind,omitempty"`
 	Command []string        `json:"command"`
 	Dir     string          `json:"dir"`
+	// At is the instant a time wait is met.
+	At *time.Time `json:"at,omitempty"`
 	// OrTimeout makes the deadline a normal outcome rather than a failure.
 	OrTimeout bool `json:"orTimeout,omitempty"`
 	// Outcome is the trailer outcome once the wait settled.
@@ -107,8 +109,13 @@ func (w *Wait) settle(status Status, reason string, at time.Time, fields map[str
 	w.Outcome = outcomeName(*w)
 }
 
-// currentInterval is the interval after backoff, never below Every.
+// currentInterval is the interval after backoff, never below Every. A time
+// wait's interval is computed from the remaining time and is exact: the poll
+// must land at the instant, not at the next multiple of --every.
 func (w Wait) currentInterval() time.Duration {
+	if w.Kind == domain.WaitKindTime && w.Interval > 0 {
+		return w.Interval
+	}
 	if w.Interval > w.Every {
 		return w.Interval
 	}
@@ -237,30 +244,30 @@ func (r *Runner) Tick(ctx context.Context, _ []domain.Thread, buckets []domain.B
 }
 
 // runOnce evaluates a wait once and records the outcome. A shell wait runs
-// its command; the other local kinds are dispatched by runKindOnce.
+// its command; the other local kinds are dispatched by runKindOnce and set
+// their own next interval.
 func (r *Runner) runOnce(ctx context.Context, w *Wait, now time.Time) {
-	if r.runKindOnce(ctx, w, now) {
-		return
-	}
-	out, code, err := r.Exec(ctx, *w)
 	t := now
 	w.LastRunAt = &t
 	w.Runs++
-	w.LastExit = code
-	w.LastOutput = tail(out, 4000)
-	switch {
-	case err != nil:
-		// A command that cannot run at all is a failed wait, not a poll
-		// that keeps returning nothing.
-		w.settle(StatusFailed, err.Error(), now, nil)
-	case code == 0:
-		w.settle(StatusMet, "condition met", now, nil)
-	case code == 2:
-		w.settle(StatusGaveUp, "the check gave up (exit 2)", now, nil)
+	if !r.runKindOnce(ctx, w, now) {
+		out, code, err := r.Exec(ctx, *w)
+		w.LastExit = code
+		w.LastOutput = tail(out, 4000)
+		switch {
+		case err != nil:
+			// A command that cannot run at all is a failed wait, not a poll
+			// that keeps returning nothing.
+			w.settle(StatusFailed, err.Error(), now, nil)
+		case code == 0:
+			w.settle(StatusMet, "condition met", now, nil)
+		case code == 2:
+			w.settle(StatusGaveUp, "the check gave up (exit 2)", now, nil)
+		}
 	}
 	if w.Settled() {
-		r.log.Info("wait settled", "wait", w.ID, "name", w.Name, "thread", w.ThreadID, "status", string(w.Status), "runs", w.Runs)
-	} else {
+		r.log.Info("wait settled", "wait", w.ID, "name", w.Name, "thread", w.ThreadID, "kind", string(w.Kind.OrShell()), "status", string(w.Status), "runs", w.Runs)
+	} else if w.Kind.OrShell() == domain.WaitKindShell {
 		// Not yet: back off so a long wait polls lightly.
 		next := w.currentInterval() * 2
 		if max := w.maxInterval(); next > max {

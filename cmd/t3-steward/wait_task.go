@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -154,74 +153,43 @@ func taskWaitRequestID(explicit string, identity taskIdentity, warnings io.Write
 	return explicit
 }
 
-// cmdTaskWaitAdd registers a task-bound wait: the coordinator parks this
-// attempt, the worker collects nothing, and the steward resumes the same thread
-// and the same attempt when the condition settles.
 func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error {
-	fs := flag.NewFlagSet("wait add --task current", flag.ContinueOnError)
-	task := fs.String("task", "", "current")
-	name := fs.String("name", "", "what is being waited for")
-	every := fs.Duration("every", 30*time.Second, "first poll interval")
-	maxEvery := fs.Duration("max-every", 10*time.Minute, "backoff ceiling")
-	timeout := fs.Duration("timeout", 24*time.Hour, "maximum duration of the wait")
-	runTimeout := fs.Duration("run-timeout", time.Minute, "bound one run of the check")
-	dir := fs.String("dir", "", "working directory for the check")
-	wakeMode := fs.String("wake", "each", "each or all")
-	requestID := fs.String("request-id", "", "stable registration ID for safe retries")
-	asJSON := fs.Bool("json", false, "print the registered wait as JSON")
-	if err := fs.Parse(args); err != nil {
+	now := time.Now()
+	spec, err := parseLocalWaitSpec(args, now)
+	if err != nil {
 		return err
 	}
-	if *task != "current" {
-		return errors.New("cmdTaskWaitAdd requires --task current")
-	}
-	command := fs.Args()
-	if len(command) > 0 && command[0] == "--" {
-		command = command[1:]
-	}
-	if len(command) == 0 {
-		return errors.New("--task current needs the condition to poll after --, for example: -- gh run view 123 --json status --jq '.status==\"completed\"'")
-	}
-	if *wakeMode != "each" && *wakeMode != "all" {
-		return errors.New("--wake must be each or all")
-	}
-	if *every < 30*time.Second {
-		return errors.New("--every must be at least 30s")
-	}
-	if *maxEvery < *every {
-		return errors.New("--max-every must not be shorter than --every")
-	}
-	if *timeout <= *every {
-		return errors.New("--timeout must be longer than --every")
+	if spec.Thread != "" || spec.Group != "" {
+		return errors.New("--thread and --group do not apply to --task current: the wait is bound to this task's own thread, and --wake all is scoped to the attempt")
 	}
 	identity, err := resolveTaskIdentity(os.Getenv)
 	if err != nil {
 		return err
 	}
-	if *dir == "" {
-		*dir, _ = os.Getwd()
+	if spec.Dir == "" {
+		spec.Dir, _ = os.Getwd()
 	}
-	if *name == "" {
-		*name = strings.Join(command, " ")
-		if len(*name) > 60 {
-			*name = (*name)[:60]
-		}
-	}
-	*requestID = taskWaitRequestID(*requestID, identity, os.Stderr)
+	spec.RequestID = taskWaitRequestID(spec.RequestID, identity, os.Stderr)
 
 	local := wait.Wait{
-		ID: newWaitID(), ThreadID: identity.ThreadID, Name: *name, Kind: domain.WaitKindShell, Command: command, Dir: *dir,
-		Every: *every, MaxEvery: *maxEvery, Timeout: *timeout, RunTimeout: *runTimeout,
-		Wake: wait.WakeMode(*wakeMode), Status: wait.StatusWaiting, CreatedAt: time.Now(),
+		ID: newWaitID(), ThreadID: identity.ThreadID, Name: spec.Name, Kind: spec.Kind, Command: spec.Command, Dir: spec.Dir,
+		At: spec.At, OrTimeout: spec.OrTimeout,
+		Every: spec.Every, MaxEvery: spec.MaxEvery, Timeout: spec.Timeout, RunTimeout: spec.RunTimeout,
+		Wake: wait.WakeMode(spec.WakeMode), Status: wait.StatusWaiting, CreatedAt: now,
 	}
 	// The check is proven to run before the attempt is parked. A condition that
 	// cannot run, gives up at once, or is already true would otherwise park a
-	// task for a wake that is either immediate or never coming.
-	out, code, err := runCheck(ctx, local)
-	if err := refuseFirstRun(os.Stderr, out, code, err, "so there is nothing to park for"); err != nil {
-		return err
+	// task for a wake that is either immediate or never coming. A time wait
+	// was already checked to lie in the future.
+	code, firstLine, out := 1, "", ""
+	if spec.Kind == domain.WaitKindShell {
+		var probeErr error
+		out, code, probeErr = runCheck(ctx, local)
+		if err := refuseFirstRun(os.Stderr, out, code, probeErr, "so there is nothing to park for"); err != nil {
+			return err
+		}
+		firstLine = firstOutputLine(out)
 	}
-	firstLine := firstOutputLine(out)
 
 	transport, err := newCoordinatorTransport(cfg)
 	if err != nil {
@@ -235,10 +203,10 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 	response, err := client.NodeWait(ctx, backlogadmin.NodeWaitOperation{
 		Action: "register-task",
 		Task: &domain.TaskWaitRegistration{
-			RequestID: *requestID, WorkflowRunID: identity.WorkflowRunID, TaskID: identity.TaskID,
+			RequestID: spec.RequestID, WorkflowRunID: identity.WorkflowRunID, TaskID: identity.TaskID,
 			AttemptID: identity.AttemptID, IssuedRevision: identity.AttemptRevision,
-			ThreadID: identity.ThreadID, Wake: domain.WakeMode(*wakeMode), MaxDuration: *timeout,
-			Name: *name, Condition: strings.Join(command, " "), Kind: domain.WaitKindShell,
+			ThreadID: identity.ThreadID, Wake: domain.WakeMode(spec.WakeMode), MaxDuration: spec.Timeout,
+			Name: spec.Name, Condition: spec.Condition, Kind: spec.Kind, OrTimeout: spec.OrTimeout,
 		},
 	})
 	if err != nil {
@@ -265,14 +233,16 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 		return err
 	}
 	defer store.Close()
-	now := time.Now()
 	local.TaskWaitID = registered.ID
 	// A registration retry must never create a second poll or reset a settled one.
 	local.ID = "w-" + registered.ID
-	local.LastRunAt = &now
-	local.Runs = 1
-	local.LastExit = code
-	local.LastOutput = out
+	if spec.Kind == domain.WaitKindShell {
+		ran := time.Now()
+		local.LastRunAt = &ran
+		local.Runs = 1
+		local.LastExit = code
+		local.LastOutput = out
+	}
 	if err := saveRegisteredTaskCheck(ctx, store, local); err != nil {
 		// The attempt is parked and the coordinator owns its maximum duration,
 		// so an unpolled wait expires with a structured timeout rather than
@@ -281,8 +251,10 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 		return fmt.Errorf("task-bound wait %s is registered and this attempt is parked, but the local check could not be saved, so the wait will only settle when it times out after %s: %w",
 			registered.ID, registered.MaxDuration, err)
 	}
-	warnUnconventionalFirstExit(os.Stderr, code, firstLine)
-	if *asJSON {
+	if spec.Kind == domain.WaitKindShell {
+		warnUnconventionalFirstExit(os.Stderr, code, firstLine)
+	}
+	if spec.JSON {
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
 		if err := encoder.Encode(struct {
@@ -296,8 +268,8 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 		fmt.Fprintln(os.Stderr, "until the steward resumes this same thread with the outcome.")
 		return nil
 	}
-	fmt.Printf("task-bound wait %s registered for attempt %s on thread %s: %s; polling every %s, backing off to %s, giving up after %s.\n",
-		registered.ID, registered.AttemptID, registered.ThreadID, firstRunSummary(code, firstLine), *every, *maxEvery, *timeout)
+	fmt.Printf("task-bound wait %s (%s) registered for attempt %s on thread %s: %s.\n",
+		registered.ID, spec.Kind, registered.AttemptID, registered.ThreadID, spec.registrationSummary(code, firstLine))
 	fmt.Println("This task is now parked. End this turn now: nothing is collected and nothing is verified")
 	fmt.Println("until the steward resumes this same thread with the outcome.")
 	return nil

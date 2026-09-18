@@ -364,52 +364,21 @@ func runCheck(ctx context.Context, w wait.Wait) (string, int, error) {
 }
 
 func cmdWaitAdd(ctx context.Context, cfg config.Config, store *sqlite.Store, args []string) error {
-	fs := flag.NewFlagSet("wait add", flag.ContinueOnError)
-	name := fs.String("name", "", "what is being waited for")
-	every := fs.Duration("every", 30*time.Second, "first poll interval; doubles after each not-yet up to --max-every")
-	maxEvery := fs.Duration("max-every", 10*time.Minute, "backoff ceiling")
-	timeout := fs.Duration("timeout", 24*time.Hour, "give up after")
-	runTimeout := fs.Duration("run-timeout", time.Minute, "bound one run")
-	thread := fs.String("thread", "", "thread id")
-	dir := fs.String("dir", "", "working directory")
-	group := fs.String("group", "", "group name")
-	wakeMode := fs.String("wake", "each", "each or all")
-	asJSON := fs.Bool("json", false, "print the registered wait as JSON")
-	if err := fs.Parse(args); err != nil {
+	now := time.Now()
+	spec, err := parseLocalWaitSpec(args, now)
+	if err != nil {
 		return err
 	}
-	command := fs.Args()
-	if len(command) > 0 && command[0] == "--" {
-		command = command[1:]
+	if spec.RequestID != "" {
+		return errors.New("--request-id applies to --task current and node waits; an interactive local wait has no registration to retry")
 	}
-	if len(command) == 0 {
-		return errors.New("add needs a command after --")
-	}
-	if *every < 30*time.Second {
-		return errors.New("--every must be at least 30s")
-	}
-	if *maxEvery < *every {
-		return errors.New("--max-every must not be shorter than --every")
-	}
-	if *timeout <= *every {
-		return errors.New("--timeout must be longer than --every")
-	}
-	if *wakeMode != "each" && *wakeMode != "all" {
-		return errors.New("--wake must be each or all")
-	}
-	if *wakeMode == "all" && *group == "" {
+	if spec.WakeMode == "all" && spec.Group == "" {
 		return errors.New("--wake all needs --group")
 	}
-	if *dir == "" {
-		*dir, _ = os.Getwd()
+	if spec.Dir == "" {
+		spec.Dir, _ = os.Getwd()
 	}
-	if *name == "" {
-		*name = strings.Join(command, " ")
-		if len(*name) > 60 {
-			*name = (*name)[:60]
-		}
-	}
-	threadID, err := resolveThread(cfg, *thread)
+	threadID, err := resolveThread(cfg, spec.Thread)
 	if err != nil {
 		return err
 	}
@@ -429,26 +398,32 @@ func cmdWaitAdd(ctx context.Context, cfg config.Config, store *sqlite.Store, arg
 		return fmt.Errorf("thread %s is not known to T3 on this host", threadID)
 	}
 	w := wait.Wait{
-		ID: newWaitID(), ThreadID: threadID, Name: *name, Kind: domain.WaitKindShell, Command: command, Dir: *dir,
-		Every: *every, MaxEvery: *maxEvery, Timeout: *timeout, RunTimeout: *runTimeout, Group: *group,
-		Wake: wait.WakeMode(*wakeMode), Status: wait.StatusWaiting, CreatedAt: time.Now(),
+		ID: newWaitID(), ThreadID: threadID, Name: spec.Name, Kind: spec.Kind, Command: spec.Command, Dir: spec.Dir,
+		At: spec.At, OrTimeout: spec.OrTimeout,
+		Every: spec.Every, MaxEvery: spec.MaxEvery, Timeout: spec.Timeout, RunTimeout: spec.RunTimeout, Group: spec.Group,
+		Wake: wait.WakeMode(spec.WakeMode), Status: wait.StatusWaiting, CreatedAt: now,
 	}
-	// Verify the check runs before accepting the wait.
-	out, code, err := runCheck(ctx, w)
-	if err := refuseFirstRun(os.Stderr, out, code, err, "nothing to wait for"); err != nil {
-		return err
+	// Verify the check runs before accepting the wait. A time wait has no
+	// check to prove; its first poll is the runner's next tick.
+	code, firstLine := 1, ""
+	if spec.Kind == domain.WaitKindShell {
+		out, exit, err := runCheck(ctx, w)
+		if err := refuseFirstRun(os.Stderr, out, exit, err, "nothing to wait for"); err != nil {
+			return err
+		}
+		code, firstLine = exit, firstOutputLine(out)
+		w.LastRunAt = &now
+		w.Runs = 1
+		w.LastExit = code
+		w.LastOutput = out
 	}
-	firstLine := firstOutputLine(out)
-	now := time.Now()
-	w.LastRunAt = &now
-	w.Runs = 1
-	w.LastExit = code
-	w.LastOutput = out
 	if err := store.SaveWait(ctx, w); err != nil {
 		return err
 	}
-	warnUnconventionalFirstExit(os.Stderr, code, firstLine)
-	if *asJSON {
+	if spec.Kind == domain.WaitKindShell {
+		warnUnconventionalFirstExit(os.Stderr, code, firstLine)
+	}
+	if spec.JSON {
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
 		if err := encoder.Encode(struct {
@@ -461,8 +436,8 @@ func cmdWaitAdd(ctx context.Context, cfg config.Config, store *sqlite.Store, arg
 		fmt.Fprintln(os.Stderr, "End this turn now; the steward wakes the thread with the outcome.")
 		return nil
 	}
-	fmt.Printf("wait %s registered for thread %s (%s): %s; polling every %s, backing off to %s, up to %s.\n",
-		w.ID, threadID, t.Title, firstRunSummary(code, firstLine), *every, *maxEvery, *timeout)
+	fmt.Printf("wait %s (%s) registered for thread %s (%s): %s.\n",
+		w.ID, spec.Kind, threadID, t.Title, spec.registrationSummary(code, firstLine))
 	fmt.Println("End this turn now; the steward wakes the thread with the outcome.")
 	return nil
 }
