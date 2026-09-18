@@ -762,10 +762,18 @@ cancelled source run does not release them. They provide ordering; cross-run
 artifact imports through `inputs_from` are not supported.
 
 An agent that would otherwise poll in a loop (PR review, CI, a long job)
-registers the check with the steward and ends its turn:
+registers the wait with the steward and ends its turn. Every wait has a kind:
+`shell` (a command), `time` (`--at`, `--for`), `github` (`--github run <id> |
+pr <n>`), `node` (`--node <run>[/<task>] --state ...`) and `quota` (`--quota
+<pool> ...`); the first three are settled on the registering host, the last
+two by the coordinator. Every wake begins with one parseable line,
+`t3-steward-wait kind=<kind> outcome=<outcome> wait=<id> ...`, and `wait help`
+lists the pairs each kind adds.
 
 ```sh
-t3-steward wait add --name "PR 123 reviewed" -- gh pr view 123 --json reviewDecision --jq 'select(.reviewDecision != "") | .reviewDecision'
+t3-steward wait add --github pr 123 --state reviewed --name "PR 123 reviewed"
+t3-steward wait add --for 2h --or-timeout
+t3-steward wait add --name "deploy finished" -- ./scripts/deployed.sh
 ```
 
 The thread is resolved from `CLAUDE_CODE_SESSION_ID` (Claude), `CODEX_THREAD_ID`
@@ -821,8 +829,12 @@ t3-steward report [--days 14] [--peak "Mon-Fri 09:00-17:00"] [--bucket TEXT] [--
 t3-steward export [--days 14] [--from-logs]
 t3-steward forecast [--days 56] [--bucket TEXT] [--from-logs] [--remotes a,b] [--json]
 t3-steward backlog list [--all]|new ID|check FILE|show ID|retry ID|cancel ID|receive ID|path
-t3-steward wait add [--name TEXT] [--every 30s] [--max-every 10m] [--timeout 24h] [--thread ID] [--group G --wake all] -- CMD...
-t3-steward wait list [--all]|cancel ID|run-now ID
+t3-steward wait add [--task current] [--name TEXT] [--timeout 24h] [--or-timeout] [--group G --wake all] -- CMD...
+t3-steward wait add [--task current] --at RFC3339 | --for DURATION
+t3-steward wait add [--task current] --github run ID | pr N [--state completed|merged|reviewed|checks-passed] [--repo owner/name]
+t3-steward wait add [--task current] --node RUN[/TASK] [--state terminal|succeeded|paused|waiting-external|active]
+t3-steward wait add [--task current] --quota POOL --below N | --phase normal | --reset
+t3-steward wait list [--all] [--native] [--json]|cancel ID|run-now ID
 t3-steward task env [--get NAME]
 t3-steward bucket list [--json]|rearm KEY --reason TEXT [--force] [--json]
 t3-steward archive candidates|run [--dry-run]|list|restore ID [DIR]

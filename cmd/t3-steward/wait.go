@@ -29,7 +29,7 @@ const waitUsage = waitCommandUsage + coordinatorTransportSummary
 
 const waitCommandUsage = `Usage: t3-steward wait <command> [flags]
 
-Wait instead of polling in a loop: register a check, end the turn, and the
+Wait instead of polling in a loop: register a wait, end the turn, and the
 steward wakes you when the condition settles.
 
 There are two kinds of wait. They differ in what they wake and in what they are
@@ -51,22 +51,71 @@ that parks safely and a task that is verified against work it has not done.
       reach the thread.
       Only valid inside a task: outside one it is an error that says so.
 
-  INTERACTIVE WAIT  (no --task, or --task <run>/<task>, or --run <run>)
+  INTERACTIVE WAIT  (no --task current)
       For an ordinary session. It is NON-MUTATING with respect to workflow
       state: it wakes the selected thread and creates or alters nothing else.
       No task is parked, nothing is held, nothing is released.
 
+Every wait has one of five conditions, its KIND. Both forms take every kind.
+
+  LOCAL KINDS  settled by this host's wait runner, with a local check row
+    shell    -- <command...>          exit 0 met, exit 2 gave up, else not yet
+    time     --at RFC3339 | --for DURATION
+                                      met when the instant passes; the poll
+                                      interval follows the remaining time
+    github   --github run <id> | pr <n> [--state STATE] [--repo owner/name]
+                                      reads the target with gh and fixed
+                                      arguments; run: completed (met on
+                                      conclusion success, failed otherwise);
+                                      pr: merged (default), reviewed,
+                                      checks-passed; three gh errors in a row
+                                      give up, a target that is gone gives up
+                                      at once
+
+  COORDINATOR KINDS  settled by the coordinator from its own records, no
+  local check on any host
+    node     --node <run>[/<task>] [--state terminal|succeeded|paused|waiting-external|active]
+                                      terminal (default) is met when the node
+                                      reaches any terminal progress except
+                                      cancelled; succeeded is failed on a
+                                      failed run; paused, waiting-external and
+                                      active read the latest attempt. A run
+                                      alone names its sink.
+    quota    --quota <pool> --below N | --phase normal | --reset
+                                      settled from the merged bucket
+                                      observations of the pool: usage under N
+                                      percent, every bucket normal, or the
+                                      window current at registration reset
+
+Outcomes: met, failed, gave-up, cancelled, timed-out. --or-timeout makes the
+deadline a normal outcome for every kind: the wake still says timed-out, with
+or-timeout=true, and nothing calls it a failure.
+
+The wake. The first line of every wake message, every kind, interactive and
+task-bound, is one parseable line:
+
+  t3-steward-wait kind=<kind> outcome=<outcome> wait=<id> <key>=<value>...
+
+plus kind-specific pairs: shell exit=; time at=; github target=run:<id>|pr:<n>
+state= conclusion= url=; node run= task= attempt= revision= progress=
+[control= pauseReason=] and, for a terminal run, failed=<comma list> and
+result="t3-steward result <run>"; quota pool= phase= percent=. Values with a
+space are quoted, unknown keys are to be ignored, key order is not promised. A
+blank line and the prose follow.
+
 Commands:
-  add --task current [flags] -- <command...>
-                                Park this task until the check settles.
-  add [flags] -- <command...>    Interactive shell check on this thread.
-  add --task <run>/<task> [--thread ID] [--name TEXT] [--timeout 24h] [--request-id ID]
-                                Interactive wait on another task's outcome.
-  add --run <run> [flags]       Interactive wait on a run sink; no shell command.
+  add --task current [flags] <condition>
+                                Park this task until the condition settles.
+  add [flags] <condition>       Interactive wait on this thread.
+  add --task <run>/<task> | --run <run> [--thread ID] [--name TEXT] [--timeout 24h] [--request-id ID]
+                                The older spelling of --node <run>/<task> and
+                                --node <run>: an interactive node wait.
   list [--thread ID] [--all] [--json]
-                                Waits of this thread, or of every thread. A
-                                check bound to a task-bound wait names it.
-  list --native [--json]        Native waits, outcomes and delivery state.
+                                Local checks of this thread, or of every
+                                thread, with their kind and outcome. A check
+                                bound to a task-bound wait names it.
+  list --native [--json]        Coordinator-held waits (node, quota and every
+                                task-bound wait), outcomes and delivery state.
   cancel <id> | run-now <id>    Control an interactive wait or a local check.
   cancel <w-tw-id> | cancel <tw-id>
                                 Cancel a task-bound wait, by its local check or
@@ -77,17 +126,25 @@ Commands:
                                 the coordinator cannot be reached nothing is
                                 changed and the command fails with the
                                 transport exit code.
-  cancel|run-now <nw-id>        Control a native wait through the admin socket.
+  cancel|run-now <nw-id>        Control a coordinator-held wait through the
+                                admin socket.
 
 add flags:
   --name TEXT        What is being waited for (shown in the wake message).
-  --every DURATION   First poll interval (default 30s, minimum 30s); doubles
-                     after every "not yet" up to --max-every (default 10m).
-  --timeout DURATION Give up after this long (default 24h). For --task current
-                     this is the wait's maximum duration, enforced by the
-                     coordinator, because a parked task holds its directory
-                     bindings and those have no deadline of their own.
-  --run-timeout DUR  Bound one run of the check (default 1m).
+  --every DURATION   First poll interval of a shell or github wait (default
+                     30s, minimum 30s); doubles after every "not yet" up to
+                     --max-every (default 10m). A time wait polls from the
+                     remaining time instead, never under 30s.
+  --timeout DURATION Give up after this long (default 24h; a time wait's
+                     default covers its instant). For --task current this is
+                     the wait's maximum duration, enforced by the coordinator,
+                     because a parked task holds its directory bindings and
+                     those have no deadline of their own.
+  --or-timeout       Treat the deadline as a normal outcome (timed-out, exit
+                     0) rather than a failure.
+  --run-timeout DUR  Bound one run of a shell check (default 1m).
+  --state STATE      The state waited for: a github or node state, see above.
+  --repo owner/name  The repository of a github target.
   --thread ID        T3 thread to wake. Default: the canonical thread of the
                      task this process is executing, taken from the injected
                      environment or from .t3-steward/task.env in the prepared
@@ -96,10 +153,12 @@ add flags:
                      ID is an input to that resolution and never a thread ID; if
                      it is ambiguous the candidates are named and --thread is
                      required.
-  --dir PATH         Working directory for the check (default: current).
+  --dir PATH         Working directory for a shell check (default: current).
   --group NAME       Group with other waits of the same thread (interactive).
   --wake each|all    Wake on the first settlement (default) or once every wait
-                     has settled.
+                     has settled. A group, and a task's --wake all set, is all
+                     local kinds or all coordinator kinds; mixing the two is
+                     refused, naming both members.
   --request-id ID    Stable registration ID, for retrying one registration
                      safely. Default for --task current: park-<attempt>-<revision>
                      from this task's identity, which is stable for a retry and
@@ -115,13 +174,17 @@ add flags:
   --json             Print the registered wait as JSON, with firstExit and
                      firstOutputLine from the registration probe.
 
-Check protocol: exit 0 = condition met, wake. Exit 2 = give up, wake with the
-failure. Any other exit = not yet, keep polling. The check is run once at
-registration: a command that cannot run, exits 2, or already exits 0 is not
-registered and nothing is parked. The first run's exit code and first output
-line are reported in every mode. An exit other than 1 is registered as "not
-yet" and warned about on stderr, because the protocol cannot tell a not-yet
-from a command that will fail the same way forever.
+Check protocol (shell kind): exit 0 = condition met, wake. Exit 2 = give up,
+wake with the failure. Any other exit = not yet, keep polling. The check is run
+once at registration: a command that cannot run, exits 2, or already exits 0 is
+not registered and nothing is parked. The first run's exit code and first
+output line are reported in every mode. An exit other than 1 is registered as
+"not yet" and warned about on stderr, because the protocol cannot tell a
+not-yet from a command that will fail the same way forever. A github target is
+read once at registration the same way: unreadable, already met or already
+failed is refused. A time wait is refused when its instant has passed. A node
+or quota condition is checked by the coordinator: an unknown target or pool,
+or a condition that already holds, is refused and nothing is parked.
 
 Verifying the caller's thread for an interactive wait needs the T3 API token:
 t3.token or t3.token_file in the configuration, T3_STEWARD_T3_TOKEN in the
@@ -130,7 +193,8 @@ environment, or the t3 CLI, in that order.
 On failure or timeout the wait still wakes you, with structured evidence:
 which wait, which condition, which exit status and how long it ran. A
 task-bound wait that times out releases its attempt to finish or fail
-honestly; it never leaves the task parked. Silence is not an outcome.
+honestly; it never leaves the task parked. Cancelling the task settles its
+live wait as cancelled. Silence is not an outcome.
 
 Registering a task-bound wait is refused if the attempt is already terminal
 ("attempt is terminal (<progress>); task-bound waits are refused") or if the
@@ -139,11 +203,13 @@ errors: report them, do not retry blindly.
 
 Exit codes: 0 registered or listed, 1 refused or failed.
 
-Complete example, inside a task, waiting for CI on a pushed commit:
+Examples, inside a task:
 
-  t3-steward wait add --task current --name "CI on $(git rev-parse HEAD)" \\
-    --every 60s --max-every 10m --timeout 2h --wake all -- \\
-    sh -c 'test "$(gh run view --json status --jq .status)" = completed'
+  t3-steward wait add --task current --github run $(gh run list --limit 1 --json databaseId --jq '.[0].databaseId') --timeout 2h
+  t3-steward wait add --task current --for 30m --or-timeout
+  t3-steward wait add --task current --node <run>/<task> --state succeeded
+  t3-steward wait add --task current --quota claude --phase normal
+  t3-steward wait add --task current --name "deploy finished" -- ./scripts/deployed.sh
 
 Then end the turn. Nothing is collected or verified until the steward resumes
 this same thread with the outcome.

@@ -8,6 +8,49 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Every wait has a kind, and every wake message begins with one parseable
+  line, `t3-steward-wait kind=<kind> outcome=<outcome> wait=<id> ...`, with
+  kind-specific pairs after it (contract 3 of the agent-experience campaign).
+  The local kinds, settled by the registering host's wait runner: `shell`
+  (today's `-- <command>`), `time` (`--at RFC3339`, `--for DURATION`; the poll
+  interval follows the remaining time so the last poll lands within 30 s of
+  the instant; `at=`), and `github` (`--github run <id> | pr <n> [--state
+  completed|merged|reviewed|checks-passed] [--repo owner/name]`; a built-in
+  check runs `gh` with fixed arguments and applies a fixed mapping, three
+  consecutive `gh` errors give up with the last error; `target= state=
+  conclusion= url=`). The coordinator kinds, settled from the coordinator's
+  own records with no local check on any host: `node` (`--node <run>[/<task>]
+  --state terminal|succeeded|paused|waiting-external|active`; `run= task=
+  attempt= revision= progress=` and, for a terminal run, `failed=` and
+  `result="t3-steward result <run>"`) and `quota` (`--quota <pool> --below N |
+  --phase normal | --reset`, from the merged bucket observations; `pool=
+  phase= percent=`). Every kind works interactively and with `--task current`,
+  where a coordinator kind is a task wait with a structured condition. The
+  campaign notification and task wakes carry the same first line;
+  `wait list --json` and the task wake context carry `kind` and `outcome`.
+- `--or-timeout` makes the deadline a normal outcome for every kind: the
+  wake says `outcome=timed-out or-timeout=true`, the result reads as exit 0,
+  and the coordinator's expiry records no contradiction.
+- `--group NAME --wake all` works for the coordinator kinds too (one message
+  when every member settled). A group, and a task's `--wake all` set, is all
+  local kinds or all coordinator kinds; a registration that would mix the two
+  is refused, naming both members.
+- Cancelling a task whose attempt is parked on a live task wait settles the
+  wait as `cancelled` in the same command application, and the worker cancels
+  its check row on its next reconcile (U-4).
+
+### Changed
+
+- A shell check that exits 2 settles as `gave-up` rather than `failed`,
+  locally and on the coordinator; `failed` now means the condition decided
+  against the waiter (a run that concluded with a failure, a pull request
+  closed unmerged).
+- `--state terminal`, the default of a node wait and what a campaign
+  notification waits for, is `met` on any terminal progress except cancelled
+  (`cancelled`), with `progress=` and `failed=` saying what happened;
+  `--state succeeded` is `failed` on a failed run. `ResolveNode` and success
+  dependencies keep their exit codes.
+
 - The coordinator writes a receipt for every SIGHUP at
   `<state dir>/coordinator/reload-receipt.json` (atomically, before the log
   line that reports the outcome, never older than the previous one) with

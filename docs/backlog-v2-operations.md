@@ -816,6 +816,59 @@ drops every credential reference. Contained execution is currently an operator
 qualification path and not what ordinary tasks take. Until one of those holds,
 do not describe supervision credentials as isolated.
 
+### Wait kinds
+
+Every wait has a kind, and the kind decides which side settles it.
+
+| Kind | Registration | Settled by | Trailer pairs |
+| --- | --- | --- | --- |
+| `shell` | `-- <command>` | the registering host's wait runner, from the command's exit: 0 met, 2 gave up, else not yet | `exit=` |
+| `time` | `--at RFC3339` or `--for DURATION` | the registering host's wait runner, from the clock; the poll interval follows the remaining time, never under 30 s | `at=` |
+| `github` | `--github run <id> \| pr <n> [--state completed\|merged\|reviewed\|checks-passed] [--repo owner/name]` | the registering host's wait runner, from `gh run view <id> --json status,conclusion,url` or `gh pr view <n> --json state,mergedAt,reviewDecision,statusCheckRollup,url`; three consecutive `gh` errors give up with the last error, a target that is gone gives up at once | `target=run:<id>\|pr:<n> state= conclusion= url=` |
+| `node` | `--node <run>[/<task>] [--state terminal\|succeeded\|paused\|waiting-external\|active]` | the coordinator's node settlement pass (`SettleNodeWaits`), from its own records and the workers' last reports; no local check anywhere | `run= task= attempt= revision= progress=` plus `control=`, `pauseReason=` and, for a terminal run, `failed=<comma list>` and `result="t3-steward result <run>"` |
+| `quota` | `--quota <pool> --below N \| --phase normal \| --reset` | the same pass, from the merged bucket observations (the coordinator's own and every worker's, freshest per bucket), which is what admission is derived from | `pool= phase= percent=` |
+
+The local kinds work as task-bound waits through the existing registration:
+the coordinator holds the kind, name, condition text and deadline and parks
+the attempt; the worker keeps the local check row. A task-bound coordinator
+kind is a task wait with a structured condition (`node` or `quota` on the
+record) and no local row on any host; registration is refused when the target
+or pool is unknown, when the condition already holds, and when a task names
+its own run's sink (the run cannot settle while the attempt is parked).
+
+Outcomes are `met`, `failed`, `gave-up`, `cancelled` and `timed-out`.
+`--state terminal` (the default, and what a campaign notification waits for)
+is `met` on any terminal progress except cancelled, which is `cancelled`; read
+`progress=` and `failed=` for what happened. `--state succeeded` is `failed`
+on a failed run. `--or-timeout` makes the deadline a normal outcome for every
+kind: the outcome is still `timed-out`, the trailer adds `or-timeout=true`,
+the result reads as exit 0, and the coordinator records no expiry
+contradiction.
+
+The first line of every wake message, every kind, interactive and task-bound,
+is the trailer:
+
+```text
+t3-steward-wait kind=<kind> outcome=<outcome> wait=<id> <key>=<value> ...
+```
+
+The three leading pairs come first; the rest are in no promised order. A value
+with a space is quoted; unknown keys are to be ignored; a wake that carries
+several waits (a `--wake all` group, a task's all set) names the earliest one
+and adds `count=`. A blank line and the prose follow. `wait list --json` and
+the task wake context carry `kind` and `outcome` too.
+
+Composition: `--group NAME --wake all` wakes once when every member has
+settled, for the local kinds through the local runner and for the coordinator
+kinds through the node runner (one message, the earliest member sends). A
+group, and a task's `--wake all` set, is all local kinds or all coordinator
+kinds: a registration that would mix the two is refused, naming both members.
+
+Cancelling a task whose attempt is parked on a live task wait settles the
+wait as `cancelled` in the same command application; the worker cancels its
+check row on its next reconcile (it lists the coordinator's waits at most
+once a minute while it holds a live bound row).
+
 ### Administering the coordinator from another host
 
 A host that is not the coordinator reaches it through the restricted
