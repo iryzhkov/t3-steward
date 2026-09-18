@@ -64,7 +64,10 @@ func TestReviewFleetMetadataPreserved(t *testing.T) {
 	}
 }
 func TestReviewFleetUnknownBindingIsAtomic(t *testing.T) {
-	for _, kind := range []string{"worker", "provider", "quota", "project", "eligible"} {
+	// A fleet project without a local binding is no longer in this list: it is
+	// loaded with default local bindings (see coordinator_fleet_default_test.go).
+	// Workers and providers keep failing closed.
+	for _, kind := range []string{"worker", "provider", "quota", "eligible"} {
 		t.Run(kind, func(t *testing.T) {
 			c := reviewConfig()
 			before, _ := json.Marshal(c)
@@ -83,8 +86,6 @@ func TestReviewFleetUnknownBindingIsAtomic(t *testing.T) {
 				w := f.Workers["keep"]
 				w.QuotaPools = []string{"unmapped"}
 				f.Workers["keep"] = w
-			case "project":
-				f.Projects["unknown"] = f.Projects["keep"]
 			case "eligible":
 				p := f.Projects["keep"]
 				p.EligibleWorkers = []string{"unknown"}

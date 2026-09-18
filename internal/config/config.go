@@ -525,6 +525,10 @@ type V2Scheduling struct {
 // Config is the full configuration.
 type Config struct {
 	coordinatorFleetApplied bool
+	// defaultedFleetProjects records the fleet projects loaded with an empty
+	// V2Project because the operator file binds nothing for them. Read it
+	// through DefaultedFleetProjects.
+	defaultedFleetProjects []string
 	// QuotaChecks controls this host watchdog and, on a coordinator, fleet-wide
 	// scheduler admission and throttling. Nil defaults to enabled.
 	QuotaChecks *bool `yaml:"quota_checks"`

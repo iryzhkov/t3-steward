@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `t3-steward worker enroll <worker> --current-catalog` reads the catalog
+  digest the coordinator requires and the worker's current enrollment revision
+  from the coordinator's own workers view and submits the enrollment with them,
+  so neither value has to be copied out of `backlog workers --json` or a
+  readiness detail string. `--all --current-catalog` re-enrolls every configured
+  worker whose accepted digest is stale and prints one line per worker
+  (enrolled, already current, or refused with the reason). `--request-id`
+  defaults to `enroll-<worker>-<digest12>-rev<N>` in that form; it replays a
+  refused attempt (same `--reason`) and, after a success, the next run enrolls
+  again at the advanced revision. The fenced
+  `--catalog-revision` and `--expected-revision` remain and cannot be combined
+  with `--current-catalog`. Enrollment still runs on the coordinator host and
+  is still refused to the remote-admin role.
+
 ### Fixed
 
 - `t3-steward wait cancel <id>` on a local check bound to a task-bound wait
@@ -32,6 +48,16 @@ All notable changes to this project are documented here. The format follows
   `T3_STEWARD_T3_TOKEN` in the environment, or the CLI), instead of the bare
   "t3 CLI not found on PATH". `t3.token_file` names a private (mode 0600) file
   holding the token and is read at load when `t3.token` is empty.
+- A fleet project with no `backlog_v2.projects` entry no longer fails the whole
+  coordinator configuration load, which took every admin query down with
+  `fleet project "home-assistant-config" needs an explicit local execution
+  binding` when a project was published before it was bound. Such a project is
+  loaded with an empty local binding (no credentials, resource locks or
+  directory resources), the coordinator logs one warning naming it at startup,
+  `Config.DefaultedFleetProjects()` lists it, and both `campaign check` (on
+  each candidate's `unchecked` list) and `explain` (in a new `details` list)
+  carry the informational `project-binding-defaulted` detail without changing
+  the outcome. Workers and providers keep failing closed.
 
 - An overseer activation now carries its supervisor identity in the activation
   workspace, as an owner-only `.t3-steward/supervisor.env` the worker writes

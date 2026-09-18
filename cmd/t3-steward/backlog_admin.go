@@ -652,6 +652,9 @@ func renderExplanation(out io.Writer, explanation *backlogadmin.Explanation) {
 	for _, blocker := range explanation.Blockers {
 		fmt.Fprintf(out, "  %s: %s\n", blocker.Code, blocker.Detail)
 	}
+	for _, detail := range explanation.Details {
+		fmt.Fprintf(out, "  detail: %s\n", detail)
+	}
 }
 
 func renderEvents(out io.Writer, events []backlogadmin.Event) {

@@ -563,11 +563,20 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			"reason", backlog.SupervisionNoSupervisorClient,
 			"remedy", "declare exactly one backlog_v2.coordinator.admin_clients entry with supervisor: true")
 	}
+	for _, name := range cfg.DefaultedFleetProjects() {
+		// Said once at startup: the project runs, but with nothing host-local
+		// bound, and an operator reading the first lines should know which.
+		logger.Warn("fleet project has no backlog_v2.projects entry; loaded with default local bindings",
+			"project", name,
+			"effect", "no credentials, resource locks or directory resources",
+			"remedy", "add a backlog_v2.projects entry only if the project needs host-local bindings")
+	}
 	service.SetViability(backlogadmin.ViabilitySettings{
-		Projects:       fleetProjects,
-		SetupProfiles:  fleetProfiles,
-		MaxBundleBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
-		MaxBundleFiles: cfg.BacklogV2.MessageLimits.MaxFiles,
+		Projects:          fleetProjects,
+		SetupProfiles:     fleetProfiles,
+		DefaultedProjects: cfg.DefaultedFleetProjects(),
+		MaxBundleBytes:    cfg.BacklogV2.MessageLimits.MaxBytes,
+		MaxBundleFiles:    cfg.BacklogV2.MessageLimits.MaxFiles,
 		// Repository reachability is observed on the candidate worker, over the
 		// worker protocol, under the credential references the real task would
 		// use. Without this the readiness check reported nothing at all about the

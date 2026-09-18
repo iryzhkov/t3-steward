@@ -14,8 +14,10 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
+	"io"
 	"os"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -82,7 +84,9 @@ func coordinatorEnrollmentHandler(settings config.BacklogV2, store *sqlite.Store
 	}
 }
 
-const workerEnrollUsage = `Usage: t3-steward worker enroll <worker> --request-id ID \
+const workerEnrollUsage = `Usage: t3-steward worker enroll <worker> --current-catalog --reason TEXT [--request-id ID]
+       t3-steward worker enroll --all --current-catalog --reason TEXT
+       t3-steward worker enroll <worker> --request-id ID \
     --catalog-revision DIGEST --reason TEXT --expected-revision N
 
 Admit one configured worker to this coordinator's current catalog. Mutating, and
@@ -92,7 +96,30 @@ It must be run on the coordinator host. Enrollment binds a worker to this
 coordinator's identity, epoch and credential reference, so the remote-admin role
 is refused it even over an authenticated coordinator client.
 
-Example:
+Self-serving form. --current-catalog reads the catalog digest this coordinator
+requires of the worker and the worker's current enrollment revision from the
+coordinator itself (the same values "t3-steward backlog workers --json" reports)
+and submits the enrollment with them, so neither has to be copied by hand. With
+--all it re-enrolls every configured worker whose accepted digest differs from
+the required one, printing one line per worker: enrolled, already current, or
+refused with the reason; any refusal fails the command after every worker was
+tried. --request-id then defaults to a stable id derived from the worker id, the
+first twelve characters of the required digest and the fenced revision
+(enroll-<worker>-<digest12>-rev<N>). That id replays the first answer only while
+no enrollment has committed: a retry after a refusal reuses it, and a retry must
+pass the same --reason, because the replay compares the whole request. Once an
+enrollment succeeds the coordinator advances the worker's revision, so running
+the single-worker form again derives a new id and enrolls again (harmless: the
+same digest at the next revision); --all skips a worker that is already current.
+
+Fenced form. --catalog-revision and --expected-revision pin the exact digest and
+revision the enrollment is fenced against; they are for a deliberate fence read
+out of band and cannot be combined with --current-catalog.
+
+Examples:
+  t3-steward worker enroll homelab --current-catalog \
+    --reason "re-enroll after home-assistant-config was added"
+  t3-steward worker enroll --all --current-catalog --reason "catalog changed"
   t3-steward worker enroll homelab --request-id 2026-09-14-homelab \
     --catalog-revision 9f2c1a --reason "admit homelab after the rebuild" \
     --expected-revision 0
@@ -113,28 +140,64 @@ or not yet ready.
 
 Recovery:
   t3-steward backlog workers --json        Read the current state and revision.
-  Re-run with the same --request-id once the reported reason is resolved.
+  Re-run with --current-catalog, or with the same --request-id, once the
+  reported reason is resolved.
 `
 
 func cmdWorkerEnroll(g globalFlags, args []string) error {
+	return runWorkerEnroll(g, args, os.Stdout)
+}
+
+// runWorkerEnroll is cmdWorkerEnroll with its output injected, so a test can
+// hold the per-worker report of --all to its wording.
+func runWorkerEnroll(g globalFlags, args []string, out io.Writer) error {
 	if len(args) < 1 {
-		return errors.New("worker enroll requires worker ID")
+		return errors.New("worker enroll requires a worker ID or --all")
 	}
 	if isHelp(args[0]) {
-		fmt.Print(workerEnrollUsage)
+		fmt.Fprint(out, workerEnrollUsage)
 		return nil
 	}
-	request := domain.WorkerEnrollmentRequest{WorkerID: args[0], ExpectedRevision: -1}
+	request := domain.WorkerEnrollmentRequest{ExpectedRevision: -1}
+	rest := args
+	if !strings.HasPrefix(args[0], "-") {
+		request.WorkerID = args[0]
+		rest = args[1:]
+	}
+	var currentCatalog, all bool
 	fs := flag.NewFlagSet("worker enroll", flag.ContinueOnError)
 	fs.StringVar(&request.ID, "request-id", "", "stable request ID")
 	fs.StringVar(&request.CatalogRevision, "catalog-revision", "", "expected catalog digest")
 	fs.StringVar(&request.Reason, "reason", "", "operator reason")
 	fs.Int64Var(&request.ExpectedRevision, "expected-revision", -1, "current enrollment revision, zero for first enrollment")
-	if err := fs.Parse(args[1:]); err != nil {
+	fs.BoolVar(&currentCatalog, "current-catalog", false, "read the required catalog digest and the current enrollment revision from the coordinator")
+	fs.BoolVar(&all, "all", false, "with --current-catalog, re-enroll every configured worker whose accepted digest is stale")
+	if err := fs.Parse(rest); err != nil {
 		return err
 	}
-	if fs.NArg() != 0 || request.ID == "" || request.CatalogRevision == "" || request.Reason == "" || request.ExpectedRevision < 0 {
-		return errors.New("worker enroll requires request-id, catalog-revision, reason and expected-revision")
+	if fs.NArg() != 0 {
+		return errors.New("worker enroll takes one worker ID before its flags")
+	}
+	if all && !currentCatalog {
+		return errors.New("--all re-enrolls every stale worker and needs --current-catalog")
+	}
+	if all && request.WorkerID != "" {
+		return errors.New("--all takes no worker ID; --current-catalog with one worker enrolls that worker alone")
+	}
+	if currentCatalog && (request.CatalogRevision != "" || request.ExpectedRevision >= 0) {
+		return errors.New("--current-catalog reads the catalog digest and the enrollment revision from the coordinator; --catalog-revision and --expected-revision are the fenced form and cannot be combined with it")
+	}
+	if all && request.ID != "" {
+		return errors.New("--request-id cannot be combined with --all; each worker's id is derived from its digest and revision")
+	}
+	if request.Reason == "" {
+		return errors.New("worker enroll requires --reason")
+	}
+	if !currentCatalog && (request.WorkerID == "" || request.ID == "" || request.CatalogRevision == "" || request.ExpectedRevision < 0) {
+		return errors.New("worker enroll requires a worker ID and either --current-catalog or request-id, catalog-revision and expected-revision")
+	}
+	if currentCatalog && !all && request.WorkerID == "" {
+		return errors.New("worker enroll requires a worker ID or --all with --current-catalog")
 	}
 	cfg, err := config.LoadFile(g.configPath)
 	if err != nil {
@@ -144,9 +207,108 @@ func cmdWorkerEnroll(g globalFlags, args []string) error {
 	if err != nil {
 		return err
 	}
-	result, err := transport.client.EnrollWorker(context.Background(), request)
+	ctx := context.Background()
+	if !currentCatalog {
+		result, err := transport.client.EnrollWorker(ctx, request)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(result)
+	}
+	// The digest and revision come from the coordinator's own workers view,
+	// the query behind "backlog workers --json": the requirement row carries
+	// the digest the coordinator computed over its effective configuration,
+	// and the enrollment row carries the revision the next enrollment must
+	// fence against. Reading them here, rather than out of printed output, is
+	// what makes the command self-serving without inventing a second source.
+	workers, err := queryWorkerEnrollmentState(ctx, transport, request.WorkerID)
 	if err != nil {
 		return err
 	}
-	return json.NewEncoder(os.Stdout).Encode(result)
+	if !all {
+		worker, found := workers[request.WorkerID]
+		if !found || worker.Requirement == nil {
+			return fmt.Errorf("worker %q has no enrollment requirement on this coordinator (only a configured worker with a persistent connection has one), so there is no current catalog digest to enroll it to; enroll it with --catalog-revision and --expected-revision", request.WorkerID)
+		}
+		result, err := transport.client.EnrollWorker(ctx, currentCatalogRequest(request, worker))
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(result)
+	}
+	ids := make([]string, 0, len(workers))
+	for id, worker := range workers {
+		if worker.Requirement != nil {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	if len(ids) == 0 {
+		return errors.New("this coordinator has no configured worker with an enrollment requirement")
+	}
+	var refused []string
+	for _, id := range ids {
+		worker := workers[id]
+		digest := worker.Requirement.CatalogRevision
+		if worker.Enrolled {
+			fmt.Fprintf(out, "%s: already current (catalog %s, revision %d)\n", id, shortCatalogDigest(digest), worker.Enrollment.Revision)
+			continue
+		}
+		result, err := transport.client.EnrollWorker(ctx, currentCatalogRequest(request, worker))
+		if err != nil {
+			fmt.Fprintf(out, "%s: refused: %v\n", id, err)
+			refused = append(refused, id)
+			continue
+		}
+		fmt.Fprintf(out, "%s: enrolled (catalog %s, revision %d)\n", id, shortCatalogDigest(result.Request.CatalogRevision), result.Revision)
+	}
+	if len(refused) != 0 {
+		return fmt.Errorf("%d of %d workers refused enrollment: %s", len(refused), len(ids), strings.Join(refused, ", "))
+	}
+	return nil
+}
+
+// queryWorkerEnrollmentState runs the workers query and indexes its answer by
+// worker id. An empty workerID asks for every worker.
+func queryWorkerEnrollmentState(ctx context.Context, transport coordinatorTransport, workerID string) (map[string]backlogadmin.Worker, error) {
+	response, err := transport.client.Query(ctx, backlogadmin.Query{
+		Version: backlogadmin.Version, Kind: backlogadmin.QueryWorkers, Principal: transport.principal,
+		Filter: backlogadmin.Filter{WorkerID: workerID},
+	})
+	if err != nil {
+		return nil, err
+	}
+	workers := make(map[string]backlogadmin.Worker, len(response.Workers))
+	for _, worker := range response.Workers {
+		id := worker.Snapshot.WorkerID
+		if worker.Requirement != nil {
+			id = worker.Requirement.WorkerID
+		}
+		workers[id] = worker
+	}
+	return workers, nil
+}
+
+// currentCatalogRequest completes an enrollment request from the coordinator's
+// view of one worker: the required digest, the revision the enrollment must
+// fence against (0 for a worker that never enrolled), and a derived request id
+// when the operator gave none.
+func currentCatalogRequest(request domain.WorkerEnrollmentRequest, worker backlogadmin.Worker) domain.WorkerEnrollmentRequest {
+	request.WorkerID = worker.Requirement.WorkerID
+	request.CatalogRevision = worker.Requirement.CatalogRevision
+	request.ExpectedRevision = 0
+	if worker.Enrollment != nil {
+		request.ExpectedRevision = worker.Enrollment.Revision
+	}
+	if request.ID == "" {
+		request.ID = fmt.Sprintf("enroll-%s-%s-rev%d", request.WorkerID, shortCatalogDigest(request.CatalogRevision), request.ExpectedRevision)
+	}
+	return request
+}
+
+func shortCatalogDigest(digest string) string {
+	if len(digest) > 12 {
+		return digest[:12]
+	}
+	return digest
 }

@@ -333,6 +333,10 @@ type Explanation struct {
 	Summary       string     `json:"summary"`
 	EarliestAt    *time.Time `json:"earliestAt,omitempty"`
 	Blockers      []Blocker  `json:"blockers"`
+	// Details are informational findings that block nothing, such as
+	// project-binding-defaulted. They never influence Eligible; a detail that
+	// changed eligibility would be a blocker wearing an informational label.
+	Details []string `json:"details,omitempty"`
 }
 
 type Event struct {
