@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"testing"
 	"time"
 
@@ -53,28 +54,55 @@ func TestCampaignJSONCommandsWriteOnlyTheDocumentToStdout(t *testing.T) {
 			}
 		})
 	}
+	// The two check cases run through the same layer run() uses: the campaign
+	// CLI writes to the process stdout and its error goes through
+	// reportJSONError, so the --json error envelope layer is part of what is
+	// asserted, not something the test bypasses (R2).
 	t.Run("check", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		cli, _ := campaignCheckCLI(t, &stdout, campaignWaitingOnQuota)
+		var unused, stderr bytes.Buffer
+		cli, _ := campaignCheckCLI(t, &unused, campaignWaitingOnQuota)
 		cli.stderr = &stderr
-		if err := cli.run(context.Background(), []string{"check", root, "--json"}); err != nil {
+		args := []string{"campaign", "check", root, "--json"}
+		var err error
+		stdout := captureStdout(t, func() {
+			cli.stdout = os.Stdout
+			err = reportJSONError(args, cli.run(context.Background(), args[1:]))
+		})
+		if err != nil {
 			t.Fatal(err)
 		}
-		assertExactlyOneJSONDocument(t, "check", stdout.Bytes())
+		assertExactlyOneJSONDocument(t, "check", []byte(stdout))
 		if stderr.Len() != 0 {
 			t.Fatalf("check wrote to stderr without a warning to give: %q", stderr.String())
 		}
 	})
 	t.Run("check impossible", func(t *testing.T) {
 		// The refusal is the exit status and the error, never a line on stdout
-		// ahead of the document.
-		var stdout, stderr bytes.Buffer
-		cli, _ := campaignCheckCLI(t, &stdout, campaignImpossibleMatrix)
+		// ahead of the document and never an error envelope after it: the check
+		// document is the one document, and the refusal rides on the exit code.
+		var unused, stderr bytes.Buffer
+		cli, _ := campaignCheckCLI(t, &unused, campaignImpossibleMatrix)
 		cli.stderr = &stderr
-		if err := cli.run(context.Background(), []string{"check", root, "--json"}); err == nil {
+		args := []string{"campaign", "check", root, "--json"}
+		var err error
+		stdout := captureStdout(t, func() {
+			cli.stdout = os.Stdout
+			err = reportJSONError(args, cli.run(context.Background(), args[1:]))
+		})
+		if err == nil {
 			t.Fatal("an impossible campaign passed check")
 		}
-		assertExactlyOneJSONDocument(t, "check impossible", stdout.Bytes())
+		if class := backlogadmin.ClassOf(err); class != backlogadmin.ClassRejected {
+			t.Fatalf("class = %q, want %q", class, backlogadmin.ClassRejected)
+		}
+		if backlogadmin.ExitCodeFor(err) != 8 {
+			t.Fatalf("exit code = %d, want 8", backlogadmin.ExitCodeFor(err))
+		}
+		assertExactlyOneJSONDocument(t, "check impossible", []byte(stdout))
+		var document campaignCheck
+		if err := json.Unmarshal([]byte(stdout), &document); err != nil || document.SchemaVersion != campaignCheckSchemaVersion {
+			t.Fatalf("the one document is not the check document: %v\n%s", err, stdout)
+		}
 	})
 }
 
