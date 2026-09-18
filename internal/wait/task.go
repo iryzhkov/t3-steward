@@ -19,6 +19,59 @@ type TaskWaitStore interface {
 	TransitionTaskWake(context.Context, string, string, string, time.Time) (bool, error)
 }
 
+// TaskWaitLister is the optional list surface of the coordinator. A store
+// that offers it lets the worker notice a bound wait that was settled
+// without its check (a cancellation, the coordinator's own settlement pass)
+// and stop polling for it.
+type TaskWaitLister interface {
+	ListTaskWaits(context.Context) ([]domain.TaskWait, error)
+}
+
+// taskWaitReconcileEvery bounds how often a worker asks the coordinator
+// about its live bound rows.
+const taskWaitReconcileEvery = time.Minute
+
+// reconcileBoundChecks cancels the local rows whose coordinator wait has
+// settled without them. It asks the coordinator at most once a minute, and
+// only while a bound row is still waiting.
+func (r *Runner) reconcileBoundChecks(ctx context.Context, store TaskWaitStore, waits []Wait, now time.Time) {
+	lister, ok := store.(TaskWaitLister)
+	if !ok {
+		return
+	}
+	bound := map[string]*Wait{}
+	for i := range waits {
+		if waits[i].TaskWaitID != "" && waits[i].Status == StatusWaiting {
+			bound[waits[i].TaskWaitID] = &waits[i]
+		}
+	}
+	if len(bound) == 0 || (!r.lastBoundReconcile.IsZero() && now.Sub(r.lastBoundReconcile) < taskWaitReconcileEvery) {
+		return
+	}
+	r.lastBoundReconcile = now
+	records, err := lister.ListTaskWaits(ctx)
+	if err != nil {
+		logFailure(ctx, r.log, "list task-bound waits for reconcile", err, "err", err)
+		return
+	}
+	for _, record := range records {
+		row, ok := bound[record.ID]
+		if !ok || !record.Settled() {
+			continue
+		}
+		outcome := "settled"
+		if record.Result != nil {
+			outcome = string(record.Result.Outcome)
+		}
+		row.Status = StatusCancelled
+		row.Reason = fmt.Sprintf("the coordinator settled wait %s as %s without this check; the check is cancelled", record.ID, outcome)
+		t := now
+		row.SettledAt = &t
+		r.log.Info("bound check cancelled after coordinator settlement", "wait", row.ID, "task_wait", record.ID, "outcome", outcome)
+		r.save(ctx, *row)
+	}
+}
+
 // tickTaskWaits carries settled checks into the coordinator, enforces every
 // wait's maximum duration, and delivers the wakes the coordinator committed.
 //
@@ -48,6 +101,7 @@ func (r *Runner) tickTaskWaits(ctx context.Context, waits []Wait) {
 			logFailure(ctx, r.log, "settle task-bound wait", err, "wait", w.TaskWaitID, "err", err)
 		}
 	}
+	r.reconcileBoundChecks(ctx, store, waits, now)
 	if expired, err := store.ExpireTaskWaits(ctx, now); err != nil {
 		logFailure(ctx, r.log, "expire task-bound waits", err, "err", err)
 	} else if len(expired) != 0 {

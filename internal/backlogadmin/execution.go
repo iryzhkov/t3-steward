@@ -77,8 +77,61 @@ func (s *Service) ExecutePendingCommands(ctx context.Context) (CommandExecutionR
 		if err != nil {
 			return report, fmt.Errorf("apply admin command %q: %w", command.ID, err)
 		}
+		if command.Kind == domain.AdminCommandCancel && decision.Command.State == domain.AdminCommandApplied {
+			if err := s.settleCancelledAttemptWaits(ctx, application, command.Reason); err != nil {
+				return report, fmt.Errorf("settle the task waits of cancelled command %q: %w", command.ID, err)
+			}
+		}
 		report.Decisions = append(report.Decisions, mutationResponse(decision))
 	}
+}
+
+// settleCancelledAttemptWaits settles, as cancelled, every live task-bound
+// wait of the attempts a cancel command just made terminal (U-4). Without
+// it the attempt would sit cancelled while its wait stayed live until the
+// deadline, and the worker's check row would keep polling for a wake that
+// could never be delivered. The worker learns of the settlement on its next
+// reconcile and cancels its own row.
+func (s *Service) settleCancelledAttemptWaits(ctx context.Context, application domain.AdminCommandApplication, reason string) error {
+	store, ok := s.reader.(taskWaitStore)
+	if !ok {
+		return nil
+	}
+	cancelled := map[string]bool{}
+	if application.Attempt != nil {
+		cancelled[application.Attempt.ID] = true
+	}
+	for _, related := range application.RelatedAttempts {
+		cancelled[related.ID] = true
+	}
+	if len(cancelled) == 0 {
+		return nil
+	}
+	waits, err := store.ListTaskWaits(ctx)
+	if err != nil {
+		return err
+	}
+	settler, settles := s.reader.(interface {
+		SettleTaskWait(context.Context, string, domain.TaskWaitResult, time.Time) (domain.TaskWait, error)
+	})
+	for _, wait := range waits {
+		if !wait.Live() || !cancelled[wait.AttemptID] {
+			continue
+		}
+		if !settles {
+			if _, err := store.CancelTaskWait(ctx, wait.ID, s.now()); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := settler.SettleTaskWait(ctx, wait.ID, domain.TaskWaitResult{
+			Outcome: domain.TaskWaitCancelled, ExitCode: 2,
+			Reason: fmt.Sprintf("the task was cancelled (%s); the wait was settled with it", reason),
+		}, s.now()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func pendingAdminCommands(commands []domain.AdminCommand) []domain.AdminCommand {

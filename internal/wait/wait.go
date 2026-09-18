@@ -174,7 +174,8 @@ type Runner struct {
 	// DisableQuotaChecks bypasses quota-based wake holds, independently of DryRun.
 	DisableQuotaChecks bool
 
-	buckets []domain.BucketState
+	buckets            []domain.BucketState
+	lastBoundReconcile time.Time
 }
 
 // New builds a runner.

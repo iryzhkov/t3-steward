@@ -83,3 +83,12 @@ func (s remoteTaskWaitStore) TransitionTaskWake(ctx context.Context, id, from, t
 	response, err := s.call(ctx, backlogadmin.NodeWaitOperation{Action: "transition-task", ID: id, From: from, To: to})
 	return response.Changed, err
 }
+
+// ListTaskWaits is the reconcile surface: the worker reads the coordinator's
+// records to notice a bound wait settled without its check.
+func (s remoteTaskWaitStore) ListTaskWaits(ctx context.Context) ([]domain.TaskWait, error) {
+	response, err := s.call(ctx, backlogadmin.NodeWaitOperation{Action: "list-task"})
+	return response.TaskWaits, err
+}
+
+var _ wait.TaskWaitLister = remoteTaskWaitStore{}
