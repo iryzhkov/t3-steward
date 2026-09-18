@@ -60,6 +60,9 @@ Revision-fenced controls:
   start|resume|cancel|retry|skip <workflow-run>/<task> --reason TEXT [--command-id ID] [--json]
   delay <workflow-run>/<task> --until RFC3339 --reason TEXT [--command-id ID] [--json]
   pause <workflow-run>/<task> [--now] --reason TEXT [--command-id ID] [--json]
+  rewake <workflow-run>/<task> --reason TEXT [--command-id ID] [--json]
+      Wake an attempt left waiting-external after its task wait was cancelled
+      or settled without reaching it; refused while a wait is still live.
   quarantine release <key> --reason TEXT [--json]
       Clear one intake quarantine after fixing what caused it. Editing the file
       clears it by itself; this is for a refusal the file cannot fix, such as a
