@@ -574,11 +574,6 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 	return nil
 }
 
-// renderQuarantine prints the intake the coordinator refuses and is silent
-// about. The reason is printed in full on its own line rather than squeezed
-// into a column, because it is the whole point of the view, and the retry rule
-// is stated every time so that an operator never has to guess whether editing
-// the file is enough.
 // renderWorkers prints the worker table and, under it, what each worker can
 // actually take: the projects it advertises and the instance/model/pool routes
 // it offers. Those two facts decide where work can run, and the text form used
@@ -689,6 +684,11 @@ func firstNonEmptyText(value, fallback string) string {
 	return value
 }
 
+// renderQuarantine prints the intake the coordinator refuses and is silent
+// about. The reason is printed in full on its own line rather than squeezed
+// into a column, because it is the whole point of the view, and the retry rule
+// is stated every time so that an operator never has to guess whether editing
+// the file is enough.
 func renderQuarantine(out io.Writer, quarantined []backlogadmin.QuarantinedIntake) {
 	if len(quarantined) == 0 {
 		fmt.Fprintln(out, "no quarantined intake: every submission source is being read.")
@@ -1028,10 +1028,6 @@ func renderSchedules(out io.Writer, schedules []backlogadmin.Schedule, selector 
 	_ = table.Flush()
 }
 
-// renderDiagnosis prints the short form of "diagnose": the run and its
-// revision, one line per task, the live task-bound waits, the node waits, the
-// workers holding this run's assignments and what the coordinator could not
-// read. --json carries the whole document.
 // diagnosisNodeWaits is the interactive node waits of a diagnosis, from
 // whichever key the coordinator that answered uses. In a diagnosis the
 // deprecated waits key is the node waits, and a coordinator of the previous
@@ -1045,6 +1041,10 @@ func diagnosisNodeWaits(diagnosis *backlogadmin.Diagnosis) []domain.NodeWait {
 	return diagnosis.Waits
 }
 
+// renderDiagnosis prints the short form of "diagnose": the run and its
+// revision, one line per task, the live task-bound waits, the node waits, the
+// workers holding this run's assignments and what the coordinator could not
+// read. --json carries the whole document.
 func renderDiagnosis(out io.Writer, diagnosis *backlogadmin.Diagnosis) {
 	if diagnosis == nil {
 		return
