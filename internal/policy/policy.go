@@ -329,6 +329,7 @@ func (e *Engine) Evaluate(snap domain.QuotaSnapshot, prev domain.BucketState, no
 		state.Phase = domain.PhaseNormal
 		state.DrainDeadline = nil
 		state.StoppedAt = nil
+		state.ProbedAt = nil
 		state.RearmObservations = 0
 	} else if state.Phase != domain.PhaseNormal && state.ResetsAt == nil {
 		// No reset time: rearm only after usage stays low for several
@@ -345,6 +346,7 @@ func (e *Engine) Evaluate(snap domain.QuotaSnapshot, prev domain.BucketState, no
 				state.Phase = domain.PhaseNormal
 				state.DrainDeadline = nil
 				state.StoppedAt = nil
+				state.ProbedAt = nil
 				state.RearmObservations = 0
 			}
 		} else {
@@ -438,6 +440,7 @@ func (e *Engine) Rederive(prev domain.BucketState, now time.Time) domain.Decisio
 	state.Phase = want
 	state.StoppedAt = nil
 	state.DrainDeadline = nil
+	state.ProbedAt = nil
 	state.ETAStrikes = 0
 	state.RearmObservations = 0
 	if want == domain.PhaseNormal {

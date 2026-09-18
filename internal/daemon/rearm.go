@@ -110,6 +110,7 @@ func RearmBucket(ctx context.Context, cfg config.Config, store BucketStore, req 
 	after.RecoveredAt = &t
 	after.StoppedAt = nil
 	after.DrainDeadline = nil
+	after.ProbedAt = nil
 	after.ETAStrikes = 0
 	after.RearmObservations = 0
 	after.Healthy = before.UsedPercent < thresholds.WarnPercent

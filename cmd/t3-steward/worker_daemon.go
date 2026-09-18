@@ -178,7 +178,7 @@ func cmdWorker(g globalFlags, args []string) error {
 	// pauses and resumes them itself from the same bucket state, read from
 	// the watchdog's state database. Without that database (no watchdog on
 	// this host) there are no local pauses, which is today's behaviour.
-	quota := hostQuotaGuard(cfg, logger)
+	quota := hostQuotaGuard(cfg, logger, control)
 	if closer, ok := quota.(interface{ Close() error }); ok {
 		defer closer.Close()
 	}
@@ -238,8 +238,10 @@ type storeQuotaGuard struct {
 func (g storeQuotaGuard) Close() error { return g.store.Close() }
 
 // hostQuotaGuard opens the watchdog's state database on this host for the
-// worker's local quota pauses, or returns nil when there is none.
-func hostQuotaGuard(cfg config.Config, logger *slog.Logger) workerruntime.QuotaGuard {
+// worker's local quota pauses, or returns nil when there is none. threads is
+// the worker's T3 control client, which the probe rule asks whether anything
+// on the host is running that would produce a reading.
+func hostQuotaGuard(cfg config.Config, logger *slog.Logger, threads workerruntime.ThreadLister) workerruntime.QuotaGuard {
 	statePath, err := cfg.ResolveStatePath()
 	if err != nil {
 		logger.Warn("quota watchdog state path unavailable; owned attempts are not paused locally", "err", err)
@@ -251,5 +253,5 @@ func hostQuotaGuard(cfg config.Config, logger *slog.Logger) workerruntime.QuotaG
 		return nil
 	}
 	logger.Info("local quota pauses enabled from the watchdog state", "path", statePath)
-	return storeQuotaGuard{HostQuotaGuard: workerruntime.HostQuotaGuard{Config: cfg, Buckets: store}, store: store}
+	return storeQuotaGuard{HostQuotaGuard: workerruntime.HostQuotaGuard{Config: cfg, Buckets: store, Threads: threads}, store: store}
 }

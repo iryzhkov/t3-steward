@@ -28,21 +28,23 @@ type fakeDriver struct {
 	// fail, so a failed create cannot be disproved.
 	observeAfterCreateErr error
 	observations          []backlog.DispatchThreadState
-	observeErr            error
-	createErr             error
-	stopErr               error
-	collectErr            error
-	prepareCalls          int
-	createCalls           int
-	stopCalls             int
-	collectCalls          int
-	collectFailureCalls   int
-	settleCalls           int
-	settleErr             error
-	cleanupCalls          int
-	checkpointCalls       int
-	checkpointErr         error
-	resumeCalls           int
+	// resumeReasons keeps the reason of every resume command, newest last.
+	resumeReasons       []string
+	observeErr          error
+	createErr           error
+	stopErr             error
+	collectErr          error
+	prepareCalls        int
+	createCalls         int
+	stopCalls           int
+	collectCalls        int
+	collectFailureCalls int
+	settleCalls         int
+	settleErr           error
+	cleanupCalls        int
+	checkpointCalls     int
+	checkpointErr       error
+	resumeCalls         int
 }
 
 func (d *fakeDriver) Prepare(context.Context, workerproto.ExecutionPackage) (string, error) {
@@ -111,8 +113,9 @@ func (d *fakeDriver) Checkpoint(context.Context, workerproto.ExecutionPackage, d
 	sum := sha256.Sum256(data)
 	return &domain.CheckpointMetadata{ArtifactID: "checkpoint-1", Path: ".t3/checkpoint.md", SHA256: hex.EncodeToString(sum[:]), Size: int64(len(data)), CapturedAt: runtimeTestNow}, nil
 }
-func (d *fakeDriver) Resume(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) error {
+func (d *fakeDriver) Resume(_ context.Context, _ workerproto.ExecutionPackage, command domain.ThrottleCommand) error {
 	d.resumeCalls++
+	d.resumeReasons = append(d.resumeReasons, command.Reason)
 	return nil
 }
 
