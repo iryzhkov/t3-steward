@@ -28,9 +28,10 @@ does not run, or a pool it does not join, is refused when the document is decode
 The key is new, so the order of a release matters on this one host. Upgrade every
 coordinator host to this release before any UpKeeper release authors a `quota_bindings`
 entry: an older coordinator refuses the whole projection as an unknown field, so its
-reload is rejected, the `steward-fleet-configuration` component fails, and the rejected
-projection stays on disk, where it will also stop that coordinator from starting the next
-time it is restarted. Author the binding in a release that also pins this steward version,
+reload is rejected and the `steward-fleet-configuration` component fails. UpKeeper v0.1.11
+and newer roll a refused projection back when the coordinator answered with a receipt; a
+coordinator too old to write one leaves the refused projection on disk, where it will also
+stop that coordinator from starting the next time it is restarted. Author the binding in a release that also pins this steward version,
 and do not converge it with `upkeeper pull --components steward-fleet-configuration`,
 which writes the projection without installing the binary that can read it.
 
