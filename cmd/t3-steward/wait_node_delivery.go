@@ -160,7 +160,10 @@ func nodeWakeDeliveryFor(cfg config.Config) nodeWakeDelivery {
 }
 
 // freshnessWindow is how old a receipt may be and still describe a running
-// daemon: four of its own ticks, never less than the floor.
+// daemon: four of its own ticks or the floor, whichever is longer. At the
+// default 15 s snapshot interval the floor decides and the window is two
+// minutes, which is eight ticks rather than four; state it that way wherever it
+// is documented, because four ticks alone would say 60 s.
 func (r nodeWakeDeliveryReceipt) freshnessWindow() time.Duration {
 	interval, err := time.ParseDuration(r.Interval)
 	if err != nil || interval <= 0 {

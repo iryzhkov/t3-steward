@@ -354,9 +354,11 @@ All notable changes to this project are documented here. The format follows
   read this host's node waits and could send their wakes, naming the host, the
   release and its own interval; `task run`, `campaign submit --notify-thread`
   and `wait add --node` print `End this turn now` only when that receipt is
-  present, names this host and is younger than four of the daemon's ticks, and
-  otherwise say which of those is false and that the steward has to be
-  restarted. During an upgrade the daemon is the one thing that has not been
+  present, names this host and is younger than four of the daemon's ticks or
+  two minutes, whichever is longer -- two minutes at the default 15 s snapshot
+  interval -- and otherwise say which of those is false and what to check on
+  the host, because a receipt can also go stale under a daemon that is running
+  but cannot reach the coordinator, or one running with wait dry run on. During an upgrade the daemon is the one thing that has not been
   replaced, and comparing hostnames could not see it.
 - The calling host is stated only to a coordinator whose release is known to be
   `v0.11.0-rc.71` or newer, because an older one decodes the registration with
