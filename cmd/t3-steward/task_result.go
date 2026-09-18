@@ -25,7 +25,8 @@ not collected: "t3-steward backlog artifacts <run>/<task>" lists everything the
 coordinator holds, and "backlog artifact get" fetches one.
 
 Exit codes are the task's own verdict, so a script branches on them:
-  0  every collected task succeeded
+  0  every collected task succeeded or was skipped; a task the graph skipped
+     ran nothing and has nothing to collect, which is not a failure
   2  one failed or was cancelled; whatever exists is still written
   1  one is not terminal yet; its progress is printed and nothing is waited for
 

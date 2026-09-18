@@ -504,8 +504,9 @@ It writes `final-message.md` and every declared output under
 `./.t3/results/<run>/<task>/`, each under the name the task declared, and
 collects nothing else; the thread archive and the verification records stay
 behind `backlog artifacts`. The exit code is the task's own verdict: 0
-succeeded, 2 failed or cancelled with whatever exists still written, 1 not
-terminal with the progress printed. `--json` inlines the final message.
+succeeded or skipped, 2 failed or cancelled with whatever exists still written,
+1 not terminal with the progress printed. A task the graph skipped ran nothing
+and has nothing to collect, which is not a failure to report. `--json` inlines the final message.
 
 To stop a run:
 

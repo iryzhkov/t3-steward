@@ -168,6 +168,13 @@ func TestTaskResultExitsWithTheTasksVerdict(t *testing.T) {
 			t.Fatalf("error = %v, want none", err)
 		}
 	})
+	t.Run("skipped is 0", func(t *testing.T) {
+		f := newTaskResultFixture(t)
+		f.detail.Tasks[0].Attempt.Progress = domain.ProgressSkipped
+		if err := f.run("run-1"); err != nil {
+			t.Fatalf("error = %v, want none: a skipped task is not a failure", err)
+		}
+	})
 	t.Run("failed is 2 and still writes what exists", func(t *testing.T) {
 		f := newTaskResultFixture(t)
 		f.detail.Tasks[0].Attempt.Progress = domain.ProgressFailed
@@ -199,6 +206,39 @@ func TestTaskResultExitsWithTheTasksVerdict(t *testing.T) {
 			t.Fatalf("the progress was not reported: %s / %v", f.stdout.String(), err)
 		}
 	})
+}
+
+// The exit code is what a script branches on, so the help text has to be the
+// code and not a summary of it. A skipped task exits 0 beside a succeeded one,
+// which is deliberate -- a task the graph skipped is not a failure to collect
+// -- and the help said "every collected task succeeded". The outcomes that
+// exit 0 are read from the verdict rather than listed here, so the two cannot
+// drift apart again.
+func TestTaskResultHelpNamesEveryOutcomeThatExitsZero(t *testing.T) {
+	var zero []domain.ProgressState
+	for _, state := range []domain.ProgressState{
+		domain.ProgressSucceeded, domain.ProgressSkipped, domain.ProgressFailed,
+		domain.ProgressCancelled, domain.ProgressActive,
+	} {
+		if taskResultVerdict(taskResultDocument{Run: "run-1", Outcome: string(state)}) == nil {
+			zero = append(zero, state)
+		}
+	}
+	line := ""
+	for _, candidate := range strings.Split(taskResultUsage, "\n") {
+		if strings.HasPrefix(candidate, "  0  ") {
+			line = candidate
+			break
+		}
+	}
+	if line == "" {
+		t.Fatal("the help text has no line for exit code 0")
+	}
+	for _, state := range zero {
+		if !strings.Contains(line, string(state)) {
+			t.Fatalf("%q exits 0 and the help line does not name it: %q", state, line)
+		}
+	}
 }
 
 // A run with several tasks collects all of them, and one task can be named.
