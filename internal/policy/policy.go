@@ -409,8 +409,11 @@ func (e *Engine) Evaluate(snap domain.QuotaSnapshot, prev domain.BucketState, no
 	return domain.Decision{State: state, Actions: actions}
 }
 
-// Tick advances timers without a new snapshot. It fires the hard stop when a
-// drain grace period expires.
+// Tick advances timers without a new snapshot. When a drain grace period
+// expires it escalates to the hard stop on the same terms a reading does:
+// the last reading at or above the stop threshold, or an exhaustion projected
+// under the hard-stop floor. Below both the drain request stands and the next
+// reading decides.
 func (e *Engine) Tick(prev domain.BucketState, now time.Time) domain.Decision {
 	state := prev
 	if state.Phase != domain.PhaseDraining || state.DrainDeadline == nil || now.Before(*state.DrainDeadline) {
@@ -433,6 +436,20 @@ func (e *Engine) Tick(prev domain.BucketState, now time.Time) domain.Decision {
 			state.UpdatedAt = now
 			return domain.Decision{State: state, Ignored: fmt.Sprintf("grace expired but the window resets in %s; not stopping", until.Round(time.Second))}
 		}
+	}
+	// The grace stop obeys the same rule as the ladder (S-18): below the
+	// stop threshold an interrupt is worth its cost only when no drain can
+	// finish before the provider ends the session at 100% by itself. The
+	// drain notice was the point; a session that ignores it and keeps
+	// climbing is stopped by the reading that crosses the threshold.
+	if state.UsedPercent < e.t.StopPercent && (state.ExhaustsIn == nil || *state.ExhaustsIn > e.hardStopETA()) {
+		state.DrainDeadline = nil
+		state.UpdatedAt = now
+		eta := "no exhaustion projected"
+		if state.ExhaustsIn != nil {
+			eta = fmt.Sprintf("exhaustion projected in %s", state.ExhaustsIn.Round(time.Minute))
+		}
+		return domain.Decision{State: state, Ignored: fmt.Sprintf("grace expired at %.0f%%, below the stop threshold of %.0f%% with %s; the drain request stands", state.UsedPercent, e.t.StopPercent, eta)}
 	}
 	state.Phase = domain.PhaseStopped
 	state.DrainDeadline = nil

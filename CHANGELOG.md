@@ -48,7 +48,9 @@ All notable changes to this project are documented here. The format follows
   cancel, skip` (S-5).
 - The burn-rate projection asks for a drain at most while usage is below
   `stop_percent`; a hard stop needs the percentage threshold or an exhaustion
-  under two minutes. The runway margin defaults to 1, so an exhaustion
+  under two minutes; the drain's grace timer escalates on the same terms, so
+  a below-threshold drain stands when the grace expires and the next reading
+  decides. The runway margin defaults to 1, so an exhaustion
   projected after the reset is no reason to act. A turn the user starts after
   a watchdog stop is left running while the bucket is stopped, and the drain
   notice says how long the session has at the current rate (S-18).

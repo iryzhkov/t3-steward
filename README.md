@@ -320,7 +320,12 @@ normal -> warned -> draining -> stopped -> (reset confirmed) -> normal
   start new subagents and to have active ones checkpoint.
 - **90% (drain)**: one message per thread asking it to stop spawning,
   finish or cancel subagents, collect results, write a checkpoint and stop.
-  A grace timer starts.
+  A grace timer starts (`policy.grace_period`, 60 seconds). When it expires
+  the bucket is stopped only on the terms a reading would stop it: the last
+  reading at or above `stop_percent`, or exhaustion projected under two
+  minutes. Below both the drain request stands and the next reading
+  decides; a session that ignores the notice and keeps climbing is stopped
+  by the reading that crosses the stop threshold.
 - **Projected exhaustion** tightens the ladder only once usage is already
   at or above `warn_percent`, and only after the projection has held on
   two consecutive readings. Below the warn threshold the burn rate never
@@ -348,8 +353,8 @@ normal -> warned -> draining -> stopped -> (reset confirmed) -> normal
 - **Reset exemption**: when the window resets within `policy.reset_exemption`
   (10 minutes), nothing fires, not even at 96%, and an expired grace
   timer does not stop. Stopping then would save nothing.
-- **95% (stop)** or grace timer expired: `thread.turn.interrupt` for every
-  affected running thread, verification that it left the running state,
+- **95% (stop)**, or the grace timer expiring on those terms:
+  `thread.turn.interrupt` for every affected running thread, verification that it left the running state,
   bounded retries, escalation to `thread.session.stop`, and a desktop
   notification if a thread would not stop.
 - A jump straight from 60% to 97% performs only the highest action.

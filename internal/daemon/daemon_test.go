@@ -233,13 +233,19 @@ func TestWarnDrainStopResumeFlow(t *testing.T) {
 	}
 }
 
+// The grace timer stops without a new event only on the terms a reading
+// would: here a drain whose projection is already at the hard-stop floor. A
+// drain from the percentage ladder alone leaves the thread running when the
+// grace expires (S-18); see TestGraceTimerStops in the policy package.
 func TestGraceExpiryStopsWithoutNewEvent(t *testing.T) {
 	h := newHarness(t, nil)
 	h.fake.add("a", "codex", "gpt", true)
 	reset := h.clock.Add(5 * time.Hour)
-	h.snap(codexPrimary, 91, reset, "1")
-	if len(h.fake.stops) != 0 {
-		t.Fatalf("stopped at drain: %v", h.fake.stops)
+	h.snap(codexPrimary, 84, reset, "0")
+	h.clock = h.clock.Add(2 * time.Minute)
+	h.snap(codexPrimary, 92, reset, "1")
+	if len(h.fake.stops) != 0 || fmt.Sprint(h.fake.warnings) != "[drain:a]" {
+		t.Fatalf("at drain: stops=%v warnings=%v", h.fake.stops, h.fake.warnings)
 	}
 	h.advance(30 * time.Second)
 	if len(h.fake.stops) != 0 {
@@ -248,6 +254,18 @@ func TestGraceExpiryStopsWithoutNewEvent(t *testing.T) {
 	h.advance(31 * time.Second)
 	if fmt.Sprint(h.fake.stops) != "[interrupt:a]" {
 		t.Fatalf("stops = %v", h.fake.stops)
+	}
+	// The same grace on a percentage-ladder drain stands.
+	h2 := newHarness(t, nil)
+	h2.fake.add("b", "codex", "gpt", true)
+	h2.snap(codexPrimary, 91, reset, "1")
+	h2.advance(61 * time.Second)
+	if len(h2.fake.stops) != 0 {
+		t.Fatalf("a below-threshold drain was escalated by the grace timer: %v", h2.fake.stops)
+	}
+	states, _ := h2.store.ListBuckets(context.Background())
+	if len(states) != 1 || states[0].Phase != domain.PhaseDraining {
+		t.Fatalf("bucket after the grace = %+v", states)
 	}
 }
 

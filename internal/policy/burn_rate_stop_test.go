@@ -34,6 +34,25 @@ func TestBurnRateProjectionDrainsButNeverStopsBelowStopPercent(t *testing.T) {
 	if !strings.Contains(d.Actions[0].Reason, "burning") {
 		t.Fatalf("reason = %s", d.Actions[0].Reason)
 	}
+	// The drain's grace period expires one minute later, at 86.3% with an
+	// hour and fifty minutes to the reset. The grace timer obeys the same
+	// rule: no hard stop below the stop threshold while the projected
+	// exhaustion is above the floor. The drain request stands.
+	st = d.State
+	d = e.Tick(st, base.Add(3*time.Minute+6*time.Second))
+	only(t, d)
+	if d.State.Phase != domain.PhaseDraining || d.State.StoppedAt != nil || d.State.DrainDeadline != nil || !strings.Contains(d.Ignored, "drain request stands") {
+		t.Fatalf("grace expiry = %+v ignored=%q", d.State, d.Ignored)
+	}
+	if d = e.Tick(d.State, base.Add(10*time.Minute)); len(d.Actions) != 0 || d.State.Phase != domain.PhaseDraining {
+		t.Fatalf("later tick = %+v", d)
+	}
+	// The next reading, still below the stop threshold, changes nothing.
+	d = e.Evaluate(snap(86.6, base.Add(4*time.Minute), &r, "s4"), d.State, base.Add(4*time.Minute))
+	only(t, d)
+	if d.State.Phase != domain.PhaseDraining {
+		t.Fatalf("phase after a later reading = %s", d.State.Phase)
+	}
 	// A projection under the hard-stop floor still stops: at 93% burning
 	// 5%/min the session has under two minutes left.
 	st = domain.BucketState{}
@@ -87,13 +106,17 @@ func TestStoppedAtFollowsTheStopAndTheReset(t *testing.T) {
 	if d.State.StoppedAt != nil {
 		t.Fatalf("stoppedAt survived the reset: %v", d.State.StoppedAt)
 	}
-	// The grace-timer stop records it too.
+	// The grace-timer stop records it too: a drain whose projection is
+	// already under the hard-stop floor (84% to 92% in two minutes, two
+	// minutes to exhaustion, on its first strike) stops when the grace
+	// expires.
 	far := base.Add(time.Hour)
-	d = e.Evaluate(snap(91, base, &far, "3"), domain.BucketState{}, base)
+	st := e.Evaluate(snap(84, base, &far, "3"), domain.BucketState{}, base).State
+	d = e.Evaluate(snap(92, base.Add(2*time.Minute), &far, "4"), st, base.Add(2*time.Minute))
 	only(t, d, domain.ActionDrain)
-	d = e.Tick(d.State, base.Add(2*time.Minute))
+	d = e.Tick(d.State, base.Add(4*time.Minute))
 	only(t, d, domain.ActionStop)
-	if d.State.StoppedAt == nil || !d.State.StoppedAt.Equal(base.Add(2*time.Minute)) {
+	if d.State.StoppedAt == nil || !d.State.StoppedAt.Equal(base.Add(4*time.Minute)) {
 		t.Fatalf("tick stoppedAt = %v", d.State.StoppedAt)
 	}
 }
