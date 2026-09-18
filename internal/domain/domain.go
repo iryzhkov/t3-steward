@@ -163,6 +163,29 @@ type BucketState struct {
 	// higher level than the percentage ladder; escalation on the
 	// projection needs two, so a single burst does not fire it.
 	ETAStrikes int `json:"etaStrikes,omitempty"`
+	// AppliedThresholds is the percentage ladder the phase was last derived
+	// under. The daemon compares it with the loaded ladder at start and
+	// lowers a phase the new ladder would not produce; nil for a state
+	// written before the field existed.
+	AppliedThresholds *ThresholdSet `json:"appliedThresholds,omitempty"`
+	// ProbedAt is when a paused owned attempt was last resumed as a probe
+	// of this bucket's epoch while the phase was stopped and no thread on
+	// the host could produce a reading; nil when none was. One probe per
+	// epoch: a reading that follows rearms or re-stops the bucket honestly.
+	ProbedAt *time.Time `json:"probedAt,omitempty"`
+}
+
+// ThresholdSet is the percentage ladder a phase is derived from: warn,
+// drain and stop, in percent used.
+type ThresholdSet struct {
+	WarnPercent  float64 `json:"warnPercent"`
+	DrainPercent float64 `json:"drainPercent"`
+	StopPercent  float64 `json:"stopPercent"`
+}
+
+// String renders the ladder as "85/90/95".
+func (t ThresholdSet) String() string {
+	return fmt.Sprintf("%.0f/%.0f/%.0f", t.WarnPercent, t.DrainPercent, t.StopPercent)
 }
 
 // Reading is one usage reading kept for rate estimation.

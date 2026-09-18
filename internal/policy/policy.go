@@ -136,6 +136,12 @@ func New(t Thresholds) *Engine {
 // Thresholds returns the engine's configuration.
 func (e *Engine) Thresholds() Thresholds { return e.t }
 
+// applied is the percentage ladder recorded on every state the engine
+// writes, so a later start can tell which ladder produced the phase.
+func (e *Engine) applied() *domain.ThresholdSet {
+	return &domain.ThresholdSet{WarnPercent: e.t.WarnPercent, DrainPercent: e.t.DrainPercent, StopPercent: e.t.StopPercent}
+}
+
 // level maps a usage percentage to the phase it demands.
 func (e *Engine) level(usedPercent float64) domain.Phase {
 	switch {
@@ -406,7 +412,58 @@ func (e *Engine) Evaluate(snap domain.QuotaSnapshot, prev domain.BucketState, no
 	state.LastEventID = snap.SourceEventID
 	state.UpdatedAt = now
 	state.Healthy = state.Phase == domain.PhaseNormal && snap.UsedPercent < e.t.WarnPercent
+	state.AppliedThresholds = e.applied()
 	return domain.Decision{State: state, Actions: actions}
+}
+
+// Rederive recomputes a stored phase from the stored percentage under this
+// engine's ladder, for the daemon to call at start: the thresholds may have
+// changed since the phase was written, and on a host where nothing runs no
+// reading will ever revisit it. Only the percentage ladder is consulted;
+// there is no fresh reading, so no projection. A stored phase above what the
+// ladder produces is lowered, with the stop and drain bookkeeping cleared and
+// RecoveredAt set when the result is normal, and one rearm action names the
+// stored and the new phase and both ladders. A phase is never raised: only a
+// reading does that. The returned decision carries no actions when nothing
+// changes.
+func (e *Engine) Rederive(prev domain.BucketState, now time.Time) domain.Decision {
+	if prev.Key == (domain.BucketKey{}) || prev.Phase == domain.PhaseNormal {
+		return domain.Decision{State: prev}
+	}
+	want := e.level(prev.UsedPercent)
+	if want.Rank() >= prev.Phase.Rank() {
+		return domain.Decision{State: prev}
+	}
+	state := prev
+	state.Phase = want
+	state.StoppedAt = nil
+	state.DrainDeadline = nil
+	state.ETAStrikes = 0
+	state.RearmObservations = 0
+	if want == domain.PhaseNormal {
+		t := now
+		state.RecoveredAt = &t
+	}
+	state.Healthy = want == domain.PhaseNormal && prev.UsedPercent < e.t.WarnPercent
+	state.AppliedThresholds = e.applied()
+	state.UpdatedAt = now
+	before := "unknown"
+	if prev.AppliedThresholds != nil {
+		before = prev.AppliedThresholds.String()
+	}
+	snap := domain.QuotaSnapshot{
+		Key: prev.Key, LimitName: prev.LimitName, UsedPercent: prev.UsedPercent,
+		ResetsAt: prev.ResetsAt, ModelSelector: prev.ModelSelector, ObservedAt: prev.ObservedAt,
+		SourceEventID: prev.LastEventID, WindowDuration: prev.WindowDuration,
+	}
+	return domain.Decision{
+		State: state,
+		Actions: []domain.Action{{
+			Kind: domain.ActionRearm, Bucket: prev.Key, Snapshot: snap,
+			Reason: fmt.Sprintf("re-derived at load: %s at %.0f%% is %s under thresholds warn/drain/stop %s, not %s as stored under %s",
+				describe(snap), prev.UsedPercent, want, state.AppliedThresholds, prev.Phase, before),
+		}},
+	}
 }
 
 // Tick advances timers without a new snapshot. When a drain grace period

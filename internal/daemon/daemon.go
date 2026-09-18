@@ -159,6 +159,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	prune := time.NewTicker(time.Hour)
 	defer prune.Stop()
 
+	// Stored phases were written under the thresholds of the previous run;
+	// lower any the loaded ones would not produce before acting on them.
+	d.Rederive(ctx)
 	// Reconcile once at start so a restart during a grace period or a
 	// pending resume picks up where it left off.
 	d.pollThreads(ctx)
@@ -333,6 +336,43 @@ func (d *Daemon) HandleSnapshot(ctx context.Context, snap domain.QuotaSnapshot) 
 		return
 	}
 	if d.cfg.QuotaChecksEnabled() {
+		for _, a := range decision.Actions {
+			d.execute(ctx, a, decision.State)
+		}
+	}
+}
+
+// Rederive lowers every stored phase of a current epoch that the loaded
+// thresholds would not produce from the stored percentage (F-1). It runs
+// once at start, before the first poll, and is the second of the three
+// writers of a bucket's phase: it records a rearm naming both threshold
+// sets, never raises a phase, and leaves the stored state untouched when the
+// save fails. A bucket whose reset time has passed is left to the next
+// reading, which rearms or re-stops it. Exposed for tests and replay.
+func (d *Daemon) Rederive(ctx context.Context) {
+	states, err := d.store.ListBuckets(ctx)
+	if err != nil {
+		d.log.Error("list buckets", "err", err)
+		return
+	}
+	now := d.now()
+	for _, st := range states {
+		if st.Phase == domain.PhaseNormal {
+			continue
+		}
+		if st.ResetsAt != nil && !st.ResetsAt.After(now) {
+			continue
+		}
+		decision := d.engineFor(st.Key, st.LimitName, st.WindowDuration).Rederive(st, now)
+		if len(decision.Actions) == 0 {
+			continue
+		}
+		if err := d.store.SaveBucket(ctx, decision.State); err != nil {
+			d.log.Error("save bucket state after re-derivation; stored phase kept", "bucket", st.Key.String(), "phase", string(st.Phase), "err", err)
+			continue
+		}
+		d.log.Warn("stored phase re-derived under the loaded thresholds", "bucket", st.Key.String(),
+			"from", string(st.Phase), "to", string(decision.State.Phase), "used", fmt.Sprintf("%.0f%%", st.UsedPercent))
 		for _, a := range decision.Actions {
 			d.execute(ctx, a, decision.State)
 		}
