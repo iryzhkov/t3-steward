@@ -43,7 +43,9 @@ Derived, each printed in the record:
            worker
   key      --idempotency-key, else run- plus sixteen hex characters of a digest
            over the derived inputs and the prompt; a repeat replays the same
-           run and prints replayed: true
+           run and prints replayed: true. --worker and --name are not in it,
+           and do change what is submitted, so a start that differs only in
+           those is refused as the same key with different content
   name     --name, else the prompt's first line, as a manifest-legal slug
 
 Flags:
@@ -395,7 +397,7 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 		IdempotencyKey: key, Principal: c.campaign.submissionPrincipal(),
 	}, bytes.NewReader(bundle.Archive), int64(len(bundle.Archive)))
 	if err != nil {
-		return err
+		return explainSubmissionConflict(err)
 	}
 	record := taskRunRecord{
 		SchemaVersion:  taskRunSchemaVersion,
@@ -796,6 +798,30 @@ func taskRunIdempotencyKey(project, ref string, route taskRunRoute, prompts []ta
 	write(parsed.verify...)
 	write(parsed.class, strconv.Itoa(parsed.maxTurns))
 	return "run-" + hex.EncodeToString(digest.Sum(nil))[:16]
+}
+
+// explainSubmissionConflict names the flags that can have changed the archive
+// without changing the key. The key covers what will run, deliberately, so
+// --worker and --name are outside it; both of them are inside the archive, so
+// a start that differs from an earlier one only in those flags arrives with
+// that key and different content. The coordinator's own refusal is true and
+// names nothing the caller can act on, so it is kept and explained.
+func explainSubmissionConflict(err error) error {
+	if err == nil || !isSubmissionConflict(err) {
+		return err
+	}
+	return fmt.Errorf("%w\nThe key covers the project, ref, route, prompts, outputs, "+
+		"verify commands, class and max turns, and not --worker or --name, which do change "+
+		"what is submitted.\nPass --idempotency-key KEY to start this as its own run, or "+
+		"repeat the earlier --worker and --name to replay that one", err)
+}
+
+// isSubmissionConflict recognises the conflict as a value where the transport
+// carries one and by its message where it carries a string, which is what a
+// remote coordinator's error is by the time it reaches here.
+func isSubmissionConflict(err error) bool {
+	return errors.Is(err, domain.ErrSubmissionConflict) ||
+		strings.Contains(err.Error(), domain.ErrSubmissionConflict.Error())
 }
 
 // taskRunDerivedName is the prompt's first line, which is what an operator

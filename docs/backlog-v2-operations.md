@@ -453,6 +453,13 @@ Derived in this order, each printed in the record:
 | name | `--name`, else the prompt's first line, as a manifest-legal slug |
 | notification | the calling thread, as `campaign submit --notify-thread current` resolves it |
 
+The key covers what will run, and so covers neither `--worker` nor `--name`,
+both of which do change what is submitted. A start that differs from an earlier
+one only in those two flags therefore reaches the coordinator with that key and
+different content and is refused with `submission idempotency key already has
+different content`. The refusal names both flags and `--idempotency-key`, which
+starts it as its own run.
+
 Refused, each naming what to pass instead: a remote zero or several projects
 match; a model several instances offer; a detached HEAD or a branch ahead of
 its upstream ("push first or pass --ref"); more than one prompt source; no

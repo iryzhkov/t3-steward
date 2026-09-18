@@ -34,6 +34,9 @@ type taskRunHarness struct {
 	thread       string
 	threadErr    error
 	defaultModel string
+	// submitErr is what the coordinator refuses the submission with, for the
+	// refusals this CLI has to explain rather than pass through.
+	submitErr error
 
 	stdin  *strings.Reader
 	stdout bytes.Buffer
@@ -93,6 +96,9 @@ func (h *taskRunHarness) cli() taskRunCLI {
 					}
 					h.archives = append(h.archives, raw)
 					h.requests = append(h.requests, request)
+					if h.submitErr != nil {
+						return backlogadmin.LocalSubmissionResponse{}, h.submitErr
+					}
 					return backlogadmin.LocalSubmissionResponse{
 						Key: request.IdempotencyKey, WorkflowID: "workflow-1", RunID: "run-1",
 						State: "accepted", Replay: h.replay, Digest: "digest-1",
@@ -604,6 +610,38 @@ func TestTaskRunPassesAnyOtherProjectsFailureThrough(t *testing.T) {
 	h.projectsErr = errors.New("coordinator unavailable: dial unix: no such file")
 	err := h.run("--model", "claude-haiku-4-5", "--", "work")
 	if err == nil || err.Error() != h.projectsErr.Error() {
+		t.Fatalf("error = %v, want the transport failure unchanged", err)
+	}
+}
+
+// The key covers what will run; --worker and --name are outside it by
+// contract and inside the archive in fact, so re-running the same prompt with
+// a different one of them reaches the coordinator with the same key and a
+// different digest. The coordinator's refusal names neither flag, which leaves
+// the caller with nothing to change.
+func TestTaskRunNamesTheFlagsOutsideTheIdempotencyKeyWhenTheContentDiffers(t *testing.T) {
+	h := newTaskRunHarness()
+	h.submitErr = domain.ErrSubmissionConflict
+	err := h.run("--model", "claude-haiku-4-5", "--worker", "omarchy-pc", "--", "work")
+	if err == nil {
+		t.Fatal("a conflicting submission succeeded")
+	}
+	for _, want := range []string{
+		domain.ErrSubmissionConflict.Error(), "--worker", "--name", "--idempotency-key",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal does not name %q: %v", want, err)
+		}
+	}
+}
+
+// The explanation is attached to that one refusal. Any other failure of the
+// submission is the caller's to read as it stands.
+func TestTaskRunPassesAnyOtherSubmissionFailureThrough(t *testing.T) {
+	h := newTaskRunHarness()
+	h.submitErr = errors.New("coordinator unavailable: dial unix: no such file")
+	err := h.run("--model", "claude-haiku-4-5", "--", "work")
+	if err == nil || err.Error() != h.submitErr.Error() {
 		t.Fatalf("error = %v, want the transport failure unchanged", err)
 	}
 }
