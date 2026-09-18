@@ -515,6 +515,14 @@ application, so the client reads the release the coordinator reports and
 refuses the run form rather than queueing a command that will never be applied.
 The per-task form works against every release.
 
+Both forms queue a command: the coordinator applies it on its next tick, so the
+answer is the submit decision and not the outcome. The run form's `--json`
+document names the tasks the one command covers under `willCancel`, an
+intention computed from the read that found the fence, and the text form says
+"will cancel" for the same reason. What was actually applied, task by task, is
+in `t3-steward backlog commands <run>`, in the audit event and in
+`t3-steward campaign show <run>`.
+
 A task that declares no route at all is refused as permanent `no-route`, at
 `check` and at intake, with the instance/model pairs its project's eligible
 workers advertise. The legacy single-task adapter refuses a submission with no

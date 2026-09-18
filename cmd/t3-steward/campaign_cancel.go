@@ -19,8 +19,15 @@ import (
 // single anchor attempt and an operator reading only that would not know what
 // else it took with it.
 type campaignCancelRunDocument struct {
-	Run     string               `json:"run"`
-	Tasks   []string             `json:"tasks"`
+	Run string `json:"run"`
+	// Tasks is "willCancel" and not "tasks": it is an intention, computed from
+	// a read of the run that may already be stale, and nothing has been applied
+	// when it is printed -- the command is queued, and the coordinator applies
+	// it on its next tick. Under the name "tasks", beside "run", it sits
+	// exactly where "task run" prints the tasks that exist, so an automated
+	// caller would read it as the outcome. The applied per-task outcome is in
+	// "t3-steward backlog commands <run>" and in the audit event.
+	Tasks   []string             `json:"willCancel"`
 	Anchor  string               `json:"anchorAttempt"`
 	Command backlogadmin.Command `json:"command"`
 	Event   backlogadmin.Event   `json:"event,omitzero"`
@@ -126,14 +133,18 @@ func (c campaignCLI) runCampaignCancelRun(ctx context.Context, args []string) er
 	if asJSON {
 		return encodeCampaignJSON(c.stdout, document)
 	}
-	fmt.Fprintf(c.stdout, "command %s cancels %d task(s) of run %s: %s\n",
+	fmt.Fprintf(c.stdout, "command %s will cancel %d task(s) of run %s: %s\n",
 		response.Command.ID, len(cancelled), runID, campaignList(cancelled))
 	fmt.Fprintf(c.stdout, "state %s, fenced on attempt %s at revision %d\n",
 		response.Command.State, anchor, expectedRevision)
 	if response.Command.Failure != "" {
 		fmt.Fprintf(c.stdout, "failure: %s\n", response.Command.Failure)
 	}
-	_, err = fmt.Fprintf(c.stdout, "next:\n  t3-steward campaign show %s\n", runID)
+	// The list above is what the command covers, not what it has done: it is
+	// computed here from a read, and the application happens on the
+	// coordinator's next tick.
+	_, err = fmt.Fprintf(c.stdout, "the applied outcome, once the coordinator has applied it:\n"+
+		"  t3-steward campaign show %s\n  t3-steward backlog commands %s\n", runID, runID)
 	return err
 }
 

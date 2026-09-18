@@ -91,6 +91,11 @@ func TestCampaignCancelRunSendsOneScopedCommand(t *testing.T) {
 		t.Fatalf("expected revision = %d, want the anchor attempt's 2", mutation.ExpectedRevision)
 	}
 	text := out.String()
+	// The text form says "will cancel" for the same reason the JSON key is
+	// willCancel: the command is pending, and nothing has been applied yet.
+	if !strings.Contains(text, "will cancel") || !strings.Contains(text, "backlog commands run-1") {
+		t.Fatalf("the text form does not separate the intention from the outcome:\n%s", text)
+	}
 	for _, want := range []string{"alpha", "beta"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("the output does not name the cancelled task %q:\n%s", want, text)
@@ -256,5 +261,19 @@ func TestCampaignCancelRunJSONIsOneDocument(t *testing.T) {
 	}
 	if document.Command.State != domain.AdminCommandPending {
 		t.Fatalf("command = %+v", document.Command)
+	}
+	// The key is willCancel. Under "tasks", beside "run", it would sit exactly
+	// where "task run" prints the tasks that exist, and an automated caller
+	// would read an intention computed from a possibly stale read as the
+	// outcome of a command that is still pending.
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(out.Bytes(), &keys); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := keys["willCancel"]; !present {
+		t.Fatalf("the document has no willCancel key: %s", out.String())
+	}
+	if _, present := keys["tasks"]; present {
+		t.Fatalf("the document still names an intention \"tasks\": %s", out.String())
 	}
 }

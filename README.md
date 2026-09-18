@@ -603,7 +603,10 @@ t3-steward task result <run>          # final message and declared outputs
 It writes `./.t3/results/<run>/<task>/` and exits 0 for a succeeded task, 2 for
 a failed or cancelled one, 1 while it is not terminal. To stop a run,
 `t3-steward campaign cancel <run> --reason TEXT` cancels every non-terminal task
-of it with one command.
+of it with one command; it needs a coordinator at rc.70 or newer and is refused
+against an older one, which names the per-task form instead. The command is
+queued, so its `--json` document names what it covers under `willCancel` and
+the applied outcome is in `t3-steward backlog commands <run>`.
 
 A repeat of the same command replays the same run and prints `replayed: true`,
 so a retry after an ambiguous failure never starts a second one.

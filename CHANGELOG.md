@@ -55,7 +55,11 @@ All notable changes to this project are documented here. The format follows
   release. The run form needs a coordinator at this release or newer, because
   an older one accepts the request and cannot apply it; the client reads the
   release the coordinator reports for itself and refuses the run form against
-  one that cannot apply it, naming the per-task form.
+  one that cannot apply it, naming the per-task form. The `--json` document
+  names the tasks the command covers under `willCancel`, not `tasks`: the
+  command is queued and the coordinator applies it on its next tick, so that
+  list is an intention computed from a read and not the applied outcome, which
+  is in `t3-steward backlog commands <run>` and the audit event.
 
 - Every wait has a kind, and every wake message begins with one parseable
   line, `t3-steward-wait kind=<kind> outcome=<outcome> wait=<id> ...`, with

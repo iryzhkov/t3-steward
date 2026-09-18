@@ -40,9 +40,9 @@ Mutating recovery, creates a second run and never changes the first:
 
 Lifecycle (delegated to backlog, unchanged; explain is read-only and live):
   list [--project P] [--progress STATES] [--class CLASS] [--json]
-  show <run> [--json]                 graph <run> [--json|--dot]
-  explain <run>/<task> [--json]
+  show <run> [--json]   graph <run> [--json|--dot]   explain <run>/<task> [--json]
   cancel <run>[/<task>] --reason TEXT [--command-id ID] [--json]   no task = whole run
+  cancel --json prints willCancel, the tasks it covers, not the outcome it applied.
 Supervised runs, structured decisions only and never prose:
   supervision <show|decide|hold|release|escalate|resolve> <run> [flags] [--json]
   Mutating verbs need --request-id KEY, --reason TEXT and --expected-revision N.

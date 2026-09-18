@@ -551,7 +551,14 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// Updated again when cancel gained its run form: the lifecycle line now
 	// reads "cancel <run>[/<task>]" and says that naming no task cancels the
 	// whole run in one command. It cost no line at all.
-	const wantDigest = "0612812650c31e3d50a923f17f4a2b57b6d165b251366b5223929fd236ca49f9"
+	//
+	// Updated again to say what the run form's --json document means: its
+	// willCancel key is the tasks the one command covers, computed from a read,
+	// and not the outcome the coordinator has applied. An automated caller that
+	// reads it as the outcome is the mistake the line exists to prevent. The
+	// line was paid for by putting explain beside show and graph, so the cap is
+	// unchanged.
+	const wantDigest = "0cc7e60af2ecb0d5ad10839bffa479b5f0d765330f4bbc22da50bf1b07f67d71"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)
@@ -564,6 +571,8 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 		"submit   <directory|workflow.yaml> --idempotency-key KEY [--json]",
 		"cancel <run>[/<task>] --reason TEXT",
 		"no task = whole run",
+		"willCancel, the tasks it covers, not the outcome it applied",
+		"explain <run>/<task> [--json]",
 		"workflow.yaml",
 		"version: 2",
 		"needs",
