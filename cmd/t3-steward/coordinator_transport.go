@@ -15,14 +15,39 @@ import (
 // Its exit code stays 1, as ExitCodeFor already decides.
 const unclassifiedErrorClass backlogadmin.TransportClass = "error"
 
+// documentPrinted marks an error a command returns after it has already
+// written its result document to stdout. A --json reader gets exactly one
+// document, so the error envelope must not follow it; the error itself still
+// carries its class through Unwrap, so ExitCodeFor, ClassOf and the stderr
+// line are unchanged. It is the explicit form of "the document is the answer,
+// the exit code is the verdict", which campaign check on an impossible
+// campaign has always meant.
+type documentPrinted struct{ error }
+
+func (e documentPrinted) Unwrap() error { return e.error }
+
+// afterDocument wraps err as returned after a successful document write. A nil
+// error stays nil.
+func afterDocument(err error) error {
+	if err == nil {
+		return nil
+	}
+	return documentPrinted{err}
+}
+
 // reportJSONError prints the versioned error envelope on stdout when the
 // command line asked for --json and the command failed. A transport-classified
 // failure prints its class and operation; any other failure prints the same
 // shape with class "error", the command word as the operation and the message.
-// It always returns the error unchanged, so the process exit code still
-// carries the class and the human line still reaches stderr.
+// A failure marked documentPrinted prints nothing more: its document is
+// already on stdout. It always returns the error unchanged, so the process
+// exit code still carries the class and the human line still reaches stderr.
 func reportJSONError(args []string, err error) error {
 	if err == nil || !requestsJSON(args) {
+		return err
+	}
+	var printed documentPrinted
+	if errors.As(err, &printed) {
 		return err
 	}
 	envelope, classified := backlogadmin.NewTransportErrorEnvelope(err)
@@ -82,7 +107,10 @@ Talking to the coordinator
   --json also prints {"version":"backlog.admin/v1","kind":"error",
   "class":"...","operation":"...","message":"..."} on standard output: the
   transport class above when the failure reached the transport, class "error"
-  with the command word as the operation otherwise.
+  with the command word as the operation otherwise. The one exception is a
+  command that already printed its result document, such as campaign check on
+  an impossible campaign: stdout stays that one document and the refusal is
+  the exit code.
 
   Configuration on a host that is not the coordinator, in either place, with the
   configuration file winning when both exist:

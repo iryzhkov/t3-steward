@@ -188,7 +188,9 @@ func (c campaignCLI) runCheck(ctx context.Context, args []string) error {
 		return err
 	}
 	if matrix.Outcome == backlogadmin.ViabilityImpossible {
-		return campaignImpossible(matrix)
+		// The document above is the whole --json answer; the refusal is the
+		// exit code and the stderr line, never a second document.
+		return afterDocument(campaignImpossible(matrix))
 	}
 	return nil
 }
