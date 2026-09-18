@@ -54,7 +54,7 @@ Commands:
   report             Consumption by peak/off-peak hours, hour of day, model and thread.
   forecast           Interactive-demand map by weekday and hour, and current backlog headroom.
   campaign           Author, inspect and submit a workflow from a campaign directory.
-  coordinator        Show which coordinator this host administers and how (identity).
+  coordinator        Show which coordinator this host administers (identity); reload it (reload).
   backlog            Inspect and control coordinator workflows; includes legacy file helpers.
   diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
   schedules          Inspect and control schedules and trigger history.

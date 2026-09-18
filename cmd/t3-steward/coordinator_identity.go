@@ -18,6 +18,10 @@ const coordinatorUsage = `Usage: t3-steward coordinator <command> [flags]
 Commands:
   identity [--json]   Show which coordinator this host administers and how it
                       reaches it. Read-only; it runs one status query.
+  reload [--json] [--wait DURATION]
+                      Send SIGHUP to the coordinator on this host and print the
+                      receipt it writes for that signal (accepted, unchanged or
+                      rejected with the blockers). Coordinator host only.
 
 "t3-steward coordinator identity" answers, before anything is submitted, the
 question "where would my next submission go". It reports the coordinator id,
@@ -29,6 +33,11 @@ when backlog_v2.coordinator_client is configured. It never changes anything.
 
 Example:
   t3-steward coordinator identity --json
+  t3-steward coordinator reload --json --wait 30s
+
+The identity view carries the coordinator's last reload receipt as lastReload
+(--json) or as reload lines (text): the outcome, when it completed, the digest
+effective after it, and the error and blockers of a rejection.
 
 Configuration on a host that is not the coordinator:
   backlog_v2.coordinator_client.coordinator_id, .address and a
@@ -55,6 +64,9 @@ func cmdCoordinator(g globalFlags, args []string) error {
 	if len(args) == 0 || isHelp(args[0]) {
 		fmt.Print(coordinatorUsage)
 		return nil
+	}
+	if args[0] == "reload" {
+		return cmdCoordinatorReload(g, args[1:])
 	}
 	if args[0] != "identity" {
 		return fmt.Errorf("unknown coordinator command %q (try \"t3-steward coordinator help\")", args[0])
