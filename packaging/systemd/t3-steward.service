@@ -20,6 +20,9 @@ Type=simple
 ExecStart=%h/.local/bin/t3-steward run --config %h/.config/t3-steward/config.yaml
 Restart=on-failure
 RestartSec=5
+# Every role (watchdog, worker, coordinator) logs under one identifier, so
+# "journalctl --user -t t3-steward" finds the process however it is started.
+SyslogIdentifier=t3-steward
 # The default token command runs the t3 CLI, which needs node on PATH.
 Environment=PATH=%h/.local/share/mise/shims:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
