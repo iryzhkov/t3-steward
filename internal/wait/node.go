@@ -35,9 +35,16 @@ func nodeWakeProse(w domain.NodeWait) string {
 // survives a crash before or after Dispatch. Only positive message evidence
 // resolves it; absence in a bounded read is not proof of non-delivery.
 func (r *Runner) tickNodes(ctx context.Context) {
-	store, ok := r.store.(NodeStore)
-	if !ok {
-		return
+	// A configured transport wins over the local store. On a host that runs no
+	// coordinator the local store answers this interface and holds no node
+	// waits at all, so preferring it would deliver nothing and say nothing.
+	store := r.NodeStore
+	if store == nil {
+		local, ok := r.store.(NodeStore)
+		if !ok {
+			return
+		}
+		store = local
 	}
 	if err := store.SettleNodeWaits(ctx, r.now()); err != nil {
 		logFailure(ctx, r.log, "settle node waits", err, "error", err)

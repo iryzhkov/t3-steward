@@ -668,6 +668,7 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, 
 	if err := configureTaskWaitTransport(waits, cfg); err != nil {
 		logger.Error("task wait worker identity unavailable; task wake delivery is fenced", "err", err)
 	}
+	configureNodeWaitTransport(waits, cfg)
 	waits.DryRun = waitDryRun
 	waits.NodeDryRun = waitDryRun
 	waits.DisableQuotaChecks = !cfg.QuotaChecksEnabled() || (cfg.Wait.QuotaChecks != nil && !*cfg.Wait.QuotaChecks)

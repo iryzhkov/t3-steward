@@ -154,6 +154,12 @@ type Control interface {
 type Runner struct {
 	// TaskStore optionally routes coordinator-owned task waits over a transport.
 	TaskStore TaskWaitStore
+	// NodeStore optionally routes the coordinator-owned node waits over a
+	// transport, for a host that runs no coordinator and therefore holds none
+	// of its records. The wake of a node wait has to be sent by the steward of
+	// the host whose T3 holds the thread, so that host has to be able to read
+	// and claim the rows it is named on.
+	NodeStore NodeStore
 	// DisableTaskWaitRuntime fences all task operations on invalid host identity.
 	DisableTaskWaitRuntime bool
 	// AssignedTaskWakesOnly confines delivery to the durable assignment owner.

@@ -232,6 +232,83 @@ func TestCampaignSubmitReportsARegistrationFailureWithTheRunItCreated(t *testing
 	}
 }
 
+// campaign submit registers through the same path as task run and has the same
+// promise to keep. A wake that cannot reach this host is reported as what it
+// is, and the caller is not told to end its turn on it.
+func TestCampaignSubmitDoesNotPromiseAWakeItCannotDeliver(t *testing.T) {
+	root := campaignFixture(t)
+	var out bytes.Buffer
+	var registered []backlogadmin.NodeWaitOperation
+	cli := campaignNotifyCLI(t, &out, &fakeSubmissionService{}, &registered,
+		func(string) (string, error) { return "thread-42", nil }, nil)
+	cli.wakeHost = func() (string, error) { return "omarchy-pc", nil }
+	cli.release = func(context.Context) (string, error) { return "v0.11.0-rc.70", nil }
+	cli.notify = func(_ context.Context, operation backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error) {
+		registered = append(registered, operation)
+		host := operation.Host
+		if host == "" {
+			host = "normandy"
+		}
+		return backlogadmin.NodeWaitResponse{Waits: []domain.NodeWait{{
+			Request: operation.Request, Delivery: "pending", Host: host,
+		}}}, nil
+	}
+	if err := cli.run(context.Background(), []string{
+		"submit", root, "--idempotency-key", "campaign-1", "--notify-thread", "current",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(registered) != 1 || registered[0].Host != "" {
+		t.Fatalf("an rc.70 coordinator was told the calling host: %+v", registered)
+	}
+	text := out.String()
+	if strings.Contains(text, "End this turn now") {
+		t.Fatalf("a wake that cannot be delivered was promised anyway:\n%s", text)
+	}
+	for _, want := range []string{"undeliverable", "normandy", "omarchy-pc", "do not end this turn"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the report does not say %q:\n%s", want, text)
+		}
+	}
+}
+
+// What each undeliverable wake says, and which of them says nothing at all.
+// The distinction that matters is between a coordinator that cannot record the
+// calling host and one that did record a different one, because only the first
+// is fixed by upgrading the coordinator.
+func TestUndeliverableWakeNamesTheCauseItCanProve(t *testing.T) {
+	for _, tc := range []struct {
+		name                     string
+		recorded, local, release string
+		want                     []string
+	}{
+		{"delivered here", "omarchy-pc", "omarchy-pc", nodeWakeDeliveryHostRelease, nil},
+		{"no host recorded", "", "omarchy-pc", nodeWakeDeliveryHostRelease, nil},
+		{"this host unnameable", "normandy", "", nodeWakeDeliveryHostRelease, nil},
+		{"an older coordinator", "normandy", "omarchy-pc", "v0.11.0-rc.70",
+			[]string{"normandy", "omarchy-pc", nodeWakeDeliveryHostRelease, "v0.11.0-rc.70"}},
+		{"a release this client cannot read", "normandy", "omarchy-pc", "dev-build",
+			[]string{"no release this client can read", `"dev-build"`}},
+		{"registered earlier elsewhere", "normandy", "omarchy-pc", "v0.12.0",
+			[]string{"does record the calling host", "registered earlier from normandy"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := undeliverableWake(tc.recorded, tc.local, tc.release)
+			if len(tc.want) == 0 {
+				if got != "" {
+					t.Fatalf("a deliverable wake was reported as undeliverable: %q", got)
+				}
+				return
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("the reason does not say %q: %q", want, got)
+				}
+			}
+		})
+	}
+}
+
 func TestCampaignNotifyThreadIsOnlyValidOnSubmit(t *testing.T) {
 	for _, command := range []string{"validate", "plan", "check"} {
 		if _, err := parseCampaignArgs(command, []string{"dir", "--notify-thread", "current"}, true, false); err == nil {

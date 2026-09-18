@@ -26,15 +26,21 @@ import (
 // submission and the thread resolution. Nothing here reaches a coordinator, a
 // git binary or the network.
 type taskRunHarness struct {
-	checkout     gitCheckout
-	checkoutErr  error
-	projects     []backlogadmin.Project
-	projectsErr  error
-	release      string
-	matrix       backlogadmin.ViabilityMatrix
-	thread       string
-	threadErr    error
-	defaultModel string
+	checkout    gitCheckout
+	checkoutErr error
+	projects    []backlogadmin.Project
+	projectsErr error
+	release     string
+	// coordinatorHost is the host the coordinator records on a registration
+	// that does not state one, which is its own hostname; callerHost is the
+	// host this command runs on. They differ, because every earlier test of
+	// this path ran where they did not.
+	coordinatorHost string
+	callerHost      string
+	matrix          backlogadmin.ViabilityMatrix
+	thread          string
+	threadErr       error
+	defaultModel    string
 	// submitErr is what the coordinator refuses the submission with, for the
 	// refusals this CLI has to explain rather than pass through.
 	submitErr error
@@ -79,8 +85,11 @@ func newTaskRunHarness() *taskRunHarness {
 				Name: "other", Repository: "https://example.invalid/other.git", DefaultRef: "main",
 			},
 		},
-		matrix: backlogadmin.ViabilityMatrix{Outcome: backlogadmin.ViabilityReady},
-		thread: "thread-1",
+		matrix:          backlogadmin.ViabilityMatrix{Outcome: backlogadmin.ViabilityReady},
+		thread:          "thread-1",
+		release:         nodeWakeDeliveryHostRelease,
+		coordinatorHost: "normandy",
+		callerHost:      "omarchy-pc",
 	}
 }
 
@@ -128,11 +137,23 @@ func (h *taskRunHarness) cli() taskRunCLI {
 			},
 			notify: func(_ context.Context, operation backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error) {
 				h.notified = append(h.notified, operation)
+				// The coordinator's own rule: it records the calling host when the
+				// registration states one and its own hostname when it does not.
+				host := operation.Host
+				if host == "" {
+					host = h.coordinatorHost
+				}
 				return backlogadmin.NodeWaitResponse{Waits: []domain.NodeWait{{
-					Request: operation.Request, Delivery: "pending",
+					Request: operation.Request, Delivery: "pending", Host: host,
 				}}}, nil
 			},
 			resolveThread: func(string) (string, error) { return h.thread, h.threadErr },
+			wakeHost:      func() (string, error) { return h.callerHost, nil },
+			// The release seam is the coordinator's own identity query and is
+			// deliberately not the query recorder below: the recorder measures the
+			// catalog path, which is a different question asked for a different
+			// reason.
+			release: func(context.Context) (string, error) { return h.release, nil },
 		},
 		query: func(_ context.Context, query backlogadmin.Query) (backlogadmin.Response, error) {
 			h.queries = append(h.queries, query.Kind)
@@ -702,8 +723,8 @@ func TestTaskRunStartsAFullyExplicitRouteWhenTheCatalogIsRefused(t *testing.T) {
 		"--worker", "omarchy-pc", "--json", "--", "summarise the diff"); err != nil {
 		t.Fatal(err)
 	}
-	// The refusal costs nothing beyond the one query: it is never explained,
-	// because nothing on this path was waiting for the answer.
+	// The refusal is never explained, because nothing on this path was waiting
+	// for the answer: no status query is asked through the catalog seam.
 	for _, kind := range h.queries {
 		if kind == backlogadmin.QueryStatus {
 			t.Fatalf("the swallowed refusal was explained anyway: %v", h.queries)
@@ -873,5 +894,116 @@ func TestTaskRunTextRecordNamesTheResultCommand(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("the text record does not name %q:\n%s", want, text)
 		}
+	}
+}
+
+// The calling host is stated only to a coordinator that records it. An rc.70
+// coordinator decodes the registration with unknown fields disallowed, so a
+// client that always sent the field could start no task at all against a
+// coordinator one release behind, and a release this client cannot read is no
+// evidence that it can be read by the coordinator either.
+func TestTaskRunStatesTheCallingHostOnlyToACoordinatorThatRecordsIt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		release string
+		want    string
+	}{
+		{"records the calling host", nodeWakeDeliveryHostRelease, "omarchy-pc"},
+		{"newer still", "v0.12.0", "omarchy-pc"},
+		{"one release behind", "v0.11.0-rc.70", ""},
+		{"far behind", "v0.10.1", ""},
+		{"a release this client cannot read", "dev-build", ""},
+		{"no release at all", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTaskRunHarness()
+			h.release = tc.release
+			if err := h.run("--model", "opus", "--json", "--", "work"); err != nil {
+				t.Fatal(err)
+			}
+			if len(h.notified) != 1 {
+				t.Fatalf("registered %d waits, want 1", len(h.notified))
+			}
+			if h.notified[0].Host != tc.want {
+				t.Fatalf("the registration states host %q against a coordinator running %q, want %q",
+					h.notified[0].Host, tc.release, tc.want)
+			}
+			// Whether the field travels or not, the run itself is started: the
+			// compatibility rule costs the wake, never the work.
+			if record := h.record(t); record.Run != "run-1" {
+				t.Fatalf("record = %+v", record)
+			}
+		})
+	}
+}
+
+// A wake that cannot reach this host must not be reported as one that will.
+// The delivery host is read back from the coordinator's own answer, so the
+// report states what the coordinator recorded rather than what this client
+// asked for, and it says what to run instead of ending the turn.
+func TestTaskRunDoesNotPromiseAWakeItCannotDeliver(t *testing.T) {
+	h := newTaskRunHarness()
+	// The live shape: a caller on omarchy-pc, a coordinator on normandy that is
+	// one release behind and records itself as the delivery host.
+	h.release = "v0.11.0-rc.70"
+	if err := h.run("--model", "opus", "--", "work"); err != nil {
+		t.Fatal(err)
+	}
+	text := h.stdout.String()
+	if strings.Contains(text, "End this turn now") {
+		t.Fatalf("a wake that cannot be delivered was promised anyway:\n%s", text)
+	}
+	for _, want := range []string{
+		"undeliverable", "normandy", "omarchy-pc", "The run was started",
+		"do not end this turn", "t3-steward campaign show run-1",
+		"t3-steward task result run-1",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the report does not say %q:\n%s", want, text)
+		}
+	}
+
+	// The same fact in the JSON document, as a key a reader can branch on.
+	h = newTaskRunHarness()
+	h.release = "v0.11.0-rc.70"
+	if err := h.run("--model", "opus", "--json", "--", "work"); err != nil {
+		t.Fatal(err)
+	}
+	record := h.record(t)
+	if record.Notify == nil || record.Notify.Host != "normandy" || record.Notify.Undeliverable == "" {
+		t.Fatalf("notify = %+v", record.Notify)
+	}
+	if !strings.Contains(record.Notify.Undeliverable, nodeWakeDeliveryHostRelease) {
+		t.Fatalf("the reason does not name the release that fixes it: %q", record.Notify.Undeliverable)
+	}
+
+	// A coordinator that records the calling host promises the wake again, and
+	// the JSON says nothing about undeliverability at all.
+	h = newTaskRunHarness()
+	if err := h.run("--model", "opus", "--", "work"); err != nil {
+		t.Fatal(err)
+	}
+	if text := h.stdout.String(); !strings.Contains(text, "End this turn now") {
+		t.Fatalf("a deliverable wake was not promised:\n%s", text)
+	}
+	h = newTaskRunHarness()
+	if err := h.run("--model", "opus", "--json", "--", "work"); err != nil {
+		t.Fatal(err)
+	}
+	// Read the document as keys: decoding into the record would fill an absent
+	// key with the zero value and hide the difference.
+	var document map[string]any
+	if err := json.Unmarshal(h.stdout.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	notify, ok := document["notify"].(map[string]any)
+	if !ok {
+		t.Fatalf("the document has no notify object: %s", h.stdout.String())
+	}
+	if _, present := notify["undeliverable"]; present {
+		t.Fatalf("a deliverable wake carries an undeliverable key: %+v", notify)
+	}
+	if notify["host"] != "omarchy-pc" {
+		t.Fatalf("notify names host %v, want the calling host", notify["host"])
 	}
 }

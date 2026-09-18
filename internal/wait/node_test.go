@@ -173,3 +173,68 @@ func TestNativeWakeWrongHostNeverDispatches(t *testing.T) {
 		t.Fatal("woke a different host's thread")
 	}
 }
+
+// localOnlyMemory is the store of a host that runs no coordinator: it holds
+// this host's own waits and none of the coordinator's node waits, which is why
+// it deliberately does not answer NodeStore.
+type localOnlyMemory struct{}
+
+func (localOnlyMemory) SaveWait(context.Context, Wait) error                    { return nil }
+func (localOnlyMemory) ListWaits(context.Context, string) ([]Wait, error)       { return nil, nil }
+func (localOnlyMemory) RecordAction(context.Context, domain.ActionRecord) error { return nil }
+
+// The wake of a wait registered from another host is delivered by the steward
+// of that host and by no other, because the T3 thread it names exists only
+// there. The coordinator holds the record; the calling host reads it over a
+// transport and sends the message.
+//
+// This is the case the delivery tests were missing: every one of them set the
+// wait's host and the runner's host to the same value, so a wait whose host was
+// nobody's was indistinguishable from a wait that was delivered.
+func TestANodeWakeIsDeliveredByTheRunnerOnTheWaitsOwnHost(t *testing.T) {
+	now := time.Now()
+	// One record, as the coordinator holds it, naming the calling host.
+	coordinatorRecords := &nativeMemory{w: domain.NodeWait{
+		Request:     domain.NodeWaitRequest{ID: "nw-caller", ThreadID: "thread", Name: "run-1/__sink"},
+		Host:        "caller",
+		SettledAt:   &now,
+		Observation: &domain.NodeObservation{ExitCode: 0, Reason: "succeeded"},
+		DeliveryID:  "token",
+		Delivery:    "pending",
+	}}
+
+	// The coordinator's own steward reads the same record and leaves it alone.
+	coordinatorControl := &nativeControl{}
+	coordinator := New(coordinatorRecords, coordinatorControl, nil)
+	coordinator.NodeHost = "coordinator"
+	coordinator.Tick(context.Background(), nil, nil)
+	if coordinatorControl.sends != 0 {
+		t.Fatalf("the coordinator sent %d wakes into its own T3 for another host's thread", coordinatorControl.sends)
+	}
+	if coordinatorRecords.w.Delivery != "pending" {
+		t.Fatalf("the coordinator moved another host's wake to %q", coordinatorRecords.w.Delivery)
+	}
+
+	// The calling host holds no coordinator records of its own and reads them
+	// over its transport, which is what NodeStore is.
+	callerControl := &nativeControl{}
+	caller := New(localOnlyMemory{}, callerControl, nil)
+	caller.NodeStore = coordinatorRecords
+	caller.NodeHost = "caller"
+	caller.Tick(context.Background(), nil, nil)
+	if callerControl.sends != 1 || len(callerControl.texts) != 1 {
+		t.Fatalf("the calling host sent %d wakes, want exactly one", callerControl.sends)
+	}
+	if !strings.HasPrefix(callerControl.texts[0], "t3-steward-wait kind=node outcome=met wait=nw-caller") {
+		t.Fatalf("the delivered wake does not begin with the trailer: %q", firstLine(callerControl.texts[0]))
+	}
+	// The claim is durable in the coordinator's records, so a second steward
+	// cannot send the same wake again.
+	if coordinatorRecords.w.Delivery != "sending" {
+		t.Fatalf("the delivering host left the coordinator's record at %q", coordinatorRecords.w.Delivery)
+	}
+	coordinator.Tick(context.Background(), nil, nil)
+	if coordinatorControl.sends != 0 {
+		t.Fatal("the coordinator sent a wake the calling host had claimed")
+	}
+}

@@ -997,11 +997,20 @@ func renderTaskRunRecord(out io.Writer, record taskRunRecord) error {
 	fmt.Fprintf(out, "route %s\n", route)
 	fmt.Fprintf(out, "idempotency-key %s (replayed: %t)\n", record.IdempotencyKey, record.Replayed)
 	fmt.Fprintf(out, "check %s\n", record.Check)
-	if record.Notify != nil {
+	switch {
+	case record.Notify == nil:
+		fmt.Fprint(out, "notify none: nothing will wake a thread when this run ends\n")
+	case record.Notify.Undeliverable == "":
 		fmt.Fprintf(out, "notify thread %s (wait %s)\n", record.Notify.ThreadID, record.Notify.WaitID)
 		fmt.Fprint(out, "End this turn now; the steward wakes this thread when the run ends.\n")
-	} else {
-		fmt.Fprint(out, "notify none: nothing will wake a thread when this run ends\n")
+	default:
+		// The run exists and the wait exists; what does not exist is a path from
+		// one to this thread. Promising a wake here is worse than promising
+		// nothing, because the agent would end its turn on it.
+		fmt.Fprintf(out, "notify thread %s (wait %s) undeliverable: %s\n",
+			record.Notify.ThreadID, record.Notify.WaitID, record.Notify.Undeliverable)
+		fmt.Fprintf(out, "The run was started. Nothing will wake this thread, so do not end this turn "+
+			"waiting for a wake.\nWatch it instead with:\n  t3-steward campaign show %s\n", record.Run)
 	}
 	_, err := fmt.Fprintf(out, "next:\n  %s\n", record.Result)
 	return err

@@ -173,6 +173,11 @@ type campaignCLI struct {
 	// that a test can prove the registration creates no workflow state.
 	notify        func(context.Context, backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error)
 	resolveThread func(string) (string, error)
+	// wakeHost names the host this client's threads live on. It is a seam only
+	// so that a test can state a host without depending on the machine it runs
+	// on; nil means os.Hostname, which is the name the wait runner matches a
+	// wait's delivery host against.
+	wakeHost func() (string, error)
 	// superviseAs carries one structured supervision operation, under an
 	// optional supervisor client identity. It is its own seam because
 	// supervision travels over an optional interface the carrier may not
@@ -566,10 +571,16 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 		return err
 	}
 	if notification != nil {
+		closing := "End this turn now; the coordinator wakes the thread with the terminal outcome.\n"
+		if notification.Undeliverable != "" {
+			// Say what was registered and that its wake cannot arrive here, rather
+			// than telling the caller to end a turn nothing will resume.
+			closing = fmt.Sprintf("That wake is undeliverable: %s.\nThe run was started. Nothing will wake "+
+				"this thread, so do not end this turn waiting for a wake.\n", notification.Undeliverable)
+		}
 		if _, err := fmt.Fprintf(c.stdout,
-			"notification %s registered on %s for thread %s.\n"+
-				"End this turn now; the coordinator wakes the thread with the terminal outcome.\n",
-			notification.WaitID, notification.Target, notification.ThreadID); err != nil {
+			"notification %s registered on %s for thread %s.\n%s",
+			notification.WaitID, notification.Target, notification.ThreadID, closing); err != nil {
 			return err
 		}
 	}
