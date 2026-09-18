@@ -58,6 +58,10 @@ type Wait struct {
 	Dir     string          `json:"dir"`
 	// At is the instant a time wait is met.
 	At *time.Time `json:"at,omitempty"`
+	// GitHub is the target of a github wait.
+	GitHub *GitHubTarget `json:"github,omitempty"`
+	// Errors counts consecutive failures to read a github target.
+	Errors int `json:"errors,omitempty"`
 	// OrTimeout makes the deadline a normal outcome rather than a failure.
 	OrTimeout bool `json:"orTimeout,omitempty"`
 	// Outcome is the trailer outcome once the wait settled.
@@ -161,7 +165,9 @@ type Runner struct {
 	now                   func() time.Time
 	// Exec runs a command and returns its combined output and exit code;
 	// replaceable in tests.
-	Exec       func(ctx context.Context, w Wait) (string, int, error)
+	Exec func(ctx context.Context, w Wait) (string, int, error)
+	// GitHub runs gh for github waits; nil runs the gh on PATH.
+	GitHub     GitHubRunner
 	DryRun     bool
 	NodeDryRun bool
 	NodeHost   string

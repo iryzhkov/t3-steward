@@ -173,22 +173,17 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 
 	local := wait.Wait{
 		ID: newWaitID(), ThreadID: identity.ThreadID, Name: spec.Name, Kind: spec.Kind, Command: spec.Command, Dir: spec.Dir,
-		At: spec.At, OrTimeout: spec.OrTimeout,
+		At: spec.At, GitHub: spec.GitHub, OrTimeout: spec.OrTimeout,
 		Every: spec.Every, MaxEvery: spec.MaxEvery, Timeout: spec.Timeout, RunTimeout: spec.RunTimeout,
 		Wake: wait.WakeMode(spec.WakeMode), Status: wait.StatusWaiting, CreatedAt: now,
 	}
-	// The check is proven to run before the attempt is parked. A condition that
-	// cannot run, gives up at once, or is already true would otherwise park a
-	// task for a wake that is either immediate or never coming. A time wait
-	// was already checked to lie in the future.
-	code, firstLine, out := 1, "", ""
-	if spec.Kind == domain.WaitKindShell {
-		var probeErr error
-		out, code, probeErr = runCheck(ctx, local)
-		if err := refuseFirstRun(os.Stderr, out, code, probeErr, "so there is nothing to park for"); err != nil {
-			return err
-		}
-		firstLine = firstOutputLine(out)
+	// The condition is proven observable before the attempt is parked. A check
+	// that cannot run, gives up at once, or is already true would otherwise
+	// park a task for a wake that is either immediate or never coming. A time
+	// wait was already checked to lie in the future.
+	code, firstLine, err := probeLocalWait(ctx, spec, &local, "so there is nothing to park for")
+	if err != nil {
+		return err
 	}
 
 	transport, err := newCoordinatorTransport(cfg)
@@ -236,13 +231,6 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 	local.TaskWaitID = registered.ID
 	// A registration retry must never create a second poll or reset a settled one.
 	local.ID = "w-" + registered.ID
-	if spec.Kind == domain.WaitKindShell {
-		ran := time.Now()
-		local.LastRunAt = &ran
-		local.Runs = 1
-		local.LastExit = code
-		local.LastOutput = out
-	}
 	if err := saveRegisteredTaskCheck(ctx, store, local); err != nil {
 		// The attempt is parked and the coordinator owns its maximum duration,
 		// so an unpolled wait expires with a structured timeout rather than

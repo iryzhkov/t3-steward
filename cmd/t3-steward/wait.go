@@ -399,23 +399,15 @@ func cmdWaitAdd(ctx context.Context, cfg config.Config, store *sqlite.Store, arg
 	}
 	w := wait.Wait{
 		ID: newWaitID(), ThreadID: threadID, Name: spec.Name, Kind: spec.Kind, Command: spec.Command, Dir: spec.Dir,
-		At: spec.At, OrTimeout: spec.OrTimeout,
+		At: spec.At, GitHub: spec.GitHub, OrTimeout: spec.OrTimeout,
 		Every: spec.Every, MaxEvery: spec.MaxEvery, Timeout: spec.Timeout, RunTimeout: spec.RunTimeout, Group: spec.Group,
 		Wake: wait.WakeMode(spec.WakeMode), Status: wait.StatusWaiting, CreatedAt: now,
 	}
-	// Verify the check runs before accepting the wait. A time wait has no
-	// check to prove; its first poll is the runner's next tick.
-	code, firstLine := 1, ""
-	if spec.Kind == domain.WaitKindShell {
-		out, exit, err := runCheck(ctx, w)
-		if err := refuseFirstRun(os.Stderr, out, exit, err, "nothing to wait for"); err != nil {
-			return err
-		}
-		code, firstLine = exit, firstOutputLine(out)
-		w.LastRunAt = &now
-		w.Runs = 1
-		w.LastExit = code
-		w.LastOutput = out
+	// Verify the condition can be observed before accepting the wait. A time
+	// wait has nothing to prove; its first poll is the runner's next tick.
+	code, firstLine, err := probeLocalWait(ctx, spec, &w, "nothing to wait for")
+	if err != nil {
+		return err
 	}
 	if err := store.SaveWait(ctx, w); err != nil {
 		return err

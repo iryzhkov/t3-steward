@@ -1,14 +1,66 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/wait"
 )
+
+// gitHubCommand runs gh for the registration probe of a github wait. It is a
+// variable so tests never reach GitHub.
+var gitHubCommand wait.GitHubRunner = wait.ExecGitHub
+
+// normalizeKindArgs rewrites the two-token form `--github run 123` into the
+// one-token form `--github=run:123` that the flag package can parse, since it
+// stops at the first positional argument.
+func normalizeKindArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			out = append(out, args[i:]...)
+			break
+		}
+		if (arg == "--github" || arg == "-github") && i+2 < len(args) && (args[i+1] == "run" || args[i+1] == "pr") && !strings.HasPrefix(args[i+2], "-") {
+			out = append(out, "--github="+args[i+1]+":"+args[i+2])
+			i += 2
+			continue
+		}
+		if (arg == "--github" || arg == "-github") && i+1 < len(args) && (args[i+1] == "run" || args[i+1] == "pr") {
+			// `--github run` with no id: keep the kind so the error names it.
+			out = append(out, "--github="+args[i+1]+":")
+			i++
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+// parseGitHubTarget reads run:<id>, pr:<n>, run/<id> or pr/<n>.
+func parseGitHubTarget(spec, state, repo string) (wait.GitHubTarget, error) {
+	kind, id, ok := strings.Cut(spec, ":")
+	if !ok {
+		kind, id, _ = strings.Cut(spec, "/")
+	}
+	target := wait.GitHubTarget{Kind: kind, ID: strings.TrimSpace(id), State: state, Repo: repo}
+	if target.State == "" {
+		if states := wait.GitHubStates(kind); len(states) != 0 {
+			target.State = states[0]
+		}
+	}
+	if err := target.Validate(); err != nil {
+		return target, err
+	}
+	return target, nil
+}
 
 // localWaitSpec is a parsed `wait add` for a local kind: shell, time or
 // github. One parser serves the interactive form and `--task current`, so the
@@ -19,6 +71,8 @@ type localWaitSpec struct {
 	Command []string
 	// At is the instant of a time wait.
 	At *time.Time
+	// GitHub is the target of a github wait.
+	GitHub *wait.GitHubTarget
 	// Name is the name to use when --name was not given.
 	Name string
 	// Condition is the text the coordinator records for a task-bound wait.
@@ -64,7 +118,10 @@ func parseLocalWaitSpec(args []string, now time.Time) (localWaitSpec, error) {
 	fs.BoolVar(&spec.OrTimeout, "or-timeout", false, "treat the deadline as a normal outcome")
 	at := fs.String("at", "", "RFC 3339 instant of a time wait")
 	after := fs.String("for", "", "duration of a time wait")
-	if err := fs.Parse(args); err != nil {
+	github := fs.String("github", "", "run <id> or pr <number>")
+	state := fs.String("state", "", "state waited for")
+	repo := fs.String("repo", "", "owner/name for --github")
+	if err := fs.Parse(normalizeKindArgs(args)); err != nil {
 		return spec, err
 	}
 	if *task != "" && *task != "current" {
@@ -84,6 +141,9 @@ func parseLocalWaitSpec(args []string, now time.Time) (localWaitSpec, error) {
 	if *at != "" || *after != "" {
 		kinds = append(kinds, "--at/--for")
 	}
+	if *github != "" {
+		kinds = append(kinds, "--github")
+	}
 	if len(spec.Command) > 0 {
 		kinds = append(kinds, "a command after --")
 	}
@@ -91,10 +151,25 @@ func parseLocalWaitSpec(args []string, now time.Time) (localWaitSpec, error) {
 	case len(kinds) > 1:
 		return spec, fmt.Errorf("one wait has one kind; %s were given", strings.Join(kinds, " and "))
 	case len(kinds) == 0:
-		return spec, errors.New("add needs a condition: a command after --, or --at RFC3339 / --for DURATION")
+		return spec, errors.New("add needs a condition: a command after --, --at RFC3339 / --for DURATION, or --github run <id> | pr <n>")
+	}
+	if *github == "" && (*state != "" || *repo != "") {
+		return spec, errors.New("--state and --repo belong to --github")
 	}
 
 	switch {
+	case *github != "":
+		target, err := parseGitHubTarget(*github, *state, *repo)
+		if err != nil {
+			return spec, err
+		}
+		spec.Kind = domain.WaitKindGitHub
+		spec.GitHub = &target
+		spec.Condition = "github " + target.Ref() + " " + target.State
+		if target.Repo != "" {
+			spec.Condition += " in " + target.Repo
+		}
+		spec.Name = spec.Condition
 	case *at != "" && *after != "":
 		return spec, errors.New("--at and --for are two ways to name one instant; give one")
 	case *at != "" || *after != "":
@@ -183,6 +258,49 @@ func (spec localWaitSpec) registrationSummary(code int, firstLine string) string
 	case domain.WaitKindTime:
 		return fmt.Sprintf("met at %s; the poll interval follows the remaining time (at most %s), giving up after %s",
 			spec.At.UTC().Format(time.RFC3339), spec.MaxEvery, spec.Timeout)
+	case domain.WaitKindGitHub:
+		return fmt.Sprintf("gh reports %s; polling every %s, backing off to %s, up to %s", firstLine, spec.Every, spec.MaxEvery, spec.Timeout)
 	}
 	return fmt.Sprintf("%s; polling every %s, backing off to %s, up to %s", firstRunSummary(code, firstLine), spec.Every, spec.MaxEvery, spec.Timeout)
+}
+
+// probeLocalWait proves a wait can be registered: a shell check is run once
+// and refused when it cannot run, already exits 0 or gives up; a github
+// target is read once and refused when gh cannot read it or the condition has
+// already settled; a time wait was checked to lie in the future by the parser.
+// It returns the first exit code and first output line the registration
+// reports, and leaves the probe's evidence on the wait.
+func probeLocalWait(ctx context.Context, spec localWaitSpec, w *wait.Wait, parked string) (int, string, error) {
+	now := time.Now()
+	switch spec.Kind {
+	case domain.WaitKindShell:
+		out, code, err := runCheck(ctx, *w)
+		if err := refuseFirstRun(os.Stderr, out, code, err, parked); err != nil {
+			return code, "", err
+		}
+		w.LastRunAt = &now
+		w.Runs = 1
+		w.LastExit = code
+		w.LastOutput = out
+		return code, firstOutputLine(out), nil
+	case domain.WaitKindGitHub:
+		runner := wait.New(nil, nil, nil)
+		runner.GitHub = gitHubCommand
+		reading, err := runner.ReadGitHub(ctx, *spec.GitHub)
+		if err != nil {
+			return 1, "", fmt.Errorf("%w: %v", wait.ErrGitHubProbe, err)
+		}
+		switch reading.Status {
+		case wait.StatusMet:
+			return 0, reading.Reason, fmt.Errorf("the condition already holds (%s), %s", reading.Reason, parked)
+		case wait.StatusFailed:
+			return 2, reading.Reason, fmt.Errorf("the condition has already settled against you (%s), %s", reading.Reason, parked)
+		}
+		w.LastRunAt = &now
+		w.Runs = 1
+		w.LastExit = 1
+		w.LastOutput = reading.Reason
+		return 1, reading.Reason, nil
+	}
+	return 1, "", nil
 }

@@ -152,6 +152,9 @@ func trailerFields(w Wait) []Field {
 	if w.Kind.OrShell() == domain.WaitKindShell {
 		fields = append(fields, F("exit", strconv.Itoa(w.LastExit)))
 	}
+	if w.Kind == domain.WaitKindGitHub && w.GitHub != nil && w.Fields["target"] == "" {
+		fields = append(fields, F("target", w.GitHub.Ref()))
+	}
 	if w.OrTimeout && w.Status == StatusTimedOut {
 		fields = append(fields, F("or-timeout", "true"))
 	}
