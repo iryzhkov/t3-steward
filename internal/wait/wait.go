@@ -177,6 +177,18 @@ type Runner struct {
 	DryRun     bool
 	NodeDryRun bool
 	NodeHost   string
+	// NodeDelivery, when set, is called on every tick on which this runner read
+	// the node waits of the host it names and is in a position to send their
+	// wakes. It is how a steward records, where something other than itself can
+	// read it, that node wakes for this host are actually being delivered here.
+	//
+	// A command that registers a node wait cannot otherwise establish that:
+	// delivery is done by the daemon, not by the command, and a host whose
+	// binary is new while its daemon is old, stopped or in dry run looks
+	// identical from outside. It is called after the list rather than before, so
+	// what it records is the whole path having worked, and it is not called at
+	// all in a dry run, where a wake is held rather than sent.
+	NodeDelivery func(ctx context.Context, host string)
 	// DisableQuotaChecks bypasses quota-based wake holds, independently of DryRun.
 	DisableQuotaChecks bool
 

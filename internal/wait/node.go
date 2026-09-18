@@ -77,6 +77,9 @@ func (r *Runner) tickNodes(ctx context.Context) {
 	if !ok {
 		return
 	}
+	if r.NodeDelivery != nil && !r.NodeDryRun {
+		r.NodeDelivery(ctx, host)
+	}
 	groups := nodeWaitGroups(waits, host)
 	for _, w := range waits {
 		if w.Host != host {

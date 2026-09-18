@@ -178,6 +178,11 @@ type campaignCLI struct {
 	// on; nil means os.Hostname, which is the name the wait runner matches a
 	// wait's delivery host against.
 	wakeHost func() (string, error)
+	// delivery reads what this host's steward daemon recorded about delivering
+	// node wakes. It is a seam because the answer is a file the daemon writes,
+	// and because a test has to be able to state a daemon that is running, one
+	// that is not, and one that was never restarted onto this release.
+	delivery nodeWakeDelivery
 	// superviseAs carries one structured supervision operation, under an
 	// optional supervisor client identity. It is its own seam because
 	// supervision travels over an optional interface the carrier may not
@@ -275,6 +280,7 @@ func campaignCLIFor(cfg config.Config) campaignCLI {
 			return transport.client.NodeWait(ctx, operation)
 		},
 		resolveThread: func(explicit string) (string, error) { return resolveThread(cfg, explicit) },
+		delivery:      nodeWakeDeliveryFor(cfg),
 		superviseAs: func(ctx context.Context, identity supervisorIdentity, request backlogadmin.SupervisionRequest) (backlogadmin.SupervisionResponse, error) {
 			// This is the only construction in the CLI that may carry a supervisor
 			// credential, and it is reached only from the supervision verbs.

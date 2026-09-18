@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -272,28 +274,62 @@ func TestCampaignSubmitDoesNotPromiseAWakeItCannotDeliver(t *testing.T) {
 	}
 }
 
+// deliveryReceiptSeam answers as a host whose steward daemon last recorded what
+// the receipt says, or as one where the receipt could not be read at all.
+func deliveryReceiptSeam(receipt nodeWakeDeliveryReceipt, err error) nodeWakeDelivery {
+	return func() (nodeWakeDeliveryReceipt, string, error) {
+		return receipt, "/state/node-wake-delivery.json", err
+	}
+}
+
 // What each undeliverable wake says, and which of them says nothing at all.
-// The distinction that matters is between a coordinator that cannot record the
-// calling host and one that did record a different one, because only the first
-// is fixed by upgrading the coordinator.
+//
+// Two distinctions matter. Between a coordinator that cannot record the calling
+// host and one that did record a different one, because only the first is fixed
+// by upgrading the coordinator. And between a wait recorded for this host whose
+// steward daemon is delivering wakes and one whose daemon is stopped or was
+// never restarted onto this release, because the hostnames agree in both and
+// only the first is a wake that will arrive.
 func TestUndeliverableWakeNamesTheCauseItCanProve(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	running := nodeWakeDeliveryReceipt{
+		SchemaVersion: nodeWakeDeliveryReceiptSchema, Release: nodeWakeDeliveryHostRelease,
+		Host: "omarchy-pc", Interval: "15s", UpdatedAt: now.Add(-20 * time.Second),
+	}
+	stopped := running
+	stopped.UpdatedAt = now.Add(-30 * time.Minute)
+	elsewhere := running
+	elsewhere.Host = "homelab"
 	for _, tc := range []struct {
 		name                     string
 		recorded, local, release string
+		delivery                 nodeWakeDelivery
 		want                     []string
 	}{
-		{"delivered here", "omarchy-pc", "omarchy-pc", nodeWakeDeliveryHostRelease, nil},
-		{"no host recorded", "", "omarchy-pc", nodeWakeDeliveryHostRelease, nil},
-		{"this host unnameable", "normandy", "", nodeWakeDeliveryHostRelease, nil},
-		{"an older coordinator", "normandy", "omarchy-pc", "v0.11.0-rc.70",
+		{"delivered here by a running daemon", "omarchy-pc", "omarchy-pc", nodeWakeDeliveryHostRelease,
+			deliveryReceiptSeam(running, nil), nil},
+		{"delivered here by a daemon that has never said so", "omarchy-pc", "omarchy-pc", nodeWakeDeliveryHostRelease,
+			deliveryReceiptSeam(nodeWakeDeliveryReceipt{}, os.ErrNotExist),
+			[]string{"recorded no node wake delivery", "/state/node-wake-delivery.json", "restart the steward on omarchy-pc"}},
+		{"delivered here by a daemon that has stopped", "omarchy-pc", "omarchy-pc", nodeWakeDeliveryHostRelease,
+			deliveryReceiptSeam(stopped, nil),
+			[]string{"30m0s ago", "it is not running now", "restart the steward on omarchy-pc"}},
+		{"delivered here by a daemon that names another host", "omarchy-pc", "omarchy-pc", nodeWakeDeliveryHostRelease,
+			deliveryReceiptSeam(elsewhere, nil),
+			[]string{`"homelab" rather than for omarchy-pc`}},
+		{"delivered here with nothing to read", "omarchy-pc", "omarchy-pc", nodeWakeDeliveryHostRelease, nil,
+			[]string{"cannot read what this host's steward daemon is doing"}},
+		{"no host recorded", "", "omarchy-pc", nodeWakeDeliveryHostRelease, nil, nil},
+		{"this host unnameable", "normandy", "", nodeWakeDeliveryHostRelease, nil, nil},
+		{"an older coordinator", "normandy", "omarchy-pc", "v0.11.0-rc.70", nil,
 			[]string{"normandy", "omarchy-pc", nodeWakeDeliveryHostRelease, "v0.11.0-rc.70"}},
-		{"a release this client cannot read", "normandy", "omarchy-pc", "dev-build",
+		{"a release this client cannot read", "normandy", "omarchy-pc", "dev-build", nil,
 			[]string{"no release this client can read", `"dev-build"`}},
-		{"registered earlier elsewhere", "normandy", "omarchy-pc", "v0.12.0",
+		{"registered earlier elsewhere", "normandy", "omarchy-pc", "v0.12.0", nil,
 			[]string{"does record the calling host", "registered earlier from normandy"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := undeliverableWake(tc.recorded, tc.local, tc.release)
+			got := undeliverableWake(tc.recorded, tc.local, tc.release, tc.delivery, now)
 			if len(tc.want) == 0 {
 				if got != "" {
 					t.Fatalf("a deliverable wake was reported as undeliverable: %q", got)

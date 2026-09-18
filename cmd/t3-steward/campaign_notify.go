@@ -50,9 +50,19 @@ type campaignNotification struct {
 //
 // An answer that carries no host at all is no evidence either way and is not
 // reported as a failure.
-func undeliverableWake(recorded, local, release string) string {
-	if recorded == "" || local == "" || recorded == local {
+//
+// A wait recorded for this host is the case where the hosts agree and the wake
+// still may not arrive, because the wake is sent by this host's steward daemon
+// rather than by this command: a daemon that is stopped, or still running a
+// release that delivers no wake registered for another host, is invisible to
+// any comparison of names. undeliverableHere asks what that daemon has actually
+// recorded about itself.
+func undeliverableWake(recorded, local, release string, delivery nodeWakeDelivery, now time.Time) string {
+	if recorded == "" || local == "" {
 		return ""
+	}
+	if recorded == local {
+		return undeliverableHere(local, delivery, now)
 	}
 	reason := fmt.Sprintf("the coordinator records %s as this wait's delivery host and this host is %s, "+
 		"so the wake is sent into the T3 of %s, where this thread does not exist", recorded, local, recorded)
@@ -182,6 +192,6 @@ func (c campaignCLI) registerCampaignNotification(ctx context.Context, key, runI
 		notification.Delivery = response.Waits[0].Delivery
 		notification.Host = response.Waits[0].Host
 	}
-	notification.Undeliverable = undeliverableWake(notification.Host, local, release)
+	notification.Undeliverable = undeliverableWake(notification.Host, local, release, c.delivery, time.Now())
 	return notification, nil
 }

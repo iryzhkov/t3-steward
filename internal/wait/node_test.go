@@ -225,6 +225,42 @@ func TestTheRunnerAsksAScopedStoreForItsOwnHostsWaits(t *testing.T) {
 	}
 }
 
+// The runner records that it is delivering node wakes for its host, so that a
+// command on this host can establish that a daemon is here to deliver them. It
+// records nothing in a dry run, where a wake is held rather than sent, because
+// a promise kept by holding the message is not kept.
+func TestTheRunnerRecordsThatItDeliversNodeWakesForItsHost(t *testing.T) {
+	now := time.Now()
+	records := func() *nativeMemory {
+		return &nativeMemory{w: domain.NodeWait{
+			Request:     domain.NodeWaitRequest{ID: "nw-1", ThreadID: "thread", Name: "run-1/__sink"},
+			Host:        "here",
+			SettledAt:   &now,
+			Observation: &domain.NodeObservation{ExitCode: 0, Reason: "succeeded"},
+			DeliveryID:  "token",
+			Delivery:    "pending",
+		}}
+	}
+	var recorded []string
+	runner := New(records(), &nativeControl{}, nil)
+	runner.NodeHost = "here"
+	runner.NodeDelivery = func(_ context.Context, host string) { recorded = append(recorded, host) }
+	runner.Tick(context.Background(), nil, nil)
+	if len(recorded) != 1 || recorded[0] != "here" {
+		t.Fatalf("the runner recorded delivery for %v, want one record for here", recorded)
+	}
+
+	recorded = nil
+	dry := New(records(), &nativeControl{}, nil)
+	dry.NodeHost = "here"
+	dry.NodeDryRun = true
+	dry.NodeDelivery = func(_ context.Context, host string) { recorded = append(recorded, host) }
+	dry.Tick(context.Background(), nil, nil)
+	if len(recorded) != 0 {
+		t.Fatalf("a dry run recorded delivery for %v", recorded)
+	}
+}
+
 // The wake of a wait registered from another host is delivered by the steward
 // of that host and by no other, because the T3 thread it names exists only
 // there. The coordinator holds the record; the calling host reads it over a

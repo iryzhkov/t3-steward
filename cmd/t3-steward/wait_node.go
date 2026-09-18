@@ -199,7 +199,7 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 		// This command always prints its result as JSON, so the instruction to
 		// the agent goes to stderr. On stdout it would leave a document no
 		// strict reader can parse.
-		if reason := undeliverableWake(result.Waits[0].Host, caller, release); reason != "" {
+		if reason := undeliverableWake(result.Waits[0].Host, caller, release, nodeWakeDeliveryFor(cfg), time.Now()); reason != "" {
 			fmt.Fprintln(os.Stderr, "The wait was registered, but its wake is undeliverable: "+reason+".")
 			fmt.Fprintln(os.Stderr, "Nothing will wake this thread, so do not end this turn waiting for a wake.")
 		} else {

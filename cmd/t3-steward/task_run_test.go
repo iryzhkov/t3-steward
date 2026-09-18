@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
@@ -37,10 +38,16 @@ type taskRunHarness struct {
 	// this path ran where they did not.
 	coordinatorHost string
 	callerHost      string
-	matrix          backlogadmin.ViabilityMatrix
-	thread          string
-	threadErr       error
-	defaultModel    string
+	// daemon is what this host's steward daemon last recorded about delivering
+	// node wakes, or nil for a host where it has recorded nothing: a daemon
+	// that is stopped, or that has not been restarted onto this release. The
+	// wake is sent by that daemon and not by this command, so the promise this
+	// command prints depends on it.
+	daemon       *nodeWakeDeliveryReceipt
+	matrix       backlogadmin.ViabilityMatrix
+	thread       string
+	threadErr    error
+	defaultModel string
 	// submitErr is what the coordinator refuses the submission with, for the
 	// refusals this CLI has to explain rather than pass through.
 	submitErr error
@@ -90,6 +97,10 @@ func newTaskRunHarness() *taskRunHarness {
 		release:         nodeWakeDeliveryHostRelease,
 		coordinatorHost: "normandy",
 		callerHost:      "omarchy-pc",
+		daemon: &nodeWakeDeliveryReceipt{
+			SchemaVersion: nodeWakeDeliveryReceiptSchema, Release: nodeWakeDeliveryHostRelease,
+			Host: "omarchy-pc", Interval: "15s", UpdatedAt: time.Now().UTC(),
+		},
 	}
 }
 
@@ -154,6 +165,16 @@ func (h *taskRunHarness) cli() taskRunCLI {
 			// catalog path, which is a different question asked for a different
 			// reason.
 			release: func(context.Context) (string, error) { return h.release, nil },
+			// What this host's own daemon recorded about delivering node wakes.
+			// A host that has recorded nothing is the rollout case: the binary is
+			// new, the daemon has not been restarted, and nothing would deliver.
+			delivery: func() (nodeWakeDeliveryReceipt, string, error) {
+				const path = "/state/node-wake-delivery.json"
+				if h.daemon == nil {
+					return nodeWakeDeliveryReceipt{}, path, os.ErrNotExist
+				}
+				return *h.daemon, path, nil
+			},
 		},
 		query: func(_ context.Context, query backlogadmin.Query) (backlogadmin.Response, error) {
 			h.queries = append(h.queries, query.Kind)
@@ -1005,5 +1026,51 @@ func TestTaskRunDoesNotPromiseAWakeItCannotDeliver(t *testing.T) {
 	}
 	if notify["host"] != "omarchy-pc" {
 		t.Fatalf("notify names host %v, want the calling host", notify["host"])
+	}
+}
+
+// The rollout case the hostname comparison cannot see. The coordinator is new
+// enough and records this host, so the two names agree -- and the wake is still
+// delivered by this host's steward daemon, which during an upgrade is the one
+// thing that has not been replaced. A command that promised a wake here would
+// be making exactly the promise this whole path exists to stop making.
+func TestTaskRunDoesNotPromiseAWakeItsOwnDaemonHasNotRecorded(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		daemon *nodeWakeDeliveryReceipt
+		want   string
+	}{
+		{"a daemon that has recorded nothing", nil, "recorded no node wake delivery"},
+		{"a daemon that stopped an hour ago", &nodeWakeDeliveryReceipt{
+			SchemaVersion: nodeWakeDeliveryReceiptSchema, Release: nodeWakeDeliveryHostRelease,
+			Host: "omarchy-pc", Interval: "15s", UpdatedAt: time.Now().Add(-time.Hour).UTC(),
+		}, "it is not running now"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTaskRunHarness()
+			h.daemon = tc.daemon
+			if err := h.run("--model", "opus", "--", "work"); err != nil {
+				t.Fatal(err)
+			}
+			text := h.stdout.String()
+			if strings.Contains(text, "End this turn now") {
+				t.Fatalf("a wake no daemon here is known to deliver was promised anyway:\n%s", text)
+			}
+			for _, want := range []string{
+				tc.want, "restart the steward on omarchy-pc",
+				// The run itself is unaffected: it was started, and the report
+				// says how to watch it instead of waiting for a wake.
+				"The run was started", "do not end this turn", "t3-steward campaign show run-1",
+			} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("the report does not say %q:\n%s", want, text)
+				}
+			}
+			// The registration still states the calling host, because the
+			// coordinator records it correctly; what is unproven is the delivery.
+			if len(h.notified) != 1 || h.notified[0].Host != "omarchy-pc" {
+				t.Fatalf("registered %+v", h.notified)
+			}
+		})
 	}
 }
