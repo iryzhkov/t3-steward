@@ -102,6 +102,10 @@ resume:
   # Readings only come from running turns. When the reset time has passed
   # by this long with no reading, one stopped thread per provider is resumed
   # as a probe; its first call confirms the reset (or gets it stopped again).
+  # The worker applies the same duration to a bucket stopped below
+  # stop_percent: once the stored reading is that old and nothing on the
+  # host is running to refresh it, one paused attempt per bucket epoch is
+  # resumed as a probe. Zero disables both probes.
   probe_after_reset: 5m
   # prompt: |
   #   The provider quota has recovered. Resume from the latest checkpoint...

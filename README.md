@@ -820,6 +820,8 @@ t3-steward forecast [--days 56] [--bucket TEXT] [--from-logs] [--remotes a,b] [-
 t3-steward backlog list [--all]|new ID|check FILE|show ID|retry ID|cancel ID|receive ID|path
 t3-steward wait add [--name TEXT] [--every 30s] [--max-every 10m] [--timeout 24h] [--thread ID] [--group G --wake all] -- CMD...
 t3-steward wait list [--all]|cancel ID|run-now ID
+t3-steward task env [--get NAME]
+t3-steward bucket list [--json]|rearm KEY --reason TEXT [--force] [--json]
 t3-steward archive candidates|run [--dry-run]|list|restore ID [DIR]
 t3-steward install-service [--force] [--enable]
 t3-steward uninstall-service
