@@ -114,8 +114,11 @@ func (r *Runner) tickNodes(ctx context.Context) {
 		}
 		if grouped {
 			// The other members rode in the same message. A crash here leaves
-			// them pending, and the next tick sends each on its own rather than
-			// never; that is the honest degradation.
+			// them pending while this one becomes delivered on a later tick;
+			// nodeWaitGroups then leaves the delivered member out, so the
+			// earliest member still pending carries one more send naming the
+			// rest, rather than every remaining member being skipped forever
+			// as "not the earliest". That is the honest degradation.
 			for _, member := range members[1:] {
 				if member.Delivery != "pending" && member.Delivery != "held" {
 					continue
@@ -134,11 +137,13 @@ func nodeGroupKey(w domain.NodeWait) string {
 }
 
 // nodeWaitGroups collects this host's --wake all groups, each sorted by
-// creation so the earliest member carries the send.
+// creation so the earliest member carries the send. A member that is already
+// delivered or cancelled is left out: it has nothing more to say, and keeping
+// it would make it the earliest member of a group it can no longer send for.
 func nodeWaitGroups(waits []domain.NodeWait, host string) map[string][]domain.NodeWait {
 	groups := map[string][]domain.NodeWait{}
 	for _, w := range waits {
-		if w.Host != host || w.Request.Group == "" || w.Request.Wake != domain.WakeAll || w.Delivery == "cancelled" {
+		if w.Host != host || w.Request.Group == "" || w.Request.Wake != domain.WakeAll || w.Delivery == "delivered" || w.Delivery == "cancelled" {
 			continue
 		}
 		key := nodeGroupKey(w)
