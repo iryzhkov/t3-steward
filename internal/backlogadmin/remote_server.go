@@ -172,6 +172,12 @@ func (s *RemoteServer) Serve(ctx context.Context, pinned string, in io.Reader, o
 // which does set Replay on a repeat, is never asked, so the first answer's
 // "replay": false was returned verbatim.
 //
+// The five answers named below are every one this carrier can return that
+// carries such a flag: a submission, a schedule definition, a graph amendment,
+// a supervision decision and an unknown-assignment recovery. A mutation answer
+// and a quarantine release have no flag to set, and a quarantine release has no
+// stable request id either, so neither is ever served from this cache.
+//
 // Nothing here is inferred. The carrier knows it served a cached answer; it
 // does not conclude "replay" from a run id that happens to match. When the
 // cached row has been pruned the operation re-executes and the service sets
@@ -198,6 +204,14 @@ func markReplayedAnswer(response localResponse) localResponse {
 		replayed := *response.SupervisionResponse
 		replayed.Replay = true
 		response.SupervisionResponse = &replayed
+	}
+	if response.UnknownRecoveryResponse != nil {
+		// "backlog recover" derives its request id from the recovery ID, so a
+		// repeat reaches this cache as the same request and is answered from it.
+		// Without this line the answer said "applied" while applying nothing.
+		replayed := *response.UnknownRecoveryResponse
+		replayed.Replay = true
+		response.UnknownRecoveryResponse = &replayed
 	}
 	return response
 }
