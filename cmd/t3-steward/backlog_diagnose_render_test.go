@@ -12,12 +12,15 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
+// diagnoseFixture gives the run revision and the graph revision different
+// values, so the text renderer's revision line is proven to print the graph
+// revision the diagnosis was taken at, not the run's own revision.
 func diagnoseFixture(now time.Time) *backlogadmin.Diagnosis {
 	return &backlogadmin.Diagnosis{
 		GraphRevision: 3, GeneratedAt: now,
 		Workflow: backlogadmin.WorkflowDetail{
 			Summary: backlogadmin.WorkflowSummary{
-				Run:      domain.WorkflowRun{ID: "run-1", Progress: domain.ProgressActive, Revision: 3},
+				Run:      domain.WorkflowRun{ID: "run-1", Progress: domain.ProgressActive, Revision: 7},
 				Workflow: domain.Workflow{ID: "workflow-1", Name: "rebuild", Project: "home-assistant"},
 			},
 			Tasks: []backlogadmin.TaskDetail{
@@ -80,6 +83,10 @@ func TestBacklogDiagnoseTextSummary(t *testing.T) {
 	// A settled task wait no longer parks anything and is not a live wait.
 	if strings.Contains(stdout.String(), "tw-0") {
 		t.Errorf("output lists the settled wait tw-0:\n%s", stdout.String())
+	}
+	// The revision line is the graph revision (3), not the run revision (7).
+	if strings.Contains(stdout.String(), "revision: 7\n") {
+		t.Errorf("output prints the run revision where the graph revision belongs:\n%s", stdout.String())
 	}
 }
 
