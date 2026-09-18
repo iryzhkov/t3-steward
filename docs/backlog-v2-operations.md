@@ -570,6 +570,21 @@ Adding a provider instance to the fleet, or a model on one, is one edit to the
 UpKeeper release and one pull. Nothing on the coordinator host is edited by
 hand, and no file on a worker host is edited at all.
 
+The precondition is the coordinator's own release. Confirm, before the edit,
+that every coordinator host already runs a release that reads `quota_bindings`
+(this one): `t3-steward --version` on the coordinator host, or `upkeeper status`
+for the release that host has converged to.
+
+> Upgrade every coordinator host to this release before any UpKeeper release
+> authors a `quota_bindings` entry: an older coordinator refuses the whole
+> projection as an unknown field, so its reload is rejected, the
+> `steward-fleet-configuration` component fails, and the rejected projection
+> stays on disk, where it will also stop that coordinator from starting the next
+> time it is restarted. Author the binding in a release that also pins this
+> steward version, and do not converge it with `upkeeper pull --components
+> steward-fleet-configuration`, which writes the projection without installing
+> the binary that can read it.
+
 1. On the controller, in a current UpKeeper checkout:
 
    ```sh
@@ -585,11 +600,18 @@ hand, and no file on a worker host is edited at all.
 2. Pull the coordinator host, or wait for its timer:
 
    ```sh
-   upkeeper pull --hosts <coordinator> --components steward-fleet-configuration
+   upkeeper pull --hosts <coordinator>
    ```
 
-   The component writes `~/.config/t3-steward/coordinator-fleet.json`, signals
-   the running coordinator and reads its reload receipt. `accepted` or
+   Pull the whole host. Selecting `--components steward-fleet-configuration`
+   skips the `t3-steward` component and therefore the one protection there is:
+   in a whole-host pull the steward component installs the binary and restarts
+   the unit before the fleet component writes the projection, and the agent
+   stops at the first failed component, so either the binary that can read the
+   binding lands first or the projection is never written.
+
+   The fleet component writes `~/.config/t3-steward/coordinator-fleet.json`,
+   signals the running coordinator and reads its reload receipt. `accepted` or
    `unchanged` converge; `rejected` carries the coordinator's own error.
 
 3. On the coordinator host, re-enrol every worker whose catalog changed, which

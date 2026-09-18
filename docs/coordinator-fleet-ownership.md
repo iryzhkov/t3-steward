@@ -25,6 +25,15 @@ binding is used only where the coordinator's own configuration binds nothing, in
 where it has no entry for the instance at all. A binding naming an instance the worker
 does not run, or a pool it does not join, is refused when the document is decoded.
 
+The key is new, so the order of a release matters on this one host. Upgrade every
+coordinator host to this release before any UpKeeper release authors a `quota_bindings`
+entry: an older coordinator refuses the whole projection as an unknown field, so its
+reload is rejected, the `steward-fleet-configuration` component fails, and the rejected
+projection stays on disk, where it will also stop that coordinator from starting the next
+time it is restarted. Author the binding in a release that also pins this steward version,
+and do not converge it with `upkeeper pull --components steward-fleet-configuration`,
+which writes the projection without installing the binary that can read it.
+
 An instance with desired models that neither source binds to a pool this coordinator
 defines is dropped for that worker rather than failing the whole configuration: the
 coordinator logs one warning at startup naming the instance, the worker and the remedy,

@@ -129,6 +129,15 @@ All notable changes to this project are documented here. The format follows
   operator configuration. The field is optional: a projection rendered before
   it existed decodes and applies exactly as it did. See
   `docs/backlog-v2-operations.md`, "Registering a provider".
+  **Upgrading:** Upgrade every coordinator host to this release before any
+  UpKeeper release authors a `quota_bindings` entry: an older coordinator
+  refuses the whole projection as an unknown field, so its reload is rejected,
+  the `steward-fleet-configuration` component fails, and the rejected
+  projection stays on disk, where it will also stop that coordinator from
+  starting the next time it is restarted. Author the binding in a release that
+  also pins this steward version, and do not converge it with `upkeeper pull
+  --components steward-fleet-configuration`, which writes the projection
+  without installing the binary that can read it.
 
 - `t3-steward models` reports, per instance and per worker, `authorized`,
   `advertised` and, when the worker is not offering the route, the `reason`:
