@@ -460,10 +460,10 @@ different content and is refused with `submission idempotency key already has
 different content`. The refusal names both flags and `--idempotency-key`, which
 starts it as its own run.
 
-Refused, each naming what to pass instead: a remote zero or several projects
-match; a model several instances offer; a detached HEAD or a branch ahead of
-its upstream ("push first or pass --ref"); more than one prompt source; no
-route and no `defaults.model`. A dirty working tree is a warning and not a
+Refused, each naming what to pass instead: a remote that zero or several
+projects match; a model several instances offer; a detached HEAD or a branch
+ahead of its upstream ("push first or pass --ref"); more than one prompt
+source; no route and no `defaults.model`. A dirty working tree is a warning and not a
 refusal: uncommitted changes are not sent, the worker fetches the ref.
 
 A start is refused when no thread resolves, unless `--no-notify` says that a
