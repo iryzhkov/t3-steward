@@ -26,6 +26,9 @@ SyslogIdentifier=t3-steward
 # The default token command runs the t3 CLI, which needs node on PATH.
 Environment=PATH=%h/.local/share/mise/shims:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
+# A credential read from a file at use, rendered by
+# "install-service --credential-file REF=PATH"; the file must be 0600.
+# Environment=T3_STEWARD_CREDENTIAL_F02_PROTOCOL_FILE=%h/.config/t3-steward/f02/protocol-credential.json
 NoNewPrivileges=true
 # User mount namespaces remap root-owned SSH includes, which OpenSSH rejects.
 ProtectSystem=false

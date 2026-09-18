@@ -210,7 +210,10 @@ journald, and bakes in the `PATH` of the shell that ran `install-service`
 so the `t3` CLI and Node resolve the same way. It never enables destructive
 behaviour by itself: dry-run stays on until you change the configuration.
 `install-service --force` regenerates a unit you edited; `--enable` also
-enables and starts it.
+enables and starts it. `--credential-file REF=PATH`, repeatable, renders
+`Environment=T3_STEWARD_CREDENTIAL_<REF>_FILE=<path>` into the unit so the
+steward reads that credential from the file at use instead of a wrapper
+script exporting it; the file must be a private (0600) regular file.
 
 ## macOS and Windows: foreground operation
 
@@ -823,7 +826,7 @@ t3-steward wait list [--all]|cancel ID|run-now ID
 t3-steward task env [--get NAME]
 t3-steward bucket list [--json]|rearm KEY --reason TEXT [--force] [--json]
 t3-steward archive candidates|run [--dry-run]|list|restore ID [DIR]
-t3-steward install-service [--force] [--enable]
+t3-steward install-service [--force] [--enable] [--credential-file REF=PATH ...]
 t3-steward uninstall-service
 t3-steward version
 ```

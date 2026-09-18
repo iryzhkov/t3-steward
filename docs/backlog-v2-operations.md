@@ -453,10 +453,49 @@ on the executable name instead, which is `t3-steward` for every role:
 journalctl --user _COMM=t3-steward -n 200
 ```
 
-Stage 3 of the agent-experience campaign replaces those wrappers with a
-generated unit that reads the credential from a file and carries
-`SyslogIdentifier=t3-steward` itself, after which `-t t3-steward` holds on
-every host.
+Such a wrapper can be retired: the generated unit reads the credential from
+the same file itself when it is installed with `--credential-file`, and then
+carries `SyslogIdentifier=t3-steward` like every other generated unit, after
+which `-t t3-steward` holds on every host. See "Credential files" below for
+the exact command and the rollback.
+
+### Credential files
+
+Every resolver that reads a credential from `T3_STEWARD_CREDENTIAL_<REF>`
+(the worker's project credential check, the worker protocol credential and
+the coordinator admin credential) also accepts
+`T3_STEWARD_CREDENTIAL_<REF>_FILE=<path>`. The inline variable wins when both
+are set. The file is read at use, one trailing newline is trimmed, and it is
+refused when it is missing, a symbolic link, or readable by others; the
+refusal names the variable and the path, never the content. `<REF>` is the
+reference with letters and digits upper-cased and everything else replaced by
+an underscore, so `secretref:f03-admin/normandy` reads
+`T3_STEWARD_CREDENTIAL_SECRETREF_F03_ADMIN_NORMANDY` or its `_FILE` form.
+
+`t3-steward install-service --credential-file REF=PATH` (repeatable) renders
+one `Environment=T3_STEWARD_CREDENTIAL_<REF>_FILE=<path>` line per file into
+the generated unit, with the home directory written as `%h`. The path is
+checked at install time the way the runtime checks it at use, so a unit that
+could never resolve its credential is refused before it is written. A
+hand-written wrapper that exported the value from a file is retired by
+regenerating the unit with the file named instead, for example on a
+coordinator host whose wrapper read
+`~/.config/t3-steward/f02/protocol-credential.json`:
+
+```text
+cp ~/.config/systemd/user/t3-steward.service \
+   ~/.config/systemd/user/t3-steward.service.rollback-<date>
+t3-steward install-service --force \
+   --credential-file F02_PROTOCOL=~/.config/t3-steward/f02/protocol-credential.json
+systemctl --user daemon-reload
+systemctl --user restart t3-steward.service
+t3-steward coordinator identity        # the coordinator answers under the new unit
+```
+
+The wrapper script itself is left in place until the restarted service has
+been seen serving; rolling back is copying the retained unit file back over
+the generated one, `daemon-reload` and a restart. The retirement is a live
+change on the host and is done with approval, not by a pull.
 
 Coordinator startup acquires authority and completes one local reconciliation
 pass without contacting workers. Configured SSH worker sessions begin only on a

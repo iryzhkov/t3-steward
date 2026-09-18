@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"unicode"
 )
 
 const unitName = "t3-steward.service"
@@ -48,6 +50,13 @@ func RenderUnit(opts InstallOptions) string {
 	b.WriteString("# The default token command runs the t3 CLI, which needs node on PATH.\n")
 	fmt.Fprintf(&b, "Environment=PATH=%s\n", servicePath())
 	b.WriteString("Environment=HOME=%h\n")
+	if len(opts.CredentialFiles) != 0 {
+		b.WriteString("# Credentials are read from these files at use (T3_STEWARD_CREDENTIAL_<REF>_FILE),\n")
+		b.WriteString("# so no wrapper script exports them; the files must be 0600.\n")
+		for _, credential := range sortedCredentialFiles(opts.CredentialFiles) {
+			fmt.Fprintf(&b, "Environment=%s\n", environmentAssignment(credentialFileVariable(credential.Reference), homeRelative(credential.Path)))
+		}
+	}
 	b.WriteString("# Modest hardening. ProtectHome and PrivateTmp are deliberately absent: the\n")
 	b.WriteString("# steward reads T3's logs, the t3 CLI writes T3's own database under $HOME,\n")
 	b.WriteString("# and wait checks written by agents must see the same /tmp the agents use.\n")
@@ -71,6 +80,61 @@ func servicePath() string {
 		p = strings.ReplaceAll(p, home, "%h")
 	}
 	return p
+}
+
+// credentialFileVariable is the variable that names a credential file:
+// T3_STEWARD_CREDENTIAL_<REF>_FILE, with the reference mapped the way the
+// runtime maps it (letters and digits upper-cased, anything else an
+// underscore; see workerruntime.CredentialEnvironmentName, repeated here so
+// this package stays free of the runtime).
+func credentialFileVariable(reference string) string {
+	var name strings.Builder
+	name.WriteString("T3_STEWARD_CREDENTIAL_")
+	for _, char := range reference {
+		if unicode.IsLetter(char) || unicode.IsDigit(char) {
+			name.WriteRune(unicode.ToUpper(char))
+		} else {
+			name.WriteByte('_')
+		}
+	}
+	name.WriteString("_FILE")
+	return name.String()
+}
+
+// sortedCredentialFiles orders the rendered lines by variable, so the same
+// options render the same unit.
+func sortedCredentialFiles(files []CredentialFile) []CredentialFile {
+	sorted := append([]CredentialFile(nil), files...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return credentialFileVariable(sorted[i].Reference) < credentialFileVariable(sorted[j].Reference)
+	})
+	return sorted
+}
+
+// homeRelative rewrites a path under the home directory to use %h, which
+// systemd expands for the unit's user.
+func homeRelative(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == home {
+		return "%h"
+	}
+	if strings.HasPrefix(path, home+string(filepath.Separator)) {
+		return "%h" + path[len(home):]
+	}
+	return path
+}
+
+// environmentAssignment renders one VAR=value for an Environment= line,
+// quoting the assignment when the value has whitespace or quotes.
+func environmentAssignment(variable, value string) string {
+	assignment := variable + "=" + value
+	if !strings.ContainsAny(value, " \t\"'\\") {
+		return assignment
+	}
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(assignment) + `"`
 }
 
 func shellQuote(s string) string {

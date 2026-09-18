@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
+	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
 
 // credentialEnvironmentName maps a reference onto the restricted environment
@@ -127,7 +128,12 @@ func (r EnvironmentAdminCredentialResolver) ResolveAdmin(reference string) (Admi
 	if lookup == nil {
 		lookup = os.LookupEnv
 	}
-	raw, ok := lookup(prefix + credentialEnvironmentName(reference))
+	// The _FILE form is accepted here exactly as the worker resolvers accept
+	// it, so one unit line serves every credential on a host.
+	raw, ok, err := workerruntime.ResolveCredentialVariable(lookup, prefix+credentialEnvironmentName(reference))
+	if err != nil {
+		return AdminCredentials{}, fmt.Errorf("resolve admin credentials: reference %q: %w", reference, err)
+	}
 	if !ok || raw == "" {
 		return AdminCredentials{}, fmt.Errorf("resolve admin credentials: reference %q is unavailable", reference)
 	}

@@ -8,6 +8,18 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Every resolver that reads a credential from `T3_STEWARD_CREDENTIAL_<REF>`
+  (project credential checks, the worker protocol credential and the
+  coordinator admin credential) also accepts
+  `T3_STEWARD_CREDENTIAL_<REF>_FILE=<path>`: the inline variable wins when
+  both are set, the file is read at use with one trailing newline trimmed, and
+  a missing, symlinked or world-readable file is refused with an error that
+  names the variable and the path and never the content.
+  `t3-steward install-service --credential-file REF=PATH` (repeatable)
+  renders `Environment=T3_STEWARD_CREDENTIAL_<REF>_FILE=<path>` lines into
+  the generated unit, with the home directory as `%h`, so a hand-written
+  wrapper script that exported the value can be retired with
+  `install-service --force --credential-file F02_PROTOCOL=...` (F-10).
 - `t3-steward bucket list [--json]` prints every quota bucket in the host's
   state database with its phase, used percent, observation, reset, recovery,
   stop and probe times, the thresholds it was derived under and its last rearm

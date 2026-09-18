@@ -64,7 +64,8 @@ Commands:
   bucket             Inspect and rearm this host's quota buckets (list, rearm <key> --reason TEXT).
   archive            Cold storage for finished threads (candidates, run, list, restore).
   export             Print this host's readings and token samples as JSON for another host's report.
-  install-service    Install a per-user background service (Linux systemd).
+  install-service    Install a per-user background service (Linux systemd);
+                     --credential-file REF=PATH reads a credential from a file.
   uninstall-service  Remove the background service.
   worker-exchange    Restricted SSH worker endpoint (control/artifact-receive/artifact-send).
   coordinator-exchange  Restricted SSH coordinator-admin endpoint (one operation word).
@@ -229,21 +230,23 @@ func dispatch(args []string) error {
 	fs.BoolVar(&g.noDryRun, "no-dry-run", false, "disable dry-run mode for this run (overrides the configuration)")
 	fs.StringVar(&g.logLevel, "log-level", "", "log level")
 	var (
-		force     bool
-		enable    bool
-		limit     int
-		t3URL     string
-		dataDir   string
-		asJSON    bool
-		speed     float64
-		showAll   bool
-		fromState bool
-		rf        reportFlags
+		force           bool
+		enable          bool
+		credentialFiles repeatableFlag
+		limit           int
+		t3URL           string
+		dataDir         string
+		asJSON          bool
+		speed           float64
+		showAll         bool
+		fromState       bool
+		rf              reportFlags
 	)
 	switch cmd {
 	case "install-service":
 		fs.BoolVar(&force, "force", false, "overwrite an existing service definition")
 		fs.BoolVar(&enable, "enable", false, "enable and start the service now")
+		fs.Var(&credentialFiles, "credential-file", "REF=PATH: read the credential REF from PATH at use (repeatable); renders Environment=T3_STEWARD_CREDENTIAL_<REF>_FILE=<path> into the unit")
 	case "init":
 		fs.BoolVar(&force, "force", false, "overwrite an existing configuration file")
 		fs.StringVar(&t3URL, "t3-url", "", "T3 server URL to write into the configuration")
@@ -307,7 +310,7 @@ func dispatch(args []string) error {
 	case "report":
 		return cmdReport(g, rf)
 	case "install-service":
-		return cmdInstallService(g, force, enable)
+		return cmdInstallService(g, force, enable, credentialFiles)
 	case "uninstall-service":
 		return cmdUninstallService()
 	case "worker-exchange":
@@ -947,8 +950,61 @@ func (r *replayControl) ResumeThread(_ context.Context, t domain.Thread, _ strin
 	return nil
 }
 
-func cmdInstallService(g globalFlags, force, enable bool) error {
+// repeatableFlag collects every occurrence of a flag, so that
+// --credential-file can be given once per credential.
+type repeatableFlag []string
+
+func (f *repeatableFlag) String() string { return strings.Join(*f, ",") }
+func (f *repeatableFlag) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
+
+// parseCredentialFiles turns REF=PATH arguments into the unit's credential
+// files. The path is made absolute and must name a regular file that is not
+// world-readable, so a unit that could never resolve the credential is refused
+// here rather than discovered at the service's first use.
+func parseCredentialFiles(arguments []string) ([]platform.CredentialFile, error) {
+	files := make([]platform.CredentialFile, 0, len(arguments))
+	seen := map[string]string{}
+	for _, argument := range arguments {
+		reference, path, ok := strings.Cut(argument, "=")
+		reference = strings.TrimSpace(reference)
+		path = strings.TrimSpace(path)
+		if !ok || reference == "" || path == "" {
+			return nil, fmt.Errorf("--credential-file %q: expected REF=PATH", argument)
+		}
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return nil, fmt.Errorf("--credential-file %q: %w", argument, err)
+		}
+		variable := "T3_STEWARD_CREDENTIAL_" + workerruntime.CredentialEnvironmentName(reference) + workerruntime.CredentialFileSuffix
+		if previous, duplicate := seen[variable]; duplicate {
+			return nil, fmt.Errorf("--credential-file %q: %s is already bound to %s", argument, variable, previous)
+		}
+		seen[variable] = absolute
+		info, err := os.Lstat(absolute)
+		switch {
+		case err != nil:
+			return nil, fmt.Errorf("--credential-file %q: %s: %w", argument, absolute, err)
+		case info.Mode()&os.ModeSymlink != 0:
+			return nil, fmt.Errorf("--credential-file %q: %s is a symbolic link; name the file itself", argument, absolute)
+		case !info.Mode().IsRegular():
+			return nil, fmt.Errorf("--credential-file %q: %s is not a regular file", argument, absolute)
+		case info.Mode().Perm()&0o004 != 0:
+			return nil, fmt.Errorf("--credential-file %q: %s is world-readable (mode %04o); chmod 0600 it first", argument, absolute, info.Mode().Perm())
+		}
+		files = append(files, platform.CredentialFile{Reference: reference, Path: absolute})
+	}
+	return files, nil
+}
+
+func cmdInstallService(g globalFlags, force, enable bool, credentialArguments []string) error {
 	cfg, err := loadConfig(g)
+	if err != nil {
+		return err
+	}
+	credentialFiles, err := parseCredentialFiles(credentialArguments)
 	if err != nil {
 		return err
 	}
@@ -965,7 +1021,7 @@ func cmdInstallService(g globalFlags, force, enable bool) error {
 	if _, err := os.Stat(configPath); err != nil {
 		return fmt.Errorf("configuration %s does not exist; run `t3-steward init` first", configPath)
 	}
-	res, err := mgr.Install(platform.InstallOptions{Binary: exe, ConfigPath: configPath, Force: force, Enable: enable, DryRun: cfg.Policy.DryRun})
+	res, err := mgr.Install(platform.InstallOptions{Binary: exe, ConfigPath: configPath, Force: force, Enable: enable, DryRun: cfg.Policy.DryRun, CredentialFiles: credentialFiles})
 	if err != nil {
 		return err
 	}

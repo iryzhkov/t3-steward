@@ -27,6 +27,22 @@ type InstallOptions struct {
 	// DryRun reports whether the configuration still has dry-run on, for
 	// the installer's advice.
 	DryRun bool
+	// CredentialFiles are rendered as Environment=T3_STEWARD_CREDENTIAL_<REF>_FILE=<path>
+	// lines, so the steward reads each credential from its file at use and
+	// no wrapper script has to export it. Paths under the home directory are
+	// rendered with %h.
+	CredentialFiles []CredentialFile
+}
+
+// CredentialFile binds one credential reference to the file that holds its
+// value on this host.
+type CredentialFile struct {
+	// Reference is the credential reference as configured (for example
+	// F02_PROTOCOL or secretref:f02-protocol/normandy); it is mapped onto the
+	// variable name the same way the runtime maps it.
+	Reference string
+	// Path is the absolute path of the file.
+	Path string
 }
 
 // InstallResult reports what was written.
