@@ -270,6 +270,37 @@ func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeR
 	return p.coordinator.PlanAndCommit(ctx, input)
 }
 
+// coordinatorWorkerAuthorization reports, per worker, the provider instances
+// this coordinator's effective configuration authorizes, and the instances the
+// fleet projection authorized that the load dropped.
+//
+// The two halves are joined here because nothing downstream can: a dropped
+// instance is in no worker catalog and therefore in no quota pool, so the
+// only record that it was ever authorized is the load's own. "t3-steward
+// models" reports it as the reason a route is missing.
+func coordinatorWorkerAuthorization(cfg config.Config) map[string][]backlogadmin.WorkerProviderAuthorization {
+	authorization := make(map[string][]backlogadmin.WorkerProviderAuthorization, len(cfg.BacklogV2.Workers))
+	for id, worker := range cfg.BacklogV2.Workers {
+		for instance, provider := range worker.Providers {
+			authorization[id] = append(authorization[id], backlogadmin.WorkerProviderAuthorization{
+				Instance: instance, QuotaPool: provider.QuotaPool,
+				Models: append([]string(nil), provider.Models...),
+			})
+		}
+	}
+	for _, dropped := range cfg.DroppedFleetProviders() {
+		authorization[dropped.Worker] = append(authorization[dropped.Worker], backlogadmin.WorkerProviderAuthorization{
+			Instance: dropped.Instance, Dropped: dropped.Reason,
+		})
+	}
+	for id := range authorization {
+		sort.Slice(authorization[id], func(i, j int) bool {
+			return authorization[id][i].Instance < authorization[id][j].Instance
+		})
+	}
+	return authorization
+}
+
 func coordinatorQuotaPoolBindings(cfg config.Config) []backlog.QuotaPoolBinding {
 	instancesByPool := make(map[string]map[string]struct{}, len(cfg.BacklogV2.QuotaPools))
 	modelsByPool := make(map[string]map[string]struct{}, len(cfg.BacklogV2.QuotaPools))
@@ -613,6 +644,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	for name, project := range cfg.BacklogV2.Projects {
 		projectWorkers[name] = append([]string(nil), project.Workers...)
 	}
+	service.SetWorkerAuthorization(coordinatorWorkerAuthorization(cfg))
 	service.SetViability(backlogadmin.ViabilitySettings{
 		Projects:          fleetProjects,
 		SetupProfiles:     fleetProfiles,
