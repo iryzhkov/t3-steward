@@ -69,7 +69,7 @@ func cmdCoordinator(g globalFlags, args []string) error {
 	if err != nil {
 		return err
 	}
-	return reportTransportError(args, runCoordinatorIdentity(context.Background(), cfg, os.Stdout, asJSON))
+	return runCoordinatorIdentity(context.Background(), cfg, os.Stdout, asJSON)
 }
 
 // CoordinatorIdentity is what "coordinator identity" reports. It needs no new

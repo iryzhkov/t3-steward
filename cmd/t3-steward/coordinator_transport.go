@@ -10,16 +10,31 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 )
 
-// reportTransportError prints the versioned error envelope when the command was
-// asked for JSON. It always returns the error unchanged, so the process exit
-// code still carries the class and the human line still reaches stderr.
-func reportTransportError(args []string, err error) error {
-	if err == nil {
-		return nil
+// unclassifiedErrorClass is the class of an error envelope for a failure no
+// transport classified: a bad flag, a refused registration, a missing file.
+// Its exit code stays 1, as ExitCodeFor already decides.
+const unclassifiedErrorClass backlogadmin.TransportClass = "error"
+
+// reportJSONError prints the versioned error envelope on stdout when the
+// command line asked for --json and the command failed. A transport-classified
+// failure prints its class and operation; any other failure prints the same
+// shape with class "error", the command word as the operation and the message.
+// It always returns the error unchanged, so the process exit code still
+// carries the class and the human line still reaches stderr.
+func reportJSONError(args []string, err error) error {
+	if err == nil || !requestsJSON(args) {
+		return err
 	}
 	envelope, classified := backlogadmin.NewTransportErrorEnvelope(err)
-	if !classified || !requestsJSON(args) {
-		return err
+	if !classified {
+		operation := ""
+		if len(args) > 0 {
+			operation = args[0]
+		}
+		envelope = backlogadmin.TransportErrorEnvelope{
+			Version: backlogadmin.Version, Kind: "error", Class: unclassifiedErrorClass,
+			Operation: operation, Message: err.Error(),
+		}
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(envelope)
 	return err
@@ -63,9 +78,11 @@ Talking to the coordinator
     8  rejected: the coordinator answered and refused the request
     1  anything else
 
-  --json is available on every command that prints a result. A failure that
-  reached the transport also prints {"version":"backlog.admin/v1","kind":"error",
-  "class":"...","operation":"...","message":"..."} on standard output.
+  --json is available on every command that prints a result. Any failure under
+  --json also prints {"version":"backlog.admin/v1","kind":"error",
+  "class":"...","operation":"...","message":"..."} on standard output: the
+  transport class above when the failure reached the transport, class "error"
+  with the command word as the operation otherwise.
 
   Configuration on a host that is not the coordinator, in either place, with the
   configuration file winning when both exist:

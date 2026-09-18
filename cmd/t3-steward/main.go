@@ -98,7 +98,16 @@ type globalFlags struct {
 	logLevel       string
 }
 
+// run dispatches one command line and, when it asked for --json and failed,
+// prints the error envelope on stdout before returning the error. Applying
+// the envelope here, once, is what makes "--json is on every verb" true: a
+// command family cannot forget it, and an error that no transport classified
+// still produces a document instead of silence.
 func run(args []string) error {
+	return reportJSONError(args, dispatch(args))
+}
+
+func dispatch(args []string) error {
 	// A manifest refusal names the release that refused it, so the version
 	// the linker set is handed to the manifest parser before any command runs.
 	backlog.SetReleaseVersion(version)

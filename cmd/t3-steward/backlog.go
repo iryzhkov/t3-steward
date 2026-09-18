@@ -145,7 +145,7 @@ func isCoordinatorAdmin(args []string) bool {
 func runCoordinatorAdmin(cfg config.Config, args []string, schedules bool) error {
 	transport, err := newCoordinatorTransport(cfg)
 	if err != nil {
-		return reportTransportError(args, err)
+		return err
 	}
 	client := transport.client
 	cli := backlogAdminCLI{
@@ -159,10 +159,11 @@ func runCoordinatorAdmin(cfg config.Config, args []string, schedules bool) error
 		principal:           transport.principal,
 		stdout:              os.Stdout,
 	}
+	// The --json error envelope is applied once, in run(), for every command.
 	if schedules {
-		return reportTransportError(args, cli.runSchedules(context.Background(), args))
+		return cli.runSchedules(context.Background(), args)
 	}
-	return reportTransportError(args, cli.runBacklog(context.Background(), args))
+	return cli.runBacklog(context.Background(), args)
 }
 
 func cmdSchedules(g globalFlags, args []string) error {
