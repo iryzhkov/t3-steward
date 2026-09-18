@@ -281,6 +281,131 @@ func TestARefusedNodeWakeClaimIsReported(t *testing.T) {
 	}
 }
 
+// nodeWakeTransitionReports collects the delivery transitions a runner reported
+// as refused, so a test can say which transition was named rather than only
+// that something was logged.
+func nodeWakeTransitionReports(handler *recordingHandler) []map[string]string {
+	var reports []map[string]string
+	for _, record := range handler.records {
+		if record.Level != slog.LevelError || record.Message != "move a node wake through its delivery states" {
+			continue
+		}
+		attributes := map[string]string{}
+		record.Attrs(func(a slog.Attr) bool {
+			attributes[a.Key] = a.Value.String()
+			return true
+		})
+		reports = append(reports, attributes)
+	}
+	return reports
+}
+
+// refusingMemberMemory refuses one wait's transition into one state and answers
+// every other transition normally, which is how a rolled-back coordinator or a
+// transport that failed mid-tick refuses exactly one call.
+type refusingMemberMemory struct {
+	*nativeGroupMemory
+	id, to string
+}
+
+func (s *refusingMemberMemory) TransitionNodeWake(ctx context.Context, id, from, to string, at time.Time) (bool, error) {
+	if id == s.id && to == s.to {
+		return false, errors.New("unknown native wait action")
+	}
+	return s.nativeGroupMemory.TransitionNodeWake(ctx, id, from, to, at)
+}
+
+// The members of a --wake all group ride in the earliest member's message and
+// are then moved through the same two transitions the sender is, over the same
+// network on every host that is not the coordinator. A refusal there is milder
+// than a lost wake -- nodeWaitGroups lets the earliest still-pending member
+// carry one more send on a later tick -- but the group is then woken twice, and
+// a duplicate wake with nothing in the log to explain it is the kind of mystery
+// these lines exist to end.
+func TestARefusedGroupMemberTransitionIsReported(t *testing.T) {
+	now := time.Now()
+	member := func(id string, created time.Time) domain.NodeWait {
+		return domain.NodeWait{
+			Request:     domain.NodeWaitRequest{ID: id, ThreadID: "thread", Group: "pair", Wake: domain.WakeAll, Target: domain.NodeRef{RunID: "r", TaskID: id}},
+			Host:        "here",
+			CreatedAt:   created,
+			SettledAt:   &now,
+			Observation: &domain.NodeObservation{ExitCode: 0, Outcome: domain.TaskWaitMet},
+			DeliveryID:  "token-" + id,
+			Delivery:    "pending",
+		}
+	}
+	for _, tc := range []struct {
+		name, refuse, from string
+	}{
+		{"the rider cannot be claimed", "sending", "pending"},
+		{"the rider cannot be marked delivered", "delivered", "sending"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &refusingMemberMemory{nativeGroupMemory: &nativeGroupMemory{waits: []domain.NodeWait{
+				member("nw-first", now.Add(-time.Minute)),
+				member("nw-second", now),
+			}}, id: "nw-second", to: tc.refuse}
+			handler := &recordingHandler{}
+			control := &nativeControl{}
+			runner := New(store, control, slog.New(handler))
+			runner.NodeHost = "here"
+			runner.Tick(context.Background(), nil, nil)
+			if control.sends != 1 {
+				t.Fatalf("the group was sent %d times, want once", control.sends)
+			}
+			reports := nodeWakeTransitionReports(handler)
+			if len(reports) != 1 {
+				t.Fatalf("a refused group member transition was reported %d times, want once (%v)", len(reports), reports)
+			}
+			for key, want := range map[string]string{
+				"wait": "nw-second", "from": tc.from, "to": tc.refuse, "host": "here",
+				"error": "unknown native wait action",
+			} {
+				if reports[0][key] != want {
+					t.Fatalf("the report says %s=%q, want %q (%v)", key, reports[0][key], want, reports[0])
+				}
+			}
+		})
+	}
+}
+
+// A dry run holds a wake rather than sending it, and the hold is a transition
+// on the same store, over the same network. A refusal leaves the wait pending
+// while the operator reads "held" into it, so it is reported like the rest.
+func TestARefusedDryRunHoldIsReported(t *testing.T) {
+	now := time.Now()
+	store := refusingNativeMemory{&nativeMemory{w: domain.NodeWait{
+		Request:     domain.NodeWaitRequest{ID: "nw-1", ThreadID: "thread", Name: "run-1/__sink"},
+		Host:        "here",
+		SettledAt:   &now,
+		Observation: &domain.NodeObservation{ExitCode: 0, Reason: "succeeded"},
+		DeliveryID:  "token",
+		Delivery:    "pending",
+	}}}
+	handler := &recordingHandler{}
+	control := &nativeControl{}
+	runner := New(store, control, slog.New(handler))
+	runner.NodeHost = "here"
+	runner.NodeDryRun = true
+	runner.Tick(context.Background(), nil, nil)
+	if control.sends != 0 {
+		t.Fatalf("a dry run sent %d wakes", control.sends)
+	}
+	reports := nodeWakeTransitionReports(handler)
+	if len(reports) != 1 {
+		t.Fatalf("a refused hold was reported %d times, want once (%v)", len(reports), reports)
+	}
+	for key, want := range map[string]string{
+		"wait": "nw-1", "from": "pending", "to": "held", "host": "here",
+		"error": "unknown native wait action",
+	} {
+		if reports[0][key] != want {
+			t.Fatalf("the report says %s=%q, want %q (%v)", key, reports[0][key], want, reports[0])
+		}
+	}
+}
+
 // The runner records that it is delivering node wakes for its host, so that a
 // command on this host can establish that a daemon is here to deliver them. It
 // records nothing in a dry run, where a wake is held rather than sent, because

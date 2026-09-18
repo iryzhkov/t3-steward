@@ -115,7 +115,9 @@ func (r *Runner) tickNodes(ctx context.Context) {
 		}
 		if r.NodeDryRun {
 			if w.Delivery == "pending" {
-				_, _ = store.TransitionNodeWake(ctx, w.Request.ID, "pending", "held", r.now())
+				if _, err := store.TransitionNodeWake(ctx, w.Request.ID, "pending", "held", r.now()); err != nil {
+					logNodeWakeTransition(ctx, r, w.Request.ID, "pending", "held", host, err)
+				}
 			}
 			continue
 		}
@@ -157,8 +159,18 @@ func (r *Runner) tickNodes(ctx context.Context) {
 				if member.Delivery != "pending" && member.Delivery != "held" {
 					continue
 				}
-				if claimed, _ := store.TransitionNodeWake(ctx, member.Request.ID, member.Delivery, "sending", r.now()); claimed {
-					_, _ = store.TransitionNodeWake(ctx, member.Request.ID, "sending", "delivered", r.now())
+				claimed, err := store.TransitionNodeWake(ctx, member.Request.ID, member.Delivery, "sending", r.now())
+				if err != nil {
+					logNodeWakeTransition(ctx, r, member.Request.ID, member.Delivery, "sending", host, err)
+					continue
+				}
+				if !claimed {
+					// Another runner carried this member: the same fence as
+					// above, and the same silence.
+					continue
+				}
+				if _, err := store.TransitionNodeWake(ctx, member.Request.ID, "sending", "delivered", r.now()); err != nil {
+					logNodeWakeTransition(ctx, r, member.Request.ID, "sending", "delivered", host, err)
 				}
 			}
 		}
