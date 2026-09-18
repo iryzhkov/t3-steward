@@ -140,10 +140,11 @@ All notable changes to this project are documented here. The format follows
   without installing the binary that can read it.
 
 - `t3-steward models` reports, per instance and per worker, `authorized`,
-  `advertised` and, when the worker is not offering the route, the `reason`:
-  `missing binding` (the coordinator dropped the instance at load), `no models`
-  (the fleet authorises it for no model), `not installed` (the worker has no
-  such instance) or `unavailable` (installed, not signed in or not enabled).
+  `advertised` and, when that instance and worker route cannot run, the
+  `reason`: `missing binding` (the coordinator dropped the instance at load),
+  `no models` (the fleet authorises it for no model), `not installed` (the
+  worker has no such instance) or `unavailable` (installed, not signed in or
+  not enabled).
   The text form gains one line per instance and worker under the table. The
   reason field, added with the verb, was empty until now because the
   coordinator did not report why it dropped an instance; it does now, and the

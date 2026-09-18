@@ -503,8 +503,11 @@ rather than omitted: a route that cannot run is what the caller most needs to
 see.
 
 Under the table, one line per instance and worker that the coordinator
-authorises for that worker and that the worker is not offering now, with the
-reason:
+authorises for that worker and whose route cannot run, with the reason. A
+worker that has the instance installed and is signed in to it is listed there
+too when the coordinator dropped that instance from its catalog: the host
+offers the route and the fleet authorises no pool to charge it to, so it still
+cannot run. The reasons are:
 
 | Reason | What it means | Where it is fixed |
 | --- | --- | --- |
@@ -515,9 +518,11 @@ reason:
 
 The instance's own `reason` is the first of those its workers report, in that
 order, because a fault in the fleet's authorisation explains every worker at
-once and is one edit away from fixed. An instance the coordinator dropped is
-listed here and nowhere else: it is in no quota pool and in no inventory, which
-is why it used to be invisible. A coordinator older than this release reports
+once and is one edit away from fixed. An instance the coordinator dropped is in
+the table with `no quota binding` as its status, and these lines are the only
+place that names the worker it was dropped for and why. It used to be reported
+nowhere at all: no quota pool holds it, and a worker's inventory names it only
+on a host that has it installed. A coordinator older than this release reports
 no per-worker authorisation and the reasons are then absent rather than guessed.
 
 On the wake, whose first line is the structured trailer

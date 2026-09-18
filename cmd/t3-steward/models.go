@@ -35,12 +35,14 @@ that project; "t3-steward backlog projects" lists the projects.
 
 An instance that is authorized and advertised by nobody, or advertised with no
 quota binding, is listed with that as its status rather than omitted: a route
-that cannot run is the thing the caller most needs to see. Under the table,
-one line per instance and worker whose route cannot run, with the reason. A
-worker that has the instance installed and is signed in to it is listed there
-too when the coordinator dropped that instance from the worker's catalog: the
-host offers the route and the fleet authorizes no pool to charge it to, so it
-still cannot run.
+that cannot run is the thing the caller most needs to see. Under the table, one
+line per instance and worker the coordinator authorizes for that worker and
+whose route cannot run, with the reason. A worker that has the instance
+installed and is signed in to it is listed there too when the coordinator
+dropped that instance from the worker's catalog: the host offers the route and
+the fleet authorizes no pool to charge it to, so it still cannot run. A pair
+the coordinator authorizes for nothing has no line: these reasons are what the
+coordinator reports about the instances it does authorize.
 
   missing binding   the coordinator dropped it at load: no quota pool of that
                     worker is authorized for the instance
@@ -454,13 +456,16 @@ func renderModels(out io.Writer, document modelsDocument) error {
 	return renderModelsReasons(out, document)
 }
 
-// renderModelsReasons lists every instance and worker pair whose route cannot
-// run, with the reason. A pair is listed even when the worker advertises the
-// instance: the coordinator drops an instance it cannot bind to a quota pool,
-// and no amount of advertising makes that route runnable. It is a second table
-// rather than a column of the first because the reason belongs to the pair,
-// not to the route: one instance can be missing on one worker and signed out
-// on another.
+// renderModelsReasons lists the instance and worker pairs the coordinator
+// authorizes and whose route cannot run, with the reason. That scope is the
+// coordinator's: a reason is recorded only for a pair it reported an
+// authorization for, so a pair it authorizes for nothing gets no row here
+// however little it can run. A pair is listed even when the worker advertises
+// the instance: the coordinator drops an instance it cannot bind to a quota
+// pool, and no amount of advertising makes that route runnable. It is a second
+// table rather than a column of the first because the reason belongs to the
+// pair, not to the route: one instance can be missing on one worker and signed
+// out on another.
 func renderModelsReasons(out io.Writer, document modelsDocument) error {
 	type pair struct{ instance, worker, reason string }
 	var pairs []pair
