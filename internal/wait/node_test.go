@@ -225,6 +225,62 @@ func TestTheRunnerAsksAScopedStoreForItsOwnHostsWaits(t *testing.T) {
 	}
 }
 
+// refusingNativeMemory answers a delivery transition the way a coordinator that
+// does not know the action does: with a plain error, over the network.
+type refusingNativeMemory struct{ *nativeMemory }
+
+func (refusingNativeMemory) TransitionNodeWake(context.Context, string, string, string, time.Time) (bool, error) {
+	return false, errors.New("unknown native wait action")
+}
+
+// A wake that cannot be claimed is a wake that never arrives, and the symptom
+// -- delivery=pending forever -- is identical to the defect this path exists to
+// fix. Now that the claim crosses the network on every host that is not the
+// coordinator, its refusal has to leave a line naming the wait, the transition
+// and the host, instead of being swallowed by the loop.
+func TestARefusedNodeWakeClaimIsReported(t *testing.T) {
+	now := time.Now()
+	records := refusingNativeMemory{&nativeMemory{w: domain.NodeWait{
+		Request:     domain.NodeWaitRequest{ID: "nw-1", ThreadID: "thread", Name: "run-1/__sink"},
+		Host:        "here",
+		SettledAt:   &now,
+		Observation: &domain.NodeObservation{ExitCode: 0, Reason: "succeeded"},
+		DeliveryID:  "token",
+		Delivery:    "pending",
+	}}}
+	handler := &recordingHandler{}
+	control := &nativeControl{}
+	runner := New(records, control, slog.New(handler))
+	runner.NodeHost = "here"
+	runner.Tick(context.Background(), nil, nil)
+	if control.sends != 0 {
+		t.Fatalf("a wake was sent without being claimed (%d sends)", control.sends)
+	}
+	var reported int
+	for _, record := range handler.records {
+		if record.Level != slog.LevelError || record.Message != "move a node wake through its delivery states" {
+			continue
+		}
+		reported++
+		attributes := map[string]string{}
+		record.Attrs(func(a slog.Attr) bool {
+			attributes[a.Key] = a.Value.String()
+			return true
+		})
+		for key, want := range map[string]string{
+			"wait": "nw-1", "from": "pending", "to": "sending", "host": "here",
+			"error": "unknown native wait action",
+		} {
+			if attributes[key] != want {
+				t.Fatalf("the report says %s=%q, want %q (%v)", key, attributes[key], want, attributes)
+			}
+		}
+	}
+	if reported != 1 {
+		t.Fatalf("a refused claim was reported %d times, want once", reported)
+	}
+}
+
 // The runner records that it is delivering node wakes for its host, so that a
 // command on this host can establish that a daemon is here to deliver them. It
 // records nothing in a dry run, where a wake is held rather than sent, because

@@ -107,7 +107,9 @@ func (r *Runner) tickNodes(ctx context.Context) {
 				to = "delivered"
 			}
 			if to != w.Delivery {
-				_, _ = store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, to, r.now())
+				if _, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, to, r.now()); err != nil {
+					logNodeWakeTransition(ctx, r, w.Request.ID, w.Delivery, to, host, err)
+				}
 			}
 			continue
 		}
@@ -125,7 +127,13 @@ func (r *Runner) tickNodes(ctx context.Context) {
 			continue
 		}
 		claimed, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "sending", r.now())
-		if err != nil || !claimed {
+		if err != nil {
+			logNodeWakeTransition(ctx, r, w.Request.ID, w.Delivery, "sending", host, err)
+			continue
+		}
+		if !claimed {
+			// Another runner holds this wake. That is the fence working, not a
+			// fault, so it is not reported as one.
 			continue
 		}
 		text := nodeTrailer(w) + "\n\n" + nodeWakeProse(w)
@@ -133,7 +141,9 @@ func (r *Runner) tickNodes(ctx context.Context) {
 			text = nodeGroupMessage(members)
 		}
 		if err := control.SendNodeWake(ctx, *thread, w.DeliveryID, text); err != nil {
-			_, _ = store.TransitionNodeWake(ctx, w.Request.ID, "sending", "recovery-required", r.now())
+			if _, err := store.TransitionNodeWake(ctx, w.Request.ID, "sending", "recovery-required", r.now()); err != nil {
+				logNodeWakeTransition(ctx, r, w.Request.ID, "sending", "recovery-required", host, err)
+			}
 			continue
 		}
 		if grouped {
@@ -167,6 +177,21 @@ func (r *Runner) listNodeWaits(ctx context.Context, store NodeStore, host string
 		return scoped.ListNodeWaitsForHost(ctx, host)
 	}
 	return store.ListNodeWaits(ctx)
+}
+
+// logNodeWakeTransition reports a delivery transition the store refused.
+//
+// On a coordinator this store is local SQLite and an error here means a corrupt
+// database. On every other host it is the coordinator over the admin transport,
+// where an error means a coordinator that was rolled back to a release without
+// the transition, an expired credential or a transport fault -- and the
+// consequence is a wake that silently never arrives, which is indistinguishable
+// from the defect this delivery path exists to fix. It names the wait, the
+// transition it was refused and the host that tried, which is what turns
+// "delivery=pending forever" into one log line with a cause.
+func logNodeWakeTransition(ctx context.Context, r *Runner, id, from, to, host string, err error) {
+	logFailure(ctx, r.log, "move a node wake through its delivery states", err,
+		"wait", id, "from", from, "to", to, "host", host, "error", err)
 }
 
 // nodeGroupKey identifies a --wake all group: one thread, one group name.
