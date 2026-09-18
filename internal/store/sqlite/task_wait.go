@@ -453,9 +453,20 @@ func (s *Store) ExpireTaskWaits(ctx context.Context, now time.Time) ([]domain.Ta
 			RanFor:     settled.Sub(wait.RegisteredAt),
 			ObservedAt: settled,
 		}
+		if wait.OrTimeout {
+			// --or-timeout: the deadline is an expected end of the wait, not a
+			// contradiction to record. The outcome still says timed-out so the
+			// resumed turn can tell it from the condition being met.
+			wait.Result.ExitCode = 0
+			wait.Result.Reason = fmt.Sprintf("the deadline of %s passed, which this wait treats as a normal outcome (--or-timeout)", wait.MaxDuration)
+		}
 		wait.SettledAt = &settled
 		if err = saveTaskWaitTx(ctx, tx, wait); err != nil {
 			return nil, err
+		}
+		expired = append(expired, wait)
+		if wait.OrTimeout {
+			continue
 		}
 		if err = recordTaskWaitEventTx(ctx, tx, domain.TaskWaitReconciliation{
 			ID: "expiry:" + wait.ID, Kind: domain.TaskWaitReconciliationExpired,
@@ -465,7 +476,6 @@ func (s *Store) ExpireTaskWaits(ctx context.Context, now time.Time) ([]domain.Ta
 		}); err != nil {
 			return nil, err
 		}
-		expired = append(expired, wait)
 	}
 	return expired, tx.Commit()
 }

@@ -196,6 +196,12 @@ func taskWaitResult(w Wait, now time.Time) domain.TaskWaitResult {
 		outcome = domain.TaskWaitTimedOut
 	case StatusCancelled:
 		outcome = domain.TaskWaitCancelled
+	default:
+		if w.Outcome != "" {
+			// The row records its outcome at settlement; a status that has
+			// moved on since (woken) does not change what was observed.
+			outcome = domain.TaskWaitOutcome(w.Outcome)
+		}
 	}
 	observed := now
 	if w.SettledAt != nil {

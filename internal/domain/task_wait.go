@@ -440,7 +440,11 @@ func (c TaskWaitWakeContext) Prompt() string {
 			fmt.Fprintf(&builder, "- %s: still pending\n", name)
 			continue
 		}
-		fmt.Fprintf(&builder, "- %s: %s (exit %d) after %s", name, w.Result.Outcome, w.Result.ExitCode, w.Result.RanFor.Round(time.Second))
+		outcome := string(w.Result.Outcome)
+		if w.OrTimeout && w.Result.Outcome == TaskWaitTimedOut {
+			outcome = "deadline reached (timed-out, a normal outcome for this wait)"
+		}
+		fmt.Fprintf(&builder, "- %s: %s (exit %d) after %s", name, outcome, w.Result.ExitCode, w.Result.RanFor.Round(time.Second))
 		if w.Result.Reason != "" {
 			fmt.Fprintf(&builder, ": %s", w.Result.Reason)
 		}

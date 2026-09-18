@@ -233,7 +233,10 @@ func (r *Runner) Tick(ctx context.Context, _ []domain.Thread, buckets []domain.B
 		if w.Timeout > 0 && now.Sub(w.CreatedAt) >= w.Timeout {
 			reason := fmt.Sprintf("no result within %s", w.Timeout)
 			if w.OrTimeout {
+				// The deadline is what was waited for as much as the condition
+				// was: a normal outcome, reported as exit 0.
 				reason = fmt.Sprintf("the deadline of %s passed, which this wait treats as a normal outcome (--or-timeout)", w.Timeout)
+				w.LastExit = 0
 			}
 			w.settle(StatusTimedOut, reason, now, nil)
 			r.log.Info("wait timed out", "wait", w.ID, "name", w.Name, "thread", w.ThreadID, "or_timeout", w.OrTimeout)
