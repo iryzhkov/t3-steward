@@ -335,8 +335,8 @@ func TestJournalThreadOwnershipListsLiveAttemptThreads(t *testing.T) {
 	host, projection := catalogHostFixture(t)
 	bootstrapWorkerFile(t, host)
 	ownership := &JournalThreadOwnership{Home: host.Home}
-	if owned, err := ownership.OwnedThreads(context.Background()); err != nil || len(owned) != 0 {
-		t.Fatalf("worker without a catalog owns %v err=%v", owned, err)
+	if owners, err := ownership.Threads(context.Background()); err != nil || len(owners.Live) != 0 || len(owners.Settled) != 0 {
+		t.Fatalf("worker without a catalog knows %v err=%v", owners, err)
 	}
 	publishCatalog(t, host, "first", CatalogRequest{Projection: projection})
 	record := func(id, thread string, phase Phase) AttemptRecord {
@@ -357,16 +357,23 @@ func TestJournalThreadOwnershipListsLiveAttemptThreads(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	owned, err := ownership.OwnedThreads(context.Background())
+	owners, err := ownership.Threads(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	owned := owners.Live
 	if len(owned) != 2 || owned["thread-running"] != "attempt-running" || owned["thread-paused"] != "attempt-paused" {
 		t.Fatalf("owned = %v", owned)
 	}
+	// The finished and the released attempt's threads are settled: nobody
+	// owns them, and an old resume intent for them is cancelled rather than
+	// resumed.
+	if len(owners.Settled) != 2 || owners.Settled["thread-done"] != "attempt-done" || owners.Settled["thread-released"] != "attempt-released" {
+		t.Fatalf("settled = %v", owners.Settled)
+	}
 	// A host with no worker bootstrap owns nothing and reports no error.
-	if owned, err := (&JournalThreadOwnership{Home: t.TempDir()}).OwnedThreads(context.Background()); err != nil || len(owned) != 0 {
-		t.Fatalf("host without a worker: %v %v", owned, err)
+	if owners, err := (&JournalThreadOwnership{Home: t.TempDir()}).Threads(context.Background()); err != nil || len(owners.Live) != 0 || len(owners.Settled) != 0 {
+		t.Fatalf("host without a worker: %v %v", owners, err)
 	}
 }
 
@@ -399,11 +406,12 @@ func TestJournalThreadOwnershipExpiresWithTheLease(t *testing.T) {
 	var logged bytes.Buffer
 	ownership := &JournalThreadOwnership{Home: host.Home, Now: func() time.Time { return now }, Log: slog.New(slog.NewTextHandler(&logged, nil))}
 	for range 3 {
-		owned, err := ownership.OwnedThreads(context.Background())
+		owners, err := ownership.Threads(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(owned) != 2 || owned["thread-live"] != "attempt-live" || owned["thread-no-lease-fresh"] != "attempt-no-lease-fresh" {
+		owned := owners.Live
+		if len(owners.Settled) != 0 || len(owned) != 2 || owned["thread-live"] != "attempt-live" || owned["thread-no-lease-fresh"] != "attempt-no-lease-fresh" {
 			t.Fatalf("owned = %v", owned)
 		}
 	}
@@ -427,9 +435,9 @@ func TestJournalThreadOwnershipExpiresWithTheLease(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	owned, err := ownership.OwnedThreads(context.Background())
-	if err != nil || len(owned) != 5 {
-		t.Fatalf("owned after renewal = %v err=%v", owned, err)
+	owners, err := ownership.Threads(context.Background())
+	if err != nil || len(owners.Live) != 5 {
+		t.Fatalf("owned after renewal = %v err=%v", owners, err)
 	}
 	if !strings.Contains(logged.String(), "no stale attempt records remain") {
 		t.Fatalf("recovery not logged:\n%s", logged.String())

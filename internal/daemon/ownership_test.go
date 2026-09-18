@@ -12,14 +12,15 @@ import (
 )
 
 type fakeOwnership struct {
-	owned map[string]string
-	err   error
-	calls int
+	owned   map[string]string
+	settled map[string]string
+	err     error
+	calls   int
 }
 
-func (f *fakeOwnership) OwnedThreads(context.Context) (map[string]string, error) {
+func (f *fakeOwnership) Threads(context.Context) (ThreadOwners, error) {
 	f.calls++
-	return f.owned, f.err
+	return ThreadOwners{Live: f.owned, Settled: f.settled}, f.err
 }
 
 // The S-16 incident: the watchdog stopped the threads of campaign tasks at the
@@ -63,6 +64,40 @@ func TestOwnedThreadIntentIsCancelledNeverResumed(t *testing.T) {
 	h.poll()
 	if len(h.fake.resumes) != 0 {
 		t.Fatalf("resumes = %v", h.fake.resumes)
+	}
+}
+
+// The upgrade hazard behind S-16's seven threads: an intent recorded before
+// this release for a thread whose attempt has since failed or been cancelled.
+// The attempt is settled, so nobody owns the thread, and nothing would use a
+// resumed turn: the intent is cancelled, not resumed after the reset. A settled
+// attempt's thread is otherwise the watchdog's as before.
+func TestSettledAttemptThreadIntentIsCancelled(t *testing.T) {
+	h := newHarness(t, nil)
+	h.fake.add("a", "codex", "gpt", true)
+	reset := h.clock.Add(5 * time.Hour)
+	h.snap(codexPrimary, 96, reset, "1")
+	if fmt.Sprint(h.fake.stops) != "[interrupt:a]" {
+		t.Fatalf("stops = %v", h.fake.stops)
+	}
+	h.d.Ownership = &fakeOwnership{settled: map[string]string{"a": "attempt-1"}}
+	h.clock = reset.Add(time.Minute)
+	h.snap(codexPrimary, 1, reset.Add(5*time.Hour), "2")
+	h.clock = h.clock.Add(3 * time.Minute)
+	h.poll()
+	if len(h.fake.resumes) != 0 {
+		t.Fatalf("a settled attempt's thread was resumed: %v", h.fake.resumes)
+	}
+	intent, _, _ := h.store.LoadResumeIntent(context.Background(), "a")
+	if intent.Status != domain.ResumeCancelled || intent.Reason != SettledThreadReason("attempt-1") {
+		t.Fatalf("intent = %+v", intent)
+	}
+	// A settled thread that runs again is stopped by the watchdog like any
+	// unowned thread.
+	h.fake.add("a", "codex", "gpt", true)
+	h.snap(codexPrimary, 96, reset.Add(5*time.Hour), "3")
+	if fmt.Sprint(h.fake.stops) != "[interrupt:a interrupt:a]" {
+		t.Fatalf("stops = %v", h.fake.stops)
 	}
 }
 

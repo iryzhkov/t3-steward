@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/daemon"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -45,25 +46,23 @@ type JournalThreadOwnership struct {
 // longer proves a live worker, and its thread is unowned for the watchdog.
 const OwnershipMaxAge = time.Hour
 
-// OwnedThreads implements daemon.ThreadOwnership. A host without a worker
-// bootstrap owns nothing; a worker without a catalog or journal owns nothing;
-// a record whose lease has expired owns nothing.
-func (o *JournalThreadOwnership) OwnedThreads(context.Context) (map[string]string, error) {
+// Threads implements daemon.ThreadOwnership. A host without a worker
+// bootstrap knows nothing; a worker without a catalog or journal knows
+// nothing. A live attempt's thread is owned unless the record is stale; a
+// terminal or released attempt's thread is settled.
+func (o *JournalThreadOwnership) Threads(context.Context) (daemon.ThreadOwners, error) {
 	attempts, err := hostJournalAttempts(o.Home)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return daemon.ThreadOwners{}, nil
 	}
 	if err != nil {
-		return nil, err
+		return daemon.ThreadOwners{}, err
 	}
 	now := o.now()
-	owned := make(map[string]string)
+	owners := daemon.ThreadOwners{Live: make(map[string]string), Settled: make(map[string]string)}
 	var stale []string
 	for _, id := range sortedAttemptIDs(attempts) {
 		record := attempts[id]
-		if !attemptOwnsThread(record) {
-			continue
-		}
 		threadID := record.ThreadID
 		if threadID == "" {
 			threadID = record.Package.Package.Identity.ThreadID
@@ -71,14 +70,34 @@ func (o *JournalThreadOwnership) OwnedThreads(context.Context) (map[string]strin
 		if threadID == "" {
 			continue
 		}
+		if !attemptOwnsThread(record) {
+			if attemptSettled(record) {
+				owners.Settled[threadID] = record.Assignment.AttemptID
+			}
+			continue
+		}
 		if why := ownershipStale(record, now); why != "" {
 			stale = append(stale, fmt.Sprintf("%s (thread %s): %s", record.Assignment.AttemptID, threadID, why))
 			continue
 		}
-		owned[threadID] = record.Assignment.AttemptID
+		owners.Live[threadID] = record.Assignment.AttemptID
 	}
 	o.noteStale(stale)
-	return owned, nil
+	return owners, nil
+}
+
+// attemptSettled reports whether an attempt is terminal on the worker or its
+// assignment was released by a confirmed coordinator stop: its thread has no
+// owner any more and nothing would use a resumed turn.
+func attemptSettled(record AttemptRecord) bool {
+	switch record.Phase {
+	case PhaseCompleted, PhaseFailed, PhaseUnknown:
+		return true
+	case PhaseStopped:
+		return record.StopConfirmed && hasCommandRequest(record, domain.WorkerCommandStop)
+	default:
+		return false
+	}
 }
 
 func (o *JournalThreadOwnership) now() time.Time {

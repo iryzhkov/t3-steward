@@ -10,9 +10,11 @@ import (
 
 // advanceResumes cancels stale intents, marks eligible ones, and resumes
 // them one provider instance at a time with staggering. An intent for a
-// thread in owned is cancelled: that thread belongs to a steward attempt and
-// the worker runtime decides when it resumes.
-func (d *Daemon) advanceResumes(ctx context.Context, threads []domain.Thread, states []domain.BucketState, owned map[string]string) {
+// thread a live attempt owns is cancelled: that thread belongs to a steward
+// attempt and the worker runtime decides when it resumes. An intent for a
+// thread whose attempt has settled is cancelled too: nothing would use the
+// resumed turn.
+func (d *Daemon) advanceResumes(ctx context.Context, threads []domain.Thread, states []domain.BucketState, owners ThreadOwners) {
 	intents, err := d.store.ListResumeIntents(ctx, domain.ResumePending, domain.ResumeEligible)
 	if err != nil {
 		d.log.Error("list resume intents", "err", err)
@@ -46,11 +48,18 @@ func (d *Daemon) advanceResumes(ctx context.Context, threads []domain.Thread, st
 			}
 			d.record(ctx, domain.ActionRecord{Kind: domain.ActionResume, ThreadID: intent.ThreadID, Detail: "cancelled: " + reason})
 		}
-		if attemptID, ownedThread := owned[intent.ThreadID]; ownedThread {
+		if attemptID, ownedThread := owners.Live[intent.ThreadID]; ownedThread {
 			// Evaluated on every tick, so an intent recorded before ownership
 			// was consulted, or before the attempt claimed the thread, is
 			// cancelled on the first tick that sees the ownership.
 			cancel(OwnedThreadReason(attemptID))
+			continue
+		}
+		if attemptID, settled := owners.Settled[intent.ThreadID]; settled {
+			// The intent predates this rule (the watchdog no longer stops
+			// owned threads) and its attempt has since failed, completed or
+			// been cancelled: a one-time upgrade hazard, closed here.
+			cancel(SettledThreadReason(attemptID))
 			continue
 		}
 		switch {

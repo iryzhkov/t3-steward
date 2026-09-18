@@ -65,7 +65,10 @@ Must:
 1. The watchdog excludes owned threads from warn, drain, stop and resume. On every tick any
    pending or eligible resume intent for an owned thread is cancelled with the reason
    `thread owned by steward attempt <attempt id>`; this also clears intents recorded before the
-   rule existed. If ownership cannot be read, the watchdog logs once and treats every thread as
+   rule existed. An intent for a thread whose attempt the journal shows as settled (completed,
+   failed, unknown or released) is cancelled with `thread belonged to a settled steward attempt
+   <attempt id>`: such an intent can only predate this rule, and nothing would use the resumed
+   turn. If ownership cannot be read, the watchdog logs once and treats every thread as
    unowned, never the reverse.
 2. The worker observes the thread before deciding on a pause, and pauses only a thread that is
    still working: a thread that already ended its turn is finished work, spends no quota to
