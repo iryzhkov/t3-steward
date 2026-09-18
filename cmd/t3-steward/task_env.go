@@ -54,14 +54,24 @@ func cmdTask(g globalFlags, args []string) error {
 	}
 	switch args[0] {
 	case "env":
-		return runTaskEnv(args[1:], os.Getenv, os.Stdout)
+		return taskFamilyEnvRoute(args[1:], os.Getenv, os.Stdout)
 	case "run":
-		return cmdTaskRun(g, args[1:])
+		return taskFamilyRunRoute(g, args[1:])
 	case "result":
-		return cmdTaskResult(g, args[1:])
+		return taskFamilyResultRoute(g, args[1:])
 	}
 	return fmt.Errorf("%w %q; the commands are run, result and env (try task --help)", errUnknownTaskCommand, args[0])
 }
+
+// The three dispatchers behind the single name "task", held in variables for
+// the same reason the backlog routes are: a test can ask which one a verb
+// documented in taskUsage reaches without starting a task, loading a
+// configuration or reaching the coordinator.
+var (
+	taskFamilyEnvRoute    = runTaskEnv
+	taskFamilyRunRoute    = cmdTaskRun
+	taskFamilyResultRoute = cmdTaskResult
+)
 
 // runTaskEnv prints the task identity the way wait resolves it: the injected
 // environment when it is complete, otherwise the record the worker wrote into
