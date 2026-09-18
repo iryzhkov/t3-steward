@@ -54,6 +54,7 @@ Commands:
   report             Consumption by peak/off-peak hours, hour of day, model and thread.
   forecast           Interactive-demand map by weekday and hour, and current backlog headroom.
   campaign           Author, inspect and submit a workflow from a campaign directory.
+  models             Every provider route the fleet can run now, with its quota state.
   coordinator        Show which coordinator this host administers (identity); reload it (reload).
   backlog            Inspect and control coordinator workflows; includes legacy file helpers.
   diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
@@ -168,7 +169,7 @@ func dispatch(args []string) error {
 			return cmdUIArchive(g, sub)
 		}
 		return cmdArchive(g, sub)
-	case "backlog", "diagnose", "worker", "campaign", "coordinator":
+	case "backlog", "diagnose", "worker", "campaign", "coordinator", "models":
 		// Sub-commands parse their own arguments; only --config and
 		// --dry-run style globals are shared, taken from the environment here.
 		paths, err := config.DefaultPaths()
@@ -193,6 +194,9 @@ func dispatch(args []string) error {
 		}
 		if cmd == "campaign" {
 			return cmdCampaign(g, sub)
+		}
+		if cmd == "models" {
+			return cmdModels(g, sub)
 		}
 		if cmd == "diagnose" {
 			sub = append([]string{"diagnose"}, sub...)
