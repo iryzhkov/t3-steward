@@ -298,13 +298,34 @@ func (s *Store) SettleNodeWaits(ctx context.Context, now time.Time) error {
 // settleStructuredTaskWaitsTx settles the live task-bound waits of the
 // coordinator kinds from the coordinator's own records. Expiry is left to
 // ExpireTaskWaits, which knows about --or-timeout.
+//
+// It also sweeps every kind for a live wait whose attempt is already
+// terminal: a cancellation whose wait settlement was lost to a crash between
+// the command application and the settlement, or any other path that ended
+// the attempt. Such a wait is settled cancelled here, on the next boundary
+// tick, rather than left live until its deadline.
 func settleStructuredTaskWaitsTx(ctx context.Context, tx *sql.Tx, records nodeStateRecords, now time.Time) error {
 	waits, err := loadJSON[domain.TaskWait](ctx, tx, "coordinator_task_waits")
 	if err != nil {
 		return err
 	}
+	attempts := make(map[string]domain.Attempt, len(records.Attempts))
+	for _, attempt := range records.Attempts {
+		attempts[attempt.ID] = attempt
+	}
 	for _, wait := range waits {
-		if !wait.Live() || !wait.Kind.Coordinator() {
+		if !wait.Live() {
+			continue
+		}
+		if attempt, ok := attempts[wait.AttemptID]; ok && attempt.Progress.Terminal() {
+			result := domain.TaskWaitResult{Outcome: domain.TaskWaitCancelled, ExitCode: 2,
+				Reason: fmt.Sprintf("the attempt ended (%s) while the wait was live", attempt.Progress)}
+			if _, err := settleTaskWaitTx(ctx, tx, wait, result, now); err != nil {
+				return err
+			}
+			continue
+		}
+		if !wait.Kind.Coordinator() {
 			continue
 		}
 		var result *domain.TaskWaitResult

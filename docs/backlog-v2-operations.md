@@ -867,7 +867,10 @@ kinds: a registration that would mix the two is refused, naming both members.
 Cancelling a task whose attempt is parked on a live task wait settles the
 wait as `cancelled` in the same command application; the worker cancels its
 check row on its next reconcile (it lists the coordinator's waits at most
-once a minute while it holds a live bound row).
+once a minute while it holds a live bound row). The settlement pass also
+settles any live task wait whose attempt is already terminal as `cancelled`
+("the attempt ended (<progress>) while the wait was live"), so an attempt
+ended by any path leaves no wait live past the next boundary tick.
 
 Version skew: deploy the coordinator before the hosts that register waits.
 A plain shell `--task current` wait from a newer host keeps working against

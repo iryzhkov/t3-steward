@@ -42,7 +42,11 @@ All notable changes to this project are documented here. The format follows
   is refused, naming both members.
 - Cancelling a task whose attempt is parked on a live task wait settles the
   wait as `cancelled` in the same command application, and the worker cancels
-  its check row on its next reconcile (U-4).
+  its check row on its next reconcile (U-4). The coordinator's settlement
+  pass also settles any live task wait whose attempt is already terminal as
+  `cancelled` on the next boundary tick, so a crash between the cancellation
+  and its wait settlement, or any other path that ends an attempt, leaves no
+  wait live until its deadline.
 
 ### Changed
 
