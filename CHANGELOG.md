@@ -105,9 +105,12 @@ All notable changes to this project are documented here. The format follows
   diagnosis gains `nodeWaits`, the interactive node waits it used to report
   under `waits`. Both documents still carry `waits` with exactly what it
   carried before, the live task waits in a run document and the node waits in
-  a diagnosis. **Deprecated: `waits` is kept for one release** so that a
-  client of the previous release keeps working; read `taskWaits` and
-  `nodeWaits`, whose names mean the same thing in both documents. The text
+  a diagnosis, in the previous release's shape: the fields this release adds to
+  a wait travel under `taskWaits` only, so `waits` is what rc.69 declares and a
+  reader that decodes it strictly still reads it. **Deprecated: `waits` is kept
+  for one release** so that a client of the previous release keeps working;
+  read `taskWaits` and `nodeWaits`, whose names mean the same thing in both
+  documents. The text
   form of a run prints a settled wait with its outcome instead of dropping it.
 - `backlog workers` prints, under the worker table, what each worker can
   actually take: the projects it advertises and its instance/model@pool

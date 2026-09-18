@@ -1,7 +1,9 @@
 package backlogadmin
 
 import (
+	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,9 +84,70 @@ func TestWorkflowDetailListsSettledTaskWaitsWithTheirOutcome(t *testing.T) {
 	}
 }
 
+// rc69TaskWaitDetail is a verbatim copy of TaskWaitDetail at v0.11.0-rc.69
+// (git show bd5362b:internal/backlogadmin/types.go), the shape every deployed
+// admin client decodes the "waits" entries of a run document into. It is kept
+// here, not shared with the live type, so that a change to the live type
+// cannot silently change what this test pins.
+type rc69TaskWaitDetail struct {
+	ID           string    `json:"id"`
+	TaskID       string    `json:"taskId"`
+	TaskName     string    `json:"taskName,omitempty"`
+	AttemptID    string    `json:"attemptId"`
+	Name         string    `json:"name,omitempty"`
+	Condition    string    `json:"condition,omitempty"`
+	RegisteredAt time.Time `json:"registeredAt"`
+	Deadline     time.Time `json:"deadline"`
+}
+
+// rc69WorkflowDetail and rc69Diagnosis are how rc.69 reads the two documents
+// this stage renamed keys in. Only the wait keys are pinned: the rest of each
+// document is held as raw JSON because nothing else in it is what this test is
+// about, and giving those fields the live types would defeat the pin.
+type rc69WorkflowDetail struct {
+	Summary       json.RawMessage      `json:"summary"`
+	Tasks         json.RawMessage      `json:"tasks"`
+	Artifacts     json.RawMessage      `json:"artifacts,omitempty"`
+	ResourceLocks json.RawMessage      `json:"resourceLocks,omitempty"`
+	Reservations  json.RawMessage      `json:"reservations,omitempty"`
+	Waits         []rc69TaskWaitDetail `json:"waits,omitempty"`
+	Gates         json.RawMessage      `json:"gates,omitempty"`
+}
+
+type rc69Diagnosis struct {
+	Revisions     json.RawMessage   `json:"revisions"`
+	GraphRevision int64             `json:"graphRevision"`
+	GeneratedAt   time.Time         `json:"generatedAt"`
+	Status        json.RawMessage   `json:"status"`
+	Workflow      json.RawMessage   `json:"workflow"`
+	Graph         json.RawMessage   `json:"graph"`
+	Events        json.RawMessage   `json:"events"`
+	Explanations  json.RawMessage   `json:"explanations"`
+	Assignments   json.RawMessage   `json:"assignments"`
+	Commands      json.RawMessage   `json:"commands"`
+	Waits         []domain.NodeWait `json:"waits"`
+	TaskWaits     json.RawMessage   `json:"taskWaits"`
+	Workers       json.RawMessage   `json:"workers"`
+	Unavailable   json.RawMessage   `json:"unavailable,omitempty"`
+}
+
+// decodeStrict is the strict decode: the one an owner-only local socket does
+// (readLocalJSON, local_transport.go) and the one that says whether a document
+// carries a field the previous release does not know.
+func decodeStrict(raw []byte, into any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(into)
+}
+
 // One key, two meanings: "waits" was the task waits in a run document and the
 // node waits in a diagnosis. Both documents now name each family, and both
 // keep the old key for one release so an rc.69 client still reads them.
+//
+// This is the cross-release pin stages 3 and 4 have (runtime_status_compat_test
+// and wait_task_compat_test): the rc.69 shapes are declared here verbatim and
+// this branch's documents are decoded into them, so "kept for one release"
+// means the previous release's own reader, not a key of the same name.
 func TestWaitKeysNameTheSameFamilyInBothDocuments(t *testing.T) {
 	detail, ok := waitNamingView().workflowDetail("run-1")
 	if !ok {
@@ -104,6 +167,37 @@ func TestWaitKeysNameTheSameFamilyInBothDocuments(t *testing.T) {
 		}
 	}
 
+	// The cross-host admin path decodes the response leniently
+	// (ssh_client.go), which is how an rc.69 admin host reads this document.
+	var oldRun rc69WorkflowDetail
+	if err := json.Unmarshal(raw, &oldRun); err != nil {
+		t.Fatalf("an rc.69 client cannot decode the run document: %v\n%s", err, raw)
+	}
+	if len(oldRun.Waits) != 1 {
+		t.Fatalf("rc.69 reads waits = %+v, want the one live wait", oldRun.Waits)
+	}
+	if got, want := oldRun.Waits[0], (rc69TaskWaitDetail{
+		ID: "tw-live", TaskID: "task-1", TaskName: "alpha", AttemptID: "attempt-1",
+		Name: "ci", Condition: "gh run view",
+		RegisteredAt: waitNamingNow.Add(-2 * time.Hour), Deadline: waitNamingNow.Add(time.Hour),
+	}); got != want {
+		t.Fatalf("rc.69 reads waits[0] = %+v, want %+v", got, want)
+	}
+
+	// Each entry of the deprecated key is frozen at the rc.69 shape for the
+	// deprecation window: everything this release added to a wait travels
+	// under taskWaits, so even a strict rc.69 reader of one entry accepts it.
+	var entries []json.RawMessage
+	if err := json.Unmarshal(document["waits"], &entries); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		var old rc69TaskWaitDetail
+		if err := decodeStrict(entry, &old); err != nil {
+			t.Fatalf("an entry of the deprecated waits key is not the rc.69 shape: %v\n%s", err, entry)
+		}
+	}
+
 	diagnosis := Diagnosis{
 		NodeWaits: []domain.NodeWait{{Request: domain.NodeWaitRequest{ID: "nw-1"}}},
 		TaskWaits: []domain.TaskWait{{ID: "tw-live"}},
@@ -120,6 +214,57 @@ func TestWaitKeysNameTheSameFamilyInBothDocuments(t *testing.T) {
 		if _, ok := document[key]; !ok {
 			t.Fatalf("the diagnosis has no %q key: %s", key, raw)
 		}
+	}
+	var oldDiagnosis rc69Diagnosis
+	if err := json.Unmarshal(raw, &oldDiagnosis); err != nil {
+		t.Fatalf("an rc.69 client cannot decode the diagnosis: %v\n%s", err, raw)
+	}
+	if len(oldDiagnosis.Waits) != 1 || oldDiagnosis.Waits[0].Request.ID != "nw-1" {
+		t.Fatalf("rc.69 reads the diagnosis waits = %+v, want the node waits", oldDiagnosis.Waits)
+	}
+	// A node wait record is untouched by this stage, so a strict rc.69 reader
+	// accepts the whole entry, not only the fields it names.
+	if err := json.Unmarshal(document["waits"], &entries); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		var old domain.NodeWait
+		if err := decodeStrict(entry, &old); err != nil {
+			t.Fatalf("an entry of the diagnosis waits key is not the rc.69 shape: %v\n%s", err, entry)
+		}
+	}
+}
+
+// What the strict decode of a whole document does, stated rather than assumed.
+// Both documents gain a key rc.69 does not know, so the strict path refuses
+// them: that path is the owner-only local socket, reachable only when an rc.69
+// binary talks to an rc.70 daemon on the same host, which is the downgrade
+// shape reported on 2026-09-18 and is not new in this stage -- every key stages
+// 1 to 4 added is in it too. The cross-host path, which is the one that spans
+// releases, is lenient and is pinned above.
+func TestTheStrictLocalDecodeRefusesTheNewWaitKeys(t *testing.T) {
+	detail, ok := waitNamingView().workflowDetail("run-1")
+	if !ok {
+		t.Fatal("run-1 has no detail")
+	}
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldRun rc69WorkflowDetail
+	err = decodeStrict(raw, &oldRun)
+	if err == nil || !strings.Contains(err.Error(), `unknown field "taskWaits"`) {
+		t.Fatalf("strict rc.69 decode of the run document: %v, want a refusal naming taskWaits", err)
+	}
+	diagnosis := Diagnosis{NodeWaits: []domain.NodeWait{{Request: domain.NodeWaitRequest{ID: "nw-1"}}}}
+	diagnosis.Waits = diagnosis.NodeWaits
+	if raw, err = json.Marshal(diagnosis); err != nil {
+		t.Fatal(err)
+	}
+	var oldDiagnosis rc69Diagnosis
+	err = decodeStrict(raw, &oldDiagnosis)
+	if err == nil || !strings.Contains(err.Error(), `unknown field "nodeWaits"`) {
+		t.Fatalf("strict rc.69 decode of the diagnosis: %v, want a refusal naming nodeWaits", err)
 	}
 }
 

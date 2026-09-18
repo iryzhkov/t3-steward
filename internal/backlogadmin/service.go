@@ -730,11 +730,21 @@ func (v view) runTaskWaits(runID string) []TaskWaitDetail {
 // liveTaskWaits is the deprecated "waits" key of a run document: the waits
 // that are still parking an attempt. It is derived from the same list the
 // taskWaits key carries, so the two can never disagree while both exist.
+//
+// Each entry is reduced to the fields the previous release declares, because
+// that is what a deprecation window is worth: the key keeps not only its old
+// meaning but its old shape, so even a reader that decodes it strictly still
+// reads it. Everything this release added to a wait -- its kind, and the
+// settlement a live wait does not have -- travels under taskWaits.
 func liveTaskWaits(waits []TaskWaitDetail) []TaskWaitDetail {
 	live := make([]TaskWaitDetail, 0, len(waits))
 	for _, wait := range waits {
 		if wait.SettledAt == nil && wait.Outcome == "" {
-			live = append(live, wait)
+			live = append(live, TaskWaitDetail{
+				ID: wait.ID, TaskID: wait.TaskID, TaskName: wait.TaskName, AttemptID: wait.AttemptID,
+				Name: wait.Name, Condition: wait.Condition,
+				RegisteredAt: wait.RegisteredAt, Deadline: wait.Deadline,
+			})
 		}
 	}
 	return live

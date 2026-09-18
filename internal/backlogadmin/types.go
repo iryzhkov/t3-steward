@@ -363,9 +363,6 @@ type WorkflowDetail struct {
 	Artifacts     []Artifact      `json:"artifacts,omitempty"`
 	ResourceLocks []ResourceLock  `json:"resourceLocks,omitempty"`
 	Reservations  []Reservation   `json:"reservations,omitempty"`
-	// Waits are the live task-bound waits parking attempts of this run, one
-	// entry per wait, each naming its task. A settled wait no longer parks
-	// anything and is not listed.
 	// TaskWaits are every task-bound wait of this run, live and settled, each
 	// naming its task and, once it has one, its outcome. A settled wait is why
 	// a task stopped waiting, so dropping it made the run document unable to
@@ -373,9 +370,10 @@ type WorkflowDetail struct {
 	// a reader branches on the array rather than on whether the key exists.
 	TaskWaits []TaskWaitDetail `json:"taskWaits"`
 	// Waits is TaskWaits restricted to the live ones, the meaning this key has
-	// always had here. Deprecated: kept for one release because a client of the
-	// previous release reads it; read taskWaits, whose name means the same
-	// thing in this document and in a diagnosis.
+	// always had here, and to the fields the previous release declares.
+	// Deprecated: kept for one release because a client of the previous release
+	// reads it; read taskWaits, whose name means the same thing in this
+	// document and in a diagnosis.
 	Waits []TaskWaitDetail `json:"waits"`
 	// Gates are the declared gates of a supervised run with their current
 	// state. An unsupervised run has none.
