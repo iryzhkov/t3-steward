@@ -4,8 +4,6 @@ import (
 	"context"
 	"reflect"
 	"testing"
-
-	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // Every answer this carrier serves from its replay cache and that carries a
@@ -39,36 +37,55 @@ func TestARepeatedUnknownRecoveryIsReportedAsAReplay(t *testing.T) {
 }
 
 // Which answers carry a replay flag is a fact about the response types, and the
-// list in markReplayedAnswer has to keep up with them. This reads the fields of
-// localResponse and fails when one grows a Replay flag that nothing marks,
-// which is how the recovery answer was missed.
+// list in markReplayedAnswer has to keep up with them. This asks the type which
+// answers there are and fails when one carries a Replay flag that nothing
+// marks, which is how the recovery answer was missed.
+//
+// The enumeration comes from localResponse itself and never from a literal
+// written here. A literal is only as complete as the memory of whoever last
+// edited it: the one this test used to carry named ten of the eleven pointer
+// fields, having already missed ArtifactMetadata, so a response type added to
+// the struct later would have been skipped in silence -- the exact failure this
+// test exists to prevent.
 func TestEveryAnswerWithAReplayFlagIsMarkedOnAReplay(t *testing.T) {
-	full := localResponse{
-		SubmissionResponse:         &LocalSubmissionResponse{},
-		ScheduleDefinitionResponse: &LocalScheduleDefinitionResponse{},
-		GraphAmendment:             &domain.GraphAmendmentResult{},
-		SupervisionResponse:        &SupervisionResponse{},
-		UnknownRecoveryResponse:    &domain.UnknownAssignmentRecoveryDecision{},
-		MutationResponse:           &MutationResponse{},
-		QuarantineReleaseResponse:  &domain.QuarantineRelease{},
-		NodeWait:                   &NodeWaitResponse{},
-		Response:                   &Response{},
-		WorkerEnrollment:           &domain.WorkerEnrollment{},
+	full := reflect.New(reflect.TypeFor[localResponse]()).Elem()
+	var populated int
+	for i := range full.NumField() {
+		field := full.Field(i)
+		if field.Kind() != reflect.Ptr {
+			continue
+		}
+		// A zero value of whatever this field points at. markReplayedAnswer has
+		// to reach every answer the carrier can serve, so every answer is
+		// present at once.
+		field.Set(reflect.New(field.Type().Elem()))
+		populated++
 	}
-	marked := markReplayedAnswer(full)
-	value := reflect.ValueOf(marked)
-	for i := range value.NumField() {
-		field := value.Field(i)
-		if field.Kind() != reflect.Ptr || field.IsNil() {
+	if populated == 0 {
+		t.Fatal("localResponse has no pointer answers, so this test proves nothing")
+	}
+	marked := reflect.ValueOf(markReplayedAnswer(full.Interface().(localResponse)))
+	var checked int
+	for i := range marked.NumField() {
+		field := marked.Field(i)
+		if field.Kind() != reflect.Ptr || field.IsNil() || field.Elem().Kind() != reflect.Struct {
 			continue
 		}
 		flag := field.Elem().FieldByName("Replay")
 		if !flag.IsValid() || flag.Kind() != reflect.Bool {
 			continue
 		}
+		checked++
 		if !flag.Bool() {
 			t.Fatalf("%s carries a replay flag that markReplayedAnswer leaves false",
-				value.Type().Field(i).Name)
+				marked.Type().Field(i).Name)
 		}
+	}
+	// The five answers markReplayedAnswer names. A count stated here turns the
+	// addition of a response type that carries a replay flag into a failure even
+	// if the walk above were ever weakened, and the addition of one that does
+	// not into a deliberate edit rather than a silent pass.
+	if checked != 5 {
+		t.Fatalf("walked %d answers carrying a replay flag, want the 5 markReplayedAnswer names", checked)
 	}
 }
