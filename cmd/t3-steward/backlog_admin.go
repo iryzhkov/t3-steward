@@ -488,9 +488,7 @@ func selectSchedule(response backlogadmin.Response, selector string) (backlogadm
 func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector string) error {
 	switch response.Kind {
 	case backlogadmin.QueryDiagnose:
-		encoder := json.NewEncoder(out)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(response.Diagnosis)
+		renderDiagnosis(out, response.Diagnosis)
 	case backlogadmin.QueryWorkers:
 		table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(table, "WORKER\tSTATE\tHEALTH\tENROLLED\tSNAPSHOT AGE (s)\tCATALOG")
@@ -850,6 +848,68 @@ func renderSchedules(out io.Writer, schedules []backlogadmin.Schedule, selector 
 			schedule.Expression, schedule.Timezone, schedule.Enabled, schedule.ActiveRunID)
 	}
 	_ = table.Flush()
+}
+
+// renderDiagnosis prints the short form of "diagnose": the run and its
+// revision, one line per task, the live task-bound waits, the node waits, the
+// workers holding this run's assignments and what the coordinator could not
+// read. --json carries the whole document.
+func renderDiagnosis(out io.Writer, diagnosis *backlogadmin.Diagnosis) {
+	if diagnosis == nil {
+		return
+	}
+	summary := diagnosis.Workflow.Summary
+	fmt.Fprintf(out, "run: %s\nworkflow: %s (%s)\nprogress: %s\nrevision: %d\ngenerated: %s\n",
+		summary.Run.ID, summary.Workflow.Name, summary.Workflow.ID, summary.Run.Progress,
+		diagnosis.GraphRevision, formatTime(diagnosis.GeneratedAt))
+	fmt.Fprintln(out, "tasks:")
+	for _, task := range diagnosis.Workflow.Tasks {
+		if task.Sink != nil {
+			fmt.Fprintf(out, "  %s (%s): %s (coordinator sink)\n", task.Task.Name, task.Task.ID, task.Sink.Progress)
+			continue
+		}
+		state, control, attempt := taskState(task)
+		fmt.Fprintf(out, "  %s (%s): %s %s attempt=%s%s\n", task.Task.Name, task.Task.ID, state, control, attempt, evidenceMarker(task.Evidence))
+	}
+	live := 0
+	for _, wait := range diagnosis.TaskWaits {
+		if wait.SettledAt != nil {
+			continue
+		}
+		if live == 0 {
+			fmt.Fprintln(out, "task waits:")
+		}
+		live++
+		fmt.Fprintf(out, "  %s task=%s attempt=%s %q: %s (deadline %s)\n", wait.ID, wait.TaskID, wait.AttemptID, wait.Name, wait.Condition, formatTime(wait.Deadline))
+	}
+	if len(diagnosis.Waits) != 0 {
+		fmt.Fprintln(out, "node waits:")
+		for _, wait := range diagnosis.Waits {
+			fmt.Fprintf(out, "  %s %q thread=%s host=%s delivery=%s (deadline %s)\n", wait.Request.ID, wait.Request.Name, wait.Request.ThreadID, wait.Host, wait.Delivery, formatTime(wait.Deadline))
+		}
+	}
+	if len(diagnosis.Workers) != 0 {
+		fmt.Fprintln(out, "workers:")
+		for _, worker := range diagnosis.Workers {
+			fmt.Fprintf(out, "  %s epoch=%s sequence=%d observed=%s\n", worker.WorkerID, worker.WorkerEpoch, worker.Sequence, formatTime(worker.ObservedAt))
+			for _, assignment := range worker.Assignments {
+				fmt.Fprintf(out, "    %s %s %s", assignment.AssignmentID, assignment.State, assignment.Control)
+				if assignment.ThreadID != "" {
+					fmt.Fprintf(out, " thread=%s", assignment.ThreadID)
+				}
+				if assignment.Journal != nil && assignment.Journal.PauseReason != "" {
+					fmt.Fprintf(out, " paused=%q", assignment.Journal.PauseReason)
+				}
+				fmt.Fprintln(out)
+			}
+		}
+	}
+	if len(diagnosis.Unavailable) != 0 {
+		fmt.Fprintln(out, "unavailable:")
+		for _, item := range diagnosis.Unavailable {
+			fmt.Fprintf(out, "  %s\n", item)
+		}
+	}
 }
 
 func formatTime(value time.Time) string {

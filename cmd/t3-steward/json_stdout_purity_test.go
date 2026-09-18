@@ -90,7 +90,8 @@ func TestCampaignWarningsGoToStderrWhenWired(t *testing.T) {
 }
 
 // diagnose --json, reached both as "t3-steward diagnose <run> --json" and as
-// "backlog diagnose <run> --json", writes the response document alone.
+// "backlog diagnose <run> --json", writes the response document alone. Without
+// --json it prints a text summary (F-18), covered by TestBacklogDiagnoseTextSummary.
 func TestBacklogDiagnoseJSONWritesOnlyTheDocumentToStdout(t *testing.T) {
 	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
 	fake := &fakeAdminQueryService{response: backlogadmin.Response{
@@ -104,7 +105,6 @@ func TestBacklogDiagnoseJSONWritesOnlyTheDocumentToStdout(t *testing.T) {
 	}}
 	for _, args := range [][]string{
 		{"diagnose", "run-1", "--json"},
-		{"diagnose", "run-1"},
 	} {
 		var stdout bytes.Buffer
 		cli := backlogAdminCLI{service: fake, principal: backlogadmin.Principal{ID: "operator", Roles: []string{"local-admin"}}, stdout: &stdout}
