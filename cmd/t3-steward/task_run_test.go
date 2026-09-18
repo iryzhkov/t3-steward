@@ -28,6 +28,8 @@ type taskRunHarness struct {
 	checkout     gitCheckout
 	checkoutErr  error
 	projects     []backlogadmin.Project
+	projectsErr  error
+	release      string
 	matrix       backlogadmin.ViabilityMatrix
 	thread       string
 	threadErr    error
@@ -38,6 +40,7 @@ type taskRunHarness struct {
 	stderr bytes.Buffer
 
 	// observed
+	queries   []backlogadmin.QueryKind
 	archives  [][]byte
 	requests  []backlogadmin.LocalSubmissionRequest
 	viability []backlogadmin.ViabilityRequest
@@ -109,8 +112,18 @@ func (h *taskRunHarness) cli() taskRunCLI {
 			resolveThread: func(string) (string, error) { return h.thread, h.threadErr },
 		},
 		query: func(_ context.Context, query backlogadmin.Query) (backlogadmin.Response, error) {
+			h.queries = append(h.queries, query.Kind)
+			if query.Kind == backlogadmin.QueryStatus {
+				return backlogadmin.Response{
+					Version: backlogadmin.Version, Kind: query.Kind,
+					Status: &backlogadmin.Status{Runtime: backlogadmin.RuntimeStatus{Release: h.release}},
+				}, nil
+			}
 			if query.Kind != backlogadmin.QueryProjects {
 				return backlogadmin.Response{}, fmt.Errorf("unexpected query kind %q", query.Kind)
+			}
+			if h.projectsErr != nil {
+				return backlogadmin.Response{}, h.projectsErr
 			}
 			response := backlogadmin.Response{Version: backlogadmin.Version, Kind: query.Kind}
 			for _, project := range h.projects {
@@ -502,6 +515,96 @@ func TestTaskRunUsesTheConfiguredDefaultModel(t *testing.T) {
 	}
 	if record := h.record(t); record.Route.Model != "opus" || record.Route.Instance != "t3-primary" {
 		t.Fatalf("route = %+v", record.Route)
+	}
+}
+
+// rc69RefusedProjectsQuery is what a coordinator of the previous release
+// answers when it is asked for a query kind it does not have. The refusal
+// crosses the transport as this text (bd5362b:internal/backlogadmin/service.go,
+// ErrInvalidQuery), so this is what the client has to recognise.
+var errRC69RefusesTheProjectsQuery = errors.New(`coordinator refused the query: invalid query: kind "projects" or target is invalid`)
+
+// A start that names its project and its whole route derives nothing from the
+// catalog, so it must not ask for it: the projects query is the one thing in
+// this verb that a coordinator of the previous release cannot answer, and a
+// mixed-release fleet is exactly when starting one task matters.
+func TestTaskRunSkipsTheProjectsQueryWhenTheRouteIsFullyExplicit(t *testing.T) {
+	h := newTaskRunHarness()
+	// Any projects query at all now fails, so success proves none was sent.
+	h.projectsErr = errRC69RefusesTheProjectsQuery
+	if err := h.run("--project", "steward", "--model", "t3-primary/claude-haiku-4-5",
+		"--worker", "omarchy-pc", "--json", "--", "summarise the diff"); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range h.queries {
+		if kind == backlogadmin.QueryProjects {
+			t.Fatalf("a fully explicit start asked for the catalog: %v", h.queries)
+		}
+	}
+	record := h.record(t)
+	if record.Project != "steward" || record.Route.Instance != "t3-primary" ||
+		record.Route.Model != "claude-haiku-4-5" || record.Route.Worker != "omarchy-pc" {
+		t.Fatalf("record = %+v", record)
+	}
+	// The pool is not invented here. The coordinator resolves it from the
+	// worker's inventory, which is where the catalog would have read it.
+	if record.Route.QuotaPool != "" {
+		t.Fatalf("a route derived without the catalog named a quota pool: %+v", record.Route)
+	}
+	manifest, _ := h.manifest(t)
+	if len(manifest.Routes) != 1 || manifest.Routes[0].Instance != "t3-primary" ||
+		manifest.Routes[0].Model != "claude-haiku-4-5" || manifest.Routes[0].QuotaPool != "" ||
+		manifest.Routes[0].Host != "omarchy-pc" || manifest.Environment.Project != "steward" {
+		t.Fatalf("manifest route = %+v, environment = %+v", manifest.Routes, manifest.Environment)
+	}
+}
+
+// A qualified defaults.model names the route as completely as the flag does.
+func TestTaskRunSkipsTheProjectsQueryForAQualifiedDefaultModel(t *testing.T) {
+	h := newTaskRunHarness()
+	h.projectsErr = errRC69RefusesTheProjectsQuery
+	h.defaultModel = "t3-primary/opus"
+	if err := h.run("--project", "steward", "--json", "--", "work"); err != nil {
+		t.Fatal(err)
+	}
+	if record := h.record(t); record.Route.Instance != "t3-primary" || record.Route.Model != "opus" {
+		t.Fatalf("route = %+v", record.Route)
+	}
+}
+
+// When the catalog is what the start needs, an older coordinator's refusal is
+// explained rather than passed through: "invalid query" reads like a client
+// bug, and the agent needs the release, the release that has the query and the
+// two flags that avoid it.
+func TestTaskRunExplainsACoordinatorWithoutTheProjectsQuery(t *testing.T) {
+	h := newTaskRunHarness()
+	h.projectsErr = errRC69RefusesTheProjectsQuery
+	h.release = "v0.11.0-rc.69"
+	err := h.run("--model", "claude-haiku-4-5", "--", "work")
+	if err == nil {
+		t.Fatal("a start that needs the catalog succeeded against a coordinator without it")
+	}
+	for _, want := range []string{
+		"v0.11.0-rc.69", `"projects" query`, taskRunProjectsQueryRelease,
+		"--project NAME", "--model INSTANCE/MODEL", "invalid query",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal does not name %q: %v", want, err)
+		}
+	}
+	if len(h.archives) != 0 {
+		t.Fatal("a run was submitted after the catalog could not be read")
+	}
+}
+
+// Only that one refusal is explained. Any other failure of the query is the
+// caller's to read as it stands.
+func TestTaskRunPassesAnyOtherProjectsFailureThrough(t *testing.T) {
+	h := newTaskRunHarness()
+	h.projectsErr = errors.New("coordinator unavailable: dial unix: no such file")
+	err := h.run("--model", "claude-haiku-4-5", "--", "work")
+	if err == nil || err.Error() != h.projectsErr.Error() {
+		t.Fatalf("error = %v, want the transport failure unchanged", err)
 	}
 }
 

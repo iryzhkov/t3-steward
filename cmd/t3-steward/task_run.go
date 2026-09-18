@@ -66,6 +66,12 @@ printed "t3-steward task result <run>" command.
 
   t3-steward models                 the routes this fleet can run now
   t3-steward backlog projects       the projects and their eligible workers
+
+--project NAME with --model INSTANCE/MODEL derives nothing from the
+coordinator's catalog, so no projects query is sent and the start works against
+a coordinator older than that query. The route then carries no quota pool: the
+coordinator resolves it from the worker's inventory rather than the CLI naming
+one it did not read.
 ` + coordinatorTransportHelp
 
 // taskRunSchemaVersion versions the record run prints.
@@ -303,17 +309,24 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	projects, err := c.projects(ctx)
-	if err != nil {
-		return err
-	}
 	checkout, err := c.checkout()
 	if err != nil {
 		return err
 	}
-	project, err := deriveTaskRunProject(parsed.project, checkout, projects)
-	if err != nil {
-		return err
+	// A start that names its project and its whole route needs nothing from
+	// the catalog, so it does not ask for it. That is not only one query
+	// saved: the projects query is the one thing here a coordinator of the
+	// previous release cannot answer, and this is what lets the single-task
+	// start work unchanged during a mixed-release window.
+	project, route, explicit := explicitTaskRunRoute(parsed, c.defaultModel)
+	if !explicit {
+		projects, queryErr := c.projects(ctx)
+		if queryErr != nil {
+			return queryErr
+		}
+		if project, err = deriveTaskRunProject(parsed.project, checkout, projects); err != nil {
+			return err
+		}
 	}
 	var warnings []string
 	ref := ""
@@ -323,9 +336,10 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	route, err := deriveTaskRunRoute(parsed.model, parsed.worker, c.defaultModel, project)
-	if err != nil {
-		return err
+	if !explicit {
+		if route, err = deriveTaskRunRoute(parsed.model, parsed.worker, c.defaultModel, project); err != nil {
+			return err
+		}
 	}
 	key := parsed.key
 	if key == "" {
@@ -412,6 +426,32 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	return renderTaskRunRecord(c.stdout, record)
 }
 
+// taskRunProjectsQueryRelease is the first release whose coordinator answers
+// the projects query. It names when the coordinator gained the query, which is
+// not what this binary's own version says, so it is written here rather than
+// taken from the linker.
+const taskRunProjectsQueryRelease = "v0.11.0-rc.70"
+
+// explicitTaskRunRoute is the start that derives nothing from the catalog:
+// --project names the project and --model INSTANCE/MODEL names the whole
+// route, optionally pinned to a worker. The quota pool is left unset rather
+// than guessed, and the coordinator resolves it from the worker's inventory,
+// which is the same pool the catalog would have named. The effective model is
+// the flag or the configured default, because a qualified default names a
+// route just as completely as the flag does.
+func explicitTaskRunRoute(parsed taskRunArgs, defaultModel string) (backlogadmin.Project, taskRunRoute, bool) {
+	model := strings.TrimSpace(parsed.model)
+	if model == "" {
+		model = strings.TrimSpace(defaultModel)
+	}
+	instance, name, qualified := strings.Cut(model, "/")
+	if strings.TrimSpace(parsed.project) == "" || !qualified || instance == "" || name == "" {
+		return backlogadmin.Project{}, taskRunRoute{}, false
+	}
+	return backlogadmin.Project{Name: parsed.project},
+		taskRunRoute{Worker: parsed.worker, Instance: instance, Model: name}, true
+}
+
 // projects asks the coordinator for its catalog. It is one query: the project
 // and the route are both derived from it, so they cannot be derived from two
 // different views of the fleet.
@@ -421,9 +461,52 @@ func (c taskRunCLI) projects(ctx context.Context) ([]backlogadmin.Project, error
 	}
 	response, err := c.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryProjects})
 	if err != nil {
-		return nil, err
+		return nil, c.explainRefusedProjectsQuery(ctx, err)
 	}
 	return response.Projects, nil
+}
+
+// explainRefusedProjectsQuery turns the refusal of a coordinator that has no
+// projects query into an answer the caller can act on. The coordinator answers
+// it as "invalid query", which reads like a client bug; during a mixed-release
+// window it is nothing of the kind, and the way forward is either the two
+// flags that need no catalog or an upgraded coordinator.
+func (c taskRunCLI) explainRefusedProjectsQuery(ctx context.Context, err error) error {
+	if !refusedAsAnUnknownQuery(err, backlogadmin.QueryProjects) {
+		return err
+	}
+	release := c.coordinatorRelease(ctx)
+	if release == "" {
+		release = "an unreported release"
+	}
+	return fmt.Errorf("this coordinator runs %s and has no %q query, which needs %s or newer: %w\n"+
+		"Pass --project NAME and --model INSTANCE/MODEL to start a task without the catalog, or upgrade the coordinator",
+		release, backlogadmin.QueryProjects, taskRunProjectsQueryRelease, err)
+}
+
+// refusedAsAnUnknownQuery reports the coordinator's own refusal of a query
+// kind it does not have. The refusal crosses the transport as its text, not as
+// a sentinel, so the text is what there is to read.
+func refusedAsAnUnknownQuery(err error, kind backlogadmin.QueryKind) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "invalid query") && strings.Contains(message, strconv.Quote(string(kind)))
+}
+
+// coordinatorRelease asks what release the coordinator runs, for a message
+// about version skew. Every release answers the status query, and an answer
+// that does not arrive only costs the message its most useful clause.
+func (c taskRunCLI) coordinatorRelease(ctx context.Context) string {
+	if c.query == nil {
+		return ""
+	}
+	response, err := c.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryStatus})
+	if err != nil || response.Status == nil {
+		return ""
+	}
+	return response.Status.Runtime.Release
 }
 
 // prompts reads the one prompt, or the fan-out's several. Exactly one source
