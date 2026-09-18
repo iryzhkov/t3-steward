@@ -184,6 +184,85 @@ func TestARegistrationWithoutTheCallingHostIsTheRC70Shape(t *testing.T) {
 	if err := decodeStrict(raw, &old); err != nil {
 		t.Fatalf("a wake transition carries a field rc.70 refuses: %v\n%s", err, raw)
 	}
+
+	// The same hazard governs the narrowed list. An rc.70 coordinator refuses it
+	// whole rather than answering it unnarrowed, which is why the client has to
+	// be able to ask again in the shape below rather than treat the refusal as a
+	// failure of the list.
+	if raw, err = json.Marshal(NodeWaitOperation{Action: "list", Host: "caller-host", Undelivered: true}); err != nil {
+		t.Fatal(err)
+	}
+	err = decodeStrict(raw, &old)
+	if err == nil || !strings.Contains(err.Error(), `unknown field "`) {
+		t.Fatalf("strict rc.70 decode of a narrowed list: %v, want a refusal naming the field", err)
+	}
+	if raw, err = json.Marshal(NodeWaitOperation{Action: "list"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := decodeStrict(raw, &old); err != nil {
+		t.Fatalf("the unnarrowed list carries a field rc.70 refuses: %v\n%s", err, raw)
+	}
+}
+
+// The list a wait runner asks for is narrowed by the coordinator, because only
+// the coordinator can narrow it: coordinator_node_waits is append-only, nothing
+// deletes a row, and the answer travels over the admin carrier once per tick
+// from every host that is not the coordinator. A runner can act on no wait but
+// its own host's, and on none whose delivery has ended.
+func TestANodeWaitListIsNarrowedToTheHostAndTheWaitsStillToDeliver(t *testing.T) {
+	store := openAdminTestStore(t)
+	seedAdminTestStore(t, store)
+	service, err := New(store, &allowAuthorizer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	principal := Principal{ID: "tester"}
+	register := func(id, host string) domain.NodeWait {
+		t.Helper()
+		response, err := service.NodeWait(ctx, principal, NodeWaitOperation{
+			Action: "register", Host: host,
+			Request: domain.NodeWaitRequest{ID: id, ThreadID: "thread", Name: "implement",
+				Target: domain.NodeRef{RunID: "run-1", TaskID: "implement"}, Timeout: time.Hour},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response.Waits[0]
+	}
+	live := register("nw-live", "caller-host")
+	over := register("nw-over", "caller-host")
+	register("nw-elsewhere", "other-host")
+	if _, err := service.NodeWait(ctx, principal, NodeWaitOperation{
+		Action: NodeWaitTransitionAction, ID: over.Request.ID, From: over.Delivery, To: "cancelled",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	narrowed, err := service.NodeWait(ctx, principal, NodeWaitOperation{Action: "list", Host: "caller-host", Undelivered: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(narrowed.Waits) != 1 || narrowed.Waits[0].Request.ID != live.Request.ID {
+		t.Fatalf("the narrowed list answered with %+v, want only %s", narrowed.Waits, live.Request.ID)
+	}
+
+	// A list that narrows nothing is what every client before v0.11.0-rc.71
+	// sends and what "t3-steward wait list" still sends: the whole table.
+	all, err := service.NodeWait(ctx, principal, NodeWaitOperation{Action: "list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all.Waits) != 3 {
+		t.Fatalf("an unfiltered list answered with %d waits, want all 3", len(all.Waits))
+	}
+
+	// The filters belong to "list" alone. A cancellation names one wait by ID
+	// and must not be narrowed away by a host that is not its own.
+	cancelled, err := service.NodeWait(ctx, principal, NodeWaitOperation{Action: "cancel", ID: "nw-elsewhere", Host: "caller-host", Undelivered: true})
+	if err != nil || len(cancelled.Waits) != 1 || cancelled.Waits[0].Delivery != "cancelled" {
+		t.Fatalf("cancelling a wait of another host answered %+v: %v", cancelled.Waits, err)
+	}
 }
 
 // The steward of the calling host claims a wake before it sends it and records

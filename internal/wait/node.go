@@ -16,6 +16,20 @@ type NodeStore interface {
 	ListNodeWaits(context.Context) ([]domain.NodeWait, error)
 	TransitionNodeWake(context.Context, string, string, string, time.Time) (bool, error)
 }
+
+// HostNodeStore is a node-wait store that can answer for one host alone. A
+// store that implements it is asked only for the waits this runner could act
+// on, which is the same set tickNodes keeps from a full list.
+//
+// It is optional because the local SQLite store has nothing to gain from it:
+// the narrowing happens in the same process against the same rows. A store that
+// answers over the admin transport has everything to gain, because the
+// coordinator's node-wait table is append-only and the answer travels once per
+// tick.
+type HostNodeStore interface {
+	ListNodeWaitsForHost(ctx context.Context, host string) ([]domain.NodeWait, error)
+}
+
 type NodeControl interface {
 	ObserveNodeWake(context.Context, string, string) (bool, error)
 	SendNodeWake(context.Context, domain.Thread, string, string) error
@@ -50,7 +64,11 @@ func (r *Runner) tickNodes(ctx context.Context) {
 		logFailure(ctx, r.log, "settle node waits", err, "error", err)
 		return
 	}
-	waits, err := store.ListNodeWaits(ctx)
+	host := r.NodeHost
+	if host == "" {
+		host, _ = os.Hostname()
+	}
+	waits, err := r.listNodeWaits(ctx, store, host)
 	if err != nil {
 		logFailure(ctx, r.log, "list node waits", err, "error", err)
 		return
@@ -58,10 +76,6 @@ func (r *Runner) tickNodes(ctx context.Context) {
 	control, ok := r.control.(NodeControl)
 	if !ok {
 		return
-	}
-	host := r.NodeHost
-	if host == "" {
-		host, _ = os.Hostname()
 	}
 	groups := nodeWaitGroups(waits, host)
 	for _, w := range waits {
@@ -136,6 +150,20 @@ func (r *Runner) tickNodes(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// listNodeWaits reads the waits this runner could act on, asking the store to
+// narrow the answer when it can do so itself.
+//
+// The narrowing is exactly the filter the delivery loop below applies anyway:
+// this host's waits, and only while their delivery has not ended. A store that
+// cannot narrow answers with everything and the loop discards the rest, which
+// is what a store behind an older coordinator does.
+func (r *Runner) listNodeWaits(ctx context.Context, store NodeStore, host string) ([]domain.NodeWait, error) {
+	if scoped, ok := store.(HostNodeStore); ok && host != "" {
+		return scoped.ListNodeWaitsForHost(ctx, host)
+	}
+	return store.ListNodeWaits(ctx)
 }
 
 // nodeGroupKey identifies a --wake all group: one thread, one group name.

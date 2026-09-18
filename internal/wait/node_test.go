@@ -183,6 +183,48 @@ func (localOnlyMemory) SaveWait(context.Context, Wait) error                    
 func (localOnlyMemory) ListWaits(context.Context, string) ([]Wait, error)       { return nil, nil }
 func (localOnlyMemory) RecordAction(context.Context, domain.ActionRecord) error { return nil }
 
+// scopedNativeMemory is a node-wait store that can answer for one host, as the
+// store over the admin transport does. It records what it was asked for.
+type scopedNativeMemory struct {
+	*nativeMemory
+	asked []string
+}
+
+func (s *scopedNativeMemory) ListNodeWaitsForHost(_ context.Context, host string) ([]domain.NodeWait, error) {
+	s.asked = append(s.asked, host)
+	if s.w.Host != host {
+		return nil, nil
+	}
+	return []domain.NodeWait{s.w}, nil
+}
+
+// A store that can narrow the list is asked to. The runner is the only party
+// that knows which waits it could act on, and on a store that reaches the
+// coordinator over the admin transport the difference is the coordinator's whole
+// node-wait history, carried once per tick.
+func TestTheRunnerAsksAScopedStoreForItsOwnHostsWaits(t *testing.T) {
+	now := time.Now()
+	records := &scopedNativeMemory{nativeMemory: &nativeMemory{w: domain.NodeWait{
+		Request:     domain.NodeWaitRequest{ID: "nw-caller", ThreadID: "thread", Name: "run-1/__sink"},
+		Host:        "caller",
+		SettledAt:   &now,
+		Observation: &domain.NodeObservation{ExitCode: 0, Reason: "succeeded"},
+		DeliveryID:  "token",
+		Delivery:    "pending",
+	}}}
+	control := &nativeControl{}
+	runner := New(localOnlyMemory{}, control, nil)
+	runner.NodeStore = records
+	runner.NodeHost = "caller"
+	runner.Tick(context.Background(), nil, nil)
+	if len(records.asked) != 1 || records.asked[0] != "caller" {
+		t.Fatalf("the runner asked the store for %v, want one list scoped to caller", records.asked)
+	}
+	if control.sends != 1 {
+		t.Fatalf("the scoped list delivered %d wakes, want exactly one", control.sends)
+	}
+}
+
 // The wake of a wait registered from another host is delivered by the steward
 // of that host and by no other, because the T3 thread it names exists only
 // there. The coordinator holds the record; the calling host reads it over a

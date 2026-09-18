@@ -32,7 +32,28 @@ type NodeWaitOperation struct {
 	// registered. An empty host keeps the previous behaviour, the coordinator's
 	// own hostname, which is what every client before v0.11.0-rc.71 meant and
 	// what a coordinator-local client still means.
+	//
+	// On a "list" it means the other half of the same fact: keep only the waits
+	// recorded for that host. A wait runner can act on no other, so asking for
+	// them is asking the coordinator to encode and send history that is thrown
+	// away on arrival.
 	Host string `json:"host,omitempty"`
+	// Undelivered narrows a "list" to the waits whose wake has still to be
+	// delivered, dropping the delivered and cancelled ones.
+	//
+	// coordinator_node_waits is append-only: nothing deletes a row, so an
+	// unfiltered list is the coordinator's entire node-wait history and it grows
+	// for the life of the deployment. The wait runner of every host that is not
+	// the coordinator asks for this list on every tick, so the unfiltered answer
+	// is what would eventually meet the carrier's message limit.
+	//
+	// Both filters are optional, and an operation that states neither narrows
+	// nothing, which is what every client before v0.11.0-rc.71 sends and what
+	// "t3-steward wait list" still sends. An rc.70 coordinator decodes this
+	// envelope with unknown fields disallowed and refuses either of them whole,
+	// so a client that cannot be sure of the coordinator's release has to be
+	// able to fall back to the unfiltered list rather than fail.
+	Undelivered bool `json:"undelivered,omitempty"`
 }
 
 // NodeWaitTransitionAction moves a node wake through its delivery states on
@@ -124,6 +145,9 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 			if op.ID != "" && w.Request.ID != op.ID {
 				continue
 			}
+			if op.Action == "list" && !listedNodeWait(w, op) {
+				continue
+			}
 			if op.Action == "cancel" {
 				changed, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "cancelled", s.now())
 				if err != nil {
@@ -149,6 +173,27 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 	default:
 		return result, errors.New("unknown native wait action")
 	}
+}
+
+// listedNodeWait applies the narrowing a list asked for. Both filters are
+// optional and an operation that states neither keeps every wait, which is the
+// answer every client before v0.11.0-rc.71 gets and the one "t3-steward wait
+// list" still wants: an operator reading the coordinator's waits is reading its
+// history on purpose.
+//
+// A wait runner is the opposite case. It can act only on the waits recorded for
+// its own host whose delivery has not ended, so everything else in an
+// unfiltered answer is encoded by the coordinator, carried over the admin
+// transport and discarded on arrival, once per tick per host, from a table that
+// only ever grows.
+func listedNodeWait(w domain.NodeWait, op NodeWaitOperation) bool {
+	if op.Host != "" && w.Host != op.Host {
+		return false
+	}
+	if op.Undelivered && (w.Delivery == "delivered" || w.Delivery == "cancelled") {
+		return false
+	}
+	return true
 }
 
 // taskWait registers, lists or cancels the coordinator-owned waits that park an

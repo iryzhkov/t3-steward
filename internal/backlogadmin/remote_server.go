@@ -118,7 +118,7 @@ func (s *RemoteServer) Serve(ctx context.Context, pinned string, in io.Reader, o
 		}
 		return s.refuse(out, frame, operation, nil, protocolErr)
 	}
-	if s.config.Replay == nil || !mutatingOperation(operation) {
+	if s.config.Replay == nil || !mutatingRequest(operation, request) {
 		return s.relay(ctx, frame, operation, request, credentials, buffered, out)
 	}
 	digest, err := frameDigest(frame)
@@ -237,6 +237,37 @@ func mutatingOperation(operation string) bool {
 	default:
 		return true
 	}
+}
+
+// mutatingRequest reports whether this request could repeat an external
+// effect. It is mutatingOperation refined by what the envelope actually asks
+// for, and it is consulted in place of the operation word alone because one
+// operation word carries both kinds: "node-wait" carries the registrations and
+// wake transitions that change the coordinator's records and the two lists that
+// only read them.
+//
+// The distinction is not a nicety. The wait runner of every host that is not the
+// coordinator lists node waits on every tick, and treating that read as a
+// mutation takes the coordinator's exclusive admin-replay lock, spends a request
+// identity and writes the whole answer into a store budgeted at 32 MiB and 4096
+// rows. That store is the fleet's 24-hour window for recovering the lost answer
+// to a submission; a read that carries no effect to deduplicate must not spend
+// it.
+//
+// Only the two list actions are reclassified. Everything else this operation
+// word carries, including the task-wake transitions and expiries the runner also
+// sends, keeps its replay protection.
+func mutatingRequest(operation string, request localRequest) bool {
+	if !mutatingOperation(operation) {
+		return false
+	}
+	if operation == localOperationNodeWait && request.NodeWait != nil {
+		switch request.NodeWait.Action {
+		case "list", "list-task":
+			return false
+		}
+	}
+	return true
 }
 
 func asProtocolError(err error) *workerproto.ProtocolError {

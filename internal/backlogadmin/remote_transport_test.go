@@ -201,10 +201,15 @@ func TestCoordinatorExchangeHelperProcess(t *testing.T) {
 // newClient builds a further client against the same coordinator, which is what
 // a retry from a new CLI invocation actually is: a fresh session id.
 type remoteHarness struct {
-	client    *SSHClient
-	service   *remoteFakeService
-	argv      *[][]string
-	newClient func(*testing.T) *SSHClient
+	client  *SSHClient
+	service *remoteFakeService
+	argv    *[][]string
+	// replayRoot is the coordinator's replay store on disk, or empty when the
+	// harness runs without one. A test reads it to say which requests the
+	// carrier decided to protect, which is the same question as which requests
+	// take the coordinator's exclusive admin lock and spend its budget.
+	replayRoot string
+	newClient  func(*testing.T) *SSHClient
 }
 
 func newRemoteHarness(t *testing.T, replay bool) remoteHarness {
@@ -261,7 +266,7 @@ func newRemoteHarness(t *testing.T, replay bool) remoteHarness {
 		}
 		return client
 	}
-	return remoteHarness{client: newClient(t), service: service, argv: recorded, newClient: newClient}
+	return remoteHarness{client: newClient(t), service: service, argv: recorded, replayRoot: replayRoot, newClient: newClient}
 }
 
 func TestRemoteCarrierRoundTripAndPrincipalOverwrite(t *testing.T) {
