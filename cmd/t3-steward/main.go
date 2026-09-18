@@ -609,7 +609,7 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, 
 	// pause and resume; the watchdog reads the ownership from the worker's
 	// journal on every tick. A host without a worker bootstrap owns nothing.
 	if home, homeErr := os.UserHomeDir(); homeErr == nil {
-		d.Ownership = workerruntime.JournalThreadOwnership{Home: home}
+		d.Ownership = &workerruntime.JournalThreadOwnership{Home: home, Log: logger}
 	}
 	// Wait delivery is explicitly requested by registration, independent of
 	// watchdog enforcement. Its client must use the same delivery policy.

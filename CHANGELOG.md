@@ -36,7 +36,9 @@ All notable changes to this project are documented here. The format follows
   owns. Ownership is read from the worker's journal on the same host on every
   tick; a resume intent for an owned thread is cancelled with
   `thread owned by steward attempt <id>`, including intents recorded before
-  this release. A cancelled campaign's threads are no longer resumed after the
+  this release. Ownership lasts while the assignment lease in the journal is
+  unexpired, so a crashed worker's threads return to the watchdog once its
+  leases lapse. A cancelled campaign's threads are no longer resumed after the
   reset (S-16).
 - A quota stop of an attempt's thread is a pause, not a failure. The worker
   drains or stops its own thread through the throttle path when the host

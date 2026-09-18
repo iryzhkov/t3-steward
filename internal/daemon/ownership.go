@@ -10,7 +10,10 @@ import (
 // steward attempt. The authority is the worker runtime's durable journal on the
 // same host: a thread the worker created for an attempt is owned by that
 // attempt from dispatch until the attempt is terminal on the worker or its
-// assignment is released.
+// assignment is released, and only while the journal is fresh: an attempt
+// whose assignment lease has expired no longer owns its thread, because only
+// a live worker renews leases, so a crashed worker's threads return to the
+// watchdog once its leases lapse.
 //
 // The watchdog consults it on every tick and leaves owned threads alone. It
 // never warns, drains, stops or resumes them, and it cancels any resume intent

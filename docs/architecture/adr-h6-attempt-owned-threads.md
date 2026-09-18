@@ -34,6 +34,16 @@ writes. The two run in different processes on the same host (`t3-steward run` an
 `t3-steward worker serve`), so the journal on disk, not memory, is the seam. A host without a
 worker bootstrap owns nothing.
 
+Ownership read from the journal is bounded by freshness. Only a live worker advances the
+journal, and the assignment lease in each record is renewed only through that worker by the
+coordinator, so a record owns its thread only while its lease has not expired
+(`ownershipStale` in `internal/workerruntime/ownership.go`). A record without a lease expiry is
+bounded by `OwnershipMaxAge` (one hour) since its last update. A worker that crashes or is
+stopped with running attempts therefore hands its threads back to the watchdog once the leases
+lapse (two minutes by default, `backlog_v2.leases.duration`), instead of leaving them immune
+until the provider's 100 %. The watchdog logs once when it ignores stale records and once when
+none remain.
+
 **The host watchdog's bucket table stays the authority on quota phase.** The worker does not
 reconstruct policy; it reads the same bucket states from the same state database and applies the
 same functions the daemon applies (`daemon.GoverningPause`, `daemon.BucketsRecovered`,
@@ -103,7 +113,9 @@ May: reuse the throttle command kinds drain, hard-stop and resume for the local 
 
 Does not guarantee: coordination across hosts for a pool no worker observes; resumption while
 the coordinator is unreachable (the pause stays, the lease expires, and lease expiry handles the
-rest as today); that the coordinator counts a locally paused attempt's remaining cost as a
+rest as today); ownership of a thread whose assignment lease has expired (a coordinator outage
+longer than the lease duration makes a running attempt's thread the watchdog's again until the
+next renewal, which is the coordinator's own view of that lease); that the coordinator counts a locally paused attempt's remaining cost as a
 reservation (it has no coordinator-side throttle record, and quota planning skips it with a
 warning as it does today for any paused attempt without one).
 

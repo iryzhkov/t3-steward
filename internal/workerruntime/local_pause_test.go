@@ -1,8 +1,10 @@
 package workerruntime
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -332,7 +334,7 @@ func containsString(items []string, want string) bool {
 func TestJournalThreadOwnershipListsLiveAttemptThreads(t *testing.T) {
 	host, projection := catalogHostFixture(t)
 	bootstrapWorkerFile(t, host)
-	ownership := JournalThreadOwnership{Home: host.Home}
+	ownership := &JournalThreadOwnership{Home: host.Home}
 	if owned, err := ownership.OwnedThreads(context.Background()); err != nil || len(owned) != 0 {
 		t.Fatalf("worker without a catalog owns %v err=%v", owned, err)
 	}
@@ -363,7 +365,73 @@ func TestJournalThreadOwnershipListsLiveAttemptThreads(t *testing.T) {
 		t.Fatalf("owned = %v", owned)
 	}
 	// A host with no worker bootstrap owns nothing and reports no error.
-	if owned, err := (JournalThreadOwnership{Home: t.TempDir()}).OwnedThreads(context.Background()); err != nil || len(owned) != 0 {
+	if owned, err := (&JournalThreadOwnership{Home: t.TempDir()}).OwnedThreads(context.Background()); err != nil || len(owned) != 0 {
 		t.Fatalf("host without a worker: %v %v", owned, err)
+	}
+}
+
+// Ownership has a freshness bound: only a live worker renews the leases in
+// its journal, so a record whose lease has expired no longer owns its thread
+// for the watchdog, nor does a lease-less record not updated for an hour. A
+// crashed worker's threads are the watchdog's again once the leases lapse.
+// The staleness is logged once, not on every tick.
+func TestJournalThreadOwnershipExpiresWithTheLease(t *testing.T) {
+	host, projection := catalogHostFixture(t)
+	bootstrapWorkerFile(t, host)
+	publishCatalog(t, host, "first", CatalogRequest{Projection: projection})
+	now := runtimeTestNow
+	record := func(id string, phase Phase, lease, updated time.Time) AttemptRecord {
+		r := AttemptRecord{Phase: phase, ThreadID: "thread-" + id, UpdatedAt: updated}
+		r.Assignment.ID, r.Assignment.AttemptID, r.Assignment.LeaseExpiresAt = id, "attempt-"+id, lease
+		r.Package.Package.Identity.AssignmentID = id
+		return r
+	}
+	if err := host.service.Exchange.Runtime.journal.update(func(state *journalState) error {
+		state.Attempts["live"] = record("live", PhaseRunning, now.Add(time.Minute), now)
+		state.Attempts["lapsed"] = record("lapsed", PhaseRunning, now.Add(-time.Second), now.Add(-3*time.Minute))
+		state.Attempts["paused-lapsed"] = record("paused-lapsed", PhaseStopped, now.Add(-time.Hour), now.Add(-time.Hour))
+		state.Attempts["no-lease-fresh"] = record("no-lease-fresh", PhaseRunning, time.Time{}, now.Add(-30*time.Minute))
+		state.Attempts["no-lease-old"] = record("no-lease-old", PhaseRunning, time.Time{}, now.Add(-OwnershipMaxAge-time.Minute))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var logged bytes.Buffer
+	ownership := &JournalThreadOwnership{Home: host.Home, Now: func() time.Time { return now }, Log: slog.New(slog.NewTextHandler(&logged, nil))}
+	for range 3 {
+		owned, err := ownership.OwnedThreads(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(owned) != 2 || owned["thread-live"] != "attempt-live" || owned["thread-no-lease-fresh"] != "attempt-no-lease-fresh" {
+			t.Fatalf("owned = %v", owned)
+		}
+	}
+	if n := strings.Count(logged.String(), "stale attempt records"); n != 1 {
+		t.Fatalf("staleness logged %d times:\n%s", n, logged.String())
+	}
+	if !strings.Contains(logged.String(), "attempt-lapsed (thread thread-lapsed): assignment lease expired") || !strings.Contains(logged.String(), "attempt-no-lease-old") {
+		t.Fatalf("log does not name the stale records:\n%s", logged.String())
+	}
+	// A renewed lease restores ownership, and the recovery is logged once.
+	if err := host.service.Exchange.Runtime.journal.update(func(state *journalState) error {
+		for _, id := range []string{"lapsed", "paused-lapsed"} {
+			r := state.Attempts[id]
+			r.Assignment.LeaseExpiresAt = now.Add(time.Minute)
+			state.Attempts[id] = r
+		}
+		r := state.Attempts["no-lease-old"]
+		r.UpdatedAt = now
+		state.Attempts["no-lease-old"] = r
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	owned, err := ownership.OwnedThreads(context.Background())
+	if err != nil || len(owned) != 5 {
+		t.Fatalf("owned after renewal = %v err=%v", owned, err)
+	}
+	if !strings.Contains(logged.String(), "no stale attempt records remain") {
+		t.Fatalf("recovery not logged:\n%s", logged.String())
 	}
 }

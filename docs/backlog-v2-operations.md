@@ -818,8 +818,12 @@ attempt is terminal on the worker or its assignment is released. The quota
 watchdog on the same host reads that ownership from the worker's journal on
 every tick and leaves owned threads alone: no warn, drain, stop or resume, and
 any resume intent for an owned thread is cancelled with
-`thread owned by steward attempt <id>`. See
-[ADR H6](architecture/adr-h6-attempt-owned-threads.md).
+`thread owned by steward attempt <id>`. Ownership lasts only while the
+assignment lease in the journal is unexpired (a lease-less record, one hour
+since its last update): a crashed or stopped worker stops renewing, and its
+threads are the watchdog's again once the leases lapse. The watchdog logs
+`thread ownership ignored for stale attempt records` once when that happens.
+See [ADR H6](architecture/adr-h6-attempt-owned-threads.md).
 
 When the watchdog's bucket for the attempt's route is draining or stopped, the
 worker itself drains or stops the thread through the throttle path and reports
