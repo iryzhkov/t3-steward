@@ -205,14 +205,7 @@ func cmdCoordinatorWaitAdd(ctx context.Context, cfg config.Config, client coordi
 			return err
 		}
 	}
-	request := domain.NodeWaitRequest{ID: spec.RequestID, ThreadID: threadID, Name: spec.Name, Timeout: spec.Timeout, Quota: spec.Quota, Group: spec.Group, Wake: domain.WakeMode(spec.WakeMode)}
-	if spec.Node != nil {
-		request.Target = spec.Node.Target
-		if spec.Node.State != domain.NodeStateTerminal {
-			request.State = spec.Node.State
-		}
-	}
-	result, err := client.NodeWait(ctx, backlogadmin.NodeWaitOperation{Action: "register", Request: request})
+	result, err := client.NodeWait(ctx, backlogadmin.NodeWaitOperation{Action: "register", Request: coordinatorWaitRequest(spec, threadID)})
 	if err != nil {
 		return err
 	}
@@ -225,6 +218,24 @@ func cmdCoordinatorWaitAdd(ctx context.Context, cfg config.Config, client coordi
 		fmt.Fprintln(os.Stderr, "End this turn now; the coordinator has registered the wait.")
 	}
 	return nil
+}
+
+// coordinatorWaitRequest is the native wait registration of an interactive
+// coordinator-kind spec. Every flag the spec parsed that the coordinator
+// settles on travels here; the default node state is left empty so the
+// registration is unchanged for a coordinator that predates states.
+func coordinatorWaitRequest(spec coordinatorWaitSpec, threadID string) domain.NodeWaitRequest {
+	request := domain.NodeWaitRequest{
+		ID: spec.RequestID, ThreadID: threadID, Name: spec.Name, Timeout: spec.Timeout, OrTimeout: spec.OrTimeout,
+		Quota: spec.Quota, Group: spec.Group, Wake: domain.WakeMode(spec.WakeMode),
+	}
+	if spec.Node != nil {
+		request.Target = spec.Node.Target
+		if spec.Node.State != domain.NodeStateTerminal {
+			request.State = spec.Node.State
+		}
+	}
+	return request
 }
 
 // refuseMixedGroup refuses a registration into an interactive --group that

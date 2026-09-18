@@ -270,6 +270,10 @@ type NodeWaitRequest struct {
 	Timeout  time.Duration `json:"timeout"`
 	// State is the node state waited for; empty is terminal.
 	State NodeWaitState `json:"state,omitempty"`
+	// OrTimeout makes the deadline a normal outcome, as it does for a task
+	// wait: the observation still says timed-out, with exit 0 and the
+	// or-timeout trailer pair, rather than the failure form.
+	OrTimeout bool `json:"orTimeout,omitempty"`
 	// Quota makes this a quota wait: Target is empty and the condition is
 	// settled from the pool's merged bucket observations.
 	Quota *QuotaWaitCondition `json:"quota,omitempty"`

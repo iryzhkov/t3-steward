@@ -190,5 +190,9 @@ func nodeTrailer(w domain.NodeWait) string {
 	if kind == domain.WaitKindNode {
 		fields = FieldsOf(domain.NodeTrailerFields(observation))
 	}
-	return WakeTrailer(string(kind), string(domain.NodeObservationOutcome(observation)), w.Request.ID, fields...)
+	outcome := domain.NodeObservationOutcome(observation)
+	if w.Request.OrTimeout && outcome == domain.TaskWaitTimedOut {
+		fields = append(fields, F("or-timeout", "true"))
+	}
+	return WakeTrailer(string(kind), string(outcome), w.Request.ID, fields...)
 }

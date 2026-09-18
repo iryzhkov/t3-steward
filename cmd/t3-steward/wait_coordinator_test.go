@@ -27,6 +27,10 @@ func TestCoordinatorWaitSpecParsesNode(t *testing.T) {
 	if spec.Node.Target.TaskID != "deploy" || spec.Node.State != domain.NodeStatePaused || spec.Timeout != 2*time.Hour || !spec.OrTimeout {
 		t.Fatalf("spec = %+v node=%+v", spec, spec.Node)
 	}
+	// --or-timeout reaches the coordinator on the request, not only the spec.
+	if request := coordinatorWaitRequest(spec, "thread-1"); !request.OrTimeout || request.State != domain.NodeStatePaused || request.Target.TaskID != "deploy" || request.ThreadID != "thread-1" {
+		t.Fatalf("request = %+v", request)
+	}
 	for _, args := range [][]string{
 		{"--node", "run-2", "--state", "finished"},
 		{"--node", "run-2", "--", "true"},

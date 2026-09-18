@@ -272,6 +272,12 @@ func (s *Store) SettleNodeWaits(ctx context.Context, now time.Time) error {
 			obs.ExitCode = 2
 			obs.Reason = "timed out"
 			obs.Outcome = domain.TaskWaitTimedOut
+			if w.Request.OrTimeout {
+				// --or-timeout: the deadline is an expected end of the wait, as
+				// ExpireTaskWaits records it for a task-bound wait.
+				obs.ExitCode = 0
+				obs.Reason = fmt.Sprintf("the deadline of %s passed, which this wait treats as a normal outcome (--or-timeout)", w.Request.Timeout)
+			}
 		}
 		if obs.ExitCode == 1 {
 			continue
