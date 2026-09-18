@@ -527,18 +527,22 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 	var err error
 	switch record.Phase {
 	case PhaseRunning:
-		paused, pauseErr := r.pauseForQuota(ctx, id, &record)
-		if pauseErr != nil {
-			err = pauseErr
-			break
-		}
-		if paused {
-			break
-		}
+		// Observe before deciding on a pause: a thread that has already ended
+		// its turn is finished work, and collecting it spends no provider
+		// quota. Pausing it would settle a finished thread and later resume
+		// it with a filler turn. Only a thread that is still working is
+		// paused; a stopped one takes the collection path.
 		threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
-		switch {
-		case observeErr != nil:
+		if observeErr != nil {
 			r.log.Warn("T3 observation unavailable; attempt keeps running", "assignment", id, "error", observeErr)
+			break
+		}
+		if err = r.noteThreadState(id, threadState); err != nil {
+			break
+		}
+		switch {
+		case threadState == backlog.DispatchThreadActive:
+			_, err = r.pauseForQuota(ctx, id, &record)
 		case threadState == backlog.DispatchThreadStopped && record.LocalThrottle != nil:
 			// The drain request was honoured: the thread checkpointed and
 			// ended its turn. This is the pause taking effect, not the
@@ -550,9 +554,6 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			}
 		case threadState == backlog.DispatchThreadMissing:
 			err = r.markUnknown(id, "running T3 thread is missing")
-		}
-		if observeErr == nil {
-			err = errors.Join(err, r.noteThreadState(id, threadState))
 		}
 	case PhaseWaiting:
 		err = r.reconcileWaiting(ctx, id, record)

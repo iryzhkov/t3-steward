@@ -57,9 +57,12 @@ Must:
    `thread owned by steward attempt <attempt id>`; this also clears intents recorded before the
    rule existed. If ownership cannot be read, the watchdog logs once and treats every thread as
    unowned, never the reverse.
-2. When the bucket governing an attempt's route is draining, the worker sends the drain notice
-   through the driver's checkpoint path once and then observes; when it is stopped, the worker
-   stops the thread through the driver's stop path. Either way the attempt is paused, not failed:
+2. The worker observes the thread before deciding on a pause, and pauses only a thread that is
+   still working: a thread that already ended its turn is finished work, spends no quota to
+   collect, and takes the collection path as before. When the bucket governing a working
+   attempt's route is draining, the worker sends the drain notice through the driver's
+   checkpoint path once and then observes; when it is stopped, the worker stops the thread
+   through the driver's stop path. Either way the attempt is paused, not failed:
    nothing is collected, a commanded collection is deferred, and the coordinator sees
    `ControlPaused`. A collection that later meets a session that is not ready reports
    `paused by quota watchdog: <bucket> at <percent>; provider session is not ready ...`.

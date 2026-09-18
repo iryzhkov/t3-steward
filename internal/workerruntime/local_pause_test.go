@@ -2,6 +2,7 @@ package workerruntime
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -68,8 +69,10 @@ func journalRecord(t *testing.T, runtime *Runtime) AttemptRecord {
 // even though the thread is observed stopped and the driver would collect.
 func TestLocalQuotaStopReportsPausedAndDefersCollection(t *testing.T) {
 	now := runtimeTestNow
+	// The thread is mid-work when the bucket stops; afterwards it is observed
+	// stopped until the worker resumes it.
 	driver := &fakeDriver{workspace: filepath.Join(t.TempDir(), "workspace"), workspaceReady: true,
-		observations: []backlog.DispatchThreadState{backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadActive}}
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadActive}}
 	guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
 	runtime := runningRuntime(t, driver, guard, &now)
 	// The coordinator asks for quota observations, which is what carries the
@@ -137,7 +140,7 @@ func TestLocalQuotaStopReportsPausedAndDefersCollection(t *testing.T) {
 func TestLocalQuotaDrainThenHardStop(t *testing.T) {
 	now := runtimeTestNow
 	driver := &fakeDriver{workspace: filepath.Join(t.TempDir(), "workspace"), workspaceReady: true,
-		observations: []backlog.DispatchThreadState{backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}}
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped}}
 	pause := stoppedPause()
 	pause.Phase, pause.UsedPercent = domain.PhaseDraining, 91
 	guard := &fakeQuotaGuard{pause: pause, pauseNeeded: true}
@@ -158,13 +161,54 @@ func TestLocalQuotaDrainThenHardStop(t *testing.T) {
 	}
 }
 
+// A thread that has already ended its turn cleanly when the bucket is stopped
+// is finished work: collecting it spends no quota. It is collected as today,
+// never settled, paused and later resumed with a filler turn. A drain notice
+// that was already sent is the exception: the thread ending its turn is the
+// pause taking effect.
+func TestFinishedTurnIsCollectedNotPausedWhileBucketStopped(t *testing.T) {
+	now := runtimeTestNow
+	driver := &fakeDriver{workspace: filepath.Join(t.TempDir(), "workspace"), workspaceReady: true,
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadStopped}}
+	guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
+	runtime := runningRuntime(t, driver, guard, &now)
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	record := journalRecord(t, runtime)
+	if driver.stopCalls != 0 || driver.checkpointCalls != 0 || driver.collectCalls != 1 || record.LocalThrottle != nil || record.Phase != PhaseCompleted {
+		t.Fatalf("stops=%d checkpoints=%d collects=%d record=%+v", driver.stopCalls, driver.checkpointCalls, driver.collectCalls, record)
+	}
+	if driver.resumeCalls != 0 {
+		t.Fatal("a finished thread was resumed")
+	}
+	// The drained case: the notice went out while the thread was working,
+	// and the turn ending afterwards is the pause, not the attempt finishing.
+	driver = &fakeDriver{workspace: filepath.Join(t.TempDir(), "workspace"), workspaceReady: true,
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped}}
+	driver.checkpointErr = errors.New("checkpoint turn did not stop before deadline")
+	pause := stoppedPause()
+	pause.Phase, pause.UsedPercent = domain.PhaseDraining, 91
+	guard = &fakeQuotaGuard{pause: pause, pauseNeeded: true}
+	runtime = runningRuntime(t, driver, guard, &now)
+	for range 2 {
+		if err := runtime.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record = journalRecord(t, runtime)
+	if driver.checkpointCalls != 1 || driver.collectCalls != 0 || record.Phase != PhaseStopped || record.LocalThrottle == nil || record.LocalThrottle.StoppedAt == nil {
+		t.Fatalf("drained: checkpoints=%d collects=%d record=%+v", driver.checkpointCalls, driver.collectCalls, record)
+	}
+}
+
 // S-16 from the worker's side: a cancelled attempt is never resumed. The
 // coordinator's stop command settles the pause through the ordinary stop
 // path, and the recovered bucket changes nothing.
 func TestLocalQuotaPauseNeverResumesACancelledAttempt(t *testing.T) {
 	now := runtimeTestNow
 	driver := &fakeDriver{workspace: filepath.Join(t.TempDir(), "workspace"), workspaceReady: true,
-		observations: []backlog.DispatchThreadState{backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}}
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}}
 	guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
 	runtime := runningRuntime(t, driver, guard, &now)
 	if err := runtime.Reconcile(context.Background()); err != nil {
@@ -200,7 +244,7 @@ func TestLocalQuotaPauseNeverResumesACancelledAttempt(t *testing.T) {
 func TestLocalQuotaResumeIsGatedOnRecoveryAndLiveness(t *testing.T) {
 	now := runtimeTestNow
 	driver := &fakeDriver{workspace: filepath.Join(t.TempDir(), "workspace"), workspaceReady: true,
-		observations: []backlog.DispatchThreadState{backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}}
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}}
 	guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
 	runtime := runningRuntime(t, driver, guard, &now)
 	if err := runtime.Reconcile(context.Background()); err != nil {
