@@ -316,11 +316,13 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	// A start that names its project and its whole route needs nothing from
-	// the catalog, so it does not ask for it. That is not only one query
-	// saved: the projects query is the one thing here a coordinator of the
-	// previous release cannot answer, and this is what lets the single-task
-	// start work unchanged during a mixed-release window.
+	// A start that names its project and its whole route derives nothing
+	// about what will run from the catalog, so a coordinator that cannot
+	// answer for the catalog cannot stop it: the projects query is the one
+	// thing here a coordinator of the previous release does not have, and this
+	// is what lets the single-task start work unchanged during a mixed-release
+	// window. The query is still sent, a few lines below, for the route's
+	// quota pool alone, and its refusal is swallowed there.
 	project, route, explicit := explicitTaskRunRoute(parsed, c.defaultModel)
 	if !explicit {
 		projects, queryErr := c.projects(ctx)
