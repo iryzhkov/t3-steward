@@ -28,12 +28,12 @@ func (r *Runner) tickNodes(ctx context.Context) {
 		return
 	}
 	if err := store.SettleNodeWaits(ctx, r.now()); err != nil {
-		r.log.Error("settle node waits", "error", err)
+		logFailure(ctx, r.log, "settle node waits", err, "error", err)
 		return
 	}
 	waits, err := store.ListNodeWaits(ctx)
 	if err != nil {
-		r.log.Error("list node waits", "error", err)
+		logFailure(ctx, r.log, "list node waits", err, "error", err)
 		return
 	}
 	control, ok := r.control.(NodeControl)

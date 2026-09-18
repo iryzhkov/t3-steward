@@ -44,11 +44,11 @@ func (r *Runner) tickTaskWaits(ctx context.Context, waits []Wait) {
 			continue
 		}
 		if _, err := store.SettleTaskWait(ctx, w.TaskWaitID, taskWaitResult(w, now), now); err != nil {
-			r.log.Error("settle task-bound wait", "wait", w.TaskWaitID, "err", err)
+			logFailure(ctx, r.log, "settle task-bound wait", err, "wait", w.TaskWaitID, "err", err)
 		}
 	}
 	if expired, err := store.ExpireTaskWaits(ctx, now); err != nil {
-		r.log.Error("expire task-bound waits", "err", err)
+		logFailure(ctx, r.log, "expire task-bound waits", err, "err", err)
 	} else if len(expired) != 0 {
 		r.log.Warn("task-bound waits exceeded their maximum duration", "waits", len(expired))
 	}
@@ -61,12 +61,12 @@ func (r *Runner) tickTaskWaits(ctx context.Context, waits []Wait) {
 		return
 	}
 	if _, err := store.WakeTaskWaits(ctx, now); err != nil {
-		r.log.Error("resume parked attempts", "err", err)
+		logFailure(ctx, r.log, "resume parked attempts", err, "err", err)
 		return
 	}
 	pending, err := store.TaskWakesAwaitingDelivery(ctx, now)
 	if err != nil {
-		r.log.Error("list task wakes awaiting delivery", "err", err)
+		logFailure(ctx, r.log, "list task wakes awaiting delivery", err, "err", err)
 		return
 	}
 	control, ok := r.control.(NodeControl)

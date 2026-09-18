@@ -181,7 +181,7 @@ func (r *Runner) Tick(ctx context.Context, _ []domain.Thread, buckets []domain.B
 	r.tickSupervisionEscalations(ctx)
 	waits, err := r.store.ListWaits(ctx, "")
 	if err != nil {
-		r.log.Error("list waits", "err", err)
+		logFailure(ctx, r.log, "list waits", err, "err", err)
 		return
 	}
 	now := r.now()

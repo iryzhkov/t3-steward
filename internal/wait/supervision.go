@@ -35,7 +35,7 @@ func (r *Runner) tickSupervisionEscalations(ctx context.Context) {
 	}
 	pending, err := store.PendingSupervisionEscalations(ctx)
 	if err != nil {
-		r.log.Error("list supervision escalations", "error", err)
+		logFailure(ctx, r.log, "list supervision escalations", err, "error", err)
 		return
 	}
 	for _, escalation := range pending {
