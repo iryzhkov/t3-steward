@@ -16,9 +16,12 @@ import (
 // engine and the load-time re-derivation. It runs from the bucket rearm verb
 // against the host's state database, sets the phase to normal with
 // RecoveredAt now, and records who did it and why. The worker's resume rule
-// reads RecoveredAt newer than the pause, so a paused owned attempt resumes
-// after the settle delay without a reading; the next reading rearms or
-// re-stops the bucket honestly.
+// treats it as a confirmed recovery, so its percentage rules apply exactly as
+// after a real reset: a paused owned attempt resumes after the settle delay
+// without a reading only when the stored percentage is below
+// resume.below_percent and below the warn threshold; otherwise the rearm
+// reopens the bucket and the next reading decides. The result says which
+// case applies so the verb can tell the operator.
 
 // BucketStore is the part of the state store a rearm touches.
 type BucketStore interface {
@@ -47,6 +50,21 @@ type RearmResult struct {
 	Action domain.ActionRecord `json:"action"`
 	// StopPercent is the stop threshold the refusal rule used.
 	StopPercent float64 `json:"stopPercent"`
+	// ResumeEligible says whether the worker's resume rule lets a paused
+	// owned attempt on this bucket resume once resume.reset_settle_delay has
+	// passed: the stored percentage is below resume.below_percent and below
+	// the warn threshold. When it is not, ResumeBlockedBy names the two
+	// thresholds a reading must fall below first; the rearm still reopens the
+	// bucket for that reading.
+	ResumeEligible  bool         `json:"resumeEligible"`
+	ResumeBlockedBy *ResumeBlock `json:"resumeBlockedBy"`
+}
+
+// ResumeBlock is the pair of thresholds a rearmed bucket's stored percentage
+// must fall below before a paused owned attempt resumes.
+type ResumeBlock struct {
+	BelowPercent float64 `json:"belowPercent"`
+	WarnPercent  float64 `json:"warnPercent"`
 }
 
 // RearmRefusedError is a rearm the rule refused; nothing was written.
@@ -136,5 +154,13 @@ func RearmBucket(ctx context.Context, cfg config.Config, store BucketStore, req 
 	if err := store.RecordAction(ctx, rec); err != nil {
 		return RearmResult{}, fmt.Errorf("record rearm of %s: %w (the phase is already normal)", req.Key, err)
 	}
-	return RearmResult{Before: before, After: after, Action: rec, StopPercent: thresholds.StopPercent}, nil
+	result := RearmResult{Before: before, After: after, Action: rec, StopPercent: thresholds.StopPercent}
+	// The same conditions BucketsRecovered and ApplicableHealthy apply to a
+	// recovery from a reading; a rearm is not exempt from them.
+	if before.UsedPercent < cfg.Resume.BelowPercent && before.UsedPercent < thresholds.WarnPercent {
+		result.ResumeEligible = true
+	} else {
+		result.ResumeBlockedBy = &ResumeBlock{BelowPercent: cfg.Resume.BelowPercent, WarnPercent: thresholds.WarnPercent}
+	}
+	return result, nil
 }

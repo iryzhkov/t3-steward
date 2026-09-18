@@ -130,6 +130,58 @@ func TestBucketRearmRefusesAtOrAboveStopPercentWithoutForce(t *testing.T) {
 	}
 }
 
+// R1: a rearm is a confirmed recovery, but the worker's resume rule still
+// needs the stored percentage below resume.below_percent and below
+// policy.warn_percent (defaults 50 and 85) before a paused owned attempt
+// resumes. The verb computes that from the loaded configuration and says which
+// case applies, in text and in the JSON document, so an operator rearming at
+// 60% is not left waiting for a resume that cannot come.
+func TestBucketRearmSaysWhetherPausedAttemptsMayResume(t *testing.T) {
+	type rearmJSON struct {
+		ResumeEligible  *bool `json:"resumeEligible"`
+		ResumeBlockedBy *struct {
+			BelowPercent float64 `json:"belowPercent"`
+			WarnPercent  float64 `json:"warnPercent"`
+		} `json:"resumeBlockedBy"`
+	}
+	rearm := func(used float64, extra ...string) string {
+		t.Helper()
+		_, configPath := bucketTestState(t, domain.PhaseStopped, used)
+		args := append([]string{"bucket", "rearm", bucketTestKey.String(), "--reason", "resume eligibility", "--config", configPath}, extra...)
+		return captureStdout(t, func() {
+			if err := run(args); err != nil {
+				t.Fatalf("bucket rearm at %.0f%%: %v", used, err)
+			}
+		})
+	}
+	const eligibleLine = "paused attempts on this bucket may resume after 2m0s"
+	const blockedLine = "paused attempts will not resume until a reading below 50% (resume.below_percent) and 85% (policy.warn_percent) lands; the rearm still reopens the bucket"
+	if output := rearm(40); !strings.Contains(output, eligibleLine) {
+		t.Fatalf("rearm at 40%% does not print %q: %q", eligibleLine, output)
+	}
+	if output := rearm(60); !strings.Contains(output, blockedLine) || strings.Contains(output, "may resume") {
+		t.Fatalf("rearm at 60%% does not print %q: %q", blockedLine, output)
+	}
+	var document rearmJSON
+	output := rearm(60, "--json")
+	assertExactlyOneJSONDocument(t, "bucket rearm", []byte(output))
+	if err := json.Unmarshal([]byte(output), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.ResumeEligible == nil || *document.ResumeEligible || document.ResumeBlockedBy == nil ||
+		document.ResumeBlockedBy.BelowPercent != 50 || document.ResumeBlockedBy.WarnPercent != 85 {
+		t.Fatalf("rearm at 60%% --json lacks resumeEligible=false and resumeBlockedBy{50,85}: %s", output)
+	}
+	document = rearmJSON{}
+	output = rearm(40, "--json")
+	if err := json.Unmarshal([]byte(output), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.ResumeEligible == nil || !*document.ResumeEligible || document.ResumeBlockedBy != nil {
+		t.Fatalf("rearm at 40%% --json lacks resumeEligible=true with no resumeBlockedBy: %s", output)
+	}
+}
+
 func TestBucketRearmNeedsAReason(t *testing.T) {
 	_, configPath := bucketTestState(t, domain.PhaseStopped, 60)
 	err := run([]string{"bucket", "rearm", bucketTestKey.String(), "--config", configPath})

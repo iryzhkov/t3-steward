@@ -29,12 +29,18 @@ Commands:
                                  Set the bucket's phase to normal with the
                                  recovery time now, clear the stop and drain
                                  bookkeeping, and record a rearm action. The
-                                 worker treats it as a confirmed recovery: a
-                                 paused owned attempt resumes after the settle
-                                 delay without waiting for a reading. Refused
-                                 when the stored usage is at or above
-                                 stop_percent unless --force is given, because
-                                 the next reading would stop the bucket again.
+                                 worker treats it as a confirmed recovery, so
+                                 its resume rules apply as after a real reset:
+                                 a paused owned attempt resumes after the
+                                 settle delay without waiting for a reading
+                                 only when the stored usage is below
+                                 resume.below_percent and policy.warn_percent;
+                                 a rearm above either only reopens the bucket
+                                 for the next reading, and the output says
+                                 which case applies. Refused when the stored
+                                 usage is at or above stop_percent unless
+                                 --force is given, because the next reading
+                                 would stop the bucket again.
 
 The key is what bucket list and status print, for example
 claudeAgent/claude/five_hour. A rearm does not invent a reading: the stored
@@ -203,8 +209,14 @@ func cmdBucketRearm(g globalFlags, args []string) error {
 	}
 	fmt.Printf("%s: %s at %.0f%% -> normal at %.0f%%\n", result.Before.Key, result.Before.Phase, result.Before.UsedPercent, result.After.UsedPercent)
 	fmt.Printf("  before: stopped %s, recovered %s, %s\n", optionalRelative(result.Before.StoppedAt, now), optionalRelative(result.Before.RecoveredAt, now), resetText(result.Before.ResetsAt, now))
-	fmt.Printf("  after:  recovered %s; a paused owned attempt resumes after the settle delay, and the next reading decides again\n", result.After.RecoveredAt.Local().Format(time.RFC3339))
+	fmt.Printf("  after:  recovered %s; the next reading decides again\n", result.After.RecoveredAt.Local().Format(time.RFC3339))
 	fmt.Printf("  recorded: %s\n", result.Action.Detail)
+	if result.ResumeEligible {
+		fmt.Printf("  paused attempts on this bucket may resume after %s\n", cfg.Resume.ResetSettleDelay.D())
+	} else {
+		fmt.Printf("  paused attempts will not resume until a reading below %.0f%% (resume.below_percent) and %.0f%% (policy.warn_percent) lands; the rearm still reopens the bucket\n",
+			result.ResumeBlockedBy.BelowPercent, result.ResumeBlockedBy.WarnPercent)
+	}
 	return nil
 }
 

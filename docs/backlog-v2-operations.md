@@ -955,10 +955,20 @@ record with its evidence, visible in `t3-steward status` and
    is reported.
 
 The worker's resume rule treats an operator rearm exactly as a confirmed
-recovery: the recovery time is newer than the pause, so a paused owned attempt
-resumes on the first reconcile after `resume.reset_settle_delay`, without a
-reading. Neither writer guarantees that the provider accepts new turns; the
-next reading rearms or re-stops the bucket honestly, and a re-stop is not a
+recovery, and its percentage rules apply to a rearm exactly as they apply
+after a real reset: the recovery time is newer than the pause, so a paused
+owned attempt resumes on the first reconcile after `resume.reset_settle_delay`,
+without a reading, once the stored percentage is below `resume.below_percent`
+and below `policy.warn_percent`. A rearm at or above either value only reopens
+the bucket for the next reading; nothing resumes until a reading below both
+lands. `bucket rearm` computes that condition from the loaded configuration and
+prints one line after the before and after state, either `paused attempts on
+this bucket may resume after <settle delay>` or `paused attempts will not
+resume until a reading below <N>% (resume.below_percent) and <M>%
+(policy.warn_percent) lands; the rearm still reopens the bucket`; the `--json`
+document carries `resumeEligible` and, when blocked, `resumeBlockedBy` with the
+two thresholds. Neither writer guarantees that the provider accepts new turns;
+the next reading rearms or re-stops the bucket honestly, and a re-stop is not a
 defect. A bucket with no reset time keeps the consecutive-low-readings rearm.
 
 The probe rule. When a bucket is `stopped` below the current `stop_percent`

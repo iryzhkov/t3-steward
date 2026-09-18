@@ -17,8 +17,13 @@ All notable changes to this project are documented here. The format follows
   the reason and the phase before and after, and prints both states. An
   unknown key is refused with the known keys listed; a stored percentage at or
   above `stop_percent` is refused without `--force`. The worker treats the
-  rearm as a confirmed recovery: a paused owned attempt resumes after
-  `resume.reset_settle_delay` without a reading (F-1).
+  rearm as a confirmed recovery, under the same percentage rules as a real
+  reset: a paused owned attempt resumes after `resume.reset_settle_delay`
+  without a reading when the stored percentage is below
+  `resume.below_percent` and below `policy.warn_percent`; a rearm above either
+  only reopens the bucket for the next reading. The verb prints which case
+  applies, and `--json` carries `resumeEligible` and `resumeBlockedBy` with
+  the two thresholds (F-1).
 - The worker probes a stopped bucket once per epoch: when the bucket is
   `stopped` below the current `stop_percent`, its stored reading is older than
   `resume.probe_after_reset`, and no running thread on the host matches it,
