@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -54,12 +56,22 @@ func (r *Runner) tickNodes(ctx context.Context) {
 	if host == "" {
 		host, _ = os.Hostname()
 	}
+	groups := nodeWaitGroups(waits, host)
 	for _, w := range waits {
 		if w.Host != host {
 			continue
 		}
 		if w.SettledAt == nil || w.Delivery == "delivered" || w.Delivery == "cancelled" {
 			continue
+		}
+		members, grouped := groups[nodeGroupKey(w)]
+		if grouped {
+			// A --wake all group wakes once, with one message, when every member
+			// has settled; the earliest member carries the send and the others
+			// are marked delivered with it.
+			if !nodeGroupSettled(members) || members[0].Request.ID != w.Request.ID {
+				continue
+			}
 		}
 		if w.Delivery == "sending" || w.Delivery == "recovery-required" {
 			found, err := control.ObserveNodeWake(ctx, w.Request.ThreadID, w.DeliveryID)
@@ -93,8 +105,74 @@ func (r *Runner) tickNodes(ctx context.Context) {
 			continue
 		}
 		text := nodeTrailer(w) + "\n\n" + nodeWakeProse(w)
+		if grouped {
+			text = nodeGroupMessage(members)
+		}
 		if err := control.SendNodeWake(ctx, *thread, w.DeliveryID, text); err != nil {
 			_, _ = store.TransitionNodeWake(ctx, w.Request.ID, "sending", "recovery-required", r.now())
+			continue
+		}
+		if grouped {
+			// The other members rode in the same message. A crash here leaves
+			// them pending, and the next tick sends each on its own rather than
+			// never; that is the honest degradation.
+			for _, member := range members[1:] {
+				if member.Delivery != "pending" && member.Delivery != "held" {
+					continue
+				}
+				if claimed, _ := store.TransitionNodeWake(ctx, member.Request.ID, member.Delivery, "sending", r.now()); claimed {
+					_, _ = store.TransitionNodeWake(ctx, member.Request.ID, "sending", "delivered", r.now())
+				}
+			}
 		}
 	}
+}
+
+// nodeGroupKey identifies a --wake all group: one thread, one group name.
+func nodeGroupKey(w domain.NodeWait) string {
+	return w.Request.ThreadID + "\x00" + w.Request.Group
+}
+
+// nodeWaitGroups collects this host's --wake all groups, each sorted by
+// creation so the earliest member carries the send.
+func nodeWaitGroups(waits []domain.NodeWait, host string) map[string][]domain.NodeWait {
+	groups := map[string][]domain.NodeWait{}
+	for _, w := range waits {
+		if w.Host != host || w.Request.Group == "" || w.Request.Wake != domain.WakeAll || w.Delivery == "cancelled" {
+			continue
+		}
+		key := nodeGroupKey(w)
+		groups[key] = append(groups[key], w)
+	}
+	for key := range groups {
+		sort.Slice(groups[key], func(i, j int) bool { return groups[key][i].CreatedAt.Before(groups[key][j].CreatedAt) })
+	}
+	return groups
+}
+
+func nodeGroupSettled(members []domain.NodeWait) bool {
+	for _, member := range members {
+		if member.SettledAt == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// nodeGroupMessage is the one wake of a settled group: the earliest member's
+// trailer with the member count, then each member's prose.
+func nodeGroupMessage(members []domain.NodeWait) string {
+	var b strings.Builder
+	b.WriteString(nodeTrailer(members[0]))
+	fmt.Fprintf(&b, " count=%d\n\nWaits finished (T3 steward): %d conditions of group %q settled.\n", len(members), len(members), members[0].Request.Group)
+	for _, member := range members {
+		b.WriteString("\n## ")
+		b.WriteString(member.Request.ID)
+		b.WriteString("\n")
+		b.WriteString(nodeTrailer(member))
+		b.WriteString("\n")
+		b.WriteString(nodeWakeProse(member))
+		b.WriteString("\n")
+	}
+	return b.String()
 }

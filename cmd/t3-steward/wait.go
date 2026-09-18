@@ -397,6 +397,21 @@ func cmdWaitAdd(ctx context.Context, cfg config.Config, store *sqlite.Store, arg
 	if t == nil {
 		return fmt.Errorf("thread %s is not known to T3 on this host", threadID)
 	}
+	if spec.Group != "" && cfg.BacklogV2.CoordinatorClient.Configured() {
+		// The coordinator's waits of this thread are the other side of a mixed
+		// group. A coordinator that cannot be reached does not block a local
+		// wait: the check is advisory here and enforced when the coordinator
+		// kind registers.
+		if transport, err := newCoordinatorTransport(cfg); err == nil {
+			if listed, err := transport.client.NodeWait(ctx, backlogadmin.NodeWaitOperation{Action: "list"}); err == nil {
+				if err := refuseMixedGroup(threadID, spec.Group, spec.Kind, nil, listed.Waits); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: the coordinator's waits could not be listed to check --group %q for mixed kinds: %v\n", spec.Group, err)
+			}
+		}
+	}
 	w := wait.Wait{
 		ID: newWaitID(), ThreadID: threadID, Name: spec.Name, Kind: spec.Kind, Command: spec.Command, Dir: spec.Dir,
 		At: spec.At, GitHub: spec.GitHub, OrTimeout: spec.OrTimeout,

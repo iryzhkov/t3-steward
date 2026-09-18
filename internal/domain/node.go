@@ -273,6 +273,11 @@ type NodeWaitRequest struct {
 	// Quota makes this a quota wait: Target is empty and the condition is
 	// settled from the pool's merged bucket observations.
 	Quota *QuotaWaitCondition `json:"quota,omitempty"`
+	// Group and Wake compose interactive waits of the coordinator kinds the
+	// way local waits compose: with Wake all, the thread is woken once, when
+	// every member of the group on that thread has settled.
+	Group string   `json:"group,omitempty"`
+	Wake  WakeMode `json:"wake,omitempty"`
 }
 
 // Kind is the wait kind of a coordinator-settled interactive wait.

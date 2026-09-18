@@ -15,6 +15,8 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/wait"
 )
 
 // coordinatorWaitSpec is a parsed `wait add` for a coordinator kind: node or
@@ -184,7 +186,26 @@ func cmdCoordinatorWaitAdd(ctx context.Context, cfg config.Config, client coordi
 	if spec.RequestID == "" {
 		spec.RequestID = "nw-" + strings.TrimPrefix(newWaitID(), "w-")
 	}
-	request := domain.NodeWaitRequest{ID: spec.RequestID, ThreadID: threadID, Name: spec.Name, Timeout: spec.Timeout, Quota: spec.Quota}
+	if spec.Group != "" {
+		// The local checks of this thread are the other side of a mixed group.
+		statePath, err := cfg.ResolveStatePath()
+		if err != nil {
+			return err
+		}
+		store, err := sqlite.Open(statePath)
+		if err != nil {
+			return err
+		}
+		local, err := store.ListWaits(ctx, threadID)
+		store.Close()
+		if err != nil {
+			return err
+		}
+		if err := refuseMixedGroup(threadID, spec.Group, spec.Kind, local, nil); err != nil {
+			return err
+		}
+	}
+	request := domain.NodeWaitRequest{ID: spec.RequestID, ThreadID: threadID, Name: spec.Name, Timeout: spec.Timeout, Quota: spec.Quota, Group: spec.Group, Wake: domain.WakeMode(spec.WakeMode)}
 	if spec.Node != nil {
 		request.Target = spec.Node.Target
 		if spec.Node.State != domain.NodeStateTerminal {
@@ -202,6 +223,33 @@ func cmdCoordinatorWaitAdd(ctx context.Context, cfg config.Config, client coordi
 	}
 	if len(result.Waits) == 1 && result.Waits[0].Delivery != "delivered" && result.Waits[0].Delivery != "cancelled" {
 		fmt.Fprintln(os.Stderr, "End this turn now; the coordinator has registered the wait.")
+	}
+	return nil
+}
+
+// refuseMixedGroup refuses a registration into an interactive --group that
+// already holds a live member from the other side: a local kind into a group
+// with a coordinator wait, or a coordinator kind into a group with a local
+// check. The two sides settle on different hosts and the contract does not
+// guarantee a mixed group. The refusal names both members.
+func refuseMixedGroup(threadID, group string, kind domain.WaitKind, local []wait.Wait, native []domain.NodeWait) error {
+	if group == "" {
+		return nil
+	}
+	coordinator := kind.OrShell().Coordinator()
+	for _, w := range local {
+		if w.ThreadID != threadID || w.Group != group || w.Status != wait.StatusWaiting || !coordinator {
+			continue
+		}
+		return fmt.Errorf("group %q on thread %s already holds local wait %s (%s); a %s wait is a coordinator kind and cannot join it: use another --group, or wait for %s to settle",
+			group, threadID, w.ID, w.Kind.OrShell(), kind, w.ID)
+	}
+	for _, w := range native {
+		if w.Request.ThreadID != threadID || w.Request.Group != group || w.Delivery == "delivered" || w.Delivery == "cancelled" || coordinator {
+			continue
+		}
+		return fmt.Errorf("group %q on thread %s already holds coordinator wait %s (%s); a %s wait is a local kind and cannot join it: use another --group, or wait for %s to settle",
+			group, threadID, w.Request.ID, w.Request.Kind(), kind.OrShell(), w.Request.ID)
 	}
 	return nil
 }

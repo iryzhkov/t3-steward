@@ -179,6 +179,14 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		return wait, fmt.Errorf("task-bound wait names attempt revision %d, ahead of attempt %q at revision %d",
 			request.IssuedRevision, attempt.ID, attempt.Revision)
 	}
+	if request.Wake == domain.WakeAll {
+		// A task-bound all set is the attempt's live all waits, and it is all
+		// local kinds or all coordinator kinds: the two sides settle on
+		// different hosts and a mixed set is not guaranteed by the contract.
+		if err := refuseMixedTaskWaitSetTx(ctx, tx, request); err != nil {
+			return wait, err
+		}
+	}
 	if request.Kind.Coordinator() {
 		// A coordinator kind is checked against the records it will be settled
 		// from, so a condition that can never settle, or already holds, is
@@ -214,6 +222,34 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		return domain.TaskWait{}, err
 	}
 	return wait, tx.Commit()
+}
+
+// refuseMixedTaskWaitSetTx refuses a --wake all registration whose kind is
+// on the other side (local or coordinator) from a live all wait of the same
+// attempt, naming both members.
+func refuseMixedTaskWaitSetTx(ctx context.Context, tx *sql.Tx, request domain.TaskWaitRegistration) error {
+	waits, err := loadJSON[domain.TaskWait](ctx, tx, "coordinator_task_waits")
+	if err != nil {
+		return err
+	}
+	for _, wait := range waits {
+		if wait.AttemptID != request.AttemptID || !wait.Live() || wait.Wake != domain.WakeAll {
+			continue
+		}
+		if wait.Kind.OrShell().Coordinator() == request.Kind.OrShell().Coordinator() {
+			continue
+		}
+		return fmt.Errorf("a --wake all set is all local kinds or all coordinator kinds: wait %s (%s, %s) and this %s wait (%s) would mix them; register this one with --wake each, or wait for %s to settle",
+			wait.ID, wait.Kind.OrShell(), sideOf(wait.Kind), request.Kind.OrShell(), sideOf(request.Kind), wait.ID)
+	}
+	return nil
+}
+
+func sideOf(kind domain.WaitKind) string {
+	if kind.OrShell().Coordinator() {
+		return "a coordinator kind"
+	}
+	return "a local kind"
 }
 
 // validateStructuredRegistrationTx checks a coordinator-kind registration
