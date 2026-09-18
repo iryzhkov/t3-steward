@@ -148,6 +148,9 @@ All notable changes to this project are documented here. The format follows
   reason field, added with the verb, was empty until now because the
   coordinator did not report why it dropped an instance; it does now, and the
   workers query carries the per-worker provider authorization the answer needs.
+  A worker row carries `authorized` only when the coordinator reported
+  per-worker authorization at all: an older coordinator's answer leaves the
+  field out rather than printing `false` for a route it said nothing about.
   An instance the coordinator dropped is listed at all for the first time: it
   is in no quota pool and in no worker inventory, which is why "the release
   authorises opencode and nothing runs it" was invisible from every command.

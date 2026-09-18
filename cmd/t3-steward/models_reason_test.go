@@ -99,7 +99,7 @@ func TestModelsReportsWhyARouteIsNotAdvertised(t *testing.T) {
 		if advertised := item.Workers[0].Advertised; advertised != (want == "") {
 			t.Errorf("%s worker advertised = %t", instance, advertised)
 		}
-		if !item.Workers[0].Authorized {
+		if authorized := item.Workers[0].Authorized; authorized == nil || !*authorized {
 			t.Errorf("%s is authorized for omarchy-pc and the row does not say so", instance)
 		}
 	}
@@ -179,6 +179,21 @@ func TestModelsWithoutWorkerAuthorizationIsUnchanged(t *testing.T) {
 		if instance.Reason != "" {
 			t.Fatalf("%s reports a reason nothing could have told it: %q", instance.Instance, instance.Reason)
 		}
+		// The worker rows are the half this coordinator said nothing about, so
+		// they must not answer for it. Printing "authorized": false here is the
+		// mistake SetWorkerAuthorization avoids one level up: the coordinator
+		// did not report that the route is unauthorized, it reported nothing.
+		for _, worker := range instance.Workers {
+			if worker.Authorized != nil {
+				t.Fatalf("%s on %s claims authorized=%t against a coordinator that reported no authorization",
+					instance.Instance, worker.Worker, *worker.Authorized)
+			}
+		}
+	}
+	// Every instance in this fixture is in a quota pool, so an "authorized":
+	// false anywhere in the document can only be a worker row.
+	if strings.Contains(out.String(), `"authorized": false`) {
+		t.Fatalf("the document asserts an authorization the coordinator never reported:\n%s", out.String())
 	}
 	primary := modelsInstanceByName(t, document, "t3-primary")
 	if !primary.Authorized || !primary.Advertised || len(primary.Workers) != 1 {

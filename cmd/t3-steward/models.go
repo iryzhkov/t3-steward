@@ -103,8 +103,11 @@ type modelsWorker struct {
 	Worker string `json:"worker"`
 	Ready  bool   `json:"ready"`
 	// Authorized reports that the coordinator's configuration names this
-	// instance for this worker, whatever became of it at load.
-	Authorized bool `json:"authorized"`
+	// instance for this worker, whatever became of it at load. It is absent,
+	// not false, when the coordinator reported no per-worker authorization at
+	// all: a release older than this one answers the same query without it, and
+	// false would assert as fact what that answer does not carry.
+	Authorized *bool `json:"authorized,omitempty"`
 	// Advertised reports that this worker's inventory offers it now.
 	Advertised bool `json:"advertised"`
 	// Reason is why this instance and worker pair cannot run a route:
@@ -273,11 +276,19 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 		ready := worker.Enrolled && !worker.Stale && worker.Snapshot.Connected &&
 			worker.State == "observed" && worker.Health == string(domain.WorkerHealthReady)
 		rows := map[string]*modelsWorker{}
+		// worker.Providers is the coordinator's own statement of what this
+		// worker is authorized for. When it carries something, an instance
+		// absent from it is a fact and the row says so; when it is empty the
+		// coordinator reported nothing, and the row says nothing either.
+		reported := len(worker.Providers) > 0
 		row := func(instance string) *modelsWorker {
 			if existing, ok := rows[instance]; ok {
 				return existing
 			}
 			created := &modelsWorker{Worker: id, Ready: ready}
+			if reported {
+				created.Authorized = new(bool)
+			}
 			rows[instance] = created
 			return created
 		}
@@ -288,10 +299,12 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 		// The authorization half first, so that an instance the coordinator
 		// dropped is in the document at all: it is in no quota pool and no
 		// inventory, and it is exactly the state that was invisible before.
-		for _, authorized := range worker.Providers {
-			entry(authorized.Instance)
-			row(authorized.Instance).Authorized = true
-			row(authorized.Instance).Reason = workerRouteReason(authorized, installed)
+		for _, granted := range worker.Providers {
+			entry(granted.Instance)
+			current := row(granted.Instance)
+			yes := true
+			current.Authorized = &yes
+			current.Reason = workerRouteReason(granted, installed)
 		}
 		for _, provider := range worker.Snapshot.Inventory.Providers {
 			if !provider.Available {
