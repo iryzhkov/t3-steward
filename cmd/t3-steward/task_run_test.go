@@ -310,6 +310,44 @@ func TestTaskRunIdempotencyKeyIsStableAndPromptSensitive(t *testing.T) {
 	}
 }
 
+// Both printed forms have to say whether the run was started now or replayed.
+// Against the live fleet the second identical start returned the same run and
+// the same key and still printed "replayed: false" in text and in --json. The
+// cause was below this verb -- the remote carrier returned the first answer
+// from its cache verbatim, which markReplayedAnswer in internal/backlogadmin
+// now corrects -- and this pins the half that belongs here: given a truthful
+// answer, the first start says false and the repeat says true, in both forms.
+func TestTaskRunPrintsWhetherTheStartWasAReplayInBothForms(t *testing.T) {
+	h := newTaskRunHarness()
+	start := func() taskRunRecord {
+		t.Helper()
+		h.stdout.Reset()
+		if err := h.run("--model", "opus", "--json", "--", "the same prompt"); err != nil {
+			t.Fatal(err)
+		}
+		return h.record(t)
+	}
+	// One harness for both starts, so the coordinator side really has seen the
+	// key by the time the second one arrives.
+	if first := start(); first.Replayed {
+		t.Fatalf("a first submission reported replayed: %+v", first)
+	}
+	repeat := start()
+	if !repeat.Replayed {
+		t.Fatalf("the repeat of an identical start reported replayed: false: %+v", repeat)
+	}
+	if !bytes.Contains(h.stdout.Bytes(), []byte(`"replayed": true`)) {
+		t.Fatalf("--json did not print replayed: true\n%s", h.stdout.String())
+	}
+	var text bytes.Buffer
+	if err := renderTaskRunRecord(&text, repeat); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text.String(), "(replayed: true)") {
+		t.Fatalf("the text form did not say the start was replayed:\n%s", text.String())
+	}
+}
+
 // The key covers what will run and not how the route was found, so the archive
 // must not vary by that either. These two commands are the same task to the
 // caller and to the key -- the same project, ref, instance, model, prompt,

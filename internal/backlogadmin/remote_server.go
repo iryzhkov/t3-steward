@@ -146,7 +146,7 @@ func (s *RemoteServer) Serve(ctx context.Context, pinned string, in io.Reader, o
 			return s.refuse(out, frame, operation, &credentials,
 				&workerproto.ProtocolError{Code: workerproto.ErrorInternal, Message: err.Error(), RequestID: frame.RequestID})
 		}
-		return s.write(out, frame, operation, response, credentials)
+		return s.write(out, frame, operation, markReplayedAnswer(response), credentials)
 	}
 	response := s.respond(ctx, request, buffered, nil)
 	encoded, err := json.Marshal(response)
@@ -160,6 +160,46 @@ func (s *RemoteServer) Serve(ctx context.Context, pinned string, in io.Reader, o
 		return err
 	}
 	return s.write(out, frame, operation, response, credentials)
+}
+
+// markReplayedAnswer says on the answer itself that it came from the carrier's
+// cache: this request identity was answered before, so the work it asked for
+// happened then and not now. That is exactly what the printed "replayed" flag
+// means, and without this the flag is wrong on the path the fleet actually
+// uses. A "t3-steward task run" repeated with the same inputs derives the same
+// idempotency key, requestIdentity turns that key into the same request id,
+// and the carrier therefore answers from this cache. The submission service,
+// which does set Replay on a repeat, is never asked, so the first answer's
+// "replay": false was returned verbatim.
+//
+// Nothing here is inferred. The carrier knows it served a cached answer; it
+// does not conclude "replay" from a run id that happens to match. When the
+// cached row has been pruned the operation re-executes and the service sets
+// the same flag from its own durable record, so the two layers agree instead
+// of contradicting each other, and an answer that carries no replay flag at
+// all, such as a refusal, is left alone.
+func markReplayedAnswer(response localResponse) localResponse {
+	if response.SubmissionResponse != nil {
+		replayed := *response.SubmissionResponse
+		replayed.Replay = true
+		response.SubmissionResponse = &replayed
+	}
+	if response.ScheduleDefinitionResponse != nil {
+		replayed := *response.ScheduleDefinitionResponse
+		replayed.Replay = true
+		response.ScheduleDefinitionResponse = &replayed
+	}
+	if response.GraphAmendment != nil {
+		replayed := *response.GraphAmendment
+		replayed.Replay = true
+		response.GraphAmendment = &replayed
+	}
+	if response.SupervisionResponse != nil {
+		replayed := *response.SupervisionResponse
+		replayed.Replay = true
+		response.SupervisionResponse = &replayed
+	}
+	return response
 }
 
 // decodeCachedResponse reads back a cached answer strictly, so a corrupted row

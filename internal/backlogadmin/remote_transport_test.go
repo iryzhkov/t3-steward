@@ -385,6 +385,20 @@ func TestRemoteCarrierReplayProducesExactlyOneRunAcrossProcesses(t *testing.T) {
 	if harness.service.submissions != 1 {
 		t.Fatalf("submissions = %d, want exactly 1", harness.service.submissions)
 	}
+	// The answer has to say which of the two it is. The first submission did
+	// the work; the second was served from the carrier's cache and did none,
+	// which is what "replayed" means to the caller. Before this was asserted,
+	// the cached answer was returned verbatim and every repeat of a remote
+	// "t3-steward task run" printed "replayed: false" while replaying.
+	//
+	// The fake service never sets Replay, so nothing but the carrier can make
+	// the second answer true here.
+	if first.Replay {
+		t.Fatal("the first submission reported itself a replay")
+	}
+	if !second.Replay {
+		t.Fatalf("the replayed submission reported replay=false: %+v", second)
+	}
 }
 
 // Equal-length different content is the case a digest over the request envelope
