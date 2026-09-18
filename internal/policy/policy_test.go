@@ -121,6 +121,11 @@ func TestDirectJumpToStop(t *testing.T) {
 	only(t, d, domain.ActionStop)
 }
 
+// The grace timer after a drain escalates on the same terms as a reading: a
+// drain from the percentage ladder alone stands when the grace expires below
+// the stop threshold, and the reading that crosses the threshold stops the
+// bucket; a drain whose projection is already under the hard-stop floor is
+// stopped by the timer, also after a restart during the grace period.
 func TestGraceTimerStops(t *testing.T) {
 	e := New(DefaultThresholds())
 	r := resetAt
@@ -129,7 +134,27 @@ func TestGraceTimerStops(t *testing.T) {
 	st := d.State
 	d = e.Tick(st, base.Add(30*time.Second))
 	only(t, d)
+	if d.State.DrainDeadline == nil {
+		t.Fatal("the grace deadline was dropped before it expired")
+	}
 	d = e.Tick(st, base.Add(61*time.Second))
+	only(t, d)
+	if d.State.Phase != domain.PhaseDraining || d.Ignored == "" || d.State.DrainDeadline != nil {
+		t.Fatalf("grace expiry below the stop threshold = %+v ignored=%q", d.State, d.Ignored)
+	}
+	d = e.Evaluate(snap(95, base.Add(2*time.Minute), &r, "2"), d.State, base.Add(2*time.Minute))
+	only(t, d, domain.ActionStop)
+	if d.State.Phase != domain.PhaseStopped {
+		t.Fatalf("phase = %s", d.State.Phase)
+	}
+	// 84% to 92% in two minutes projects exhaustion in two minutes, the
+	// hard-stop floor, on its first strike: the reading drains, the timer
+	// stops.
+	st = e.Evaluate(snap(84, base, &r, "3"), domain.BucketState{}, base).State
+	d = e.Evaluate(snap(92, base.Add(2*time.Minute), &r, "4"), st, base.Add(2*time.Minute))
+	only(t, d, domain.ActionDrain)
+	st = d.State
+	d = e.Tick(st, base.Add(3*time.Minute+time.Second))
 	only(t, d, domain.ActionStop)
 	if d.State.Phase != domain.PhaseStopped {
 		t.Fatalf("phase = %s", d.State.Phase)
@@ -137,7 +162,7 @@ func TestGraceTimerStops(t *testing.T) {
 	// Restart during a grace period: the persisted state still carries the
 	// deadline, so the tick still fires.
 	restarted := st
-	d = e.Tick(restarted, base.Add(2*time.Minute))
+	d = e.Tick(restarted, base.Add(4*time.Minute))
 	only(t, d, domain.ActionStop)
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
@@ -118,11 +120,23 @@ func cmdWorker(g globalFlags, args []string) error {
 	}
 	control := t3control.New(client, logger, cfg.Policy.DryRun)
 	control.SendThreadEnvironment = cfg.T3.SendThreadEnvironment
+	// The watchdog on this host leaves the worker's threads alone; the worker
+	// pauses and resumes them itself from the same bucket state, read from
+	// the watchdog's state database. Without that database (no watchdog on
+	// this host) there are no local pauses, which is today's behaviour.
+	quota := hostQuotaGuard(cfg, logger)
+	if closer, ok := quota.(interface{ Close() error }); ok {
+		defer closer.Close()
+	}
 	host := &workerruntime.CatalogHost{Home: home, Bootstrap: bootstrap, Options: workerruntime.WorkerServiceOptions{
 		RuntimeIdentity:     &domain.WorkerRuntimeIdentity{Release: version, Commit: commit, BootstrapDigest: digest},
 		ProtocolCredentials: credentials, ProjectCredentials: workerruntime.EnvironmentCredentialChecker{},
 		ObserveInventory: observeHostInventory(control, dataDir),
-		T3:               control, DryRun: cfg.Policy.DryRun, Logger: logger,
+		Quota:            quota,
+		// A local quota stop sends the drain notice first and escalates to the
+		// stop after the window the watchdog itself gives a stop to take effect.
+		PauseEscalation: cfg.Policy.StopVerifyTimeout.D(),
+		T3:              control, DryRun: cfg.Policy.DryRun, Logger: logger,
 	}}
 	if err = host.Load(ctx); err != nil {
 		return err
@@ -158,4 +172,30 @@ func cmdWorker(g globalFlags, args []string) error {
 		return nil
 	}
 	return err
+}
+
+// storeQuotaGuard is a HostQuotaGuard over the watchdog's state database that
+// closes the database with the worker.
+type storeQuotaGuard struct {
+	workerruntime.HostQuotaGuard
+	store *sqlite.Store
+}
+
+func (g storeQuotaGuard) Close() error { return g.store.Close() }
+
+// hostQuotaGuard opens the watchdog's state database on this host for the
+// worker's local quota pauses, or returns nil when there is none.
+func hostQuotaGuard(cfg config.Config, logger *slog.Logger) workerruntime.QuotaGuard {
+	statePath, err := cfg.ResolveStatePath()
+	if err != nil {
+		logger.Warn("quota watchdog state path unavailable; owned attempts are not paused locally", "err", err)
+		return nil
+	}
+	store, err := sqlite.Open(statePath)
+	if err != nil {
+		logger.Warn("quota watchdog state unavailable; owned attempts are not paused locally", "path", statePath, "err", err)
+		return nil
+	}
+	logger.Info("local quota pauses enabled from the watchdog state", "path", statePath)
+	return storeQuotaGuard{HostQuotaGuard: workerruntime.HostQuotaGuard{Config: cfg, Buckets: store}, store: store}
 }

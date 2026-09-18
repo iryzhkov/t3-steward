@@ -274,6 +274,29 @@ func (a Attempt) TurnLive() bool {
 	}
 }
 
+// AdminCommandRewake resumes an attempt that is parked in waiting-external
+// while no task-bound wait is live for it: the wait was cancelled from the
+// thread, or settled without a wake reaching the attempt. It is refused while
+// a live wait exists, naming the wait, because the wait's settlement is the
+// ordinary way out. It is declared here beside the states it acts on; the
+// other command kinds live in admin.go.
+const AdminCommandRewake AdminCommandKind = "rewake"
+
+// WorkerQuotaObservation is one provider bucket as the worker's host watchdog
+// last saw it. Workers report them so the coordinator's admission does not
+// depend on its own host observing a pool it does not use.
+type WorkerQuotaObservation struct {
+	Key           BucketKey  `json:"key"`
+	Phase         Phase      `json:"phase"`
+	UsedPercent   float64    `json:"usedPercent"`
+	Healthy       bool       `json:"healthy"`
+	ObservedAt    time.Time  `json:"observedAt"`
+	ResetsAt      *time.Time `json:"resetsAt,omitempty"`
+	Epoch         string     `json:"epoch,omitempty"`
+	LimitName     string     `json:"limitName,omitempty"`
+	ModelSelector string     `json:"modelSelector,omitempty"`
+}
+
 // AssignmentState is the coordinator's knowledge of an assignment lease.
 type AssignmentState string
 

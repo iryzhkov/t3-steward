@@ -601,7 +601,7 @@ func Default() Config {
 	c.Policy.DrainETA = Duration(15 * time.Minute)
 	c.Policy.StopETA = Duration(5 * time.Minute)
 	c.Policy.ResetExemption = Duration(10 * time.Minute)
-	c.Policy.RunwayMargin = 1.5
+	c.Policy.RunwayMargin = 1
 	c.Policy.HistoryRetention = Duration(90 * 24 * time.Hour)
 	c.Resume.Enabled = false
 	c.Resume.BelowPercent = 50

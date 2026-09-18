@@ -50,3 +50,23 @@ func TestResultCompletionRequiresStructuredSuccess(t *testing.T) {
 		t.Fatal("invalid archive accepted")
 	}
 }
+
+// A session that is not ready after a recorded quota pause is still refused,
+// and the refusal names the pause (S-3).
+func TestResultCompletionFailureNamesRecordedPause(t *testing.T) {
+	archive := `{"thread":{"id":"thread-1","latestTurn":{"turnId":"turn-1","state":"completed","startedAt":"2026-09-13T05:00:00Z","completedAt":"2026-09-13T05:01:00Z"},"session":{"threadId":"thread-1","status":"ready","activeTurnId":null,"lastError":null}}}`
+	notReady := strings.Replace(archive, `"status":"ready"`, `"status":"stopped"`, 1)
+	if notReady == archive {
+		t.Fatal("fixture has no ready session to break")
+	}
+	reason, err := ResultCompletionFailureWithPause([]byte(notReady), "thread-1", "done", "claudeAgent/claude/seven_day at 97%")
+	if err != nil || reason != "paused by quota watchdog: claudeAgent/claude/seven_day at 97%; "+SessionNotReadyFailure {
+		t.Fatalf("reason=%q err=%v", reason, err)
+	}
+	if reason, err := ResultCompletionFailureWithPause([]byte(notReady), "thread-1", "done", ""); err != nil || reason != SessionNotReadyFailure {
+		t.Fatalf("without a pause: reason=%q err=%v", reason, err)
+	}
+	if reason, err := ResultCompletionFailureWithPause([]byte(archive), "thread-1", "done", "claudeAgent/claude/seven_day at 97%"); err != nil || reason != "" {
+		t.Fatalf("a clean turn after a pause was refused: reason=%q err=%v", reason, err)
+	}
+}

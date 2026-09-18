@@ -110,11 +110,19 @@ func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 			return workerproto.SnapshotRequest{}, err
 		}
 		for _, snapshot := range observed {
-			if snapshot.WorkerID == workerID && snapshot.Sequence > 0 && slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityTaskWaitCollectionFence) {
+			if snapshot.WorkerID != workerID {
+				continue
+			}
+			// Host bucket observations are asked of a worker build that
+			// advertises them, so an older worker never meets the field.
+			if slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityQuotaObservations) {
+				request.QuotaObservationsWanted = true
+			}
+			if snapshot.Sequence > 0 && slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityTaskWaitCollectionFence) {
 				request.ObservedWorkerEpoch = snapshot.WorkerEpoch
 				request.ObservedSequence = snapshot.Sequence
-				break
 			}
+			break
 		}
 	}
 	waits, ok := source.(TaskWaitParkStore)

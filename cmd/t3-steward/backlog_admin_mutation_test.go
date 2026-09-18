@@ -21,16 +21,112 @@ type fakeAdminMutationService struct {
 	mutateErr      error
 	queries        []backlogadmin.Query
 	mutations      []backlogadmin.Mutation
+	// queryResponses and mutateResponses, when set, are consumed in order
+	// before the single responses above, for a target whose revision moves.
+	queryResponses  []backlogadmin.Response
+	mutateResponses []backlogadmin.MutationResponse
 }
 
 func (f *fakeAdminMutationService) Query(_ context.Context, query backlogadmin.Query) (backlogadmin.Response, error) {
 	f.queries = append(f.queries, query)
+	if len(f.queryResponses) != 0 {
+		response := f.queryResponses[0]
+		f.queryResponses = f.queryResponses[1:]
+		return response, f.queryErr
+	}
 	return f.queryResponse, f.queryErr
 }
 
 func (f *fakeAdminMutationService) Mutate(_ context.Context, mutation backlogadmin.Mutation) (backlogadmin.MutationResponse, error) {
 	f.mutations = append(f.mutations, mutation)
+	if len(f.mutateResponses) != 0 {
+		response := f.mutateResponses[0]
+		f.mutateResponses = f.mutateResponses[1:]
+		return response, f.mutateErr
+	}
 	return f.mutateResponse, f.mutateErr
+}
+
+// S-4: a retry issued right after a cancel meets the revision the
+// coordinator's own tick bumped in between. Without an explicit
+// --expected-revision the CLI re-reads the target once and resubmits under a
+// new command id, and says which revision it used.
+func TestBacklogMutationRetriesOnceAfterStaleRevision(t *testing.T) {
+	before := domain.Attempt{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: "task-1", Revision: 6}
+	after := before
+	after.Revision = 7
+	fake := &fakeAdminMutationService{
+		queryResponses: []backlogadmin.Response{
+			{Kind: backlogadmin.QueryTask, Task: &backlogadmin.TaskDetail{Attempt: &before}},
+			{Kind: backlogadmin.QueryTask, Task: &backlogadmin.TaskDetail{Attempt: &after}},
+		},
+		mutateResponses: []backlogadmin.MutationResponse{
+			{Command: backlogadmin.Command{ID: "first", Kind: domain.AdminCommandRetry, TargetType: domain.AdminTargetAttempt, TargetID: "attempt-1",
+				ExpectedRevision: 6, State: domain.AdminCommandRejected, Failure: "stale revision: expected 6, current 7"},
+				Event:         backlogadmin.Event{ID: "event-stale"},
+				CurrentTarget: &domain.AdminTargetSnapshot{Type: domain.AdminTargetAttempt, ID: "attempt-1", Revision: 7}},
+			{Command: backlogadmin.Command{ID: "second", Kind: domain.AdminCommandRetry, TargetType: domain.AdminTargetAttempt, TargetID: "attempt-1",
+				ExpectedRevision: 7, State: domain.AdminCommandPending},
+				Event: backlogadmin.Event{ID: "event-ok"}},
+		},
+	}
+	ids := []string{"first", "second"}
+	var out bytes.Buffer
+	cli := backlogAdminCLI{
+		service: fake, mutator: fake, principal: backlogadmin.Principal{ID: "operator"}, stdout: &out,
+		newCommandID: func() (string, error) { id := ids[0]; ids = ids[1:]; return id, nil },
+	}
+	if err := cli.runBacklogMutation(context.Background(), []string{"retry", "run-1/task-1", "--reason", "retry after cancel"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.mutations) != 2 || fake.mutations[0].ExpectedRevision != 6 || fake.mutations[1].ExpectedRevision != 7 ||
+		fake.mutations[0].ID == fake.mutations[1].ID || len(fake.queries) != 2 {
+		t.Fatalf("mutations = %+v queries = %d", fake.mutations, len(fake.queries))
+	}
+	for _, want := range []string{"command: second", "state: pending", "expected revision: 7", "note: revision 6 was stale", "resubmitted at revision 7 as command second"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output %q does not contain %q", out.String(), want)
+		}
+	}
+}
+
+// With an explicit --expected-revision, or an explicit --command-id, the
+// stale rejection is returned as it is: the operator chose the fence.
+func TestBacklogMutationHonoursExplicitRevisionAndCommandID(t *testing.T) {
+	stale := backlogadmin.MutationResponse{
+		Command: backlogadmin.Command{ID: "pinned", Kind: domain.AdminCommandRetry, TargetType: domain.AdminTargetAttempt, TargetID: "attempt-1",
+			ExpectedRevision: 6, State: domain.AdminCommandRejected, Failure: "stale revision: expected 6, current 7"},
+		Event:         backlogadmin.Event{ID: "event-stale"},
+		CurrentTarget: &domain.AdminTargetSnapshot{Type: domain.AdminTargetAttempt, ID: "attempt-1", Revision: 7},
+	}
+	t.Run("expected revision", func(t *testing.T) {
+		fake := &fakeAdminMutationService{mutateResponse: stale}
+		var out bytes.Buffer
+		cli := backlogAdminCLI{service: fake, mutator: fake, principal: backlogadmin.Principal{ID: "operator"}, stdout: &out,
+			newCommandID: func() (string, error) { return "generated", nil }}
+		if err := cli.runBacklogMutation(context.Background(), []string{"retry", "run-1/task-1", "--reason", "why", "--expected-revision", "6"}); err != nil {
+			t.Fatal(err)
+		}
+		if len(fake.queries) != 0 || len(fake.mutations) != 1 || fake.mutations[0].ExpectedRevision != 6 ||
+			!strings.Contains(out.String(), "state: rejected") || strings.Contains(out.String(), "note:") {
+			t.Fatalf("queries=%d mutations=%+v out=%q", len(fake.queries), fake.mutations, out.String())
+		}
+	})
+	t.Run("command id", func(t *testing.T) {
+		attempt := domain.Attempt{ID: "attempt-1", Revision: 6}
+		fake := &fakeAdminMutationService{mutateResponse: stale, queryResponse: backlogadmin.Response{Kind: backlogadmin.QueryTask, Task: &backlogadmin.TaskDetail{Attempt: &attempt}}}
+		var out bytes.Buffer
+		cli := backlogAdminCLI{service: fake, mutator: fake, principal: backlogadmin.Principal{ID: "operator"}, stdout: &out}
+		if err := cli.runBacklogMutation(context.Background(), []string{"retry", "run-1/task-1", "--reason", "why", "--command-id", "pinned"}); err != nil {
+			t.Fatal(err)
+		}
+		if len(fake.mutations) != 1 || !strings.Contains(out.String(), "state: rejected") || strings.Contains(out.String(), "note:") {
+			t.Fatalf("mutations=%+v out=%q", fake.mutations, out.String())
+		}
+	})
+	if _, err := parseBacklogMutation([]string{"retry", "run/task", "--reason", "why", "--expected-revision", "x"}); err == nil {
+		t.Fatal("a non-numeric expected revision was accepted")
+	}
 }
 
 func TestParseBacklogMutations(t *testing.T) {
@@ -48,6 +144,7 @@ func TestParseBacklogMutations(t *testing.T) {
 		{command: "cancel", kind: domain.AdminCommandCancel},
 		{command: "retry", kind: domain.AdminCommandRetry},
 		{command: "skip", kind: domain.AdminCommandSkip},
+		{command: "rewake", kind: domain.AdminCommandRewake},
 	}
 	for _, test := range tests {
 		name := test.command

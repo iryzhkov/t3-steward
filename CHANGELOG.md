@@ -22,6 +22,28 @@ All notable changes to this project are documented here. The format follows
   with `--current-catalog`. Enrollment still runs on the coordinator host and
   is still refused to the remote-admin role.
 
+- `t3-steward thread stop <thread-id> [--session]` dispatches
+  `thread.turn.interrupt` and, with `--session`, `thread.session.stop` for a
+  thread on the local T3 server through the existing control client.
+- `t3-steward backlog rewake <run>/<task> --reason TEXT` resumes an attempt
+  parked in `waiting-external` with no live task-bound wait, the state a
+  thread-side `wait cancel` used to strand it in. It is refused while a wait is
+  live, naming the wait.
+- `--expected-revision N` on backlog mutations. Without it, a `stale revision`
+  rejection is resubmitted once by the CLI after re-reading the target, under a
+  new command id, and the response says which revision was used.
+- Workers advertise `quota-observations-v1` and report their host watchdog's
+  bucket observations on the snapshot exchange when the coordinator asks; the
+  coordinator's quota admission merges them with its own by bucket key, keeping
+  the freshest, so a pool closes at its stop threshold before dispatch even
+  when the coordinator's own host has no fresh reading.
+- `backlog task show --json` carries the worker's last report on the attempt
+  as `evidence`: thread id, worker, observed control and session state, and
+  the quota pause reason. The text renderers of `backlog task show`,
+  `campaign show` and `diagnose` do not print it yet. Session state and pause
+  reason come from a worker that advertises `quota-observations-v1` and was
+  asked for it on the exchange; an older worker reports neither (S-17).
+
 ### Fixed
 
 - `t3-steward wait cancel <id>` on a local check bound to a task-bound wait
@@ -84,6 +106,37 @@ All notable changes to this project are documented here. The format follows
   hard-coded.
 - Tests now assert that `campaign check`, `validate` and `plan` with `--json`
   and `diagnose --json` write exactly one JSON document to stdout.
+- The quota watchdog no longer stops or resumes threads a live steward attempt
+  owns. Ownership is read from the worker's journal on the same host on every
+  tick; a resume intent for an owned thread is cancelled with
+  `thread owned by steward attempt <id>`, including intents recorded before
+  this release; an earlier intent for a thread whose attempt has since
+  settled is cancelled with `thread belonged to a settled steward attempt
+  <id>`. Ownership lasts while the assignment lease in the journal is
+  unexpired, so a crashed worker's threads return to the watchdog once its
+  leases lapse. A cancelled campaign's threads are no longer resumed after the
+  reset (S-16).
+- A quota stop of an attempt's thread is a pause, not a failure. The worker
+  drains or stops its own thread through the throttle path when the host
+  bucket for the route is draining or stopped (a stopped bucket sends the
+  drain notice first and stops the thread only when it is still working
+  `policy.stop_verify_timeout` later), reports the attempt as `paused`
+  with the bucket and percent as the reason, collects nothing meanwhile, and
+  resumes it when the bucket has recovered and the attempt is still live. A
+  session that is still not ready when collected is refused as
+  `paused by quota watchdog: <bucket> at <percent>; ...` instead of an
+  unexplained session failure (S-3).
+- A rejected attempt command names the commands its state admits, for example
+  `resume is invalid from waiting-external/waiting-external; allowed: rewake,
+  cancel, skip` (S-5).
+- The burn-rate projection asks for a drain at most while usage is below
+  `stop_percent`; a hard stop needs the percentage threshold or an exhaustion
+  under two minutes; the drain's grace timer escalates on the same terms, so
+  a below-threshold drain stands when the grace expires and the next reading
+  decides. The runway margin defaults to 1, so an exhaustion
+  projected after the reset is no reason to act. A turn the user starts after
+  a watchdog stop is left running while the bucket is stopped, and the drain
+  notice says how long the session has at the current rate (S-18).
 - An overseer activation now carries its supervisor identity in the activation
   workspace, as an owner-only `.t3-steward/supervisor.env` the worker writes
   before the thread starts, and the supervision commands discover it by walking
@@ -131,6 +184,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The worker journal decoder tolerates fields it does not know within journal
+  version 1, so a worker binary rolled back onto a journal written by this
+  release opens it instead of refusing every attempt with
+  `worker journal: decode: ... unknown field`. Rollback note: this release adds
+  `localThrottle`, `lastLocalThrottle` and `observedThreadState` to attempt
+  records; an older binary drops them on its next write, so a locally paused
+  attempt is then seen as an ordinary stopped one and collected, which fails
+  its session as before this release. Drain or finish paused attempts before
+  rolling the worker back.
 - The coordinator schema is version 18. The migration adds the nine campaign
   supervision tables and rewrites nothing: an existing run gets no supervision
   record, because the absence of one is the unsupervised case. Migration is

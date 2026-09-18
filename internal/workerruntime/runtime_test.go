@@ -41,6 +41,7 @@ type fakeDriver struct {
 	settleErr             error
 	cleanupCalls          int
 	checkpointCalls       int
+	checkpointErr         error
 	resumeCalls           int
 }
 
@@ -103,6 +104,9 @@ func (d *fakeDriver) Warn(context.Context, workerproto.ExecutionPackage, domain.
 }
 func (d *fakeDriver) Checkpoint(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) (*domain.CheckpointMetadata, error) {
 	d.checkpointCalls++
+	if d.checkpointErr != nil {
+		return nil, d.checkpointErr
+	}
 	data := []byte("checkpoint")
 	sum := sha256.Sum256(data)
 	return &domain.CheckpointMetadata{ArtifactID: "checkpoint-1", Path: ".t3/checkpoint.md", SHA256: hex.EncodeToString(sum[:]), Size: int64(len(data)), CapturedAt: runtimeTestNow}, nil
@@ -564,7 +568,7 @@ func TestObservationKeepsPreDispatchPhasesPreparing(t *testing.T) {
 			got := observation(AttemptRecord{
 				Assignment: domain.Assignment{ID: "assignment-1", Epoch: 1},
 				Phase:      phase,
-			}, runtimeTestNow)
+			}, runtimeTestNow, false)
 			if got.State != domain.AssignmentClaimed || got.Control != domain.ControlPreparing {
 				t.Fatalf("observation = %#v", got)
 			}

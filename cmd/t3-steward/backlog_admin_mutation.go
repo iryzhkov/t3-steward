@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,11 +29,15 @@ type adminMutationInvocation struct {
 	commandID     string
 	payload       json.RawMessage
 	asJSON        bool
+	// expectedRevision is the operator's explicit fence; nil means the CLI
+	// reads the current revision itself and may re-read it once after a
+	// stale-revision rejection.
+	expectedRevision *int64
 }
 
 func isBacklogMutation(command string) bool {
 	switch command {
-	case "start", "delay", "pause", "resume", "cancel", "retry", "skip":
+	case "start", "delay", "pause", "resume", "cancel", "retry", "skip", "rewake":
 		return true
 	default:
 		return false
@@ -50,7 +55,7 @@ func isScheduleMutation(command string) bool {
 
 func parseBacklogMutation(args []string) (adminMutationInvocation, error) {
 	if len(args) < 2 || !isBacklogMutation(args[0]) {
-		return adminMutationInvocation{}, errors.New("backlog control usage: <start|delay|pause|resume|cancel|retry|skip> <workflow-run>/<task> --reason <reason>")
+		return adminMutationInvocation{}, errors.New("backlog control usage: <start|delay|pause|resume|cancel|retry|skip|rewake> <workflow-run>/<task> --reason <reason> [--expected-revision N] [--command-id ID] [--json]")
 	}
 	runID, taskID, err := splitTaskTarget(args[1])
 	if err != nil {
@@ -106,11 +111,20 @@ func parseMutationOptions(args []string, invocation *adminMutationInvocation) er
 			}
 			now = true
 			args = args[1:]
-		case "--reason", "--command-id", "--until":
+		case "--reason", "--command-id", "--until", "--expected-revision":
 			if len(args) < 2 || args[1] == "" {
 				return fmt.Errorf("%s needs a value", args[0])
 			}
 			switch args[0] {
+			case "--expected-revision":
+				if invocation.expectedRevision != nil {
+					return errors.New("--expected-revision may only be specified once")
+				}
+				value, err := strconv.ParseInt(args[1], 10, 64)
+				if err != nil || value < 0 {
+					return fmt.Errorf("--expected-revision must be a non-negative integer, got %q", args[1])
+				}
+				invocation.expectedRevision = &value
 			case "--reason":
 				if invocation.reason != "" {
 					return errors.New("--reason may only be specified once")
@@ -178,17 +192,59 @@ func (c backlogAdminCLI) runBacklogMutation(ctx context.Context, args []string) 
 	if err != nil {
 		return err
 	}
+	if invocation.expectedRevision != nil {
+		return c.submitMutation(ctx, invocation, *invocation.expectedRevision)
+	}
+	revision, err := c.currentAttemptRevision(ctx, invocation)
+	if err != nil {
+		return err
+	}
+	// The revision is read and then submitted; the coordinator's own tick
+	// can move it in between (a cancel it has just applied, a worker
+	// observation). Without an explicit --expected-revision that race is
+	// not the operator's to resolve: the target is re-read once and the
+	// command resubmitted under a new id, and the response says so (S-4).
+	// An explicit --command-id is a replay handle and is never rewritten.
+	response, err := c.mutate(ctx, invocation, revision)
+	if err != nil {
+		return err
+	}
+	var note string
+	if invocation.commandID == "" && staleRevisionRejection(response) {
+		current, err := c.currentAttemptRevision(ctx, invocation)
+		if err != nil {
+			return err
+		}
+		if current != revision {
+			note = fmt.Sprintf("revision %d was stale (%s); re-read the target and resubmitted at revision %d as command %%s", revision, response.Command.Failure, current)
+			if response, err = c.mutate(ctx, invocation, current); err != nil {
+				return err
+			}
+			note = fmt.Sprintf(note, response.Command.ID)
+		}
+	}
+	return c.renderMutation(invocation, response, note)
+}
+
+// staleRevisionRejection reports a submission the coordinator refused because
+// the expected revision was behind the target's current one.
+func staleRevisionRejection(response backlogadmin.MutationResponse) bool {
+	return response.Command.State == domain.AdminCommandRejected &&
+		strings.HasPrefix(response.Command.Failure, "stale revision")
+}
+
+func (c backlogAdminCLI) currentAttemptRevision(ctx context.Context, invocation adminMutationInvocation) (int64, error) {
 	response, err := c.service.Query(ctx, backlogadmin.Query{
 		Version: backlogadmin.Version, Kind: backlogadmin.QueryTask, Principal: c.principal,
 		WorkflowRunID: invocation.workflowRunID, TaskID: invocation.taskID,
 	})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if response.Task == nil || response.Task.Attempt == nil {
-		return fmt.Errorf("task %s/%s has no attempt to control", invocation.workflowRunID, invocation.taskID)
+		return 0, fmt.Errorf("task %s/%s has no attempt to control", invocation.workflowRunID, invocation.taskID)
 	}
-	return c.submitMutation(ctx, invocation, response.Task.Attempt.Revision)
+	return response.Task.Attempt.Revision, nil
 }
 
 func (c backlogAdminCLI) runScheduleMutation(ctx context.Context, args []string) error {
@@ -211,8 +267,18 @@ func (c backlogAdminCLI) runScheduleMutation(ctx context.Context, args []string)
 }
 
 func (c backlogAdminCLI) submitMutation(ctx context.Context, invocation adminMutationInvocation, expectedRevision int64) error {
+	response, err := c.mutate(ctx, invocation, expectedRevision)
+	if err != nil {
+		return err
+	}
+	return c.renderMutation(invocation, response, "")
+}
+
+// mutate submits one command under the given revision, with the operator's
+// command id or a fresh one.
+func (c backlogAdminCLI) mutate(ctx context.Context, invocation adminMutationInvocation, expectedRevision int64) (backlogadmin.MutationResponse, error) {
 	if c.mutator == nil {
-		return backlogadmin.ErrReadOnly
+		return backlogadmin.MutationResponse{}, backlogadmin.ErrReadOnly
 	}
 	commandID := invocation.commandID
 	if commandID == "" {
@@ -223,31 +289,41 @@ func (c backlogAdminCLI) submitMutation(ctx context.Context, invocation adminMut
 		var err error
 		commandID, err = generate()
 		if err != nil {
-			return fmt.Errorf("create command id: %w", err)
+			return backlogadmin.MutationResponse{}, fmt.Errorf("create command id: %w", err)
 		}
 	}
-	response, err := c.mutator.Mutate(ctx, backlogadmin.Mutation{
+	return c.mutator.Mutate(ctx, backlogadmin.Mutation{
 		Version: backlogadmin.Version, Principal: c.principal, ID: commandID,
 		Kind: invocation.kind, WorkflowRunID: invocation.workflowRunID, TaskID: invocation.taskID,
 		ScheduleID: invocation.scheduleID, ExpectedRevision: expectedRevision,
 		Reason: invocation.reason, Payload: invocation.payload,
 	})
-	if err != nil {
-		return err
-	}
+}
+
+// mutationDocument is the JSON form of a mutation result; Resubmitted is set
+// when a stale-revision rejection was retried once with a re-read revision.
+type mutationDocument struct {
+	backlogadmin.MutationResponse
+	Resubmitted string `json:"resubmitted,omitempty"`
+}
+
+func (c backlogAdminCLI) renderMutation(invocation adminMutationInvocation, response backlogadmin.MutationResponse, note string) error {
 	if invocation.asJSON {
 		encoder := json.NewEncoder(c.stdout)
 		encoder.SetIndent("", "  ")
-		return encoder.Encode(response)
+		return encoder.Encode(mutationDocument{MutationResponse: response, Resubmitted: note})
 	}
 	renderMutationResponse(c.stdout, response)
+	if note != "" {
+		fmt.Fprintf(c.stdout, "note: %s\n", note)
+	}
 	return nil
 }
 
 func renderMutationResponse(out io.Writer, response backlogadmin.MutationResponse) {
 	command := response.Command
-	fmt.Fprintf(out, "command: %s\nkind: %s\ntarget: %s/%s\nstate: %s\n",
-		command.ID, command.Kind, command.TargetType, command.TargetID, command.State)
+	fmt.Fprintf(out, "command: %s\nkind: %s\ntarget: %s/%s\nstate: %s\nexpected revision: %d\n",
+		command.ID, command.Kind, command.TargetType, command.TargetID, command.State, command.ExpectedRevision)
 	if command.Failure != "" {
 		fmt.Fprintf(out, "failure: %s\n", command.Failure)
 	}

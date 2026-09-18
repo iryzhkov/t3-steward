@@ -832,6 +832,69 @@ Answering in the task's thread does not cancel the wait; the attempt stays
 parked until the condition settles, the wait is cancelled or its deadline
 passes.
 
+### Quota pause on the worker host
+
+A thread the worker created for an attempt belongs to that attempt until the
+attempt is terminal on the worker or its assignment is released. The quota
+watchdog on the same host reads that ownership from the worker's journal on
+every tick and leaves owned threads alone: no warn, drain, stop or resume, and
+any resume intent for an owned thread is cancelled with
+`thread owned by steward attempt <id>`, and an intent recorded before this
+release for a thread whose attempt has since settled is cancelled with
+`thread belonged to a settled steward attempt <id>`. Ownership lasts only while the
+assignment lease in the journal is unexpired (a lease-less record, one hour
+since its last update): a crashed or stopped worker stops renewing, and its
+threads are the watchdog's again once the leases lapse. The watchdog logs
+`thread ownership ignored for stale attempt records` once when that happens.
+See [ADR H6](architecture/adr-h6-attempt-owned-threads.md).
+
+When the watchdog's bucket for the attempt's route is draining or stopped, the
+worker itself drains or stops the thread through the throttle path and reports
+the attempt as `paused` with the bucket as the reason. A stopped bucket sends
+the drain notice first and stops the thread only when it is still working
+`policy.stop_verify_timeout` later, so a session that checkpoints on request
+is never interrupted. The reason reads, for example,
+`claudeAgent/claude/seven_day at 97%` in `backlog task show` evidence. Nothing
+is collected while the pause is in force, so the attempt does not fail with
+"provider session is not ready". The worker resumes the thread when the bucket
+has recovered under the watchdog's resume rules and the attempt is still
+claimed under a live lease with no stop command; a cancelled attempt is never
+resumed, its stop command ends the session. A worker host without a watchdog
+state database applies no local pause.
+
+Workers that advertise `quota-observations-v1` report their host's bucket
+observations on the snapshot exchange, and admission closes at the pool's
+stop threshold on the freshest reading from any host.
+
+To stop a session nothing owns any more, on the host that runs it:
+
+```text
+t3-steward thread stop <thread-id>            # thread.turn.interrupt
+t3-steward thread stop <thread-id> --session  # also thread.session.stop
+```
+
+### Parked attempt with no live wait
+
+An attempt stays `waiting-external` when its task-bound wait was cancelled
+from the thread or settled without a wake reaching it. `resume` and `retry`
+are refused from that state, and the refusal names what is allowed:
+
+```text
+t3-steward backlog rewake <run>/<task> --reason TEXT [--json]
+```
+
+`rewake` applies the transition a settled wait's wake applies (active,
+resuming, same assignment and thread). It is refused while a wait is still
+live for the attempt, naming the wait; cancel that wait or let it settle. It
+is also refused when the execution that parked the attempt is gone; cancel
+and retry then.
+
+A recovery command issued right after another one can meet a revision the
+coordinator's own tick has moved. Without `--expected-revision` the CLI
+re-reads the target once, resubmits under a new command id and says which
+revision it used. With `--expected-revision N`, or an explicit `--command-id`,
+the stale-revision rejection is returned as it is.
+
 ### Schedule overlap or failure hold
 
 A schedule has at most one open workflow run. Duplicate occurrences are
@@ -950,6 +1013,14 @@ task-specific idempotency or manual verification.
 Never use deletion of the state database as backlog-v2 rollback; it discards
 assignment identity, schedule singleton state, reservations, audit events, and
 resume intent needed to prevent duplicate execution.
+
+The worker journal (`journal.json` under the worker state root) is versioned by
+its `version` header, and within a version a binary ignores record fields it
+does not know, so a rolled-back worker binary opens a journal a newer one
+wrote. It drops the unknown fields on its next write: a local quota pause
+(`localThrottle`) recorded by this release is then lost, and the older binary
+collects the stopped thread as finished. Let paused attempts resume or drain,
+or cancel them, before rolling a worker back.
 
 ### Rolling back the campaign supervision migration (schema 18)
 

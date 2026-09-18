@@ -77,7 +77,7 @@ func TestWorkerParksInsteadOfCollectingWhileATaskWaitIsLive(t *testing.T) {
 	if driver.collectCalls != 0 {
 		t.Fatalf("outputs were collected from a parked task: %d collections", driver.collectCalls)
 	}
-	observed := observation(mustRecord(t, runtime, "assignment-1"), now)
+	observed := observation(mustRecord(t, runtime, "assignment-1"), now, false)
 	if observed.Control != domain.ControlWaitingExternal || observed.State != domain.AssignmentClaimed {
 		t.Fatalf("a parked attempt reported %q/%q", observed.State, observed.Control)
 	}

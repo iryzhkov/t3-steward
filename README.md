@@ -320,27 +320,41 @@ normal -> warned -> draining -> stopped -> (reset confirmed) -> normal
   start new subagents and to have active ones checkpoint.
 - **90% (drain)**: one message per thread asking it to stop spawning,
   finish or cancel subagents, collect results, write a checkpoint and stop.
-  A grace timer starts.
+  A grace timer starts (`policy.grace_period`, 60 seconds). When it expires
+  the bucket is stopped only on the terms a reading would stop it: the last
+  reading at or above `stop_percent`, or exhaustion projected under two
+  minutes. Below both the drain request stands and the next reading
+  decides; a session that ignores the notice and keeps climbing is stopped
+  by the reading that crosses the stop threshold.
 - **Projected exhaustion** tightens the ladder only once usage is already
   at or above `warn_percent`, and only after the projection has held on
   two consecutive readings. Below the warn threshold the burn rate never
   fires anything: a burst at the start of a window is not a reason to
   wind down. The burn rate
-  over the last ten minutes of readings gives a time to 100%; the same
-  warn, drain and stop actions fire when that falls below 30, 15 and 5
-  minutes (`policy.warn_eta` etc.), but only if the window does not reset
-  first. A session burning 2.3% a minute at 63% gets the drain request at
-  about 16 minutes to exhaustion instead of waiting for 90%.
+  over the last ten minutes of readings gives a time to 100%; the warn and
+  drain actions fire when that falls below 30 and 15 minutes
+  (`policy.warn_eta`, `policy.drain_eta`), but only if the window does not
+  reset first. A session burning 2.3% a minute at 63% gets the drain
+  request at about 16 minutes to exhaustion instead of waiting for 90%.
+  The projection never fires a hard stop while usage is below
+  `stop_percent`, except when exhaustion is under two minutes away and no
+  drain can finish in time: the provider ends the session at 100% by
+  itself, and an interrupt discards the session's subagents for nothing.
+  The drain notice says how long the session has at the current rate.
 - **Runway**: with a known burn rate, nothing fires while the projected
-  time to 100% covers `policy.runway_margin` (1.5) times the time to the
-  reset, whatever the percentage: at 96% burning 0.05%/min with the reset
-  30 minutes away, the session is left alone. A burst too short to give a
-  rate falls back to the percentage ladder.
+  time to 100% covers `policy.runway_margin` (1, so any exhaustion
+  projected after the reset) times the time to the reset, whatever the
+  percentage: at 96% burning 0.05%/min with the reset 30 minutes away, the
+  session is left alone. A burst too short to give a rate falls back to
+  the percentage ladder.
+- A turn the user starts after a stop is left running while the bucket is
+  stopped; its readings rearm or re-stop the bucket. Only turns the harness
+  starts on its own are held.
 - **Reset exemption**: when the window resets within `policy.reset_exemption`
   (10 minutes), nothing fires, not even at 96%, and an expired grace
   timer does not stop. Stopping then would save nothing.
-- **95% (stop)** or grace timer expired: `thread.turn.interrupt` for every
-  affected running thread, verification that it left the running state,
+- **95% (stop)**, or the grace timer expiring on those terms:
+  `thread.turn.interrupt` for every affected running thread, verification that it left the running state,
   bounded retries, escalation to `thread.session.stop`, and a desktop
   notification if a thread would not stop.
 - A jump straight from 60% to 97% performs only the highest action.

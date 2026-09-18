@@ -42,9 +42,20 @@ type Thresholds struct {
 	// within this long: stopping then saves nothing.
 	ResetExemption time.Duration
 	// RunwayMargin is how many times the time to the reset the projected
-	// runway must cover before the percentage ladder is ignored.
+	// runway must cover before the percentage ladder is ignored. One means
+	// an exhaustion projected after the reset is never a reason to act.
 	RunwayMargin float64
+	// HardStopETA is the only projection that stops a thread whose usage is
+	// still below StopPercent: the provider ends the session at 100% by
+	// itself, so an interrupt is worth its cost only in the last minutes.
+	// Above it the projection asks for a drain at most. Zero uses
+	// DefaultHardStopETA.
+	HardStopETA time.Duration
 }
+
+// DefaultHardStopETA is the projected time to exhaustion under which a hard
+// stop fires below the stop threshold.
+const DefaultHardStopETA = 2 * time.Minute
 
 // DefaultThresholds are the shipped defaults.
 func DefaultThresholds() Thresholds {
@@ -61,8 +72,16 @@ func DefaultThresholds() Thresholds {
 		DrainETA:          15 * time.Minute,
 		StopETA:           5 * time.Minute,
 		ResetExemption:    10 * time.Minute,
-		RunwayMargin:      1.5,
+		RunwayMargin:      1,
+		HardStopETA:       DefaultHardStopETA,
 	}
+}
+
+func (e *Engine) hardStopETA() time.Duration {
+	if e.t.HardStopETA <= 0 {
+		return DefaultHardStopETA
+	}
+	return e.t.HardStopETA
 }
 
 // Validate rejects thresholds that cannot form a monotonic ladder.
@@ -91,6 +110,9 @@ func (t Thresholds) Validate() error {
 	}
 	if t.RunwayMargin < 1 {
 		return fmt.Errorf("runway_margin must be at least 1 (got %v)", t.RunwayMargin)
+	}
+	if t.HardStopETA < 0 {
+		return fmt.Errorf("hard_stop_eta must not be negative")
 	}
 	return nil
 }
@@ -218,12 +240,17 @@ func (e *Engine) wantedLevel(snap domain.QuotaSnapshot, state *domain.BucketStat
 	why := fmt.Sprintf("threshold %.0f%%", e.thresholdFor(level))
 	// The projection only tightens the ladder once usage is already in
 	// warning territory; a burst early in a window is not a reason to
-	// wind anything down.
+	// wind anything down. And it asks for a drain at most while the
+	// percentage is below the stop threshold: a session that checkpoints
+	// and stops on request loses nothing, an interrupted one loses its
+	// subagents, and the provider ends the session at 100% anyway. Only a
+	// projection under the hard-stop floor, when no drain can finish in
+	// time, is a stop.
 	if snap.UsedPercent >= e.t.WarnPercent && state.ExhaustsIn != nil && e.t.RateWindow > 0 && (snap.ResetsAt == nil || *state.ExhaustsIn < untilReset) {
 		eta := *state.ExhaustsIn
 		var etaLevel domain.Phase
 		switch {
-		case eta <= e.t.StopETA:
+		case eta <= e.hardStopETA():
 			etaLevel = domain.PhaseStopped
 		case eta <= e.t.DrainETA:
 			etaLevel = domain.PhaseDraining
@@ -249,11 +276,13 @@ func (e *Engine) wantedLevel(snap domain.QuotaSnapshot, state *domain.BucketStat
 }
 
 // runwayHolds reports whether the projected time to exhaustion covers the
-// time to the reset with the configured margin.
+// time to the reset with the configured margin. With the default margin of
+// one, an exhaustion projected after the reset is no reason to act: the
+// window ends before the quota does.
 func (e *Engine) runwayHolds(eta, untilReset time.Duration, rate float64) (bool, string) {
 	margin := e.t.RunwayMargin
 	if margin <= 0 {
-		margin = 1.5
+		margin = 1
 	}
 	if float64(eta) >= margin*float64(untilReset) {
 		return true, fmt.Sprintf("burning %.2f%%/min, about %s of runway against %s to the reset; no need to stop",
@@ -293,6 +322,7 @@ func (e *Engine) Evaluate(snap domain.QuotaSnapshot, prev domain.BucketState, no
 		state.RecoveredAt = &t
 		state.Phase = domain.PhaseNormal
 		state.DrainDeadline = nil
+		state.StoppedAt = nil
 		state.RearmObservations = 0
 	} else if state.Phase != domain.PhaseNormal && state.ResetsAt == nil {
 		// No reset time: rearm only after usage stays low for several
@@ -308,6 +338,7 @@ func (e *Engine) Evaluate(snap domain.QuotaSnapshot, prev domain.BucketState, no
 				state.RecoveredAt = &t
 				state.Phase = domain.PhaseNormal
 				state.DrainDeadline = nil
+				state.StoppedAt = nil
 				state.RearmObservations = 0
 			}
 		} else {
@@ -360,6 +391,8 @@ func (e *Engine) Evaluate(snap domain.QuotaSnapshot, prev domain.BucketState, no
 			state.DrainDeadline = &deadline
 		case domain.PhaseStopped:
 			state.DrainDeadline = nil
+			stoppedAt := now
+			state.StoppedAt = &stoppedAt
 		}
 	}
 
@@ -376,8 +409,11 @@ func (e *Engine) Evaluate(snap domain.QuotaSnapshot, prev domain.BucketState, no
 	return domain.Decision{State: state, Actions: actions}
 }
 
-// Tick advances timers without a new snapshot. It fires the hard stop when a
-// drain grace period expires.
+// Tick advances timers without a new snapshot. When a drain grace period
+// expires it escalates to the hard stop on the same terms a reading does:
+// the last reading at or above the stop threshold, or an exhaustion projected
+// under the hard-stop floor. Below both the drain request stands and the next
+// reading decides.
 func (e *Engine) Tick(prev domain.BucketState, now time.Time) domain.Decision {
 	state := prev
 	if state.Phase != domain.PhaseDraining || state.DrainDeadline == nil || now.Before(*state.DrainDeadline) {
@@ -401,8 +437,24 @@ func (e *Engine) Tick(prev domain.BucketState, now time.Time) domain.Decision {
 			return domain.Decision{State: state, Ignored: fmt.Sprintf("grace expired but the window resets in %s; not stopping", until.Round(time.Second))}
 		}
 	}
+	// The grace stop obeys the same rule as the ladder (S-18): below the
+	// stop threshold an interrupt is worth its cost only when no drain can
+	// finish before the provider ends the session at 100% by itself. The
+	// drain notice was the point; a session that ignores it and keeps
+	// climbing is stopped by the reading that crosses the threshold.
+	if state.UsedPercent < e.t.StopPercent && (state.ExhaustsIn == nil || *state.ExhaustsIn > e.hardStopETA()) {
+		state.DrainDeadline = nil
+		state.UpdatedAt = now
+		eta := "no exhaustion projected"
+		if state.ExhaustsIn != nil {
+			eta = fmt.Sprintf("exhaustion projected in %s", state.ExhaustsIn.Round(time.Minute))
+		}
+		return domain.Decision{State: state, Ignored: fmt.Sprintf("grace expired at %.0f%%, below the stop threshold of %.0f%% with %s; the drain request stands", state.UsedPercent, e.t.StopPercent, eta)}
+	}
 	state.Phase = domain.PhaseStopped
 	state.DrainDeadline = nil
+	stoppedAt := now
+	state.StoppedAt = &stoppedAt
 	state.Healthy = false
 	state.UpdatedAt = now
 	snap := domain.QuotaSnapshot{

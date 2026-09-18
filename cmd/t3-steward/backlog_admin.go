@@ -54,6 +54,7 @@ func remoteAdminCommandKinds() map[domain.AdminCommandKind]bool {
 		domain.AdminCommandCancel:      true,
 		domain.AdminCommandRetry:       true,
 		domain.AdminCommandSkip:        true,
+		domain.AdminCommandRewake:      true,
 		domain.AdminCommandScheduleRun: true,
 		domain.AdminCommandEnable:      true,
 		domain.AdminCommandDisable:     true,

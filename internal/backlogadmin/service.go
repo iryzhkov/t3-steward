@@ -778,8 +778,10 @@ func (v view) taskDetail(runID, taskID string) (TaskDetail, bool) {
 			projected := assignmentDTO(assignment)
 			detail.Assignment = &projected
 			detail.ThreadURL = v.threadURL(assignment.WorkerID, firstNonEmpty(assignment.ThreadID, attempt.ThreadID))
+			detail.Evidence = v.attemptEvidence(*attempt, &assignment)
 		} else {
 			detail.ThreadURL = v.threadURL("", attempt.ThreadID)
+			detail.Evidence = v.attemptEvidence(*attempt, nil)
 		}
 	}
 	detail.Artifacts = v.artifacts(Query{WorkflowRunID: runID, TaskID: task.ID})

@@ -2,6 +2,7 @@ package workerruntime
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -120,6 +121,66 @@ func TestRuntimeRejectsChangedCommandReplayAndCorruptJournal(t *testing.T) {
 	if _, err := OpenJournal(corruptRoot, "normandy", "worker-1", 9); err == nil {
 		t.Fatal("corrupt journal accepted")
 	}
+}
+
+// A rolled-back binary reads the journal a newer one wrote: fields it does
+// not know, on a record or at the top level, are ignored within the journal
+// version rather than refusing the whole journal and every attempt in it. A
+// different version is still refused.
+func TestJournalToleratesUnknownFieldsWithinTheVersion(t *testing.T) {
+	root := t.TempDir()
+	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}
+	runtime := newClaimedRuntime(t, root, driver)
+	path := filepath.Join(root, "journal.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		t.Fatal(err)
+	}
+	generic["futureTopLevelField"] = true
+	attempts := generic["attempts"].(map[string]any)
+	record := attempts["assignment-1"].(map[string]any)
+	record["futureRecordField"] = map[string]any{"kind": "unknown-to-this-build"}
+	write := func() {
+		t.Helper()
+		newer, err := json.Marshal(generic)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, newer, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write()
+	journal, err := OpenJournal(root, "normandy", "worker-1", 9)
+	if err != nil {
+		t.Fatalf("a journal with unknown fields was refused: %v", err)
+	}
+	state, err := journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.Attempts["assignment-1"]; got.Assignment.ID != "assignment-1" || got.Phase != runtime.mustPhase(t, "assignment-1") {
+		t.Fatalf("attempt not preserved: %+v", got)
+	}
+	generic["version"] = journalVersion + 1
+	write()
+	if _, err := OpenJournal(root, "normandy", "worker-1", 9); err == nil {
+		t.Fatal("a journal of another version was accepted")
+	}
+}
+
+// mustPhase reads an attempt's phase from the runtime's own journal.
+func (r *Runtime) mustPhase(t *testing.T, id string) Phase {
+	t.Helper()
+	state, err := r.journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state.Attempts[id].Phase
 }
 
 func TestOpenJournalAdoptsNewerCoordinatorEpoch(t *testing.T) {

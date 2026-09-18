@@ -58,7 +58,17 @@ type Config struct {
 	LiveTaskWait func(context.Context, workerproto.ExecutionPackage) (bool, error)
 	// CampaignRefs is the worker-local store of campaign-scoped commits. It is
 	// nil for a worker that keeps none, which then has nothing to release.
-	CampaignRefs     CampaignRefCustodian
+	CampaignRefs CampaignRefCustodian
+	// Quota is the host watchdog's bucket state, consulted for the threads
+	// this runtime owns: a bucket in the drain or stop phase pauses the
+	// attempt through the throttle path, and the same recovery rules resume
+	// it. Nil means no watchdog state on this host and no local pauses.
+	Quota QuotaGuard
+	// PauseEscalation is how long a drain notice sent for a stopped bucket
+	// gets before the worker escalates to the driver's stop while the thread
+	// keeps working: the daemon's stop_verify_timeout. Zero escalates on the
+	// first reconcile after the notice failed to end the turn.
+	PauseEscalation  time.Duration
 	WorkerID         string
 	WorkerEpoch      string
 	CoordinatorID    string
@@ -78,6 +88,10 @@ type Runtime struct {
 	journal          *Journal
 	driver           Driver
 	log              *slog.Logger
+	// reportQuota records that the coordinator asked for bucket observations
+	// on its last snapshot request. It is not durable: the coordinator asks
+	// again on every exchange.
+	reportQuota bool
 }
 
 func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
@@ -136,6 +150,9 @@ func advertisedCapabilities(configured []string) []string {
 	if !slices.Contains(merged, workerproto.CapabilityCampaignSupervision) {
 		merged = append(merged, workerproto.CapabilityCampaignSupervision)
 	}
+	if !slices.Contains(merged, workerproto.CapabilityQuotaObservations) {
+		merged = append(merged, workerproto.CapabilityQuotaObservations)
+	}
 	for _, capability := range workerproto.SupportedPackageCapabilities() {
 		if !slices.Contains(merged, capability) {
 			merged = append(merged, capability)
@@ -157,13 +174,22 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 		return domain.WorkerSnapshot{}, err
 	}
 	now := r.now()
+	var quota []domain.WorkerQuotaObservation
+	if r.reportQuota && r.config.Quota != nil {
+		observed, err := r.config.Quota.Observations(ctx)
+		if err != nil {
+			r.log.Warn("host quota observations unavailable; snapshot carries none", "error", err)
+		} else {
+			quota = observed
+		}
+	}
 	var snapshot domain.WorkerSnapshot
 	err := r.journal.update(func(state *journalState) error {
 		state.Sequence++
 		assignments := make([]domain.WorkerAssignmentObservation, 0, len(state.Attempts))
 		for _, id := range sortedAttemptIDs(state.Attempts) {
 			record := state.Attempts[id]
-			assignments = append(assignments, observation(record, now))
+			assignments = append(assignments, observation(record, now, r.reportQuota))
 		}
 		inventory := r.config.Inventory
 		inventory.Capabilities = advertisedCapabilities(inventory.Capabilities)
@@ -171,7 +197,8 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 			WorkerID: r.config.WorkerID, WorkerEpoch: r.config.WorkerEpoch,
 			CoordinatorEpoch: r.config.CoordinatorEpoch, Sequence: state.Sequence,
 			Connected: true, Inventory: inventory, Assignments: assignments,
-			ObservedAt: now, ValidUntil: now.Add(r.config.SnapshotTTL),
+			QuotaObservations: quota,
+			ObservedAt:        now, ValidUntil: now.Add(r.config.SnapshotTTL),
 		}
 		return nil
 	})
@@ -505,10 +532,27 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 	var err error
 	switch record.Phase {
 	case PhaseRunning:
+		// Observe before deciding on a pause: a thread that has already ended
+		// its turn is finished work, and collecting it spends no provider
+		// quota. Pausing it would settle a finished thread and later resume
+		// it with a filler turn. Only a thread that is still working is
+		// paused; a stopped one takes the collection path.
 		threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
-		switch {
-		case observeErr != nil:
+		if observeErr != nil {
 			r.log.Warn("T3 observation unavailable; attempt keeps running", "assignment", id, "error", observeErr)
+			break
+		}
+		if err = r.noteThreadState(id, threadState); err != nil {
+			break
+		}
+		switch {
+		case threadState == backlog.DispatchThreadActive:
+			err = r.pauseForQuota(ctx, id, &record)
+		case threadState == backlog.DispatchThreadStopped && record.LocalThrottle != nil:
+			// The drain request was honoured: the thread checkpointed and
+			// ended its turn. This is the pause taking effect, not the
+			// attempt finishing, so nothing is collected.
+			err = r.markLocalPauseStopped(id, nil)
 		case threadState == backlog.DispatchThreadStopped:
 			if err = r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID); err == nil {
 				err = r.collectUnlessWaiting(ctx, id, record)
@@ -525,6 +569,10 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			} else if now.Sub(record.UpdatedAt) >= r.config.Retention {
 				err = r.prune(ctx, id, record)
 			}
+			break
+		}
+		if record.LocalThrottle != nil {
+			err = r.reconcileLocalPause(ctx, id, record, now)
 			break
 		}
 		if len(record.ThrottleRequests) == 0 {
@@ -908,6 +956,13 @@ func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record At
 	if record.Phase == PhaseFailed {
 		return r.collect(ctx, id)
 	}
+	if record.LocalThrottle != nil {
+		// A local quota pause is in force: the turn ended because this worker
+		// stopped it, and it resumes when the bucket recovers. Refused here,
+		// before the park probe, so the answer names the pause rather than a
+		// stale parked-assignment report.
+		return errors.New("collection deferred: attempt is paused by the quota watchdog")
+	}
 	// Stopped/stopped observations cannot distinguish a task that parked and
 	// resumed entirely between polls. Bind this decision to the provider turn.
 	if observer, ok := r.driver.(interface {
@@ -1030,6 +1085,11 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 	default:
 		return fmt.Errorf("collect is invalid in phase %q", record.Phase)
 	}
+	if record.LocalThrottle != nil {
+		// A local quota pause is in force: the turn ended because this
+		// worker stopped it, and it resumes when the bucket recovers.
+		return errors.New("collection deferred: attempt is paused by the quota watchdog")
+	}
 	if record.Phase != PhaseCollecting {
 		if err := r.markPhase(id, PhaseCollecting, "", record.WorkspacePath, record.ThreadID); err != nil {
 			return err
@@ -1046,7 +1106,7 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 			return r.collect(ctx, id)
 		}
 	}
-	if err := r.driver.Collect(ctx, record.Package.Package, record.WorkspacePath); err != nil {
+	if err := r.collectWithPauseEvidence(ctx, record); err != nil {
 		if !errors.Is(err, ErrSettleUnproven) {
 			return fmt.Errorf("collection deferred: %w", err)
 		}
@@ -1263,7 +1323,13 @@ func claim(assignment domain.Assignment, config Config, now time.Time) domain.As
 	}
 }
 
-func observation(record AttemptRecord, now time.Time) domain.WorkerAssignmentObservation {
+// observation is the worker's report on one attempt. The pause reason and the
+// thread state in the journal excerpt are the quota-observations-v1 fields:
+// the coordinator decodes snapshots strictly, so they are included only when
+// the coordinator asked for the capability on this exchange (detailed), the
+// same gate QuotaObservations has. An older coordinator never asks and never
+// meets them.
+func observation(record AttemptRecord, now time.Time, detailed bool) domain.WorkerAssignmentObservation {
 	state := record.Assignment.State
 	control := domain.ControlState("")
 	switch record.Phase {
@@ -1284,14 +1350,14 @@ func observation(record AttemptRecord, now time.Time) domain.WorkerAssignmentObs
 		control = domain.ControlWaitingExternal
 	case PhaseStopped:
 		// A thread that ended on its own is still owned by a live execution
-		// that waits for collection; only a delivered throttle command makes
-		// the stop a quota pause.
+		// that waits for collection; a delivered throttle command or the
+		// worker's own quota pause makes the stop a pause.
 		state = domain.AssignmentClaimed
 		control = domain.ControlRunning
 		if record.StopConfirmed && hasCommandRequest(record, domain.WorkerCommandStop) {
 			state = domain.AssignmentReleased
 			control = domain.ControlStopped
-		} else if len(record.ThrottleRequests) != 0 {
+		} else if len(record.ThrottleRequests) != 0 || record.LocalThrottle != nil {
 			control = domain.ControlPaused
 		}
 	case PhaseCompleted, PhaseFailed:
@@ -1305,8 +1371,18 @@ func observation(record AttemptRecord, now time.Time) domain.WorkerAssignmentObs
 	if len(failure) > 2048 {
 		failure = failure[:2048]
 	}
+	journal := &domain.WorkerJournalExcerpt{
+		Phase: string(record.Phase), Failure: failure,
+		PackageSHA256: record.Package.SHA256, GraphRevision: record.Package.Package.GraphRevision, TaskRevision: record.Package.Package.TaskRevision, UpdatedAt: record.UpdatedAt,
+	}
+	if detailed {
+		journal.ThreadState = record.ObservedThreadState
+		if record.LocalThrottle != nil {
+			journal.PauseReason = record.LocalThrottle.Reason
+		}
+	}
 	return domain.WorkerAssignmentObservation{
-		Journal:      &domain.WorkerJournalExcerpt{Phase: string(record.Phase), Failure: failure, PackageSHA256: record.Package.SHA256, GraphRevision: record.Package.Package.GraphRevision, TaskRevision: record.Package.Package.TaskRevision, UpdatedAt: record.UpdatedAt},
+		Journal:      journal,
 		AssignmentID: record.Assignment.ID, AssignmentEpoch: record.Assignment.Epoch,
 		State: state, Control: control, ThreadID: record.ThreadID,
 		WorkspacePath: record.WorkspacePath, ObservedAt: now,

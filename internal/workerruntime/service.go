@@ -34,10 +34,16 @@ type WorkerServiceOptions struct {
 	// behind the restricted command today; the coordinator's own refusal is
 	// then the only check, and it is the authoritative one.
 	LiveTaskWait func(context.Context, workerproto.ExecutionPackage) (bool, error)
-	T3           T3Control
-	DryRun       bool
-	Now          func() time.Time
-	Logger       *slog.Logger
+	// Quota is the host watchdog's bucket state, when the host runs a
+	// watchdog. See QuotaGuard.
+	Quota QuotaGuard
+	// PauseEscalation is the daemon's stop_verify_timeout, the window a drain
+	// notice gets before a local quota stop escalates; see Config.
+	PauseEscalation time.Duration
+	T3              T3Control
+	DryRun          bool
+	Now             func() time.Time
+	Logger          *slog.Logger
 }
 
 // WorkerService owns the bounded codec and authenticated exchange used by the
@@ -168,6 +174,8 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		Inventory:        binding.Inventory,
 		ObserveInventory: observerForSettings(options),
 		LiveTaskWait:     options.LiveTaskWait,
+		Quota:            options.Quota,
+		PauseEscalation:  options.PauseEscalation,
 		// The same store the finalizer publishes into. The coordinator
 		// states which campaigns are still alive on every snapshot
 		// exchange, and this is what acts on that statement.

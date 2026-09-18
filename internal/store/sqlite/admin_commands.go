@@ -413,7 +413,7 @@ func validAdminCommandKind(targetType domain.AdminTargetType, kind domain.AdminC
 		switch kind {
 		case domain.AdminCommandStart, domain.AdminCommandDelay, domain.AdminCommandPause,
 			domain.AdminCommandResume, domain.AdminCommandCancel, domain.AdminCommandRetry,
-			domain.AdminCommandSkip:
+			domain.AdminCommandSkip, domain.AdminCommandRewake:
 			return true
 		}
 	case domain.AdminTargetWorkflowRun:
