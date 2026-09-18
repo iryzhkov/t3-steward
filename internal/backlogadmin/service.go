@@ -73,6 +73,21 @@ type Service struct {
 	supervisorClientConfigured bool
 
 	viabilitySettings ViabilitySettings
+	// workerProviders is the configured provider authorization per worker. It
+	// is supplied rather than read because it is the coordinator process's own
+	// effective configuration and appears in no record a query reads.
+	workerProviders map[string][]WorkerProviderAuthorization
+}
+
+// SetWorkerAuthorization supplies the provider authorization the coordinator
+// loaded for each worker, including the instances that load dropped.
+//
+// Without it the workers view reports none, which is what a coordinator that
+// never sets it must report: an empty list would otherwise read as "the fleet
+// authorizes nothing for this worker", and "t3-steward models" would state
+// that as a fact about the fleet.
+func (s *Service) SetWorkerAuthorization(authorization map[string][]WorkerProviderAuthorization) {
+	s.workerProviders = authorization
 }
 
 type RuntimeInfo struct {
@@ -352,6 +367,7 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 	}
 	loaded := newView(records, workers, admissions, s.runtime, s.now().UTC())
 	loaded.supervisorClientConfigured = s.supervisorClientConfigured
+	loaded.workerProviders = s.workerProviders
 	if loaded.supervision, err = s.supervisionSnapshots(ctx, records, workers); err != nil {
 		return view{}, err
 	}
@@ -407,19 +423,20 @@ func notFound(kind, id string) error {
 }
 
 type view struct {
-	requirements []domain.WorkerRequirement
-	enrollments  []domain.WorkerEnrollment
-	includeSink  bool
-	records      sqlite.CoordinatorRecords
-	workers      []domain.WorkerSnapshot
-	admissions   []domain.QuotaAdmissionRecord
-	now          time.Time
-	workflows    map[string]domain.Workflow
-	runs         map[string]domain.WorkflowRun
-	tasks        map[string]domain.Task
-	attempts     map[string][]domain.Attempt
-	assignments  map[string]domain.Assignment
-	runtime      RuntimeInfo
+	requirements    []domain.WorkerRequirement
+	enrollments     []domain.WorkerEnrollment
+	workerProviders map[string][]WorkerProviderAuthorization
+	includeSink     bool
+	records         sqlite.CoordinatorRecords
+	workers         []domain.WorkerSnapshot
+	admissions      []domain.QuotaAdmissionRecord
+	now             time.Time
+	workflows       map[string]domain.Workflow
+	runs            map[string]domain.WorkflowRun
+	tasks           map[string]domain.Task
+	attempts        map[string][]domain.Attempt
+	assignments     map[string]domain.Assignment
+	runtime         RuntimeInfo
 	// supervision is the readiness snapshot of every supervised run in records,
 	// keyed by run ID. An absent run is unsupervised, which is every run on a
 	// coordinator that has never accepted a supervised campaign.
@@ -1251,6 +1268,9 @@ func (v view) workersResponse(filter Filter) []Worker {
 					dto.PoolConcurrency[pool.ID] = pool.MaxConcurrent
 				}
 			}
+		}
+		if authorized := v.workerProviders[snapshot.WorkerID]; len(authorized) != 0 {
+			dto.Providers = slices.Clone(authorized)
 		}
 		if !snapshot.ObservedAt.IsZero() {
 			dto.SnapshotAgeSeconds = max(0, v.now.Sub(snapshot.ObservedAt).Seconds())

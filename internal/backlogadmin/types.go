@@ -577,17 +577,42 @@ type Schedule struct {
 	Triggers []domain.Trigger `json:"triggers,omitempty"`
 }
 
+// WorkerProviderAuthorization is one provider instance the coordinator's
+// effective configuration authorizes for one worker, after the fleet
+// projection was applied. It is authorization and never observation: it says
+// what the coordinator may route to this worker, never that the instance is
+// installed there, signed in, or offering a model. The worker's inventory is
+// what says that, and the two fail separately.
+type WorkerProviderAuthorization struct {
+	Instance string `json:"instance"`
+	// QuotaPool is the pool this instance's work is charged to, empty when the
+	// load did not bind it.
+	QuotaPool string `json:"quotaPool,omitempty"`
+	// Models is the desired model allowlist, empty for an instance authorized
+	// for no model.
+	Models []string `json:"models,omitempty"`
+	// Dropped is why the load did not install this instance in the worker's
+	// catalog (config.DroppedProviderMissingBinding or
+	// config.DroppedProviderNoModels), and is empty for a bound instance. An
+	// instance the coordinator dropped is in no quota pool, so this is the one
+	// place a reader can learn that the fleet authorized it at all.
+	Dropped string `json:"dropped,omitempty"`
+}
+
 type Worker struct {
-	PoolConcurrency    map[string]int            `json:"poolConcurrency,omitempty"`
-	State              string                    `json:"state"`
-	Enrolled           bool                      `json:"enrolled"`
-	Requirement        *domain.WorkerRequirement `json:"requirement,omitempty"`
-	Enrollment         *domain.WorkerEnrollment  `json:"enrollment,omitempty"`
-	SnapshotAgeSeconds float64                   `json:"snapshotAgeSeconds"`
-	ConcurrencySource  string                    `json:"concurrencySource"`
-	Snapshot           domain.WorkerSnapshot     `json:"snapshot"`
-	Health             string                    `json:"health"`
-	Stale              bool                      `json:"stale"`
+	PoolConcurrency map[string]int `json:"poolConcurrency,omitempty"`
+	// Providers is the configured provider authorization for this worker,
+	// sorted by instance, or nil on a coordinator that reports none.
+	Providers          []WorkerProviderAuthorization `json:"providers,omitempty"`
+	State              string                        `json:"state"`
+	Enrolled           bool                          `json:"enrolled"`
+	Requirement        *domain.WorkerRequirement     `json:"requirement,omitempty"`
+	Enrollment         *domain.WorkerEnrollment      `json:"enrollment,omitempty"`
+	SnapshotAgeSeconds float64                       `json:"snapshotAgeSeconds"`
+	ConcurrencySource  string                        `json:"concurrencySource"`
+	Snapshot           domain.WorkerSnapshot         `json:"snapshot"`
+	Health             string                        `json:"health"`
+	Stale              bool                          `json:"stale"`
 }
 
 type Quota struct {

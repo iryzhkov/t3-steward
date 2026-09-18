@@ -9,6 +9,11 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 )
 
+// An instance the projection authorizes that nothing binds to a quota pool
+// leaves the worker's effective catalog exactly as it was, whether its desired
+// model list is empty (a bootstrap-only route, which grants no execution
+// authorization) or not (since stage 6 it is dropped for that worker and
+// recorded; before that it failed the whole configuration).
 func TestBootstrapOnlyEmptyProviderPreservesCatalogBinding(t *testing.T) {
 	for _, models := range [][]string{{}, {"unauthorized-model"}} {
 		t.Run(map[bool]string{true: "empty", false: "nonempty"}[len(models) == 0], func(t *testing.T) {
@@ -29,7 +34,6 @@ func TestBootstrapOnlyEmptyProviderPreservesCatalogBinding(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			original, _ := json.Marshal(cfg.BacklogV2)
 			authored := config.CoordinatorFleet{Kind: "steward-coordinator-catalog-input", SchemaVersion: 1, CoordinatorID: "coordinator",
 				Workers: map[string]config.CoordinatorFleetWorker{"homelab": {
 					WorkerID: "homelab", CPUClass: "low", ExecutorSlots: 2, Capabilities: []string{"git", "huyang"},
@@ -44,19 +48,16 @@ func TestBootstrapOnlyEmptyProviderPreservesCatalogBinding(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = cfg.ApplyCoordinatorFleet(decoded)
-			if len(models) > 0 {
-				if err == nil {
-					t.Fatal("unmapped nonempty provider was authorized")
-				}
-				after, _ := json.Marshal(cfg.BacklogV2)
-				if string(after) != string(original) {
-					t.Fatal("refusal changed config")
-				}
-				return
+			if err = cfg.ApplyCoordinatorFleet(decoded); err != nil {
+				t.Fatalf("an unmapped provider instance failed the whole configuration: %v", err)
 			}
-			if err != nil {
-				t.Fatal(err)
+			wantReason := config.DroppedProviderNoModels
+			if len(models) > 0 {
+				wantReason = config.DroppedProviderMissingBinding
+			}
+			dropped := cfg.DroppedFleetProviders()
+			if len(dropped) != 1 || dropped[0].Instance != "opencode" || dropped[0].Reason != wantReason {
+				t.Fatalf("dropped = %+v, want opencode %q", dropped, wantReason)
 			}
 			after, err := BuildWorkerBinding(cfg.BacklogV2, "homelab", now)
 			if err != nil {

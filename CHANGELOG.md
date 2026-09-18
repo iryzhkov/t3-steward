@@ -115,7 +115,69 @@ All notable changes to this project are documented here. The format follows
   and its wait settlement, or any other path that ends an attempt, leaves no
   wait live until its deadline.
 
+- The coordinator fleet projection may carry, per worker, `quota_bindings`: a
+  map from a provider instance to the one quota pool its work may be charged
+  to, authored by `upkeeper provider add`. The coordinator uses it where
+  `backlog_v2.workers.<w>.providers.<instance>` has no `quota_pool`, including
+  where it has no entry for that instance at all, so registering a provider is
+  one release edit and one pull instead of a hand edit of the coordinator's
+  `config.yaml` beside it. An explicit `quota_pool` still wins. A binding
+  naming an instance the worker does not run, or a pool it does not join, is
+  refused when the projection is decoded; a binding to a pool
+  `backlog_v2.quota_pools` does not define on this coordinator is dropped with
+  a warning naming it, because the pool's provider and concurrency are still
+  operator configuration. The field is optional: a projection rendered before
+  it existed decodes and applies exactly as it did. See
+  `docs/backlog-v2-operations.md`, "Registering a provider".
+  **Upgrading:** Upgrade every coordinator host to this release before any
+  UpKeeper release authors a `quota_bindings` entry: an older coordinator
+  refuses the whole projection as an unknown field, so its reload is rejected,
+  the `steward-fleet-configuration` component fails. UpKeeper v0.1.11 and newer
+  roll a refused projection back when the coordinator answered with a receipt;
+  a coordinator too old to write one leaves the refused projection on disk,
+  where it will also stop that coordinator from starting the next time it is
+  restarted. Author the binding in a release that
+  also pins this steward version, and do not converge it with `upkeeper pull
+  --components steward-fleet-configuration`, which writes the projection
+  without installing the binary that can read it.
+
+- `t3-steward models` reports, per instance and per worker, `authorized`,
+  `advertised` and, when that instance and worker route cannot run, the
+  `reason`: `missing binding` (the coordinator dropped the instance at load),
+  `no models` (the fleet authorises it for no model), `not installed` (the
+  worker has no such instance) or `unavailable` (installed, not signed in or
+  not enabled).
+  The text form gains one line per instance and worker under the table. The
+  reason field, added with the verb, was empty until now because the
+  coordinator did not report why it dropped an instance; it does now, and the
+  workers query carries the per-worker provider authorization the answer needs.
+  A worker row carries `authorized` only when the coordinator reported
+  per-worker authorization at all: an older coordinator's answer leaves the
+  field out rather than printing `false` for a route it said nothing about.
+  An instance the coordinator dropped is listed at all for the first time: it
+  is in no quota pool and in no worker inventory, which is why "the release
+  authorises opencode and nothing runs it" was invisible from every command.
+
 ### Changed
+
+- A provider instance the fleet projection authorises with desired models and
+  no quota binding no longer fails the coordinator's whole configuration. It is
+  dropped for that worker, the coordinator logs one warning at startup naming
+  the instance, the worker and the remedy, `t3-steward models` reports it as
+  `missing binding`, and the rest of the catalog loads. This is the rule a
+  project without a local binding already follows, for the same reason:
+  refusing the whole configuration took every coordinator admin query down.
+  An explicit binding to a pool the projection does not authorise for that
+  worker still fails the load, because that is the operator's own file
+  contradicting the fleet rather than a missing binding.
+  **Upgrading:** a coordinator that was relying on the refusal to notice an
+  unbound instance now starts with that route dropped; the startup warning and
+  `t3-steward models` name it.
+
+- The `WORKERS` column of `t3-steward models` counts the workers advertising
+  the route, not every worker it is authorised for. The rows now include the
+  workers a route is authorised for and unavailable on, and a worker that does
+  not advertise a route cannot run it however ready it is.
 
 - A version 2 task that declares no provider route at all is refused as
   permanent `no-route`, at `campaign check` and at intake, with the

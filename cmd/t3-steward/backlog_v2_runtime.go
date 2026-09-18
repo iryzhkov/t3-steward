@@ -270,6 +270,37 @@ func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeR
 	return p.coordinator.PlanAndCommit(ctx, input)
 }
 
+// coordinatorWorkerAuthorization reports, per worker, the provider instances
+// this coordinator's effective configuration authorizes, and the instances the
+// fleet projection authorized that the load dropped.
+//
+// The two halves are joined here because nothing downstream can: a dropped
+// instance is in no worker catalog and therefore in no quota pool, so the
+// only record that it was ever authorized is the load's own. "t3-steward
+// models" reports it as the reason a route is missing.
+func coordinatorWorkerAuthorization(cfg config.Config) map[string][]backlogadmin.WorkerProviderAuthorization {
+	authorization := make(map[string][]backlogadmin.WorkerProviderAuthorization, len(cfg.BacklogV2.Workers))
+	for id, worker := range cfg.BacklogV2.Workers {
+		for instance, provider := range worker.Providers {
+			authorization[id] = append(authorization[id], backlogadmin.WorkerProviderAuthorization{
+				Instance: instance, QuotaPool: provider.QuotaPool,
+				Models: append([]string(nil), provider.Models...),
+			})
+		}
+	}
+	for _, dropped := range cfg.DroppedFleetProviders() {
+		authorization[dropped.Worker] = append(authorization[dropped.Worker], backlogadmin.WorkerProviderAuthorization{
+			Instance: dropped.Instance, Dropped: dropped.Reason,
+		})
+	}
+	for id := range authorization {
+		sort.Slice(authorization[id], func(i, j int) bool {
+			return authorization[id][i].Instance < authorization[id][j].Instance
+		})
+	}
+	return authorization
+}
+
 func coordinatorQuotaPoolBindings(cfg config.Config) []backlog.QuotaPoolBinding {
 	instancesByPool := make(map[string]map[string]struct{}, len(cfg.BacklogV2.QuotaPools))
 	modelsByPool := make(map[string]map[string]struct{}, len(cfg.BacklogV2.QuotaPools))
@@ -594,10 +625,26 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			"effect", "no credentials, resource locks or directory resources",
 			"remedy", "add a backlog_v2.projects entry only if the project needs host-local bindings")
 	}
+	for _, dropped := range cfg.DroppedFleetProviders() {
+		if dropped.Reason != config.DroppedProviderMissingBinding {
+			// An instance the projection authorizes with no desired models is
+			// not a fault: it grants no execution authorization and never did.
+			// It is recorded so "models" can say so, not warned about here.
+			continue
+		}
+		// Said once at startup, where an operator reading the first lines
+		// learns which route the fleet authorized and this coordinator cannot
+		// charge. The rest of the worker runs.
+		logger.Warn("fleet provider instance has no authorized quota binding; dropped for this worker",
+			"instance", dropped.Instance, "worker", dropped.Worker,
+			"effect", "no task is routed to this instance on this worker",
+			"remedy", dropped.Remedy)
+	}
 	projectWorkers := make(map[string][]string, len(cfg.BacklogV2.Projects))
 	for name, project := range cfg.BacklogV2.Projects {
 		projectWorkers[name] = append([]string(nil), project.Workers...)
 	}
+	service.SetWorkerAuthorization(coordinatorWorkerAuthorization(cfg))
 	service.SetViability(backlogadmin.ViabilitySettings{
 		Projects:          fleetProjects,
 		SetupProfiles:     fleetProfiles,

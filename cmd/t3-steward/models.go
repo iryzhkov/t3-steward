@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
+	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -34,7 +35,24 @@ that project; "t3-steward backlog projects" lists the projects.
 
 An instance that is authorized and advertised by nobody, or advertised with no
 quota binding, is listed with that as its status rather than omitted: a route
-that cannot run is the thing the caller most needs to see.
+that cannot run is the thing the caller most needs to see. Under the table, one
+line per instance and worker the coordinator authorizes for that worker and
+whose route cannot run, with the reason. A worker that has the instance
+installed and is signed in to it is listed there too when the coordinator
+dropped that instance from the worker's catalog: the host offers the route and
+the fleet authorizes no pool to charge it to, so it still cannot run. A pair
+the coordinator authorizes for nothing has no line: these reasons are what the
+coordinator reports about the instances it does authorize.
+
+  missing binding   the coordinator dropped it at load: no quota pool of that
+                    worker is authorized for the instance
+  no models         the fleet authorizes the instance for no model
+  not installed     the worker has no such provider instance
+  unavailable       installed, and not signed in or not enabled
+
+A coordinator older than this one reports no per-worker authorization, and the
+table is then built from the quota pools and the inventories alone, with no
+reasons under it.
 ` + coordinatorTransportHelp
 
 // modelsSchemaVersion versions the models document. It is an agent-facing
@@ -71,20 +89,52 @@ type modelsInstance struct {
 	// deduplicated and sorted.
 	Models  []string       `json:"models,omitempty"`
 	Workers []modelsWorker `json:"workers,omitempty"`
-	// MissingBinding reports an instance a worker advertises that the loaded
-	// fleet catalog authorizes in no quota pool. Reason is empty at this
-	// release: the coordinator does not yet report why it dropped an instance,
-	// and inventing a cause here would be a guess. The field exists so that the
-	// document does not change shape when it can be filled.
-	MissingBinding bool   `json:"missingBinding"`
-	Reason         string `json:"reason,omitempty"`
+	// MissingBinding reports an instance no authorized quota pool holds: one a
+	// worker advertises that the fleet catalog binds nowhere, or one the
+	// coordinator dropped at load for want of a binding.
+	MissingBinding bool `json:"missingBinding"`
+	// Reason is why no eligible worker advertises this instance, in the
+	// vocabulary the worker rows use, and is empty when one does or when no
+	// worker reported an authorization that could explain it.
+	Reason string `json:"reason,omitempty"`
 }
 
-// modelsWorker is one worker that advertises an instance.
+// modelsWorker is one worker the instance is authorized for, advertised by, or
+// both. The two halves fail separately, so each is reported.
 type modelsWorker struct {
-	Worker string   `json:"worker"`
-	Ready  bool     `json:"ready"`
+	Worker string `json:"worker"`
+	Ready  bool   `json:"ready"`
+	// Authorized reports that the coordinator's configuration names this
+	// instance for this worker, whatever became of it at load. It is absent,
+	// not false, when the coordinator reported no per-worker authorization at
+	// all: a release older than this one answers the same query without it, and
+	// false would assert as fact what that answer does not carry.
+	Authorized *bool `json:"authorized,omitempty"`
+	// Advertised reports that this worker's inventory offers it now.
+	Advertised bool `json:"advertised"`
+	// Reason is why this instance and worker pair cannot run a route:
+	// "missing binding", "no models", "not installed" or "unavailable". It is
+	// set even when Advertised is true, because an instance the coordinator
+	// dropped cannot be routed to whatever the host offers.
+	Reason string   `json:"reason,omitempty"`
 	Models []string `json:"models,omitempty"`
+}
+
+// The two reasons a route fails on the worker rather than in the catalog. The
+// other two are the coordinator's own drop reasons, so they are named once in
+// the configuration package and used here.
+const (
+	modelsReasonNotInstalled = "not installed"
+	modelsReasonUnavailable  = "unavailable"
+)
+
+// modelsReasonOrder is the precedence an instance's own reason follows when
+// its workers disagree: a fault in the fleet's authorization first, because it
+// is one edit away from fixed and it explains every worker at once; then the
+// host-side facts, the actionable one first.
+var modelsReasonOrder = []string{
+	config.DroppedProviderMissingBinding, config.DroppedProviderNoModels,
+	modelsReasonUnavailable, modelsReasonNotInstalled,
 }
 
 // modelsCLI is the seam: everything models needs is one query service, so the
@@ -227,6 +277,37 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 		}
 		ready := worker.Enrolled && !worker.Stale && worker.Snapshot.Connected &&
 			worker.State == "observed" && worker.Health == string(domain.WorkerHealthReady)
+		rows := map[string]*modelsWorker{}
+		// worker.Providers is the coordinator's own statement of what this
+		// worker is authorized for. When it carries something, an instance
+		// absent from it is a fact and the row says so; when it is empty the
+		// coordinator reported nothing, and the row says nothing either.
+		reported := len(worker.Providers) > 0
+		row := func(instance string) *modelsWorker {
+			if existing, ok := rows[instance]; ok {
+				return existing
+			}
+			created := &modelsWorker{Worker: id, Ready: ready}
+			if reported {
+				created.Authorized = new(bool)
+			}
+			rows[instance] = created
+			return created
+		}
+		installed := make(map[string]domain.WorkerProviderInventory, len(worker.Snapshot.Inventory.Providers))
+		for _, provider := range worker.Snapshot.Inventory.Providers {
+			installed[provider.InstanceID] = provider
+		}
+		// The authorization half first, so that an instance the coordinator
+		// dropped is in the document at all: it is in no quota pool and no
+		// inventory, and it is exactly the state that was invisible before.
+		for _, granted := range worker.Providers {
+			entry(granted.Instance)
+			current := row(granted.Instance)
+			yes := true
+			current.Authorized = &yes
+			current.Reason = workerRouteReason(granted, installed)
+		}
 		for _, provider := range worker.Snapshot.Inventory.Providers {
 			if !provider.Available {
 				continue
@@ -237,9 +318,13 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 				item.QuotaPool = provider.QuotaPoolID
 			}
 			item.Models = mergeSorted(item.Models, provider.Models)
-			item.Workers = append(item.Workers, modelsWorker{
-				Worker: id, Ready: ready, Models: mergeSorted(nil, provider.Models),
-			})
+			advertised := row(provider.InstanceID)
+			advertised.Advertised = true
+			advertised.Models = mergeSorted(nil, provider.Models)
+		}
+		for instance, entered := range rows {
+			item := entry(instance)
+			item.Workers = append(item.Workers, *entered)
 		}
 	}
 	document := modelsDocument{
@@ -248,6 +333,25 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 	}
 	for _, item := range instances {
 		item.MissingBinding = item.Advertised && !item.Authorized
+		reasons := map[string]bool{}
+		for _, worker := range item.Workers {
+			if worker.Reason != "" {
+				reasons[worker.Reason] = true
+			}
+		}
+		if reasons[config.DroppedProviderMissingBinding] {
+			// The coordinator dropped it for at least one worker, so no pool
+			// holds it there whatever the rest of the fleet reports.
+			item.MissingBinding = true
+		}
+		if !item.Advertised {
+			for _, reason := range modelsReasonOrder {
+				if reasons[reason] {
+					item.Reason = reason
+					break
+				}
+			}
+		}
 		sort.Slice(item.Workers, func(i, j int) bool { return item.Workers[i].Worker < item.Workers[j].Worker })
 		document.Instances = append(document.Instances, *item)
 	}
@@ -255,6 +359,27 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 		return document.Instances[i].Instance < document.Instances[j].Instance
 	})
 	return document
+}
+
+// workerRouteReason says why one authorized instance and worker pair cannot
+// run a route, and is empty when it can. The catalog's own reasons come first,
+// and they hold however available the instance is on the host: an instance the
+// coordinator dropped, or authorized for no model, cannot be routed to
+// whatever the worker has installed, and reporting the host-side fact instead
+// would send an operator to the wrong machine.
+func workerRouteReason(authorized backlogadmin.WorkerProviderAuthorization, installed map[string]domain.WorkerProviderInventory) string {
+	switch provider, exists := installed[authorized.Instance]; {
+	case authorized.Dropped != "":
+		return authorized.Dropped
+	case len(authorized.Models) == 0:
+		return config.DroppedProviderNoModels
+	case !exists:
+		return modelsReasonNotInstalled
+	case !provider.Available:
+		return modelsReasonUnavailable
+	default:
+		return ""
+	}
 }
 
 // mergeSorted returns the union of two string lists, deduplicated and sorted.
@@ -288,14 +413,21 @@ func renderModels(out io.Writer, document modelsDocument) error {
 	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(table, "ROUTE\tPOOL\tPHASE\tUSED\tADMISSION\tWORKERS\tSTATUS")
 	for _, instance := range document.Instances {
-		ready := 0
+		// The column counts the workers that are offering the route now, not
+		// the ones it is authorized for: a worker that does not advertise it
+		// cannot run it however ready it is, and the reason is below the table.
+		ready, advertising := 0, 0
 		for _, worker := range instance.Workers {
+			if !worker.Advertised {
+				continue
+			}
+			advertising++
 			if worker.Ready {
 				ready++
 			}
 		}
-		workers := fmt.Sprintf("%d/%d ready", ready, len(instance.Workers))
-		if len(instance.Workers) == 0 {
+		workers := fmt.Sprintf("%d/%d ready", ready, advertising)
+		if advertising == 0 {
 			workers = "none"
 		}
 		used := "unknown"
@@ -318,7 +450,60 @@ func renderModels(out io.Writer, document modelsDocument) error {
 				modelsStatus(instance))
 		}
 	}
+	if err := table.Flush(); err != nil {
+		return err
+	}
+	return renderModelsReasons(out, document)
+}
+
+// renderModelsReasons lists the instance and worker pairs the coordinator
+// authorizes and whose route cannot run, with the reason. That scope is the
+// coordinator's: a reason is recorded only for a pair it reported an
+// authorization for, so a pair it authorizes for nothing gets no row here
+// however little it can run. A pair is listed even when the worker advertises
+// the instance: the coordinator drops an instance it cannot bind to a quota
+// pool, and no amount of advertising makes that route runnable. It is a second
+// table rather than a column of the first because the reason belongs to the
+// pair, not to the route: one instance can be missing on one worker and signed
+// out on another.
+func renderModelsReasons(out io.Writer, document modelsDocument) error {
+	type pair struct{ instance, worker, reason string }
+	var pairs []pair
+	for _, instance := range document.Instances {
+		for _, worker := range instance.Workers {
+			if worker.Reason == "" {
+				continue
+			}
+			pairs = append(pairs, pair{instance.Instance, worker.Worker, worker.Reason})
+		}
+	}
+	if len(pairs) == 0 {
+		return nil
+	}
+	fmt.Fprintln(out, "\nroutes that cannot run:")
+	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(table, "INSTANCE\tWORKER\tREASON\tWHAT IT MEANS")
+	for _, item := range pairs {
+		fmt.Fprintf(table, "%s\t%s\t%s\t%s\n", item.instance, item.worker, item.reason, modelsReasonText(item.reason))
+	}
 	return table.Flush()
+}
+
+// modelsReasonText is the one sentence each reason is explained with, in the
+// same words in the table and in the status column.
+func modelsReasonText(reason string) string {
+	switch reason {
+	case config.DroppedProviderMissingBinding:
+		return "the coordinator dropped it: no quota pool is authorized for it"
+	case config.DroppedProviderNoModels:
+		return "the fleet authorizes the instance for no model"
+	case modelsReasonNotInstalled:
+		return "the worker has no such provider instance"
+	case modelsReasonUnavailable:
+		return "installed, and not signed in or not enabled"
+	default:
+		return reason
+	}
 }
 
 // modelsStatus is the one phrase that says whether this route can run, and
@@ -327,6 +512,8 @@ func modelsStatus(instance modelsInstance) string {
 	switch {
 	case instance.MissingBinding:
 		return "no quota binding: the fleet catalog authorizes no pool for it"
+	case !instance.Advertised && instance.Reason != "":
+		return "not advertised: " + modelsReasonText(instance.Reason)
 	case !instance.Advertised:
 		return "authorized, not advertised: no worker offers it"
 	case instance.Admission != "" && instance.Admission != string(domain.AdmissionOpen):
