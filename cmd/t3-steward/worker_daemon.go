@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,7 +22,58 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
 
+const workerUsage = `Usage: t3-steward worker <command> [args]
+
+Worker daemon (reads the worker bootstrap under $HOME):
+  serve                Run the worker: enroll with the coordinator and execute
+                       dispatched attempts. This is the service's ExecStart.
+  bridge               Relay stdin/stdout to the running worker's socket; the
+                       coordinator's SSH exchange uses it.
+  inspect-bootstrap    Print the worker's identity and bootstrap digest (JSON).
+  inspect-journal      Print the attempt journal summary: whether restarting the
+                       worker would interrupt a dispatched execution (JSON).
+
+On the coordinator host:
+  enroll <worker>|--all [--current-catalog] --reason TEXT [--json]
+                       Accept a worker's catalog; "worker enroll --help" for detail.
+  list [--json]        Alias of "backlog workers".
+
+Operator diagnostics and provider containment:
+  inspect-directory --registration FILE [--expected FILE]
+                       Read-only check of a directory resource on this host.
+  contained-exec --spec FILE
+                       Run one containment launch specification in the foreground.
+  contained-start|contained-show|contained-stop --spec FILE --state-dir DIR --execution ID
+                       Supervise a contained execution across worker restarts.
+  contained-t3         Run the contained T3 server (internal; invoked by the
+                       containment launcher).
+  contained-child      Run the contained child process (internal).
+
+help, --help, -h and no arguments print this text.
+`
+
+// workerVerbList names every verb cmdWorker dispatches, for the refusal of an
+// unknown one. Keep it in step with workerUsage.
+var workerVerbList = []string{
+	"serve", "bridge", "inspect-bootstrap", "inspect-journal", "enroll", "list",
+	"inspect-directory", "contained-exec", "contained-start", "contained-show",
+	"contained-stop", "contained-t3", "contained-child",
+}
+
+// isWorkerDaemonVerb reports whether the verb needs the worker bootstrap.
+func isWorkerDaemonVerb(verb string) bool {
+	switch verb {
+	case "serve", "bridge", "inspect-bootstrap", "inspect-journal":
+		return true
+	}
+	return false
+}
+
 func cmdWorker(g globalFlags, args []string) error {
+	if len(args) == 0 || isHelp(args[0]) {
+		fmt.Print(workerUsage)
+		return nil
+	}
 	if len(args) > 0 {
 		switch args[0] {
 		case "contained-t3":
@@ -49,8 +101,10 @@ func cmdWorker(g globalFlags, args []string) error {
 	if len(args) > 0 && args[0] == "list" {
 		return cmdBacklog(g, append([]string{"workers"}, args[1:]...))
 	}
-	if len(args) != 1 {
-		return errors.New("worker requires inspect-bootstrap, inspect-journal, serve, or bridge")
+	// The daemon verbs read the bootstrap first, so an unknown verb is refused
+	// here, before a missing bootstrap can hide the real mistake.
+	if len(args) != 1 || !isWorkerDaemonVerb(args[0]) {
+		return fmt.Errorf("unknown worker command %q; the commands are %s (try worker --help)", strings.Join(args, " "), strings.Join(workerVerbList, ", "))
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -90,7 +144,7 @@ func cmdWorker(g globalFlags, args []string) error {
 		return workerruntime.BridgeWorkerStream(ctx, os.Stdin, os.Stdout, conn, (8<<20)+workerproto.StreamArtifactLimit, 2*time.Minute)
 	case "serve":
 	default:
-		return errors.New("worker requires inspect-bootstrap, inspect-journal, serve, or bridge")
+		return fmt.Errorf("unknown worker command %q; the commands are %s (try worker --help)", args[0], strings.Join(workerVerbList, ", "))
 	}
 	cfg, err := config.LoadFile(g.configPath)
 	if err != nil {
