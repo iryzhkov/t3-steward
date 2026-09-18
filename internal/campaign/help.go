@@ -306,7 +306,13 @@ Permanent reason codes. Waiting cannot change any of them, so submit refuses:
   cpu-class-impossible, resources-impossible, directory-impossible,
   credential-missing, repository-syntax-invalid,
   repository-authentication-failed, repository-not-found, ref-not-found,
-  no-configured-route, timing-window-closed, message-limit-exceeded.
+  no-route, no-configured-route, timing-window-closed, message-limit-exceeded.
+
+no-route means a task declares no provider route (instance and model) at all.
+The coordinator never chooses one: declare routes in workflow.yaml, or start a
+single task with "t3-steward task run --model [INSTANCE/]MODEL", which derives
+the route from what the project's eligible workers advertise. The refusal lists
+those instance/model pairs; "t3-steward models" shows them with quota state.
 
 Temporary reason codes. Waiting is what fixes them, so submit proceeds:
   quota-closed, worker-at-capacity, worker-offline, worker-stale,
@@ -329,6 +335,7 @@ Recovery:
   unknown-project            t3-steward backlog workers --json
   repository-syntax-invalid  fix backlog_v2.projects.<name>.repository
   ref-not-found              fix environment.ref in workflow.yaml
+  no-route                   declare routes: [{instance, model}] in workflow.yaml (t3-steward models lists them)
   no-configured-route        add the instance and model to an eligible worker
   catalog-digest-mismatch    t3-steward worker enroll <worker> --current-catalog --reason TEXT   (on the coordinator host)
 

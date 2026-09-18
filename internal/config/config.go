@@ -356,6 +356,18 @@ type V2CoordinatorClient struct {
 	Credential     string          `yaml:"credential"`
 	RequestTimeout Duration        `yaml:"request_timeout"`
 	MessageLimits  V2MessageLimits `yaml:"message_limits"`
+	// Defaults are the choices this host makes when a command names none. They
+	// are deliberately not part of Configured(): a host that only wants a
+	// default model is not thereby claiming to administer a remote coordinator.
+	Defaults V2ClientDefaults `yaml:"defaults"`
+}
+
+// V2ClientDefaults holds the client-side defaults of the single-task start.
+// Model is the route "t3-steward task run" uses when the caller passes no
+// --model, in the same [INSTANCE/]MODEL form the flag takes. It is the only
+// place a default route may come from: the coordinator never chooses one.
+type V2ClientDefaults struct {
+	Model string `yaml:"model"`
 }
 
 // Configured reports whether an operator declared the block at all. A partly

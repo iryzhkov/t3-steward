@@ -38,6 +38,12 @@ const (
 	// run, so the run-scoped event view cannot show them and an operator had no
 	// way to see them at all.
 	QueryQuarantine QueryKind = "quarantine"
+	// QueryProjects lists the projects this coordinator is configured with,
+	// each with its repository, default ref and setup profile, and the workers
+	// that could take its work. It exists so that a client can match a checkout
+	// to a fleet project and choose a route the fleet actually offers without
+	// reading every worker's inventory itself.
+	QueryProjects QueryKind = "projects"
 )
 
 // QueryKinds is every declared query kind. A query kind is a read view by
@@ -54,7 +60,7 @@ func QueryKinds() []QueryKind {
 		QueryStatus, QueryWorkflows, QueryWorkflow, QueryGraph, QueryDiagnose,
 		QueryTask, QueryExplanation, QueryEvents, QueryArtifacts, QueryArtifact,
 		QuerySchedules, QueryWorkers, QueryQuota, QueryReservations, QueryLocks,
-		QueryCommands, QueryRecovery, QueryViability, QueryQuarantine,
+		QueryCommands, QueryRecovery, QueryViability, QueryQuarantine, QueryProjects,
 	}
 }
 
@@ -192,6 +198,52 @@ type Response struct {
 	// when nothing is quarantined, which the text renderer states in words so
 	// that an empty answer is never mistaken for a failed query.
 	Quarantine []QuarantinedIntake `json:"quarantine,omitempty"`
+	// Projects is the whole catalog on a QueryProjects response, or the one
+	// project the filter named.
+	Projects []Project `json:"projects,omitempty"`
+}
+
+// Project is one configured fleet project as the projects query reports it.
+type Project struct {
+	Name         string `json:"name"`
+	Repository   string `json:"repository,omitempty"`
+	DefaultRef   string `json:"defaultRef,omitempty"`
+	Type         string `json:"type,omitempty"`
+	SetupProfile string `json:"setupProfile,omitempty"`
+	// Workers are the workers that could take this project's work: every
+	// worker the configuration names for it and every worker whose inventory
+	// advertises it. A worker on neither list is not eligible and is not
+	// listed.
+	Workers []ProjectWorker `json:"workers"`
+}
+
+// ProjectWorker is one eligible worker of a project with what a client needs
+// to know before choosing it: whether it is enrolled and ready now, and which
+// provider routes it advertises.
+type ProjectWorker struct {
+	Worker string `json:"worker"`
+	// Configured reports that backlog_v2.projects.<name>.workers names it.
+	Configured bool `json:"configured"`
+	// Advertises reports that the worker's inventory lists the project as
+	// available.
+	Advertises bool `json:"advertises"`
+	Enrolled   bool `json:"enrolled"`
+	// Ready reports a fresh, connected, enrolled worker whose inventory is
+	// healthy and accepting backlog: the same judgement the workers view makes.
+	Ready  bool   `json:"ready"`
+	State  string `json:"state"`
+	Health string `json:"health,omitempty"`
+	// Routes are the instance, model and quota pool triples the worker's
+	// inventory advertises as available, one per model.
+	Routes []ProjectRoute `json:"routes,omitempty"`
+}
+
+// ProjectRoute is one advertised provider route. QuotaPool is the pool the
+// worker's inventory binds the instance to, and is empty when it binds none.
+type ProjectRoute struct {
+	Instance  string `json:"instance"`
+	Model     string `json:"model"`
+	QuotaPool string `json:"quotaPool,omitempty"`
 }
 
 type Status struct {
@@ -311,10 +363,18 @@ type WorkflowDetail struct {
 	Artifacts     []Artifact      `json:"artifacts,omitempty"`
 	ResourceLocks []ResourceLock  `json:"resourceLocks,omitempty"`
 	Reservations  []Reservation   `json:"reservations,omitempty"`
-	// Waits are the live task-bound waits parking attempts of this run, one
-	// entry per wait, each naming its task. A settled wait no longer parks
-	// anything and is not listed.
-	Waits []TaskWaitDetail `json:"waits,omitempty"`
+	// TaskWaits are every task-bound wait of this run, live and settled, each
+	// naming its task and, once it has one, its outcome. A settled wait is why
+	// a task stopped waiting, so dropping it made the run document unable to
+	// say what became of a wait it had just reported. It is never omitted, so
+	// a reader branches on the array rather than on whether the key exists.
+	TaskWaits []TaskWaitDetail `json:"taskWaits"`
+	// Waits is TaskWaits restricted to the live ones, the meaning this key has
+	// always had here, and to the fields the previous release declares.
+	// Deprecated: kept for one release because a client of the previous release
+	// reads it; read taskWaits, whose name means the same thing in this
+	// document and in a diagnosis.
+	Waits []TaskWaitDetail `json:"waits"`
 	// Gates are the declared gates of a supervised run with their current
 	// state. An unsupervised run has none.
 	Gates []GateDetail `json:"gates,omitempty"`
@@ -331,10 +391,17 @@ type TaskWaitDetail struct {
 	Condition    string    `json:"condition,omitempty"`
 	RegisteredAt time.Time `json:"registeredAt"`
 	Deadline     time.Time `json:"deadline"`
-	// There is no last exit code here. The condition is polled on the worker
-	// host, whose local check row holds the last exit code and output; the
-	// coordinator records an exit code only when the wait settles, at which
-	// point the wait no longer parks anything and is not listed.
+	// Kind is how the wait is settled: shell, time, github, node or quota.
+	Kind string `json:"kind,omitempty"`
+	// Outcome, ExitCode, Reason and SettledAt are the settlement, and are
+	// present only once the wait has one. While the wait is live there is no
+	// exit code to report: the condition is polled on the worker host, whose
+	// local check row holds the last exit code and output, and the coordinator
+	// records one only at settlement.
+	Outcome   string     `json:"outcome,omitempty"`
+	ExitCode  int        `json:"exitCode,omitempty"`
+	Reason    string     `json:"reason,omitempty"`
+	SettledAt *time.Time `json:"settledAt,omitempty"`
 }
 
 // GateDetail is one gate of a supervised run and, while it is pending, the

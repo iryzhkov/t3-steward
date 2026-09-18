@@ -107,7 +107,10 @@ func (rejectingSingleTaskSubmitter) SubmitSingleTask(context.Context, SingleTask
 
 func writeLegacySubmission(t *testing.T, path, project string, enabled bool, prompt string) {
 	t.Helper()
-	raw := "---\nproject: " + project + "\ntitle: test\nimportance: 3\ndifficulty: 3\nmax_turns: 2\nenabled: "
+	// A route is written because intake refuses a task without one; these
+	// tests are about the source, not about the no-route rule.
+	raw := "---\nproject: " + project + "\ntitle: test\nimportance: 3\ndifficulty: 3\nmax_turns: 2\n" +
+		"instance: claudeAgent\nmodel: claude-haiku-4-5\nenabled: "
 	if enabled {
 		raw += "true\n"
 	} else {

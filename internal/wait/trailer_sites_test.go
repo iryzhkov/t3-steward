@@ -95,7 +95,7 @@ func TestNodeWakeBeginsWithTheTrailerAndNamesTheResult(t *testing.T) {
 	parsed, _ := ParseWakeTrailer(text)
 	for key, want := range map[string]string{
 		"run": "run-1", "task": "sink:run-1", "revision": "9", "progress": "succeeded",
-		"result": "t3-steward result run-1",
+		"result": "t3-steward task result run-1",
 	} {
 		if parsed[key] != want {
 			t.Fatalf("%s = %q, want %q (trailer %q)", key, parsed[key], want, firstLine(text))

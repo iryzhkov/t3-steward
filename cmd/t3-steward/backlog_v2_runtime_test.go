@@ -247,7 +247,7 @@ func TestRunBacklogV2CoordinatorIngestsLegacyDropWithoutDispatch(t *testing.T) {
 			SetupProfile: "go", T3Project: "t3-steward development",
 		},
 	}
-	raw := "---\nproject: t3-steward development\ntitle: compatibility\nimportance: 5\ndifficulty: 5\nmax_turns: 3\ngate: false\n---\nlegacy prompt\n"
+	raw := "---\nproject: t3-steward development\ntitle: compatibility\nimportance: 5\ndifficulty: 5\ninstance: t3-primary\nmodel: opus\nmax_turns: 3\ngate: false\n---\nlegacy prompt\n"
 	if err := os.WriteFile(filepath.Join(cfg.Backlog.Dir, "legacy.md"), []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -891,7 +891,9 @@ func runtimeSubmissionTar(t *testing.T) []byte {
 	var buffer bytes.Buffer
 	writer := tar.NewWriter(&buffer)
 	files := map[string]string{
-		"workflow.yaml":      "version: 2\nname: native\nenvironment: {project: steward}\ntasks:\n  inspect:\n    prompt_file: prompts/inspect.md\n",
+		// The route is part of the fixture because the coordinator refuses a
+		// task that declares none (permanent no-route).
+		"workflow.yaml":      "version: 2\nname: native\nenvironment: {project: steward}\nroutes:\n  - instance: t3-primary\n    model: opus\ntasks:\n  inspect:\n    prompt_file: prompts/inspect.md\n",
 		"prompts/inspect.md": "inspect the repository\n",
 	}
 	for _, name := range []string{"workflow.yaml", "prompts/inspect.md"} {

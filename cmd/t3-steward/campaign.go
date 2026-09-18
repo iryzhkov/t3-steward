@@ -40,9 +40,9 @@ Mutating recovery, creates a second run and never changes the first:
 
 Lifecycle (delegated to backlog, unchanged; explain is read-only and live):
   list [--project P] [--progress STATES] [--class CLASS] [--json]
-  show <run> [--json]                 graph <run> [--json|--dot]
-  explain <run>/<task> [--json]
-  cancel <run>/<task> --reason TEXT [--command-id ID] [--json]
+  show <run> [--json]   graph <run> [--json|--dot]   explain <run>/<task> [--json]
+  cancel <run>[/<task>] --reason TEXT [--command-id ID] [--json]   no task = whole run
+  cancel --json prints willCancel, the tasks it covers, not the outcome it applied.
 Supervised runs, structured decisions only and never prose:
   supervision <show|decide|hold|release|escalate|resolve> <run> [flags] [--json]
   Mutating verbs need --request-id KEY, --reason TEXT and --expected-revision N.
@@ -62,13 +62,13 @@ check reports one outcome per task and per worker:
   ready             at least one worker can take every task now
   accepted_waiting  nobody can now, and waiting fixes it; submit proceeds
   impossible        no worker can ever run it as written; submit is refused
-Permanent, so submit refuses: an unknown project, setup profile, provider
-instance, model or quota pool; no configured route; invalid repository syntax;
-repository-not-found, ref-not-found or authentication-failed; impossible cpu,
-resource, directory or capability requirements; a missing credential reference;
-a closed timing window. Everything else is temporary and submit proceeds,
-including catalog-digest-mismatch, which means re-enrolling a worker. Codes and
-recovery commands: t3-steward campaign help readiness.
+Permanent, so submit refuses: an unknown project, setup profile, provider instance,
+model or quota pool; no route at all (declare instance and model, the coordinator
+never chooses) or no configured route; invalid repository syntax, repository-not-found,
+ref-not-found or authentication-failed; impossible cpu, resource, directory or
+capability requirements; a missing credential; a closed timing window. Everything
+else is temporary and submit proceeds, including catalog-digest-mismatch, which
+means re-enrolling a worker. Codes and recovery: t3-steward campaign help readiness.
 
 submit runs check first. --allow-unverified skips only the client-side check; the
 coordinator still refuses an impossible campaign and records the principal and --reason.
@@ -156,6 +156,18 @@ type campaignCLI struct {
 	// describe reads one run. rerun needs its graph revision to fence the
 	// amendment against a run that changed under it.
 	describe func(context.Context, string) (backlogadmin.WorkflowSummary, error)
+	// detail reads one run with its tasks and attempts, and mutate sends one
+	// revision-fenced admin command. They are the two seams the run form of
+	// cancel needs: it fences on an attempt it has to read first, and it sends
+	// one command rather than forwarding a command line.
+	detail func(context.Context, string) (backlogadmin.WorkflowDetail, error)
+	mutate func(context.Context, backlogadmin.Mutation) (backlogadmin.MutationResponse, error)
+	// release is the release the coordinator reports for itself, from the same
+	// identity every client already reads. The run form of cancel needs it
+	// because an older coordinator accepts that command and cannot apply it,
+	// which is a failure the operator would otherwise learn about only from the
+	// command never taking effect.
+	release func(context.Context) (string, error)
 	// notify registers the node wait --notify-thread asks for, and resolveThread
 	// turns "current" into a canonical T3 thread id. They are separate seams so
 	// that a test can prove the registration creates no workflow state.
@@ -189,6 +201,15 @@ func cmdCampaign(g globalFlags, args []string) error {
 }
 
 func runCampaign(cfg config.Config, args []string) error {
+	return campaignCLIFor(cfg).run(context.Background(), args)
+}
+
+// campaignCLIFor builds the campaign CLI with its real transports. It is a
+// function of its own because "task run" composes the same seams: the single
+// task start is the campaign path with the authoring removed, and a second
+// construction of check, submit and notify would be a second behaviour to keep
+// in agreement.
+func campaignCLIFor(cfg config.Config) campaignCLI {
 	cli := campaignCLI{
 		// The coordinator's own message limits decide what a campaign may
 		// contain, so a directory this command accepts cannot be refused for
@@ -213,6 +234,33 @@ func runCampaign(cfg config.Config, args []string) error {
 		},
 		describe: func(ctx context.Context, runID string) (backlogadmin.WorkflowSummary, error) {
 			return describeCampaignRun(ctx, cfg, runID)
+		},
+		detail: func(ctx context.Context, runID string) (backlogadmin.WorkflowDetail, error) {
+			return describeCampaignRunDetail(ctx, cfg, runID)
+		},
+		mutate: func(ctx context.Context, mutation backlogadmin.Mutation) (backlogadmin.MutationResponse, error) {
+			transport, err := newCoordinatorTransport(cfg)
+			if err != nil {
+				return backlogadmin.MutationResponse{}, err
+			}
+			mutation.Principal = transport.principal
+			return transport.client.Mutate(ctx, mutation)
+		},
+		release: func(ctx context.Context) (string, error) {
+			transport, err := newCoordinatorTransport(cfg)
+			if err != nil {
+				return "", err
+			}
+			response, err := transport.client.Query(ctx, backlogadmin.Query{
+				Version: backlogadmin.Version, Kind: backlogadmin.QueryStatus, Principal: transport.principal,
+			})
+			if err != nil {
+				return "", err
+			}
+			if response.Status == nil {
+				return "", nil
+			}
+			return response.Status.Runtime.Release, nil
 		},
 		notify: func(ctx context.Context, operation backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error) {
 			transport, err := newCoordinatorTransport(cfg)
@@ -245,7 +293,7 @@ func runCampaign(cfg config.Config, args []string) error {
 	if err == nil {
 		cli.principal = transport.principal.ID
 	}
-	return cli.run(context.Background(), args)
+	return cli
 }
 
 // queryCampaignViability asks the coordinator whether a projected campaign
@@ -306,6 +354,12 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 	case "supervision":
 		return c.runSupervision(ctx, args[1:])
 	case "list", "graph", "cancel":
+		if args[0] == "cancel" && isCampaignRunCancel(args) {
+			// "cancel <run>" is a command of its own: one revision-fenced
+			// cancellation of every non-terminal task. "cancel <run>/<task>"
+			// stays the forwarded alias it has always been.
+			return c.runCampaignCancelRun(ctx, args)
+		}
 		// Aliases forward the arguments untouched. Parsing or rendering them
 		// here would be a second implementation of a command that already
 		// exists, and the two would answer differently the day one changed.

@@ -80,7 +80,7 @@ func TestTaskBoundNodeWaitParksAndIsSettledByTheCoordinator(t *testing.T) {
 	if result == nil || result.Outcome != domain.TaskWaitMet {
 		t.Fatalf("the coordinator did not settle the node wait: %+v", waits[0])
 	}
-	if result.Fields["run"] != "r2" || result.Fields["progress"] != "failed" || result.Fields["failed"] != "t2" || result.Fields["result"] != "t3-steward result r2" {
+	if result.Fields["run"] != "r2" || result.Fields["progress"] != "failed" || result.Fields["failed"] != "t2" || result.Fields["result"] != "t3-steward task result r2" {
 		t.Fatalf("fields = %v", result.Fields)
 	}
 	wakes, err := store.WakeTaskWaits(ctx, now.Add(3*time.Minute))
@@ -98,7 +98,7 @@ func TestTaskBoundNodeWaitParksAndIsSettledByTheCoordinator(t *testing.T) {
 		t.Fatalf("wake = %v", control.texts)
 	}
 	parsed, _ := wait.ParseWakeTrailer(control.texts[0])
-	if parsed["failed"] != "t2" || parsed["result"] != "t3-steward result r2" {
+	if parsed["failed"] != "t2" || parsed["result"] != "t3-steward task result r2" {
 		t.Fatalf("trailer = %v", parsed)
 	}
 }

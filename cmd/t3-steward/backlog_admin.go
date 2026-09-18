@@ -234,11 +234,23 @@ func (c backlogAdminCLI) runSchedules(ctx context.Context, args []string) error 
 	}
 }
 
-func (c backlogAdminCLI) queryAndRender(ctx context.Context, query backlogadmin.Query, asJSON bool, selector string) error {
+// ask is one question to the coordinator, with the envelope every question
+// carries. It is a function value so that a refusal can be explained by the
+// shared explanation, which asks a question of its own.
+func (c backlogAdminCLI) ask(ctx context.Context, query backlogadmin.Query) (backlogadmin.Response, error) {
 	query.Version = backlogadmin.Version
 	query.Principal = c.principal
-	response, err := c.service.Query(ctx, query)
+	return c.service.Query(ctx, query)
+}
+
+func (c backlogAdminCLI) queryAndRender(ctx context.Context, query backlogadmin.Query, asJSON bool, selector string) error {
+	response, err := c.ask(ctx, query)
 	if err != nil {
+		if query.Kind == backlogadmin.QueryProjects {
+			// "backlog projects" is the catalog and nothing else, so a
+			// coordinator that has no projects query refuses the whole verb.
+			return explainRefusedProjectsQuery(ctx, c.ask, err, projectsWithoutTheCatalog)
+		}
 		return err
 	}
 	if selector != "" {
@@ -247,12 +259,39 @@ func (c backlogAdminCLI) queryAndRender(ctx context.Context, query backlogadmin.
 			return err
 		}
 	}
+	response = adoptDeprecatedWaitKeys(response)
 	if asJSON {
 		encoder := json.NewEncoder(c.stdout)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(response)
 	}
 	return renderAdminResponse(c.stdout, response, selector)
+}
+
+// adoptDeprecatedWaitKeys gives a document decoded from an older coordinator
+// the content of its renamed wait keys, once, where the answer arrives.
+//
+// A coordinator of the previous release sends only the deprecated waits key,
+// and this release reads taskWaits in a run document and nodeWaits in a
+// diagnosis. Doing this in the renderers alone would fix the text and leave
+// --json printing "taskWaits": null and "nodeWaits": null beside a populated
+// "waits", because that form re-encodes the decoded response rather than
+// passing the coordinator's bytes through -- a silent misread on the path the
+// skills tell an agent to use. Normalising here means the renderer and the
+// encoder see one document.
+//
+// The deprecated key is left populated: this release still emits it so that a
+// client of the previous release can read this coordinator, and both go away
+// together.
+func adoptDeprecatedWaitKeys(response backlogadmin.Response) backlogadmin.Response {
+	if detail := response.Workflow; detail != nil {
+		detail.TaskWaits = workflowTaskWaits(detail)
+	}
+	if diagnosis := response.Diagnosis; diagnosis != nil {
+		diagnosis.NodeWaits = diagnosisNodeWaits(diagnosis)
+		diagnosis.Workflow.TaskWaits = workflowTaskWaits(&diagnosis.Workflow)
+	}
+	return response
 }
 
 func parseBacklogAdminQuery(args []string) (backlogadmin.Query, bool, error) {
@@ -293,6 +332,16 @@ func parseBacklogAdminQueryWithoutSink(args []string) (backlogadmin.Query, bool,
 			return backlogadmin.Query{}, false, errors.New("backlog workers takes no arguments")
 		}
 		return backlogadmin.Query{Kind: backlogadmin.QueryWorkers}, asJSON, nil
+	case "projects":
+		query := backlogadmin.Query{Kind: backlogadmin.QueryProjects}
+		switch {
+		case len(clean) == 1:
+		case len(clean) == 3 && clean[1] == "--project" && strings.TrimSpace(clean[2]) != "":
+			query.Filter.Project = clean[2]
+		default:
+			return backlogadmin.Query{}, false, errors.New("backlog projects usage: backlog projects [--project NAME] [--json]")
+		}
+		return query, asJSON, nil
 	case "status":
 		if len(clean) != 1 {
 			return backlogadmin.Query{}, false, errors.New("backlog status takes no arguments")
@@ -490,12 +539,9 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 	case backlogadmin.QueryDiagnose:
 		renderDiagnosis(out, response.Diagnosis)
 	case backlogadmin.QueryWorkers:
-		table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(table, "WORKER\tSTATE\tHEALTH\tENROLLED\tSNAPSHOT AGE (s)\tCATALOG")
-		for _, worker := range response.Workers {
-			fmt.Fprintf(table, "%s\t%s\t%s\t%t\t%.1f\t%s\n", worker.Snapshot.WorkerID, worker.State, worker.Health, worker.Enrolled, worker.SnapshotAgeSeconds, worker.Snapshot.Inventory.CatalogRevision)
-		}
-		return table.Flush()
+		return renderWorkers(out, response.Workers)
+	case backlogadmin.QueryProjects:
+		return renderProjects(out, response.Projects)
 	case backlogadmin.QueryStatus:
 		renderStatus(out, response.Status)
 	case backlogadmin.QueryWorkflows:
@@ -526,6 +572,116 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 		return fmt.Errorf("no human renderer for admin response %q", response.Kind)
 	}
 	return nil
+}
+
+// renderWorkers prints the worker table and, under it, what each worker can
+// actually take: the projects it advertises and the instance/model/pool routes
+// it offers. Those two facts decide where work can run, and the text form used
+// to drop them, so an operator had to read the JSON to answer "which worker
+// could run this".
+func renderWorkers(out io.Writer, workers []backlogadmin.Worker) error {
+	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(table, "WORKER\tSTATE\tHEALTH\tENROLLED\tSNAPSHOT AGE (s)\tCATALOG")
+	for _, worker := range workers {
+		fmt.Fprintf(table, "%s\t%s\t%s\t%t\t%.1f\t%s\n", worker.Snapshot.WorkerID, worker.State,
+			worker.Health, worker.Enrolled, worker.SnapshotAgeSeconds, worker.Snapshot.Inventory.CatalogRevision)
+	}
+	if err := table.Flush(); err != nil {
+		return err
+	}
+	for _, worker := range workers {
+		inventory := worker.Snapshot.Inventory
+		if len(inventory.Projects) == 0 && len(inventory.Providers) == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "\n%s offers:\n", worker.Snapshot.WorkerID)
+		inner := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(inner, "  PROJECTS\tROUTES (instance/model@pool)")
+		projects := make([]string, 0, len(inventory.Projects))
+		for _, project := range inventory.Projects {
+			label := project.Name
+			if !project.Available {
+				label += " (unavailable)"
+			}
+			projects = append(projects, label)
+		}
+		routes := make([]string, 0, len(inventory.Providers))
+		for _, provider := range inventory.Providers {
+			for _, model := range provider.Models {
+				label := provider.InstanceID + "/" + model
+				if provider.QuotaPoolID != "" {
+					label += "@" + provider.QuotaPoolID
+				}
+				if !provider.Available {
+					label += " (unavailable)"
+				}
+				routes = append(routes, label)
+			}
+		}
+		sort.Strings(projects)
+		sort.Strings(routes)
+		fmt.Fprintf(inner, "  %s\t%s\n", campaignList(projects), campaignList(routes))
+		if err := inner.Flush(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// renderProjects prints the catalog as one table and, under it, one table per
+// project of the workers that could take its work with the routes each one
+// advertises. It is the text form of what "run" derives a project and a route
+// from, so an operator can see the same facts an agent acts on.
+func renderProjects(out io.Writer, projects []backlogadmin.Project) error {
+	if len(projects) == 0 {
+		_, err := fmt.Fprintln(out, "no project matched; this coordinator's catalog is backlog_v2.projects")
+		return err
+	}
+	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(table, "PROJECT\tREPOSITORY\tDEFAULT REF\tTYPE\tSETUP PROFILE\tELIGIBLE WORKERS")
+	for _, project := range projects {
+		names := make([]string, 0, len(project.Workers))
+		for _, worker := range project.Workers {
+			names = append(names, worker.Worker)
+		}
+		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n", project.Name, project.Repository, project.DefaultRef,
+			firstNonEmptyText(project.Type, "git"), project.SetupProfile, campaignList(names))
+	}
+	if err := table.Flush(); err != nil {
+		return err
+	}
+	for _, project := range projects {
+		if len(project.Workers) == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "\n%s workers:\n", project.Name)
+		workers := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(workers, "  WORKER\tSTATE\tCONFIGURED\tADVERTISES\tENROLLED\tREADY\tROUTES (instance/model@pool)")
+		for _, worker := range project.Workers {
+			routes := make([]string, 0, len(worker.Routes))
+			for _, route := range worker.Routes {
+				label := route.Instance + "/" + route.Model
+				if route.QuotaPool != "" {
+					label += "@" + route.QuotaPool
+				}
+				routes = append(routes, label)
+			}
+			fmt.Fprintf(workers, "  %s\t%s\t%t\t%t\t%t\t%t\t%s\n", worker.Worker, worker.State,
+				worker.Configured, worker.Advertises, worker.Enrolled, worker.Ready, campaignList(routes))
+		}
+		if err := workers.Flush(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// firstNonEmptyText returns value, or fallback when value is empty.
+func firstNonEmptyText(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 // renderQuarantine prints the intake the coordinator refuses and is silent
@@ -588,6 +744,21 @@ func renderWorkflows(out io.Writer, workflows []backlogadmin.WorkflowSummary) {
 	_ = table.Flush()
 }
 
+// workflowTaskWaits is the task-bound waits of a run document, from whichever
+// key the coordinator that answered uses. This client reads taskWaits; a
+// coordinator of the previous release sends only the deprecated waits key, and
+// a mixed-version window is the normal state during a release, so without the
+// fallback "campaign show" against an older coordinator would print a parked
+// task with nothing to say about what it is parked on. Only
+// adoptDeprecatedWaitKeys calls this, so that the text and the JSON forms
+// cannot disagree; the fallback goes away with the deprecated key.
+func workflowTaskWaits(detail *backlogadmin.WorkflowDetail) []backlogadmin.TaskWaitDetail {
+	if len(detail.TaskWaits) != 0 {
+		return detail.TaskWaits
+	}
+	return detail.Waits
+}
+
 func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 	if detail == nil {
 		return
@@ -611,11 +782,18 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 		// A parked task says what it is parked on. The wait is the reason the
 		// task is not moving, and its condition is what an operator can go and
 		// satisfy or cancel.
-		for _, wait := range detail.Waits {
+		// A settled wait is listed too, with its outcome: it is what became
+		// of the wait the previous answer reported as live.
+		for _, wait := range detail.TaskWaits {
 			if wait.TaskID != task.Task.ID {
 				continue
 			}
-			fmt.Fprintf(out, "    wait %s %q: %s (deadline %s)\n", wait.ID, wait.Name, wait.Condition, formatTime(wait.Deadline))
+			if wait.Outcome == "" && wait.SettledAt == nil {
+				fmt.Fprintf(out, "    wait %s %q: %s (deadline %s)\n", wait.ID, wait.Name, wait.Condition, formatTime(wait.Deadline))
+				continue
+			}
+			fmt.Fprintf(out, "    wait %s %q: settled %s exit=%d at %s%s\n", wait.ID, wait.Name,
+				wait.Outcome, wait.ExitCode, formatTime(settledWaitTime(wait)), waitReasonSuffix(wait.Reason))
 		}
 	}
 	if len(detail.Gates) != 0 {
@@ -850,6 +1028,19 @@ func renderSchedules(out io.Writer, schedules []backlogadmin.Schedule, selector 
 	_ = table.Flush()
 }
 
+// diagnosisNodeWaits is the interactive node waits of a diagnosis, from
+// whichever key the coordinator that answered uses. In a diagnosis the
+// deprecated waits key is the node waits, and a coordinator of the previous
+// release sends only that one; taskWaits is not renamed here, so it needs no
+// fallback. Only adoptDeprecatedWaitKeys calls this, so that the text and the
+// JSON forms cannot disagree; the fallback goes away with the deprecated key.
+func diagnosisNodeWaits(diagnosis *backlogadmin.Diagnosis) []domain.NodeWait {
+	if len(diagnosis.NodeWaits) != 0 {
+		return diagnosis.NodeWaits
+	}
+	return diagnosis.Waits
+}
+
 // renderDiagnosis prints the short form of "diagnose": the run and its
 // revision, one line per task, the live task-bound waits, the node waits, the
 // workers holding this run's assignments and what the coordinator could not
@@ -882,9 +1073,9 @@ func renderDiagnosis(out io.Writer, diagnosis *backlogadmin.Diagnosis) {
 		live++
 		fmt.Fprintf(out, "  %s task=%s attempt=%s %q: %s (deadline %s)\n", wait.ID, wait.TaskID, wait.AttemptID, wait.Name, wait.Condition, formatTime(wait.Deadline))
 	}
-	if len(diagnosis.Waits) != 0 {
+	if nodeWaits := diagnosis.NodeWaits; len(nodeWaits) != 0 {
 		fmt.Fprintln(out, "node waits:")
-		for _, wait := range diagnosis.Waits {
+		for _, wait := range nodeWaits {
 			fmt.Fprintf(out, "  %s %q thread=%s host=%s delivery=%s (deadline %s)\n", wait.Request.ID, wait.Request.Name, wait.Request.ThreadID, wait.Host, wait.Delivery, formatTime(wait.Deadline))
 		}
 	}
@@ -910,6 +1101,23 @@ func renderDiagnosis(out io.Writer, diagnosis *backlogadmin.Diagnosis) {
 			fmt.Fprintf(out, "  %s\n", item)
 		}
 	}
+}
+
+// settledWaitTime is the settlement time, or the zero time formatTime renders
+// as "-" when the coordinator recorded an outcome without one.
+func settledWaitTime(wait backlogadmin.TaskWaitDetail) time.Time {
+	if wait.SettledAt == nil {
+		return time.Time{}
+	}
+	return *wait.SettledAt
+}
+
+// waitReasonSuffix appends the settlement reason when there is one.
+func waitReasonSuffix(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	return ": " + reason
 }
 
 func formatTime(value time.Time) string {

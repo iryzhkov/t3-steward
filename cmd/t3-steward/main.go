@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
-	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/compat"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
@@ -54,12 +53,15 @@ Commands:
   report             Consumption by peak/off-peak hours, hour of day, model and thread.
   forecast           Interactive-demand map by weekday and hour, and current backlog headroom.
   campaign           Author, inspect and submit a workflow from a campaign directory.
+  models             Every provider route the fleet can run now, with its quota state.
   coordinator        Show which coordinator this host administers (identity); reload it (reload).
   backlog            Inspect and control coordinator workflows; includes legacy file helpers.
   diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
   schedules          Inspect and control schedules and trigger history.
   wait               Park a thread until a check succeeds; the steward wakes it (add, list, cancel).
-  task               Inside a task workspace: print this attempt's identity (env [--get NAME]).
+  task               run: start one task on the fleet from this checkout, with the project,
+                     ref, route and wake derived; result <run>[/<task>]: collect its final
+                     message and outputs; env [--get NAME]: this attempt's identity.
   thread             Operate on a local T3 thread (stop <thread-id> [--session]).
   bucket             Inspect and rearm this host's quota buckets (list, rearm <key> --reason TEXT).
   archive            Cold storage for finished threads (candidates, run, list, restore).
@@ -88,8 +90,10 @@ func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		// A transport failure exits with its class so that automation can
-		// branch without parsing prose. Everything else keeps exit 1.
-		os.Exit(backlogadmin.ExitCodeFor(err))
+		// branch without parsing prose. A verb that owns its own verdict, such
+		// as "task result", carries its exit code on the error. Everything else
+		// keeps exit 1.
+		os.Exit(exitCodeFor(err))
 	}
 }
 
@@ -101,6 +105,13 @@ type globalFlags struct {
 	logLevel       string
 }
 
+// cmdRunWatchdog is the route the bare "run" command takes to the foreground
+// watchdog, which is what the packaged unit invokes as "t3-steward run
+// --config <path>". It is a variable rather than a direct call so that a test
+// can assert that routing without starting a watchdog, opening a state
+// database or executing the built binary.
+var cmdRunWatchdog = cmdRun
+
 // run dispatches one command line and, when it asked for --json and failed,
 // prints the error envelope on stdout before returning the error. Applying
 // the envelope here, once, is what makes "--json is on every verb" true: a
@@ -109,6 +120,16 @@ type globalFlags struct {
 func run(args []string) error {
 	return reportJSONError(args, dispatch(args))
 }
+
+// errUnknownCommand and errUnknownTaskCommand mark the two refusals the
+// dispatcher makes when it is handed a name it does not route. They are
+// sentinels so that a test can ask "does this CLI dispatch this verb?" -- for
+// example about a verb a wake trailer tells an agent to run -- without running
+// the verb and without pasting the verb's spelling into the test.
+var (
+	errUnknownCommand     = errors.New("unknown command")
+	errUnknownTaskCommand = errors.New("unknown task command")
+)
 
 func dispatch(args []string) error {
 	// A manifest refusal names the release that refused it, so the version
@@ -124,10 +145,7 @@ func dispatch(args []string) error {
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil
-	case "task":
-		// Reads only the workspace identity record; no configuration is needed.
-		return cmdTask(rest)
-	case "wait", "thread", "bucket":
+	case "task", "wait", "thread", "bucket":
 		paths, err := config.DefaultPaths()
 		if err != nil {
 			return err
@@ -147,6 +165,10 @@ func dispatch(args []string) error {
 			return cmdThread(g, sub)
 		case "bucket":
 			return cmdBucket(g, sub)
+		case "task":
+			// task env reads only the workspace identity record and loads no
+			// configuration; task run and task result reach the coordinator.
+			return cmdTask(g, sub)
 		}
 		return cmdWait(g, sub)
 	case "archive", "ui-archive":
@@ -168,7 +190,7 @@ func dispatch(args []string) error {
 			return cmdUIArchive(g, sub)
 		}
 		return cmdArchive(g, sub)
-	case "backlog", "diagnose", "worker", "campaign", "coordinator":
+	case "backlog", "diagnose", "worker", "campaign", "coordinator", "models":
 		// Sub-commands parse their own arguments; only --config and
 		// --dry-run style globals are shared, taken from the environment here.
 		paths, err := config.DefaultPaths()
@@ -193,6 +215,9 @@ func dispatch(args []string) error {
 		}
 		if cmd == "campaign" {
 			return cmdCampaign(g, sub)
+		}
+		if cmd == "models" {
+			return cmdModels(g, sub)
 		}
 		if cmd == "diagnose" {
 			sub = append([]string{"diagnose"}, sub...)
@@ -295,7 +320,7 @@ func dispatch(args []string) error {
 	case "check":
 		return cmdCheck(g)
 	case "run":
-		return cmdRun(g)
+		return cmdRunWatchdog(g)
 	case "status":
 		return cmdStatus(g, limit, asJSON, showAll)
 	case "replay":
@@ -338,7 +363,7 @@ func dispatch(args []string) error {
 		}
 		return cmdCoordinatorExchange(g, fs.Arg(0))
 	default:
-		return fmt.Errorf("unknown command %q (try --help)", cmd)
+		return fmt.Errorf("%w %q (try --help)", errUnknownCommand, cmd)
 	}
 }
 

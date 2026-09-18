@@ -327,6 +327,11 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		}
 		matrix := view.viability(ctx, s.viabilitySettings, *query.Viability)
 		response.Viability = &matrix
+	case QueryProjects:
+		if !s.viabilitySettings.configured() {
+			return Response{}, fmt.Errorf("%w: this coordinator has no project catalog to list", ErrInvalidQuery)
+		}
+		response.Projects = view.projects(s.viabilitySettings, query.Filter)
 	}
 	return response, nil
 }
@@ -376,7 +381,7 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 func validQuery(query Query) bool {
 	switch query.Kind {
 	case QueryStatus, QueryWorkflows, QuerySchedules, QueryWorkers, QueryQuota,
-		QueryReservations, QueryLocks, QueryQuarantine:
+		QueryReservations, QueryLocks, QueryQuarantine, QueryProjects:
 		return true
 	case QueryCommands:
 		return query.TaskID == "" || query.WorkflowRunID != ""
@@ -681,26 +686,37 @@ func (v view) workflowDetail(runID string) (WorkflowDetail, bool) {
 	}
 	detail.ResourceLocks = filterLocksForRun(detail.ResourceLocks, detail.Tasks)
 	detail.Reservations = filterReservationsForRun(detail.Reservations, runID)
-	detail.Waits = v.runWaits(runID)
+	detail.TaskWaits = v.runTaskWaits(runID)
+	detail.Waits = liveTaskWaits(detail.TaskWaits)
 	detail.Gates = v.runGates(runID)
 	return detail, true
 }
 
-// runWaits lists the live task-bound waits of one run, oldest registration
-// first. A settled wait has an outcome and no longer parks its attempt, so it
-// is not a reason the run is waiting and is left out; that is also why no
-// exit code is reported, since the coordinator records one only at settlement.
-func (v view) runWaits(runID string) []TaskWaitDetail {
-	var waits []TaskWaitDetail
+// runTaskWaits lists every task-bound wait of one run, live and settled,
+// oldest registration first. A settled wait carries its outcome: it is what
+// became of a wait the previous answer reported as live, and an operator who
+// sees a task stop waiting needs it more than anything else in this document.
+func (v view) runTaskWaits(runID string) []TaskWaitDetail {
+	waits := make([]TaskWaitDetail, 0, len(v.taskWaits))
 	for _, wait := range v.taskWaits {
-		if wait.WorkflowRunID != runID || !wait.Live() {
+		if wait.WorkflowRunID != runID {
 			continue
 		}
-		waits = append(waits, TaskWaitDetail{
+		detail := TaskWaitDetail{
 			ID: wait.ID, TaskID: wait.TaskID, TaskName: v.tasks[wait.TaskID].Name, AttemptID: wait.AttemptID,
-			Name: wait.Name, Condition: wait.Condition,
+			Name: wait.Name, Condition: wait.Condition, Kind: string(wait.Kind),
 			RegisteredAt: wait.RegisteredAt, Deadline: wait.Deadline,
-		})
+		}
+		if wait.Result != nil {
+			detail.Outcome = string(wait.Result.Outcome)
+			detail.ExitCode = wait.Result.ExitCode
+			detail.Reason = wait.Result.Reason
+		}
+		if wait.SettledAt != nil {
+			settled := *wait.SettledAt
+			detail.SettledAt = &settled
+		}
+		waits = append(waits, detail)
 	}
 	sort.SliceStable(waits, func(i, j int) bool {
 		if !waits[i].RegisteredAt.Equal(waits[j].RegisteredAt) {
@@ -709,6 +725,29 @@ func (v view) runWaits(runID string) []TaskWaitDetail {
 		return waits[i].ID < waits[j].ID
 	})
 	return waits
+}
+
+// liveTaskWaits is the deprecated "waits" key of a run document: the waits
+// that are still parking an attempt. It is derived from the same list the
+// taskWaits key carries, so the two can never disagree while both exist.
+//
+// Each entry is reduced to the fields the previous release declares, because
+// that is what a deprecation window is worth: the key keeps not only its old
+// meaning but its old shape, so even a reader that decodes it strictly still
+// reads it. Everything this release added to a wait -- its kind, and the
+// settlement a live wait does not have -- travels under taskWaits.
+func liveTaskWaits(waits []TaskWaitDetail) []TaskWaitDetail {
+	live := make([]TaskWaitDetail, 0, len(waits))
+	for _, wait := range waits {
+		if wait.SettledAt == nil && wait.Outcome == "" {
+			live = append(live, TaskWaitDetail{
+				ID: wait.ID, TaskID: wait.TaskID, TaskName: wait.TaskName, AttemptID: wait.AttemptID,
+				Name: wait.Name, Condition: wait.Condition,
+				RegisteredAt: wait.RegisteredAt, Deadline: wait.Deadline,
+			})
+		}
+	}
+	return live
 }
 
 // runGates lists the gates of a supervised run by name, each with the

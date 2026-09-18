@@ -48,6 +48,10 @@ type ViabilitySettings struct {
 	// one of them carries ReasonProjectBindingDefaulted as an informational
 	// detail on every candidate.
 	DefaultedProjects []string
+	// ProjectWorkers names the workers backlog_v2.projects.<name>.workers
+	// lists for each project. The projects query reports them beside the
+	// workers whose inventories advertise the project.
+	ProjectWorkers map[string][]string
 	// MaxBundleBytes and MaxBundleFiles are the coordinator's message limits.
 	MaxBundleBytes int64
 	MaxBundleFiles int
@@ -278,6 +282,14 @@ func (v view) viabilityTask(ctx context.Context, settings ViabilitySettings, tas
 		result.Reasons = append(result.Reasons, newViabilityReason(ReasonUnknownSetupProfile,
 			fmt.Sprintf("project %q names setup profile %q, which this coordinator does not have",
 				task.Project, project.SetupProfile)))
+	}
+	if len(task.Routes) == 0 {
+		// A task with no route is refused here, at the task level, and never
+		// reaches the planner: a route-less task used to be a candidate on every
+		// eligible worker with a nil route, and the planning report then failed
+		// for the whole fleet on every tick until somebody cancelled it.
+		result.Reasons = append(result.Reasons, newViabilityReason(ReasonNoRoute,
+			noRouteDetail(task.Name, task.Project, workers)))
 	}
 	ref := task.Ref
 	if ref == "" {

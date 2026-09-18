@@ -20,6 +20,9 @@ environment:
   project: dev-fleet
 inputs:
   - inputs/plan.md
+routes:
+  - instance: t3-primary
+    model: opus
 tasks:
   implement:
     prompt_file: prompts/implement.md

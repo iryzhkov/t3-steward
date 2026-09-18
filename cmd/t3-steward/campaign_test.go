@@ -540,7 +540,25 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// submit flag groups on one line, by reflowing the --allow-unverified
 	// paragraph, and by dropping "Lifecycle JSON is unchanged" from the exit-code
 	// paragraph, which the lifecycle heading three lines up already says.
-	const wantDigest = "2e58027183fc76bc293eaad0325d10d810a7980941a460c691d1f631de5615ac"
+	//
+	// Updated again when a task with no route at all became a permanent
+	// refusal: the permanent-reason paragraph names it, because a campaign
+	// whose routes are missing is refused at submit and the reason has to be
+	// readable where the exit code is explained. It was paid for by reflowing
+	// the paragraph to the full width and by shortening "a missing credential
+	// reference" and "Codes and recovery commands", so the cap is unchanged.
+	//
+	// Updated again when cancel gained its run form: the lifecycle line now
+	// reads "cancel <run>[/<task>]" and says that naming no task cancels the
+	// whole run in one command. It cost no line at all.
+	//
+	// Updated again to say what the run form's --json document means: its
+	// willCancel key is the tasks the one command covers, computed from a read,
+	// and not the outcome the coordinator has applied. An automated caller that
+	// reads it as the outcome is the mistake the line exists to prevent. The
+	// line was paid for by putting explain beside show and graph, so the cap is
+	// unchanged.
+	const wantDigest = "0cc7e60af2ecb0d5ad10839bffa479b5f0d765330f4bbc22da50bf1b07f67d71"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)
@@ -551,7 +569,10 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 		"validate <directory|workflow.yaml> [--json]",
 		"plan     <directory|workflow.yaml> [--json|--dot]",
 		"submit   <directory|workflow.yaml> --idempotency-key KEY [--json]",
-		"cancel <run>/<task> --reason TEXT",
+		"cancel <run>[/<task>] --reason TEXT",
+		"no task = whole run",
+		"willCancel, the tasks it covers, not the outcome it applied",
+		"explain <run>/<task> [--json]",
 		"workflow.yaml",
 		"version: 2",
 		"needs",

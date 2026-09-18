@@ -424,6 +424,128 @@ A forced start bypasses ordinary ordering and timing only. Dependencies, live
 locks, fresh worker identity, route compatibility, and hard draining/closed
 quota admission remain authoritative. There is no administrative quota bypass.
 
+### Starting one task from a session
+
+An agent in a session starts one task on the fleet with one call, from the
+checkout the work is about:
+
+```sh
+t3-steward task run --model claude-haiku-4-5 -- "summarise the open PRs"
+t3-steward task run --model t3-primary/opus --prompt-file plan.md --json
+t3-steward task run --model opus --fan-out prompts/*.md      # one run, one task per file
+```
+
+The CLI derives, the coordinator validates, and the coordinator never chooses a
+route. Nothing new crosses the wire: `task run` composes the `projects` query,
+`campaign check`, `campaign submit --notify-thread current` and the artifact
+verbs, and what it submits is exactly what `campaign submit` would submit from a
+directory written by hand.
+
+Derived in this order, each printed in the record:
+
+| Value | Derived from |
+| --- | --- |
+| project | `--project`, else this checkout's `origin` remote normalised and matched against `t3-steward backlog projects`; exactly one match |
+| ref | `--ref`, else the current branch when it has an upstream and is not ahead of it; `--fresh` takes a scratch workspace instead |
+| route | `--model INSTANCE/MODEL` exactly, or `--model MODEL` when exactly one advertised instance offers it, else `backlog_v2.coordinator_client.defaults.model`; the quota pool is the one the instance advertises |
+| worker | `--worker` pins one; otherwise any eligible worker |
+| idempotency key | `--idempotency-key`, else `run-` plus sixteen hex characters of a digest over project, ref, instance, model, the prompts, outputs, verify commands, class and max turns |
+| name | `--name`, else the prompt's first line, as a manifest-legal slug |
+| notification | the calling thread, as `campaign submit --notify-thread current` resolves it |
+
+The key covers what will run, and so covers neither `--worker` nor `--name`,
+both of which do change what is submitted. A start that differs from an earlier
+one only in those two flags therefore reaches the coordinator with that key and
+different content and is refused with `submission idempotency key already has
+different content`. The route's quota pool is outside the key in the same way,
+and unlike those two flags nobody chose it: it is read from the catalog and
+left empty when the catalog cannot be read, so the identical command submits
+different content across a coordinator upgraded to the release that has the
+`projects` query, a transient failure of that one query, or a principal without
+the `projects` read view. The refusal names both flags, that cause, and
+`--idempotency-key`, which starts it as its own run.
+
+Refused, each naming what to pass instead: a remote that zero or several
+projects match; a model several instances offer; a detached HEAD or a branch
+ahead of its upstream ("push first or pass --ref"); more than one prompt
+source; no route and no `defaults.model`. A dirty working tree is a warning and not a
+refusal: uncommitted changes are not sent, the worker fetches the ref.
+
+A start is refused when no thread resolves, unless `--no-notify` says that a
+run nobody will hear about is intended. `check` reports `ready` or
+`accepted_waiting` and both are success: the run exists either way.
+
+Against a coordinator older than the `projects` query, `--project NAME` with
+`--model INSTANCE/MODEL` starts a task unchanged: naming both leaves nothing
+about what will run to derive. The catalog is still asked for one thing, the
+route's quota pool, and a coordinator that refuses that query leaves the pool
+empty and resolves it from the worker's inventory, which is where the catalog
+reads it too. Both ways of naming a route read the pool the same way because
+the idempotency key covers the instance and the model and not the pool: a pool
+present on one path and absent on the other would give one key two archives,
+and the second start of the same task would be refused. A start that does need
+the catalog is refused with the release the coordinator reports, the release
+the query needs and those two flags, rather than with the coordinator's bare
+"invalid query".
+
+What the fleet can run right now:
+
+```sh
+t3-steward models [--project NAME] [--json]
+```
+
+One row per `instance/model`, in the form `--model` takes, with the pool, the
+pool's admission state, the phase and used percent of its worst bucket, and how
+many of the workers that advertise it are ready. An instance the fleet catalog
+authorises that nobody advertises, and one a worker advertises that the catalog
+authorises in no pool (`missingBinding`), are listed with that as their status
+rather than omitted: a route that cannot run is what the caller most needs to
+see.
+
+On the wake, whose first line is the structured trailer
+(`t3-steward-wait kind=node outcome=... result="t3-steward task result <run>"`):
+
+```sh
+t3-steward task result <run>[/<task>] [--output DIR] [--json]
+```
+
+It writes `final-message.md` and every declared output under
+`./.t3/results/<run>/<task>/`, each under the name the task declared, and
+collects nothing else; the thread archive and the verification records stay
+behind `backlog artifacts`. The exit code is the task's own verdict: 0
+succeeded or skipped, 2 failed or cancelled with whatever exists still written,
+1 not terminal with the progress printed. A task the graph skipped ran nothing
+and has nothing to collect, which is not a failure to report. `--json` inlines the final message.
+
+To stop a run:
+
+```sh
+t3-steward campaign cancel <run> --reason TEXT [--json]     # every non-terminal task
+t3-steward campaign cancel <run>/<task> --reason TEXT       # one task and its dependents
+```
+
+The run form is one command with one revision fence per attempt, which is what
+a fan-out run needs: its tasks depend on each other for nothing, so cancelling
+one of them cascades to nothing. It needs a coordinator at that release or
+newer: an older one decodes the request, ignores the scope and fails at
+application, so the client reads the release the coordinator reports and
+refuses the run form rather than queueing a command that will never be applied.
+The per-task form works against every release.
+
+Both forms queue a command: the coordinator applies it on its next tick, so the
+answer is the submit decision and not the outcome. The run form's `--json`
+document names the tasks the one command covers under `willCancel`, an
+intention computed from the read that found the fence, and the text form says
+"will cancel" for the same reason. What was actually applied, task by task, is
+in `t3-steward backlog commands <run>`, in the audit event and in
+`t3-steward campaign show <run>`.
+
+A task that declares no route at all is refused as permanent `no-route`, at
+`check` and at intake, with the instance/model pairs its project's eligible
+workers advertise. The legacy single-task adapter refuses a submission with no
+instance and model the same way, which quarantines the file once instead of
+reporting it on every cycle.
+
 ### Where the logs are
 
 Every role runs in the same per-user unit, `t3-steward.service`: the quota
@@ -825,7 +947,7 @@ Every wait has a kind, and the kind decides which side settles it.
 | `shell` | `-- <command>` | the registering host's wait runner, from the command's exit: 0 met, 2 gave up, else not yet | `exit=` |
 | `time` | `--at RFC3339` or `--for DURATION` | the registering host's wait runner, from the clock; the poll interval follows the remaining time, never under 30 s | `at=` |
 | `github` | `--github run <id> \| pr <n> [--state completed\|merged\|reviewed\|checks-passed] [--repo owner/name]` | the registering host's wait runner, from `gh run view <id> --json status,conclusion,url` or `gh pr view <n> --json state,mergedAt,reviewDecision,statusCheckRollup,url`; three consecutive `gh` errors give up with the last error, a target that is gone gives up at once | `target=run:<id>\|pr:<n> state= conclusion= url=` |
-| `node` | `--node <run>[/<task>] [--state terminal\|succeeded\|paused\|waiting-external\|active]` | the coordinator's node settlement pass (`SettleNodeWaits`), from its own records and the workers' last reports; no local check anywhere | `run= task= attempt= revision= progress=` plus `control=`, `pauseReason=` and, for a terminal run, `failed=<comma list>` and `result="t3-steward result <run>"` |
+| `node` | `--node <run>[/<task>] [--state terminal\|succeeded\|paused\|waiting-external\|active]` | the coordinator's node settlement pass (`SettleNodeWaits`), from its own records and the workers' last reports; no local check anywhere | `run= task= attempt= revision= progress=` plus `control=`, `pauseReason=` and, for a terminal run, `failed=<comma list>` and `result="t3-steward task result <run>"` |
 | `quota` | `--quota <pool> --below N \| --phase normal \| --reset` | the same pass, from the merged bucket observations (the coordinator's own and every worker's, freshest per bucket), which is what admission is derived from | `pool= phase= percent=` |
 
 The local kinds work as task-bound waits through the existing registration:

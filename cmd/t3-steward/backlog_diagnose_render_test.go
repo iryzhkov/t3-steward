@@ -33,7 +33,7 @@ func diagnoseFixture(now time.Time) *backlogadmin.Diagnosis {
 			{ID: "tw-1", TaskID: "task-b", AttemptID: "attempt-b", Name: "nest answered", Condition: "jocasta exists x.md", RegisteredAt: now, Deadline: now.Add(time.Hour)},
 			{ID: "tw-0", TaskID: "task-a", AttemptID: "attempt-a", Name: "old", RegisteredAt: now.Add(-2 * time.Hour), Deadline: now, SettledAt: &now, Result: &domain.TaskWaitResult{Outcome: domain.TaskWaitMet}},
 		},
-		Waits: []domain.NodeWait{{
+		NodeWaits: []domain.NodeWait{{
 			Request: domain.NodeWaitRequest{ID: "nw-1", ThreadID: "thread-x", Name: "until analyse", Target: domain.NodeRef{RunID: "run-1", TaskID: "task-a"}},
 			Host:    "omarchy-pc", Deadline: now.Add(2 * time.Hour), Delivery: "pending",
 		}},

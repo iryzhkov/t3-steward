@@ -167,7 +167,7 @@ func NodeTrailerFields(o NodeObservation) map[string]string {
 	fields["revision"] = strconv.FormatInt(o.RunRevision, 10)
 	fields["progress"] = string(o.Progress)
 	if o.Progress.Terminal() {
-		fields["result"] = "t3-steward result " + o.Target.RunID
+		fields["result"] = "t3-steward task result " + o.Target.RunID
 	}
 	return fields
 }

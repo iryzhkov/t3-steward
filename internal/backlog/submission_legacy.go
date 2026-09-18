@@ -26,6 +26,16 @@ func (s *SubmissionService) SubmitSingleTask(ctx context.Context, request Single
 	if task.Prompt == "" {
 		return SubmissionResult{}, errors.New("single-task submission prompt is required")
 	}
+	if task.Instance == "" || task.Model == "" {
+		// The same rule the version 2 intake applies: the coordinator never
+		// chooses a route, and a task without one is not dispatchable. It is a
+		// conflict of the content so that the legacy source quarantines the file
+		// once instead of reporting it on every cycle, and it is permanent because
+		// only different content can fix it.
+		return SubmissionResult{}, fmt.Errorf("no-route: single-task submission names no provider route (instance %q, model %q); "+
+			"set both instance and model to a route an eligible worker advertises (t3-steward models): %w: %w",
+			task.Instance, task.Model, ErrPermanentIntake, domain.ErrSubmissionConflict)
+	}
 	class := domain.TaskClassSurplus
 	if !task.Gated() {
 		class = domain.TaskClassRequired

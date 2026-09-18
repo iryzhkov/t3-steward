@@ -8,6 +8,73 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `t3-steward task run` starts one task on the fleet from a checkout, with the
+  project, the ref, the route, the idempotency key and the wake derived and
+  every derived value printed: the project from `--project` or the checkout's
+  `origin` remote matched against the new `projects` query, the ref from
+  `--ref` or the current branch when it is pushed (a detached HEAD or an
+  unpushed branch is refused with "push first or pass --ref"; a dirty tree is a
+  warning), the route from `--model [INSTANCE/]MODEL` against what the
+  project's eligible workers advertise, with the quota pool the instance
+  advertises and never an invented one, or from the new optional
+  `backlog_v2.coordinator_client.defaults.model`. The calling thread is
+  notified by default and a start is refused when none resolves unless
+  `--no-notify`. `--fan-out GLOB` starts one run with one task per file. A
+  repeat replays the same run and prints `replayed: true`. It composes the
+  existing campaign path: what it submits is what `campaign submit` would
+  submit. The verb is under `task`, beside `task env`; `t3-steward run` is
+  still the watchdog's foreground command and is unchanged. `--project NAME`
+  with `--model INSTANCE/MODEL` decides what will run without the catalog, so
+  it starts a task against a coordinator older than the `projects` query: that
+  query is then sent only for the route's quota pool, and a coordinator that
+  refuses it leaves the pool empty for the coordinator to resolve from the
+  worker's inventory. Both ways of naming a route read the pool the same way,
+  so both submit the same archive: the idempotency key covers the instance and
+  the model and not the pool, so a pool present on one path and absent on the
+  other would give one key two archives and the second start would be refused.
+  The pool is outside the key either way, so the identical command run once
+  while that query is refused and once while it is answered still submits two
+  archives under one key; the second start is refused, and the refusal now
+  names the pool and the catalog beside `--worker` and `--name`.
+  A start that does need the catalog and meets a coordinator without the query
+  is refused with that coordinator's release, the release the query needs and
+  those two flags.
+- `t3-steward task result <run>[/<task>] [--output DIR] [--json]` collects a
+  finished task in one call: `final-message.md` and every declared output,
+  written under `./.t3/results/<run>/<task>/`. It exits 0 for a succeeded task,
+  2 for a failed or cancelled one with whatever exists still written, and 1
+  for one that is not terminal, with its progress printed. `--json` inlines the
+  final message.
+- `t3-steward models [--project NAME] [--json]` lists every provider route the
+  fleet can run now, one row per `instance/model`, joining three facts that
+  fail separately: authorisation from the fleet catalog's quota pools,
+  advertisement from the workers' inventories, and the pool's admission state
+  with the phase and used percent of its worst bucket. An instance that is
+  authorised and advertised by nobody, and one advertised with no authorised
+  pool (`missingBinding`), are listed with that as their status rather than
+  omitted.
+- A `projects` query kind, rendered by `t3-steward backlog projects
+  [--project NAME] [--json]`: per project the repository, default ref, type and
+  setup profile, and per eligible worker whether it is configured for the
+  project, whether its inventory advertises it, whether it is enrolled and
+  ready, and the instance/model/pool routes it advertises. Every verb that asks
+  for the catalog -- `backlog projects`, `models --project` and a `task run`
+  that derives its project or its route -- explains a coordinator that does not
+  have the query with that coordinator's release, the release the query needs
+  and what the verb can do without it, rather than passing on the bare
+  `invalid query: kind "projects"`.
+- `t3-steward campaign cancel <run> --reason TEXT` cancels every non-terminal
+  task of a run with one command, one application and one revision fence per
+  attempt. The `<run>/<task>` form is unchanged and works against every
+  release. The run form needs a coordinator at this release or newer, because
+  an older one accepts the request and cannot apply it; the client reads the
+  release the coordinator reports for itself and refuses the run form against
+  one that cannot apply it, naming the per-task form. The `--json` document
+  names the tasks the command covers under `willCancel`, not `tasks`: the
+  command is queued and the coordinator applies it on its next tick, so that
+  list is an intention computed from a read and not the applied outcome, which
+  is in `t3-steward backlog commands <run>` and the audit event.
+
 - Every wait has a kind, and every wake message begins with one parseable
   line, `t3-steward-wait kind=<kind> outcome=<outcome> wait=<id> ...`, with
   kind-specific pairs after it (contract 3 of the agent-experience campaign).
@@ -22,7 +89,7 @@ All notable changes to this project are documented here. The format follows
   own records with no local check on any host: `node` (`--node <run>[/<task>]
   --state terminal|succeeded|paused|waiting-external|active`; `run= task=
   attempt= revision= progress=` and, for a terminal run, `failed=` and
-  `result="t3-steward result <run>"`) and `quota` (`--quota <pool> --below N |
+  `result="t3-steward task result <run>"`) and `quota` (`--quota <pool> --below N |
   --phase normal | --reset`, from the merged bucket observations; `pool=
   phase= percent=`). Every kind works interactively and with `--task current`,
   where a coordinator kind is a task wait with a structured condition. The
@@ -50,6 +117,48 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- A version 2 task that declares no provider route at all is refused as
+  permanent `no-route`, at `campaign check` and at intake, with the
+  instance/model pairs its project's eligible workers advertise. The
+  coordinator never chooses a route; before this, such a task was accepted and
+  then made every eligible worker a candidate with a nil route, which failed
+  the assignment-planning report for the whole fleet on every tick until the
+  run was cancelled. The legacy single-task adapter refuses a submission with
+  no instance and model the same way, as a content conflict, so its source
+  quarantines the file once instead of reporting it on every cycle.
+  **Upgrading: check the drop directories first.** The legacy adapter defaults
+  neither `instance` nor `model`, so every drop file already sitting in a
+  `backlog.dir` without both of them is quarantined on the first cycle after
+  this release starts, not only new ones. Nothing is lost and nothing retries
+  itself: `t3-steward backlog quarantine` lists them with the reason, and each
+  file has to be given an `instance` and a `model`. That edit changes the
+  file's content, so its digest changes, the marker is released and the next
+  cycle submits it again -- no `quarantine release` is needed for this one.
+  `t3-steward models` lists the instance/model pairs the fleet can run.
+- Waits are named for the family they hold in every document, and a settled
+  task wait is no longer dropped. A run document (`backlog show`, `campaign
+  show`) gains `taskWaits`, every task-bound wait of the run with its `kind`
+  and, once it has one, its `outcome`, `exitCode`, `reason` and `settledAt`; a
+  diagnosis gains `nodeWaits`, the interactive node waits it used to report
+  under `waits`. Both documents still carry `waits` with exactly what it
+  carried before, the live task waits in a run document and the node waits in
+  a diagnosis, in the previous release's shape: the fields this release adds to
+  a wait travel under `taskWaits` only, so `waits` is what rc.69 declares and a
+  reader that decodes it strictly still reads it. **Deprecated: `waits` is kept
+  for one release** so that a client of the previous release keeps working;
+  read `taskWaits` and `nodeWaits`, whose names mean the same thing in both
+  documents. The compatibility runs both ways for that release, in the text
+  form and in `--json` alike: a document from a coordinator of the previous
+  release, which sends only `waits`, has its renamed keys filled where it is
+  decoded, so `campaign show`, `backlog show` and `diagnose` during a
+  mixed-version window say what a parked task is waiting for and print the
+  content under `taskWaits` and `nodeWaits` rather than beside them. The
+  deprecated key keeps what it carried either way, and the fallback goes away
+  with it. The text
+  form of a run prints a settled wait with its outcome instead of dropping it.
+- `backlog workers` prints, under the worker table, what each worker can
+  actually take: the projects it advertises and its instance/model@pool
+  routes. They decide where work can run and were visible only in `--json`.
 - A shell check that exits 2 settles as `gave-up` rather than `failed`,
   locally and on the coordinator; `failed` now means the condition decided
   against the waiter (a run that concluded with a failure, a pull request

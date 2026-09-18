@@ -32,7 +32,14 @@ type Diagnosis struct {
 	Explanations  []Explanation           `json:"explanations"`
 	Assignments   []Assignment            `json:"assignments"`
 	Commands      []Command               `json:"commands"`
-	Waits         []domain.NodeWait       `json:"waits"`
+	// NodeWaits are the interactive node waits registered on this run: a wait
+	// that wakes a thread, never one that parks an attempt. The key is named
+	// for what it holds because "waits" meant the task waits in a run document
+	// and the node waits here, which is one word for two families.
+	NodeWaits []domain.NodeWait `json:"nodeWaits"`
+	// Waits is NodeWaits under its old key. Deprecated: kept for one release
+	// because a client of the previous release reads it.
+	Waits []domain.NodeWait `json:"waits"`
 	// TaskWaits are the coordinator-owned waits that park this run's attempts:
 	// id, task, attempt, name, condition, registration, deadline and outcome.
 	// A parked attempt with no live entry here is parked on nothing.
@@ -97,9 +104,11 @@ func (s *Service) diagnose(ctx context.Context, v view, runID string) (Diagnosis
 		}
 		for _, wait := range waits {
 			if wait.Request.Target.RunID == runID {
-				result.Waits = append(result.Waits, wait)
+				result.NodeWaits = append(result.NodeWaits, wait)
 			}
 		}
+		// The deprecated key carries the same records, never a second list.
+		result.Waits = result.NodeWaits
 	} else {
 		result.Unavailable = append(result.Unavailable, "native wait registry")
 	}
