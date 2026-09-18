@@ -47,7 +47,7 @@ with the reason:
 
 A coordinator older than this one reports no per-worker authorization, and the
 table is then built from the quota pools and the inventories alone, with no
-reason column.
+reasons under it.
 ` + coordinatorTransportHelp
 
 // modelsSchemaVersion versions the models document. It is an agent-facing

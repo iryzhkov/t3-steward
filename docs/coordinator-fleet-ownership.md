@@ -11,10 +11,27 @@ default ref, setup profile and eligible workers. Omitted workers, projects or pr
 are revoked; an empty model list authorizes no models. Review the complete intent before
 applying it. CPU classes are `low`, `medium` and `high`.
 
-Existing operator configuration supplies transport, credentials, epochs, provider quota
-bindings, containment, resource sizes and project execution metadata. An unknown worker
-or provider binding fails closed: the projection cannot create credentials or guess a
-quota binding.
+Existing operator configuration supplies transport, credentials, epochs, containment,
+resource sizes, project execution metadata and the quota pool definitions themselves
+(`backlog_v2.quota_pools`: a pool's provider and concurrency). An unknown worker fails
+closed: the projection cannot create credentials.
+
+A quota binding is different since the stage 6 release. The document may carry, per
+worker, `quota_bindings`: a map from a provider instance to the one pool its work may be
+charged to. It is authorization, exactly as the model allowlist is, and never a claim
+that the instance is installed, signed in or offering a model. An explicit
+`backlog_v2.workers.<w>.providers.<instance>.quota_pool` still wins; the projected
+binding is used only where the coordinator's own configuration binds nothing, including
+where it has no entry for the instance at all. A binding naming an instance the worker
+does not run, or a pool it does not join, is refused when the document is decoded.
+
+An instance with desired models that neither source binds to a pool this coordinator
+defines is dropped for that worker rather than failing the whole configuration: the
+coordinator logs one warning at startup naming the instance, the worker and the remedy,
+`Config.DroppedFleetProviders()` records it with `missing binding` or `no models`, and
+`t3-steward models` reports that as the reason the route is not advertised. A document
+rendered before `quota_bindings` existed carries no such key and is applied exactly as it
+was, which is what a fleet part-way through a release needs.
 
 A project is different. A fleet project with no `backlog_v2.projects` entry is loaded
 with an empty local binding: no credentials, no resource locks, no directory resources,

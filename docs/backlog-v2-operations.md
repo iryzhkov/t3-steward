@@ -502,6 +502,24 @@ authorises in no pool (`missingBinding`), are listed with that as their status
 rather than omitted: a route that cannot run is what the caller most needs to
 see.
 
+Under the table, one line per instance and worker that the coordinator
+authorises for that worker and that the worker is not offering now, with the
+reason:
+
+| Reason | What it means | Where it is fixed |
+| --- | --- | --- |
+| `missing binding` | the coordinator dropped the instance at load: no quota pool of that worker is authorised for it | the release (`upkeeper provider add`) or `backlog_v2.workers.<w>.providers.<i>.quota_pool` |
+| `no models` | the fleet authorises the instance for no model | the release's model allowlist |
+| `not installed` | the worker has no such provider instance | the worker host |
+| `unavailable` | the instance is installed and not signed in or not enabled | the worker host |
+
+The instance's own `reason` is the first of those its workers report, in that
+order, because a fault in the fleet's authorisation explains every worker at
+once and is one edit away from fixed. An instance the coordinator dropped is
+listed here and nowhere else: it is in no quota pool and in no inventory, which
+is why it used to be invisible. A coordinator older than this release reports
+no per-worker authorisation and the reasons are then absent rather than guessed.
+
 On the wake, whose first line is the structured trailer
 (`t3-steward-wait kind=node outcome=... result="t3-steward task result <run>"`):
 
@@ -545,6 +563,75 @@ A task that declares no route at all is refused as permanent `no-route`, at
 workers advertise. The legacy single-task adapter refuses a submission with no
 instance and model the same way, which quarantines the file once instead of
 reporting it on every cycle.
+
+### Registering a provider
+
+Adding a provider instance to the fleet, or a model on one, is one edit to the
+UpKeeper release and one pull. Nothing on the coordinator host is edited by
+hand, and no file on a worker host is edited at all.
+
+1. On the controller, in a current UpKeeper checkout:
+
+   ```sh
+   upkeeper provider add opencode --quota-pool opencode-free \
+     --hosts homelab,normandy,omarchy-pc --models glm-4.6
+   ```
+
+   The command edits the release manifest, validates it, and prints the
+   enrolment plan against `HEAD`. Review `git diff desired/release.json` and the
+   plan (it lists the model authorisation, the pool and the binding per worker,
+   and the re-enrolment each of them then needs), commit and `upkeeper push`.
+
+2. Pull the coordinator host, or wait for its timer:
+
+   ```sh
+   upkeeper pull --hosts <coordinator> --components steward-fleet-configuration
+   ```
+
+   The component writes `~/.config/t3-steward/coordinator-fleet.json`, signals
+   the running coordinator and reads its reload receipt. `accepted` or
+   `unchanged` converge; `rejected` carries the coordinator's own error.
+
+3. On the coordinator host, re-enrol every worker whose catalog changed, which
+   a changed catalog always requires:
+
+   ```sh
+   t3-steward worker enroll --all --current-catalog --reason "register opencode"
+   ```
+
+4. Confirm what the fleet can run:
+
+   ```sh
+   t3-steward models --json
+   ```
+
+   The instance is `authorized` as soon as the projection is applied and the
+   pool is bound. It is `advertised` only once the provider instance exists on
+   a worker host and is signed in; until then its reason says which of the two
+   is missing (`not installed`, `unavailable`), and never `missing binding`.
+
+What the projection may and may not decide:
+
+- `quota_bindings` in the projection is authorisation, exactly as a model
+  allowlist is: it says which pool an instance may charge its work to. It never
+  claims the instance is installed, signed in or offering a model.
+- An explicit `backlog_v2.workers.<w>.providers.<instance>.quota_pool` on the
+  coordinator still wins. The projected binding is used only where the
+  coordinator's own configuration binds nothing, including where it has no
+  entry for the instance at all, which is the case this flow exists for.
+- The pool itself stays operator configuration: `backlog_v2.quota_pools` on the
+  coordinator defines its provider and concurrency. A projected binding to a
+  pool that file does not define is dropped with a warning naming it, rather
+  than applied and then failing the whole configuration. Registering an
+  instance in an existing pool is one release edit; a new pool is a
+  coordinator configuration change first.
+- One instance belongs to one pool across the whole coordinator. Binding the
+  same instance to different pools on different hosts fails the coordinator's
+  own validation, so the release must bind it once.
+- An instance with desired models and no usable binding from either source is
+  dropped for that worker, with one warning at startup naming the instance, the
+  worker and the remedy, and the rest of the catalog loads. `t3-steward models`
+  reports it as `missing binding`.
 
 ### Where the logs are
 
