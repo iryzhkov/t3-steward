@@ -132,7 +132,7 @@ func TestModelsTextNamesTheReasonPerInstanceAndWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := out.String()
-	for _, want := range []string{"t3-primary/opus", "available", "not advertised by", "none"} {
+	for _, want := range []string{"t3-primary/opus", "available", "routes that cannot run:", "none"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("models text does not carry %q:\n%s", want, text)
 		}
@@ -183,6 +183,69 @@ func TestModelsWithoutWorkerAuthorizationIsUnchanged(t *testing.T) {
 	primary := modelsInstanceByName(t, document, "t3-primary")
 	if !primary.Authorized || !primary.Advertised || len(primary.Workers) != 1 {
 		t.Fatalf("t3-primary = %+v", primary)
+	}
+}
+
+// modelsAdvertisedDropFixture is the live shape of opencode: the release
+// authorizes the instance, the coordinator binds it to no pool and drops it,
+// and the worker has it installed and is signed in to it. Its row then carries
+// Advertised and a reason at the same time.
+func modelsAdvertisedDropFixture() *modelsFixtureService {
+	fixture := modelsReasonFixture()
+	inventory := &fixture.workers[0].Snapshot.Inventory
+	inventory.Providers = append(inventory.Providers, domain.WorkerProviderInventory{
+		InstanceID: "opencode", QuotaPoolID: "opencode-free", Available: true,
+		Models: []string{"glm-4.6"},
+	})
+	return fixture
+}
+
+// A worker can advertise a route the fleet does not let it run, so the second
+// table is headed for what its rows mean and not for advertisement. Headed
+// "not advertised by", it contradicted the table above it, which counts the
+// same worker as one offering the route.
+func TestModelsNamesARouteTheWorkerAdvertisesAndCannotRun(t *testing.T) {
+	fixture := modelsAdvertisedDropFixture()
+	var encoded bytes.Buffer
+	cli := modelsCLI{service: fixture, principal: backlogadmin.Principal{ID: "test"}, stdout: &encoded}
+	if err := cli.run(context.Background(), "", true); err != nil {
+		t.Fatal(err)
+	}
+	var document modelsDocument
+	if err := json.Unmarshal(encoded.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	opencode := modelsInstanceByName(t, document, "opencode")
+	if len(opencode.Workers) != 1 {
+		t.Fatalf("opencode workers = %+v, want the one worker", opencode.Workers)
+	}
+	if row := opencode.Workers[0]; !row.Advertised || row.Reason != config.DroppedProviderMissingBinding {
+		t.Fatalf("opencode on %s = %+v, want advertised with a missing binding", row.Worker, row)
+	}
+
+	var rendered bytes.Buffer
+	cli.stdout = &rendered
+	if err := cli.run(context.Background(), "", false); err != nil {
+		t.Fatal(err)
+	}
+	text := rendered.String()
+	if strings.Contains(text, "not advertised by") {
+		t.Errorf("the heading still says the listed workers do not advertise the route:\n%s", text)
+	}
+	if !strings.Contains(text, "routes that cannot run:") {
+		t.Errorf("the second table has no heading for what its rows mean:\n%s", text)
+	}
+	found := false
+	for _, line := range strings.Split(text, "\n") {
+		found = found || (strings.Contains(line, "opencode") &&
+			strings.Contains(line, "omarchy-pc") && strings.Contains(line, "missing binding"))
+	}
+	if !found {
+		t.Errorf("no line names the advertised route the coordinator dropped:\n%s", text)
+	}
+	// The help describes the same rows, so it describes the same shape.
+	if !strings.Contains(modelsUsage, "whose route cannot run") {
+		t.Error("models --help still describes the second table as workers not offering the route")
 	}
 }
 

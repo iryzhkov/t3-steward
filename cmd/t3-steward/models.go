@@ -36,8 +36,11 @@ that project; "t3-steward backlog projects" lists the projects.
 An instance that is authorized and advertised by nobody, or advertised with no
 quota binding, is listed with that as its status rather than omitted: a route
 that cannot run is the thing the caller most needs to see. Under the table,
-one line per instance and worker that is authorized and not offering it now,
-with the reason:
+one line per instance and worker whose route cannot run, with the reason. A
+worker that has the instance installed and is signed in to it is listed there
+too when the coordinator dropped that instance from the worker's catalog: the
+host offers the route and the fleet authorizes no pool to charge it to, so it
+still cannot run.
 
   missing binding   the coordinator dropped it at load: no quota pool of that
                     worker is authorized for the instance
@@ -104,8 +107,10 @@ type modelsWorker struct {
 	Authorized bool `json:"authorized"`
 	// Advertised reports that this worker's inventory offers it now.
 	Advertised bool `json:"advertised"`
-	// Reason is why this worker does not offer this route:
-	// "missing binding", "no models", "not installed" or "unavailable".
+	// Reason is why this instance and worker pair cannot run a route:
+	// "missing binding", "no models", "not installed" or "unavailable". It is
+	// set even when Advertised is true, because an instance the coordinator
+	// dropped cannot be routed to whatever the host offers.
 	Reason string   `json:"reason,omitempty"`
 	Models []string `json:"models,omitempty"`
 }
@@ -341,11 +346,12 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 	return document
 }
 
-// workerRouteReason says why one worker does not offer one authorized route,
-// and is empty when it does. The catalog's own reasons come first: an
-// instance the coordinator dropped, or authorized for no model, cannot be
-// routed to whatever the worker has installed, and reporting the host-side
-// fact instead would send an operator to the wrong machine.
+// workerRouteReason says why one authorized instance and worker pair cannot
+// run a route, and is empty when it can. The catalog's own reasons come first,
+// and they hold however available the instance is on the host: an instance the
+// coordinator dropped, or authorized for no model, cannot be routed to
+// whatever the worker has installed, and reporting the host-side fact instead
+// would send an operator to the wrong machine.
 func workerRouteReason(authorized backlogadmin.WorkerProviderAuthorization, installed map[string]domain.WorkerProviderInventory) string {
 	switch provider, exists := installed[authorized.Instance]; {
 	case authorized.Dropped != "":
@@ -435,10 +441,13 @@ func renderModels(out io.Writer, document modelsDocument) error {
 	return renderModelsReasons(out, document)
 }
 
-// renderModelsReasons lists every authorized instance and worker that is not
-// offering it now, with the reason. It is a second table rather than a column
-// of the first because the reason belongs to the pair, not to the route: one
-// instance can be missing on one worker and signed out on another.
+// renderModelsReasons lists every instance and worker pair whose route cannot
+// run, with the reason. A pair is listed even when the worker advertises the
+// instance: the coordinator drops an instance it cannot bind to a quota pool,
+// and no amount of advertising makes that route runnable. It is a second table
+// rather than a column of the first because the reason belongs to the pair,
+// not to the route: one instance can be missing on one worker and signed out
+// on another.
 func renderModelsReasons(out io.Writer, document modelsDocument) error {
 	type pair struct{ instance, worker, reason string }
 	var pairs []pair
@@ -453,7 +462,7 @@ func renderModelsReasons(out io.Writer, document modelsDocument) error {
 	if len(pairs) == 0 {
 		return nil
 	}
-	fmt.Fprintln(out, "\nnot advertised by:")
+	fmt.Fprintln(out, "\nroutes that cannot run:")
 	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(table, "INSTANCE\tWORKER\tREASON\tWHAT IT MEANS")
 	for _, item := range pairs {
