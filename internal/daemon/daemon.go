@@ -190,27 +190,27 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 }
 
-// engineFor returns the policy engine for a bucket, applying the first
-// matching override.
-func (d *Daemon) engineFor(key domain.BucketKey, limitName string, duration time.Duration) *policy.Engine {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+// ThresholdsFor returns the thresholds the configuration applies to a
+// bucket: the policy section with the first matching override on top. The
+// daemon builds its engines from it, and bucket rearm reads stop_percent
+// from it, so both see the same ladder.
+func ThresholdsFor(cfg config.Config, key domain.BucketKey, limitName string, duration time.Duration) policy.Thresholds {
 	t := policy.Thresholds{
-		WarnPercent:       d.cfg.Policy.WarnPercent,
-		DrainPercent:      d.cfg.Policy.DrainPercent,
-		StopPercent:       d.cfg.Policy.StopPercent,
-		RearmPercent:      d.cfg.Policy.RearmPercent,
-		GracePeriod:       d.cfg.Policy.GracePeriod.D(),
-		RearmObservations: d.cfg.Policy.RearmObservations,
+		WarnPercent:       cfg.Policy.WarnPercent,
+		DrainPercent:      cfg.Policy.DrainPercent,
+		StopPercent:       cfg.Policy.StopPercent,
+		RearmPercent:      cfg.Policy.RearmPercent,
+		GracePeriod:       cfg.Policy.GracePeriod.D(),
+		RearmObservations: cfg.Policy.RearmObservations,
 		ResetTolerance:    5 * time.Minute,
-		RateWindow:        d.cfg.Policy.RateWindow.D(),
-		WarnETA:           d.cfg.Policy.WarnETA.D(),
-		DrainETA:          d.cfg.Policy.DrainETA.D(),
-		StopETA:           d.cfg.Policy.StopETA.D(),
-		ResetExemption:    d.cfg.Policy.ResetExemption.D(),
-		RunwayMargin:      d.cfg.Policy.RunwayMargin,
+		RateWindow:        cfg.Policy.RateWindow.D(),
+		WarnETA:           cfg.Policy.WarnETA.D(),
+		DrainETA:          cfg.Policy.DrainETA.D(),
+		StopETA:           cfg.Policy.StopETA.D(),
+		ResetExemption:    cfg.Policy.ResetExemption.D(),
+		RunwayMargin:      cfg.Policy.RunwayMargin,
 	}
-	for _, o := range d.cfg.Overrides {
+	for _, o := range cfg.Overrides {
 		if !overrideMatches(o, key, limitName, duration) {
 			continue
 		}
@@ -228,6 +228,15 @@ func (d *Daemon) engineFor(key domain.BucketKey, limitName string, duration time
 		}
 		break
 	}
+	return t
+}
+
+// engineFor returns the policy engine for a bucket, applying the first
+// matching override.
+func (d *Daemon) engineFor(key domain.BucketKey, limitName string, duration time.Duration) *policy.Engine {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	t := ThresholdsFor(d.cfg, key, limitName, duration)
 	if e, ok := d.engines[key]; ok && e.Thresholds() == t {
 		return e
 	}

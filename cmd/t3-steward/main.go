@@ -61,6 +61,7 @@ Commands:
   wait               Park a thread until a check succeeds; the steward wakes it (add, list, cancel).
   task               Inside a task workspace: print this attempt's identity (env [--get NAME]).
   thread             Operate on a local T3 thread (stop <thread-id> [--session]).
+  bucket             Inspect and rearm this host's quota buckets (list, rearm <key> --reason TEXT).
   archive            Cold storage for finished threads (candidates, run, list, restore).
   export             Print this host's readings and token samples as JSON for another host's report.
   install-service    Install a per-user background service (Linux systemd).
@@ -125,7 +126,7 @@ func dispatch(args []string) error {
 	case "task":
 		// Reads only the workspace identity record; no configuration is needed.
 		return cmdTask(rest)
-	case "wait", "thread":
+	case "wait", "thread", "bucket":
 		paths, err := config.DefaultPaths()
 		if err != nil {
 			return err
@@ -140,8 +141,11 @@ func dispatch(args []string) error {
 			}
 			sub = append(sub, rest[i])
 		}
-		if cmd == "thread" {
+		switch cmd {
+		case "thread":
 			return cmdThread(g, sub)
+		case "bucket":
+			return cmdBucket(g, sub)
 		}
 		return cmdWait(g, sub)
 	case "archive", "ui-archive":
