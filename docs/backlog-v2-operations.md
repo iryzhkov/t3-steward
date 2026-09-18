@@ -869,6 +869,15 @@ wait as `cancelled` in the same command application; the worker cancels its
 check row on its next reconcile (it lists the coordinator's waits at most
 once a minute while it holds a live bound row).
 
+Version skew: deploy the coordinator before the hosts that register waits.
+A plain shell `--task current` wait from a newer host keeps working against
+an older coordinator, because its registration carries no new field. A
+`time`, `github`, `node` or `quota` wait, and `--or-timeout` on any kind,
+is refused by an older coordinator with `invalid operation envelope: json:
+unknown field ...`; nothing is parked on a wait the coordinator cannot
+settle. An older worker against this coordinator keeps working; the wakes
+it composes carry no trailer and it does not reconcile cancelled waits.
+
 ### Administering the coordinator from another host
 
 A host that is not the coordinator reaches it through the restricted

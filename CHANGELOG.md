@@ -28,6 +28,11 @@ All notable changes to this project are documented here. The format follows
   where a coordinator kind is a task wait with a structured condition. The
   campaign notification and task wakes carry the same first line;
   `wait list --json` and the task wake context carry `kind` and `outcome`.
+  Against a coordinator from an earlier release a plain shell `--task
+  current` wait keeps working (its registration carries no new field);
+  `time`, `github`, `node`, `quota` and `--or-timeout` are refused by that
+  coordinator with an `unknown field` error until it is upgraded, so deploy
+  the coordinator first.
 - `--or-timeout` makes the deadline a normal outcome for every kind: the
   wake says `outcome=timed-out or-timeout=true`, the result reads as exit 0,
   and the coordinator's expiry records no contradiction.

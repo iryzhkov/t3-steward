@@ -153,6 +153,26 @@ func taskWaitRequestID(explicit string, identity taskIdentity, warnings io.Write
 	return explicit
 }
 
+// localTaskWaitRegistration is the coordinator registration of a task-bound
+// wait of a local kind. The kind is sent only when it is not shell: the
+// coordinator decodes the request strictly and treats an absent kind as
+// shell, so a plain shell registration stays byte-compatible with a
+// coordinator that predates kinds, while time, github and --or-timeout carry
+// the fields such a coordinator cannot settle and are refused by it with an
+// unknown-field error rather than parked on a wait it does not understand.
+func localTaskWaitRegistration(spec localWaitSpec, identity taskIdentity) domain.TaskWaitRegistration {
+	kind := spec.Kind
+	if kind == domain.WaitKindShell {
+		kind = ""
+	}
+	return domain.TaskWaitRegistration{
+		RequestID: spec.RequestID, WorkflowRunID: identity.WorkflowRunID, TaskID: identity.TaskID,
+		AttemptID: identity.AttemptID, IssuedRevision: identity.AttemptRevision,
+		ThreadID: identity.ThreadID, Wake: domain.WakeMode(spec.WakeMode), MaxDuration: spec.Timeout,
+		Name: spec.Name, Condition: spec.Condition, Kind: kind, OrTimeout: spec.OrTimeout,
+	}
+}
+
 func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error {
 	if coordinatorWaitArgs(args) {
 		return cmdTaskCoordinatorWaitAdd(ctx, cfg, args)
@@ -198,15 +218,8 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 	// a failure here must leave no local poll behind that nothing is waiting on.
 	// The reverse order would let the attempt keep running while a check quietly
 	// polled for it.
-	response, err := client.NodeWait(ctx, backlogadmin.NodeWaitOperation{
-		Action: "register-task",
-		Task: &domain.TaskWaitRegistration{
-			RequestID: spec.RequestID, WorkflowRunID: identity.WorkflowRunID, TaskID: identity.TaskID,
-			AttemptID: identity.AttemptID, IssuedRevision: identity.AttemptRevision,
-			ThreadID: identity.ThreadID, Wake: domain.WakeMode(spec.WakeMode), MaxDuration: spec.Timeout,
-			Name: spec.Name, Condition: spec.Condition, Kind: spec.Kind, OrTimeout: spec.OrTimeout,
-		},
-	})
+	registration := localTaskWaitRegistration(spec, identity)
+	response, err := client.NodeWait(ctx, backlogadmin.NodeWaitOperation{Action: "register-task", Task: &registration})
 	if err != nil {
 		return err
 	}
