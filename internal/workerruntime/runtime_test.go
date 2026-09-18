@@ -564,7 +564,7 @@ func TestObservationKeepsPreDispatchPhasesPreparing(t *testing.T) {
 			got := observation(AttemptRecord{
 				Assignment: domain.Assignment{ID: "assignment-1", Epoch: 1},
 				Phase:      phase,
-			}, runtimeTestNow)
+			}, runtimeTestNow, false)
 			if got.State != domain.AssignmentClaimed || got.Control != domain.ControlPreparing {
 				t.Fatalf("observation = %#v", got)
 			}

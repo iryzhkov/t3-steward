@@ -60,7 +60,7 @@ func TestTaskTimeoutWaitsForContainmentAndSurvivesRestart(t *testing.T) {
 	if state.Attempts[id].Phase != PhaseFailed {
 		t.Fatal("contained timeout was not failed")
 	}
-	observed := observation(state.Attempts[id], now)
+	observed := observation(state.Attempts[id], now, false)
 	if observed.Journal == nil || observed.Journal.Phase != "failed" || observed.Journal.PackageSHA256 != manifest.SHA256 {
 		t.Fatalf("journal excerpt=%+v", observed.Journal)
 	}

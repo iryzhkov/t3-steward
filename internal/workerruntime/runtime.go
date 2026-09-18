@@ -184,7 +184,7 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 		assignments := make([]domain.WorkerAssignmentObservation, 0, len(state.Attempts))
 		for _, id := range sortedAttemptIDs(state.Attempts) {
 			record := state.Attempts[id]
-			assignments = append(assignments, observation(record, now))
+			assignments = append(assignments, observation(record, now, r.reportQuota))
 		}
 		inventory := r.config.Inventory
 		inventory.Capabilities = advertisedCapabilities(inventory.Capabilities)
@@ -950,6 +950,13 @@ func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record At
 	if record.Phase == PhaseFailed {
 		return r.collect(ctx, id)
 	}
+	if record.LocalThrottle != nil {
+		// A local quota pause is in force: the turn ended because this worker
+		// stopped it, and it resumes when the bucket recovers. Refused here,
+		// before the park probe, so the answer names the pause rather than a
+		// stale parked-assignment report.
+		return errors.New("collection deferred: attempt is paused by the quota watchdog")
+	}
 	// Stopped/stopped observations cannot distinguish a task that parked and
 	// resumed entirely between polls. Bind this decision to the provider turn.
 	if observer, ok := r.driver.(interface {
@@ -1310,7 +1317,13 @@ func claim(assignment domain.Assignment, config Config, now time.Time) domain.As
 	}
 }
 
-func observation(record AttemptRecord, now time.Time) domain.WorkerAssignmentObservation {
+// observation is the worker's report on one attempt. The pause reason and the
+// thread state in the journal excerpt are the quota-observations-v1 fields:
+// the coordinator decodes snapshots strictly, so they are included only when
+// the coordinator asked for the capability on this exchange (detailed), the
+// same gate QuotaObservations has. An older coordinator never asks and never
+// meets them.
+func observation(record AttemptRecord, now time.Time, detailed bool) domain.WorkerAssignmentObservation {
 	state := record.Assignment.State
 	control := domain.ControlState("")
 	switch record.Phase {
@@ -1352,15 +1365,18 @@ func observation(record AttemptRecord, now time.Time) domain.WorkerAssignmentObs
 	if len(failure) > 2048 {
 		failure = failure[:2048]
 	}
-	pauseReason := ""
-	if record.LocalThrottle != nil {
-		pauseReason = record.LocalThrottle.Reason
+	journal := &domain.WorkerJournalExcerpt{
+		Phase: string(record.Phase), Failure: failure,
+		PackageSHA256: record.Package.SHA256, GraphRevision: record.Package.Package.GraphRevision, TaskRevision: record.Package.Package.TaskRevision, UpdatedAt: record.UpdatedAt,
+	}
+	if detailed {
+		journal.ThreadState = record.ObservedThreadState
+		if record.LocalThrottle != nil {
+			journal.PauseReason = record.LocalThrottle.Reason
+		}
 	}
 	return domain.WorkerAssignmentObservation{
-		Journal: &domain.WorkerJournalExcerpt{
-			Phase: string(record.Phase), Failure: failure, PauseReason: pauseReason, ThreadState: record.ObservedThreadState,
-			PackageSHA256: record.Package.SHA256, GraphRevision: record.Package.Package.GraphRevision, TaskRevision: record.Package.Package.TaskRevision, UpdatedAt: record.UpdatedAt,
-		},
+		Journal:      journal,
 		AssignmentID: record.Assignment.ID, AssignmentEpoch: record.Assignment.Epoch,
 		State: state, Control: control, ThreadID: record.ThreadID,
 		WorkspacePath: record.WorkspacePath, ObservedAt: now,

@@ -23,9 +23,12 @@ All notable changes to this project are documented here. The format follows
   coordinator's quota admission merges them with its own by bucket key, keeping
   the freshest, so a pool closes at its stop threshold before dispatch even
   when the coordinator's own host has no fresh reading.
-- `backlog task show` output carries the worker's last report on the attempt:
-  thread id, worker, observed control and session state, and the quota pause
-  reason.
+- `backlog task show --json` carries the worker's last report on the attempt
+  as `evidence`: thread id, worker, observed control and session state, and
+  the quota pause reason. The text renderers of `backlog task show`,
+  `campaign show` and `diagnose` do not print it yet. Session state and pause
+  reason come from a worker that advertises `quota-observations-v1` and was
+  asked for it on the exchange; an older worker reports neither (S-17).
 
 ### Fixed
 

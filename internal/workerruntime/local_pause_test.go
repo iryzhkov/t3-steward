@@ -72,6 +72,11 @@ func TestLocalQuotaStopReportsPausedAndDefersCollection(t *testing.T) {
 		observations: []backlog.DispatchThreadState{backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadActive}}
 	guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
 	runtime := runningRuntime(t, driver, guard, &now)
+	// The coordinator asks for quota observations, which is what carries the
+	// pause reason and thread state in the journal excerpt.
+	if err := runtime.ApplyParkedAssignments(workerproto.SnapshotRequest{ParkedReported: true, QuotaObservationsWanted: true}); err != nil {
+		t.Fatal(err)
+	}
 	if err := runtime.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}

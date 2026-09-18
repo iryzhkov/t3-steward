@@ -153,10 +153,13 @@ const CapabilityTaskWaitCollectionFence = "task-wait-collection-fence-v1"
 const CapabilityCampaignSupervision = "campaign-supervision-v1"
 
 // CapabilityQuotaObservations advertises that this worker build reports its
-// host watchdog's bucket observations on the snapshot exchange when asked.
-// The coordinator asks only a worker that advertises it, and a worker reports
-// only when asked, so neither an older coordinator nor an older worker ever
-// meets the field; that is why the wire version is unchanged.
+// host watchdog's bucket observations on the snapshot exchange when asked,
+// and with them the pause reason and thread state in each assignment's
+// journal excerpt. The coordinator asks only a worker that advertises it, and
+// a worker includes those fields only when asked, so neither an older
+// coordinator nor an older worker ever meets them; that is why the wire
+// version is unchanged. Both sides decode strictly, so every field added to
+// the snapshot must be gated this way.
 const CapabilityQuotaObservations = "quota-observations-v1"
 
 type SnapshotRequest struct {

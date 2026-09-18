@@ -27,10 +27,11 @@ type WorkerJournalExcerpt struct {
 	Failure string `json:"failure,omitempty"`
 	// PauseReason names the bucket that paused the attempt on the worker
 	// host, for example "claudeAgent/claude/seven_day at 97%", while a local
-	// quota pause is in force.
+	// quota pause is in force. Like QuotaObservations it is sent only when the
+	// coordinator asked for quota observations on the exchange.
 	PauseReason string `json:"pauseReason,omitempty"`
 	// ThreadState is the worker's last observation of the T3 thread: active,
-	// stopped or missing.
+	// stopped or missing. Gated like PauseReason.
 	ThreadState   string    `json:"threadState,omitempty"`
 	PackageSHA256 string    `json:"packageSha256"`
 	GraphRevision int64     `json:"graphRevision"`

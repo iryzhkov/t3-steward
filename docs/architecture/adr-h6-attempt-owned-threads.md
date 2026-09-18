@@ -73,7 +73,10 @@ Must:
    the coordinator's own by bucket key, keeping the freshest. A pool closes at its stop threshold
    whichever host observed it, and `snapshot-stale` clears while any worker has a fresh reading.
    The wire version is unchanged: an older worker is never asked and never sends, an older
-   coordinator never asks, so neither meets the field.
+   coordinator never asks, so neither meets the field. The pause reason and thread state in the
+   journal excerpt of each assignment observation are gated by the same ask: both sides decode
+   snapshots strictly, so any field added to the snapshot is sent only to a coordinator that
+   asked for `quota-observations-v1` on that exchange.
 5. `t3-steward thread stop <thread-id> [--session]` dispatches `thread.turn.interrupt` and, with
    `--session`, `thread.session.stop` through the local T3 control client and prints what it
    sent. `t3-steward backlog rewake <run>/<task> --reason TEXT` resumes an attempt that is
