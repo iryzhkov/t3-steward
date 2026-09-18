@@ -308,7 +308,7 @@ func parseBacklogAdminQueryWithoutSink(args []string) (backlogadmin.Query, bool,
 		return backlogadmin.Query{Kind: kinds[clean[0]], WorkflowRunID: clean[1]}, asJSON, nil
 	case "task":
 		if len(clean) != 3 || clean[1] != "show" {
-			return backlogadmin.Query{}, false, errors.New("task usage: backlog task show <workflow-run>/<task>")
+			return backlogadmin.Query{}, false, showOnlyUsage("task", "<workflow-run>/<task>", clean)
 		}
 		runID, taskID, err := splitTaskTarget(clean[2])
 		return backlogadmin.Query{Kind: backlogadmin.QueryTask, WorkflowRunID: runID, TaskID: taskID}, asJSON, err
@@ -334,7 +334,7 @@ func parseBacklogAdminQueryWithoutSink(args []string) (backlogadmin.Query, bool,
 		return query, asJSON, nil
 	case "artifact":
 		if len(clean) != 3 || clean[1] != "show" {
-			return backlogadmin.Query{}, false, errors.New("artifact usage: backlog artifact show <artifact>")
+			return backlogadmin.Query{}, false, showOnlyUsage("artifact", "<artifact>", clean)
 		}
 		return backlogadmin.Query{Kind: backlogadmin.QueryArtifact, ArtifactID: clean[2]}, asJSON, nil
 	case "quarantine":
@@ -353,12 +353,23 @@ func parseBacklogAdminQueryWithoutSink(args []string) (backlogadmin.Query, bool,
 		return query, asJSON, nil
 	case "command":
 		if len(clean) != 3 || clean[1] != "show" {
-			return backlogadmin.Query{}, false, errors.New("command usage: backlog command show <command>")
+			return backlogadmin.Query{}, false, showOnlyUsage("command", "<command>", clean)
 		}
 		return backlogadmin.Query{Kind: backlogadmin.QueryCommands, CommandID: clean[2]}, asJSON, nil
 	default:
 		return backlogadmin.Query{}, false, fmt.Errorf("unknown backlog admin command %q", clean[0])
 	}
+}
+
+// showOnlyUsage is the refusal of a verb that exists only in its show form.
+// When the caller wrote the identifier without the show word, which is the
+// natural mistake, the refusal spells out the command they meant.
+func showOnlyUsage(verb, placeholder string, clean []string) error {
+	usage := fmt.Sprintf("usage: backlog %s show %s", verb, placeholder)
+	if len(clean) == 2 && clean[1] != "show" {
+		return fmt.Errorf("%s; did you mean: backlog %s show %s?", usage, verb, clean[1])
+	}
+	return errors.New(usage)
 }
 
 func takeJSONFlag(args []string) ([]string, bool, error) {
@@ -393,7 +404,7 @@ func parseWorkflowFilters(args []string) (backlogadmin.Filter, error) {
 		case "--progress":
 			for _, item := range strings.Split(value, ",") {
 				if !validProgress(item) {
-					return filter, fmt.Errorf("invalid progress %q", item)
+					return filter, fmt.Errorf("invalid progress %q; valid values: %s", item, strings.Join(progressFilterValues(), ", "))
 				}
 				filter.Progress = append(filter.Progress, domain.ProgressState(item))
 			}
@@ -413,15 +424,29 @@ func parseWorkflowFilters(args []string) (backlogadmin.Filter, error) {
 	return filter, nil
 }
 
-func validProgress(value string) bool {
-	switch domain.ProgressState(value) {
-	case domain.ProgressQueued, domain.ProgressBlocked, domain.ProgressReady, domain.ProgressActive,
+// progressFilterValues lists the progress states --progress accepts, in the
+// order a task moves through them. The refusal of an unknown value prints
+// this list, so it is the one place the accepted set is spelled.
+func progressFilterValues() []string {
+	states := []domain.ProgressState{
+		domain.ProgressQueued, domain.ProgressBlocked, domain.ProgressReady, domain.ProgressActive,
 		domain.ProgressNeedsInput, domain.ProgressWaitingExternal, domain.ProgressVerifying,
-		domain.ProgressSucceeded, domain.ProgressFailed, domain.ProgressCancelled, domain.ProgressSkipped:
-		return true
-	default:
-		return false
+		domain.ProgressSucceeded, domain.ProgressFailed, domain.ProgressCancelled, domain.ProgressSkipped,
 	}
+	values := make([]string, 0, len(states))
+	for _, state := range states {
+		values = append(values, string(state))
+	}
+	return values
+}
+
+func validProgress(value string) bool {
+	for _, valid := range progressFilterValues() {
+		if value == valid {
+			return true
+		}
+	}
+	return false
 }
 
 func splitTaskTarget(target string) (string, string, error) {
@@ -572,6 +597,10 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 	fmt.Fprintf(out, "run: %s\nworkflow: %s (%s)\nproject: %s\nclass: %s\nprogress: %s\nrevision: %d\n",
 		summary.Run.ID, summary.Workflow.Name, summary.Workflow.ID, summary.Workflow.Project,
 		summary.Workflow.Class, summary.Run.Progress, summary.Run.Revision)
+	taskNames := make(map[string]string, len(detail.Tasks))
+	for _, task := range detail.Tasks {
+		taskNames[task.Task.ID] = task.Task.Name
+	}
 	fmt.Fprintln(out, "tasks:")
 	for _, task := range detail.Tasks {
 		if task.Sink != nil {
@@ -580,9 +609,57 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 		}
 		state, control, attempt := taskState(task)
 		fmt.Fprintf(out, "  %s (%s): %s %s attempt=%s\n", task.Task.Name, task.Task.ID, state, control, attempt)
+		// A parked task says what it is parked on. The wait is the reason the
+		// task is not moving, and its condition is what an operator can go and
+		// satisfy or cancel.
+		for _, wait := range detail.Waits {
+			if wait.TaskID != task.Task.ID {
+				continue
+			}
+			fmt.Fprintf(out, "    wait %s %q: %s (deadline %s)\n", wait.ID, wait.Name, wait.Condition, formatTime(wait.Deadline))
+		}
+	}
+	if len(detail.Gates) != 0 {
+		fmt.Fprintln(out, "gates:")
+		for _, gate := range detail.Gates {
+			fmt.Fprintf(out, "  %s (%s): %s", gate.Name, gate.ID, gate.State)
+			if gate.Final {
+				fmt.Fprint(out, "; protects run settlement")
+			} else if len(gate.ProtectedTaskIDs) != 0 {
+				fmt.Fprintf(out, "; protects %s", strings.Join(taskLabels(gate.ProtectedTaskIDs, taskNames), ", "))
+			}
+			// A pending gate names the observed tasks that have not produced
+			// evidence yet, with their progress, so "pending-evidence" says
+			// which task the reviewer is waiting for.
+			if len(gate.MissingEvidence) != 0 {
+				gaps := make([]string, 0, len(gate.MissingEvidence))
+				for _, gap := range gate.MissingEvidence {
+					label := gap.TaskName
+					if label == "" {
+						label = gap.TaskID
+					}
+					gaps = append(gaps, fmt.Sprintf("%s (%s)", label, gap.Progress))
+				}
+				fmt.Fprintf(out, "; missing evidence: %s", strings.Join(gaps, ", "))
+			}
+			fmt.Fprintln(out)
+		}
 	}
 	fmt.Fprintf(out, "artifacts: %d\nreservations: %d\nlocks: %d\n",
 		len(detail.Artifacts), len(detail.Reservations), len(detail.ResourceLocks))
+}
+
+// taskLabels renders task ids by name where the run knows the name.
+func taskLabels(ids []string, names map[string]string) []string {
+	labels := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if name := names[id]; name != "" {
+			labels = append(labels, name)
+			continue
+		}
+		labels = append(labels, id)
+	}
+	return labels
 }
 
 func renderGraph(out io.Writer, graph *backlogadmin.Graph) {

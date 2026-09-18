@@ -354,10 +354,28 @@ func (c coordinatorBoundaryCycle) TickWithWorkers(ctx context.Context) {
 	c.tick(ctx, true)
 }
 
+// logTickFailure reports one failed step of a boundary cycle. A step that
+// failed because the cycle's context was cancelled is the coordinator shutting
+// down, not an operational fault: every store call in flight returns "context
+// canceled" at once, and logging that burst at ERROR buried the errors an
+// operator does have to read. Those are reported at INFO as shutdown; every
+// other failure keeps its severity.
+func logTickFailure(ctx context.Context, logger *slog.Logger, msg string, err error, attrs ...any) {
+	// The cycle's own context is the authoritative signal. The error is also
+	// checked because a store call that observed the cancellation returns it
+	// wrapped, sometimes before ctx.Err() is visible to this goroutine; no tick
+	// path returns context.Canceled from a per-request context of its own.
+	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		logger.Info("shutting down: "+msg, append(attrs, "error", err)...)
+		return
+	}
+	logger.Error(msg, append(attrs, "error", err)...)
+}
+
 func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool) {
 	if c.projection != nil {
 		if _, err := backlog.ProjectWorkflowRuns(ctx, c.projection, time.Now().UTC()); err != nil {
-			c.logger.Error("workflow run projection failed", "error", err)
+			logTickFailure(ctx, c.logger, "workflow run projection failed", err)
 		}
 	}
 	// Supervision runs after the projection and before worker exchange: a gate
@@ -371,7 +389,7 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 		SettleNodeWaits(context.Context, time.Time) error
 	}); ok {
 		if err := store.SettleNodeWaits(ctx, time.Now().UTC()); err != nil {
-			c.logger.Error("node wait settlement failed", "error", err)
+			logTickFailure(ctx, c.logger, "node wait settlement failed", err)
 		}
 	}
 	// Task-bound wait expiry is driven from here, not only from the watchdog's
@@ -382,7 +400,7 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 		ExpireTaskWaits(context.Context, time.Time) ([]domain.TaskWait, error)
 	}); ok {
 		if expired, err := store.ExpireTaskWaits(ctx, time.Now().UTC()); err != nil {
-			c.logger.Error("task-bound wait expiry failed", "error", err)
+			logTickFailure(ctx, c.logger, "task-bound wait expiry failed", err)
 		} else if len(expired) != 0 {
 			c.logger.Warn("task-bound waits exceeded their maximum duration", "waits", len(expired))
 		}
@@ -394,7 +412,7 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 	if c.campaignRefs != nil {
 		report := c.campaignRefs.Tick(ctx)
 		for _, err := range report.Errors {
-			c.logger.Error("campaign commit release failed", "error", err)
+			logTickFailure(ctx, c.logger, "campaign commit release failed", err)
 		}
 		if len(report.Released) != 0 {
 			c.logger.Info("campaign commits released", "runs", len(report.Released))
@@ -404,12 +422,12 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 	quotaReport, err := c.quota.Tick(ctx)
 	if err != nil {
 		quotaHealthy = false
-		c.logger.Error("backlog-v2 quota reconciliation failed", "error", err)
+		logTickFailure(ctx, c.logger, "backlog-v2 quota reconciliation failed", err)
 	} else if len(quotaReport.Directives) != 0 {
 		c.logger.Info("backlog-v2 quota transitions reconciled", "directives", len(quotaReport.Directives))
 	}
 	if report, err := c.schedules.Tick(ctx); err != nil {
-		c.logger.Error("backlog-v2 schedule reconciliation failed", "error", err)
+		logTickFailure(ctx, c.logger, "backlog-v2 schedule reconciliation failed", err)
 	} else if len(report.Results) != 0 {
 		c.logger.Info("backlog-v2 schedule occurrences reconciled", "results", len(report.Results))
 	}
@@ -422,12 +440,12 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 	}
 	if quotaHealthy {
 		if report, err := c.planning.Tick(ctx, quotaReport); err != nil {
-			c.logger.Error("backlog-v2 assignment planning failed", "error", err)
+			logTickFailure(ctx, c.logger, "backlog-v2 assignment planning failed", err)
 		} else if len(report.Assignments) != 0 {
 			c.logger.Info("backlog-v2 assignment plans committed", "assignments", len(report.Assignments))
 		}
 		if report, err := c.admin.ExecutePendingCommands(ctx); err != nil {
-			c.logger.Error("backlog-v2 admin command execution failed", "error", err)
+			logTickFailure(ctx, c.logger, "backlog-v2 admin command execution failed", err)
 		} else if len(report.Decisions) != 0 {
 			c.logger.Info("backlog-v2 admin commands executed", "decisions", len(report.Decisions))
 		}
@@ -436,7 +454,7 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 	}
 	report := c.legacy.Tick(ctx)
 	for _, err := range report.Errors {
-		c.logger.Error("legacy backlog-v2 submission failed", "error", err)
+		logTickFailure(ctx, c.logger, "legacy backlog-v2 submission failed", err)
 	}
 	if len(report.Accepted) != 0 {
 		c.logger.Info("legacy backlog-v2 submissions reconciled", "accepted", len(report.Accepted))
@@ -445,7 +463,7 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 		workerReport := c.workers.Tick(ctx, quotaReport)
 		for _, result := range workerReport.Results {
 			if result.Err != nil {
-				c.logger.Error("backlog-v2 worker reconciliation failed", "worker", result.WorkerID, "error", result.Err)
+				logTickFailure(ctx, c.logger, "backlog-v2 worker reconciliation failed", result.Err, "worker", result.WorkerID)
 				continue
 			}
 			c.logger.Info("backlog-v2 worker reconciled", "worker", result.WorkerID,

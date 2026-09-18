@@ -20,6 +20,13 @@ import (
 // both documents and is the identity the coordinator ingests, so a golden
 // mismatch is either a real behaviour change or a change to the example, and
 // both are things a reader of this branch has to be told about.
+//
+// One change to the example has happened since: the prompts of the three-node
+// example were corrected to name the inputs mount as .t3/inputs/inputs/scope.md
+// (the declared path is kept in full under .t3/inputs/), which changes the
+// content digest and nothing else. The digest in both goldens was re-recorded
+// from this branch's own plan output for that reason; every other byte is the
+// origin/main recording.
 const (
 	unsupervisedPlanTextGolden = "testdata/origin-main-three-node-plan.txt"
 	unsupervisedPlanJSONGolden = "testdata/origin-main-three-node-plan.json"

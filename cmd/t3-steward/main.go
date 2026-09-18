@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/compat"
 	"github.com/iryzhkov/t3-steward/internal/config"
@@ -96,6 +97,9 @@ type globalFlags struct {
 }
 
 func run(args []string) error {
+	// A manifest refusal names the release that refused it, so the version
+	// the linker set is handed to the manifest parser before any command runs.
+	backlog.SetReleaseVersion(version)
 	if len(args) == 0 {
 		fmt.Print(usage)
 		return nil

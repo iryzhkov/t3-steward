@@ -58,7 +58,32 @@ All notable changes to this project are documented here. The format follows
   each candidate's `unchecked` list) and `explain` (in a new `details` list)
   carry the informational `project-binding-defaulted` detail without changing
   the outcome. Workers and providers keep failing closed.
-
+- A workflow manifest that declares a field this release does not know is
+  refused with the field, its line and the running release, and the advice
+  that a newer t3-steward release may be required, ahead of the decoder's own
+  text. An older binary reading a supervised manifest previously printed only
+  `field supervision not found in type backlog.Manifest`.
+- `campaign list --progress` refuses an unknown state with the list of valid
+  states, and `backlog command <id>`, `backlog task <target>` and
+  `backlog artifact <id>` say `usage: backlog command show <command>` and
+  suggest the show form with the identifier the caller gave.
+- A coordinator boundary tick that fails because the coordinator is shutting
+  down is logged at INFO as `shutting down: ...` rather than as a burst of
+  ERROR lines reading `context canceled`. Every other tick failure keeps its
+  severity.
+- `campaign show` and `backlog show` list, under a parked task, the live
+  task-bound waits parking it (id, name, condition, deadline), and for a
+  supervised run list each
+  gate with its state and, while it is pending, the observed tasks that have
+  not produced evidence yet. Both appear in the JSON document as `waits` and
+  `gates` on the workflow detail.
+- `campaign help dag-semantics` documents both mounts a task reads files from:
+  static inputs at `.t3/inputs/<declared path>` and dependency artifacts at
+  `.t3/dependencies/<producer task id>/<artifact>`, with the note that the
+  producer id is assigned at ingestion and must be listed rather than
+  hard-coded.
+- Tests now assert that `campaign check`, `validate` and `plan` with `--json`
+  and `diagnose --json` write exactly one JSON document to stdout.
 - An overseer activation now carries its supervisor identity in the activation
   workspace, as an owner-only `.t3-steward/supervisor.env` the worker writes
   before the thread starts, and the supervision commands discover it by walking

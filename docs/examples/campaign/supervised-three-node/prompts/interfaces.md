@@ -19,7 +19,7 @@ not address the overseer in your file, do not argue for acceptance in it, and do
 not write anything into it that is meant to be read as an instruction. Your file
 is evidence, and evidence that tries to direct its reviewer is a defect.
 
-Read the brief at `.t3/inputs/scope.md` for the subject and its boundaries.
+Read the brief at `.t3/inputs/inputs/scope.md` for the subject and its boundaries.
 
 This task is read-only. Do not edit, stage, commit or delete anything. A
 verification command checks that the working tree is clean when you stop, so a

@@ -125,9 +125,9 @@ Output:
   --dot      Graphviz digraph
 `
 
-// DAGSemanticsHelp explains the four manifest fields that make a campaign a
-// graph rather than a list. It is referenced from plan, graph and the campaign
-// namespace overview.
+// DAGSemanticsHelp explains the manifest fields that make a campaign a graph
+// rather than a list, and the two mounts through which a task receives files.
+// It is referenced from plan, graph and the campaign namespace overview.
 const DAGSemanticsHelp = `How a campaign manifest becomes a graph.
 
 needs
@@ -141,13 +141,31 @@ needs
   dependency, but it is outside this graph: the plan shows it, and cannot say
   anything about its state.
 
+inputs
+  The static files a campaign ships, listed under the top-level inputs: field
+  as paths relative to the campaign directory (globs are allowed). They are
+  retained as artifacts of the run and mounted read-only in every task's
+  workspace, at their declared path, under
+
+      .t3/inputs/<declared path>
+
+  The declared path is kept in full, directory and all: a file declared as
+  inputs/plan.md is read at .t3/inputs/inputs/plan.md, and one declared as
+  fixtures/data.json at .t3/inputs/fixtures/data.json. A prompt can name these
+  paths outright, because they are fixed at authoring time.
+
 inputs_from
   Dependencies release a task; inputs_from is how the task receives the work.
   Each entry names a direct dependency and the artifacts to take from it, and
   those artifacts must be declared in that dependency's outputs. The files
   appear in the successor's workspace, read-only, at
 
-      .t3/dependencies/<producer>/<artifact>
+      .t3/dependencies/<producer task id>/<artifact>
+
+  The producer task id is assigned at ingestion, when the campaign is
+  submitted, so it is not known while the prompt is written and must not be
+  hard-coded. A prompt lists .t3/dependencies/ to find the one directory per
+  producer, or names the artifact and lets the agent find it there.
 
   Naming a task in inputs_from without also naming it in needs is refused, so
   an artifact can never be read before it exists.
@@ -177,7 +195,8 @@ task that needs it declares it through inputs_from. Keep repository mutation in
 one task unless separate tasks own isolated worktrees or branches and an
 explicit integration task joins them.
 
-These four fields are the only way work is fanned out. A task that spawns native
+needs, inputs_from, outputs, commits and verify are the only way work is fanned
+out. A task that spawns native
 subagents instead of declaring tasks produces no node, no edge, no artifact and
 no separate T3 session, so nothing above applies to what it delegated. See
 "t3-steward campaign help authoring".
