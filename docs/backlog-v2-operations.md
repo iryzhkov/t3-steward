@@ -487,13 +487,20 @@ could never resolve its credential is refused before it is written. A
 hand-written wrapper that exported the value from a file is retired by
 regenerating the unit with the file named instead, for example on a
 coordinator host whose wrapper read
-`~/.config/t3-steward/f02/protocol-credential.json`:
+`$HOME/.config/t3-steward/f02/protocol-credential.json`. Write the path with
+`$HOME`, not `~`: `install-service` does not expand a tilde, and neither does
+systemd or `sh` when the command runs over `ssh`. Before restarting, confirm
+that the `--config` path the wrapper passed to `t3-steward run` is the one
+`install-service` bakes into `ExecStart` (the default is
+`$XDG_CONFIG_HOME/t3-steward/config.yaml`), or pass the same `--config` to
+`install-service`; and confirm the credential file is a regular 0600 file and
+not a symlink, which `install-service` and the resolver both refuse.
 
 ```text
 cp ~/.config/systemd/user/t3-steward.service \
    ~/.config/systemd/user/t3-steward.service.rollback-<date>
 t3-steward install-service --force \
-   --credential-file F02_PROTOCOL=~/.config/t3-steward/f02/protocol-credential.json
+   --credential-file F02_PROTOCOL=$HOME/.config/t3-steward/f02/protocol-credential.json
 systemctl --user daemon-reload
 systemctl --user restart t3-steward.service
 t3-steward coordinator identity        # the coordinator answers under the new unit
