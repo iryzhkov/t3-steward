@@ -270,9 +270,13 @@ func (j *Journal) read() (journalState, error) {
 	if err != nil {
 		return journalState{}, fmt.Errorf("worker journal: read: %w", err)
 	}
+	// Unknown fields are tolerated within a journal version: a release adds
+	// record fields without bumping the version, and an older binary rolled
+	// back onto a newer journal must still open it rather than refuse every
+	// attempt. Such a binary drops what it does not know when it next
+	// writes; the version header stays the signal for an incompatible shape.
 	var state journalState
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&state); err != nil {
 		return journalState{}, fmt.Errorf("worker journal: decode: %w", err)
 	}

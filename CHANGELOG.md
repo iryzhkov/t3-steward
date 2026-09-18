@@ -104,6 +104,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The worker journal decoder tolerates fields it does not know within journal
+  version 1, so a worker binary rolled back onto a journal written by this
+  release opens it instead of refusing every attempt with
+  `worker journal: decode: ... unknown field`. Rollback note: this release adds
+  `localThrottle`, `lastLocalThrottle` and `observedThreadState` to attempt
+  records; an older binary drops them on its next write, so a locally paused
+  attempt is then seen as an ordinary stopped one and collected, which fails
+  its session as before this release. Drain or finish paused attempts before
+  rolling the worker back.
 - The coordinator schema is version 18. The migration adds the nine campaign
   supervision tables and rewrites nothing: an existing run gets no supervision
   record, because the absence of one is the unsupervised case. Migration is

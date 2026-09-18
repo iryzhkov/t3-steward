@@ -993,6 +993,14 @@ Never use deletion of the state database as backlog-v2 rollback; it discards
 assignment identity, schedule singleton state, reservations, audit events, and
 resume intent needed to prevent duplicate execution.
 
+The worker journal (`journal.json` under the worker state root) is versioned by
+its `version` header, and within a version a binary ignores record fields it
+does not know, so a rolled-back worker binary opens a journal a newer one
+wrote. It drops the unknown fields on its next write: a local quota pause
+(`localThrottle`) recorded by this release is then lost, and the older binary
+collects the stopped thread as finished. Let paused attempts resume or drain,
+or cancel them, before rolling a worker back.
+
 ### Rolling back the campaign supervision migration (schema 18)
 
 The coordinator schema is forward-only. There is no reverse migration from 18 to
