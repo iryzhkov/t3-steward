@@ -8,6 +8,25 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `t3-steward bucket list [--json]` prints every quota bucket in the host's
+  state database with its phase, used percent, observation, reset, recovery,
+  stop and probe times, the thresholds it was derived under and its last rearm
+  with the reason. `t3-steward bucket rearm <key> --reason TEXT [--force]
+  [--json]` sets the phase to `normal` with the recovery time now, clears the
+  stop and drain bookkeeping, records a `rearm` action carrying `user@host`,
+  the reason and the phase before and after, and prints both states. An
+  unknown key is refused with the known keys listed; a stored percentage at or
+  above `stop_percent` is refused without `--force`. The worker treats the
+  rearm as a confirmed recovery: a paused owned attempt resumes after
+  `resume.reset_settle_delay` without a reading (F-1).
+- The worker probes a stopped bucket once per epoch: when the bucket is
+  `stopped` below the current `stop_percent`, its stored reading is older than
+  `resume.probe_after_reset`, and no running thread on the host matches it,
+  one paused owned attempt is resumed to obtain the reading nothing else would
+  produce. The probe is recorded on the bucket (`probedAt`) and as a `resume`
+  action; the probing thread is not paused again while its reading is
+  outstanding, and the reading rearms or re-stops the bucket. A worker whose
+  thread list is unknown never probes.
 - `t3-steward worker enroll <worker> --current-catalog` reads the catalog
   digest the coordinator requires and the worker's current enrollment revision
   from the coordinator's own workers view and submits the enrollment with them,
@@ -46,6 +65,28 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A stored bucket phase now follows the loaded thresholds at start (F-1). The
+  engine records the ladder it evaluated under on the bucket state, and the
+  watchdog re-derives every stored phase of a current epoch from the stored
+  percentage when it starts: a phase the loaded `warn_percent`,
+  `drain_percent` and `stop_percent` would not produce is lowered, with
+  `StoppedAt` and the drain deadline cleared and the recovery time set when
+  the result is `normal`, and one `rearm` action names the stored phase, the
+  new phase and both threshold sets. A phase is never raised at load. Before,
+  a bucket stopped at 44 % under tightened thresholds stayed stopped after the
+  thresholds were restored and the daemon restarted, because only a reading
+  ever set the recovery time and a host whose threads were all paused attempts
+  produced none (homelab, 2026-09-17 19:06).
+- The interactive override covers every stop and drain path (S-18 remainder).
+  A thread whose latest user message is newer than the bucket's stop, beyond
+  the ten-second tolerance that covers the watchdog's own messages, is
+  recorded in the bucket's thread notices as `user-resumed` with that time,
+  and for the rest of the epoch it is stopped by no path (the stopped-phase
+  poll, a reading that raises the phase, the drain grace timer,
+  `stop_new_sessions`), never drained, warned at most once, and given no
+  resume intent. rc.68 exempted it only in the stopped-phase poll and the
+  resume intent (omarchy-pc, 2026-09-17 10:11 to 10:13). A rearm clears the
+  record with the epoch; owned threads are excluded before the rule.
 - A `SIGHUP` reload that brings in a fleet projection whose new project has no
   local binding is accepted as a catalog change. The list of defaulted projects
   the load records had leaked into the lifecycle comparison, so the first such

@@ -115,6 +115,28 @@ Must:
    turn whose latest user message is newer than the bucket's stop is not held while the bucket
    is stopped. The drain notice says how long the session has at the current rate and that the
    provider ends it at 100 %.
+9. (F-1, S-18 remainder; agent-experience campaign stage 2) A bucket's phase for one window epoch
+   has exactly three writers, each leaving an action record: the engine from a reading or a grace
+   timer (the only one that raises a phase); load-time re-derivation, which at daemon start lowers
+   a stored phase of a current epoch that the loaded thresholds would not produce from the stored
+   percentage, clearing `StoppedAt` and the drain deadline, setting `RecoveredAt` when the result
+   is normal, and recording a rearm that names both threshold sets (the engine stores the ladder it
+   evaluated under as `AppliedThresholds`); and `t3-steward bucket rearm <key> --reason TEXT
+   [--force]`, which sets normal with `RecoveredAt` now and records the actor, the reason and the
+   phase before and after, refusing a stored percentage at or above `stop_percent` without
+   `--force`. No phase changes without its record; a save failure keeps the stored phase and logs
+   at ERROR. The worker's resume rule needs no change: a rearm is a recovery newer than the pause.
+   The worker's probe rule resumes one paused attempt per bucket epoch when the bucket is stopped
+   below the current `stop_percent`, the stored reading is older than `resume.probe_after_reset`,
+   the host's thread list is known and no running thread on it matches the bucket; `ProbedAt` on
+   the bucket and a resume action record it, the probing thread is not paused again while its
+   reading is outstanding, and the reading rearms or re-stops the bucket. The interactive override
+   is a sub-rule of the same owner: a thread whose latest user message is newer than the bucket's
+   stop beyond the ten-second tolerance is recorded in the bucket's thread notices as
+   `user-resumed` with that time; for the rest of the epoch no path stops or drains it (poll,
+   execute on a reading, grace timer, `stop_new_sessions`), it is warned at most once, and it gets
+   no resume intent. The record is evidence, not a phase reset; a rearm clears it with the epoch.
+   Owned threads are excluded before the rule.
 
 May: reuse the throttle command kinds drain, hard-stop and resume for the local pause.
 
@@ -158,6 +180,15 @@ drain grace and the grace tests use a projection at the hard-stop floor); `TestU
 the unasked snapshot), `TestFinishedTurnIsCollectedNotPausedWhileBucketStopped`,
 `TestJournalThreadOwnershipExpiresWithTheLease`, `TestLocalQuotaStopPrefersDrainAndEscalatesAfterTheWindow`,
 `TestJournalToleratesUnknownFieldsWithinTheVersion` (workerruntime);
+stage 2 of the agent-experience campaign, each failing on `9c79972`: `TestLoadRederivesStoredPhaseUnderRelaxedThresholds`,
+`TestLoadKeepsAPhaseTheThresholdsStillProduce`, `TestLoadNeverRaisesAStoredPhase`, `TestUserResumedThreadIsNotStoppedByThePoll`,
+`TestUserResumedThreadIsNotStoppedByExecute`, `TestUserResumedThreadIsNotStoppedByTheGraceTimer`,
+`TestUserResumedThreadIsWarnedAtMostOnce`, `TestUserResumedExemptionEndsWithTheEpoch` (daemon);
+`TestBucketRearmRearmsAStoppedBucket`, `TestBucketRearmRefusesAtOrAboveStopPercentWithoutForce`,
+`TestBucketRearmUnknownKeyListsKnownKeys`, `TestBucketRearmJSONPrintsOneDocument`, `TestBucketListShowsEveryBucket` (cmd);
+`TestRearmResumesAPausedAttemptWithinOneReconcile`, `TestProbeResumesOnePausedAttemptPerBucketEpoch`,
+`TestProbeResumesThePausedAttemptThroughTheRuntime` (workerruntime), with `TestU3PausedAttemptLeaseIsRenewedAcrossOneLeaseDuration`
+and `TestOwnedThreadWithNewerUserMessageIsLeftToTheWorker` as guards that pass on the base;
 `TestOlderWorkerSnapshotReconcilesWithoutGatedFields` (backlog);
 `TestDrainNoticeNamesTimeToExhaustion` (daemon).
 

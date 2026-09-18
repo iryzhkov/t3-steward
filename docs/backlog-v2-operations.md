@@ -907,6 +907,84 @@ t3-steward thread stop <thread-id>            # thread.turn.interrupt
 t3-steward thread stop <thread-id> --session  # also thread.session.stop
 ```
 
+### Recovering a stopped bucket
+
+A bucket's phase (`normal`, `warned`, `draining`, `stopped`) for one window
+epoch lives in the host's state database and belongs to the host watchdog's
+policy engine. Readings only come from running turns, so on a host whose
+threads are all paused attempts nothing produces one, and before this release
+a stopped bucket stayed stopped until the reset however the policy changed.
+There are now exactly three writers of a phase, and each leaves an action
+record with its evidence, visible in `t3-steward status` and
+`t3-steward bucket list`:
+
+1. The engine, from a fresh provider reading or a drain grace timer, as
+   before. Only a reading raises a phase.
+2. Load-time re-derivation. When the watchdog starts it recomputes, for every
+   stored bucket whose window has not passed, the phase the loaded
+   `warn_percent`, `drain_percent` and `stop_percent` (with overrides) would
+   produce from the stored percentage. A stored phase above that is lowered,
+   with `StoppedAt` and the drain deadline cleared and the recovery time set
+   when the result is `normal`, and one `rearm` action is recorded naming the
+   stored phase, the new phase and both threshold sets, for example
+   `re-derived at load: codex/codex/primary at 44% is normal under thresholds
+   warn/drain/stop 85/90/95, not stopped as stored under 40/42/44`. A phase is
+   never raised at load, no reading is invented, and if the save fails the
+   stored phase is kept and an ERROR is logged. So the recovery for a policy
+   that was tightened and then restored is a restart of the watchdog.
+3. An operator rearm, for the cases the load rule does not cover, such as a
+   provider that extended the quota mid-window:
+
+   ```text
+   t3-steward bucket list [--json]
+   t3-steward bucket rearm <key> --reason TEXT [--force] [--json]
+   ```
+
+   `bucket list` prints every bucket with its phase, used percent, when it
+   was observed, when it resets, when it recovered, when it was stopped, when
+   it was last probed, the thresholds it was derived under and its last rearm
+   with the reason. `bucket rearm` sets the phase to `normal` with the
+   recovery time now, clears the stop and drain bookkeeping, keeps the stored
+   percentage, and records a `rearm` action carrying `user@host`, the reason
+   and the phase before and after; it prints the state before and after. The
+   key is what `bucket list` and `status` print, for example
+   `claudeAgent/claude/five_hour`; an unknown key is refused with the known
+   keys listed. A rearm is refused when the stored percentage is at or above
+   `stop_percent`, because the next reading would stop the bucket again at
+   once; `--force` overrides that. A store failure leaves the stored phase and
+   is reported.
+
+The worker's resume rule treats an operator rearm exactly as a confirmed
+recovery: the recovery time is newer than the pause, so a paused owned attempt
+resumes on the first reconcile after `resume.reset_settle_delay`, without a
+reading. Neither writer guarantees that the provider accepts new turns; the
+next reading rearms or re-stops the bucket honestly, and a re-stop is not a
+defect. A bucket with no reset time keeps the consecutive-low-readings rearm.
+
+The probe rule. When a bucket is `stopped` below the current `stop_percent`
+(a burn-rate stop, for instance), its stored reading is older than
+`resume.probe_after_reset`, the worker can list the host's threads and none
+that is running matches the bucket, the worker resumes one paused attempt per
+bucket epoch as a probe to obtain the reading nothing else would produce. The
+probe is recorded on the bucket (`probedAt` in `bucket list`) and as a
+`resume` action naming it; the phase does not change. While the probe's
+reading is outstanding the worker does not pause that thread again; the
+reading that arrives rearms or re-stops the bucket, and no second probe is
+made in the same epoch. A worker whose thread list is unknown never probes.
+
+The interactive override. A thread the user resumed or started by hand after a
+watchdog stop, that is, whose latest user message is newer than the bucket's
+stop by more than the ten-second tolerance that covers the watchdog's own
+messages, is recorded in the bucket's thread notices as `user-resumed` with
+that message time. For the rest of that window epoch the watchdog neither
+stops nor drains it by any path: not the stopped-phase poll, not a reading
+that raises the phase, not the drain grace timer, not `stop_new_sessions`. It
+receives the advisory warning at most once and gets no resume intent. The
+record is evidence, not a change of phase: a rearm clears the notices with
+the epoch, and a stop in the next window holds the thread again until the
+user acts. Threads a live steward attempt owns are excluded before this rule
+applies; they are the worker's.
+
 ### Parked attempt with no live wait
 
 An attempt stays `waiting-external` when its task-bound wait was cancelled
