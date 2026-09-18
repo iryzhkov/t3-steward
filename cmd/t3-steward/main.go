@@ -105,6 +105,13 @@ type globalFlags struct {
 	logLevel       string
 }
 
+// cmdRunWatchdog is the route the bare "run" command takes to the foreground
+// watchdog, which is what the packaged unit invokes as "t3-steward run
+// --config <path>". It is a variable rather than a direct call so that a test
+// can assert that routing without starting a watchdog, opening a state
+// database or executing the built binary.
+var cmdRunWatchdog = cmdRun
+
 // run dispatches one command line and, when it asked for --json and failed,
 // prints the error envelope on stdout before returning the error. Applying
 // the envelope here, once, is what makes "--json is on every verb" true: a
@@ -313,7 +320,7 @@ func dispatch(args []string) error {
 	case "check":
 		return cmdCheck(g)
 	case "run":
-		return cmdRun(g)
+		return cmdRunWatchdog(g)
 	case "status":
 		return cmdStatus(g, limit, asJSON, showAll)
 	case "replay":
