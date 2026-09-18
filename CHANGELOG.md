@@ -332,6 +332,74 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A node wake now reaches a caller that is not on the coordinator. A wake is
+  sent by the wait runner whose host matches the wait's, into that host's own
+  T3, and a thread exists only on the host that opened it -- but a registration
+  recorded the coordinator's hostname, so every `t3-steward task run`,
+  `campaign submit --notify-thread` and `wait add --node` from another host
+  registered a wait whose wake was sent into the coordinator's T3, where the
+  waiting thread does not exist, and the record stayed `delivery=pending`
+  forever. The client now states the calling host, the coordinator records it,
+  and the steward of that host reads and claims the coordinator's rows over the
+  admin transport and sends the wake locally, as it already does for task
+  wakes. **Restart the steward daemon on every host, not only replace the
+  binary**: the wake is delivered by the daemon and not by the command that
+  registered the wait. After the upgrade a `delivery=pending` row is a question
+  about the *named* host's steward rather than about the coordinator's, and a
+  wait whose host never claims it is claimed by nobody: the coordinator's own
+  runner now skips a wait addressed elsewhere.
+- A command that registers a node wait promises a wake only when this host's
+  steward daemon has recorded that it delivers them. The wait runner rewrites
+  `node-wake-delivery.json` beside the state database on every tick on which it
+  read this host's node waits and could send their wakes, naming the host, the
+  release and its own interval; `task run`, `campaign submit --notify-thread`
+  and `wait add --node` print `End this turn now` only when that receipt is
+  present, names this host and is younger than four of the daemon's ticks, and
+  otherwise say which of those is false and that the steward has to be
+  restarted. During an upgrade the daemon is the one thing that has not been
+  replaced, and comparing hostnames could not see it.
+- The calling host is stated only to a coordinator whose release is known to be
+  `v0.11.0-rc.71` or newer, because an older one decodes the registration with
+  unknown fields disallowed and would refuse it whole, failing a command that
+  had already submitted its run. A release this client cannot parse is treated
+  as an old one, so a coordinator built without the release ldflags -- it
+  reports `dev` -- keeps the previous behaviour and says so instead of
+  delivering cross-host wakes. Confirm `t3-steward backlog status` reports a
+  parseable release on the coordinator after upgrading it.
+- The node-wait list a wait runner reads from the coordinator is bounded to its
+  own host's undelivered waits and is no longer replay-protected. The
+  coordinator's node-wait table is append-only, so the unfiltered list was its
+  entire history; and because the carrier classified every `node-wait`
+  operation as a mutation, each list took the coordinator's exclusive
+  admin-replay lock and wrote its whole answer into a 32 MiB / 4096-row store,
+  shortening the 24-hour window for recovering a lost submission answer to
+  hours, and to minutes as the table grew. A coordinator that cannot apply the
+  narrowing refuses it, and the runner then asks for the whole list as before,
+  so delivery still works against `v0.11.0-rc.70`.
+- A refused node-wake delivery transition is reported. The claim that fences
+  one send now crosses the network on every host that is not the coordinator,
+  where a refusal means a rolled-back coordinator, an expired credential or a
+  transport fault; it was swallowed silently, leaving a wake that never arrives
+  and a record stuck at `delivery=pending`. A lost race stays silent, because
+  that is the fence working.
+- Every documented `backlog` verb reaches the dispatcher that implements it.
+  `backlog projects` and `backlog rewake` were documented, parsed and
+  implemented, but missing from the router's list, so both fell through to the
+  legacy dispatcher and were refused as `unknown backlog command`. The router
+  now derives the revision-fenced controls from the same predicate the parser
+  uses, and a test derives its table from the help text, so a documented verb
+  that reaches the wrong dispatcher fails the build.
+- An answer served from the coordinator's replay cache says that it is a
+  replay. The flag was set by the submission service, which a cached answer
+  never reaches, so a repeat over the remote carrier printed `replayed: false`
+  while replaying: `task run`, `campaign submit`, `schedules put`, a graph
+  amendment, a supervision decision and `backlog recover` were all affected.
+  The `[Unreleased]` promise above that a repeated `task run` prints
+  `replayed: true` is true on the remote path for the first time.
+- The JSON record of `task run` names the route's worker in both forms. The
+  field was omitted when the route was unpinned, so a reader that decoded the
+  document could not tell an unpinned route from a worker whose name it failed
+  to read; both forms now print `any` for an unpinned route.
 - A stored bucket phase now follows the loaded thresholds at start (F-1). The
   engine records the ladder it evaluated under on the bucket state, and the
   watchdog re-derives every stored phase of a current epoch from the stored
