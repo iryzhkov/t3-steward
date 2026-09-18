@@ -51,7 +51,11 @@ All notable changes to this project are documented here. The format follows
   ready, and the instance/model/pool routes it advertises.
 - `t3-steward campaign cancel <run> --reason TEXT` cancels every non-terminal
   task of a run with one command, one application and one revision fence per
-  attempt. The `<run>/<task>` form is unchanged.
+  attempt. The `<run>/<task>` form is unchanged and works against every
+  release. The run form needs a coordinator at this release or newer, because
+  an older one accepts the request and cannot apply it; the client reads the
+  release the coordinator reports for itself and refuses the run form against
+  one that cannot apply it, naming the per-task form.
 
 - Every wait has a kind, and every wake message begins with one parseable
   line, `t3-steward-wait kind=<kind> outcome=<outcome> wait=<id> ...`, with

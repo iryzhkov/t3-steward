@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
@@ -69,6 +71,9 @@ func (c campaignCLI) runCampaignCancelRun(ctx context.Context, args []string) er
 	if c.detail == nil || c.mutate == nil {
 		return errors.New("coordinator admin transport is unavailable")
 	}
+	if err := c.refuseRunCancelOnAnOlderCoordinator(ctx, runID); err != nil {
+		return err
+	}
 	detail, err := c.detail(ctx, runID)
 	if err != nil {
 		return err
@@ -130,6 +135,97 @@ func (c campaignCLI) runCampaignCancelRun(ctx context.Context, args []string) er
 	}
 	_, err = fmt.Fprintf(c.stdout, "next:\n  t3-steward campaign show %s\n", runID)
 	return err
+}
+
+// campaignRunCancelRelease is the first release whose coordinator can apply a
+// run-scoped cancel. An older one decodes the request, ignores the scope,
+// resolves the empty task to the run itself and then fails at application,
+// because its store applies attempt and schedule targets only. The operator
+// would get a queued command id and a silent failure some ticks later, so this
+// client refuses to send it.
+const campaignRunCancelRelease = "v0.11.0-rc.70"
+
+// refuseRunCancelOnAnOlderCoordinator refuses the run form against a
+// coordinator that cannot apply it, naming the per-task form instead. A
+// release that cannot be read or parsed is not refused -- that would break the
+// verb against every build whose release string this rule does not understand
+// -- but it is warned about, because a silent non-application is exactly what
+// this check exists to prevent.
+func (c campaignCLI) refuseRunCancelOnAnOlderCoordinator(ctx context.Context, runID string) error {
+	release := ""
+	if c.release != nil {
+		// A status query that fails is not this command's failure to report:
+		// the mutation below reports its own transport trouble in its own words.
+		release, _ = c.release(ctx)
+	}
+	newEnough, known := releaseAtLeast(release, campaignRunCancelRelease)
+	switch {
+	case known && !newEnough:
+		return fmt.Errorf("this coordinator runs %s and cannot apply a run-scoped cancel, which needs %s or newer; "+
+			"cancel the tasks one at a time:\n  t3-steward campaign cancel %s/<task> --reason TEXT",
+			release, campaignRunCancelRelease, runID)
+	case !known:
+		fmt.Fprintf(c.stderr, "warning: this coordinator reports no release this client can read (%q), "+
+			"so a run-scoped cancel may be accepted and never applied; "+
+			"t3-steward campaign cancel %s/<task> is the form every release applies\n", release, runID)
+	}
+	return nil
+}
+
+// releaseAtLeast compares two releases of this project's own form,
+// vMAJOR.MINOR.PATCH optionally followed by -rc.N, and reports whether the
+// first is at least the second. A release with no candidate suffix is newer
+// than every candidate of the same version. The second return value is false
+// when either string is not of that form, which is the difference between "an
+// older coordinator" and "a release this rule cannot read".
+func releaseAtLeast(release, minimum string) (bool, bool) {
+	left, leftOK := parseReleaseOrder(release)
+	right, rightOK := parseReleaseOrder(minimum)
+	if !leftOK || !rightOK {
+		return false, false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return left[i] > right[i], true
+		}
+	}
+	return true, true
+}
+
+// parseReleaseOrder turns a release into a comparable tuple: major, minor,
+// patch and the candidate number, where a final release sorts above every
+// candidate of the same version.
+func parseReleaseOrder(release string) ([4]int, bool) {
+	value := strings.TrimPrefix(strings.TrimSpace(release), "v")
+	if value == "" {
+		return [4]int{}, false
+	}
+	version, candidate, hasCandidate := strings.Cut(value, "-")
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		return [4]int{}, false
+	}
+	var order [4]int
+	for i, part := range parts {
+		number, err := strconv.Atoi(part)
+		if err != nil || number < 0 {
+			return [4]int{}, false
+		}
+		order[i] = number
+	}
+	order[3] = math.MaxInt
+	if hasCandidate {
+		digits, ok := strings.CutPrefix(candidate, "rc.")
+		if !ok {
+			return [4]int{}, false
+		}
+		number, err := strconv.Atoi(digits)
+		if err != nil || number < 0 {
+			return [4]int{}, false
+		}
+		order[3] = number
+	}
+	return order, true
 }
 
 // parseCampaignCancelRunArgs takes the flags of the run form. --reason is

@@ -162,6 +162,12 @@ type campaignCLI struct {
 	// one command rather than forwarding a command line.
 	detail func(context.Context, string) (backlogadmin.WorkflowDetail, error)
 	mutate func(context.Context, backlogadmin.Mutation) (backlogadmin.MutationResponse, error)
+	// release is the release the coordinator reports for itself, from the same
+	// identity every client already reads. The run form of cancel needs it
+	// because an older coordinator accepts that command and cannot apply it,
+	// which is a failure the operator would otherwise learn about only from the
+	// command never taking effect.
+	release func(context.Context) (string, error)
 	// notify registers the node wait --notify-thread asks for, and resolveThread
 	// turns "current" into a canonical T3 thread id. They are separate seams so
 	// that a test can prove the registration creates no workflow state.
@@ -239,6 +245,22 @@ func campaignCLIFor(cfg config.Config) campaignCLI {
 			}
 			mutation.Principal = transport.principal
 			return transport.client.Mutate(ctx, mutation)
+		},
+		release: func(ctx context.Context) (string, error) {
+			transport, err := newCoordinatorTransport(cfg)
+			if err != nil {
+				return "", err
+			}
+			response, err := transport.client.Query(ctx, backlogadmin.Query{
+				Version: backlogadmin.Version, Kind: backlogadmin.QueryStatus, Principal: transport.principal,
+			})
+			if err != nil {
+				return "", err
+			}
+			if response.Status == nil {
+				return "", nil
+			}
+			return response.Status.Runtime.Release, nil
 		},
 		notify: func(ctx context.Context, operation backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error) {
 			transport, err := newCoordinatorTransport(cfg)

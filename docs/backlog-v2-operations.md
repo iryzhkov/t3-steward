@@ -509,7 +509,11 @@ t3-steward campaign cancel <run>/<task> --reason TEXT       # one task and its d
 
 The run form is one command with one revision fence per attempt, which is what
 a fan-out run needs: its tasks depend on each other for nothing, so cancelling
-one of them cascades to nothing.
+one of them cascades to nothing. It needs a coordinator at that release or
+newer: an older one decodes the request, ignores the scope and fails at
+application, so the client reads the release the coordinator reports and
+refuses the run form rather than queueing a command that will never be applied.
+The per-task form works against every release.
 
 A task that declares no route at all is refused as permanent `no-route`, at
 `check` and at intake, with the instance/model pairs its project's eligible

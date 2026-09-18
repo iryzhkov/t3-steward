@@ -11,11 +11,14 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-// cancelRunCLI is a campaign CLI with only the two seams a run cancel needs:
-// the run detail it fences on and the mutation it submits.
+// cancelRunCLI is a campaign CLI with only the three seams a run cancel needs:
+// the run detail it fences on, the mutation it submits, and the release the
+// coordinator reports for itself, which decides whether the run form can be
+// applied at all. The release defaults to one that can.
 func cancelRunCLI(out *bytes.Buffer, detail backlogadmin.WorkflowDetail, sent *[]backlogadmin.Mutation) campaignCLI {
 	return campaignCLI{
 		stdout: out, stderr: out, principal: "operator",
+		release: func(context.Context) (string, error) { return campaignRunCancelRelease, nil },
 		detail: func(context.Context, string) (backlogadmin.WorkflowDetail, error) {
 			return detail, nil
 		},
@@ -140,6 +143,101 @@ func TestCampaignCancelRunRefusals(t *testing.T) {
 			t.Fatalf("a command was sent for a terminal run: %+v", sent)
 		}
 	})
+}
+
+// A coordinator of the previous release decodes this request, ignores the
+// scope, resolves the empty task to the run itself and then fails at
+// application: the operator gets a command id and a silent failure some ticks
+// later. The client refuses to send it and names the form that release applies.
+func TestCampaignCancelRunIsRefusedAgainstAnOlderCoordinator(t *testing.T) {
+	var out bytes.Buffer
+	var sent []backlogadmin.Mutation
+	cli := cancelRunCLI(&out, cancelRunDetail(), &sent)
+	cli.release = func(context.Context) (string, error) { return "v0.11.0-rc.69", nil }
+	err := cli.run(context.Background(), []string{"cancel", "run-1", "--reason", "obsolete"})
+	if err == nil {
+		t.Fatal("a run-scoped cancel was sent to a coordinator that cannot apply it")
+	}
+	for _, want := range []string{
+		"v0.11.0-rc.69", campaignRunCancelRelease,
+		"t3-steward campaign cancel run-1/<task> --reason TEXT",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal does not name %q: %v", want, err)
+		}
+	}
+	if len(sent) != 0 {
+		t.Fatalf("a command was sent anyway: %+v", sent)
+	}
+}
+
+// The same read admits every release that can apply it, including a final
+// release and a later minor version, which sort above their candidates.
+func TestCampaignCancelRunIsSentToACoordinatorThatCanApplyIt(t *testing.T) {
+	for _, release := range []string{campaignRunCancelRelease, "v0.11.0-rc.71", "v0.11.0", "v0.12.0-rc.1"} {
+		t.Run(release, func(t *testing.T) {
+			var out bytes.Buffer
+			var sent []backlogadmin.Mutation
+			cli := cancelRunCLI(&out, cancelRunDetail(), &sent)
+			cli.release = func(context.Context) (string, error) { return release, nil }
+			if err := cli.run(context.Background(), []string{"cancel", "run-1", "--reason", "obsolete"}); err != nil {
+				t.Fatal(err)
+			}
+			if len(sent) != 1 {
+				t.Fatalf("mutations = %+v, want exactly one", sent)
+			}
+		})
+	}
+}
+
+// A release this rule cannot read is not refused -- that would break the verb
+// against every build whose release string it does not understand -- but it is
+// warned about on stderr, because a command that is accepted and never applied
+// is what the check exists to prevent.
+func TestCampaignCancelRunWarnsWhenTheReleaseCannotBeRead(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	var sent []backlogadmin.Mutation
+	cli := cancelRunCLI(&stdout, cancelRunDetail(), &sent)
+	cli.stderr = &stderr
+	cli.release = func(context.Context) (string, error) { return "dev", nil }
+	if err := cli.run(context.Background(), []string{"cancel", "run-1", "--reason", "obsolete"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != 1 {
+		t.Fatalf("mutations = %+v, want exactly one", sent)
+	}
+	for _, want := range []string{"warning:", "never applied", "campaign cancel run-1/<task>"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("the warning does not say %q:\n%s", want, stderr.String())
+		}
+	}
+	if strings.Contains(stdout.String(), "warning") {
+		t.Fatalf("the warning landed on stdout, where it would break --json:\n%s", stdout.String())
+	}
+}
+
+func TestReleaseAtLeastOrdersCandidatesAndFinalReleases(t *testing.T) {
+	for _, testCase := range []struct {
+		release, minimum string
+		atLeast, known   bool
+	}{
+		{"v0.11.0-rc.70", "v0.11.0-rc.70", true, true},
+		{"v0.11.0-rc.69", "v0.11.0-rc.70", false, true},
+		{"v0.11.0-rc.9", "v0.11.0-rc.70", false, true},
+		{"v0.11.0-rc.100", "v0.11.0-rc.70", true, true},
+		{"v0.11.0", "v0.11.0-rc.70", true, true},
+		{"v0.10.9", "v0.11.0-rc.70", false, true},
+		{"0.11.0-rc.70", "v0.11.0-rc.70", true, true},
+		{"dev", "v0.11.0-rc.70", false, false},
+		{"", "v0.11.0-rc.70", false, false},
+		{"v0.11.0-beta.1", "v0.11.0-rc.70", false, false},
+	} {
+		atLeast, known := releaseAtLeast(testCase.release, testCase.minimum)
+		if atLeast != testCase.atLeast || known != testCase.known {
+			t.Fatalf("releaseAtLeast(%q, %q) = %t, %t; want %t, %t",
+				testCase.release, testCase.minimum, atLeast, known, testCase.atLeast, testCase.known)
+		}
+	}
 }
 
 func TestCampaignCancelRunJSONIsOneDocument(t *testing.T) {
