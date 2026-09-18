@@ -12,7 +12,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -387,24 +389,124 @@ func loadCoordinatorReload(ctx context.Context, current config.Config, store rel
 	if err != nil {
 		return current, nil, err
 	}
+	snapshots, err := store.LoadWorkerSnapshots(ctx)
+	if err != nil {
+		return current, nil, err
+	}
+	blockers, err := reloadBlockers(current.BacklogV2, next.BacklogV2, records, snapshots, time.Now())
+	if err != nil {
+		return current, nil, err
+	}
+	if len(blockers) != 0 {
+		return current, blockers, errors.New(reloadBlockersMessage(blockers))
+	}
+	return next, nil, nil
+}
+
+// reloadBlockers names every retained assignment on a worker whose execution
+// catalog the next configuration would change. Every one of them is listed, not
+// only the first, with the attempt's coordinator-side progress and control, the
+// phase the worker last reported for it, and the action that unblocks it.
+//
+// The rule itself is unchanged from rc.68: an assignment that is not completed
+// or released blocks a catalog change on its worker, at any phase. Accepting
+// the reload for dispatched work is not done here; see the handoff for the
+// worker-side drain guard that keeps it that way.
+func reloadBlockers(current, next config.BacklogV2, records sqlite.CoordinatorRecords, snapshots []domain.WorkerSnapshot, now time.Time) ([]backlogadmin.ReloadBlocker, error) {
+	attempts := make(map[string]domain.Attempt, len(records.Attempts))
+	for _, attempt := range records.Attempts {
+		attempts[attempt.ID] = attempt
+	}
+	phases := map[string]string{}
+	for _, snapshot := range snapshots {
+		for _, observation := range snapshot.Assignments {
+			if observation.Journal != nil && observation.Journal.Phase != "" {
+				phases[snapshot.WorkerID+"/"+observation.AssignmentID] = observation.Journal.Phase
+			}
+		}
+	}
+	changed := map[string]bool{}
+	var blockers []backlogadmin.ReloadBlocker
 	for _, assignment := range records.Assignments {
 		if assignment.State == domain.AssignmentCompleted || assignment.State == domain.AssignmentReleased {
 			continue
 		}
-		before, err := workerruntime.BuildWorkerBinding(current.BacklogV2, assignment.WorkerID, time.Now())
-		if err != nil {
-			return current, nil, err
-		}
-		after, err := workerruntime.BuildWorkerBinding(next.BacklogV2, assignment.WorkerID, time.Now())
-		if err != nil || before.CatalogRevision != after.CatalogRevision {
-			blocker := backlogadmin.ReloadBlocker{
-				WorkerID: assignment.WorkerID, AssignmentID: assignment.ID, AttemptID: assignment.AttemptID,
-				Unblock: "drain the worker and let the assignment settle, or cancel its task",
+		touched, known := changed[assignment.WorkerID]
+		if !known {
+			before, err := workerruntime.BuildWorkerBinding(current, assignment.WorkerID, now)
+			if err != nil {
+				return nil, err
 			}
-			return current, []backlogadmin.ReloadBlocker{blocker}, fmt.Errorf("worker %s has retained assignment %s; drain and settle before changing its execution catalog", assignment.WorkerID, assignment.ID)
+			after, err := workerruntime.BuildWorkerBinding(next, assignment.WorkerID, now)
+			touched = err != nil || before.CatalogRevision != after.CatalogRevision
+			changed[assignment.WorkerID] = touched
 		}
+		if !touched {
+			continue
+		}
+		blocker := backlogadmin.ReloadBlocker{
+			WorkerID: assignment.WorkerID, AssignmentID: assignment.ID, AttemptID: assignment.AttemptID,
+			JournalPhase: phases[assignment.WorkerID+"/"+assignment.ID],
+		}
+		attempt, found := attempts[assignment.AttemptID]
+		if found {
+			blocker.Progress = string(attempt.Progress)
+			blocker.Control = string(attempt.Control)
+		}
+		blocker.Unblock = reloadUnblockAction(attempt, found)
+		blockers = append(blockers, blocker)
 	}
-	return next, nil, nil
+	sort.Slice(blockers, func(i, j int) bool {
+		if blockers[i].WorkerID != blockers[j].WorkerID {
+			return blockers[i].WorkerID < blockers[j].WorkerID
+		}
+		return blockers[i].AssignmentID < blockers[j].AssignmentID
+	})
+	return blockers, nil
+}
+
+// reloadUnblockAction is the operator action that removes one blocker: the
+// cancel command for the attempt's task, or, for a paused or parked attempt,
+// waiting for the pause or the wait to end first.
+func reloadUnblockAction(attempt domain.Attempt, found bool) string {
+	if !found || attempt.WorkflowRunID == "" || attempt.TaskID == "" {
+		return "drain the worker (accept_backlog: false) and let the assignment settle, or cancel its task with t3-steward backlog cancel <run>/<task> --reason TEXT"
+	}
+	cancel := fmt.Sprintf("t3-steward backlog cancel %s/%s --reason TEXT", attempt.WorkflowRunID, attempt.TaskID)
+	switch attempt.Control {
+	case domain.ControlPaused, domain.ControlPausedUncheckpointed, domain.ControlDraining, domain.ControlResuming:
+		return "wait for the pause to lift and the attempt to settle, or " + cancel
+	case domain.ControlWaitingExternal:
+		return "wait for the task wait to settle and the attempt to finish, or " + cancel
+	}
+	return "let the attempt settle, or " + cancel
+}
+
+// reloadBlockersMessage is the one-line refusal that names every blocker.
+func reloadBlockersMessage(blockers []backlogadmin.ReloadBlocker) string {
+	var b strings.Builder
+	workers := map[string]bool{}
+	for _, blocker := range blockers {
+		workers[blocker.WorkerID] = true
+	}
+	fmt.Fprintf(&b, "%d retained assignment(s) on %d worker(s) whose execution catalog would change; drain and settle, or cancel, before changing it:", len(blockers), len(workers))
+	for i, blocker := range blockers {
+		if i > 0 {
+			b.WriteString(";")
+		}
+		state := blocker.Progress
+		if blocker.Control != "" {
+			state += "/" + blocker.Control
+		}
+		if state == "" {
+			state = "attempt record missing"
+		}
+		if blocker.JournalPhase != "" {
+			state += ", worker journal " + blocker.JournalPhase
+		}
+		fmt.Fprintf(&b, " worker %s assignment %s attempt %s (%s): %s", blocker.WorkerID, blocker.AssignmentID, blocker.AttemptID, state, blocker.Unblock)
+	}
+	return b.String()
 }
 
 func validateCoordinatorReload(current, next config.Config) error {
