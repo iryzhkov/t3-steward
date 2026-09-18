@@ -234,11 +234,23 @@ func (c backlogAdminCLI) runSchedules(ctx context.Context, args []string) error 
 	}
 }
 
-func (c backlogAdminCLI) queryAndRender(ctx context.Context, query backlogadmin.Query, asJSON bool, selector string) error {
+// ask is one question to the coordinator, with the envelope every question
+// carries. It is a function value so that a refusal can be explained by the
+// shared explanation, which asks a question of its own.
+func (c backlogAdminCLI) ask(ctx context.Context, query backlogadmin.Query) (backlogadmin.Response, error) {
 	query.Version = backlogadmin.Version
 	query.Principal = c.principal
-	response, err := c.service.Query(ctx, query)
+	return c.service.Query(ctx, query)
+}
+
+func (c backlogAdminCLI) queryAndRender(ctx context.Context, query backlogadmin.Query, asJSON bool, selector string) error {
+	response, err := c.ask(ctx, query)
 	if err != nil {
+		if query.Kind == backlogadmin.QueryProjects {
+			// "backlog projects" is the catalog and nothing else, so a
+			// coordinator that has no projects query refuses the whole verb.
+			return explainRefusedProjectsQuery(ctx, c.ask, err, projectsWithoutTheCatalog)
+		}
 		return err
 	}
 	if selector != "" {

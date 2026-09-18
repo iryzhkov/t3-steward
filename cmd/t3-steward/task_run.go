@@ -431,12 +431,6 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	return renderTaskRunRecord(c.stdout, record)
 }
 
-// taskRunProjectsQueryRelease is the first release whose coordinator answers
-// the projects query. It names when the coordinator gained the query, which is
-// not what this binary's own version says, so it is written here rather than
-// taken from the linker.
-const taskRunProjectsQueryRelease = "v0.11.0-rc.70"
-
 // explicitTaskRunRoute is the start that derives nothing it needs from the
 // catalog: --project names the project and --model INSTANCE/MODEL names the
 // whole route, optionally pinned to a worker. It does not settle the quota
@@ -503,52 +497,9 @@ func (c taskRunCLI) projects(ctx context.Context) ([]backlogadmin.Project, error
 	}
 	response, err := c.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryProjects})
 	if err != nil {
-		return nil, c.explainRefusedProjectsQuery(ctx, err)
+		return nil, explainRefusedProjectsQuery(ctx, c.query, err, taskRunWithoutTheCatalog)
 	}
 	return response.Projects, nil
-}
-
-// explainRefusedProjectsQuery turns the refusal of a coordinator that has no
-// projects query into an answer the caller can act on. The coordinator answers
-// it as "invalid query", which reads like a client bug; during a mixed-release
-// window it is nothing of the kind, and the way forward is either the two
-// flags that need no catalog or an upgraded coordinator.
-func (c taskRunCLI) explainRefusedProjectsQuery(ctx context.Context, err error) error {
-	if !refusedAsAnUnknownQuery(err, backlogadmin.QueryProjects) {
-		return err
-	}
-	release := c.coordinatorRelease(ctx)
-	if release == "" {
-		release = "an unreported release"
-	}
-	return fmt.Errorf("this coordinator runs %s and has no %q query, which needs %s or newer: %w\n"+
-		"Pass --project NAME and --model INSTANCE/MODEL to start a task without the catalog, or upgrade the coordinator",
-		release, backlogadmin.QueryProjects, taskRunProjectsQueryRelease, err)
-}
-
-// refusedAsAnUnknownQuery reports the coordinator's own refusal of a query
-// kind it does not have. The refusal crosses the transport as its text, not as
-// a sentinel, so the text is what there is to read.
-func refusedAsAnUnknownQuery(err error, kind backlogadmin.QueryKind) bool {
-	if err == nil {
-		return false
-	}
-	message := err.Error()
-	return strings.Contains(message, "invalid query") && strings.Contains(message, strconv.Quote(string(kind)))
-}
-
-// coordinatorRelease asks what release the coordinator runs, for a message
-// about version skew. Every release answers the status query, and an answer
-// that does not arrive only costs the message its most useful clause.
-func (c taskRunCLI) coordinatorRelease(ctx context.Context) string {
-	if c.query == nil {
-		return ""
-	}
-	response, err := c.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryStatus})
-	if err != nil || response.Status == nil {
-		return ""
-	}
-	return response.Status.Runtime.Release
 }
 
 // prompts reads the one prompt, or the fan-out's several. Exactly one source

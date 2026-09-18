@@ -156,7 +156,9 @@ func (c modelsCLI) run(ctx context.Context, project string, asJSON bool) error {
 			Kind: backlogadmin.QueryProjects, Filter: backlogadmin.Filter{Project: project},
 		})
 		if err != nil {
-			return err
+			// Only --project needs the catalog: the table itself is built from
+			// the workers and quota queries, which every release answers.
+			return explainRefusedProjectsQuery(ctx, c.query, err, modelsWithoutTheCatalog)
 		}
 		if len(projects.Projects) == 0 {
 			return fmt.Errorf("project %q is not in this coordinator's catalog; t3-steward backlog projects lists the projects it has", project)

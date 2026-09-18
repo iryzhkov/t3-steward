@@ -675,7 +675,7 @@ func TestTaskRunExplainsACoordinatorWithoutTheProjectsQuery(t *testing.T) {
 		t.Fatal("a start that needs the catalog succeeded against a coordinator without it")
 	}
 	for _, want := range []string{
-		"v0.11.0-rc.69", `"projects" query`, taskRunProjectsQueryRelease,
+		"v0.11.0-rc.69", `"projects" query`, projectsQueryRelease,
 		"--project NAME", "--model INSTANCE/MODEL", "invalid query",
 	} {
 		if !strings.Contains(err.Error(), want) {

@@ -53,7 +53,12 @@ All notable changes to this project are documented here. The format follows
   [--project NAME] [--json]`: per project the repository, default ref, type and
   setup profile, and per eligible worker whether it is configured for the
   project, whether its inventory advertises it, whether it is enrolled and
-  ready, and the instance/model/pool routes it advertises.
+  ready, and the instance/model/pool routes it advertises. Every verb that asks
+  for the catalog -- `backlog projects`, `models --project` and a `task run`
+  that derives its project or its route -- explains a coordinator that does not
+  have the query with that coordinator's release, the release the query needs
+  and what the verb can do without it, rather than passing on the bare
+  `invalid query: kind "projects"`.
 - `t3-steward campaign cancel <run> --reason TEXT` cancels every non-terminal
   task of a run with one command, one application and one revision fence per
   attempt. The `<run>/<task>` form is unchanged and works against every
