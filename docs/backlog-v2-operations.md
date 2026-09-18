@@ -829,7 +829,10 @@ See [ADR H6](architecture/adr-h6-attempt-owned-threads.md).
 
 When the watchdog's bucket for the attempt's route is draining or stopped, the
 worker itself drains or stops the thread through the throttle path and reports
-the attempt as `paused` with the bucket as the reason, for example
+the attempt as `paused` with the bucket as the reason. A stopped bucket sends
+the drain notice first and stops the thread only when it is still working
+`policy.stop_verify_timeout` later, so a session that checkpoints on request
+is never interrupted. The reason reads, for example,
 `claudeAgent/claude/seven_day at 97%` in `backlog task show` evidence. Nothing
 is collected while the pause is in force, so the attempt does not fail with
 "provider session is not ready". The worker resumes the thread when the bucket

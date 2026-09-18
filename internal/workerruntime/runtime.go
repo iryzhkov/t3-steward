@@ -63,7 +63,12 @@ type Config struct {
 	// this runtime owns: a bucket in the drain or stop phase pauses the
 	// attempt through the throttle path, and the same recovery rules resume
 	// it. Nil means no watchdog state on this host and no local pauses.
-	Quota            QuotaGuard
+	Quota QuotaGuard
+	// PauseEscalation is how long a drain notice sent for a stopped bucket
+	// gets before the worker escalates to the driver's stop while the thread
+	// keeps working: the daemon's stop_verify_timeout. Zero escalates on the
+	// first reconcile after the notice failed to end the turn.
+	PauseEscalation  time.Duration
 	WorkerID         string
 	WorkerEpoch      string
 	CoordinatorID    string
@@ -542,7 +547,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 		}
 		switch {
 		case threadState == backlog.DispatchThreadActive:
-			_, err = r.pauseForQuota(ctx, id, &record)
+			err = r.pauseForQuota(ctx, id, &record)
 		case threadState == backlog.DispatchThreadStopped && record.LocalThrottle != nil:
 			// The drain request was honoured: the thread checkpointed and
 			// ended its turn. This is the pause taking effect, not the

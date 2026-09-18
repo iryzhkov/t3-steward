@@ -85,12 +85,14 @@ func TestLocalQuotaStopReportsPausedAndDefersCollection(t *testing.T) {
 	if err := runtime.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if driver.stopCalls != 1 || driver.collectCalls != 0 || driver.collectFailureCalls != 0 {
-		t.Fatalf("stops=%d collects=%d failures=%d", driver.stopCalls, driver.collectCalls, driver.collectFailureCalls)
+	// The stop reaches a thread mid-work as the drain notice first; the fake
+	// checkpoint succeeds at once, which is a thread that honoured it.
+	if driver.checkpointCalls != 1 || driver.stopCalls != 0 || driver.collectCalls != 0 || driver.collectFailureCalls != 0 {
+		t.Fatalf("checkpoints=%d stops=%d collects=%d failures=%d", driver.checkpointCalls, driver.stopCalls, driver.collectCalls, driver.collectFailureCalls)
 	}
 	record := journalRecord(t, runtime)
-	if record.Phase != PhaseStopped || record.LocalThrottle == nil || record.LocalThrottle.Kind != domain.ThrottleCommandHardStop ||
-		record.LocalThrottle.Reason != "codex/codex/primary at 97%" || record.LocalThrottle.StoppedAt == nil {
+	if record.Phase != PhaseStopped || record.LocalThrottle == nil || record.LocalThrottle.Phase != domain.PhaseStopped ||
+		record.LocalThrottle.Reason != "codex/codex/primary at 97%" || record.LocalThrottle.StoppedAt == nil || record.LocalThrottle.Checkpoint == nil {
 		t.Fatalf("record = %+v throttle=%+v", record, record.LocalThrottle)
 	}
 	snapshot, err := runtime.Snapshot(context.Background())
@@ -113,8 +115,8 @@ func TestLocalQuotaStopReportsPausedAndDefersCollection(t *testing.T) {
 	if err != nil || !acks.Acknowledgements[0].Accepted || !strings.Contains(acks.Acknowledgements[0].Detail, "paused by the quota watchdog") {
 		t.Fatalf("collect while paused: acks=%+v err=%v", acks, err)
 	}
-	if driver.stopCalls != 1 || driver.collectCalls != 0 || guard.resumeAsked == 0 {
-		t.Fatalf("stops=%d collects=%d resumeAsked=%d", driver.stopCalls, driver.collectCalls, guard.resumeAsked)
+	if driver.checkpointCalls != 1 || driver.stopCalls != 0 || driver.collectCalls != 0 || guard.resumeAsked == 0 {
+		t.Fatalf("checkpoints=%d stops=%d collects=%d resumeAsked=%d", driver.checkpointCalls, driver.stopCalls, driver.collectCalls, guard.resumeAsked)
 	}
 	// The bucket recovers and the attempt is still live: the same worker
 	// resumes the thread through the throttle path and the pause ends.
@@ -160,6 +162,55 @@ func TestLocalQuotaDrainThenHardStop(t *testing.T) {
 	snapshot, err := runtime.Snapshot(context.Background())
 	if err != nil || snapshot.Assignments[0].Control != domain.ControlPaused {
 		t.Fatalf("drained observation = %+v err=%v", snapshot.Assignments[0], err)
+	}
+}
+
+// A stopped bucket meets a thread mid-work with the drain notice first: a
+// session that checkpoints on request loses nothing, an interrupted one loses
+// its subagents. The stop follows only when the thread is still working after
+// the escalation window, the daemon's stop_verify_timeout, and the escalated
+// request keeps the notice's request time so the throttle command id is
+// stable.
+func TestLocalQuotaStopPrefersDrainAndEscalatesAfterTheWindow(t *testing.T) {
+	now := runtimeTestNow
+	driver := &fakeDriver{workspace: filepath.Join(t.TempDir(), "workspace"), workspaceReady: true,
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadActive, backlog.DispatchThreadActive, backlog.DispatchThreadStopped}}
+	driver.checkpointErr = errors.New("checkpoint turn did not stop before deadline")
+	guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
+	runtime := runningRuntime(t, driver, guard, &now)
+	runtime.config.PauseEscalation = 20 * time.Second
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	record := journalRecord(t, runtime)
+	if driver.checkpointCalls != 1 || driver.stopCalls != 0 || record.Phase != PhaseRunning ||
+		record.LocalThrottle == nil || record.LocalThrottle.Kind != domain.ThrottleCommandDrain || record.LocalThrottle.Phase != domain.PhaseStopped {
+		t.Fatalf("after the notice: checkpoints=%d stops=%d record=%+v", driver.checkpointCalls, driver.stopCalls, record)
+	}
+	requested := record.LocalThrottle.RequestedAt
+	// Inside the window: no second notice, no stop.
+	now = now.Add(10 * time.Second)
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if driver.checkpointCalls != 1 || driver.stopCalls != 0 || journalRecord(t, runtime).Phase != PhaseRunning {
+		t.Fatalf("inside the window: checkpoints=%d stops=%d", driver.checkpointCalls, driver.stopCalls)
+	}
+	// Past the window and still working: the stop.
+	now = now.Add(15 * time.Second)
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	record = journalRecord(t, runtime)
+	if driver.checkpointCalls != 1 || driver.stopCalls != 1 || record.Phase != PhaseStopped || record.LocalThrottle == nil ||
+		record.LocalThrottle.Kind != domain.ThrottleCommandHardStop || !record.LocalThrottle.RequestedAt.Equal(requested) || record.LocalThrottle.StoppedAt == nil {
+		t.Fatalf("after the window: checkpoints=%d stops=%d record=%+v", driver.checkpointCalls, driver.stopCalls, record)
+	}
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if driver.stopCalls != 1 || driver.collectCalls != 0 {
+		t.Fatalf("paused: stops=%d collects=%d", driver.stopCalls, driver.collectCalls)
 	}
 }
 

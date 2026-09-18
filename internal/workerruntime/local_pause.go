@@ -20,18 +20,23 @@ import (
 // still live according to the last assignment state it holds.
 
 // pauseForQuota asks the guard whether the running attempt's route must
-// pause, and applies the pause through the throttle path when it must. It
-// reports true when the thread was stopped by it; the attempt is then in the
-// stopped phase with LocalThrottle set. record is updated in place so the
-// caller sees a drain request that is still waiting for the thread to end.
-func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptRecord) (bool, error) {
+// pause, and applies the pause through the throttle path when it must. The
+// caller has just observed the thread active, so the pause always meets a
+// thread mid-work: a draining bucket sends the drain notice once and then
+// observes; a stopped bucket also sends the drain notice first, because a
+// session that checkpoints and ends its turn on request loses nothing while
+// an interrupted one loses its subagents, and escalates to the driver's stop
+// only when the thread is still working Config.PauseEscalation after the
+// notice. record is updated in place so the caller sees the request that is
+// still waiting for the thread to end.
+func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptRecord) error {
 	if r.config.Quota == nil || record.Package.Package.Identity.ThreadID == "" {
-		return false, nil
+		return nil
 	}
 	pause, required, err := r.config.Quota.PauseRequired(ctx, record.Package.Package.Route)
 	if err != nil {
 		r.log.Warn("host quota state unavailable; attempt keeps running", "assignment", id, "error", err)
-		return false, nil
+		return nil
 	}
 	if !required {
 		if record.LocalThrottle != nil {
@@ -39,23 +44,40 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 			// kept working; the request is moot.
 			r.log.Info("quota recovered before the drain took effect; the pause request is withdrawn", "assignment", id)
 			if err := r.withdrawLocalPause(id); err != nil {
-				return false, err
+				return err
 			}
 			record.LocalThrottle = nil
 		}
-		return false, nil
+		return nil
 	}
+	now := r.now()
 	kind := domain.ThrottleCommandDrain
 	if pause.Phase == domain.PhaseStopped {
 		kind = domain.ThrottleCommandHardStop
 	}
-	if record.LocalThrottle != nil && record.LocalThrottle.Kind == domain.ThrottleCommandDrain && kind == domain.ThrottleCommandDrain {
-		// The drain notice was sent; the thread is expected to checkpoint
-		// and end its turn on its own. Sending it again every reconcile
-		// would spam the session, so the running branch just observes.
-		return false, nil
+	if record.LocalThrottle != nil && record.LocalThrottle.Kind == domain.ThrottleCommandDrain {
+		if kind == domain.ThrottleCommandDrain {
+			// The drain notice was sent; the thread is expected to checkpoint
+			// and end its turn on its own. Sending it again every reconcile
+			// would spam the session, so the running branch just observes.
+			return nil
+		}
+		if elapsed := now.Sub(record.LocalThrottle.RequestedAt); elapsed < r.config.PauseEscalation {
+			// The bucket is stopped, but the notice is still within the
+			// window the daemon gives a stop to take effect.
+			r.log.Debug("drain notice stands; the stop follows if the thread keeps working",
+				"assignment", id, "escalates_in", (r.config.PauseEscalation - elapsed).Round(time.Second))
+			return nil
+		}
+		r.log.Warn("drain notice not honoured in time; escalating to the stop", "assignment", id,
+			"thread", record.Package.Package.Identity.ThreadID, "notice_age", now.Sub(record.LocalThrottle.RequestedAt).Round(time.Second))
+	} else if kind == domain.ThrottleCommandHardStop && record.LocalThrottle == nil {
+		// First contact with a stopped bucket while the thread is mid-work:
+		// the drain form goes first, the stop only after the escalation
+		// window. The request keeps the bucket's stopped phase so the notice
+		// and the reported pause say what the bucket is.
+		kind = domain.ThrottleCommandDrain
 	}
-	now := r.now()
 	request := LocalThrottleRequest{
 		Kind: kind, Bucket: pause.Bucket, Phase: pause.Phase, UsedPercent: pause.UsedPercent,
 		LimitName: pause.LimitName, ResetsAt: pause.ResetsAt, ObservedAt: pause.ObservedAt,
@@ -79,30 +101,31 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 		state.Sequence++
 		return nil
 	}); err != nil {
-		return false, err
+		return err
 	}
 	record.LocalThrottle = &request
 	pkg := record.Package.Package
 	command := r.localThrottleCommand(*record, request)
 	r.log.Warn("quota watchdog pauses an owned attempt", "assignment", id, "thread", pkg.Identity.ThreadID,
-		"kind", string(kind), "bucket", pause.Bucket.String(), "used", fmt.Sprintf("%.0f%%", pause.UsedPercent))
+		"kind", string(kind), "bucket", pause.Bucket.String(), "phase", string(pause.Phase), "used", fmt.Sprintf("%.0f%%", pause.UsedPercent))
 	switch kind {
 	case domain.ThrottleCommandDrain:
 		checkpoint, err := r.driver.Checkpoint(ctx, pkg, command)
 		if err != nil {
 			// The notice went out but the thread has not ended its turn yet.
-			// It keeps running; the next reconcile observes it, and the hard
-			// stop follows if the bucket reaches the stop phase.
+			// It keeps running; the next reconcile observes it, and the stop
+			// follows once the bucket is stopped and the escalation window
+			// has passed.
 			r.log.Warn("drain requested; thread has not stopped yet", "assignment", id, "error", err)
-			return false, nil
+			return nil
 		}
-		return true, r.markLocalPauseStopped(id, checkpoint)
+		return r.markLocalPauseStopped(id, checkpoint)
 	default:
 		if err := r.driver.StopThread(ctx, pkg); err != nil {
 			r.log.Warn("quota stop outcome is unproven; retrying next reconcile", "assignment", id, "error", err)
-			return false, nil
+			return nil
 		}
-		return true, r.markLocalPauseStopped(id, nil)
+		return r.markLocalPauseStopped(id, nil)
 	}
 }
 

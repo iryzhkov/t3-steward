@@ -74,8 +74,12 @@ Must:
    still working: a thread that already ended its turn is finished work, spends no quota to
    collect, and takes the collection path as before. When the bucket governing a working
    attempt's route is draining, the worker sends the drain notice through the driver's
-   checkpoint path once and then observes; when it is stopped, the worker stops the thread
-   through the driver's stop path. Either way the attempt is paused, not failed:
+   checkpoint path once and then observes. When it is stopped, the worker still sends the
+   drain notice first (a session that checkpoints on request loses nothing; an interrupted one
+   loses its subagents) and escalates to the driver's stop path only when the thread is still
+   working after the daemon's `policy.stop_verify_timeout` (`Config.PauseEscalation`); the
+   escalated request keeps the notice's request time, so the throttle command id is stable.
+   Either way the attempt is paused, not failed:
    nothing is collected, a commanded collection is deferred, and the coordinator sees
    `ControlPaused`. A collection that later meets a session that is not ready reports
    `paused by quota watchdog: <bucket> at <percent>; provider session is not ready ...`.

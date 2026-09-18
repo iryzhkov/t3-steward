@@ -133,7 +133,10 @@ func cmdWorker(g globalFlags, args []string) error {
 		ProtocolCredentials: credentials, ProjectCredentials: workerruntime.EnvironmentCredentialChecker{},
 		ObserveInventory: observeHostInventory(control, dataDir),
 		Quota:            quota,
-		T3:               control, DryRun: cfg.Policy.DryRun, Logger: logger,
+		// A local quota stop sends the drain notice first and escalates to the
+		// stop after the window the watchdog itself gives a stop to take effect.
+		PauseEscalation: cfg.Policy.StopVerifyTimeout.D(),
+		T3:              control, DryRun: cfg.Policy.DryRun, Logger: logger,
 	}}
 	if err = host.Load(ctx); err != nil {
 		return err

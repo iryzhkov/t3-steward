@@ -44,7 +44,9 @@ All notable changes to this project are documented here. The format follows
   reset (S-16).
 - A quota stop of an attempt's thread is a pause, not a failure. The worker
   drains or stops its own thread through the throttle path when the host
-  bucket for the route is draining or stopped, reports the attempt as `paused`
+  bucket for the route is draining or stopped (a stopped bucket sends the
+  drain notice first and stops the thread only when it is still working
+  `policy.stop_verify_timeout` later), reports the attempt as `paused`
   with the bucket and percent as the reason, collects nothing meanwhile, and
   resumes it when the bucket has recovered and the attempt is still live. A
   session that is still not ready when collected is refused as
