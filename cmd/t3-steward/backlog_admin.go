@@ -609,7 +609,7 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 			continue
 		}
 		state, control, attempt := taskState(task)
-		fmt.Fprintf(out, "  %s (%s): %s %s attempt=%s\n", task.Task.Name, task.Task.ID, state, control, attempt)
+		fmt.Fprintf(out, "  %s (%s): %s %s attempt=%s%s\n", task.Task.Name, task.Task.ID, state, control, attempt, evidenceMarker(task.Evidence))
 		// A parked task says what it is parked on. The wait is the reason the
 		// task is not moving, and its condition is what an operator can go and
 		// satisfy or cancel.
@@ -708,7 +708,62 @@ func renderTask(out io.Writer, detail *backlogadmin.TaskDetail) {
 	if detail.ThreadURL != "" {
 		fmt.Fprintf(out, "thread: %s\n", detail.ThreadURL)
 	}
+	renderAttemptEvidence(out, detail)
 	fmt.Fprintf(out, "artifacts: %d\nlocks: %s\n", len(detail.Artifacts), strings.Join(detail.ResourceLocks, ", "))
+}
+
+// renderAttemptEvidence prints what the worker last reported about the
+// attempt: the thread, the worker, the observed session and any quota pause.
+// Lines the assignment already printed (worker, thread URL) are not repeated.
+func renderAttemptEvidence(out io.Writer, detail *backlogadmin.TaskDetail) {
+	evidence := detail.Evidence
+	if evidence == nil {
+		return
+	}
+	if evidence.ThreadID != "" && detail.ThreadURL == "" {
+		fmt.Fprintf(out, "thread: %s\n", evidence.ThreadID)
+	}
+	if evidence.WorkerID != "" && detail.Assignment == nil {
+		fmt.Fprintf(out, "worker: %s\n", evidence.WorkerID)
+	}
+	var session []string
+	if evidence.ThreadState != "" {
+		session = append(session, "thread "+evidence.ThreadState)
+	}
+	if evidence.Control != "" {
+		session = append(session, "control "+string(evidence.Control))
+	}
+	if evidence.Phase != "" {
+		session = append(session, "phase "+evidence.Phase)
+	}
+	if !evidence.ObservedAt.IsZero() {
+		session = append(session, "observed "+formatTime(evidence.ObservedAt))
+	}
+	if len(session) != 0 {
+		fmt.Fprintf(out, "session: %s\n", strings.Join(session, ", "))
+	}
+	if evidence.PauseReason != "" {
+		fmt.Fprintf(out, "paused: %s\n", evidence.PauseReason)
+	}
+	if evidence.Failure != "" && (detail.Attempt == nil || detail.Attempt.Failure != evidence.Failure) {
+		fmt.Fprintf(out, "worker failure: %s\n", evidence.Failure)
+	}
+}
+
+// evidenceMarker is the one word "campaign show" appends to a task line when
+// the worker's evidence says the attempt is paused on a quota bucket or parked
+// on a task-bound wait. It is empty for anything else.
+func evidenceMarker(evidence *backlogadmin.AttemptEvidence) string {
+	if evidence == nil {
+		return ""
+	}
+	switch {
+	case evidence.PauseReason != "", evidence.Control == domain.ControlPaused, evidence.Control == domain.ControlPausedUncheckpointed:
+		return " paused"
+	case evidence.Control == domain.ControlWaitingExternal:
+		return " parked"
+	}
+	return ""
 }
 
 func taskState(detail backlogadmin.TaskDetail) (domain.ProgressState, domain.ControlState, string) {
