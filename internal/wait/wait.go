@@ -154,6 +154,12 @@ type Control interface {
 type Runner struct {
 	// TaskStore optionally routes coordinator-owned task waits over a transport.
 	TaskStore TaskWaitStore
+	// NodeStore optionally routes the coordinator-owned node waits over a
+	// transport, for a host that runs no coordinator and therefore holds none
+	// of its records. The wake of a node wait has to be sent by the steward of
+	// the host whose T3 holds the thread, so that host has to be able to read
+	// and claim the rows it is named on.
+	NodeStore NodeStore
 	// DisableTaskWaitRuntime fences all task operations on invalid host identity.
 	DisableTaskWaitRuntime bool
 	// AssignedTaskWakesOnly confines delivery to the durable assignment owner.
@@ -171,6 +177,18 @@ type Runner struct {
 	DryRun     bool
 	NodeDryRun bool
 	NodeHost   string
+	// NodeDelivery, when set, is called on every tick on which this runner read
+	// the node waits of the host it names and is in a position to send their
+	// wakes. It is how a steward records, where something other than itself can
+	// read it, that node wakes for this host are actually being delivered here.
+	//
+	// A command that registers a node wait cannot otherwise establish that:
+	// delivery is done by the daemon, not by the command, and a host whose
+	// binary is new while its daemon is old, stopped or in dry run looks
+	// identical from outside. It is called after the list rather than before, so
+	// what it records is the whole path having worked, and it is not called at
+	// all in a dry run, where a wake is held rather than sent.
+	NodeDelivery func(ctx context.Context, host string)
 	// DisableQuotaChecks bypasses quota-based wake holds, independently of DryRun.
 	DisableQuotaChecks bool
 

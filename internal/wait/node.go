@@ -16,6 +16,20 @@ type NodeStore interface {
 	ListNodeWaits(context.Context) ([]domain.NodeWait, error)
 	TransitionNodeWake(context.Context, string, string, string, time.Time) (bool, error)
 }
+
+// HostNodeStore is a node-wait store that can answer for one host alone. A
+// store that implements it is asked only for the waits this runner could act
+// on, which is the same set tickNodes keeps from a full list.
+//
+// It is optional because the local SQLite store has nothing to gain from it:
+// the narrowing happens in the same process against the same rows. A store that
+// answers over the admin transport has everything to gain, because the
+// coordinator's node-wait table is append-only and the answer travels once per
+// tick.
+type HostNodeStore interface {
+	ListNodeWaitsForHost(ctx context.Context, host string) ([]domain.NodeWait, error)
+}
+
 type NodeControl interface {
 	ObserveNodeWake(context.Context, string, string) (bool, error)
 	SendNodeWake(context.Context, domain.Thread, string, string) error
@@ -35,15 +49,26 @@ func nodeWakeProse(w domain.NodeWait) string {
 // survives a crash before or after Dispatch. Only positive message evidence
 // resolves it; absence in a bounded read is not proof of non-delivery.
 func (r *Runner) tickNodes(ctx context.Context) {
-	store, ok := r.store.(NodeStore)
-	if !ok {
-		return
+	// A configured transport wins over the local store. On a host that runs no
+	// coordinator the local store answers this interface and holds no node
+	// waits at all, so preferring it would deliver nothing and say nothing.
+	store := r.NodeStore
+	if store == nil {
+		local, ok := r.store.(NodeStore)
+		if !ok {
+			return
+		}
+		store = local
 	}
 	if err := store.SettleNodeWaits(ctx, r.now()); err != nil {
 		logFailure(ctx, r.log, "settle node waits", err, "error", err)
 		return
 	}
-	waits, err := store.ListNodeWaits(ctx)
+	host := r.NodeHost
+	if host == "" {
+		host, _ = os.Hostname()
+	}
+	waits, err := r.listNodeWaits(ctx, store, host)
 	if err != nil {
 		logFailure(ctx, r.log, "list node waits", err, "error", err)
 		return
@@ -52,9 +77,8 @@ func (r *Runner) tickNodes(ctx context.Context) {
 	if !ok {
 		return
 	}
-	host := r.NodeHost
-	if host == "" {
-		host, _ = os.Hostname()
+	if r.NodeDelivery != nil && !r.NodeDryRun {
+		r.NodeDelivery(ctx, host)
 	}
 	groups := nodeWaitGroups(waits, host)
 	for _, w := range waits {
@@ -83,13 +107,17 @@ func (r *Runner) tickNodes(ctx context.Context) {
 				to = "delivered"
 			}
 			if to != w.Delivery {
-				_, _ = store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, to, r.now())
+				if _, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, to, r.now()); err != nil {
+					logNodeWakeTransition(ctx, r, w.Request.ID, w.Delivery, to, host, err)
+				}
 			}
 			continue
 		}
 		if r.NodeDryRun {
 			if w.Delivery == "pending" {
-				_, _ = store.TransitionNodeWake(ctx, w.Request.ID, "pending", "held", r.now())
+				if _, err := store.TransitionNodeWake(ctx, w.Request.ID, "pending", "held", r.now()); err != nil {
+					logNodeWakeTransition(ctx, r, w.Request.ID, "pending", "held", host, err)
+				}
 			}
 			continue
 		}
@@ -101,7 +129,13 @@ func (r *Runner) tickNodes(ctx context.Context) {
 			continue
 		}
 		claimed, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "sending", r.now())
-		if err != nil || !claimed {
+		if err != nil {
+			logNodeWakeTransition(ctx, r, w.Request.ID, w.Delivery, "sending", host, err)
+			continue
+		}
+		if !claimed {
+			// Another runner holds this wake. That is the fence working, not a
+			// fault, so it is not reported as one.
 			continue
 		}
 		text := nodeTrailer(w) + "\n\n" + nodeWakeProse(w)
@@ -109,7 +143,9 @@ func (r *Runner) tickNodes(ctx context.Context) {
 			text = nodeGroupMessage(members)
 		}
 		if err := control.SendNodeWake(ctx, *thread, w.DeliveryID, text); err != nil {
-			_, _ = store.TransitionNodeWake(ctx, w.Request.ID, "sending", "recovery-required", r.now())
+			if _, err := store.TransitionNodeWake(ctx, w.Request.ID, "sending", "recovery-required", r.now()); err != nil {
+				logNodeWakeTransition(ctx, r, w.Request.ID, "sending", "recovery-required", host, err)
+			}
 			continue
 		}
 		if grouped {
@@ -123,12 +159,51 @@ func (r *Runner) tickNodes(ctx context.Context) {
 				if member.Delivery != "pending" && member.Delivery != "held" {
 					continue
 				}
-				if claimed, _ := store.TransitionNodeWake(ctx, member.Request.ID, member.Delivery, "sending", r.now()); claimed {
-					_, _ = store.TransitionNodeWake(ctx, member.Request.ID, "sending", "delivered", r.now())
+				claimed, err := store.TransitionNodeWake(ctx, member.Request.ID, member.Delivery, "sending", r.now())
+				if err != nil {
+					logNodeWakeTransition(ctx, r, member.Request.ID, member.Delivery, "sending", host, err)
+					continue
+				}
+				if !claimed {
+					// Another runner carried this member: the same fence as
+					// above, and the same silence.
+					continue
+				}
+				if _, err := store.TransitionNodeWake(ctx, member.Request.ID, "sending", "delivered", r.now()); err != nil {
+					logNodeWakeTransition(ctx, r, member.Request.ID, "sending", "delivered", host, err)
 				}
 			}
 		}
 	}
+}
+
+// listNodeWaits reads the waits this runner could act on, asking the store to
+// narrow the answer when it can do so itself.
+//
+// The narrowing is exactly the filter the delivery loop below applies anyway:
+// this host's waits, and only while their delivery has not ended. A store that
+// cannot narrow answers with everything and the loop discards the rest, which
+// is what a store behind an older coordinator does.
+func (r *Runner) listNodeWaits(ctx context.Context, store NodeStore, host string) ([]domain.NodeWait, error) {
+	if scoped, ok := store.(HostNodeStore); ok && host != "" {
+		return scoped.ListNodeWaitsForHost(ctx, host)
+	}
+	return store.ListNodeWaits(ctx)
+}
+
+// logNodeWakeTransition reports a delivery transition the store refused.
+//
+// On a coordinator this store is local SQLite and an error here means a corrupt
+// database. On every other host it is the coordinator over the admin transport,
+// where an error means a coordinator that was rolled back to a release without
+// the transition, an expired credential or a transport fault -- and the
+// consequence is a wake that silently never arrives, which is indistinguishable
+// from the defect this delivery path exists to fix. It names the wait, the
+// transition it was refused and the host that tried, which is what turns
+// "delivery=pending forever" into one log line with a cause.
+func logNodeWakeTransition(ctx context.Context, r *Runner, id, from, to, host string, err error) {
+	logFailure(ctx, r.log, "move a node wake through its delivery states", err,
+		"wait", id, "from", from, "to", to, "host", host, "error", err)
 }
 
 // nodeGroupKey identifies a --wake all group: one thread, one group name.

@@ -118,7 +118,7 @@ func (s *RemoteServer) Serve(ctx context.Context, pinned string, in io.Reader, o
 		}
 		return s.refuse(out, frame, operation, nil, protocolErr)
 	}
-	if s.config.Replay == nil || !mutatingOperation(operation) {
+	if s.config.Replay == nil || !mutatingRequest(operation, request) {
 		return s.relay(ctx, frame, operation, request, credentials, buffered, out)
 	}
 	digest, err := frameDigest(frame)
@@ -146,7 +146,7 @@ func (s *RemoteServer) Serve(ctx context.Context, pinned string, in io.Reader, o
 			return s.refuse(out, frame, operation, &credentials,
 				&workerproto.ProtocolError{Code: workerproto.ErrorInternal, Message: err.Error(), RequestID: frame.RequestID})
 		}
-		return s.write(out, frame, operation, response, credentials)
+		return s.write(out, frame, operation, markReplayedAnswer(response), credentials)
 	}
 	response := s.respond(ctx, request, buffered, nil)
 	encoded, err := json.Marshal(response)
@@ -160,6 +160,60 @@ func (s *RemoteServer) Serve(ctx context.Context, pinned string, in io.Reader, o
 		return err
 	}
 	return s.write(out, frame, operation, response, credentials)
+}
+
+// markReplayedAnswer says on the answer itself that it came from the carrier's
+// cache: this request identity was answered before, so the work it asked for
+// happened then and not now. That is exactly what the printed "replayed" flag
+// means, and without this the flag is wrong on the path the fleet actually
+// uses. A "t3-steward task run" repeated with the same inputs derives the same
+// idempotency key, requestIdentity turns that key into the same request id,
+// and the carrier therefore answers from this cache. The submission service,
+// which does set Replay on a repeat, is never asked, so the first answer's
+// "replay": false was returned verbatim.
+//
+// The five answers named below are every one this carrier can return that
+// carries such a flag: a submission, a schedule definition, a graph amendment,
+// a supervision decision and an unknown-assignment recovery. A mutation answer
+// and a quarantine release have no flag to set, and a quarantine release has no
+// stable request id either, so neither is ever served from this cache.
+//
+// Nothing here is inferred. The carrier knows it served a cached answer; it
+// does not conclude "replay" from a run id that happens to match. When the
+// cached row has been pruned the operation re-executes and the service sets
+// the same flag from its own durable record, so the two layers agree instead
+// of contradicting each other, and an answer that carries no replay flag at
+// all, such as a refusal, is left alone.
+func markReplayedAnswer(response localResponse) localResponse {
+	if response.SubmissionResponse != nil {
+		replayed := *response.SubmissionResponse
+		replayed.Replay = true
+		response.SubmissionResponse = &replayed
+	}
+	if response.ScheduleDefinitionResponse != nil {
+		replayed := *response.ScheduleDefinitionResponse
+		replayed.Replay = true
+		response.ScheduleDefinitionResponse = &replayed
+	}
+	if response.GraphAmendment != nil {
+		replayed := *response.GraphAmendment
+		replayed.Replay = true
+		response.GraphAmendment = &replayed
+	}
+	if response.SupervisionResponse != nil {
+		replayed := *response.SupervisionResponse
+		replayed.Replay = true
+		response.SupervisionResponse = &replayed
+	}
+	if response.UnknownRecoveryResponse != nil {
+		// "backlog recover" derives its request id from the recovery ID, so a
+		// repeat reaches this cache as the same request and is answered from it.
+		// Without this line the answer said "applied" while applying nothing.
+		replayed := *response.UnknownRecoveryResponse
+		replayed.Replay = true
+		response.UnknownRecoveryResponse = &replayed
+	}
+	return response
 }
 
 // decodeCachedResponse reads back a cached answer strictly, so a corrupted row
@@ -197,6 +251,37 @@ func mutatingOperation(operation string) bool {
 	default:
 		return true
 	}
+}
+
+// mutatingRequest reports whether this request could repeat an external
+// effect. It is mutatingOperation refined by what the envelope actually asks
+// for, and it is consulted in place of the operation word alone because one
+// operation word carries both kinds: "node-wait" carries the registrations and
+// wake transitions that change the coordinator's records and the two lists that
+// only read them.
+//
+// The distinction is not a nicety. The wait runner of every host that is not the
+// coordinator lists node waits on every tick, and treating that read as a
+// mutation takes the coordinator's exclusive admin-replay lock, spends a request
+// identity and writes the whole answer into a store budgeted at 32 MiB and 4096
+// rows. That store is the fleet's 24-hour window for recovering the lost answer
+// to a submission; a read that carries no effect to deduplicate must not spend
+// it.
+//
+// Only the two list actions are reclassified. Everything else this operation
+// word carries, including the task-wake transitions and expiries the runner also
+// sends, keeps its replay protection.
+func mutatingRequest(operation string, request localRequest) bool {
+	if !mutatingOperation(operation) {
+		return false
+	}
+	if operation == localOperationNodeWait && request.NodeWait != nil {
+		switch request.NodeWait.Action {
+		case "list", "list-task":
+			return false
+		}
+	}
+	return true
 }
 
 func asProtocolError(err error) *workerproto.ProtocolError {

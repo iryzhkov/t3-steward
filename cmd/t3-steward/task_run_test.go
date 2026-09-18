@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
@@ -26,11 +27,23 @@ import (
 // submission and the thread resolution. Nothing here reaches a coordinator, a
 // git binary or the network.
 type taskRunHarness struct {
-	checkout     gitCheckout
-	checkoutErr  error
-	projects     []backlogadmin.Project
-	projectsErr  error
-	release      string
+	checkout    gitCheckout
+	checkoutErr error
+	projects    []backlogadmin.Project
+	projectsErr error
+	release     string
+	// coordinatorHost is the host the coordinator records on a registration
+	// that does not state one, which is its own hostname; callerHost is the
+	// host this command runs on. They differ, because every earlier test of
+	// this path ran where they did not.
+	coordinatorHost string
+	callerHost      string
+	// daemon is what this host's steward daemon last recorded about delivering
+	// node wakes, or nil for a host where it has recorded nothing: a daemon
+	// that is stopped, or that has not been restarted onto this release. The
+	// wake is sent by that daemon and not by this command, so the promise this
+	// command prints depends on it.
+	daemon       *nodeWakeDeliveryReceipt
 	matrix       backlogadmin.ViabilityMatrix
 	thread       string
 	threadErr    error
@@ -79,8 +92,15 @@ func newTaskRunHarness() *taskRunHarness {
 				Name: "other", Repository: "https://example.invalid/other.git", DefaultRef: "main",
 			},
 		},
-		matrix: backlogadmin.ViabilityMatrix{Outcome: backlogadmin.ViabilityReady},
-		thread: "thread-1",
+		matrix:          backlogadmin.ViabilityMatrix{Outcome: backlogadmin.ViabilityReady},
+		thread:          "thread-1",
+		release:         nodeWakeDeliveryHostRelease,
+		coordinatorHost: "normandy",
+		callerHost:      "omarchy-pc",
+		daemon: &nodeWakeDeliveryReceipt{
+			SchemaVersion: nodeWakeDeliveryReceiptSchema, Release: nodeWakeDeliveryHostRelease,
+			Host: "omarchy-pc", Interval: "15s", UpdatedAt: time.Now().UTC(),
+		},
 	}
 }
 
@@ -128,11 +148,33 @@ func (h *taskRunHarness) cli() taskRunCLI {
 			},
 			notify: func(_ context.Context, operation backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error) {
 				h.notified = append(h.notified, operation)
+				// The coordinator's own rule: it records the calling host when the
+				// registration states one and its own hostname when it does not.
+				host := operation.Host
+				if host == "" {
+					host = h.coordinatorHost
+				}
 				return backlogadmin.NodeWaitResponse{Waits: []domain.NodeWait{{
-					Request: operation.Request, Delivery: "pending",
+					Request: operation.Request, Delivery: "pending", Host: host,
 				}}}, nil
 			},
 			resolveThread: func(string) (string, error) { return h.thread, h.threadErr },
+			wakeHost:      func() (string, error) { return h.callerHost, nil },
+			// The release seam is the coordinator's own identity query and is
+			// deliberately not the query recorder below: the recorder measures the
+			// catalog path, which is a different question asked for a different
+			// reason.
+			release: func(context.Context) (string, error) { return h.release, nil },
+			// What this host's own daemon recorded about delivering node wakes.
+			// A host that has recorded nothing is the rollout case: the binary is
+			// new, the daemon has not been restarted, and nothing would deliver.
+			delivery: func() (nodeWakeDeliveryReceipt, string, error) {
+				const path = "/state/node-wake-delivery.json"
+				if h.daemon == nil {
+					return nodeWakeDeliveryReceipt{}, path, os.ErrNotExist
+				}
+				return *h.daemon, path, nil
+			},
 		},
 		query: func(_ context.Context, query backlogadmin.Query) (backlogadmin.Response, error) {
 			h.queries = append(h.queries, query.Kind)
@@ -307,6 +349,103 @@ func TestTaskRunIdempotencyKeyIsStableAndPromptSensitive(t *testing.T) {
 	}
 	if !keyAgain.Replayed {
 		t.Fatal("a replayed submission did not report replayed: true")
+	}
+}
+
+// Both printed forms have to say whether the run was started now or replayed.
+// Against the live fleet the second identical start returned the same run and
+// the same key and still printed "replayed: false" in text and in --json. The
+// cause was below this verb -- the remote carrier returned the first answer
+// from its cache verbatim, which markReplayedAnswer in internal/backlogadmin
+// now corrects -- and this pins the half that belongs here: given a truthful
+// answer, the first start says false and the repeat says true, in both forms.
+func TestTaskRunPrintsWhetherTheStartWasAReplayInBothForms(t *testing.T) {
+	h := newTaskRunHarness()
+	start := func() taskRunRecord {
+		t.Helper()
+		h.stdout.Reset()
+		if err := h.run("--model", "opus", "--json", "--", "the same prompt"); err != nil {
+			t.Fatal(err)
+		}
+		return h.record(t)
+	}
+	// One harness for both starts, so the coordinator side really has seen the
+	// key by the time the second one arrives.
+	if first := start(); first.Replayed {
+		t.Fatalf("a first submission reported replayed: %+v", first)
+	}
+	repeat := start()
+	if !repeat.Replayed {
+		t.Fatalf("the repeat of an identical start reported replayed: false: %+v", repeat)
+	}
+	if !bytes.Contains(h.stdout.Bytes(), []byte(`"replayed": true`)) {
+		t.Fatalf("--json did not print replayed: true\n%s", h.stdout.String())
+	}
+	var text bytes.Buffer
+	if err := renderTaskRunRecord(&text, repeat); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text.String(), "(replayed: true)") {
+		t.Fatalf("the text form did not say the start was replayed:\n%s", text.String())
+	}
+}
+
+// Contract 4 lists the route as {worker, instance, model, quotaPool}. When the
+// route was not pinned the JSON form dropped the worker key altogether while
+// the text form printed "route any t3-primary/...", so a caller reading the
+// document could not tell an unpinned run from a field nobody had implemented.
+// Both forms name the worker now, and they name the same one.
+func TestTaskRunNamesTheRouteWorkerInBothFormsPinnedOrNot(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"unpinned", nil, unpinnedWorker},
+		{"pinned with --worker", []string{"--worker", "omarchy-pc"}, "omarchy-pc"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newTaskRunHarness()
+			// Two eligible workers advertising the same instance and model is
+			// what leaves the derived worker empty. A single eligible worker
+			// decides the route by itself and is not the unpinned case.
+			h.projects[0].Workers = append(h.projects[0].Workers, backlogadmin.ProjectWorker{
+				Worker: "normandy", Advertises: true, Enrolled: true, Ready: true, State: "observed",
+				Routes: []backlogadmin.ProjectRoute{{Instance: "t3-primary", Model: "opus", QuotaPool: "pool-claude"}},
+			})
+			args := append(append([]string{}, test.args...), "--model", "opus", "--json", "--", "a prompt")
+			if err := h.run(args...); err != nil {
+				t.Fatal(err)
+			}
+			// Read the document as a document: a decode into taskRunRecord would
+			// fill the field with the zero value and hide an omitted key.
+			var document map[string]any
+			if err := json.Unmarshal(h.stdout.Bytes(), &document); err != nil {
+				t.Fatal(err)
+			}
+			route, ok := document["route"].(map[string]any)
+			if !ok {
+				t.Fatalf("the record carries no route object:\n%s", h.stdout.String())
+			}
+			worker, present := route["worker"]
+			if !present {
+				t.Fatalf("the JSON route omits the worker key:\n%s", h.stdout.String())
+			}
+			if worker != test.want {
+				t.Fatalf("the JSON route worker = %v, want %q", worker, test.want)
+			}
+			record := h.record(t)
+			if record.Route.Worker != test.want {
+				t.Fatalf("route worker = %q, want %q (%+v)", record.Route.Worker, test.want, record.Route)
+			}
+			var text bytes.Buffer
+			if err := renderTaskRunRecord(&text, record); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(text.String(), "route "+test.want+" t3-primary/opus@pool-claude\n") {
+				t.Fatalf("the text form does not name worker %q:\n%s", test.want, text.String())
+			}
+		})
 	}
 }
 
@@ -605,8 +744,8 @@ func TestTaskRunStartsAFullyExplicitRouteWhenTheCatalogIsRefused(t *testing.T) {
 		"--worker", "omarchy-pc", "--json", "--", "summarise the diff"); err != nil {
 		t.Fatal(err)
 	}
-	// The refusal costs nothing beyond the one query: it is never explained,
-	// because nothing on this path was waiting for the answer.
+	// The refusal is never explained, because nothing on this path was waiting
+	// for the answer: no status query is asked through the catalog seam.
 	for _, kind := range h.queries {
 		if kind == backlogadmin.QueryStatus {
 			t.Fatalf("the swallowed refusal was explained anyway: %v", h.queries)
@@ -776,5 +915,167 @@ func TestTaskRunTextRecordNamesTheResultCommand(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("the text record does not name %q:\n%s", want, text)
 		}
+	}
+}
+
+// The calling host is stated only to a coordinator that records it. An rc.70
+// coordinator decodes the registration with unknown fields disallowed, so a
+// client that always sent the field could start no task at all against a
+// coordinator one release behind, and a release this client cannot read is no
+// evidence that it can be read by the coordinator either.
+func TestTaskRunStatesTheCallingHostOnlyToACoordinatorThatRecordsIt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		release string
+		want    string
+	}{
+		{"records the calling host", nodeWakeDeliveryHostRelease, "omarchy-pc"},
+		{"newer still", "v0.12.0", "omarchy-pc"},
+		{"one release behind", "v0.11.0-rc.70", ""},
+		{"far behind", "v0.10.1", ""},
+		{"a release this client cannot read", "dev-build", ""},
+		{"no release at all", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTaskRunHarness()
+			h.release = tc.release
+			if err := h.run("--model", "opus", "--json", "--", "work"); err != nil {
+				t.Fatal(err)
+			}
+			if len(h.notified) != 1 {
+				t.Fatalf("registered %d waits, want 1", len(h.notified))
+			}
+			if h.notified[0].Host != tc.want {
+				t.Fatalf("the registration states host %q against a coordinator running %q, want %q",
+					h.notified[0].Host, tc.release, tc.want)
+			}
+			// Whether the field travels or not, the run itself is started: the
+			// compatibility rule costs the wake, never the work.
+			if record := h.record(t); record.Run != "run-1" {
+				t.Fatalf("record = %+v", record)
+			}
+		})
+	}
+}
+
+// A wake that cannot reach this host must not be reported as one that will.
+// The delivery host is read back from the coordinator's own answer, so the
+// report states what the coordinator recorded rather than what this client
+// asked for, and it says what to run instead of ending the turn.
+func TestTaskRunDoesNotPromiseAWakeItCannotDeliver(t *testing.T) {
+	h := newTaskRunHarness()
+	// The live shape: a caller on omarchy-pc, a coordinator on normandy that is
+	// one release behind and records itself as the delivery host.
+	h.release = "v0.11.0-rc.70"
+	if err := h.run("--model", "opus", "--", "work"); err != nil {
+		t.Fatal(err)
+	}
+	text := h.stdout.String()
+	if strings.Contains(text, "End this turn now") {
+		t.Fatalf("a wake that cannot be delivered was promised anyway:\n%s", text)
+	}
+	for _, want := range []string{
+		"undeliverable", "normandy", "omarchy-pc", "The run was started",
+		"do not end this turn", "t3-steward campaign show run-1",
+		"t3-steward task result run-1",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the report does not say %q:\n%s", want, text)
+		}
+	}
+
+	// The same fact in the JSON document, as a key a reader can branch on.
+	h = newTaskRunHarness()
+	h.release = "v0.11.0-rc.70"
+	if err := h.run("--model", "opus", "--json", "--", "work"); err != nil {
+		t.Fatal(err)
+	}
+	record := h.record(t)
+	if record.Notify == nil || record.Notify.Host != "normandy" || record.Notify.Undeliverable == "" {
+		t.Fatalf("notify = %+v", record.Notify)
+	}
+	if !strings.Contains(record.Notify.Undeliverable, nodeWakeDeliveryHostRelease) {
+		t.Fatalf("the reason does not name the release that fixes it: %q", record.Notify.Undeliverable)
+	}
+
+	// A coordinator that records the calling host promises the wake again, and
+	// the JSON says nothing about undeliverability at all.
+	h = newTaskRunHarness()
+	if err := h.run("--model", "opus", "--", "work"); err != nil {
+		t.Fatal(err)
+	}
+	if text := h.stdout.String(); !strings.Contains(text, "End this turn now") {
+		t.Fatalf("a deliverable wake was not promised:\n%s", text)
+	}
+	h = newTaskRunHarness()
+	if err := h.run("--model", "opus", "--json", "--", "work"); err != nil {
+		t.Fatal(err)
+	}
+	// Read the document as keys: decoding into the record would fill an absent
+	// key with the zero value and hide the difference.
+	var document map[string]any
+	if err := json.Unmarshal(h.stdout.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	notify, ok := document["notify"].(map[string]any)
+	if !ok {
+		t.Fatalf("the document has no notify object: %s", h.stdout.String())
+	}
+	if _, present := notify["undeliverable"]; present {
+		t.Fatalf("a deliverable wake carries an undeliverable key: %+v", notify)
+	}
+	if notify["host"] != "omarchy-pc" {
+		t.Fatalf("notify names host %v, want the calling host", notify["host"])
+	}
+}
+
+// The rollout case the hostname comparison cannot see. The coordinator is new
+// enough and records this host, so the two names agree -- and the wake is still
+// delivered by this host's steward daemon, which during an upgrade is the one
+// thing that has not been replaced. A command that promised a wake here would
+// be making exactly the promise this whole path exists to stop making.
+func TestTaskRunDoesNotPromiseAWakeItsOwnDaemonHasNotRecorded(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		daemon *nodeWakeDeliveryReceipt
+		want   []string
+	}{
+		{"a daemon that has recorded nothing", nil,
+			[]string{"recorded no node wake delivery", "restart the steward on omarchy-pc"}},
+		// A stale receipt is reported as what it is -- no fresh record of
+		// delivery -- and not as a stopped daemon, because a live daemon that
+		// cannot reach the coordinator, and one running with wait dry run on,
+		// leave the same evidence. The remedy has to cover all three.
+		{"a daemon that stopped an hour ago", &nodeWakeDeliveryReceipt{
+			SchemaVersion: nodeWakeDeliveryReceiptSchema, Release: nodeWakeDeliveryHostRelease,
+			Host: "omarchy-pc", Interval: "15s", UpdatedAt: time.Now().Add(-time.Hour).UTC(),
+		}, []string{"Nothing here is delivering node wakes now", "wait dry run",
+			"on omarchy-pc check that the steward is running"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTaskRunHarness()
+			h.daemon = tc.daemon
+			if err := h.run("--model", "opus", "--", "work"); err != nil {
+				t.Fatal(err)
+			}
+			text := h.stdout.String()
+			if strings.Contains(text, "End this turn now") {
+				t.Fatalf("a wake no daemon here is known to deliver was promised anyway:\n%s", text)
+			}
+			for _, want := range append(append([]string{}, tc.want...),
+				// The run itself is unaffected: it was started, and the report
+				// says how to watch it instead of waiting for a wake.
+				"The run was started", "do not end this turn", "t3-steward campaign show run-1",
+			) {
+				if !strings.Contains(text, want) {
+					t.Fatalf("the report does not say %q:\n%s", want, text)
+				}
+			}
+			// The registration still states the calling host, because the
+			// coordinator records it correctly; what is unproven is the delivery.
+			if len(h.notified) != 1 || h.notified[0].Host != "omarchy-pc" {
+				t.Fatalf("registered %+v", h.notified)
+			}
+		})
 	}
 }

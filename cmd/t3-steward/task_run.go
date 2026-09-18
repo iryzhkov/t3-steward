@@ -104,11 +104,33 @@ type taskRunRecord struct {
 // taskRunRoute is the route the run was started on. Worker is the worker the
 // task will run on when that is already decided, either because --worker
 // pinned it or because exactly one eligible worker advertises the route.
+//
+// Worker has no omitempty: contract 4 lists it among the route's four keys, and
+// a key that disappears when the route is not pinned makes a reader of the JSON
+// guess whether the run is unpinned or the field was never implemented. The
+// printed record names it either way; see printedRoute.
 type taskRunRoute struct {
-	Worker    string `json:"worker,omitempty"`
+	Worker    string `json:"worker"`
 	Instance  string `json:"instance"`
 	Model     string `json:"model"`
 	QuotaPool string `json:"quotaPool,omitempty"`
+}
+
+// unpinnedWorker is what the route's worker is called when the run may go to
+// any eligible worker. The text form has always said it; printedRoute makes
+// the JSON form say the same word rather than leaving the key out.
+const unpinnedWorker = "any"
+
+// printedRoute is the route as the record prints it, in both forms: the worker
+// is always named. The empty worker of the derived route means "not pinned",
+// and it stays empty everywhere else -- the campaign manifest and the
+// idempotency key are built from the derived route before this, so naming the
+// unpinned worker here cannot pin anything or change a key.
+func printedRoute(route taskRunRoute) taskRunRoute {
+	if route.Worker == "" {
+		route.Worker = unpinnedWorker
+	}
+	return route
 }
 
 // gitCheckout is what the current directory says about itself. It is a value
@@ -410,7 +432,7 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 		Project:        project.Name,
 		Ref:            ref,
 		Fresh:          parsed.fresh,
-		Route:          route,
+		Route:          printedRoute(route),
 		IdempotencyKey: response.Key,
 		Replayed:       response.Replay,
 		Check:          string(matrix.Outcome),
@@ -959,13 +981,10 @@ func writeTaskRunCampaign(spec taskRunCampaign) (string, error) {
 // renderTaskRunRecord prints the record as text. It ends with the two things
 // the caller does next: end the turn, and collect the result on wake.
 func renderTaskRunRecord(out io.Writer, record taskRunRecord) error {
-	worker := record.Route.Worker
-	if worker == "" {
-		worker = "any"
-	}
-	route := worker + " " + record.Route.Instance + "/" + record.Route.Model
-	if record.Route.QuotaPool != "" {
-		route += "@" + record.Route.QuotaPool
+	printed := printedRoute(record.Route)
+	route := printed.Worker + " " + printed.Instance + "/" + printed.Model
+	if printed.QuotaPool != "" {
+		route += "@" + printed.QuotaPool
 	}
 	ref := record.Ref
 	if record.Fresh {
@@ -978,11 +997,20 @@ func renderTaskRunRecord(out io.Writer, record taskRunRecord) error {
 	fmt.Fprintf(out, "route %s\n", route)
 	fmt.Fprintf(out, "idempotency-key %s (replayed: %t)\n", record.IdempotencyKey, record.Replayed)
 	fmt.Fprintf(out, "check %s\n", record.Check)
-	if record.Notify != nil {
+	switch {
+	case record.Notify == nil:
+		fmt.Fprint(out, "notify none: nothing will wake a thread when this run ends\n")
+	case record.Notify.Undeliverable == "":
 		fmt.Fprintf(out, "notify thread %s (wait %s)\n", record.Notify.ThreadID, record.Notify.WaitID)
 		fmt.Fprint(out, "End this turn now; the steward wakes this thread when the run ends.\n")
-	} else {
-		fmt.Fprint(out, "notify none: nothing will wake a thread when this run ends\n")
+	default:
+		// The run exists and the wait exists; what does not exist is a path from
+		// one to this thread. Promising a wake here is worse than promising
+		// nothing, because the agent would end its turn on it.
+		fmt.Fprintf(out, "notify thread %s (wait %s) undeliverable: %s\n",
+			record.Notify.ThreadID, record.Notify.WaitID, record.Notify.Undeliverable)
+		fmt.Fprintf(out, "The run was started. Nothing will wake this thread, so do not end this turn "+
+			"waiting for a wake.\nWatch it instead with:\n  t3-steward campaign show %s\n", record.Run)
 	}
 	_, err := fmt.Fprintf(out, "next:\n  %s\n", record.Result)
 	return err

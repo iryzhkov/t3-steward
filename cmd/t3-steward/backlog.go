@@ -132,13 +132,24 @@ func newBacklogRunner(cfg config.Config, store *sqlite.Store, control backlog.Co
 	}, store, control), nil
 }
 
+// isCoordinatorAdmin decides which of cmdBacklog's dispatchers a command word
+// belongs to. It has to agree with two other places -- the verbs backlogUsage
+// documents and the verbs the admin parser implements -- and when it does not,
+// a documented verb dies quietly in the legacy dispatcher as "unknown backlog
+// command". The revision-fenced controls therefore ask isBacklogMutation, the
+// same predicate the parser uses, rather than repeating its list; every other
+// verb is named here and TestEveryDocumentedBacklogCommandReachesItsDispatcher
+// drives the whole documented set through cmdBacklog to keep the three in
+// agreement.
 func isCoordinatorAdmin(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
+	if isBacklogMutation(args[0]) {
+		return true
+	}
 	switch args[0] {
-	case "submit", "status", "workers", "edge", "run", "diagnose", "graph", "task", "events", "explain", "artifacts", "artifact", "commands", "command", "show", "quarantine",
-		"start", "delay", "pause", "resume", "cancel", "retry", "skip", "recover":
+	case "submit", "status", "projects", "workers", "edge", "run", "diagnose", "graph", "task", "events", "explain", "artifacts", "artifact", "commands", "command", "show", "quarantine", "recover":
 		return true
 	case "list":
 		return len(args) != 2 || args[1] != "--all"
@@ -193,11 +204,30 @@ func cmdBacklog(g globalFlags, args []string) error {
 		return err
 	}
 	if isCoordinatorAdmin(args) {
-		return runCoordinatorAdmin(cfg, args, false)
+		return backlogAdminRoute(cfg, args, false)
 	}
 	if args[0] == "backup" {
-		return runBacklogBackup(context.Background(), cfg, args[1:])
+		return backlogBackupRoute(context.Background(), cfg, args[1:])
 	}
+	return backlogLegacyRoute(cfg, args)
+}
+
+// backlogAdminRoute, backlogBackupRoute and backlogLegacyRoute are the three
+// dispatchers that live behind the single name "backlog". They are variables
+// rather than direct calls so that a test can ask which one a documented verb
+// reaches without a coordinator, a state database or a network: the routing is
+// the thing that was wrong, and executing the dispatcher would hide it.
+var (
+	backlogAdminRoute  = runCoordinatorAdmin
+	backlogBackupRoute = runBacklogBackup
+	backlogLegacyRoute = runBacklogLegacy
+)
+
+// runBacklogLegacy serves the offline task-file helpers: they read and write
+// this host's backlog directory and its state database and reach no
+// coordinator. A verb that is not one of them is refused here, which is where
+// a coordinator verb missing from isCoordinatorAdmin ends up.
+func runBacklogLegacy(cfg config.Config, args []string) error {
 	dir, err := cfg.ResolveBacklogDir()
 	if err != nil {
 		return err

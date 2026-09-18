@@ -201,10 +201,15 @@ func TestCoordinatorExchangeHelperProcess(t *testing.T) {
 // newClient builds a further client against the same coordinator, which is what
 // a retry from a new CLI invocation actually is: a fresh session id.
 type remoteHarness struct {
-	client    *SSHClient
-	service   *remoteFakeService
-	argv      *[][]string
-	newClient func(*testing.T) *SSHClient
+	client  *SSHClient
+	service *remoteFakeService
+	argv    *[][]string
+	// replayRoot is the coordinator's replay store on disk, or empty when the
+	// harness runs without one. A test reads it to say which requests the
+	// carrier decided to protect, which is the same question as which requests
+	// take the coordinator's exclusive admin lock and spend its budget.
+	replayRoot string
+	newClient  func(*testing.T) *SSHClient
 }
 
 func newRemoteHarness(t *testing.T, replay bool) remoteHarness {
@@ -261,7 +266,7 @@ func newRemoteHarness(t *testing.T, replay bool) remoteHarness {
 		}
 		return client
 	}
-	return remoteHarness{client: newClient(t), service: service, argv: recorded, newClient: newClient}
+	return remoteHarness{client: newClient(t), service: service, argv: recorded, replayRoot: replayRoot, newClient: newClient}
 }
 
 func TestRemoteCarrierRoundTripAndPrincipalOverwrite(t *testing.T) {
@@ -384,6 +389,20 @@ func TestRemoteCarrierReplayProducesExactlyOneRunAcrossProcesses(t *testing.T) {
 	}
 	if harness.service.submissions != 1 {
 		t.Fatalf("submissions = %d, want exactly 1", harness.service.submissions)
+	}
+	// The answer has to say which of the two it is. The first submission did
+	// the work; the second was served from the carrier's cache and did none,
+	// which is what "replayed" means to the caller. Before this was asserted,
+	// the cached answer was returned verbatim and every repeat of a remote
+	// "t3-steward task run" printed "replayed: false" while replaying.
+	//
+	// The fake service never sets Replay, so nothing but the carrier can make
+	// the second answer true here.
+	if first.Replay {
+		t.Fatal("the first submission reported itself a replay")
+	}
+	if !second.Replay {
+		t.Fatalf("the replayed submission reported replay=false: %+v", second)
 	}
 }
 
