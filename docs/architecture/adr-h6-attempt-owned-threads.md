@@ -151,7 +151,14 @@ Regression tests, each failing on the base commit `e1a0a90`: `TestOwnedThreadInt
 `TestTaskDetailCarriesAttemptEvidence` (backlogadmin); `TestBacklogMutationRetriesOnceAfterStaleRevision`,
 `TestBacklogMutationHonoursExplicitRevisionAndCommandID`, `TestThreadStopDispatchesInterruptAndSession`
 (cmd); `TestBurnRateProjectionDrainsButNeverStopsBelowStopPercent`, `TestRunwayMarginOneIgnoresExhaustionAfterReset`,
-`TestStoppedAtFollowsTheStopAndTheReset` (policy); `TestUserStartedTurnIsNotReStoppedWhileBucketStopped`,
+`TestStoppedAtFollowsTheStopAndTheReset`, `TestGraceTimerStops` (policy; the S-18 test ticks through the
+drain grace and the grace tests use a projection at the hard-stop floor); `TestUserStartedTurnIsNotReStoppedWhileBucketStopped`,
+`TestSettledAttemptThreadIntentIsCancelled`, `TestGraceExpiryStopsWithoutNewEvent` (daemon);
+`TestSnapshotOmitsPauseFieldsUnlessQuotaObservationsWereAsked` (an rc.66-shaped strict decoder accepts
+the unasked snapshot), `TestFinishedTurnIsCollectedNotPausedWhileBucketStopped`,
+`TestJournalThreadOwnershipExpiresWithTheLease`, `TestLocalQuotaStopPrefersDrainAndEscalatesAfterTheWindow`,
+`TestJournalToleratesUnknownFieldsWithinTheVersion` (workerruntime);
+`TestOlderWorkerSnapshotReconcilesWithoutGatedFields` (backlog);
 `TestDrainNoticeNamesTimeToExhaustion` (daemon).
 
 Live validation still owed: a supervised campaign with a forced quota stop on the worker host
