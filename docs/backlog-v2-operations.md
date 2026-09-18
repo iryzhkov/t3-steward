@@ -552,9 +552,14 @@ receipt.
 What blocks a reload is a catalog change on a worker that still holds a
 retained assignment, meaning one that is neither `completed` nor `released`,
 at any phase, including a paused attempt and a parked one. A worker whose
-catalog revision does not change never blocks, so a policy change, a drain
-(`accept_backlog: false`) or a change to another worker's projects reloads
-with work in flight. The refusal names every blocking assignment with its
+catalog revision does not change never blocks. Only `scheduling`, the quota
+pool definitions outside a worker's entry, a drain (`accept_backlog: false`)
+and a change to another worker's entry or projects reload with work in
+flight. The `leases`, `freshness`, `message_limits` and `transport` settings
+are part of every connected worker's catalog revision, so a change to any of
+them is refused, exactly like a project change, while any connected worker
+holds a retained assignment; the receipt's `blockers` name the assignments
+that kept it. The refusal names every blocking assignment with its
 worker, its attempt, the attempt's progress and control, the phase the worker
 last reported and the action that unblocks it:
 
