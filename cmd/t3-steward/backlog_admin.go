@@ -705,6 +705,20 @@ func renderWorkflows(out io.Writer, workflows []backlogadmin.WorkflowSummary) {
 	_ = table.Flush()
 }
 
+// workflowTaskWaits is the task-bound waits of a run document, from whichever
+// key the coordinator that answered uses. This client reads taskWaits; a
+// coordinator of the previous release sends only the deprecated waits key, and
+// a mixed-version window is the normal state during a release, so without the
+// fallback "campaign show" against an older coordinator would print a parked
+// task with nothing to say about what it is parked on. The fallback goes away
+// with the deprecated key.
+func workflowTaskWaits(detail *backlogadmin.WorkflowDetail) []backlogadmin.TaskWaitDetail {
+	if len(detail.TaskWaits) != 0 {
+		return detail.TaskWaits
+	}
+	return detail.Waits
+}
+
 func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 	if detail == nil {
 		return
@@ -730,7 +744,7 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 		// satisfy or cancel.
 		// A settled wait is listed too, with its outcome: it is what became
 		// of the wait the previous answer reported as live.
-		for _, wait := range detail.TaskWaits {
+		for _, wait := range workflowTaskWaits(detail) {
 			if wait.TaskID != task.Task.ID {
 				continue
 			}
@@ -978,6 +992,18 @@ func renderSchedules(out io.Writer, schedules []backlogadmin.Schedule, selector 
 // revision, one line per task, the live task-bound waits, the node waits, the
 // workers holding this run's assignments and what the coordinator could not
 // read. --json carries the whole document.
+// diagnosisNodeWaits is the interactive node waits of a diagnosis, from
+// whichever key the coordinator that answered uses. In a diagnosis the
+// deprecated waits key is the node waits, and a coordinator of the previous
+// release sends only that one; taskWaits is not renamed here, so it needs no
+// fallback. The fallback goes away with the deprecated key.
+func diagnosisNodeWaits(diagnosis *backlogadmin.Diagnosis) []domain.NodeWait {
+	if len(diagnosis.NodeWaits) != 0 {
+		return diagnosis.NodeWaits
+	}
+	return diagnosis.Waits
+}
+
 func renderDiagnosis(out io.Writer, diagnosis *backlogadmin.Diagnosis) {
 	if diagnosis == nil {
 		return
@@ -1006,9 +1032,9 @@ func renderDiagnosis(out io.Writer, diagnosis *backlogadmin.Diagnosis) {
 		live++
 		fmt.Fprintf(out, "  %s task=%s attempt=%s %q: %s (deadline %s)\n", wait.ID, wait.TaskID, wait.AttemptID, wait.Name, wait.Condition, formatTime(wait.Deadline))
 	}
-	if len(diagnosis.NodeWaits) != 0 {
+	if nodeWaits := diagnosisNodeWaits(diagnosis); len(nodeWaits) != 0 {
 		fmt.Fprintln(out, "node waits:")
-		for _, wait := range diagnosis.NodeWaits {
+		for _, wait := range nodeWaits {
 			fmt.Fprintf(out, "  %s %q thread=%s host=%s delivery=%s (deadline %s)\n", wait.Request.ID, wait.Request.Name, wait.Request.ThreadID, wait.Host, wait.Delivery, formatTime(wait.Deadline))
 		}
 	}

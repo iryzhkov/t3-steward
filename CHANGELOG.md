@@ -124,7 +124,11 @@ All notable changes to this project are documented here. The format follows
   reader that decodes it strictly still reads it. **Deprecated: `waits` is kept
   for one release** so that a client of the previous release keeps working;
   read `taskWaits` and `nodeWaits`, whose names mean the same thing in both
-  documents. The text
+  documents. The compatibility runs both ways for that release: this client
+  renders `waits` when a coordinator of the previous release sends only that
+  key, so `campaign show` and `diagnose` during a mixed-version window still
+  say what a parked task is waiting for. That fallback goes away with the
+  deprecated key. The text
   form of a run prints a settled wait with its outcome instead of dropping it.
 - `backlog workers` prints, under the worker table, what each worker can
   actually take: the projects it advertises and its instance/model@pool
