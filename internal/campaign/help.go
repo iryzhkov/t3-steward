@@ -330,8 +330,7 @@ Recovery:
   repository-syntax-invalid  fix backlog_v2.projects.<name>.repository
   ref-not-found              fix environment.ref in workflow.yaml
   no-configured-route        add the instance and model to an eligible worker
-  catalog-digest-mismatch    t3-steward worker enroll <host>
-                               --catalog-revision <desired>
+  catalog-digest-mismatch    t3-steward worker enroll <worker> --current-catalog --reason TEXT   (on the coordinator host)
 
 Exit codes: 0 when the campaign is ready or accepted_waiting, 8 when it is
 impossible, and the transport classes 3 to 7 when the coordinator could not be
