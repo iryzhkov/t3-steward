@@ -38,6 +38,12 @@ const (
 	// run, so the run-scoped event view cannot show them and an operator had no
 	// way to see them at all.
 	QueryQuarantine QueryKind = "quarantine"
+	// QueryProjects lists the projects this coordinator is configured with,
+	// each with its repository, default ref and setup profile, and the workers
+	// that could take its work. It exists so that a client can match a checkout
+	// to a fleet project and choose a route the fleet actually offers without
+	// reading every worker's inventory itself.
+	QueryProjects QueryKind = "projects"
 )
 
 // QueryKinds is every declared query kind. A query kind is a read view by
@@ -54,7 +60,7 @@ func QueryKinds() []QueryKind {
 		QueryStatus, QueryWorkflows, QueryWorkflow, QueryGraph, QueryDiagnose,
 		QueryTask, QueryExplanation, QueryEvents, QueryArtifacts, QueryArtifact,
 		QuerySchedules, QueryWorkers, QueryQuota, QueryReservations, QueryLocks,
-		QueryCommands, QueryRecovery, QueryViability, QueryQuarantine,
+		QueryCommands, QueryRecovery, QueryViability, QueryQuarantine, QueryProjects,
 	}
 }
 
@@ -192,6 +198,52 @@ type Response struct {
 	// when nothing is quarantined, which the text renderer states in words so
 	// that an empty answer is never mistaken for a failed query.
 	Quarantine []QuarantinedIntake `json:"quarantine,omitempty"`
+	// Projects is the whole catalog on a QueryProjects response, or the one
+	// project the filter named.
+	Projects []Project `json:"projects,omitempty"`
+}
+
+// Project is one configured fleet project as the projects query reports it.
+type Project struct {
+	Name         string `json:"name"`
+	Repository   string `json:"repository,omitempty"`
+	DefaultRef   string `json:"defaultRef,omitempty"`
+	Type         string `json:"type,omitempty"`
+	SetupProfile string `json:"setupProfile,omitempty"`
+	// Workers are the workers that could take this project's work: every
+	// worker the configuration names for it and every worker whose inventory
+	// advertises it. A worker on neither list is not eligible and is not
+	// listed.
+	Workers []ProjectWorker `json:"workers"`
+}
+
+// ProjectWorker is one eligible worker of a project with what a client needs
+// to know before choosing it: whether it is enrolled and ready now, and which
+// provider routes it advertises.
+type ProjectWorker struct {
+	Worker string `json:"worker"`
+	// Configured reports that backlog_v2.projects.<name>.workers names it.
+	Configured bool `json:"configured"`
+	// Advertises reports that the worker's inventory lists the project as
+	// available.
+	Advertises bool `json:"advertises"`
+	Enrolled   bool `json:"enrolled"`
+	// Ready reports a fresh, connected, enrolled worker whose inventory is
+	// healthy and accepting backlog: the same judgement the workers view makes.
+	Ready  bool   `json:"ready"`
+	State  string `json:"state"`
+	Health string `json:"health,omitempty"`
+	// Routes are the instance, model and quota pool triples the worker's
+	// inventory advertises as available, one per model.
+	Routes []ProjectRoute `json:"routes,omitempty"`
+}
+
+// ProjectRoute is one advertised provider route. QuotaPool is the pool the
+// worker's inventory binds the instance to, and is empty when it binds none.
+type ProjectRoute struct {
+	Instance  string `json:"instance"`
+	Model     string `json:"model"`
+	QuotaPool string `json:"quotaPool,omitempty"`
 }
 
 type Status struct {

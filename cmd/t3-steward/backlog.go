@@ -29,6 +29,11 @@ Stopped coordinator backup commands:
 
 Coordinator read commands:
   status [--include-sink] [--json]
+  projects [--project NAME] [--json]
+       The configured projects (repository, default ref, setup profile) and,
+       per project, the eligible workers with the instance/model routes they
+       advertise. "t3-steward task run" derives its project and route from this.
+  workers [--json]
   list [--project P] [--schedule S] [--progress STATES] [--class CLASS]
        [--worker W] [--quota-pool Q] [--include-sink] [--json]
   show <workflow-run> [--include-sink] [--json]

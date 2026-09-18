@@ -18,7 +18,8 @@ func isolationCampaign(t *testing.T, project string) string {
 	t.Helper()
 	root := t.TempDir()
 	manifest := "version: 2\nname: " + project + "-work\nenvironment:\n  project: " + project +
-		"\ntasks:\n  implement:\n    prompt_file: prompts/implement.md\n"
+		"\nroutes:\n  - instance: t3-primary\n    model: opus\n" +
+		"tasks:\n  implement:\n    prompt_file: prompts/implement.md\n"
 	for name, content := range map[string]string{
 		"workflow.yaml":        manifest,
 		"prompts/implement.md": "implement the plan\n",
@@ -45,6 +46,9 @@ func isolationReadinessService(t *testing.T) (*backlogadmin.Service, *sqlite.Sto
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	if err := store.SaveCoordinatorRecords(context.Background(), probeQuotaPools()); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.SaveWorkerSnapshot(context.Background(), probeWorkerSnapshot("homelab")); err != nil {
 		t.Fatal(err)
 	}

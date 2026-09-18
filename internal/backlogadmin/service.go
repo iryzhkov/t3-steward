@@ -327,6 +327,11 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		}
 		matrix := view.viability(ctx, s.viabilitySettings, *query.Viability)
 		response.Viability = &matrix
+	case QueryProjects:
+		if !s.viabilitySettings.configured() {
+			return Response{}, fmt.Errorf("%w: this coordinator has no project catalog to list", ErrInvalidQuery)
+		}
+		response.Projects = view.projects(s.viabilitySettings, query.Filter)
 	}
 	return response, nil
 }
@@ -376,7 +381,7 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 func validQuery(query Query) bool {
 	switch query.Kind {
 	case QueryStatus, QueryWorkflows, QuerySchedules, QueryWorkers, QueryQuota,
-		QueryReservations, QueryLocks, QueryQuarantine:
+		QueryReservations, QueryLocks, QueryQuarantine, QueryProjects:
 		return true
 	case QueryCommands:
 		return query.TaskID == "" || query.WorkflowRunID != ""

@@ -594,10 +594,15 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			"effect", "no credentials, resource locks or directory resources",
 			"remedy", "add a backlog_v2.projects entry only if the project needs host-local bindings")
 	}
+	projectWorkers := make(map[string][]string, len(cfg.BacklogV2.Projects))
+	for name, project := range cfg.BacklogV2.Projects {
+		projectWorkers[name] = append([]string(nil), project.Workers...)
+	}
 	service.SetViability(backlogadmin.ViabilitySettings{
 		Projects:          fleetProjects,
 		SetupProfiles:     fleetProfiles,
 		DefaultedProjects: cfg.DefaultedFleetProjects(),
+		ProjectWorkers:    projectWorkers,
 		MaxBundleBytes:    cfg.BacklogV2.MessageLimits.MaxBytes,
 		MaxBundleFiles:    cfg.BacklogV2.MessageLimits.MaxFiles,
 		// Repository reachability is observed on the candidate worker, over the

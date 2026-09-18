@@ -2,8 +2,10 @@ package backlog
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -70,5 +72,45 @@ func TestSubmissionServicePreservesLegacySingleTaskCompatibility(t *testing.T) {
 	}
 	if string(raw) != task.Prompt {
 		t.Fatalf("prompt = %q", raw)
+	}
+}
+
+// TestSubmissionServiceRefusesALegacyTaskWithoutARoute is the legacy side of
+// the no-route rule: a task file that names no instance and model is refused
+// at intake, permanently and as a content conflict, so the legacy source
+// quarantines it once rather than creating a run the planner cannot place.
+func TestSubmissionServiceRefusesALegacyTaskWithoutARoute(t *testing.T) {
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	storage := filepath.Join(t.TempDir(), "storage")
+	t.Cleanup(func() { _ = removeIngestedTree(storage) })
+	service := &SubmissionService{
+		StorageRoot: storage, Store: store, MaxBytes: 1 << 20, MaxFiles: 16,
+	}
+	for name, task := range map[string]Task{
+		"neither":       {Project: "steward", Title: "Continue", Prompt: "do the work"},
+		"model only":    {Project: "steward", Title: "Continue", Prompt: "do the work", Model: "claude-haiku-4-5"},
+		"instance only": {Project: "steward", Title: "Continue", Prompt: "do the work", Instance: "claudeAgent"},
+	} {
+		_, err := service.SubmitSingleTask(context.Background(), SingleTaskSubmission{IdempotencyKey: "legacy-" + name, Task: task})
+		if err == nil {
+			t.Fatalf("%s: a route-less legacy task was accepted", name)
+		}
+		if !errors.Is(err, ErrPermanentIntake) || !errors.Is(err, domain.ErrSubmissionConflict) {
+			t.Fatalf("%s: the refusal is not a permanent content conflict: %v", name, err)
+		}
+		if !strings.Contains(err.Error(), "no-route") {
+			t.Fatalf("%s: the refusal does not name no-route: %v", name, err)
+		}
+	}
+	records, err := store.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records.Workflows) != 0 {
+		t.Fatalf("a refused legacy task created %d workflow(s)", len(records.Workflows))
 	}
 }

@@ -32,9 +32,22 @@ func probeWorkerSnapshot(workerID string) domain.WorkerSnapshot {
 			CatalogRevision: probeCatalogDigest, Epoch: "worker-1",
 			Capabilities: []string{"git"},
 			Projects:     []domain.WorkerProjectInventory{{Name: "dev-fleet", Available: true}},
-			ObservedAt:   probeNow,
+			// Intake refuses a task with no route, so the fixture campaign names
+			// one and the worker has to advertise it.
+			Providers: []domain.WorkerProviderInventory{{
+				InstanceID: "t3-primary", Models: []string{"opus"}, QuotaPoolID: "pool-1", Available: true,
+			}},
+			ObservedAt: probeNow,
 		},
 	}
+}
+
+// probeQuotaPools is the one pool the fixture route resolves to.
+func probeQuotaPools() sqlite.CoordinatorRecords {
+	return sqlite.CoordinatorRecords{QuotaPools: []domain.QuotaPool{{
+		ID: "pool-1", Provider: "t3", ProviderInstanceIDs: []string{"t3-primary"},
+		MaxConcurrent: 4, Admission: domain.AdmissionOpen,
+	}}}
 }
 
 // probeReadinessService builds a coordinator that answers viability from a real
@@ -47,6 +60,9 @@ func probeReadinessService(t *testing.T, observer backlogadmin.RepositoryObserve
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	if err := store.SaveCoordinatorRecords(context.Background(), probeQuotaPools()); err != nil {
+		t.Fatal(err)
+	}
 	for _, workerID := range workerIDs {
 		if err := store.SaveWorkerSnapshot(context.Background(), probeWorkerSnapshot(workerID)); err != nil {
 			t.Fatal(err)
@@ -77,6 +93,7 @@ func probeViabilityMatrix(t *testing.T, service *backlogadmin.Service) backlogad
 	request := backlogadmin.ViabilityRequest{Tasks: []backlogadmin.ViabilityTask{{
 		Name: "implement", Project: "dev-fleet", Ref: "main",
 		Class: domain.TaskClassRequired, Capabilities: []string{"git"},
+		Routes: []domain.ProviderRoute{{ProviderInstanceID: "t3-primary", Model: "opus"}},
 	}}}
 	response, err := service.Query(context.Background(), backlogadmin.Query{
 		Version: backlogadmin.Version, Kind: backlogadmin.QueryViability,

@@ -41,6 +41,12 @@ const (
 	ReasonRepositoryNotFound      = "repository-not-found"
 	ReasonRefNotFound             = "ref-not-found"
 	ReasonNoConfiguredRoute       = "no-configured-route"
+	// ReasonNoRoute means the task declares no provider route at all. The
+	// coordinator never chooses a route on a task's behalf: a task with none
+	// is not dispatchable, and before this code existed it was accepted and
+	// then stalled planning for every run on every tick. The detail names the
+	// instance/model pairs the project's eligible workers advertise.
+	ReasonNoRoute = "no-route"
 	// ReasonSupervisorClientMissing means the coordinator has no admin client
 	// with supervisor: true, so it would dispatch no overseer for this campaign
 	// and every gate the manifest declares would wait for an operator. It is
@@ -116,6 +122,7 @@ var permanentReasons = map[string]bool{
 	ReasonRepositoryNotFound:      true,
 	ReasonRefNotFound:             true,
 	ReasonNoConfiguredRoute:       true,
+	ReasonNoRoute:                 true,
 	ReasonSupervisorClientMissing: true,
 	ReasonTimingWindowClosed:      true,
 	ReasonMessageLimitExceeded:    true,

@@ -293,6 +293,16 @@ func parseBacklogAdminQueryWithoutSink(args []string) (backlogadmin.Query, bool,
 			return backlogadmin.Query{}, false, errors.New("backlog workers takes no arguments")
 		}
 		return backlogadmin.Query{Kind: backlogadmin.QueryWorkers}, asJSON, nil
+	case "projects":
+		query := backlogadmin.Query{Kind: backlogadmin.QueryProjects}
+		switch {
+		case len(clean) == 1:
+		case len(clean) == 3 && clean[1] == "--project" && strings.TrimSpace(clean[2]) != "":
+			query.Filter.Project = clean[2]
+		default:
+			return backlogadmin.Query{}, false, errors.New("backlog projects usage: backlog projects [--project NAME] [--json]")
+		}
+		return query, asJSON, nil
 	case "status":
 		if len(clean) != 1 {
 			return backlogadmin.Query{}, false, errors.New("backlog status takes no arguments")
@@ -496,6 +506,8 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 			fmt.Fprintf(table, "%s\t%s\t%s\t%t\t%.1f\t%s\n", worker.Snapshot.WorkerID, worker.State, worker.Health, worker.Enrolled, worker.SnapshotAgeSeconds, worker.Snapshot.Inventory.CatalogRevision)
 		}
 		return table.Flush()
+	case backlogadmin.QueryProjects:
+		return renderProjects(out, response.Projects)
 	case backlogadmin.QueryStatus:
 		renderStatus(out, response.Status)
 	case backlogadmin.QueryWorkflows:
@@ -533,6 +545,62 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 // into a column, because it is the whole point of the view, and the retry rule
 // is stated every time so that an operator never has to guess whether editing
 // the file is enough.
+// renderProjects prints the catalog as one table and, under it, one table per
+// project of the workers that could take its work with the routes each one
+// advertises. It is the text form of what "run" derives a project and a route
+// from, so an operator can see the same facts an agent acts on.
+func renderProjects(out io.Writer, projects []backlogadmin.Project) error {
+	if len(projects) == 0 {
+		_, err := fmt.Fprintln(out, "no project matched; this coordinator's catalog is backlog_v2.projects")
+		return err
+	}
+	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(table, "PROJECT\tREPOSITORY\tDEFAULT REF\tTYPE\tSETUP PROFILE\tELIGIBLE WORKERS")
+	for _, project := range projects {
+		names := make([]string, 0, len(project.Workers))
+		for _, worker := range project.Workers {
+			names = append(names, worker.Worker)
+		}
+		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n", project.Name, project.Repository, project.DefaultRef,
+			firstNonEmptyText(project.Type, "git"), project.SetupProfile, campaignList(names))
+	}
+	if err := table.Flush(); err != nil {
+		return err
+	}
+	for _, project := range projects {
+		if len(project.Workers) == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "\n%s workers:\n", project.Name)
+		workers := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(workers, "  WORKER\tSTATE\tCONFIGURED\tADVERTISES\tENROLLED\tREADY\tROUTES (instance/model@pool)")
+		for _, worker := range project.Workers {
+			routes := make([]string, 0, len(worker.Routes))
+			for _, route := range worker.Routes {
+				label := route.Instance + "/" + route.Model
+				if route.QuotaPool != "" {
+					label += "@" + route.QuotaPool
+				}
+				routes = append(routes, label)
+			}
+			fmt.Fprintf(workers, "  %s\t%s\t%t\t%t\t%t\t%t\t%s\n", worker.Worker, worker.State,
+				worker.Configured, worker.Advertises, worker.Enrolled, worker.Ready, campaignList(routes))
+		}
+		if err := workers.Flush(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// firstNonEmptyText returns value, or fallback when value is empty.
+func firstNonEmptyText(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
 func renderQuarantine(out io.Writer, quarantined []backlogadmin.QuarantinedIntake) {
 	if len(quarantined) == 0 {
 		fmt.Fprintln(out, "no quarantined intake: every submission source is being read.")

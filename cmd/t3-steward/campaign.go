@@ -62,13 +62,13 @@ check reports one outcome per task and per worker:
   ready             at least one worker can take every task now
   accepted_waiting  nobody can now, and waiting fixes it; submit proceeds
   impossible        no worker can ever run it as written; submit is refused
-Permanent, so submit refuses: an unknown project, setup profile, provider
-instance, model or quota pool; no configured route; invalid repository syntax;
-repository-not-found, ref-not-found or authentication-failed; impossible cpu,
-resource, directory or capability requirements; a missing credential reference;
-a closed timing window. Everything else is temporary and submit proceeds,
-including catalog-digest-mismatch, which means re-enrolling a worker. Codes and
-recovery commands: t3-steward campaign help readiness.
+Permanent, so submit refuses: an unknown project, setup profile, provider instance,
+model or quota pool; no route at all (declare instance and model, the coordinator
+never chooses) or no configured route; invalid repository syntax, repository-not-found,
+ref-not-found or authentication-failed; impossible cpu, resource, directory or
+capability requirements; a missing credential; a closed timing window. Everything
+else is temporary and submit proceeds, including catalog-digest-mismatch, which
+means re-enrolling a worker. Codes and recovery: t3-steward campaign help readiness.
 
 submit runs check first. --allow-unverified skips only the client-side check; the
 coordinator still refuses an impossible campaign and records the principal and --reason.
