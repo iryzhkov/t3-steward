@@ -1038,13 +1038,19 @@ func TestTaskRunDoesNotPromiseAWakeItsOwnDaemonHasNotRecorded(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		daemon *nodeWakeDeliveryReceipt
-		want   string
+		want   []string
 	}{
-		{"a daemon that has recorded nothing", nil, "recorded no node wake delivery"},
+		{"a daemon that has recorded nothing", nil,
+			[]string{"recorded no node wake delivery", "restart the steward on omarchy-pc"}},
+		// A stale receipt is reported as what it is -- no fresh record of
+		// delivery -- and not as a stopped daemon, because a live daemon that
+		// cannot reach the coordinator, and one running with wait dry run on,
+		// leave the same evidence. The remedy has to cover all three.
 		{"a daemon that stopped an hour ago", &nodeWakeDeliveryReceipt{
 			SchemaVersion: nodeWakeDeliveryReceiptSchema, Release: nodeWakeDeliveryHostRelease,
 			Host: "omarchy-pc", Interval: "15s", UpdatedAt: time.Now().Add(-time.Hour).UTC(),
-		}, "it is not running now"},
+		}, []string{"Nothing here is delivering node wakes now", "wait dry run",
+			"on omarchy-pc check that the steward is running"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newTaskRunHarness()
@@ -1056,12 +1062,11 @@ func TestTaskRunDoesNotPromiseAWakeItsOwnDaemonHasNotRecorded(t *testing.T) {
 			if strings.Contains(text, "End this turn now") {
 				t.Fatalf("a wake no daemon here is known to deliver was promised anyway:\n%s", text)
 			}
-			for _, want := range []string{
-				tc.want, "restart the steward on omarchy-pc",
+			for _, want := range append(append([]string{}, tc.want...),
 				// The run itself is unaffected: it was started, and the report
 				// says how to watch it instead of waiting for a wake.
 				"The run was started", "do not end this turn", "t3-steward campaign show run-1",
-			} {
+			) {
 				if !strings.Contains(text, want) {
 					t.Fatalf("the report does not say %q:\n%s", want, text)
 				}

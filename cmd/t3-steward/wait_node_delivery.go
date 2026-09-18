@@ -176,9 +176,11 @@ func (r nodeWakeDeliveryReceipt) freshnessWindow() time.Duration {
 // arrive here, and is empty when it can be.
 //
 // Every branch reports what was and was not established, in D-4's form: the
-// command says what it knows rather than what it hopes. The remedy is named
-// because it is always the same one, and because a daemon that has not been
-// restarted onto this release is the expected cause during an upgrade.
+// command says what it knows rather than what it hopes. A daemon that has not
+// been restarted onto this release is the expected cause during an upgrade, so
+// the branches that establish nothing about any daemon here name restarting the
+// steward as the remedy. The stale branch is the one that does have evidence of
+// a daemon and cannot say which way it failed, so it names its own remedy.
 func undeliverableHere(local string, delivery nodeWakeDelivery, now time.Time) string {
 	remedy := ". A node wake is sent by this host's steward daemon and not by this command, so restart the steward on " +
 		local + " -- replacing the binary does not restart it -- and run this again"
@@ -199,10 +201,27 @@ func undeliverableHere(local string, delivery nodeWakeDelivery, now time.Time) s
 			" rather than for " + local + " (" + path + "), so nothing shows that a wake registered for " +
 			local + " would be delivered" + remedy
 	case now.Sub(receipt.UpdatedAt) > receipt.freshnessWindow():
-		return fmt.Sprintf("this host's steward daemon last recorded node wake delivery %s ago, at %s (%s), "+
-			"which is longer than the %s its own tick allows, so it is not running now",
-			now.Sub(receipt.UpdatedAt).Round(time.Second), receipt.UpdatedAt.Format(time.RFC3339),
-			path, receipt.freshnessWindow()) + remedy
+		// What is established here is the absence of a fresh receipt, not a
+		// stopped daemon. A daemon that is alive rewrites this file only on a
+		// tick that read this host's node waits and could send their wakes, so a
+		// tick that returned early on an unreachable coordinator or an unreadable
+		// T3 server leaves the receipt exactly as stale as a daemon that exited,
+		// and a daemon running with wait dry run on never writes it at all. Each
+		// of those means the same thing for this wake -- nothing here is
+		// delivering node wakes now -- and naming only one of them would send the
+		// reader to a remedy that does not apply, so the message names the fact
+		// and then the causes it cannot distinguish.
+		return fmt.Sprintf("no steward daemon here has recorded a node wake delivery for %s within its own "+
+			"freshness window of %s: the last one was %s ago, at %s (%s). Nothing here is delivering node "+
+			"wakes now, and this cannot tell which cause it is -- the daemon is stopped, or it was never "+
+			"restarted onto this release, or it is running and its ticks end early because it cannot reach "+
+			"the coordinator or its own T3 server, or it runs with wait dry run on, where a wake is held "+
+			"rather than sent. A node wake is sent by this host's steward daemon and not by this command, "+
+			"so on %s check that the steward is running, that its log shows it reaching the coordinator, "+
+			"and that wait dry run is off; restart it if it is stopped or still on an older release -- "+
+			"replacing the binary does not restart it -- and run this again",
+			local, receipt.freshnessWindow(), now.Sub(receipt.UpdatedAt).Round(time.Second),
+			receipt.UpdatedAt.Format(time.RFC3339), path, local)
 	}
 	return ""
 }

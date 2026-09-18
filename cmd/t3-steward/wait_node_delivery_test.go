@@ -65,8 +65,19 @@ func TestTheDaemonRecordsNodeWakeDeliveryWhereACommandCanReadIt(t *testing.T) {
 	// receipt behind, and a command that trusted it would promise a wake that
 	// nothing sends.
 	stopped := now.Add(receipt.freshnessWindow()).Add(time.Second)
-	if reason := undeliverableHere("omarchy-pc", delivery, stopped); !strings.Contains(reason, "it is not running now") {
+	reason = undeliverableHere("omarchy-pc", delivery, stopped)
+	if !strings.Contains(reason, "Nothing here is delivering node wakes now") {
 		t.Fatalf("a receipt older than its own window was accepted: %q", reason)
+	}
+	// And it reports what it knows rather than a cause it cannot see. A stale
+	// receipt is also what a live daemon leaves when it cannot reach the
+	// coordinator, and what one running with wait dry run on leaves always, so
+	// the message names those beside a stopped daemon and its remedy covers all
+	// of them.
+	for _, want := range []string{"cannot reach ", "wait dry run", "restart it if it is stopped"} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("the stale report does not say %q: %q", want, reason)
+		}
 	}
 }
 
