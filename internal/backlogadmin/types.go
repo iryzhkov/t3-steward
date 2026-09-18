@@ -205,21 +205,75 @@ type Status struct {
 }
 
 type RuntimeStatus struct {
-	Release              string    `json:"release,omitempty"`
-	ConfigurationDigest  string    `json:"configurationDigest,omitempty"`
-	LastReload           time.Time `json:"lastReload,omitzero"`
-	Mode                 string    `json:"mode"`
-	Owner                string    `json:"owner"`
-	Epoch                int64     `json:"epoch"`
-	Health               string    `json:"health"`
-	Transport            string    `json:"transport"`
-	FreshWorkers         int       `json:"freshWorkers"`
-	StaleWorkers         int       `json:"staleWorkers"`
-	FreshQuotaPools      int       `json:"freshQuotaPools"`
-	StaleQuotaPools      int       `json:"staleQuotaPools"`
-	ReconciliationIssues []string  `json:"reconciliationIssues,omitempty"`
-	UnknownExecutionIDs  []string  `json:"unknownExecutionIds,omitempty"`
-	CustodyIncidentIDs   []string  `json:"custodyIncidentIds,omitempty"`
+	Release             string `json:"release,omitempty"`
+	ConfigurationDigest string `json:"configurationDigest,omitempty"`
+	// ActivatedAt is when the effective configuration was activated: at
+	// startup, or by the last accepted reload.
+	ActivatedAt time.Time `json:"activatedAt,omitzero"`
+	// LastReload is the receipt of the last SIGHUP the coordinator handled,
+	// absent until the first one. It is the same record the coordinator writes
+	// to its state directory, so a remote admin host reads the verdict without
+	// a shell on the coordinator host.
+	LastReload           *ReloadReceipt `json:"lastReload,omitempty"`
+	Mode                 string         `json:"mode"`
+	Owner                string         `json:"owner"`
+	Epoch                int64          `json:"epoch"`
+	Health               string         `json:"health"`
+	Transport            string         `json:"transport"`
+	FreshWorkers         int            `json:"freshWorkers"`
+	StaleWorkers         int            `json:"staleWorkers"`
+	FreshQuotaPools      int            `json:"freshQuotaPools"`
+	StaleQuotaPools      int            `json:"staleQuotaPools"`
+	ReconciliationIssues []string       `json:"reconciliationIssues,omitempty"`
+	UnknownExecutionIDs  []string       `json:"unknownExecutionIds,omitempty"`
+	CustodyIncidentIDs   []string       `json:"custodyIncidentIds,omitempty"`
+}
+
+// Reload outcomes. Accepted means the new configuration is active; unchanged
+// means the file was re-read and its digest equals the effective one, so nothing
+// was replaced; rejected means the effective configuration and its digest are
+// exactly what they were before the signal.
+const (
+	ReloadAccepted  = "accepted"
+	ReloadRejected  = "rejected"
+	ReloadUnchanged = "unchanged"
+)
+
+// ReloadReceipt is the coordinator's verdict on one SIGHUP. The coordinator
+// owns the verdict: it writes one receipt per signal, atomically, before the
+// log line that reports the same outcome, and never one older than the
+// previous. Whoever sent the signal reads the receipt instead of the journal.
+type ReloadReceipt struct {
+	RequestedAt time.Time `json:"requestedAt"`
+	CompletedAt time.Time `json:"completedAt"`
+	Outcome     string    `json:"outcome"`
+	Error       string    `json:"error,omitempty"`
+	// ConfigurationDigest is the digest effective after the request. On a
+	// rejection it equals PreviousDigest, which is how the receipt says that
+	// nothing changed.
+	ConfigurationDigest string `json:"configurationDigest"`
+	PreviousDigest      string `json:"previousDigest"`
+	Release             string `json:"release,omitempty"`
+	// Blockers names, on a rejection, every retained assignment that kept the
+	// reload from being accepted, with the command that unblocks it.
+	Blockers []ReloadBlocker `json:"blockers,omitempty"`
+}
+
+// ReloadBlocker is one assignment that blocks a catalog change on its worker.
+type ReloadBlocker struct {
+	WorkerID     string `json:"workerId"`
+	AssignmentID string `json:"assignmentId"`
+	AttemptID    string `json:"attemptId,omitempty"`
+	// Progress and Control are the attempt's coordinator-side states, and
+	// JournalPhase the phase the worker last reported for it, when a snapshot
+	// carried one. They tell an operator whether the attempt is running,
+	// paused or parked before deciding what to do with it.
+	Progress     string `json:"progress,omitempty"`
+	Control      string `json:"control,omitempty"`
+	JournalPhase string `json:"journalPhase,omitempty"`
+	// Unblock is the operator action that removes this blocker: a
+	// "t3-steward backlog cancel" command line, or an instruction to wait.
+	Unblock string `json:"unblock"`
 }
 
 type Progress struct {

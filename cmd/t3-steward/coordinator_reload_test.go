@@ -106,13 +106,13 @@ func TestCoordinatorReloadRejectsMissingAndMalformedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if _, err := loadCoordinatorReload(ctx, cfg, s); err == nil {
+	if _, _, err := loadCoordinatorReload(ctx, cfg, s); err == nil {
 		t.Fatal("missing file became defaults")
 	}
 	if err := os.WriteFile(cfg.Path, []byte("unknown_authority: true\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadCoordinatorReload(ctx, cfg, s); err == nil {
+	if _, _, err := loadCoordinatorReload(ctx, cfg, s); err == nil {
 		t.Fatal("unknown configuration accepted")
 	}
 	raw, err := yaml.Marshal(cfg)
@@ -126,7 +126,7 @@ func TestCoordinatorReloadRejectsMissingAndMalformedFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadCoordinatorReload(ctx, cfg, s); err != nil {
+	if _, _, err := loadCoordinatorReload(ctx, cfg, s); err != nil {
 		t.Fatal(err)
 	}
 }

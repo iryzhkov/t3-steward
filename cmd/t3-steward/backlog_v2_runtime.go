@@ -499,7 +499,7 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 	return coordinatorConfigLoop(ctx, cfg, logger, store, epoch)
 }
 
-func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger *slog.Logger, store *sqlite.Store, epoch int64, ready func()) error {
+func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger *slog.Logger, store *sqlite.Store, epoch int64, receipts *reloadReceiptWriter, ready func()) error {
 	// A supervisor capability is enforced server-side, around the ordinary
 	// authorizer rather than instead of it: every other principal is delegated
 	// unchanged, and a supervisor is bound to the one run and epoch the
@@ -528,7 +528,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			"effect", "this project cannot be scheduled; every other project is unaffected")
 	}
 	service.SetRuntimeInfo(backlogadmin.RuntimeInfo{
-		Release: version, ConfigurationDigest: configurationDigest, LastReload: appliedAt,
+		Release: version, ConfigurationDigest: configurationDigest, ActivatedAt: appliedAt, LastReload: receipts.Last,
 		Mode: "coordinator", Owner: cfg.BacklogV2.Coordinator.ID, Epoch: epoch,
 		Transport:              cfg.BacklogV2.Transport.Kind,
 		MaxWorkerSnapshotAge:   cfg.BacklogV2.Freshness.WorkerMaxAge.D(),

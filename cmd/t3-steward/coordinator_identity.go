@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
@@ -75,15 +76,19 @@ func cmdCoordinator(g globalFlags, args []string) error {
 // CoordinatorIdentity is what "coordinator identity" reports. It needs no new
 // request type: a status query already returns all of it.
 type CoordinatorIdentity struct {
-	Version             string                            `json:"version"`
-	Kind                string                            `json:"kind"`
-	CoordinatorID       string                            `json:"coordinatorId"`
-	Owner               string                            `json:"owner"`
-	Release             string                            `json:"release,omitempty"`
-	ConfigurationDigest string                            `json:"configurationDigest,omitempty"`
-	Epoch               int64                             `json:"epoch"`
-	Health              string                            `json:"health"`
-	Transport           backlogadmin.TransportDescription `json:"transport"`
+	Version             string `json:"version"`
+	Kind                string `json:"kind"`
+	CoordinatorID       string `json:"coordinatorId"`
+	Owner               string `json:"owner"`
+	Release             string `json:"release,omitempty"`
+	ConfigurationDigest string `json:"configurationDigest,omitempty"`
+	Epoch               int64  `json:"epoch"`
+	Health              string `json:"health"`
+	// LastReload is the coordinator's receipt for its last SIGHUP, absent
+	// before the first one. It is the record the coordinator wrote to its
+	// state directory, carried here so a remote admin host reads the verdict.
+	LastReload *backlogadmin.ReloadReceipt       `json:"lastReload,omitempty"`
+	Transport  backlogadmin.TransportDescription `json:"transport"`
 }
 
 func runCoordinatorIdentity(ctx context.Context, cfg config.Config, out io.Writer, asJSON bool) error {
@@ -103,8 +108,13 @@ func runCoordinatorIdentity(ctx context.Context, cfg config.Config, out io.Write
 	if response.Status == nil {
 		return errors.New("coordinator status query returned no status")
 	}
-	runtime := response.Status.Runtime
-	identity := CoordinatorIdentity{
+	return renderCoordinatorIdentity(out, asJSON, coordinatorIdentityFrom(description, *response.Status))
+}
+
+// coordinatorIdentityFrom builds the identity document from one status answer.
+func coordinatorIdentityFrom(description backlogadmin.TransportDescription, status backlogadmin.Status) CoordinatorIdentity {
+	runtime := status.Runtime
+	return CoordinatorIdentity{
 		Version:             backlogadmin.Version,
 		Kind:                "coordinator-identity",
 		CoordinatorID:       description.CoordinatorID,
@@ -113,8 +123,12 @@ func runCoordinatorIdentity(ctx context.Context, cfg config.Config, out io.Write
 		ConfigurationDigest: runtime.ConfigurationDigest,
 		Epoch:               runtime.Epoch,
 		Health:              runtime.Health,
+		LastReload:          runtime.LastReload,
 		Transport:           description,
 	}
+}
+
+func renderCoordinatorIdentity(out io.Writer, asJSON bool, identity CoordinatorIdentity) error {
 	if asJSON {
 		encoder := json.NewEncoder(out)
 		encoder.SetIndent("", "  ")
@@ -126,6 +140,30 @@ func runCoordinatorIdentity(ctx context.Context, cfg config.Config, out io.Write
 	fmt.Fprintf(out, "config       %s\n", identity.ConfigurationDigest)
 	fmt.Fprintf(out, "epoch        %d\n", identity.Epoch)
 	fmt.Fprintf(out, "health       %s\n", identity.Health)
+	if identity.LastReload != nil {
+		writeReloadReceiptLines(out, "reload       ", "             ", *identity.LastReload)
+	}
 	fmt.Fprintf(out, "carrier      %s via %s\n", identity.Transport.Carrier, identity.Transport.Endpoint)
 	return nil
+}
+
+// writeReloadReceiptLines prints a receipt as "<outcome> at <time> (<digest>)"
+// followed by the error and the blockers on a rejection, one per line. The
+// identity view and "coordinator reload" print the same lines with different
+// leading labels.
+func writeReloadReceiptLines(out io.Writer, first, rest string, receipt backlogadmin.ReloadReceipt) {
+	fmt.Fprintf(out, "%s%s at %s (%s)\n", first, receipt.Outcome, receipt.CompletedAt.UTC().Format(time.RFC3339), receipt.ConfigurationDigest)
+	if receipt.Error != "" {
+		fmt.Fprintf(out, "%serror: %s\n", rest, receipt.Error)
+	}
+	for _, blocker := range receipt.Blockers {
+		state := blocker.Progress
+		if blocker.Control != "" {
+			state += "/" + blocker.Control
+		}
+		if blocker.JournalPhase != "" {
+			state += " (worker journal: " + blocker.JournalPhase + ")"
+		}
+		fmt.Fprintf(out, "%sblocker: worker %s assignment %s attempt %s %s: %s\n", rest, blocker.WorkerID, blocker.AssignmentID, blocker.AttemptID, state, blocker.Unblock)
+	}
 }

@@ -76,9 +76,13 @@ type Service struct {
 }
 
 type RuntimeInfo struct {
-	Release                string
-	ConfigurationDigest    string
-	LastReload             time.Time
+	Release             string
+	ConfigurationDigest string
+	ActivatedAt         time.Time
+	// LastReload reports the receipt of the last reload request, or nil before
+	// the first. It is a function rather than a value because the receipt
+	// changes on every SIGHUP while this composition stays the same.
+	LastReload             func() *ReloadReceipt
 	Mode                   string
 	Owner                  string
 	Epoch                  int64
@@ -501,8 +505,11 @@ func (v view) status() Status {
 func (v view) runtimeStatus() RuntimeStatus {
 	status := RuntimeStatus{
 		Mode: v.runtime.Mode, Owner: v.runtime.Owner, Epoch: v.runtime.Epoch,
-		Release: v.runtime.Release, ConfigurationDigest: v.runtime.ConfigurationDigest, LastReload: v.runtime.LastReload,
+		Release: v.runtime.Release, ConfigurationDigest: v.runtime.ConfigurationDigest, ActivatedAt: v.runtime.ActivatedAt,
 		Transport: v.runtime.Transport, Health: "healthy",
+	}
+	if v.runtime.LastReload != nil {
+		status.LastReload = v.runtime.LastReload()
 	}
 	for _, worker := range v.workers {
 		stale := !worker.Connected || worker.ObservedAt.After(v.now) || !worker.ValidUntil.After(v.now) || (v.runtime.Epoch > 0 && worker.CoordinatorEpoch != v.runtime.Epoch)
