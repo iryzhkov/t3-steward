@@ -148,7 +148,7 @@ func taskWaitRequestID(explicit string, identity taskIdentity, warnings io.Write
 	}
 	if strings.HasSuffix(explicit, "-") {
 		fmt.Fprintf(warnings, "warning: --request-id %q ends in \"-\", which usually means an empty shell variable was interpolated into it; "+
-			"the identity is in .t3-steward/task.env, not the environment, so use $(t3-steward task env --get revision) or omit --request-id to derive park-%s-%d\n",
+			"the identity is in .t3-steward/task.env, not the environment (unless t3.send_thread_environment is on), so use $(t3-steward task env --get revision) or omit --request-id to derive park-%s-%d\n",
 			explicit, identity.AttemptID, identity.AttemptRevision)
 	}
 	return explicit

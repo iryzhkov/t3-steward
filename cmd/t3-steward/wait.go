@@ -109,8 +109,9 @@ add flags:
                      the ID names one park, not a standing permission to park
                      again. A custom ID that must differ per park can include
                      $(t3-steward task env --get revision); the T3_STEWARD_*
-                     variables are not in the environment. A repeated ID with
-                     different contents is also refused.
+                     variables are not in the environment unless
+                     t3.send_thread_environment is on (off by default). A
+                     repeated ID with different contents is also refused.
   --json             Print the registered wait as JSON, with firstExit and
                      firstOutputLine from the registration probe.
 
