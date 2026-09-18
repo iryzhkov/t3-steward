@@ -59,6 +59,7 @@ Commands:
   diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
   schedules          Inspect and control schedules and trigger history.
   wait               Park a thread until a check succeeds; the steward wakes it (add, list, cancel).
+  task               Inside a task workspace: print this attempt's identity (env [--get NAME]).
   thread             Operate on a local T3 thread (stop <thread-id> [--session]).
   archive            Cold storage for finished threads (candidates, run, list, restore).
   export             Print this host's readings and token samples as JSON for another host's report.
@@ -121,6 +122,9 @@ func dispatch(args []string) error {
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil
+	case "task":
+		// Reads only the workspace identity record; no configuration is needed.
+		return cmdTask(rest)
 	case "wait", "thread":
 		paths, err := config.DefaultPaths()
 		if err != nil {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -130,6 +131,29 @@ func readTaskIdentityFile() (map[string]string, error) {
 	}
 }
 
+// taskWaitRequestID settles the registration id of a task-bound wait. With no
+// --request-id it is derived from the resolved identity, "park-<attempt>-
+// <revision>", which is stable for a retry of the same park and different for
+// every later park of the same task; the random id remains only for an
+// identity with no attempt, which registration refuses anyway. An explicit id
+// that ends in "-" is almost always a shell variable that was empty when the
+// command line was built, so it is warned about, but still used: a repeated
+// registration must keep returning the same wait.
+func taskWaitRequestID(explicit string, identity taskIdentity, warnings io.Writer) string {
+	if explicit == "" {
+		if identity.AttemptID == "" {
+			return strings.TrimPrefix(newWaitID(), "w-")
+		}
+		return fmt.Sprintf("park-%s-%d", identity.AttemptID, identity.AttemptRevision)
+	}
+	if strings.HasSuffix(explicit, "-") {
+		fmt.Fprintf(warnings, "warning: --request-id %q ends in \"-\", which usually means an empty shell variable was interpolated into it; "+
+			"the identity is in .t3-steward/task.env, not the environment, so use $(t3-steward task env --get revision) or omit --request-id to derive park-%s-%d\n",
+			explicit, identity.AttemptID, identity.AttemptRevision)
+	}
+	return explicit
+}
+
 // cmdTaskWaitAdd registers a task-bound wait: the coordinator parks this
 // attempt, the worker collects nothing, and the steward resumes the same thread
 // and the same attempt when the condition settles.
@@ -183,9 +207,7 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 			*name = (*name)[:60]
 		}
 	}
-	if *requestID == "" {
-		*requestID = strings.TrimPrefix(newWaitID(), "w-")
-	}
+	*requestID = taskWaitRequestID(*requestID, identity, os.Stderr)
 
 	local := wait.Wait{
 		ID: newWaitID(), ThreadID: identity.ThreadID, Name: *name, Command: command, Dir: *dir,

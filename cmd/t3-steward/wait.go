@@ -101,12 +101,16 @@ add flags:
   --wake each|all    Wake on the first settlement (default) or once every wait
                      has settled.
   --request-id ID    Stable registration ID, for retrying one registration
-                     safely. Repeating it while that wait is still live and
-                     holding this attempt returns the same wait. Repeating it
-                     after the wait settled is refused: the ID names one park,
-                     not a standing permission to park again. Include
-                     $T3_STEWARD_ATTEMPT_REVISION so each park gets its own ID.
-                     A repeated ID with different contents is also refused.
+                     safely. Default for --task current: park-<attempt>-<revision>
+                     from this task's identity, which is stable for a retry and
+                     different for every later park. Repeating an ID while that
+                     wait is still live and holding this attempt returns the
+                     same wait. Repeating it after the wait settled is refused:
+                     the ID names one park, not a standing permission to park
+                     again. A custom ID that must differ per park can include
+                     $(t3-steward task env --get revision); the T3_STEWARD_*
+                     variables are not in the environment. A repeated ID with
+                     different contents is also refused.
   --json             Print the registered wait as JSON, with firstExit and
                      firstOutputLine from the registration probe.
 
@@ -137,8 +141,7 @@ Exit codes: 0 registered or listed, 1 refused or failed.
 Complete example, inside a task, waiting for CI on a pushed commit:
 
   t3-steward wait add --task current --name "CI on $(git rev-parse HEAD)" \\
-    --every 60s --max-every 10m --timeout 2h --wake all \\
-    --request-id ci-$T3_STEWARD_ATTEMPT_REVISION-$(git rev-parse --short HEAD) -- \\
+    --every 60s --max-every 10m --timeout 2h --wake all -- \\
     sh -c 'test "$(gh run view --json status --jq .status)" = completed'
 
 Then end the turn. Nothing is collected or verified until the steward resumes
