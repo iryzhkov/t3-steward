@@ -686,26 +686,37 @@ func (v view) workflowDetail(runID string) (WorkflowDetail, bool) {
 	}
 	detail.ResourceLocks = filterLocksForRun(detail.ResourceLocks, detail.Tasks)
 	detail.Reservations = filterReservationsForRun(detail.Reservations, runID)
-	detail.Waits = v.runWaits(runID)
+	detail.TaskWaits = v.runTaskWaits(runID)
+	detail.Waits = liveTaskWaits(detail.TaskWaits)
 	detail.Gates = v.runGates(runID)
 	return detail, true
 }
 
-// runWaits lists the live task-bound waits of one run, oldest registration
-// first. A settled wait has an outcome and no longer parks its attempt, so it
-// is not a reason the run is waiting and is left out; that is also why no
-// exit code is reported, since the coordinator records one only at settlement.
-func (v view) runWaits(runID string) []TaskWaitDetail {
-	var waits []TaskWaitDetail
+// runTaskWaits lists every task-bound wait of one run, live and settled,
+// oldest registration first. A settled wait carries its outcome: it is what
+// became of a wait the previous answer reported as live, and an operator who
+// sees a task stop waiting needs it more than anything else in this document.
+func (v view) runTaskWaits(runID string) []TaskWaitDetail {
+	waits := make([]TaskWaitDetail, 0, len(v.taskWaits))
 	for _, wait := range v.taskWaits {
-		if wait.WorkflowRunID != runID || !wait.Live() {
+		if wait.WorkflowRunID != runID {
 			continue
 		}
-		waits = append(waits, TaskWaitDetail{
+		detail := TaskWaitDetail{
 			ID: wait.ID, TaskID: wait.TaskID, TaskName: v.tasks[wait.TaskID].Name, AttemptID: wait.AttemptID,
-			Name: wait.Name, Condition: wait.Condition,
+			Name: wait.Name, Condition: wait.Condition, Kind: string(wait.Kind),
 			RegisteredAt: wait.RegisteredAt, Deadline: wait.Deadline,
-		})
+		}
+		if wait.Result != nil {
+			detail.Outcome = string(wait.Result.Outcome)
+			detail.ExitCode = wait.Result.ExitCode
+			detail.Reason = wait.Result.Reason
+		}
+		if wait.SettledAt != nil {
+			settled := *wait.SettledAt
+			detail.SettledAt = &settled
+		}
+		waits = append(waits, detail)
 	}
 	sort.SliceStable(waits, func(i, j int) bool {
 		if !waits[i].RegisteredAt.Equal(waits[j].RegisteredAt) {
@@ -714,6 +725,19 @@ func (v view) runWaits(runID string) []TaskWaitDetail {
 		return waits[i].ID < waits[j].ID
 	})
 	return waits
+}
+
+// liveTaskWaits is the deprecated "waits" key of a run document: the waits
+// that are still parking an attempt. It is derived from the same list the
+// taskWaits key carries, so the two can never disagree while both exist.
+func liveTaskWaits(waits []TaskWaitDetail) []TaskWaitDetail {
+	live := make([]TaskWaitDetail, 0, len(waits))
+	for _, wait := range waits {
+		if wait.SettledAt == nil && wait.Outcome == "" {
+			live = append(live, wait)
+		}
+	}
+	return live
 }
 
 // runGates lists the gates of a supervised run by name, each with the

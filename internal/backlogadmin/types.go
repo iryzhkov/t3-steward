@@ -366,7 +366,17 @@ type WorkflowDetail struct {
 	// Waits are the live task-bound waits parking attempts of this run, one
 	// entry per wait, each naming its task. A settled wait no longer parks
 	// anything and is not listed.
-	Waits []TaskWaitDetail `json:"waits,omitempty"`
+	// TaskWaits are every task-bound wait of this run, live and settled, each
+	// naming its task and, once it has one, its outcome. A settled wait is why
+	// a task stopped waiting, so dropping it made the run document unable to
+	// say what became of a wait it had just reported. It is never omitted, so
+	// a reader branches on the array rather than on whether the key exists.
+	TaskWaits []TaskWaitDetail `json:"taskWaits"`
+	// Waits is TaskWaits restricted to the live ones, the meaning this key has
+	// always had here. Deprecated: kept for one release because a client of the
+	// previous release reads it; read taskWaits, whose name means the same
+	// thing in this document and in a diagnosis.
+	Waits []TaskWaitDetail `json:"waits"`
 	// Gates are the declared gates of a supervised run with their current
 	// state. An unsupervised run has none.
 	Gates []GateDetail `json:"gates,omitempty"`
@@ -383,10 +393,17 @@ type TaskWaitDetail struct {
 	Condition    string    `json:"condition,omitempty"`
 	RegisteredAt time.Time `json:"registeredAt"`
 	Deadline     time.Time `json:"deadline"`
-	// There is no last exit code here. The condition is polled on the worker
-	// host, whose local check row holds the last exit code and output; the
-	// coordinator records an exit code only when the wait settles, at which
-	// point the wait no longer parks anything and is not listed.
+	// Kind is how the wait is settled: shell, time, github, node or quota.
+	Kind string `json:"kind,omitempty"`
+	// Outcome, ExitCode, Reason and SettledAt are the settlement, and are
+	// present only once the wait has one. While the wait is live there is no
+	// exit code to report: the condition is polled on the worker host, whose
+	// local check row holds the last exit code and output, and the coordinator
+	// records one only at settlement.
+	Outcome   string     `json:"outcome,omitempty"`
+	ExitCode  int        `json:"exitCode,omitempty"`
+	Reason    string     `json:"reason,omitempty"`
+	SettledAt *time.Time `json:"settledAt,omitempty"`
 }
 
 // GateDetail is one gate of a supervised run and, while it is pending, the

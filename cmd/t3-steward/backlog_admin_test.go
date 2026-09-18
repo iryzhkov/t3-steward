@@ -342,7 +342,7 @@ func TestRenderWorkflowShowsWaitsAndGateEvidenceGaps(t *testing.T) {
 			{Task: domain.Task{ID: "task-nest", Name: "s17-nest-model"}, Attempt: &parked},
 			{Task: domain.Task{ID: "task-publish", Name: "publish"}},
 		},
-		Waits: []backlogadmin.TaskWaitDetail{{
+		TaskWaits: []backlogadmin.TaskWaitDetail{{
 			ID: "w-tw-nest-model-1", TaskID: "task-nest", TaskName: "s17-nest-model", AttemptID: "attempt-nest",
 			Name: "nest model answered", Condition: "jocasta exists home-assistant/inputs/nest-model.md",
 			RegisteredAt: now, Deadline: now.Add(24 * time.Hour),
@@ -370,7 +370,7 @@ func TestRenderWorkflowShowsWaitsAndGateEvidenceGaps(t *testing.T) {
 	}
 	// A run with neither waits nor gates renders as it always did.
 	out.Reset()
-	detail.Waits, detail.Gates = nil, nil
+	detail.TaskWaits, detail.Waits, detail.Gates = nil, nil, nil
 	renderWorkflow(&out, detail)
 	if strings.Contains(out.String(), "gates:") || strings.Contains(out.String(), "wait ") {
 		t.Fatalf("output %q mentions waits or gates it has none of", out.String())

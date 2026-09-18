@@ -50,6 +50,20 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Waits are named for the family they hold in every document, and a settled
+  task wait is no longer dropped. A run document (`backlog show`, `campaign
+  show`) gains `taskWaits`, every task-bound wait of the run with its `kind`
+  and, once it has one, its `outcome`, `exitCode`, `reason` and `settledAt`; a
+  diagnosis gains `nodeWaits`, the interactive node waits it used to report
+  under `waits`. Both documents still carry `waits` with exactly what it
+  carried before, the live task waits in a run document and the node waits in
+  a diagnosis. **Deprecated: `waits` is kept for one release** so that a
+  client of the previous release keeps working; read `taskWaits` and
+  `nodeWaits`, whose names mean the same thing in both documents. The text
+  form of a run prints a settled wait with its outcome instead of dropping it.
+- `backlog workers` prints, under the worker table, what each worker can
+  actually take: the projects it advertises and its instance/model@pool
+  routes. They decide where work can run and were visible only in `--json`.
 - A shell check that exits 2 settles as `gave-up` rather than `failed`,
   locally and on the coordinator; `failed` now means the condition decided
   against the waiter (a run that concluded with a failure, a pull request

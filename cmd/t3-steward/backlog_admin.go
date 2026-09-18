@@ -500,12 +500,7 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 	case backlogadmin.QueryDiagnose:
 		renderDiagnosis(out, response.Diagnosis)
 	case backlogadmin.QueryWorkers:
-		table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(table, "WORKER\tSTATE\tHEALTH\tENROLLED\tSNAPSHOT AGE (s)\tCATALOG")
-		for _, worker := range response.Workers {
-			fmt.Fprintf(table, "%s\t%s\t%s\t%t\t%.1f\t%s\n", worker.Snapshot.WorkerID, worker.State, worker.Health, worker.Enrolled, worker.SnapshotAgeSeconds, worker.Snapshot.Inventory.CatalogRevision)
-		}
-		return table.Flush()
+		return renderWorkers(out, response.Workers)
 	case backlogadmin.QueryProjects:
 		return renderProjects(out, response.Projects)
 	case backlogadmin.QueryStatus:
@@ -545,6 +540,60 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 // into a column, because it is the whole point of the view, and the retry rule
 // is stated every time so that an operator never has to guess whether editing
 // the file is enough.
+// renderWorkers prints the worker table and, under it, what each worker can
+// actually take: the projects it advertises and the instance/model/pool routes
+// it offers. Those two facts decide where work can run, and the text form used
+// to drop them, so an operator had to read the JSON to answer "which worker
+// could run this".
+func renderWorkers(out io.Writer, workers []backlogadmin.Worker) error {
+	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(table, "WORKER\tSTATE\tHEALTH\tENROLLED\tSNAPSHOT AGE (s)\tCATALOG")
+	for _, worker := range workers {
+		fmt.Fprintf(table, "%s\t%s\t%s\t%t\t%.1f\t%s\n", worker.Snapshot.WorkerID, worker.State,
+			worker.Health, worker.Enrolled, worker.SnapshotAgeSeconds, worker.Snapshot.Inventory.CatalogRevision)
+	}
+	if err := table.Flush(); err != nil {
+		return err
+	}
+	for _, worker := range workers {
+		inventory := worker.Snapshot.Inventory
+		if len(inventory.Projects) == 0 && len(inventory.Providers) == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "\n%s offers:\n", worker.Snapshot.WorkerID)
+		inner := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(inner, "  PROJECTS\tROUTES (instance/model@pool)")
+		projects := make([]string, 0, len(inventory.Projects))
+		for _, project := range inventory.Projects {
+			label := project.Name
+			if !project.Available {
+				label += " (unavailable)"
+			}
+			projects = append(projects, label)
+		}
+		routes := make([]string, 0, len(inventory.Providers))
+		for _, provider := range inventory.Providers {
+			for _, model := range provider.Models {
+				label := provider.InstanceID + "/" + model
+				if provider.QuotaPoolID != "" {
+					label += "@" + provider.QuotaPoolID
+				}
+				if !provider.Available {
+					label += " (unavailable)"
+				}
+				routes = append(routes, label)
+			}
+		}
+		sort.Strings(projects)
+		sort.Strings(routes)
+		fmt.Fprintf(inner, "  %s\t%s\n", campaignList(projects), campaignList(routes))
+		if err := inner.Flush(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // renderProjects prints the catalog as one table and, under it, one table per
 // project of the workers that could take its work with the routes each one
 // advertises. It is the text form of what "run" derives a project and a route
@@ -679,11 +728,18 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 		// A parked task says what it is parked on. The wait is the reason the
 		// task is not moving, and its condition is what an operator can go and
 		// satisfy or cancel.
-		for _, wait := range detail.Waits {
+		// A settled wait is listed too, with its outcome: it is what became
+		// of the wait the previous answer reported as live.
+		for _, wait := range detail.TaskWaits {
 			if wait.TaskID != task.Task.ID {
 				continue
 			}
-			fmt.Fprintf(out, "    wait %s %q: %s (deadline %s)\n", wait.ID, wait.Name, wait.Condition, formatTime(wait.Deadline))
+			if wait.Outcome == "" && wait.SettledAt == nil {
+				fmt.Fprintf(out, "    wait %s %q: %s (deadline %s)\n", wait.ID, wait.Name, wait.Condition, formatTime(wait.Deadline))
+				continue
+			}
+			fmt.Fprintf(out, "    wait %s %q: settled %s exit=%d at %s%s\n", wait.ID, wait.Name,
+				wait.Outcome, wait.ExitCode, formatTime(settledWaitTime(wait)), waitReasonSuffix(wait.Reason))
 		}
 	}
 	if len(detail.Gates) != 0 {
@@ -950,9 +1006,9 @@ func renderDiagnosis(out io.Writer, diagnosis *backlogadmin.Diagnosis) {
 		live++
 		fmt.Fprintf(out, "  %s task=%s attempt=%s %q: %s (deadline %s)\n", wait.ID, wait.TaskID, wait.AttemptID, wait.Name, wait.Condition, formatTime(wait.Deadline))
 	}
-	if len(diagnosis.Waits) != 0 {
+	if len(diagnosis.NodeWaits) != 0 {
 		fmt.Fprintln(out, "node waits:")
-		for _, wait := range diagnosis.Waits {
+		for _, wait := range diagnosis.NodeWaits {
 			fmt.Fprintf(out, "  %s %q thread=%s host=%s delivery=%s (deadline %s)\n", wait.Request.ID, wait.Request.Name, wait.Request.ThreadID, wait.Host, wait.Delivery, formatTime(wait.Deadline))
 		}
 	}
@@ -978,6 +1034,23 @@ func renderDiagnosis(out io.Writer, diagnosis *backlogadmin.Diagnosis) {
 			fmt.Fprintf(out, "  %s\n", item)
 		}
 	}
+}
+
+// settledWaitTime is the settlement time, or the zero time formatTime renders
+// as "-" when the coordinator recorded an outcome without one.
+func settledWaitTime(wait backlogadmin.TaskWaitDetail) time.Time {
+	if wait.SettledAt == nil {
+		return time.Time{}
+	}
+	return *wait.SettledAt
+}
+
+// waitReasonSuffix appends the settlement reason when there is one.
+func waitReasonSuffix(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	return ": " + reason
 }
 
 func formatTime(value time.Time) string {
