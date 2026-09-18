@@ -594,6 +594,21 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			"effect", "no credentials, resource locks or directory resources",
 			"remedy", "add a backlog_v2.projects entry only if the project needs host-local bindings")
 	}
+	for _, dropped := range cfg.DroppedFleetProviders() {
+		if dropped.Reason != config.DroppedProviderMissingBinding {
+			// An instance the projection authorizes with no desired models is
+			// not a fault: it grants no execution authorization and never did.
+			// It is recorded so "models" can say so, not warned about here.
+			continue
+		}
+		// Said once at startup, where an operator reading the first lines
+		// learns which route the fleet authorized and this coordinator cannot
+		// charge. The rest of the worker runs.
+		logger.Warn("fleet provider instance has no authorized quota binding; dropped for this worker",
+			"instance", dropped.Instance, "worker", dropped.Worker,
+			"effect", "no task is routed to this instance on this worker",
+			"remedy", dropped.Remedy)
+	}
 	projectWorkers := make(map[string][]string, len(cfg.BacklogV2.Projects))
 	for name, project := range cfg.BacklogV2.Projects {
 		projectWorkers[name] = append([]string(nil), project.Workers...)

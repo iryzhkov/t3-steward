@@ -541,6 +541,11 @@ type Config struct {
 	// V2Project because the operator file binds nothing for them. Read it
 	// through DefaultedFleetProjects.
 	defaultedFleetProjects []string
+	// droppedFleetProviders records the provider instances the fleet
+	// projection authorized for a worker that this load did not install in
+	// that worker's catalog, with the reason. Read it through
+	// DroppedFleetProviders.
+	droppedFleetProviders []DroppedFleetProvider
 	// QuotaChecks controls this host watchdog and, on a coordinator, fleet-wide
 	// scheduler admission and throttling. Nil defaults to enabled.
 	QuotaChecks *bool `yaml:"quota_checks"`
