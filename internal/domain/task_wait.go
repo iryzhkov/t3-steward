@@ -190,6 +190,9 @@ type TaskWait struct {
 	// Node is the structured condition of a node wait, settled by the
 	// coordinator's node settlement pass with no local check.
 	Node *NodeWaitCondition `json:"node,omitempty"`
+	// Quota is the structured condition of a quota wait, settled by the same
+	// pass from the merged bucket observations.
+	Quota *QuotaWaitCondition `json:"quota,omitempty"`
 
 	// RegisteredRevision is the attempt revision this registration produced. It
 	// is the fence a later wake is checked against.
@@ -288,6 +291,8 @@ type TaskWaitRegistration struct {
 	OrTimeout bool     `json:"orTimeout,omitempty"`
 	// Node is the structured condition of a node wait.
 	Node *NodeWaitCondition `json:"node,omitempty"`
+	// Quota is the structured condition of a quota wait.
+	Quota *QuotaWaitCondition `json:"quota,omitempty"`
 }
 
 // MaxTaskWaitDuration bounds any single task-bound wait. Directory writer
@@ -366,9 +371,18 @@ func (r TaskWaitRegistration) Validate() error {
 		return errors.New("a node wait needs a target run and task")
 	case r.Kind != WaitKindNode && r.Node != nil:
 		return fmt.Errorf("a %s wait carries no node condition", r.Kind.OrShell())
+	case r.Kind == WaitKindQuota && r.Quota == nil:
+		return errors.New("a quota wait needs its pool and condition")
+	case r.Kind != WaitKindQuota && r.Quota != nil:
+		return fmt.Errorf("a %s wait carries no quota condition", r.Kind.OrShell())
 	}
 	if r.Node != nil {
 		if _, err := ParseNodeWaitState(string(r.Node.State)); err != nil {
+			return err
+		}
+	}
+	if r.Quota != nil {
+		if err := r.Quota.Validate(); err != nil {
 			return err
 		}
 	}

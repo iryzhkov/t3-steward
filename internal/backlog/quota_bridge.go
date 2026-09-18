@@ -198,52 +198,11 @@ func (b QuotaBridge) ReconcileState(ctx context.Context, input QuotaPlanningStat
 // same key replaces them, an older or equally old one is dropped, and a key
 // no local reading has is added. Duplicate local readings of one key are kept
 // as they were, for the conflict handling downstream.
+//
+// The rule lives in domain.MergeQuotaObservations so the coordinator's
+// quota waits read the same merged observations its admission does.
 func MergeWorkerQuotaObservations(local []domain.BucketState, workers []domain.WorkerSnapshot) []domain.BucketState {
-	newestLocal := make(map[domain.BucketKey]time.Time, len(local))
-	for _, state := range local {
-		if state.ObservedAt.After(newestLocal[state.Key]) {
-			newestLocal[state.Key] = state.ObservedAt
-		}
-	}
-	fresher := make(map[domain.BucketKey]domain.BucketState)
-	for _, worker := range workers {
-		for _, observed := range worker.QuotaObservations {
-			if observed.ObservedAt.IsZero() {
-				continue
-			}
-			if localAt, ok := newestLocal[observed.Key]; ok && !observed.ObservedAt.After(localAt) {
-				continue
-			}
-			if current, ok := fresher[observed.Key]; ok && !observed.ObservedAt.After(current.ObservedAt) {
-				continue
-			}
-			fresher[observed.Key] = domain.BucketState{
-				Key: observed.Key, Phase: observed.Phase, Epoch: observed.Epoch,
-				LimitName: observed.LimitName, ModelSelector: observed.ModelSelector,
-				UsedPercent: observed.UsedPercent, ResetsAt: observed.ResetsAt,
-				ObservedAt: observed.ObservedAt, Healthy: observed.Healthy, UpdatedAt: observed.ObservedAt,
-			}
-			if fresher[observed.Key].Epoch == "" {
-				state := fresher[observed.Key]
-				state.Epoch = domain.EpochFor(observed.ResetsAt)
-				fresher[observed.Key] = state
-			}
-		}
-	}
-	if len(fresher) == 0 {
-		return local
-	}
-	merged := make([]domain.BucketState, 0, len(local)+len(fresher))
-	for _, state := range local {
-		if _, replaced := fresher[state.Key]; replaced {
-			continue
-		}
-		merged = append(merged, state)
-	}
-	for _, state := range fresher {
-		merged = append(merged, state)
-	}
-	return merged
+	return domain.MergeQuotaObservations(local, workers)
 }
 
 // bucketGovernsPool reports whether an observed bucket bears on a pool's

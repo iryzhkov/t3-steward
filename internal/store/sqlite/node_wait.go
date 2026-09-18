@@ -59,6 +59,9 @@ func resolveNodeRecords(ref domain.NodeRef, r CoordinatorRecords) (domain.NodeOb
 type nodeStateRecords struct {
 	CoordinatorRecords
 	Workers []domain.WorkerSnapshot
+	// Buckets are the bucket observations with the workers' fresher readings
+	// merged in, which is what a quota wait is evaluated against.
+	Buckets []domain.BucketState
 }
 
 func nodeStateRecordsTx(ctx context.Context, tx *sql.Tx) (nodeStateRecords, error) {
@@ -67,27 +70,81 @@ func nodeStateRecordsTx(ctx context.Context, tx *sql.Tx) (nodeStateRecords, erro
 	if r.CoordinatorRecords, err = nodeRecordsTx(ctx, tx); err != nil {
 		return r, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT record FROM coordinator_worker_snapshots ORDER BY worker_id`)
-	if err != nil {
+	if r.QuotaPools, err = loadJSON[domain.QuotaPool](ctx, tx, "coordinator_quota_pools"); err != nil {
+		return r, err
+	}
+	if r.Workers, err = scanJSONRows[domain.WorkerSnapshot](ctx, tx, `SELECT record FROM coordinator_worker_snapshots ORDER BY worker_id`); err != nil {
 		return r, fmt.Errorf("load worker snapshots: %w", err)
 	}
+	local, err := scanJSONRows[domain.BucketState](ctx, tx, `SELECT state FROM buckets ORDER BY key`)
+	if err != nil {
+		return r, fmt.Errorf("load bucket observations: %w", err)
+	}
+	r.Buckets = domain.MergeQuotaObservations(local, r.Workers)
+	return r, nil
+}
+
+// scanJSONRows reads one JSON column of every row of a query.
+func scanJSONRows[T any](ctx context.Context, tx *sql.Tx, query string) ([]T, error) {
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
+	var values []T
 	for rows.Next() {
 		var raw string
 		if err := rows.Scan(&raw); err != nil {
-			return r, err
+			return nil, err
 		}
-		var snapshot domain.WorkerSnapshot
-		if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
-			return r, fmt.Errorf("decode worker snapshot: %w", err)
+		var value T
+		if err := json.Unmarshal([]byte(raw), &value); err != nil {
+			return nil, err
 		}
-		r.Workers = append(r.Workers, snapshot)
+		values = append(values, value)
 	}
-	return r, rows.Err()
+	return values, rows.Err()
 }
 
 func resolveNodeState(condition domain.NodeWaitCondition, r nodeStateRecords) (domain.NodeObservation, error) {
 	return domain.ResolveNodeState(condition.Target, condition.State, r.WorkflowRuns, r.Tasks, r.Attempts, r.Assignments, r.Workers)
+}
+
+// observeQuota evaluates a quota condition against the merged observations.
+// The observation carries the pool's reading in Fields and the check-protocol
+// exit code; a pool that is no longer configured gives up.
+func observeQuota(condition domain.QuotaWaitCondition, r nodeStateRecords, now time.Time) (domain.NodeObservation, error) {
+	observation := domain.NodeObservation{ExitCode: 1, Reason: "pending"}
+	pool, err := domain.FindQuotaPool(r.QuotaPools, condition.Pool)
+	if err != nil {
+		return observation, err
+	}
+	reading := domain.ObserveQuotaPool(pool, r.Buckets)
+	observation.Fields = domain.QuotaTrailerFields(reading)
+	outcome, reason := condition.Evaluate(reading, now)
+	observation.Reason = reason
+	if outcome != "" {
+		observation.Outcome = outcome
+		observation.ExitCode = 0
+	}
+	return observation, nil
+}
+
+// quotaResetAt is the reset time a --reset wait records at registration: the
+// earliest reset among the pool's buckets.
+func quotaResetAt(condition domain.QuotaWaitCondition, r nodeStateRecords) (*time.Time, error) {
+	pool, err := domain.FindQuotaPool(r.QuotaPools, condition.Pool)
+	if err != nil {
+		return nil, err
+	}
+	reading := domain.ObserveQuotaPool(pool, r.Buckets)
+	if reading.Buckets == 0 {
+		return nil, fmt.Errorf("quota pool %s has no observation yet, so there is no window to wait out; try --below or --phase normal", condition.Pool)
+	}
+	if reading.ResetsAt == nil {
+		return nil, fmt.Errorf("quota pool %s reports no reset time; try --below or --phase normal", condition.Pool)
+	}
+	return reading.ResetsAt, nil
 }
 func saveNodeWaitTx(ctx context.Context, tx *sql.Tx, w domain.NodeWait) error {
 	raw, err := json.Marshal(w)
@@ -131,19 +188,35 @@ func (s *Store) RegisterNodeWait(ctx context.Context, request domain.NodeWaitReq
 	if err != nil {
 		return w, err
 	}
-	observation, err := resolveNodeState(domain.NodeWaitCondition{Target: request.Target, State: request.State}, records)
-	if err != nil {
-		return w, err
+	var observation domain.NodeObservation
+	if request.Quota != nil {
+		if err := request.Quota.Validate(); err != nil {
+			return w, err
+		}
+		if request.Quota.Reset && request.Quota.ResetAt == nil {
+			if request.Quota.ResetAt, err = quotaResetAt(*request.Quota, records); err != nil {
+				return w, err
+			}
+		}
+		if observation, err = observeQuota(*request.Quota, records, now); err != nil {
+			return w, err
+		}
+	} else {
+		if observation, err = resolveNodeState(domain.NodeWaitCondition{Target: request.Target, State: request.State}, records); err != nil {
+			return w, err
+		}
+		request.Target = observation.Target
 	}
-	request.Target = observation.Target
 	w = domain.NodeWait{Registration: original, Request: request, Actor: actor, Host: host, RegisteredRevision: observation.RunRevision, CreatedAt: now.UTC(), Deadline: now.Add(request.Timeout).UTC(), DeliveryID: "node-wake:" + request.ID, Delivery: "pending"}
 	if observation.ExitCode != 1 {
 		w.Observation = &observation
 		t := now.UTC()
 		w.SettledAt = &t
 	}
-	if err = pinNodeTx(ctx, tx, "wait:"+request.ID, request.Target); err != nil {
-		return w, err
+	if request.Quota == nil {
+		if err = pinNodeTx(ctx, tx, "wait:"+request.ID, request.Target); err != nil {
+			return w, err
+		}
 	}
 	if err = saveNodeWaitTx(ctx, tx, w); err != nil {
 		return w, err
@@ -185,7 +258,13 @@ func (s *Store) SettleNodeWaits(ctx context.Context, now time.Time) error {
 		if w.SettledAt != nil || w.Delivery == "cancelled" {
 			continue
 		}
-		obs, e := resolveNodeState(domain.NodeWaitCondition{Target: w.Request.Target, State: w.Request.State}, records)
+		var obs domain.NodeObservation
+		var e error
+		if w.Request.Quota != nil {
+			obs, e = observeQuota(*w.Request.Quota, records, now)
+		} else {
+			obs, e = resolveNodeState(domain.NodeWaitCondition{Target: w.Request.Target, State: w.Request.State}, records)
+		}
 		if e != nil {
 			obs = domain.NodeObservation{Target: w.Request.Target, ExitCode: 2, Reason: e.Error(), Outcome: domain.TaskWaitGaveUp}
 		}
@@ -234,6 +313,15 @@ func settleStructuredTaskWaitsTx(ctx context.Context, tx *sql.Tx, records nodeSt
 					Fields: domain.NodeTrailerFields(domain.NodeObservation{Target: wait.Node.Target})}
 			case obs.Outcome != "":
 				result = &domain.TaskWaitResult{Outcome: obs.Outcome, ExitCode: obs.ExitCode, Reason: obs.Reason, Fields: domain.NodeTrailerFields(obs)}
+			}
+		case wait.Quota != nil:
+			obs, err := observeQuota(*wait.Quota, records, now)
+			switch {
+			case err != nil:
+				// The pool left the configuration: nothing will observe it again.
+				result = &domain.TaskWaitResult{Outcome: domain.TaskWaitGaveUp, ExitCode: 2, Reason: err.Error(), Fields: map[string]string{"pool": wait.Quota.Pool}}
+			case obs.Outcome != "":
+				result = &domain.TaskWaitResult{Outcome: obs.Outcome, ExitCode: obs.ExitCode, Reason: obs.Reason, Fields: obs.Fields}
 			}
 		}
 		if result == nil {

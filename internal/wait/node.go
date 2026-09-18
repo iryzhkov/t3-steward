@@ -19,8 +19,12 @@ type NodeControl interface {
 	SendNodeWake(context.Context, domain.Thread, string, string) error
 }
 
-// nodeWakeProse is the human part of a node wake, after the trailer.
+// nodeWakeProse is the human part of a node or quota wake, after the trailer.
 func nodeWakeProse(w domain.NodeWait) string {
+	if w.Request.Quota != nil {
+		return fmt.Sprintf("Wait finished (T3 steward): %q. Quota pool %s: %s.\nContinue the work that was waiting on this.",
+			w.Request.Name, w.Request.Quota.Pool, w.Observation.Reason)
+	}
 	return fmt.Sprintf("Wait finished (T3 steward): %q. Node %s: %s (exit %d). Observed attempt %s, run revision %d.\nContinue the work that was waiting on this.",
 		w.Request.Name, w.Request.Target.String(), w.Observation.Reason, w.Observation.ExitCode, w.Observation.AttemptID, w.Observation.RunRevision)
 }

@@ -183,7 +183,7 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		// A coordinator kind is checked against the records it will be settled
 		// from, so a condition that can never settle, or already holds, is
 		// refused before anything is parked, as a local check would be.
-		if err := validateStructuredRegistrationTx(ctx, tx, &request); err != nil {
+		if err := validateStructuredRegistrationTx(ctx, tx, &request, now); err != nil {
 			return wait, err
 		}
 	}
@@ -195,7 +195,7 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		AttemptID: request.AttemptID, IssuedRevision: request.IssuedRevision,
 		ThreadID: request.ThreadID, Wake: request.Wake, MaxDuration: request.MaxDuration,
 		RequestID: request.RequestID, Name: request.Name, Condition: request.Condition,
-		Kind: request.Kind.OrShell(), OrTimeout: request.OrTimeout, Node: request.Node,
+		Kind: request.Kind.OrShell(), OrTimeout: request.OrTimeout, Node: request.Node, Quota: request.Quota,
 		RegisteredRevision: expected + 1,
 		RegisteredAt:       now.UTC(),
 		Deadline:           now.Add(request.MaxDuration).UTC(),
@@ -219,7 +219,7 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 // validateStructuredRegistrationTx checks a coordinator-kind registration
 // against the records it will be settled from, canonicalises its target and
 // fills the condition text and name when the caller gave none.
-func validateStructuredRegistrationTx(ctx context.Context, tx *sql.Tx, request *domain.TaskWaitRegistration) error {
+func validateStructuredRegistrationTx(ctx context.Context, tx *sql.Tx, request *domain.TaskWaitRegistration, now time.Time) error {
 	records, err := nodeStateRecordsTx(ctx, tx)
 	if err != nil {
 		return err
@@ -242,6 +242,24 @@ func validateStructuredRegistrationTx(ctx context.Context, tx *sql.Tx, request *
 		request.Node.Target = obs.Target
 		if request.Condition == "" {
 			request.Condition = request.Node.String()
+		}
+	case request.Quota != nil:
+		if request.Quota.Reset && request.Quota.ResetAt == nil {
+			resetAt, err := quotaResetAt(*request.Quota, records)
+			if err != nil {
+				return err
+			}
+			request.Quota.ResetAt = resetAt
+		}
+		obs, err := observeQuota(*request.Quota, records, now.UTC())
+		if err != nil {
+			return err
+		}
+		if obs.Outcome != "" {
+			return fmt.Errorf("the condition already holds (%s), so there is nothing to park for", obs.Reason)
+		}
+		if request.Condition == "" {
+			request.Condition = request.Quota.String()
 		}
 	default:
 		return fmt.Errorf("a %s wait needs its structured condition", request.Kind)

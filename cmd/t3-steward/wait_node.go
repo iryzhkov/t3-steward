@@ -33,7 +33,7 @@ func currentTaskWaitArgs(args []string) bool {
 
 func nativeWaitArgs(args []string) bool {
 	for _, arg := range args {
-		if arg == "--native" || arg == "--task" || strings.HasPrefix(arg, "--task=") || arg == "--run" || strings.HasPrefix(arg, "--run=") || arg == "--node" || strings.HasPrefix(arg, "--node=") || strings.HasPrefix(arg, "nw-") || strings.HasPrefix(arg, "tw-") {
+		if arg == "--native" || arg == "--task" || strings.HasPrefix(arg, "--task=") || arg == "--run" || strings.HasPrefix(arg, "--run=") || arg == "--node" || strings.HasPrefix(arg, "--node=") || arg == "--quota" || strings.HasPrefix(arg, "--quota=") || strings.HasPrefix(arg, "nw-") || strings.HasPrefix(arg, "tw-") {
 			return true
 		}
 	}
@@ -48,6 +48,9 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 	op := backlogadmin.NodeWaitOperation{Action: args[0]}
 	switch args[0] {
 	case "add":
+		if coordinatorWaitArgs(args[1:]) {
+			return cmdCoordinatorWaitAdd(ctx, cfg, client, args[1:])
+		}
 		fs := flag.NewFlagSet("wait add", flag.ContinueOnError)
 		task := fs.String("task", "", "run/task")
 		run := fs.String("run", "", "run sink")

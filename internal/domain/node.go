@@ -270,10 +270,18 @@ type NodeWaitRequest struct {
 	Timeout  time.Duration `json:"timeout"`
 	// State is the node state waited for; empty is terminal.
 	State NodeWaitState `json:"state,omitempty"`
+	// Quota makes this a quota wait: Target is empty and the condition is
+	// settled from the pool's merged bucket observations.
+	Quota *QuotaWaitCondition `json:"quota,omitempty"`
 }
 
 // Kind is the wait kind of a coordinator-settled interactive wait.
-func (r NodeWaitRequest) Kind() WaitKind { return WaitKindNode }
+func (r NodeWaitRequest) Kind() WaitKind {
+	if r.Quota != nil {
+		return WaitKindQuota
+	}
+	return WaitKindNode
+}
 
 type NodeWait struct {
 	Registration       NodeWaitRequest  `json:"registration"`

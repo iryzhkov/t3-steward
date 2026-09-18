@@ -7,11 +7,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
+	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -19,8 +21,9 @@ import (
 // quota. The coordinator settles these from its own records; the worker
 // registers no local check.
 type coordinatorWaitSpec struct {
-	Kind domain.WaitKind
-	Node *domain.NodeWaitCondition
+	Kind  domain.WaitKind
+	Node  *domain.NodeWaitCondition
+	Quota *domain.QuotaWaitCondition
 
 	Name, Condition string
 	Timeout         time.Duration
@@ -67,6 +70,10 @@ func parseCoordinatorWaitSpec(args []string) (coordinatorWaitSpec, error) {
 	fs.BoolVar(&spec.JSON, "json", false, "print the registered wait as JSON")
 	node := fs.String("node", "", "<run>[/<task>]")
 	state := fs.String("state", "", "node state")
+	quota := fs.String("quota", "", "quota pool")
+	below := fs.String("below", "", "usage percent the pool must be below")
+	phase := fs.String("phase", "", "phase the pool must be in (normal)")
+	reset := fs.Bool("reset", false, "wait for the pool's window to reset")
 	// The local-kind flags are declared so they are refused by name rather
 	// than reported as unknown.
 	at := fs.String("at", "", "")
@@ -84,7 +91,31 @@ func parseCoordinatorWaitSpec(args []string) (coordinatorWaitSpec, error) {
 	if spec.Timeout <= 0 || spec.Timeout > domain.MaxTaskWaitDuration {
 		return spec, fmt.Errorf("--timeout must be above zero and at most %s", domain.MaxTaskWaitDuration)
 	}
+	if *node != "" && *quota != "" {
+		return spec, errors.New("one wait has one kind; give --node or --quota, not both")
+	}
+	if *quota == "" && (*below != "" || *phase != "" || *reset) {
+		return spec, errors.New("--below, --phase and --reset belong to --quota")
+	}
+	if *node == "" && *state != "" {
+		return spec, errors.New("--state belongs to --node (and to --github)")
+	}
 	switch {
+	case *quota != "":
+		condition := domain.QuotaWaitCondition{Pool: strings.TrimSpace(*quota), Phase: domain.Phase(*phase), Reset: *reset}
+		if *below != "" {
+			value, err := strconv.ParseFloat(strings.TrimSuffix(*below, "%"), 64)
+			if err != nil {
+				return spec, fmt.Errorf("--below %q is not a percent: %w", *below, err)
+			}
+			condition.Below = &value
+		}
+		if err := condition.Validate(); err != nil {
+			return spec, err
+		}
+		spec.Kind = domain.WaitKindQuota
+		spec.Quota = &condition
+		spec.Condition = condition.String()
 	case *node != "":
 		target, err := parseNodeTarget(*node)
 		if err != nil {
@@ -98,7 +129,7 @@ func parseCoordinatorWaitSpec(args []string) (coordinatorWaitSpec, error) {
 		spec.Node = &domain.NodeWaitCondition{Target: target, State: parsedState}
 		spec.Condition = spec.Node.String()
 	default:
-		return spec, errors.New("--node <run>[/<task>] names the coordinator-settled wait")
+		return spec, errors.New("--node <run>[/<task>] or --quota <pool> names the coordinator-settled wait")
 	}
 	if spec.Name == "" {
 		spec.Name = spec.Condition
@@ -116,6 +147,68 @@ func parseNodeTarget(value string) (domain.NodeRef, error) {
 		return domain.NodeRef{RunID: value, TaskID: domain.SinkTaskName}, nil
 	}
 	return domain.ParseNodeRef(value)
+}
+
+// cmdCoordinatorWaitAdd registers an interactive wait of a coordinator kind
+// (--node or --quota) as a native wait: the coordinator holds and settles
+// it, and this host's runner delivers the wake.
+func cmdCoordinatorWaitAdd(ctx context.Context, cfg config.Config, client coordinatorNodeWaitClient, args []string) error {
+	spec, err := parseCoordinatorWaitSpec(args)
+	if err != nil {
+		return err
+	}
+	if spec.Task != "" {
+		return errors.New("--task current is a task-bound wait and is routed before this point")
+	}
+	if spec.WakeMode == "all" && spec.Group == "" {
+		return errors.New("--wake all needs --group")
+	}
+	threadID, err := resolveThread(cfg, spec.Thread)
+	if err != nil {
+		return err
+	}
+	logger := newLogger("error")
+	t3, _, err := connectForCallerThread(cfg, logger)
+	if err != nil {
+		return err
+	}
+	cctx, cancel := context.WithTimeout(ctx, cfg.T3.RequestTimeout.D())
+	defer cancel()
+	target, err := t3control.New(t3, logger, true).GetThread(cctx, threadID)
+	if err != nil {
+		return err
+	}
+	if target == nil || target.ArchivedAt != nil {
+		return errors.New("wait thread is unavailable on this host")
+	}
+	if spec.RequestID == "" {
+		spec.RequestID = "nw-" + strings.TrimPrefix(newWaitID(), "w-")
+	}
+	request := domain.NodeWaitRequest{ID: spec.RequestID, ThreadID: threadID, Name: spec.Name, Timeout: spec.Timeout, Quota: spec.Quota}
+	if spec.Node != nil {
+		request.Target = spec.Node.Target
+		if spec.Node.State != domain.NodeStateTerminal {
+			request.State = spec.Node.State
+		}
+	}
+	result, err := client.NodeWait(ctx, backlogadmin.NodeWaitOperation{Action: "register", Request: request})
+	if err != nil {
+		return err
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(result); err != nil {
+		return err
+	}
+	if len(result.Waits) == 1 && result.Waits[0].Delivery != "delivered" && result.Waits[0].Delivery != "cancelled" {
+		fmt.Fprintln(os.Stderr, "End this turn now; the coordinator has registered the wait.")
+	}
+	return nil
+}
+
+// coordinatorNodeWaitClient is the transport method the coordinator kinds use.
+type coordinatorNodeWaitClient interface {
+	NodeWait(context.Context, backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error)
 }
 
 // cmdTaskCoordinatorWaitAdd registers a task-bound wait of a coordinator
@@ -148,7 +241,7 @@ func cmdTaskCoordinatorWaitAdd(ctx context.Context, cfg config.Config, args []st
 			AttemptID: identity.AttemptID, IssuedRevision: identity.AttemptRevision,
 			ThreadID: identity.ThreadID, Wake: domain.WakeMode(spec.WakeMode), MaxDuration: spec.Timeout,
 			Name: spec.Name, Condition: spec.Condition, Kind: spec.Kind, OrTimeout: spec.OrTimeout,
-			Node: spec.Node,
+			Node: spec.Node, Quota: spec.Quota,
 		},
 	})
 	if err != nil {
