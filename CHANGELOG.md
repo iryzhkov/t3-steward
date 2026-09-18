@@ -33,12 +33,6 @@ All notable changes to this project are documented here. The format follows
   "t3 CLI not found on PATH". `t3.token_file` names a private (mode 0600) file
   holding the token and is read at load when `t3.token` is empty.
 
-### Added
-
-- `wait list --json` for the local checks; the human list names the
-  coordinator task wait each task-bound check settles.
-- `wait add --json` for interactive waits.
-
 - An overseer activation now carries its supervisor identity in the activation
   workspace, as an owner-only `.t3-steward/supervisor.env` the worker writes
   before the thread starts, and the supervision commands discover it by walking
@@ -77,6 +71,12 @@ All notable changes to this project are documented here. The format follows
 - Campaign readiness recognizes full pinned Git object IDs in advertised refs.
   A commit SHA is no longer mistaken for a ref name; an unadvertised object
   remains unverified instead of being falsely reported missing.
+
+### Added
+
+- `wait list --json` for the local checks; the human list names the
+  coordinator task wait each task-bound check settles.
+- `wait add --json` for interactive waits.
 
 ### Changed
 

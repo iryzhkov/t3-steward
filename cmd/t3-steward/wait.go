@@ -250,6 +250,11 @@ func cmdWaitControl(ctx context.Context, cfg config.Config, store *sqlite.Store,
 			fmt.Printf("exit %d\n%s", code, out)
 			return err
 		}
+		if w.Status != wait.StatusWaiting {
+			// A settled or already cancelled row keeps its outcome: overwriting a
+			// met check as cancelled would misreport what the runner observed.
+			return fmt.Errorf("wait %s is already %s; nothing to cancel", w.ID, w.Status)
+		}
 		if w.TaskWaitID == "" {
 			w.Status, w.Reason = wait.StatusCancelled, "cancelled manually"
 			if err := store.SaveWait(ctx, w); err != nil {
