@@ -118,9 +118,16 @@ services under the existing coordinator epoch. Only backlog_v2 catalog and polic
 settings are reloadable. Identity, epochs, storage, and host watchdog/T3 settings
 are lifecycle operations. Invalid configuration retains the prior effective
 configuration. Changing an execution catalog while its worker has nonterminal
-assignments is rejected; drain and settle first. A failed activation restores
-the prior configuration. Status exposes the effective configuration digest,
-release, and last activation time; successful activation has a native audit event.
+assignments is rejected; drain and settle first, or cancel the task the receipt
+names. A failed activation restores the prior configuration. Every signal is
+answered with a receipt at
+`~/.local/state/t3-steward/coordinator/reload-receipt.json` (`accepted`,
+`unchanged` or `rejected` with the blockers), carried by the status query as
+`lastReload` and by `t3-steward coordinator identity`; on the coordinator host
+`t3-steward coordinator reload` sends the signal and prints the receipt. Status
+also exposes the effective configuration digest, release, and activation time;
+successful activation has a native audit event. See "Reloading the coordinator"
+in [backlog-v2-operations.md](backlog-v2-operations.md).
 
 Rotate credential values in their private files on both ends, then reconnect.
 A same-catalog handshake refreshes authentication without changing worker epoch

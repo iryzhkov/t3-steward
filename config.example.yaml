@@ -44,7 +44,10 @@ t3:
 # Host watchdog quota checks; on a coordinator this also controls scheduler
 # quota admission/forecast/throttling for the ENTIRE fleet, not just local work.
 # Readings remain recorded. Worker safety and concurrency checks remain enforced.
-# Changing this requires restarting the coordinator, not SIGHUP.
+# Changing this requires restarting the coordinator, not SIGHUP. (SIGHUP
+# reloads only backlog_v2 catalog and policy and answers every signal with a
+# receipt under the state directory, coordinator/reload-receipt.json; see
+# "t3-steward coordinator reload".)
 quota_checks: true
 
 wait:

@@ -459,6 +459,13 @@ carries `SyslogIdentifier=t3-steward` like every other generated unit, after
 which `-t t3-steward` holds on every host. See "Credential files" below for
 the exact command and the rollback.
 
+Coordinator startup acquires authority and completes one local reconciliation
+pass without contacting workers. Configured SSH worker sessions begin only on a
+later scheduled pass. Every pass creates a fresh authenticated session per
+worker and reapplies current quota admission immediately before offers and
+prepare/dispatch delivery. A failed quota reconstruction is equivalent to no
+open pools; observation, stop, and collection remain available.
+
 ### Credential files
 
 Every resolver that reads a credential from `T3_STEWARD_CREDENTIAL_<REF>`
@@ -497,12 +504,72 @@ been seen serving; rolling back is copying the retained unit file back over
 the generated one, `daemon-reload` and a restart. The retirement is a live
 change on the host and is done with approval, not by a pull.
 
-Coordinator startup acquires authority and completes one local reconciliation
-pass without contacting workers. Configured SSH worker sessions begin only on a
-later scheduled pass. Every pass creates a fresh authenticated session per
-worker and reapplies current quota admission immediately before offers and
-prepare/dispatch delivery. A failed quota reconstruction is equivalent to no
-open pools; observation, stop, and collection remain available.
+### Reloading the coordinator
+
+The coordinator re-reads its configuration file on SIGHUP and replaces its
+configuration-bound services under the same acquired authority. Only the
+`backlog_v2` catalog and policy are reloadable: projects, workers, setup
+profiles, quota pools, leases, freshness, message limits and scheduling. The
+coordinator identity, epochs, storage roots and the host watchdog and T3
+settings are lifecycle operations and need a restart; a file that changes one
+of them is rejected whole. A worker epoch change is rejected too, because it
+is a custody recovery, not a reload.
+
+The coordinator owns the verdict, and it writes it down. For every signal it
+writes `<state dir>/coordinator/reload-receipt.json`, which is
+`~/.local/state/t3-steward/coordinator/reload-receipt.json` under the default
+state path, atomically (a temporary file renamed into place) and before the
+log line that reports the same outcome. The receipt carries `requestedAt`,
+`completedAt`, `outcome`, `error`, `configurationDigest` (the digest in
+effect after the request), `previousDigest`, `release` and, on a rejection,
+`blockers`. The outcomes are:
+
+- `accepted`: the new configuration is active. The receipt is written once
+  the new services are ready, so a reader that finds it knows the reload is
+  done, not merely under way. If the activation fails, the prior
+  configuration is restored and the receipt says `rejected` with the
+  activation error.
+- `unchanged`: the file's digest equals the effective one. Nothing is
+  replaced and no service restarts.
+- `rejected`: the effective configuration and its digest are exactly what
+  they were, and `configurationDigest` equals `previousDigest` to say so.
+
+A receipt is never older than the one before it. The same record is carried
+in the status query's runtime block as `lastReload`, so
+`t3-steward coordinator identity --json` shows the last verdict from any
+admin host, and the text form prints it as `reload <outcome> at <time>
+(<digest>)` with the error and blockers of a rejection. On the coordinator
+host, `t3-steward coordinator reload [--json] [--wait DURATION]` sends the
+signal (through the pid file the coordinator writes beside the receipt),
+waits up to `--wait` (default 10s) for a receipt requested at or after the
+signal and prints it; it exits 0 for `accepted` and `unchanged`, 8 for
+`rejected` and 6 when no receipt arrived in time. UpKeeper's
+`steward-fleet-configuration` component reads the same receipt after it
+signals a changed catalog, and fails its convergence on a rejection or on no
+receipt.
+
+What blocks a reload is a catalog change on a worker that still holds a
+retained assignment, meaning one that is neither `completed` nor `released`,
+at any phase, including a paused attempt and a parked one. A worker whose
+catalog revision does not change never blocks, so a policy change, a drain
+(`accept_backlog: false`) or a change to another worker's projects reloads
+with work in flight. The refusal names every blocking assignment with its
+worker, its attempt, the attempt's progress and control, the phase the worker
+last reported and the action that unblocks it:
+
+- a running attempt: let it settle, or cancel its task with
+  `t3-steward backlog cancel <run>/<task> --reason TEXT`;
+- a paused attempt: wait for the pause to lift and the attempt to settle, or
+  cancel it;
+- a parked attempt (`waiting-external`): wait for its task wait to settle and
+  the attempt to finish, or cancel it;
+- otherwise, drain the worker and let the assignment settle.
+
+After the blockers are gone, signal again with `coordinator reload`; the
+receipt for the new signal is the one that counts. A touched worker is
+offered new work only after it re-enrolls at the new revision
+(`t3-steward worker enroll <worker> --current-catalog --reason TEXT`);
+enrollment stays an explicit operator action.
 
 ### Campaign supervision
 

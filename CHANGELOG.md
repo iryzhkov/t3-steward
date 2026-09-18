@@ -8,6 +8,31 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The coordinator writes a receipt for every SIGHUP at
+  `<state dir>/coordinator/reload-receipt.json` (atomically, before the log
+  line that reports the outcome, never older than the previous one) with
+  `requestedAt`, `completedAt`, `outcome` (`accepted`, `rejected`,
+  `unchanged`), `error`, `configurationDigest` (effective after the request),
+  `previousDigest`, `release` and, on a rejection, `blockers`. An unchanged
+  file no longer restarts the configuration services. The status query's
+  runtime block carries the receipt as `lastReload` (the activation time is
+  now `activatedAt`), and `t3-steward coordinator identity` prints it as
+  `lastReload` with `--json` and as reload lines in text. The coordinator
+  also writes `coordinator.pid` beside the receipt (F-3, contract 2).
+- `t3-steward coordinator reload [--json] [--wait DURATION]` sends SIGHUP to
+  the coordinator on this host, waits (default 10s) for a receipt requested at
+  or after the signal and prints it: exit 0 for `accepted` and `unchanged`, 8
+  for `rejected` (class `rejected`, the receipt printed first), 6 when no
+  receipt arrives in time, 5 when no coordinator pid file exists (F-3).
+- A refused catalog change names every retained assignment on every worker
+  whose execution catalog would change, with the attempt's progress and
+  control, the phase the worker last reported for it and the action that
+  unblocks it (`t3-steward backlog cancel <run>/<task> --reason TEXT`, after
+  waiting for a pause to lift or a task wait to settle), in the WARN line and
+  in the receipt. The rule itself is unchanged: a paused or parked attempt
+  still blocks, because the worker refuses a republished catalog while its
+  journal owns a non-terminal attempt and the coordinator refuses a session to
+  a worker that does not accept the current revision (F-2, step A).
 - Every resolver that reads a credential from `T3_STEWARD_CREDENTIAL_<REF>`
   (project credential checks, the worker protocol credential and the
   coordinator admin credential) also accepts
