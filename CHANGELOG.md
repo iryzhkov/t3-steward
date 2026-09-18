@@ -377,7 +377,13 @@ All notable changes to this project are documented here. The format follows
   shortening the 24-hour window for recovering a lost submission answer to
   hours, and to minutes as the table grew. A coordinator that cannot apply the
   narrowing refuses it, and the runner then asks for the whole list as before,
-  so delivery still works against `v0.11.0-rc.70`.
+  so delivery still works against `v0.11.0-rc.70`. **Upgrade the coordinator
+  before the workers.** That fallback list is unfiltered and, on an rc.70
+  coordinator, still classified a mutation by operation word, so every worker's
+  tick keeps taking the admin-replay lock and writing its whole answer into the
+  replay store: none of the relief above applies until the coordinator itself
+  is on this release, and the shortened replay window stays in effect for the
+  whole mixed-version period.
 - A refused node-wake delivery transition is reported. The claim that fences
   one send now crosses the network on every host that is not the coordinator,
   where a refusal means a rolled-back coordinator, an expired credential or a
