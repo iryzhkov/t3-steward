@@ -28,8 +28,34 @@ type NodeObservation struct {
 	AttemptID       string        `json:"attemptId,omitempty"`
 	AttemptRevision int64         `json:"attemptRevision,omitempty"`
 	Progress        ProgressState `json:"progress"`
-	ExitCode        int           `json:"exitCode"`
-	Reason          string        `json:"reason"`
+	// ExitCode is the check-protocol reading of the observation: 0 met, 1 not
+	// yet, 2 settled against the waiter. Success dependencies read it.
+	ExitCode int    `json:"exitCode"`
+	Reason   string `json:"reason"`
+	// Outcome is the wake outcome of a settled observation. Empty in records
+	// written before outcomes existed; NodeObservationOutcome derives it.
+	Outcome TaskWaitOutcome `json:"outcome,omitempty"`
+	// Fields are extra kind-specific pairs for the wake trailer, such as the
+	// failed task list of a terminal run or the pause reason of a paused one.
+	Fields map[string]string `json:"fields,omitempty"`
+}
+
+// NodeObservationOutcome is the wake outcome of a settled observation, derived
+// from the exit code and reason for records that predate the Outcome field.
+func NodeObservationOutcome(o NodeObservation) TaskWaitOutcome {
+	if o.Outcome != "" {
+		return o.Outcome
+	}
+	switch {
+	case o.ExitCode == 0:
+		return TaskWaitMet
+	case o.Reason == "timed out":
+		return TaskWaitTimedOut
+	case o.Progress == ProgressCancelled:
+		return TaskWaitCancelled
+	default:
+		return TaskWaitFailed
+	}
 }
 
 // ResolveNode is shared by native waits and success dependencies. Missing state
@@ -111,6 +137,10 @@ type NodeWaitRequest struct {
 	Target   NodeRef       `json:"target"`
 	Timeout  time.Duration `json:"timeout"`
 }
+
+// Kind is the wait kind of a coordinator-settled interactive wait.
+func (r NodeWaitRequest) Kind() WaitKind { return WaitKindNode }
+
 type NodeWait struct {
 	Registration       NodeWaitRequest  `json:"registration"`
 	Request            NodeWaitRequest  `json:"request"`

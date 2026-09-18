@@ -19,6 +19,12 @@ type NodeControl interface {
 	SendNodeWake(context.Context, domain.Thread, string, string) error
 }
 
+// nodeWakeProse is the human part of a node wake, after the trailer.
+func nodeWakeProse(w domain.NodeWait) string {
+	return fmt.Sprintf("Wait finished (T3 steward): %q. Node %s: %s (exit %d). Observed attempt %s, run revision %d.\nContinue the work that was waiting on this.",
+		w.Request.Name, w.Request.Target.String(), w.Observation.Reason, w.Observation.ExitCode, w.Observation.AttemptID, w.Observation.RunRevision)
+}
+
 // tickNodes never repeats an uncertain external send. The durable sending state
 // survives a crash before or after Dispatch. Only positive message evidence
 // resolves it; absence in a bounded read is not proof of non-delivery.
@@ -82,7 +88,7 @@ func (r *Runner) tickNodes(ctx context.Context) {
 		if err != nil || !claimed {
 			continue
 		}
-		text := fmt.Sprintf("Wait finished (T3 steward): %q. Node %s: %s (exit %d). Observed attempt %s, run revision %d.\nContinue the work that was waiting on this.", w.Request.Name, w.Request.Target.String(), w.Observation.Reason, w.Observation.ExitCode, w.Observation.AttemptID, w.Observation.RunRevision)
+		text := nodeTrailer(w) + "\n\n" + nodeWakeProse(w)
 		if err := control.SendNodeWake(ctx, *thread, w.DeliveryID, text); err != nil {
 			_, _ = store.TransitionNodeWake(ctx, w.Request.ID, "sending", "recovery-required", r.now())
 		}

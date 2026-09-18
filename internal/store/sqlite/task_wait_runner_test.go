@@ -102,7 +102,7 @@ func TestTwoEachWaitsWakeTheAttemptOnTheFirstSettlement(t *testing.T) {
 		{check: "w-second", exit: 0, local: wait.StatusMet, outcome: domain.TaskWaitMet},
 		// A check that gives up settles too. A failed condition wakes the task
 		// with its evidence; only silence would be wrong.
-		{check: "w-second", exit: 2, local: wait.StatusFailed, outcome: domain.TaskWaitFailed},
+		{check: "w-second", exit: 2, local: wait.StatusGaveUp, outcome: domain.TaskWaitGaveUp},
 	} {
 		settles := settlement.check
 		t.Run(fmt.Sprintf("%s settles as %s", settles, settlement.outcome), func(t *testing.T) {

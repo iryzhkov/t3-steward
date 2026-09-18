@@ -35,6 +35,7 @@ type nativeControl struct {
 	sends int
 	seen  bool
 	fail  bool
+	texts []string
 }
 
 func (c *nativeControl) GetThread(context.Context, string) (*domain.Thread, error) {
@@ -46,8 +47,9 @@ func (c *nativeControl) ResumeThread(context.Context, domain.Thread, string) err
 func (c *nativeControl) ObserveNodeWake(context.Context, string, string) (bool, error) {
 	return c.seen, nil
 }
-func (c *nativeControl) SendNodeWake(context.Context, domain.Thread, string, string) error {
+func (c *nativeControl) SendNodeWake(_ context.Context, _ domain.Thread, _ string, text string) error {
 	c.sends++
+	c.texts = append(c.texts, text)
 	if c.fail {
 		return errors.New("response lost")
 	}

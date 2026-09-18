@@ -210,7 +210,7 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 	*requestID = taskWaitRequestID(*requestID, identity, os.Stderr)
 
 	local := wait.Wait{
-		ID: newWaitID(), ThreadID: identity.ThreadID, Name: *name, Command: command, Dir: *dir,
+		ID: newWaitID(), ThreadID: identity.ThreadID, Name: *name, Kind: domain.WaitKindShell, Command: command, Dir: *dir,
 		Every: *every, MaxEvery: *maxEvery, Timeout: *timeout, RunTimeout: *runTimeout,
 		Wake: wait.WakeMode(*wakeMode), Status: wait.StatusWaiting, CreatedAt: time.Now(),
 	}
@@ -238,7 +238,7 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 			RequestID: *requestID, WorkflowRunID: identity.WorkflowRunID, TaskID: identity.TaskID,
 			AttemptID: identity.AttemptID, IssuedRevision: identity.AttemptRevision,
 			ThreadID: identity.ThreadID, Wake: domain.WakeMode(*wakeMode), MaxDuration: *timeout,
-			Name: *name, Condition: strings.Join(command, " "),
+			Name: *name, Condition: strings.Join(command, " "), Kind: domain.WaitKindShell,
 		},
 	})
 	if err != nil {

@@ -124,9 +124,14 @@ const (
 type TaskWaitOutcome string
 
 const (
-	TaskWaitMet       TaskWaitOutcome = "met"
-	TaskWaitFailed    TaskWaitOutcome = "failed"
-	TaskWaitTimedOut  TaskWaitOutcome = "timed-out"
+	TaskWaitMet      TaskWaitOutcome = "met"
+	TaskWaitFailed   TaskWaitOutcome = "failed"
+	TaskWaitTimedOut TaskWaitOutcome = "timed-out"
+	// TaskWaitGaveUp is a check that stopped deciding: a shell check exiting 2,
+	// or a github target that no longer exists or cannot be read three times
+	// in a row. It is distinct from failed, which is the condition deciding
+	// against the waiter.
+	TaskWaitGaveUp    TaskWaitOutcome = "gave-up"
 	TaskWaitCancelled TaskWaitOutcome = "cancelled"
 )
 
@@ -135,12 +140,16 @@ const (
 // condition reported, and how long it ran, so the agent can either handle it or
 // produce an honest final failure.
 type TaskWaitResult struct {
-	Outcome    TaskWaitOutcome `json:"outcome"`
-	ExitCode   int             `json:"exitCode"`
-	Reason     string          `json:"reason,omitempty"`
-	Output     string          `json:"output,omitempty"`
-	RanFor     time.Duration   `json:"ranFor"`
-	ObservedAt time.Time       `json:"observedAt"`
+	Outcome  TaskWaitOutcome `json:"outcome"`
+	ExitCode int             `json:"exitCode"`
+	Reason   string          `json:"reason,omitempty"`
+	Output   string          `json:"output,omitempty"`
+	// Fields are the kind-specific pairs the wake trailer carries: at= for a
+	// time wait, target= state= conclusion= url= for github, run= task=
+	// attempt= revision= progress= for node, pool= phase= percent= for quota.
+	Fields     map[string]string `json:"fields,omitempty"`
+	RanFor     time.Duration     `json:"ranFor"`
+	ObservedAt time.Time         `json:"observedAt"`
 }
 
 // TaskWait is the coordinator-owned record that binds one external condition to
@@ -172,6 +181,12 @@ type TaskWait struct {
 	// reading a queue and for the wake message the agent receives.
 	Name      string `json:"name,omitempty"`
 	Condition string `json:"condition,omitempty"`
+	// Kind is how the wait is settled; empty in records written before kinds
+	// existed, which are shell waits.
+	Kind WaitKind `json:"kind,omitempty"`
+	// OrTimeout makes the deadline a normal outcome: the wake still says
+	// timed-out, but as an expected end rather than a failure.
+	OrTimeout bool `json:"orTimeout,omitempty"`
 
 	// RegisteredRevision is the attempt revision this registration produced. It
 	// is the fence a later wake is checked against.
@@ -265,6 +280,9 @@ type TaskWaitRegistration struct {
 	MaxDuration    time.Duration `json:"maxDuration"`
 	Name           string        `json:"name,omitempty"`
 	Condition      string        `json:"condition,omitempty"`
+	// Kind is the wait kind; empty means shell.
+	Kind      WaitKind `json:"kind,omitempty"`
+	OrTimeout bool     `json:"orTimeout,omitempty"`
 }
 
 // MaxTaskWaitDuration bounds any single task-bound wait. Directory writer
@@ -337,6 +355,8 @@ func (r TaskWaitRegistration) Validate() error {
 		return fmt.Errorf("task-bound wait needs a maximum duration above zero and at most %s", MaxTaskWaitDuration)
 	case len(r.Name) > 1000 || len(r.Condition) > 4000:
 		return errors.New("task-bound wait name or condition is too long")
+	case !r.Kind.Local() && !r.Kind.Coordinator():
+		return fmt.Errorf("task-bound wait kind %q is not one of %v", r.Kind, WaitKinds())
 	}
 	return nil
 }

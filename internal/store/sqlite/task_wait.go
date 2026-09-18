@@ -127,7 +127,8 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		}
 		if wait.AttemptID != request.AttemptID || wait.ThreadID != request.ThreadID ||
 			wait.Wake != request.Wake || wait.MaxDuration != request.MaxDuration ||
-			wait.WorkflowRunID != request.WorkflowRunID || wait.TaskID != request.TaskID {
+			wait.WorkflowRunID != request.WorkflowRunID || wait.TaskID != request.TaskID ||
+			wait.Kind.OrShell() != request.Kind.OrShell() {
 			return domain.TaskWait{}, domain.ErrTaskWaitReplayChanged
 		}
 		// A replay may only report a park that is actually in force. The wait
@@ -186,6 +187,7 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		AttemptID: request.AttemptID, IssuedRevision: request.IssuedRevision,
 		ThreadID: request.ThreadID, Wake: request.Wake, MaxDuration: request.MaxDuration,
 		RequestID: request.RequestID, Name: request.Name, Condition: request.Condition,
+		Kind: request.Kind.OrShell(), OrTimeout: request.OrTimeout,
 		RegisteredRevision: expected + 1,
 		RegisteredAt:       now.UTC(),
 		Deadline:           now.Add(request.MaxDuration).UTC(),

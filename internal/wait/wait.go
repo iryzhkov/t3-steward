@@ -23,10 +23,14 @@ import (
 type Status string
 
 const (
-	StatusWaiting   Status = "waiting"
-	StatusMet       Status = "met"
-	StatusFailed    Status = "failed"
-	StatusTimedOut  Status = "timed-out"
+	StatusWaiting  Status = "waiting"
+	StatusMet      Status = "met"
+	StatusFailed   Status = "failed"
+	StatusTimedOut Status = "timed-out"
+	// StatusGaveUp is a check that stopped deciding: exit 2, or a github
+	// target that cannot be read. It settles the wait like a failure does,
+	// and the wake says which of the two it was.
+	StatusGaveUp    Status = "gave-up"
 	StatusWoken     Status = "woken"
 	StatusCancelled Status = "cancelled"
 )
@@ -43,11 +47,22 @@ const (
 
 // Wait is one registered poll.
 type Wait struct {
-	ID       string   `json:"id"`
-	ThreadID string   `json:"threadId"`
-	Name     string   `json:"name"`
-	Command  []string `json:"command"`
-	Dir      string   `json:"dir"`
+	ID       string `json:"id"`
+	ThreadID string `json:"threadId"`
+	Name     string `json:"name"`
+	// Kind is how the runner settles the wait: shell (the default for rows
+	// written before kinds existed), time or github. Coordinator kinds never
+	// have a local row.
+	Kind    domain.WaitKind `json:"kind,omitempty"`
+	Command []string        `json:"command"`
+	Dir     string          `json:"dir"`
+	// OrTimeout makes the deadline a normal outcome rather than a failure.
+	OrTimeout bool `json:"orTimeout,omitempty"`
+	// Outcome is the trailer outcome once the wait settled.
+	Outcome string `json:"outcome,omitempty"`
+	// Fields are the kind-specific trailer pairs recorded at settlement.
+	Fields map[string]string `json:"fields,omitempty"`
+
 	// Every is the interval after the first run; it doubles after every
 	// "not yet" result up to MaxEvery, so a long wait polls lightly.
 	Every    time.Duration `json:"every"`
@@ -77,7 +92,19 @@ type Wait struct {
 
 // Settled reports whether the wait has an outcome.
 func (w Wait) Settled() bool {
-	return w.Status == StatusMet || w.Status == StatusFailed || w.Status == StatusTimedOut
+	return w.Status == StatusMet || w.Status == StatusFailed || w.Status == StatusGaveUp || w.Status == StatusTimedOut
+}
+
+// settle records an outcome and the kind-specific trailer pairs.
+func (w *Wait) settle(status Status, reason string, at time.Time, fields map[string]string) {
+	w.Kind = w.Kind.OrShell()
+	w.Status, w.Reason = status, reason
+	t := at
+	w.SettledAt = &t
+	if len(fields) != 0 {
+		w.Fields = fields
+	}
+	w.Outcome = outcomeName(*w)
 }
 
 // currentInterval is the interval after backoff, never below Every.
@@ -191,10 +218,12 @@ func (r *Runner) Tick(ctx context.Context, _ []domain.Thread, buckets []domain.B
 			continue
 		}
 		if w.Timeout > 0 && now.Sub(w.CreatedAt) >= w.Timeout {
-			w.Status, w.Reason = StatusTimedOut, fmt.Sprintf("no result within %s", w.Timeout)
-			t := now
-			w.SettledAt = &t
-			r.log.Info("wait timed out", "wait", w.ID, "name", w.Name, "thread", w.ThreadID)
+			reason := fmt.Sprintf("no result within %s", w.Timeout)
+			if w.OrTimeout {
+				reason = fmt.Sprintf("the deadline of %s passed, which this wait treats as a normal outcome (--or-timeout)", w.Timeout)
+			}
+			w.settle(StatusTimedOut, reason, now, nil)
+			r.log.Info("wait timed out", "wait", w.ID, "name", w.Name, "thread", w.ThreadID, "or_timeout", w.OrTimeout)
 			r.save(ctx, *w)
 			continue
 		}
@@ -207,8 +236,12 @@ func (r *Runner) Tick(ctx context.Context, _ []domain.Thread, buckets []domain.B
 	r.wake(ctx, waits, now)
 }
 
-// runOnce executes a wait's command and records the outcome.
+// runOnce evaluates a wait once and records the outcome. A shell wait runs
+// its command; the other local kinds are dispatched by runKindOnce.
 func (r *Runner) runOnce(ctx context.Context, w *Wait, now time.Time) {
+	if r.runKindOnce(ctx, w, now) {
+		return
+	}
 	out, code, err := r.Exec(ctx, *w)
 	t := now
 	w.LastRunAt = &t
@@ -219,14 +252,11 @@ func (r *Runner) runOnce(ctx context.Context, w *Wait, now time.Time) {
 	case err != nil:
 		// A command that cannot run at all is a failed wait, not a poll
 		// that keeps returning nothing.
-		w.Status, w.Reason = StatusFailed, err.Error()
-		w.SettledAt = &t
+		w.settle(StatusFailed, err.Error(), now, nil)
 	case code == 0:
-		w.Status, w.Reason = StatusMet, "condition met"
-		w.SettledAt = &t
+		w.settle(StatusMet, "condition met", now, nil)
 	case code == 2:
-		w.Status, w.Reason = StatusFailed, "the check gave up (exit 2)"
-		w.SettledAt = &t
+		w.settle(StatusGaveUp, "the check gave up (exit 2)", now, nil)
 	}
 	if w.Settled() {
 		r.log.Info("wait settled", "wait", w.ID, "name", w.Name, "thread", w.ThreadID, "status", string(w.Status), "runs", w.Runs)
@@ -325,17 +355,28 @@ func (r *Runner) wakeThread(ctx context.Context, threadID string, due []Wait, no
 	_ = r.store.RecordAction(ctx, domain.ActionRecord{At: now, Kind: "wake", ThreadID: threadID, Detail: "woken by: " + strings.Join(names, ", ")})
 }
 
-// WakeMessage renders the message that starts the thread's next turn.
+// WakeMessage renders the message that starts the thread's next turn. Its
+// first line is the trailer of the earliest settled wait; when several waits
+// wake the thread together the trailer carries their count and the prose
+// lists each one.
 func WakeMessage(due []Wait) string {
 	var b strings.Builder
+	if len(due) != 0 {
+		fields := trailerFields(due[0])
+		if len(due) > 1 {
+			fields = append(fields, F("count", fmt.Sprint(len(due))))
+		}
+		b.WriteString(WakeTrailer(string(due[0].Kind.OrShell()), outcomeName(due[0]), due[0].ID, fields...))
+		b.WriteString("\n\n")
+	}
 	if len(due) == 1 {
 		fmt.Fprintf(&b, "Wait finished (T3 steward): %q %s.\n", due[0].Name, outcome(due[0]))
 	} else {
 		fmt.Fprintf(&b, "Waits finished (T3 steward): %d conditions settled.\n", len(due))
 	}
 	for _, w := range due {
-		fmt.Fprintf(&b, "\n## %s: %s\nCommand: %s\nRuns: %d, last exit %d, registered %s.\n",
-			w.Name, outcome(w), strings.Join(w.Command, " "), w.Runs, w.LastExit, w.CreatedAt.Local().Format("2006-01-02 15:04"))
+		fmt.Fprintf(&b, "\n## %s: %s\n%s\nRuns: %d, last exit %d, registered %s.\n",
+			w.Name, outcome(w), w.Condition(), w.Runs, w.LastExit, w.CreatedAt.Local().Format("2006-01-02 15:04"))
 		if out := strings.TrimSpace(w.LastOutput); out != "" {
 			fmt.Fprintf(&b, "Last output:\n```\n%s\n```\n", out)
 		}
@@ -350,11 +391,50 @@ func outcome(w Wait) string {
 		return "condition met"
 	case StatusFailed:
 		return "failed (" + w.Reason + ")"
+	case StatusGaveUp:
+		return "gave up (" + w.Reason + ")"
 	case StatusTimedOut:
+		if w.OrTimeout {
+			return "deadline reached (" + w.Reason + ")"
+		}
 		return "timed out (" + w.Reason + ")"
 	default:
 		return string(w.Status)
 	}
+}
+
+// Condition is the human description of what the wait polls, by kind.
+func (w Wait) Condition() string {
+	if described, ok := kindCondition(w); ok {
+		return described
+	}
+	return "Command: " + strings.Join(w.Command, " ")
+}
+
+// runKindOnce evaluates one poll of a non-shell local kind and reports whether
+// it handled the wait. Each kind registers itself in kindRunners.
+func (r *Runner) runKindOnce(ctx context.Context, w *Wait, now time.Time) bool {
+	run, ok := kindRunners[w.Kind.OrShell()]
+	if !ok {
+		return false
+	}
+	run(r, ctx, w, now)
+	return true
+}
+
+// kindRunners and kindConditions are filled by the files that implement the
+// non-shell local kinds.
+var (
+	kindRunners    = map[domain.WaitKind]func(*Runner, context.Context, *Wait, time.Time){}
+	kindConditions = map[domain.WaitKind]func(Wait) string{}
+)
+
+func kindCondition(w Wait) (string, bool) {
+	describe, ok := kindConditions[w.Kind.OrShell()]
+	if !ok {
+		return "", false
+	}
+	return describe(w), true
 }
 
 func (r *Runner) save(ctx context.Context, w Wait) {

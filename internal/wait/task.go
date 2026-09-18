@@ -2,6 +2,7 @@ package wait
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -172,7 +173,13 @@ func taskWakeMessage(wake domain.TaskWaitWakeContext, wait domain.TaskWait) stri
 			group.Waits = append(group.Waits, member)
 		}
 	}
-	return group.Prompt()
+	// The trailer names the wait this delivery is for; a grouped delivery
+	// lists the other members in the prose and says how many there are.
+	line := taskTrailer(wait)
+	if len(group.Waits) > 1 {
+		line += " count=" + fmt.Sprint(len(group.Waits))
+	}
+	return line + "\n\n" + group.Prompt()
 }
 
 // taskWaitResult translates a settled check into the structured evidence the
@@ -183,6 +190,8 @@ func taskWaitResult(w Wait, now time.Time) domain.TaskWaitResult {
 	switch w.Status {
 	case StatusMet:
 		outcome = domain.TaskWaitMet
+	case StatusGaveUp:
+		outcome = domain.TaskWaitGaveUp
 	case StatusTimedOut:
 		outcome = domain.TaskWaitTimedOut
 	case StatusCancelled:
@@ -193,7 +202,7 @@ func taskWaitResult(w Wait, now time.Time) domain.TaskWaitResult {
 		observed = *w.SettledAt
 	}
 	return domain.TaskWaitResult{
-		Outcome: outcome, ExitCode: w.LastExit, Reason: w.Reason,
+		Outcome: outcome, ExitCode: w.LastExit, Reason: w.Reason, Fields: w.Fields,
 		Output: w.LastOutput, RanFor: observed.Sub(w.CreatedAt), ObservedAt: observed,
 	}
 }

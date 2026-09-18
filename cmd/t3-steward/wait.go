@@ -209,6 +209,11 @@ func cmdWaitList(ctx context.Context, cfg config.Config, store *sqlite.Store, ar
 		if waits == nil {
 			waits = []wait.Wait{}
 		}
+		for i := range waits {
+			// A row written before kinds existed is a shell wait; say so rather
+			// than leaving the reader to know the history.
+			waits[i].Kind = waits[i].Kind.OrShell()
+		}
 		encoder := json.NewEncoder(out)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(waits)
@@ -217,13 +222,13 @@ func cmdWaitList(ctx context.Context, cfg config.Config, store *sqlite.Store, ar
 		fmt.Fprintln(out, "No waits.")
 		return nil
 	}
-	fmt.Fprintf(out, "%-14s %-36s %-10s %-6s %-8s %-14s %s\n", "id", "thread", "status", "runs", "exit", "task-wait", "name / command")
+	fmt.Fprintf(out, "%-14s %-36s %-7s %-10s %-6s %-8s %-14s %s\n", "id", "thread", "kind", "status", "runs", "exit", "task-wait", "name / condition")
 	for _, w := range waits {
 		bound := "-"
 		if w.TaskWaitID != "" {
 			bound = w.TaskWaitID
 		}
-		fmt.Fprintf(out, "%-14s %-36s %-10s %-6d %-8d %-14s %s: %s\n", w.ID, w.ThreadID, w.Status, w.Runs, w.LastExit, bound, w.Name, strings.Join(w.Command, " "))
+		fmt.Fprintf(out, "%-14s %-36s %-7s %-10s %-6d %-8d %-14s %s: %s\n", w.ID, w.ThreadID, w.Kind.OrShell(), w.Status, w.Runs, w.LastExit, bound, w.Name, w.Condition())
 		if w.Reason != "" {
 			fmt.Fprintf(out, "%-14s %s\n", "", w.Reason)
 		}
@@ -424,7 +429,7 @@ func cmdWaitAdd(ctx context.Context, cfg config.Config, store *sqlite.Store, arg
 		return fmt.Errorf("thread %s is not known to T3 on this host", threadID)
 	}
 	w := wait.Wait{
-		ID: newWaitID(), ThreadID: threadID, Name: *name, Command: command, Dir: *dir,
+		ID: newWaitID(), ThreadID: threadID, Name: *name, Kind: domain.WaitKindShell, Command: command, Dir: *dir,
 		Every: *every, MaxEvery: *maxEvery, Timeout: *timeout, RunTimeout: *runTimeout, Group: *group,
 		Wake: wait.WakeMode(*wakeMode), Status: wait.StatusWaiting, CreatedAt: time.Now(),
 	}
