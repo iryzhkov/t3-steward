@@ -970,6 +970,8 @@ document carries `resumeEligible` and, when blocked, `resumeBlockedBy` with the
 two thresholds. Neither writer guarantees that the provider accepts new turns;
 the next reading rearms or re-stops the bucket honestly, and a re-stop is not a
 defect. A bucket with no reset time keeps the consecutive-low-readings rearm.
+Known limitation: a rearm or probe racing a reading in the same millisecond
+can be overwritten by that reading; the action record still shows the rearm.
 
 The probe rule. When a bucket is `stopped` below the current `stop_percent`
 (a burn-rate stop, for instance), its stored reading is older than
