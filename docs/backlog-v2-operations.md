@@ -457,8 +457,13 @@ The key covers what will run, and so covers neither `--worker` nor `--name`,
 both of which do change what is submitted. A start that differs from an earlier
 one only in those two flags therefore reaches the coordinator with that key and
 different content and is refused with `submission idempotency key already has
-different content`. The refusal names both flags and `--idempotency-key`, which
-starts it as its own run.
+different content`. The route's quota pool is outside the key in the same way,
+and unlike those two flags nobody chose it: it is read from the catalog and
+left empty when the catalog cannot be read, so the identical command submits
+different content across a coordinator upgraded to the release that has the
+`projects` query, a transient failure of that one query, or a principal without
+the `projects` read view. The refusal names both flags, that cause, and
+`--idempotency-key`, which starts it as its own run.
 
 Refused, each naming what to pass instead: a remote that zero or several
 projects match; a model several instances offer; a detached HEAD or a branch

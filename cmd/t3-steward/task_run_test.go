@@ -719,6 +719,39 @@ func TestTaskRunNamesTheFlagsOutsideTheIdempotencyKeyWhenTheContentDiffers(t *te
 	}
 }
 
+// The route's quota pool is outside the key as well, and unlike --worker and
+// --name the caller never chose it: it is filled from the projects catalog and
+// left empty when that catalog cannot be read. The identical command run
+// against a coordinator that refuses the catalog and then against one that
+// answers it therefore arrives twice under one key with two different
+// archives, so the refusal has to name that cause too. Naming only the two
+// flags sends the agent to change something it never passed.
+func TestTaskRunNamesTheCatalogWhenTheSameCommandConflictsAcrossIt(t *testing.T) {
+	h := newTaskRunHarness()
+	h.projectsErr = errRC69RefusesTheProjectsQuery
+	if err := h.run("--project", "steward", "--model", "t3-primary/claude-haiku-4-5",
+		"--", "work"); err != nil {
+		t.Fatalf("the start against a coordinator without the catalog failed: %v", err)
+	}
+	h.projectsErr = nil
+	h.stdout.Reset()
+	err := h.run("--project", "steward", "--model", "t3-primary/claude-haiku-4-5",
+		"--", "work")
+	if err == nil {
+		t.Fatal("the second start was not refused, so this test no longer reproduces the conflict")
+	}
+	if len(h.requests) != 2 || h.requests[0].IdempotencyKey != h.requests[1].IdempotencyKey {
+		t.Fatalf("requests = %+v, want two starts under one key", h.requests)
+	}
+	for _, want := range []string{
+		domain.ErrSubmissionConflict.Error(), "quota pool", "catalog", "--idempotency-key",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal does not name %q: %v", want, err)
+		}
+	}
+}
+
 // The explanation is attached to that one refusal. Any other failure of the
 // submission is the caller's to read as it stands.
 func TestTaskRunPassesAnyOtherSubmissionFailureThrough(t *testing.T) {

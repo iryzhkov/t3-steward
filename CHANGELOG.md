@@ -32,6 +32,10 @@ All notable changes to this project are documented here. The format follows
   so both submit the same archive: the idempotency key covers the instance and
   the model and not the pool, so a pool present on one path and absent on the
   other would give one key two archives and the second start would be refused.
+  The pool is outside the key either way, so the identical command run once
+  while that query is refused and once while it is answered still submits two
+  archives under one key; the second start is refused, and the refusal now
+  names the pool and the catalog beside `--worker` and `--name`.
   A start that does need the catalog and meets a coordinator without the query
   is refused with that coordinator's release, the release the query needs and
   those two flags.

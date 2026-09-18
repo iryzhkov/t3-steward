@@ -791,20 +791,35 @@ func taskRunIdempotencyKey(project, ref string, route taskRunRoute, prompts []ta
 	return "run-" + hex.EncodeToString(digest.Sum(nil))[:16]
 }
 
-// explainSubmissionConflict names the flags that can have changed the archive
-// without changing the key. The key covers what will run, deliberately, so
-// --worker and --name are outside it; both of them are inside the archive, so
-// a start that differs from an earlier one only in those flags arrives with
-// that key and different content. The coordinator's own refusal is true and
-// names nothing the caller can act on, so it is kept and explained.
+// explainSubmissionConflict names what can have changed the archive without
+// changing the key. The key covers what will run, deliberately, so --worker
+// and --name are outside it; both of them are inside the archive, so a start
+// that differs from an earlier one only in those flags arrives with that key
+// and different content.
+//
+// The route's quota pool is outside the key for the same reason and inside the
+// archive in the same way, but the caller never chose it: advertisedTaskRunRoute
+// and deriveTaskRunRoute both read it from the projects catalog and both leave
+// it empty when the catalog cannot be read. An identical command therefore
+// submits different content on either side of a coordinator upgraded to the
+// release that has the query, a transient failure of that one query, or a
+// principal without the projects read view. That cause is named here because
+// nothing the caller can see distinguishes it from the two flags, and reading
+// this refusal as being about flags it never passed is the wrong place to
+// look. The coordinator's own refusal is true and names none of this, so it is
+// kept and explained.
 func explainSubmissionConflict(err error) error {
 	if err == nil || !isSubmissionConflict(err) {
 		return err
 	}
 	return fmt.Errorf("%w\nThe key covers the project, ref, route, prompts, outputs, "+
 		"verify commands, class and max turns, and not --worker or --name, which do change "+
-		"what is submitted.\nPass --idempotency-key KEY to start this as its own run, or "+
-		"repeat the earlier --worker and --name to replay that one", err)
+		"what is submitted.\nThe route's quota pool is outside the key as well: it is read "+
+		"from the coordinator's projects catalog and left empty when that catalog cannot be "+
+		"read, so the same command submits different content across a coordinator upgrade, a "+
+		"transient failure of that query, or a principal without the projects read view.\n"+
+		"Pass --idempotency-key KEY to start this as its own run, or repeat the earlier "+
+		"--worker and --name against the same coordinator to replay that one", err)
 }
 
 // isSubmissionConflict recognises the conflict as a value where the transport
