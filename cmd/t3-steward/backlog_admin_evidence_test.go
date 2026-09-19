@@ -29,11 +29,15 @@ func TestRenderTaskPrintsAttemptEvidence(t *testing.T) {
 		},
 	}
 	var out bytes.Buffer
-	renderTask(&out, detail)
+	renderTask(&out, detail, observed)
 	for _, want := range []string{
 		"thread: thread-abc\n",
 		"worker: normandy\n",
-		"session: thread stopped, control paused, phase running, observed 2026-09-17T12:00:00Z\n",
+		// The session line names the provider session, because the words are
+		// the provider's and they are about the thread, not about the task.
+		// The attempt here is paused, which the words agree with, so they are
+		// printed as the worker reported them.
+		"provider session: thread stopped, control paused, phase running, observed 2026-09-17T12:00:00Z\n",
 		"paused: claudeAgent/claude/seven_day at 97%\n",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -47,7 +51,7 @@ func TestRenderTaskPrintsAttemptEvidence(t *testing.T) {
 	// Without evidence nothing about a session or a pause is printed.
 	out.Reset()
 	detail.Evidence = nil
-	renderTask(&out, detail)
+	renderTask(&out, detail, observed)
 	if strings.Contains(out.String(), "session:") || strings.Contains(out.String(), "paused:") {
 		t.Errorf("output %q reports evidence it does not have", out.String())
 	}

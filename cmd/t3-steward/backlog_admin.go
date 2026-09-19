@@ -193,11 +193,11 @@ func (c backlogAdminCLI) runBacklog(ctx context.Context, args []string) error {
 			}
 		}
 	}
-	query, asJSON, err := parseBacklogAdminQuery(args)
+	query, display, err := parseBacklogAdminQuery(args)
 	if err != nil {
 		return err
 	}
-	return c.queryAndRender(ctx, query, asJSON, "")
+	return c.queryAndRender(ctx, query, display, "")
 }
 
 func (c backlogAdminCLI) runSchedules(ctx context.Context, args []string) error {
@@ -223,12 +223,12 @@ func (c backlogAdminCLI) runSchedules(ctx context.Context, args []string) error 
 		if len(clean) != 1 {
 			return errors.New("schedules list takes no arguments")
 		}
-		return c.queryAndRender(ctx, backlogadmin.Query{Kind: backlogadmin.QuerySchedules}, asJSON, "")
+		return c.queryAndRender(ctx, backlogadmin.Query{Kind: backlogadmin.QuerySchedules}, commandDisplay{JSON: asJSON}, "")
 	case "show", "history":
 		if len(clean) != 2 {
 			return fmt.Errorf("schedules %s needs a schedule id", clean[0])
 		}
-		return c.queryAndRender(ctx, backlogadmin.Query{Kind: backlogadmin.QuerySchedules}, asJSON, clean[0]+":"+clean[1])
+		return c.queryAndRender(ctx, backlogadmin.Query{Kind: backlogadmin.QuerySchedules}, commandDisplay{JSON: asJSON}, clean[0]+":"+clean[1])
 	default:
 		return fmt.Errorf("unknown schedules command %q", clean[0])
 	}
@@ -243,7 +243,7 @@ func (c backlogAdminCLI) ask(ctx context.Context, query backlogadmin.Query) (bac
 	return c.service.Query(ctx, query)
 }
 
-func (c backlogAdminCLI) queryAndRender(ctx context.Context, query backlogadmin.Query, asJSON bool, selector string) error {
+func (c backlogAdminCLI) queryAndRender(ctx context.Context, query backlogadmin.Query, display commandDisplay, selector string) error {
 	response, err := c.ask(ctx, query)
 	if err != nil {
 		if query.Kind == backlogadmin.QueryProjects {
@@ -260,12 +260,12 @@ func (c backlogAdminCLI) queryAndRender(ctx context.Context, query backlogadmin.
 		}
 	}
 	response = adoptDeprecatedWaitKeys(response)
-	if asJSON {
+	if display.JSON {
 		encoder := json.NewEncoder(c.stdout)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(response)
 	}
-	return renderAdminResponse(c.stdout, response, selector)
+	return renderAdminResponse(c.stdout, response, selector, display)
 }
 
 // adoptDeprecatedWaitKeys gives a document decoded from an older coordinator
@@ -294,13 +294,50 @@ func adoptDeprecatedWaitKeys(response backlogadmin.Response) backlogadmin.Respon
 	return response
 }
 
-func parseBacklogAdminQuery(args []string) (backlogadmin.Query, bool, error) {
+// commandDisplay is what the command line asked of the rendering rather than
+// of the coordinator: the shape of the answer, not its content. The query says
+// what to read and the coordinator answers it; this says how much of that
+// answer to print and is honoured here. The two are kept apart because the
+// scope is always applied first: a summary is a summary of the scoped answer,
+// never a truncation the scope is then looked for in.
+type commandDisplay struct {
+	JSON bool
+	// Verbose asks a summarising renderer for its full form. Only backlog
+	// projects summarises, so parseBacklogAdminQuery refuses the flag for every
+	// other verb rather than accepting it and doing nothing with it.
+	Verbose bool
+}
+
+// takeVerboseFlag removes --verbose from the arguments. It is a function of
+// its own because it is the parser site the backlog projects help page derives
+// the flag from, and no other backlog verb accepts it.
+func takeVerboseFlag(args []string) ([]string, bool, error) {
+	clean := make([]string, 0, len(args))
+	verbose := false
+	for _, arg := range args {
+		if arg == "--verbose" {
+			if verbose {
+				return nil, false, errors.New("--verbose may only be specified once")
+			}
+			verbose = true
+			continue
+		}
+		clean = append(clean, arg)
+	}
+	return clean, verbose, nil
+}
+
+func parseBacklogAdminQuery(args []string) (backlogadmin.Query, commandDisplay, error) {
+	args, verbose, err := takeVerboseFlag(args)
+	if err != nil {
+		return backlogadmin.Query{}, commandDisplay{}, err
+	}
 	clean := make([]string, 0, len(args))
 	include := false
 	for _, arg := range args {
 		if arg == "--include-sink" {
 			if include {
-				return backlogadmin.Query{}, false, errors.New("--include-sink may only be specified once")
+				return backlogadmin.Query{}, commandDisplay{Verbose: verbose}, errors.New("--include-sink may only be specified once")
 			}
 			include = true
 		} else {
@@ -308,14 +345,18 @@ func parseBacklogAdminQuery(args []string) (backlogadmin.Query, bool, error) {
 		}
 	}
 	query, asJSON, err := parseBacklogAdminQueryWithoutSink(clean)
+	display := commandDisplay{JSON: asJSON, Verbose: verbose}
 	if err != nil {
-		return query, asJSON, err
+		return query, display, err
 	}
 	if include && query.Kind != backlogadmin.QueryStatus && query.Kind != backlogadmin.QueryWorkflows && query.Kind != backlogadmin.QueryWorkflow {
-		return query, asJSON, errors.New("--include-sink is supported by status, list, and show")
+		return query, display, errors.New("--include-sink is supported by status, list, and show")
+	}
+	if verbose && query.Kind != backlogadmin.QueryProjects {
+		return query, display, errors.New("--verbose is supported by backlog projects, where it spells out every project's eligible workers and routes")
 	}
 	query.IncludeSink = include
-	return query, asJSON, nil
+	return query, display, nil
 }
 
 func parseBacklogAdminQueryWithoutSink(args []string) (backlogadmin.Query, bool, error) {
@@ -339,7 +380,7 @@ func parseBacklogAdminQueryWithoutSink(args []string) (backlogadmin.Query, bool,
 		case len(clean) == 3 && clean[1] == "--project" && strings.TrimSpace(clean[2]) != "":
 			query.Filter.Project = clean[2]
 		default:
-			return backlogadmin.Query{}, false, errors.New("backlog projects usage: backlog projects [--project NAME] [--json]")
+			return backlogadmin.Query{}, false, errors.New("backlog projects usage: backlog projects [--project NAME] [--verbose] [--json]")
 		}
 		return query, asJSON, nil
 	case "status":
@@ -530,14 +571,14 @@ func selectSchedule(response backlogadmin.Response, selector string) (backlogadm
 	return backlogadmin.Response{}, fmt.Errorf("%w: schedule %q", backlogadmin.ErrNotFound, id)
 }
 
-func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector string) error {
+func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector string, display commandDisplay) error {
 	switch response.Kind {
 	case backlogadmin.QueryDiagnose:
 		renderDiagnosis(out, response.Diagnosis)
 	case backlogadmin.QueryWorkers:
 		return renderWorkers(out, response.Workers)
 	case backlogadmin.QueryProjects:
-		return renderProjects(out, response.Projects)
+		return renderProjects(out, response.Projects, display.Verbose)
 	case backlogadmin.QueryStatus:
 		renderStatus(out, response.Status)
 	case backlogadmin.QueryWorkflows:
@@ -547,7 +588,7 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 	case backlogadmin.QueryGraph:
 		renderGraph(out, response.Graph)
 	case backlogadmin.QueryTask:
-		renderTask(out, response.Task)
+		renderTask(out, response.Task, response.GeneratedAt)
 	case backlogadmin.QueryExplanation:
 		renderExplanation(out, response.Explanation)
 	case backlogadmin.QueryEvents:
@@ -624,18 +665,42 @@ func renderWorkers(out io.Writer, workers []backlogadmin.Worker) error {
 	return nil
 }
 
-// renderProjects prints the catalog as one table and, under it, one table per
+// renderProjects prints the catalog: one row per project and, when the answer
+// is about one project or the caller asked for the whole thing, one table per
 // project of the workers that could take its work with the routes each one
 // advertises. It is the text form of what "run" derives a project and a route
 // from, so an operator can see the same facts an agent acts on.
-func renderProjects(out io.Writer, projects []backlogadmin.Project) error {
+//
+// The detail is what made this verb 28 KB of text and 90 KB of JSON on a fleet
+// of thirteen projects: every eligible worker of every project with all of its
+// advertised routes spelled out, in answer to "which projects are there". The
+// summary states the counts and says how to get the rest, and the scope is
+// applied first, by the coordinator: --project NAME is answered with one
+// project, so the detailed form is the whole of a small answer rather than a
+// window onto a large one.
+func renderProjects(out io.Writer, projects []backlogadmin.Project, verbose bool) error {
 	if len(projects) == 0 {
 		_, err := fmt.Fprintln(out, "no project matched; this coordinator's catalog is backlog_v2.projects")
 		return err
 	}
+	// One project in the answer is already the size of one project, whether the
+	// caller scoped it with --project or this coordinator holds one.
+	detailed := verbose || len(projects) == 1
 	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(table, "PROJECT\tREPOSITORY\tDEFAULT REF\tTYPE\tSETUP PROFILE\tELIGIBLE WORKERS")
+	if detailed {
+		fmt.Fprintln(table, "PROJECT\tREPOSITORY\tDEFAULT REF\tTYPE\tSETUP PROFILE\tELIGIBLE WORKERS")
+	} else {
+		fmt.Fprintln(table, "PROJECT\tREPOSITORY\tDEFAULT REF\tTYPE\tSETUP PROFILE\tWORKERS\tROUTES")
+	}
+	routes := 0
 	for _, project := range projects {
+		if !detailed {
+			count := len(projectRouteLabels(project))
+			routes += count
+			fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%d\t%d\n", project.Name, project.Repository, project.DefaultRef,
+				firstNonEmptyText(project.Type, "git"), project.SetupProfile, len(project.Workers), count)
+			continue
+		}
 		names := make([]string, 0, len(project.Workers))
 		for _, worker := range project.Workers {
 			names = append(names, worker.Worker)
@@ -646,6 +711,12 @@ func renderProjects(out io.Writer, projects []backlogadmin.Project) error {
 	if err := table.Flush(); err != nil {
 		return err
 	}
+	if !detailed {
+		fmt.Fprintf(out, "\nsummarised: %d projects, %d eligible worker rows and %d advertised routes are counted above and not spelled out.\n",
+			len(projects), projectWorkerRows(projects), routes)
+		_, err := fmt.Fprintln(out, "For one project's workers and routes: t3-steward backlog projects --project NAME. For every project's: --verbose, or --json.")
+		return err
+	}
 	for _, project := range projects {
 		if len(project.Workers) == 0 {
 			continue
@@ -654,22 +725,57 @@ func renderProjects(out io.Writer, projects []backlogadmin.Project) error {
 		workers := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(workers, "  WORKER\tSTATE\tCONFIGURED\tADVERTISES\tENROLLED\tREADY\tROUTES (instance/model@pool)")
 		for _, worker := range project.Workers {
-			routes := make([]string, 0, len(worker.Routes))
-			for _, route := range worker.Routes {
-				label := route.Instance + "/" + route.Model
-				if route.QuotaPool != "" {
-					label += "@" + route.QuotaPool
-				}
-				routes = append(routes, label)
-			}
 			fmt.Fprintf(workers, "  %s\t%s\t%t\t%t\t%t\t%t\t%s\n", worker.Worker, worker.State,
-				worker.Configured, worker.Advertises, worker.Enrolled, worker.Ready, campaignList(routes))
+				worker.Configured, worker.Advertises, worker.Enrolled, worker.Ready, campaignList(workerRouteLabels(worker)))
 		}
 		if err := workers.Flush(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// workerRouteLabels is one eligible worker's advertised routes in the
+// instance/model@pool form "task run --model" takes.
+func workerRouteLabels(worker backlogadmin.ProjectWorker) []string {
+	labels := make([]string, 0, len(worker.Routes))
+	for _, route := range worker.Routes {
+		label := route.Instance + "/" + route.Model
+		if route.QuotaPool != "" {
+			label += "@" + route.QuotaPool
+		}
+		labels = append(labels, label)
+	}
+	return labels
+}
+
+// projectRouteLabels is the distinct routes a project's eligible workers
+// advertise between them. The summary counts these rather than the rows,
+// because two workers offering the same route are one route to choose.
+func projectRouteLabels(project backlogadmin.Project) []string {
+	seen := map[string]bool{}
+	var labels []string
+	for _, worker := range project.Workers {
+		for _, label := range workerRouteLabels(worker) {
+			if seen[label] {
+				continue
+			}
+			seen[label] = true
+			labels = append(labels, label)
+		}
+	}
+	sort.Strings(labels)
+	return labels
+}
+
+// projectWorkerRows is how many project-and-worker rows the detailed form
+// would print, which is what the summary says it is not printing.
+func projectWorkerRows(projects []backlogadmin.Project) int {
+	rows := 0
+	for _, project := range projects {
+		rows += len(project.Workers)
+	}
+	return rows
 }
 
 // firstNonEmptyText returns value, or fallback when value is empty.
@@ -853,7 +959,13 @@ func renderGraph(out io.Writer, graph *backlogadmin.Graph) {
 	}
 }
 
-func renderTask(out io.Writer, detail *backlogadmin.TaskDetail) {
+// renderTask prints one task: what it is, what state the coordinator holds it
+// in, the attempt's own timeline, and what the worker last reported.
+//
+// now is when the answer was generated, which is what the elapsed and lease
+// lines are measured against. It is a parameter rather than time.Now() so that
+// the text and the JSON of one answer describe the same instant.
+func renderTask(out io.Writer, detail *backlogadmin.TaskDetail, now time.Time) {
 	if detail == nil {
 		return
 	}
@@ -880,6 +992,7 @@ func renderTask(out io.Writer, detail *backlogadmin.TaskDetail) {
 	if detail.ThreadURL != "" {
 		fmt.Fprintf(out, "thread: %s\n", detail.ThreadURL)
 	}
+	renderAttemptTimeline(out, "", detail, now)
 	renderAttemptEvidence(out, detail)
 	fmt.Fprintf(out, "artifacts: %d\nlocks: %s\n", len(detail.Artifacts), strings.Join(detail.ResourceLocks, ", "))
 }
@@ -898,21 +1011,8 @@ func renderAttemptEvidence(out io.Writer, detail *backlogadmin.TaskDetail) {
 	if evidence.WorkerID != "" && detail.Assignment == nil {
 		fmt.Fprintf(out, "worker: %s\n", evidence.WorkerID)
 	}
-	var session []string
-	if evidence.ThreadState != "" {
-		session = append(session, "thread "+evidence.ThreadState)
-	}
-	if evidence.Control != "" {
-		session = append(session, "control "+string(evidence.Control))
-	}
-	if evidence.Phase != "" {
-		session = append(session, "phase "+evidence.Phase)
-	}
-	if !evidence.ObservedAt.IsZero() {
-		session = append(session, "observed "+formatTime(evidence.ObservedAt))
-	}
-	if len(session) != 0 {
-		fmt.Fprintf(out, "session: %s\n", strings.Join(session, ", "))
+	if line, ok := providerSessionLine(detail); ok {
+		fmt.Fprintln(out, line)
 	}
 	if evidence.PauseReason != "" {
 		fmt.Fprintf(out, "paused: %s\n", evidence.PauseReason)
@@ -920,6 +1020,131 @@ func renderAttemptEvidence(out io.Writer, detail *backlogadmin.TaskDetail) {
 	if evidence.Failure != "" && (detail.Attempt == nil || detail.Attempt.Failure != evidence.Failure) {
 		fmt.Fprintf(out, "worker failure: %s\n", evidence.Failure)
 	}
+}
+
+// renderAttemptTimeline prints the attempt's own clock: when the work started,
+// how long it has been going, and, while it is not finished, when the lease
+// that holds it expires. "It started an hour ago, why is it not finished" was
+// answerable only from --json before this, because the text path printed the
+// worker's observation time and no time of the attempt's own.
+//
+// now is when the answer was generated. A zero now means the caller had none,
+// and the elapsed line then measures to the attempt's last update and says so.
+// A timestamp missing from the record is printed as unknown, naming the field
+// that was absent, because a zero time rendered as a date is worse than a gap.
+func renderAttemptTimeline(out io.Writer, indent string, detail *backlogadmin.TaskDetail, now time.Time) {
+	attempt := detail.Attempt
+	if attempt == nil {
+		return
+	}
+	var started time.Time
+	if detail.Assignment != nil {
+		started = detail.Assignment.CreatedAt
+	}
+	switch {
+	case !started.IsZero():
+		fmt.Fprintf(out, "%sstarted: %s\n", indent, formatTime(started))
+	case detail.Assignment == nil:
+		fmt.Fprintf(out, "%sstarted: unknown (no assignment record, which is where assignment.createdAt lives)\n", indent)
+	default:
+		fmt.Fprintf(out, "%sstarted: unknown (assignment.createdAt is absent from the record)\n", indent)
+	}
+	terminal := attempt.Progress.Terminal()
+	reference, measured := now, "as of the coordinator's answer"
+	if terminal || reference.IsZero() {
+		reference, measured = attempt.UpdatedAt, "to the attempt's last update"
+	}
+	switch {
+	case started.IsZero():
+		fmt.Fprintf(out, "%selapsed: unknown (no start time to measure from)\n", indent)
+	case reference.IsZero():
+		fmt.Fprintf(out, "%selapsed: unknown (attempt.updatedAt is absent from the record)\n", indent)
+	default:
+		fmt.Fprintf(out, "%selapsed: %s (%s %s)\n", indent, reference.Sub(started).Round(time.Second), measured, formatTime(reference))
+	}
+	if terminal {
+		// A finished attempt holds no lease, so it claims none: this line is
+		// about work something is still holding.
+		return
+	}
+	switch {
+	case detail.Assignment == nil:
+		fmt.Fprintf(out, "%slease: none held (no assignment record; nothing holds this attempt)\n", indent)
+	case detail.Assignment.LeaseExpiresAt.IsZero():
+		fmt.Fprintf(out, "%slease: unknown (assignment.leaseExpiresAt is absent from the record)\n", indent)
+	case reference.IsZero():
+		fmt.Fprintf(out, "%slease: expires %s\n", indent, formatTime(detail.Assignment.LeaseExpiresAt))
+	default:
+		fmt.Fprintf(out, "%slease: expires %s (%s)\n", indent, formatTime(detail.Assignment.LeaseExpiresAt),
+			leaseRemaining(detail.Assignment.LeaseExpiresAt, reference))
+	}
+}
+
+// leaseRemaining says how much of the lease was left at the reference time, or
+// how long ago it lapsed, which is the difference between "a worker is holding
+// this" and "the coordinator is about to recover it".
+func leaseRemaining(expires, reference time.Time) string {
+	if left := expires.Sub(reference); left >= 0 {
+		return left.Round(time.Second).String() + " left"
+	}
+	return "expired " + reference.Sub(expires).Round(time.Second).String() + " ago"
+}
+
+// providerSessionLine is the worker's last observation of the provider session
+// -- the T3 thread, its control state and the journal phase -- worded so that
+// it cannot be read as the task's own state.
+//
+// The words are the provider's and mean "the provider thread was not
+// generating at that instant". Concatenated bare they produced "session:
+// thread stopped, control stopped, phase completed" four lines under the same
+// attempt's "progress: active" and "control: running", and an agent diagnosing
+// a slow task reads that as "the work stopped". So the line names the provider
+// session, and when the words would contradict an attempt the coordinator
+// holds as running it says what they mean and what the attempt's state is.
+func providerSessionLine(detail *backlogadmin.TaskDetail) (string, bool) {
+	evidence := detail.Evidence
+	if evidence == nil {
+		return "", false
+	}
+	var words []string
+	if evidence.ThreadState != "" {
+		words = append(words, "thread "+evidence.ThreadState)
+	}
+	if evidence.Control != "" {
+		words = append(words, "control "+string(evidence.Control))
+	}
+	if evidence.Phase != "" {
+		words = append(words, "phase "+evidence.Phase)
+	}
+	if !evidence.ObservedAt.IsZero() {
+		words = append(words, "observed "+formatTime(evidence.ObservedAt))
+	}
+	if len(words) == 0 {
+		return "", false
+	}
+	if !providerSessionContradictsAttempt(detail) {
+		return "provider session: " + strings.Join(words, ", "), true
+	}
+	return fmt.Sprintf("provider session: idle when the worker last looked (%s); the attempt is progress %s, control %s, so that is the provider thread between turns and not the task stopping",
+		strings.Join(words, ", "), detail.Attempt.Progress, detail.Attempt.Control), true
+}
+
+// providerSessionContradictsAttempt reports whether the provider's words say
+// the session stopped or finished while the coordinator holds the attempt as
+// executing. The attempt's state is the coordinator's and decides whether the
+// work is over; the session's is one worker's observation of one thread.
+func providerSessionContradictsAttempt(detail *backlogadmin.TaskDetail) bool {
+	attempt, evidence := detail.Attempt, detail.Evidence
+	if attempt == nil || evidence == nil || attempt.Progress.Terminal() {
+		return false
+	}
+	switch attempt.Control {
+	case domain.ControlPreparing, domain.ControlRunning, domain.ControlResuming:
+	default:
+		return false
+	}
+	return evidence.ThreadState == "stopped" || evidence.ThreadState == "missing" ||
+		evidence.Control == domain.ControlStopped || evidence.Phase == "completed"
 }
 
 // evidenceMarker is the one word "campaign show" appends to a task line when
@@ -1057,6 +1282,12 @@ func renderDiagnosis(out io.Writer, diagnosis *backlogadmin.Diagnosis) {
 		}
 		state, control, attempt := taskState(task)
 		fmt.Fprintf(out, "  %s (%s): %s %s attempt=%s%s\n", task.Task.Name, task.Task.ID, state, control, attempt, evidenceMarker(task.Evidence))
+		// The timeline is printed for the attempts that are still going,
+		// because "why is this one not finished" is the question diagnose is
+		// run to answer and a finished attempt has already answered it.
+		if detail := task; detail.Attempt != nil && !detail.Attempt.Progress.Terminal() {
+			renderAttemptTimeline(out, "    ", &detail, diagnosis.GeneratedAt)
+		}
 	}
 	live := 0
 	for _, wait := range diagnosis.TaskWaits {

@@ -23,11 +23,11 @@ func (c backlogAdminCLI) runGraphDOT(ctx context.Context, args []string) error {
 		}
 		clean = append(clean, arg)
 	}
-	query, asJSON, err := parseBacklogAdminQuery(clean)
+	query, display, err := parseBacklogAdminQuery(clean)
 	if err != nil {
 		return err
 	}
-	if asJSON || query.Kind != backlogadmin.QueryGraph {
+	if display.JSON || query.Kind != backlogadmin.QueryGraph {
 		return errors.New("--dot requires graph and cannot be combined with --json")
 	}
 	query.Version, query.Principal = backlogadmin.Version, c.principal

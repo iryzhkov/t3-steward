@@ -61,7 +61,7 @@ func TestSinkCountFlagAndHumanResult(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	renderTask(&out, &backlogadmin.TaskDetail{Task: domain.Task{ID: "sink:r", Name: domain.SinkTaskName}, Sink: &domain.SinkTask{GraphRevision: 1, Progress: domain.ProgressFailed, Result: &domain.SinkResult{FailedTaskIDs: []string{"a", "b"}}}})
+	renderTask(&out, &backlogadmin.TaskDetail{Task: domain.Task{ID: "sink:r", Name: domain.SinkTaskName}, Sink: &domain.SinkTask{GraphRevision: 1, Progress: domain.ProgressFailed, Result: &domain.SinkResult{FailedTaskIDs: []string{"a", "b"}}}}, time.Time{})
 	if !strings.Contains(out.String(), "failed task IDs: a, b") || strings.Contains(out.String(), "attempt:") {
 		t.Fatalf("output=%s", out.String())
 	}

@@ -51,7 +51,7 @@ func TestParseBacklogAdminQuery(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			query, asJSON, err := parseBacklogAdminQuery(test.args)
+			query, display, err := parseBacklogAdminQuery(test.args)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -59,15 +59,15 @@ func TestParseBacklogAdminQuery(t *testing.T) {
 				query.ArtifactID != test.artifactID || query.CommandID != test.commandID {
 				t.Fatalf("query = %+v", query)
 			}
-			if asJSON != test.asJSON {
-				t.Fatalf("asJSON = %t, want %t", asJSON, test.asJSON)
+			if display.JSON != test.asJSON {
+				t.Fatalf("display.JSON = %t, want %t", display.JSON, test.asJSON)
 			}
 		})
 	}
 }
 
 func TestParseWorkflowFilters(t *testing.T) {
-	query, asJSON, err := parseBacklogAdminQuery([]string{
+	query, display, err := parseBacklogAdminQuery([]string{
 		"list", "--project", "steward", "--schedule", "nightly",
 		"--progress", "active,blocked", "--class", "surplus",
 		"--worker", "normandy", "--quota-pool", "codex", "--json",
@@ -75,7 +75,7 @@ func TestParseWorkflowFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !asJSON {
+	if !display.JSON {
 		t.Fatal("--json was not recognized")
 	}
 	wantProgress := []domain.ProgressState{domain.ProgressActive, domain.ProgressBlocked}
@@ -311,7 +311,7 @@ func TestHumanRenderersExposeCoordinatorDetails(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var out bytes.Buffer
-			if err := renderAdminResponse(&out, test.response, ""); err != nil {
+			if err := renderAdminResponse(&out, test.response, "", commandDisplay{}); err != nil {
 				t.Fatal(err)
 			}
 			for _, want := range test.wants {
