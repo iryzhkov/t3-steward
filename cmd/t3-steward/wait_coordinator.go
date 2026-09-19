@@ -209,9 +209,7 @@ func cmdCoordinatorWaitAdd(ctx context.Context, cfg config.Config, client coordi
 	if err != nil {
 		return err
 	}
-	encoder := json.NewEncoder(os.Stdout)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(result); err != nil {
+	if err := renderNativeWaitResult(os.Stdout, result, waitListOptions{all: true, asJSON: spec.JSON}); err != nil {
 		return err
 	}
 	if len(result.Waits) == 1 && result.Waits[0].Delivery != "delivered" && result.Waits[0].Delivery != "cancelled" {

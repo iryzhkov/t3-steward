@@ -143,11 +143,15 @@ func TestLocalWaitListNamesTheTaskWaitAndHasJSON(t *testing.T) {
 	if err := cmdWaitList(ctx, cfg, coordinator, []string{"--all", "--json"}, &machine); err != nil {
 		t.Fatal(err)
 	}
-	var listed []wait.Wait
+	var listed waitListAnswer
 	if err := json.Unmarshal(machine.Bytes(), &listed); err != nil {
-		t.Fatalf("wait list --json is not a JSON list: %v: %s", err, machine.String())
+		t.Fatalf("wait list --json is not one document: %v: %s", err, machine.String())
 	}
-	if len(listed) != 1 || listed[0].TaskWaitID != checks[0].TaskWaitID {
+	if len(listed.Rows) != 1 || listed.Rows[0].TaskWait != checks[0].TaskWaitID {
 		t.Fatalf("listed=%+v", listed)
+	}
+	// The sources that answered are named, so an empty list is readable.
+	if len(listed.Sources) == 0 {
+		t.Fatalf("the document names no source it read: %s", machine.String())
 	}
 }

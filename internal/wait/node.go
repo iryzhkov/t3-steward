@@ -41,8 +41,27 @@ func nodeWakeProse(w domain.NodeWait) string {
 		return fmt.Sprintf("Wait finished (T3 steward): %q. Quota pool %s: %s.\nContinue the work that was waiting on this.",
 			w.Request.Name, w.Request.Quota.Pool, w.Observation.Reason)
 	}
-	return fmt.Sprintf("Wait finished (T3 steward): %q. Node %s: %s (exit %d). Observed attempt %s, run revision %d.\nContinue the work that was waiting on this.",
-		w.Request.Name, w.Request.Target.String(), w.Observation.Reason, w.Observation.ExitCode, w.Observation.AttemptID, w.Observation.RunRevision)
+	return fmt.Sprintf("Wait finished (T3 steward): %q. Node %s: %s (exit %d).%s\nContinue the work that was waiting on this.",
+		w.Request.Name, w.Request.Target.String(), w.Observation.Reason, w.Observation.ExitCode, nodeWakeObservation(w))
+}
+
+// nodeWakeObservation is the evidence clause, and is empty when there is no
+// evidence to state.
+//
+// A run sink has no attempt of its own: it is the run's join point, and it is
+// exactly the target "task run" and "campaign submit --notify-thread" register
+// on. Printing "Observed attempt , run revision 0" for it said nothing twice.
+func nodeWakeObservation(w domain.NodeWait) string {
+	switch {
+	case w.Observation == nil:
+		return ""
+	case w.Observation.AttemptID != "":
+		return fmt.Sprintf(" Observed attempt %s, run revision %d.", w.Observation.AttemptID, w.Observation.RunRevision)
+	case w.Observation.RunRevision != 0:
+		return fmt.Sprintf(" Observed at run revision %d.", w.Observation.RunRevision)
+	default:
+		return ""
+	}
 }
 
 // tickNodes never repeats an uncertain external send. The durable sending state

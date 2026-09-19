@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -46,6 +45,11 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 	}
 	client := transport.client
 	op := backlogadmin.NodeWaitOperation{Action: args[0]}
+	// Text is the default here as it is everywhere else. These verbs used to
+	// print a JSON document unconditionally, with the registration and request
+	// blocks duplicated and every duration in nanoseconds, which is a document
+	// an agent has to parse to learn one sentence.
+	scope := waitListOptions{all: true}
 	// A node wake is sent by the steward of the host the coordinator recorded on
 	// the wait, so the caller's own host and the coordinator's release decide
 	// both what is sent and what may honestly be printed afterwards.
@@ -65,9 +69,11 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 		name := fs.String("name", "", "name")
 		id := fs.String("request-id", "nw-"+strings.TrimPrefix(newWaitID(), "w-"), "stable registration ID")
 		timeout := fs.Duration("timeout", 24*time.Hour, "deadline")
+		asJSON := fs.Bool("json", false, "print the registration as JSON")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
+		scope.asJSON = *asJSON
 		if *task == "current" {
 			return errors.New("--task current is a task-bound wait and is routed before this point")
 		}
@@ -139,14 +145,29 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 		}
 	case "list":
 		op.Action = "list"
-		for _, arg := range args[1:] {
-			if arg != "--native" && arg != "--json" {
-				return fmt.Errorf("unknown native wait list flag %q", arg)
-			}
+		// The raw inventory measured 99,630 bytes and 62 waits on one host,
+		// covering every thread and every host including long-delivered
+		// ones, and it refused to be scoped. It is still the raw inventory;
+		// it can now be asked a narrower question.
+		fs := flag.NewFlagSet("wait list --native", flag.ContinueOnError)
+		fs.Bool("native", false, "read the coordinator-held waits")
+		nativeThread := fs.String("thread", "", "thread id")
+		nativeHost := fs.String("host", "", "delivery host")
+		asJSON := fs.Bool("json", false, "print the inventory as JSON")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
 		}
+		if fs.NArg() != 0 {
+			return fmt.Errorf("wait list --native takes no arguments (got %q)", strings.Join(fs.Args(), " "))
+		}
+		scope.thread, scope.host, scope.asJSON = *nativeThread, *nativeHost, *asJSON
 	case "cancel", "run-now":
 		for _, arg := range args[1:] {
-			if arg != "--native" && arg != "--json" {
+			if arg == "--json" {
+				scope.asJSON = true
+				continue
+			}
+			if arg != "--native" {
 				if op.ID != "" {
 					return errors.New("one native wait ID required")
 				}
@@ -190,15 +211,12 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 		}
 		result.TaskWaits = tasks.TaskWaits
 	}
-	encoder := json.NewEncoder(os.Stdout)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(result); err != nil {
+	if err := renderNativeWaitResult(os.Stdout, result, scope); err != nil {
 		return err
 	}
 	if op.Action == "register" && len(result.Waits) == 1 && result.Waits[0].Delivery != "delivered" && result.Waits[0].Delivery != "cancelled" {
-		// This command always prints its result as JSON, so the instruction to
-		// the agent goes to stderr. On stdout it would leave a document no
-		// strict reader can parse.
+		// The instruction to the agent goes to stderr, because under --json
+		// stdout is one document a strict reader has to be able to parse.
 		if reason := undeliverableWake(result.Waits[0].Host, caller, release, nodeWakeDeliveryFor(cfg), time.Now()); reason != "" {
 			fmt.Fprintln(os.Stderr, "The wait was registered, but its wake is undeliverable: "+reason+".")
 			fmt.Fprintln(os.Stderr, "Nothing will wake this thread, so do not end this turn waiting for a wake.")

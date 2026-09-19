@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -251,51 +250,50 @@ func cmdWait(g globalFlags, args []string) error {
 	}
 }
 
-// cmdWaitList prints the local checks: this thread's, or every thread's.
+// cmdWaitList answers what a thread is waiting for, from both sources: this
+// host's local checks and the waits the coordinator holds. Reading only the
+// first is what made "No waits." appear while a node wait registered seconds
+// earlier was pending.
 func cmdWaitList(ctx context.Context, cfg config.Config, store *sqlite.Store, args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("wait list", flag.ContinueOnError)
-	thread := fs.String("thread", "", "thread id")
-	all := fs.Bool("all", false, "every thread")
-	asJSON := fs.Bool("json", false, "print the list as JSON")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *thread == "" && !*all {
-		*thread, _ = resolveThread(cfg, "")
-	}
-	waits, err := store.ListWaits(ctx, *thread)
+	options, err := parseWaitListArgs(args)
 	if err != nil {
 		return err
 	}
-	if *asJSON {
-		if waits == nil {
-			waits = []wait.Wait{}
-		}
-		for i := range waits {
-			// A row written before kinds existed is a shell wait; say so rather
-			// than leaving the reader to know the history.
-			waits[i].Kind = waits[i].Kind.OrShell()
-		}
-		encoder := json.NewEncoder(out)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(waits)
+	if options.thread == "" && !options.all {
+		options.thread, options.threadResolutionErr = resolveThread(cfg, "")
 	}
-	if len(waits) == 0 {
-		fmt.Fprintln(out, "No waits.")
+	sources := waitListSources{
+		host: localWakeHost(nil),
+		local: func(ctx context.Context, thread string) ([]wait.Wait, error) {
+			return store.ListWaits(ctx, thread)
+		},
+		coordinator: coordinatorWaitSource(cfg),
+	}
+	return runWaitList(ctx, sources, options, out)
+}
+
+// coordinatorWaitSource reads the node waits and task-bound waits the
+// coordinator holds, or is nil on a host with no coordinator configured, which
+// is a source that does not exist rather than one that failed.
+func coordinatorWaitSource(cfg config.Config) func(context.Context) ([]domain.NodeWait, []domain.TaskWait, error) {
+	if !cfg.BacklogV2.CoordinatorClient.Configured() {
 		return nil
 	}
-	fmt.Fprintf(out, "%-14s %-36s %-7s %-10s %-6s %-8s %-14s %s\n", "id", "thread", "kind", "status", "runs", "exit", "task-wait", "name / condition")
-	for _, w := range waits {
-		bound := "-"
-		if w.TaskWaitID != "" {
-			bound = w.TaskWaitID
+	return func(ctx context.Context) ([]domain.NodeWait, []domain.TaskWait, error) {
+		transport, err := newCoordinatorTransport(cfg)
+		if err != nil {
+			return nil, nil, err
 		}
-		fmt.Fprintf(out, "%-14s %-36s %-7s %-10s %-6d %-8d %-14s %s: %s\n", w.ID, w.ThreadID, w.Kind.OrShell(), w.Status, w.Runs, w.LastExit, bound, w.Name, w.Condition())
-		if w.Reason != "" {
-			fmt.Fprintf(out, "%-14s %s\n", "", w.Reason)
+		nodes, err := transport.client.NodeWait(ctx, backlogadmin.NodeWaitOperation{Action: "list"})
+		if err != nil {
+			return nil, nil, err
 		}
+		tasks, err := transport.client.NodeWait(ctx, backlogadmin.NodeWaitOperation{Action: "list-task"})
+		if err != nil {
+			return nil, nil, err
+		}
+		return nodes.Waits, tasks.TaskWaits, nil
 	}
-	return nil
 }
 
 // cmdWaitControl cancels or re-runs one local check.
