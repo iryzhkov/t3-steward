@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -99,9 +100,15 @@ const (
 	spoolState = "state"
 	// spoolTransport is a failure to get an answer at all.
 	spoolTransport = "transport"
-	// spoolInternal is an error this program never classified. See
-	// spoolErrClass for why this class is wider here than it should be.
-	spoolInternal = "internal"
+	// spoolUnclassified is an error this program never classified. It is not
+	// called "internal": in an adversarial sample it took twelve records in
+	// thirty and nearly all of them were ordinary usage refusals, so a reader
+	// ranking failure clusters would have gone looking for a crash that never
+	// happened. The word has to say what the bucket holds, and what it holds
+	// is calls this program refused without saying what kind of refusal it
+	// was. jocasta's producer calls the same bucket the same thing. See
+	// spoolErrClass for why it is wider here than it should be.
+	spoolUnclassified = "unclassified"
 )
 
 // spoolEnabled reports whether invocations are recorded. Off unless someone
@@ -338,14 +345,31 @@ func spoolFlagKey(key string) string {
 	return key
 }
 
-// spoolFlagNameRe finds an option name in this program's own help text.
-var spoolFlagNameRe = regexp.MustCompile(`--?[A-Za-z][A-Za-z0-9_-]*`)
+// spoolFlagNameRe finds an option name in this program's own help text. Both
+// dashes are required, and the first of them has to begin a word.
+//
+// Neither condition is optional in a real option, and dropping either admits
+// English. The pattern here used to accept one dash and to match anywhere, so
+// it matched the tail of every hyphenated word in the prose it scanned:
+// "off-peak" contributed "peak", "read-only" contributed "only",
+// "t3-steward" contributed "steward". That is how a set described as the
+// options this program documents came to hold 134 names, a third of which name
+// no option of this program at all.
+//
+// It was never a leak - the set is closed, authored entirely by this program,
+// and no caller-supplied word can enter it - but it made the args field
+// something other than the flag list it claims to be. A per-verb table that
+// prints "args: for" and "args: now" as though a caller had passed them cannot
+// be read, and every English word admitted is a genuinely undeclared option
+// that stopped being recorded as spoolUndeclaredFlag, which is the signal that
+// placeholder exists to carry.
+var spoolFlagNameRe = regexp.MustCompile(`(^|[^A-Za-z0-9_-])(--[A-Za-z][A-Za-z0-9_-]*)`)
 
 // spoolGlobalFlags are the options the dispatcher declares for every verb it
-// parses itself, plus the three spellings of a help request. They are named
-// here because registerGlobalFlags declares them in code rather than on a
-// page.
-var spoolGlobalFlags = []string{"config", "dry-run", "no-dry-run", "log-level", "help", "h", "v"}
+// parses itself, plus the three spellings of a help request and the two
+// spellings of a version request. They are named here because the dispatcher
+// answers them itself, before any parser a help page could point at.
+var spoolGlobalFlags = []string{"config", "dry-run", "no-dry-run", "log-level", "help", "h", "version", "v"}
 
 // spoolDeclaredFlags is every option name this program documents, read out of
 // the same help-page registry that answers --help. Deriving it rather than
@@ -353,13 +377,23 @@ var spoolGlobalFlags = []string{"config", "dry-run", "no-dry-run", "log-level", 
 // already fails the build when a parser accepts a flag no page names, so a
 // flag cannot be added to this program without entering this set.
 //
+// A page states its options as structured flags, or, when it carries a
+// reference this package already holds in full, inside that reference. Both
+// are compiled-in text of this program's own and neither comes from a caller,
+// so the set is closed either way; what the structured fields give and the
+// reference does not is the assurance that every name in it is an option. The
+// references have to be scanned, because a Body page has no structured flags
+// at all and taskRunUsage is where --model, --project and --ref are written
+// down; spoolFlagNameRe is what keeps that scan to options, and
+// TestSpoolAllowlistIsExactlyTheProgramsFlags is what proves it stayed there.
+//
 // It is computed at most once per process, and only when a command line
 // carried a flag at all.
 var spoolDeclaredFlags = sync.OnceValue(func() map[string]struct{} {
 	declared := make(map[string]struct{}, 256)
 	add := func(text string) {
-		for _, name := range spoolFlagNameRe.FindAllString(text, -1) {
-			if key := strings.TrimLeft(name, "-"); key != "" {
+		for _, match := range spoolFlagNameRe.FindAllStringSubmatch(text, -1) {
+			if key := strings.TrimLeft(match[2], "-"); key != "" {
 				declared[key] = struct{}{}
 			}
 		}
@@ -368,15 +402,26 @@ var spoolDeclaredFlags = sync.OnceValue(func() map[string]struct{} {
 		declared[name] = struct{}{}
 	}
 	for _, page := range helpPages {
-		// A page states its options either as structured flags or, when it
-		// carries a reference this package already holds in full, inside that
-		// reference. Both are this program's own text, compiled in; neither
-		// comes from a caller.
-		add(page.Body)
+		// A Body is scanned only when the page names a parser, which is what
+		// distinguishes a verb's own reference from a family page. A family
+		// page summarises the verbs below it and its flags live on those
+		// pages, so scanning it adds nothing this loop does not already have -
+		// and it does add what is not an option of this program, because a
+		// family page is where the worked examples live and an example calls
+		// other programs: "gh run list --limit 1 --json databaseId --jq ..."
+		// on the wait page contributed --jq.
+		if len(page.Parsers) > 0 {
+			add(page.Body)
+		}
+		// A usage line is this page's synopsis of its own verb.
 		for _, line := range page.Usage {
 			add(line)
 		}
-		for _, option := range page.Flags {
+		// renderedFlags rather than Flags: a verb of a command family accepts
+		// the --config its family's clause in the dispatcher takes out of the
+		// arguments, and that option is injected by the renderer rather than
+		// written on the page.
+		for _, option := range page.renderedFlags() {
 			add(option.Name)
 		}
 		for _, option := range page.Undocumented {
@@ -397,13 +442,20 @@ var spoolDeclaredFlags = sync.OnceValue(func() map[string]struct{} {
 // rejected by the coordinator, 2 a verdict a verb owns outright, 1 anything
 // else.
 //
-// "error" is the honest name for that last bucket, and it is wide: this
-// program collapses a refusal it could have classified - "replay needs exactly
-// one file argument" - and a genuine internal failure into the same exit 1.
-// The sentinels and the parser's own wording recover the usage refusals that
-// can be recognised without guessing; what is left is recorded as unclassified
-// rather than as something more specific than the evidence supports. How big
-// that bucket turns out to be is itself a measurement worth having.
+// "unclassified" is the honest name for that last bucket, and it is wide.
+// This program collapses a refusal it could have classified - "campaign
+// submit requires --idempotency-key KEY" - and a genuine internal failure onto
+// the same exit 1, so the exit code cannot tell them apart, and this producer
+// will not tell them apart by reading a message, because a message quotes what
+// the caller typed.
+//
+// What can be split without reading a message is split. A sentinel is evidence
+// that carries no text: the two below say that a path the caller named could
+// not be opened, which is a different thing for an agent from a command that
+// ran and failed, and errors.Is answers it without any part of the message
+// entering the record. What is left after that is recorded as unclassified
+// rather than as something more specific than the evidence supports, and how
+// big that bucket stays is itself a measurement worth having.
 func spoolErrClass(code int, err error) string {
 	if err == nil && code == 0 {
 		return ""
@@ -433,8 +485,10 @@ func spoolErrClass(code int, err error) string {
 		return "unknown-verb"
 	case spoolIsFlagError(err):
 		return "flag"
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, fs.ErrPermission):
+		return "local-io"
 	}
-	return "error"
+	return spoolUnclassified
 }
 
 // spoolFlagRefusals are the standard library flag parser's fixed wordings. A
@@ -481,12 +535,12 @@ func spoolOutcome(class string) string {
 	case "unknown-command", "unknown-verb", "flag", "help",
 		"client-configuration", "authentication":
 		return spoolUsage
-	case "verdict", "rejected":
+	case "verdict", "rejected", "local-io":
 		return spoolState
 	case "unavailable", "timeout", "protocol":
 		return spoolTransport
 	default:
-		return spoolInternal
+		return spoolUnclassified
 	}
 }
 

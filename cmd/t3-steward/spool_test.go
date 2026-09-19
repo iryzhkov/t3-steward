@@ -2,10 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -331,6 +334,112 @@ func TestSpoolRecordsDeclaredFlagNamesOnly(t *testing.T) {
 	}
 }
 
+// The allowlist is this program's options, in both directions.
+//
+// The claim the spool rests on is that a flag key in a record is a name this
+// program declares. The first direction is the safety half and it held before
+// this test existed: nothing a caller supplies can enter the set, because the
+// set is built from compiled-in text. The second direction is the fidelity
+// half, and it did not hold: the set was read out of the help prose with a
+// pattern that also matched the tail of every hyphenated word, so it admitted
+// "for", "now", "user" and "zero", and a caller passing "--now" had it
+// recorded as though this program had such an option.
+//
+// The reference set is the one the help contract already derives from the
+// source: the options each verb's own parser accepts, read out of the parser
+// sites the pages name. That is the definition of "an option of this program"
+// this repository already fails the build over, so the spool uses it rather
+// than inventing a second one.
+func TestSpoolAllowlistIsExactlyTheProgramsFlags(t *testing.T) {
+	files := packageSource(t)
+	accepted := map[string]bool{}
+	for _, path := range helpPagePaths() {
+		page, found := helpPageFor(path)
+		if !found {
+			t.Fatalf("the registry lists %q and has no page for it", path)
+		}
+		sites := page.Parsers
+		if family, _, isFamilyVerb := strings.Cut(page.Path, " "); isFamilyVerb {
+			sites = append(append([]parserSite{}, sites...), familyDispatchSite(family))
+		}
+		for _, site := range sites {
+			for flag := range declaredFlags(t, files, site) {
+				accepted[strings.TrimLeft(flag, "-")] = true
+			}
+		}
+		// A documented flag counts as accepted: the help contract already
+		// fails the build when a page names an option no parser of that verb
+		// takes, so the two sets are the same set by the time this runs.
+		for _, flag := range page.renderedFlags() {
+			accepted[strings.TrimLeft(flag.Name, "-")] = true
+		}
+		for _, flag := range page.Undocumented {
+			accepted[strings.TrimLeft(flag, "-")] = true
+		}
+	}
+	// One option is spelled at its parser through a compiled-in constant
+	// rather than as a literal, so the scan above cannot see it. Naming the
+	// constant rather than the word is what keeps this line honest: deleting
+	// the option fails the build here.
+	accepted[strings.TrimLeft(supervisorCredentialFlag, "-")] = true
+	if len(accepted) < 40 {
+		t.Fatalf("the parser scan found only %d options, so this test proves nothing", len(accepted))
+	}
+
+	declared := spoolDeclaredFlags()
+	global := map[string]bool{}
+	for _, name := range spoolGlobalFlags {
+		global[name] = true
+	}
+
+	var missing, extra []string
+	for name := range accepted {
+		if _, present := declared[name]; !present {
+			missing = append(missing, name)
+		}
+	}
+	for name := range declared {
+		if !accepted[name] && !global[name] {
+			extra = append(extra, name)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(extra)
+	if len(missing) != 0 {
+		t.Errorf("a parser of this program accepts %v and the spool would record each as %q", missing, spoolUndeclaredFlag)
+	}
+	if len(extra) != 0 {
+		t.Errorf("the spool would record %v as options of this program, and no parser accepts them", extra)
+	}
+}
+
+// The English the prose scan used to admit is recorded as the placeholder,
+// which is what tells a reader that a caller passed an option this program
+// does not have.
+//
+// Each word below is the tail of a hyphenated word in this program's help -
+// "end-user", "non-zero", "read-only", "t3-steward", "pre-flight" - or, in
+// the case of "jq", another program's option inside a worked example. None of
+// them is an option of this program. The review that found this
+// also listed "for", "now", "days", "every", "until", "outcome", "peak" and
+// "options" as English admitted by the same defect; they are not, and are
+// deliberately absent from this list, because every one of them is a real
+// option of this program: "wait add --for", "backlog pause --now", "report
+// --days", "wait add --every", "backlog delay --until", "backlog admin
+// close-assignment --outcome", "report --peak" and "backlog amend --options".
+func TestSpoolDoesNotAdmitTheProsesEnglish(t *testing.T) {
+	for _, word := range []string{
+		"user", "zero", "only", "steward", "flight", "jq",
+	} {
+		if _, present := spoolDeclaredFlags()[word]; present {
+			t.Errorf("%q is a word from the help prose, not an option, and the allowlist admits it", word)
+		}
+		if key := spoolFlagKey(word); key != spoolUndeclaredFlag {
+			t.Errorf("--%s records as %q, want %q", word, key, spoolUndeclaredFlag)
+		}
+	}
+}
+
 // A spool that cannot be written changes neither the exit code nor a byte of
 // either output stream. This is the one place in this program where silence is
 // the correct behaviour.
@@ -436,7 +545,9 @@ func TestSpoolOutcomeMapsTheDocumentedExitCodes(t *testing.T) {
 		{6, "timeout", spoolTransport},
 		{7, "protocol", spoolTransport},
 		{8, "rejected", spoolState},
-		{1, "error", spoolInternal},
+		// Exit 1 is everything this program did not number, so the class it
+		// gets has to say that and nothing more.
+		{1, spoolUnclassified, spoolUnclassified},
 	} {
 		var err error
 		if testCase.code != 0 {
@@ -448,6 +559,40 @@ func TestSpoolOutcomeMapsTheDocumentedExitCodes(t *testing.T) {
 		if outcome := spoolOutcome(testCase.class); outcome != testCase.outcome {
 			t.Errorf("class %q is outcome %q, want %q", testCase.class, outcome, testCase.outcome)
 		}
+	}
+}
+
+// A path the caller named that cannot be opened is not an unclassified
+// failure. The exit code says nothing - this program answers 1 for a missing
+// file, a usage refusal and a crash alike - but the standard library's
+// sentinels do, and errors.Is reads them without any part of the message
+// reaching the record, which is what keeps this split inside the rule the rest
+// of the classifier follows.
+func TestSpoolSplitsALocalIOFailureOutOfTheUnclassifiedBucket(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		err  error
+	}{
+		{"a path that is not there", fmt.Errorf("open %s: %w", spoolSecret, fs.ErrNotExist)},
+		{"a path that cannot be read", fmt.Errorf("open %s: %w", spoolSecret, fs.ErrPermission)},
+	} {
+		class := spoolErrClass(1, testCase.err)
+		if class != "local-io" {
+			t.Errorf("%s classes as %q, want %q", testCase.name, class, "local-io")
+		}
+		if outcome := spoolOutcome(class); outcome != spoolState {
+			t.Errorf("%s is outcome %q, want %q", testCase.name, outcome, spoolState)
+		}
+		// The class is a literal in this file; the path the caller named is
+		// in the message and stays there.
+		if strings.Contains(class, spoolSecret) {
+			t.Errorf("the class carries the path from the message: %q", class)
+		}
+	}
+	// An error with no sentinel and no recognisable wording is still the
+	// bucket, because nothing about it says more than that.
+	if class := spoolErrClass(1, errSpoolTest); class != spoolUnclassified {
+		t.Errorf("an unrecognisable failure classes as %q, want %q", class, spoolUnclassified)
 	}
 }
 
