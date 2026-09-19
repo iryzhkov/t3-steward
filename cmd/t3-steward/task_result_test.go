@@ -91,8 +91,14 @@ func (f *taskResultFixture) cli() taskResultCLI {
 				Content:  io.NopCloser(strings.NewReader(body)),
 			}, nil
 		},
-		stdout: &f.stdout, stderr: &f.stderr, workdir: f.dir,
+		stdout: &f.stdout, stderr: &f.stderr, workdir: f.dir, results: f.resultsDir(),
 	}
+}
+
+// resultsDir stands in for the user's state directory, which is where results
+// go by default: outside every checkout, and so outside f.dir's role as one.
+func (f *taskResultFixture) resultsDir() string {
+	return filepath.Join(f.dir, "state", "results")
 }
 
 func (f *taskResultFixture) run(args ...string) error {
@@ -124,7 +130,7 @@ func TestTaskResultWritesTheFinalMessageAndEveryOutput(t *testing.T) {
 	if err := f.run("run-1"); err != nil {
 		t.Fatal(err)
 	}
-	base := filepath.Join(f.dir, ".t3", "results", "run-1", "task")
+	base := filepath.Join(f.resultsDir(), "run-1", "task")
 	if got := readFile(t, base, "final-message.md"); got != "the job" {
 		t.Fatalf("final message = %q", got)
 	}
@@ -183,7 +189,7 @@ func TestTaskResultExitsWithTheTasksVerdict(t *testing.T) {
 		if code := exitCodeFor(err); code != 2 {
 			t.Fatalf("exit code = %d, want 2 (error %v)", code, err)
 		}
-		if got := readFile(t, f.dir, ".t3", "results", "run-1", "task", "final-message.md"); got != "the job" {
+		if got := readFile(t, f.resultsDir(), "run-1", "task", "final-message.md"); got != "the job" {
 			t.Fatalf("a failed task's final message was not written: %q", got)
 		}
 	})

@@ -1211,7 +1211,35 @@ func readGitCheckout() (gitCheckout, error) {
 		}
 	}
 	if status, ok := git("status", "--porcelain"); ok {
-		checkout.Dirty = status != ""
+		checkout.Dirty = hasSendableChanges(status)
 	}
 	return checkout, nil
+}
+
+// toolOutputDirectory is the in-tree directory "task result" used to write
+// under. It is no longer the default, and an older checkout still holding one
+// must not keep producing a warning about it.
+const toolOutputDirectory = ".t3"
+
+// hasSendableChanges reports whether a porcelain status shows work the fleet
+// would not fetch. Output this tool itself wrote does not count: the warning it
+// produced was true and useless, because the only uncommitted change was the
+// result of the last "task result".
+func hasSendableChanges(status string) bool {
+	for _, line := range strings.Split(status, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		path := line
+		if len(line) > 3 {
+			path = line[3:]
+		}
+		path = strings.Trim(strings.TrimSpace(path), "\"")
+		if path == toolOutputDirectory || path == toolOutputDirectory+"/" ||
+			strings.HasPrefix(path, toolOutputDirectory+"/") {
+			continue
+		}
+		return true
+	}
+	return false
 }

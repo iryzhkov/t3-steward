@@ -1049,6 +1049,25 @@ func (c *Config) ResolveStatePath() (string, error) {
 	return p.StateFile, nil
 }
 
+// ResolveResultsDir returns the directory "task result" writes collected
+// results under when no --output names one: a results directory beside the
+// state file.
+//
+// It is outside every checkout on purpose. The default used to be
+// ./.t3/results, so collecting a result dirtied the working tree, nothing
+// ignored it, and every later start from that checkout warned about
+// uncommitted changes that were the tool's own output.
+func (c *Config) ResolveResultsDir() (string, error) {
+	if c.StatePath != "" {
+		return filepath.Join(filepath.Dir(c.StatePath), "results"), nil
+	}
+	p, err := DefaultPaths()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(p.StateDir, "results"), nil
+}
+
 // ResolveDataDir returns the T3 base directory: the configured one,
 // T3CODE_HOME, or ~/.t3.
 func (c *Config) ResolveDataDir() (string, error) {

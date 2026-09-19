@@ -19,10 +19,13 @@ const taskResultUsage = `Usage: t3-steward task result <run>[/<task>] [--output 
 Collect a finished task: its final message and every output it declared, in one
 call. Without a task, every task of the run is collected.
 
-The files are written under DIR (default ./.t3/results/<run>/<task>/), each
-under the name the task declared for it. The thread archive and other logs are
-not collected: "t3-steward backlog artifacts <run>/<task>" lists everything the
-coordinator holds, and "backlog artifact get" fetches one.
+The files are written under DIR, each under the name the task declared for it,
+and the directory is printed. The default is <state>/results/<run>/<task>/,
+outside every checkout, so collecting a result never changes a working tree;
+pass --output . to write into the current directory instead. Results under the
+state directory may be pruned, so copy what you need. The thread archive and
+other logs are not collected: "t3-steward backlog artifacts <run>/<task>" lists
+everything the coordinator holds, and "backlog artifact get" fetches one.
 
 Exit codes are the task's own verdict, so a script branches on them:
   0  every collected task succeeded or was skipped; a task the graph skipped
@@ -54,6 +57,9 @@ type taskResultDocument struct {
 	Outcome   string           `json:"outcome"`
 	Directory string           `json:"directory"`
 	Tasks     []taskResultTask `json:"tasks"`
+	// Fallback says why the files are not where the caller would expect them,
+	// and is empty when they are.
+	Fallback string `json:"fallback,omitempty"`
 }
 
 // taskResultTask is one collected task.
@@ -106,9 +112,15 @@ type taskResultCLI struct {
 	open   func(context.Context, string) (backlogadmin.ArtifactContent, error)
 	stdout io.Writer
 	stderr io.Writer
-	// workdir is the base of the default output directory. It is a field so
-	// that a test never writes into the directory the test binary runs in.
+	// workdir is the directory a relative --output is taken against. It is a
+	// field so that a test never writes into the directory the test binary
+	// runs in.
 	workdir string
+	// results is the default output directory, outside every checkout. A
+	// collected result that landed in the working tree was output nothing
+	// ignored, which made every later "task run" from that checkout warn about
+	// uncommitted changes that were this tool's own.
+	results string
 }
 
 // Help is admitted once for the whole family, in cmdTask.
@@ -121,7 +133,11 @@ func cmdTaskResult(g globalFlags, args []string) error {
 	if err != nil {
 		return err
 	}
-	cli := taskResultCLI{stdout: os.Stdout, stderr: os.Stderr, workdir: workdir}
+	results, err := cfg.ResolveResultsDir()
+	if err != nil {
+		return err
+	}
+	cli := taskResultCLI{stdout: os.Stdout, stderr: os.Stderr, workdir: workdir, results: results}
 	cli.query = func(ctx context.Context, query backlogadmin.Query) (backlogadmin.Response, error) {
 		transport, err := newCoordinatorTransport(cfg)
 		if err != nil {
@@ -167,14 +183,20 @@ func (c taskResultCLI) run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	base := output
-	if base == "" {
-		base = filepath.Join(c.workdir, ".t3", "results")
+	base, degraded, err := c.outputBase(output)
+	if err != nil {
+		return err
+	}
+	if degraded != "" && !asJSON {
+		// On stdout, because it changes where the caller has to look for the
+		// files this command just wrote.
+		fmt.Fprintln(c.stdout, degraded)
 	}
 	document := taskResultDocument{
 		SchemaVersion: taskResultSchemaVersion,
 		Run:           runID,
 		Directory:     filepath.Join(base, runID),
+		Fallback:      degraded,
 	}
 	worst := domain.ProgressSucceeded
 	for _, detail := range selected {
@@ -194,6 +216,36 @@ func (c taskResultCLI) run(ctx context.Context, args []string) error {
 		return err
 	}
 	return afterDocument(taskResultVerdict(document))
+}
+
+// outputBase decides where the collected files go and reports the degradation
+// when that is not where they were meant to go.
+//
+// An explicit --output is taken against the working directory, so --output .
+// restores the in-tree location for anyone who wants it. The default is the
+// state directory, and a state directory that cannot be written is a temporary
+// directory and a sentence saying so -- never a silent fall back into the
+// checkout, which is the behaviour this contract exists to end.
+func (c taskResultCLI) outputBase(output string) (string, string, error) {
+	if output != "" {
+		base := output
+		if !filepath.IsAbs(base) {
+			base = filepath.Join(c.workdir, base)
+		}
+		return base, "", nil
+	}
+	base := c.results
+	if base == "" {
+		return "", "", errors.New("no results directory is configured and none could be resolved")
+	}
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		temporary, tempErr := os.MkdirTemp("", "t3-steward-results-")
+		if tempErr != nil {
+			return "", "", fmt.Errorf("the results directory %s is not writable (%w) and no temporary directory could be made: %w", base, err, tempErr)
+		}
+		return temporary, fmt.Sprintf("the results directory %s is not writable (%v), so this run was written under %s instead", base, err, temporary), nil
+	}
+	return base, "", nil
 }
 
 // parseTaskResultArgs takes the selector and the two flags.
@@ -368,6 +420,13 @@ func taskResultVerdict(document taskResultDocument) error {
 
 func renderTaskResult(out io.Writer, document taskResultDocument) error {
 	fmt.Fprintf(out, "run %s: %s\n", document.Run, document.Outcome)
+	// The absolute path, because the files are no longer under the caller's
+	// working directory and a relative one would name nothing it can find.
+	directory := document.Directory
+	if absolute, err := filepath.Abs(directory); err == nil {
+		directory = absolute
+	}
+	fmt.Fprintf(out, "written to %s\n", directory)
 	for _, task := range document.Tasks {
 		fmt.Fprintf(out, "\n%s (%s)\n  %s\n", task.Task, task.Progress, task.Directory)
 		for _, file := range task.Files {
