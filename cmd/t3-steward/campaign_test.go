@@ -572,7 +572,17 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// happens to be the name of a real verb; at four columns it is the
 	// continuation of the cancel entry that it always was. No line was added
 	// and no wording changed, and the line is 85 columns, inside the cap below.
-	const wantDigest = "ba84fe4156b9fde54c67dacdd3b9c33ddd27fc6e2cbde8d43631d7b5b72cbe2d"
+	//
+	// Updated again when submit's notification became the default: the
+	// synopsis offers --no-notify, which is the flag an unattended caller now
+	// needs, and the paragraph under it says the calling thread is notified
+	// by default rather than offering --notify-thread as the way to be woken.
+	// The page described the behaviour submit had before stage 3, which is
+	// the same defect the wait family page had. Both changes were paid for by
+	// tightening the sentence they are in, so the cap is unchanged, and
+	// campaign_family_help_test.go now ties this page to the campaign submit
+	// page so that it cannot describe a superseded submit again.
+	const wantDigest = "14c9813785d13e57057013aca9f3dbdd2ee2f64560272c289188084ad8330af3"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)

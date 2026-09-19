@@ -33,7 +33,7 @@ Offline, reaches no coordinator:
 Read-only and live, asks the coordinator and creates nothing:
   check    <directory|workflow.yaml> [--json] [--task NAME]
 Mutating, checks first and creates one workflow and one run:
-  submit   <directory|workflow.yaml> --idempotency-key KEY [--json]
+  submit   <directory|workflow.yaml> --idempotency-key KEY [--json] [--no-notify]
            [--allow-unverified --reason TEXT] [--notify-thread <current|id>]
 Mutating recovery, creates a second run and never changes the first:
   rerun    <run> --from TASK --idempotency-key KEY [--reason TEXT] [--json]
@@ -73,7 +73,7 @@ means re-enrolling a worker. Codes and recovery: t3-steward campaign help readin
 submit runs check first. --allow-unverified skips only the client-side check; the
 coordinator still refuses an impossible campaign and records the principal and --reason.
 Agents should not use it. accepted_waiting is a success: the run exists and stays
-queued, so an agent may end its turn or pass --notify-thread to be woken when it ends.
+queued, so end the turn: this thread is notified by default, and --no-notify opts out.
 
 class: surplus is the default and runs on spare quota, required is admitted first;
 placement.hosts and placement.requires narrow eligible workers, never choose one.
