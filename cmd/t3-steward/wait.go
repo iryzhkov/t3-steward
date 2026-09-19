@@ -106,12 +106,23 @@ Commands:
   add --task current [flags] <condition>
                                 Park this task until the condition settles.
   add [flags] <condition>       Interactive wait on this thread.
-  list [--thread ID] [--all] [--json]
-                                Local checks of this thread, or of every
-                                thread, with their kind and outcome. A check
-                                bound to a task-bound wait names it.
-  list --native [--json]        Coordinator-held waits (node, quota and every
-                                task-bound wait), outcomes and delivery state.
+  list [--thread ID] [--host HOST] [--all] [--json]
+                                What this thread is waiting for, joined from
+                                this host's local checks and the waits the
+                                coordinator holds, in one row shape with kind,
+                                subject, state, delivery and host. A check
+                                bound to a task-bound wait names it. Settled
+                                and delivered waits are hidden; --all shows
+                                them and every thread. --host keeps the waits
+                                one host would deliver. --json is one document:
+                                waits, sources, unavailable, hidden. A source
+                                that could not be read is named and exits
+                                non-zero rather than shortening the list.
+  list --native [--thread ID] [--host HOST] [--json]
+                                The coordinator's own inventory instead of the
+                                joined answer: node, quota and every task-bound
+                                wait it holds, in every state, scoped the same
+                                way and printed in the same row shape.
   cancel <id> | run-now <id>    Control an interactive wait or a local check.
   cancel <w-tw-id> | cancel <tw-id>
                                 Cancel a task-bound wait, by its local check or
