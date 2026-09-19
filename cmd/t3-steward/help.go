@@ -258,6 +258,27 @@ func helpPagePaths() []string {
 	return paths
 }
 
+// renderedFlags are the options this page actually prints: its own, plus the
+// --config every verb below a command family accepts because the dispatcher's
+// clause for that family takes it out of the argument list before the family
+// is entered.
+//
+// It is injected here rather than written on ninety-odd pages because it is
+// the dispatcher's behaviour and not the verb's, and because writing it by
+// hand is how nineteen pages came to say "This verb takes no flags" about
+// verbs that take this one -- among them worker serve, which the packaged unit
+// invokes with it. It is a method rather than a few lines inside render so
+// that the contract test asserts against what the page prints: the injected
+// flag never reached Flags, so deleting --config from one family's clause in
+// the dispatcher would have left every page of that family documenting an
+// option nothing accepted, with the suite green.
+func (p helpPage) renderedFlags() []helpFlag {
+	if family, _, isFamilyVerb := strings.Cut(p.Path, " "); isFamilyVerb {
+		return append(append([]helpFlag{}, p.Flags...), familyConfigFlag(family))
+	}
+	return p.Flags
+}
+
 // render writes the page. A page with a Body carries a reference this package
 // already holds in full and is printed as it stands.
 func (p helpPage) render() string {
@@ -272,17 +293,7 @@ func (p helpPage) render() string {
 		fmt.Fprintf(&b, "  %s\n", line)
 	}
 	b.WriteString("\nFlags:\n")
-	flags := p.Flags
-	// Every verb below a command family accepts --config, because the
-	// dispatcher's clause for that family takes it out of the argument list
-	// before the family is entered. It is rendered here rather than written on
-	// ninety-odd pages because it is the dispatcher's behaviour and not the
-	// verb's, and because writing it by hand is how nineteen pages came to say
-	// "This verb takes no flags" about verbs that take this one -- among them
-	// worker serve, which the packaged unit invokes with it.
-	if family, _, isFamilyVerb := strings.Cut(p.Path, " "); isFamilyVerb {
-		flags = append(append([]helpFlag{}, flags...), familyConfigFlag(family))
-	}
+	flags := p.renderedFlags()
 	if len(flags) == 0 {
 		b.WriteString("  This verb takes no flags.\n")
 	}

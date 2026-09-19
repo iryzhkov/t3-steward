@@ -345,7 +345,7 @@ func assertHelpNamesItsFlags(t *testing.T, files map[string]*ast.File, verb, hel
 			accepted[flag] = true
 		}
 	}
-	if len(accepted) == 0 && len(page.Flags) > 0 {
+	if len(accepted) == 0 && len(page.renderedFlags()) > 0 {
 		t.Fatalf("%q documents flags and names parsers that declare none; point the sites at the parser that takes them", verb)
 	}
 	undocumented := map[string]bool{}
@@ -363,11 +363,47 @@ func assertHelpNamesItsFlags(t *testing.T, files map[string]*ast.File, verb, hel
 			t.Errorf("the parser of %q accepts %s and its help does not name it", verb, flag)
 		}
 	}
-	for _, flag := range page.Flags {
+	// renderedFlags rather than Flags: the --config a family's clause in the
+	// dispatcher takes out of the arguments is injected by the renderer and
+	// never reached Flags, so deleting that clause's handling of it would have
+	// left every page of the family printing an option nothing accepted.
+	for _, flag := range page.renderedFlags() {
 		if !accepted[flag.Name] {
 			t.Errorf("the help of %q names %s and no parser of that verb accepts it", verb, flag.Name)
 		}
 	}
+}
+
+// flagsAtDispatchCase reads the options one verb's own clause in the
+// dispatcher declares, and reports whether such a clause exists. It is
+// declaredFlags without the fatal, for a page that claims to have no parser at
+// all: the claim is worth nothing unless something checks that the clause
+// answering the verb declares no option.
+func flagsAtDispatchCase(files map[string]*ast.File, verb string) (map[string]bool, bool) {
+	found := map[string]bool{}
+	matched := false
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			function, ok := decl.(*ast.FuncDecl)
+			if !ok || function.Body == nil || function.Name.Name != "dispatch" {
+				continue
+			}
+			ast.Inspect(function.Body, func(n ast.Node) bool {
+				clause, ok := n.(*ast.CaseClause)
+				if !ok || !caseClauseCovers(clause, verb) {
+					return true
+				}
+				matched = true
+				for _, statement := range clause.Body {
+					for flag := range flagsIn(statement) {
+						found[flag] = true
+					}
+				}
+				return true
+			})
+		}
+	}
+	return found, matched
 }
 
 // namesFlag reports whether the help text mentions the option as a whole word,
@@ -500,35 +536,67 @@ func TestEveryRenderedPageCarriesTheContract(t *testing.T) {
 // hypothetical refactor: it is how nineteen pages came to state that their
 // verb takes no flags while accepting --config, worker serve among them, which
 // the repository's own systemd unit invokes with --config.
-var pagesWithoutAParserSite = map[string]string{
-	"": "the top-level overview: it names the families and parses nothing of its own",
+// pageExcuseKind says what the suite proves about an excused page instead of
+// deriving its flags. It is the price of an entry: a kind is a claim, and each
+// kind below is checked.
+type pageExcuseKind string
 
-	// A family page summarises its verbs and the flags live one level down,
-	// which is what the two depths are for.
-	"archive":     "family page",
-	"backlog":     "family page",
-	"bucket":      "family page",
-	"campaign":    "family page",
-	"coordinator": "family page",
-	"models":      "family page",
-	"schedules":   "family page",
-	"task":        "family page",
-	"thread":      "family page",
-	"wait":        "family page",
-	"worker":      "family page",
+const (
+	// excuseOverview is the top-level overview, which names the families and
+	// parses nothing of its own. Only the empty path may claim it.
+	excuseOverview pageExcuseKind = "overview"
+	// excuseBreadth is a family or hub page: it summarises the pages below it
+	// and the flags live there, which is what the two depths are for. The suite
+	// requires those pages to exist, so a verb with nothing registered below it
+	// cannot be excused as one. That is not hypothetical: models, a childless
+	// verb that honours --config, was excused here as a "family page" and its
+	// page did not mention the flag.
+	excuseBreadth pageExcuseKind = "breadth"
+	// excuseNoParser is a verb answered before any parser exists. The suite
+	// requires its clause in the dispatcher to declare no option at all, so
+	// adding a flag to that clause fails the build instead of hiding behind the
+	// entry.
+	excuseNoParser pageExcuseKind = "no-parser"
+)
 
-	// version is answered inside the dispatcher before a flag set is built,
-	// and it is the one page whose no-flags claim is true.
-	"version": "answered before any parser exists; it takes no option at all",
+// pageWithoutAParserSite is one page excused from the flag derivation: the
+// kind, which is the claim the suite checks in place of the derivation, and
+// the reason a reader needs.
+//
+// The kind is what makes an entry cost more than two lines of table. Excusing
+// a top-level verb such as status used to be exactly that, and a flag added to
+// its parser afterwards left the suite green; now status can be excused as
+// neither breadth, because no page is registered below it, nor no-parser,
+// because its clause in the dispatcher declares --limit, --all and --json.
+type pageWithoutAParserSite struct {
+	Kind   pageExcuseKind
+	Reason string
+}
+
+var pagesWithoutAParserSite = map[string]pageWithoutAParserSite{
+	"": {excuseOverview, "the top-level overview: it names the families and parses nothing of its own"},
+
+	"archive":     {excuseBreadth, "family page"},
+	"backlog":     {excuseBreadth, "family page"},
+	"bucket":      {excuseBreadth, "family page"},
+	"campaign":    {excuseBreadth, "family page"},
+	"coordinator": {excuseBreadth, "family page"},
+	"schedules":   {excuseBreadth, "family page"},
+	"task":        {excuseBreadth, "family page"},
+	"thread":      {excuseBreadth, "family page"},
+	"wait":        {excuseBreadth, "family page"},
+	"worker":      {excuseBreadth, "family page"},
+
+	"version": {excuseNoParser, "answered inside the dispatcher before a flag set is built; it takes no option at all"},
 
 	// A hub page is a family page one level down: it summarises the verbs
 	// below it, and each of those carries the sites.
-	"backlog artifact": "hub page; the sites are on artifact show and artifact get",
-	"backlog backup":   "hub page; the sites are on backup create, verify and restore",
-	"backlog command":  "hub page; the site is on command show",
-	"backlog edge":     "hub page; the sites are on edge add and edge remove",
-	"backlog run":      "hub page; the site is on run clone",
-	"backlog task":     "hub page; the sites are on task show, task add and task set",
+	"backlog artifact": {excuseBreadth, "hub page; the sites are on artifact show and artifact get"},
+	"backlog backup":   {excuseBreadth, "hub page; the sites are on backup create, verify and restore"},
+	"backlog command":  {excuseBreadth, "hub page; the site is on command show"},
+	"backlog edge":     {excuseBreadth, "hub page; the sites are on edge add and edge remove"},
+	"backlog run":      {excuseBreadth, "hub page; the site is on run clone"},
+	"backlog task":     {excuseBreadth, "hub page; the sites are on task show, task add and task set"},
 }
 
 // Test 4. The floor under the derivation. A page that declares no parser site
@@ -536,20 +604,46 @@ var pagesWithoutAParserSite = map[string]string{
 // wrote down rather than the default for an empty list, and a page that loses
 // the sites it had fails the build.
 func TestEveryPageDeclaresAParserSite(t *testing.T) {
+	files := packageSource(t)
 	for _, path := range helpPagePaths() {
 		page, _ := helpPageFor(path)
 		name := path
 		if name == "" {
 			name = "(overview)"
 		}
-		reason, excused := pagesWithoutAParserSite[path]
+		excuse, excused := pagesWithoutAParserSite[path]
 		switch {
 		case len(page.Parsers) > 0 && excused:
-			t.Errorf("%s declares a parser site and is still excused from the derivation as %q; drop the entry", name, reason)
+			t.Errorf("%s declares a parser site and is still excused from the derivation as %q; drop the entry", name, excuse.Reason)
+			continue
 		case len(page.Parsers) == 0 && !excused:
 			t.Errorf("%s declares no parser site, so nothing derives its flags and nothing would notice if it stopped naming them; point it at the parser that consumes its arguments, or add it to pagesWithoutAParserSite with the reason", name)
-		case excused && strings.TrimSpace(reason) == "":
+			continue
+		case !excused:
+			continue
+		}
+		if strings.TrimSpace(excuse.Reason) == "" {
 			t.Errorf("%s is excused from the derivation with no reason recorded", name)
+		}
+		// The kind is a claim about why the page derives nothing, and each one
+		// is checked here, so that an entry cannot be the two lines that take a
+		// verb out of the flag contract.
+		switch excuse.Kind {
+		case excuseOverview:
+			if path != "" {
+				t.Errorf("%s is excused as the overview, which is the empty path alone", name)
+			}
+		case excuseBreadth:
+			if len(helpPageChildren(strings.Fields(path))) == 0 {
+				t.Errorf("%s is excused as a page whose flags live one level down, and no page is registered below it, so nothing carries them; declare the sites its own arguments are parsed at", name)
+			}
+		case excuseNoParser:
+			flags, matched := flagsAtDispatchCase(files, path)
+			if matched && len(flags) != 0 {
+				t.Errorf("%s is excused as parsing nothing, and its clause in the dispatcher declares %s; document them and give the page that site", name, strings.Join(sortedKeys(flags), ", "))
+			}
+		default:
+			t.Errorf("%s is excused with the unknown kind %q; the kinds are overview, breadth and no-parser", name, excuse.Kind)
 		}
 	}
 	for path := range pagesWithoutAParserSite {

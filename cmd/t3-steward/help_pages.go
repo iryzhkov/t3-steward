@@ -322,7 +322,15 @@ func familyHelpPages() []helpPage {
 		{Path: "campaign", Body: campaignUsage},
 		{Path: "coordinator", Body: coordinatorUsage},
 		{Path: "worker", Body: workerUsage},
-		{Path: "models", Body: modelsUsage},
+		{
+			// models is not a family: it has no page below it and it parses its
+			// own arguments, so it declares the sites they are parsed at. It was
+			// excused from the derivation as a family page, which is how it came
+			// to accept --config and not say so; ui-archive below is the same
+			// shape and carries its site for the same reason.
+			Path: "models", Body: modelsUsage,
+			Parsers: []parserSite{{Func: "parseModelsArgs"}, {Func: "takeJSONFlag"}, familyDispatchSite("models")},
+		},
 		{
 			Path:     "ui-archive",
 			Purpose:  "read-only: the T3 UI's archive candidates and their classification, as JSON.",
