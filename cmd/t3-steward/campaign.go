@@ -45,8 +45,8 @@ Lifecycle (delegated to backlog, unchanged; explain is read-only and live):
   cancel --json prints willCancel, the tasks it covers, not the outcome it applied.
 Supervised runs, structured decisions only and never prose:
   supervision <show|decide|hold|release|escalate|resolve> <run> [flags] [--json]
-  Mutating verbs need --request-id KEY, --reason TEXT and --expected-revision N.
-  Flags and refusal classes: t3-steward campaign supervision --help
+    Mutating verbs need --request-id KEY, --reason TEXT and --expected-revision N.
+    Flags and refusal classes: t3-steward campaign supervision --help
 Graph amendment and artifact commands stay under "t3-steward backlog".
 Graph fields: needs (run only after these succeed; acyclic), inputs_from (named
 artifacts from a direct dependency, read-only), outputs (the files a task
@@ -200,8 +200,8 @@ type campaignCLI struct {
 }
 
 func cmdCampaign(g globalFlags, args []string) error {
-	if len(args) == 0 || isHelp(args[0]) {
-		return printCampaignHelp(os.Stdout, args)
+	if handled, err := admitCampaignHelp(os.Stdout, args); handled {
+		return err
 	}
 	cfg, err := loadConfig(g)
 	if err != nil {
@@ -347,11 +347,13 @@ func newCampaignSubmissionClient(cfg config.Config) (adminSubmissionService, err
 
 func (c campaignCLI) run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return printCampaignHelp(c.stdout, nil)
+		_, err := admitCampaignHelp(c.stdout, nil)
+		return err
 	}
 	switch args[0] {
 	case "help", "--help", "-h":
-		return printCampaignHelp(c.stdout, args)
+		_, err := admitCampaignHelp(c.stdout, args)
+		return err
 	case "validate":
 		return c.runValidate(args[1:])
 	case "plan":
@@ -397,28 +399,40 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 	}
 }
 
-func printCampaignHelp(out io.Writer, args []string) error {
-	if len(args) > 1 {
-		// The supervision family carries its own flag contract, which is too
-		// long for the capped usage block and does not come from the campaign
-		// projection's help topics.
-		if args[1] == "supervision" {
-			return printCampaignSupervisionHelp(out)
+// admitCampaignHelp is this family's one help admission, before any argument
+// is parsed. It goes through the shared helper like every other family, with
+// one addition the others have no use for: "campaign help <topic>" names an
+// essay rather than a verb, so a word that is a topic and not a verb is
+// answered from the topic set, and a word that is neither is refused by name
+// rather than answered with the family page.
+func admitCampaignHelp(out io.Writer, args []string) (bool, error) {
+	if len(args) == 0 {
+		args = []string{"--help"}
+	}
+	if len(args) > 1 && isHelp(args[0]) {
+		word := args[1]
+		// The explicit "campaign help <word>" form names a topic first. Several
+		// topics share a name with a verb -- plan, graph, rerun -- and the essay
+		// is what that form has always answered with; the verb's reference is
+		// one word away, as "campaign <verb> --help".
+		if word == "supervision" {
+			return true, printCampaignSupervisionHelp(out)
 		}
 		for _, topic := range campaign.HelpTopics() {
-			if topic.Name == args[1] {
+			if topic.Name == word {
 				_, err := fmt.Fprint(out, topic.Body)
-				return err
+				return true, err
 			}
 		}
-		names := make([]string, 0, len(campaign.HelpTopics()))
-		for _, topic := range campaign.HelpTopics() {
-			names = append(names, topic.Name)
+		if _, verb := helpPageFor("campaign " + word); !verb {
+			names := make([]string, 0, len(campaign.HelpTopics()))
+			for _, topic := range campaign.HelpTopics() {
+				names = append(names, topic.Name)
+			}
+			return true, fmt.Errorf("unknown campaign help topic %q; try one of %s", word, strings.Join(names, ", "))
 		}
-		return fmt.Errorf("unknown campaign help topic %q; try one of %s", args[1], strings.Join(names, ", "))
 	}
-	_, err := fmt.Fprint(out, campaignUsage)
-	return err
+	return admitHelp(out, []string{"campaign"}, args), nil
 }
 
 func (c campaignCLI) runValidate(args []string) error {

@@ -213,8 +213,7 @@ this same thread with the outcome.
 `
 
 func cmdWait(g globalFlags, args []string) error {
-	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		fmt.Print(waitUsage)
+	if admitFamilyHelp(os.Stdout, []string{"wait"}, args) {
 		return nil
 	}
 	cfg, err := loadConfig(g)

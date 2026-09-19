@@ -198,11 +198,10 @@ func promptStdin() io.Reader {
 	return os.Stdin
 }
 
+// Help is not admitted here. The task family admits it once, in cmdTask,
+// before this parser sees anything; a second guard per verb is what let
+// eighteen of them drift apart in the first place.
 func cmdTaskRun(g globalFlags, args []string) error {
-	if len(args) > 0 && isHelp(args[0]) {
-		fmt.Print(taskRunUsage)
-		return nil
-	}
 	cfg, err := loadConfig(g)
 	if err != nil {
 		return err

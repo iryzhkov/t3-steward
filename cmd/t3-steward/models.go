@@ -146,8 +146,7 @@ type modelsCLI struct {
 }
 
 func cmdModels(g globalFlags, args []string) error {
-	if len(args) > 0 && isHelp(args[0]) {
-		fmt.Print(modelsUsage)
+	if admitHelp(os.Stdout, []string{"models"}, args) {
 		return nil
 	}
 	project, asJSON, err := parseModelsArgs(args)

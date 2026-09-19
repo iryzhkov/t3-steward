@@ -70,8 +70,7 @@ func isWorkerDaemonVerb(verb string) bool {
 }
 
 func cmdWorker(g globalFlags, args []string) error {
-	if len(args) == 0 || isHelp(args[0]) {
-		fmt.Print(workerUsage)
+	if admitFamilyHelp(os.Stdout, []string{"worker"}, args) {
 		return nil
 	}
 	if len(args) > 0 {

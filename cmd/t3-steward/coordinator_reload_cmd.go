@@ -75,11 +75,8 @@ func (processReloadSignaller) Signal(pid int) error {
 	return process.Signal(syscall.SIGHUP)
 }
 
+// Help is admitted once for the whole family, in cmdCoordinator.
 func cmdCoordinatorReload(g globalFlags, args []string) error {
-	if len(args) != 0 && isHelp(args[0]) {
-		fmt.Print(coordinatorReloadUsage)
-		return nil
-	}
 	fs := flag.NewFlagSet("coordinator reload", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	asJSON := fs.Bool("json", false, "print the receipt as JSON")

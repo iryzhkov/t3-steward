@@ -183,8 +183,7 @@ func runCoordinatorAdmin(cfg config.Config, args []string, schedules bool) error
 }
 
 func cmdSchedules(g globalFlags, args []string) error {
-	if len(args) == 0 || isHelp(args[0]) {
-		fmt.Print(schedulesUsage)
+	if admitFamilyHelp(os.Stdout, []string{"schedules"}, args) {
 		return nil
 	}
 	cfg, err := loadConfig(g)
@@ -195,8 +194,7 @@ func cmdSchedules(g globalFlags, args []string) error {
 }
 
 func cmdBacklog(g globalFlags, args []string) error {
-	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		fmt.Print(backlogUsage)
+	if admitFamilyHelp(os.Stdout, []string{"backlog"}, args) {
 		return nil
 	}
 	cfg, err := loadConfig(g)

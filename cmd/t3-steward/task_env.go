@@ -48,8 +48,7 @@ var taskIdentityShortNames = map[string]string{
 // record and needs no configuration; "run" and "result" reach the coordinator
 // and take the shared global flags, which is why they are dispatched with them.
 func cmdTask(g globalFlags, args []string) error {
-	if len(args) == 0 || isHelp(args[0]) {
-		fmt.Print(taskUsage)
+	if admitFamilyHelp(os.Stdout, []string{"task"}, args) {
 		return nil
 	}
 	switch args[0] {

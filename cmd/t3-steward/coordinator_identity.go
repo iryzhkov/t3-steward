@@ -62,8 +62,7 @@ Recovery:
 `
 
 func cmdCoordinator(g globalFlags, args []string) error {
-	if len(args) == 0 || isHelp(args[0]) {
-		fmt.Print(coordinatorUsage)
+	if admitFamilyHelp(os.Stdout, []string{"coordinator"}, args) {
 		return nil
 	}
 	if args[0] == "reload" {

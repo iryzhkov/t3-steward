@@ -452,8 +452,8 @@ func TestCampaignAllowUnverifiedRequiresAReason(t *testing.T) {
 // than aspirational.
 func TestCampaignHelpDocumentsEveryVerb(t *testing.T) {
 	var out bytes.Buffer
-	if err := printCampaignHelp(&out, nil); err != nil {
-		t.Fatal(err)
+	if handled, err := admitCampaignHelp(&out, nil); !handled || err != nil {
+		t.Fatalf("campaign help: handled=%v err=%v", handled, err)
 	}
 	help := out.String()
 	for _, want := range []string{
@@ -483,8 +483,8 @@ func TestCampaignHelpDocumentsEveryVerb(t *testing.T) {
 
 	// The readiness topic carries the full tables the usage points at.
 	var topic bytes.Buffer
-	if err := printCampaignHelp(&topic, []string{"help", "readiness"}); err != nil {
-		t.Fatal(err)
+	if handled, err := admitCampaignHelp(&topic, []string{"help", "readiness"}); !handled || err != nil {
+		t.Fatalf("campaign help readiness: handled=%v err=%v", handled, err)
 	}
 	for _, want := range []string{
 		"ready", "accepted_waiting", "impossible",

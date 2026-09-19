@@ -558,7 +558,12 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// reads it as the outcome is the mistake the line exists to prevent. The
 	// line was paid for by putting explain beside show and graph, so the cap is
 	// unchanged.
-	const wantDigest = "0cc7e60af2ecb0d5ad10839bffa479b5f0d765330f4bbc22da50bf1b07f67d71"
+	//
+	// Updated again when help became one contract: the two prose lines under
+	// the supervision heading are indented four columns rather than two, so
+	// that the router scan reads them as the continuation they are and not as
+	// two command forms. No line was added and no wording changed.
+	const wantDigest = "e90dde99cca7ef0bbff2bf44d6c88250a233ab049ad4cb8829a5381b989ceea0"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)

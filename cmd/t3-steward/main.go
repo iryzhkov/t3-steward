@@ -109,6 +109,17 @@ type globalFlags struct {
 	logLevel       string
 }
 
+// registerGlobalFlags declares the four options every verb the dispatcher
+// parses itself accepts. They are declared here, in one function, rather than
+// inline in dispatch, so that the help contract test can read the shared set
+// out of one place and require every such verb's page to name all four.
+func registerGlobalFlags(fs *flag.FlagSet, g *globalFlags, defaultConfigPath string) {
+	fs.StringVar(&g.configPath, "config", defaultConfigPath, "configuration file")
+	fs.BoolVar(&g.dryRun, "dry-run", false, "force dry-run mode")
+	fs.BoolVar(&g.noDryRun, "no-dry-run", false, "disable dry-run mode for this run (overrides the configuration)")
+	fs.StringVar(&g.logLevel, "log-level", "", "log level")
+}
+
 // cmdRunWatchdog is the route the bare "run" command takes to the foreground
 // watchdog, which is what the packaged unit invokes as "t3-steward run
 // --config <path>". It is a variable rather than a direct call so that a test
@@ -145,10 +156,17 @@ func dispatch(args []string) error {
 	}
 	cmd := args[0]
 	rest := args[1:]
+	// Help is admitted here, before anything is parsed, routed or loaded, so
+	// that no verb can send --help onwards as an identifier. The campaign
+	// family is the one exception: its help word also names a topic, as in
+	// "campaign help readiness", so it admits its own help through the same
+	// shared helper one level down.
+	if cmd != "campaign" && admitHelp(os.Stdout, nil, args) {
+		return nil
+	}
 	switch cmd {
 	case "-h", "--help", "help":
-		fmt.Print(usage)
-		return nil
+		return printTopLevelHelp(os.Stdout, rest)
 	case "task", "wait", "thread", "bucket":
 		paths, err := config.DefaultPaths()
 		if err != nil {
@@ -248,16 +266,20 @@ func dispatch(args []string) error {
 			version, commit, date, runtime.GOOS, runtime.GOARCH, compat.MinServerVersion, compat.MaxServerVersion)
 		return nil
 	}
+	// Help is admitted before the flag set exists, so that a verb parsed here
+	// answers --help with its page instead of with "flag: help requested" on
+	// standard error. The family verbs above admit help at their own entry
+	// point; this call covers the verbs the dispatcher parses itself.
+	if admitHelp(os.Stdout, nil, args) {
+		return nil
+	}
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	var g globalFlags
 	paths, err := config.DefaultPaths()
 	if err != nil {
 		return err
 	}
-	fs.StringVar(&g.configPath, "config", paths.ConfigFile, "configuration file")
-	fs.BoolVar(&g.dryRun, "dry-run", false, "force dry-run mode")
-	fs.BoolVar(&g.noDryRun, "no-dry-run", false, "disable dry-run mode for this run (overrides the configuration)")
-	fs.StringVar(&g.logLevel, "log-level", "", "log level")
+	registerGlobalFlags(fs, &g, paths.ConfigFile)
 	var (
 		force           bool
 		enable          bool
@@ -353,10 +375,6 @@ func dispatch(args []string) error {
 		}
 		return cmdWorkerExchange(g, fs.Arg(0))
 	case "coordinator-exchange":
-		if fs.NArg() == 1 && isHelp(fs.Arg(0)) {
-			fmt.Print(coordinatorExchangeUsage)
-			return nil
-		}
 		// No operation word serves every operation from one key, taking the
 		// operation from the signed frame; one word pins the key to it.
 		if fs.NArg() > 1 {

@@ -35,8 +35,7 @@ type threadStopper interface {
 }
 
 func cmdThread(g globalFlags, args []string) error {
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		fmt.Print(threadUsage)
+	if admitFamilyHelp(os.Stdout, []string{"thread"}, args) {
 		return nil
 	}
 	if args[0] != "stop" {

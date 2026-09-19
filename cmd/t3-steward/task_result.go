@@ -107,11 +107,8 @@ type taskResultCLI struct {
 	workdir string
 }
 
+// Help is admitted once for the whole family, in cmdTask.
 func cmdTaskResult(g globalFlags, args []string) error {
-	if len(args) > 0 && isHelp(args[0]) {
-		fmt.Print(taskResultUsage)
-		return nil
-	}
 	cfg, err := loadConfig(g)
 	if err != nil {
 		return err

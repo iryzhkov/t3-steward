@@ -515,10 +515,6 @@ func splitOptionalTaskTarget(target string) (string, string) {
 	return runID, taskID
 }
 
-func isHelp(arg string) bool {
-	return arg == "help" || arg == "--help" || arg == "-h"
-}
-
 func selectSchedule(response backlogadmin.Response, selector string) (backlogadmin.Response, error) {
 	mode, id, _ := strings.Cut(selector, ":")
 	for _, schedule := range response.Schedules {

@@ -71,8 +71,7 @@ type bucketRow struct {
 }
 
 func cmdBucket(g globalFlags, args []string) error {
-	if len(args) == 0 || isHelp(args[0]) {
-		fmt.Print(bucketUsage)
+	if admitFamilyHelp(os.Stdout, []string{"bucket"}, args) {
 		return nil
 	}
 	switch args[0] {

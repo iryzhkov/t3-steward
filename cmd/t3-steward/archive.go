@@ -46,8 +46,7 @@ func newArchiver(cfg config.Config, store *sqlite.Store, control *t3control.Cont
 }
 
 func cmdArchive(g globalFlags, args []string) error {
-	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		fmt.Print(archiveUsage)
+	if admitFamilyHelp(os.Stdout, []string{"archive"}, args) {
 		return nil
 	}
 	cfg, err := loadConfig(g)
