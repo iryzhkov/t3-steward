@@ -16,7 +16,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-const modelsUsage = `Usage: t3-steward models [--project NAME] [--json]
+const modelsUsage = `Usage: t3-steward models [--project NAME] [--instance ID] [--available] [--json]
 
 Every provider route the fleet can run right now, joined from three facts that
 fail separately:
@@ -30,8 +30,20 @@ fail separately:
 
 Each row is one instance/model pair, in the form "t3-steward task run --model
 [INSTANCE/]MODEL" takes. A bare model name is enough when exactly one instance
-offers it. --project narrows the advertised half to the workers eligible for
-that project; "t3-steward backlog projects" lists the projects.
+offers it.
+
+Narrowing the answer. Each of these says what to read, and all of them are
+applied before anything decides how much of it to print, so a narrowed answer
+is the whole of a smaller question rather than a window onto a larger one:
+
+  --project NAME   count only the workers eligible for that project as
+                   advertising; "t3-steward backlog projects" lists them
+  --instance ID    report that one provider instance
+  --available      drop the routes that cannot run now, which is the table
+                   minus everything the reasons below explain
+
+A narrowed table says how many routes and instances the unnarrowed answer
+holds and which filter is in force, so it is never mistaken for the fleet.
 
 An instance that is authorized and advertised by nobody, or advertised with no
 quota binding, is listed with that as its status rather than omitted: a route
@@ -53,6 +65,12 @@ coordinator reports about the instances it does authorize.
 A coordinator older than this one reports no per-worker authorization, and the
 table is then built from the quota pools and the inventories alone, with no
 reasons under it.
+
+--config PATH names the configuration file this host reads (default
+$XDG_CONFIG_HOME/t3-steward/config.yaml). The dispatcher takes it out of the
+arguments before this verb is entered, so the path is a separate word:
+--config=PATH is not recognised there and travels on to this verb, which
+refuses it.
 ` + coordinatorTransportHelp
 
 // modelsSchemaVersion versions the models document. It is an agent-facing
@@ -62,9 +80,49 @@ const modelsSchemaVersion = 1
 // modelsDocument is what "models --json" prints: one document, one entry per
 // provider instance, sorted by instance id.
 type modelsDocument struct {
-	SchemaVersion int              `json:"schemaVersion"`
-	Project       string           `json:"project,omitempty"`
-	Instances     []modelsInstance `json:"instances"`
+	SchemaVersion int    `json:"schemaVersion"`
+	Project       string `json:"project,omitempty"`
+	// Instance and Available echo the scope this document answers, so that a
+	// document holding two routes says which question it answers rather than
+	// looking like a fleet with two routes.
+	Instance  string `json:"instance,omitempty"`
+	Available bool   `json:"available,omitempty"`
+	// TotalInstances and TotalRoutes are the sizes before the scope narrowed
+	// the document. They equal what is in Instances when nothing narrowed it.
+	TotalInstances int              `json:"totalInstances"`
+	TotalRoutes    int              `json:"totalRoutes"`
+	Instances      []modelsInstance `json:"instances"`
+}
+
+// modelsScope is what the command line asked models to read: the project whose
+// eligible workers count as advertising, the provider instance to report, and
+// whether routes that cannot run now are wanted at all. Every field narrows
+// what is read, and all of them are applied before the document is rendered or
+// encoded, so no cap and no summary can ever precede the scope.
+type modelsScope struct {
+	Project   string
+	Instance  string
+	Available bool
+}
+
+// Narrowed reports whether this scope drops anything from the built document.
+// --project is not one of those: it is answered by the coordinator, in the
+// query that decides which workers count as advertising.
+func (s modelsScope) Narrowed() bool {
+	return s.Instance != "" || s.Available
+}
+
+// Words is the scope in the words the command line used, for a line that has
+// to say which filter is in force.
+func (s modelsScope) Words() string {
+	var words []string
+	if s.Instance != "" {
+		words = append(words, "--instance "+s.Instance)
+	}
+	if s.Available {
+		words = append(words, "--available")
+	}
+	return strings.Join(words, " and ")
 }
 
 // modelsInstance is one provider instance as the three views see it.
@@ -149,7 +207,7 @@ func cmdModels(g globalFlags, args []string) error {
 	if answered, err := admitHelp(os.Stdout, []string{"models"}, args); answered || err != nil {
 		return err
 	}
-	project, asJSON, err := parseModelsArgs(args)
+	scope, asJSON, err := parseModelsArgs(args)
 	if err != nil {
 		return err
 	}
@@ -162,35 +220,48 @@ func cmdModels(g globalFlags, args []string) error {
 		return err
 	}
 	cli := modelsCLI{service: transport.client, principal: transport.principal, stdout: os.Stdout}
-	return cli.run(context.Background(), project, asJSON)
+	return cli.run(context.Background(), scope, asJSON)
 }
 
-// parseModelsArgs takes the two flags models has. It refuses a positional
-// argument rather than ignoring it, because "t3-steward models steward" is a
-// plausible mistake and a silently unfiltered table is a worse answer than a
-// refusal that names the flag.
-func parseModelsArgs(args []string) (string, bool, error) {
+// parseModelsArgs takes the flags models has, each of which narrows what is
+// read. It refuses a positional argument rather than ignoring it, because
+// "t3-steward models steward" is a plausible mistake and a silently unfiltered
+// table is a worse answer than a refusal that names the flag.
+func parseModelsArgs(args []string) (modelsScope, bool, error) {
 	clean, asJSON, err := takeJSONFlag(args)
 	if err != nil {
-		return "", false, err
+		return modelsScope{}, false, err
 	}
-	project := ""
+	var scope modelsScope
 	for i := 0; i < len(clean); i++ {
 		switch clean[i] {
 		case "--project":
 			if i+1 >= len(clean) || strings.TrimSpace(clean[i+1]) == "" {
-				return "", false, errors.New("--project needs a project name; t3-steward backlog projects lists them")
+				return modelsScope{}, false, errors.New("--project needs a project name; t3-steward backlog projects lists them")
 			}
-			project = clean[i+1]
+			scope.Project = clean[i+1]
 			i++
+		case "--instance":
+			if i+1 >= len(clean) || strings.TrimSpace(clean[i+1]) == "" {
+				return modelsScope{}, false, errors.New("--instance needs a provider instance id; t3-steward models with no filter lists them")
+			}
+			scope.Instance = clean[i+1]
+			i++
+		case "--available":
+			scope.Available = true
 		default:
-			return "", false, fmt.Errorf("models usage: t3-steward models [--project NAME] [--json] (got %q)", clean[i])
+			return modelsScope{}, false, fmt.Errorf("models usage: t3-steward models [--project NAME] [--instance ID] [--available] [--json] (got %q)", clean[i])
 		}
 	}
-	return project, asJSON, nil
+	return scope, asJSON, nil
 }
 
-func (c modelsCLI) run(ctx context.Context, project string, asJSON bool) error {
+// run reads the three views, joins them, and narrows the result to the scope
+// the command line asked for. The scope is applied to the document before
+// either the encoder or the renderer sees it, so the text form and the JSON
+// form answer the same question and neither can narrow something the other
+// already capped.
+func (c modelsCLI) run(ctx context.Context, scope modelsScope, asJSON bool) error {
 	workers, err := c.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryWorkers})
 	if err != nil {
 		return err
@@ -200,9 +271,9 @@ func (c modelsCLI) run(ctx context.Context, project string, asJSON bool) error {
 		return err
 	}
 	var eligible map[string]bool
-	if project != "" {
+	if scope.Project != "" {
 		projects, err := c.query(ctx, backlogadmin.Query{
-			Kind: backlogadmin.QueryProjects, Filter: backlogadmin.Filter{Project: project},
+			Kind: backlogadmin.QueryProjects, Filter: backlogadmin.Filter{Project: scope.Project},
 		})
 		if err != nil {
 			// Only --project needs the catalog: the table itself is built from
@@ -210,14 +281,14 @@ func (c modelsCLI) run(ctx context.Context, project string, asJSON bool) error {
 			return explainRefusedProjectsQuery(ctx, c.query, err, modelsWithoutTheCatalog)
 		}
 		if len(projects.Projects) == 0 {
-			return fmt.Errorf("project %q is not in this coordinator's catalog; t3-steward backlog projects lists the projects it has", project)
+			return fmt.Errorf("project %q is not in this coordinator's catalog; t3-steward backlog projects lists the projects it has", scope.Project)
 		}
 		eligible = make(map[string]bool)
 		for _, worker := range projects.Projects[0].Workers {
 			eligible[worker.Worker] = true
 		}
 	}
-	document := buildModelsDocument(project, workers.Workers, quotas.Quotas, eligible)
+	document := scopeModelsDocument(buildModelsDocument(scope.Project, workers.Workers, quotas.Quotas, eligible), scope)
 	if asJSON {
 		encoder := json.NewEncoder(c.stdout)
 		encoder.SetIndent("", "  ")
@@ -360,6 +431,58 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 	return document
 }
 
+// scopeModelsDocument narrows a built document to the scope the command line
+// asked for and records what it narrowed. It runs before anything renders or
+// encodes the document, which is the whole of the ordering rule: what to read
+// is decided first, how much of it to show second, so the answer to a narrowed
+// question is complete rather than truncated.
+//
+// --project is absent here on purpose: it is answered by the coordinator, in
+// the projects query that decides which workers count as advertising, and
+// applying it a second time here would report a different fleet than the one
+// the document was built from.
+func scopeModelsDocument(document modelsDocument, scope modelsScope) modelsDocument {
+	document.Instance, document.Available = scope.Instance, scope.Available
+	document.TotalInstances = len(document.Instances)
+	document.TotalRoutes = countModelsRoutes(document.Instances)
+	if !scope.Narrowed() {
+		return document
+	}
+	kept := make([]modelsInstance, 0, len(document.Instances))
+	for _, instance := range document.Instances {
+		if scope.Instance != "" && instance.Instance != scope.Instance {
+			continue
+		}
+		if scope.Available && modelsStatus(instance) != modelsStatusAvailable {
+			continue
+		}
+		kept = append(kept, instance)
+	}
+	document.Instances = kept
+	return document
+}
+
+// countModelsRoutes counts the rows the table would print: one per model of an
+// instance, and one for an instance that advertises none, because a route that
+// cannot run is still a line the caller reads.
+func countModelsRoutes(instances []modelsInstance) int {
+	rows := 0
+	for _, instance := range instances {
+		if len(instance.Models) == 0 {
+			rows++
+			continue
+		}
+		rows += len(instance.Models)
+	}
+	return rows
+}
+
+// modelsScopeWords is the scope a document answers, in the words of the
+// command line that asked for it.
+func modelsScopeWords(document modelsDocument) string {
+	return modelsScope{Instance: document.Instance, Available: document.Available}.Words()
+}
+
 // workerRouteReason says why one authorized instance and worker pair cannot
 // run a route, and is empty when it can. The catalog's own reasons come first,
 // and they hold however available the instance is on the host: an instance the
@@ -402,6 +525,13 @@ func mergeSorted(into []string, add []string) []string {
 // choosing one is copying one field rather than joining two columns by eye.
 func renderModels(out io.Writer, document modelsDocument) error {
 	if len(document.Instances) == 0 {
+		if document.Instance != "" || document.Available {
+			// An empty narrowed answer is not an empty fleet, and saying so is
+			// the difference between a typo and an outage.
+			_, err := fmt.Fprintf(out, "no provider route matches %s; this coordinator answers with %d instances and %d routes, which \"t3-steward models\" with no filter lists\n",
+				modelsScopeWords(document), document.TotalInstances, document.TotalRoutes)
+			return err
+		}
 		_, err := fmt.Fprintln(out, "no provider instance is authorized or advertised; "+
 			"the fleet catalog is what authorizes one and a worker inventory is what advertises it")
 		return err
@@ -451,6 +581,11 @@ func renderModels(out io.Writer, document modelsDocument) error {
 	}
 	if err := table.Flush(); err != nil {
 		return err
+	}
+	if document.Instance != "" || document.Available {
+		fmt.Fprintf(out, "\nshowing %d of %d routes on %d of %d provider instances: %s is in force, and dropping it prints the rest.\n",
+			countModelsRoutes(document.Instances), document.TotalRoutes,
+			len(document.Instances), document.TotalInstances, modelsScopeWords(document))
 	}
 	return renderModelsReasons(out, document)
 }
@@ -505,6 +640,11 @@ func modelsReasonText(reason string) string {
 	}
 }
 
+// modelsStatusAvailable is the status of a route that can run now. --available
+// keeps exactly the instances whose status is this one, so the flag and the
+// column can never disagree about what "available" means.
+const modelsStatusAvailable = "available"
+
 // modelsStatus is the one phrase that says whether this route can run, and
 // what is missing when it cannot.
 func modelsStatus(instance modelsInstance) string {
@@ -518,6 +658,6 @@ func modelsStatus(instance modelsInstance) string {
 	case instance.Admission != "" && instance.Admission != string(domain.AdmissionOpen):
 		return "pool " + instance.Admission
 	default:
-		return "available"
+		return modelsStatusAvailable
 	}
 }

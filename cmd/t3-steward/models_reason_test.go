@@ -63,7 +63,7 @@ func modelsReasonDocument(t *testing.T) modelsDocument {
 	t.Helper()
 	var out bytes.Buffer
 	cli := modelsCLI{service: modelsReasonFixture(), principal: backlogadmin.Principal{ID: "test"}, stdout: &out}
-	if err := cli.run(context.Background(), "", true); err != nil {
+	if err := cli.run(context.Background(), modelsScope{}, true); err != nil {
 		t.Fatal(err)
 	}
 	var document modelsDocument
@@ -128,7 +128,7 @@ func TestModelsListsAnInstanceTheCoordinatorDropped(t *testing.T) {
 func TestModelsTextNamesTheReasonPerInstanceAndWorker(t *testing.T) {
 	var out bytes.Buffer
 	cli := modelsCLI{service: modelsReasonFixture(), principal: backlogadmin.Principal{ID: "test"}, stdout: &out}
-	if err := cli.run(context.Background(), "", false); err != nil {
+	if err := cli.run(context.Background(), modelsScope{}, false); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
@@ -165,7 +165,7 @@ func TestModelsWithoutWorkerAuthorizationIsUnchanged(t *testing.T) {
 	fixture.workers[0].Providers = nil
 	var out bytes.Buffer
 	cli := modelsCLI{service: fixture, principal: backlogadmin.Principal{ID: "test"}, stdout: &out}
-	if err := cli.run(context.Background(), "", true); err != nil {
+	if err := cli.run(context.Background(), modelsScope{}, true); err != nil {
 		t.Fatal(err)
 	}
 	var document modelsDocument
@@ -223,7 +223,7 @@ func TestModelsNamesARouteTheWorkerAdvertisesAndCannotRun(t *testing.T) {
 	fixture := modelsAdvertisedDropFixture()
 	var encoded bytes.Buffer
 	cli := modelsCLI{service: fixture, principal: backlogadmin.Principal{ID: "test"}, stdout: &encoded}
-	if err := cli.run(context.Background(), "", true); err != nil {
+	if err := cli.run(context.Background(), modelsScope{}, true); err != nil {
 		t.Fatal(err)
 	}
 	var document modelsDocument
@@ -240,7 +240,7 @@ func TestModelsNamesARouteTheWorkerAdvertisesAndCannotRun(t *testing.T) {
 
 	var rendered bytes.Buffer
 	cli.stdout = &rendered
-	if err := cli.run(context.Background(), "", false); err != nil {
+	if err := cli.run(context.Background(), modelsScope{}, false); err != nil {
 		t.Fatal(err)
 	}
 	text := rendered.String()

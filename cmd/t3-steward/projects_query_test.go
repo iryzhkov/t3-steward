@@ -67,7 +67,7 @@ func TestEveryVerbThatNeedsTheCatalogExplainsACoordinatorWithoutIt(t *testing.T)
 					principal: backlogadmin.Principal{ID: "operator"},
 					stdout:    &out,
 				}
-				return cli.run(context.Background(), "steward", false)
+				return cli.run(context.Background(), modelsScope{Project: "steward"}, false)
 			},
 			instead: `"t3-steward models" without --project`,
 		},
@@ -105,7 +105,7 @@ func TestTheProjectsExplanationIsAttachedToThatOneRefusal(t *testing.T) {
 		service := &coordinatorWithoutTheProjectsQuery{release: "v0.11.0-rc.69"}
 		var out bytes.Buffer
 		cli := modelsCLI{service: service, principal: backlogadmin.Principal{ID: "operator"}, stdout: &out}
-		if err := cli.run(context.Background(), "", false); err != nil {
+		if err := cli.run(context.Background(), modelsScope{}, false); err != nil {
 			t.Fatalf("models without --project failed against a coordinator of the previous release: %v", err)
 		}
 		for _, kind := range service.asked {

@@ -111,7 +111,7 @@ func TestModelsJoinsAuthorisationAdvertisementAndQuota(t *testing.T) {
 	fixture := modelsFixture()
 	var out bytes.Buffer
 	cli := modelsCLI{service: fixture, principal: backlogadmin.Principal{ID: "test"}, stdout: &out}
-	if err := cli.run(context.Background(), "", true); err != nil {
+	if err := cli.run(context.Background(), modelsScope{}, true); err != nil {
 		t.Fatal(err)
 	}
 	var document modelsDocument
@@ -167,7 +167,7 @@ func TestModelsTextIsOneTableOfCopyableRoutes(t *testing.T) {
 	fixture := modelsFixture()
 	var out bytes.Buffer
 	cli := modelsCLI{service: fixture, principal: backlogadmin.Principal{ID: "test"}, stdout: &out}
-	if err := cli.run(context.Background(), "", false); err != nil {
+	if err := cli.run(context.Background(), modelsScope{}, false); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
@@ -193,7 +193,7 @@ func TestModelsProjectFilterUsesTheProjectsEligibleWorkers(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := modelsCLI{service: fixture, principal: backlogadmin.Principal{ID: "test"}, stdout: &out}
-	if err := cli.run(context.Background(), "steward", true); err != nil {
+	if err := cli.run(context.Background(), modelsScope{Project: "steward"}, true); err != nil {
 		t.Fatal(err)
 	}
 	var document modelsDocument
@@ -223,7 +223,7 @@ func TestModelsRefusesAnUnknownProject(t *testing.T) {
 	fixture := modelsFixture()
 	var out bytes.Buffer
 	cli := modelsCLI{service: fixture, principal: backlogadmin.Principal{ID: "test"}, stdout: &out}
-	err := cli.run(context.Background(), "nope", false)
+	err := cli.run(context.Background(), modelsScope{Project: "nope"}, false)
 	if err == nil {
 		t.Fatal("an unknown project was accepted")
 	}
@@ -233,9 +233,9 @@ func TestModelsRefusesAnUnknownProject(t *testing.T) {
 }
 
 func TestParseModelsArguments(t *testing.T) {
-	project, asJSON, err := parseModelsArgs([]string{"--project", "steward", "--json"})
-	if err != nil || project != "steward" || !asJSON {
-		t.Fatalf("project = %q asJSON = %t err = %v", project, asJSON, err)
+	scope, asJSON, err := parseModelsArgs([]string{"--project", "steward", "--json"})
+	if err != nil || scope.Project != "steward" || !asJSON {
+		t.Fatalf("scope = %+v asJSON = %t err = %v", scope, asJSON, err)
 	}
 	if _, _, err := parseModelsArgs([]string{"--project"}); err == nil {
 		t.Fatal("--project without a value was accepted")
