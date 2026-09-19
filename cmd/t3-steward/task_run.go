@@ -53,7 +53,7 @@ Flags:
   --model [INSTANCE/]MODEL                     --worker WORKER
   --name TEXT           --idempotency-key KEY
   --outputs a.md,b.md   --verify "CMD" (repeatable)
-  --class surplus|required                     --max-turns N
+  --class surplus|required (default surplus)   --max-turns N (default 3)
   --prompt-file FILE    --fan-out GLOB         --no-notify   --json
 
 The prompt is exactly one of: an inline argument after --, --prompt-file FILE,

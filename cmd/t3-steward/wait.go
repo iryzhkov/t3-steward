@@ -107,9 +107,6 @@ Commands:
   add --task current [flags] <condition>
                                 Park this task until the condition settles.
   add [flags] <condition>       Interactive wait on this thread.
-  add --task <run>/<task> | --run <run> [--thread ID] [--name TEXT] [--timeout 24h] [--request-id ID]
-                                The older spelling of --node <run>/<task> and
-                                --node <run>: an interactive node wait.
   list [--thread ID] [--all] [--json]
                                 Local checks of this thread, or of every
                                 thread, with their kind and outcome. A check

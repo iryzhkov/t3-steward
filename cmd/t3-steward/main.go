@@ -65,10 +65,14 @@ Commands:
   thread             Operate on a local T3 thread (stop <thread-id> [--session]).
   bucket             Inspect and rearm this host's quota buckets (list, rearm <key> --reason TEXT).
   archive            Cold storage for finished threads (candidates, run, list, restore).
+  ui-archive         Read-only: the T3 UI's archive candidates and their classification, as JSON.
   export             Print this host's readings and token samples as JSON for another host's report.
   install-service    Install a per-user background service (Linux systemd);
                      --credential-file REF=PATH reads a credential from a file.
   uninstall-service  Remove the background service.
+  worker             Run and inspect a worker: serve, bridge, enroll, list, inspect-bootstrap,
+                     inspect-journal. "worker enroll" runs on the coordinator host and is what
+                     unblocks a worker whose enrolment is stale.
   worker-exchange    Restricted SSH worker endpoint (control/artifact-receive/artifact-send).
   coordinator-exchange  Restricted SSH coordinator-admin endpoint (one operation word).
   version            Print the version.
