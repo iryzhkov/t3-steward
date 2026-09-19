@@ -87,6 +87,25 @@ func mutationPage(path, purpose, usage string) helpPage {
 	}
 }
 
+// projectsReadPage is the read page of "backlog projects", which is the one
+// backlog read whose document has two shapes: the summary both forms print by
+// default, and the whole catalog that --verbose and a one-project answer print
+// instead. Both key sets are stated, because a page that named one of them
+// would be false half the time it is read.
+func projectsReadPage() helpPage {
+	page := backlogReadPage("backlog projects", "the configured projects and, per project, the eligible workers and the routes they advertise.",
+		"t3-steward backlog projects [--project NAME] [--verbose] [--json]",
+		[]helpFlag{
+			{Name: "--project", Value: "NAME", Default: "every project", Text: "Report one project only. It narrows what the coordinator reads, so the answer is one project in full rather than a slice of the catalog."},
+			{Name: "--verbose", Default: "off", Text: "Spell out every project's eligible workers and the routes each advertises. Without it, and without --project, both forms are one row per project with the worker and route counts, because the catalog spelled out is tens of kilobytes on a real fleet. --json honours it the same way: the summarised document carries the counts and the totals, and --verbose --json is the whole catalog."},
+		},
+		[]string{"summarised", "totalProjects", "totalWorkerRows", "totalRoutes", "projects", "detail"},
+		append(backlogReadSites("projects"), parserSite{Func: "takeVerboseFlag"}),
+		"Read-only. Both forms summarise the whole catalog and say so, with the counts and the two ways to get the detail; one project, named or the only one, is always printed in full. \"t3-steward task run\" derives its project and route from this answer, and \"t3-steward models\" reports the same routes joined with their quota state.")
+	page.JSONNote = "Those keys are the summarised document's. --verbose --json, and an answer that holds one project, print version, kind, generatedAt and projects, where every project carries its eligible workers and their routes. " + jsonErrorNote
+	return page
+}
+
 // backlogReadPage is a coordinator read: one query, no change, one document.
 func backlogReadPage(path, purpose, usage string, extra []helpFlag, keys []string, sites []parserSite, notes string) helpPage {
 	return helpPage{
@@ -278,14 +297,7 @@ func backlogHelpPages() []helpPage {
 			"t3-steward backlog status [--include-sink] [--json]",
 			[]helpFlag{includeSinkFlag}, []string{"status"}, backlogSinkSites("status"),
 			"Read-only. It takes no positional argument. For this host's quota buckets instead, the verb is \"t3-steward status\"."),
-		backlogReadPage("backlog projects", "the configured projects and, per project, the eligible workers and the routes they advertise.",
-			"t3-steward backlog projects [--project NAME] [--verbose] [--json]",
-			[]helpFlag{
-				{Name: "--project", Value: "NAME", Default: "every project", Text: "Report one project only. It narrows what the coordinator reads, so the answer is one project in full rather than a slice of the catalog."},
-				{Name: "--verbose", Default: "off", Text: "Spell out every project's eligible workers and the routes each advertises. Without it, and without --project, the text form is one row per project with the worker and route counts, because the catalog spelled out is tens of kilobytes on a real fleet. --json is always the whole document."},
-			},
-			[]string{"projects"}, append(backlogReadSites("projects"), parserSite{Func: "takeVerboseFlag"}),
-			"Read-only. The text form summarises the whole catalog and says so, with the counts and the two ways to get the detail; one project, named or the only one, is always printed in full. \"t3-steward task run\" derives its project and route from this answer, and \"t3-steward models\" reports the same routes joined with their quota state."),
+		projectsReadPage(),
 		backlogReadPage("backlog workers", "every worker the coordinator knows, with its enrolment, catalog and readiness.",
 			"t3-steward backlog workers [--json]",
 			nil, []string{"workers"}, backlogReadSites("workers"),

@@ -904,6 +904,14 @@ t3-steward uninstall-service
 t3-steward version
 ```
 
+`backlog projects` summarises: one row per project with the count of its
+eligible workers and of the routes they advertise, followed by the totals
+and the two ways to the detail. `--project NAME` is answered with that one
+project in full, as is a catalog that holds one project, and `--verbose`
+spells the whole catalog out. `--json` follows the same rule, so the
+document is a summary unless `--verbose` or a one-project answer makes it
+the whole catalog.
+
 `replay` feeds a copied provider log (or a JSONL of canonical events)
 through the policy engine against a fake T3 with one running thread per
 provider, printing every message and action. It needs no server:

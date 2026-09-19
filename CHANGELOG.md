@@ -161,16 +161,22 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - `t3-steward backlog projects` answers the question it was asked. Unfiltered,
-  its text form is now one row per project with the eligible worker count and
-  the advertised route count, followed by a line that says it summarised, gives
-  the totals and names the two ways to get the detail. It was 28 KB of text and
-  90 KB of JSON on a thirteen-project fleet, because every eligible worker of
-  every project was printed with all thirty-six routes spelled out. `--project
-  NAME` is unchanged and still prints one project in full, as does a catalog
-  that holds one project; the new `--verbose` prints the whole catalog in the
-  old detailed form, and `--json` is unchanged and always the whole document.
-  The scope is applied before the summary, by the coordinator: a scoped answer
-  is the whole of a smaller question rather than a window onto a larger one.
+  it is now one row per project with the eligible worker count and the
+  advertised route count, followed by the totals and the two ways to get the
+  detail. It was 28 KB of text and 90 KB of JSON on a thirteen-project fleet,
+  because every eligible worker of every project was printed with all
+  thirty-six routes spelled out. `--project NAME` is unchanged and still
+  answers with one project in full, as does a catalog that holds one project;
+  the new `--verbose` prints the whole catalog in the old detailed form.
+  `--json` follows the same rule rather than an exception to it: its default
+  document carries one entry per project with `workerCount` and `routeCount`,
+  the document-level `totalProjects`, `totalWorkerRows` and `totalRoutes`, a
+  `summarised` flag and the same pointer to the detail, and `--verbose --json`
+  is the old document byte for byte. Nothing machine-parses that document --
+  `task run` issues the projects query in process and never reads this
+  command's output -- so no schema version changes. The scope is applied
+  before the summary, by the coordinator: a scoped answer is the whole of a
+  smaller question rather than a window onto a larger one.
 - `t3-steward models` gains `--instance ID` and `--available`, which narrow
   what is read, and both are applied to the document before it is rendered or
   encoded. A narrowed table says how many routes and instances the unnarrowed

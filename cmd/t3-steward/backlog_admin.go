@@ -263,6 +263,9 @@ func (c backlogAdminCLI) queryAndRender(ctx context.Context, query backlogadmin.
 	if display.JSON {
 		encoder := json.NewEncoder(c.stdout)
 		encoder.SetIndent("", "  ")
+		if document, summarised := summariseProjects(response, display.Verbose); summarised {
+			return encoder.Encode(document)
+		}
 		return encoder.Encode(response)
 	}
 	return renderAdminResponse(c.stdout, response, selector, display)
@@ -714,7 +717,7 @@ func renderProjects(out io.Writer, projects []backlogadmin.Project, verbose bool
 	if !detailed {
 		fmt.Fprintf(out, "\nsummarised: %d projects, %d eligible worker rows and %d advertised routes are counted above and not spelled out.\n",
 			len(projects), projectWorkerRows(projects), routes)
-		_, err := fmt.Fprintln(out, "For one project's workers and routes: t3-steward backlog projects --project NAME. For every project's: --verbose, or --json.")
+		_, err := fmt.Fprintln(out, projectsDetailAdvice)
 		return err
 	}
 	for _, project := range projects {
@@ -768,6 +771,13 @@ func projectRouteLabels(project backlogadmin.Project) []string {
 	return labels
 }
 
+// projectsDetailAdvice is the one sentence both summaries end with: the two
+// commands that answer with the workers and the routes themselves. --json
+// carries it in the document so that a reader of either form is told the same
+// thing, and --verbose is named in it because --json alone no longer spells
+// the catalog out.
+const projectsDetailAdvice = "For one project's workers and routes: t3-steward backlog projects --project NAME. For every project's: --verbose, which --json honours too."
+
 // projectWorkerRows is how many project-and-worker rows the detailed form
 // would print, which is what the summary says it is not printing.
 func projectWorkerRows(projects []backlogadmin.Project) int {
@@ -776,6 +786,81 @@ func projectWorkerRows(projects []backlogadmin.Project) int {
 		rows += len(project.Workers)
 	}
 	return rows
+}
+
+// projectsSummaryDocument is what "backlog projects --json" answers with when
+// it was not asked for the detail: the envelope of the whole document, one
+// entry per project carrying its counts in place of its workers, and the
+// totals those counts add up to.
+//
+// The whole document is 90 KB on a thirteen-project fleet for the reason the
+// text form was 28 KB -- every eligible worker of every project with all of
+// its advertised routes spelled out -- and an agent asking "which projects are
+// there" reads all of it. So --json honours --verbose the way the text form
+// does, and the two forms of the verb summarise under one rule: --verbose
+// prints the whole document, and an answer that holds one project, named with
+// --project or held alone by this coordinator, is printed in full.
+//
+// Nothing machine-parses this document. "task run" issues the projects query
+// in process and consumes the []backlogadmin.Project it answers with, never
+// this command's output, so the summary needs no schema version and no
+// migration; version is on the document for a reader that wants one.
+type projectsSummaryDocument struct {
+	Version     string                 `json:"version"`
+	Kind        backlogadmin.QueryKind `json:"kind"`
+	GeneratedAt time.Time              `json:"generatedAt"`
+	// Summarised says what this document is, so that a reader never has to know
+	// which flags were in force to tell a project with no eligible workers from
+	// a project whose workers this answer did not spell out.
+	Summarised bool `json:"summarised"`
+	// The totals are of the answer this document summarises, which is already
+	// the scoped answer: the coordinator applied the filter before anything
+	// here was counted.
+	TotalProjects   int              `json:"totalProjects"`
+	TotalWorkerRows int              `json:"totalWorkerRows"`
+	TotalRoutes     int              `json:"totalRoutes"`
+	Projects        []projectSummary `json:"projects"`
+	// Detail names the two ways to the workers and the routes, in the same
+	// words the text summary ends with.
+	Detail string `json:"detail"`
+}
+
+// projectSummary is one project with the count of its eligible workers and of
+// the distinct routes they advertise, in place of the workers and routes.
+type projectSummary struct {
+	Name         string `json:"name"`
+	Repository   string `json:"repository,omitempty"`
+	DefaultRef   string `json:"defaultRef,omitempty"`
+	Type         string `json:"type,omitempty"`
+	SetupProfile string `json:"setupProfile,omitempty"`
+	WorkerCount  int    `json:"workerCount"`
+	RouteCount   int    `json:"routeCount"`
+}
+
+// summariseProjects is the document --json prints in place of the catalog, and
+// whether it applies at all. The rule is renderProjects' rule, expressed once
+// here for the encoder, so that the text form and the JSON form of one command
+// can never disagree about what counts as a summary.
+func summariseProjects(response backlogadmin.Response, verbose bool) (projectsSummaryDocument, bool) {
+	if response.Kind != backlogadmin.QueryProjects || verbose || len(response.Projects) <= 1 {
+		return projectsSummaryDocument{}, false
+	}
+	document := projectsSummaryDocument{
+		Version: response.Version, Kind: response.Kind, GeneratedAt: response.GeneratedAt,
+		Summarised: true, TotalProjects: len(response.Projects),
+		TotalWorkerRows: projectWorkerRows(response.Projects),
+		Detail:          projectsDetailAdvice,
+	}
+	for _, project := range response.Projects {
+		routes := len(projectRouteLabels(project))
+		document.TotalRoutes += routes
+		document.Projects = append(document.Projects, projectSummary{
+			Name: project.Name, Repository: project.Repository, DefaultRef: project.DefaultRef,
+			Type: firstNonEmptyText(project.Type, "git"), SetupProfile: project.SetupProfile,
+			WorkerCount: len(project.Workers), RouteCount: routes,
+		})
+	}
+	return document, true
 }
 
 // firstNonEmptyText returns value, or fallback when value is empty.

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -16,8 +17,9 @@ import (
 // thirty-six advertised routes spelled out per worker: 28,088 bytes of text
 // and 90,449 of JSON on the live fleet, in answer to "which projects are
 // there". The fixture below is that catalog's shape -- thirteen projects,
-// three eligible workers each, thirty-six routes each -- so the measurement
-// here is comparable with the one the audit took against the coordinator.
+// thirty-six routes each, two eligible workers on most of them and a third on
+// every fourth -- so the measurement here is comparable with the one the audit
+// took against the coordinator.
 
 // catalogRoutes is the thirty-six routes the fleet authorises, as one worker
 // advertises them.
@@ -173,12 +175,84 @@ func TestVerboseIsRefusedByTheVerbsThatDoNotSummarise(t *testing.T) {
 	}
 }
 
+// --json is the other half of the same finding, and it honours --verbose the
+// way the text form does: without it the document carries the counts, with it
+// the whole catalog. Leaving the document whole would have left the headline
+// number -- 90 KB in answer to "which projects are there" -- where it was, for
+// a reader that is an agent or an operator and not a parser.
+func TestBacklogProjectsJSONHonoursVerboseTheWayTheTextFormDoes(t *testing.T) {
+	summarised := runProjectsCommand(t, "--json")
+	whole := runProjectsCommand(t, "--verbose", "--json")
+
+	// --verbose --json is the document --json printed before this change,
+	// which is the response encoded exactly as it arrived.
+	response, err := projectsCatalogService{projects: projectsCatalogFixture()}.Query(context.Background(), backlogadmin.Query{Kind: backlogadmin.QueryProjects})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want bytes.Buffer
+	encoder := json.NewEncoder(&want)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(response); err != nil {
+		t.Fatal(err)
+	}
+	if whole != want.String() {
+		t.Errorf("--verbose --json is %d bytes and the whole document is %d; it is meant to be that document byte for byte", len(whole), want.Len())
+	}
+	if len(summarised)*10 >= len(whole) {
+		t.Errorf("the summarised document is %d bytes against the whole document's %d", len(summarised), len(whole))
+	}
+
+	document := map[string]any{}
+	if err := json.Unmarshal([]byte(summarised), &document); err != nil {
+		t.Fatalf("the summarised document is not JSON: %v\n%s", err, summarised)
+	}
+	if document["summarised"] != true {
+		t.Errorf("the document does not say it summarised, so a reader cannot tell a project with no workers from one whose workers it did not spell out: %+v", document)
+	}
+	for key, count := range map[string]float64{"totalProjects": 13, "totalWorkerRows": 30, "totalRoutes": 468} {
+		if document[key] != count {
+			t.Errorf("the document reports %s = %v, want %v", key, document[key], count)
+		}
+	}
+	if detail, _ := document["detail"].(string); !strings.Contains(detail, "--project NAME") || !strings.Contains(detail, "--verbose") {
+		t.Errorf("the document does not name the two ways to the detail: %q", detail)
+	}
+	entries, listed := document["projects"].([]any)
+	if !listed || len(entries) != 13 {
+		t.Fatalf("the document does not hold one entry per project: %+v", document["projects"])
+	}
+	first, _ := entries[0].(map[string]any)
+	for _, key := range []string{"name", "repository", "defaultRef", "type", "setupProfile", "workerCount", "routeCount"} {
+		if _, present := first[key]; !present {
+			t.Errorf("a summarised entry has no %q: %+v", key, first)
+		}
+	}
+	if _, present := first["workers"]; present {
+		t.Errorf("a summarised entry still carries its workers: %+v", first)
+	}
+	if strings.Contains(summarised, "pool-claude") {
+		t.Errorf("the summarised document still spells the routes out:\n%s", summarised)
+	}
+
+	// The scope is still applied before anything summarises: one project,
+	// named, is answered in full with its workers and their routes.
+	scoped := runProjectsCommand(t, "--project", "dogfood-sum", "--json")
+	if strings.Contains(scoped, "\"summarised\"") {
+		t.Errorf("the scoped document summarises an answer that is already one project:\n%s", scoped)
+	}
+	if !strings.Contains(scoped, "pool-claude") {
+		t.Errorf("the scoped document dropped the routes it is asked for:\n%s", scoped)
+	}
+}
+
 // TestBacklogProjectsMeasured records the sizes this finding is closed with.
-// It asserts nothing the test above does not: it exists so that "go test -run
+// It asserts nothing the tests above do not: it exists so that "go test -run
 // Measured -v" prints the same numbers on any commit, including the base.
 func TestBacklogProjectsMeasured(t *testing.T) {
 	t.Logf("backlog projects              text %d bytes", len(runProjectsCommand(t)))
 	t.Logf("backlog projects --json       %d bytes", len(runProjectsCommand(t, "--json")))
+	t.Logf("backlog projects --verbose    json %d bytes", len(runProjectsCommand(t, "--verbose", "--json")))
 	t.Logf("backlog projects --project X  text %d bytes", len(runProjectsCommand(t, "--project", "dogfood-sum")))
 	t.Logf("backlog projects --project X  json %d bytes", len(runProjectsCommand(t, "--project", "dogfood-sum", "--json")))
 }
