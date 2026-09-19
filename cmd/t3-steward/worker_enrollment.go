@@ -56,11 +56,11 @@ func coordinatorEnrollmentHandler(settings config.BacklogV2, store *sqlite.Store
 			return domain.WorkerEnrollment{}, err
 		}
 		if snapshot.Inventory.CatalogRevision != r.CatalogRevision || !snapshot.Inventory.AcceptBacklog || snapshot.Inventory.Health != domain.WorkerHealthReady {
-			return domain.WorkerEnrollment{}, errors.New("worker is not ready for effective catalog")
+			return domain.WorkerEnrollment{}, enrollmentReadinessRefusal(r.WorkerID, r.CatalogRevision, snapshot.Inventory)
 		}
-		for _, capability := range []string{"git", "huyang"} {
+		for _, capability := range enrollmentCapabilities {
 			if !slices.Contains(snapshot.Inventory.Capabilities, capability) {
-				return domain.WorkerEnrollment{}, errors.New("worker lacks required observed capabilities")
+				return domain.WorkerEnrollment{}, enrollmentCapabilityRefusal(r.WorkerID, capability, snapshot.Inventory.Capabilities)
 			}
 		}
 		for instance, route := range worker.Providers {
@@ -74,7 +74,7 @@ func coordinatorEnrollmentHandler(settings config.BacklogV2, store *sqlite.Store
 				found = domain.ModelsObserved(route.Models, available.Models)
 			}
 			if !found {
-				return domain.WorkerEnrollment{}, errors.New("configured provider route is unavailable on worker")
+				return domain.WorkerEnrollment{}, enrollmentRouteRefusal(r.WorkerID, instance, route.Models, snapshot.Inventory.Providers)
 			}
 		}
 		if err = store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
@@ -82,6 +82,86 @@ func coordinatorEnrollmentHandler(settings config.BacklogV2, store *sqlite.Store
 		}
 		return store.CommitWorkerEnrollment(ctx, domain.WorkerEnrollment{Request: r, WorkerEpoch: worker.Epoch, CoordinatorID: settings.Coordinator.ID, CredentialRef: worker.Credential, Principal: "ssh:" + r.WorkerID, Connection: worker.Connection, Actor: p.ID, EnrolledAt: time.Now().UTC()}, snapshot)
 	}
+}
+
+// enrollmentCapabilities are the capabilities a worker must report before this
+// coordinator will admit it. They are named once, here, so that the refusal
+// can list the whole required set rather than the one it stopped at.
+var enrollmentCapabilities = []string{"git", "huyang"}
+
+// The three refusals enrollment makes about what a worker reported. Each names
+// the worker, the fact that failed with what was observed against what is
+// required, and the command to run next. The standard is the one "task run"
+// already meets in this binary: a refusal lists the acceptable values instead
+// of stating that the value given was not one of them. Before this they were
+// three bare sentences -- "configured provider route is unavailable on worker"
+// -- which named neither the route nor the remedy, and which "worker enroll
+// --all" prints once per worker with nothing to tell the workers apart.
+
+// enrollmentRetryHint is the read and the retry every enrollment refusal ends
+// with, in one wording.
+func enrollmentRetryHint(workerID string) string {
+	return fmt.Sprintf("read the current state with \"t3-steward backlog workers --json\", and once it is fixed re-run \"t3-steward worker enroll %s --current-catalog --reason TEXT\"", workerID)
+}
+
+// enrollmentReadinessRefusal names every readiness fact that failed, not the
+// first: a worker with a stale catalog and a degraded health is two fixes, and
+// reporting one of them sends the operator back for the other.
+func enrollmentReadinessRefusal(workerID, required string, inventory domain.WorkerInventory) error {
+	var observed []string
+	if inventory.CatalogRevision != required {
+		observed = append(observed, fmt.Sprintf("it accepted catalog %s and this coordinator requires %s",
+			firstNonEmptyText(shortCatalogDigest(inventory.CatalogRevision), "none"), shortCatalogDigest(required)))
+	}
+	if !inventory.AcceptBacklog {
+		observed = append(observed, "it reports accept_backlog off, and enrollment admits a worker that takes backlog work")
+	}
+	if inventory.Health != domain.WorkerHealthReady {
+		observed = append(observed, fmt.Sprintf("it reports health %q and %q is required",
+			firstNonEmptyText(string(inventory.Health), "none"), domain.WorkerHealthReady))
+	}
+	return fmt.Errorf("worker %q is not ready for this coordinator's effective catalog: %s. The worker's own snapshot is what reports this, so restart or reload the worker so that it picks up the catalog and reports a new one; %s",
+		workerID, strings.Join(observed, "; "), enrollmentRetryHint(workerID))
+}
+
+// enrollmentCapabilityRefusal names the capability that is missing, the whole
+// required set and what the worker does advertise, because "lacks required
+// observed capabilities" does not say which one or where the list lives.
+func enrollmentCapabilityRefusal(workerID, missing string, observed []string) error {
+	advertised := "it advertises none"
+	if len(observed) != 0 {
+		advertised = "it advertises " + strings.Join(observed, ", ")
+	}
+	return fmt.Errorf("worker %q does not advertise the capability %q that enrollment requires: the required set is %s, and %s. Capabilities come from the worker's own inventory, so install or enable %s on the worker host and let it report a new snapshot; %s",
+		workerID, missing, strings.Join(enrollmentCapabilities, ", "), advertised, missing, enrollmentRetryHint(workerID))
+}
+
+// enrollmentRouteRefusal explains a provider route this coordinator configures
+// for the worker and the worker cannot serve. It names the configured models
+// against what the worker advertises for that instance, and it distinguishes
+// the three ways the instance can fail -- absent, present and unavailable,
+// present with other models -- because each one is fixed somewhere else.
+func enrollmentRouteRefusal(workerID, instance string, configured []string, providers []domain.WorkerProviderInventory) error {
+	advertised := fmt.Sprintf("the worker advertises no provider instance %q at all", instance)
+	for _, available := range providers {
+		if available.InstanceID != instance {
+			continue
+		}
+		switch {
+		case !available.Available:
+			advertised = fmt.Sprintf("the worker has %s installed and reports it unavailable, which is not signed in or not enabled", instance)
+		case len(available.Models) == 0:
+			advertised = fmt.Sprintf("the worker offers %s with no model", instance)
+		default:
+			advertised = fmt.Sprintf("the worker offers %s with %s", instance, strings.Join(available.Models, ", "))
+		}
+	}
+	models := "no model"
+	if len(configured) != 0 {
+		models = strings.Join(configured, ", ")
+	}
+	return fmt.Errorf("worker %q cannot serve a provider route this coordinator configures for it: backlog_v2.workers.%s.providers.%s authorizes %s, and %s. See what it offers with \"t3-steward models --instance %s\", then either fix that instance on the worker host or bring the configured models into line with it; %s",
+		workerID, workerID, instance, models, advertised, instance, enrollmentRetryHint(workerID))
 }
 
 const workerEnrollUsage = `Usage: t3-steward worker enroll <worker> --current-catalog --reason TEXT [--request-id ID]
