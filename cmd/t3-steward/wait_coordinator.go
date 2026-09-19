@@ -167,7 +167,7 @@ func cmdCoordinatorWaitAdd(ctx context.Context, cfg config.Config, client coordi
 	}
 	threadID, err := resolveThread(cfg, spec.Thread)
 	if err != nil {
-		return err
+		return refuseWaitThread("wait add", "<the rest of this call>", err)
 	}
 	logger := newLogger("error")
 	t3, _, err := connectForCallerThread(cfg, logger)

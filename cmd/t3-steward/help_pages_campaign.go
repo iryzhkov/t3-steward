@@ -10,7 +10,7 @@ package main
 // that belong to a sibling verb. Naming them here is what makes this page a
 // complete account of what that parser will do with this command line.
 const campaignAuthoringNote = "validate, plan, check and submit share one option parser. It also recognises " +
-	"--dot, --idempotency-key, --task, --allow-unverified, --reason and --notify-thread, and refuses the ones " +
+	"--dot, --idempotency-key, --task, --allow-unverified, --reason, --notify-thread and --no-notify, and refuses the ones " +
 	"that belong to a sibling verb with \"campaign <verb> does not accept <option>\". Any other option is refused " +
 	"as unknown."
 
@@ -58,18 +58,19 @@ func campaignHelpPages() []helpPage {
 		{
 			Path:    "campaign submit",
 			Purpose: "create exactly one workflow and one run from a campaign directory.",
-			Usage:   []string{"t3-steward campaign submit <directory|workflow.yaml> --idempotency-key KEY [--allow-unverified --reason TEXT] [--notify-thread current|<id>] [--json]"},
+			Usage:   []string{"t3-steward campaign submit <directory|workflow.yaml> --idempotency-key KEY [--allow-unverified --reason TEXT] [--notify-thread current|<id>|--no-notify] [--json]"},
 			Flags: []helpFlag{
 				{Name: "--idempotency-key", Value: "KEY", Required: true, Text: "The key this submission is recorded under. The same key with the same directory returns the same run, the archive being packed deterministically; the same key with different content is refused. It is required rather than generated, because a generated key turns a retry into a second run."},
 				{Name: "--allow-unverified", Default: "off", Text: "Skip the client-side readiness check. The coordinator still refuses an impossible campaign. Requires --reason. Agents should not use it."},
 				{Name: "--reason", Value: "TEXT", Default: "none", Text: "Why the check was skipped; recorded with the principal in the submission audit record. Only meaningful with --allow-unverified, and required by it."},
-				{Name: "--notify-thread", Value: "current|<id>", Default: "no notification", Text: "Register a node wait so that this thread, or the named T3 thread, is woken when the run ends."},
+				{Name: "--notify-thread", Value: "current|<id>", Default: "current", Text: "Register a node wait so that this thread, or the named T3 thread, is woken when the run ends. It is the same spelling \"task run\" takes, and it defaults the same way."},
+				{Name: "--no-notify", Default: "off", Text: "Submit a campaign nobody is woken for. It is the only way to opt out, because the calling thread is notified by default and a submission no thread resolves for is refused."},
 				jsonFlag("the submission receipt"),
 			},
 			Exits:    coordinatorExits(),
 			JSONKeys: []string{"schemaVersion", "key", "digest", "workflowId", "runId", "state", "acceptedAt", "replay"},
 			JSONNote: "Read schemaVersion first. An impossible campaign is refused with class rejected, exit 8. " + jsonErrorNote,
-			Notes:    "Mutating. It runs check first unless --allow-unverified. accepted_waiting is a success: the run exists and stays queued, so end the turn or pass --notify-thread.\n\n" + campaignAuthoringNote,
+			Notes:    "Mutating. It runs check first unless --allow-unverified. accepted_waiting is a success: the run exists and stays queued, so end the turn. The calling thread is notified by default; --no-notify submits a campaign nobody is woken for.\n\n" + campaignAuthoringNote,
 			Parsers:  []parserSite{{Func: "parseCampaignArgs"}},
 		},
 		{

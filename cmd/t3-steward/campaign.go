@@ -510,7 +510,7 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 	}
 	// The thread to notify is resolved before submission. An unresolvable
 	// --notify-thread must not leave a run behind that nobody is listening for.
-	notifyThread, err := c.campaignNotifyThread(parsed.notify)
+	notifyThread, err := c.campaignNotifyThread("campaign submit", parsed.notify)
 	if err != nil {
 		return err
 	}
@@ -641,8 +641,13 @@ type campaignArgs struct {
 	// coordinator's own permanent validation at acceptance.
 	unverified bool
 	// notify names the T3 thread a terminal outcome is delivered to, or
-	// "current" for the calling agent's own canonical thread.
+	// "current" for the calling agent's own canonical thread. It defaults to
+	// "current" on submit, the same default "task run" has, so that one spelling
+	// means one thing on both verbs.
 	notify string
+	// noNotify is the explicit opt-out, the only way to submit a campaign
+	// nobody will be woken for.
+	noNotify bool
 }
 
 func parseCampaignArgs(command string, args []string, allowDOT, requireKey bool) (campaignArgs, error) {
@@ -706,6 +711,11 @@ func parseCampaignArgs(command string, args []string, allowDOT, requireKey bool)
 			}
 			index++
 			parsed.notify = args[index]
+		case "--no-notify":
+			if command != "submit" {
+				return campaignArgs{}, fmt.Errorf("campaign %s does not accept --no-notify", command)
+			}
+			parsed.noNotify = true
 		default:
 			if strings.HasPrefix(argument, "-") {
 				return campaignArgs{}, fmt.Errorf("unknown campaign %s option %q", command, argument)
@@ -735,6 +745,15 @@ func parseCampaignArgs(command string, args []string, allowDOT, requireKey bool)
 	}
 	if parsed.reason != "" && !parsed.unverified {
 		return campaignArgs{}, errors.New("--reason is only meaningful with --allow-unverified")
+	}
+	if parsed.noNotify && parsed.notify != "" {
+		return campaignArgs{}, errors.New("--no-notify and --notify-thread contradict each other: one says nobody is woken, the other names who is")
+	}
+	if command == "submit" && !parsed.noNotify && parsed.notify == "" {
+		// The calling thread is notified by default, as it is on "task run". A
+		// campaign nobody will hear about is started only when the caller says
+		// so with --no-notify.
+		parsed.notify = "current"
 	}
 	return parsed, nil
 }

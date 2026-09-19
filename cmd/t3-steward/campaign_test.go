@@ -158,7 +158,9 @@ func TestCampaignArgumentParsing(t *testing.T) {
 		},
 		{
 			name: "submit takes a key", command: "submit", args: []string{"./demo", "--idempotency-key", "key-1"}, requireKey: true,
-			want: campaignArgs{source: "./demo", key: "key-1"},
+			// notify defaults to current on submit: the calling thread is woken
+			// unless --no-notify says otherwise, the same as on "task run".
+			want: campaignArgs{source: "./demo", key: "key-1", notify: "current"},
 		},
 		{
 			name: "submit requires a key", command: "submit", args: []string{"./demo"}, requireKey: true,
@@ -346,7 +348,7 @@ func TestCampaignSubmitSendsThePackedArchive(t *testing.T) {
 			return campaignReadyMatrix(request), nil
 		},
 	}
-	if err := cli.run(context.Background(), []string{"submit", root, "--idempotency-key", "campaign-1"}); err != nil {
+	if err := cli.run(context.Background(), []string{"submit", root, "--idempotency-key", "campaign-1", "--no-notify"}); err != nil {
 		t.Fatal(err)
 	}
 	if checked != 1 {
@@ -369,7 +371,7 @@ func TestCampaignSubmitSendsThePackedArchive(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := cli.run(context.Background(), []string{"submit", root, "--idempotency-key", "campaign-1", "--json"}); err != nil {
+	if err := cli.run(context.Background(), []string{"submit", root, "--idempotency-key", "campaign-1", "--json", "--no-notify"}); err != nil {
 		t.Fatal(err)
 	}
 	var response backlogadmin.LocalSubmissionResponse

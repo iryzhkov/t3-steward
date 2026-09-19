@@ -51,6 +51,16 @@ type taskRunHarness struct {
 	// submitErr is what the coordinator refuses the submission with, for the
 	// refusals this CLI has to explain rather than pass through.
 	submitErr error
+	// workflow is what the coordinator answers when asked about the run an
+	// idempotency key replayed to, and workflowErr is the failure to answer.
+	// A replay states that run's progress, so the answer is a fact this start
+	// depends on and a test has to be able to state it.
+	workflow    *backlogadmin.WorkflowDetail
+	workflowErr error
+	// deliveredWaitIDs are registration IDs the coordinator already holds with
+	// their wake spent. A registration whose ID has one of these as a prefix
+	// comes back delivered, which is the state A-1's replay was in.
+	deliveredWaitIDs map[string]bool
 
 	stdin  *strings.Reader
 	stdout bytes.Buffer
@@ -154,8 +164,14 @@ func (h *taskRunHarness) cli() taskRunCLI {
 				if host == "" {
 					host = h.coordinatorHost
 				}
+				delivery := "pending"
+				for prefix := range h.deliveredWaitIDs {
+					if strings.HasPrefix(operation.Request.ID, prefix) && !strings.Contains(strings.TrimPrefix(operation.Request.ID, prefix), "-w-") {
+						delivery = "delivered"
+					}
+				}
 				return backlogadmin.NodeWaitResponse{Waits: []domain.NodeWait{{
-					Request: operation.Request, Delivery: "pending", Host: host,
+					Request: operation.Request, Delivery: delivery, Host: host,
 				}}}, nil
 			},
 			resolveThread: func(string) (string, error) { return h.thread, h.threadErr },
@@ -182,6 +198,14 @@ func (h *taskRunHarness) cli() taskRunCLI {
 				return backlogadmin.Response{
 					Version: backlogadmin.Version, Kind: query.Kind,
 					Status: &backlogadmin.Status{Runtime: backlogadmin.RuntimeStatus{Release: h.release}},
+				}, nil
+			}
+			if query.Kind == backlogadmin.QueryWorkflow {
+				if h.workflowErr != nil {
+					return backlogadmin.Response{}, h.workflowErr
+				}
+				return backlogadmin.Response{
+					Version: backlogadmin.Version, Kind: query.Kind, Workflow: h.workflow,
 				}, nil
 			}
 			if query.Kind != backlogadmin.QueryProjects {

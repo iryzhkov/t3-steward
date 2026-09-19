@@ -101,7 +101,7 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 		}
 		threadID, err := resolveThread(cfg, *thread)
 		if err != nil {
-			return err
+			return refuseWaitThread("wait add", "<the rest of this call>", err)
 		}
 		logger := newLogger("error")
 		t3, _, err := connectForCallerThread(cfg, logger)

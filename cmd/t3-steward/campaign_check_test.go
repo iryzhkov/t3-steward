@@ -333,7 +333,9 @@ func TestCampaignSubmitProceedsWhileWaiting(t *testing.T) {
 	var out bytes.Buffer
 	cli, _ := campaignCheckCLI(t, &out, campaignWaitingOnQuota)
 	cli.submissions = func() (adminSubmissionService, error) { return fake, nil }
-	if err := cli.run(context.Background(), []string{"submit", root, "--idempotency-key", "campaign-1"}); err != nil {
+	// --no-notify because this test is about readiness, not about waking: the
+	// calling thread is notified by default and there is no T3 session here.
+	if err := cli.run(context.Background(), []string{"submit", root, "--idempotency-key", "campaign-1", "--no-notify"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.raw) == 0 {
@@ -356,7 +358,7 @@ func TestCampaignSubmitAllowUnverifiedIsAuditedAndLoud(t *testing.T) {
 	// The readiness seam stays disarmed: reaching it would fail the test, which
 	// is what "skips the client-side check" has to mean.
 	if err := cli.run(context.Background(), []string{
-		"submit", root, "--idempotency-key", "campaign-1",
+		"submit", root, "--idempotency-key", "campaign-1", "--no-notify",
 		"--allow-unverified", "--reason", "coordinator is being rebuilt",
 	}); err != nil {
 		t.Fatal(err)
@@ -385,7 +387,7 @@ func TestCampaignSubmitJSONStaysParseableWithAllowUnverified(t *testing.T) {
 	cli.submissions = func() (adminSubmissionService, error) { return fake, nil }
 	cli.principal = "local:1000"
 	if err := cli.run(context.Background(), []string{
-		"submit", root, "--idempotency-key", "campaign-1", "--json",
+		"submit", root, "--idempotency-key", "campaign-1", "--json", "--no-notify",
 		"--allow-unverified", "--reason", "coordinator is being rebuilt",
 	}); err != nil {
 		t.Fatal(err)

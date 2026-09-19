@@ -442,7 +442,7 @@ func cmdWaitAdd(ctx context.Context, cfg config.Config, store *sqlite.Store, arg
 	}
 	threadID, err := resolveThread(cfg, spec.Thread)
 	if err != nil {
-		return err
+		return refuseWaitThread("wait add", "<the rest of this call>", err)
 	}
 	// The thread must exist on this host's T3.
 	logger := newLogger("error")
@@ -558,7 +558,7 @@ func resolveThread(cfg config.Config, explicit string) (string, error) {
 		}
 	}
 	if len(resolved) == 0 {
-		return "", fmt.Errorf("no T3 thread could be resolved from the caller's provider session (%s); pass --thread with the T3 thread id",
+		return "", unresolvedThread("no T3 thread could be resolved from the caller's provider session (%s)",
 			strings.Join(failures, "; "))
 	}
 	candidates := make([]string, 0, len(resolved))
@@ -566,7 +566,7 @@ func resolveThread(cfg config.Config, explicit string) (string, error) {
 		candidates = append(candidates, fmt.Sprintf("%s (from %s)", thread, strings.Join(keys, ", ")))
 	}
 	sort.Strings(candidates)
-	return "", fmt.Errorf("the caller's provider sessions resolve to several T3 threads: %s; pass --thread with the intended one",
+	return "", unresolvedThread("the caller's provider sessions resolve to several T3 threads: %s",
 		strings.Join(candidates, "; "))
 }
 
@@ -591,7 +591,7 @@ func callerSessions(getenv func(string) string) ([]providerSession, error) {
 		sessions = append(sessions, providerSession{key: key, value: value})
 	}
 	if len(sessions) == 0 {
-		return nil, errors.New("no caller session found: set CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID or OPENCODE_SESSION_ID, or pass --thread with the T3 thread id")
+		return nil, unresolvedThread("no caller session is set in the environment")
 	}
 	return sessions, nil
 }
@@ -608,7 +608,7 @@ func callerSession(getenv func(string) string) (string, error) {
 		for _, session := range sessions {
 			named = append(named, session.key+"="+session.value)
 		}
-		return "", fmt.Errorf("several provider session IDs are set (%s); pass --thread with the intended T3 thread id",
+		return "", unresolvedThread("several provider session IDs are set (%s)",
 			strings.Join(named, ", "))
 	}
 	return sessions[0].value, nil

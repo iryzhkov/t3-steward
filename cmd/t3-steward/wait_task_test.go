@@ -225,10 +225,17 @@ func TestCallerSessionNamesConflictingProviders(t *testing.T) {
 	if err == nil {
 		t.Fatal("conflicting provider sessions accepted")
 	}
-	for _, want := range []string{"CLAUDE_CODE_SESSION_ID=claude-session", "CODEX_THREAD_ID=codex-session", "--thread"} {
+	for _, want := range []string{"CLAUDE_CODE_SESSION_ID=claude-session", "CODEX_THREAD_ID=codex-session"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("the ambiguity does not name %q: %s", want, err)
 		}
+	}
+	// The resolution layer does not know which verb was invoked, so it names no
+	// flag at all: the flag that fixes this is --thread on "wait add" and
+	// --notify-thread on "task run", and a refusal that guesses sends the caller
+	// to a second refusal. refuseUnresolvedThread adds the right one per verb.
+	if strings.Contains(err.Error(), "--") {
+		t.Fatalf("the ambiguity names a flag it cannot know is accepted: %s", err)
 	}
 	// One provider, whichever it is, resolves.
 	for _, key := range providerSessionKeys {

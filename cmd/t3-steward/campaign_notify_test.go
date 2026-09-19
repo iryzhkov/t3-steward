@@ -129,23 +129,37 @@ func TestCampaignSubmitNotifiesAnExplicitThreadWithoutResolving(t *testing.T) {
 	}
 }
 
-// A submission without --notify-thread must not register anything, so the flag
-// is the only thing that creates a wait.
-func TestCampaignSubmitRegistersNothingWithoutNotifyThread(t *testing.T) {
+// --no-notify is the only way to submit a campaign nobody is woken for. The
+// calling thread is notified by default, as it is on "task run": one spelling,
+// one default, one opt-out on both verbs.
+func TestCampaignSubmitRegistersNothingOnlyWithNoNotify(t *testing.T) {
 	root := campaignFixture(t)
 	var registered []backlogadmin.NodeWaitOperation
 	cli := campaignNotifyCLI(t, io.Discard, &fakeSubmissionService{}, &registered,
 		func(string) (string, error) {
-			t.Fatal("a submission without --notify-thread resolved a thread")
+			t.Fatal("a submission with --no-notify resolved a thread")
 			return "", nil
 		}, nil)
 	if err := cli.run(context.Background(), []string{
-		"submit", root, "--idempotency-key", "campaign-1",
+		"submit", root, "--idempotency-key", "campaign-1", "--no-notify",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if len(registered) != 0 {
 		t.Fatalf("registered %+v", registered)
+	}
+
+	// Without it, the default resolves the calling thread and registers one.
+	registered = nil
+	defaulted := campaignNotifyCLI(t, io.Discard, &fakeSubmissionService{}, &registered,
+		func(string) (string, error) { return "thread-9", nil }, nil)
+	if err := defaulted.run(context.Background(), []string{
+		"submit", root, "--idempotency-key", "campaign-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(registered) != 1 {
+		t.Fatalf("node-wait operations = %d, want the calling thread registered by default", len(registered))
 	}
 }
 
@@ -193,9 +207,10 @@ func TestCampaignSubmitRefusesAnUnresolvableCurrentThreadBeforeSubmitting(t *tes
 		t.Fatal("an unresolvable --notify-thread was accepted")
 	}
 	for _, fragment := range []string{
-		"--notify-thread current could not be resolved",
+		"campaign submit could not identify the calling agent's T3 thread",
 		"nothing was submitted",
-		"Pass --notify-thread <id>",
+		"CLAUDE_CODE_SESSION_ID",
+		"t3-steward campaign submit --notify-thread <THREAD-ID>",
 	} {
 		if !strings.Contains(err.Error(), fragment) {
 			t.Fatalf("the message does not say %q: %v", fragment, err)

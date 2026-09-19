@@ -30,6 +30,11 @@ type campaignNotification struct {
 	ThreadID string `json:"threadId"`
 	Target   string `json:"target"`
 	Delivery string `json:"delivery,omitempty"`
+	// WaitThreadID is the thread the coordinator holds on this wait, read back
+	// from its answer rather than assumed from what was asked for. It differs
+	// from ThreadID when the registration this key derives already existed for
+	// another thread, which is a wake this caller will never receive.
+	WaitThreadID string `json:"waitThreadId,omitempty"`
 	// Host is the host the coordinator recorded as this wait's delivery host,
 	// read back from its answer rather than assumed from what was asked for.
 	Host string `json:"host,omitempty"`
@@ -122,7 +127,12 @@ func (c campaignCLI) coordinatorRelease(ctx context.Context) string {
 // a session the steward cannot identify gets an error and no run, which is the
 // right way round: a campaign nobody will hear about is worse than a campaign
 // that was not submitted.
-func (c campaignCLI) campaignNotifyThread(requested string) (string, error) {
+//
+// verb is the invoked verb, because the refusal shows the corrected call and a
+// refusal that names a flag the invoked verb rejects sends the caller to a
+// second refusal. Both verbs that reach here accept --notify-thread; the
+// remainder of the corrected call differs, so each names its own.
+func (c campaignCLI) campaignNotifyThread(verb, requested string) (string, error) {
 	if requested == "" {
 		return "", nil
 	}
@@ -137,14 +147,21 @@ func (c campaignCLI) campaignNotifyThread(requested string) (string, error) {
 	}
 	thread, err := c.resolveThread(explicit)
 	if err != nil {
-		return "", fmt.Errorf(
-			"--notify-thread current could not be resolved to a T3 thread, so nothing was submitted: %w. "+
-				"Pass --notify-thread <id> with the thread to wake", err)
+		return "", refuseUnresolvedThread(verb, "nothing was submitted", "--notify-thread",
+			notifyThreadExample(verb), err)
 	}
 	if thread == "" {
 		return "", errors.New("--notify-thread resolved to an empty T3 thread id")
 	}
 	return thread, nil
+}
+
+// notifyThreadExample is the rest of the corrected call for one verb.
+func notifyThreadExample(verb string) string {
+	if verb == "task run" {
+		return "-- \"<prompt>\""
+	}
+	return "<campaign-directory> --idempotency-key KEY"
 }
 
 // registerCampaignNotification parks the calling agent on the new run's sink.
@@ -191,6 +208,7 @@ func (c campaignCLI) registerCampaignNotification(ctx context.Context, key, runI
 		notification.WaitID = response.Waits[0].Request.ID
 		notification.Delivery = response.Waits[0].Delivery
 		notification.Host = response.Waits[0].Host
+		notification.WaitThreadID = response.Waits[0].Request.ThreadID
 	}
 	notification.Undeliverable = undeliverableWake(notification.Host, local, release, c.delivery, time.Now())
 	return notification, nil
