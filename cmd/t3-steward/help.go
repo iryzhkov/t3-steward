@@ -87,7 +87,21 @@ func isHelp(arg string) bool {
 	return arg == "help" || arg == "--help" || arg == "-h"
 }
 
-// helpRequest resolves a command line into the verb path whose page answers
+// helpResolution is what a command line asking for documentation resolves to:
+// either the page that answers it, or the word that stands where a verb should
+// and names none.
+type helpResolution struct {
+	// Path is the verb path whose page answers, when Answered.
+	Path     []string
+	Answered bool
+	// Parent is the page whose verb list the unknown word should have named,
+	// and Unknown is that word. Both are empty unless the request named a verb
+	// that does not exist.
+	Parent  []string
+	Unknown string
+}
+
+// resolveHelp resolves a command line into the verb path whose page answers
 // it. family is the verb words already consumed by the caller (nil at the top
 // level), args is what the caller received.
 //
@@ -101,7 +115,15 @@ func isHelp(arg string) bool {
 // name no page are dropped, which is how "backlog show run-123 --help" answers
 // about backlog show. At the top level a first word that names no verb is not
 // a help request at all, so a mistyped command is still refused by name.
-func helpRequest(family, args []string) ([]string, bool) {
+//
+// A word is dropped only when it can be an operand. "backlog show" has no
+// verbs below it, so "backlog show run-123" names a run and the page for
+// backlog show is the answer; "backlog" does have verbs below it, so
+// "backlog shwo" names no run and no verb, and answering it with the family
+// page and exit 0 would be an ambiguous zero in answer to a documentation
+// request. That word is reported as unknown instead, and the caller refuses it
+// by name.
+func resolveHelp(family, args []string) helpResolution {
 	index := -1
 	for position, argument := range args {
 		if argument == "--" {
@@ -113,7 +135,7 @@ func helpRequest(family, args []string) ([]string, bool) {
 		}
 	}
 	if index < 0 {
-		return nil, false
+		return helpResolution{}
 	}
 	var words []string
 	if index == 0 {
@@ -134,36 +156,86 @@ func helpRequest(family, args []string) ([]string, bool) {
 	}
 	for length := len(words); length >= minimum; length-- {
 		path := append(append([]string{}, family...), words[:length]...)
-		if _, found := helpPages[strings.Join(path, " ")]; found {
-			return path, true
+		if _, found := helpPages[strings.Join(path, " ")]; !found {
+			continue
 		}
+		if length == len(words) || len(helpPageChildren(path)) == 0 {
+			return helpResolution{Path: path, Answered: true}
+		}
+		return helpResolution{Parent: path, Unknown: words[length]}
 	}
-	return nil, false
+	return helpResolution{}
+}
+
+// helpRequest is resolveHelp for the callers that only need the page.
+func helpRequest(family, args []string) ([]string, bool) {
+	resolution := resolveHelp(family, args)
+	return resolution.Path, resolution.Answered
+}
+
+// helpPageChildren names the verbs registered directly below a page, sorted.
+// It is what tells an operand apart from a mistyped verb, and what a refusal
+// lists, so the list of a family's verbs is derived from the registry every
+// --help is answered from rather than written out a second time.
+func helpPageChildren(path []string) []string {
+	prefix := strings.Join(path, " ")
+	if prefix == "" {
+		return nil
+	}
+	prefix += " "
+	var children []string
+	for registered := range helpPages {
+		if !strings.HasPrefix(registered, prefix) {
+			continue
+		}
+		rest := registered[len(prefix):]
+		if rest == "" || strings.Contains(rest, " ") {
+			continue
+		}
+		children = append(children, rest)
+	}
+	sort.Strings(children)
+	return children
+}
+
+// unknownHelpVerb is the refusal for "t3-steward backlog shwo --help": a
+// documentation request about a verb that does not exist. It names the verbs
+// that do, which is the standard the program's other refusals already meet,
+// and it fails, because exit 0 with the family page says the verb was
+// documented.
+func unknownHelpVerb(parent []string, verb string) error {
+	name := strings.Join(parent, " ")
+	return fmt.Errorf("unknown %s command %q; the %s commands are %s (try \"t3-steward %s --help\")",
+		name, verb, name, strings.Join(helpPageChildren(parent), ", "), name)
 }
 
 // admitHelp is the one place a help request is answered. A command family
 // calls it once, at its entry point, before its parser sees the arguments; it
-// reports whether it printed a page, and the caller returns nil when it did.
+// reports whether it printed a page, and the caller returns its error when it
+// did not print one and the request named a verb that does not exist.
 //
 // It reads no configuration, opens no store and reaches no coordinator, which
 // is what makes a help page that returns a transport failure impossible by
 // construction rather than by review.
-func admitHelp(out io.Writer, family []string, args []string) bool {
-	path, requested := helpRequest(family, args)
-	if !requested {
-		return false
+func admitHelp(out io.Writer, family []string, args []string) (bool, error) {
+	resolution := resolveHelp(family, args)
+	if resolution.Unknown != "" {
+		return false, unknownHelpVerb(resolution.Parent, resolution.Unknown)
 	}
-	page, found := helpPages[strings.Join(path, " ")]
+	if !resolution.Answered {
+		return false, nil
+	}
+	page, found := helpPages[strings.Join(resolution.Path, " ")]
 	if !found {
-		return false
+		return false, nil
 	}
-	fmt.Fprint(out, page.render())
-	return true
+	_, err := fmt.Fprint(out, page.render())
+	return true, err
 }
 
 // admitFamilyHelp is admitHelp for a command family, where the bare family
 // name is itself a request for the family's page.
-func admitFamilyHelp(out io.Writer, family []string, args []string) bool {
+func admitFamilyHelp(out io.Writer, family []string, args []string) (bool, error) {
 	if len(args) == 0 {
 		args = []string{"--help"}
 	}
@@ -200,10 +272,21 @@ func (p helpPage) render() string {
 		fmt.Fprintf(&b, "  %s\n", line)
 	}
 	b.WriteString("\nFlags:\n")
-	if len(p.Flags) == 0 {
+	flags := p.Flags
+	// Every verb below a command family accepts --config, because the
+	// dispatcher's clause for that family takes it out of the argument list
+	// before the family is entered. It is rendered here rather than written on
+	// ninety-odd pages because it is the dispatcher's behaviour and not the
+	// verb's, and because writing it by hand is how nineteen pages came to say
+	// "This verb takes no flags" about verbs that take this one -- among them
+	// worker serve, which the packaged unit invokes with it.
+	if family, _, isFamilyVerb := strings.Cut(p.Path, " "); isFamilyVerb {
+		flags = append(append([]helpFlag{}, flags...), familyConfigFlag(family))
+	}
+	if len(flags) == 0 {
 		b.WriteString("  This verb takes no flags.\n")
 	}
-	for _, flag := range p.Flags {
+	for _, flag := range flags {
 		spelling := flag.Name
 		if flag.Value != "" {
 			spelling += " " + flag.Value

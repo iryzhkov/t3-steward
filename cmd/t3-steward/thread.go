@@ -35,8 +35,8 @@ type threadStopper interface {
 }
 
 func cmdThread(g globalFlags, args []string) error {
-	if admitFamilyHelp(os.Stdout, []string{"thread"}, args) {
-		return nil
+	if answered, err := admitFamilyHelp(os.Stdout, []string{"thread"}, args); answered || err != nil {
+		return err
 	}
 	if args[0] != "stop" {
 		return fmt.Errorf("unknown thread command %q; see t3-steward thread --help", args[0])

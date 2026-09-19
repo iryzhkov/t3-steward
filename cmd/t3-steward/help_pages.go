@@ -30,8 +30,8 @@ func init() {
 // printTopLevelHelp answers "t3-steward help [verb...]": the overview, or the
 // page of the verb the words name.
 func printTopLevelHelp(out io.Writer, words []string) error {
-	if admitHelp(out, nil, append([]string{"help"}, words...)) {
-		return nil
+	if answered, err := admitHelp(out, nil, append([]string{"help"}, words...)); answered || err != nil {
+		return err
 	}
 	page := helpPages[""]
 	_, err := fmt.Fprint(out, page.render())
@@ -98,6 +98,36 @@ func globalHelpFlags(stateful bool) []helpFlag {
 // globalFlagSite is the one place the four shared options are declared, and so
 // the one place the contract test reads them from.
 var globalFlagSite = parserSite{Func: "registerGlobalFlags"}
+
+// familyDispatchSite is the clause of the dispatcher's own switch that a
+// command family is entered through. That clause takes --config out of the
+// argument list before the family sees it, so it is a parser site of every
+// verb of the family, and the contract test derives it from the verb's path
+// rather than reading it off the page. A page therefore cannot leave it out,
+// which is the hole nineteen "this verb takes no flags" pages went through.
+func familyDispatchSite(family string) parserSite {
+	return parserSite{Func: "dispatch", Case: family}
+}
+
+// familyConfigFlag is the option every verb of a command family accepts,
+// whether or not the verb parses anything of its own. The renderer puts it on
+// every second-level page.
+//
+// The value is a separate word because the dispatcher compares the whole
+// argument: "--config=PATH" is not recognised there and travels on to the
+// verb, which ignores it (backlog path) or refuses it (worker serve). Saying
+// so is the difference between a page that documents the flag and a page a
+// caller can act on.
+func familyConfigFlag(family string) helpFlag {
+	return helpFlag{
+		Name:    "--config",
+		Value:   "PATH",
+		Default: "$XDG_CONFIG_HOME/t3-steward/config.yaml",
+		Text: "Configuration file to read. The dispatcher removes it from the arguments before the " + family +
+			" family is entered, so every verb of the family accepts it; a verb that reads no configuration accepts it and ignores it. " +
+			"The path is a separate word: --config=PATH is not recognised here and is passed on to the verb.",
+	}
+}
 
 // dispatchSite scopes a flat verb's own options to its case clause in the
 // dispatcher's flag switch.

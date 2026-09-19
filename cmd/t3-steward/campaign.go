@@ -42,7 +42,7 @@ Lifecycle (delegated to backlog, unchanged; explain is read-only and live):
   list [--project P] [--progress STATES] [--class CLASS] [--json]
   show <run> [--json]   graph <run> [--json|--dot]   explain <run>/<task> [--json]
   cancel <run>[/<task>] --reason TEXT [--command-id ID] [--json]   no task = whole run
-  cancel --json prints willCancel, the tasks it covers, not the outcome it applied.
+    cancel --json prints willCancel, the tasks it covers, not the outcome it applied.
 Supervised runs, structured decisions only and never prose:
   supervision <show|decide|hold|release|escalate|resolve> <run> [flags] [--json]
     Mutating verbs need --request-id KEY, --reason TEXT and --expected-revision N.
@@ -200,7 +200,7 @@ type campaignCLI struct {
 }
 
 func cmdCampaign(g globalFlags, args []string) error {
-	if handled, err := admitCampaignHelp(os.Stdout, args); handled {
+	if handled, err := admitCampaignHelp(os.Stdout, args); handled || err != nil {
 		return err
 	}
 	cfg, err := loadConfig(g)
@@ -432,7 +432,7 @@ func admitCampaignHelp(out io.Writer, args []string) (bool, error) {
 			return true, fmt.Errorf("unknown campaign help topic %q; try one of %s", word, strings.Join(names, ", "))
 		}
 	}
-	return admitHelp(out, []string{"campaign"}, args), nil
+	return admitHelp(out, []string{"campaign"}, args)
 }
 
 func (c campaignCLI) runValidate(args []string) error {

@@ -183,8 +183,8 @@ func runCoordinatorAdmin(cfg config.Config, args []string, schedules bool) error
 }
 
 func cmdSchedules(g globalFlags, args []string) error {
-	if admitFamilyHelp(os.Stdout, []string{"schedules"}, args) {
-		return nil
+	if answered, err := admitFamilyHelp(os.Stdout, []string{"schedules"}, args); answered || err != nil {
+		return err
 	}
 	cfg, err := loadConfig(g)
 	if err != nil {
@@ -194,8 +194,8 @@ func cmdSchedules(g globalFlags, args []string) error {
 }
 
 func cmdBacklog(g globalFlags, args []string) error {
-	if admitFamilyHelp(os.Stdout, []string{"backlog"}, args) {
-		return nil
+	if answered, err := admitFamilyHelp(os.Stdout, []string{"backlog"}, args); answered || err != nil {
+		return err
 	}
 	cfg, err := loadConfig(g)
 	if err != nil {

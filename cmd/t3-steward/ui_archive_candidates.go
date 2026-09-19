@@ -14,8 +14,8 @@ import (
 
 // This command is deliberately read-only; the daemon performs bounded effects.
 func cmdUIArchive(g globalFlags, args []string) error {
-	if admitHelp(os.Stdout, []string{"ui-archive"}, args) {
-		return nil
+	if answered, err := admitHelp(os.Stdout, []string{"ui-archive"}, args); answered || err != nil {
+		return err
 	}
 	if len(args) != 1 || args[0] != "candidates" {
 		return fmt.Errorf("usage: t3-steward ui-archive candidates [--config PATH]")

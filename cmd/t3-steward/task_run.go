@@ -55,6 +55,10 @@ Flags:
   --outputs a.md,b.md   --verify "CMD" (repeatable)
   --class surplus|required (default surplus)   --max-turns N (default 3)
   --prompt-file FILE    --fan-out GLOB         --no-notify   --json
+  --config PATH         the configuration file to read (default
+                        $XDG_CONFIG_HOME/t3-steward/config.yaml); the dispatcher
+                        takes it out of the arguments before the task family is
+                        entered, so every task verb accepts it
 
 The prompt is exactly one of: an inline argument after --, --prompt-file FILE,
 --prompt-file - or stdin. --fan-out GLOB starts one run with one task per file,

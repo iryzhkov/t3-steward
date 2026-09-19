@@ -231,7 +231,8 @@ func fleetHelpPages() []helpPage {
 			Usage:    []string{"t3-steward worker serve"},
 			Exits:    []helpExit{{0, "the process was asked to stop and shut down cleanly"}, {1, "no worker bootstrap under $HOME, an unresolvable credential, or a runtime failure"}},
 			JSONNote: "This verb prints no JSON document; it logs to standard error.",
-			Notes:    "This is the worker service's ExecStart. It takes no arguments beyond the verb and reads the worker bootstrap under $HOME. Enrolment is accepted on the coordinator host with \"t3-steward worker enroll\".",
+			Notes:    "This is the worker service's ExecStart, and the packaged unit passes --config: the verb reads the configuration file for the T3 connection, the policy and the state database it takes local quota pauses from. It takes no other argument beyond the verb, and it reads the worker bootstrap under $HOME. Enrolment is accepted on the coordinator host with \"t3-steward worker enroll\".",
+			Parsers:  []parserSite{{Func: "cmdWorker", Case: "serve"}},
 		},
 		{
 			Path:     "worker bridge",
@@ -239,7 +240,8 @@ func fleetHelpPages() []helpPage {
 			Usage:    []string{"t3-steward worker bridge"},
 			Exits:    []helpExit{{0, "the relay ended cleanly"}, {1, "no worker bootstrap, or no running worker to relay to"}},
 			JSONNote: "This verb speaks the framed worker protocol; it prints no document for a reader.",
-			Notes:    "The coordinator's SSH exchange uses it. It takes no arguments beyond the verb, and unlike the other daemon verbs it does not resolve the bootstrap credential.",
+			Notes:    "The coordinator's SSH exchange uses it. It takes no argument beyond the verb, it reads no configuration file, and unlike the other daemon verbs it does not resolve the bootstrap credential.",
+			Parsers:  []parserSite{{Func: "cmdWorker", Case: "bridge"}},
 		},
 		{
 			Path:     "worker inspect-bootstrap",
@@ -248,7 +250,8 @@ func fleetHelpPages() []helpPage {
 			Exits:    []helpExit{{0, "printed"}, {1, "no worker bootstrap under $HOME, or its credential does not resolve"}},
 			JSONKeys: []string{"workerId", "coordinatorId", "digest", "credentialRef"},
 			JSONNote: "This verb always prints JSON; it has no text rendering and no --json flag.",
-			Notes:    "Read-only and local. It takes no arguments beyond the verb.",
+			Notes:    "Read-only and local. It takes no argument beyond the verb and reads no configuration file.",
+			Parsers:  []parserSite{{Func: "cmdWorker", Case: "inspect-bootstrap"}},
 		},
 		{
 			Path:     "worker inspect-journal",
@@ -257,7 +260,8 @@ func fleetHelpPages() []helpPage {
 			Exits:    []helpExit{{0, "printed"}, {1, "no worker bootstrap under $HOME, or its credential does not resolve"}},
 			JSONKeys: []string{"safeToRestart", "attempts"},
 			JSONNote: "This verb always prints JSON; it has no text rendering and no --json flag.",
-			Notes:    "Read-only and local: it summarises the attempt journal. It takes no arguments beyond the verb.",
+			Notes:    "Read-only and local: it summarises the attempt journal. It takes no argument beyond the verb and reads no configuration file.",
+			Parsers:  []parserSite{{Func: "cmdWorker", Case: "inspect-journal"}},
 		},
 		{
 			Path:    "worker inspect-directory",

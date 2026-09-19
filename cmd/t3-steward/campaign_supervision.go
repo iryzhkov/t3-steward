@@ -62,6 +62,11 @@ needs no flag. It is accepted on these verbs and on no other command.
 --json prints the versioned backlog.admin.supervision/v1 response document.
 Read its version field first.
 
+--config PATH names the configuration file (default
+$XDG_CONFIG_HOME/t3-steward/config.yaml). The dispatcher takes it out of the
+arguments before the campaign family is entered, so every campaign verb
+accepts it.
+
 A refusal names its supervision class in the message and exits with the frozen
 transport code for that class:
   stale-evidence           8  the revision or evidence snapshot moved first

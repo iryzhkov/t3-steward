@@ -38,6 +38,10 @@ Flags:
   --json          Print the receipt as one JSON document.
   --wait DURATION How long to wait for a receipt whose requestedAt is at or
                   after the signal (default 10s).
+  --config PATH   The configuration file to read (default
+                  $XDG_CONFIG_HOME/t3-steward/config.yaml). The dispatcher takes
+                  it out of the arguments before the coordinator family is
+                  entered, so every coordinator verb accepts it.
 
 Exit codes:
   0  accepted or unchanged.

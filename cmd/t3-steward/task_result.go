@@ -32,6 +32,10 @@ Exit codes are the task's own verdict, so a script branches on them:
 
 --json prints one document with the final message inlined, so reading the
 answer needs no second file read.
+
+--config PATH names the configuration file (default
+$XDG_CONFIG_HOME/t3-steward/config.yaml). The dispatcher takes it out of the
+arguments before the task family is entered, so every task verb accepts it.
 ` + coordinatorTransportHelp
 
 // taskResultSchemaVersion versions the result document.

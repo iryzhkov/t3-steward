@@ -213,8 +213,8 @@ this same thread with the outcome.
 `
 
 func cmdWait(g globalFlags, args []string) error {
-	if admitFamilyHelp(os.Stdout, []string{"wait"}, args) {
-		return nil
+	if answered, err := admitFamilyHelp(os.Stdout, []string{"wait"}, args); answered || err != nil {
+		return err
 	}
 	cfg, err := loadConfig(g)
 	if err != nil {

@@ -142,6 +142,10 @@ Recovery:
   t3-steward backlog workers --json        Read the current state and revision.
   Re-run with --current-catalog, or with the same --request-id, once the
   reported reason is resolved.
+
+--config PATH names the configuration file this coordinator host reads (default
+$XDG_CONFIG_HOME/t3-steward/config.yaml). The dispatcher takes it out of the
+arguments before the worker family is entered, so every worker verb accepts it.
 `
 
 func cmdWorkerEnroll(g globalFlags, args []string) error {

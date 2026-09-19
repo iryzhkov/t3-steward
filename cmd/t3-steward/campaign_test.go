@@ -563,7 +563,14 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// the supervision heading are indented four columns rather than two, so
 	// that the router scan reads them as the continuation they are and not as
 	// two command forms. No line was added and no wording changed.
-	const wantDigest = "e90dde99cca7ef0bbff2bf44d6c88250a233ab049ad4cb8829a5381b989ceea0"
+	//
+	// Updated again for the third line of the same kind, the note under the
+	// cancel entry about what its --json document means. The scan read it as a
+	// command form too and it passed only by accident, because its first word
+	// happens to be the name of a real verb; at four columns it is the
+	// continuation of the cancel entry that it always was. No line was added
+	// and no wording changed, and the line is 85 columns, inside the cap below.
+	const wantDigest = "ba84fe4156b9fde54c67dacdd3b9c33ddd27fc6e2cbde8d43631d7b5b72cbe2d"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)

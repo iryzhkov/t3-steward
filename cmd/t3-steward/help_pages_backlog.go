@@ -225,6 +225,7 @@ func backlogHelpPages() []helpPage {
 			Exits:    []helpExit{{0, "written"}, {1, "no id, the file already exists, or the directory could not be created"}},
 			JSONNote: "This verb prints no JSON document; it prints the path it wrote.",
 			Notes:    "Offline: it writes one file under the local backlog directory and reaches no coordinator. The legacy task-file runner is part of \"run\" and is enabled with backlog.enabled. For fleet work the verb is \"t3-steward task run\".",
+			Parsers:  []parserSite{{Func: "runBacklogLegacy", Case: "new"}},
 		},
 		{
 			Path:     "backlog path",
@@ -232,7 +233,8 @@ func backlogHelpPages() []helpPage {
 			Usage:    []string{"t3-steward backlog path"},
 			Exits:    localExits(),
 			JSONNote: "This verb prints no JSON document; it prints one path.",
-			Notes:    "Offline: it resolves a path from the configuration and reads nothing.",
+			Notes:    "Offline: it resolves a path from the configuration and reads nothing. The path it prints is the one the configuration names, so --config moves it.",
+			Parsers:  []parserSite{{Func: "runBacklogLegacy", Case: "path"}},
 		},
 		{
 			Path:     "backlog check",
@@ -241,6 +243,7 @@ func backlogHelpPages() []helpPage {
 			Exits:    []helpExit{{0, "the task is valid"}, {1, "no path given, the file is unreadable, or the task is invalid"}},
 			JSONNote: "This verb prints no JSON document; it prints what it resolved and what it refused.",
 			Notes:    "Offline: it reads one file, or standard input when the path is -, and reaches no coordinator. This is the legacy task-file checker; the campaign equivalent is \"t3-steward campaign validate\".",
+			Parsers:  []parserSite{{Func: "runBacklogLegacy", Case: "check"}},
 		},
 		{
 			Path:     "backlog receive",
@@ -249,6 +252,7 @@ func backlogHelpPages() []helpPage {
 			Exits:    []helpExit{{0, "stored"}, {1, "no id, or the task on standard input does not parse"}},
 			JSONNote: "This verb prints no JSON document.",
 			Notes:    "Offline, and not an operator verb: forwarding invokes it over SSH with the task on standard input.",
+			Parsers:  []parserSite{{Func: "runBacklogLegacy", Case: "receive"}},
 		},
 	}
 

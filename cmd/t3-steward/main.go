@@ -161,8 +161,10 @@ func dispatch(args []string) error {
 	// family is the one exception: its help word also names a topic, as in
 	// "campaign help readiness", so it admits its own help through the same
 	// shared helper one level down.
-	if cmd != "campaign" && admitHelp(os.Stdout, nil, args) {
-		return nil
+	if cmd != "campaign" {
+		if answered, err := admitHelp(os.Stdout, nil, args); answered || err != nil {
+			return err
+		}
 	}
 	switch cmd {
 	case "-h", "--help", "help":
@@ -270,8 +272,8 @@ func dispatch(args []string) error {
 	// answers --help with its page instead of with "flag: help requested" on
 	// standard error. The family verbs above admit help at their own entry
 	// point; this call covers the verbs the dispatcher parses itself.
-	if admitHelp(os.Stdout, nil, args) {
-		return nil
+	if answered, err := admitHelp(os.Stdout, nil, args); answered || err != nil {
+		return err
 	}
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	var g globalFlags

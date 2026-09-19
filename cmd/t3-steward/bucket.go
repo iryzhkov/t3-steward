@@ -71,8 +71,8 @@ type bucketRow struct {
 }
 
 func cmdBucket(g globalFlags, args []string) error {
-	if admitFamilyHelp(os.Stdout, []string{"bucket"}, args) {
-		return nil
+	if answered, err := admitFamilyHelp(os.Stdout, []string{"bucket"}, args); answered || err != nil {
+		return err
 	}
 	switch args[0] {
 	case "list":
