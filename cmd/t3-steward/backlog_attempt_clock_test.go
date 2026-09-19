@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -70,6 +71,11 @@ func runTaskShow(t *testing.T, detail *backlogadmin.TaskDetail) string {
 
 func runDiagnose(t *testing.T, detail backlogadmin.TaskDetail) string {
 	t.Helper()
+	return runDiagnoseTasks(t, []backlogadmin.TaskDetail{detail})
+}
+
+func runDiagnoseTasks(t *testing.T, tasks []backlogadmin.TaskDetail) string {
+	t.Helper()
 	var out bytes.Buffer
 	fake := &fakeAdminQueryService{response: backlogadmin.Response{
 		Version: backlogadmin.Version, Kind: backlogadmin.QueryDiagnose, GeneratedAt: clockNow,
@@ -80,7 +86,7 @@ func runDiagnose(t *testing.T, detail backlogadmin.TaskDetail) string {
 					Run:      domain.WorkflowRun{ID: "run-1", Progress: domain.ProgressActive},
 					Workflow: domain.Workflow{ID: "workflow-1", Name: "rebuild"},
 				},
-				Tasks: []backlogadmin.TaskDetail{detail},
+				Tasks: tasks,
 			},
 		},
 	}}
@@ -201,5 +207,71 @@ func TestTheProviderSessionLineCannotContradictAnActiveAttempt(t *testing.T) {
 	}
 	if strings.Contains(text, "idle when the worker last looked") {
 		t.Errorf("a paused attempt whose thread is stopped was reported as a contradiction:\n%s", text)
+	}
+}
+
+// queuedAttemptDetail is the shape every task of a run has before it is
+// dispatched: an attempt that exists because the run was planned, with no
+// assignment and nothing holding it. It is the repository's own example of a
+// task the coordinator has not started -- see cancel_run_test.go -- and it is
+// what a freshly submitted campaign, a run held behind quota and a fleet with
+// no eligible worker are full of.
+func queuedAttemptDetail(id string) backlogadmin.TaskDetail {
+	return backlogadmin.TaskDetail{
+		Task: domain.Task{ID: id, Name: id, WorkflowID: "workflow-1"},
+		Attempt: &domain.Attempt{
+			ID: "attempt-" + id, Number: 1, Revision: 1,
+			Progress: domain.ProgressQueued, Control: domain.ControlUnassigned,
+		},
+	}
+}
+
+// An attempt that has not started has no timeline, and saying "unknown" three
+// times about it reports a defect in a record that is intact: the work has not
+// begun. The degraded lines belong to a record that lost a timestamp, which is
+// why they are still printed for a started attempt whose assignment is missing.
+func TestAnAttemptThatHasNotStartedPrintsNoTimeline(t *testing.T) {
+	queued := queuedAttemptDetail("task-0")
+	for _, form := range []struct {
+		name string
+		text string
+	}{
+		{"diagnose", runDiagnose(t, queued)},
+		{"task show", runTaskShow(t, &queued)},
+	} {
+		for _, unwanted := range []string{"started:", "elapsed:", "lease:", "unknown"} {
+			if strings.Contains(form.text, unwanted) {
+				t.Errorf("%s prints %q for a queued, unassigned attempt:\n%s", form.name, unwanted, form.text)
+			}
+		}
+		if !strings.Contains(form.text, "attempt-task-0") {
+			t.Errorf("%s does not name the attempt at all:\n%s", form.name, form.text)
+		}
+	}
+
+	// A running attempt still prints all three lines: the gate is "has this
+	// started", not "is this worth printing".
+	running := runDiagnose(t, *runningAttemptDetail())
+	for _, want := range []string{"    started: ", "    elapsed: ", "    lease: "} {
+		if !strings.Contains(running, want) {
+			t.Errorf("diagnose of a running attempt no longer prints %q:\n%s", want, running)
+		}
+	}
+}
+
+// TestQueuedDiagnoseMeasured records the size of the state diagnose is most
+// often run in. The assertion is a proportion rather than a byte count: an
+// eight-task queued run is the run's own five lines, the tasks heading and one
+// line per task, and nothing else.
+func TestQueuedDiagnoseMeasured(t *testing.T) {
+	tasks := make([]backlogadmin.TaskDetail, 0, 8)
+	for index := 0; index < 8; index++ {
+		tasks = append(tasks, queuedAttemptDetail(fmt.Sprintf("task-%d", index)))
+	}
+	text := runDiagnoseTasks(t, tasks)
+	lines := strings.Count(text, "\n")
+	t.Logf("diagnose of eight queued tasks %d bytes, %d lines", len(text), lines)
+	if lines != 14 {
+		t.Errorf("diagnose of eight queued tasks is %d lines, want 14 -- five for the run, one heading and one per task:\n%s", lines, text)
 	}
 }

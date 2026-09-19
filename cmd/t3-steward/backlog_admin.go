@@ -1032,9 +1032,13 @@ func renderAttemptEvidence(out io.Writer, detail *backlogadmin.TaskDetail) {
 // and the elapsed line then measures to the attempt's last update and says so.
 // A timestamp missing from the record is printed as unknown, naming the field
 // that was absent, because a zero time rendered as a date is worse than a gap.
+//
+// An attempt that has not started has no timeline and prints none, which is
+// what attemptStarted decides for both callers: those unknown lines are for a
+// record that lost a timestamp, not for work that has not begun.
 func renderAttemptTimeline(out io.Writer, indent string, detail *backlogadmin.TaskDetail, now time.Time) {
 	attempt := detail.Attempt
-	if attempt == nil {
+	if !attemptStarted(detail) {
 		return
 	}
 	var started time.Time
@@ -1077,6 +1081,39 @@ func renderAttemptTimeline(out io.Writer, indent string, detail *backlogadmin.Ta
 	default:
 		fmt.Fprintf(out, "%slease: expires %s (%s)\n", indent, formatTime(detail.Assignment.LeaseExpiresAt),
 			leaseRemaining(detail.Assignment.LeaseExpiresAt, reference))
+	}
+}
+
+// attemptStarted reports whether the attempt has begun, which is what decides
+// whether there is a timeline to print at all.
+//
+// An attempt exists from the moment the run is planned and acquires its
+// assignment at dispatch, so a queued, unassigned attempt has no clock of its
+// own yet: it has a start time neither the coordinator nor anyone else knows,
+// because there is none. Printing "started: unknown (no assignment record)"
+// for it says a record is damaged when the record is intact, and it says it
+// three times per task in the state diagnose is most often run in -- a freshly
+// submitted campaign, a run held behind quota, a fleet with no eligible
+// worker.
+//
+// An attempt whose assignment is present, or whose control state says a worker
+// is acting on it, has started. That second half is what keeps the degraded
+// case honest: a running attempt whose assignment record is missing still
+// prints the timeline, with the absent field named, because there the record
+// really has lost something.
+func attemptStarted(detail *backlogadmin.TaskDetail) bool {
+	attempt := detail.Attempt
+	if attempt == nil {
+		return false
+	}
+	if detail.Assignment != nil {
+		return true
+	}
+	switch attempt.Control {
+	case "", domain.ControlUnassigned:
+		return false
+	default:
+		return true
 	}
 }
 
@@ -1284,7 +1321,9 @@ func renderDiagnosis(out io.Writer, diagnosis *backlogadmin.Diagnosis) {
 		fmt.Fprintf(out, "  %s (%s): %s %s attempt=%s%s\n", task.Task.Name, task.Task.ID, state, control, attempt, evidenceMarker(task.Evidence))
 		// The timeline is printed for the attempts that are still going,
 		// because "why is this one not finished" is the question diagnose is
-		// run to answer and a finished attempt has already answered it.
+		// run to answer and a finished attempt has already answered it. An
+		// attempt that has not started prints none either: renderAttemptTimeline
+		// applies attemptStarted for this caller and for backlog task show.
 		if detail := task; detail.Attempt != nil && !detail.Attempt.Progress.Terminal() {
 			renderAttemptTimeline(out, "    ", &detail, diagnosis.GeneratedAt)
 		}

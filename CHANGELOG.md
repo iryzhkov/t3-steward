@@ -184,9 +184,12 @@ All notable changes to this project are documented here. The format follows
   an hour ago, why is it not finished" needed a second call in `--json`
   before, because the text path carried the coordinator's generation time, the
   worker's observation time and the waits' deadlines, and no clock of the
-  attempt's own. A terminal attempt claims no lease, and a timestamp missing
-  from the record is printed as unknown naming the absent field rather than as
-  a zero time rendered as a date.
+  attempt's own. An attempt that has not started prints no timeline at all --
+  attempts exist from planning and acquire their assignment at dispatch, so a
+  queued, unassigned attempt has no clock yet. A terminal attempt claims no
+  lease, and a timestamp missing from the record of an attempt that did start
+  is printed as unknown naming the absent field rather than as a zero time
+  rendered as a date.
 - The session line of `backlog task show` is labelled as the provider
   session's own state, and says what it means when it would contradict the
   attempt above it. `session: thread stopped, control stopped, phase completed`
