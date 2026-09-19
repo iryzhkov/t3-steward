@@ -164,6 +164,111 @@ func TestWaitListScopesByThreadAndHostBeforeHiding(t *testing.T) {
 	}
 }
 
+// M-2. The help page this verb ships declares the transport exit codes, and the
+// t3-wait skill tells agents to branch on the code rather than on the message.
+// The joined list stringified the failure of each source, so the class was gone
+// by the time the process exited and every unreadable source exited 1.
+func TestWaitListExitsWithTheTransportClassOfTheSourceThatFailed(t *testing.T) {
+	unavailable := &backlogadmin.TransportError{
+		Class: backlogadmin.ClassUnavailable, Operation: "node-wait",
+		Err: errors.New("no coordinator answered"),
+	}
+	sources := waitListSources{
+		host:  "omarchy-pc",
+		local: func(context.Context, string) ([]wait.Wait, error) { return nil, nil },
+		coordinator: func(context.Context) ([]domain.NodeWait, []domain.TaskWait, error) {
+			return nil, nil, unavailable
+		},
+	}
+	text, err := listWaits(t, sources, waitListOptions{thread: "thread-1"})
+	if err == nil {
+		t.Fatal("a source that could not be read exited zero")
+	}
+	if class := backlogadmin.ClassOf(err); class != backlogadmin.ClassUnavailable {
+		t.Fatalf("class = %q, want %q (%v)", class, backlogadmin.ClassUnavailable, err)
+	}
+	if code := backlogadmin.ExitCodeFor(err); code != 5 {
+		t.Fatalf("exit code = %d, want the 5 the help page promises (%v)", code, err)
+	}
+	// The text half of the answer is unchanged: an empty list whose source
+	// failed is not "nothing is pending".
+	if !strings.Contains(err.Error(), "this list is incomplete: coordinator-held waits:") {
+		t.Fatalf("the message no longer names the incomplete list: %v", err)
+	}
+	for _, want := range []string{
+		"No waits could be listed from the sources that answered",
+		"NOT READ: coordinator-held waits",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the empty degraded answer does not say %q:\n%s", want, text)
+		}
+	}
+
+	// A failure that was never transport-classified keeps the generic exit 1,
+	// so nothing that used to exit 1 now exits something else.
+	plain := sources
+	plain.coordinator = func(context.Context) ([]domain.NodeWait, []domain.TaskWait, error) {
+		return nil, nil, errors.New("no coordinator answered")
+	}
+	_, err = listWaits(t, plain, waitListOptions{thread: "thread-1"})
+	if code := backlogadmin.ExitCodeFor(err); code != 1 {
+		t.Fatalf("an unclassified failure exits %d, want 1 (%v)", code, err)
+	}
+
+	// Two failed sources: the classified one decides the code, because the
+	// unclassified one would only have produced the 1 this already falls back to.
+	both := sources
+	both.local = func(context.Context, string) ([]wait.Wait, error) {
+		return nil, errors.New("state database is locked")
+	}
+	_, err = listWaits(t, both, waitListOptions{thread: "thread-1"})
+	if code := backlogadmin.ExitCodeFor(err); code != 5 {
+		t.Fatalf("exit code = %d, want the classified source's 5 (%v)", code, err)
+	}
+}
+
+// S-1. A thread that cannot be resolved leaves the scope wide, so the answer is
+// every thread on every host. The empty answer said so; a non-empty one read as
+// this thread's waits when it was not.
+func TestWaitListSaysWhenItCouldNotScopeToTheCallingThread(t *testing.T) {
+	sources := waitListSources{
+		host:  "omarchy-pc",
+		local: func(context.Context, string) ([]wait.Wait, error) { return nil, nil },
+		coordinator: func(context.Context) ([]domain.NodeWait, []domain.TaskWait, error) {
+			return []domain.NodeWait{
+				pendingNodeWait("nw-mine", "thread-1", "omarchy-pc"),
+				pendingNodeWait("nw-theirs", "thread-2", "normandy"),
+			}, nil, nil
+		},
+	}
+	unresolved := errors.New("no T3 thread could be resolved from the caller's provider session")
+	text, err := listWaits(t, sources, waitListOptions{threadResolutionErr: unresolved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "nw-theirs") {
+		t.Fatalf("the unscoped list dropped another thread's wait:\n%s", text)
+	}
+	for _, want := range []string{
+		"No thread could be resolved for the caller",
+		"it is every thread on every host",
+		"--thread",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("a silently widened scope does not say %q:\n%s", want, text)
+		}
+	}
+
+	// A list that was scoped says nothing of the kind.
+	scoped, err := listWaits(t, sources, waitListOptions{thread: "thread-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(scoped, "No thread could be resolved") {
+		t.Fatalf("a scoped list claimed it could not scope:\n%s", scoped)
+	}
+}
+
 // B-4. The native inventory and "wait add" printed a JSON document with no
 // --json asked for, with the registration and request blocks duplicated and
 // every duration as a nanosecond count.

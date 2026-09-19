@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -79,6 +78,12 @@ type waitListAnswer struct {
 	Unavailable []string `json:"unavailable,omitempty"`
 	// Hidden counts the settled waits --all would have shown.
 	Hidden int `json:"hidden,omitempty"`
+	// causes are the failures behind Unavailable, in the same order, kept so
+	// that the exit code can carry the transport class of the source that could
+	// not be read. Unavailable is the text a reader sees; a class survives only
+	// in the error itself, and stringifying it here is what made this verb exit
+	// 1 where its own help page promises the class.
+	causes []error
 }
 
 // waitListSources are the two places a wait can live.
@@ -123,6 +128,7 @@ func collectWaitList(ctx context.Context, sources waitListSources, options waitL
 		local, err := sources.local(ctx, options.thread)
 		if err != nil {
 			answer.Unavailable = append(answer.Unavailable, "local checks on this host: "+err.Error())
+			answer.causes = append(answer.causes, err)
 		} else {
 			answer.Sources = append(answer.Sources, "local checks on this host")
 			for _, w := range local {
@@ -137,6 +143,7 @@ func collectWaitList(ctx context.Context, sources waitListSources, options waitL
 		nodes, tasks, err := sources.coordinator(ctx)
 		if err != nil {
 			answer.Unavailable = append(answer.Unavailable, "coordinator-held waits: "+err.Error())
+			answer.causes = append(answer.causes, err)
 		} else {
 			answer.Sources = append(answer.Sources, "coordinator-held waits")
 			for _, w := range nodes {
@@ -262,9 +269,41 @@ func runWaitList(ctx context.Context, sources waitListSources, options waitListO
 	if len(answer.Unavailable) != 0 {
 		// The list is incomplete and the caller has to know that from the exit
 		// code as well as from the text, because a script reads one of the two.
-		return errors.New("this list is incomplete: " + strings.Join(answer.Unavailable, "; "))
+		return incompleteWaitList(answer)
 	}
 	return nil
+}
+
+// incompleteWaitListError reports a list that is missing a source. It keeps
+// the joined text as its message and the failure of one source as its cause,
+// so that ClassOf and ExitCodeFor read the transport class through Unwrap and
+// the verb exits with the code its help page promises.
+type incompleteWaitListError struct {
+	message string
+	cause   error
+}
+
+func (e incompleteWaitListError) Error() string { return e.message }
+
+func (e incompleteWaitListError) Unwrap() error { return e.cause }
+
+// incompleteWaitList builds that error.
+//
+// When more than one source failed, the cause carried is the first one that
+// was transport-classified. Nothing is lost by preferring it: an unclassified
+// failure exits 1, which is also what this error exits with when no source's
+// failure was classified at all.
+func incompleteWaitList(answer waitListAnswer) error {
+	err := incompleteWaitListError{
+		message: "this list is incomplete: " + strings.Join(answer.Unavailable, "; "),
+	}
+	for _, cause := range answer.causes {
+		if backlogadmin.ClassOf(cause) != "" {
+			err.cause = cause
+			break
+		}
+	}
+	return err
 }
 
 func renderWaitList(out io.Writer, answer waitListAnswer, options waitListOptions) {
@@ -286,6 +325,14 @@ func renderWaitList(out io.Writer, answer waitListAnswer, options waitListOption
 	}
 	if len(answer.Rows) == 0 {
 		fmt.Fprintln(out, emptyWaitListLine(answer, options))
+	} else if options.thread == "" && !options.all && options.threadResolutionErr != nil {
+		// The scope silently widened: no thread could be resolved, so nothing
+		// was filtered and this is every thread on every host. The empty answer
+		// said so already; a non-empty one has to say it too, or it reads as
+		// this thread's waits when it is not.
+		fmt.Fprintf(out, "No thread could be resolved for the caller (%v), so this list is not scoped to "+
+			"one thread: it is every thread on every host. Pass --thread with a T3 thread id.\n",
+			options.threadResolutionErr)
 	}
 	if answer.Hidden != 0 {
 		fmt.Fprintf(out, "%d settled or delivered wait(s) hidden; --all shows them.\n", answer.Hidden)

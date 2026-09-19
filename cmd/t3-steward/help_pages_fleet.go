@@ -77,10 +77,10 @@ func fleetHelpPages() []helpPage {
 				{Name: "--native", Default: "off", Text: "The coordinator's raw inventory instead of the joined answer: node, quota and every task-bound wait it holds, in every state."},
 				jsonFlag("the list"),
 			},
-			Exits:    []helpExit{{0, "listed, from every source"}, {1, "a source could not be read, the state database could not be read, or a bad option"}, {3, "client configuration"}, {5, "no coordinator answered"}, {6, "timeout"}, {8, "the coordinator refused the query"}},
+			Exits:    []helpExit{{0, "listed, from every source"}, {1, "the state database could not be read, a bad option, or a source failed with no transport class"}, {3, "client configuration"}, {5, "no coordinator answered"}, {6, "timeout"}, {8, "the coordinator refused the query"}},
 			JSONKeys: []string{"waits", "sources", "unavailable", "hidden", "id", "kind", "threadId", "subject", "state", "delivery", "host", "registeredAt", "deadline", "source", "settled"},
 			JSONNote: "One document with waits, the sources that answered, and unavailable naming any source that did not. Read unavailable before reading an empty waits: they are different zeros.",
-			Notes:    "It joins this host's local checks with the waits the coordinator holds, so a node wait registered seconds ago appears. A source that could not be read is named in the output and exits non-zero rather than shortening the list silently.",
+			Notes:    "It joins this host's local checks with the waits the coordinator holds, so a node wait registered seconds ago appears. A source that could not be read is named in the output and exits non-zero rather than shortening the list silently, keeping the transport class of the first classified failure so the exit code says which transport failed.",
 			Parsers:  []parserSite{{Func: "parseWaitListArgs"}, {Func: "cmdNodeWait", Case: "list"}},
 		},
 		{
