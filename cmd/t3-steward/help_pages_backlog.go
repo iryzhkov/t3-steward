@@ -375,9 +375,15 @@ func backlogHelpPages() []helpPage {
 
 	// "t3-steward diagnose <run>" is the same verb as "backlog diagnose", named
 	// at the top level because a failed run is what an operator arrives with.
+	// Its path has no family word in it, so the renderer's shared option and
+	// the derived family site do not reach it the way they reach every other
+	// verb of the family; the dispatcher's clause names diagnose and strips
+	// --config for it all the same, so the page states it and the site is
+	// declared here rather than derived.
 	top := backlogReadPage("diagnose", "one run's graph, tasks, assignments, worker journal and wait evidence, joined.",
-		"t3-steward diagnose <workflow-run> [--json]",
-		nil, []string{"diagnosis"}, backlogReadSites("diagnose"),
+		"t3-steward diagnose <workflow-run> [--config PATH] [--json]",
+		[]helpFlag{familyConfigFlag("backlog")}, []string{"diagnosis"},
+		append(backlogReadSites("diagnose"), familyDispatchSite("diagnose")),
 		"Read-only. Exactly one workflow-run id. The dispatcher routes it into the backlog family, so it is the same verb as \"t3-steward backlog diagnose\".")
 	return append(pages, top)
 }

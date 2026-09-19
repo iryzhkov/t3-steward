@@ -327,11 +327,15 @@ func familyHelpPages() []helpPage {
 			Path:     "ui-archive",
 			Purpose:  "read-only: the T3 UI's archive candidates and their classification, as JSON.",
 			Usage:    []string{"t3-steward ui-archive candidates [--config PATH]"},
-			Flags:    []helpFlag{{Name: "--config", Value: "PATH", Default: "$XDG_CONFIG_HOME/t3-steward/config.yaml", Text: "Configuration file to read. The dispatcher removes it before this verb parses anything."}},
+			Flags:    []helpFlag{familyConfigFlag("ui-archive")},
 			Exits:    localExits(),
 			JSONKeys: []string{"enabled", "dryRun", "visibleThreads", "archivedInShell", "candidates"},
 			JSONNote: "This verb always prints JSON; it has no text rendering and no --json flag.",
 			Notes:    "candidates is the only verb. It archives nothing: the daemon performs the bounded effects, and this is the read that explains what it would do.",
+			// ui-archive is a family with one verb and no page below it, so its
+			// own page carries the command form and the site the family's verbs
+			// would otherwise have derived.
+			Parsers: []parserSite{familyDispatchSite("ui-archive")},
 		},
 	}
 }

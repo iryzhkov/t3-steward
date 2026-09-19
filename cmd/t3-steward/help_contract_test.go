@@ -517,10 +517,6 @@ var pagesWithoutAParserSite = map[string]string{
 	"wait":        "family page",
 	"worker":      "family page",
 
-	// ui-archive has one verb, candidates, and no page below it, so its own
-	// page carries the single command form and its one option by hand.
-	"ui-archive": "family page with one verb and no page below it",
-
 	// version is answered inside the dispatcher before a flag set is built,
 	// and it is the one page whose no-flags claim is true.
 	"version": "answered before any parser exists; it takes no option at all",
