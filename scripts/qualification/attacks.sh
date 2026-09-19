@@ -269,7 +269,18 @@ case_fourteen() {
   # have been left polling for a park that does not exist.
   local after waits
   after=$(fleet_coordinator_cli backlog show "$EXECUTION_RUN" --json 2>/dev/null | reading task-state)
-  waits=$(fleet_coordinator_cli wait list 2>/dev/null | grep -c case14 || true)
+  # Only the local half is the subject here: a refused registration must leave
+  # no local check polling. Plain "wait list" now joins the coordinator's own
+  # waits into the same answer, so the rows are filtered back to the local
+  # source rather than counted whole.
+  waits=$(fleet_coordinator_cli wait list --all --json 2>/dev/null |
+    python3 -c 'import json, sys
+try:
+    answer = json.load(sys.stdin)
+except ValueError:
+    answer = {}
+print(sum(1 for row in answer.get("waits", [])
+          if row.get("source") == "local" and "case14" in json.dumps(row)))' || true)
   if [ "$after" != "$state" ]; then
     record case14 FAIL "the refused registration changed the attempt from \"$state\" to \"$after\""
     return

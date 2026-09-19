@@ -763,15 +763,28 @@ For coordinator tasks, register a native check through the admin socket:
 ```sh
 t3-steward wait add --task <run>/<task> --name "task finished"
 t3-steward wait add --run <run> --name "workflow finished"
-t3-steward wait list --native
+t3-steward wait list [--thread ID] [--host HOST] [--all] [--json]
+t3-steward wait list --native [--thread ID] [--host HOST] [--json]
 ```
 
 `--run` targets the implicit sink. `--request-id nw-<unique-id>` makes retries of
 registration idempotent. Native waits follow retries while pending; a committed
-outcome is final. The response reports exitCode 0 for success, 2 for terminal
-failure/cancellation/timeout, and 1 while pending. `wait cancel <nw-id>` and
-`wait run-now <nw-id>` use the coordinator socket too. Use `--native` explicitly
-with a custom request ID that does not start with `nw-`.
+outcome is final. Registration prints text by default; `wait add ... --json`
+reports exitCode 0 for success, 2 for terminal failure/cancellation/timeout, and
+1 while pending. `wait cancel <nw-id>` and `wait run-now <nw-id>` use the
+coordinator socket too. Use `--native` explicitly with a custom request ID that
+does not start with `nw-`.
+
+Plain `wait list` answers what a thread is waiting for from both places a wait
+lives: this host's local checks and the waits the coordinator holds. It is
+scoped to the calling thread by default, hides settled and delivered waits
+until `--all`, and names every source it read. A source it could not read is
+named in the output and exits non-zero, with that source's transport class as
+the exit code. `--native` asks the coordinator for its own inventory instead of
+the joined answer, scoped the same way. Under `--json` both forms print one
+document with `waits`, `sources`, `unavailable` and `hidden`, rather than a
+bare array: read `unavailable` before reading an empty `waits`, because they
+are different zeros.
 
 Shell and native wake delivery use `wait.dry_run` (default `false`), independently
 of `policy.dry_run`. A dedicated T3 client delivers registered wakes even while
@@ -880,7 +893,7 @@ t3-steward wait add [--task current] --at RFC3339 | --for DURATION
 t3-steward wait add [--task current] --github run ID | pr N [--state completed|merged|reviewed|checks-passed] [--repo owner/name]
 t3-steward wait add [--task current] --node RUN[/TASK] [--state terminal|succeeded|paused|waiting-external|active]
 t3-steward wait add [--task current] --quota POOL --below N | --phase normal | --reset
-t3-steward wait list [--all] [--native] [--json]|cancel ID|run-now ID
+t3-steward wait list [--thread ID] [--host HOST] [--all] [--native] [--json]|cancel ID|run-now ID
 t3-steward task env [--get NAME]
 t3-steward bucket list [--json]|rearm KEY --reason TEXT [--force] [--json]
 t3-steward archive candidates|run [--dry-run]|list|restore ID [DIR]

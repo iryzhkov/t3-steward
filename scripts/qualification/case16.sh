@@ -80,8 +80,9 @@ case_multi_wait() {
 # Native coordinator records prove settlement; elapsed time alone cannot.
 all_wait_phase() {
   local run=$1 phase=$2 evidence=$3
-  # The CLI native list currently exposes node waits only. Read coordinator
-  # task-wait records in a read-only SQLite snapshot for this assertion.
+  # The CLI native list does expose task waits, but this assertion needs every
+  # field of the coordinator's own record rather than the printed row, so it
+  # reads the coordinator task-wait records in a read-only SQLite snapshot.
   python3 - "$ROOT/coordinator/state.db" "$evidence" <<'PY'
 import json, sqlite3, sys
 with sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True) as db:

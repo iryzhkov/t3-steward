@@ -1095,6 +1095,28 @@ several waits (a `--wake all` group, a task's all set) names the earliest one
 and adds `count=`. A blank line and the prose follow. `wait list --json` and
 the task wake context carry `kind` and `outcome` too.
 
+`wait list` answers from both places a wait lives: this host's local checks and
+the waits the coordinator holds, joined into one row shape and scoped to the
+calling thread by default. Settled and delivered waits are hidden until
+`--all`; `--thread` and `--host` narrow the scope, on the joined answer and on
+`--native` alike. `--json` prints one document rather than a bare array:
+
+```json
+{
+  "waits": [{"id": "nw-...", "kind": "node", "threadId": "...", "subject": "run-1/sink",
+              "state": "waiting", "delivery": "pending", "host": "...",
+              "registeredAt": "...", "deadline": "...", "source": "coordinator",
+              "settled": false}],
+  "sources": ["local checks on this host", "coordinator-held waits"],
+  "unavailable": ["coordinator-held waits: no coordinator answered"],
+  "hidden": 0
+}
+```
+
+Read `unavailable` before reading an empty `waits`: an empty list whose source
+could not be read is not "nothing is pending", and it exits non-zero with that
+source's transport class.
+
 Composition: `--group NAME --wake all` wakes once when every member has
 settled, for the local kinds through the local runner and for the coordinator
 kinds through the node runner (one message, the earliest member sends). A
