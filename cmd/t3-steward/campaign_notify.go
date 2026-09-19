@@ -121,6 +121,25 @@ func (c campaignCLI) coordinatorRelease(ctx context.Context) string {
 	return release
 }
 
+// replayedRunProgress reads the progress of the run an idempotency key
+// resolved to. It is asked only on a replay, and its failure is reported as a
+// failure rather than filled in with a guess: a record that cannot state the
+// run's progress must not promise a wake for it.
+//
+// "task run" asks the same question of its own query seam. The transports
+// differ because each verb already had one and neither can reach the other's;
+// the rule that reads the answer does not differ, and lives in wake.go.
+func (c campaignCLI) replayedRunProgress(ctx context.Context, runID string) (domain.ProgressState, error) {
+	if c.describe == nil {
+		return "", errors.New("coordinator query transport is unavailable")
+	}
+	summary, err := c.describe(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	return summary.Run.Progress, nil
+}
+
 // campaignNotifyThread resolves the thread a submission should wake.
 //
 // It runs before anything is submitted. A caller that asked for "current" from

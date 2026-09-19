@@ -484,24 +484,14 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 			record.Progress = string(progress)
 		}
 	}
-	if thread != "" && !record.runIsTerminal() {
-		notification, err := c.campaign.registerCampaignNotification(ctx, key, response.RunID, thread)
-		if err != nil {
-			return err
-		}
-		if spentWake(notification, thread) {
-			// The registration this key derives already exists and is spent:
-			// delivered, cancelled, or held for another thread. Reporting it as
-			// the wake for this call is exactly the lie A-1 recorded, so a fresh
-			// registration is made before anything is promised. A fresh one that
-			// is spent too, or that the coordinator refuses, leaves the record
-			// saying plainly that no wake is attached.
-			if fresh, freshErr := c.campaign.registerCampaignNotification(ctx, key+"-"+newWaitID(), response.RunID, thread); freshErr == nil {
-				notification = fresh
-			}
-		}
-		record.Notify = &notification
+	// attachWake is the shared path "campaign submit" registers through too:
+	// nothing for a run that already ended, a fresh registration when the one
+	// this key derives comes back spent.
+	notification, err := c.campaign.attachWake(ctx, key, response.RunID, thread, record.runIsTerminal())
+	if err != nil {
+		return err
 	}
+	record.Notify = notification
 	if parsed.asJSON {
 		return encodeCampaignJSON(c.stdout, record)
 	}
@@ -526,50 +516,21 @@ func (c taskRunCLI) replayedRunProgress(ctx context.Context, runID string) (doma
 	return response.Workflow.Summary.Run.Progress, nil
 }
 
+// wake is contract 1's view of this record: the four facts that decide whether
+// anything will wake the caller. The rule that reads them is in wake.go,
+// shared with "campaign submit", because one contract with an implementation
+// per verb is how "End this turn now" went on being printed by the other verb
+// for a whole release after it was fixed here.
+func (record taskRunRecord) wake() startedRunWake {
+	return startedRunWake{
+		Run: record.Run, Notify: record.Notify,
+		Progress: record.Progress, ProgressUnavailable: record.ProgressUnavailable,
+	}
+}
+
 // runIsTerminal reports whether the record states a run that has already ended.
-// Nothing is registered to wake a thread for one: the outcome is there to be
-// collected now.
-func (record taskRunRecord) runIsTerminal() bool {
-	return record.Progress != "" && domain.ProgressState(record.Progress).Terminal()
-}
-
-// spentWake reports whether a registration that came back can no longer wake
-// this caller: its wake was already delivered or cancelled, or the coordinator
-// holds it for a different thread.
-//
-// An undeliverable wake is not spent. It is a live registration with a
-// delivery-host fault, which has its own message and its own fix.
-func spentWake(notification campaignNotification, thread string) bool {
-	if notification.Undeliverable != "" {
-		return false
-	}
-	if notification.WaitThreadID != "" && notification.WaitThreadID != thread {
-		return true
-	}
-	return notification.Delivery == "delivered" || notification.Delivery == "cancelled"
-}
-
-// wakeWillFire reports whether a wait exists that will fire for the calling
-// thread. The wake promise and the wait are the same fact: the "End this turn
-// now" line is printed if and only if this answers true, so no state of the
-// record can tell an agent to end its turn on a wake that will not arrive.
-func (record taskRunRecord) wakeWillFire() bool {
-	switch {
-	case record.Notify == nil, record.Notify.WaitID == "":
-		return false
-	case record.Notify.Undeliverable != "":
-		return false
-	case spentWake(*record.Notify, record.Notify.ThreadID):
-		return false
-	case record.ProgressUnavailable != "":
-		// The run's progress could not be read, so whether it is still running
-		// to be woken from is unknown. An unknown is not a promise.
-		return false
-	case record.runIsTerminal():
-		return false
-	}
-	return true
-}
+// Nothing is registered to wake a thread for one.
+func (record taskRunRecord) runIsTerminal() bool { return record.wake().runIsTerminal() }
 
 // explicitTaskRunRoute is the start that derives nothing it needs from the
 // catalog: --project names the project and --model INSTANCE/MODEL names the
@@ -1113,7 +1074,7 @@ func renderTaskRunRecord(out io.Writer, record taskRunRecord) error {
 	fmt.Fprintf(out, "route %s\n", route)
 	fmt.Fprintf(out, "idempotency-key %s (replayed: %t)\n", record.IdempotencyKey, record.Replayed)
 	renderTaskRunState(out, record)
-	renderTaskRunWake(out, record)
+	renderWake(out, record.wake())
 	_, err := fmt.Fprintf(out, "next:\n  %s\n", record.Result)
 	return err
 }
@@ -1124,60 +1085,11 @@ func renderTaskRunRecord(out io.Writer, record taskRunRecord) error {
 // reader who sees "check accepted_waiting" on a replay reads it as the state of
 // the run and it is not.
 func renderTaskRunState(out io.Writer, record taskRunRecord) {
-	switch {
-	case record.ProgressUnavailable != "":
-		fmt.Fprintf(out, "progress unknown: %s\n", record.ProgressUnavailable)
-	case record.Progress != "":
-		fmt.Fprintf(out, "progress %s (this run already exists; nothing new was started)\n", record.Progress)
-	case record.Check != "":
-		fmt.Fprintf(out, "check %s\n", record.Check)
-	}
-}
-
-// renderTaskRunWake prints the wait, if there is one, and then exactly one
-// instruction about the caller's turn. The "End this turn now" line is printed
-// if and only if wakeWillFire, so the promise and the wait are the same fact.
-func renderTaskRunWake(out io.Writer, record taskRunRecord) {
-	if record.Notify != nil {
-		line := fmt.Sprintf("notify thread %s (wait %s)", record.Notify.ThreadID, record.Notify.WaitID)
-		if record.Notify.Delivery != "" {
-			line += " delivery=" + record.Notify.Delivery
-		}
-		if record.Notify.Host != "" {
-			// Host is printed because host is where D-4 hid: a wake recorded for
-			// another host is sent into the T3 of that host.
-			line += " host=" + record.Notify.Host
-		}
-		if record.Notify.WaitThreadID != "" && record.Notify.WaitThreadID != record.Notify.ThreadID {
-			line += " held-for-thread=" + record.Notify.WaitThreadID
-		}
-		if record.Notify.Undeliverable != "" {
-			line += " undeliverable: " + record.Notify.Undeliverable
-		}
-		fmt.Fprintln(out, line)
-	}
-	if record.wakeWillFire() {
-		fmt.Fprint(out, "End this turn now; the steward wakes this thread when the run ends.\n")
+	if renderRunProgress(out, record.wake()) {
 		return
 	}
-	switch {
-	case record.ProgressUnavailable != "":
-		fmt.Fprintf(out, "This run's progress could not be read, so nothing is promised about a wake. "+
-			"Read it with:\n  t3-steward diagnose %s\n", record.Run)
-	case record.runIsTerminal():
-		fmt.Fprintf(out, "This run already ended %s, so there is nothing to wait for and nothing will wake "+
-			"this thread. Collect it now.\n", record.Progress)
-	case record.Notify == nil:
-		fmt.Fprint(out, "notify none: nothing will wake a thread when this run ends\n")
-	case record.Notify.Undeliverable != "":
-		// The run exists and the wait exists; what does not exist is a path from
-		// one to this thread. Promising a wake here is worse than promising
-		// nothing, because the agent would end its turn on it.
-		fmt.Fprintf(out, "The run was started. Nothing will wake this thread, so do not end this turn "+
-			"waiting for a wake.\nWatch it instead with:\n  t3-steward campaign show %s\n", record.Run)
-	default:
-		fmt.Fprintf(out, "No wake is attached to this run, so do not end this turn waiting for one. "+
-			"Attach one with:\n  t3-steward wait add --run %s\n", record.Run)
+	if record.Check != "" {
+		fmt.Fprintf(out, "check %s\n", record.Check)
 	}
 }
 

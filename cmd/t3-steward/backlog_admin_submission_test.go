@@ -16,6 +16,10 @@ type fakeSubmissionService struct {
 	request backlogadmin.LocalSubmissionRequest
 	raw     []byte
 	size    int64
+	// replay is what the coordinator answers about the idempotency key: a key
+	// that resolved to a run which already exists started nothing, and what the
+	// caller may then be told about a wake depends on that run's own progress.
+	replay bool
 }
 
 func (f *fakeSubmissionService) SubmitArchive(
@@ -32,6 +36,7 @@ func (f *fakeSubmissionService) SubmitArchive(
 	return backlogadmin.LocalSubmissionResponse{
 		Key: request.IdempotencyKey, Digest: "abc", WorkflowID: "workflow-1",
 		RunID: "run-1", State: "accepted", AcceptedAt: "2026-09-10T12:00:00Z",
+		Replay: f.replay,
 	}, nil
 }
 

@@ -554,14 +554,26 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	var notification *campaignNotification
-	if notifyThread != "" {
-		registered, err := c.registerCampaignNotification(ctx, parsed.key, response.RunID, notifyThread)
-		if err != nil {
-			return err
+	// What this submission may promise about a wake is decided by the same
+	// rule "task run" uses, through the same path: a key that replayed onto a
+	// run that already ended gets no registration at all, and a run whose
+	// progress cannot be read gets no promise. Writing the rule a second time
+	// here is how this verb went on saying "End this turn now" for a wait the
+	// coordinator had already answered.
+	wake := startedRunWake{Run: response.RunID}
+	if response.Replay {
+		progress, progressErr := c.replayedRunProgress(ctx, response.RunID)
+		if progressErr != nil {
+			wake.ProgressUnavailable = progressErr.Error()
+		} else {
+			wake.Progress = string(progress)
 		}
-		notification = &registered
 	}
+	notification, err := c.attachWake(ctx, parsed.key, response.RunID, notifyThread, wake.runIsTerminal())
+	if err != nil {
+		return err
+	}
+	wake.Notify = notification
 	if parsed.asJSON {
 		return encodeCampaignJSON(c.stdout, campaignSubmission{
 			LocalSubmissionResponse: response,
@@ -590,20 +602,8 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 	); err != nil {
 		return err
 	}
-	if notification != nil {
-		closing := "End this turn now; the coordinator wakes the thread with the terminal outcome.\n"
-		if notification.Undeliverable != "" {
-			// Say what was registered and that its wake cannot arrive here, rather
-			// than telling the caller to end a turn nothing will resume.
-			closing = fmt.Sprintf("That wake is undeliverable: %s.\nThe run was started. Nothing will wake "+
-				"this thread, so do not end this turn waiting for a wake.\n", notification.Undeliverable)
-		}
-		if _, err := fmt.Fprintf(c.stdout,
-			"notification %s registered on %s for thread %s.\n%s",
-			notification.WaitID, notification.Target, notification.ThreadID, closing); err != nil {
-			return err
-		}
-	}
+	renderRunProgress(c.stdout, wake)
+	renderWake(c.stdout, wake)
 	_, err = fmt.Fprintf(c.stdout,
 		"next:\n  t3-steward campaign show %s\n  t3-steward campaign graph %s\n",
 		response.RunID, response.RunID)
