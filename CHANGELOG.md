@@ -8,6 +8,23 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Every invocation of `t3-steward` appends one record to the tool-feedback
+  spool the fleet's MCP servers already write, at
+  `~/.local/share/toolfeedback/t3-steward/<host>-<date>.jsonl`. The record
+  holds the verb path, the flag keys, an outcome class and the elapsed time,
+  and it is written from `main`, where the verb, the flags and the exit code
+  are known without parsing anything. It carries no argument values: the verb
+  path is built by matching words against the help-page registry and the flag
+  keys against the options those pages document, so only names this program
+  already publishes are ever written, an undeclared option records as `?`, and
+  everything after a bare `--` is not scanned at all. `outcome` maps the exit
+  codes the help pages document onto the five classes an agent experiences:
+  `ok`, `usage` (3, 4 and a recognised refusal at 1), `state` (2 and 8),
+  `transport` (5, 6 and 7) and `internal` (an unclassified 1). The spool is off
+  unless the `enabled` marker exists in the spool directory or
+  `T3_STEWARD_FRICTION=1` or `TOOLFEEDBACK=1` is set, and a spool that cannot
+  be written is skipped in silence: it never changes the exit code, standard
+  output or standard error.
 - `t3-steward task run` starts one task on the fleet from a checkout, with the
   project, the ref, the route, the idempotency key and the wake derived and
   every derived value printed: the project from `--project` or the checkout's

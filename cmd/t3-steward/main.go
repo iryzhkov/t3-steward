@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -91,14 +92,33 @@ file (for example T3_STEWARD_T3_URL, T3_STEWARD_DRY_RUN).
 `
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+	os.Exit(invoke(os.Args[1:], os.Stderr))
+}
+
+// invoke runs one command line and returns the exit code the caller sees. It
+// is the whole of main apart from the call to os.Exit, so that a test can
+// drive a real command line through the same path a shell does.
+//
+// The instrumentation spool is written between the command finishing and the
+// caller learning about it, and it cannot change either: spoolInvocation
+// prints nothing and returns nothing, and the exit code was decided before it
+// ran. See spool.go.
+func invoke(args []string, stderr io.Writer) int {
+	started := time.Now()
+	err := run(args)
+	code := 0
+	if err != nil {
 		// A transport failure exits with its class so that automation can
 		// branch without parsing prose. A verb that owns its own verdict, such
 		// as "task result", carries its exit code on the error. Everything else
 		// keeps exit 1.
-		os.Exit(exitCodeFor(err))
+		code = exitCodeFor(err)
 	}
+	spoolInvocation(args, code, err, time.Since(started))
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+	}
+	return code
 }
 
 type globalFlags struct {
