@@ -160,6 +160,53 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- `t3-steward backlog projects` answers the question it was asked. Unfiltered,
+  its text form is now one row per project with the eligible worker count and
+  the advertised route count, followed by a line that says it summarised, gives
+  the totals and names the two ways to get the detail. It was 28 KB of text and
+  90 KB of JSON on a thirteen-project fleet, because every eligible worker of
+  every project was printed with all thirty-six routes spelled out. `--project
+  NAME` is unchanged and still prints one project in full, as does a catalog
+  that holds one project; the new `--verbose` prints the whole catalog in the
+  old detailed form, and `--json` is unchanged and always the whole document.
+  The scope is applied before the summary, by the coordinator: a scoped answer
+  is the whole of a smaller question rather than a window onto a larger one.
+- `t3-steward models` gains `--instance ID` and `--available`, which narrow
+  what is read, and both are applied to the document before it is rendered or
+  encoded. A narrowed table says how many routes and instances the unnarrowed
+  answer holds and which filter is in force, so it cannot be mistaken for the
+  fleet; a filter that matches nothing says so and gives those totals rather
+  than printing the empty table an empty fleet would print. The `--json`
+  document gains `instance`, `available`, `totalInstances` and `totalRoutes`.
+- `t3-steward backlog task show` and `t3-steward diagnose` print the attempt's
+  own timeline: when it started, how long it has been going, and, while it is
+  not finished, when its lease expires and how much of it is left. "It started
+  an hour ago, why is it not finished" needed a second call in `--json`
+  before, because the text path carried the coordinator's generation time, the
+  worker's observation time and the waits' deadlines, and no clock of the
+  attempt's own. A terminal attempt claims no lease, and a timestamp missing
+  from the record is printed as unknown naming the absent field rather than as
+  a zero time rendered as a date.
+- The session line of `backlog task show` is labelled as the provider
+  session's own state, and says what it means when it would contradict the
+  attempt above it. `session: thread stopped, control stopped, phase completed`
+  meant "the provider thread was not generating at that instant" and was
+  printed four lines under the same attempt's `progress: active` and `control:
+  running`; an agent diagnosing a slow task read it as "the work stopped". It
+  now reads `provider session: idle when the worker last looked (...); the
+  attempt is progress active, control running, so that is the provider thread
+  between turns and not the task stopping`, and a session the attempt agrees
+  with is printed plainly under the same `provider session:` label.
+- The three enrollment refusals name the worker, the fact that failed with
+  what was observed against what is required, and the command to run next. The
+  provider-route refusal was `configured provider route is unavailable on
+  worker`, which named neither the route nor the remedy in a binary whose
+  `task run` refusals list every acceptable value, and `worker enroll --all`
+  prints one refusal per worker.
+- `t3-steward campaign --help` offers `--no-notify` and says the calling
+  thread is notified by default. The family page still described the submit
+  that existed before notification became the default, so the flag an
+  unattended caller needs was absent from it.
 - A provider instance the fleet projection authorises with desired models and
   no quota binding no longer fails the coordinator's whole configuration. It is
   dropped for that worker, the coordinator logs one warning at startup naming

@@ -592,6 +592,8 @@ The coordinator validates; it never chooses a route.
 
 `t3-steward models [--project NAME]` lists every route the fleet can run now,
 one row per `instance/model`, with its pool, quota phase and workers.
+`--instance ID` reports one provider instance and `--available` drops the routes
+that cannot run; a narrowed table says how many routes the whole answer holds.
 
 The calling thread is woken when the run ends, and a start is refused when no
 thread resolves unless `--no-notify` says that is intended. On wake:
@@ -884,8 +886,8 @@ t3-steward task run [--project NAME] [--ref REF | --fresh] [--model [INSTANCE/]M
                     [--max-turns N] [--idempotency-key KEY] [--no-notify] [--json]
                     (-- PROMPT | --prompt-file FILE | --fan-out GLOB | stdin)
 t3-steward task result RUN[/TASK] [--output DIR] [--json]
-t3-steward models [--project NAME] [--json]
-t3-steward backlog projects [--project NAME] [--json]
+t3-steward models [--project NAME] [--instance ID] [--available] [--json]
+t3-steward backlog projects [--project NAME] [--verbose] [--json]
 t3-steward backlog list [--all]|new ID|check FILE|show ID|retry ID|cancel ID|receive ID|path
 t3-steward campaign cancel RUN[/TASK] --reason TEXT [--command-id ID] [--json]
 t3-steward wait add [--task current] [--name TEXT] [--timeout 24h] [--or-timeout] [--group G --wake all] -- CMD...

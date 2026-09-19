@@ -491,7 +491,7 @@ the query needs and those two flags, rather than with the coordinator's bare
 What the fleet can run right now:
 
 ```sh
-t3-steward models [--project NAME] [--json]
+t3-steward models [--project NAME] [--instance ID] [--available] [--json]
 ```
 
 One row per `instance/model`, in the form `--model` takes, with the pool, the
