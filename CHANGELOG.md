@@ -405,6 +405,20 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `wait add --node` and `wait add --quota` now register the wake for the
+  calling host. Recording the calling host was added for the registration path
+  of the superseded `--run` and `--task <run>/<task>` spellings, but the
+  documented kind flags are parsed by a second path that never stated it, so on
+  every host that is not the coordinator such a wait was recorded for the
+  coordinator's hostname, its wake was sent into the coordinator's own T3 where
+  the waiting thread does not exist, and the row stayed `delivery=pending`
+  forever -- while the command still printed "end this turn now". Both paths now
+  state the host, decide whether the coordinator accepts the field and report
+  the outcome through the same three functions, so they cannot disagree about it
+  again, and a registration whose wake cannot be shown to arrive here says so
+  instead of promising a wake. A wait registered before this fix is still
+  recorded for the wrong host: cancel it with `t3-steward wait cancel <id>` and
+  register it again.
 - A node wake now reaches a caller that is not on the coordinator. A wake is
   sent by the wait runner whose host matches the wait's, into that host's own
   T3, and a thread exists only on the host that opened it -- but a registration

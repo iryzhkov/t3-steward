@@ -58,7 +58,7 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 	switch args[0] {
 	case "add":
 		if coordinatorWaitArgs(args[1:]) {
-			return cmdCoordinatorWaitAdd(ctx, cfg, client, args[1:])
+			return cmdCoordinatorWaitAdd(ctx, cfg, client, coordinatorWaitRelease(transport), args[1:])
 		}
 		fs := flag.NewFlagSet("wait add", flag.ContinueOnError)
 		task := fs.String("task", "", "run/task")
@@ -133,16 +133,8 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 			// and one from this client replay as the same request.
 			op.Request.State = nodeState
 		}
-		release = coordinatorRelease(ctx, func(ctx context.Context, query backlogadmin.Query) (backlogadmin.Response, error) {
-			query.Version = backlogadmin.Version
-			query.Principal = transport.principal
-			return client.Query(ctx, query)
-		})
-		if newEnough, known := releaseAtLeast(release, nodeWakeDeliveryHostRelease); known && newEnough {
-			// An older coordinator decodes this operation strictly and would
-			// refuse the whole registration over a field it does not know.
-			op.Host = caller
-		}
+		release = coordinatorWaitRelease(transport)(ctx)
+		op.Host = statedWakeHost(release, caller)
 	case "list":
 		op.Action = "list"
 		// The raw inventory measured 99,630 bytes and 62 waits on one host,
@@ -214,15 +206,8 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 	if err := renderNativeWaitResult(os.Stdout, result, scope); err != nil {
 		return err
 	}
-	if op.Action == "register" && len(result.Waits) == 1 && result.Waits[0].Delivery != "delivered" && result.Waits[0].Delivery != "cancelled" {
-		// The instruction to the agent goes to stderr, because under --json
-		// stdout is one document a strict reader has to be able to parse.
-		if reason := undeliverableWake(result.Waits[0].Host, caller, release, nodeWakeDeliveryFor(cfg), time.Now()); reason != "" {
-			fmt.Fprintln(os.Stderr, "The wait was registered, but its wake is undeliverable: "+reason+".")
-			fmt.Fprintln(os.Stderr, "Nothing will wake this thread, so do not end this turn waiting for a wake.")
-		} else {
-			fmt.Fprintln(os.Stderr, "End this turn now; the coordinator has registered the node wait.")
-		}
+	if op.Action == "register" && len(result.Waits) == 1 {
+		reportNodeWaitRegistration(os.Stderr, result.Waits[0], caller, release, nodeWakeDeliveryFor(cfg), time.Now())
 	}
 	return nil
 }
