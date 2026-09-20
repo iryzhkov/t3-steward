@@ -37,7 +37,17 @@ func TestWatchdogSweepsItsOwnEmptyProjects(t *testing.T) {
 					"createdAt": "2026-09-01T00:00:00.000Z", "updatedAt": "2026-09-01T00:00:00.000Z"},
 				{"id": "human", "title": "huyang development", "workspaceRoot": "/home/igor/Work/huyang",
 					"createdAt": "2026-09-01T00:00:00.000Z", "updatedAt": "2026-09-01T00:00:00.000Z"},
+				{"id": "occupied", "title": "Steward: busy", "workspaceRoot": filepath.Join(workspaces, "workers", "abc", ".projects", "busy"),
+					"createdAt": "2026-09-01T00:00:00.000Z", "updatedAt": "2026-09-01T00:00:00.000Z"},
 			}, "threads": []any{}})
+		case "/api/orchestration/snapshot":
+			// The full read model, where an archived thread is still a thread.
+			// The shell above shows none of them, which is the defect this route
+			// exists in the pass for.
+			_ = json.NewEncoder(w).Encode(map[string]any{"threads": []map[string]any{
+				{"id": "thread-1", "projectId": "occupied", "archivedAt": "2026-09-02T00:00:00.000Z",
+					"updatedAt": "2026-09-02T00:00:00.000Z"},
+			}})
 		case "/api/orchestration/dispatch":
 			var command map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&command); err != nil {

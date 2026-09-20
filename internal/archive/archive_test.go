@@ -37,7 +37,9 @@ type memControl struct {
 	deleted []string
 }
 
-func (c *memControl) ListThreads(context.Context) ([]domain.Thread, error) { return c.threads, nil }
+// ListAllThreads is what the archiver reads: every thread T3 holds, archived
+// ones included.
+func (c *memControl) ListAllThreads(context.Context) ([]domain.Thread, error) { return c.threads, nil }
 func (c *memControl) ExportThread(_ context.Context, id string) ([]byte, error) {
 	return []byte(`{"thread":{"id":"` + id + `"}}`), nil
 }
@@ -46,6 +48,32 @@ func (c *memControl) DeleteThread(_ context.Context, id string) error {
 	return nil
 }
 func (c *memControl) ProjectTitle(context.Context, string) string { return "proj" }
+
+// A thread archived in T3 is what cold storage is for, and it reaches this pass
+// only because the pass reads the full thread index.
+//
+// The shell snapshot leaves an archived thread out entirely, so reading it meant
+// a thread hidden in the T3 UI was never bundled and never deleted: the
+// database kept every one of them, and the project holding them could not be
+// removed either.
+func TestArchivedThreadsAreCandidates(t *testing.T) {
+	now := time.Date(2030, 1, 10, 4, 0, 0, 0, time.UTC)
+	archived := now.Add(-70 * time.Hour)
+	store := &memStore{recs: map[string]Record{}, busy: map[string]string{}, kv: map[string]string{}}
+	control := &memControl{threads: []domain.Thread{
+		{ID: "hidden", Title: "archived in the UI", UpdatedAt: now.Add(-72 * time.Hour), ArchivedAt: &archived},
+		{ID: "recent-archive", Title: "archived an hour ago", UpdatedAt: now.Add(-time.Hour), ArchivedAt: ptr(now.Add(-time.Hour))},
+	}}
+	a := New(Options{After: 48 * time.Hour, Destination: t.TempDir(), HostName: "h", DataDir: t.TempDir()}, store, control)
+	a.SetClock(func() time.Time { return now })
+	cands, skipped, err := a.Candidates(context.Background())
+	if err != nil || len(cands) != 1 || cands[0].ID != "hidden" {
+		t.Fatalf("candidates = %+v err=%v", cands, err)
+	}
+	if skipped["recent-archive"] == "" {
+		t.Fatalf("a thread archived inside the retention was not kept: %v", skipped)
+	}
+}
 
 func TestCandidatesAndBundle(t *testing.T) {
 	now := time.Date(2030, 1, 10, 4, 0, 0, 0, time.UTC)

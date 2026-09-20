@@ -16,7 +16,9 @@ All notable changes to this project are documented here. The format follows
   coordinator left behind, all of them in the T3 sidebar next to the projects a
   person actually opens. A new `project_cleanup` section (enabled, `after: 24h`,
   `every: 1h`, `max_per_pass: 20`, `dry_run`, `roots`) removes a project that
-  holds no thread at all and whose own record has been untouched for `after`.
+  holds no thread at all -- counted from the full read model, so an archived
+  thread still occupies its project -- and whose own record has been untouched
+  for `after`.
   Ownership is the whole of the rule: a candidate's workspace root must be
   inside this host's worker workspaces root, so a project someone opened is
   never one. It removes nothing else -- threads belong to `archive` and
@@ -428,6 +430,22 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Cold storage now sees the threads archived in T3, which are most of the
+  threads it exists for. `archive` read the shell snapshot, which leaves an
+  archived thread out entirely, so a session hidden by `ui_archive` or archived
+  by hand was never bundled and never deleted: the fleet had accumulated 950 of
+  them (719 on one host), every one still in T3's database and none in cold
+  storage. It now reads the full thread index, so such a thread is bundled,
+  verified and deleted from T3 once it has been idle for `archive.after`, at
+  most `archive.max_per_run` per host per night. `t3-steward archive candidates`
+  shows them before the next run, and `archive restore` brings one back.
+
+  The project cleanup pass counts threads from the same index, because T3 counts
+  an archived thread when it decides whether a project may be deleted. Its first
+  release asked the shell snapshot, saw an occupied project as empty, and had
+  every deletion refused with "is not empty and cannot be deleted without
+  force=true"; it now leaves such a project alone and removes it after cold
+  storage has emptied it. A thread list that cannot be read fences the pass.
 - A `--github` wait registered without `--repo` is now polled where it can be
   read. `gh` resolves the repository from its working directory, and the poll
   runs in the steward daemon, whose working directory under systemd is the

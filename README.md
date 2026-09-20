@@ -877,6 +877,13 @@ t3-steward archive list
 t3-steward archive restore <thread-id> [DIR]   # fetch and unpack a bundle
 ```
 
+The candidates are read from T3's full thread index, so a session that
+`ui_archive` hid, or that you archived in the T3 UI yourself, is bundled and
+then deleted from T3 like any other settled thread once it has been idle for
+`archive.after`. Hiding a session in the UI is reversible; cold storage is where
+it stops being reversible in T3, and `t3-steward archive restore <thread-id>`
+is how it comes back.
+
 The export is JSON to read or hand to an agent; T3 has no import.
 
 ## Cleaning up managed T3 projects
@@ -892,6 +899,12 @@ when it holds no thread at all and its own record has been untouched for
 `project_cleanup.after` (24 hours), at most `max_per_pass` projects per pass and
 at most one pass per `every`. Passes are logged, and each removal is one
 `project-cleanup` row in `t3-steward status`.
+
+"No thread" is counted from the full orchestration read model rather than from
+the shell snapshot, because the shell leaves archived threads out and T3 counts
+one when it decides whether a project may be deleted. A project whose threads
+are merely archived in T3 is therefore never swept; it becomes a candidate once
+`archive` has bundled its threads to cold storage and deleted them from T3.
 
 The ownership rule is the whole of the safety: a project is a candidate only
 when its workspace root is *inside* this host's worker workspaces root (the one

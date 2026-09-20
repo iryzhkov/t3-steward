@@ -39,6 +39,12 @@ const lastPassKey = "project_cleanup.last_pass"
 
 type Control interface {
 	ListProjects(context.Context) ([]t3control.Project, error)
+	// ListAllThreads includes the archived threads. T3 counts an archived
+	// thread when it decides whether a project may be deleted, and the shell
+	// snapshot every other pass reads leaves archived threads out entirely, so
+	// a pass that asked only the shell saw an occupied project as empty and had
+	// every deletion refused.
+	ListAllThreads(context.Context) ([]domain.Thread, error)
 	DeleteProject(context.Context, string) error
 }
 
@@ -148,9 +154,10 @@ func Idle(project t3control.Project) (time.Time, bool) {
 
 // Candidates are the projects this pass would delete, oldest record first.
 //
-// threads is every thread T3 still holds, archived ones included: a project
-// that holds an archived thread is not empty, T3 refuses to delete it without
-// force, and this package never sends force.
+// threads must be every thread T3 still holds, archived ones included: a
+// project that holds an archived thread is not empty, T3 refuses to delete it
+// without force, and this package never sends force. Run collects them from
+// ListAllThreads for exactly that reason.
 func Candidates(projects []t3control.Project, threads []domain.Thread, now time.Time, opts Options) []t3control.Project {
 	occupied := map[string]bool{}
 	for _, thread := range threads {
@@ -229,8 +236,15 @@ func (s *Sweeper) Run(ctx context.Context, threads []domain.Thread) (int, error)
 	if err != nil {
 		return 0, fmt.Errorf("project cleanup: read the projects: %w", err)
 	}
+	// Every thread, including the archived ones the caller's shell snapshot
+	// cannot see. A failure here fences the whole pass rather than leaving it to
+	// decide emptiness from half the threads.
+	all, err := s.Control.ListAllThreads(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("project cleanup: read the threads: %w", err)
+	}
 	now := s.now()
-	candidates := Candidates(projects, threads, now, s.Options)
+	candidates := Candidates(projects, append(append([]domain.Thread(nil), threads...), all...), now, s.Options)
 	if len(candidates) > s.Options.MaxPerPass {
 		candidates = candidates[:s.Options.MaxPerPass]
 	}

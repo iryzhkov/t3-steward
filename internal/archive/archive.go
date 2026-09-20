@@ -57,7 +57,12 @@ type Store interface {
 
 // Control is what the archiver needs from T3.
 type Control interface {
-	ListThreads(ctx context.Context) ([]domain.Thread, error)
+	// ListAllThreads includes the threads archived in T3, which are exactly
+	// the ones cold storage exists for: a settled or archived thread that has
+	// not been updated for After. The shell snapshot leaves an archived thread
+	// out entirely, so reading it meant this pass never saw one, and a thread
+	// archived in the T3 UI was never bundled and never left the database.
+	ListAllThreads(ctx context.Context) ([]domain.Thread, error)
 	ExportThread(ctx context.Context, threadID string) ([]byte, error)
 	DeleteThread(ctx context.Context, threadID string) error
 	ProjectTitle(ctx context.Context, projectID string) string
@@ -165,7 +170,7 @@ func (a *Archiver) dueToday(ctx context.Context, now time.Time) (bool, error) {
 
 // Candidates lists threads eligible for archiving now.
 func (a *Archiver) Candidates(ctx context.Context) ([]domain.Thread, map[string]string, error) {
-	threads, err := a.control.ListThreads(ctx)
+	threads, err := a.control.ListAllThreads(ctx)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -87,6 +87,29 @@ func (c *Control) ResolveProjectID(ctx context.Context, project string) (string,
 	return resolved, nil
 }
 
+// ListAllThreads returns every thread T3 still holds, archived ones included,
+// and only the deleted ones left out.
+//
+// The shell snapshot leaves an archived thread out entirely, and T3 still
+// counts one when it decides whether a project may be deleted, so a caller that
+// asks "is anything left in this project" has to read the full index rather
+// than the shell. It is a separate method because it is a heavier read: the
+// whole orchestration read model rather than the shell's live subset.
+func (c *Control) ListAllThreads(ctx context.Context) ([]domain.Thread, error) {
+	shells, err := c.client.ThreadIndex(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.Thread, 0, len(shells))
+	for _, t := range shells {
+		if t.DeletedAt != nil {
+			continue
+		}
+		out = append(out, FromShell(t))
+	}
+	return out, nil
+}
+
 // ListThreads returns every live (non-archived, non-deleted) thread.
 func (c *Control) ListThreads(ctx context.Context) ([]domain.Thread, error) {
 	snap, err := c.client.ShellSnapshot(ctx)

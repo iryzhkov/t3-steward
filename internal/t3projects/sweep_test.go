@@ -16,12 +16,20 @@ import (
 
 type fakeControl struct {
 	projects []t3control.Project
-	deleted  []string
-	refuse   map[string]error
+	// threads is what T3 still holds, archived ones included, which is what
+	// ListAllThreads answers.
+	threads      []domain.Thread
+	threadsError error
+	deleted      []string
+	refuse       map[string]error
 }
 
 func (c *fakeControl) ListProjects(context.Context) ([]t3control.Project, error) {
 	return c.projects, nil
+}
+
+func (c *fakeControl) ListAllThreads(context.Context) ([]domain.Thread, error) {
+	return c.threads, c.threadsError
 }
 
 func (c *fakeControl) DeleteProject(_ context.Context, id string) error {
@@ -82,10 +90,12 @@ func TestSweepDeletesOnlyEmptyManagedProjects(t *testing.T) {
 	sweeper := &Sweeper{Options: testOptions(owned), Control: control, Store: store,
 		Now: func() time.Time { return now }, Logger: discardLogger()}
 	// An archived thread is still a thread: T3 refuses to delete its project
-	// without force, and this pass never sends force.
+	// without force, and this pass never sends force. The shell snapshot the
+	// caller passes cannot see it, so it arrives from ListAllThreads -- which is
+	// the whole reason the pass reads them itself.
 	archived := now.Add(-48 * time.Hour)
-	threads := []domain.Thread{{ID: "thread-1", ProjectID: "occupied", ArchivedAt: &archived}}
-	deleted, err := sweeper.Run(context.Background(), threads)
+	control.threads = []domain.Thread{{ID: "thread-1", ProjectID: "occupied", ArchivedAt: &archived}}
+	deleted, err := sweeper.Run(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +112,23 @@ func TestSweepDeletesOnlyEmptyManagedProjects(t *testing.T) {
 	}
 	if !strings.Contains(store.actions[0].Detail, "root=") || store.actions[0].DryRun {
 		t.Fatalf("an audit record does not say what was deleted: %+v", store.actions[0])
+	}
+}
+
+// A thread list that cannot be read fences the pass. Deciding emptiness from
+// half the threads is how a project with work in it gets deleted.
+func TestSweepFencesOnAnUnreadableThreadList(t *testing.T) {
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	owned := "/state/workspaces"
+	control := &fakeControl{
+		projects:     []t3control.Project{{ID: "empty", Title: "Steward: a", WorkspaceRoot: owned + "/a", UpdatedAt: now.Add(-72 * time.Hour)}},
+		threadsError: errors.New("T3 API 503"),
+	}
+	sweeper := &Sweeper{Options: testOptions(owned), Control: control, Store: newFakeStore(),
+		Now: func() time.Time { return now }, Logger: discardLogger()}
+	deleted, err := sweeper.Run(context.Background(), nil)
+	if err == nil || deleted != 0 || len(control.deleted) != 0 {
+		t.Fatalf("deleted %d (%v) err=%v", deleted, control.deleted, err)
 	}
 }
 
