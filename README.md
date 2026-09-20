@@ -880,7 +880,9 @@ t3-steward archive restore <thread-id> [DIR]   # fetch and unpack a bundle
 The candidates are read from T3's full thread index, so a session that
 `ui_archive` hid, or that you archived in the T3 UI yourself, is bundled and
 then deleted from T3 like any other settled thread once it has been idle for
-`archive.after`. Hiding a session in the UI is reversible; cold storage is where
+`archive.after`. T3 cannot export an archived thread, so such a thread is
+unarchived for the export and archived again unless it is deleted; a bundle
+that fails leaves it hidden exactly as it was. Hiding a session in the UI is reversible; cold storage is where
 it stops being reversible in T3, and `t3-steward archive restore <thread-id>`
 is how it comes back.
 

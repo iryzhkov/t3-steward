@@ -2,6 +2,7 @@ package archive
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,13 +36,34 @@ func (m *memStore) SetKV(_ context.Context, k, v string) error { m.kv[k] = v; re
 type memControl struct {
 	threads []domain.Thread
 	deleted []string
+	// archived is the state T3 holds: an archived thread cannot be exported.
+	archived   map[string]bool
+	unarchived []string
+	rearchived []string
 }
 
 // ListAllThreads is what the archiver reads: every thread T3 holds, archived
 // ones included.
 func (c *memControl) ListAllThreads(context.Context) ([]domain.Thread, error) { return c.threads, nil }
+
+// The fake refuses an export while the thread is archived, exactly as T3 does.
 func (c *memControl) ExportThread(_ context.Context, id string) ([]byte, error) {
+	if c.archived[id] {
+		return nil, errors.New("T3 API 404 EnvironmentResourceNotFoundError (thread_not_found)")
+	}
 	return []byte(`{"thread":{"id":"` + id + `"}}`), nil
+}
+
+func (c *memControl) UnarchiveThread(_ context.Context, id string) error {
+	c.unarchived = append(c.unarchived, id)
+	delete(c.archived, id)
+	return nil
+}
+
+func (c *memControl) RearchiveThread(_ context.Context, id string) error {
+	c.rearchived = append(c.rearchived, id)
+	c.archived[id] = true
+	return nil
 }
 func (c *memControl) DeleteThread(_ context.Context, id string) error {
 	c.deleted = append(c.deleted, id)
@@ -60,11 +82,12 @@ func TestArchivedThreadsAreCandidates(t *testing.T) {
 	now := time.Date(2030, 1, 10, 4, 0, 0, 0, time.UTC)
 	archived := now.Add(-70 * time.Hour)
 	store := &memStore{recs: map[string]Record{}, busy: map[string]string{}, kv: map[string]string{}}
-	control := &memControl{threads: []domain.Thread{
+	control := &memControl{archived: map[string]bool{"hidden": true, "recent-archive": true}, threads: []domain.Thread{
 		{ID: "hidden", Title: "archived in the UI", UpdatedAt: now.Add(-72 * time.Hour), ArchivedAt: &archived},
 		{ID: "recent-archive", Title: "archived an hour ago", UpdatedAt: now.Add(-time.Hour), ArchivedAt: ptr(now.Add(-time.Hour))},
 	}}
-	a := New(Options{After: 48 * time.Hour, Destination: t.TempDir(), HostName: "h", DataDir: t.TempDir()}, store, control)
+	dest := t.TempDir()
+	a := New(Options{After: 48 * time.Hour, Destination: dest, HostName: "h", DataDir: t.TempDir(), DeleteFromT3: true}, store, control)
 	a.SetClock(func() time.Time { return now })
 	cands, skipped, err := a.Candidates(context.Background())
 	if err != nil || len(cands) != 1 || cands[0].ID != "hidden" {
@@ -72,6 +95,51 @@ func TestArchivedThreadsAreCandidates(t *testing.T) {
 	}
 	if skipped["recent-archive"] == "" {
 		t.Fatalf("a thread archived inside the retention was not kept: %v", skipped)
+	}
+	// T3 refuses to export an archived thread, so the bundle only exists if the
+	// pass unarchived it first; the deletion then leaves no state to restore.
+	n, err := a.Run(context.Background(), false)
+	if err != nil || n != 1 {
+		t.Fatalf("run n=%d err=%v", n, err)
+	}
+	if len(control.unarchived) != 1 || control.unarchived[0] != "hidden" {
+		t.Fatalf("unarchived = %v", control.unarchived)
+	}
+	if len(control.rearchived) != 0 {
+		t.Fatalf("a deleted thread was archived again: %v", control.rearchived)
+	}
+	if rec := store.recs["hidden"]; rec.Error != "" || !rec.DeletedFromT3 || rec.SHA256 == "" {
+		t.Fatalf("record = %+v", rec)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "h", "2030-01", "hidden.tar.gz")); err != nil {
+		t.Fatalf("bundle missing: %v", err)
+	}
+}
+
+// A bundle that fails leaves the T3 UI as it found it: the thread this pass
+// unarchived in order to read it is archived again, and nothing is deleted.
+func TestAFailedBundleRestoresTheArchivedState(t *testing.T) {
+	now := time.Date(2030, 1, 10, 4, 0, 0, 0, time.UTC)
+	store := &memStore{recs: map[string]Record{}, busy: map[string]string{}, kv: map[string]string{}}
+	control := &memControl{archived: map[string]bool{"hidden": true}, threads: []domain.Thread{
+		{ID: "hidden", Title: "archived in the UI", UpdatedAt: now.Add(-72 * time.Hour), ArchivedAt: ptr(now.Add(-70 * time.Hour))},
+	}}
+	// A destination inside a file cannot be written to, so shipping fails after
+	// the export has already unarchived the thread.
+	broken := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(broken, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := New(Options{After: 48 * time.Hour, Destination: broken, HostName: "h", DataDir: t.TempDir(), DeleteFromT3: true}, store, control)
+	a.SetClock(func() time.Time { return now })
+	if n, _ := a.Run(context.Background(), false); n != 0 {
+		t.Fatalf("a failed bundle counted as archived: %d", n)
+	}
+	if len(control.deleted) != 0 {
+		t.Fatalf("a thread with no bundle was deleted: %v", control.deleted)
+	}
+	if len(control.rearchived) != 1 || !control.archived["hidden"] {
+		t.Fatalf("the archived state was not restored: rearchived=%v archived=%v", control.rearchived, control.archived)
 	}
 }
 
@@ -88,7 +156,7 @@ func TestCandidatesAndBundle(t *testing.T) {
 	_ = os.Chtimes(transcript, now, now) // written "today" by the fake clock
 	dest := t.TempDir()
 	store := &memStore{recs: map[string]Record{}, busy: map[string]string{"parked": "wait w-1 is waiting"}, kv: map[string]string{}}
-	control := &memControl{threads: []domain.Thread{
+	control := &memControl{archived: map[string]bool{}, threads: []domain.Thread{
 		{ID: "old", Title: "old thread", UpdatedAt: now.Add(-72 * time.Hour), SettledAt: ptr(now.Add(-60 * time.Hour))},
 		{ID: "fresh", Title: "fresh", UpdatedAt: now.Add(-time.Hour), SettledAt: ptr(now.Add(-time.Hour))},
 		{ID: "running", Title: "running", Running: true, UpdatedAt: now.Add(-72 * time.Hour)},

@@ -63,6 +63,10 @@ type Control interface {
 	// out entirely, so reading it meant this pass never saw one, and a thread
 	// archived in the T3 UI was never bundled and never left the database.
 	ListAllThreads(ctx context.Context) ([]domain.Thread, error)
+	// UnarchiveThread and RearchiveThread bracket the export of a thread that
+	// is archived in T3, which cannot be read while it is archived.
+	UnarchiveThread(ctx context.Context, threadID string) error
+	RearchiveThread(ctx context.Context, threadID string) error
 	ExportThread(ctx context.Context, threadID string) ([]byte, error)
 	DeleteThread(ctx context.Context, threadID string) error
 	ProjectTitle(ctx context.Context, projectID string) string
@@ -250,6 +254,31 @@ func (a *Archiver) Run(ctx context.Context, dryRun bool) (int, error) {
 func (a *Archiver) ArchiveThread(ctx context.Context, t domain.Thread) (Record, error) {
 	now := a.now()
 	rec := Record{ThreadID: t.ID, Title: t.Title, Project: a.control.ProjectTitle(ctx, t.ProjectID), Host: a.opts.HostName, ArchivedAt: now}
+	// A thread archived in T3 cannot be read: the export answers 404 while the
+	// archived state holds. It is unarchived for the read and archived again
+	// unless this pass goes on to delete it, so a bundle that fails anywhere
+	// leaves the T3 UI exactly as it found it.
+	//
+	// A process that dies inside this window leaves the thread unarchived and
+	// visible, which the next pass or the UI archive corrects; that is the
+	// failure this ordering chooses, over one that hides a thread nothing has
+	// bundled.
+	restore := false
+	if t.ArchivedAt != nil {
+		if err := a.control.UnarchiveThread(ctx, t.ID); err != nil {
+			return rec, fmt.Errorf("unarchive for export: %w", err)
+		}
+		restore = true
+		defer func() {
+			if !restore {
+				return
+			}
+			if err := a.control.RearchiveThread(ctx, t.ID); err != nil {
+				a.log.Warn("the archived state of a thread this pass read could not be restored; it is visible in T3 again",
+					"thread", t.ID, "err", err)
+			}
+		}()
+	}
 	export, err := a.control.ExportThread(ctx, t.ID)
 	if err != nil {
 		return rec, fmt.Errorf("export: %w", err)
@@ -357,6 +386,8 @@ func (a *Archiver) ArchiveThread(ctx context.Context, t domain.Thread) (Record, 
 			a.log.Warn("delete thread from T3", "thread", t.ID, "err", err)
 		} else {
 			rec.DeletedFromT3 = true
+			// There is no archived state left to restore.
+			restore = false
 		}
 	}
 	if err := a.store.SaveArchive(ctx, rec); err != nil {

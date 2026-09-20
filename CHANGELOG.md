@@ -430,6 +430,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Cold storage reads a thread that is archived in T3 by unarchiving it for the
+  export and archiving it again unless it goes on to delete it. T3 omits an
+  archived thread from thread detail exactly as it does from the shell
+  snapshot, so simply making such threads candidates was not enough: every
+  export answered `404 thread_not_found`, and a pass over 114 of them bundled
+  none. A bundle that fails anywhere leaves the T3 UI as it found it; a process
+  that dies inside the window leaves the thread visible, which the next pass or
+  the UI archive corrects.
 - Cold storage now sees the threads archived in T3, which are most of the
   threads it exists for. `archive` read the shell snapshot, which leaves an
   archived thread out entirely, so a session hidden by `ui_archive` or archived
