@@ -24,6 +24,9 @@ package workerruntime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -158,12 +161,26 @@ func (d *LocalDriver) createActivationThread(ctx context.Context, pkg workerprot
 	if d.Config.DryRun {
 		return os.WriteFile(d.noEffectsThreadPath(pkg), []byte("active\n"), 0o600)
 	}
-	// The overseer gets a project of its own, keyed by its thread, so its
-	// session never lands in a project a reviewed task is using.
+	// The overseer's sessions get a project of their own, so one never lands in
+	// a project a reviewed task is using. It is keyed by the run rather than by
+	// the thread: every activation of one run is the same supervision of the
+	// same work, and a project per activation put five projects in the T3 picker
+	// for one run -- where a person choosing a project for their own session has
+	// to read past every one of them.
+	//
+	// Its workspace root is an owned metadata directory, as a task project's is,
+	// because a project is identified by that root and every activation of a run
+	// has a different prepared workspace. The thread still opens in its own
+	// prepared workspace; that is its worktree path below, not the project's.
+	encodedKey, err := json.Marshal([]string{pkg.CoordinatorID, pkg.WorkerID, "supervision", activation.RunID})
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(encodedKey)
 	projectID, err := d.T3.EnsureProject(ctx, t3control.ManagedProject{
-		Key:           pkg.Identity.ThreadID,
+		Key:           string(encodedKey),
 		Title:         "Steward supervision: " + activation.RunID,
-		WorkspaceRoot: workspace,
+		WorkspaceRoot: filepath.Join(d.Config.RunsRoot, ".projects", hex.EncodeToString(sum[:])),
 	})
 	if err != nil {
 		return err

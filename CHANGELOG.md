@@ -202,6 +202,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- A run's supervision activations share one T3 project instead of taking one
+  each. The project was keyed by the activation's thread, so a single run put
+  five "Steward supervision: run-..." projects in the T3 project picker, which a
+  person has to read past when choosing where their own session runs. It is now
+  keyed by the run, and addressed by an owned metadata directory rather than by
+  the activation's prepared workspace, because a project is identified by its
+  workspace root and every activation prepares a different one. The activation
+  thread still opens in its own prepared workspace.
 - `t3-steward backlog projects` answers the question it was asked. Unfiltered,
   it is now one row per project with the eligible worker count and the
   advertised route count, followed by the totals and the two ways to get the
