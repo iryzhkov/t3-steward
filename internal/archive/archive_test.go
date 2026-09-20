@@ -116,6 +116,37 @@ func TestArchivedThreadsAreCandidates(t *testing.T) {
 	}
 }
 
+// Hiding a session in the T3 UI does not restart its retention.
+//
+// Archiving a thread updates it, so a pass that measured idleness from
+// UpdatedAt gave every hidden session the whole retention again, counted from
+// the act of hiding it. A thread that settled three days ago is idle whether or
+// not the UI archive touched it a minute ago.
+func TestRetentionIsMeasuredFromSettlementNotFromHiding(t *testing.T) {
+	now := time.Date(2030, 1, 10, 4, 0, 0, 0, time.UTC)
+	settled := now.Add(-72 * time.Hour)
+	hidden := now.Add(-time.Minute)
+	store := &memStore{recs: map[string]Record{}, busy: map[string]string{}, kv: map[string]string{}}
+	control := &memControl{archived: map[string]bool{"hidden": true}, threads: []domain.Thread{
+		// Settled three days ago, hidden a minute ago, which is what set
+		// UpdatedAt.
+		{ID: "hidden", Title: "hidden just now", UpdatedAt: hidden, SettledAt: &settled, ArchivedAt: &hidden},
+		// Settled three days ago and then used again an hour ago: still busy
+		// work, not bookkeeping.
+		{ID: "resumed", Title: "used after settling", UpdatedAt: now.Add(-time.Hour), SettledAt: &settled,
+			LatestUserMessageAt: ptr(now.Add(-time.Hour))},
+	}}
+	a := New(Options{After: 48 * time.Hour, Destination: t.TempDir(), HostName: "h", DataDir: t.TempDir()}, store, control)
+	a.SetClock(func() time.Time { return now })
+	cands, skipped, err := a.Candidates(context.Background())
+	if err != nil || len(cands) != 1 || cands[0].ID != "hidden" {
+		t.Fatalf("candidates = %+v err=%v", cands, err)
+	}
+	if skipped["resumed"] == "" {
+		t.Fatalf("a thread used an hour ago was archived: %v", skipped)
+	}
+}
+
 // A bundle that fails leaves the T3 UI as it found it: the thread this pass
 // unarchived in order to read it is archived again, and nothing is deleted.
 func TestAFailedBundleRestoresTheArchivedState(t *testing.T) {

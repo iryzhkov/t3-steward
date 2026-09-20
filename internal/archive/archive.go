@@ -201,8 +201,8 @@ func (a *Archiver) Candidates(ctx context.Context) ([]domain.Thread, map[string]
 			continue
 		case t.Running:
 			skipped[t.ID] = "running"
-		case now.Sub(t.UpdatedAt) < a.opts.After:
-			skipped[t.ID] = fmt.Sprintf("updated %s ago", now.Sub(t.UpdatedAt).Round(time.Minute))
+		case now.Sub(IdleSince(t)) < a.opts.After:
+			skipped[t.ID] = fmt.Sprintf("idle for %s", now.Sub(IdleSince(t)).Round(time.Minute))
 		case t.HasPendingApprovals || t.HasPendingUserInput:
 			skipped[t.ID] = "waiting for user input"
 		case !t.Settled():
@@ -215,8 +215,35 @@ func (a *Archiver) Candidates(ctx context.Context) ([]domain.Thread, map[string]
 			out = append(out, t)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.Before(out[j].UpdatedAt) })
+	sort.Slice(out, func(i, j int) bool { return IdleSince(out[i]).Before(IdleSince(out[j])) })
 	return out, skipped, nil
+}
+
+// IdleSince is when work last touched a thread, which is not the same as when
+// T3 last updated its row.
+//
+// Hiding a settled session in the T3 UI updates the thread, so reading
+// UpdatedAt restarted this retention every time the UI archive hid something:
+// a session settled yesterday became "idle for 0m" the moment it was hidden,
+// and cold storage then waited the whole retention again from an act of
+// bookkeeping. Settlement and the last user message are what the retention is
+// about; UpdatedAt is the fallback for a thread that has neither.
+func IdleSince(t domain.Thread) time.Time {
+	idle := time.Time{}
+	if t.SettledAt != nil {
+		idle = *t.SettledAt
+	}
+	if t.LatestUserMessageAt != nil && t.LatestUserMessageAt.After(idle) {
+		idle = *t.LatestUserMessageAt
+	}
+	if idle.IsZero() {
+		return t.UpdatedAt
+	}
+	// A thread that kept working after it settled is not idle since settlement.
+	if t.ArchivedAt == nil && t.UpdatedAt.After(idle) {
+		return t.UpdatedAt
+	}
+	return idle
 }
 
 // Run archives every candidate (up to MaxPerRun) and returns how many.

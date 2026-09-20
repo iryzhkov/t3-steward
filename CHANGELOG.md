@@ -438,6 +438,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Cold storage measures a thread's retention from its settlement rather than
+  from T3's `updatedAt`. Hiding a settled session updates the thread, so every
+  session the UI archive hid started its retention again from the act of hiding
+  it: a session settled yesterday read as "idle for 0m" and waited another two
+  days to be bundled. A thread that was used again after settling is still
+  measured from that use.
 - A finished steward session is hidden from the T3 session list after the two
   hours a background session gets, rather than the day a person's own session
   gets. The classification comes from the worker journal, and the journal was

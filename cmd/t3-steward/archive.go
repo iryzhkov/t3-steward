@@ -99,7 +99,9 @@ func cmdArchive(g globalFlags, args []string) error {
 			}
 			fmt.Printf("%d thread(s) would be archived (idle for more than %s):\n", len(cands), cfg.Archive.After.D())
 			for _, t := range cands {
-				fmt.Printf("  %s  %-50.50s  updated %s\n", t.ID, t.Title, t.UpdatedAt.Local().Format("2006-01-02 15:04"))
+				// The time the retention is measured from, which is not the
+				// thread's UpdatedAt once the UI archive has hidden it.
+				fmt.Printf("  %s  %-50.50s  idle since %s\n", t.ID, t.Title, archive.IdleSince(t).Local().Format("2006-01-02 15:04"))
 			}
 			if len(skipped) > 0 {
 				fmt.Printf("%d kept:\n", len(skipped))
