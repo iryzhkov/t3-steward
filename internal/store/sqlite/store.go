@@ -931,9 +931,25 @@ func (s *Store) BusyThreads(ctx context.Context) (map[string]string, error) {
 		return nil, err
 	}
 	for _, w := range waits {
-		if w.Status == wait.StatusWaiting || w.Settled() {
+		switch {
+		case w.Status == wait.StatusWaiting:
+			// The thread is parked on this check and has to be here for it.
+			out[w.ThreadID] = "wait " + w.ID + " is " + string(w.Status)
+		case w.Settled() && w.TaskWaitID == "":
+			// An interactive outcome with no wake delivered yet: this host's
+			// runner still owes the thread a message. A delivered one is
+			// StatusWoken and holds nothing.
 			out[w.ThreadID] = "wait " + w.ID + " is " + string(w.Status)
 		}
+		// A settled task-bound row holds nothing. Its outcome belongs to the
+		// coordinator's own wait record, which resumes the attempt and delivers
+		// the wake; this row is the check that produced it and is never woken,
+		// so treating it as custody pinned every thread that ever parked on a
+		// task-bound wait for the life of the database. Those threads were then
+		// never hidden by the UI archive and never bundled into cold storage,
+		// which is what filled the T3 session list with finished steward runs.
+		// A task whose attempt is genuinely still in flight is held by the
+		// worker journal and by its coordinator records instead.
 	}
 	native, err := s.ListNodeWaits(ctx)
 	if err != nil {

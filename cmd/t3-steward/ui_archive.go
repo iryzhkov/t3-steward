@@ -37,6 +37,31 @@ func newUIArchiver(cfg config.Config, store *sqlite.Store, control *t3control.Co
 				return nil, err
 			}
 			roots := map[string]bool{}
+			// The journals of this host's own worker storage, which no
+			// configuration file names when the worker runs from the private
+			// bootstrap. Without them every thread the steward dispatched here
+			// is classified as a person's session and waits a day to be hidden
+			// rather than two hours.
+			if home, err := os.UserHomeDir(); err == nil {
+				for _, root := range workerruntime.HostJournalRoots(home) {
+					if roots[root] {
+						continue
+					}
+					roots[root] = true
+					local, err := workerruntime.JournalArchiveStates(root)
+					if err != nil {
+						return nil, err
+					}
+					for thread, state := range local {
+						combined := states[thread]
+						combined.Background = combined.Background || state.Background
+						if state.Busy != "" {
+							combined.Busy = state.Busy
+						}
+						states[thread] = combined
+					}
+				}
+			}
 			for _, b := range settings {
 				ids := map[string]bool{}
 				for id := range b.Workers {

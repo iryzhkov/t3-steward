@@ -438,6 +438,22 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A finished steward session is hidden from the T3 session list after the two
+  hours a background session gets, rather than the day a person's own session
+  gets. The classification comes from the worker journal, and the journal was
+  looked for only under a configured `backlog_v2.storage.workspaces` -- which a
+  worker running from the private UpKeeper bootstrap does not have in any
+  configuration file. Every task and supervision thread therefore counted as a
+  person's session: 27 finished runs were sitting in one host's list, none of
+  them eligible to be hidden. The journals under this host's own worker storage
+  are now read as well, whatever worker identities have run here.
+- A settled task-bound check no longer holds its thread forever. The outcome of
+  such a check belongs to the coordinator's wait record, which resumes the
+  attempt and delivers the wake, so the local row is never woken and stayed
+  "met" for the life of the database -- and while it did, the thread counted as
+  custody, so the UI archive never hid it and cold storage never bundled it. A
+  check that is still waiting, and an interactive outcome whose wake this host
+  still owes, remain custody.
 - Cold storage reads a thread that is archived in T3 by unarchiving it for the
   export and archiving it again unless it goes on to delete it. T3 omits an
   archived thread from thread detail exactly as it does from the shell
