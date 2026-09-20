@@ -428,6 +428,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A `--github` wait registered without `--repo` is now polled where it can be
+  read. `gh` resolves the repository from its working directory, and the poll
+  runs in the steward daemon, whose working directory under systemd is the
+  filesystem root -- so such a wait read its target once at registration, in the
+  caller's checkout, and then answered "fatal: not a git repository" on every
+  poll until it gave up after three of them. The poll now runs in the directory
+  the wait was registered in, which also repairs the waits already stored, and a
+  registration that names no repository resolves and records the one its
+  directory is a checkout of, so the stored wait says which repository it is
+  about.
 - `wait add --node` and `wait add --quota` now register the wake for the
   calling host. Recording the calling host was added for the registration path
   of the superseded `--run` and `--task <run>/<task>` spellings, but the

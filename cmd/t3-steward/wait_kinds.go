@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,6 +17,37 @@ import (
 // gitHubCommand runs gh for the registration probe of a github wait. It is a
 // variable so tests never reach GitHub.
 var gitHubCommand wait.GitHubRunner = wait.ExecGitHub
+
+// gitHubRepository is the owner/name gh resolves in dir, or the empty string
+// when it resolves none.
+//
+// It is asked at registration so that the wait records the repository the
+// caller meant, in the one place where a directory means what the caller thinks
+// it means. The steward daemon that polls the wait later has no such directory
+// of its own; see wait.GitHubRunner.
+func gitHubRepository(ctx context.Context, runner *wait.Runner, dir string) string {
+	run := runner.GitHub
+	if run == nil {
+		run = wait.ExecGitHub
+	}
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	out, err := run(cctx, dir, []string{"repo", "view", "--json", "nameWithOwner"})
+	if err != nil {
+		return ""
+	}
+	var view struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	}
+	if err := json.Unmarshal([]byte(out), &view); err != nil {
+		return ""
+	}
+	repo := strings.TrimSpace(view.NameWithOwner)
+	if strings.Count(repo, "/") != 1 || strings.HasPrefix(repo, "/") || strings.HasSuffix(repo, "/") {
+		return ""
+	}
+	return repo
+}
 
 // normalizeKindArgs rewrites the two-token form `--github run 123` into the
 // one-token form `--github=run:123` that the flag package can parse, since it
@@ -286,7 +318,18 @@ func probeLocalWait(ctx context.Context, spec localWaitSpec, w *wait.Wait, parke
 	case domain.WaitKindGitHub:
 		runner := wait.New(nil, nil, nil)
 		runner.GitHub = gitHubCommand
-		reading, err := runner.ReadGitHub(ctx, *spec.GitHub)
+		// Name the repository on the wait itself when the caller did not, so the
+		// stored wait says which repository it is about and the daemon's poll
+		// does not depend on this directory still being a checkout of it. It is
+		// best effort: the poll runs in the wait's directory either way, and a
+		// repository that cannot be read here is gh's answer to report at the
+		// probe below rather than a reason to refuse.
+		if w.GitHub != nil && w.GitHub.Repo == "" {
+			if repo := gitHubRepository(ctx, runner, w.Dir); repo != "" {
+				w.GitHub.Repo = repo
+			}
+		}
+		reading, err := runner.ReadGitHub(ctx, *w.GitHub, w.Dir)
 		if err != nil {
 			return 1, "", fmt.Errorf("%w: %v", wait.ErrGitHubProbe, err)
 		}
