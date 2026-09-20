@@ -68,6 +68,10 @@ type Daemon struct {
 	Archive BacklogRunner
 	// UIArchive reversibly hides settled sessions on each thread poll.
 	UIArchive BacklogRunner
+	// Projects, when set, removes the steward's own empty T3 projects on its
+	// own cadence. It is ticked with the same threads the other runners see,
+	// because whether a project is empty is a fact about those threads.
+	Projects BacklogRunner
 	// Ownership, when set, names the threads a live steward attempt owns on
 	// this host. They are excluded from every watchdog action; see
 	// ThreadOwnership.
@@ -522,6 +526,11 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 	}
 	if d.Archive != nil {
 		d.Archive.Tick(ctx, threads, states)
+	}
+	// Last: the archive may have just deleted the last thread of a project, and
+	// nothing here depends on the sweep having run.
+	if d.Projects != nil {
+		d.Projects.Tick(ctx, threads, states)
 	}
 }
 

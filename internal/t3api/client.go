@@ -95,6 +95,11 @@ type ProjectShell struct {
 	Title                 string          `json:"title"`
 	WorkspaceRoot         string          `json:"workspaceRoot"`
 	DefaultModelSelection json.RawMessage `json:"defaultModelSelection"`
+	CreatedAt             string          `json:"createdAt"`
+	// UpdatedAt changes only when the project's own metadata does, never when a
+	// thread inside it runs, so it is the age of the project record and not of
+	// the work in it.
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // ShellSnapshot mirrors OrchestrationShellSnapshot.

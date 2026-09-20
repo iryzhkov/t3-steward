@@ -751,6 +751,15 @@ directory under the worker's runs root. Attempts keep their separate prepared
 workspaces; the metadata directory needs no Git repository. Lost creation replies
 are reconciled against the same ID and expected title/root before starting a thread.
 
+A managed project is identified by its owned workspace root rather than by the ID
+derived from its identity, because T3 keeps a deleted project's record and refuses
+to create the same ID twice. A project found at the owned root is adopted whatever
+ID it carries, and a spent identity is replaced by a fresh one at the same root, so
+removing a managed project does not break the next dispatch for it.
+
+Managed projects are also removed once they are empty: see
+[Cleaning up managed T3 projects](#cleaning-up-managed-t3-projects).
+
 An explicit `t3_project` still resolves an existing exact ID or unique exact title.
 Missing or ambiguous explicit references fail; they do not create a replacement.
 Deploy compatible workers before enrolling catalogs that omit this field; older
@@ -869,6 +878,32 @@ t3-steward archive restore <thread-id> [DIR]   # fetch and unpack a bundle
 ```
 
 The export is JSON to read or hand to an agent; T3 has no import.
+
+## Cleaning up managed T3 projects
+
+Every backlog task and every supervision activation opens its thread in a T3
+project, and for worker-managed projects that project's workspace root is a
+directory under this host's worker workspaces root. They accumulate: one per
+catalog project per host, one per supervision activation, and one for every
+identity a renamed project or a moved coordinator left behind.
+
+With `project_cleanup` enabled (the default) the steward removes such a project
+when it holds no thread at all and its own record has been untouched for
+`project_cleanup.after` (24 hours), at most `max_per_pass` projects per pass and
+at most one pass per `every`. Passes are logged, and each removal is one
+`project-cleanup` row in `t3-steward status`.
+
+The ownership rule is the whole of the safety: a project is a candidate only
+when its workspace root is *inside* this host's worker workspaces root (the one
+`backlog_v2.storage.workspaces` names, the one a bootstrap worker derives under
+`~/.local/state/t3-steward/worker`, and anything `project_cleanup.roots` adds), so a
+project someone opened is never one. Nothing else is removed: threads belong to
+`archive`, workspaces to the worker's own retention, and no directory is deleted
+here. The deletion is never forced, so a project that has gained a thread since
+the pass read its snapshot is refused by T3 rather than emptied.
+
+`project_cleanup.dry_run: true` logs and records what a pass would remove and
+removes nothing; the watchdog's own `policy.dry_run` holds it as well.
 
 ## Commands
 

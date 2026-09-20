@@ -92,7 +92,7 @@ func (p CatalogProjection) Settings(bootstrap WorkerBootstrap, home string) (con
 	for instance, provider := range p.Worker.Providers {
 		settings.QuotaPools[provider.QuotaPool] = config.V2QuotaPool{Provider: instance, MaxConcurrent: 1}
 	}
-	root := filepath.Join(home, ".local/state/t3-steward/worker")
+	root := config.WorkerStorageRoot(home)
 	settings.Storage = config.V2Storage{Bundles: filepath.Join(root, "bundles"), Artifacts: filepath.Join(root, "artifacts"), Workspaces: filepath.Join(root, "workspaces")}
 	if p.MessageLimits.MaxBytes > 8<<20 || p.MessageLimits.MaxArtifactBytes > 16<<20 || p.Transport.RequestTimeout.D() > 2*time.Minute || p.Freshness.WorkerMaxAge.D() > 5*time.Minute {
 		return config.BacklogV2{}, errors.New("catalog exceeds host runtime bounds")

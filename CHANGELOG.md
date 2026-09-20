@@ -8,6 +8,29 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The steward removes the T3 projects it created itself, once they are empty.
+  Every backlog task and every supervision activation opens its thread in a
+  project whose workspace root is a directory the worker owns, and nothing
+  removed them, so a host accumulated one project per catalog project, one per
+  supervision activation and one for every identity a renamed project or a moved
+  coordinator left behind, all of them in the T3 sidebar next to the projects a
+  person actually opens. A new `project_cleanup` section (enabled, `after: 24h`,
+  `every: 1h`, `max_per_pass: 20`, `dry_run`, `roots`) removes a project that
+  holds no thread at all and whose own record has been untouched for `after`.
+  Ownership is the whole of the rule: a candidate's workspace root must be
+  inside this host's worker workspaces root, so a project someone opened is
+  never one. It removes nothing else -- threads belong to `archive` and
+  workspaces to the worker's retention, and no directory is deleted -- and it
+  never forces a deletion, so a project that gained a thread since the pass read
+  its snapshot is refused by T3. Each removal is one `project-cleanup` row in
+  `t3-steward status`.
+
+  A managed project is now identified by its owned workspace root rather than by
+  the ID derived from its key, which is what makes removing one safe: T3 keeps a
+  deleted project's record and refuses to create the same ID twice, so a project
+  identified only by that ID could never be provisioned again once anything
+  removed it. A project at the owned root is adopted whatever ID it carries, and
+  a spent identity is replaced by a fresh one at the same root.
 - Every invocation of `t3-steward` appends one record to the tool-feedback
   spool the fleet's MCP servers already write, at
   `~/.local/share/toolfeedback/t3-steward/<host>-<date>.jsonl`. The record

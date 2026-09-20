@@ -281,6 +281,32 @@ type UIArchive struct {
 	MaxPerPass      int      `yaml:"max_per_pass"`
 }
 
+// ProjectCleanup configures removal of the T3 projects the steward created.
+//
+// It removes a project record and nothing else: no thread (that is archive:)
+// and no directory (that is the worker's workspace retention). A project is
+// only ever a candidate when its workspace root is inside a directory this
+// host's worker provisions managed projects under, so a project a person
+// opened is never one.
+type ProjectCleanup struct {
+	Enabled bool `yaml:"enabled"`
+	DryRun  bool `yaml:"dry_run"`
+	// After is how long a project's record must have gone untouched before it
+	// is removed. T3 touches a project only when its own metadata changes, so
+	// this is the age of the record and not of the last thread in it; a project
+	// that still holds a thread is never a candidate whatever its age.
+	After Duration `yaml:"after"`
+	// Every is the shortest interval between passes.
+	Every Duration `yaml:"every"`
+	// MaxPerPass bounds the projects removed in one pass.
+	MaxPerPass int `yaml:"max_per_pass"`
+	// Roots are extra directories whose projects this host created. The
+	// configured worker workspaces root and the one a bootstrap worker derives
+	// from the home directory are always included; this is for a host that
+	// moved its worker storage and still has projects under the old path.
+	Roots []string `yaml:"roots"`
+}
+
 // Archive configures cold storage of finished threads.
 type Archive struct {
 	Enabled bool `yaml:"enabled"`
@@ -568,6 +594,8 @@ type Config struct {
 	BacklogV2     BacklogV2     `yaml:"backlog_v2"`
 	Archive       Archive       `yaml:"archive"`
 	UIArchive     UIArchive     `yaml:"ui_archive"`
+
+	ProjectCleanup ProjectCleanup `yaml:"project_cleanup"`
 	// StatePath is the SQLite database. Empty means the platform default.
 	StatePath string `yaml:"state_path"`
 	// LogLevel is debug, info, warn or error.
@@ -638,6 +666,11 @@ func Default() Config {
 	c.Notifications.Desktop = true
 	c.Report.Peak = "Mon-Fri 09:00-17:00"
 	c.UIArchive = UIArchive{Enabled: true, BackgroundAfter: Duration(2 * time.Hour), UserAfter: Duration(24 * time.Hour), MaxPerPass: 10}
+	// A managed project outlives the threads in it, and the archive deletes a
+	// finished thread from T3 two days after its last update, so a day of an
+	// empty record is already well past the work it held. The pass is hourly
+	// because nothing about it is urgent and every pass reads the project list.
+	c.ProjectCleanup = ProjectCleanup{Enabled: true, After: Duration(24 * time.Hour), Every: Duration(time.Hour), MaxPerPass: 20}
 	c.Archive.After = Duration(48 * time.Hour)
 	c.Archive.At = "03:30"
 	c.Archive.DeleteFromT3 = true
@@ -932,6 +965,23 @@ func (c *Config) Validate() error {
 	}
 	if c.UIArchive.Enabled && (c.UIArchive.BackgroundAfter.D() <= 0 || c.UIArchive.UserAfter.D() <= 0 || c.UIArchive.MaxPerPass < 1 || c.UIArchive.MaxPerPass > 100) {
 		return errors.New("ui_archive: positive delays and max_per_pass 1..100 are required")
+	}
+	if c.ProjectCleanup.Enabled {
+		if c.ProjectCleanup.After.D() < time.Hour {
+			return errors.New("project_cleanup: after must be at least 1h")
+		}
+		if c.ProjectCleanup.Every.D() < time.Minute {
+			return errors.New("project_cleanup: every must be at least 1m")
+		}
+		if c.ProjectCleanup.MaxPerPass < 1 || c.ProjectCleanup.MaxPerPass > 100 {
+			return errors.New("project_cleanup: max_per_pass must be between 1 and 100")
+		}
+		for _, root := range c.ProjectCleanup.Roots {
+			clean := filepath.Clean(root)
+			if !filepath.IsAbs(clean) || clean == string(filepath.Separator) {
+				return fmt.Errorf("project_cleanup: root %q must be an absolute path below the filesystem root", root)
+			}
+		}
 	}
 	if c.Archive.Enabled {
 		if strings.TrimSpace(c.Archive.Destination) == "" {

@@ -222,6 +222,22 @@ archive:
   keep_transcripts: 336h        # bundled transcripts stay on disk this long (toolfeedback reads them)
   max_per_run: 50
 
+project_cleanup:
+  # Removal of the T3 projects the steward itself created. A backlog task and
+  # a supervision activation each open their thread in a project whose
+  # workspace root is a directory this host's worker owns, and nothing else
+  # removed them, so they accumulated in the T3 sidebar. A project is removed
+  # when it holds no thread and its own record has been untouched for "after".
+  # Only projects under this host's worker workspaces root are candidates, so
+  # a project someone opened is never one; threads belong to archive: and
+  # workspaces to the worker, and no directory is ever removed here.
+  enabled: true
+  after: 24h
+  every: 1h
+  max_per_pass: 20
+  dry_run: false                # log the candidates, delete nothing
+  # roots: []                   # extra directories, for a host that moved its worker storage
+
 notifications:
   # Desktop notification (notify-send on Linux) when a stop fails or when
   # a thread is stopped or resumed.

@@ -729,6 +729,13 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, 
 		d.Archive = newArchiver(cfg, store, control, logger, dataDir)
 		logger.Info("archive enabled", "destination", cfg.Archive.Destination, "after", cfg.Archive.After.D(), "at", cfg.Archive.At)
 	}
+	if cfg.ProjectCleanup.Enabled && store != nil {
+		if sweeper := newProjectSweeper(cfg, store, client, logger); sweeper != nil {
+			d.Projects = sweeper
+			logger.Info("project cleanup enabled", "roots", sweeper.Options.OwnedRoots,
+				"after", sweeper.Options.After, "every", sweeper.Options.Every, "dry_run", sweeper.Options.DryRun)
+		}
+	}
 	if allowLegacyBacklog && cfg.Backlog.Enabled {
 		runner, err := newBacklogRunner(cfg, store, control, logger, dataDir)
 		if err != nil {
