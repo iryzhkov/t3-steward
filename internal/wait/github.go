@@ -89,13 +89,23 @@ func (t GitHubTarget) Args() []string {
 	return args
 }
 
-// GitHubRunner runs gh with the given arguments and returns its standard
-// output. It is a seam so tests never reach GitHub.
-type GitHubRunner func(ctx context.Context, args []string) (string, error)
+// GitHubRunner runs gh with the given arguments in a directory and returns its
+// standard output. It is a seam so tests never reach GitHub.
+//
+// The directory is part of the call because gh resolves the repository from the
+// working directory when no --repo is given, and the runner of a registered
+// wait is the steward daemon, whose working directory is not the one the wait
+// was registered in -- as a user service it is the filesystem root. A github
+// wait registered without --repo therefore polled a gh that answered "not a git
+// repository" every time and gave up after three of them, while the same
+// command at registration time, run in the caller's checkout, had just read the
+// target successfully.
+type GitHubRunner func(ctx context.Context, dir string, args []string) (string, error)
 
-// ExecGitHub runs the real gh on PATH.
-func ExecGitHub(ctx context.Context, args []string) (string, error) {
+// ExecGitHub runs the real gh on PATH, in dir when one is given.
+func ExecGitHub(ctx context.Context, dir string, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -238,16 +248,16 @@ func init() {
 	}
 }
 
-// ReadGitHub runs gh once for the target and evaluates the answer. A gh error
-// is returned as such; the caller decides whether it is one of three.
-func (r *Runner) ReadGitHub(ctx context.Context, target GitHubTarget) (GitHubReading, error) {
+// ReadGitHub runs gh once for the target, in dir, and evaluates the answer. A
+// gh error is returned as such; the caller decides whether it is one of three.
+func (r *Runner) ReadGitHub(ctx context.Context, target GitHubTarget, dir string) (GitHubReading, error) {
 	run := r.GitHub
 	if run == nil {
 		run = ExecGitHub
 	}
 	cctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
-	output, err := run(cctx, target.Args())
+	output, err := run(cctx, dir, target.Args())
 	if err != nil {
 		return GitHubReading{}, err
 	}
@@ -263,7 +273,10 @@ func (r *Runner) runGitHubOnce(ctx context.Context, w *Wait, now time.Time) {
 		w.settle(StatusFailed, "the github wait has no target", now, nil)
 		return
 	}
-	reading, err := r.ReadGitHub(ctx, *w.GitHub)
+	// The wait's own directory, which is the one it was registered in: see
+	// GitHubRunner. A wait that named a repository does not need it, and one
+	// whose directory has since been removed fails with gh's own reason.
+	reading, err := r.ReadGitHub(ctx, *w.GitHub, w.Dir)
 	if err != nil {
 		w.Errors++
 		w.LastExit = 1

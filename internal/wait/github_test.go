@@ -80,6 +80,27 @@ func TestGitHubTargetArgumentsAreFixed(t *testing.T) {
 	}
 }
 
+// A github poll runs gh in the directory the wait was registered in.
+//
+// gh resolves the repository from its working directory when the wait names
+// none, and the poll runs in the steward daemon, whose working directory is the
+// filesystem root under systemd. Such a wait answered "not a git repository"
+// three times and gave up, having read its target successfully at registration.
+func TestGitHubPollRunsInTheRegisteringDirectory(t *testing.T) {
+	var dirs []string
+	runner, store, _, _ := gitHubRunner(t, func(_ context.Context, dir string, _ []string) (string, error) {
+		dirs = append(dirs, dir)
+		return `{"status":"in_progress"}`, nil
+	})
+	runner.Tick(context.Background(), nil, nil)
+	if len(dirs) != 1 || dirs[0] != "/registered/in" {
+		t.Fatalf("gh ran in %v, want the wait's own directory", dirs)
+	}
+	if w := store.waits["w1"]; w.Status != StatusWaiting {
+		t.Fatalf("a readable target settled the wait: %+v", w)
+	}
+}
+
 func gitHubRunner(t *testing.T, gh GitHubRunner) (*Runner, *memStore, *memControl, *time.Time) {
 	t.Helper()
 	store := &memStore{waits: map[string]Wait{}}
@@ -93,7 +114,7 @@ func gitHubRunner(t *testing.T, gh GitHubRunner) (*Runner, *memStore, *memContro
 		return "", 0, nil
 	}
 	_ = store.SaveWait(context.Background(), Wait{
-		ID: "w1", ThreadID: "t1", Name: "ci", Kind: domain.WaitKindGitHub,
+		ID: "w1", ThreadID: "t1", Name: "ci", Kind: domain.WaitKindGitHub, Dir: "/registered/in",
 		GitHub: &GitHubTarget{Kind: "run", ID: "123", State: "completed"},
 		Every:  30 * time.Second, MaxEvery: time.Minute, Timeout: time.Hour, Wake: WakeEach,
 		Status: StatusWaiting, CreatedAt: now,
@@ -114,7 +135,7 @@ func TestGitHubGivesUpAfterThreeConsecutiveErrorsAndWakesWithTheTrailer(t *testi
 		func() (string, error) { return "", errors.New("gh: HTTP 502") },
 		func() (string, error) { return "", errors.New("gh: HTTP 503 the last one") },
 	}
-	runner, store, control, now := gitHubRunner(t, func(context.Context, []string) (string, error) {
+	runner, store, control, now := gitHubRunner(t, func(context.Context, string, []string) (string, error) {
 		calls++
 		return answers[calls-1]()
 	})
@@ -142,7 +163,7 @@ func TestGitHubGivesUpAfterThreeConsecutiveErrorsAndWakesWithTheTrailer(t *testi
 // A run that completes successfully wakes met with state, conclusion and url.
 func TestGitHubRunSuccessWakesMetWithTheFields(t *testing.T) {
 	answer := `{"status":"in_progress","conclusion":"","url":"https://github.com/o/r/actions/runs/123"}`
-	runner, store, control, now := gitHubRunner(t, func(_ context.Context, args []string) (string, error) {
+	runner, store, control, now := gitHubRunner(t, func(_ context.Context, _ string, args []string) (string, error) {
 		if strings.Join(args, " ") != "run view 123 --json status,conclusion,url" {
 			t.Fatalf("gh args = %v", args)
 		}
@@ -170,7 +191,7 @@ func TestGitHubRunSuccessWakesMetWithTheFields(t *testing.T) {
 // A target that no longer exists gives up at once rather than after three
 // identical answers.
 func TestGitHubMissingTargetGivesUpAtOnce(t *testing.T) {
-	runner, store, _, _ := gitHubRunner(t, func(context.Context, []string) (string, error) {
+	runner, store, _, _ := gitHubRunner(t, func(context.Context, string, []string) (string, error) {
 		return "", errors.New("could not find any workflow run with id 123: HTTP 404: Not Found")
 	})
 	runner.Tick(context.Background(), nil, nil)

@@ -275,6 +275,32 @@ func (c *Config) validateCoordinatorClient() error {
 	return nil
 }
 
+// WorkerStorageRoot is where a worker keeps its own storage when its catalog
+// comes from the private bootstrap rather than from a configuration file that
+// names backlog_v2.storage.
+//
+// It is written here, beside the storage settings it stands in for, because two
+// processes need the same answer and cannot ask each other: the worker builds
+// its roots under it, and the watchdog has to know which directories the
+// projects it may clean up live under. A home directory that is not known
+// yields the empty string rather than a relative path.
+func WorkerStorageRoot(home string) string {
+	if strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".local", "state", "t3-steward", "worker")
+}
+
+// WorkerWorkspacesRoot is the workspaces root under WorkerStorageRoot, which is
+// the directory managed T3 projects are provisioned below.
+func WorkerWorkspacesRoot(home string) string {
+	root := WorkerStorageRoot(home)
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, "workspaces")
+}
+
 func validateV2Storage(storage V2Storage) error {
 	roots := []struct {
 		name string

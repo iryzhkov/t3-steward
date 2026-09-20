@@ -8,6 +8,29 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The steward removes the T3 projects it created itself, once they are empty.
+  Every backlog task and every supervision activation opens its thread in a
+  project whose workspace root is a directory the worker owns, and nothing
+  removed them, so a host accumulated one project per catalog project, one per
+  supervision activation and one for every identity a renamed project or a moved
+  coordinator left behind, all of them in the T3 sidebar next to the projects a
+  person actually opens. A new `project_cleanup` section (enabled, `after: 24h`,
+  `every: 1h`, `max_per_pass: 20`, `dry_run`, `roots`) removes a project that
+  holds no thread at all and whose own record has been untouched for `after`.
+  Ownership is the whole of the rule: a candidate's workspace root must be
+  inside this host's worker workspaces root, so a project someone opened is
+  never one. It removes nothing else -- threads belong to `archive` and
+  workspaces to the worker's retention, and no directory is deleted -- and it
+  never forces a deletion, so a project that gained a thread since the pass read
+  its snapshot is refused by T3. Each removal is one `project-cleanup` row in
+  `t3-steward status`.
+
+  A managed project is now identified by its owned workspace root rather than by
+  the ID derived from its key, which is what makes removing one safe: T3 keeps a
+  deleted project's record and refuses to create the same ID twice, so a project
+  identified only by that ID could never be provisioned again once anything
+  removed it. A project at the owned root is adopted whatever ID it carries, and
+  a spent identity is replaced by a fresh one at the same root.
 - Every invocation of `t3-steward` appends one record to the tool-feedback
   spool the fleet's MCP servers already write, at
   `~/.local/share/toolfeedback/t3-steward/<host>-<date>.jsonl`. The record
@@ -405,6 +428,30 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A `--github` wait registered without `--repo` is now polled where it can be
+  read. `gh` resolves the repository from its working directory, and the poll
+  runs in the steward daemon, whose working directory under systemd is the
+  filesystem root -- so such a wait read its target once at registration, in the
+  caller's checkout, and then answered "fatal: not a git repository" on every
+  poll until it gave up after three of them. The poll now runs in the directory
+  the wait was registered in, which also repairs the waits already stored, and a
+  registration that names no repository resolves and records the one its
+  directory is a checkout of, so the stored wait says which repository it is
+  about.
+- `wait add --node` and `wait add --quota` now register the wake for the
+  calling host. Recording the calling host was added for the registration path
+  of the superseded `--run` and `--task <run>/<task>` spellings, but the
+  documented kind flags are parsed by a second path that never stated it, so on
+  every host that is not the coordinator such a wait was recorded for the
+  coordinator's hostname, its wake was sent into the coordinator's own T3 where
+  the waiting thread does not exist, and the row stayed `delivery=pending`
+  forever -- while the command still printed "end this turn now". Both paths now
+  state the host, decide whether the coordinator accepts the field and report
+  the outcome through the same three functions, so they cannot disagree about it
+  again, and a registration whose wake cannot be shown to arrive here says so
+  instead of promising a wake. A wait registered before this fix is still
+  recorded for the wrong host: cancel it with `t3-steward wait cancel <id>` and
+  register it again.
 - A node wake now reaches a caller that is not on the coordinator. A wake is
   sent by the wait runner whose host matches the wait's, into that host's own
   T3, and a thread exists only on the host that opened it -- but a registration

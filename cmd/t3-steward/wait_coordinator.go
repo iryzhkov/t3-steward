@@ -154,7 +154,13 @@ func parseNodeTarget(value string) (domain.NodeRef, error) {
 // cmdCoordinatorWaitAdd registers an interactive wait of a coordinator kind
 // (--node or --quota) as a native wait: the coordinator holds and settles
 // it, and this host's runner delivers the wake.
-func cmdCoordinatorWaitAdd(ctx context.Context, cfg config.Config, client coordinatorNodeWaitClient, args []string) error {
+//
+// release is how this command asks which release the coordinator runs, which
+// decides whether the registration may state the calling host as the wake's
+// delivery host. It is a seam so a test can state a coordinator's release
+// without one; a nil reader means an unknown release, under which nothing new
+// is sent and nothing is promised.
+func cmdCoordinatorWaitAdd(ctx context.Context, cfg config.Config, client coordinatorNodeWaitClient, release func(context.Context) string, args []string) error {
 	spec, err := parseCoordinatorWaitSpec(args)
 	if err != nil {
 		return err
@@ -205,15 +211,27 @@ func cmdCoordinatorWaitAdd(ctx context.Context, cfg config.Config, client coordi
 			return err
 		}
 	}
-	result, err := client.NodeWait(ctx, backlogadmin.NodeWaitOperation{Action: "register", Request: coordinatorWaitRequest(spec, threadID)})
+	// The wake of this wait is sent by the steward daemon of the host that holds
+	// the thread, which is this one, so the registration says so. Leaving it out
+	// recorded the coordinator's own hostname instead, and on every host that is
+	// not the coordinator the wake was then sent into a T3 where this thread does
+	// not exist: the thread ended its turn and nothing woke it.
+	caller := localWakeHost(nil)
+	coordinator := ""
+	if release != nil {
+		coordinator = release(ctx)
+	}
+	result, err := client.NodeWait(ctx, backlogadmin.NodeWaitOperation{
+		Action: "register", Request: coordinatorWaitRequest(spec, threadID), Host: statedWakeHost(coordinator, caller),
+	})
 	if err != nil {
 		return err
 	}
 	if err := renderNativeWaitResult(os.Stdout, result, waitListOptions{all: true, asJSON: spec.JSON}); err != nil {
 		return err
 	}
-	if len(result.Waits) == 1 && result.Waits[0].Delivery != "delivered" && result.Waits[0].Delivery != "cancelled" {
-		fmt.Fprintln(os.Stderr, "End this turn now; the coordinator has registered the wait.")
+	if len(result.Waits) == 1 {
+		reportNodeWaitRegistration(os.Stderr, result.Waits[0], caller, coordinator, nodeWakeDeliveryFor(cfg), time.Now())
 	}
 	return nil
 }

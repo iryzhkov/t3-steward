@@ -25,7 +25,7 @@ func fleetHelpPages() []helpPage {
 				{Name: "--at", Value: "RFC3339", Default: "none", Text: "Time condition: the instant to wait for. An instant that has passed is refused."},
 				{Name: "--for", Value: "DURATION", Default: "none", Text: "Time condition, relative to now."},
 				{Name: "--github", Value: "run <id>|pr <n>", Default: "none", Text: "GitHub condition. The target is read once at registration with gh and fixed arguments; unreadable, already met or already failed is refused."},
-				{Name: "--repo", Value: "owner/name", Default: "the repository of the current directory", Text: "The repository of a github target."},
+				{Name: "--repo", Value: "owner/name", Default: "the repository of the current directory, resolved and recorded at registration", Text: "The repository of a github target."},
 				{Name: "--node", Value: "<run>[/<task>]", Default: "none", Text: "Coordinator condition on a workflow node. A run alone names its sink."},
 				{Name: "--quota", Value: "POOL", Default: "none", Text: "Coordinator condition on a quota pool, settled from its merged bucket observations."},
 				{Name: "--below", Value: "N", Default: "none", Text: "Quota condition: met when the pool's usage is under N percent."},

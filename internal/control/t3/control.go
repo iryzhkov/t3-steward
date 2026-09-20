@@ -390,6 +390,12 @@ type Project struct {
 	Title                 string
 	WorkspaceRoot         string
 	DefaultModelSelection map[string]any
+	// CreatedAt and UpdatedAt are zero when the server sent neither, which is
+	// how every release before this field was read answered. A caller that
+	// decides anything from a project's age has to treat a zero time as "no
+	// evidence" rather than as 1970.
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // ListProjects returns the projects known to the server.
@@ -401,6 +407,12 @@ func (c *Control) ListProjects(ctx context.Context) ([]Project, error) {
 	out := make([]Project, 0, len(snap.Projects))
 	for _, p := range snap.Projects {
 		proj := Project{ID: p.ID, Title: p.Title, WorkspaceRoot: p.WorkspaceRoot}
+		if created := t3api.ParseTime(&p.CreatedAt); created != nil {
+			proj.CreatedAt = *created
+		}
+		if updated := t3api.ParseTime(&p.UpdatedAt); updated != nil {
+			proj.UpdatedAt = *updated
+		}
 		if len(p.DefaultModelSelection) > 0 {
 			_ = json.Unmarshal(p.DefaultModelSelection, &proj.DefaultModelSelection)
 		}
@@ -548,6 +560,39 @@ func (c *Control) DeleteThread(ctx context.Context, threadID string) error {
 		return fmt.Errorf("delete thread %s: %w", threadID, err)
 	}
 	c.log.Info("thread deleted from T3", "thread", threadID)
+	return nil
+}
+
+// DeleteProject removes a project from T3.
+//
+// It never sends force. T3 refuses to delete a project that still holds a
+// thread it has not deleted, and that refusal is the last fence in front of a
+// caller whose view of the project's threads is one snapshot old; force would
+// delete those threads with it. The caller decides what it owns, T3 decides
+// whether the project is empty, and neither decision is inferred from the
+// other.
+//
+// A deleted project's ID cannot be created again: T3 keeps the record and
+// refuses a second creation under the same identity. Nothing may therefore
+// delete a project whose identity a later dispatch has to be able to recreate;
+// EnsureProject exists in the shape it does for that reason.
+func (c *Control) DeleteProject(ctx context.Context, projectID string) error {
+	if strings.TrimSpace(projectID) == "" {
+		return errors.New("delete T3 project: a project ID is required")
+	}
+	cmd := map[string]any{
+		"type":      "project.delete",
+		"commandId": newID(),
+		"projectId": projectID,
+	}
+	if c.DryRun {
+		c.log.Info("dry-run: would delete project", "project", projectID)
+		return nil
+	}
+	if _, err := c.client.Dispatch(ctx, cmd); err != nil {
+		return fmt.Errorf("delete project %s: %w", projectID, err)
+	}
+	c.log.Info("project deleted from T3", "project", projectID)
 	return nil
 }
 

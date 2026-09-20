@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -57,9 +58,16 @@ func TestTaskBoundGitHubWaitProbesAndRegisters(t *testing.T) {
 	cfg, store := taskWaitCLIFixture(t)
 	answer, answerErr := `{"status":"completed","conclusion":"success","url":"u"}`, error(nil)
 	var seen [][]string
+	var seenDirs []string
 	previous := gitHubCommand
-	gitHubCommand = func(_ context.Context, args []string) (string, error) {
+	gitHubCommand = func(_ context.Context, dir string, args []string) (string, error) {
 		seen = append(seen, args)
+		seenDirs = append(seenDirs, dir)
+		if len(args) != 0 && args[0] == "repo" {
+			// The repository this directory is a checkout of, which is what a
+			// registration without --repo records on the wait.
+			return `{"nameWithOwner":"resolved/repo"}`, nil
+		}
 		return answer, answerErr
 	}
 	t.Cleanup(func() { gitHubCommand = previous })
@@ -77,8 +85,25 @@ func TestTaskBoundGitHubWaitProbesAndRegisters(t *testing.T) {
 	if err := cmdTaskWaitAdd(ctx, cfg, []string{"--task", "current", "--request-id", "ci", "--github", "run", "123", "--repo", "o/r"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(seen) != 3 || strings.Join(seen[2], " ") != "run view 123 --json status,conclusion,url --repo o/r" {
+	// A registration that names the repository asks gh for nothing else; the
+	// two before it, which named none, each resolved one first.
+	if len(seen) != 5 || strings.Join(seen[4], " ") != "run view 123 --json status,conclusion,url --repo o/r" {
 		t.Fatalf("gh was called with %v", seen)
+	}
+	if strings.Join(seen[0], " ") != "repo view --json nameWithOwner" {
+		t.Fatalf("the repository of the calling directory was not resolved: %v", seen)
+	}
+	// Every call runs in the directory the wait is registered in, because gh
+	// resolves a repository from its working directory and the daemon's own is
+	// not a checkout of anything.
+	working, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, dir := range seenDirs {
+		if dir != working {
+			t.Fatalf("gh call %d ran in %q, want the registering directory %q", i, dir, working)
+		}
 	}
 	waits, err := store.ListTaskWaits(ctx)
 	if err != nil || len(waits) != 1 {
@@ -93,5 +118,24 @@ func TestTaskBoundGitHubWaitProbesAndRegisters(t *testing.T) {
 	}
 	if local[0].Kind != domain.WaitKindGitHub || local[0].GitHub == nil || local[0].GitHub.Repo != "o/r" || local[0].Runs != 1 || local[0].LastExit != 1 {
 		t.Fatalf("local row = %+v", local[0])
+	}
+	if local[0].Dir == "" {
+		t.Fatalf("the local row records no directory to poll in: %+v", local[0])
+	}
+	// A registration that names no repository records the one its directory is a
+	// checkout of, so the stored wait says which repository it is about.
+	if err := cmdTaskWaitAdd(ctx, cfg, []string{"--task", "current", "--request-id", "resolved", "--github", "run", "456"}); err != nil {
+		t.Fatal(err)
+	}
+	local, err = store.ListWaits(ctx, "")
+	if err != nil || len(local) != 2 {
+		t.Fatalf("local=%v err=%v", local, err)
+	}
+	resolved := local[0]
+	if resolved.GitHub == nil || resolved.GitHub.ID != "456" {
+		resolved = local[1]
+	}
+	if resolved.GitHub == nil || resolved.GitHub.Repo != "resolved/repo" {
+		t.Fatalf("the registration did not record the repository of its directory: %+v", resolved.GitHub)
 	}
 }
