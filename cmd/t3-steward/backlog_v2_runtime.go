@@ -467,12 +467,16 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 	} else if len(report.Results) != 0 {
 		c.logger.Info("backlog-v2 schedule occurrences reconciled", "results", len(report.Results))
 	}
-	// An overseer obeys the same automatic admission gates as every other
-	// route, so activation dispatch runs only with a current quota answer.
-	// Without one the gate stays closed, which is the plan's own rule for an
-	// unavailable supervisor route rather than a special case.
-	if quotaHealthy && c.supervision != nil {
-		c.supervision.DispatchActivations(ctx, backlog.WorkerAdmissionPolicyFromQuotaReport(quotaReport))
+	// Supervision reconciliation runs even when quota reconciliation failed:
+	// completed, lost and expired activations must still settle. A failed
+	// quota pass supplies an empty fail-closed policy, so any transition
+	// that would create provider work remains blocked.
+	if c.supervision != nil {
+		admission := backlog.WorkerAdmissionPolicy{}
+		if quotaHealthy {
+			admission = backlog.WorkerAdmissionPolicyFromQuotaReport(quotaReport)
+		}
+		c.supervision.DispatchActivations(ctx, admission)
 	}
 	if quotaHealthy {
 		if report, err := c.planning.Tick(ctx, quotaReport); err != nil {
