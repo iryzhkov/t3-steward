@@ -229,6 +229,33 @@ func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeR
 	return p.tick(ctx, quota, true)
 }
 
+type activationOlderOrdinaryConstraint struct {
+	allowed map[string]struct{}
+}
+
+func activationOrdinaryProposalKey(attemptID, workerID, poolID string) string {
+	return attemptID + "\x00" + workerID + "\x00" + poolID
+}
+
+func (c activationOlderOrdinaryConstraint) StartPlan(time.Time) backlog.PlanningConstraintSession {
+	return c
+}
+
+func (c activationOlderOrdinaryConstraint) Evaluate(candidate backlog.PlanningCandidate) []backlog.PlanningBlocker {
+	if candidate.Route != nil {
+		key := activationOrdinaryProposalKey(candidate.Attempt.ID, candidate.WorkerID, candidate.Route.QuotaPoolID)
+		if _, ok := c.allowed[key]; ok {
+			return nil
+		}
+	}
+	return []backlog.PlanningBlocker{{
+		Code:   backlog.PlanningBlockerResource,
+		Detail: "the proposal is outside this activation's older shared contenders",
+	}}
+}
+
+func (activationOlderOrdinaryConstraint) Reserve(backlog.PlanningCandidate) {}
+
 // yieldToOlderActivationContender admits already-eligible work only when its
 // durable age wins at a worker or quota-pool bottleneck used by candidate.
 func (p coordinatorPlanner) yieldToOlderActivationContender(ctx context.Context, quota backlog.QuotaBridgeReport, candidate activationFairnessCandidate) (bool, error) {
@@ -272,39 +299,47 @@ func (p coordinatorPlanner) yieldToOlderActivationContender(ctx context.Context,
 		return false, err
 	}
 	cutoff := sqlite.TaskWakeCutoff{ReadyAt: candidate.ReadyAt, AttemptID: candidate.ID}
-	// WakeTaskWaitsBefore treats a missing cutoff as unconstrained. Block every
-	// disjoint worker and pool, then open only the two resources this activation
-	// would consume. Unrelated wakes may run in the normal planning pass, but they
-	// are not evidence that this activation lost its own fairness contest.
-	blocked := sqlite.TaskWakeCutoff{}
+	poolMaxConcurrent := 0
+	for _, pool := range quota.Pools {
+		if pool.ID == candidate.Pool {
+			poolMaxConcurrent = pool.MaxConcurrent
+			break
+		}
+	}
+	contendingPool := ""
+	poolCutoffs := make(map[string]sqlite.TaskWakeCutoff)
+	if poolMaxConcurrent > 0 {
+		contendingPool = candidate.Pool
+		poolCutoffs[candidate.Pool] = cutoff
+	}
+	// This pass admits wakes sharing either bottleneck the activation would
+	// consume. The store applies both age cutoffs only when that wake actually
+	// uses the corresponding worker or pool.
 	cutoffs := sqlite.TaskWakeCutoffs{
-		Worker:              make(map[string]sqlite.TaskWakeCutoff),
-		Pool:                make(map[string]sqlite.TaskWakeCutoff),
+		Worker:              map[string]sqlite.TaskWakeCutoff{candidate.Worker: cutoff},
+		Pool:                poolCutoffs,
 		AuthorizedWorkers:   make(map[string]sqlite.TaskWakeWorkerAuthorization),
 		AdmissionValidAfter: now.Add(-p.maxQuotaObservationAge),
+		ContendingWorker:    candidate.Worker,
+		ContendingPool:      contendingPool,
 	}
 	for _, snapshot := range snapshots {
-		cutoffs.Worker[snapshot.WorkerID] = blocked
 		cutoffs.AuthorizedWorkers[snapshot.WorkerID] = sqlite.TaskWakeWorkerAuthorization{
 			WorkerEpoch: snapshot.WorkerEpoch, SnapshotSequence: snapshot.Sequence,
 			CatalogRevision: snapshot.Inventory.CatalogRevision, ValidUntil: snapshot.ValidUntil,
 			Providers: append([]domain.WorkerProviderInventory(nil), snapshot.Inventory.Providers...),
 			Projects:  append([]domain.WorkerProjectInventory(nil), snapshot.Inventory.Projects...),
 		}
-		for _, provider := range snapshot.Inventory.Providers {
-			if provider.QuotaPoolID != "" {
-				cutoffs.Pool[provider.QuotaPoolID] = blocked
-			}
-		}
 	}
-	cutoffs.Worker[candidate.Worker] = cutoff
-	cutoffs.Pool[candidate.Pool] = cutoff
 	older := func(at time.Time, id string, than sqlite.TaskWakeCutoff) bool {
 		return at.Before(than.ReadyAt) || at.Equal(than.ReadyAt) && id < than.AttemptID
 	}
 	hasOlderOrdinary := false
+	olderOrdinary := make(map[string]struct{})
 	for _, proposal := range contenders {
-		if proposal.Route == nil || proposal.WorkerID != candidate.Worker && proposal.Route.QuotaPoolID != candidate.Pool {
+		if proposal.Route == nil ||
+			(proposal.WorkerID != candidate.Worker &&
+				(poolMaxConcurrent <= 0 || proposal.Route.QuotaPoolID != candidate.Pool)) {
 			continue
 		}
 		ordering, ok := input.Ordering.Attempts[proposal.AttemptID]
@@ -314,11 +349,13 @@ func (p coordinatorPlanner) yieldToOlderActivationContender(ctx context.Context,
 		ordinary := sqlite.TaskWakeCutoff{ReadyAt: ordering.ReadySince, AttemptID: proposal.AttemptID}
 		if older(ordinary.ReadyAt, ordinary.AttemptID, cutoff) {
 			hasOlderOrdinary = true
+			olderOrdinary[activationOrdinaryProposalKey(proposal.AttemptID, proposal.WorkerID, proposal.Route.QuotaPoolID)] = struct{}{}
 		}
 		if proposal.WorkerID == candidate.Worker && older(ordinary.ReadyAt, ordinary.AttemptID, cutoffs.Worker[candidate.Worker]) {
 			cutoffs.Worker[candidate.Worker] = ordinary
 		}
-		if proposal.Route.QuotaPoolID == candidate.Pool && older(ordinary.ReadyAt, ordinary.AttemptID, cutoffs.Pool[candidate.Pool]) {
+		if poolMaxConcurrent > 0 && proposal.Route.QuotaPoolID == candidate.Pool &&
+			older(ordinary.ReadyAt, ordinary.AttemptID, cutoffs.Pool[candidate.Pool]) {
 			cutoffs.Pool[candidate.Pool] = ordinary
 		}
 	}
@@ -330,6 +367,10 @@ func (p coordinatorPlanner) yieldToOlderActivationContender(ctx context.Context,
 		return true, nil
 	}
 	if hasOlderOrdinary {
+		// Replan with only the exact older proposals that share this activation's
+		// worker or pool. Younger and disjoint ordinary work stays for the normal
+		// planning pass after activation arbitration.
+		input.Constraints = append(input.Constraints, activationOlderOrdinaryConstraint{allowed: olderOrdinary})
 		report, err := p.coordinator.PlanAndCommit(ctx, input)
 		if err != nil {
 			return false, err
@@ -354,7 +395,7 @@ func (p coordinatorPlanner) yieldToOlderActivationContender(ctx context.Context,
 					active++
 				}
 			}
-			if active >= pool.MaxConcurrent {
+			if pool.MaxConcurrent > 0 && active >= pool.MaxConcurrent {
 				return true, nil
 			}
 			break

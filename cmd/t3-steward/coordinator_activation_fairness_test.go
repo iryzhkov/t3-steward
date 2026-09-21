@@ -212,6 +212,99 @@ func TestOrdinaryBatchWithRemainingSharedCapacityDoesNotDelayActivation(t *testi
 	}
 }
 
+func TestActivationFairnessCommitsOlderOrdinaryButNotYoungerAtTwoSlots(t *testing.T) {
+	ctx := context.Background()
+	fixture := newActivationLeaseFixture(t)
+	fixture.superviseRun(t)
+	fixture.now = fixture.now.Add(10 * time.Minute)
+	addActivationFairnessAttempt(t, fixture, "old", activationLeaseWorker, "claude-main", activationLeaseTime.Add(-time.Minute), false)
+	addActivationFairnessAttempt(t, fixture, "young", activationLeaseWorker, "claude-main", fixture.now.Add(-time.Minute), false)
+	snapshots, err := fixture.store.LoadWorkerSnapshots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := snapshots[0]
+	snapshot.Sequence++
+	snapshot.ObservedAt = fixture.now.Add(time.Duration(snapshot.Sequence) * time.Millisecond)
+	snapshot.Inventory.ObservedAt = snapshot.ObservedAt
+	snapshot.Inventory.Allocatable.ExecutorSlots = 2
+	if err := fixture.store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	quota := activationFairnessQuota(fixture.now,
+		domain.QuotaPool{ID: "claude-main", Provider: "claude", ProviderInstanceIDs: []string{"claudeAgent"}, Admission: domain.AdmissionOpen, MaxConcurrent: 2},
+	)
+	cycle := activationFairnessCycle(t, fixture, quota)
+	cycle.Tick(ctx)
+
+	state, err := fixture.supervision.LoadSupervisionActivationState(ctx, activationLeaseRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Activation.State != domain.ActivationPendingDispatch {
+		t.Fatalf("activation state=%q, want middle-aged activation in second slot", state.Activation.State)
+	}
+	records, err := fixture.store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offered := map[string]bool{}
+	for _, assignment := range records.Assignments {
+		if assignment.State == domain.AssignmentOffered {
+			offered[assignment.AttemptID] = true
+		}
+	}
+	if !offered["attempt-old"] {
+		t.Fatal("older ordinary attempt did not receive the first slot")
+	}
+	if offered["attempt-young"] {
+		t.Fatal("younger ordinary attempt preempted the activation's second slot")
+	}
+}
+
+func TestOlderWakeSharingEitherActivationConstraintWins(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		worker string
+		pool   string
+	}{
+		{name: "same worker different pool", worker: activationLeaseWorker, pool: "pool-other"},
+		{name: "same pool different worker", worker: "worker-other", pool: "claude-main"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := context.Background()
+			fixture := newActivationLeaseFixture(t)
+			fixture.superviseRun(t)
+			addActivationFairnessAttempt(t, fixture, "wake", testCase.worker, testCase.pool, fixture.now.Add(-time.Minute), true)
+
+			pools := []domain.QuotaPool{{
+				ID: "claude-main", Provider: "claude", ProviderInstanceIDs: []string{"claudeAgent"},
+				Admission: domain.AdmissionOpen, MaxConcurrent: 1,
+			}}
+			if testCase.pool != "claude-main" {
+				pools = append(pools, domain.QuotaPool{
+					ID: testCase.pool, Provider: "other", ProviderInstanceIDs: []string{"instance-wake"},
+					Admission: domain.AdmissionOpen, MaxConcurrent: 1,
+				})
+			}
+			cycle := activationFairnessCycle(t, fixture, activationFairnessQuota(fixture.now, pools...))
+			cycle.Tick(ctx)
+
+			state, err := fixture.supervision.LoadSupervisionActivationState(ctx, activationLeaseRun)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Activation.State != "" {
+				t.Fatalf("activation state=%q, want older shared wake to win", state.Activation.State)
+			}
+			if got := loadFairnessAttempt(t, ctx, fixture.store, "attempt-wake"); got.Control != domain.ControlResuming {
+				t.Fatalf("shared wake control=%q, want resuming", got.Control)
+			}
+		})
+	}
+}
+
 func activationFairnessCycle(t *testing.T, fixture *activationLeaseFixture, quota backlog.QuotaBridgeReport) coordinatorBoundaryCycle {
 	t.Helper()
 	if err := fixture.store.SaveCoordinatorRecords(context.Background(), sqlite.CoordinatorRecords{QuotaPools: quota.Pools}); err != nil {
@@ -252,11 +345,18 @@ func addActivationFairnessAttempt(t *testing.T, fixture *activationLeaseFixture,
 	ctx := context.Background()
 	workflowID, runID := "workflow-"+suffix, "run-"+suffix
 	taskID, attemptID := "task-"+suffix, "attempt-"+suffix
-	instanceID := "instance-" + suffix
+	instanceID, model := "instance-"+suffix, "model"
 	if poolID == "claude-main" {
 		instanceID = "claudeAgent"
 	}
-	route := domain.ProviderRoute{WorkerID: workerID, ProviderInstanceID: instanceID, Model: "model", QuotaPoolID: poolID}
+	if workerID == activationLeaseWorker {
+		model = "claude-fable-5-1"
+	}
+	route := domain.ProviderRoute{WorkerID: workerID, ProviderInstanceID: instanceID, Model: model, QuotaPoolID: poolID}
+	workerEpoch := "epoch-" + suffix
+	if workerID == activationLeaseWorker {
+		workerEpoch = "worker-epoch-1"
+	}
 	attempt := domain.Attempt{
 		ID: attemptID, WorkflowRunID: runID, TaskID: taskID, Number: 1,
 		Progress: domain.ProgressReady, Control: domain.ControlUnassigned, Revision: 1, UpdatedAt: readyAt,
@@ -267,7 +367,7 @@ func addActivationFairnessAttempt(t *testing.T, fixture *activationLeaseFixture,
 		attempt.AssignmentID, attempt.ThreadID = "assignment-"+suffix, "thread-"+suffix
 		assignments = []domain.Assignment{{
 			ID: attempt.AssignmentID, AttemptID: attempt.ID, Project: "project",
-			WorkerID: workerID, WorkerEpoch: "epoch-" + suffix, Route: route,
+			WorkerID: workerID, WorkerEpoch: workerEpoch, Route: route,
 			ExecutorDemand: &domain.ResourceDemand{}, State: domain.AssignmentClaimed, Epoch: 1,
 			ThreadID: attempt.ThreadID, CreatedAt: readyAt, UpdatedAt: readyAt,
 		}}
@@ -280,13 +380,32 @@ func addActivationFairnessAttempt(t *testing.T, fixture *activationLeaseFixture,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.store.SaveWorkerSnapshot(ctx, domain.WorkerSnapshot{
+	if workerID == activationLeaseWorker {
+		snapshots, err := fixture.store.LoadWorkerSnapshots(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot := snapshots[0]
+		snapshot.Sequence++
+		snapshot.ObservedAt = fixture.now.Add(time.Duration(snapshot.Sequence) * time.Millisecond)
+		snapshot.ValidUntil = fixture.now.Add(time.Hour)
+		snapshot.Inventory.ObservedAt = snapshot.ObservedAt
+		snapshot.Inventory.Projects = []domain.WorkerProjectInventory{{Name: "project", Available: true, UpdatedAt: fixture.now}}
+		if poolID != "claude-main" {
+			snapshot.Inventory.Providers = append(snapshot.Inventory.Providers, domain.WorkerProviderInventory{
+				InstanceID: instanceID, Models: []string{model}, QuotaPoolID: poolID, Available: true,
+			})
+		}
+		if err := fixture.store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
+			t.Fatal(err)
+		}
+	} else if err := fixture.store.SaveWorkerSnapshot(ctx, domain.WorkerSnapshot{
 		WorkerID: workerID, WorkerEpoch: "epoch-" + suffix, CoordinatorEpoch: 1, Sequence: 1,
 		Connected: true, ObservedAt: fixture.now, ValidUntil: fixture.now.Add(time.Hour),
 		Inventory: domain.WorkerInventory{
 			ID: workerID, AcceptBacklog: true, Health: domain.WorkerHealthReady, ObservedAt: fixture.now,
 			Projects:    []domain.WorkerProjectInventory{{Name: "project", Available: true, UpdatedAt: fixture.now}},
-			Providers:   []domain.WorkerProviderInventory{{InstanceID: instanceID, Models: []string{"model"}, QuotaPoolID: poolID, Available: true}},
+			Providers:   []domain.WorkerProviderInventory{{InstanceID: instanceID, Models: []string{model}, QuotaPoolID: poolID, Available: true}},
 			Allocatable: domain.AllocatableCapacity{ExecutorSlots: 1},
 		},
 	}); err != nil {
