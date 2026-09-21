@@ -60,6 +60,7 @@ func TestTaskParksWakesAndIsCollectedOnceFromTheInjectedIdentity(t *testing.T) {
 		ID: pkg.Identity.AssignmentID, AttemptID: attempt.ID, WorkerID: pkg.WorkerID, WorkerEpoch: pkg.WorkerEpoch,
 		State: domain.AssignmentClaimed, Epoch: pkg.Identity.AssignmentEpoch, LeaseToken: "lease-1",
 		DispatchToken: pkg.Identity.DispatchToken, ThreadID: pkg.Identity.ThreadID,
+		ExecutorDemand: &domain.ResourceDemand{},
 		LeaseExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now,
 	}
 	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
@@ -117,7 +118,7 @@ func TestTaskParksWakesAndIsCollectedOnceFromTheInjectedIdentity(t *testing.T) {
 	}, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	wakes, err := store.WakeTaskWaits(ctx, now.Add(time.Minute))
+	wakes, err := authorizedWakeTaskWaits(t, store, now.Add(time.Minute))
 	if err != nil || len(wakes) != 1 || wakes[0].ThreadID != pkg.Identity.ThreadID {
 		t.Fatalf("wakes = %+v err=%v", wakes, err)
 	}
@@ -142,7 +143,7 @@ func TestTaskParksWakesAndIsCollectedOnceFromTheInjectedIdentity(t *testing.T) {
 	}, now.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if wakes, err := store.WakeTaskWaits(ctx, now.Add(3*time.Minute)); err != nil || len(wakes) != 1 {
+	if wakes, err := authorizedWakeTaskWaits(t, store, now.Add(3*time.Minute)); err != nil || len(wakes) != 1 {
 		t.Fatalf("the second wake = %+v err=%v", wakes, err)
 	}
 

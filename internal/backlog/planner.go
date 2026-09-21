@@ -156,7 +156,6 @@ type TaskPlanningDecision struct {
 type ProposedTask struct {
 	WorkflowRunID string                 `json:"workflowRunId"`
 	Project       string                 `json:"project,omitempty"`
-	TaskClass     domain.TaskClass       `json:"taskClass,omitempty"`
 	TaskID        string                 `json:"taskId"`
 	AttemptID     string                 `json:"attemptId"`
 	WorkerID      string                 `json:"workerId"`
@@ -524,12 +523,8 @@ func planTask(input PlanInput, router *providerRouter, constraints []PlanningCon
 	}
 	explanation := placed.Decision
 	explanation.AttemptID = attempt.ID
-	taskClass := task.Class
-	if taskClass == "" {
-		taskClass = domain.TaskClassRequired
-	}
 	return decision, &ProposedTask{
-		WorkflowRunID: state.Run.ID, Project: workflow.Project, TaskClass: taskClass, TaskID: task.ID, AttemptID: attempt.ID,
+		WorkflowRunID: state.Run.ID, Project: workflow.Project, TaskID: task.ID, AttemptID: attempt.ID,
 		WorkerID: selected.WorkerID, Route: cloneProviderRoutePointer(selected.Route),
 		Estimate: cloneTaskAdmissionEstimatePointer(selected.Estimate), ResourceLocks: locks,
 		Placement: &explanation,

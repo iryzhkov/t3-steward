@@ -69,7 +69,7 @@ func TestEntireParkResumeBetweenWorkerObservationsPreservesSecondPark(t *testing
 	if _, err := f.store.SettleTaskWait(ctx, first.ID, domain.TaskWaitResult{Outcome: domain.TaskWaitMet}, f.now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	wakes, err := f.store.WakeTaskWaits(ctx, f.now.Add(time.Minute))
+	wakes, err := authorizedWakeTaskWaits(t, f.store, f.now.Add(time.Minute))
 	if err != nil || len(wakes) != 1 {
 		t.Fatalf("wake: %+v %v", wakes, err)
 	}

@@ -796,10 +796,6 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 			continue
 		}
 		if poolID != "" {
-			taskClass, err := frozenTaskWakeClassTx(ctx, tx, attempt, assignment)
-			if err != nil {
-				return nil, err
-			}
 			pools, err := loadJSON[domain.QuotaPool](ctx, tx, "coordinator_quota_pools")
 			if err != nil {
 				return nil, err
@@ -822,7 +818,6 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 			}
 			for _, admission := range admissions {
 				classAllowed := admission.Admission == domain.AdmissionOpen ||
-					(taskClass != domain.TaskClassSurplus && (admission.Admission == domain.AdmissionConstrained || admission.Admission == domain.AdmissionRecovering)) ||
 					(attempt.AdminForceStart && (admission.Admission == domain.AdmissionConstrained || admission.Admission == domain.AdmissionRecovering))
 				if admission.QuotaPoolID == poolID && !cutoffs.AdmissionValidAfter.IsZero() && !admission.ObservedAt.Before(cutoffs.AdmissionValidAfter) && classAllowed {
 					open = true
@@ -931,28 +926,6 @@ func frozenTaskWakeProjectTx(ctx context.Context, tx *sql.Tx, attempt domain.Att
 		return "", fmt.Errorf("assignment %q frozen project %q disagrees with workflow %q project %q", assignment.ID, assignment.Project, workflow.ID, workflow.Project)
 	}
 	return workflow.Project, nil
-}
-
-func frozenTaskWakeClassTx(ctx context.Context, tx *sql.Tx, attempt domain.Attempt, assignment domain.Assignment) (domain.TaskClass, error) {
-	class := assignment.TaskClass
-	if class == "" {
-		var raw []byte
-		if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_tasks WHERE id=?", attempt.TaskID).Scan(&raw); err != nil {
-			return "", fmt.Errorf("load wake task %q: %w", attempt.TaskID, err)
-		}
-		var task domain.Task
-		if err := json.Unmarshal(raw, &task); err != nil {
-			return "", err
-		}
-		class = task.Class
-	}
-	if class == "" {
-		class = domain.TaskClassRequired
-	}
-	if class != domain.TaskClassRequired && class != domain.TaskClassSurplus {
-		return "", fmt.Errorf("assignment %q has invalid frozen task class %q", assignment.ID, class)
-	}
-	return class, nil
 }
 
 func replaySettledOutcome(wait domain.TaskWait) domain.TaskWaitOutcome {

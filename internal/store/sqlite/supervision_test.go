@@ -178,7 +178,7 @@ func TestSupervisionSchemaMigratesForwardAndRefusesNewerDatabase(t *testing.T) {
 	}
 
 	// An older binary refuses a newer database rather than opening it.
-	if _, err := store.db.Exec(`INSERT INTO schema_version(version) VALUES (19)`); err != nil {
+	if _, err := store.db.Exec(`INSERT INTO schema_version(version) VALUES (20)`); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Migrate(); err == nil || !strings.Contains(err.Error(), "newer than supported") {

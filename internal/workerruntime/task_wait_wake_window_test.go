@@ -55,7 +55,8 @@ func newWakeWindowFixture(t *testing.T) *wakeWindowFixture {
 		AssignmentID: pkg.Identity.AssignmentID, ThreadID: pkg.Identity.ThreadID, UpdatedAt: now,
 	}
 	assignment := domain.Assignment{
-		ID: pkg.Identity.AssignmentID, AttemptID: attempt.ID, WorkerID: pkg.WorkerID, WorkerEpoch: pkg.WorkerEpoch,
+		ExecutorDemand: &domain.ResourceDemand{},
+		ID:             pkg.Identity.AssignmentID, AttemptID: attempt.ID, WorkerID: pkg.WorkerID, WorkerEpoch: pkg.WorkerEpoch,
 		State: domain.AssignmentClaimed, Epoch: pkg.Identity.AssignmentEpoch, LeaseToken: "lease-1",
 		DispatchToken: pkg.Identity.DispatchToken, ThreadID: pkg.Identity.ThreadID,
 		LeaseExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now,
@@ -237,7 +238,7 @@ func TestParkedTaskKeepsItsIdentityThroughTheWakeWindow(t *testing.T) {
 	}
 
 	// The wake is committed against the attempt, and still not delivered.
-	wakes, err := f.store.WakeTaskWaits(ctx, f.now.Add(time.Minute))
+	wakes, err := authorizedWakeTaskWaits(t, f.store, f.now.Add(time.Minute))
 	if err != nil || len(wakes) != 1 {
 		t.Fatalf("wakes = %+v err=%v", wakes, err)
 	}
@@ -265,7 +266,7 @@ func TestParkedTaskKeepsItsIdentityThroughTheWakeWindow(t *testing.T) {
 
 	// Which is what the resumed turn needs it for: a second wait, registered
 	// with the same record.
-	second, err := registerFromInjectedIdentity(t, f.store, f.workspace, "req-2", f.now.Add(3*time.Minute))
+	second, err := registerFromInjectedIdentity(t, f.store, f.workspace, "req-2", f.now.Add(30*time.Second))
 	if err != nil {
 		t.Fatalf("the resumed turn could not park itself again: %v", err)
 	}
@@ -273,7 +274,7 @@ func TestParkedTaskKeepsItsIdentityThroughTheWakeWindow(t *testing.T) {
 	// A request ID names one park. Replaying the first one now that its wait has
 	// settled must refuse, because the caller would otherwise be told it is
 	// parked and end its turn on a wait that holds nothing.
-	if _, err := registerFromInjectedIdentity(t, f.store, f.workspace, "req-1", f.now.Add(3*time.Minute)); !errors.Is(err, domain.ErrTaskWaitReplaySettled) {
+	if _, err := registerFromInjectedIdentity(t, f.store, f.workspace, "req-1", f.now.Add(30*time.Second)); !errors.Is(err, domain.ErrTaskWaitReplaySettled) {
 		t.Fatalf("a replayed request ID parked the task again: %v", err)
 	}
 
@@ -281,18 +282,14 @@ func TestParkedTaskKeepsItsIdentityThroughTheWakeWindow(t *testing.T) {
 	// nothing parking it. Only now is the attempt collected, exactly once.
 	if _, err := f.store.SettleTaskWait(ctx, second.ID, domain.TaskWaitResult{
 		Outcome: domain.TaskWaitMet, Reason: "the review landed",
-	}, f.now.Add(4*time.Minute)); err != nil {
+	}, f.now.Add(40*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	// A production worker heartbeats throughout a resumed turn. Renew the
-	// fixture's real snapshot at this later fake-clock boundary so capacity
-	// evidence is current without weakening the stale-snapshot fence.
-	f.renewWorkerSnapshot(t, f.now.Add(4*time.Minute))
-	secondWakes, err := f.store.WakeTaskWaits(ctx, f.now.Add(4*time.Minute))
+	secondWakes, err := authorizedWakeTaskWaits(t, f.store, f.now.Add(40*time.Second))
 	if err != nil || len(secondWakes) != 1 {
 		t.Fatalf("the second wake = %+v err=%v", secondWakes, err)
 	}
-	f.deliverWake(t, secondWakes[0], f.now.Add(5*time.Minute))
+	f.deliverWake(t, secondWakes[0], f.now.Add(50*time.Second))
 	f.turnRunning()
 	f.exchange(t)
 	if got := phaseOf(t, f.runtime, "assignment-1"); got != PhaseRunning {
