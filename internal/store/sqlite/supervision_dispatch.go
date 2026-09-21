@@ -134,7 +134,7 @@ func (s *Store) CommitActivationAssignment(ctx context.Context, commit Activatio
 		return domain.Assignment{}, fmt.Errorf("%w: worker %q is not enrolled for the effective catalog",
 			ErrActivationDispatch, assignment.WorkerID)
 	}
-	if err := requireExecutorCapacityTx(ctx, tx, assignment.WorkerID, commit.CommittedAt, domain.ResourceDemand{}, true); err != nil {
+	if err := requireExecutorCapacityTx(ctx, tx, assignment.WorkerID, commit.CommittedAt, assignment.WorkerEpoch, domain.ResourceDemand{}, true); err != nil {
 		return domain.Assignment{}, fmt.Errorf("%w: %v", ErrActivationDispatch, err)
 	}
 	attempt.AssignmentID = assignment.ID
