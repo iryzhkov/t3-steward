@@ -226,6 +226,10 @@ type coordinatorPlanner struct {
 }
 
 func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeReport) (backlog.AssignmentPlanningReport, error) {
+	return p.tick(ctx, quota, true)
+}
+
+func (p coordinatorPlanner) tick(ctx context.Context, quota backlog.QuotaBridgeReport, reconcileWakes bool) (backlog.AssignmentPlanningReport, error) {
 	now := time.Now().UTC()
 	if p.now != nil {
 		now = p.now().UTC()
@@ -271,28 +275,46 @@ func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeR
 	// this planning snapshot. Wakes older than the oldest ordinary proposal at
 	// either shared bottleneck get the first transactional capacity check;
 	// newer wakes yield. The normal planner then reloads after any resumption.
-	plan, err := backlog.BuildPlan(input)
+	if !reconcileWakes {
+		return p.coordinator.PlanAndCommit(ctx, input)
+	}
+	hasReadyWakes, err := p.store.HasReadyTaskWaits(ctx)
+	if err != nil {
+		return backlog.AssignmentPlanningReport{}, fmt.Errorf("inspect settled task wakes: %w", err)
+	}
+	if !hasReadyWakes {
+		return p.coordinator.PlanAndCommit(ctx, input)
+	}
+	contenders, err := backlog.BuildUnreservedProposals(input)
 	if err != nil {
 		return backlog.AssignmentPlanningReport{}, err
 	}
 	cutoffs := sqlite.TaskWakeCutoffs{
 		Worker:              make(map[string]sqlite.TaskWakeCutoff),
 		Pool:                make(map[string]sqlite.TaskWakeCutoff),
+		AuthorizedWorkers:   make(map[string]sqlite.TaskWakeWorkerAuthorization),
 		AdmissionValidAfter: now.Add(-p.maxQuotaObservationAge),
 	}
-	attempts := make(map[string]domain.Attempt, len(records.Attempts))
-	for _, attempt := range records.Attempts {
-		attempts[attempt.ID] = attempt
+	for _, snapshot := range snapshots {
+		cutoffs.AuthorizedWorkers[snapshot.WorkerID] = sqlite.TaskWakeWorkerAuthorization{
+			WorkerEpoch: snapshot.WorkerEpoch, SnapshotSequence: snapshot.Sequence,
+			CatalogRevision: snapshot.Inventory.CatalogRevision, ValidUntil: snapshot.ValidUntil,
+			Providers: append([]domain.WorkerProviderInventory(nil), snapshot.Inventory.Providers...),
+			Projects:  append([]domain.WorkerProjectInventory(nil), snapshot.Inventory.Projects...),
+		}
 	}
 	older := func(current sqlite.TaskWakeCutoff, candidate sqlite.TaskWakeCutoff) bool {
 		return current.ReadyAt.IsZero() || candidate.ReadyAt.Before(current.ReadyAt) || candidate.ReadyAt.Equal(current.ReadyAt) && candidate.AttemptID < current.AttemptID
 	}
-	for _, proposal := range plan.Proposals {
-		attempt, ok := attempts[proposal.AttemptID]
-		if !ok || proposal.Route == nil {
+	for _, proposal := range contenders {
+		ordering, ok := input.Ordering.Attempts[proposal.AttemptID]
+		if !ok || ordering.ReadySince.IsZero() {
+			return backlog.AssignmentPlanningReport{}, fmt.Errorf("ordinary proposal %q has no durable ready age", proposal.AttemptID)
+		}
+		if proposal.Route == nil {
 			continue
 		}
-		candidate := sqlite.TaskWakeCutoff{ReadyAt: attempt.UpdatedAt, AttemptID: attempt.ID}
+		candidate := sqlite.TaskWakeCutoff{ReadyAt: ordering.ReadySince, AttemptID: proposal.AttemptID}
 		if current := cutoffs.Worker[proposal.WorkerID]; older(current, candidate) {
 			cutoffs.Worker[proposal.WorkerID] = candidate
 		}
@@ -305,7 +327,10 @@ func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeR
 		return backlog.AssignmentPlanningReport{}, fmt.Errorf("admit settled task wakes: %w", err)
 	}
 	if len(wakes) != 0 {
-		return p.Tick(ctx, quota)
+		// Reload once after transactional wake admission so ordinary planning sees
+		// the newly occupied capacity. Concurrent settlements wait for the next
+		// coordinator boundary instead of recursively extending this one.
+		return p.tick(ctx, quota, false)
 	}
 	return p.coordinator.PlanAndCommit(ctx, input)
 }

@@ -72,6 +72,7 @@ func TestSettledParkedWakeGetsServiceUnderContinuousOrdinaryLoad(t *testing.T) {
 	}
 	parkedAssignment := domain.Assignment{
 		ID: parked.AssignmentID, AttemptID: parked.ID, WorkerID: workerID,
+		Project:     "project",
 		WorkerEpoch: workerEpoch, Epoch: 1, State: domain.AssignmentClaimed,
 		ThreadID: parked.ThreadID, CreatedAt: now, UpdatedAt: now,
 		ExecutorDemand: &domain.ResourceDemand{},
@@ -154,6 +155,7 @@ func TestSettledParkedWakeGetsServiceUnderContinuousOrdinaryLoad(t *testing.T) {
 				if pass != 1 {
 					t.Fatalf("older settled wake was not served on first eligible boundary; pass=%d", pass)
 				}
+				assertOlderOrdinaryServedUnderNewerWakeLoad(t, ctx, store, planner, cycle, attempt, currentNow)
 				return
 			}
 		}
@@ -198,4 +200,71 @@ func TestSettledParkedWakeGetsServiceUnderContinuousOrdinaryLoad(t *testing.T) {
 		}
 	}
 	t.Fatal("parked attempt disappeared")
+}
+
+func assertOlderOrdinaryServedUnderNewerWakeLoad(t *testing.T, ctx context.Context, store *sqlite.Store,
+	planner *coordinatorPlanner, cycle coordinatorBoundaryCycle, parked domain.Attempt, now time.Time) {
+	t.Helper()
+	parked.Progress, parked.Control = domain.ProgressActive, domain.ControlRunning
+	parked.Revision++
+	parked.UpdatedAt = now.Add(time.Second)
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Attempts: []domain.Attempt{parked}}); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 3; index++ {
+		at := now.Add(time.Duration(index+2) * time.Second)
+		wait, err := store.RegisterTaskWait(ctx, domain.TaskWaitRegistration{
+			RequestID:     "newer-wake-" + time.Unix(int64(index), 0).UTC().Format("150405"),
+			WorkflowRunID: parked.WorkflowRunID, TaskID: parked.TaskID, AttemptID: parked.ID,
+			IssuedRevision: parked.Revision, ThreadID: parked.ThreadID, Wake: domain.WakeEach,
+			MaxDuration: time.Hour, Name: "newer", Condition: "true",
+		}, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SettleTaskWait(ctx, wait.ID, domain.TaskWaitResult{Outcome: domain.TaskWaitMet}, at); err != nil {
+			t.Fatal(err)
+		}
+		parked = loadFairnessAttempt(t, ctx, store, parked.ID)
+	}
+	ordinaryReady := now.Add(1500 * time.Millisecond)
+	ordinary := domain.Attempt{
+		ID: "inverse-ordinary", WorkflowRunID: "inverse-run", TaskID: "ordinary-task", Number: 1,
+		Progress: domain.ProgressReady, Control: domain.ControlUnassigned, Revision: 1, UpdatedAt: ordinaryReady,
+	}
+	run := domain.WorkflowRun{ID: ordinary.WorkflowRunID, WorkflowID: "ordinary-workflow", Progress: domain.ProgressActive,
+		Revision: 1, CreatedAt: ordinaryReady, UpdatedAt: ordinaryReady}
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{run}, Attempts: []domain.Attempt{ordinary}}); err != nil {
+		t.Fatal(err)
+	}
+	planner.now = func() time.Time { return now.Add(10 * time.Second) }
+	cycle.Tick(ctx)
+	records, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, assignment := range records.Assignments {
+		if assignment.AttemptID != parked.ID && assignment.State == domain.AssignmentOffered {
+			if got := loadFairnessAttempt(t, ctx, store, parked.ID); got.Control != domain.ControlWaitingExternal {
+				t.Fatalf("newer wake bypassed older ordinary: parked control=%s", got.Control)
+			}
+			return
+		}
+	}
+	t.Fatal("older ordinary received no offer under finite newer wake load")
+}
+
+func loadFairnessAttempt(t *testing.T, ctx context.Context, store *sqlite.Store, id string) domain.Attempt {
+	t.Helper()
+	records, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, attempt := range records.Attempts {
+		if attempt.ID == id {
+			return attempt
+		}
+	}
+	t.Fatalf("attempt %q not found", id)
+	return domain.Attempt{}
 }
