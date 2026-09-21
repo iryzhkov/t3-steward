@@ -64,8 +64,9 @@ const (
 	TriggerOperatorReassessment SupervisionTriggerKind = "operator-reassessment"
 	// TriggerReviewTimeout fires when a pending review times out.
 	TriggerReviewTimeout SupervisionTriggerKind = "review-timeout"
-	// TriggerTerminationFinalReport fires when campaign termination asks for a
-	// final report. It is the last activation of a run.
+	// TriggerTerminationFinalReport is reserved for compatibility. No current
+	// producer emits it, and campaign plans must not promise a final-report
+	// activation. Terminal reporting cannot restore mutation authority.
 	TriggerTerminationFinalReport SupervisionTriggerKind = "termination-final-report"
 )
 

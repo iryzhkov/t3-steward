@@ -183,7 +183,7 @@ func routeDistinctFromTasks(overseer Route, tasks []Task) bool {
 // property of the scheduler, and the plan exists so an author can see it before
 // the run starts.
 func supervisionTriggers(gates []Gate, supervision *Supervision) []string {
-	triggers := make([]string, 0, len(gates)+5)
+	triggers := make([]string, 0, len(gates)+4)
 	for _, gate := range gates {
 		if gate.Final {
 			triggers = append(triggers, "gate "+gate.Name+" becomes ready for review before run settlement")
@@ -196,7 +196,6 @@ func supervisionTriggers(gates []Gate, supervision *Supervision) []string {
 		"a capacity or route block persists past its configured threshold",
 		"an operator requests reassessment",
 		"a pending review is still undecided after "+supervision.ActivationDeadline,
-		"the run requests final reporting at settlement",
 	)
 	return triggers
 }

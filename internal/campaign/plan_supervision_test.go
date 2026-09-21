@@ -135,7 +135,6 @@ func TestProjectSupervisionTriggersAreDerivedAndOrdered(t *testing.T) {
 		"a capacity or route block persists past its configured threshold",
 		"an operator requests reassessment",
 		"a pending review is still undecided after 1h30m0s",
-		"the run requests final reporting at settlement",
 	}
 	if !reflect.DeepEqual(triggers, want) {
 		t.Fatalf("triggers = %#v", triggers)
