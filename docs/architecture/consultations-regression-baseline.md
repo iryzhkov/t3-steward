@@ -99,6 +99,53 @@ coordinator coverage but is not yet composed in this compact fixture. Retention 
 exists for ordinary records; consultation context-pin ownership and rollback
 reconciliation require the feature schema.
 
+## One-slot fair-service qualification
+
+The source order does not provide a wake-service bound. The coordinator process runs
+ordinary assignment planning in coordinatorBoundaryCycle; task wakes are requested by
+the separately scheduled worker wait runner. TestSettledParkedWakeGetsServiceUnderContinuousOrdinaryLoad
+freezes a valid interleaving using the production coordinator boundary, planner, SQLite
+assignment commit, and wake transaction. The fixture has one ready worker snapshot with
+one executor slot, an open provider pool with maxConcurrent 1, one settled parked wait,
+and replenished ordinary work. On each of eight passes the planner commits an ordinary
+offer, that offer excludes the settled wake from the only slot, the ordinary assignment
+completes, and the next ready attempt is added. The wake remains waiting-external; its
+revision changes only through wait registration, not resumption.
+
+The desired-contract test therefore fails at the current source revision with: settled
+parked wake received no slot in 8 coordinator passes; control=waiting-external revision=3.
+
+Eight is a finite regression bound, not a claim that starvation ends on pass nine. The
+same legal ordering can repeat while ordinary work is replenished, so the current design
+has no finite service bound. This is orchestrator evidence for one deterministic
+interleaving; it does not claim that every deployment starves a wake.
+
+The smallest repair is one arbitration step inside the existing coordinator boundary.
+Before committing new work, load all capacity contenders and sort them by a durable ready
+key:
+
+1. a settled parked wake uses the earliest settlement time in its committed wake set and
+   the stable attempt ID;
+2. a supervision activation uses its durable activation-ready time, activation epoch and
+   ID;
+3. an ordinary attempt uses the time it first became ready, its attempt number and ID.
+
+Compare contenders by ready time, then stable ID; kind is only a final deterministic
+tie-breaker and must not grant a permanent class priority. For each worker snapshot, walk
+that order once and commit at most the snapshot's available sized capacity. The commit
+transaction must revalidate coordinator and worker epoch/sequence, snapshot freshness,
+live attempt and assignment revision, wait settlement, supervision gates, route/provider
+admission, pool concurrency and sized executor demand. A loser keeps its original durable
+ready key for the next boundary. No slot is reserved between boundaries and no second
+scheduler is introduced.
+
+Feature-absent compatibility is narrow: with no settled wake or ready activation, ordinary
+planning produces the same candidates and assignment semantics. With mixed contenders,
+assignment order can change because an older wake or activation can win. Replay identities,
+quota and worker fail-closed behavior, and capacity ownership states remain unchanged.
+A repaired version of the fixture should pass with a stated finite bound and should also
+assert that continuous wakes cannot permanently exclude ordinary attempts.
+
 ## Baseline command receipts
 
 The repository-prescribed gates passed in this isolated worktree:
