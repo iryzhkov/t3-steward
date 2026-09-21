@@ -14,9 +14,11 @@ JSON receipt freezes these observable facts:
 - same-content replay retains one wait identity and one durable record;
 - cancellation commits a cancelled outcome and resumes the same attempt once.
 
-The receipt intentionally excludes no sessions, blockers, resource counts, outcomes, or
-revisions. It compares semantic fields rather than generated wait IDs; those IDs are
-already deterministic hashes of the fixed request IDs. Runtime state lives under
+The receipt records attempt revisions plus every wait's settlement, wake, outcome,
+delivery state, delivery identity, wake revision, and resumption flag. It also records the
+existing assignment-row count. That count is a narrow store invariant, not evidence about
+model-session creation. Session counts, scheduler blockers, unrelated effects, and broader
+resource accounting remain integration-gate measurements. Runtime state lives under
 `t.TempDir()`.
 
 Run it with:
@@ -31,7 +33,7 @@ Feature-absent and supported-but-unconfigured results must meet all of these bud
 
 | Measure | Budget |
 | --- | --- |
-| Differential JSON receipt | byte-for-byte identical; zero added effects, waits, assignments, or outcomes |
+| Differential JSON receipt | byte-for-byte identical for the recorded wait transitions, revisions, delivery identities, assignment count and outcomes |
 | Extra model/advisor sessions | exactly zero |
 | Extra consultation/context records | exactly zero |
 | Ordinary scheduling decisions and authoritative receipts | exactly zero semantic differences |
@@ -50,6 +52,21 @@ semantic budgets above. The performance budgets permit at most 15% p95 latency r
 and 10% throughput regression while advisor work is queued, active, timed out, or
 cancelled. A one-slot worker must still admit ordinary work after a parked task releases
 capacity.
+
+## Measured pre-feature reconciliation baseline
+
+`BenchmarkConsultationsBaselineReconciliation` runs the real SQLite no-work wake
+reconciliation seam used on each coordinator boundary. Five 200-operation samples on the
+baseline host measured 84,154–116,217 operations/second (median 101,678) and per-sample
+p95 latency of 11.57–19.03 microseconds (median 14.54 microseconds). Compare on the same
+host with the same command:
+
+```sh
+go test ./internal/store/sqlite -run '^$' -bench '^BenchmarkConsultationsBaselineReconciliation$' -benchtime=200x -count=5
+```
+
+This measures the reconciliation transaction only. It does not establish end-to-end
+worker scheduling, model-session, or transport latency; those remain integration gates.
 
 ## Existing section 16 coverage inventory
 
