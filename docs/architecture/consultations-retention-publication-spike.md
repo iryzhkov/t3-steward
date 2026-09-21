@@ -43,24 +43,26 @@ metadata-then-file deletion is fail-safe for a crash in the absence of concurren
 it may leak an unreferenced blob but does not by itself create dangling retained metadata.
 That crash property does not provide concurrency safety.
 
-SQLite's single connection serializes database transactions, but it does not close the
-object lifecycle race: `CoordinatorArtifactStore.Prune` commits metadata deletion, queries
-references, and then calls `os.Remove` outside a transaction. The deterministic
-`TestConsultationPruneCanDeleteConcurrentlyAdoptedBlob` pauses after the query observes no
-reference, publishes a new metadata owner for the existing hash, and proves prune then
-unlinks the newly adopted blob. Publication-failure cleanup has the same read-then-unlink
-shape.
+SQLite's single connection serializes database transactions but does not cover the
+reference-check-to-unlink filesystem gap. The original deterministic reproducer showed
+that pruning could delete a blob after a concurrent publication had adopted it.
 
-The smallest robust fix is a transaction-backed blob lifecycle row keyed by storage path.
-Prune atomically changes an unreferenced live object to `deleting`; publication may attach
-a reference only while it is live and must retry or recreate after a deleting generation
-finishes. Prune unlinks only its claimed generation, then removes or tombstones the row.
-Startup reconciliation completes deleting claims and collects live zero-reference
-orphans. A shared per-storage-path lock spanning publish's existence/metadata commit and
-prune's reference-check/unlink is a smaller single-process alternative, but it must be
-shared by every `CoordinatorArtifactStore` value for the canonical root and does not cover
-multiple processes. Removing the last pin, retiring a version, producer pruning,
-publication failure, and orphan collection require concurrency tests.
+The prerequisite repair uses the existing cross-process `acquireFileLock` helper. Both
+paths select the producer's artifact root (including `SubmissionRoot`) and the same
+`artifact-object:<storagePath>` lock key. Publication holds the lock before deciding
+whether to reuse or rename an object through metadata commit and failure cleanup.
+Pruning holds it across the final authoritative reference check and unlink. Distinct
+store values share the filesystem lock; process exit releases it. The converted
+`TestConsultationPruneSerializesConcurrentBlobAdoption` proves the publisher waits for
+pruning, then recreates and commits an openable object. Its initial test uses separate
+store values in one process; cross-process behavior follows the flock implementation
+and requires separate qualification.
+
+Future context publication and orphan collection must participate in this same content
+lifecycle lock before adopting or deleting bytes. Adding references directly outside
+that boundary would reopen the race. Removing the last pin, retiring a version,
+publication failure and orphan collection still need feature-specific concurrency tests.
+No transaction-backed blob state machine or feature schema is introduced by this repair.
 
 Backup coverage is structurally feasible because `backupsnapshot.Manager.Create` copies
 the stopped coordinator database and artifact root under the same lock. C1 still needs a
