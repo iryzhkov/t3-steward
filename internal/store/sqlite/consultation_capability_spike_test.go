@@ -88,6 +88,23 @@ func installCapabilitySpikeSchema(t *testing.T, store *Store) {
 	}
 }
 
+func validCapabilitySpikePurpose(purpose string) bool {
+	switch purpose {
+	case "consultation.ask", "consultation.await", "consultation.inspect-own", "consultation.cancel-own":
+		return true
+	default:
+		return false
+	}
+}
+
+func validCapabilitySpikeHex(value string) bool {
+	raw, err := hex.DecodeString(value)
+	return err == nil && len(raw) == 32
+}
+
+// registerCapabilitySpike models an operation available only to the worker
+// principal authenticated by the existing signed worker envelope. A task
+// principal can use issued authority but can never mint or broaden it.
 func registerCapabilitySpike(ctx context.Context, store *Store, record capabilitySpikeRecord, now time.Time) error {
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -108,6 +125,11 @@ func registerCapabilitySpike(ctx context.Context, store *Store, record capabilit
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
+	}
+	if !validCapabilitySpikeHex(record.ID) || !validCapabilitySpikeHex(record.Digest) ||
+		!validCapabilitySpikePurpose(record.Purpose) || record.ExpiresAtUnixNano <= now.UnixNano() ||
+		record.ExpiresAtUnixNano > now.Add(24*time.Hour).UnixNano() {
+		return errors.New("capability registration has invalid identity, digest, purpose, or expiry")
 	}
 	assignment, err := loadAssignmentTx(ctx, tx, record.AssignmentID)
 	if err != nil {
@@ -229,11 +251,35 @@ func TestConsultationCapabilityAuthoritySpike(t *testing.T) {
 		t.Fatalf("exact registration replay failed: %v", err)
 	}
 	for name, mutate := range map[string]func(*capabilitySpikeRecord){
-		"coordinator epoch": func(r *capabilitySpikeRecord) { r.ID = "cap-forged-coordinator"; r.CoordinatorEpoch++ },
-		"expired":           func(r *capabilitySpikeRecord) { r.ID = "cap-expired"; r.ExpiresAtUnixNano = now.UnixNano() },
-		"assignment":        func(r *capabilitySpikeRecord) { r.ID = "cap-forged-assignment"; r.AssignmentID = "assignment-forged" },
-		"worker epoch":      func(r *capabilitySpikeRecord) { r.ID = "cap-forged-worker"; r.WorkerEpoch = "worker-epoch-forged" },
-		"thread":            func(r *capabilitySpikeRecord) { r.ID = "cap-forged-thread"; r.ThreadID = "thread-forged" },
+		"coordinator epoch": func(r *capabilitySpikeRecord) {
+			r.ID = capabilitySpikeDigest("forged-coordinator")
+			r.CoordinatorEpoch++
+		},
+		"expired": func(r *capabilitySpikeRecord) {
+			r.ID = capabilitySpikeDigest("expired")
+			r.ExpiresAtUnixNano = now.UnixNano()
+		},
+		"overlong expiry": func(r *capabilitySpikeRecord) {
+			r.ID = capabilitySpikeDigest("overlong")
+			r.ExpiresAtUnixNano = now.Add(24*time.Hour + time.Nanosecond).UnixNano()
+		},
+		"empty purpose": func(r *capabilitySpikeRecord) { r.ID = capabilitySpikeDigest("empty-purpose"); r.Purpose = "" },
+		"unknown purpose": func(r *capabilitySpikeRecord) {
+			r.ID = capabilitySpikeDigest("unknown-purpose")
+			r.Purpose = "consultation.approve-gate"
+		},
+		"assignment": func(r *capabilitySpikeRecord) {
+			r.ID = capabilitySpikeDigest("forged-assignment")
+			r.AssignmentID = "assignment-forged"
+		},
+		"worker epoch": func(r *capabilitySpikeRecord) {
+			r.ID = capabilitySpikeDigest("forged-worker")
+			r.WorkerEpoch = "worker-epoch-forged"
+		},
+		"thread": func(r *capabilitySpikeRecord) {
+			r.ID = capabilitySpikeDigest("forged-thread")
+			r.ThreadID = "thread-forged"
+		},
 	} {
 		t.Run("registration rejects forged "+name, func(t *testing.T) {
 			forged := record
@@ -285,7 +331,10 @@ func TestConsultationCapabilityAuthoritySpike(t *testing.T) {
 	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Attempts: []domain.Attempt{attempt}}); err != nil {
 		t.Fatal(err)
 	}
+	if err := registerCapabilitySpike(ctx, store, record, now); err != nil {
+		t.Fatalf("exact registration receipt replay failed after terminality: %v", err)
+	}
 	if err := authorizeCapabilitySpike(ctx, store, record.ID, token, record.Purpose, record.AssignmentEpoch, now); err == nil {
-		t.Fatal("terminal attempt retained consultation authority")
+		t.Fatal("registration receipt replay authorized a new use after terminality")
 	}
 }

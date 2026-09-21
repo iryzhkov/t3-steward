@@ -38,7 +38,7 @@ changed replay is refused (`internal/store/sqlite/worker_commands.go`).
 
 ## Minimal contract
 
-1. The worker generates 32 random bytes with `crypto/rand` for each assignment authority
+1. Only an authenticated worker principal may register authority; a task principal may use an issued capability but can never mint or broaden one. The worker generates 32 random bytes with `crypto/rand` for each assignment authority
    generation. It durably journals the raw token in worker-owned storage before creating
    the external execution or exposing the token.
 2. The worker sends only SHA-256(token), capability ID, explicit allowed purposes,
@@ -79,7 +79,8 @@ effect, stores only its digest, and authorizes within
 a transaction against real assignment and attempt rows. The test proves:
 
 - file restart replay returns the same random token after file and parent-directory fsync;
-- exact registration replay succeeds, while changed registration is refused;
+- only the closed ask/await/inspect-own/cancel-own purposes are issued; empty or authority-expanding purposes are refused;
+- exact registration replay succeeds even after terminality as a receipt, while changed registration is refused and the replay grants no new use;
 - initial registration requires the claimed assignment and live attempt to agree on worker, coordinator and assignment epochs plus thread ownership;
 - forged capability ID/token, purpose mismatch, expiry, and assignment epoch mismatch fail;
 - digest rotation under one opaque capability ID fails;
