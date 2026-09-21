@@ -107,6 +107,8 @@ func (c FleetCoordinator) PlanAndCommit(ctx context.Context, input PlanInput) (A
 		assignment := domain.Assignment{
 			ID:            assignmentID,
 			AttemptID:     attempt.ID,
+			Project:       proposal.Project,
+			TaskClass:     proposal.TaskClass,
 			WorkerID:      proposal.WorkerID,
 			Route:         *proposal.Route,
 			Estimate:      cloneTaskAdmissionEstimatePointer(proposal.Estimate),

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -29,6 +30,16 @@ CREATE TABLE IF NOT EXISTS coordinator_task_wait_events(
 	record TEXT NOT NULL);
 CREATE TRIGGER IF NOT EXISTS immutable_task_wait_event BEFORE UPDATE ON coordinator_task_wait_events
  BEGIN SELECT RAISE(ABORT,'task wait reconciliation events are immutable'); END;
+`
+
+const coordinatorMigrationV19 = `
+CREATE INDEX IF NOT EXISTS coordinator_task_waits_ready
+	ON coordinator_task_waits(attempt_id)
+	WHERE json_extract(record, '$.settledAt') IS NOT NULL
+	  AND json_extract(record, '$.wokenAt') IS NULL;
+CREATE INDEX IF NOT EXISTS coordinator_task_waits_live
+	ON coordinator_task_waits(attempt_id)
+	WHERE json_extract(record, '$.settledAt') IS NULL;
 `
 
 func taskWaitID(requestID string) string { return "tw-" + requestID }
@@ -602,7 +613,17 @@ func (s *Store) CancelTaskWait(ctx context.Context, id string, now time.Time) (d
 type TaskWakeCutoffs struct {
 	Worker              map[string]TaskWakeCutoff
 	Pool                map[string]TaskWakeCutoff
+	AuthorizedWorkers   map[string]TaskWakeWorkerAuthorization
 	AdmissionValidAfter time.Time
+}
+
+type TaskWakeWorkerAuthorization struct {
+	WorkerEpoch      string
+	SnapshotSequence int64
+	CatalogRevision  string
+	ValidUntil       time.Time
+	Providers        []domain.WorkerProviderInventory
+	Projects         []domain.WorkerProjectInventory
 }
 
 type TaskWakeCutoff struct {
@@ -614,9 +635,30 @@ func (s *Store) WakeTaskWaits(ctx context.Context, now time.Time) ([]domain.Task
 	return s.WakeTaskWaitsBefore(ctx, now, TaskWakeCutoffs{})
 }
 
+// HasReadyTaskWaits is the cheap coordinator guard for fairness projection.
+// WakeTaskWaitsBefore remains authoritative and rechecks the same records in
+// its transaction.
+func (s *Store) HasReadyTaskWaits(ctx context.Context) (bool, error) {
+	var attemptID string
+	err := s.db.QueryRowContext(ctx, `SELECT candidate.attempt_id FROM coordinator_task_waits AS candidate
+		WHERE json_extract(candidate.record, '$.settledAt') IS NOT NULL
+		  AND json_extract(candidate.record, '$.wokenAt') IS NULL
+		  AND (json_extract(candidate.record, '$.wake') = 'each' OR NOT EXISTS (
+			SELECT 1 FROM coordinator_task_waits AS live
+			WHERE live.attempt_id = candidate.attempt_id
+			  AND json_extract(live.record, '$.settledAt') IS NULL))
+		LIMIT 1`).Scan(&attemptID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // WakeTaskWaitsBefore applies settled wakes in durable settlement order. A
 // cutoff keeps a newer wake behind an older ordinary contender sharing its
-// worker or quota pool. Empty cutoffs retain the worker-driven API behavior.
+// worker or quota pool. Empty cutoffs retain legacy behavior only for an
+// ungoverned assignment; governed worker-driven wakes deliberately fail closed
+// until a coordinator supplies current admission evidence.
 func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs TaskWakeCutoffs) ([]domain.TaskWaitWakeContext, error) {
 	if now.IsZero() {
 		return nil, errors.New("task-bound wait wake needs a timestamp")
@@ -720,6 +762,29 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 		if err != nil {
 			return nil, err
 		}
+		authorization, authorized := cutoffs.AuthorizedWorkers[assignment.WorkerID]
+		if assignment.Route.ProviderInstanceID != "" {
+			project, err := frozenTaskWakeProjectTx(ctx, tx, attempt, assignment)
+			if err != nil {
+				return nil, err
+			}
+			if !authorized || authorization.WorkerEpoch != assignment.WorkerEpoch ||
+				authorization.ValidUntil.Before(now) || !authorizedTaskWakeProject(authorization.Projects, project) {
+				continue
+			}
+			snapshot, exists, err := loadWorkerSnapshotTx(ctx, tx, assignment.WorkerID)
+			if err != nil {
+				return nil, err
+			}
+			current := exists && snapshot.WorkerEpoch == authorization.WorkerEpoch &&
+				snapshot.Sequence == authorization.SnapshotSequence &&
+				snapshot.Inventory.CatalogRevision == authorization.CatalogRevision &&
+				!snapshot.ValidUntil.Before(now) && authorizedTaskWakeRoute(snapshot.Inventory.Providers, assignment.Route) &&
+				authorizedTaskWakeProject(snapshot.Inventory.Projects, project)
+			if !current || !authorizedTaskWakeRoute(authorization.Providers, assignment.Route) {
+				continue
+			}
+		}
 		newerThan := func(cutoff TaskWakeCutoff) bool {
 			return candidate.settled.After(cutoff.ReadyAt) || candidate.settled.Equal(cutoff.ReadyAt) && attemptID >= cutoff.AttemptID
 		}
@@ -731,6 +796,10 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 			continue
 		}
 		if poolID != "" {
+			taskClass, err := frozenTaskWakeClassTx(ctx, tx, attempt, assignment)
+			if err != nil {
+				return nil, err
+			}
 			pools, err := loadJSON[domain.QuotaPool](ctx, tx, "coordinator_quota_pools")
 			if err != nil {
 				return nil, err
@@ -747,11 +816,15 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 					break
 				}
 			}
-			if foundPool && pool.ChecksDisabled && !cutoffs.AdmissionValidAfter.IsZero() {
+			if foundPool && !cutoffs.AdmissionValidAfter.IsZero() &&
+				(pool.ChecksDisabled || strings.HasSuffix(poolID, "-free")) {
 				open = true
 			}
 			for _, admission := range admissions {
-				if admission.QuotaPoolID == poolID && !cutoffs.AdmissionValidAfter.IsZero() && !admission.ObservedAt.Before(cutoffs.AdmissionValidAfter) && admission.Admission == domain.AdmissionOpen {
+				classAllowed := admission.Admission == domain.AdmissionOpen ||
+					(taskClass != domain.TaskClassSurplus && (admission.Admission == domain.AdmissionConstrained || admission.Admission == domain.AdmissionRecovering)) ||
+					(attempt.AdminForceStart && (admission.Admission == domain.AdmissionConstrained || admission.Admission == domain.AdmissionRecovering))
+				if admission.QuotaPoolID == poolID && !cutoffs.AdmissionValidAfter.IsZero() && !admission.ObservedAt.Before(cutoffs.AdmissionValidAfter) && classAllowed {
 					open = true
 				}
 			}
@@ -771,7 +844,7 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 				if err != nil {
 					return nil, err
 				}
-				if owner.Control.HoldsProviderSlot() {
+				if domain.AssignmentOwnsExecutorCapacity(owner, other) {
 					active++
 				}
 			}
@@ -810,6 +883,76 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 		})
 	}
 	return wakes, tx.Commit()
+}
+
+func authorizedTaskWakeRoute(providers []domain.WorkerProviderInventory, route domain.ProviderRoute) bool {
+	for _, provider := range providers {
+		if !provider.Available || provider.InstanceID != route.ProviderInstanceID || provider.QuotaPoolID != route.QuotaPoolID {
+			continue
+		}
+		for _, model := range provider.Models {
+			if model == route.Model {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func authorizedTaskWakeProject(projects []domain.WorkerProjectInventory, project string) bool {
+	if project == "" {
+		return false
+	}
+	for _, candidate := range projects {
+		if candidate.Name == project && candidate.Available {
+			return true
+		}
+	}
+	return false
+}
+
+func frozenTaskWakeProjectTx(ctx context.Context, tx *sql.Tx, attempt domain.Attempt, assignment domain.Assignment) (string, error) {
+	var raw []byte
+	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_workflow_runs WHERE id=?", attempt.WorkflowRunID).Scan(&raw); err != nil {
+		return "", fmt.Errorf("load wake workflow run %q: %w", attempt.WorkflowRunID, err)
+	}
+	var run domain.WorkflowRun
+	if err := json.Unmarshal(raw, &run); err != nil {
+		return "", err
+	}
+	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_workflows WHERE id=?", run.WorkflowID).Scan(&raw); err != nil {
+		return "", fmt.Errorf("load wake workflow %q: %w", run.WorkflowID, err)
+	}
+	var workflow domain.Workflow
+	if err := json.Unmarshal(raw, &workflow); err != nil {
+		return "", err
+	}
+	if assignment.Project != "" && assignment.Project != workflow.Project {
+		return "", fmt.Errorf("assignment %q frozen project %q disagrees with workflow %q project %q", assignment.ID, assignment.Project, workflow.ID, workflow.Project)
+	}
+	return workflow.Project, nil
+}
+
+func frozenTaskWakeClassTx(ctx context.Context, tx *sql.Tx, attempt domain.Attempt, assignment domain.Assignment) (domain.TaskClass, error) {
+	class := assignment.TaskClass
+	if class == "" {
+		var raw []byte
+		if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_tasks WHERE id=?", attempt.TaskID).Scan(&raw); err != nil {
+			return "", fmt.Errorf("load wake task %q: %w", attempt.TaskID, err)
+		}
+		var task domain.Task
+		if err := json.Unmarshal(raw, &task); err != nil {
+			return "", err
+		}
+		class = task.Class
+	}
+	if class == "" {
+		class = domain.TaskClassRequired
+	}
+	if class != domain.TaskClassRequired && class != domain.TaskClassSurplus {
+		return "", fmt.Errorf("assignment %q has invalid frozen task class %q", assignment.ID, class)
+	}
+	return class, nil
 }
 
 func replaySettledOutcome(wait domain.TaskWait) domain.TaskWaitOutcome {

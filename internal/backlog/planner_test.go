@@ -43,8 +43,8 @@ func TestBuildPlanDeterministicIndependentReadyBranchesAndPure(t *testing.T) {
 	// of a proposal is compared without it and the explanation is checked on
 	// its own terms.
 	want := []ProposedTask{
-		{WorkflowRunID: "run", TaskID: "task-alpha", AttemptID: "alpha-1", WorkerID: "worker-a"},
-		{WorkflowRunID: "run", TaskID: "task-beta", AttemptID: "beta-1", WorkerID: "worker-a"},
+		{WorkflowRunID: "run", Project: "project", TaskClass: domain.TaskClassRequired, TaskID: "task-alpha", AttemptID: "alpha-1", WorkerID: "worker-a"},
+		{WorkflowRunID: "run", Project: "project", TaskClass: domain.TaskClassRequired, TaskID: "task-beta", AttemptID: "beta-1", WorkerID: "worker-a"},
 	}
 	proposals := append([]ProposedTask(nil), got.Proposals...)
 	for index := range proposals {

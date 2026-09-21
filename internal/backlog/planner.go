@@ -155,6 +155,8 @@ type TaskPlanningDecision struct {
 
 type ProposedTask struct {
 	WorkflowRunID string                 `json:"workflowRunId"`
+	Project       string                 `json:"project,omitempty"`
+	TaskClass     domain.TaskClass       `json:"taskClass,omitempty"`
 	TaskID        string                 `json:"taskId"`
 	AttemptID     string                 `json:"attemptId"`
 	WorkerID      string                 `json:"workerId"`
@@ -170,6 +172,49 @@ type ProposedTask struct {
 type Plan struct {
 	Proposals []ProposedTask         `json:"proposals,omitempty"`
 	Decisions []TaskPlanningDecision `json:"decisions"`
+}
+
+// BuildUnreservedProposals evaluates every ready task against the same
+// immutable eligibility rules as BuildPlan, but starts a fresh planning
+// session for each task. The result therefore includes contenders hidden by
+// capacity reserved for an earlier proposal in the ordinary batch.
+func BuildUnreservedProposals(input PlanInput) ([]ProposedTask, error) {
+	if err := validatePlanInput(input); err != nil {
+		return nil, err
+	}
+	entries, err := orderedPlanningTasks(input)
+	if err != nil {
+		return nil, err
+	}
+	var result []ProposedTask
+	for _, entry := range entries {
+		if !entry.ready {
+			continue
+		}
+		router, err := newProviderRouter(input)
+		if err != nil {
+			return nil, err
+		}
+		constraints := make([]PlanningConstraintSession, 0, len(input.Constraints)+1)
+		constraints = append(constraints, newDirectorySession(input.DirectoryOwners))
+		for _, constraint := range input.Constraints {
+			session := constraint.StartPlan(input.Now)
+			if session == nil {
+				return nil, errors.New("planning constraint returned a nil plan session")
+			}
+			constraints = append(constraints, session)
+		}
+		_, proposal, err := planTask(input, router, constraints, entry.workflow, entry.state,
+			entry.task, entry.attempt, entry.order, cloneStringMap(input.ResourceOwners),
+			cloneStringMap(input.WorkflowCheckoutOwners))
+		if err != nil {
+			return nil, err
+		}
+		if proposal != nil {
+			result = append(result, *proposal)
+		}
+	}
+	return result, nil
 }
 
 // BuildPlan is a deterministic dry run. It does not mutate DAG projections,
@@ -479,8 +524,12 @@ func planTask(input PlanInput, router *providerRouter, constraints []PlanningCon
 	}
 	explanation := placed.Decision
 	explanation.AttemptID = attempt.ID
+	taskClass := task.Class
+	if taskClass == "" {
+		taskClass = domain.TaskClassRequired
+	}
 	return decision, &ProposedTask{
-		WorkflowRunID: state.Run.ID, TaskID: task.ID, AttemptID: attempt.ID,
+		WorkflowRunID: state.Run.ID, Project: workflow.Project, TaskClass: taskClass, TaskID: task.ID, AttemptID: attempt.ID,
 		WorkerID: selected.WorkerID, Route: cloneProviderRoutePointer(selected.Route),
 		Estimate: cloneTaskAdmissionEstimatePointer(selected.Estimate), ResourceLocks: locks,
 		Placement: &explanation,
