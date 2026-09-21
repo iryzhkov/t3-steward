@@ -1,0 +1,27 @@
+{
+  "wake_each": {
+    "wakes_after_first": 1,
+    "wakes_after_second": 0,
+    "attempt_progress": "active",
+    "attempt_control": "resuming",
+    "wait_count": 2,
+    "assignment_count": 1
+  },
+  "wake_all": {
+    "wakes_after_first": 0,
+    "wakes_after_second": 1,
+    "attempt_progress": "active",
+    "attempt_control": "resuming",
+    "wait_count": 2,
+    "assignment_count": 1
+  },
+  "replay": {
+    "same_wait_identity": true,
+    "wait_count": 1
+  },
+  "cancellation": {
+    "outcome": "cancelled",
+    "wakes": 1,
+    "attempt_progress": "active"
+  }
+}
