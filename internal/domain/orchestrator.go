@@ -325,6 +325,7 @@ type Assignment struct {
 	// constraints that rejected the others, the preference scores and the
 	// snapshots read. It is written once, with the assignment.
 	Placement           *PlacementDecision     `json:"placement,omitempty"`
+	ExecutorDemand      *ResourceDemand        `json:"executorDemand,omitempty"`
 	GraphRevision       int64                  `json:"graphRevision,omitempty"`
 	TaskRevision        int64                  `json:"taskRevision,omitempty"`
 	TaskDigest          string                 `json:"taskDigest,omitempty"`

@@ -39,6 +39,37 @@ func TestAssignmentPlanOneSlotCommitsOnlyOneOffer(t *testing.T) {
 	}
 }
 
+func TestAssignmentPlanFencesFrozenSizedDemand(t *testing.T) {
+	store := openFleetTestStore(t)
+	saveFleetAttempt(t, store, fleetAttempt("attempt-sized-1"))
+	secondAttempt := fleetAttempt("attempt-sized-2")
+	secondAttempt.Number = 2
+	saveFleetAttempt(t, store, secondAttempt)
+	snapshot := fleetSnapshot(1, "worker-epoch-1", 1, true, fleetTestTime.Add(time.Hour))
+	snapshot.Inventory.CPUClass = domain.CPUClassMedium
+	snapshot.Inventory.Allocatable = domain.AllocatableCapacity{
+		ExecutorSlots: 2, CPUUnits: 2, MemoryMB: 2048, ScratchMB: 1024,
+	}
+	saveFleetSnapshot(t, store, snapshot)
+
+	demand := domain.ResourceDemand{
+		MinCPUClass: domain.CPUClassMedium, CPUUnits: 2, MemoryMB: 2048, ScratchMB: 1024,
+	}
+	first := fleetPlanCommit(1, "assignment-sized-1", "attempt-sized-1", "worker-epoch-1", 1)
+	first.Items[0].Assignment.ExecutorDemand = &demand
+	second := fleetPlanCommit(1, "assignment-sized-2", "attempt-sized-2", "worker-epoch-1", 1)
+	second.Items[0].Assignment.ExecutorDemand = &demand
+	first.Items = append(first.Items, second.Items...)
+
+	got, err := store.CommitAssignmentPlan(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("committed assignments = %d, want sized capacity to admit one", len(got))
+	}
+}
+
 func TestConcurrentOneSlotOffersNeverBothCommit(t *testing.T) {
 	store := openFleetTestStore(t)
 	saveFleetAttempt(t, store, fleetAttempt("attempt-race-1"))
@@ -70,6 +101,36 @@ func TestConcurrentOneSlotOffersNeverBothCommit(t *testing.T) {
 	}
 	if len(records.Assignments) > 1 {
 		t.Fatalf("concurrent offers overcommitted one slot: %#v", records.Assignments)
+	}
+}
+
+func TestSettledWaitStaysParkedWithStaleExplicitZeroSnapshot(t *testing.T) {
+	ctx := context.Background()
+	store, attempt, now := taskWaitFixture(t)
+	stale := domain.WorkerSnapshot{
+		WorkerID: "worker", WorkerEpoch: "worker-epoch-1", CoordinatorEpoch: 1, Sequence: 2,
+		Connected: true, ObservedAt: now.Add(time.Minute), ValidUntil: now.Add(2 * time.Minute),
+		Inventory: domain.WorkerInventory{
+			ID: "worker", AcceptBacklog: true, Health: domain.WorkerHealthReady,
+			ObservedAt: now.Add(time.Minute),
+		},
+	}
+	if err := store.SaveWorkerSnapshot(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	wait, err := store.RegisterTaskWait(ctx, taskWaitRegistration(attempt, "stale-zero", domain.WakeEach), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SettleTaskWait(ctx, wait.ID, domain.TaskWaitResult{Outcome: domain.TaskWaitMet}, now); err != nil {
+		t.Fatal(err)
+	}
+	wakes, err := store.WakeTaskWaits(ctx, now.Add(3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wakes) != 0 || loadAttempt(t, store, attempt.ID).Control != domain.ControlWaitingExternal {
+		t.Fatalf("wake=%#v attempt=%#v, want stale zero-slot evidence to remain parked", wakes, loadAttempt(t, store, attempt.ID))
 	}
 }
 

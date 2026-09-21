@@ -27,6 +27,11 @@ func bindAssignmentGraphTx(ctx context.Context, tx *sql.Tx, attempt domain.Attem
 	}
 	for _, task := range domain.TasksForRun(run, tasks) {
 		if task.ID == attempt.TaskID {
+			if assignment.Placement != nil && assignment.Placement.Demand != task.ResourceDemand {
+				return errors.New("assignment placement demand differs from immutable task demand")
+			}
+			demand := task.ResourceDemand
+			assignment.ExecutorDemand = &demand
 			assignment.GraphRevision = run.GraphRevision
 			assignment.TaskRevision = task.DefinitionRevision
 			assignment.TaskDigest = domain.TaskDigest(task)

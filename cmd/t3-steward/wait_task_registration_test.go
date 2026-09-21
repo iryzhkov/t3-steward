@@ -62,7 +62,7 @@ func taskWaitCLIFixture(t *testing.T) (config.Config, *sqlite.Store) {
 	}
 	if err := store.SaveWorkerSnapshot(context.Background(), domain.WorkerSnapshot{
 		WorkerID: "worker", WorkerEpoch: "worker-epoch-1", CoordinatorEpoch: 1, Sequence: 1,
-		Connected: true, ObservedAt: now, ValidUntil: now.Add(time.Hour),
+		Connected: true, ObservedAt: now, ValidUntil: now.Add(30 * 24 * time.Hour),
 		Inventory: domain.WorkerInventory{ID: "worker", AcceptBacklog: true, Health: domain.WorkerHealthReady, ObservedAt: now},
 	}); err != nil {
 		t.Fatal(err)

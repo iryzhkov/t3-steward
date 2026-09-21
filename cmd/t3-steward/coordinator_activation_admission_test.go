@@ -118,6 +118,51 @@ func TestBoundaryTickReconcilesCompletedActivationWhenQuotaFailsAndBlocksNextDis
 	}
 }
 
+func TestActivationDispatchSkipsFullEligibleWorkerForFreeEligibleWorker(t *testing.T) {
+	fixture := newActivationLeaseFixture(t)
+	fixture.superviseRun(t)
+	ctx := context.Background()
+
+	snapshots, err := fixture.store.LoadWorkerSnapshots(ctx)
+	if err != nil || len(snapshots) != 1 {
+		t.Fatalf("worker snapshots = %#v, %v", snapshots, err)
+	}
+	free := snapshots[0]
+	free.WorkerID = "worker-z-free"
+	free.WorkerEpoch = "worker-epoch-free"
+	free.Inventory.ID = free.WorkerID
+	if err := fixture.store.SaveWorkerSnapshot(ctx, free); err != nil {
+		t.Fatal(err)
+	}
+	ownerAttempt := domain.Attempt{
+		ID: "attempt-full-first", WorkflowRunID: activationLeaseRun, TaskID: "task-producer",
+		Number: 2, AssignmentID: "assignment-full-first", Progress: domain.ProgressActive,
+		Control: domain.ControlRunning, Revision: 1, UpdatedAt: fixture.now,
+	}
+	ownerAssignment := domain.Assignment{
+		ID: "assignment-full-first", AttemptID: ownerAttempt.ID, WorkerID: activationLeaseWorker,
+		WorkerEpoch: "worker-epoch-1", Epoch: 1, State: domain.AssignmentClaimed,
+		CreatedAt: fixture.now, UpdatedAt: fixture.now,
+	}
+	if err := fixture.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
+		Attempts: []domain.Attempt{ownerAttempt}, Assignments: []domain.Assignment{ownerAssignment},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	fixture.coordinator.DispatchActivations(ctx, admittingQuota())
+	records, err := fixture.store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, assignment := range records.Assignments {
+		if assignment.ID != ownerAssignment.ID && assignment.WorkerID == free.WorkerID {
+			return
+		}
+	}
+	t.Fatalf("assignments = %#v, want activation on free second worker", records.Assignments)
+}
+
 func TestActivationDispatchWaitsForOrdinaryOwnerAndUsesParkedRelease(t *testing.T) {
 	fixture := newActivationLeaseFixture(t)
 	fixture.superviseRun(t)
