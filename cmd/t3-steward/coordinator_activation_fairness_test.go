@@ -148,6 +148,120 @@ func TestOlderOrdinaryAttemptPrecedesNewerActivationAtSharedCapacity(t *testing.
 	}
 }
 
+func TestOlderActivationWinsDespiteReverseWorkflowRecordOrder(t *testing.T) {
+	ctx := context.Background()
+	fixture := newActivationLeaseFixture(t)
+	fixture.superviseRun(t)
+
+	const (
+		olderWorkflow  = "workflow-z-older-activation"
+		olderRun       = "run-z-older-activation"
+		olderProducer  = "task-z-older-producer"
+		olderProtected = "task-z-older-protected"
+		olderGate      = "gate-z-older"
+		olderIncident  = "incident-z-older"
+		olderEvent     = "event-z-older"
+	)
+	olderAt := fixture.now.Add(-time.Minute)
+	olderRecord := domain.SupervisionRecord{RunID: olderRun, Config: domain.SupervisionConfig{
+		Route:                 domain.ProviderRoute{ProviderInstanceID: "claudeAgent", Model: "claude-fable-5-1"},
+		PromptArtifactID:      "artifact-z-older",
+		MaxActivations:        5,
+		MaxTurnsPerActivation: 4,
+		ActivationDeadline:    time.Hour,
+	}}
+	if _, err := fixture.store.PutSupervision(ctx, sqlite.SupervisionMaterialization{
+		Record: olderRecord,
+		Gates: []domain.Gate{{
+			RunID: olderRun, State: domain.GateReadyForReview, GraphRevision: 1,
+			Definition: domain.GateDefinition{
+				ID: olderGate, Name: "review", ObservedTaskIDs: []string{olderProducer},
+				ProtectedTaskIDs: []string{olderProtected},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
+		Workflows: []domain.Workflow{{
+			ID: olderWorkflow, Version: 1, Name: olderWorkflow, Class: domain.TaskClassRequired,
+			TaskIDs: []string{olderProducer, olderProtected}, CreatedAt: olderAt,
+		}},
+		WorkflowRuns: []domain.WorkflowRun{{
+			ID: olderRun, WorkflowID: olderWorkflow, GraphRevision: 1,
+			Progress: domain.ProgressActive, Revision: 1, Supervision: &olderRecord,
+			CreatedAt: olderAt, UpdatedAt: olderAt,
+		}},
+		Tasks: []domain.Task{{
+			ID: olderProducer, WorkflowID: olderWorkflow, Name: "producer", Class: domain.TaskClassRequired,
+		}, {
+			ID: olderProtected, WorkflowID: olderWorkflow, Name: "protected", Class: domain.TaskClassRequired,
+			Needs: []string{olderProducer},
+		}},
+		Attempts: []domain.Attempt{{
+			ID: "attempt-z-older-producer", WorkflowRunID: olderRun, TaskID: olderProducer, Number: 1,
+			Progress: domain.ProgressSucceeded, Control: domain.ControlStopped, Revision: 1, UpdatedAt: olderAt,
+		}, {
+			ID: "attempt-z-older-protected", WorkflowRunID: olderRun, TaskID: olderProtected, Number: 1,
+			Progress: domain.ProgressBlocked, Control: domain.ControlUnassigned, Revision: 1, UpdatedAt: olderAt,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.OpenReviewIncident(ctx, sqlite.IncidentRequest{
+		RunID: olderRun, IncidentID: olderIncident, RequestID: olderIncident,
+		Actor:         domain.Actor{Kind: domain.ActorOperator, Principal: coordinatorSupervisionPrincipal},
+		SourceEventID: olderEvent, GateID: olderGate,
+		RequiredDisposition: domain.DispositionGateDecision,
+		Reason:              "older review gate is ready", OpenedAt: olderAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.supervision.AppendSupervisionEvents(ctx, olderRun, []backlog.SupervisionEvent{{
+		ID: olderEvent, RunID: olderRun, Kind: backlog.TriggerGateReviewReady,
+		Reason: "older review gate is ready", GateID: olderGate,
+		IncidentID: olderIncident, OccurredAt: olderAt,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	records, err := fixture.store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, run := range records.WorkflowRuns {
+		if run.ID == activationLeaseRun || run.ID == olderRun {
+			order = append(order, run.ID)
+		}
+	}
+	if len(order) != 2 || order[0] != activationLeaseRun || order[1] != olderRun {
+		t.Fatalf("workflow record order=%v, want newer %q before older %q", order, activationLeaseRun, olderRun)
+	}
+
+	quota := activationFairnessQuota(fixture.now, domain.QuotaPool{
+		ID: "claude-main", Provider: "claude", ProviderInstanceIDs: []string{"claudeAgent"},
+		Admission: domain.AdmissionOpen, MaxConcurrent: 1,
+	})
+	cycle := activationFairnessCycle(t, fixture, quota)
+	cycle.Tick(ctx)
+
+	olderState, err := fixture.supervision.LoadSupervisionActivationState(ctx, olderRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newerState, err := fixture.supervision.LoadSupervisionActivationState(ctx, activationLeaseRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if olderState.Activation.State != domain.ActivationPendingDispatch {
+		t.Fatalf("older activation state=%q, want %q", olderState.Activation.State, domain.ActivationPendingDispatch)
+	}
+	if newerState.Activation.State != "" && newerState.Activation.State != domain.ActivationIdle {
+		t.Fatalf("newer activation state=%q, want it queued behind older activation", newerState.Activation.State)
+	}
+}
+
 func TestDisjointSettledWakeDoesNotDelayActivation(t *testing.T) {
 	ctx := context.Background()
 	fixture := newActivationLeaseFixture(t)
