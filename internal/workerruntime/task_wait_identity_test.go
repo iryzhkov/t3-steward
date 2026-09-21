@@ -68,6 +68,13 @@ func TestTaskParksWakesAndIsCollectedOnceFromTheInjectedIdentity(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SaveWorkerSnapshot(ctx, domain.WorkerSnapshot{
+		WorkerID: assignment.WorkerID, WorkerEpoch: assignment.WorkerEpoch, CoordinatorEpoch: 1,
+		Sequence: 1, Connected: true, ObservedAt: now, ValidUntil: now.Add(time.Hour),
+		Inventory: domain.WorkerInventory{ID: assignment.WorkerID, AcceptBacklog: true, Health: domain.WorkerHealthReady, ObservedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	workspace := t.TempDir()
 	control := &recordingT3{thread: &domain.Thread{ID: pkg.Identity.ThreadID, Running: true}}
