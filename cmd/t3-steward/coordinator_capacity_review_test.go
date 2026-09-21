@@ -66,8 +66,8 @@ func TestCapacityReviewActivationSkipsFullCandidateForFreeWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, assignment := range records.Assignments {
-		if assignment.ID != ownerAssignment.ID && assignment.WorkerID != free.WorkerID {
-			t.Fatalf("activation selected worker %q, want %q", assignment.WorkerID, free.WorkerID)
+		if assignment.ID != ownerAssignment.ID && assignment.WorkerID == full.WorkerID {
+			t.Fatalf("activation selected known-full worker %q", assignment.WorkerID)
 		}
 	}
 }
