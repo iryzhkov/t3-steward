@@ -5,6 +5,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
-	_ "modernc.org/sqlite" // database/sql driver
+	modernsqlite "modernc.org/sqlite"
 
 	"github.com/iryzhkov/t3-steward/internal/archive"
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -193,7 +194,28 @@ func sqliteFileURL(path string) string {
 // supported migration. Only coordinator startup and maintenance paths should
 // use it.
 func OpenMigrated(path string) (*Store, error) {
-	store, err := open(path, true)
+	return openMigrated(path, nil)
+}
+
+// OpenMigratedInstrumented opens a migrated store through a connector wrapper.
+// It exists for bounded diagnostics such as statement counting and timing; the
+// normal coordinator path continues to use OpenMigrated and database/sql's
+// registered sqlite driver directly.
+func OpenMigratedInstrumented(path string, instrument func(driver.Connector) driver.Connector) (*Store, error) {
+	if instrument == nil {
+		return nil, errors.New("sqlite connector instrumenter is required")
+	}
+	return openMigrated(path, instrument)
+}
+
+func openMigrated(path string, instrument func(driver.Connector) driver.Connector) (*Store, error) {
+	var store *Store
+	var err error
+	if instrument == nil {
+		store, err = open(path, true)
+	} else {
+		store, err = openInstrumented(path, instrument)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -205,6 +227,29 @@ func OpenMigrated(path string) (*Store, error) {
 		_ = os.Chmod(path, 0o600)
 	}
 	return store, nil
+}
+
+func openInstrumented(path string, instrument func(driver.Connector) driver.Connector) (*Store, error) {
+	if path != ":memory:" {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return nil, fmt.Errorf("create state directory: %w", err)
+		}
+	}
+	dsn := path
+	if path != ":memory:" {
+		dsn = sqliteFileURL(path) + "?mode=rwc&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+	}
+	connector, err := modernsqlite.NewConnector(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open state database: %w", err)
+	}
+	db := sql.OpenDB(instrument(connector))
+	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open state database: %w", err)
+	}
+	return &Store{db: db, now: time.Now, path: path}, nil
 }
 
 // Close releases coordinator ownership, when held, and closes the database.
