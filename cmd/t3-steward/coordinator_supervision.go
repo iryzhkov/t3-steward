@@ -36,6 +36,11 @@ type coordinatorSupervision struct {
 	// which is the deployment that has no supervisor credential configured.
 	activations backlog.SupervisionActivationService
 	settings    coordinatorActivationSettings
+	// yieldToOlderWork gives already-eligible ordinary attempts and settled wakes
+	// their existing admission path before a newer activation consumes a shared
+	// worker slot or quota pool. It is nil in focused lifecycle tests.
+	yieldToOlderWork   func(context.Context, activationFairnessCandidate) (bool, error)
+	quotaMaxConcurrent map[string]int
 	// warnedNoSupervisorClient remembers the runs this process has already
 	// warned about, so a deployment with no supervisor client says so once per
 	// run rather than once per boundary. The boundary runs on the interval the

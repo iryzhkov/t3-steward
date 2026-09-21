@@ -512,6 +512,10 @@ func PlanActivation(state SupervisionActivationState, signal ActivationSignal, n
 				recovered = 0
 			}
 			next = newActivation(record, result.Epoch, inbox.HighWaterMark, recovered)
+			if len(inbox.Events) != 0 {
+				next.ReadyAt = inbox.Events[0].OccurredAt.UTC()
+				next.ReadyTieID = inbox.Events[0].ID
+			}
 			next.IncidentID = signal.IncidentID
 			next.Principal = signal.Principal
 			plan.Dispatch = issueActivationLease(&next, record, now, false)
