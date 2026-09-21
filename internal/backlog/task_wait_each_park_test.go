@@ -48,7 +48,7 @@ func eachWakeFixture(t *testing.T, second domain.WakeMode) (*sqlite.Store, strin
 	}
 	if err := store.SaveWorkerSnapshot(ctx, domain.WorkerSnapshot{
 		WorkerID: "worker-b", WorkerEpoch: "worker-epoch-1", CoordinatorEpoch: 1, Sequence: 1,
-		Connected: true, ObservedAt: now, ValidUntil: now.Add(time.Hour),
+		Connected: true, ObservedAt: now, ValidUntil: now.Add(30 * 24 * time.Hour),
 		Inventory: domain.WorkerInventory{ID: "worker-b", AcceptBacklog: true, Health: domain.WorkerHealthReady, ObservedAt: now},
 	}); err != nil {
 		t.Fatal(err)

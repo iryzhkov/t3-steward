@@ -55,15 +55,18 @@ func capacityOwners(attempts []domain.Attempt, assignments []domain.Assignment, 
 			// task into a stalled queue.
 			continue
 		}
-		// An overseer activation is an owner like any other, which is the
-		// adopted cost of running it as assigned work: an active review occupies
-		// one executor slot on its worker until it ends, bounded by the
-		// activation deadline. It names no declared task, so it reserves no CPU,
-		// memory or scratch beyond the slot itself.
-		task, _ := domain.TaskForAttempt(attempt, runs, tasks)
+		// The placement decision freezes ordinary demand with the assignment;
+		// overseer activations are known slot-only work. Legacy records without
+		// placement evidence retain the planner's historical task lookup, while
+		// the transactional admission fence fails closed on governed resources.
+		demand, known := domain.AssignmentExecutorDemand(attempt, assignment)
+		if !known {
+			task, _ := domain.TaskForAttempt(attempt, runs, tasks)
+			demand = task.ResourceDemand
+		}
 		owners = append(owners, CapacityOwner{
 			AssignmentID: assignment.ID, AttemptID: attempt.ID,
-			WorkerID: assignment.WorkerID, Demand: task.ResourceDemand,
+			WorkerID: assignment.WorkerID, Demand: demand,
 		})
 	}
 	sort.Slice(owners, func(i, j int) bool { return owners[i].AssignmentID < owners[j].AssignmentID })
