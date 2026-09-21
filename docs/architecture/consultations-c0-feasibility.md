@@ -35,7 +35,7 @@ This audit is intentionally pre-schema. It records hypotheses, acceptance criter
 **Minimum seam.**
 
 1. Mint a random execution capability when a worker accepts a claimed assignment. Store only its digest with assignment ID/epoch, attempt ID, thread ID, allowed operations/recipient aliases, and expiry.
-2. Deliver the secret only to that execution (prefer a protected descriptor or execution-local credential file; environment remains an optimization only if T3 eventually verifies containment).
+2. Deliver the secret only to that execution (prefer a protected descriptor or execution-local credential file; environment remains an optimization only if T3 eventually verifies containment). The existing `DispatchToken` is not usable as this secret: `internal/backlog/coordinator.go` derives it deterministically from assignment identity with `stableCoordinatorID("dispatch", assignmentID)`, so it provides replay identity rather than entropy.
 3. Present it on `ask`, `await-answer`, own-request inspect, and cancel. Validate the digest and binding before entering the request transaction, then recheck live authoritative state inside the transaction.
 4. Rotate/revoke on retry, assignment epoch change, cancellation, thread replacement, and terminality. Never place the capability in durable task identity records, logs, receipts, or question payloads.
 5. Document that full-access same-UID processes are not OS-isolated. This capability narrows application authority and prevents accidental/cross-workspace use; it cannot defeat a hostile process able to read another process’s files or memory.
@@ -142,6 +142,16 @@ Required race matrix: answer before await; answer concurrent with await; ordinar
 - Provider-log input/output token parsing is accounting after the fact. It does not establish which context bytes were materialized at each continuation or prevent excess.
 
 **Result.** The hypothesis fails. The current backend lacks the strict-context-budget capability. Steward can bound the initial package bytes and force a fresh thread, but cannot honestly guarantee the total working context or accumulated tool transcript.
+
+A follow-up audit inspected the owning T3 Code source at the exact installed tag `v0.0.38` / `c0995d2eaf8ec787b3318ed1169ae266ed1529f8` (installed npm package `t3@0.0.38`) and current upstream `1de563c1491c7d82563e4553bf5bf689ce6adbb9`:
+
+- The v0.0.38 `ProviderAdapter` contract exposes session start/send/interrupt/read/stop operations, with no bounded-generation operation or strict-budget capability.
+- Its Codex adapter passes input, model, effort, interaction mode, and attachments to Codex app-server `turn/start`; it has no tools-disabled flag, complete model-envelope accounting, pre-continuation gate, or maximum output-token field.
+- T3's existing worker-owned `CodexTextGeneration` is a useful structural precedent: it invokes `codex exec --ephemeral --sandbox read-only --output-schema --output-last-message`. However, read-only is not tool-disabled, Codex's hidden system/tool envelope is not counted by T3, and the invocation has no hard output-token cap.
+- `OpenCodeTextGeneration` creates a fresh session with deny-all permissions and performs one SDK prompt. This is closer to the desired shape, but deny-all can still permit attempted tool/denial continuations, the inspected prompt has no hard maximum output or complete-envelope count, and the fleet's advertised `codex/gpt-*` routes do not use the OpenCode credential/quota identity.
+- A direct OpenAI Responses call could expose `tools=[]` and `max_output_tokens`, but it would be a different credential/provider interface unless T3 defines and admits such a route. It cannot be silently treated as the existing authenticated Codex route.
+
+Therefore there is no narrow T3-only wrapper over the currently deployed Codex app-server/CLI path that makes the section 15 claim true. Strict mode requires a backend/provider primitive whose complete model-visible envelope and output limit are controllable and auditable.
 
 **Minimum necessary backend seam.** T3 (or its controlled provider adapter) must expose:
 
