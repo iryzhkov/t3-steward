@@ -5,24 +5,54 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
+type consultationWaitReceipt struct {
+	RequestID          string `json:"request_id"`
+	RegisteredRevision int64  `json:"registered_revision"`
+	Settled            bool   `json:"settled"`
+	Woken              bool   `json:"woken"`
+	Outcome            string `json:"outcome"`
+	Delivery           string `json:"delivery"`
+	DeliveryID         string `json:"delivery_id"`
+	WakeRevision       int64  `json:"wake_revision"`
+	Resumption         bool   `json:"resumption"`
+}
+
+func consultationWaitReceipts(waits []domain.TaskWait) []consultationWaitReceipt {
+	sort.Slice(waits, func(i, j int) bool { return waits[i].RequestID < waits[j].RequestID })
+	out := make([]consultationWaitReceipt, 0, len(waits))
+	for _, wait := range waits {
+		outcome := ""
+		if wait.Result != nil {
+			outcome = string(wait.Result.Outcome)
+		}
+		out = append(out, consultationWaitReceipt{
+			RequestID: wait.RequestID, RegisteredRevision: wait.RegisteredRevision,
+			Settled: wait.Settled(), Woken: wait.Woken(), Outcome: outcome,
+			Delivery: wait.Delivery, DeliveryID: wait.DeliveryID,
+			WakeRevision: wait.WakeRevision, Resumption: wait.Resumption,
+		})
+	}
+	return out
+}
+
 // TestConsultationsRegressionBaseline is the pre-feature differential fixture.
-// It deliberately uses the real migrated SQLite store with fixed request IDs and
-// the fixture clock. Generated wait IDs are deterministic hashes of request IDs;
-// the comparison records semantic counts and transitions instead of normalizing
-// away effects.
+// It uses the real migrated SQLite store with fixed request IDs and fixture clock.
 func TestConsultationsRegressionBaseline(t *testing.T) {
 	type wakeSnapshot struct {
-		WakesAfterFirst  int    `json:"wakes_after_first"`
-		WakesAfterSecond int    `json:"wakes_after_second"`
-		AttemptProgress  string `json:"attempt_progress"`
-		AttemptControl   string `json:"attempt_control"`
-		WaitCount        int    `json:"wait_count"`
-		AssignmentCount  int    `json:"assignment_count"`
+		WakesAfterFirst  int                       `json:"wakes_after_first"`
+		WakesAfterSecond int                       `json:"wakes_after_second"`
+		AttemptProgress  string                    `json:"attempt_progress"`
+		AttemptControl   string                    `json:"attempt_control"`
+		AttemptRevision  int64                     `json:"attempt_revision"`
+		Waits            []consultationWaitReceipt `json:"waits"`
+		AssignmentCount  int                       `json:"assignment_count"`
 	}
 	type baselineSnapshot struct {
 		WakeEach wakeSnapshot `json:"wake_each"`
@@ -35,6 +65,9 @@ func TestConsultationsRegressionBaseline(t *testing.T) {
 			Outcome         string `json:"outcome"`
 			Wakes           int    `json:"wakes"`
 			AttemptProgress string `json:"attempt_progress"`
+			AttemptRevision int64  `json:"attempt_revision"`
+			DeliveryID      string `json:"delivery_id"`
+			WakeRevision    int64  `json:"wake_revision"`
 		} `json:"cancellation"`
 	}
 
@@ -50,23 +83,19 @@ func TestConsultationsRegressionBaseline(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.SettleTaskWait(ctx, first.ID, domain.TaskWaitResult{Outcome: domain.TaskWaitMet}, now.Add(1)); err != nil {
+		if _, err := store.SettleTaskWait(ctx, first.ID, domain.TaskWaitResult{Outcome: domain.TaskWaitMet}, now.Add(time.Second)); err != nil {
 			t.Fatal(err)
 		}
-		firstWakes, err := store.WakeTaskWaits(ctx, now.Add(1))
+		firstWakes, err := store.WakeTaskWaits(ctx, now.Add(time.Second))
 		if err != nil {
 			t.Fatal(err)
 		}
-		secondWakeCount := 0
-		if mode == domain.WakeAll {
-			if _, err := store.SettleTaskWait(ctx, second.ID, domain.TaskWaitResult{Outcome: domain.TaskWaitMet}, now.Add(2)); err != nil {
-				t.Fatal(err)
-			}
-			secondWakes, err := store.WakeTaskWaits(ctx, now.Add(2))
-			if err != nil {
-				t.Fatal(err)
-			}
-			secondWakeCount = len(secondWakes)
+		if _, err := store.SettleTaskWait(ctx, second.ID, domain.TaskWaitResult{Outcome: domain.TaskWaitMet}, now.Add(2*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		secondWakes, err := store.WakeTaskWaits(ctx, now.Add(2*time.Second))
+		if err != nil {
+			t.Fatal(err)
 		}
 		current := loadAttempt(t, store, attempt.ID)
 		waits, err := store.ListTaskWaits(ctx)
@@ -78,9 +107,10 @@ func TestConsultationsRegressionBaseline(t *testing.T) {
 			t.Fatal(err)
 		}
 		return wakeSnapshot{
-			WakesAfterFirst: len(firstWakes), WakesAfterSecond: secondWakeCount,
+			WakesAfterFirst: len(firstWakes), WakesAfterSecond: len(secondWakes),
 			AttemptProgress: string(current.Progress), AttemptControl: string(current.Control),
-			WaitCount: len(waits), AssignmentCount: assignments,
+			AttemptRevision: current.Revision, Waits: consultationWaitReceipts(waits),
+			AssignmentCount: assignments,
 		}
 	}
 
@@ -110,19 +140,27 @@ func TestConsultationsRegressionBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancelled, err := cancelStore.CancelTaskWait(ctx, cancelWait.ID, cancelNow.Add(1))
+	cancelled, err := cancelStore.CancelTaskWait(ctx, cancelWait.ID, cancelNow.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancelWakes, err := cancelStore.WakeTaskWaits(ctx, cancelNow.Add(1))
+	cancelWakes, err := cancelStore.WakeTaskWaits(ctx, cancelNow.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
+	cancelRecords, err := cancelStore.ListTaskWaits(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelCurrent := loadAttempt(t, cancelStore, cancelAttempt.ID)
 	got.Cancellation.Outcome = string(cancelled.Result.Outcome)
 	got.Cancellation.Wakes = len(cancelWakes)
-	got.Cancellation.AttemptProgress = string(loadAttempt(t, cancelStore, cancelAttempt.ID).Progress)
+	got.Cancellation.AttemptProgress = string(cancelCurrent.Progress)
+	got.Cancellation.AttemptRevision = cancelCurrent.Revision
+	got.Cancellation.DeliveryID = cancelRecords[0].DeliveryID
+	got.Cancellation.WakeRevision = cancelRecords[0].WakeRevision
 
-	raw, err := json.MarshalIndent(got, "", "  ")
+	raw, err := json.Marshal(got)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,5 +171,35 @@ func TestConsultationsRegressionBaseline(t *testing.T) {
 	}
 	if string(raw) != string(want) {
 		t.Fatalf("pre-feature regression fixture changed (-want +got):\nwant:\n%s\ngot:\n%s", want, raw)
+	}
+}
+
+// BenchmarkConsultationsBaselineReconciliation measures the real SQLite no-work
+// reconciliation seam used on every coordinator boundary. It reports individual
+// operation p95 in addition to Go's aggregate ns/op and throughput.
+func BenchmarkConsultationsBaselineReconciliation(b *testing.B) {
+	store, err := OpenMigrated(filepath.Join(b.TempDir(), "state.db"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 21, 8, 0, 0, 0, time.UTC)
+	samples := make([]int64, b.N)
+	b.ResetTimer()
+	started := time.Now()
+	for i := 0; i < b.N; i++ {
+		start := time.Now()
+		if _, err := store.WakeTaskWaits(ctx, now); err != nil {
+			b.Fatal(err)
+		}
+		samples[i] = time.Since(start).Nanoseconds()
+	}
+	elapsed := time.Since(started)
+	b.StopTimer()
+	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+	if len(samples) != 0 {
+		b.ReportMetric(float64(samples[(len(samples)*95-1)/100]), "p95-ns/op")
+		b.ReportMetric(float64(b.N)/elapsed.Seconds(), "ops/s")
 	}
 }
