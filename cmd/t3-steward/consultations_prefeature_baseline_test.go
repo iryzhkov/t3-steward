@@ -396,6 +396,7 @@ func (c *tracingConn) QueryContext(ctx context.Context, query string, args []dri
 
 func (c *tracingConn) Begin() (driver.Tx, error) {
 	c.metrics.beginTransaction()
+	//lint:ignore SA1019 Preserve the required legacy driver.Conn method when decorating the driver.
 	return c.Conn.Begin()
 }
 
@@ -444,11 +445,13 @@ type tracingStmt struct {
 func (s *tracingStmt) Exec(args []driver.Value) (driver.Result, error) {
 	start := s.metrics.beginStatement()
 	defer s.metrics.finishStatement(start)
+	//lint:ignore SA1019 Preserve the required legacy driver.Stmt method when decorating the driver.
 	return s.Stmt.Exec(args)
 }
 
 func (s *tracingStmt) Query(args []driver.Value) (driver.Rows, error) {
 	start := s.metrics.beginStatement()
+	//lint:ignore SA1019 Preserve the required legacy driver.Stmt method when decorating the driver.
 	rows, err := s.Stmt.Query(args)
 	if err != nil {
 		s.metrics.finishStatement(start)
