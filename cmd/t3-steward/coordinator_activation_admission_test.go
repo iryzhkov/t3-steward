@@ -10,6 +10,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
 func TestCompletedActivationReconcilesAndEscalatesWithClosedAdmissionAndOfflineWorker(t *testing.T) {
@@ -114,6 +115,56 @@ func TestBoundaryTickReconcilesCompletedActivationWhenQuotaFailsAndBlocksNextDis
 	}
 	if quotaCalls != 3 || planningCalls != 0 || adminCalls != 0 {
 		t.Fatalf("calls quota=%d planning=%d admin=%d, want failed quota on each tick and no gated work", quotaCalls, planningCalls, adminCalls)
+	}
+}
+
+func TestActivationDispatchWaitsForOrdinaryOwnerAndUsesParkedRelease(t *testing.T) {
+	fixture := newActivationLeaseFixture(t)
+	fixture.superviseRun(t)
+	ctx := context.Background()
+	ownerAttempt := domain.Attempt{
+		ID: "attempt-capacity-owner", WorkflowRunID: activationLeaseRun,
+		TaskID: "task-producer", Number: 2, AssignmentID: "assignment-capacity-owner",
+		Progress: domain.ProgressActive, Control: domain.ControlRunning, Revision: 1,
+		UpdatedAt: fixture.now,
+	}
+	ownerAssignment := domain.Assignment{
+		ID: "assignment-capacity-owner", AttemptID: ownerAttempt.ID,
+		WorkerID: activationLeaseWorker, WorkerEpoch: "worker-epoch-1",
+		Epoch: 1, State: domain.AssignmentClaimed, CreatedAt: fixture.now, UpdatedAt: fixture.now,
+	}
+	if err := fixture.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
+		Attempts: []domain.Attempt{ownerAttempt}, Assignments: []domain.Assignment{ownerAssignment},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	fixture.coordinator.DispatchActivations(ctx, admittingQuota())
+	state, err := fixture.supervision.LoadSupervisionActivationState(ctx, activationLeaseRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Activation.State != "" && state.Activation.State != domain.ActivationIdle {
+		t.Fatalf("activation state = %q, want full worker to block dispatch", state.Activation.State)
+	}
+
+	ownerAttempt.Control = domain.ControlWaitingExternal
+	ownerAttempt.Progress = domain.ProgressWaitingExternal
+	ownerAttempt.Revision++
+	ownerAttempt.UpdatedAt = fixture.now.Add(time.Minute)
+	if err := fixture.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
+		Attempts: []domain.Attempt{ownerAttempt},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.now = fixture.now.Add(time.Minute)
+	fixture.coordinator.DispatchActivations(ctx, admittingQuota())
+	state, err = fixture.supervision.LoadSupervisionActivationState(ctx, activationLeaseRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Activation.State != domain.ActivationPendingDispatch {
+		t.Fatalf("activation state = %q, want parked owner to release slot for dispatch", state.Activation.State)
 	}
 }
 

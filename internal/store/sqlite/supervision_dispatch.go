@@ -134,6 +134,9 @@ func (s *Store) CommitActivationAssignment(ctx context.Context, commit Activatio
 		return domain.Assignment{}, fmt.Errorf("%w: worker %q is not enrolled for the effective catalog",
 			ErrActivationDispatch, assignment.WorkerID)
 	}
+	if err := requireExecutorSlotTx(ctx, tx, assignment.WorkerID, commit.CommittedAt); err != nil {
+		return domain.Assignment{}, fmt.Errorf("%w: %v", ErrActivationDispatch, err)
+	}
 	attempt.AssignmentID = assignment.ID
 	attempt.Revision = 1
 	attempt.UpdatedAt = commit.CommittedAt

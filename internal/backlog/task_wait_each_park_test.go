@@ -46,6 +46,13 @@ func eachWakeFixture(t *testing.T, second domain.WakeMode) (*sqlite.Store, strin
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SaveWorkerSnapshot(ctx, domain.WorkerSnapshot{
+		WorkerID: "worker-b", WorkerEpoch: "worker-epoch-1", CoordinatorEpoch: 1, Sequence: 1,
+		Connected: true, ObservedAt: now, ValidUntil: now.Add(time.Hour),
+		Inventory: domain.WorkerInventory{ID: "worker-b", AcceptBacklog: true, Health: domain.WorkerHealthReady, ObservedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	register := func(requestID string, wake domain.WakeMode) domain.TaskWait {
 		t.Helper()
 		wait, err := store.RegisterTaskWait(ctx, domain.TaskWaitRegistration{
