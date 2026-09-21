@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
@@ -113,6 +114,42 @@ func (c coordinatorSupervision) DispatchActivations(ctx context.Context, admissi
 		}
 	}
 	now := c.at()
+	// Order activation contenders by their durable per-epoch trigger age. Runs
+	// that only need lifecycle reconciliation are still all visited, and an
+	// ineligible older dispatch cannot block a later placeable one.
+	type runOrder struct {
+		at time.Time
+		id string
+	}
+	orders := make(map[string]runOrder, len(records.WorkflowRuns))
+	for _, run := range records.WorkflowRuns {
+		if run.Supervision == nil || run.Progress.Terminal() {
+			continue
+		}
+		state, stateErr := c.activations.Store.LoadSupervisionActivationState(ctx, run.ID)
+		if stateErr != nil {
+			continue
+		}
+		if !state.Activation.ReadyAt.IsZero() && state.Activation.ReadyTieID != "" {
+			orders[run.ID] = runOrder{state.Activation.ReadyAt.UTC(), state.Activation.ReadyTieID}
+			continue
+		}
+		inbox := backlog.CoalesceSupervisionEvents(run.ID, state.Record.EventCursor, state.Pending)
+		if len(inbox.Events) != 0 {
+			orders[run.ID] = runOrder{inbox.Events[0].OccurredAt.UTC(), inbox.Events[0].ID}
+		}
+	}
+	sort.SliceStable(records.WorkflowRuns, func(i, j int) bool {
+		left, lok := orders[records.WorkflowRuns[i].ID]
+		right, rok := orders[records.WorkflowRuns[j].ID]
+		if lok != rok {
+			return lok
+		}
+		if !lok {
+			return records.WorkflowRuns[i].ID < records.WorkflowRuns[j].ID
+		}
+		return left.at.Before(right.at) || left.at.Equal(right.at) && left.id < right.id
+	})
 	for _, run := range records.WorkflowRuns {
 		if run.Supervision == nil {
 			continue
@@ -140,6 +177,13 @@ func (c coordinatorSupervision) DispatchActivations(ctx context.Context, admissi
 			c.logger.Error("supervision activation dispatch failed", "run", run.ID, "error", err)
 		}
 	}
+}
+
+type activationFairnessCandidate struct {
+	ReadyAt time.Time
+	ID      string
+	Worker  string
+	Pool    string
 }
 
 func (c coordinatorSupervision) dispatchRun(
@@ -200,6 +244,21 @@ func (c coordinatorSupervision) dispatchRun(
 		if err != nil {
 			return err
 		}
+		if c.yieldToOlderWork != nil {
+			readyAt, id, ageErr := activationDispatchAge(state, signal)
+			if ageErr != nil {
+				return ageErr
+			}
+			yield, yieldErr := c.yieldToOlderWork(ctx, activationFairnessCandidate{
+				ReadyAt: readyAt, ID: id, Worker: placement.WorkerID, Pool: placement.Route.QuotaPoolID,
+			})
+			if yieldErr != nil {
+				return fmt.Errorf("arbitrate activation admission: %w", yieldErr)
+			}
+			if yield {
+				return nil
+			}
+		}
 	}
 	plan, err := c.activations.Advance(ctx, run.ID, signal)
 	if err != nil {
@@ -228,7 +287,7 @@ func (c coordinatorSupervision) dispatchRun(
 		CoordinatorEpoch: c.settings.CoordinatorEpoch,
 		Attempt:          attempt, Assignment: assignment,
 		WorkerEpoch: placement.WorkerEpoch, WorkerSnapshotSequence: placement.SnapshotSequence,
-		CommittedAt: now,
+		CommittedAt: now, QuotaMaxConcurrent: c.quotaMaxConcurrent[placement.Route.QuotaPoolID],
 	})
 	if err != nil {
 		return err
@@ -238,6 +297,32 @@ func (c coordinatorSupervision) dispatchRun(
 		"worker", committed.WorkerID, "assignment", committed.ID, "thread", committed.ThreadID,
 		"retry", plan.Dispatch.Retry)
 	return nil
+}
+
+// activationDispatchAge returns the durable age and stable identity of the
+// dispatch being considered. A retry keeps the original activation identity and
+// the triggering event's occurrence time, so restart cannot make it younger.
+func activationDispatchAge(state backlog.SupervisionActivationState, signal backlog.ActivationSignal) (time.Time, string, error) {
+	if !state.Activation.ReadyAt.IsZero() && state.Activation.ReadyTieID != "" {
+		return state.Activation.ReadyAt.UTC(), state.Activation.ReadyTieID, nil
+	}
+	// Legacy records predate persisted ordering. Reconstruct only from events
+	// selected after the durable cursor; otherwise yield conservatively at the
+	// current boundary rather than borrowing a consumed incident's old age.
+	var readyAt time.Time
+	var id string
+	for _, event := range state.Pending {
+		if event.Sequence <= state.Record.EventCursor {
+			continue
+		}
+		if readyAt.IsZero() || event.OccurredAt.Before(readyAt) || event.OccurredAt.Equal(readyAt) && event.ID < id {
+			readyAt, id = event.OccurredAt.UTC(), event.ID
+		}
+	}
+	if readyAt.IsZero() {
+		return time.Time{}, "", fmt.Errorf("activation %q has no durable trigger age", state.Activation.DispatchIdentity)
+	}
+	return readyAt, id, nil
 }
 
 // activationSignalMayDispatch identifies the two lifecycle inputs that can

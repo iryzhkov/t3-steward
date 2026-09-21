@@ -531,6 +531,10 @@ type Activation struct {
 	// DispatchIdentity is deterministic. A provably undelivered dispatch is
 	// retried with this same identity rather than a new one.
 	DispatchIdentity string `json:"dispatchIdentity"`
+	// ReadyAt and ReadyTieID persist the selected trigger ordering for this epoch.
+	// Undelivered retries reuse them, so restart never changes fairness age.
+	ReadyAt    time.Time `json:"readyAt,omitempty"`
+	ReadyTieID string    `json:"readyTieId,omitempty"`
 	// Principal is the admin principal this activation's supervisor capability
 	// authenticates as, recorded when the activation is dispatched. The
 	// authorizer reads the run and epoch a principal may act on from here, so

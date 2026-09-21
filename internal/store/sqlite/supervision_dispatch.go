@@ -51,6 +51,7 @@ type ActivationAssignmentCommit struct {
 	WorkerEpoch            string
 	WorkerSnapshotSequence int64
 	CommittedAt            time.Time
+	QuotaMaxConcurrent     int
 }
 
 // CommitActivationAssignment offers one activation to its placed worker.
@@ -136,6 +137,42 @@ func (s *Store) CommitActivationAssignment(ctx context.Context, commit Activatio
 	}
 	if err := requireExecutorCapacityTx(ctx, tx, assignment.WorkerID, commit.CommittedAt, assignment.WorkerEpoch, domain.ResourceDemand{}, true); err != nil {
 		return domain.Assignment{}, fmt.Errorf("%w: %v", ErrActivationDispatch, err)
+	}
+	if commit.QuotaMaxConcurrent > 0 {
+		rows, err := tx.QueryContext(ctx, `SELECT a.record, t.record FROM coordinator_assignments a JOIN coordinator_attempts t ON t.id = a.attempt_id`)
+		if err != nil {
+			return domain.Assignment{}, fmt.Errorf("read quota occupancy: %w", err)
+		}
+		active := 0
+		for rows.Next() {
+			var assignmentRaw, attemptRaw []byte
+			if err := rows.Scan(&assignmentRaw, &attemptRaw); err != nil {
+				rows.Close()
+				return domain.Assignment{}, err
+			}
+			var occupied domain.Assignment
+			var owner domain.Attempt
+			if err := json.Unmarshal(assignmentRaw, &occupied); err != nil {
+				rows.Close()
+				return domain.Assignment{}, err
+			}
+			if err := json.Unmarshal(attemptRaw, &owner); err != nil {
+				rows.Close()
+				return domain.Assignment{}, err
+			}
+			if occupied.Route.QuotaPoolID == assignment.Route.QuotaPoolID &&
+				(occupied.State == domain.AssignmentUnknown ||
+					(occupied.State == domain.AssignmentOffered || occupied.State == domain.AssignmentClaimed) &&
+						owner.Control.HoldsProviderSlot()) {
+				active++
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return domain.Assignment{}, err
+		}
+		if active >= commit.QuotaMaxConcurrent {
+			return domain.Assignment{}, fmt.Errorf("%w: quota pool %q has no free slot", ErrActivationDispatch, assignment.Route.QuotaPoolID)
+		}
 	}
 	attempt.AssignmentID = assignment.ID
 	attempt.Revision = 1

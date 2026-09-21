@@ -229,6 +229,102 @@ func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeR
 	return p.tick(ctx, quota, true)
 }
 
+// yieldToOlderActivationContender admits already-eligible work only when its
+// durable age wins at a worker or quota-pool bottleneck used by candidate.
+func (p coordinatorPlanner) yieldToOlderActivationContender(ctx context.Context, quota backlog.QuotaBridgeReport, candidate activationFairnessCandidate) (bool, error) {
+	now := time.Now().UTC()
+	if p.now != nil {
+		now = p.now().UTC()
+	}
+	if _, err := backlog.RepairCoordinatorState(ctx, p.store, now); err != nil {
+		slog.Warn("coordinator state repair failed; activation arbitration continues", "error", err)
+	}
+	records, err := p.store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		return false, fmt.Errorf("load activation arbitration snapshot: %w", err)
+	}
+	snapshots, err := p.store.LoadWorkerSnapshots(ctx)
+	if err != nil {
+		return false, fmt.Errorf("load activation arbitration workers: %w", err)
+	}
+	if p.settings != nil {
+		snapshots = workerruntime.AuthorizedPlanningSnapshots(*p.settings, snapshots, now)
+	}
+	supervision, err := coordinatorSupervisionSnapshots(ctx, p.store, records.WorkflowRuns, snapshots, p.supervisorClientConfigured)
+	if err != nil {
+		return false, err
+	}
+	input, err := backlog.BuildCoordinatorPlanInput(backlog.CoordinatorPlanningStateInput{
+		Now: now, CoordinatorEpoch: p.epoch,
+		Workflows: records.Workflows, WorkflowRuns: records.WorkflowRuns,
+		Tasks: records.Tasks, Attempts: records.Attempts, Assignments: records.Assignments,
+		WorkerSnapshots: snapshots, QuotaPools: quota.Pools, QuotaWindows: quota.Windows,
+		DisableQuotaChecks:   quota.ChecksDisabled,
+		MaxWorkerSnapshotAge: p.maxWorkerSnapshotAge, MaxQuotaObservationAge: p.maxQuotaObservationAge,
+		DeadlineRiskWindow: p.deadlineRiskWindow, CheckpointMargin: p.checkpointMargin,
+		SupervisionSnapshots: supervision,
+	})
+	if err != nil {
+		return false, err
+	}
+	contenders, err := backlog.BuildUnreservedProposals(input)
+	if err != nil {
+		return false, err
+	}
+	cutoff := sqlite.TaskWakeCutoff{ReadyAt: candidate.ReadyAt, AttemptID: candidate.ID}
+	cutoffs := sqlite.TaskWakeCutoffs{
+		Worker:              map[string]sqlite.TaskWakeCutoff{candidate.Worker: cutoff},
+		Pool:                map[string]sqlite.TaskWakeCutoff{candidate.Pool: cutoff},
+		AuthorizedWorkers:   make(map[string]sqlite.TaskWakeWorkerAuthorization),
+		AdmissionValidAfter: now.Add(-p.maxQuotaObservationAge),
+	}
+	for _, snapshot := range snapshots {
+		cutoffs.AuthorizedWorkers[snapshot.WorkerID] = sqlite.TaskWakeWorkerAuthorization{
+			WorkerEpoch: snapshot.WorkerEpoch, SnapshotSequence: snapshot.Sequence,
+			CatalogRevision: snapshot.Inventory.CatalogRevision, ValidUntil: snapshot.ValidUntil,
+			Providers: append([]domain.WorkerProviderInventory(nil), snapshot.Inventory.Providers...),
+			Projects:  append([]domain.WorkerProjectInventory(nil), snapshot.Inventory.Projects...),
+		}
+	}
+	older := func(at time.Time, id string, than sqlite.TaskWakeCutoff) bool {
+		return at.Before(than.ReadyAt) || at.Equal(than.ReadyAt) && id < than.AttemptID
+	}
+	hasOlderOrdinary := false
+	for _, proposal := range contenders {
+		if proposal.Route == nil || proposal.WorkerID != candidate.Worker && proposal.Route.QuotaPoolID != candidate.Pool {
+			continue
+		}
+		ordering, ok := input.Ordering.Attempts[proposal.AttemptID]
+		if !ok || ordering.ReadySince.IsZero() {
+			return false, fmt.Errorf("ordinary proposal %q has no durable ready age", proposal.AttemptID)
+		}
+		ordinary := sqlite.TaskWakeCutoff{ReadyAt: ordering.ReadySince, AttemptID: proposal.AttemptID}
+		if older(ordinary.ReadyAt, ordinary.AttemptID, cutoff) {
+			hasOlderOrdinary = true
+		}
+		if proposal.WorkerID == candidate.Worker && older(ordinary.ReadyAt, ordinary.AttemptID, cutoffs.Worker[candidate.Worker]) {
+			cutoffs.Worker[candidate.Worker] = ordinary
+		}
+		if proposal.Route.QuotaPoolID == candidate.Pool && older(ordinary.ReadyAt, ordinary.AttemptID, cutoffs.Pool[candidate.Pool]) {
+			cutoffs.Pool[candidate.Pool] = ordinary
+		}
+	}
+	wakes, err := p.store.WakeTaskWaitsBefore(ctx, now, cutoffs)
+	if err != nil {
+		return false, err
+	}
+	if len(wakes) != 0 {
+		return true, nil
+	}
+	if hasOlderOrdinary {
+		if _, err := p.coordinator.PlanAndCommit(ctx, input); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 func (p coordinatorPlanner) tick(ctx context.Context, quota backlog.QuotaBridgeReport, reconcileWakes bool) (backlog.AssignmentPlanningReport, error) {
 	now := time.Now().UTC()
 	if p.now != nil {
@@ -540,6 +636,17 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 		admission := backlog.WorkerAdmissionPolicy{}
 		if quotaHealthy {
 			admission = backlog.WorkerAdmissionPolicyFromQuotaReport(quotaReport)
+		}
+		if planner, ok := c.planning.(*coordinatorPlanner); ok && quotaHealthy {
+			c.supervision.yieldToOlderWork = func(ctx context.Context, candidate activationFairnessCandidate) (bool, error) {
+				return planner.yieldToOlderActivationContender(ctx, quotaReport, candidate)
+			}
+		} else {
+			c.supervision.yieldToOlderWork = nil
+		}
+		c.supervision.quotaMaxConcurrent = make(map[string]int, len(quotaReport.Pools))
+		for _, pool := range quotaReport.Pools {
+			c.supervision.quotaMaxConcurrent[pool.ID] = pool.MaxConcurrent
 		}
 		c.supervision.DispatchActivations(ctx, admission)
 	}
