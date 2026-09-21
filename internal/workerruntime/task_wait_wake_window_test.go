@@ -28,6 +28,7 @@ type wakeWindowFixture struct {
 	pkg       workerproto.ExecutionPackage
 	workspace string
 	now       time.Time
+	clock     *time.Time
 }
 
 func newWakeWindowFixture(t *testing.T) *wakeWindowFixture {
@@ -107,7 +108,8 @@ func newWakeWindowFixture(t *testing.T) *wakeWindowFixture {
 	}
 	// No LiveTaskWait override: the only thing this worker knows about parked
 	// assignments is what the coordinator tells it, which is the production path.
-	runtime, err := New(testConfig(func() time.Time { now = now.Add(time.Millisecond); return now }), journal, driver)
+	cfg := testConfig(func() time.Time { now = now.Add(time.Millisecond); return now })
+	runtime, err := New(cfg, journal, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +121,19 @@ func newWakeWindowFixture(t *testing.T) *wakeWindowFixture {
 	}
 	return &wakeWindowFixture{
 		store: store, runtime: runtime, driver: driver, control: control,
-		publisher: publisher, pkg: pkg, workspace: workspace, now: now,
+		publisher: publisher, pkg: pkg, workspace: workspace, now: now, clock: &now,
+	}
+}
+
+func (f *wakeWindowFixture) heartbeatAt(t *testing.T, at time.Time) {
+	t.Helper()
+	*f.clock = at.Add(-time.Millisecond)
+	snapshot, err := f.runtime.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.SaveWorkerSnapshot(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -141,24 +155,6 @@ func (f *wakeWindowFixture) exchange(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := f.store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func (f *wakeWindowFixture) renewWorkerSnapshot(t *testing.T, at time.Time) {
-	t.Helper()
-	snapshots, err := f.store.LoadWorkerSnapshots(context.Background())
-	if err != nil || len(snapshots) != 1 {
-		t.Fatalf("load worker snapshot for renewal: %#v %v", snapshots, err)
-	}
-	snapshot := snapshots[0]
-	snapshot.Sequence++
-	// Advance within the runtime's next millisecond tick, then extend validity
-	// to the later fake boundary. The next real fixture exchange remains newer.
-	snapshot.ObservedAt = snapshot.ObservedAt.Add(time.Microsecond)
-	snapshot.Inventory.ObservedAt = snapshot.ObservedAt
-	snapshot.ValidUntil = at.Add(time.Minute)
-	if err := f.store.SaveWorkerSnapshot(context.Background(), snapshot); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -266,7 +262,7 @@ func TestParkedTaskKeepsItsIdentityThroughTheWakeWindow(t *testing.T) {
 
 	// Which is what the resumed turn needs it for: a second wait, registered
 	// with the same record.
-	second, err := registerFromInjectedIdentity(t, f.store, f.workspace, "req-2", f.now.Add(30*time.Second))
+	second, err := registerFromInjectedIdentity(t, f.store, f.workspace, "req-2", f.now.Add(3*time.Minute))
 	if err != nil {
 		t.Fatalf("the resumed turn could not park itself again: %v", err)
 	}
@@ -274,7 +270,7 @@ func TestParkedTaskKeepsItsIdentityThroughTheWakeWindow(t *testing.T) {
 	// A request ID names one park. Replaying the first one now that its wait has
 	// settled must refuse, because the caller would otherwise be told it is
 	// parked and end its turn on a wait that holds nothing.
-	if _, err := registerFromInjectedIdentity(t, f.store, f.workspace, "req-1", f.now.Add(30*time.Second)); !errors.Is(err, domain.ErrTaskWaitReplaySettled) {
+	if _, err := registerFromInjectedIdentity(t, f.store, f.workspace, "req-1", f.now.Add(3*time.Minute)); !errors.Is(err, domain.ErrTaskWaitReplaySettled) {
 		t.Fatalf("a replayed request ID parked the task again: %v", err)
 	}
 
@@ -282,14 +278,15 @@ func TestParkedTaskKeepsItsIdentityThroughTheWakeWindow(t *testing.T) {
 	// nothing parking it. Only now is the attempt collected, exactly once.
 	if _, err := f.store.SettleTaskWait(ctx, second.ID, domain.TaskWaitResult{
 		Outcome: domain.TaskWaitMet, Reason: "the review landed",
-	}, f.now.Add(40*time.Second)); err != nil {
+	}, f.now.Add(4*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	secondWakes, err := authorizedWakeTaskWaits(t, f.store, f.now.Add(40*time.Second))
+	f.heartbeatAt(t, f.now.Add(4*time.Minute))
+	secondWakes, err := authorizedWakeTaskWaits(t, f.store, f.now.Add(4*time.Minute))
 	if err != nil || len(secondWakes) != 1 {
 		t.Fatalf("the second wake = %+v err=%v", secondWakes, err)
 	}
-	f.deliverWake(t, secondWakes[0], f.now.Add(50*time.Second))
+	f.deliverWake(t, secondWakes[0], f.now.Add(5*time.Minute))
 	f.turnRunning()
 	f.exchange(t)
 	if got := phaseOf(t, f.runtime, "assignment-1"); got != PhaseRunning {
