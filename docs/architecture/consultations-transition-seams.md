@@ -52,7 +52,7 @@ type ConsultationSubscription struct {
     AttemptID string
     AssignmentID string
     WorkerID string
-    WorkerEpoch int64
+    WorkerEpoch string
     ThreadID string
     RegisteredAttemptRevision int64
     State string // attached, detached, settled
@@ -111,12 +111,12 @@ the compact answer and provenance, while the existing stable `DeliveryID`,
 | Async ask then await | Read terminal outcome and attach subscription under the same write transaction. Apply the same caller authority guards as ask. | Immediate terminal result, or one attached park. |
 | Ordinary wake already committed but undelivered | Before attaching, inspect all attempt waits using `TaskWait.Parking()` and delivery state, not only `Live()`. Refuse when any ordinary wake is committed but pending/held/sending/recovery-required or otherwise still owns the wake window. | No consultation subscription and no second park; response remains explicitly readable or awaitable in a later live turn. |
 | Simultaneous answer and await | Both contend on the same consultation row. Answer commits a terminal response; await then returns it. Await commits attachment; answer then settles that exact attachment. | Never a terminal answer plus an unbound sleeping caller. |
-| Stale worker authority registers | Verify capability assignment ID, worker ID/epoch, attempt ID, thread ID, purpose, expiry and one-use state against current authoritative rows in the registration transaction. A newer worker snapshot or replacement assignment does not inherit authority. | Refusal with no request or subscription writes. |
+| Stale worker authority registers | Verify capability assignment ID, worker ID/epoch, attempt ID, thread ID, purpose, expiry and revocation state against current authoritative rows in the registration transaction. A newer worker snapshot or replacement assignment does not inherit authority. | Refusal with no request or subscription writes. |
 | Answer settlement | Verify respondent execution/activation epoch, membership, deadline and content custody, then commit immutable response and wait result. Exact accepted replay returns the receipt; changed or late response fails. | Response completion is distinct from wake delivery. |
 | Normal wake | Reuse `WakeTaskWaits`: verify parked identity, assignment worker epoch and capacity; CAS the attempt revision into `ControlResuming`; mark the stable wake pending in the same transaction. | Capacity refusal leaves the settled subscription parked and pending. |
 | Forced rewake/resume | In the admin-command transaction, detach the subscription before changing the attempt. Refuse if an ordinary committed wake still owns delivery. The answer remains stored and is never injected into the newly busy turn. | Resumed attempt has no attached consultation; later explicit read/re-await is possible. |
 | Attempt cancel/skip/retry or authority revocation | Revoke caller capability and detach/cancel all nonterminal owned consultations before the attempt transition commits. Retry gets no inherited request, wait, delivery or capability identity. | Old responses cannot wake the replacement attempt. |
-| Consultation cancellation or timeout | Commit the terminal request outcome, revoke response authority, and settle the attached subscription immediately. The caller becomes eligible for the ordinary capacity/quota-governed wake independently of responder containment. Remove only this request from shared activation membership; preserve every other consultation and gate obligation. | Request response and subscription settlement are immutable. The respondent assignment retains resources until stop/containment evidence, and the sink remains blocked on effect quiescence. |
+| Consultation cancellation or timeout | Commit the terminal request outcome, revoke response authority, and settle the attached subscription immediately. The caller becomes eligible for the ordinary capacity/quota-governed wake independently of responder containment. Mark only this request's immutable membership cancelled; preserve its audit identity and every other consultation and gate obligation. | Request response and subscription settlement are immutable. The respondent assignment retains resources until stop/containment evidence, and the sink remains blocked on effect quiescence. |
 | Activation selection | Select at most the bounded batch and insert `ActivationConsultationMember` rows in the same transaction that raises the activation epoch/dispatch intent. Membership is immutable for that activation epoch. | New/unselected requests remain queued regardless of inbox cursor. |
 | Activation outcome | Each selected member must become answered, cancelled, or explicitly failed before activation closure. High-water advancement consumes events only and cannot complete consultation membership. | Selected-but-unanswered fails explicitly; unselected stays queued. |
 | Wake send uncertainty | Reuse `TransitionTaskWake`; `sending` to delivered/recovery-required requires the stable delivery group and positive observation rules. | No blind second send or second resumed turn. |
@@ -150,7 +150,7 @@ independent state. The respondent assignment and its resources remain owned unti
 positive stop or containment evidence. An ambiguous or running respondent effect remains
 visible and blocks sink settlement through effect-quiescence accounting, even after the
 caller has received the cancelled or timed-out outcome. Cancellation of one selected
-request removes only that membership and response authority; a shared activation
+request revokes only that member's response authority while retaining its selected identity; a shared activation
 continues while any other selected consultation, gate, escalation, or reporting
 obligation survives.
 
@@ -161,7 +161,8 @@ respondent resource release and sink eligibility.
 
 ## C0 evidence still required
 
-This audit does not prove the new transactions, schema migration, caller capability
-adapter, mixed-wait refusal, stale-epoch races, independent cancellation/containment
-accounting, or selected batch accounting. C0 remains open until real SQLite race tests
-cover those boundaries.
+This audit supplies concrete transaction seams for C0; it does not prove their future
+implementation. C0 still requires its caller/capacity/runtime feasibility receipts and
+contract freeze. C1/C2 must then qualify the new transactions, additive migration,
+capability adapter, mixed-wait refusal, stale-epoch races, independent containment,
+and selected-batch accounting with real SQLite fault and race tests.
