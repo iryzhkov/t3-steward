@@ -332,7 +332,6 @@ type Assignment struct {
 	ID                  string                 `json:"id"`
 	AttemptID           string                 `json:"attemptId"`
 	Project             string                 `json:"project,omitempty"`
-	TaskClass           TaskClass              `json:"taskClass,omitempty"`
 	WorkerID            string                 `json:"workerId"`
 	WorkerEpoch         string                 `json:"workerEpoch,omitempty"`
 	Route               ProviderRoute          `json:"route"`
