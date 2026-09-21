@@ -45,7 +45,11 @@ func (s CoordinatorArtifactStore) Publish(ctx context.Context, publication domai
 	if err := validatePublicationArtifact(artifact); err != nil {
 		return domain.Artifact{}, fmt.Errorf("publish artifact: %w", err)
 	}
-	root, err := ensureArtifactRoot(s.Root)
+	artifactRoot := s.Root
+	if artifact.Producer == "submission" && s.SubmissionRoot != "" {
+		artifactRoot = s.SubmissionRoot
+	}
+	root, err := ensureArtifactRoot(artifactRoot)
 	if err != nil {
 		return domain.Artifact{}, fmt.Errorf("publish artifact: %w", err)
 	}
@@ -92,6 +96,14 @@ func (s CoordinatorArtifactStore) Publish(ctx context.Context, publication domai
 		return domain.Artifact{}, fmt.Errorf("publish artifact: prepare object prefix: %w", err)
 	}
 	objectPath := filepath.Join(objectDir, hash)
+	artifact.SHA256 = hash
+	artifact.StoragePath = filepath.ToSlash(filepath.Join("objects", hash[:2], hash))
+	publication.Artifact = artifact
+	lifecycleLock, err := acquireFileLock(ctx, root, "artifact-object:"+artifact.StoragePath)
+	if err != nil {
+		return domain.Artifact{}, fmt.Errorf("publish artifact: lock content lifecycle: %w", err)
+	}
+	defer lifecycleLock.Close()
 	createdObject := false
 	if info, statErr := os.Lstat(objectPath); statErr == nil {
 		if !info.Mode().IsRegular() {
@@ -112,9 +124,6 @@ func (s CoordinatorArtifactStore) Publish(ctx context.Context, publication domai
 		keepStage = true
 		createdObject = true
 	}
-	artifact.SHA256 = hash
-	artifact.StoragePath = filepath.ToSlash(filepath.Join("objects", hash[:2], hash))
-	publication.Artifact = artifact
 	committed, err := s.Catalog.CommitArtifactPublication(ctx, publication)
 	if err != nil {
 		if createdObject {
@@ -232,22 +241,39 @@ func (s CoordinatorArtifactStore) Prune(
 		return nil, skipped, fmt.Errorf("prune artifacts: %w", err)
 	}
 	for _, artifact := range expired {
-		referenced, err := s.Catalog.ArtifactStoragePathReferenced(ctx, artifact.StoragePath)
+		artifactRoot := s.Root
+		if artifact.Producer == "submission" && s.SubmissionRoot != "" {
+			artifactRoot = s.SubmissionRoot
+		}
+		root, err := ensureArtifactRoot(artifactRoot)
 		if err != nil {
-			return expired, skipped, fmt.Errorf("prune artifacts: check blob %q: %w", artifact.StoragePath, err)
+			return expired, skipped, fmt.Errorf("prune artifacts: %w", err)
 		}
-		if referenced {
-			continue
-		}
-		path, err := safeBundleFile(s.Root, filepath.FromSlash(artifact.StoragePath))
+		path, err := safeBundleFile(root, filepath.FromSlash(artifact.StoragePath))
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
 			return expired, skipped, fmt.Errorf("prune artifacts: resolve blob %q: %w", artifact.StoragePath, err)
 		}
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		lifecycleLock, err := acquireFileLock(ctx, root, "artifact-object:"+filepath.ToSlash(artifact.StoragePath))
+		if err != nil {
+			return expired, skipped, fmt.Errorf("prune artifacts: lock blob %q: %w", artifact.StoragePath, err)
+		}
+		referenced, referenceErr := s.Catalog.ArtifactStoragePathReferenced(ctx, artifact.StoragePath)
+		if referenceErr != nil {
+			_ = lifecycleLock.Close()
+			return expired, skipped, fmt.Errorf("prune artifacts: check blob %q: %w", artifact.StoragePath, referenceErr)
+		}
+		if !referenced {
+			err = os.Remove(path)
+		}
+		closeErr := lifecycleLock.Close()
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return expired, skipped, fmt.Errorf("prune artifacts: remove blob %q: %w", artifact.StoragePath, err)
+		}
+		if closeErr != nil {
+			return expired, skipped, fmt.Errorf("prune artifacts: unlock blob %q: %w", artifact.StoragePath, closeErr)
 		}
 	}
 	return expired, skipped, nil
