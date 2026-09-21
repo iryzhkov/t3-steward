@@ -44,8 +44,8 @@ import (
 // a coordinator that stops hearing from the overseer keeps believing in it.
 const DefaultActivationLeaseTTL = 15 * time.Minute
 
-// SupervisionTriggerKind names one of the six conditions that may wake an
-// overseer. The set is closed on purpose. A scheduler tick is not in it, and
+// SupervisionTriggerKind names five emitted conditions and one compatibility-
+// reserved value. The set is closed on purpose. A scheduler tick is not in it, and
 // neither is an ordinary task success: waking on either would make the overseer
 // a poller, and its budget is bounded.
 type SupervisionTriggerKind string
