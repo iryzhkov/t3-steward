@@ -22,6 +22,7 @@ func requireExecutorCapacityTx(
 	tx *sql.Tx,
 	workerID string,
 	now time.Time,
+	expectedWorkerEpoch string,
 	demand domain.ResourceDemand,
 	demandKnown bool,
 ) error {
@@ -31,6 +32,10 @@ func requireExecutorCapacityTx(
 	}
 	if !exists {
 		return fmt.Errorf("%w for worker %q: no worker snapshot", ErrExecutorCapacityEvidence, workerID)
+	}
+	if expectedWorkerEpoch != "" && snapshot.WorkerEpoch != expectedWorkerEpoch {
+		return fmt.Errorf("%w for worker %q: snapshot epoch %q replaced assignment epoch %q",
+			ErrExecutorCapacityEvidence, workerID, snapshot.WorkerEpoch, expectedWorkerEpoch)
 	}
 	if now.IsZero() || !snapshot.ValidUntil.After(now.UTC()) {
 		return fmt.Errorf("%w for worker %q: snapshot is stale", ErrExecutorCapacityEvidence, workerID)
@@ -110,7 +115,7 @@ func (s *Store) ExecutorSlotAvailable(ctx context.Context, workerID string, now 
 		return false, err
 	}
 	defer tx.Rollback()
-	err = requireExecutorCapacityTx(ctx, tx, workerID, now, domain.ResourceDemand{}, true)
+	err = requireExecutorCapacityTx(ctx, tx, workerID, now, "", domain.ResourceDemand{}, true)
 	if errors.Is(err, ErrExecutorCapacity) {
 		return false, nil
 	}
