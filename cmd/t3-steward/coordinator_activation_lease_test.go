@@ -47,8 +47,13 @@ type activationLeaseFixture struct {
 
 func newActivationLeaseFixture(t *testing.T) *activationLeaseFixture {
 	t.Helper()
+	return newActivationLeaseFixtureWithStore(t, sqlite.OpenMigrated)
+}
+
+func newActivationLeaseFixtureWithStore(t *testing.T, openStore func(string) (*sqlite.Store, error)) *activationLeaseFixture {
+	t.Helper()
 	ctx := context.Background()
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openStore(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

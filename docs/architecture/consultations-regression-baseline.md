@@ -38,9 +38,9 @@ Feature-absent and supported-but-unconfigured results must meet all of these bud
 | Extra consultation/context records | exactly zero |
 | Ordinary scheduling decisions and authoritative receipts | exactly zero semantic differences |
 | SQLite write transactions per no-feature fixture | no increase |
-| Median ordinary scheduling throughput, at least 5 isolated samples | no more than 10% regression |
-| p95 scheduling/reconciliation latency, at least 30 observations | no more than 15% or 100 ms regression, whichever allowance is larger |
-| Peak retained no-feature state | no more than 5% growth after additive schema pages are excluded |
+| Median ordinary scheduling throughput, at least 5 isolated samples | no more than 2% regression |
+| p95 scheduling/reconciliation latency, at least 30 observations | no more than 5% regression and no more than 25 ms absolute |
+| Idle coordinator memory, at least 5 isolated samples | no more than 8 MiB or 2% growth, whichever allowance is smaller |
 | WakeEach/WakeAll, replay, cancellation outcomes | zero failures or identity changes in 100 repeated fixture runs |
 | Race detector | zero races |
 
@@ -48,8 +48,8 @@ A breach must be investigated. New sessions, changed blockers/resource counts, c
 outcomes, and altered wake identity are never normalized as noise.
 
 For advising-enabled mixed loads, unrelated ordinary and supervised runs retain the exact
-semantic budgets above. The performance budgets permit at most 15% p95 latency regression
-and 10% throughput regression while advisor work is queued, active, timed out, or
+semantic budgets above. The performance budgets permit at most 5% p95 latency regression
+and 2% throughput regression while advisor work is queued, active, timed out, or
 cancelled. A one-slot worker must still admit ordinary work after a parked task releases
 capacity.
 
