@@ -148,6 +148,81 @@ func TestOlderOrdinaryAttemptPrecedesNewerActivationAtSharedCapacity(t *testing.
 	}
 }
 
+func TestOlderActivationPrecedesYoungerOrdinaryAttemptAtSharedCapacity(t *testing.T) {
+	ctx := context.Background()
+	fixture := newActivationLeaseFixture(t)
+	fixture.superviseRun(t)
+
+	const (
+		project          = "activation-oldest-project"
+		ordinaryWorkflow = "workflow-younger-ordinary"
+		ordinaryRun      = "run-younger-ordinary"
+		ordinaryTask     = "task-younger-ordinary"
+		ordinaryAttempt  = "attempt-younger-ordinary"
+	)
+	fixture.now = fixture.now.Add(2 * time.Minute)
+	youngerAt := fixture.now.Add(-time.Minute)
+	route := domain.ProviderRoute{
+		WorkerID: activationLeaseWorker, ProviderInstanceID: "claudeAgent",
+		Model: "claude-fable-5-1", QuotaPoolID: "claude-main",
+	}
+	if err := fixture.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
+		Workflows: []domain.Workflow{{
+			ID: ordinaryWorkflow, Version: 1, Name: ordinaryWorkflow, Project: project,
+			Class: domain.TaskClassRequired, TaskIDs: []string{ordinaryTask}, CreatedAt: youngerAt,
+		}},
+		WorkflowRuns: []domain.WorkflowRun{{
+			ID: ordinaryRun, WorkflowID: ordinaryWorkflow, Progress: domain.ProgressActive,
+			Revision: 1, CreatedAt: youngerAt, UpdatedAt: youngerAt,
+		}},
+		Tasks: []domain.Task{{
+			ID: ordinaryTask, WorkflowID: ordinaryWorkflow, Name: ordinaryTask,
+			Class: domain.TaskClassRequired, Routes: []domain.ProviderRoute{route}, MaxTurns: 2,
+		}},
+		Attempts: []domain.Attempt{{
+			ID: ordinaryAttempt, WorkflowRunID: ordinaryRun, TaskID: ordinaryTask, Number: 1,
+			Progress: domain.ProgressReady, Control: domain.ControlUnassigned,
+			Revision: 1, UpdatedAt: youngerAt,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, err := fixture.store.LoadWorkerSnapshots(ctx)
+	if err != nil || len(snapshots) != 1 {
+		t.Fatalf("worker snapshots=%+v err=%v", snapshots, err)
+	}
+	snapshot := snapshots[0]
+	snapshot.Sequence++
+	snapshot.ObservedAt = fixture.now
+	snapshot.ValidUntil = fixture.now.Add(time.Hour)
+	snapshot.Inventory.ObservedAt = fixture.now
+	snapshot.Inventory.Projects = []domain.WorkerProjectInventory{{
+		Name: project, Available: true, UpdatedAt: fixture.now,
+	}}
+	if err := fixture.store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	quota := activationFairnessQuota(fixture.now, domain.QuotaPool{
+		ID: "claude-main", Provider: "claude", ProviderInstanceIDs: []string{"claudeAgent"},
+		Admission: domain.AdmissionOpen, MaxConcurrent: 1,
+	})
+	cycle := activationFairnessCycle(t, fixture, quota)
+	cycle.Tick(ctx)
+
+	state, err := fixture.supervision.LoadSupervisionActivationState(ctx, activationLeaseRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Activation.State != domain.ActivationPendingDispatch {
+		t.Fatalf("older activation state=%q, want %q", state.Activation.State, domain.ActivationPendingDispatch)
+	}
+	ordinary := loadFairnessAttempt(t, ctx, fixture.store, ordinaryAttempt)
+	if ordinary.Control != domain.ControlUnassigned || ordinary.AssignmentID != "" {
+		t.Fatalf("younger ordinary attempt consumed shared capacity: %#v", ordinary)
+	}
+}
+
 func TestOlderActivationWinsDespiteReverseWorkflowRecordOrder(t *testing.T) {
 	ctx := context.Background()
 	fixture := newActivationLeaseFixture(t)
