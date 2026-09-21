@@ -93,7 +93,10 @@ the source-versioned built-in advisor instruction template unless
 `instructions_file` names a campaign file; submission custodies that file and pins
 its digest. `options` is the normalized provider option map. `capability` defaults
 to `controlled-response-v1`; selecting tools or more than one turn requires
-`bounded-continuation-read-v1`. `limits` may only lower the defaults below.
+`bounded-continuation-read-v1`. Project and task policy may only narrow their parent policy. Campaign deadlines may
+increase from the default up to the operator's 24-hour maximum. Other campaign limits
+may only lower the defaults below; operator-only synthetic qualification overrides
+are explicitly recorded and never alter production defaults.
 `context` always names an exact immutable version; there is no floating latest value.
 
 `consultation_policy.allowed_recipients` is optional. When omitted it contains every
@@ -111,7 +114,8 @@ tasks:
 
 The task policy cannot add recipients or grant operator/supervisor credentials.
 `publish_context_outputs` names typed outputs declared by that task; an undeclared
-name fails validation. These field names and locations are fixed for C1 encoding.
+name fails validation. These field names and locations are candidates for C1 encoding, pending the exact
+C0 admission review.
 
 `campaign validate`, `plan` and `check` display each effective alias, route,
 definition/context versions, capability, limits, quota/capacity blockers and whether
@@ -138,6 +142,11 @@ t3-steward task answer submit REQUEST --answer-file answer.md --outcome answered
 t3-steward context publish --manifest context.yaml --request-id KEY --json
 t3-steward context show VERSION --json
 ```
+
+`context:VERSION` is shorthand only for a unique predeclared, task-allowed advisor
+binding pinned to that exact context version. It cannot introduce a route, recipient
+or new context pin. Zero or multiple matching bindings are refused with the explicit
+allowed alias alternative.
 
 There is no resident MCP surface in V1. Task, run, route, revision, authority and
 delivery identity are derived from the live execution. Each ask carries an idempotency
@@ -175,10 +184,11 @@ raise a value beyond the operator maximum or backend capacity.
 | retained context bundle | 2 MiB | 2 MiB |
 | outstanding requests per task | 1 | 1 |
 | nonterminal requests per run | 32 | 32 |
-| total requests per run | 32 | 32 |
+| total requests per run | 64 | 64 |
 | concurrent answer executions per run | 4 | 4 |
 | end-to-end request deadline | 15 minutes | 24 hours |
-| respondent turns | 4 | 4 |
+| respondent turns, controlled-response-v1 | 1 | 1 |
+| respondent turns, bounded-continuation-read-v1 | 4 | 4 |
 | overseer-selected consultation IDs per activation | 4 | 4 |
 | strict input budget | 32,000 tokens | 32,000 tokens |
 | strict output budget | 4,000 tokens | 4,000 tokens |
@@ -187,6 +197,16 @@ raise a value beyond the operator maximum or backend capacity.
 | retained context versions per project | 32 | 32 |
 | retained context bytes per project | 64 MiB | 64 MiB |
 | unpinned retired-version grace | 30 days | operator may increase |
+
+The project concurrency default matches one run's four-execution maximum while
+per-run fair shares prevent monopolization. The 64 pending-request cap admits two
+full per-run queues; the 32-version / 64 MiB storage defaults bound a project at
+32 maximum-sized bundles. The 30-day unpinned retention grace provides a recovery
+window without pinning producer runs. These are conservative lead-review choices,
+not measured capacity claims; operator policy may configure the project caps before
+submission, subject to route/resource ceilings and existing pins. Aggregate admitted
+usage is additionally bounded by the sum of per-run turn/input/output allowances and
+normal quota ownership; no project gets an unmetered inference allowance.
 
 Project limits use per-run fair shares. Pinned versions survive the retired-version
 grace; the grace starts only after the last workflow/request pin is gone. Normal route
@@ -324,10 +344,30 @@ Fair scheduling serves the oldest eligible request within per-run and per-projec
 shares, subject to normal route quota and capacity. Parked callers release only the
 existing executor slot; workspace and locks remain held. Wake reacquires capacity
 normally. No default headroom is reserved. Overseer consultation work has a separate
-allowance within the existing total activation budget; required finalization takes
-priority, then current gate/incident review, then advisory requests in deterministic
-oldest-first order. Advisory selection cannot consume the last activation reserved for
-required finalization.
+allowance within the existing total activation budget; existing required finalization
+and gate/incident review take priority over advisory requests in deterministic
+oldest-first order. Reserve only the budget of a demonstrated existing finalization
+contract. The unused final-report trigger does not establish a separate guaranteed
+post-settlement model report or justify adding an activation to ordinary campaigns.
+
+## Implementation seams and ownership
+
+C1 owns separate durable request, dispatch-intent and subscription identities, plus
+purpose-scoped capability digest registration, validation and revocation. C2 owns
+worker-side private capability emission/recovery and the actual answering assignment.
+Every mutation commits a stable native audit event; exact replay returns its existing
+receipt without duplicating events. Subscription state links to the existing task-wait
+owner rather than copying its scheduling or delivery logic.
+
+`CoordinatorArtifactStore.Publish` stages and hashes bytes before metadata publication.
+`PruneArtifacts` currently protects whole runs with `coordinator_retention_pins`, and
+`ArtifactStoragePathReferenced` sees only `coordinator_artifacts`. Project contexts need
+independent project-owned references; both prune and failed-publication cleanup must
+consult them. Retaining an entire producer run is not the context-lifetime solution.
+`backupsnapshot.Manager.Create` already captures database metadata and artifact bytes
+under the stopped-database lock; restore and shared-blob retirement races still need
+qualification. Production custody is required for the vertical slice, not replaced by
+a test adapter.
 
 ## Immutable context custody
 
@@ -394,8 +434,12 @@ release gates.
 
 ## Evidence still required before C0 admission
 
-This contract freeze closes documentation choices only. The following evidence remains
-open and must be linked before marking C0 passed:
+This contract freeze records reviewable documentation choices only. C0 requires
+source-backed feasibility spikes, a concrete happy/failure path, compatibility and
+baseline receipts, not production implementation of C1–C5 before C1. The following
+obligations remain open. For C0, each needs an accepted feasibility receipt and a
+concrete integration contract; full production and flood/race qualification belongs
+to its owning C1–C5 exit gate and remains required before release:
 
 1. Live caller capability issuance, private worker custody, registration,
    redelivery/recovery, expiry/revocation and every wait/wake authority path.
