@@ -62,36 +62,35 @@ be configured explicitly; no numeric aggregate default has yet been accepted.
 
 ## Cold-call UX fixture
 
-A user can declare one common advisor without discovering workers, provider credentials,
-or fleet state:
+A campaign can declare one common advisor without discovering workers, provider
+credentials, or fleet state:
 
 ```yaml
 advisor:
   model: codex/gpt-5.6-sol
 ```
 
-A task can inherit it and ask by stable project alias:
-
-```yaml
-tasks:
-  implement:
-    advisor: project-default
-```
+Every task in that submitted campaign uses the resolved project default when it makes the
+ordinary cold call:
 
 ```sh
-t3-steward consultation ask --advisor project-default \
-  --question-file question.md --attach design.md
+t3-steward task ask -- "Review this concurrency boundary and identify one concrete race."
 ```
 
-The expected cold-call response is a durable request ID and deadline. The default form
-parks the current task through the existing wait path; `--async` returns immediately,
-and a later `consultation await REQUEST_ID` attaches the current live turn. Effective
-route, pinned definition/context versions, deadline and limits must appear in plan output
-before submission.
+The question is self-contained and the default command needs no alias. A campaign may
+also declare named specialist bindings under `advisors`; choosing one is an optional
+advanced form, not required for the common path.
 
-This surface resolves the declared alias from the submitted project snapshot. It never
-asks the caller to select a worker, inspect credentials, choose a quota pool, or discover
-whether a model session already exists. Missing declarations, ambiguous multiple
-bindings, unsupported strict-context adapters, unavailable routes, and exceeded limits
-fail with project-level explanations. This is a static UX fixture only: no live inference,
-worker discovery, credential lookup, CLI implementation, or usability study was run.
+The expected cold-call response is a durable request ID and deadline. The default form
+parks the current task through the existing wait path. An explicit asynchronous variant
+may return immediately, and a later task-level await may attach the current live turn.
+Effective route, pinned definition/context versions, deadline and limits must appear in
+campaign plan output before submission.
+
+This surface resolves the campaign's project default from the submitted snapshot. It
+never asks the caller to select a worker, inspect credentials, choose a quota pool, name
+the default advisor, or discover whether a model session already exists. A missing common
+advisor, ambiguous optional specialist, unsupported strict-context adapter, unavailable
+route, or exceeded limit fails with a project-level explanation. This is a static UX
+fixture only: no live inference, worker discovery, credential lookup, CLI implementation,
+or usability study was run.
