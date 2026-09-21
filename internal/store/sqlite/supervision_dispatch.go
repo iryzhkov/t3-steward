@@ -167,6 +167,10 @@ func (s *Store) CommitActivationAssignment(ctx context.Context, commit Activatio
 				active++
 			}
 		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return domain.Assignment{}, fmt.Errorf("iterate quota occupancy: %w", err)
+		}
 		if err := rows.Close(); err != nil {
 			return domain.Assignment{}, err
 		}

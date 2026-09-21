@@ -272,20 +272,33 @@ func (p coordinatorPlanner) yieldToOlderActivationContender(ctx context.Context,
 		return false, err
 	}
 	cutoff := sqlite.TaskWakeCutoff{ReadyAt: candidate.ReadyAt, AttemptID: candidate.ID}
+	// WakeTaskWaitsBefore treats a missing cutoff as unconstrained. Block every
+	// disjoint worker and pool, then open only the two resources this activation
+	// would consume. Unrelated wakes may run in the normal planning pass, but they
+	// are not evidence that this activation lost its own fairness contest.
+	blocked := sqlite.TaskWakeCutoff{}
 	cutoffs := sqlite.TaskWakeCutoffs{
-		Worker:              map[string]sqlite.TaskWakeCutoff{candidate.Worker: cutoff},
-		Pool:                map[string]sqlite.TaskWakeCutoff{candidate.Pool: cutoff},
+		Worker:              make(map[string]sqlite.TaskWakeCutoff),
+		Pool:                make(map[string]sqlite.TaskWakeCutoff),
 		AuthorizedWorkers:   make(map[string]sqlite.TaskWakeWorkerAuthorization),
 		AdmissionValidAfter: now.Add(-p.maxQuotaObservationAge),
 	}
 	for _, snapshot := range snapshots {
+		cutoffs.Worker[snapshot.WorkerID] = blocked
 		cutoffs.AuthorizedWorkers[snapshot.WorkerID] = sqlite.TaskWakeWorkerAuthorization{
 			WorkerEpoch: snapshot.WorkerEpoch, SnapshotSequence: snapshot.Sequence,
 			CatalogRevision: snapshot.Inventory.CatalogRevision, ValidUntil: snapshot.ValidUntil,
 			Providers: append([]domain.WorkerProviderInventory(nil), snapshot.Inventory.Providers...),
 			Projects:  append([]domain.WorkerProjectInventory(nil), snapshot.Inventory.Projects...),
 		}
+		for _, provider := range snapshot.Inventory.Providers {
+			if provider.QuotaPoolID != "" {
+				cutoffs.Pool[provider.QuotaPoolID] = blocked
+			}
+		}
 	}
+	cutoffs.Worker[candidate.Worker] = cutoff
+	cutoffs.Pool[candidate.Pool] = cutoff
 	older := func(at time.Time, id string, than sqlite.TaskWakeCutoff) bool {
 		return at.Before(than.ReadyAt) || at.Equal(than.ReadyAt) && id < than.AttemptID
 	}
@@ -317,10 +330,35 @@ func (p coordinatorPlanner) yieldToOlderActivationContender(ctx context.Context,
 		return true, nil
 	}
 	if hasOlderOrdinary {
-		if _, err := p.coordinator.PlanAndCommit(ctx, input); err != nil {
+		report, err := p.coordinator.PlanAndCommit(ctx, input)
+		if err != nil {
 			return false, err
 		}
-		return true, nil
+		// Planning may commit independent work, or older work in a shared pool
+		// that still has another slot. Yield only when the committed batch
+		// actually exhausted this activation's worker or pool.
+		workerAvailable, err := p.store.ExecutorSlotAvailable(ctx, candidate.Worker, now)
+		if err != nil {
+			return false, fmt.Errorf("recheck activation executor capacity: %w", err)
+		}
+		if !workerAvailable {
+			return true, nil
+		}
+		for _, pool := range quota.Pools {
+			if pool.ID != candidate.Pool {
+				continue
+			}
+			active := pool.ActiveAssignments
+			for _, assignment := range report.Assignments {
+				if assignment.Route.QuotaPoolID == candidate.Pool {
+					active++
+				}
+			}
+			if active >= pool.MaxConcurrent {
+				return true, nil
+			}
+			break
+		}
 	}
 	return false, nil
 }
