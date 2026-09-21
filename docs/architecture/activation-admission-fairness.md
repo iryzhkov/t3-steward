@@ -1,0 +1,11 @@
+# Activation admission fairness
+
+This prerequisite repair preserves supervision lifecycle reconciliation independently of new-work admission. Completion, revocation and lost/expired execution evidence still reconcile when quota admission is closed.
+
+Eligible activation dispatches are ordered by durable trigger age and stable identity, with run ID as the final tie breaker. New activation epochs store their selected trigger age. Undelivered retries retain that epoch's age; legacy records reconstruct a stable original planning time from their immutable deadline and pinned activation duration. A later event cannot make an existing retry younger or give a new epoch the previous epoch's age.
+
+Before dispatch, ordinary contenders reuse the existing unreserved proposal eligibility checks. Only exact older proposals sharing the candidate's worker or bounded quota pool are eligible for the arbitration pass. Younger and disjoint ordinary work remains for normal planning. Settled wakes contend when they share either constrained resource; their existing transaction rechecks authorization, worker epoch, route, project, quota and capacity. A disjoint wake cannot delay an activation. Zero pool concurrency retains its existing unbounded meaning; a missing pool remains a refusal.
+
+Activation offer commit rechecks durable executor occupancy and the current coordinator's configured pool concurrency limit in the same SQLite transaction as assignment creation. Unknown assignments retain pool occupancy; claimed parked attempts release it. The supplied limit is internal coordinator policy, not caller authority. Existing coordinator epoch and worker snapshot fences remain required.
+
+The regression suite exercises reverse workflow-record ordering, older activation versus younger ordinary work, older ordinary/activation/younger ordinary competition for two slots, both one-resource-sharing wake cases, disjoint work, concurrent distinct-worker offers into a single pool slot, unknown/parked occupancy, fresh versus retry age and legacy retry ordering. Integration gates include the complete existing unit/race/vet suite. These are scheduler and lifecycle receipts, not evidence of consultation functionality or model utility.
