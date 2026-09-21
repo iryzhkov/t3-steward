@@ -116,7 +116,7 @@ the compact answer and provenance, while the existing stable `DeliveryID`,
 | Normal wake | Reuse `WakeTaskWaits`: verify parked identity, assignment worker epoch and capacity; CAS the attempt revision into `ControlResuming`; mark the stable wake pending in the same transaction. | Capacity refusal leaves the settled subscription parked and pending. |
 | Forced rewake/resume | In the admin-command transaction, detach the subscription before changing the attempt. Refuse if an ordinary committed wake still owns delivery. The answer remains stored and is never injected into the newly busy turn. | Resumed attempt has no attached consultation; later explicit read/re-await is possible. |
 | Attempt cancel/skip/retry or authority revocation | Revoke caller capability and detach/cancel all nonterminal owned consultations before the attempt transition commits. Retry gets no inherited request, wait, delivery or capability identity. | Old responses cannot wake the replacement attempt. |
-| Consultation cancellation | Commit terminal cancelled outcome and revoke response authority. Remove only this request from a shared activation membership; do not cancel the activation while another selected consultation or gate obligation survives. | Cancellation is immutable; execution containment remains separately visible. |
+| Consultation cancellation or timeout | Commit the terminal request outcome, revoke response authority, and settle the attached subscription immediately. The caller becomes eligible for the ordinary capacity/quota-governed wake independently of responder containment. Remove only this request from shared activation membership; preserve every other consultation and gate obligation. | Request response and subscription settlement are immutable. The respondent assignment retains resources until stop/containment evidence, and the sink remains blocked on effect quiescence. |
 | Activation selection | Select at most the bounded batch and insert `ActivationConsultationMember` rows in the same transaction that raises the activation epoch/dispatch intent. Membership is immutable for that activation epoch. | New/unselected requests remain queued regardless of inbox cursor. |
 | Activation outcome | Each selected member must become answered, cancelled, or explicitly failed before activation closure. High-water advancement consumes events only and cannot complete consultation membership. | Selected-but-unanswered fails explicitly; unselected stays queued. |
 | Wake send uncertainty | Reuse `TransitionTaskWake`; `sending` to delivered/recovery-required requires the stable delivery group and positive observation rules. | No blind second send or second resumed turn. |
@@ -138,29 +138,30 @@ Selected overseer membership is independent of `ActivationInbox.HighWaterMark`,
 cursor inputs. The membership row is the authority for which consultation IDs this
 activation may answer and which IDs require explicit failure at its termination.
 
-## Unresolved safety decision
+## Cancellation and containment decision
 
-The reviewed plan says cancellation settles the caller's wait while responder resources
-remain held until stop/containment evidence, and also says a run sink cannot settle while
-related effects are uncontained. It does not unambiguously decide whether the caller may
-resume immediately with `cancelled` while its separately routed answer execution is still
-uncontained.
+Cancellation and timeout terminalize the consultation response state and settle an
+attached subscription immediately. The caller is then eligible for the same normal
+capacity- and quota-governed wake as any other settled wait; it does not remain parked
+until respondent containment.
 
-C1 must choose and test one rule before schema implementation:
+This follows the reviewed invariant that response, containment, and delivery are
+independent state. The respondent assignment and its resources remain owned until
+positive stop or containment evidence. An ambiguous or running respondent effect remains
+visible and blocks sink settlement through effect-quiescence accounting, even after the
+caller has received the cancelled or timed-out outcome. Cancellation of one selected
+request removes only that membership and response authority; a shared activation
+continues while any other selected consultation, gate, escalation, or reporting
+obligation survives.
 
-- allow caller resumption after cancellation, while a separate uncontained-effect blocker
-  prevents sink settlement and preserves execution resources; or
-- keep the cancelled subscription parked until containment is observed.
-
-The first gives prompt cancellation but permits caller work concurrent with an ambiguous
-respondent effect. The second gives the strongest sequencing but can hold the caller
-through a worker outage. No implementation should infer the choice from
-`TaskWait.Result`, because ordinary settlement and execution containment are currently
-separate facts.
+The transaction API therefore joins request terminalization to subscription settlement,
+but does not join either to assignment release. `WakeTaskWaits` still governs when the
+caller can reacquire capacity and resume, while the execution containment owner governs
+respondent resource release and sink eligibility.
 
 ## C0 evidence still required
 
 This audit does not prove the new transactions, schema migration, caller capability
-adapter, mixed-wait refusal, stale-epoch races, cancellation/containment rule, or selected
-batch accounting. C0 remains open until real SQLite race tests cover those boundaries and
-the chosen containment rule is frozen.
+adapter, mixed-wait refusal, stale-epoch races, independent cancellation/containment
+accounting, or selected batch accounting. C0 remains open until real SQLite race tests
+cover those boundaries.
