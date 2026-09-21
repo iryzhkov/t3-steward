@@ -312,22 +312,21 @@ func activationDispatchAge(state backlog.SupervisionActivationState, signal back
 	// Persisted ordering belongs to an already-created dispatch. A fresh trigger
 	// must derive its age from this epoch's post-cursor inbox even when an older
 	// activation record is still being reconciled.
-	if signal.Event == domain.ActivationEventDispatchUndelivered &&
-		!state.Activation.ReadyAt.IsZero() && state.Activation.ReadyTieID != "" {
-		return state.Activation.ReadyAt.UTC(), state.Activation.ReadyTieID, nil
+	if signal.Event == domain.ActivationEventDispatchUndelivered {
+		if !state.Activation.ReadyAt.IsZero() && state.Activation.ReadyTieID != "" {
+			return state.Activation.ReadyAt.UTC(), state.Activation.ReadyTieID, nil
+		}
+		// Legacy pending-dispatch records predate ReadyAt. Their immutable
+		// deadline was fixed when the original dispatch was planned. Prefer it
+		// to any event that arrived later while delivery was pending.
+		if state.Activation.Deadline != nil && state.Record.Config.ActivationDeadline > 0 {
+			return state.Activation.Deadline.Add(-state.Record.Config.ActivationDeadline).UTC(),
+				state.Activation.DispatchIdentity, nil
+		}
 	}
 	inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, state.Record.EventCursor, state.Pending)
 	if len(inbox.Events) != 0 {
 		return inbox.Events[0].OccurredAt.UTC(), inbox.Events[0].ID, nil
-	}
-	// Legacy pending-dispatch records predate ReadyAt. Their immutable deadline
-	// was fixed when the original dispatch was planned, so reconstructing that
-	// planning time is stable across retries and restarts. It is later than the
-	// unknown trigger time, but never becomes younger on each retry.
-	if signal.Event == domain.ActivationEventDispatchUndelivered &&
-		state.Activation.Deadline != nil && state.Record.Config.ActivationDeadline > 0 {
-		return state.Activation.Deadline.Add(-state.Record.Config.ActivationDeadline).UTC(),
-			state.Activation.DispatchIdentity, nil
 	}
 	return time.Time{}, "", fmt.Errorf("activation %q has no durable trigger age", state.Activation.DispatchIdentity)
 }

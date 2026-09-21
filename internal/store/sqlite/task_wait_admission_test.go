@@ -113,7 +113,13 @@ func TestGovernedTaskWakeRequiresFreshCoordinatorAdmission(t *testing.T) {
 		t.Fatalf("changed-catalog wake=%+v err=%v, want held", wakes, err)
 	}
 	writeTaskWakeSnapshotFixture(t, store, currentSnapshot)
-	// The coordinator's current admission resumes exactly once after release.
+	// Zero is the authoritative unbounded-pool contract. The wake still
+	// contends for its worker, but pool occupancy cannot hold it.
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{
+		QuotaPools: []domain.QuotaPool{{ID: "pool", Admission: domain.AdmissionOpen, MaxConcurrent: 0}},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	wakes, err := store.WakeTaskWaitsBefore(ctx, settled, fresh)
 	if err != nil || len(wakes) != 1 {
 		t.Fatalf("fresh wake=%+v err=%v", wakes, err)

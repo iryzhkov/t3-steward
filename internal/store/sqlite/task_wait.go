@@ -864,7 +864,7 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 					active++
 				}
 			}
-			if pool.MaxConcurrent <= 0 || active >= pool.MaxConcurrent {
+			if pool.MaxConcurrent > 0 && active >= pool.MaxConcurrent {
 				continue
 			}
 		}

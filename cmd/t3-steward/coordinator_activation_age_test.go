@@ -43,6 +43,10 @@ func TestActivationDispatchAgeLegacyRetryUsesStableDeadlineEvidence(t *testing.T
 			DispatchIdentity: "dispatch-legacy", State: domain.ActivationPendingDispatch,
 			Deadline: &deadline,
 		},
+		Pending: []backlog.SupervisionEvent{{
+			ID: "event-arrived-later", RunID: "run", Sequence: 5, OccurredAt: planned.Add(time.Hour),
+			Kind: backlog.TriggerTaskJudgmentRequired,
+		}},
 	}
 	at, id, err := activationDispatchAge(state, backlog.ActivationSignal{Event: domain.ActivationEventDispatchUndelivered})
 	if err != nil {
