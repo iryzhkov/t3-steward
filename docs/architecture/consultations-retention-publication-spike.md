@@ -39,15 +39,28 @@ The smallest production primitives before C1 are:
 
 Whole-run retention pins are not a suitable context owner: they retain unrelated producer
 metadata and prevent the required independent lifetime. The current two-phase
-metadata-then-file deletion is fail-safe for crashes because it may leak an unreferenced
-blob but does not create dangling retained metadata.
+metadata-then-file deletion is fail-safe for a crash in the absence of concurrent adoption:
+it may leak an unreferenced blob but does not by itself create dangling retained metadata.
+That crash property does not provide concurrency safety.
 
-The SQLite store currently serializes writers with one connection, closing the
-publication-versus-prune reference race. Any future connection-pool increase requires an
-explicit immediate write transaction or equivalent locking. Publication failure cleanup
-also races with another owner adopting the same content hash; the reference check must
-occur after the failed transaction and include all owner kinds. Removing the last pin,
-retiring a version, producer pruning, and orphan collection require concurrency tests.
+SQLite's single connection serializes database transactions, but it does not close the
+object lifecycle race: `CoordinatorArtifactStore.Prune` commits metadata deletion, queries
+references, and then calls `os.Remove` outside a transaction. The deterministic
+`TestConsultationPruneCanDeleteConcurrentlyAdoptedBlob` pauses after the query observes no
+reference, publishes a new metadata owner for the existing hash, and proves prune then
+unlinks the newly adopted blob. Publication-failure cleanup has the same read-then-unlink
+shape.
+
+The smallest robust fix is a transaction-backed blob lifecycle row keyed by storage path.
+Prune atomically changes an unreferenced live object to `deleting`; publication may attach
+a reference only while it is live and must retry or recreate after a deleting generation
+finishes. Prune unlinks only its claimed generation, then removes or tombstones the row.
+Startup reconciliation completes deleting claims and collects live zero-reference
+orphans. A shared per-storage-path lock spanning publish's existence/metadata commit and
+prune's reference-check/unlink is a smaller single-process alternative, but it must be
+shared by every `CoordinatorArtifactStore` value for the canonical root and does not cover
+multiple processes. Removing the last pin, retiring a version, producer pruning,
+publication failure, and orphan collection require concurrency tests.
 
 Backup coverage is structurally feasible because `backupsnapshot.Manager.Create` copies
 the stopped coordinator database and artifact root under the same lock. C1 still needs a
@@ -70,8 +83,8 @@ advisor:
   model: codex/gpt-5.6-sol
 ```
 
-Every task in that submitted campaign uses the resolved project default when it makes the
-ordinary cold call:
+Every task in that submitted campaign uses this explicit campaign-level model override
+when it makes the ordinary cold call:
 
 ```sh
 t3-steward task ask -- "Review this concurrency boundary and identify one concrete race."
@@ -87,8 +100,9 @@ may return immediately, and a later task-level await may attach the current live
 Effective route, pinned definition/context versions, deadline and limits must appear in
 campaign plan output before submission.
 
-This surface resolves the campaign's project default from the submitted snapshot. It
-never asks the caller to select a worker, inspect credentials, choose a quota pool, name
+This surface pins the campaign's explicit advisor model in the submitted snapshot. If the
+campaign instead declares `advisor: project-default`, submission resolves and pins that
+project default. It never asks the caller to select a worker, inspect credentials, choose a quota pool, name
 the default advisor, or discover whether a model session already exists. A missing common
 advisor, ambiguous optional specialist, unsupported strict-context adapter, unavailable
 route, or exceeded limit fails with a project-level explanation. This is a static UX
