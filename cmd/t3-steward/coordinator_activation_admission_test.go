@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -9,23 +12,108 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-func TestActivationLifecycleReconcilesWhileAdmissionIsClosed(t *testing.T) {
+func TestCompletedActivationReconcilesAndEscalatesWithClosedAdmissionAndOfflineWorker(t *testing.T) {
 	fixture := newActivationLeaseFixture(t)
 	fixture.superviseRun(t)
-	activation := fixture.activate(t)
-	if activation.LeaseExpiresAt == nil {
-		t.Fatal("a confirmed activation has no lease expiry")
+	fixture.activate(t)
+	fixture.now = activationLeaseTime.Add(3 * time.Minute)
+	fixture.finishActivationTurn(t)
+	fixture.coordinator.workers = func(context.Context) ([]domain.WorkerSnapshot, error) {
+		return nil, nil
 	}
 
-	fixture.now = activation.LeaseExpiresAt.Add(time.Second)
 	fixture.coordinator.DispatchActivations(context.Background(), backlog.WorkerAdmissionPolicy{})
 
 	state, err := fixture.supervision.LoadSupervisionActivationState(context.Background(), activationLeaseRun)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Activation.State != domain.ActivationRevoked {
-		t.Fatalf("activation state = %q, want revoked despite closed admission", state.Activation.State)
+	if state.Activation.State != domain.ActivationSpent ||
+		state.Activation.Outcome != domain.ActivationOutcomeNoDecision {
+		t.Fatalf("activation = %#v, want spent with no-decision outcome", state.Activation)
+	}
+	if incident := fixture.incident(t); incident.State != domain.IncidentEscalated {
+		t.Fatalf("incident state = %q, want escalated", incident.State)
+	}
+	if got := len(escalationsOf(fixture.outbox(t))); got != 1 {
+		t.Fatalf("escalation count = %d, want one", got)
+	}
+}
+
+func TestCompletedActivationReconcilesWhenWorkerSnapshotCollectionFails(t *testing.T) {
+	fixture := newActivationLeaseFixture(t)
+	fixture.superviseRun(t)
+	fixture.activate(t)
+	fixture.now = activationLeaseTime.Add(3 * time.Minute)
+	fixture.finishActivationTurn(t)
+	fixture.coordinator.workers = func(context.Context) ([]domain.WorkerSnapshot, error) {
+		return nil, errors.New("worker inventory unavailable")
+	}
+
+	fixture.coordinator.DispatchActivations(context.Background(), backlog.WorkerAdmissionPolicy{})
+
+	state, err := fixture.supervision.LoadSupervisionActivationState(context.Background(), activationLeaseRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Activation.State != domain.ActivationSpent {
+		t.Fatalf("activation state = %q, want completion reconciled despite worker collection failure", state.Activation.State)
+	}
+}
+
+func TestBoundaryTickReconcilesCompletedActivationWhenQuotaFailsAndBlocksNextDispatch(t *testing.T) {
+	fixture := newActivationLeaseFixture(t)
+	fixture.superviseRun(t)
+	activation := fixture.activate(t)
+	fixture.now = activationLeaseTime.Add(3 * time.Minute)
+	fixture.finishActivationTurn(t)
+
+	var quotaCalls, scheduleCalls, planningCalls, adminCalls, legacyCalls int
+	cycle := coordinatorBoundaryCycle{
+		projection:  fixture.supervision,
+		quota:       failingCoordinatorQuotaTicker{calls: &quotaCalls},
+		schedules:   recordingCoordinatorScheduleTicker{calls: &scheduleCalls},
+		planning:    recordingCoordinatorPlanningTicker{calls: &planningCalls},
+		admin:       recordingCoordinatorAdminExecutor{calls: &adminCalls},
+		legacy:      recordingCoordinatorLegacyTicker{calls: &legacyCalls},
+		supervision: &fixture.coordinator,
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	cycle.Tick(context.Background())
+
+	state, err := fixture.supervision.LoadSupervisionActivationState(context.Background(), activationLeaseRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Activation.State != domain.ActivationSpent ||
+		state.Activation.Outcome != domain.ActivationOutcomeNoDecision {
+		t.Fatalf("activation = %#v, want completion reconciled during failed quota tick", state.Activation)
+	}
+
+	fixture.now = activationLeaseTime.Add(4 * time.Minute)
+	if _, err := fixture.supervision.AppendSupervisionEvents(context.Background(), activationLeaseRun,
+		[]backlog.SupervisionEvent{{
+			ID: "event-reassess-after-quota-failure", RunID: activationLeaseRun,
+			Kind: backlog.TriggerOperatorReassessment, Reason: "reassess after completion",
+			IncidentID: activationLeaseIncident, OccurredAt: fixture.now,
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	cycle.Tick(context.Background()) // spent -> idle is reconciliation and needs no admission
+	cycle.Tick(context.Background()) // idle -> dispatch remains blocked by fail-closed admission
+
+	state, err = fixture.supervision.LoadSupervisionActivationState(context.Background(), activationLeaseRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Activation.State != domain.ActivationIdle {
+		t.Fatalf("activation state = %q, want idle while unhealthy quota blocks dispatch", state.Activation.State)
+	}
+	if state.Record.ActivationsUsed != int(activation.Epoch) {
+		t.Fatalf("activations used = %d, want no additional activation budget spent", state.Record.ActivationsUsed)
+	}
+	if quotaCalls != 3 || planningCalls != 0 || adminCalls != 0 {
+		t.Fatalf("calls quota=%d planning=%d admin=%d, want failed quota on each tick and no gated work", quotaCalls, planningCalls, adminCalls)
 	}
 }
 

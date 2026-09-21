@@ -89,10 +89,10 @@ func coordinatorSupervisorClient(clients map[string]config.V2AdminClient) (strin
 // events and no live overseer, and re-offers every activation whose dispatch
 // was planned but never committed.
 //
-// It runs after quota reconciliation and only when that reconciliation
-// succeeded, because an overseer obeys the same automatic admission gates as
-// every other route. With no current quota answer the honest action is to leave
-// the gate closed and say so, not to dispatch a review the fleet cannot afford.
+// It runs after quota reconciliation even when that reconciliation failed,
+// because already assigned activations still need lifecycle reconciliation.
+// The caller supplies a fail-closed policy in that case, so no new overseer
+// work is dispatched without a current admission answer.
 func (c coordinatorSupervision) DispatchActivations(ctx context.Context, admission backlog.WorkerAdmissionPolicy) {
 	if c.activations.Store == nil || !c.settings.configured() {
 		return
@@ -105,8 +105,11 @@ func (c coordinatorSupervision) DispatchActivations(ctx context.Context, admissi
 	var workers []domain.WorkerSnapshot
 	if c.workers != nil {
 		if workers, err = c.workers(ctx); err != nil {
-			c.logger.Error("load worker snapshots for activation dispatch", "error", err)
-			return
+			// Worker evidence is needed only for a new dispatch. Continue with
+			// no candidates so completed, lost and expired activations still
+			// reconcile, while every dispatch remains fail-closed.
+			c.logger.Error("load worker snapshots for activation dispatch; continuing lifecycle reconciliation", "error", err)
+			workers = nil
 		}
 	}
 	now := c.at()
