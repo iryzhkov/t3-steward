@@ -11,6 +11,15 @@ import (
 func TestCapacityReviewWakeRequiresCurrentWorkerEpoch(t *testing.T) {
 	ctx := context.Background()
 	store, attempt, now := taskWaitFixture(t)
+	records, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignment := records.Assignments[0]
+	assignment.WorkerEpoch = "worker-epoch-1"
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Assignments: []domain.Assignment{assignment}}); err != nil {
+		t.Fatal(err)
+	}
 	wait, err := store.RegisterTaskWait(ctx, taskWaitRegistration(attempt, "epoch-fence", domain.WakeEach), now)
 	if err != nil {
 		t.Fatal(err)
