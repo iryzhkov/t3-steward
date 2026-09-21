@@ -29,6 +29,16 @@ func taskWaitFixture(t *testing.T) (*Store, domain.Attempt, time.Time) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// Existing wait behavior historically ran on workers without configured
+	// executor slots. Record that explicit inventory evidence so zero remains
+	// ungoverned without treating a missing snapshot as unlimited capacity.
+	if err := store.SaveWorkerSnapshot(context.Background(), domain.WorkerSnapshot{
+		WorkerID: "worker", WorkerEpoch: "worker-epoch-1", CoordinatorEpoch: 1, Sequence: 1,
+		Connected: true, ObservedAt: now, ValidUntil: now.Add(time.Hour),
+		Inventory: domain.WorkerInventory{ID: "worker", AcceptBacklog: true, Health: domain.WorkerHealthReady, ObservedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	return store, attempt, now
 }
 

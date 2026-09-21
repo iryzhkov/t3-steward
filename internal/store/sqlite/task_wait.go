@@ -678,6 +678,18 @@ func (s *Store) WakeTaskWaits(ctx context.Context, now time.Time) ([]domain.Task
 			}
 			continue
 		}
+		assignment, err := loadAssignmentTx(ctx, tx, attempt.AssignmentID)
+		if err != nil {
+			return nil, err
+		}
+		if err := requireExecutorSlotTx(ctx, tx, assignment.WorkerID, now); err != nil {
+			if errors.Is(err, ErrExecutorCapacity) || errors.Is(err, ErrExecutorCapacityEvidence) {
+				// Settlement remains durable but undelivered. A later pass
+				// retries this same wake after capacity is released.
+				continue
+			}
+			return nil, err
+		}
 		expected := attempt.Revision
 		attempt.Revision++
 		attempt.Progress = domain.ProgressActive

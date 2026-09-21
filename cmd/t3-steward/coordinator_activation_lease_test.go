@@ -102,6 +102,7 @@ func newActivationLeaseFixture(t *testing.T) *activationLeaseFixture {
 		Connected: true, ObservedAt: fixture.now, ValidUntil: fixture.now.Add(time.Hour),
 		Inventory: domain.WorkerInventory{
 			ID: activationLeaseWorker, AcceptBacklog: true, Health: domain.WorkerHealthReady,
+			Allocatable:  domain.AllocatableCapacity{ExecutorSlots: 1},
 			Capabilities: []string{workerproto.CapabilityCampaignSupervision}, ObservedAt: fixture.now,
 			// The overseer route has to be hosted here, or the dispatch pass
 			// stops at placement and never observes the activation's own
