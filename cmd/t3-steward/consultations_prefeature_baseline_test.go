@@ -156,6 +156,9 @@ const idleCoordinatorChild = "T3_STEWARD_PREFEATURE_IDLE_COORDINATOR_CHILD"
 // ready plus supervision coordinator cycle has completed one warm pass and is
 // quiescent: no Tick or fixture construction overlaps the observation.
 func TestConsultationsPrefeatureIdleCoordinatorRSS(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("idle coordinator RSS comparator requires Linux /proc")
+	}
 	if os.Getenv(idleCoordinatorChild) == "1" {
 		runIdleCoordinatorChild(t)
 		return
@@ -168,19 +171,32 @@ func TestConsultationsPrefeatureIdleCoordinatorRSS(t *testing.T) {
 	}
 	rssSamples := make([]int64, 0, samples)
 	for i := 0; i < samples; i++ {
-		command := exec.Command(executable, "-test.run=^TestConsultationsPrefeatureIdleCoordinatorRSS$", "-test.count=1")
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		command := exec.CommandContext(ctx, executable, "-test.run=^TestConsultationsPrefeatureIdleCoordinatorRSS$", "-test.count=1")
 		command.Env = append(os.Environ(), idleCoordinatorChild+"=1")
 		stdin, err := command.StdinPipe()
 		if err != nil {
+			cancel()
 			t.Fatal(err)
 		}
 		stdout, err := command.StdoutPipe()
 		if err != nil {
+			_ = stdin.Close()
+			cancel()
 			t.Fatal(err)
 		}
 		command.Stderr = command.Stdout
 		if err := command.Start(); err != nil {
+			_ = stdin.Close()
+			cancel()
 			t.Fatal(err)
+		}
+		failed := func(format string, args ...any) {
+			_ = stdin.Close()
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			cancel()
+			t.Fatalf(format, args...)
 		}
 		scanner := bufio.NewScanner(stdout)
 		ready := false
@@ -191,25 +207,26 @@ func TestConsultationsPrefeatureIdleCoordinatorRSS(t *testing.T) {
 			}
 		}
 		if !ready {
-			_ = stdin.Close()
-			_ = command.Wait()
-			t.Fatalf("idle coordinator child did not become ready: %v", scanner.Err())
+			failed("idle coordinator child did not become ready: scan=%v context=%v", scanner.Err(), ctx.Err())
 		}
 		rss, ok := processRSSKB(command.Process.Pid)
 		if !ok {
-			_ = stdin.Close()
-			_ = command.Wait()
-			t.Fatalf("read RSS for idle coordinator pid %d", command.Process.Pid)
+			failed("read RSS for idle coordinator pid %d", command.Process.Pid)
 		}
 		rssSamples = append(rssSamples, rss)
 		if err := stdin.Close(); err != nil {
-			t.Fatal(err)
+			failed("close idle coordinator child stdin: %v", err)
 		}
 		for scanner.Scan() {
 		}
-		if err := command.Wait(); err != nil {
-			t.Fatal(err)
+		if err := scanner.Err(); err != nil {
+			failed("read idle coordinator child output: %v", err)
 		}
+		if err := command.Wait(); err != nil {
+			cancel()
+			t.Fatalf("wait for idle coordinator child: %v (context=%v)", err, ctx.Err())
+		}
+		cancel()
 	}
 	sort.Slice(rssSamples, func(i, j int) bool { return rssSamples[i] < rssSamples[j] })
 	load, _ := os.ReadFile("/proc/loadavg")
