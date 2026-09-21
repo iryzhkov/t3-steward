@@ -144,6 +144,24 @@ func (f *wakeWindowFixture) exchange(t *testing.T) {
 	}
 }
 
+func (f *wakeWindowFixture) renewWorkerSnapshot(t *testing.T, at time.Time) {
+	t.Helper()
+	snapshots, err := f.store.LoadWorkerSnapshots(context.Background())
+	if err != nil || len(snapshots) != 1 {
+		t.Fatalf("load worker snapshot for renewal: %#v %v", snapshots, err)
+	}
+	snapshot := snapshots[0]
+	snapshot.Sequence++
+	// Advance within the runtime's next millisecond tick, then extend validity
+	// to the later fake boundary. The next real fixture exchange remains newer.
+	snapshot.ObservedAt = snapshot.ObservedAt.Add(time.Microsecond)
+	snapshot.Inventory.ObservedAt = snapshot.ObservedAt
+	snapshot.ValidUntil = at.Add(time.Minute)
+	if err := f.store.SaveWorkerSnapshot(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (f *wakeWindowFixture) turnEnded() {
 	f.control.thread.Running = false
 	f.control.thread.TurnState = "completed"
@@ -266,6 +284,10 @@ func TestParkedTaskKeepsItsIdentityThroughTheWakeWindow(t *testing.T) {
 	}, f.now.Add(4*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	// A production worker heartbeats throughout a resumed turn. Renew the
+	// fixture's real snapshot at this later fake-clock boundary so capacity
+	// evidence is current without weakening the stale-snapshot fence.
+	f.renewWorkerSnapshot(t, f.now.Add(4*time.Minute))
 	secondWakes, err := f.store.WakeTaskWaits(ctx, f.now.Add(4*time.Minute))
 	if err != nil || len(secondWakes) != 1 {
 		t.Fatalf("the second wake = %+v err=%v", secondWakes, err)

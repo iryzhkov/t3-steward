@@ -67,6 +67,16 @@ func TestTaskParksWakesAndIsCollectedOnceFromTheInjectedIdentity(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// This integration fixture has no exchange loop. Explicit fresh zero-slot
+	// inventory preserves its historical ungoverned capacity while proving the
+	// retained worker epoch used by wake reacquisition.
+	if err := store.SaveWorkerSnapshot(ctx, domain.WorkerSnapshot{
+		WorkerID: pkg.WorkerID, WorkerEpoch: pkg.WorkerEpoch, CoordinatorEpoch: 1, Sequence: 1,
+		Connected: true, ObservedAt: now, ValidUntil: now.Add(time.Hour),
+		Inventory: domain.WorkerInventory{ID: pkg.WorkerID, AcceptBacklog: true, Health: domain.WorkerHealthReady, ObservedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	workspace := t.TempDir()
 	control := &recordingT3{thread: &domain.Thread{ID: pkg.Identity.ThreadID, Running: true}}
