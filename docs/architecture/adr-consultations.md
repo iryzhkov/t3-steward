@@ -453,6 +453,10 @@ to its owning C1–C5 exit gate and remains required before release:
    budgets before every continuation. It is not implemented or qualified.
 5. Overseer bounded package construction, maximum-four selection, durable omission,
    oversized-item behavior, finalization priority and 100/1,000-request flood receipts.
+   The [materialization spike](consultations-materialization-spike.md) proves a bounded
+   event-array projection and SQLite persistence without acknowledgement. Production
+   selection uses authoritative consultation request IDs, independently of the ordinary
+   event cursor. Final package and completed-activation qualification remain open.
 6. Production question/answer/context custody and retention/backup/retirement races.
 7. Cold-call UX receipt: one ordinary ask, no model/worker/run/credential discovery,
    automatic wake with compact answer, and precise no-advisor/wrong-alias help.
