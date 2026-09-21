@@ -130,13 +130,19 @@ func (c coordinatorSupervision) DispatchActivations(ctx context.Context, admissi
 		if stateErr != nil {
 			continue
 		}
-		if !state.Activation.ReadyAt.IsZero() && state.Activation.ReadyTieID != "" {
-			orders[run.ID] = runOrder{state.Activation.ReadyAt.UTC(), state.Activation.ReadyTieID}
+		signal, wanted, signalErr := c.activationLifecycleSignal(ctx, records, state)
+		if signalErr != nil {
 			continue
 		}
-		inbox := backlog.CoalesceSupervisionEvents(run.ID, state.Record.EventCursor, state.Pending)
-		if len(inbox.Events) != 0 {
-			orders[run.ID] = runOrder{inbox.Events[0].OccurredAt.UTC(), inbox.Events[0].ID}
+		if !wanted {
+			signal, wanted, signalErr = c.activationSignal(records, state)
+		}
+		if signalErr != nil || !wanted || !activationSignalMayDispatch(signal.Event) {
+			continue
+		}
+		at, id, ageErr := activationDispatchAge(state, signal)
+		if ageErr == nil {
+			orders[run.ID] = runOrder{at: at, id: id + "\x00" + run.ID}
 		}
 	}
 	sort.SliceStable(records.WorkflowRuns, func(i, j int) bool {
@@ -250,7 +256,7 @@ func (c coordinatorSupervision) dispatchRun(
 				return ageErr
 			}
 			yield, yieldErr := c.yieldToOlderWork(ctx, activationFairnessCandidate{
-				ReadyAt: readyAt, ID: id, Worker: placement.WorkerID, Pool: placement.Route.QuotaPoolID,
+				ReadyAt: readyAt, ID: id + "\x00" + run.ID, Worker: placement.WorkerID, Pool: placement.Route.QuotaPoolID,
 			})
 			if yieldErr != nil {
 				return fmt.Errorf("arbitrate activation admission: %w", yieldErr)
@@ -303,26 +309,27 @@ func (c coordinatorSupervision) dispatchRun(
 // dispatch being considered. A retry keeps the original activation identity and
 // the triggering event's occurrence time, so restart cannot make it younger.
 func activationDispatchAge(state backlog.SupervisionActivationState, signal backlog.ActivationSignal) (time.Time, string, error) {
-	if !state.Activation.ReadyAt.IsZero() && state.Activation.ReadyTieID != "" {
+	// Persisted ordering belongs to an already-created dispatch. A fresh trigger
+	// must derive its age from this epoch's post-cursor inbox even when an older
+	// activation record is still being reconciled.
+	if signal.Event == domain.ActivationEventDispatchUndelivered &&
+		!state.Activation.ReadyAt.IsZero() && state.Activation.ReadyTieID != "" {
 		return state.Activation.ReadyAt.UTC(), state.Activation.ReadyTieID, nil
 	}
-	// Legacy records predate persisted ordering. Reconstruct only from events
-	// selected after the durable cursor; otherwise yield conservatively at the
-	// current boundary rather than borrowing a consumed incident's old age.
-	var readyAt time.Time
-	var id string
-	for _, event := range state.Pending {
-		if event.Sequence <= state.Record.EventCursor {
-			continue
-		}
-		if readyAt.IsZero() || event.OccurredAt.Before(readyAt) || event.OccurredAt.Equal(readyAt) && event.ID < id {
-			readyAt, id = event.OccurredAt.UTC(), event.ID
-		}
+	inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, state.Record.EventCursor, state.Pending)
+	if len(inbox.Events) != 0 {
+		return inbox.Events[0].OccurredAt.UTC(), inbox.Events[0].ID, nil
 	}
-	if readyAt.IsZero() {
-		return time.Time{}, "", fmt.Errorf("activation %q has no durable trigger age", state.Activation.DispatchIdentity)
+	// Legacy pending-dispatch records predate ReadyAt. Their immutable deadline
+	// was fixed when the original dispatch was planned, so reconstructing that
+	// planning time is stable across retries and restarts. It is later than the
+	// unknown trigger time, but never becomes younger on each retry.
+	if signal.Event == domain.ActivationEventDispatchUndelivered &&
+		state.Activation.Deadline != nil && state.Record.Config.ActivationDeadline > 0 {
+		return state.Activation.Deadline.Add(-state.Record.Config.ActivationDeadline).UTC(),
+			state.Activation.DispatchIdentity, nil
 	}
-	return readyAt, id, nil
+	return time.Time{}, "", fmt.Errorf("activation %q has no durable trigger age", state.Activation.DispatchIdentity)
 }
 
 // activationSignalMayDispatch identifies the two lifecycle inputs that can

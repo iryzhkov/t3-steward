@@ -615,6 +615,11 @@ type TaskWakeCutoffs struct {
 	Pool                map[string]TaskWakeCutoff
 	AuthorizedWorkers   map[string]TaskWakeWorkerAuthorization
 	AdmissionValidAfter time.Time
+	// ContendingWorker and ContendingPool restrict this admission pass to wakes
+	// sharing at least one named bottleneck. Empty values preserve the normal
+	// fleet-wide wake pass.
+	ContendingWorker string
+	ContendingPool   string
 }
 
 type TaskWakeWorkerAuthorization struct {
@@ -712,6 +717,18 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 		if err != nil {
 			return nil, err
 		}
+		if !attempt.Progress.Terminal() && (cutoffs.ContendingWorker != "" || cutoffs.ContendingPool != "") {
+			if attempt.AssignmentID == "" {
+				continue
+			}
+			scoped, err := loadAssignmentTx(ctx, tx, attempt.AssignmentID)
+			if err != nil {
+				return nil, err
+			}
+			if scoped.WorkerID != cutoffs.ContendingWorker && scoped.Route.QuotaPoolID != cutoffs.ContendingPool {
+				continue
+			}
+		}
 		switch {
 		case attempt.Progress.Terminal():
 			// There is no turn left to tell. The evidence is kept on the wait
@@ -792,6 +809,10 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 			continue
 		}
 		poolID := assignment.Route.QuotaPoolID
+		if (cutoffs.ContendingWorker != "" || cutoffs.ContendingPool != "") &&
+			assignment.WorkerID != cutoffs.ContendingWorker && poolID != cutoffs.ContendingPool {
+			continue
+		}
 		if cutoff, ok := cutoffs.Pool[poolID]; ok && newerThan(cutoff) {
 			continue
 		}
