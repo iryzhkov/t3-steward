@@ -120,15 +120,14 @@ same legal ordering can repeat while ordinary work is replenished, so the curren
 has no finite service bound. This is orchestrator evidence for one deterministic
 interleaving; it does not claim that every deployment starves a wake.
 
-The smallest repair is one arbitration step inside the existing coordinator boundary.
-Before committing new work, load all capacity contenders and sort them by a durable ready
-key:
-
-1. a settled parked wake uses the earliest settlement time in its committed wake set and
-   the stable attempt ID;
-2. a supervision activation uses its durable activation-ready time, activation epoch and
-   ID;
-3. an ordinary attempt uses the time it first became ready, its attempt number and ID.
+The first repair stage adds one arbitration step inside the existing coordinator planner.
+Before committing ordinary work, it builds the existing pure ordinary plan, compares each
+settled wake with the oldest actually placeable ordinary proposal sharing its worker or
+pool, admits older eligible wakes, then reloads and runs the existing ordinary commit.
+A settled parked wake uses the earliest settlement time in its committed wake set and the
+stable attempt ID. An ordinary proposal uses its attempt UpdatedAt value from the durable
+ready state and attempt ID. Supervision activations are not included in this bounded stage;
+their three-class fairness remains an integration requirement.
 
 Compare contenders by ready time, then stable ID; kind is only a final deterministic
 tie-breaker and must not grant a permanent class priority. For each worker snapshot, walk

@@ -149,6 +149,17 @@ func TestSettledParkedWakeGetsServiceUnderContinuousOrdinaryLoad(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		for _, attempt := range records.Attempts {
+			if attempt.ID == parked.ID && attempt.Control == domain.ControlResuming {
+				if pass != 1 {
+					t.Fatalf("older settled wake was not served on first eligible boundary; pass=%d", pass)
+				}
+				return
+			}
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 		var offered domain.Assignment
 		for _, assignment := range records.Assignments {
 			if assignment.AttemptID == ordinary.ID && assignment.State == domain.AssignmentOffered {

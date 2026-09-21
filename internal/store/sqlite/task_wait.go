@@ -599,7 +599,25 @@ func (s *Store) CancelTaskWait(ctx context.Context, id string, now time.Time) (d
 // attempt has settled. A wait is marked woken inside the same transaction that
 // resumes its attempt, so a coordinator restart, a duplicate tick or a lost
 // wake response produce one wake, one resumed turn and one verification.
+type TaskWakeCutoffs struct {
+	Worker              map[string]TaskWakeCutoff
+	Pool                map[string]TaskWakeCutoff
+	AdmissionValidAfter time.Time
+}
+
+type TaskWakeCutoff struct {
+	ReadyAt   time.Time
+	AttemptID string
+}
+
 func (s *Store) WakeTaskWaits(ctx context.Context, now time.Time) ([]domain.TaskWaitWakeContext, error) {
+	return s.WakeTaskWaitsBefore(ctx, now, TaskWakeCutoffs{})
+}
+
+// WakeTaskWaitsBefore applies settled wakes in durable settlement order. A
+// cutoff keeps a newer wake behind an older ordinary contender sharing its
+// worker or quota pool. Empty cutoffs retain the worker-driven API behavior.
+func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs TaskWakeCutoffs) ([]domain.TaskWaitWakeContext, error) {
 	if now.IsZero() {
 		return nil, errors.New("task-bound wait wake needs a timestamp")
 	}
@@ -616,14 +634,34 @@ func (s *Store) WakeTaskWaits(ctx context.Context, now time.Time) ([]domain.Task
 	for _, wait := range waits {
 		byAttempt[wait.AttemptID] = append(byAttempt[wait.AttemptID], wait)
 	}
-	attemptIDs := make([]string, 0, len(byAttempt))
-	for id := range byAttempt {
-		attemptIDs = append(attemptIDs, id)
+	type readyAttempt struct {
+		id      string
+		settled time.Time
 	}
-	sort.Strings(attemptIDs)
+	var ordered []readyAttempt
+	for id, members := range byAttempt {
+		ready, ok := taskWaitWakeSet(members)
+		if !ok {
+			continue
+		}
+		settled := *ready[0].SettledAt
+		for _, member := range ready[1:] {
+			if member.SettledAt.Before(settled) {
+				settled = *member.SettledAt
+			}
+		}
+		ordered = append(ordered, readyAttempt{id: id, settled: settled})
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if !ordered[i].settled.Equal(ordered[j].settled) {
+			return ordered[i].settled.Before(ordered[j].settled)
+		}
+		return ordered[i].id < ordered[j].id
+	})
 
 	var wakes []domain.TaskWaitWakeContext
-	for _, attemptID := range attemptIDs {
+	for _, candidate := range ordered {
+		attemptID := candidate.id
 		ready, ok := taskWaitWakeSet(byAttempt[attemptID])
 		if !ok {
 			continue
@@ -681,6 +719,65 @@ func (s *Store) WakeTaskWaits(ctx context.Context, now time.Time) ([]domain.Task
 		assignment, err := loadAssignmentTx(ctx, tx, attempt.AssignmentID)
 		if err != nil {
 			return nil, err
+		}
+		newerThan := func(cutoff TaskWakeCutoff) bool {
+			return candidate.settled.After(cutoff.ReadyAt) || candidate.settled.Equal(cutoff.ReadyAt) && attemptID >= cutoff.AttemptID
+		}
+		if cutoff, ok := cutoffs.Worker[assignment.WorkerID]; ok && newerThan(cutoff) {
+			continue
+		}
+		poolID := assignment.Route.QuotaPoolID
+		if cutoff, ok := cutoffs.Pool[poolID]; ok && newerThan(cutoff) {
+			continue
+		}
+		if poolID != "" {
+			pools, err := loadJSON[domain.QuotaPool](ctx, tx, "coordinator_quota_pools")
+			if err != nil {
+				return nil, err
+			}
+			admissions, err := loadJSON[domain.QuotaAdmissionRecord](ctx, tx, "coordinator_quota_admissions")
+			if err != nil {
+				return nil, err
+			}
+			var pool domain.QuotaPool
+			foundPool, open := false, false
+			for _, current := range pools {
+				if current.ID == poolID {
+					pool, foundPool = current, true
+					break
+				}
+			}
+			if foundPool && pool.ChecksDisabled && !cutoffs.AdmissionValidAfter.IsZero() {
+				open = true
+			}
+			for _, admission := range admissions {
+				if admission.QuotaPoolID == poolID && !cutoffs.AdmissionValidAfter.IsZero() && !admission.ObservedAt.Before(cutoffs.AdmissionValidAfter) && admission.Admission == domain.AdmissionOpen {
+					open = true
+				}
+			}
+			if !foundPool || !open {
+				continue
+			}
+			active := 0
+			assignments, err := loadJSON[domain.Assignment](ctx, tx, "coordinator_assignments")
+			if err != nil {
+				return nil, err
+			}
+			for _, other := range assignments {
+				if other.Route.QuotaPoolID != poolID {
+					continue
+				}
+				owner, err := loadAttemptTx(ctx, tx, other.AttemptID)
+				if err != nil {
+					return nil, err
+				}
+				if owner.Control.HoldsProviderSlot() {
+					active++
+				}
+			}
+			if pool.MaxConcurrent <= 0 || active >= pool.MaxConcurrent {
+				continue
+			}
 		}
 		demand, demandKnown := domain.AssignmentExecutorDemand(attempt, assignment)
 		if err := requireExecutorCapacityTx(ctx, tx, assignment.WorkerID, now, assignment.WorkerEpoch, demand, demandKnown); err != nil {

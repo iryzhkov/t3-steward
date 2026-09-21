@@ -267,6 +267,46 @@ func (p coordinatorPlanner) Tick(ctx context.Context, quota backlog.QuotaBridgeR
 	if err != nil {
 		return backlog.AssignmentPlanningReport{}, err
 	}
+	// Compare settled wakes with ordinary work that is actually placeable in
+	// this planning snapshot. Wakes older than the oldest ordinary proposal at
+	// either shared bottleneck get the first transactional capacity check;
+	// newer wakes yield. The normal planner then reloads after any resumption.
+	plan, err := backlog.BuildPlan(input)
+	if err != nil {
+		return backlog.AssignmentPlanningReport{}, err
+	}
+	cutoffs := sqlite.TaskWakeCutoffs{
+		Worker:              make(map[string]sqlite.TaskWakeCutoff),
+		Pool:                make(map[string]sqlite.TaskWakeCutoff),
+		AdmissionValidAfter: now.Add(-p.maxQuotaObservationAge),
+	}
+	attempts := make(map[string]domain.Attempt, len(records.Attempts))
+	for _, attempt := range records.Attempts {
+		attempts[attempt.ID] = attempt
+	}
+	older := func(current sqlite.TaskWakeCutoff, candidate sqlite.TaskWakeCutoff) bool {
+		return current.ReadyAt.IsZero() || candidate.ReadyAt.Before(current.ReadyAt) || candidate.ReadyAt.Equal(current.ReadyAt) && candidate.AttemptID < current.AttemptID
+	}
+	for _, proposal := range plan.Proposals {
+		attempt, ok := attempts[proposal.AttemptID]
+		if !ok || proposal.Route == nil {
+			continue
+		}
+		candidate := sqlite.TaskWakeCutoff{ReadyAt: attempt.UpdatedAt, AttemptID: attempt.ID}
+		if current := cutoffs.Worker[proposal.WorkerID]; older(current, candidate) {
+			cutoffs.Worker[proposal.WorkerID] = candidate
+		}
+		if current := cutoffs.Pool[proposal.Route.QuotaPoolID]; older(current, candidate) {
+			cutoffs.Pool[proposal.Route.QuotaPoolID] = candidate
+		}
+	}
+	wakes, err := p.store.WakeTaskWaitsBefore(ctx, now, cutoffs)
+	if err != nil {
+		return backlog.AssignmentPlanningReport{}, fmt.Errorf("admit settled task wakes: %w", err)
+	}
+	if len(wakes) != 0 {
+		return p.Tick(ctx, quota)
+	}
 	return p.coordinator.PlanAndCommit(ctx, input)
 }
 
