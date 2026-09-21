@@ -340,6 +340,13 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 			skip("worker is not enrolled for the effective catalog")
 			continue
 		}
+		if err := requireExecutorSlotTx(ctx, tx, assignment.WorkerID, commit.CommittedAt); err != nil {
+			if errors.Is(err, ErrExecutorCapacity) {
+				skip(err.Error())
+				continue
+			}
+			return nil, err
+		}
 		if err := bindAssignmentGraphTx(ctx, tx, attempt, &assignment); err != nil {
 			skip(err.Error())
 			continue
@@ -470,6 +477,12 @@ func (s *Store) ClaimAssignment(ctx context.Context, request domain.AssignmentCl
 		attempt.Control != domain.ControlUnassigned {
 		return domain.Assignment{}, fmt.Errorf("%w: attempt %q is not claimable", ErrAssignmentClaim, attempt.ID)
 	}
+	if !domain.AssignmentOwnsExecutorCapacity(attempt, assignment) {
+		return domain.Assignment{}, fmt.Errorf("%w: assignment %q does not retain its offered executor reservation", ErrAssignmentClaim, assignment.ID)
+	}
+	// The offer already reserved this slot transactionally. Claim validates that
+	// ownership rather than demanding another free slot, so a valid offer remains
+	// claimable if the configured pool subsequently shrinks.
 	// An overseer activation passes neither of the next two fences, and the
 	// exemption is the whole point rather than a shortcut. It has no declared
 	// dependency to have succeeded, and the gates and holds the supervision

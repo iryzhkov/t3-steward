@@ -187,6 +187,13 @@ func (c coordinatorSupervision) dispatchRun(
 		if err != nil {
 			return err
 		}
+		available, err := c.store.ExecutorSlotAvailable(ctx, placement.WorkerID, now)
+		if err != nil {
+			return fmt.Errorf("read activation executor capacity: %w", err)
+		}
+		if !available {
+			return fmt.Errorf("%w: worker %q has no free executor slot", backlog.ErrActivationUnplaceable, placement.WorkerID)
+		}
 	}
 	plan, err := c.activations.Advance(ctx, run.ID, signal)
 	if err != nil {
