@@ -27,7 +27,7 @@ func (c *consultationPruneRaceCatalog) ArtifactStoragePathReferenced(ctx context
 	return false, nil
 }
 
-func TestConsultationPruneCanDeleteConcurrentlyAdoptedBlob(t *testing.T) {
+func TestConsultationPruneSerializesConcurrentBlobAdoption(t *testing.T) {
 	ctx := context.Background()
 	store, root, producer := coordinatorArtifactFixture(t)
 	content := []byte("shared immutable bytes\n")
@@ -55,19 +55,36 @@ func TestConsultationPruneCanDeleteConcurrentlyAdoptedBlob(t *testing.T) {
 	adopter.Artifact.ID = "artifact-adopter"
 	adopter.Artifact.Name = "adopted-context"
 	adopter.Artifact.CreatedAt = producer.Artifact.CreatedAt.Add(25 * time.Hour)
-	if _, err := base.Publish(ctx, adopter, bytes.NewReader(content)); err != nil {
-		t.Fatalf("adopt same hash: %v", err)
+	publishDone := make(chan error, 1)
+	go func() {
+		_, err := base.Publish(ctx, adopter, bytes.NewReader(content))
+		publishDone <- err
+	}()
+	select {
+	case err := <-publishDone:
+		t.Fatalf("publish crossed prune's content lifecycle: %v", err)
+	case <-time.After(50 * time.Millisecond):
+		// Publish is waiting on the shared filesystem lock held across the
+		// unreferenced observation and unlink.
 	}
 	close(racingCatalog.adopted)
 	if err := <-pruneDone; err != nil {
 		t.Fatal(err)
+	}
+	if err := <-publishDone; err != nil {
+		t.Fatalf("adopt same hash after prune: %v", err)
 	}
 
 	if artifacts, err := store.LoadArtifacts(ctx, []string{adopter.Artifact.ID}); err != nil || len(artifacts) != 1 {
 		t.Fatalf("adopter metadata missing: %#v err=%v", artifacts, err)
 	}
 	objectPath := filepath.Join(root, filepath.FromSlash(original.StoragePath))
-	if _, err := os.Stat(objectPath); !os.IsNotExist(err) {
-		t.Fatalf("concurrently adopted blob still exists or unexpected stat error: %v", err)
+	if _, err := os.Stat(objectPath); err != nil {
+		t.Fatalf("concurrently adopted blob is missing: %v", err)
+	}
+	if _, file, err := base.Open(ctx, adopter.Artifact.ID); err != nil {
+		t.Fatalf("adopted metadata cannot open its blob: %v", err)
+	} else {
+		_ = file.Close()
 	}
 }
