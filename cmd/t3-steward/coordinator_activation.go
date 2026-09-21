@@ -168,18 +168,22 @@ func (c coordinatorSupervision) dispatchRun(
 			return err
 		}
 	}
-	// Placement runs before the lifecycle is advanced. An activation whose
-	// worker does not exist would otherwise spend one of the run's bounded
-	// activations on a dispatch that was never possible.
-	placement, err := backlog.PlaceActivation(backlog.ActivationPlacementRequest{
-		Route:     run.Supervision.Config.Route,
-		Workers:   workers,
-		Epoch:     c.settings.CoordinatorEpoch,
-		Now:       now,
-		Admission: admission,
-	})
-	if err != nil {
-		return err
+	// Placement gates only transitions that can create or retry a dispatch.
+	// Completion, revocation and other reconciliation consume no new provider
+	// or worker capacity, so closed admission or an unhealthy worker must not
+	// prevent those durable lifecycle facts from being committed.
+	var placement backlog.ActivationPlacement
+	if activationSignalMayDispatch(signal.Event) {
+		placement, err = backlog.PlaceActivation(backlog.ActivationPlacementRequest{
+			Route:     run.Supervision.Config.Route,
+			Workers:   workers,
+			Epoch:     c.settings.CoordinatorEpoch,
+			Now:       now,
+			Admission: admission,
+		})
+		if err != nil {
+			return err
+		}
 	}
 	plan, err := c.activations.Advance(ctx, run.ID, signal)
 	if err != nil {
@@ -218,6 +222,18 @@ func (c coordinatorSupervision) dispatchRun(
 		"worker", committed.WorkerID, "assignment", committed.ID, "thread", committed.ThreadID,
 		"retry", plan.Dispatch.Retry)
 	return nil
+}
+
+// activationSignalMayDispatch identifies the two lifecycle inputs that can
+// produce assigned work. Keeping this check before Advance preserves the rule
+// that an impossible dispatch spends no activation budget.
+func activationSignalMayDispatch(event domain.ActivationEvent) bool {
+	switch event {
+	case domain.ActivationEventTriggerFired, domain.ActivationEventDispatchUndelivered:
+		return true
+	default:
+		return false
+	}
 }
 
 // escalateNoDecision asks a human to act when an overseer's turn ended without
