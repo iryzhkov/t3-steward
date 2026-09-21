@@ -78,16 +78,11 @@ migrated coordinator SQLite store. It writes a random 32-byte token to a mode-06
 effect, stores only its digest, and authorizes within
 a transaction against real assignment and attempt rows. The test proves:
 
-- exact registration and use replay succeed;
-- forged capability ID/token, purpose mismatch, and assignment epoch mismatch fail;
-- digest rotation under one capability ID fails;
+- file restart replay returns the same random token after file and parent-directory fsync;
+- exact registration replay succeeds, while changed registration is refused;
+- initial registration requires the claimed assignment and live attempt to agree on worker, coordinator and assignment epochs plus thread ownership;
+- forged capability ID/token, purpose mismatch, expiry, and assignment epoch mismatch fail;
+- digest rotation under one opaque capability ID fails;
 - a terminal attempt revokes authority.
 
-The spike does not prove crash-durable filename publication: it fsyncs the token file
-before rename but does not fsync the parent directory. Its registration helper also accepts
-an arbitrary nonempty purpose rather than enforcing the required closed purpose enum, and
-the test record has no expiry field or expiry refusal. These remain mandatory C1 tests and
-implementation work alongside protocol wiring, control-directory containment,
-migration/backup behavior, multi-process races, and cleanup. The spike establishes only
-that digest proof plus live assignment/attempt fencing fits the existing transaction seam
-without trusting predictable identifiers.
+The spike does not prove protocol wiring, request/effect idempotency receipts, control-directory containment, coordinator migration/backup behavior, multi-process creation races, revocation cleanup, or OS isolation from another same-UID process. Those remain C1/C2 implementation tests and adapter gates. It establishes that random purpose-bound authority can fit the existing durable seams without trusting predictable identifiers; it does not treat the deterministic dispatch token as a secret.
