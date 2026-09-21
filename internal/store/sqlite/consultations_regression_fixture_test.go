@@ -3,9 +3,12 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,6 +175,79 @@ func TestConsultationsRegressionBaseline(t *testing.T) {
 	if string(raw) != string(want) {
 		t.Fatalf("pre-feature regression fixture changed (-want +got):\nwant:\n%s\ngot:\n%s", want, raw)
 	}
+}
+
+// TestConsultationsPrefeatureParkWakeMeasurements records a repeatable,
+// in-process baseline over real SQLite park, settlement, and wake operations.
+// Fixture creation and migration are deliberately outside every timed sample.
+func TestConsultationsPrefeatureParkWakeMeasurements(t *testing.T) {
+	const samples = 40
+	type fixture struct {
+		store   *Store
+		attempt domain.Attempt
+		now     time.Time
+	}
+	fixtures := make([]fixture, 0, samples)
+	for i := 0; i < samples; i++ {
+		store, attempt, now := taskWaitFixture(t)
+		fixtures = append(fixtures, fixture{store: store, attempt: attempt, now: now})
+	}
+
+	ctx := context.Background()
+	latencies := make([]int64, 0, samples)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	for i, f := range fixtures {
+		start := time.Now()
+		wait, err := f.store.RegisterTaskWait(
+			ctx,
+			taskWaitRegistration(f.attempt, fmt.Sprintf("prefeature-%02d", i), domain.WakeEach),
+			f.now,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.store.SettleTaskWait(ctx, wait.ID, domain.TaskWaitResult{Outcome: domain.TaskWaitMet}, f.now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		wakes, err := f.store.WakeTaskWaits(ctx, f.now.Add(time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(wakes) != 1 {
+			t.Fatalf("sample %d produced %d wakes", i, len(wakes))
+		}
+		latencies = append(latencies, time.Since(start).Nanoseconds())
+	}
+	runtime.ReadMemStats(&after)
+	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	var total int64
+	for _, latency := range latencies {
+		total += latency
+	}
+	load, _ := os.ReadFile("/proc/loadavg")
+	receipt := map[string]any{
+		"schema":                           "consultations-prefeature-park-wake-v1",
+		"samples":                          samples,
+		"operations_per_sample":            3,
+		"timed_operations":                 samples * 3,
+		"fixture_creation_timed":           false,
+		"median_ns":                        latencies[len(latencies)/2],
+		"p95_ns":                           latencies[(len(latencies)*95-1)/100],
+		"throughput_operations_per_second": float64(samples*3) / (float64(total) / float64(time.Second)),
+		"mallocs_delta":                    after.Mallocs - before.Mallocs,
+		"total_alloc_bytes_delta":          after.TotalAlloc - before.TotalAlloc,
+		"go_version":                       runtime.Version(),
+		"gomaxprocs":                       runtime.GOMAXPROCS(0),
+		"goroutines_after":                 runtime.NumGoroutine(),
+		"host_loadavg":                     strings.TrimSpace(string(load)),
+	}
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log(string(raw))
 }
 
 // BenchmarkConsultationsBaselineReconciliation measures the real SQLite no-work
