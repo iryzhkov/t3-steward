@@ -74,8 +74,8 @@ tokens keep the stronger secret out of task custody.
 ## Executable evidence and limits
 
 `TestConsultationCapabilityAuthoritySpike` creates a test-only table beside the real
-migrated coordinator SQLite store. It persists a random 32-byte token to a mode-0600
-worker journal before the simulated effect, stores only its digest, and authorizes within
+migrated coordinator SQLite store. It writes a random 32-byte token to a mode-0600 worker journal before the simulated
+effect, stores only its digest, and authorizes within
 a transaction against real assignment and attempt rows. The test proves:
 
 - exact registration and use replay succeed;
@@ -83,7 +83,11 @@ a transaction against real assignment and attempt rows. The test proves:
 - digest rotation under one capability ID fails;
 - a terminal attempt revokes authority.
 
-The spike does not prove protocol wiring, control-directory containment, coordinator
-migration/backup behavior, multi-process races, or cleanup. Those are C1/C2 implementation
-tests. It establishes that the required authority check fits existing durable seams
+The spike does not prove crash-durable filename publication: it fsyncs the token file
+before rename but does not fsync the parent directory. Its registration helper also accepts
+an arbitrary nonempty purpose rather than enforcing the required closed purpose enum, and
+the test record has no expiry field or expiry refusal. These remain mandatory C1 tests and
+implementation work alongside protocol wiring, control-directory containment,
+migration/backup behavior, multi-process races, and cleanup. The spike establishes only
+that digest proof plus live assignment/attempt fencing fits the existing transaction seam
 without trusting predictable identifiers.
