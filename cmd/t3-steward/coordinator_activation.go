@@ -177,22 +177,28 @@ func (c coordinatorSupervision) dispatchRun(
 	// prevent those durable lifecycle facts from being committed.
 	var placement backlog.ActivationPlacement
 	if activationSignalMayDispatch(signal.Event) {
+		capacityWorkers := make([]domain.WorkerSnapshot, 0, len(workers))
+		for _, worker := range workers {
+			available, capacityErr := c.store.ExecutorSlotAvailable(ctx, worker.WorkerID, now)
+			if capacityErr != nil {
+				if errors.Is(capacityErr, sqlite.ErrExecutorCapacityEvidence) {
+					continue
+				}
+				return fmt.Errorf("read activation executor capacity: %w", capacityErr)
+			}
+			if available {
+				capacityWorkers = append(capacityWorkers, worker)
+			}
+		}
 		placement, err = backlog.PlaceActivation(backlog.ActivationPlacementRequest{
 			Route:     run.Supervision.Config.Route,
-			Workers:   workers,
+			Workers:   capacityWorkers,
 			Epoch:     c.settings.CoordinatorEpoch,
 			Now:       now,
 			Admission: admission,
 		})
 		if err != nil {
 			return err
-		}
-		available, err := c.store.ExecutorSlotAvailable(ctx, placement.WorkerID, now)
-		if err != nil {
-			return fmt.Errorf("read activation executor capacity: %w", err)
-		}
-		if !available {
-			return fmt.Errorf("%w: worker %q has no free executor slot", backlog.ErrActivationUnplaceable, placement.WorkerID)
 		}
 	}
 	plan, err := c.activations.Advance(ctx, run.ID, signal)

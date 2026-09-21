@@ -340,16 +340,17 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 			skip("worker is not enrolled for the effective catalog")
 			continue
 		}
-		if err := requireExecutorSlotTx(ctx, tx, assignment.WorkerID, commit.CommittedAt); err != nil {
+		if err := bindAssignmentGraphTx(ctx, tx, attempt, &assignment); err != nil {
+			skip(err.Error())
+			continue
+		}
+		demand, demandKnown := domain.AssignmentExecutorDemand(attempt, assignment)
+		if err := requireExecutorCapacityTx(ctx, tx, assignment.WorkerID, commit.CommittedAt, demand, demandKnown); err != nil {
 			if errors.Is(err, ErrExecutorCapacity) {
 				skip(err.Error())
 				continue
 			}
 			return nil, err
-		}
-		if err := bindAssignmentGraphTx(ctx, tx, attempt, &assignment); err != nil {
-			skip(err.Error())
-			continue
 		}
 		assignment.CreatedAt = commit.CommittedAt
 		assignment.UpdatedAt = commit.CommittedAt
