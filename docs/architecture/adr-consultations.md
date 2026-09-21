@@ -38,6 +38,33 @@ Conservative defaults: question and answer 16 KiB each; 16 attachments and 1 MiB
 
 The strict context target is 32k input tokens and 4k output tokens, limited further by backend capacity and reserved margin. Assembly and every runtime continuation must enforce the bound including envelopes, tools and accumulated transcript. A fresh session, prompt instruction, byte cap or provider output limit alone cannot establish this capability. Unsupported adapters must refuse strict packages. Exact accounting method and runtime qualification remain C0 evidence obligations.
 
+## Core record partition
+
+C1 uses a separate stable dispatch-intent identity committed with request acceptance;
+request phase alone is not evidence that an external execution started. A separate
+subscription row links the consultation to the existing task-wait record and delivery
+identity. Ordinary wait algebra remains unchanged, with exclusive consultation parking
+checked in both registration directions.
+
+C1 owns durable purpose-scoped capability digest registration, validation and revocation;
+C2 owns worker-side private capability emission and recovery. Transport mutations must
+not be exposed with only caller-supplied identity or policy. Recipient bindings are
+complete pinned values derived from trusted submitted workflow policy, never mutable
+aliases resolved from task requests. Every mutation commits a stable native audit event;
+exact replay returns its existing receipt without duplicating events.
+
+Question and answer authority is a bounded content-addressed artifact under checked
+coordinator custody, as required by the reviewed plan. The response metadata names its
+digest and provenance. CLI returns and wake delivery materialize the bounded compact
+answer from that verified artifact, so users do not need a second discovery/read call.
+An inline delivery copy is a derived presentation, not a second authoritative answer.
+Custody validation and retention references must cover the transaction and subsequent
+recovery; a test adapter cannot substitute for production custody at the vertical slice.
+
+Activation membership implementation belongs with the actual overseer vertical slice;
+its immutable selected IDs and independent per-request outcomes are fixed by the
+transition-seams contract. Core schema is not admitted until C0 evidence passes.
+
 ## Immutable context custody
 
 Existing `CoordinatorArtifactStore.Publish` stages, hashes and retains blobs before metadata publication. `PruneArtifacts` currently protects whole runs using `coordinator_retention_pins`; this is unsuitable as the sole lifetime owner for project contexts. `ArtifactStoragePathReferenced` currently sees only `coordinator_artifacts`.
