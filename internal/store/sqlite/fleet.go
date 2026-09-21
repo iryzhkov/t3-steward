@@ -345,7 +345,7 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 			continue
 		}
 		demand, demandKnown := domain.AssignmentExecutorDemand(attempt, assignment)
-		if err := requireExecutorCapacityTx(ctx, tx, assignment.WorkerID, commit.CommittedAt, demand, demandKnown); err != nil {
+		if err := requireExecutorCapacityTx(ctx, tx, assignment.WorkerID, commit.CommittedAt, assignment.WorkerEpoch, demand, demandKnown); err != nil {
 			if errors.Is(err, ErrExecutorCapacity) {
 				skip(err.Error())
 				continue

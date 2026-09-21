@@ -134,6 +134,45 @@ func TestSettledWaitStaysParkedWithStaleExplicitZeroSnapshot(t *testing.T) {
 	}
 }
 
+func TestSettledWaitStaysParkedAfterWorkerEpochReplacement(t *testing.T) {
+	ctx := context.Background()
+	store, attempt, now := taskWaitFixture(t)
+	records, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignment := records.Assignments[0]
+	assignment.WorkerEpoch = "worker-epoch-1"
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Assignments: []domain.Assignment{assignment}}); err != nil {
+		t.Fatal(err)
+	}
+	replacement := domain.WorkerSnapshot{
+		WorkerID: "worker", WorkerEpoch: "worker-epoch-2", CoordinatorEpoch: 1, Sequence: 2,
+		Connected: true, ObservedAt: now.Add(time.Minute), ValidUntil: now.Add(time.Hour),
+		Inventory: domain.WorkerInventory{
+			ID: "worker", AcceptBacklog: true, Health: domain.WorkerHealthReady,
+			Allocatable: domain.AllocatableCapacity{ExecutorSlots: 1}, ObservedAt: now.Add(time.Minute),
+		},
+	}
+	if err := store.SaveWorkerSnapshot(ctx, replacement); err != nil {
+		t.Fatal(err)
+	}
+	wait, err := store.RegisterTaskWait(ctx, taskWaitRegistration(attempt, "replaced-worker", domain.WakeEach), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SettleTaskWait(ctx, wait.ID, domain.TaskWaitResult{Outcome: domain.TaskWaitMet}, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	wakes, err := store.WakeTaskWaits(ctx, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wakes) != 0 || loadAttempt(t, store, attempt.ID).Control != domain.ControlWaitingExternal {
+		t.Fatalf("wake=%#v attempt=%#v, want replaced worker epoch to remain parked", wakes, loadAttempt(t, store, attempt.ID))
+	}
+}
+
 func TestSettledWaitStaysParkedUntilSlotCanBeReacquired(t *testing.T) {
 	ctx := context.Background()
 	store, attempt, now := taskWaitFixture(t)
