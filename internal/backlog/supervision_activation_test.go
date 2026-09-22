@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -558,6 +559,68 @@ func TestActivationPromptEnvelopeDemotesFactsToReferences(t *testing.T) {
 	if demoted == 0 {
 		t.Fatal("an oversized snapshot must demote facts to references rather than drop evidence")
 	}
+}
+
+func TestActivationPromptEnvelopeHandlesFortyThreeTaskGateHistory(t *testing.T) {
+	snapshot := ActivationSnapshot{
+		ActivationID: "activation-history", RunID: "run-history", Epoch: 43,
+		GraphRevision: 43, RecordRevision: 86, TurnsRemaining: 2,
+		Triggers: []CoalescedTrigger{{
+			Kind: TriggerGateReviewReady, Subject: "gate-42",
+			Reasons: []string{"success review required"}, EventIDs: []string{"event-43"},
+			FirstSequence: 43, LastSequence: 43,
+		}},
+		Actions: []ActivationAction{{
+			Name: "decide",
+			Constraints: []string{
+				"t3-steward campaign supervision decide run-history --gate GATE_ID --accept --evidence EVIDENCE_SNAPSHOT_ID --expected-revision GATE_REVISION --graph-revision GRAPH_REVISION --incident INCIDENT_ID --activation 43 --request-id KEY --reason TEXT",
+				"review all required evidence before accepting",
+			},
+		}},
+		Constraints: []string{
+			"do not waive review gates",
+			"do not grant new permissions",
+		},
+	}
+	for index := 0; index < 43; index++ {
+		taskID := fmt.Sprintf("build-work-package-%02d", index)
+		gateID := fmt.Sprintf("review-build-work-package-%02d", index)
+		snapshot.Tasks = append(snapshot.Tasks, ActivationTaskView{
+			TaskID: taskID, State: "succeeded",
+			AttemptID:       fmt.Sprintf("attempt-%02d-%s", index, strings.Repeat("a", 96)),
+			AttemptRevision: int64(index + 1), Verification: "passed",
+		})
+		snapshot.Gates = append(snapshot.Gates, ActivationGateView{
+			GateID: gateID, State: domain.GateAccepted, GraphRevision: 43,
+			EvidenceSnapshotID: fmt.Sprintf("evidence-%02d-%s", index, strings.Repeat("e", 96)),
+			ObservedTaskIDs:    []string{taskID},
+			ProtectedTaskIDs:   []string{fmt.Sprintf("build-work-package-%02d", index+1)},
+		})
+		snapshot.Artifacts = append(snapshot.Artifacts, domain.ArtifactDigest{
+			ArtifactID: fmt.Sprintf("artifact-%02d-%s", index, strings.Repeat("r", 320)),
+			Digest:     "sha256:" + strings.Repeat("d", 64),
+		})
+	}
+	snapshot.Gates[42].State = domain.GateReadyForReview
+	snapshot.Incidents = []ActivationIncidentView{{
+		IncidentID: "incident-current-review", State: domain.IncidentOpen,
+		RequiredDisposition: domain.DispositionGateDecision, Revision: 1,
+		Reason: "current review gate requires an independent evidence decision",
+	}}
+	evidence, err := BuildActivationEvidenceSnapshot(snapshot)
+	if err != nil {
+		t.Fatalf("build retained evidence: %v", err)
+	}
+	snapshot.EvidenceSnapshot = &domain.ArtifactDigest{ArtifactID: evidence.ID, Digest: evidence.SHA256}
+
+	envelope, err := BuildActivationPromptEnvelope(snapshot)
+	if err != nil {
+		t.Fatalf("43-task/43-gate accumulated history must remain constructible: %v", err)
+	}
+	if envelope.Size() > envelope.ByteCap {
+		t.Fatalf("envelope is %d bytes, over its %d byte cap", envelope.Size(), envelope.ByteCap)
+	}
+	t.Logf("compact 43-task/43-gate envelope: %d bytes (cap %d)", envelope.Size(), envelope.ByteCap)
 }
 
 func TestActivationSnapshotRequiresScopedActionsAndTriggers(t *testing.T) {
