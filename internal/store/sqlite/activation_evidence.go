@@ -56,31 +56,12 @@ func (s *Store) EnsureActivationEvidence(ctx context.Context, request Activation
 	}
 	defer tx.Rollback()
 
-	existing, found, err := loadActivationEvidenceTx(ctx, tx, request.RunID, request.ActivationID)
-	if err != nil {
-		return domain.Artifact{}, false, err
-	}
-	if found {
-		if existing.ID != request.Artifact.ID || existing.SHA256 != request.Artifact.SHA256 {
-			return domain.Artifact{}, false, fmt.Errorf("%w: activation %s retained %s/%s, proposed %s/%s",
-				ErrActivationEvidenceConflict, request.ActivationID,
-				existing.ID, existing.SHA256, request.Artifact.ID, request.Artifact.SHA256)
-		}
-		if err := tx.Commit(); err != nil {
-			return domain.Artifact{}, false, err
-		}
-		return existing, false, nil
-	}
 	if err := requireCoordinatorEpoch(ctx, tx, request.CoordinatorEpoch); err != nil {
 		return domain.Artifact{}, false, err
 	}
 	run, err := loadActivationRunTx(ctx, tx, request.RunID)
 	if err != nil {
 		return domain.Artifact{}, false, err
-	}
-	if run.GraphRevision != request.GraphRevision {
-		return domain.Artifact{}, false, fmt.Errorf("%w: run graph revision is %d, snapshot names %d",
-			ErrActivationEvidenceConflict, run.GraphRevision, request.GraphRevision)
 	}
 	activations, err := loadSupervisionActivationsTx(ctx, tx, request.RunID)
 	if err != nil {
@@ -95,6 +76,29 @@ func (s *Store) EnsureActivationEvidence(ctx context.Context, request Activation
 	}
 	if live.ID == "" || live.RunID != request.RunID || live.Epoch != request.ActivationEpoch {
 		return domain.Artifact{}, false, fmt.Errorf("%w: activation identity or epoch changed", ErrActivationEvidenceConflict)
+	}
+	if err := requireActivationEvidenceAttemptTx(ctx, tx, request); err != nil {
+		return domain.Artifact{}, false, err
+	}
+	existing, found, err := loadActivationEvidenceTx(ctx, tx, request.RunID, request.ActivationID)
+	if err != nil {
+		return domain.Artifact{}, false, err
+	}
+	if found {
+		if existing.ID != request.Artifact.ID || existing.SHA256 != request.Artifact.SHA256 ||
+			existing.AttemptID != request.Artifact.AttemptID || existing.TaskID != request.Artifact.TaskID {
+			return domain.Artifact{}, false, fmt.Errorf("%w: activation %s retained %s/%s, proposed %s/%s",
+				ErrActivationEvidenceConflict, request.ActivationID,
+				existing.ID, existing.SHA256, request.Artifact.ID, request.Artifact.SHA256)
+		}
+		if err := tx.Commit(); err != nil {
+			return domain.Artifact{}, false, err
+		}
+		return existing, false, nil
+	}
+	if run.GraphRevision != request.GraphRevision {
+		return domain.Artifact{}, false, fmt.Errorf("%w: run graph revision is %d, snapshot names %d",
+			ErrActivationEvidenceConflict, run.GraphRevision, request.GraphRevision)
 	}
 	raw, err := json.Marshal(request.Artifact)
 	if err != nil {
@@ -127,6 +131,34 @@ func (s *Store) EnsureActivationEvidence(ctx context.Context, request Activation
 		return domain.Artifact{}, false, err
 	}
 	return request.Artifact, true, nil
+}
+
+func requireActivationEvidenceAttemptTx(ctx context.Context, tx *sql.Tx, request ActivationEvidencePublication) error {
+	var runID, taskID string
+	var raw []byte
+	err := tx.QueryRowContext(ctx, `SELECT workflow_run_id, task_id, record
+		FROM coordinator_attempts WHERE id = ?`, request.Artifact.AttemptID).Scan(&runID, &taskID, &raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: activation attempt %q does not exist",
+			ErrActivationEvidenceConflict, request.Artifact.AttemptID)
+	}
+	if err != nil {
+		return fmt.Errorf("load activation evidence attempt %q: %w", request.Artifact.AttemptID, err)
+	}
+	var attempt domain.Attempt
+	if err := json.Unmarshal(raw, &attempt); err != nil {
+		return fmt.Errorf("decode activation evidence attempt %q: %w", request.Artifact.AttemptID, err)
+	}
+	if runID != request.RunID || attempt.WorkflowRunID != request.RunID ||
+		taskID != request.Artifact.TaskID || attempt.TaskID != request.Artifact.TaskID ||
+		attempt.ID != request.Artifact.AttemptID ||
+		attempt.SupervisionActivationID != request.ActivationID ||
+		attempt.SupervisionActivationEpoch != request.ActivationEpoch ||
+		!attempt.IsSupervisionActivation() {
+		return fmt.Errorf("%w: artifact task/attempt is not the live supervision activation attempt",
+			ErrActivationEvidenceConflict)
+	}
+	return nil
 }
 
 func loadActivationEvidenceTx(ctx context.Context, tx *sql.Tx, runID, activationID string) (domain.Artifact, bool, error) {

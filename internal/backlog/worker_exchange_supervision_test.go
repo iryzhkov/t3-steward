@@ -86,6 +86,33 @@ func supervisionCapableSnapshot(sequence int64, capable bool) domain.WorkerSnaps
 	return snapshot
 }
 
+func TestSnapshotActivationIsRefusedBeforeOfferToLegacyWorker(t *testing.T) {
+	offer, err := activationOfferBuilder{}.BuildAssignmentOffer(
+		context.Background(),
+		testActivationAssignment("assignment-evidence", "attempt-evidence", "dispatch-evidence", "thread-evidence"),
+		coordinatorTestTime.Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer.Package.Package.RequiredCapabilities = append(
+		offer.Package.Package.RequiredCapabilities,
+		workerproto.PackageCapabilitySupervisionEvidence,
+	)
+	legacy := supervisionCapableSnapshot(1, true)
+	if err := requireOfferedCapabilities(offer, legacy); err == nil ||
+		!strings.Contains(err.Error(), workerproto.PackageCapabilitySupervisionEvidence) {
+		t.Fatalf("legacy worker refusal = %v, want missing evidence capability", err)
+	}
+	legacy.Inventory.Capabilities = append(
+		legacy.Inventory.Capabilities,
+		workerproto.PackageCapabilitySupervisionEvidence,
+	)
+	if err := requireOfferedCapabilities(offer, legacy); err != nil {
+		t.Fatalf("upgraded worker refused: %v", err)
+	}
+}
+
 func TestRequireOfferedCapabilitiesGatesActivationsOnTheDurableInventory(t *testing.T) {
 	offer, err := activationOfferBuilder{}.BuildAssignmentOffer(
 		context.Background(),
