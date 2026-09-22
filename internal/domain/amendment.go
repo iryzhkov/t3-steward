@@ -49,8 +49,8 @@ func ValidateGraphAmendment(r GraphAmendment) error {
 			return errors.New("mixed task add fields")
 		}
 	case "task-set":
-		if r.TaskID == "" || r.Task != nil || r.Source != "" || r.Prompt != "" ||
-			(r.Model == nil && r.Provider == nil && r.Options == nil && r.Timeout == nil && r.Verification == nil) {
+		if r.TaskID == "" || r.Task != nil || r.Source != "" || len(r.Prompt) > 256<<10 ||
+			(r.Prompt == "" && r.Model == nil && r.Provider == nil && r.Options == nil && r.Timeout == nil && r.Verification == nil) {
 			return errors.New("task set requires target and model/provider/options/timeout/verification")
 		}
 	case "edge-add", "edge-remove":
@@ -62,12 +62,12 @@ func ValidateGraphAmendment(r GraphAmendment) error {
 			return errors.New("mixed clone fields")
 		}
 	case "rerun":
-		// A rerun names one source task and nothing else. Every other field
-		// would be an edit to a definition the rerun is supposed to retain.
-		if r.TaskID == "" {
-			return errors.New("rerun requires the source task to start from")
+		// A rerun may replace only the root prompt. The source definition and
+		// every other task remain immutable; the new run records the request.
+		if r.TaskID == "" || len(r.Prompt) > 256<<10 {
+			return errors.New("rerun requires the source task to start from and a prompt of at most 256 KiB")
 		}
-		if r.Task != nil || r.Source != "" || r.Prompt != "" || r.Model != nil || r.Provider != nil || r.Options != nil || r.Timeout != nil || r.Verification != nil {
+		if r.Task != nil || r.Source != "" || r.Model != nil || r.Provider != nil || r.Options != nil || r.Timeout != nil || r.Verification != nil {
 			return errors.New("mixed rerun fields")
 		}
 	default:
@@ -131,6 +131,9 @@ func AmendTasks(r GraphAmendment, run WorkflowRun, templates []Task, newID, prom
 		task := &tasks[index]
 		switch r.Operation {
 		case "task-set":
+			if r.Prompt != "" {
+				task.PromptArtifactID = promptID
+			}
 			if len(task.Routes) != 1 && (r.Model != nil || r.Provider != nil || r.Options != nil) {
 				return nil, errors.New("route edits require exactly one route")
 			}

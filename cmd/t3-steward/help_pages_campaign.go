@@ -76,10 +76,11 @@ func campaignHelpPages() []helpPage {
 		{
 			Path:    "campaign rerun",
 			Purpose: "create a second run of an existing campaign, starting again from one task.",
-			Usage:   []string{"t3-steward campaign rerun <run> --from TASK --idempotency-key KEY [--reason TEXT] [--json]"},
+			Usage:   []string{"t3-steward campaign rerun <run> --from TASK --idempotency-key KEY [--prompt TEXT] [--reason TEXT] [--json]"},
 			Flags: []helpFlag{
 				{Name: "--from", Value: "TASK", Required: true, Text: "The task to start again from. Everything that depends on it is run again."},
 				{Name: "--idempotency-key", Value: "KEY", Required: true, Text: "The key the rerun is recorded under. Repeating it with the same content returns the same run."},
+				{Name: "--prompt", Value: "TEXT", Default: "source prompt", Text: "Corrected instructions for the selected root task only; retained as a new immutable input."},
 				{Name: "--reason", Value: "TEXT", Default: "none", Text: "Why the campaign is being rerun; recorded with the amendment."},
 				jsonFlag("the rerun receipt"),
 			},

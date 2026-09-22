@@ -36,7 +36,7 @@ Mutating, checks first and creates one workflow and one run:
   submit   <directory|workflow.yaml> --idempotency-key KEY [--json] [--no-notify]
            [--allow-unverified --reason TEXT] [--notify-thread <current|id>]
 Mutating recovery, creates a second run and never changes the first:
-  rerun    <run> --from TASK --idempotency-key KEY [--reason TEXT] [--json]
+  rerun <run> --from TASK --idempotency-key KEY [--prompt TEXT] [--reason TEXT] [--json]
 
 Lifecycle (delegated to backlog, unchanged; explain is read-only and live):
   list [--project P] [--progress STATES] [--class CLASS] [--json]
