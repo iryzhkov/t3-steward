@@ -2,7 +2,6 @@ package backlog
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +11,35 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/wait"
 )
+
+type m5NotificationControl struct {
+	thread   *domain.Thread
+	sends    []string
+	observed map[string]bool
+}
+
+func (c *m5NotificationControl) GetThread(_ context.Context, id string) (*domain.Thread, error) {
+	if c.thread != nil && c.thread.ID == id {
+		return c.thread, nil
+	}
+	return nil, nil
+}
+
+func (c *m5NotificationControl) ResumeThread(context.Context, domain.Thread, string) error {
+	return nil
+}
+
+func (c *m5NotificationControl) SendNodeWake(_ context.Context, _ domain.Thread, messageID, _ string) error {
+	c.sends = append(c.sends, messageID)
+	c.observed[messageID] = true
+	return nil
+}
+
+func (c *m5NotificationControl) ObserveNodeWake(_ context.Context, _, messageID string) (bool, error) {
+	return c.observed[messageID], nil
+}
 
 func TestM5RetainedAccumulatedHistorySurvivesRestartAndActivation(t *testing.T) {
 	ctx := context.Background()
@@ -24,13 +51,13 @@ func TestM5RetainedAccumulatedHistorySurvivesRestartAndActivation(t *testing.T) 
 	}
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	store.SetClock(func() time.Time { return now })
-	service := &SubmissionService{
+	submission := &SubmissionService{
 		StorageRoot: filepath.Join(root, "bundles"), Store: store,
-		MaxBytes: 8 << 20, MaxFiles: 1000, Now: func() time.Time { return now },
+		MaxBytes: 1 << 20, MaxFiles: 20, Now: func() time.Time { return now },
 		NewKey: func() string { return "generated-history-key" },
 	}
-	t.Cleanup(func() { _ = removeIngestedTree(service.StorageRoot) })
-	result, err := service.SubmitDirectory(ctx, DirectorySubmission{
+	t.Cleanup(func() { _ = removeIngestedTree(submission.StorageRoot) })
+	result, err := submission.SubmitDirectory(ctx, DirectorySubmission{
 		IdempotencyKey: "m5-retained-history", BundleDir: m5HistoryBundle(t),
 		Principal: "local:1000",
 	})
@@ -38,77 +65,116 @@ func TestM5RetainedAccumulatedHistorySurvivesRestartAndActivation(t *testing.T) 
 		t.Fatalf("supported manifest/run ingestion: %v", err)
 	}
 	runID := result.Record.RunID
+
 	records, err := store.LoadCoordinatorRecords(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records.Tasks) != 43 || len(records.Attempts) != 43 {
-		t.Fatalf("ingested tasks=%d attempts=%d, want 43 each", len(records.Tasks), len(records.Attempts))
+	var producerTaskID, protectedTaskID string
+	for _, task := range records.Tasks {
+		switch task.Name {
+		case "producer":
+			producerTaskID = task.ID
+		case "protected":
+			protectedTaskID = task.ID
+		}
 	}
-	supervision, err := store.LoadSupervisionSnapshot(ctx, runID)
+	var producerAttempt, protectedAttempt domain.Attempt
+	for _, attempt := range records.Attempts {
+		switch attempt.TaskID {
+		case producerTaskID:
+			producerAttempt = attempt
+		case protectedTaskID:
+			protectedAttempt = attempt
+		}
+	}
+	if producerAttempt.ID == "" || protectedAttempt.ID == "" {
+		t.Fatalf("ingestion did not create the declared attempts: %+v", records.Attempts)
+	}
+	initialSupervision, err := store.LoadSupervisionSnapshot(ctx, runID)
+	if err != nil || len(initialSupervision.Gates) != 1 {
+		t.Fatalf("ingestion did not create one gate: supervision=%+v err=%v", initialSupervision, err)
+	}
+	gateID := initialSupervision.Gates[0].Definition.ID
+	producerAttempt.Progress = domain.ProgressSucceeded
+	producerAttempt.Control = domain.ControlStopped
+	producerAttempt.Revision++
+	producerAttempt.UpdatedAt = now
+	output := domain.Artifact{
+		ID: "retained-output", WorkflowRunID: runID, TaskID: producerTaskID, AttemptID: producerAttempt.ID,
+		Kind: domain.ArtifactOutput, Name: "result.txt", MediaType: "text/plain", Size: 8,
+		SHA256: strings.Repeat("a", 64), StoragePath: "objects/retained-output",
+		Producer: "worker", CreatedAt: now,
+	}
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
+		Attempts: []domain.Attempt{producerAttempt}, Artifacts: []domain.Artifact{output},
+	}); err != nil {
+		t.Fatalf("persist producer result custody: %v", err)
+	}
+	advanced, err := store.AdvanceSupervisionGates(ctx, runID, now)
+	if err != nil || len(advanced) != 1 {
+		t.Fatalf("advance gate from stored result: advanced=%+v err=%v", advanced, err)
+	}
+	evidence := advanced[0].Evidence
+	if evidence.ID == "" || len(evidence.Producers) != 1 ||
+		evidence.Producers[0].AttemptID != producerAttempt.ID ||
+		len(evidence.Producers[0].ArtifactDigests) != 1 ||
+		evidence.Producers[0].ArtifactDigests[0].ArtifactID != output.ID {
+		t.Fatalf("generated evidence did not resolve stored producer custody: %+v", evidence)
+	}
+	accepted, err := store.DecideGate(ctx, sqlite.GateDecisionRequest{
+		RunID: runID, GateID: gateID, RequestID: "accept-retained-review",
+		Actor:                 domain.Actor{Kind: domain.ActorOperator, Principal: "operator:m5"},
+		ExpectedGraphRevision: 1, ExpectedGateRevision: advanced[0].Gate.Revision,
+		Evidence: evidence, Outcome: domain.GateDecisionAccept,
+		Reason: "stored result satisfies the retained rubric", DecidedAt: now,
+	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("accept retained gate through fenced decision API: %v", err)
 	}
-	if len(supervision.Gates) != 43 {
-		t.Fatalf("ingested gates=%d, want 43", len(supervision.Gates))
+	if accepted.Gate.State != domain.GateAccepted {
+		t.Fatalf("gate was not accepted: %+v", accepted.Gate)
 	}
+	acceptedGateRevision := accepted.Gate.Revision
+	acceptedAttemptRevision := producerAttempt.Revision
 
 	activationStore := CoordinatorSupervisionStore{Store: store}
 	activationService := SupervisionActivationService{Store: activationStore, Now: func() time.Time { return now }}
-	reasons := []string{
-		"accepted gate and evidence custody retained without rerun",
-		"parallel recovery exhausted at its bounded incident budget",
-		"worker loss after effect reconciled from unknown without duplicate effect",
-		"dispatch replay retained its idempotency identity",
-		"context replacement started from durable evidence rather than transcript",
-		"quota close then reopen preserved fair current trigger",
-		"notification delivery failed and remained retryable",
-		"notification retry was acknowledged exactly once",
-		"authorized operator approval advanced the fenced revision",
-		"stop containment was observed before custody release",
-	}
-	kinds := []SupervisionTriggerKind{
-		TriggerGateReviewReady, TriggerTaskJudgmentRequired, TriggerRouteBlockPersistent,
-		TriggerOperatorReassessment, TriggerReviewTimeout,
-	}
-	for batchStart := 0; batchStart < 1000; batchStart += 50 {
-		events := make([]SupervisionEvent, 0, 50)
-		for index := batchStart; index < batchStart+50; index++ {
+	const prefixCount = 990
+	for batchStart := 0; batchStart < prefixCount; batchStart += 45 {
+		batchEnd := batchStart + 45
+		if batchEnd > prefixCount {
+			batchEnd = prefixCount
+		}
+		events := make([]SupervisionEvent, 0, batchEnd-batchStart)
+		for index := batchStart; index < batchEnd; index++ {
 			events = append(events, SupervisionEvent{
-				ID: fmt.Sprintf("history-event-%04d", index+1), RunID: runID,
-				Kind: kinds[index%len(kinds)], Reason: reasons[index%len(reasons)],
-				GateID:        fmt.Sprintf("review-%02d", index%43),
-				TaskID:        fmt.Sprintf("task-%02d", index%43),
-				AttemptID:     fmt.Sprintf("attempt-history-%04d", index+1),
-				IncidentID:    fmt.Sprintf("incident-history-%02d", index%17),
+				ID: fmt.Sprintf("retained-prefix-%04d", index+1), RunID: runID,
+				Kind: TriggerOperatorReassessment, Reason: "inert retained-history load",
 				GraphRevision: 1, OccurredAt: now.Add(time.Duration(index) * time.Millisecond),
-				Artifacts: []domain.ArtifactDigest{{
-					ArtifactID: fmt.Sprintf("retained-evidence-%04d", index+1),
-					Digest:     "sha256:" + strings.Repeat("a", 64),
-				}},
 			})
 		}
-		written, err := activationService.Observe(ctx, runID, events...)
-		if err != nil || written != len(events) {
-			t.Fatalf("append supported event batch at %d: written=%d err=%v", batchStart, written, err)
+		if written, err := activationService.Observe(ctx, runID, events...); err != nil || written != len(events) {
+			t.Fatalf("append inert prefix at %d: written=%d err=%v", batchStart, written, err)
 		}
 	}
-	// Exact replay is a supported append and must not move the cursor.
-	replay := SupervisionEvent{
-		ID: "history-event-1000", RunID: runID, Kind: TriggerReviewTimeout,
-		Reason: reasons[9], OccurredAt: now.Add(999 * time.Millisecond),
+	prefix, err := activationService.Advance(ctx, runID, ActivationSignal{
+		Event: domain.ActivationEventTriggerFired, IncidentID: "prefix-review",
+		Principal: "supervisor:m5",
+	})
+	if err != nil || prefix.Activation.ConsumedEventCursor != prefixCount {
+		t.Fatalf("bind prefix high-water mark: plan=%+v err=%v", prefix, err)
 	}
-	if written, err := activationService.Observe(ctx, runID, replay); err != nil || written != 0 {
-		t.Fatalf("event replay appended again: written=%d err=%v", written, err)
+	if _, err = activationService.Advance(ctx, runID, ActivationSignal{
+		Event: domain.ActivationEventDispatchConfirmed,
+	}); err != nil {
+		t.Fatalf("confirm prefix activation: %v", err)
 	}
-	beforeRestart, err := activationStore.LoadSupervisionActivationState(ctx, runID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(beforeRestart.Pending) != 1000 || beforeRestart.Pending[0].Sequence != 1 ||
-		beforeRestart.Pending[999].Sequence != 1000 {
-		t.Fatalf("pre-restart cursor continuity: first=%d last=%d count=%d",
-			beforeRestart.Pending[0].Sequence, beforeRestart.Pending[len(beforeRestart.Pending)-1].Sequence, len(beforeRestart.Pending))
+	consumed, err := activationService.Advance(ctx, runID, ActivationSignal{
+		Event: domain.ActivationEventLimitReached, Outcome: domain.ActivationOutcomeDecided,
+	})
+	if err != nil || !consumed.CursorAdvanced || consumed.Record.EventCursor != prefixCount {
+		t.Fatalf("consume prefix through real lifecycle: plan=%+v err=%v", consumed, err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -119,133 +185,220 @@ func TestM5RetainedAccumulatedHistorySurvivesRestartAndActivation(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer store.Close()
-	store.SetClock(func() time.Time { return now.Add(time.Minute) })
+	now = now.Add(time.Minute)
+	store.SetClock(func() time.Time { return now })
 	activationStore = CoordinatorSupervisionStore{Store: store}
-	activationService = SupervisionActivationService{Store: activationStore, Now: func() time.Time { return now.Add(time.Minute) }}
+	activationService = SupervisionActivationService{Store: activationStore, Now: func() time.Time { return now }}
 	reopened, err := activationStore.LoadSupervisionActivationState(ctx, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reopened.Pending) != 1000 || reopened.Pending[999].Sequence != 1000 {
-		t.Fatalf("restart lost retained history: count=%d", len(reopened.Pending))
-	}
-	for index, want := range reasons {
-		event := reopened.Pending[990+index]
-		if event.Reason != want || event.Sequence != int64(991+index) {
-			t.Fatalf("causal tail[%d]=%+v, want reason %q and sequence %d", index, event, want, 991+index)
-		}
+	if reopened.Record.EventCursor != prefixCount || len(reopened.Pending) != prefixCount ||
+		reopened.Pending[0].Sequence != 1 || reopened.Pending[prefixCount-1].Sequence != prefixCount {
+		t.Fatalf("restart did not retain consumed prefix and cursor: cursor=%d pending=%d", reopened.Record.EventCursor, len(reopened.Pending))
 	}
 
-	notificationID := "history-final-notification"
-	if written, err := store.AppendSupervisionOutboxRows(ctx, runID, []sqlite.SupervisionOutboxRow{{
-		ID: notificationID, RunID: runID, Delivery: "pending",
-		Record: []byte(`{"id":"history-final-notification","runId":"` + runID + `","delivery":"pending","attempts":0}`),
-	}}); err != nil || written != 1 {
-		t.Fatalf("append final notification: written=%d err=%v", written, err)
+	tail := SupervisionEvent{
+		ID: "retained-tail-worker-loss", RunID: runID, Kind: TriggerRouteBlockPersistent,
+		Reason: "stored producer needs bounded unknown-effect recovery",
+		GateID: gateID, TaskID: producerTaskID, AttemptID: producerAttempt.ID,
+		IncidentID: "incident-retained-tail", GraphRevision: 1, OccurredAt: now,
+		Artifacts: []domain.ArtifactDigest{{ArtifactID: output.ID, Digest: "sha256:" + output.SHA256}},
 	}
-	for _, transition := range [][2]string{{"pending", "sending"}, {"sending", "offline"}, {"offline", "sending"}, {"sending", "delivered"}} {
-		if changed, err := store.TransitionSupervisionOutboxRow(ctx, notificationID, transition[0], transition[1], now.Add(time.Minute)); err != nil || !changed {
-			t.Fatalf("notification transition %s->%s changed=%v err=%v", transition[0], transition[1], changed, err)
-		}
+	if written, err := activationService.Observe(ctx, runID, tail); err != nil || written != 1 {
+		t.Fatalf("append causal tail: written=%d err=%v", written, err)
 	}
-	deliveries, err := store.ListSupervisionOutboxRows(ctx, runID)
-	if err != nil || len(deliveries) != 1 || deliveries[0].Delivery != "delivered" {
-		t.Fatalf("final notification not delivered after fail/retry/ack: rows=%+v err=%v", deliveries, err)
+	if _, err := store.OpenReviewIncident(ctx, sqlite.IncidentRequest{
+		RunID: runID, IncidentID: tail.IncidentID, RequestID: "open-retained-tail",
+		Actor:         domain.Actor{Kind: domain.ActorOperator, Principal: "operator:m5"},
+		SourceEventID: tail.ID, GateID: tail.GateID,
+		RequiredDisposition: domain.DispositionOperatorAction,
+		Reason:              tail.Reason, OpenedAt: now,
+	}); err != nil {
+		t.Fatalf("persist tail recovery incident: %v", err)
 	}
-
-	plan, err := activationService.Advance(ctx, runID, ActivationSignal{
-		Event: domain.ActivationEventTriggerFired, IncidentID: "incident-history-current",
-		Principal: "supervisor:history",
+	woken, err := activationService.Advance(ctx, runID, ActivationSignal{Event: domain.ActivationEventEventsArrived})
+	if err != nil || woken.Activation.State != domain.ActivationIdle {
+		t.Fatalf("wake spent activation for causal tail: plan=%+v err=%v", woken, err)
+	}
+	current, err := activationService.Advance(ctx, runID, ActivationSignal{
+		Event: domain.ActivationEventTriggerFired, IncidentID: tail.IncidentID,
+		Principal: "supervisor:m5",
 	})
 	if err != nil {
-		t.Fatalf("real activation cycle after restart: %v", err)
+		t.Fatalf("select causal tail after restart: %v", err)
 	}
-	if plan.Activation.State != domain.ActivationPendingDispatch ||
-		plan.Activation.ConsumedEventCursor != 1000 || plan.Inbox.HighWaterMark != 1000 ||
-		plan.Activation.ReadyTieID != "history-event-0001" {
-		t.Fatalf("activation/cursor/current-trigger result=%+v activation=%+v", plan.Result, plan.Activation)
-	}
-	afterActivation, err := store.LoadCoordinatorRecords(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(afterActivation.Attempts) != 43 {
-		t.Fatalf("accepted task branches reran during recovery: attempts=%d, want retained 43", len(afterActivation.Attempts))
-	}
-	for index := range records.Attempts {
-		if afterActivation.Attempts[index].ID != records.Attempts[index].ID ||
-			afterActivation.Attempts[index].Revision != records.Attempts[index].Revision {
-			t.Fatalf("accepted branch changed at %d: before=%+v after=%+v", index, records.Attempts[index], afterActivation.Attempts[index])
-		}
-	}
-	if _, err := activationService.Advance(ctx, runID, ActivationSignal{
-		Event: domain.ActivationEventTriggerFired,
-	}); !errors.Is(err, domain.ErrSupervisionIllegalTransition) {
-		t.Fatalf("accepted branch reran after activation: %v", err)
+	if current.Activation.ReadyTieID != tail.ID ||
+		current.Activation.ConsumedEventCursor != prefixCount+1 ||
+		current.Inbox.HighWaterMark != prefixCount+1 ||
+		len(current.Inbox.Events) != 1 || current.Inbox.Events[0].AttemptID != producerAttempt.ID {
+		t.Fatalf("tail was not the current causal subject: activation=%+v inbox=%+v", current.Activation, current.Inbox)
 	}
 
-	inbox := CoalesceSupervisionEvents(runID, 0, reopened.Pending)
-	if inbox.HighWaterMark != 1000 || len(inbox.Triggers) == 0 {
-		t.Fatalf("coalesced current trigger=%+v", inbox)
+	confirmed, err := activationService.Advance(ctx, runID, ActivationSignal{
+		Event: domain.ActivationEventDispatchConfirmed,
+	})
+	if err != nil || confirmed.Activation.State != domain.ActivationActive {
+		t.Fatalf("confirm causal tail activation: plan=%+v err=%v", confirmed, err)
 	}
-	snapshot := ActivationSnapshot{
-		ActivationID: plan.Activation.ID, RunID: runID, Epoch: plan.Activation.Epoch,
-		GraphRevision: 1, RecordRevision: plan.Record.Revision,
-		TurnsRemaining: plan.Record.Config.MaxTurnsPerActivation,
-		Triggers:       inbox.Triggers, ConsumedThrough: inbox.HighWaterMark,
-		Actions:     []ActivationAction{{Name: "decide retained review"}},
-		Constraints: []string{"bounded escalation", "no accepted branch rerun"},
+	boundedState := SupervisionActivationState{
+		Record: confirmed.Record, Activation: confirmed.Activation,
+		Pending: append([]SupervisionEvent(nil), current.Inbox.Events...),
 	}
-	for _, task := range records.Tasks {
-		snapshot.Tasks = append(snapshot.Tasks, ActivationTaskView{TaskID: task.ID, State: "retained"})
+	boundedState.Activation.RecoveredCount = domain.MaxAutoRecoveredActivationsPerIncident
+	ambiguous, err := PlanActivation(boundedState, ActivationSignal{
+		Event: domain.ActivationEventThreadLost, IncidentID: tail.IncidentID,
+		ExecutionObserved: true, Reason: "runtime effect is still unknown",
+	}, now)
+	if err != nil || ambiguous.Activation.State != domain.ActivationRecoveryRequired || ambiguous.CursorAdvanced {
+		t.Fatalf("unknown runtime effect escaped containment: plan=%+v err=%v", ambiguous, err)
 	}
-	for _, gate := range supervision.Gates {
-		snapshot.Gates = append(snapshot.Gates, ActivationGateView{
-			GateID: gate.Definition.ID, State: gate.State, GraphRevision: gate.GraphRevision,
-			EvidenceSnapshotID: gate.EvidenceSnapshotID,
-			ObservedTaskIDs:    gate.Definition.ObservedTaskIDs,
-			ProtectedTaskIDs:   gate.Definition.ProtectedTaskIDs,
-		})
+	lost, err := PlanActivation(boundedState, ActivationSignal{
+		Event: domain.ActivationEventThreadLost, IncidentID: tail.IncidentID,
+		ExecutionObserved: true, RuntimeProvenStopped: true,
+		Reason: "runtime stop was observed before replacement",
+	}, now)
+	if err != nil {
+		t.Fatalf("plan bounded recovery from selected tail: %v", err)
 	}
-	evidence, err := BuildActivationEvidenceSnapshot(snapshot)
+	if lost.Activation.State != domain.ActivationEscalated || !lost.Escalated ||
+		lost.Activation.RecoveredCount != domain.MaxAutoRecoveredActivationsPerIncident {
+		t.Fatalf("recovery exceeded its production bound without escalation: %+v", lost)
+	}
+
+	notificationID := "retained-tail-final-notification"
+	if written, err := store.AppendSupervisionOutboxRows(ctx, runID, []sqlite.SupervisionOutboxRow{{
+		ID: notificationID, RunID: runID, Delivery: "pending",
+		Record: []byte(`{"id":"retained-tail-final-notification","kind":"escalation","incidentId":"incident-retained-tail","threadId":"thread-m5","reason":"bounded recovery exhausted for retained-tail-worker-loss"}`),
+	}}); err != nil || written != 1 {
+		t.Fatalf("append causal final notification: written=%d err=%v", written, err)
+	}
+	control := &m5NotificationControl{
+		thread:   &domain.Thread{ID: "thread-m5", ProviderInstanceID: "test-provider"},
+		observed: map[string]bool{},
+	}
+	runner := wait.New(store, control, nil)
+	runner.SetClock(func() time.Time { return now })
+	runner.DisableQuotaChecks = true
+	runner.Tick(ctx, nil, nil)
+	now = now.Add(time.Second)
+	runner.Tick(ctx, nil, nil)
+	runner.Tick(ctx, nil, nil)
+	deliveries, err := store.ListSupervisionOutboxRows(ctx, runID)
+	var finalDelivery sqlite.SupervisionOutboxRow
+	for _, delivery := range deliveries {
+		if delivery.ID == notificationID {
+			finalDelivery = delivery
+		}
+	}
+	if err != nil || finalDelivery.Delivery != "delivered" || len(control.sends) != 1 {
+		t.Fatalf("final notification was not delivered and observed once: final=%+v sends=%v err=%v", finalDelivery, control.sends, err)
+	}
+
+	after, err := store.LoadCoordinatorRecords(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot.EvidenceSnapshot = &domain.ArtifactDigest{ArtifactID: evidence.ID, Digest: evidence.SHA256}
+	var afterProducer domain.Attempt
+	for _, attempt := range after.Attempts {
+		if attempt.ID == producerAttempt.ID {
+			afterProducer = attempt
+		}
+	}
+	supervision, err := store.LoadSupervisionSnapshot(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterProducer.Revision != acceptedAttemptRevision || len(supervision.Gates) != 1 ||
+		supervision.Gates[0].State != domain.GateAccepted ||
+		supervision.Gates[0].Revision != acceptedGateRevision ||
+		supervision.Gates[0].EvidenceSnapshotID != evidence.ID {
+		t.Fatalf("accepted branch or gate changed: attempt=%+v supervision=%+v", afterProducer, supervision)
+	}
+	projection, err := store.LoadSupervisionProjection(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Decisions) != 1 ||
+		projection.Decisions[0].Evidence.ID != evidence.ID ||
+		projection.Decisions[0].Evidence.Producers[0].ArtifactDigests[0].ArtifactID != output.ID {
+		t.Fatalf("accepted evidence identities no longer resolve: %+v", projection.Decisions)
+	}
+
+	snapshot := ActivationSnapshot{
+		ActivationID: current.Activation.ID, RunID: runID, Epoch: current.Activation.Epoch,
+		GraphRevision: 1, RecordRevision: current.Record.Revision,
+		TurnsRemaining: current.Record.Config.MaxTurnsPerActivation,
+		Triggers:       current.Inbox.Triggers, ConsumedThrough: current.Inbox.HighWaterMark,
+		Tasks: []ActivationTaskView{
+			{TaskID: producerTaskID, State: string(producerAttempt.Progress)},
+			{TaskID: protectedTaskID, State: string(protectedAttempt.Progress)},
+		},
+		Gates: []ActivationGateView{{
+			GateID: accepted.Gate.Definition.ID, State: accepted.Gate.State,
+			GraphRevision: accepted.Gate.GraphRevision, EvidenceSnapshotID: evidence.ID,
+			ObservedTaskIDs:  accepted.Gate.Definition.ObservedTaskIDs,
+			ProtectedTaskIDs: accepted.Gate.Definition.ProtectedTaskIDs,
+		}},
+		Artifacts:   []domain.ArtifactDigest{{ArtifactID: output.ID, Digest: "sha256:" + output.SHA256}},
+		Actions:     []ActivationAction{{Name: "reconcile retained worker loss"}},
+		Constraints: []string{"bounded recovery", "do not rerun accepted producer"},
+	}
+	boundedEvidence, err := BuildActivationEvidenceSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.EvidenceSnapshot = &domain.ArtifactDigest{ArtifactID: boundedEvidence.ID, Digest: boundedEvidence.SHA256}
 	envelope, err := BuildActivationPromptEnvelope(snapshot)
 	if err != nil {
-		t.Fatalf("bounded prompt construction from retained history: %v", err)
+		t.Fatalf("bounded prompt from retained causal state: %v", err)
 	}
-	if envelope.Size() > envelope.ByteCap || len(envelope.Facts) > 1+len(snapshot.Triggers)+ActivationBriefSubjectLimit*3 {
-		t.Fatalf("unbounded activation prompt: size=%d cap=%d facts=%d", envelope.Size(), envelope.ByteCap, len(envelope.Facts))
-	}
-	if len(envelope.Inputs) != 1 || envelope.Inputs[0].Digest != evidence.SHA256 {
-		t.Fatalf("bounded prompt lost retained evidence custody: %+v", envelope.Inputs)
+	if envelope.Size() > envelope.ByteCap || len(envelope.Inputs) != 1 ||
+		envelope.Inputs[0].Digest != boundedEvidence.SHA256 {
+		t.Fatalf("bounded prompt lost retained evidence custody: size=%d cap=%d inputs=%+v", envelope.Size(), envelope.ByteCap, envelope.Inputs)
 	}
 }
 
 func m5HistoryBundle(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	var manifest strings.Builder
-	manifest.WriteString("version: 2\nname: retained-history\nenvironment:\n  project: t3-steward\nroutes:\n  - instance: workerInstance\n    model: worker-model\nsupervision:\n  route:\n    instance: overseerInstance\n    model: overseer-model\n    quota_pool: overseer-pool\n  prompt_file: prompts/overseer.md\n  max_activations: 8\n  max_turns_per_activation: 2\n  activation_deadline: 90m\n  idle_escalation_after: 12h\n  escalation:\n    notify_thread: true\ngates:\n")
-	for index := 0; index < 42; index++ {
-		fmt.Fprintf(&manifest, "  review-%02d:\n    after: [task-%02d]\n    before: [task-%02d]\n    rubric_file: rubrics/review-%02d.md\n", index, index, index+1, index)
-	}
-	manifest.WriteString("  review-42:\n    after: [task-42]\n    final: true\n    rubric_file: rubrics/review-42.md\ntasks:\n")
-	for index := 0; index < 43; index++ {
-		fmt.Fprintf(&manifest, "  task-%02d:\n    prompt_file: prompts/task-%02d.md\n", index, index)
-		if index > 0 {
-			fmt.Fprintf(&manifest, "    needs: [task-%02d]\n", index-1)
-		}
-	}
 	files := map[string]string{
-		"workflow.yaml":       manifest.String(),
-		"prompts/overseer.md": "Review retained evidence and the current trigger without rerunning accepted branches.\n",
-	}
-	for index := 0; index < 43; index++ {
-		files[fmt.Sprintf("prompts/task-%02d.md", index)] = fmt.Sprintf("perform retained task %02d\n", index)
-		files[fmt.Sprintf("rubrics/review-%02d.md", index)] = fmt.Sprintf("review evidence for task %02d\n", index)
+		"workflow.yaml": `version: 2
+name: retained-history
+environment:
+  project: t3-steward
+routes:
+  - instance: workerInstance
+    model: worker-model
+supervision:
+  route:
+    instance: overseerInstance
+    model: overseer-model
+    quota_pool: overseer-pool
+  prompt_file: prompts/overseer.md
+  max_activations: 8
+  max_turns_per_activation: 2
+  activation_deadline: 90m
+  idle_escalation_after: 12h
+  escalation:
+    notify_thread: true
+gates:
+  review:
+    after: [producer]
+    before: [protected]
+    rubric_file: rubrics/review.md
+tasks:
+  producer:
+    prompt_file: prompts/producer.md
+    outputs: [result.txt]
+  protected:
+    prompt_file: prompts/protected.md
+    needs: [producer]
+`,
+		"prompts/overseer.md":  "Review retained evidence and the current trigger without rerunning accepted branches.\n",
+		"prompts/producer.md":  "produce result.txt\n",
+		"prompts/protected.md": "consume the accepted result\n",
+		"rubrics/review.md":    "accept only stored producer evidence\n",
 	}
 	for name, body := range files {
 		path := filepath.Join(root, filepath.FromSlash(name))
