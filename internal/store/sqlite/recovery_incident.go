@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -18,6 +19,8 @@ const coordinatorMigrationV20 = `SELECT 1;`
 
 type RecoveryIncidentRequest struct {
 	RunID, IncidentID, EventID, SourceTaskID, SourceAttemptID, Reason string
+	ExpectedGraphRevision, SourceAttemptRevision                      int64
+	RecoveryConfig                                                    domain.RecoveryConfig
 	Recovery                                                          domain.RecoveryIncident
 	EventRecord                                                       json.RawMessage
 	OpenedAt                                                          time.Time
@@ -29,6 +32,9 @@ func (s *Store) OpenRecoveryIncident(ctx context.Context, request RecoveryIncide
 		strings.TrimSpace(request.SourceAttemptID) == "" || strings.TrimSpace(request.Reason) == "" || len(request.EventRecord) == 0 {
 		return SupervisionDecision{}, false, errors.New("a recovery incident needs run, incident, event, task, attempt, reason and event record")
 	}
+	if request.ExpectedGraphRevision < 1 || request.SourceAttemptRevision < 1 || request.RecoveryConfig.Validate() != nil {
+		return SupervisionDecision{}, false, errors.New("a recovery incident needs graph, source-attempt and recovery-config fences")
+	}
 	if request.Recovery.Contract != domain.RecoveryContractV1 || request.Recovery.Purpose != domain.RecoveryActivationRepair ||
 		request.Recovery.Owner.Role != domain.RecoveryRoleRepairExecutor || request.Recovery.State != domain.RecoveryPendingDispatch ||
 		request.Recovery.NextAction != domain.RecoveryDispatchRepair {
@@ -39,6 +45,9 @@ func (s *Store) OpenRecoveryIncident(ctx context.Context, request RecoveryIncide
 		return SupervisionDecision{}, false, fmt.Errorf("begin recovery incident: %w", err)
 	}
 	defer tx.Rollback()
+	if err := validateRecoverySourceTx(ctx, tx, request); err != nil {
+		return SupervisionDecision{}, false, err
+	}
 	var raw []byte
 	err = tx.QueryRowContext(ctx, "SELECT record FROM coordinator_supervision_incidents WHERE id = ? AND run_id = ?", request.IncidentID, request.RunID).Scan(&raw)
 	if err == nil {
@@ -83,6 +92,36 @@ func (s *Store) OpenRecoveryIncident(ctx context.Context, request RecoveryIncide
 		return SupervisionDecision{}, false, fmt.Errorf("commit recovery incident: %w", err)
 	}
 	return SupervisionDecision{Incident: &incident}, true, nil
+}
+
+func validateRecoverySourceTx(ctx context.Context, tx *sql.Tx, request RecoveryIncidentRequest) error {
+	var runRaw, supervisionRaw, attemptRaw []byte
+	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_workflow_runs WHERE id = ?", request.RunID).Scan(&runRaw); err != nil {
+		return fmt.Errorf("%w: recovery run %q is unavailable", ErrSupervisionRequestConflict, request.RunID)
+	}
+	var run domain.WorkflowRun
+	if json.Unmarshal(runRaw, &run) != nil || run.ID != request.RunID || run.GraphRevision != request.ExpectedGraphRevision || run.Progress.Terminal() {
+		return fmt.Errorf("%w: recovery run %q changed", ErrSupervisionRequestConflict, request.RunID)
+	}
+	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_supervision WHERE run_id = ?", request.RunID).Scan(&supervisionRaw); err != nil {
+		return fmt.Errorf("%w: recovery contract for run %q is unavailable", ErrSupervisionRequestConflict, request.RunID)
+	}
+	var supervision domain.SupervisionRecord
+	if json.Unmarshal(supervisionRaw, &supervision) != nil || supervision.Config.Recovery == nil ||
+		!reflect.DeepEqual(*supervision.Config.Recovery, request.RecoveryConfig) {
+		return fmt.Errorf("%w: recovery contract for run %q changed", ErrSupervisionRequestConflict, request.RunID)
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT record FROM coordinator_attempts
+		WHERE workflow_run_id = ? AND task_id = ? ORDER BY number DESC LIMIT 1`,
+		request.RunID, request.SourceTaskID).Scan(&attemptRaw); err != nil {
+		return fmt.Errorf("%w: latest recovery attempt is unavailable", ErrSupervisionRequestConflict)
+	}
+	var attempt domain.Attempt
+	if json.Unmarshal(attemptRaw, &attempt) != nil || attempt.ID != request.SourceAttemptID ||
+		attempt.Revision != request.SourceAttemptRevision || attempt.Progress != domain.ProgressFailed {
+		return fmt.Errorf("%w: recovery source attempt changed", ErrSupervisionRequestConflict)
+	}
+	return nil
 }
 
 func appendRecoveryInboxTx(ctx context.Context, tx *sql.Tx, request RecoveryIncidentRequest) (bool, error) {

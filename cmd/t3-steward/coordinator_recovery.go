@@ -79,7 +79,8 @@ func (c coordinatorSupervision) observeRecoveryFailures(ctx context.Context, run
 		if _, _, err := c.store.OpenRecoveryIncident(ctx, sqlite.RecoveryIncidentRequest{
 			RunID: run.ID, IncidentID: incidentID, EventID: eventID,
 			SourceTaskID: attempt.TaskID, SourceAttemptID: attempt.ID,
-			Reason: reason, Recovery: *recovery, EventRecord: raw, OpenedAt: now,
+			ExpectedGraphRevision: run.GraphRevision, SourceAttemptRevision: attempt.Revision,
+			RecoveryConfig: config, Reason: reason, Recovery: *recovery, EventRecord: raw, OpenedAt: now,
 		}); err != nil {
 			return err
 		}

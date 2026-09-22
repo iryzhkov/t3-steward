@@ -24,11 +24,14 @@ func TestReviewRegressionEventIDCollisionAcrossRunsIsRejectedAtomically(t *testi
 		AttemptBudget: 3, Deadline: now.Add(time.Hour), LastProgressAt: now,
 		Diagnostic: domain.RecoveryDiagnosticIdentity{FailureFingerprint: "failure", EvidenceFingerprint: "evidence", StrategyFingerprint: "strategy"},
 	}
-	request := RecoveryIncidentRequest{RunID: "run-a", IncidentID: "incident-a", EventID: "shared-event", SourceTaskID: "task", SourceAttemptID: "attempt", Reason: "failed", Recovery: recovery, EventRecord: []byte(`{"id":"shared-event","runId":"run-a"}`), OpenedAt: now}
+	config := domain.RecoveryConfig{Version: domain.RecoveryContractV1, Route: recovery.Owner.Route, PromptArtifactID: recovery.Owner.PromptArtifactID, MaxAttemptsPerIncident: 3, IncidentDeadline: time.Hour, StalledAfter: time.Minute}
+	prepareRecoveryFence(t, store, "run-a", "attempt-a", now, config)
+	prepareRecoveryFence(t, store, "run-b", "attempt-b", now, config)
+	request := RecoveryIncidentRequest{RunID: "run-a", IncidentID: "incident-a", EventID: "shared-event", SourceTaskID: "task", SourceAttemptID: "attempt-a", ExpectedGraphRevision: 1, SourceAttemptRevision: 1, RecoveryConfig: config, Reason: "failed", Recovery: recovery, EventRecord: []byte(`{"id":"shared-event","runId":"run-a"}`), OpenedAt: now}
 	if _, _, err := store.OpenRecoveryIncident(ctx, request); err != nil {
 		t.Fatal(err)
 	}
-	request.RunID, request.IncidentID = "run-b", "incident-b"
+	request.RunID, request.IncidentID, request.SourceAttemptID = "run-b", "incident-b", "attempt-b"
 	request.EventRecord = []byte(`{"id":"shared-event","runId":"run-b"}`)
 	if _, _, err := store.OpenRecoveryIncident(ctx, request); err == nil {
 		t.Fatal("cross-run event collision accepted")
