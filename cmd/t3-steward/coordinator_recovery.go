@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -43,6 +44,10 @@ func (c coordinatorSupervision) observeRecoveryFailures(ctx context.Context, run
 			return err
 		}
 		if owned {
+			incident, err = c.reconcileRecoveryLiveness(ctx, run, incident, attempt, records, config, now)
+			if err != nil {
+				return err
+			}
 			if incident.Recovery == nil || incident.Recovery.CurrentAttemptID != attempt.ID ||
 				incident.Recovery.State != domain.RecoveryRecovering {
 				continue
@@ -115,6 +120,101 @@ func (c coordinatorSupervision) observeRecoveryFailures(ctx context.Context, run
 		}
 	}
 	return nil
+}
+
+func (c coordinatorSupervision) reconcileRecoveryLiveness(
+	ctx context.Context,
+	run domain.WorkflowRun,
+	incident domain.ReviewIncident,
+	attempt domain.Attempt,
+	records sqlite.CoordinatorRecords,
+	config domain.RecoveryConfig,
+	now time.Time,
+) (domain.ReviewIncident, error) {
+	if incident.Recovery == nil || incident.State != domain.IncidentOpen ||
+		incident.Recovery.State == domain.RecoveryNeedsHuman || incident.Recovery.State == domain.RecoveryResolved {
+		return incident, nil
+	}
+	waitReason, err := c.recoverySupportedWait(ctx, run.ID, incident, attempt, records)
+	if err != nil {
+		return domain.ReviewIncident{}, err
+	}
+	eventID := "supervision-event:recovery-watchdog:" + recoveryDigest(incident.ID)[:24]
+	event := backlog.SupervisionEvent{
+		ID: eventID, RunID: run.ID, Kind: backlog.TriggerTaskJudgmentRequired,
+		Reason: "the recovery watchdog found an open episode without durable progress",
+		TaskID: attempt.TaskID, AttemptID: attempt.ID, IncidentID: incident.ID,
+		GraphRevision: run.GraphRevision, OccurredAt: now.UTC(),
+	}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return domain.ReviewIncident{}, err
+	}
+	result, err := c.store.ReconcileRecoveryWatchdog(ctx, sqlite.RecoveryWatchdogRequest{
+		RunID: run.ID, IncidentID: incident.ID, EventID: eventID, EscalationEventID: incident.SourceEventID,
+		ExpectedIncidentRevision: incident.Revision, StalledAfter: config.StalledAfter,
+		ProgressObserved: attempt.Progress.Terminal() && incident.Recovery.CurrentAttemptID != incident.SourceAttemptID,
+		WaitReason:       waitReason, EventRecord: raw, ObservedAt: now,
+	})
+	if err != nil {
+		return domain.ReviewIncident{}, err
+	}
+	return result.Incident, nil
+}
+
+func (c coordinatorSupervision) recoverySupportedWait(
+	ctx context.Context,
+	runID string,
+	incident domain.ReviewIncident,
+	attempt domain.Attempt,
+	records sqlite.CoordinatorRecords,
+) (string, error) {
+	waits, err := c.store.ListTaskWaits(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, wait := range waits {
+		if wait.WorkflowRunID != runID || wait.AttemptID != attempt.ID {
+			continue
+		}
+		if wait.Live() {
+			return "repair attempt is deliberately parked on a task-bound external wait", nil
+		}
+		if wait.Settled() && !wait.Woken() {
+			return "repair attempt has a settled external effect awaiting durable wake delivery", nil
+		}
+	}
+	for _, assignment := range records.Assignments {
+		if assignment.AttemptID != attempt.ID {
+			continue
+		}
+		if assignment.State == domain.AssignmentOffered || assignment.State == domain.AssignmentClaimed {
+			return "repair attempt has an active executor assignment", nil
+		}
+	}
+	if c.activations.Store != nil {
+		state, err := c.activations.Store.LoadSupervisionActivationState(ctx, runID)
+		if err == nil && (state.Activation.IncidentID == "" || state.Activation.IncidentID == incident.ID) {
+			if assignment, ok := activationAssignmentOf(records, state.Activation); ok &&
+				(assignment.State == domain.AssignmentOffered || assignment.State == domain.AssignmentClaimed) {
+				return "repair diagnosis has an active supervision assignment", nil
+			}
+			switch state.Activation.State {
+			case "", domain.ActivationIdle, domain.ActivationPendingDispatch:
+				return "repair diagnosis is durably queued for quota and executor capacity admission", nil
+			}
+		}
+		if err != nil && !errors.Is(err, backlog.ErrSupervisionNotConfigured) {
+			return "", err
+		}
+	}
+	switch attempt.Progress {
+	case domain.ProgressQueued, domain.ProgressBlocked, domain.ProgressReady:
+		return "repair attempt is awaiting scheduler dependency, quota, or executor capacity admission", nil
+	case domain.ProgressWaitingExternal:
+		return "repair attempt is awaiting a durable external effect", nil
+	}
+	return "", nil
 }
 
 func recoveryFailureEvidence(attempt domain.Attempt, artifacts []domain.ArtifactDigest) (string, string) {

@@ -256,8 +256,31 @@ func (c activationOlderOrdinaryConstraint) Evaluate(candidate backlog.PlanningCa
 
 func (activationOlderOrdinaryConstraint) Reserve(backlog.PlanningCandidate) {}
 
+func activationAlreadyYieldedOpportunity(records sqlite.CoordinatorRecords, candidate activationFairnessCandidate) bool {
+	activationAttempts := make(map[string]struct{})
+	for _, attempt := range records.Attempts {
+		if attempt.SupervisionActivationID != "" {
+			activationAttempts[attempt.ID] = struct{}{}
+		}
+	}
+	for _, assignment := range records.Assignments {
+		if assignment.CreatedAt.Before(candidate.ReadyAt) {
+			continue
+		}
+		if _, activation := activationAttempts[assignment.AttemptID]; activation {
+			continue
+		}
+		if assignment.WorkerID == candidate.Worker ||
+			(candidate.Pool != "" && assignment.Route.QuotaPoolID == candidate.Pool) {
+			return true
+		}
+	}
+	return false
+}
+
 // yieldToOlderActivationContender admits already-eligible work only when its
-// durable age wins at a worker or quota-pool bottleneck used by candidate.
+// durable age wins at a worker or quota-pool bottleneck used by candidate, but
+// permits only one such durable ordinary batch after the activation became due.
 func (p coordinatorPlanner) yieldToOlderActivationContender(ctx context.Context, quota backlog.QuotaBridgeReport, candidate activationFairnessCandidate) (bool, error) {
 	now := time.Now().UTC()
 	if p.now != nil {
@@ -269,6 +292,13 @@ func (p coordinatorPlanner) yieldToOlderActivationContender(ctx context.Context,
 	records, err := p.store.LoadCoordinatorRecords(ctx)
 	if err != nil {
 		return false, fmt.Errorf("load activation arbitration snapshot: %w", err)
+	}
+	if activationAlreadyYieldedOpportunity(records, candidate) {
+		// At most one older ordinary batch may consume a shared bottleneck
+		// after this activation became eligible. The durable assignment is the
+		// marker, so restart cannot reset the bound and an unbounded ordinary
+		// backlog cannot win every newly free opportunity.
+		return false, nil
 	}
 	snapshots, err := p.store.LoadWorkerSnapshots(ctx)
 	if err != nil {

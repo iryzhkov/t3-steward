@@ -223,6 +223,130 @@ func appendRecoveryEpisodeEventTx(ctx context.Context, tx *sql.Tx, runID, eventI
 	return err
 }
 
+type RecoveryWatchdogRequest struct {
+	RunID, IncidentID, EventID, EscalationEventID, WaitReason string
+	ExpectedIncidentRevision                                  int64
+	StalledAfter                                              time.Duration
+	ProgressObserved                                          bool
+	EventRecord                                               json.RawMessage
+	ObservedAt                                                time.Time
+}
+
+type RecoveryWatchdogResult struct {
+	Incident  domain.ReviewIncident
+	Rewoken   bool
+	Escalated bool
+}
+
+// ReconcileRecoveryWatchdog gives each open recovery episode one durable owner
+// and next action after restart. A supported wait is made visible but does not
+// spend an attempt or refresh the absolute deadline. An abandoned episode gets
+// one stable re-wake before a later stalled pass escalates it; replay can create
+// neither a second trigger nor a second notification intent.
+func (s *Store) ReconcileRecoveryWatchdog(ctx context.Context, request RecoveryWatchdogRequest) (RecoveryWatchdogResult, error) {
+	if request.RunID == "" || request.IncidentID == "" || request.EventID == "" || request.EscalationEventID == "" ||
+		request.ExpectedIncidentRevision < 1 || request.StalledAfter <= 0 || len(request.EventRecord) == 0 {
+		return RecoveryWatchdogResult{}, errors.New("recovery watchdog observation is incomplete")
+	}
+	now := request.ObservedAt.UTC()
+	if now.IsZero() {
+		now = s.now().UTC()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RecoveryWatchdogResult{}, err
+	}
+	defer tx.Rollback()
+	var raw []byte
+	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_supervision_incidents WHERE id = ? AND run_id = ?",
+		request.IncidentID, request.RunID).Scan(&raw); err != nil {
+		return RecoveryWatchdogResult{}, err
+	}
+	var incident domain.ReviewIncident
+	if json.Unmarshal(raw, &incident) != nil || incident.Recovery == nil ||
+		incident.Revision != request.ExpectedIncidentRevision {
+		return RecoveryWatchdogResult{}, fmt.Errorf("%w: recovery episode changed", ErrSupervisionRequestConflict)
+	}
+	result := RecoveryWatchdogResult{Incident: incident}
+	recovery := incident.Recovery
+	if incident.State != domain.IncidentOpen || recovery.State == domain.RecoveryNeedsHuman ||
+		recovery.State == domain.RecoveryResolved {
+		return result, tx.Commit()
+	}
+	escalate := func(reason string) error {
+		incident.Revision++
+		recovery.State = domain.RecoveryNeedsHuman
+		recovery.NextAction = domain.RecoveryEscalateHuman
+		recovery.WaitReason = ""
+		recovery.ExhaustionReason = reason
+		if err := appendRecoveryExhaustionOutboxTx(ctx, tx, incident, request.EscalationEventID, now); err != nil {
+			return err
+		}
+		result.Escalated = true
+		return nil
+	}
+	if !now.Before(recovery.Deadline.UTC()) {
+		if err := escalate(fmt.Sprintf("recovery episode reached its absolute deadline after %d of %d attempts",
+			recovery.AttemptsUsed, recovery.AttemptBudget)); err != nil {
+			return RecoveryWatchdogResult{}, err
+		}
+	} else if request.ProgressObserved && recovery.State == domain.RecoveryExpectedWait {
+		incident.Revision++
+		recovery.State = domain.RecoveryRecovering
+		recovery.NextAction = domain.RecoveryNoAction
+		recovery.WaitReason = ""
+		recovery.LastProgressAt = now
+	} else if strings.TrimSpace(request.WaitReason) != "" {
+		if recovery.State != domain.RecoveryExpectedWait || recovery.NextAction != domain.RecoveryAwaitCapacity ||
+			recovery.WaitReason != request.WaitReason {
+			incident.Revision++
+			recovery.State = domain.RecoveryExpectedWait
+			recovery.NextAction = domain.RecoveryAwaitCapacity
+			recovery.WaitReason = request.WaitReason
+		}
+	} else if now.Sub(recovery.LastProgressAt.UTC()) >= request.StalledAfter {
+		var existing int
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM coordinator_supervision_inbox WHERE id = ?", request.EventID).Scan(&existing); err != nil {
+			return RecoveryWatchdogResult{}, err
+		}
+		if existing == 0 {
+			incident.Revision++
+			recovery.State = domain.RecoveryPendingDispatch
+			recovery.NextAction = domain.RecoveryDispatchRepair
+			recovery.WaitReason = ""
+			recovery.LastProgressAt = now
+			if err := appendRecoveryEpisodeEventTx(ctx, tx, request.RunID, request.EventID, request.EventRecord); err != nil {
+				return RecoveryWatchdogResult{}, err
+			}
+			result.Rewoken = true
+		} else if err := escalate(fmt.Sprintf("recovery episode made no durable progress for %s after its watchdog re-wake",
+			request.StalledAfter)); err != nil {
+			return RecoveryWatchdogResult{}, err
+		}
+	} else if recovery.State == domain.RecoveryExpectedWait {
+		incident.Revision++
+		recovery.WaitReason = ""
+		if recovery.CurrentAttemptID == incident.SourceAttemptID {
+			recovery.State = domain.RecoveryPendingDispatch
+			recovery.NextAction = domain.RecoveryDispatchRepair
+		} else {
+			recovery.State = domain.RecoveryRecovering
+			recovery.NextAction = domain.RecoveryNoAction
+		}
+		recovery.LastProgressAt = now
+	}
+	if incident.Revision != result.Incident.Revision {
+		if err := saveSupervisionIncidentTx(ctx, tx, incident); err != nil {
+			return RecoveryWatchdogResult{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return RecoveryWatchdogResult{}, err
+	}
+	result.Incident = incident
+	return result, nil
+}
+
 func appendRecoveryExhaustionOutboxTx(ctx context.Context, tx *sql.Tx, incident domain.ReviewIncident, eventID string, now time.Time) error {
 	var raw []byte
 	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_supervision WHERE run_id = ?", incident.RunID).Scan(&raw); err != nil {

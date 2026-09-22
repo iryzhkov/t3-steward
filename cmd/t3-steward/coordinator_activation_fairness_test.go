@@ -146,6 +146,65 @@ func TestOlderOrdinaryAttemptPrecedesNewerActivationAtSharedCapacity(t *testing.
 	if gotParked.Control != domain.ControlWaitingExternal {
 		t.Fatalf("older settled wake control=%q, want it held behind newer activation", gotParked.Control)
 	}
+
+	// The first older ordinary batch is the bounded fairness concession. Its
+	// durable assignment survives restart and prevents an unbounded older
+	// backlog from consuming the next safe free opportunity too.
+	var ordinaryAssignment domain.Assignment
+	for _, assignment := range records.Assignments {
+		if assignment.AttemptID == ordinaryAttempt {
+			ordinaryAssignment = assignment
+			break
+		}
+	}
+	if ordinaryAssignment.ID == "" {
+		t.Fatal("ordinary assignment is missing")
+	}
+	completedAt := fixture.now.Add(time.Second)
+	ordinaryAssignment.State = domain.AssignmentCompleted
+	ordinaryAssignment.UpdatedAt = completedAt
+	ordinary.Progress, ordinary.Control = domain.ProgressSucceeded, domain.ControlStopped
+	ordinary.Revision++
+	ordinary.CompletedAt, ordinary.UpdatedAt = &completedAt, completedAt
+	const secondTask, secondAttempt = "task-ordinary-fairness-2", "attempt-ordinary-fairness-2"
+	second := domain.Attempt{
+		ID: secondAttempt, WorkflowRunID: ordinaryRun, TaskID: secondTask, Number: 1,
+		Progress: domain.ProgressReady, Control: domain.ControlUnassigned,
+		Revision: 1, UpdatedAt: older.Add(time.Second),
+	}
+	ordinaryWorkflowRecord := domain.Workflow{
+		ID: ordinaryWorkflow, Version: 1, Name: ordinaryWorkflow, Project: project,
+		Class: domain.TaskClassRequired, TaskIDs: []string{ordinaryTask, secondTask}, CreatedAt: older,
+	}
+	if err := fixture.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
+		Workflows: []domain.Workflow{ordinaryWorkflowRecord},
+		Tasks: []domain.Task{{
+			ID: secondTask, WorkflowID: ordinaryWorkflow, Name: "ordinary-2",
+			Class: domain.TaskClassRequired, Routes: []domain.ProviderRoute{route}, MaxTurns: 2,
+		}},
+		Attempts:    []domain.Attempt{ordinary, second},
+		Assignments: []domain.Assignment{ordinaryAssignment},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.now = fixture.now.Add(2 * time.Second)
+	cycle.Tick(ctx)
+	state, err = fixture.supervision.LoadSupervisionActivationState(ctx, activationLeaseRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Activation.State != domain.ActivationPendingDispatch {
+		t.Fatalf("activation state=%q, want bounded priority at the next free opportunity", state.Activation.State)
+	}
+	records, err = fixture.store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, assignment := range records.Assignments {
+		if assignment.AttemptID == secondAttempt {
+			t.Fatalf("second older ordinary attempt consumed the bounded recovery/review opportunity: %+v", assignment)
+		}
+	}
 }
 
 func TestOlderActivationPrecedesYoungerOrdinaryAttemptAtSharedCapacity(t *testing.T) {
