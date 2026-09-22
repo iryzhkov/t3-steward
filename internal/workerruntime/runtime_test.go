@@ -551,7 +551,7 @@ func TestAttentionStopRequiresExactDigestAndReplaysStopReceipt(t *testing.T) {
 	}
 	stop := testThrottle(runtime, domain.ThrottleCommandHardStop, "attention-stop")
 	stop.AttentionStop = &domain.AttentionStopCommand{
-		CoordinatorID: "coord-1", CoordinatorEpoch: 9, Principal: "remote:human",
+		CoordinatorID: "coordinator", CoordinatorEpoch: 9, Principal: "remote:human",
 		DecisionID: "decision-1", WaitID: "wait-1", RequestID: "request-1",
 		WorkflowRunID: "run-1", TaskID: "task-1", RegisteredRevision: 4,
 		AppliedRevision: 5, RequestDigest: "request-digest",
@@ -571,10 +571,66 @@ func TestAttentionStopRequiresExactDigestAndReplaysStopReceipt(t *testing.T) {
 	if err != nil || !acks[0].Accepted || acks[0].Result != domain.ThrottleResultStopped || driver.stopCalls != 1 {
 		t.Fatalf("valid stop was not confirmed: ack=%+v stop_calls=%d err=%v", acks, driver.stopCalls, err)
 	}
-	replayed, err := reopenTestRuntime(t, root, driver).DeliverThrottle(context.Background(), []domain.ThrottleCommand{stop})
+	restarted := reopenTestRuntime(t, root, driver)
+	replayed, err := restarted.DeliverThrottle(context.Background(), []domain.ThrottleCommand{stop})
 	if err != nil || replayed[0].AcknowledgedAt != acks[0].AcknowledgedAt || driver.stopCalls != 1 {
 		t.Fatalf("exact replay repeated stop: ack=%+v stop_calls=%d err=%v", replayed, driver.stopCalls, err)
 	}
+	snapshot, err := restarted.Snapshot(context.Background())
+	if err != nil || len(snapshot.Assignments) != 1 || snapshot.Assignments[0].State != domain.AssignmentReleased || snapshot.Assignments[0].Control != domain.ControlStopped {
+		t.Fatalf("accepted attention stop snapshot = %+v err=%v", snapshot.Assignments, err)
+	}
+}
+
+func TestOnlyExactAcceptedAttentionStopReleasesThrottleObservation(t *testing.T) {
+	base := func(t *testing.T) (AttemptRecord, domain.ThrottleCommand, domain.ThrottleAcknowledgement) {
+		t.Helper()
+		root := t.TempDir()
+		driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}
+		runtime := newClaimedRuntime(t, root, driver)
+		if err := runtime.markPhase("assignment-1", PhaseStopped, "", driver.workspace, "thread-1"); err != nil {
+			t.Fatal(err)
+		}
+		record := journalRecord(t, runtime)
+		record.StopConfirmed = true
+		command := testThrottle(runtime, domain.ThrottleCommandHardStop, "attention-stop")
+		command.AttentionStop = &domain.AttentionStopCommand{
+			CoordinatorID: "coordinator", CoordinatorEpoch: 9, WorkflowRunID: "run-1", TaskID: "task-1",
+		}
+		command.AttentionStop.CommandDigest = domain.AttentionStopCommandDigest(command)
+		ack := domain.ThrottleAcknowledgement{CommandID: command.ID, AttemptID: command.AttemptID, Accepted: true, Result: domain.ThrottleResultStopped}
+		return record, command, ack
+	}
+	assertNonterminal := func(t *testing.T, record AttemptRecord) {
+		t.Helper()
+		got := observation(record, runtimeTestNow, false)
+		if got.State != domain.AssignmentClaimed || got.Control != domain.ControlPaused {
+			t.Fatalf("non-attention throttle observation = %+v", got)
+		}
+	}
+
+	t.Run("wrong digest", func(t *testing.T) {
+		record, command, ack := base(t)
+		command.AttentionStop.CommandDigest = "wrong"
+		record.ThrottleRequests = map[string]domain.ThrottleCommand{command.ID: command}
+		record.ThrottleResults = map[string]domain.ThrottleAcknowledgement{command.ID: ack}
+		assertNonterminal(t, record)
+	})
+	t.Run("wrong binding", func(t *testing.T) {
+		record, command, ack := base(t)
+		command.WorkspacePath += "-other"
+		command.AttentionStop.CommandDigest = domain.AttentionStopCommandDigest(command)
+		record.ThrottleRequests = map[string]domain.ThrottleCommand{command.ID: command}
+		record.ThrottleResults = map[string]domain.ThrottleAcknowledgement{command.ID: ack}
+		assertNonterminal(t, record)
+	})
+	t.Run("ordinary hard stop", func(t *testing.T) {
+		record, command, ack := base(t)
+		command.AttentionStop = nil
+		record.ThrottleRequests = map[string]domain.ThrottleCommand{command.ID: command}
+		record.ThrottleResults = map[string]domain.ThrottleAcknowledgement{command.ID: ack}
+		assertNonterminal(t, record)
+	})
 }
 
 func TestCancellationWholeCgroupDelegatesDurableStop(t *testing.T) {
