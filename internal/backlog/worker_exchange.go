@@ -107,6 +107,23 @@ func activationDispatchFailure(records sqlite.CoordinatorRecords, assignment dom
 	}, nil
 }
 
+func activationDispatchFailureCurrent(records sqlite.CoordinatorRecords, assignment domain.Assignment, failure domain.ActivationDispatchFailure) bool {
+	if failure.AssignmentID != assignment.ID || failure.AssignmentEpoch != assignment.Epoch {
+		return false
+	}
+	for _, run := range records.WorkflowRuns {
+		if run.ID == failure.RunID && run.GraphRevision != failure.GraphRevision {
+			return false
+		}
+	}
+	for _, attempt := range records.Attempts {
+		if attempt.ID == assignment.AttemptID {
+			return attempt.ID == failure.AttemptID && attempt.SupervisionActivationID == failure.ActivationID && attempt.SupervisionActivationEpoch == failure.ActivationEpoch
+		}
+	}
+	return false
+}
+
 // TaskWaitParkStore exposes the attempts the coordinator's task-bound waits
 // still park. A store that does not implement it has none, and every worker is
 // told that nothing is parked, which is exactly true for it.
@@ -275,7 +292,7 @@ func (c FleetCoordinator) ReconcileWorker(
 			if err != nil {
 				return report, err
 			}
-			if exists {
+			if exists && activationDispatchFailureCurrent(records, assignment, failure) {
 				report.Withheld = append(report.Withheld, assignment)
 				report.DispatchFailures = append(report.DispatchFailures, failure)
 				continue

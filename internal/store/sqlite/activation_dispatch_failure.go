@@ -28,6 +28,58 @@ func (s *Store) LoadActivationDispatchFailure(ctx context.Context, assignmentID 
 	return failure, true, nil
 }
 
+// ListCurrentActivationDispatchFailures returns only failures still bound to the
+// run's current graph, offered assignment, activation attempt, and live activation.
+func (s *Store) ListCurrentActivationDispatchFailures(ctx context.Context, runID string) ([]domain.ActivationDispatchFailure, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT failure.record
+		FROM coordinator_activation_dispatch_failures AS failure
+		JOIN coordinator_workflow_runs AS run ON run.id = failure.run_id
+		JOIN coordinator_assignments AS assignment ON assignment.id = failure.assignment_id AND assignment.assignment_epoch = failure.assignment_epoch
+		JOIN coordinator_attempts AS attempt ON attempt.id = assignment.attempt_id
+		JOIN coordinator_supervision_activations AS activation ON activation.id = failure.activation_id AND activation.run_id = failure.run_id
+		WHERE failure.run_id = ? AND activation.state IN (?, ?)
+		ORDER BY failure.id`, runID, string(domain.ActivationActive), string(domain.ActivationPendingDispatch))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var failures []domain.ActivationDispatchFailure
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var failure domain.ActivationDispatchFailure
+		if err := json.Unmarshal(raw, &failure); err != nil {
+			return nil, err
+		}
+		var runRaw, assignmentRaw, attemptRaw, activationRaw []byte
+		if err := s.db.QueryRowContext(ctx, "SELECT record FROM coordinator_workflow_runs WHERE id = ?", runID).Scan(&runRaw); err != nil {
+			return nil, err
+		}
+		if err := s.db.QueryRowContext(ctx, "SELECT record FROM coordinator_assignments WHERE id = ? AND assignment_epoch = ?", failure.AssignmentID, failure.AssignmentEpoch).Scan(&assignmentRaw); err != nil {
+			continue
+		}
+		if err := s.db.QueryRowContext(ctx, "SELECT record FROM coordinator_attempts WHERE id = ?", failure.AttemptID).Scan(&attemptRaw); err != nil {
+			continue
+		}
+		if err := s.db.QueryRowContext(ctx, "SELECT record FROM coordinator_supervision_activations WHERE id = ?", failure.ActivationID).Scan(&activationRaw); err != nil {
+			continue
+		}
+		var run domain.WorkflowRun
+		var assignment domain.Assignment
+		var attempt domain.Attempt
+		var activation domain.Activation
+		if json.Unmarshal(runRaw, &run) != nil || json.Unmarshal(assignmentRaw, &assignment) != nil || json.Unmarshal(attemptRaw, &attempt) != nil || json.Unmarshal(activationRaw, &activation) != nil {
+			continue
+		}
+		if assignment.State == domain.AssignmentOffered && run.GraphRevision == failure.GraphRevision && attempt.SupervisionActivationID == failure.ActivationID && attempt.SupervisionActivationEpoch == failure.ActivationEpoch && activation.Epoch == failure.ActivationEpoch && activation.GraphRevision == failure.GraphRevision {
+			failures = append(failures, failure)
+		}
+	}
+	return failures, rows.Err()
+}
+
 func (s *Store) RecordActivationDispatchFailure(ctx context.Context, coordinatorEpoch int64, failure domain.ActivationDispatchFailure) (domain.ActivationDispatchFailure, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

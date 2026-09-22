@@ -42,8 +42,9 @@ type SupervisionProjectionSource interface {
 // reads: the readiness snapshot the shared predicate consumes, and the run's
 // review incidents.
 type SupervisionProjection struct {
-	Snapshot  domain.SupervisionSnapshot
-	Incidents []domain.ReviewIncident
+	Snapshot         domain.SupervisionSnapshot
+	Incidents        []domain.ReviewIncident
+	DispatchFailures []domain.ActivationDispatchFailure
 }
 
 // RunGateView is one gate as status and explain render it.

@@ -60,6 +60,26 @@ func TestActivationDispatchFailureFreezesAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestActivationDispatchFailureCurrentProjectionSurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	store := openSupervisionStore(t, path)
+	failure := seedActivationDispatchFailure(t, store)
+	if _, _, err := store.RecordActivationDispatchFailure(context.Background(), 1, failure); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store = openSupervisionStore(t, path)
+	got, err := store.ListCurrentActivationDispatchFailures(context.Background(), failure.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].SafeMessage != failure.SafeMessage || got[0].NextAction != failure.NextAction {
+		t.Fatalf("current failures after restart = %+v", got)
+	}
+}
+
 func TestActivationDispatchFailureConcurrentPublicationFreezesOneIdentity(t *testing.T) {
 	store := openSupervisionStore(t, filepath.Join(t.TempDir(), "state.db"))
 	first := seedActivationDispatchFailure(t, store)

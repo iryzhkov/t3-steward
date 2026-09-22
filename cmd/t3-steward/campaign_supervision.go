@@ -584,6 +584,11 @@ func renderCampaignSupervisionState(out io.Writer, runID string, state backlogad
 			return err
 		}
 	}
+	for _, failure := range state.DispatchFailures {
+		if _, err := fmt.Fprintf(out, "  dispatch     %s: %s; next action: %s\n", campaignSupervisionValue(failure.Code), campaignSupervisionValue(failure.SafeMessage), campaignSupervisionValue(failure.NextAction)); err != nil {
+			return err
+		}
+	}
 	if state.SinkSettled {
 		if _, err := fmt.Fprint(out, "  settled      the run is settled; supervision is closed\n"); err != nil {
 			return err

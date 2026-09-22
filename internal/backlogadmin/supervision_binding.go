@@ -56,6 +56,10 @@ func (c CoordinatorSupervisionStore) LoadSupervision(ctx context.Context, runID 
 			LastDecision:              gate.LastDecision,
 		})
 	}
+	state.DispatchFailures, err = c.Store.ListCurrentActivationDispatchFailures(ctx, runID)
+	if err != nil {
+		return SupervisionState{}, err
+	}
 	for _, incident := range facts.Incidents {
 		state.Incidents = append(state.Incidents, SupervisionIncidentView{
 			Incident:                   incident.Incident,

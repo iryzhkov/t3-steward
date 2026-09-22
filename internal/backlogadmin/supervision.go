@@ -210,11 +210,12 @@ type SupervisionIncidentView struct {
 // SupervisionState is the whole read-only picture of one run's supervision:
 // the overview, the inbox and the evidence the plan asks show to expose.
 type SupervisionState struct {
-	Record     domain.SupervisionRecord  `json:"record"`
-	Activation domain.Activation         `json:"activation"`
-	Gates      []SupervisionGateView     `json:"gates,omitempty"`
-	Holds      []domain.Hold             `json:"holds,omitempty"`
-	Incidents  []SupervisionIncidentView `json:"incidents,omitempty"`
+	Record           domain.SupervisionRecord           `json:"record"`
+	Activation       domain.Activation                  `json:"activation"`
+	Gates            []SupervisionGateView              `json:"gates,omitempty"`
+	Holds            []domain.Hold                      `json:"holds,omitempty"`
+	Incidents        []SupervisionIncidentView          `json:"incidents,omitempty"`
+	DispatchFailures []domain.ActivationDispatchFailure `json:"activationDispatchFailures,omitempty"`
 	// SinkSettled reports terminal settlement, after which every mutating
 	// supervision capability is revoked.
 	SinkSettled bool `json:"sinkSettled"`
