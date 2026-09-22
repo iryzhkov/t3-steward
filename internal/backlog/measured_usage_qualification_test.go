@@ -3,6 +3,8 @@ package backlog_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -68,11 +70,13 @@ type qualificationTotals struct {
 }
 
 type qualificationCoverage struct {
-	State         domain.UsageCoverageState `json:"state"`
-	Raw           int64                     `json:"raw"`
-	Normalized    int64                     `json:"normalized"`
-	Resets        int64                     `json:"resets,omitempty"`
-	UnknownModels int64                     `json:"unknownModels,omitempty"`
+	State            domain.UsageCoverageState `json:"state"`
+	Raw              int64                     `json:"raw"`
+	Normalized       int64                     `json:"normalized"`
+	ExpectedSessions int64                     `json:"expectedSessions"`
+	MissingLogs      int64                     `json:"missingLogs,omitempty"`
+	Resets           int64                     `json:"resets,omitempty"`
+	UnknownModels    int64                     `json:"unknownModels,omitempty"`
 }
 
 type qualificationAggregate struct {
@@ -128,6 +132,34 @@ func TestMeasuredUsageQualificationScenarios(t *testing.T) {
 	}
 }
 
+func TestMeasuredUsageQualificationMissingRepairAndReviewLogsArePartial(t *testing.T) {
+	scenario := qualificationScenario{
+		ID: "missing-repair-review-logs", RunID: "qual-missing", RunProgress: domain.ProgressSucceeded,
+		Assignments: []qualificationAssignment{
+			{ID: "initial-missing", TaskID: "task-missing", AttemptID: "attempt-missing-1", AttemptNumber: 1,
+				Progress: domain.ProgressFailed, WorkerID: "worker-missing", Provider: "claude-agent",
+				Model: "claude-sonnet", Thread: "thread-missing-initial", Role: domain.ExecutionRoleExecutor},
+			{ID: "repair-missing", TaskID: "task-missing", AttemptID: "attempt-missing-2", AttemptNumber: 2,
+				Progress: domain.ProgressSucceeded, WorkerID: "worker-missing", Provider: "claude-agent",
+				Model: "claude-sonnet", Thread: "thread-missing-repair", Role: domain.ExecutionRoleRepairExecutor},
+			{ID: "review-missing", TaskID: "review-overhead", AttemptID: "attempt-missing-review", AttemptNumber: 1,
+				Progress: domain.ProgressSucceeded, WorkerID: "worker-missing", Provider: "claude-agent",
+				Model: "claude-opus", Thread: "thread-missing-review", Role: domain.ExecutionRoleGateReviewer},
+		},
+		Evidence: []qualificationEvidence{{
+			AssignmentID: "initial-missing",
+			Line:         `[2026-09-22T18:00:00Z] CANON: {"type":"thread.token-usage.updated","eventId":"missing-initial-result","providerInstanceId":"claude-agent","threadId":"thread-missing-initial","createdAt":"2026-09-22T18:00:00Z","turnId":"missing-initial-turn","raw":{"method":"claude/result","payload":{"modelUsage":{"reported":{"inputTokens":20,"cacheCreationInputTokens":3,"cacheReadInputTokens":4,"outputTokens":5,"costUSD":0.20,"canonicalModel":"claude-sonnet"}}}}}`,
+		}},
+	}
+	got, _ := runQualificationScenario(t, scenario)
+	if got.AcceptedOutcomes != 1 || got.CostPerAcceptedOutcomeUSD != nil ||
+		got.Coverage.State != domain.UsageCoveragePartial || got.Coverage.ExpectedSessions != 3 ||
+		got.Coverage.MissingLogs != 2 || got.Totals.Input != 20 || got.Totals.Cost != 0.20 ||
+		got.Totals.CostCoverage != domain.UsageCostComplete {
+		t.Fatalf("missing-log public report = %#v", got)
+	}
+}
+
 func runQualificationScenario(t *testing.T, scenario qualificationScenario) (qualificationObserved, []byte) {
 	t.Helper()
 	ctx := context.Background()
@@ -161,7 +193,8 @@ func runQualificationScenario(t *testing.T, scenario qualificationScenario) (qua
 				Revision: 1, CreatedAt: now, UpdatedAt: now,
 			})
 		}
-		if !tasks[item.TaskID] {
+		if !tasks[item.TaskID] &&
+			(item.Role == domain.ExecutionRoleExecutor || item.Role == domain.ExecutionRoleRepairExecutor) {
 			tasks[item.TaskID] = true
 			records.Tasks = append(records.Tasks, domain.Task{
 				ID: item.TaskID, RunID: runID, WorkflowID: "workflow-" + runID,
@@ -259,28 +292,28 @@ func runQualificationScenario(t *testing.T, scenario qualificationScenario) (qua
 		workerIDs = append(workerIDs, workerID)
 	}
 	sort.Strings(workerIDs)
-	for _, workerID := range workerIDs {
+	reconcileWorker := func(workerID string) error {
 		worker := workers[workerID]
 		if scenario.SignedReplay {
 			client := signedUsageClient(t, worker, "lost-"+workerID, &signedLoopback{worker: worker, loseNext: true})
 			if _, err := coordinator.ReconcileWorker(ctx, client, causalOfferBuilder{},
 				backlog.WorkerAdmissionPolicy{QuotaChecksDisabled: true}, nil, nil, time.Minute, time.Hour); err == nil {
-				t.Fatal("lost signed response unexpectedly succeeded")
+				return errors.New("lost signed response unexpectedly succeeded")
 			}
 			if err := workerStores[workerID].Close(); err != nil {
-				t.Fatal(err)
+				return err
 			}
 			reopened, err := sqlite.OpenMigrated(workerPaths[workerID])
 			if err != nil {
-				t.Fatal(err)
+				return err
 			}
 			workerStores[workerID], worker.store = reopened, reopened
 			if err := coordinatorStore.Close(); err != nil {
-				t.Fatal(err)
+				return err
 			}
 			coordinatorStore, err = sqlite.OpenMigrated(coordinatorPath)
 			if err != nil {
-				t.Fatal(err)
+				return err
 			}
 			coordinator.Store = coordinatorStore
 		}
@@ -288,12 +321,31 @@ func runQualificationScenario(t *testing.T, scenario qualificationScenario) (qua
 		report, err := coordinator.ReconcileWorker(ctx, client, causalOfferBuilder{},
 			backlog.WorkerAdmissionPolicy{QuotaChecksDisabled: true}, nil, nil, time.Minute, time.Hour)
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
 		for _, claimed := range report.Claimed {
 			want := assignments[claimed.ID].Role
 			if claimed.ExecutionRole != want {
-				t.Fatalf("claim %s role = %q, want %q", claimed.ID, claimed.ExecutionRole, want)
+				return fmt.Errorf("claim %s role = %q, want %q", claimed.ID, claimed.ExecutionRole, want)
+			}
+		}
+		return nil
+	}
+	if scenario.ID == "parallel-cross-run-isolation" {
+		results := make(chan error, len(workerIDs))
+		for _, workerID := range workerIDs {
+			workerID := workerID
+			go func() { results <- reconcileWorker(workerID) }()
+		}
+		for range workerIDs {
+			if err := <-results; err != nil {
+				t.Fatal(err)
+			}
+		}
+	} else {
+		for _, workerID := range workerIDs {
+			if err := reconcileWorker(workerID); err != nil {
+				t.Fatal(err)
 			}
 		}
 	}
@@ -322,6 +374,13 @@ func runQualificationScenario(t *testing.T, scenario qualificationScenario) (qua
 		})
 	}
 	if err := coordinatorStore.SaveCoordinatorRecords(ctx, terminal); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinatorStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	coordinatorStore, err = sqlite.OpenMigrated(coordinatorPath)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -378,8 +437,9 @@ func qualificationObservation(report domain.UsageReport) qualificationObserved {
 		Totals:                    qualificationTotalsFromDomain(report.Totals),
 		Coverage: qualificationCoverage{
 			State: report.Coverage.State, Raw: report.Coverage.RawSampleCount,
-			Normalized: report.Coverage.NormalizedSampleCount, Resets: report.Coverage.ResetCount,
-			UnknownModels: report.Coverage.UnknownModelCount,
+			Normalized:       report.Coverage.NormalizedSampleCount,
+			ExpectedSessions: report.Coverage.ExpectedSessionCount, MissingLogs: report.Coverage.MissingLogSessionCount,
+			Resets: report.Coverage.ResetCount, UnknownModels: report.Coverage.UnknownModelCount,
 		},
 		Tasks: make(map[string]qualificationAggregate), Attempts: make(map[string]qualificationAggregate),
 		Roles: make(map[string]qualificationAggregate), Models: make(map[string]qualificationAggregate),

@@ -383,6 +383,42 @@ func (s *Store) AttributedUsage(ctx context.Context, runID string) (domain.Usage
 	if runID == "" {
 		return report, nil
 	}
+	sessionRows, err := s.db.QueryContext(ctx, `SELECT worker_id, provider, thread_id,
+		workflow_run_id, task_id, attempt_id, assignment_id, assignment_epoch,
+		activation_id, gate_id, execution_role
+		FROM coordinator_usage_bindings WHERE workflow_run_id = ?
+		ORDER BY worker_id, provider, thread_id, assignment_id LIMIT ?`,
+		runID, MaxRunUsageAggregation+1)
+	if err != nil {
+		return domain.UsageReport{}, err
+	}
+	for sessionRows.Next() {
+		var session domain.UsageExecutionSession
+		session.Attribution.Status = domain.UsageAttributed
+		if err := sessionRows.Scan(
+			&session.WorkerID, &session.ProviderInstanceID, &session.ThreadID,
+			&session.Attribution.WorkflowRunID, &session.Attribution.TaskID,
+			&session.Attribution.AttemptID, &session.Attribution.AssignmentID,
+			&session.Attribution.AssignmentEpoch, &session.Attribution.ActivationID,
+			&session.Attribution.GateID, &session.Attribution.Role,
+		); err != nil {
+			sessionRows.Close()
+			return domain.UsageReport{}, err
+		}
+		session.Attribution.WorkerID = session.WorkerID
+		report.ExpectedSessions = append(report.ExpectedSessions, session)
+	}
+	if err := sessionRows.Err(); err != nil {
+		sessionRows.Close()
+		return domain.UsageReport{}, err
+	}
+	if err := sessionRows.Close(); err != nil {
+		return domain.UsageReport{}, err
+	}
+	if len(report.ExpectedSessions) > MaxRunUsageAggregation {
+		report.ExpectedSessions = report.ExpectedSessions[:MaxRunUsageAggregation]
+		report.Coverage.Truncated = true
+	}
 	rows, err := s.db.QueryContext(ctx, attributedUsageSelect+
 		` WHERE b.workflow_run_id = ? ORDER BY u.observed_at, u.worker_id, u.event_id LIMIT ?`,
 		runID, MaxRunUsageAggregation+1)

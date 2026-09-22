@@ -675,8 +675,9 @@ func renderUsage(out io.Writer, report *domain.UsageReport, semantics string) er
 		fmt.Fprintln(out, "Measured provider cost per accepted outcome: unavailable (requires complete provider cost coverage)")
 	}
 	fmt.Fprintln(out, "Token totals are measured execution evidence, not subscription quota savings.")
-	fmt.Fprintf(out, "Coverage: %s; raw=%d normalized=%d overlap-excluded=%d overlap-ambiguous=%d diagnostics=%d dropped-diagnostics=%d unattributed=%d\n",
+	fmt.Fprintf(out, "Coverage: %s; raw=%d normalized=%d expected-sessions=%d missing-logs=%d overlap-excluded=%d overlap-ambiguous=%d diagnostics=%d dropped-diagnostics=%d unattributed=%d\n",
 		coverage.State, coverage.RawSampleCount, coverage.NormalizedSampleCount,
+		coverage.ExpectedSessionCount, coverage.MissingLogSessionCount,
 		coverage.ExcludedOverlapCount, coverage.AmbiguousOverlapCount, coverage.DiagnosticCount,
 		coverage.DiagnosticDroppedCount, coverage.UnattributedCount)
 	if coverage.ObservedFrom != nil && coverage.ObservedThrough != nil {

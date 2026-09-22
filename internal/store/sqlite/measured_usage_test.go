@@ -536,6 +536,138 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 	}
 }
 
+type pruneHistoryCounts struct {
+	observations int
+	usage        int
+	forwarded    int
+	receipts     int
+	overflow     int
+}
+
+func TestPruneHistoryIsAtomicAndForgetsExactDeliveryIdentity(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	stages := []string{"observations-pruned", "receipts-pruned", "forwarded-pruned", "usage-pruned", "overflow-pruned"}
+	for _, stage := range stages {
+		t.Run(stage, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.db")
+			store, err := OpenMigrated(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedPruneHistoryFixture(t, store, now)
+			before := loadPruneHistoryCounts(t, store)
+			store.pruneHistoryHook = func(got string) error {
+				if got == stage {
+					return errors.New("injected prune interruption")
+				}
+				return nil
+			}
+			if err := store.PruneHistory(ctx, now); err == nil {
+				t.Fatalf("checkpoint %q did not interrupt", stage)
+			}
+			if after := loadPruneHistoryCounts(t, store); after != before {
+				t.Fatalf("partial prune at %q: got %#v want %#v", stage, after, before)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, err = OpenMigrated(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			store.pruneHistoryHook = nil
+			if reopened := loadPruneHistoryCounts(t, store); reopened != before {
+				t.Fatalf("reopen after rollback = %#v, want %#v", reopened, before)
+			}
+			if err := store.PruneHistory(ctx, now); err != nil {
+				t.Fatal(err)
+			}
+			got := loadPruneHistoryCounts(t, store)
+			if got.observations != 1 || got.usage != 1 || got.forwarded != 0 || got.receipts != 0 || got.overflow != 0 {
+				t.Fatalf("pruned bookkeeping = %#v", got)
+			}
+			acks, err := store.WorkerUsageAcknowledgements(ctx, "offline-worker")
+			if err != nil || len(acks) != 0 {
+				t.Fatalf("stale offline receipt survived: %#v, %v", acks, err)
+			}
+			reused := domain.UsageSample{
+				ProviderInstanceID: "provider", ThreadID: "thread-new", Model: "model",
+				ObservedAt: now.Add(time.Hour), SourceEventID: "old-event",
+				Kind: domain.UsageKindCall, FieldPresence: domain.UsageFieldsAll, InputTokens: 7,
+			}
+			if err := store.ReceiveWorkerUsage(ctx, "offline-worker", []domain.UsageSample{reused}); err != nil {
+				t.Fatal(err)
+			}
+			acks, err = store.WorkerUsageAcknowledgements(ctx, "offline-worker")
+			if err != nil || len(acks) != 1 || acks[0] != "old-event" {
+				t.Fatalf("reused event identity receipt = %#v, %v", acks, err)
+			}
+		})
+	}
+}
+
+func seedPruneHistoryFixture(t *testing.T, store *Store, now time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	old := now.Add(-time.Hour)
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO observations(
+		bucket,observed_at,used_percent,resets_at,event_id,thread_id,model)
+		VALUES(?,?,?,?,?,?,?),(?,?,?,?,?,?,?)`,
+		"bucket", old.Format(time.RFC3339Nano), 1, "", "old-observation", "thread", "model",
+		"bucket", now.Add(time.Hour).Format(time.RFC3339Nano), 2, "", "new-observation", "thread", "model"); err != nil {
+		t.Fatal(err)
+	}
+	oldSample := domain.UsageSample{
+		ProviderInstanceID: "provider", ThreadID: "thread-old", Model: "model",
+		ObservedAt: old, SourceEventID: "old-event", Kind: domain.UsageKindCall,
+		FieldPresence: domain.UsageFieldsAll, InputTokens: 3,
+	}
+	overflow := domain.UsageSample{
+		ProviderInstanceID: "provider", ObservedAt: old.Add(time.Second),
+		SourceEventID: "diagnostic-overflow", Kind: domain.UsageKindDiagnostic,
+		DiagnosticCode: "overflow", CumulativeTokens: 9,
+	}
+	newSample := domain.UsageSample{
+		ProviderInstanceID: "provider", ThreadID: "thread-new", Model: "model",
+		ObservedAt: now.Add(time.Hour), SourceEventID: "new-event", Kind: domain.UsageKindCall,
+		FieldPresence: domain.UsageFieldsAll, InputTokens: 5,
+	}
+	if err := store.ReceiveWorkerUsage(ctx, "offline-worker", []domain.UsageSample{oldSample, overflow}); err != nil {
+		t.Fatal(err)
+	}
+	newSample.WorkerID = "offline-worker"
+	if err := store.RecordUsage(ctx, newSample); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO worker_usage_forwarded(
+		worker_id,event_id,acknowledged_at,revision) VALUES(?,?,?,?)`,
+		"offline-worker", "old-event", now.Format(time.RFC3339Nano), 0); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func loadPruneHistoryCounts(t *testing.T, store *Store) pruneHistoryCounts {
+	t.Helper()
+	var got pruneHistoryCounts
+	for _, item := range []struct {
+		table string
+		value *int
+	}{
+		{"observations", &got.observations},
+		{"usage_samples", &got.usage},
+		{"worker_usage_forwarded", &got.forwarded},
+		{"coordinator_worker_usage_receipts", &got.receipts},
+		{"usage_diagnostic_overflow", &got.overflow},
+	} {
+		if err := store.db.QueryRow("SELECT COUNT(*) FROM " + item.table).Scan(item.value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return got
+}
+
 func measuredAssignment(id, attempt, thread, provider string, epoch int64, now time.Time) domain.Assignment {
 	return domain.Assignment{
 		ID: id, AttemptID: attempt, WorkerID: "worker", WorkerEpoch: "worker-1",

@@ -50,12 +50,13 @@ type UsageAggregate struct {
 }
 
 type UsageNormalizationContext struct {
-	Now             time.Time
-	RunProgress     ProgressState
-	RunCompletedAt  *time.Time
-	TaskProgress    map[string]ProgressState
-	AttemptProgress map[string]ProgressState
-	HardTruncated   bool
+	Now                  time.Time
+	RunProgress          ProgressState
+	RunCompletedAt       *time.Time
+	TaskProgress         map[string]ProgressState
+	AttemptProgress      map[string]ProgressState
+	AcceptedOutcomeCount int64
+	HardTruncated        bool
 }
 
 type usageCandidate struct {
@@ -71,6 +72,7 @@ func NormalizeUsageReport(report UsageReport, context UsageNormalizationContext)
 	report.Coverage.AttributedCount = int64(len(samples))
 	report.Coverage.State = UsageCoverageComplete
 	report.Totals.ProviderCostCoverage = UsageCostUnavailable
+	report.MeasuredCostPerAcceptedOutcomeUSD = nil
 
 	reasons := map[string]bool{}
 	if report.Coverage.UnscopedUnattributedCount > 0 {
@@ -226,6 +228,20 @@ func NormalizeUsageReport(report UsageReport, context UsageNormalizationContext)
 	}
 
 	report.Coverage.NormalizedSampleCount = int64(len(selected))
+	report.Coverage.ExpectedSessionCount = int64(len(report.ExpectedSessions))
+	report.Coverage.MissingLogSessionCount = 0
+	usableSessions := make(map[string]bool, len(selected))
+	for _, sample := range selected {
+		usableSessions[usageSessionKey(sample)] = true
+	}
+	for _, session := range report.ExpectedSessions {
+		if !usableSessions[usageExpectedSessionKey(session)] {
+			report.Coverage.MissingLogSessionCount++
+		}
+	}
+	if report.Coverage.MissingLogSessionCount > 0 {
+		reasons["expected execution session has no usable provider token evidence"] = true
+	}
 	report.ByTask = aggregateUsage(selected, func(s UsageSample) (string, UsageAggregate) {
 		key := s.Attribution.TaskID
 		if key == "" {
@@ -255,20 +271,7 @@ func NormalizeUsageReport(report UsageReport, context UsageNormalizationContext)
 		return key, UsageAggregate{Key: key, Model: s.Model}
 	})
 	report.RunProgress = context.RunProgress
-	acceptedTasks := map[string]bool{}
-	for _, sample := range selected {
-		role := sample.Attribution.Role
-		taskID := sample.Attribution.TaskID
-		if taskID != "" && context.TaskProgress[taskID] == ProgressSucceeded &&
-			(role == ExecutionRoleTask || role == ExecutionRoleRepairExecutor) {
-			acceptedTasks[taskID] = true
-		}
-	}
-	report.AcceptedOutcomeCount = int64(len(acceptedTasks))
-	if report.AcceptedOutcomeCount > 0 && report.Totals.ProviderCostCoverage == UsageCostComplete {
-		costPerOutcome := report.Totals.ProviderCostUSD / float64(report.AcceptedOutcomeCount)
-		report.MeasuredCostPerAcceptedOutcomeUSD = &costPerOutcome
-	}
+	report.AcceptedOutcomeCount = context.AcceptedOutcomeCount
 
 	if len(selected) == 0 {
 		reasons["no usable provider usage evidence was observed"] = true
@@ -284,13 +287,20 @@ func NormalizeUsageReport(report UsageReport, context UsageNormalizationContext)
 		report.Coverage.UnsupportedCount > 0 || report.Coverage.DiagnosticCount > 0 || report.Coverage.DiagnosticDroppedCount > 0 ||
 		report.Coverage.MissingFieldCount > 0 || report.Coverage.AmbiguousOverlapCount > 0 ||
 		report.Coverage.CumulativeAmbiguityCount > 0 || report.Coverage.LateCount > 0 ||
-		report.Coverage.UnmatchedCallCount > 0 || report.Coverage.Truncated ||
-		report.Coverage.UnattributedCount > 0 {
+		report.Coverage.UnmatchedCallCount > 0 || report.Coverage.MissingLogSessionCount > 0 ||
+		report.Coverage.Truncated || report.Coverage.UnattributedCount > 0 {
 		report.Coverage.State = UsageCoveragePartial
 	}
 	report.Coverage.Reasons = sortedUsageReasons(reasons)
 	if len(report.Coverage.Reasons) > 0 {
 		report.Coverage.Reason = strings.Join(report.Coverage.Reasons, "; ")
+	}
+	if report.RunProgress == ProgressSucceeded && report.AcceptedOutcomeCount > 0 &&
+		report.Coverage.State == UsageCoverageComplete && !report.Coverage.Truncated &&
+		report.Coverage.MissingLogSessionCount == 0 && report.Coverage.UnattributedCount == 0 &&
+		report.Totals.ProviderCostCoverage == UsageCostComplete {
+		costPerOutcome := report.Totals.ProviderCostUSD / float64(report.AcceptedOutcomeCount)
+		report.MeasuredCostPerAcceptedOutcomeUSD = &costPerOutcome
 	}
 	return report
 }
@@ -322,6 +332,12 @@ func usageSampleLess(left, right UsageSample) bool {
 func usageSessionKey(sample UsageSample) string {
 	a := sample.Attribution
 	return sample.WorkerID + "\x00" + sample.ProviderInstanceID + "\x00" + sample.ThreadID + "\x00" +
+		a.AssignmentID + "\x00" + a.AttemptID
+}
+
+func usageExpectedSessionKey(session UsageExecutionSession) string {
+	a := session.Attribution
+	return session.WorkerID + "\x00" + session.ProviderInstanceID + "\x00" + session.ThreadID + "\x00" +
 		a.AssignmentID + "\x00" + a.AttemptID
 }
 

@@ -121,6 +121,74 @@ func TestNormalizeUsageReportClassifiesLateUnknownAndMalformedEvidence(t *testin
 	}
 }
 
+func TestNormalizeUsageReportCostPerOutcomeRequiresAcceptedCompleteRun(t *testing.T) {
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	attribution := UsageAttribution{
+		Status: UsageAttributed, WorkerID: "worker", WorkflowRunID: "run",
+		TaskID: "task", AttemptID: "attempt", AssignmentID: "assignment", Role: ExecutionRoleExecutor,
+	}
+	session := UsageExecutionSession{
+		WorkerID: "worker", ProviderInstanceID: "claude", ThreadID: "thread", Attribution: attribution,
+	}
+	sample := UsageSample{
+		WorkerID: "worker", ProviderInstanceID: "claude", ThreadID: "thread", Model: "model",
+		ObservedAt: now, SourceEventID: "event", Kind: UsageKindTurn, FieldPresence: UsageFieldsAll,
+		InputTokens: 10, OutputTokens: 2, CostUSD: 0.25, CostReported: true, Attribution: attribution,
+	}
+	for _, test := range []struct {
+		name     string
+		progress ProgressState
+		accepted int64
+		wantCost bool
+	}{
+		{name: "active", progress: ProgressActive, accepted: 1},
+		{name: "failed", progress: ProgressFailed, accepted: 1},
+		{name: "no accepted outcomes", progress: ProgressSucceeded, accepted: 0},
+		{name: "accepted complete", progress: ProgressSucceeded, accepted: 1, wantCost: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			report := NormalizeUsageReport(UsageReport{
+				WorkflowRunID: "run", ExpectedSessions: []UsageExecutionSession{session}, Samples: []UsageSample{sample},
+			}, UsageNormalizationContext{
+				Now: now, RunProgress: test.progress, AcceptedOutcomeCount: test.accepted,
+				TaskProgress:    map[string]ProgressState{"task": ProgressSucceeded},
+				AttemptProgress: map[string]ProgressState{"attempt": ProgressSucceeded},
+			})
+			if (report.MeasuredCostPerAcceptedOutcomeUSD != nil) != test.wantCost {
+				t.Fatalf("cost/outcome for %s = %#v", test.name, report.MeasuredCostPerAcceptedOutcomeUSD)
+			}
+		})
+	}
+}
+
+func TestNormalizeUsageReportDiagnosticOnlyExpectedSessionIsMissing(t *testing.T) {
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	attribution := UsageAttribution{
+		Status: UsageAttributed, WorkerID: "worker", WorkflowRunID: "run",
+		TaskID: "task", AttemptID: "attempt", AssignmentID: "assignment", Role: ExecutionRoleRepairExecutor,
+	}
+	report := NormalizeUsageReport(UsageReport{
+		WorkflowRunID: "run",
+		ExpectedSessions: []UsageExecutionSession{{
+			WorkerID: "worker", ProviderInstanceID: "claude", ThreadID: "thread", Attribution: attribution,
+		}},
+		Samples: []UsageSample{{
+			WorkerID: "worker", ProviderInstanceID: "claude", ThreadID: "thread",
+			ObservedAt: now, SourceEventID: "diagnostic", Kind: UsageKindDiagnostic,
+			DiagnosticCode: "malformed", Attribution: attribution,
+		}},
+	}, UsageNormalizationContext{
+		Now: now, RunProgress: ProgressSucceeded, AcceptedOutcomeCount: 1,
+		TaskProgress:    map[string]ProgressState{"task": ProgressSucceeded},
+		AttemptProgress: map[string]ProgressState{"attempt": ProgressSucceeded},
+	})
+	if report.Coverage.ExpectedSessionCount != 1 || report.Coverage.MissingLogSessionCount != 1 ||
+		report.Coverage.State != UsageCoveragePartial || report.MeasuredCostPerAcceptedOutcomeUSD != nil ||
+		report.Totals.ProviderCostCoverage != UsageCostUnavailable {
+		t.Fatalf("diagnostic-only session = %#v", report)
+	}
+}
+
 func TestNormalizeUsageReportCoverageNeverTurnsMissingIntoZero(t *testing.T) {
 	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
 	unsupported := UsageSample{

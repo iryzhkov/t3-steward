@@ -97,7 +97,7 @@ func TestRenderUsageQualifiesAcceptedOutcomeCost(t *testing.T) {
 			ProviderCostUSD: 0.43, ProviderCostReported: true,
 			ProviderCostCoverage: domain.UsageCostComplete,
 		},
-		Coverage: domain.UsageCoverage{State: domain.UsageCoverageComplete},
+		Coverage: domain.UsageCoverage{State: domain.UsageCoverageComplete, ExpectedSessionCount: 2},
 	}
 	var out bytes.Buffer
 	if err := renderUsage(&out, &report, "frozen semantics"); err != nil {
@@ -107,6 +107,7 @@ func TestRenderUsageQualifiesAcceptedOutcomeCost(t *testing.T) {
 		"Accepted outcomes: 1",
 		"Measured provider cost per accepted outcome: 0.430000",
 		"not subscription quota savings",
+		"expected-sessions=2 missing-logs=0",
 		"By role",
 	} {
 		if want == "By role" {

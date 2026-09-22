@@ -406,6 +406,16 @@ type UsageAttribution struct {
 	Role            ExecutionRole          `json:"role,omitempty"`
 }
 
+// UsageExecutionSession is an authoritative dispatch binding expected to
+// produce provider usage evidence. It contains identity only, never provider
+// content, prompts, transcripts, or credentials.
+type UsageExecutionSession struct {
+	WorkerID           string           `json:"workerId"`
+	ProviderInstanceID string           `json:"providerInstanceId"`
+	ThreadID           string           `json:"threadId"`
+	Attribution        UsageAttribution `json:"attribution"`
+}
+
 // UsageCoverage reports evidence deliberately excluded from a run-scoped result.
 type UsageCoverage struct {
 	State                     UsageCoverageState `json:"state"`
@@ -415,6 +425,8 @@ type UsageCoverage struct {
 	ObservedThrough           *time.Time         `json:"observedThrough,omitempty"`
 	RawSampleCount            int64              `json:"rawSampleCount"`
 	NormalizedSampleCount     int64              `json:"normalizedSampleCount"`
+	ExpectedSessionCount      int64              `json:"expectedSessionCount"`
+	MissingLogSessionCount    int64              `json:"missingLogSessionCount"`
 	AttributedCount           int64              `json:"attributedCount"`
 	UnattributedCount         int64              `json:"unattributedCount"`
 	UnscopedUnattributedCount int64              `json:"unscopedUnattributedCount"`
@@ -435,18 +447,19 @@ type UsageCoverage struct {
 }
 
 type UsageReport struct {
-	WorkflowRunID                     string           `json:"workflowRunId,omitempty"`
-	RunProgress                       ProgressState    `json:"runProgress,omitempty"`
-	AcceptedOutcomeCount              int64            `json:"acceptedOutcomeCount"`
-	MeasuredCostPerAcceptedOutcomeUSD *float64         `json:"measuredCostPerAcceptedOutcomeUsd,omitempty"`
-	Totals                            UsageTotals      `json:"totals"`
-	ByTask                            []UsageAggregate `json:"byTask,omitempty"`
-	ByAttempt                         []UsageAggregate `json:"byAttempt,omitempty"`
-	ByRole                            []UsageAggregate `json:"byRole,omitempty"`
-	ByModel                           []UsageAggregate `json:"byModel,omitempty"`
-	Samples                           []UsageSample    `json:"samples,omitempty"`
-	NextCursor                        string           `json:"nextCursor,omitempty"`
-	Coverage                          UsageCoverage    `json:"coverage"`
+	WorkflowRunID                     string                  `json:"workflowRunId,omitempty"`
+	RunProgress                       ProgressState           `json:"runProgress,omitempty"`
+	AcceptedOutcomeCount              int64                   `json:"acceptedOutcomeCount"`
+	MeasuredCostPerAcceptedOutcomeUSD *float64                `json:"measuredCostPerAcceptedOutcomeUsd,omitempty"`
+	Totals                            UsageTotals             `json:"totals"`
+	ByTask                            []UsageAggregate        `json:"byTask,omitempty"`
+	ByAttempt                         []UsageAggregate        `json:"byAttempt,omitempty"`
+	ByRole                            []UsageAggregate        `json:"byRole,omitempty"`
+	ByModel                           []UsageAggregate        `json:"byModel,omitempty"`
+	ExpectedSessions                  []UsageExecutionSession `json:"expectedSessions,omitempty"`
+	Samples                           []UsageSample           `json:"samples,omitempty"`
+	NextCursor                        string                  `json:"nextCursor,omitempty"`
+	Coverage                          UsageCoverage           `json:"coverage"`
 }
 
 // UsageSample is a token count reported by a provider for one API call or

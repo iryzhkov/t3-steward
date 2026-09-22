@@ -15,7 +15,7 @@
       "expected": {
         "runProgress":"succeeded","acceptedOutcomes":1,"costPerAcceptedOutcomeUsd":0.10,
         "totals":{"input":10,"cacheWrite":2,"cacheRead":3,"output":4,"cost":0.10,"costCoverage":"complete","samples":1,"calls":0,"turns":1},
-        "coverage":{"state":"complete","raw":1,"normalized":1},
+        "coverage":{"state":"complete","raw":1,"normalized":1,"expectedSessions":1},
         "tasks":{"task-straight":{"outcome":"succeeded","totals":{"input":10,"cacheWrite":2,"cacheRead":3,"output":4,"cost":0.10,"costCoverage":"complete","samples":1,"calls":0,"turns":1}}},
         "attempts":{"attempt-straight":{"outcome":"succeeded","totals":{"input":10,"cacheWrite":2,"cacheRead":3,"output":4,"cost":0.10,"costCoverage":"complete","samples":1,"calls":0,"turns":1}}},
         "roles":{"executor":{"totals":{"input":10,"cacheWrite":2,"cacheRead":3,"output":4,"cost":0.10,"costCoverage":"complete","samples":1,"calls":0,"turns":1}}},
@@ -41,7 +41,7 @@
       "expected": {
         "runProgress":"succeeded","acceptedOutcomes":1,"costPerAcceptedOutcomeUsd":0.43,
         "totals":{"input":43,"cacheWrite":5,"cacheRead":13,"output":12,"cost":0.43,"costCoverage":"complete","samples":4,"calls":0,"turns":4},
-        "coverage":{"state":"complete","raw":4,"normalized":4},
+        "coverage":{"state":"complete","raw":4,"normalized":4,"expectedSessions":4},
         "tasks":{
           "task-main":{"outcome":"succeeded","totals":{"input":35,"cacheWrite":5,"cacheRead":10,"output":9,"cost":0.35,"costCoverage":"complete","samples":2,"calls":0,"turns":2}},
           "task-review":{"outcome":"succeeded","totals":{"input":5,"cacheWrite":0,"cacheRead":1,"output":2,"cost":0.05,"costCoverage":"complete","samples":1,"calls":0,"turns":1}},
@@ -82,7 +82,7 @@
       "expected": {
         "runProgress":"succeeded","acceptedOutcomes":2,
         "totals":{"input":20,"cacheWrite":1,"cacheRead":6,"output":5,"cost":0.08,"costCoverage":"partial","samples":2,"calls":0,"turns":2},
-        "coverage":{"state":"complete","raw":2,"normalized":2},
+        "coverage":{"state":"complete","raw":2,"normalized":2,"expectedSessions":2},
         "tasks":{
           "task-a":{"outcome":"succeeded","totals":{"input":8,"cacheWrite":1,"cacheRead":2,"output":3,"cost":0.08,"costCoverage":"complete","samples":1,"calls":0,"turns":1}},
           "task-b":{"outcome":"succeeded","totals":{"input":12,"cacheWrite":0,"cacheRead":4,"output":2,"cost":0,"costCoverage":"unavailable","samples":1,"calls":0,"turns":1}}
@@ -111,7 +111,7 @@
       "expected": {
         "runProgress":"succeeded","acceptedOutcomes":1,
         "totals":{"input":16,"cacheWrite":3,"cacheRead":6,"output":9,"cost":0,"costCoverage":"unavailable","samples":3,"calls":3,"turns":0},
-        "coverage":{"state":"partial","raw":3,"normalized":3,"resets":1,"unknownModels":3},
+        "coverage":{"state":"partial","raw":3,"normalized":3,"expectedSessions":1,"resets":1,"unknownModels":3},
         "tasks":{"task-restart":{"outcome":"succeeded","totals":{"input":16,"cacheWrite":3,"cacheRead":6,"output":9,"cost":0,"costCoverage":"unavailable","samples":3,"calls":3,"turns":0}}},
         "attempts":{"attempt-restart":{"outcome":"succeeded","totals":{"input":16,"cacheWrite":3,"cacheRead":6,"output":9,"cost":0,"costCoverage":"unavailable","samples":3,"calls":3,"turns":0}}},
         "roles":{"executor":{"totals":{"input":16,"cacheWrite":3,"cacheRead":6,"output":9,"cost":0,"costCoverage":"unavailable","samples":3,"calls":3,"turns":0}}},

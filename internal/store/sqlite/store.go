@@ -25,11 +25,12 @@ import (
 
 // Store is the SQLite-backed state store.
 type Store struct {
-	db              *sql.DB
-	now             func() time.Time
-	path            string
-	ownerLock       *os.File
-	usageRecordHook usageMutationHook
+	db               *sql.DB
+	now              func() time.Time
+	path             string
+	ownerLock        *os.File
+	usageRecordHook  usageMutationHook
+	pruneHistoryHook usageMutationHook
 }
 
 var migrations = []string{
@@ -851,14 +852,57 @@ func (s *Store) UsageSamples(ctx context.Context, from, to time.Time) ([]domain.
 	return scanAttributedUsage(rows)
 }
 
-// PruneHistory deletes observations and usage samples older than the cutoff.
+// PruneHistory atomically deletes observations, usage samples, and delivery
+// bookkeeping older than the cutoff. Receipt deletion is joined to the exact
+// worker-scoped sample identity so a later event-id reuse cannot inherit an ack.
 func (s *Store) PruneHistory(ctx context.Context, before time.Time) error {
 	cutoff := before.UTC().Format(time.RFC3339Nano)
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM observations WHERE observed_at < ?`, cutoff); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM usage_samples WHERE observed_at < ?`, cutoff)
-	return err
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM observations WHERE observed_at < ?`, cutoff); err != nil {
+		return err
+	}
+	if err := usageMutationCheckpoint(s.pruneHistoryHook, "observations-pruned"); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM coordinator_worker_usage_receipts
+		WHERE EXISTS (SELECT 1 FROM usage_samples AS u
+			WHERE u.worker_id = coordinator_worker_usage_receipts.worker_id
+			AND u.event_id = coordinator_worker_usage_receipts.event_id
+			AND u.observed_at < ?)`, cutoff); err != nil {
+		return err
+	}
+	if err := usageMutationCheckpoint(s.pruneHistoryHook, "receipts-pruned"); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM worker_usage_forwarded
+		WHERE EXISTS (SELECT 1 FROM usage_samples AS u
+			WHERE u.worker_id = worker_usage_forwarded.worker_id
+			AND u.event_id = worker_usage_forwarded.event_id
+			AND u.observed_at < ?)`, cutoff); err != nil {
+		return err
+	}
+	if err := usageMutationCheckpoint(s.pruneHistoryHook, "forwarded-pruned"); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_samples WHERE observed_at < ?`, cutoff); err != nil {
+		return err
+	}
+	if err := usageMutationCheckpoint(s.pruneHistoryHook, "usage-pruned"); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_diagnostic_overflow
+		WHERE NOT EXISTS (SELECT 1 FROM usage_samples AS u
+			WHERE u.worker_id = usage_diagnostic_overflow.worker_id AND u.diagnostic_code = 'overflow')`); err != nil {
+		return err
+	}
+	if err := usageMutationCheckpoint(s.pruneHistoryHook, "overflow-pruned"); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // RegisterDispatchedThread records that a thread was started by the

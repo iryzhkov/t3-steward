@@ -380,10 +380,18 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 				taskProgress[latest.TaskID] = latest.Progress
 			}
 		}
+		var acceptedOutcomes int64
+		for _, task := range view.runTasks(query.WorkflowRunID) {
+			if latest := latestAttempt(view.attempts[query.WorkflowRunID+"\x00"+task.ID]); latest != nil &&
+				latest.Progress == domain.ProgressSucceeded {
+				acceptedOutcomes++
+			}
+		}
 		hardTruncated := usage.Coverage.Truncated
 		usage = domain.NormalizeUsageReport(usage, domain.UsageNormalizationContext{
 			Now: view.now, RunProgress: run.Progress, RunCompletedAt: run.CompletedAt,
-			TaskProgress: taskProgress, AttemptProgress: attemptProgress, HardTruncated: hardTruncated,
+			TaskProgress: taskProgress, AttemptProgress: attemptProgress,
+			AcceptedOutcomeCount: acceptedOutcomes, HardTruncated: hardTruncated,
 		})
 		raw := usage.Samples
 		usage.Samples = nil
