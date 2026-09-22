@@ -145,6 +145,19 @@ func (s *Store) CommitRecoveryRetry(ctx context.Context, request domain.Recovery
 	incident.Recovery.State = domain.RecoveryRecovering
 	incident.Recovery.NextAction = domain.RecoveryNoAction
 	incident.Recovery.LastProgressAt = now
+	// Accepting the custody-backed proposal is the repair activation's durable
+	// decision. Acknowledge the immutable failure event it repaired in this same
+	// transaction, so activation lifecycle reconciliation cannot later classify
+	// the successful repair turn as an empty decision and escalate the incident.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coordinator_supervision_inbox_ack(event_id, run_id, purpose, acknowledged_at)
+		SELECT id, run_id, ?, ? FROM coordinator_supervision_inbox
+		WHERE run_id = ? AND json_extract(record, '$.incidentId') = ?
+			AND json_extract(record, '$.attemptId') = ?
+		ON CONFLICT(event_id, purpose) DO NOTHING`,
+		string(domain.RecoveryActivationRepair), now.Format(time.RFC3339Nano), request.RunID, request.IncidentID, request.SourceAttemptID); err != nil {
+		return domain.RecoveryRetryReceipt{}, fmt.Errorf("acknowledge repaired recovery event: %w", err)
+	}
 	if err := saveSupervisionIncidentTx(ctx, tx, incident); err != nil {
 		return domain.RecoveryRetryReceipt{}, err
 	}

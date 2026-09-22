@@ -566,6 +566,14 @@ func PlanActivation(state SupervisionActivationState, signal ActivationSignal, n
 			}
 			next = newActivation(record, result.Epoch, inbox.HighWaterMark, recovered)
 			next.Purpose = purpose
+			// The activation authority is bound to the graph that raised its
+			// selected inbox. Recovery proposal reconciliation compares this
+			// value with both the proposal and the still-current run graph.
+			for _, trigger := range inbox.Triggers {
+				if trigger.GraphRevision > next.GraphRevision {
+					next.GraphRevision = trigger.GraphRevision
+				}
+			}
 			if len(inbox.Events) != 0 {
 				next.ReadyAt = inbox.Events[0].OccurredAt.UTC()
 				next.ReadyTieID = inbox.Events[0].ID
@@ -611,6 +619,7 @@ func PlanActivation(state SupervisionActivationState, signal ActivationSignal, n
 			// original activation's routing and authority context intact.
 			next.Purpose = activation.Purpose
 			next.IncidentID = activation.IncidentID
+			next.GraphRevision = activation.GraphRevision
 			next.Principal = activation.Principal
 			if len(inbox.Events) != 0 {
 				next.ReadyAt = inbox.Events[0].OccurredAt.UTC()

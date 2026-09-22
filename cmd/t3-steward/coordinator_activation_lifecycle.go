@@ -114,6 +114,14 @@ func (c coordinatorSupervision) activationLifecycleSignal(
 			if err != nil {
 				return signal, false, err
 			}
+			if activation.Purpose == domain.RecoveryActivationRepair && repairActivationCommitted(state.Pending, activation) {
+				// CommitRecoveryRetry is the repair activation's durable decision.
+				// It can only acknowledge this purpose after custody and all repair
+				// authority fences pass, so completion must not be reported as an
+				// empty turn merely because it did not write a gate-decision row.
+				outcome = domain.ActivationOutcomeDecided
+				reason = "the repair activation committed a recovery retry"
+			}
 			signal.Event = domain.ActivationEventLimitReached
 			signal.ExecutionObserved = true
 			signal.Outcome = outcome
@@ -139,6 +147,21 @@ func (c coordinatorSupervision) activationLifecycleSignal(
 		return signal, false, nil
 	}
 	return signal, false, nil
+}
+
+func repairActivationCommitted(events []backlog.SupervisionEvent, activation domain.Activation) bool {
+	for _, event := range events {
+		if event.Kind != backlog.TriggerTaskJudgmentRequired || event.IncidentID != activation.IncidentID ||
+			event.ID != activation.ReadyTieID {
+			continue
+		}
+		for _, purpose := range event.AcknowledgedPurposes {
+			if purpose == domain.RecoveryActivationRepair {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // activationTurnOutcome maps one finished activation turn onto its outcome.

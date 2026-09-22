@@ -513,7 +513,22 @@ func (c coordinatorSupervision) activationSignal(
 		signal.Reason = "the planned activation dispatch left no durable assignment"
 		return signal, true, nil
 	}
-	inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, state.Record.EventCursor, reviewerSupervisionEvents(state.Pending))
+	// Repair events are a separate authority lane. They do not advance the
+	// reviewer's compatibility cursor, and they must be selected before ordinary
+	// review events so a failed producer is repaired before its success gate can
+	// be reviewed. CommitRecoveryRetry acknowledges the repair purpose, after
+	// which a later review event may dispatch an independent reviewer.
+	purpose := domain.RecoveryActivationPurpose("")
+	cursor := state.Record.EventCursor
+	events := reviewerSupervisionEvents(state.Pending)
+	if state.Record.Config.Recovery != nil {
+		if repairs := repairSupervisionEvents(state.Pending); len(repairs) != 0 {
+			purpose = domain.RecoveryActivationRepair
+			cursor = 0
+			events = repairs
+		}
+	}
+	inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, cursor, events)
 	if !inbox.NonEmpty() || state.OtherValidActivation {
 		return signal, false, nil
 	}
@@ -533,9 +548,34 @@ func (c coordinatorSupervision) activationSignal(
 		return signal, false, nil
 	}
 	signal.ExpectedEpoch = state.Activation.Epoch
+	signal.Purpose = purpose
 	signal.IncidentID = firstIncidentOfInbox(inbox)
-	signal.Reason = fmt.Sprintf("%d supervision event(s) are waiting for review", len(inbox.EventIDs()))
+	if purpose == domain.RecoveryActivationRepair {
+		signal.Reason = fmt.Sprintf("%d recovery event(s) are waiting for repair", len(inbox.EventIDs()))
+	} else {
+		signal.Reason = fmt.Sprintf("%d supervision event(s) are waiting for review", len(inbox.EventIDs()))
+	}
 	return signal, true, nil
+}
+
+func repairSupervisionEvents(events []backlog.SupervisionEvent) []backlog.SupervisionEvent {
+	selected := make([]backlog.SupervisionEvent, 0, len(events))
+	for _, event := range events {
+		if event.Kind != backlog.TriggerTaskJudgmentRequired {
+			continue
+		}
+		acknowledged := false
+		for _, purpose := range event.AcknowledgedPurposes {
+			if purpose == domain.RecoveryActivationRepair {
+				acknowledged = true
+				break
+			}
+		}
+		if !acknowledged {
+			selected = append(selected, event)
+		}
+	}
+	return selected
 }
 
 func reviewerSupervisionEvents(events []backlog.SupervisionEvent) []backlog.SupervisionEvent {
