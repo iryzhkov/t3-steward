@@ -114,11 +114,11 @@ func TestRecoveryObserverRequiresExplicitOptIn(t *testing.T) {
 
 func recoveryTestSupervisionConfig() domain.SupervisionConfig {
 	return domain.SupervisionConfig{
-		Route:            domain.ProviderRoute{ProviderInstanceID: "reviewer", Model: "review-model"},
+		Route:            domain.ProviderRoute{ProviderInstanceID: "reviewer", Model: "review-model", QuotaPoolID: "recovery-pool"},
 		PromptArtifactID: "review-prompt", MaxActivations: 4, MaxTurnsPerActivation: 4, ActivationDeadline: time.Hour,
 		Recovery: &domain.RecoveryConfig{
 			Version:          domain.RecoveryContractV1,
-			Route:            domain.ProviderRoute{ProviderInstanceID: "repairer", Model: "repair-model"},
+			Route:            domain.ProviderRoute{ProviderInstanceID: "repairer", Model: "repair-model", QuotaPoolID: "recovery-pool"},
 			PromptArtifactID: "repair-prompt", MaxAttemptsPerIncident: 3,
 			IncidentDeadline: 24 * time.Hour, StalledAfter: 2 * time.Hour,
 		},
