@@ -244,7 +244,9 @@ func (p ContainedT3) captured(pkg workerproto.ExecutionPackage) (containedCaptur
 func (p ContainedT3) Quiesce(ctx context.Context, pkg workerproto.ExecutionPackage, force bool) error {
 	plan, err := p.preparation(pkg)
 	if errors.Is(err, os.ErrNotExist) && force {
-		return nil
+		// Preparation may fail before the provider launch record is durable, but
+		// verification launches have their own records and still hold custody.
+		return p.stopVerifications(ctx, pkg)
 	}
 	if err != nil {
 		return err

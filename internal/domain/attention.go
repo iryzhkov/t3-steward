@@ -124,12 +124,14 @@ const (
 )
 
 type AttentionReceipt struct {
-	Decision    AttentionDecision     `json:"decision"`
-	RequestedBy string                `json:"requestedBy"`
-	State       AttentionReceiptState `json:"state"`
-	Failure     string                `json:"failure,omitempty"`
-	ReceivedAt  time.Time             `json:"receivedAt"`
-	AppliedAt   *time.Time            `json:"appliedAt,omitempty"`
-	DeliveredAt *time.Time            `json:"deliveredAt,omitempty"`
-	ObservedAt  *time.Time            `json:"observedAt,omitempty"`
+	Decision      AttentionDecision     `json:"decision"`
+	RequestedBy   string                `json:"requestedBy"`
+	State         AttentionReceiptState `json:"state"`
+	Failure       string                `json:"failure,omitempty"`
+	ReceivedAt    time.Time             `json:"receivedAt"`
+	AppliedAt     *time.Time            `json:"appliedAt,omitempty"`
+	DeliveredAt   *time.Time            `json:"deliveredAt,omitempty"`
+	ObservedAt    *time.Time            `json:"observedAt,omitempty"`
+	CommandID     string                `json:"commandId,omitempty"`
+	CommandDigest string                `json:"commandDigest,omitempty"`
 }

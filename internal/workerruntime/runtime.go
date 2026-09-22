@@ -418,6 +418,10 @@ func (r *Runtime) DeliverThrottle(ctx context.Context, commands []domain.Throttl
 }
 
 func (r *Runtime) deliverThrottle(ctx context.Context, command domain.ThrottleCommand) (domain.ThrottleAcknowledgement, error) {
+	if command.AttentionStop != nil && (command.Kind != domain.ThrottleCommandHardStop ||
+		command.AttentionStop.CommandDigest == "" || command.AttentionStop.CommandDigest != domain.AttentionStopCommandDigest(command)) {
+		return r.finishThrottle(command, false, "", nil, "invalid attention stop command binding or digest")
+	}
 	state, err := r.journal.snapshot()
 	if err != nil {
 		return domain.ThrottleAcknowledgement{}, err
@@ -1237,6 +1241,10 @@ func (r *Runtime) finishThrottle(command domain.ThrottleCommand, accepted bool, 
 				record.Phase = PhaseStopped
 			case domain.ThrottleCommandHardStop:
 				record.Phase = PhaseStopped
+				if command.AttentionStop != nil {
+					record.StopConfirmed = true
+					record.ObservedThreadState = "stopped"
+				}
 			case domain.ThrottleCommandResume:
 				record.StopObservedSequence = 0
 				record.Phase = PhaseRunning

@@ -542,6 +542,41 @@ func TestThrottleCheckpointResumeAndReplay(t *testing.T) {
 	}
 }
 
+func TestAttentionStopRequiresExactDigestAndReplaysStopReceipt(t *testing.T) {
+	root := t.TempDir()
+	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}
+	runtime := newClaimedRuntime(t, root, driver)
+	if err := runtime.markPhase("assignment-1", PhaseRunning, "", driver.workspace, "thread-1"); err != nil {
+		t.Fatal(err)
+	}
+	stop := testThrottle(runtime, domain.ThrottleCommandHardStop, "attention-stop")
+	stop.AttentionStop = &domain.AttentionStopCommand{
+		CoordinatorID: "coord-1", CoordinatorEpoch: 9, Principal: "remote:human",
+		DecisionID: "decision-1", WaitID: "wait-1", RequestID: "request-1",
+		WorkflowRunID: "run-1", TaskID: "task-1", RegisteredRevision: 4,
+		AppliedRevision: 5, RequestDigest: "request-digest",
+	}
+	stop.AttentionStop.CommandDigest = domain.AttentionStopCommandDigest(stop)
+	corrupted := stop
+	corrupted.ID = "attention-stop-corrupt"
+	corrupted.AttentionStop = new(domain.AttentionStopCommand)
+	*corrupted.AttentionStop = *stop.AttentionStop
+	corrupted.AttentionStop.CommandDigest = domain.AttentionStopCommandDigest(corrupted)
+	corrupted.AttentionStop.Principal = "remote:attacker"
+	rejected, err := runtime.DeliverThrottle(context.Background(), []domain.ThrottleCommand{corrupted})
+	if err != nil || rejected[0].Accepted || driver.stopCalls != 0 {
+		t.Fatalf("corrupted binding executed: ack=%+v stop_calls=%d err=%v", rejected, driver.stopCalls, err)
+	}
+	acks, err := runtime.DeliverThrottle(context.Background(), []domain.ThrottleCommand{stop})
+	if err != nil || !acks[0].Accepted || acks[0].Result != domain.ThrottleResultStopped || driver.stopCalls != 1 {
+		t.Fatalf("valid stop was not confirmed: ack=%+v stop_calls=%d err=%v", acks, driver.stopCalls, err)
+	}
+	replayed, err := reopenTestRuntime(t, root, driver).DeliverThrottle(context.Background(), []domain.ThrottleCommand{stop})
+	if err != nil || replayed[0].AcknowledgedAt != acks[0].AcknowledgedAt || driver.stopCalls != 1 {
+		t.Fatalf("exact replay repeated stop: ack=%+v stop_calls=%d err=%v", replayed, driver.stopCalls, err)
+	}
+}
+
 func TestCancellationWholeCgroupDelegatesDurableStop(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}

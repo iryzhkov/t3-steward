@@ -19,8 +19,11 @@ type NodeWaitOperation struct {
 	Task     *domain.TaskWaitRegistration `json:"task,omitempty"`
 	Result   *domain.TaskWaitResult       `json:"result,omitempty"`
 	Decision *domain.AttentionDecision    `json:"decision,omitempty"`
-	From     string                       `json:"from,omitempty"`
-	To       string                       `json:"to,omitempty"`
+	// CoordinatorID is injected by the authenticated server boundary and is
+	// never accepted from request JSON.
+	CoordinatorID string `json:"-"`
+	From          string `json:"from,omitempty"`
+	To            string `json:"to,omitempty"`
 	// Host is the host whose steward delivers the wake of this registration.
 	// A T3 thread exists only on the host that opened it, and a wake is sent by
 	// the wait runner whose NodeHost matches the wait's host, so a registration
@@ -82,7 +85,7 @@ type taskWaitStore interface {
 	RegisterTaskWait(context.Context, domain.TaskWaitRegistration, time.Time) (domain.TaskWait, error)
 	ListTaskWaits(context.Context) ([]domain.TaskWait, error)
 	CancelTaskWait(context.Context, string, time.Time) (domain.TaskWait, error)
-	DecideAttention(context.Context, domain.AttentionDecision, string, time.Time) (domain.TaskWait, domain.AttentionReceipt, error)
+	DecideAttentionForCoordinator(context.Context, domain.AttentionDecision, string, string, time.Time) (domain.TaskWait, domain.AttentionReceipt, error)
 }
 
 func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWaitOperation) (NodeWaitResponse, error) {
@@ -230,7 +233,7 @@ func (s *Service) taskWait(ctx context.Context, principal Principal, op NodeWait
 		if op.Decision == nil {
 			return result, errors.New("attention decision is missing")
 		}
-		wait, receipt, err := store.DecideAttention(ctx, *op.Decision, principal.ID, s.now())
+		wait, receipt, err := store.DecideAttentionForCoordinator(ctx, *op.Decision, principal.ID, op.CoordinatorID, s.now())
 		if err != nil {
 			return result, err
 		}

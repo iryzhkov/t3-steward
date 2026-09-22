@@ -122,6 +122,9 @@ func (s *Store) CommitThrottleAttemptTransitions(ctx context.Context, input []do
 			return fmt.Errorf("save throttle attempt record %q/%q: %w",
 				transition.Record.DirectiveID, transition.Record.AttemptID, err)
 		}
+		if err := advanceAttentionStopDeliveryTx(ctx, tx, transition.Record); err != nil {
+			return err
+		}
 		if _, err := insertThrottleAttemptAuditEvent(ctx, tx, transition); err != nil {
 			return err
 		}
@@ -130,6 +133,52 @@ func (s *Store) CommitThrottleAttemptTransitions(ctx context.Context, input []do
 		return fmt.Errorf("commit throttle attempt transitions: %w", err)
 	}
 	return nil
+}
+
+func advanceAttentionStopDeliveryTx(ctx context.Context, tx *sql.Tx, record domain.ThrottleAttemptRecord) error {
+	binding := record.Command.AttentionStop
+	if binding == nil {
+		return nil
+	}
+	if binding.CommandDigest == "" || binding.CommandDigest != domain.AttentionStopCommandDigest(record.Command) {
+		return errors.New("attention stop throttle command digest is invalid")
+	}
+	if record.Delivery != domain.ThrottleDeliveryAcknowledged || record.Result != domain.ThrottleResultStopped {
+		return nil
+	}
+	waits, err := loadJSON[domain.TaskWait](ctx, tx, "coordinator_task_waits")
+	if err != nil {
+		return err
+	}
+	for _, wait := range waits {
+		if wait.ID != binding.WaitID {
+			continue
+		}
+		for index := len(wait.AttentionReceipts) - 1; index >= 0; index-- {
+			prior := wait.AttentionReceipts[index]
+			if prior.Decision.ID != binding.DecisionID || prior.CommandID != record.Command.ID ||
+				prior.CommandDigest != binding.CommandDigest {
+				continue
+			}
+			if prior.State == domain.AttentionDelivered || prior.State == domain.AttentionObserved {
+				return nil
+			}
+			if prior.State != domain.AttentionApplied {
+				return errors.New("attention stop acknowledgement has no applied receipt")
+			}
+			delivered := prior
+			delivered.State = domain.AttentionDelivered
+			at := record.UpdatedAt.UTC()
+			if record.AcknowledgedAt != nil {
+				at = record.AcknowledgedAt.UTC()
+			}
+			delivered.DeliveredAt = &at
+			wait.AttentionReceipts = append(wait.AttentionReceipts, delivered)
+			return saveTaskWaitTx(ctx, tx, wait)
+		}
+		return errors.New("attention stop acknowledgement has no matching receipt")
+	}
+	return errors.New("attention stop acknowledgement names an unknown wait")
 }
 
 func insertThrottleAttemptAuditEvent(ctx context.Context, tx *sql.Tx, transition domain.ThrottleAttemptTransition) (domain.AuditEvent, error) {

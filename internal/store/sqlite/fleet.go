@@ -164,6 +164,9 @@ func (s *Store) SaveWorkerSnapshot(ctx context.Context, snapshot domain.WorkerSn
 		snapshot.Sequence, snapshot.Connected, snapshot.ValidUntil.UTC().Format(time.RFC3339Nano), raw); err != nil {
 		return fmt.Errorf("save worker snapshot %q: %w", snapshot.WorkerID, err)
 	}
+	if err := observeAttentionStopsTx(ctx, tx, snapshot); err != nil {
+		return err
+	}
 	if _, err := insertWorkerSnapshotAuditEvent(ctx, tx, snapshot); err != nil {
 		return err
 	}
@@ -171,6 +174,159 @@ func (s *Store) SaveWorkerSnapshot(ctx context.Context, snapshot domain.WorkerSn
 		return fmt.Errorf("commit worker snapshot %q: %w", snapshot.WorkerID, err)
 	}
 	return nil
+}
+
+func loadThrottleAttemptRecordsTx(ctx context.Context, tx *sql.Tx) ([]domain.ThrottleAttemptRecord, error) {
+	rows, err := tx.QueryContext(ctx, "SELECT record FROM coordinator_throttle_attempts ORDER BY directive_id, attempt_id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var records []domain.ThrottleAttemptRecord
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var record domain.ThrottleAttemptRecord
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
+func observeAttentionStopsTx(ctx context.Context, tx *sql.Tx, snapshot domain.WorkerSnapshot) error {
+	records, err := loadThrottleAttemptRecordsTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		binding := record.Command.AttentionStop
+		if binding == nil || record.Delivery != domain.ThrottleDeliveryAcknowledged || record.Result != domain.ThrottleResultStopped {
+			continue
+		}
+		if binding.CommandDigest == "" || binding.CommandDigest != domain.AttentionStopCommandDigest(record.Command) {
+			return errors.New("attention stop observation has an invalid command digest")
+		}
+		assignment, err := loadAssignmentTx(ctx, tx, record.Command.AssignmentID)
+		if err != nil {
+			return err
+		}
+		if assignment.AttemptID != record.AttemptID || assignment.Epoch != record.Command.AssignmentEpoch ||
+			assignment.WorkerID != record.Command.WorkerID || assignment.ThreadID != record.Command.ThreadID ||
+			!reflect.DeepEqual(assignment.Route, record.Command.Route) {
+			return errors.New("attention stop observation lost its assignment binding")
+		}
+		if assignment.State != domain.AssignmentReleased && assignment.State != domain.AssignmentCompleted {
+			if snapshot.WorkerID != record.Command.WorkerID || snapshot.WorkerEpoch != assignment.WorkerEpoch ||
+				snapshot.CoordinatorEpoch != binding.CoordinatorEpoch {
+				continue
+			}
+			var stopped *domain.WorkerAssignmentObservation
+			for index := range snapshot.Assignments {
+				observation := &snapshot.Assignments[index]
+				if observation.AssignmentID == assignment.ID && observation.AssignmentEpoch == assignment.Epoch &&
+					observation.ThreadID == assignment.ThreadID && observation.WorkspacePath == record.Command.WorkspacePath {
+					stopped = observation
+					break
+				}
+			}
+			if stopped == nil || (stopped.State != domain.AssignmentReleased && stopped.State != domain.AssignmentCompleted) ||
+				stopped.Control != domain.ControlStopped || stopped.Journal == nil ||
+				(stopped.Journal.Phase != "stopped" && stopped.Journal.Phase != "completed" && stopped.Journal.Phase != "failed") ||
+				record.AcknowledgedAt == nil || stopped.ObservedAt.Before(*record.AcknowledgedAt) {
+				continue
+			}
+			assignment.State, assignment.UpdatedAt = stopped.State, stopped.ObservedAt.UTC()
+			raw, err := json.Marshal(assignment)
+			if err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, "UPDATE coordinator_assignments SET record=? WHERE id=?", raw, assignment.ID); err != nil {
+				return err
+			}
+			attempt, err := loadAttemptTx(ctx, tx, record.AttemptID)
+			if err != nil {
+				return err
+			}
+			if attempt.Progress != domain.ProgressCancelled || attempt.Control != domain.ControlDraining ||
+				attempt.Revision != binding.AppliedRevision {
+				return errors.New("attention stop observation lost its cancelled attempt fence")
+			}
+			next := attempt
+			next.Control, next.Revision, next.UpdatedAt = domain.ControlStopped, attempt.Revision+1, stopped.ObservedAt.UTC()
+			if err = updateAdminAttemptTx(ctx, tx, next, attempt.Revision); err != nil {
+				return err
+			}
+		}
+		if err := advanceObservedAttentionStopTx(ctx, tx, record, snapshot.ObservedAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func advanceObservedAttentionStopTx(ctx context.Context, tx *sql.Tx, record domain.ThrottleAttemptRecord, observedAt time.Time) error {
+	binding := record.Command.AttentionStop
+	attempts, err := loadJSON[domain.Attempt](ctx, tx, "coordinator_attempts")
+	if err != nil {
+		return err
+	}
+	assignments, err := loadJSON[domain.Assignment](ctx, tx, "coordinator_assignments")
+	if err != nil {
+		return err
+	}
+	owned := map[string]bool{}
+	for _, attempt := range attempts {
+		if attempt.WorkflowRunID != binding.WorkflowRunID || attempt.TaskID != binding.TaskID {
+			continue
+		}
+		owned[attempt.ID] = true
+		if attempt.Control != domain.ControlStopped && attempt.Control != domain.ControlUnassigned {
+			return nil
+		}
+		if attempt.AssignmentID != "" {
+			assignment, err := loadAssignmentTx(ctx, tx, attempt.AssignmentID)
+			if err != nil || assignment.AttemptID != attempt.ID ||
+				(assignment.State != domain.AssignmentReleased && assignment.State != domain.AssignmentCompleted) {
+				return nil
+			}
+		}
+	}
+	for _, assignment := range assignments {
+		if owned[assignment.AttemptID] && assignment.State != domain.AssignmentReleased && assignment.State != domain.AssignmentCompleted {
+			return nil
+		}
+	}
+	var raw []byte
+	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_task_waits WHERE id=?", binding.WaitID).Scan(&raw); err != nil {
+		return err
+	}
+	var wait domain.TaskWait
+	if err := json.Unmarshal(raw, &wait); err != nil {
+		return err
+	}
+	for index := len(wait.AttentionReceipts) - 1; index >= 0; index-- {
+		prior := wait.AttentionReceipts[index]
+		if prior.Decision.ID != binding.DecisionID || prior.CommandID != record.Command.ID || prior.CommandDigest != binding.CommandDigest {
+			continue
+		}
+		if prior.State == domain.AttentionObserved {
+			return nil
+		}
+		if prior.State != domain.AttentionDelivered {
+			return nil
+		}
+		observed := prior
+		observed.State = domain.AttentionObserved
+		at := observedAt.UTC()
+		observed.ObservedAt = &at
+		wait.AttentionReceipts = append(wait.AttentionReceipts, observed)
+		return saveTaskWaitTx(ctx, tx, wait)
+	}
+	return errors.New("attention stop observation has no matching delivered receipt")
 }
 
 func insertWorkerSnapshotAuditEvent(ctx context.Context, tx *sql.Tx, snapshot domain.WorkerSnapshot) (domain.AuditEvent, error) {

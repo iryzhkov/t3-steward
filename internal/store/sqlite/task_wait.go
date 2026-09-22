@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -565,17 +567,25 @@ func settleTaskWaitTx(ctx context.Context, tx *sql.Tx, wait domain.TaskWait, res
 	return wait, saveTaskWaitTx(ctx, tx, wait)
 }
 
-// DecideAttention records an authenticated response against the exact parked
-// execution identity. Receipt facts and settlement are committed together; the
-// ordinary wake transaction later owns attempt resumption and outbox creation.
+// DecideAttention is the in-process compatibility entry point. Network-facing
+// callers use DecideAttentionForCoordinator so the trusted server identity is
+// bound into stop commands rather than accepted from request JSON.
 func (s *Store) DecideAttention(ctx context.Context, decision domain.AttentionDecision, requestedBy string, now time.Time) (domain.TaskWait, domain.AttentionReceipt, error) {
+	return s.DecideAttentionForCoordinator(ctx, decision, requestedBy, "coordinator", now)
+}
+
+// DecideAttentionForCoordinator records an authenticated response against the
+// exact parked execution identity. Receipt facts and settlement are committed
+// together. Resume/approval use the ordinary wake transaction; stop instead
+// commits a cancellation barrier and durable hard-stop intent atomically.
+func (s *Store) DecideAttentionForCoordinator(ctx context.Context, decision domain.AttentionDecision, requestedBy, coordinatorID string, now time.Time) (domain.TaskWait, domain.AttentionReceipt, error) {
 	var wait domain.TaskWait
 	var receipt domain.AttentionReceipt
 	if err := decision.Validate(); err != nil {
 		return wait, receipt, err
 	}
-	if requestedBy == "" || now.IsZero() {
-		return wait, receipt, errors.New("attention decision needs an authenticated principal and timestamp")
+	if requestedBy == "" || coordinatorID == "" || now.IsZero() {
+		return wait, receipt, errors.New("attention decision needs an authenticated principal, coordinator and timestamp")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -678,9 +688,31 @@ func (s *Store) DecideAttention(ctx context.Context, decision domain.AttentionDe
 		}
 	}
 	allowed := decision.Kind == domain.AttentionApprove && request.Kind == domain.AttentionApproval ||
-		decision.Kind == domain.AttentionResume && request.Kind == domain.AttentionDirection
+		decision.Kind == domain.AttentionResume && request.Kind == domain.AttentionDirection ||
+		decision.Kind == domain.AttentionStop
 	if !allowed {
 		return reject("the requested decision is not supported for this attention request")
+	}
+	if decision.Kind == domain.AttentionStop {
+		snapshot, found, bindingErr := loadWorkerSnapshotTx(ctx, tx, assignment.WorkerID)
+		if bindingErr != nil {
+			return wait, receivedReceipt, bindingErr
+		}
+		if !found || snapshot.WorkerEpoch != assignment.WorkerEpoch || snapshot.CoordinatorEpoch < 1 {
+			return reject("attention stop has no durable worker/coordinator epoch binding")
+		}
+		exactWorkspace := false
+		for _, observation := range snapshot.Assignments {
+			if observation.AssignmentID == assignment.ID && observation.AssignmentEpoch == assignment.Epoch &&
+				observation.ThreadID == assignment.ThreadID && observation.WorkspacePath != "" {
+				exactWorkspace = true
+				break
+			}
+		}
+		if !exactWorkspace || assignment.Route.QuotaPoolID == "" {
+			return reject("attention stop has no exact workspace and route observation")
+		}
+		return applyAttentionStopTx(ctx, tx, wait, attempt, assignment, decision, receivedReceipt, requestedBy, coordinatorID, now)
 	}
 	applied := received
 	receipt = receivedReceipt
@@ -701,6 +733,102 @@ func (s *Store) DecideAttention(ctx context.Context, decision domain.AttentionDe
 		return wait, receipt, err
 	}
 	return wait, receipt, tx.Commit()
+}
+
+func applyAttentionStopTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	wait domain.TaskWait,
+	attempt domain.Attempt,
+	assignment domain.Assignment,
+	decision domain.AttentionDecision,
+	received domain.AttentionReceipt,
+	requestedBy, coordinatorID string,
+	now time.Time,
+) (domain.TaskWait, domain.AttentionReceipt, error) {
+	snapshot, found, err := loadWorkerSnapshotTx(ctx, tx, assignment.WorkerID)
+	if err != nil {
+		return wait, received, err
+	}
+	if !found || snapshot.WorkerEpoch != assignment.WorkerEpoch || snapshot.CoordinatorEpoch < 1 {
+		return wait, received, errors.New("attention stop has no durable worker/coordinator epoch binding")
+	}
+	workspace := ""
+	for _, observation := range snapshot.Assignments {
+		if observation.AssignmentID == assignment.ID && observation.AssignmentEpoch == assignment.Epoch &&
+			observation.ThreadID == assignment.ThreadID {
+			workspace = observation.WorkspacePath
+			break
+		}
+	}
+	if workspace == "" || assignment.Route.QuotaPoolID == "" {
+		return wait, received, errors.New("attention stop has no exact workspace and route observation")
+	}
+	directiveID := attentionStopStableID("attention-stop-directive", decision.ID)
+	command := domain.ThrottleCommand{
+		ID: attentionStopStableID("attention-stop-command", decision.ID), DirectiveID: directiveID,
+		AttemptID: attempt.ID, AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
+		WorkerID: assignment.WorkerID, ThreadID: assignment.ThreadID, WorkspacePath: workspace,
+		Route: assignment.Route, Kind: domain.ThrottleCommandHardStop, QuotaPoolID: assignment.Route.QuotaPoolID,
+		Reason: decision.Reason, CreatedAt: now.UTC(),
+		AttentionStop: &domain.AttentionStopCommand{
+			CoordinatorID: coordinatorID, CoordinatorEpoch: snapshot.CoordinatorEpoch, Principal: requestedBy,
+			DecisionID: decision.ID, WaitID: decision.WaitID, RequestID: decision.RequestID,
+			WorkflowRunID: decision.WorkflowRunID, TaskID: decision.TaskID,
+			RegisteredRevision: decision.RegisteredRevision, AppliedRevision: attempt.Revision + 1,
+			RequestDigest: decision.ContentDigest,
+		},
+	}
+	command.AttentionStop.CommandDigest = domain.AttentionStopCommandDigest(command)
+	record := domain.ThrottleAttemptRecord{
+		DirectiveID: directiveID, AttemptID: attempt.ID, Revision: 1, Command: command,
+		Delivery: domain.ThrottleDeliveryPending, Control: domain.ControlDraining, UpdatedAt: now.UTC(),
+	}
+	rawRecord, err := json.Marshal(record)
+	if err != nil {
+		return wait, received, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO coordinator_throttle_attempts(directive_id, attempt_id, revision, delivery, record) VALUES (?, ?, ?, ?, ?)`,
+		record.DirectiveID, record.AttemptID, record.Revision, record.Delivery, rawRecord); err != nil {
+		return wait, received, fmt.Errorf("persist attention stop intent: %w", err)
+	}
+	next := attempt
+	next.Progress, next.Control = domain.ProgressCancelled, domain.ControlDraining
+	next.Revision++
+	next.AdminForceStart = false
+	next.UpdatedAt = now.UTC()
+	completed := now.UTC()
+	next.CompletedAt = &completed
+	if err = updateAdminAttemptTx(ctx, tx, next, attempt.Revision); err != nil {
+		return wait, received, err
+	}
+	applied := now.UTC()
+	receipt := received
+	receipt.State, receipt.AppliedAt = domain.AttentionApplied, &applied
+	receipt.CommandID, receipt.CommandDigest = command.ID, command.AttentionStop.CommandDigest
+	wait.AttentionReceipts = append(wait.AttentionReceipts, receipt)
+	result := domain.TaskWaitResult{
+		Outcome: domain.TaskWaitCancelled, ExitCode: 2, Reason: decision.Reason, ObservedAt: applied,
+		Fields: map[string]string{
+			"decision": string(decision.Kind), "decision-id": decision.ID, "principal": requestedBy,
+			"coordinator": coordinatorID, "coordinator-epoch": fmt.Sprint(snapshot.CoordinatorEpoch),
+			"request": decision.RequestID, "run": decision.WorkflowRunID, "task": decision.TaskID,
+			"attempt": decision.AttemptID, "assignment": decision.AssignmentID,
+			"assignment-epoch": fmt.Sprint(decision.AssignmentEpoch), "worker": decision.WorkerID,
+			"thread": decision.ThreadID, "workspace": workspace, "revision": fmt.Sprint(next.Revision),
+			"content-digest": decision.ContentDigest, "command": command.ID,
+			"command-digest": command.AttentionStop.CommandDigest,
+		},
+	}
+	if wait, err = settleTaskWaitTx(ctx, tx, wait, result, now); err != nil {
+		return wait, receipt, err
+	}
+	return wait, receipt, tx.Commit()
+}
+
+func attentionStopStableID(prefix, id string) string {
+	sum := sha256.Sum256([]byte(prefix + "\x00" + id))
+	return prefix + "-" + hex.EncodeToString(sum[:12])
 }
 
 // ExpireTaskWaits enforces every wait's maximum duration.

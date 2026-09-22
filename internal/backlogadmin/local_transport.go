@@ -363,6 +363,9 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 		principal = Principal{ID: RelayedPrincipalID(request.RemoteAdmin.Principal), Roles: []string{request.RemoteAdmin.role()}}
 		request.RemoteAdmin = nil
 	}
+	if request.NodeWait != nil {
+		request.NodeWait.CoordinatorID = s.CoordinatorID
+	}
 	dispatch := adminDispatch{
 		service:            s.Service,
 		maxArtifactBytes:   s.MaxArtifactBytes,
