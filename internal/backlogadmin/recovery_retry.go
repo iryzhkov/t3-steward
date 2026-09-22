@@ -18,9 +18,13 @@ type RecoveryExecutor struct {
 	Store RecoveryRetryStore
 }
 
-func (e RecoveryExecutor) Retry(ctx context.Context, request domain.RecoveryRetryRequest) (domain.RecoveryRetryReceipt, error) {
+func (e RecoveryExecutor) Retry(ctx context.Context, authenticatedPrincipal string, request domain.RecoveryRetryRequest) (domain.RecoveryRetryReceipt, error) {
 	if e.Store == nil {
 		return domain.RecoveryRetryReceipt{}, errors.New("recovery retry is unavailable")
 	}
+	if authenticatedPrincipal == "" {
+		return domain.RecoveryRetryReceipt{}, errors.New("recovery retry requires an authenticated principal")
+	}
+	request.Principal = authenticatedPrincipal
 	return e.Store.CommitRecoveryRetry(ctx, request)
 }

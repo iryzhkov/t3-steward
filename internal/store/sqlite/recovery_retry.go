@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
@@ -58,17 +59,18 @@ func (s *Store) CommitRecoveryRetry(ctx context.Context, request domain.Recovery
 	if err != nil {
 		return domain.RecoveryRetryReceipt{}, err
 	}
+	now := s.now().UTC()
 	if incident.Recovery.AttemptsUsed >= incident.Recovery.AttemptBudget {
 		return domain.RecoveryRetryReceipt{}, errors.New("recovery attempt budget exhausted")
 	}
-	if !request.RequestedAt.UTC().Before(incident.Recovery.Deadline.UTC()) {
+	if !now.Before(incident.Recovery.Deadline.UTC()) {
 		return domain.RecoveryRetryReceipt{}, errors.New("recovery incident deadline reached")
 	}
 	if request.Diagnostic.EvidenceFingerprint == incident.Recovery.Diagnostic.EvidenceFingerprint &&
 		request.Diagnostic.StrategyFingerprint == incident.Recovery.Diagnostic.StrategyFingerprint {
 		return domain.RecoveryRetryReceipt{}, errors.New("recovery retry needs substantively changed evidence or strategy")
 	}
-	if err := authorizeRecoveryRetryTx(ctx, tx, request); err != nil {
+	if err := authorizeRecoveryRetryTx(ctx, tx, request, now); err != nil {
 		return domain.RecoveryRetryReceipt{}, err
 	}
 	source, err := loadAttemptTx(ctx, tx, request.SourceAttemptID)
@@ -93,8 +95,12 @@ func (s *Store) CommitRecoveryRetry(ctx context.Context, request domain.Recovery
 		}
 	}
 	attemptID := "attempt:recovery:" + digest[:24]
+	progress, err := recoveryRetryProgressTx(ctx, tx, request.RunID, source.TaskID)
+	if err != nil {
+		return domain.RecoveryRetryReceipt{}, err
+	}
 	retry := domain.Attempt{ID: attemptID, WorkflowRunID: request.RunID, TaskID: source.TaskID, Number: source.Number + 1,
-		Progress: domain.ProgressReady, Control: domain.ControlUnassigned, Revision: 1, UpdatedAt: request.RequestedAt.UTC()}
+		Progress: progress, Control: domain.ControlUnassigned, Revision: 1, UpdatedAt: now}
 	if err := insertAdminAttemptTx(ctx, tx, retry); err != nil {
 		return domain.RecoveryRetryReceipt{}, err
 	}
@@ -109,13 +115,13 @@ func (s *Store) CommitRecoveryRetry(ctx context.Context, request domain.Recovery
 	if run.Progress.Terminal() {
 		return domain.RecoveryRetryReceipt{}, errors.New("recovery retry cannot reopen a terminal run")
 	}
-	run.Progress, run.Revision, run.UpdatedAt, run.CompletedAt = domain.ProgressQueued, run.Revision+1, request.RequestedAt.UTC(), nil
+	run.Progress, run.Revision, run.UpdatedAt, run.CompletedAt = domain.ProgressQueued, run.Revision+1, now, nil
 	if err := updateAdminWorkflowRunTx(ctx, tx, run); err != nil {
 		return domain.RecoveryRetryReceipt{}, err
 	}
 	supplement := domain.RepairAttemptSupplement{OperationID: request.OperationID, IncidentID: request.IncidentID,
 		SourceAttemptID: source.ID, AttemptID: attemptID, InstructionArtifact: request.InstructionArtifact,
-		CheckpointArtifacts: request.CheckpointArtifacts, Diagnostic: request.Diagnostic, CreatedAt: request.RequestedAt.UTC()}
+		CheckpointArtifacts: request.CheckpointArtifacts, Diagnostic: request.Diagnostic, CreatedAt: now}
 	supplementRaw, _ := json.Marshal(supplement)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO coordinator_recovery_supplements(operation_id, run_id, incident_id, attempt_id, record)
 		VALUES (?, ?, ?, ?, ?)`, request.OperationID, request.RunID, request.IncidentID, attemptID, supplementRaw); err != nil {
@@ -126,13 +132,13 @@ func (s *Store) CommitRecoveryRetry(ctx context.Context, request domain.Recovery
 	incident.Recovery.Diagnostic = request.Diagnostic
 	incident.Recovery.State = domain.RecoveryRecovering
 	incident.Recovery.NextAction = domain.RecoveryNoAction
-	incident.Recovery.LastProgressAt = request.RequestedAt.UTC()
+	incident.Recovery.LastProgressAt = now
 	if err := saveSupervisionIncidentTx(ctx, tx, incident); err != nil {
 		return domain.RecoveryRetryReceipt{}, err
 	}
 	receipt := domain.RecoveryRetryReceipt{OperationID: request.OperationID, IncidentID: request.IncidentID,
-		AttemptID: attemptID, AttemptNumber: retry.Number, CommittedAt: request.RequestedAt.UTC()}
-	if err := recordSupervisionReceiptTx(ctx, tx, "recovery-retry", request.RunID, request.OperationID, digest, receipt, request.RequestedAt); err != nil {
+		AttemptID: attemptID, AttemptNumber: retry.Number, CommittedAt: now}
+	if err := recordSupervisionReceiptTx(ctx, tx, "recovery-retry", request.RunID, request.OperationID, digest, receipt, now); err != nil {
 		return domain.RecoveryRetryReceipt{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -157,7 +163,7 @@ func loadRecoveryRetryIncidentTx(ctx context.Context, tx *sql.Tx, request domain
 	return incident, nil
 }
 
-func authorizeRecoveryRetryTx(ctx context.Context, tx *sql.Tx, request domain.RecoveryRetryRequest) error {
+func authorizeRecoveryRetryTx(ctx context.Context, tx *sql.Tx, request domain.RecoveryRetryRequest, now time.Time) error {
 	var raw []byte
 	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_supervision_activations WHERE id = ? AND run_id = ?",
 		request.ActivationID, request.RunID).Scan(&raw); err != nil {
@@ -167,14 +173,55 @@ func authorizeRecoveryRetryTx(ctx context.Context, tx *sql.Tx, request domain.Re
 	if err := json.Unmarshal(raw, &activation); err != nil {
 		return err
 	}
-	liveLease := activation.State == domain.ActivationActive && activation.LeaseExpiresAt != nil &&
-		request.RequestedAt.UTC().Before(activation.LeaseExpiresAt.UTC())
+	var supervisionRaw, runRaw []byte
+	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_supervision WHERE run_id = ?", request.RunID).Scan(&supervisionRaw); err != nil {
+		return err
+	}
+	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_workflow_runs WHERE id = ?", request.RunID).Scan(&runRaw); err != nil {
+		return err
+	}
+	var supervision domain.SupervisionRecord
+	var run domain.WorkflowRun
+	if json.Unmarshal(supervisionRaw, &supervision) != nil || json.Unmarshal(runRaw, &run) != nil {
+		return errors.New("repair executor authority state is invalid")
+	}
+	recovery := supervision.Config.Recovery
+	liveLease := activation.State == domain.ActivationActive && activation.LeaseToken != "" && activation.LeaseExpiresAt != nil &&
+		now.Before(activation.LeaseExpiresAt.UTC()) && !domain.ActivationPastDeadline(activation, now)
 	if activation.Purpose != domain.RecoveryActivationRepair || activation.IncidentID != request.IncidentID ||
-		activation.ID != request.ActivationID || !liveLease ||
-		activation.Principal != request.Principal || activation.Epoch != request.ActivationEpoch {
+		activation.ID != request.ActivationID || !liveLease || activation.GraphRevision != run.GraphRevision ||
+		activation.Principal != request.Principal || activation.Epoch != request.ActivationEpoch ||
+		activation.Epoch != supervision.ActivationEpoch || recovery == nil ||
+		activation.Principal == "" {
 		return errors.New("repair executor authority is stale or out of scope")
 	}
 	return nil
+}
+
+func recoveryRetryProgressTx(ctx context.Context, tx *sql.Tx, runID, taskID string) (domain.ProgressState, error) {
+	var taskRaw []byte
+	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_tasks WHERE id = ?", taskID).Scan(&taskRaw); err != nil {
+		return "", err
+	}
+	var task domain.Task
+	if err := json.Unmarshal(taskRaw, &task); err != nil {
+		return "", err
+	}
+	for _, need := range task.Needs {
+		var dependencyID string
+		if err := tx.QueryRowContext(ctx, "SELECT id FROM coordinator_tasks WHERE workflow_id = ? AND name = ?", task.WorkflowID, need).Scan(&dependencyID); err != nil {
+			return domain.ProgressBlocked, nil
+		}
+		var succeeded int
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM coordinator_attempts WHERE workflow_run_id = ? AND task_id = ? AND json_extract(record, '$.progress') = ?",
+			runID, dependencyID, string(domain.ProgressSucceeded)).Scan(&succeeded); err != nil {
+			return "", err
+		}
+		if succeeded == 0 {
+			return domain.ProgressBlocked, nil
+		}
+	}
+	return domain.ProgressReady, nil
 }
 
 func requireRecoveryArtifactTx(ctx context.Context, tx *sql.Tx, runID string, digest domain.ArtifactDigest) error {

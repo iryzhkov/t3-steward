@@ -19,13 +19,14 @@ func TestRecoveryRetryIsAtomicScopedAndIdempotent(t *testing.T) {
 	}
 	defer store.Close()
 	now := time.Date(2026, 9, 21, 14, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return now.Add(time.Minute) })
 	config := domain.RecoveryConfig{Version: domain.RecoveryContractV1,
 		Route: domain.ProviderRoute{ProviderInstanceID: "repairer", Model: "model"}, PromptArtifactID: "repair-prompt",
 		MaxAttemptsPerIncident: 2, IncidentDeadline: time.Hour, StalledAfter: time.Minute}
 	prepareRecoveryFence(t, store, "run", "attempt-1", now, config)
 	artifact := domain.Artifact{ID: "instruction", WorkflowRunID: "run", TaskID: "task", AttemptID: "attempt-1",
 		Kind: domain.ArtifactCheckpoint, Name: "repair", SHA256: "content-a", StoragePath: "objects/content-a", CreatedAt: now}
-	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Artifacts: []domain.Artifact{artifact}}); err != nil {
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Tasks: []domain.Task{{ID: "task", WorkflowID: "workflow-run", Name: "task", Class: domain.TaskClassRequired}}, Artifacts: []domain.Artifact{artifact}}); err != nil {
 		t.Fatal(err)
 	}
 	recovery := domain.NewRecoveryIncident(config, domain.RecoveryDiagnosticIdentity{
@@ -39,8 +40,8 @@ func TestRecoveryRetryIsAtomicScopedAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	expires := now.Add(time.Hour)
-	activation := domain.Activation{ID: "activation", RunID: "run", Epoch: 3, Purpose: domain.RecoveryActivationRepair,
-		Principal: "repair-principal", State: domain.ActivationActive, LeaseExpiresAt: &expires, IncidentID: "incident"}
+	activation := domain.Activation{ID: "activation", RunID: "run", Epoch: 1, Purpose: domain.RecoveryActivationRepair, GraphRevision: 1,
+		Principal: "repair-principal", State: domain.ActivationActive, LeaseToken: "lease", LeaseExpiresAt: &expires, IncidentID: "incident"}
 	raw, _ := json.Marshal(activation)
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO coordinator_supervision_activations(id, run_id, epoch, state, dispatch_identity, record)
 		VALUES (?, ?, ?, ?, ?, ?)`, activation.ID, activation.RunID, activation.Epoch, activation.State, "dispatch", raw); err != nil {
@@ -48,7 +49,7 @@ func TestRecoveryRetryIsAtomicScopedAndIdempotent(t *testing.T) {
 	}
 	request := domain.RecoveryRetryRequest{
 		OperationID: "repair-op", RunID: "run", IncidentID: "incident", ExpectedIncidentRevision: 1,
-		ActivationID: "activation", ActivationEpoch: 3, Principal: "repair-principal",
+		ActivationID: "activation", ActivationEpoch: 1, Principal: "repair-principal",
 		SourceAttemptID: "attempt-1", SourceAttemptRevision: 1,
 		InstructionArtifact: domain.ArtifactDigest{ArtifactID: "instruction", Digest: "content-a"},
 		Diagnostic:          domain.RecoveryDiagnosticIdentity{FailureFingerprint: "check-category", EvidenceFingerprint: "content-old", StrategyFingerprint: "strategy-new"},
@@ -101,12 +102,13 @@ func TestRecoveryRetryRejectsReviewerAndUnchangedDiagnosis(t *testing.T) {
 	}
 	defer store.Close()
 	now := time.Date(2026, 9, 21, 14, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return now.Add(time.Minute) })
 	config := domain.RecoveryConfig{Version: domain.RecoveryContractV1,
 		Route: domain.ProviderRoute{ProviderInstanceID: "repairer", Model: "model"}, PromptArtifactID: "repair-prompt",
 		MaxAttemptsPerIncident: 1, IncidentDeadline: time.Hour, StalledAfter: time.Minute}
 	prepareRecoveryFence(t, store, "run", "attempt-1", now, config)
 	artifact := domain.Artifact{ID: "instruction", WorkflowRunID: "run", SHA256: "content", StoragePath: "objects/content", CreatedAt: now}
-	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Artifacts: []domain.Artifact{artifact}}); err != nil {
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Tasks: []domain.Task{{ID: "task", WorkflowID: "workflow-run", Name: "task", Class: domain.TaskClassRequired}}, Artifacts: []domain.Artifact{artifact}}); err != nil {
 		t.Fatal(err)
 	}
 	diagnostic := domain.RecoveryDiagnosticIdentity{FailureFingerprint: "failure", EvidenceFingerprint: "evidence", StrategyFingerprint: "same"}
@@ -117,14 +119,14 @@ func TestRecoveryRetryRejectsReviewerAndUnchangedDiagnosis(t *testing.T) {
 		t.Fatal(err)
 	}
 	expires := now.Add(time.Hour)
-	reviewer := domain.Activation{ID: "review", RunID: "run", Epoch: 2, Principal: "reviewer", State: domain.ActivationActive, LeaseExpiresAt: &expires, IncidentID: "incident"}
+	reviewer := domain.Activation{ID: "review", RunID: "run", Epoch: 1, GraphRevision: 1, Principal: "reviewer", State: domain.ActivationActive, LeaseToken: "lease", LeaseExpiresAt: &expires, IncidentID: "incident"}
 	raw, _ := json.Marshal(reviewer)
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO coordinator_supervision_activations(id, run_id, epoch, state, dispatch_identity, record)
 		VALUES (?, ?, ?, ?, ?, ?)`, reviewer.ID, reviewer.RunID, reviewer.Epoch, reviewer.State, "dispatch", raw); err != nil {
 		t.Fatal(err)
 	}
 	request := domain.RecoveryRetryRequest{OperationID: "op", RunID: "run", IncidentID: "incident", ExpectedIncidentRevision: 1,
-		ActivationID: "review", ActivationEpoch: 2, Principal: "reviewer", SourceAttemptID: "attempt-1", SourceAttemptRevision: 1,
+		ActivationID: "review", ActivationEpoch: 1, Principal: "reviewer", SourceAttemptID: "attempt-1", SourceAttemptRevision: 1,
 		InstructionArtifact: domain.ArtifactDigest{ArtifactID: "instruction", Digest: "content"}, Diagnostic: diagnostic, RequestedAt: now.Add(time.Minute)}
 	if _, err := store.CommitRecoveryRetry(ctx, request); err == nil {
 		t.Fatal("reviewer/unchanged recovery retry accepted")
