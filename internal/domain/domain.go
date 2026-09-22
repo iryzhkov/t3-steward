@@ -425,6 +425,11 @@ type UsageCoverage struct {
 	UnknownModelCount         int64              `json:"unknownModelCount"`
 	MalformedCount            int64              `json:"malformedCount"`
 	UnsupportedCount          int64              `json:"unsupportedCount"`
+	DiagnosticCount           int64              `json:"diagnosticCount"`
+	DiagnosticDroppedCount    int64              `json:"diagnosticDroppedCount"`
+	MissingFieldCount         int64              `json:"missingFieldCount"`
+	AmbiguousOverlapCount     int64              `json:"ambiguousOverlapCount"`
+	CumulativeAmbiguityCount  int64              `json:"cumulativeAmbiguityCount"`
 	LateCount                 int64              `json:"lateCount"`
 	Truncated                 bool               `json:"truncated"`
 }
@@ -460,9 +465,19 @@ type UsageSample struct {
 	// CostUSD is the provider's own cost figure when it reports one.
 	CostUSD      float64 `json:"costUsd"`
 	CostReported bool    `json:"costReported,omitempty"`
-	// Kind is "call" for one API call or "turn" for a whole turn. Turn
-	// samples carry exact per-model counts; call samples carry timing.
-	Kind string `json:"kind"`
+	// Kind is "call" for one API call, "turn" for a whole turn, or
+	// "diagnostic" for bounded sanitized parse evidence carrying no content.
+	Kind           string `json:"kind"`
+	DiagnosticCode string `json:"diagnosticCode,omitempty"`
+	// FieldPresence distinguishes an absent numeric field from a measured zero.
+	FieldPresence UsageFieldPresence `json:"fieldPresence,omitempty"`
+	// BoundaryID proves that a call belongs to a particular whole-turn summary.
+	// It is empty when the provider's canonical event supplies no such identity.
+	BoundaryID string `json:"boundaryId,omitempty"`
+	// Incarnation and Sequence provide causal ordering for cumulative counters.
+	// A reset is exact only when the provider supplies a new incarnation.
+	Incarnation string `json:"incarnation,omitempty"`
+	Sequence    int64  `json:"sequence,omitempty"`
 	// CumulativeTokens is the provider's running total for the thread when
 	// it reports one, used to drop repeated notifications of the same call.
 	CumulativeTokens int64 `json:"cumulativeTokens,omitempty"`
@@ -473,9 +488,21 @@ type UsageSample struct {
 
 // Sample kinds.
 const (
-	UsageKindCall = "call"
-	UsageKindTurn = "turn"
+	UsageKindCall       = "call"
+	UsageKindTurn       = "turn"
+	UsageKindDiagnostic = "diagnostic"
 )
+
+type UsageFieldPresence uint32
+
+const (
+	UsageFieldInput UsageFieldPresence = 1 << iota
+	UsageFieldCacheWrite
+	UsageFieldCacheRead
+	UsageFieldOutput
+)
+
+const UsageFieldsAll = UsageFieldInput | UsageFieldCacheWrite | UsageFieldCacheRead | UsageFieldOutput
 
 // FreshTokens are the tokens that are not cache reads: input, cache
 // writes and output. Cache reads are reported separately because their

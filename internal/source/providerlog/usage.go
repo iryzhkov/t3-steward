@@ -2,6 +2,8 @@ package providerlog
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,31 +18,63 @@ import (
 // UsageEventType is the canonical event carrying token counts.
 const UsageEventType = "thread.token-usage.updated"
 
-// ErrNotUsage marks a well-formed line that is not a usage event of a
-// shape the watchdog understands.
-var ErrNotUsage = errors.New("not a usable token-usage event")
+// ErrNotUsage marks a well-formed line that is not a usage event.
+var ErrNotUsage = errors.New("not a token-usage event")
 
-// ParseUsageLine extracts token usage samples from one log line.
-//
-// Claude: the `claude/result` message that ends a turn carries
-// `modelUsage`, one entry per model the turn used (subagents included), so
-// each entry becomes a sample with an exact model. Per-call `message_delta`
-// events are retained as raw evidence; report normalization excludes only
-// calls causally covered by a later whole-turn result.
-//
-// Codex: every `thread/tokenUsage/updated` notification carries the last
-// call's counts in `tokenUsage.last`; the model is left empty and filled in
-// from the thread's model selection by the caller.
+// ErrUnsupportedUsage marks an identified usage event whose representation is unknown.
+var ErrUnsupportedUsage = errors.New("unsupported token-usage representation")
+
+// ParseUsageLine extracts token usage samples from one valid log line. Callers
+// needing coverage evidence for malformed or unsupported records use
+// ParseUsageEvidenceLine.
 func ParseUsageLine(line string) ([]domain.UsageSample, error) {
 	if !strings.Contains(line, UsageEventType) {
 		return nil, ErrNotUsage
 	}
 	idx := strings.Index(line, canonMarker)
 	if idx < 0 || !strings.HasPrefix(line, "[") {
-		return nil, ErrNotUsage
+		return nil, errors.New("usage event has malformed canonical envelope")
 	}
 	observedAt, _ := time.Parse(time.RFC3339Nano, line[1:idx])
 	return ParseUsageJSON([]byte(line[idx+len(canonMarker):]), observedAt)
+}
+
+// ParseUsageEvidenceLine returns either measured samples or one sanitized
+// diagnostic sample. It never retains raw event content or parser error text.
+func ParseUsageEvidenceLine(line string) ([]domain.UsageSample, error) {
+	if !strings.Contains(line, UsageEventType) {
+		return nil, ErrNotUsage
+	}
+	usage, err := ParseUsageLine(line)
+	if err == nil {
+		return usage, nil
+	}
+	code := "malformed"
+	if errors.Is(err, ErrUnsupportedUsage) {
+		code = "unsupported"
+	}
+	var rec usageRecord
+	idx := strings.Index(line, canonMarker)
+	if idx >= 0 {
+		_ = json.Unmarshal([]byte(line[idx+len(canonMarker):]), &rec)
+	}
+	observedAt, _ := time.Parse(time.RFC3339Nano, rec.CreatedAt)
+	if observedAt.IsZero() && idx > 1 {
+		observedAt, _ = time.Parse(time.RFC3339Nano, line[1:idx])
+	}
+	instance := rec.ProviderInstanceID
+	if instance == "" {
+		instance = rec.Provider
+	}
+	sum := sha256.Sum256([]byte(line))
+	return []domain.UsageSample{{
+		ProviderInstanceID: instance,
+		ThreadID:           rec.ThreadID,
+		ObservedAt:         observedAt,
+		SourceEventID:      "diagnostic-" + hex.EncodeToString(sum[:16]),
+		Kind:               domain.UsageKindDiagnostic,
+		DiagnosticCode:     code,
+	}}, nil
 }
 
 type usageRecord struct {
@@ -50,36 +84,125 @@ type usageRecord struct {
 	ProviderInstanceID string `json:"providerInstanceId"`
 	ThreadID           string `json:"threadId"`
 	CreatedAt          string `json:"createdAt"`
+	TurnID             string `json:"turnId"`
+	TurnID2            string `json:"turn_id"`
+	Incarnation        string `json:"incarnation"`
+	Sequence           int64  `json:"sequence"`
 	Raw                struct {
-		Method  string          `json:"method"`
-		Payload json.RawMessage `json:"payload"`
+		Method      string          `json:"method"`
+		Payload     json.RawMessage `json:"payload"`
+		TurnID      string          `json:"turnId"`
+		TurnID2     string          `json:"turn_id"`
+		Incarnation string          `json:"incarnation"`
+		Sequence    int64           `json:"sequence"`
 	} `json:"raw"`
 }
 
+type optionalUsageCounts struct {
+	InputTokens              *int64 `json:"inputTokens"`
+	OutputTokens             *int64 `json:"outputTokens"`
+	CacheReadInputTokens     *int64 `json:"cacheReadInputTokens"`
+	CacheCreationInputTokens *int64 `json:"cacheCreationInputTokens"`
+	CacheWriteInputTokens    *int64 `json:"cacheWriteInputTokens"`
+	CachedInputTokens        *int64 `json:"cachedInputTokens"`
+}
+
 type claudeModelUsage struct {
-	InputTokens              int64    `json:"inputTokens"`
-	OutputTokens             int64    `json:"outputTokens"`
-	CacheReadInputTokens     int64    `json:"cacheReadInputTokens"`
-	CacheCreationInputTokens int64    `json:"cacheCreationInputTokens"`
-	CostUSD                  *float64 `json:"costUSD"`
-	CanonicalModel           string   `json:"canonicalModel"`
+	optionalUsageCounts
+	CostUSD        *float64 `json:"costUSD"`
+	CanonicalModel string   `json:"canonicalModel"`
 }
 
 type codexTokenUsage struct {
 	TokenUsage struct {
-		Last *struct {
-			CacheWriteInputTokens int64 `json:"cacheWriteInputTokens"`
-			CachedInputTokens     int64 `json:"cachedInputTokens"`
-			InputTokens           int64 `json:"inputTokens"`
-			OutputTokens          int64 `json:"outputTokens"`
-		} `json:"last"`
+		Last  *optionalUsageCounts `json:"last"`
 		Total *struct {
 			TotalTokens int64 `json:"totalTokens"`
 		} `json:"total"`
 	} `json:"tokenUsage"`
 }
 
-// ParseUsageJSON parses one canonical event body.
+type usageCausalProbe struct {
+	TurnID      string `json:"turnId"`
+	TurnID2     string `json:"turn_id"`
+	SessionID   string `json:"sessionId"`
+	SessionID2  string `json:"session_id"`
+	Incarnation string `json:"incarnation"`
+	Sequence    int64  `json:"sequence"`
+}
+
+func causalUsageIdentity(rec usageRecord) (string, string, int64) {
+	boundary, incarnation, sequence := rec.TurnID, rec.Incarnation, rec.Sequence
+	if boundary == "" {
+		boundary = rec.TurnID2
+	}
+	if boundary == "" {
+		boundary = rec.Raw.TurnID
+	}
+	if boundary == "" {
+		boundary = rec.Raw.TurnID2
+	}
+	if incarnation == "" {
+		incarnation = rec.Raw.Incarnation
+	}
+	if sequence == 0 {
+		sequence = rec.Raw.Sequence
+	}
+	var probe usageCausalProbe
+	_ = json.Unmarshal(rec.Raw.Payload, &probe)
+	if boundary == "" {
+		boundary = probe.TurnID
+	}
+	if boundary == "" {
+		boundary = probe.TurnID2
+	}
+	if incarnation == "" {
+		incarnation = probe.Incarnation
+		if incarnation == "" {
+			incarnation = probe.SessionID
+		}
+		if incarnation == "" {
+			incarnation = probe.SessionID2
+		}
+	}
+	if sequence == 0 {
+		sequence = probe.Sequence
+	}
+	return boundary, incarnation, sequence
+}
+
+func applyOptionalCounts(sample *domain.UsageSample, counts optionalUsageCounts, codex bool) {
+	if counts.InputTokens != nil {
+		sample.InputTokens = *counts.InputTokens
+		sample.FieldPresence |= domain.UsageFieldInput
+	}
+	if counts.CacheCreationInputTokens != nil {
+		sample.CacheWriteTokens = *counts.CacheCreationInputTokens
+		sample.FieldPresence |= domain.UsageFieldCacheWrite
+	} else if counts.CacheWriteInputTokens != nil {
+		sample.CacheWriteTokens = *counts.CacheWriteInputTokens
+		sample.FieldPresence |= domain.UsageFieldCacheWrite
+	}
+	if counts.CacheReadInputTokens != nil {
+		sample.CacheReadTokens = *counts.CacheReadInputTokens
+		sample.FieldPresence |= domain.UsageFieldCacheRead
+	} else if counts.CachedInputTokens != nil {
+		sample.CacheReadTokens = *counts.CachedInputTokens
+		sample.FieldPresence |= domain.UsageFieldCacheRead
+	}
+	if counts.OutputTokens != nil {
+		sample.OutputTokens = *counts.OutputTokens
+		sample.FieldPresence |= domain.UsageFieldOutput
+	}
+	if codex && counts.InputTokens != nil && counts.CachedInputTokens != nil {
+		sample.InputTokens -= *counts.CachedInputTokens
+		if sample.InputTokens < 0 {
+			sample.InputTokens = 0
+		}
+	}
+}
+
+// ParseUsageJSON parses one canonical usage event body.
 func ParseUsageJSON(body []byte, fallbackObservedAt time.Time) ([]domain.UsageSample, error) {
 	var rec usageRecord
 	if err := json.Unmarshal(body, &rec); err != nil {
@@ -99,15 +222,18 @@ func ParseUsageJSON(body []byte, fallbackObservedAt time.Time) ([]domain.UsageSa
 	if instance == "" {
 		instance = rec.Provider
 	}
-	base := domain.UsageSample{ProviderInstanceID: instance, ThreadID: rec.ThreadID, ObservedAt: observedAt, SourceEventID: rec.EventID}
+	boundary, incarnation, sequence := causalUsageIdentity(rec)
+	base := domain.UsageSample{
+		ProviderInstanceID: instance, ThreadID: rec.ThreadID, ObservedAt: observedAt,
+		SourceEventID: rec.EventID, BoundaryID: boundary, Incarnation: incarnation, Sequence: sequence,
+	}
 	switch rec.Raw.Method {
 	case "claude/result":
-		// One sample per model for the whole turn: exact model split.
 		var p struct {
 			ModelUsage map[string]claudeModelUsage `json:"modelUsage"`
 		}
 		if err := json.Unmarshal(rec.Raw.Payload, &p); err != nil || len(p.ModelUsage) == 0 {
-			return nil, ErrNotUsage
+			return nil, errors.New("claude result has no model usage")
 		}
 		models := make([]string, 0, len(p.ModelUsage))
 		for model := range p.ModelUsage {
@@ -117,75 +243,62 @@ func ParseUsageJSON(body []byte, fallbackObservedAt time.Time) ([]domain.UsageSa
 		out := make([]domain.UsageSample, 0, len(models))
 		for _, model := range models {
 			u := p.ModelUsage[model]
-			s := base
-			s.Kind = domain.UsageKindTurn
-			s.Model = model
+			sample := base
+			sample.Kind = domain.UsageKindTurn
+			sample.Model = model
 			if u.CanonicalModel != "" {
-				s.Model = u.CanonicalModel
+				sample.Model = u.CanonicalModel
 			}
-			s.SourceEventID = rec.EventID + "#" + model
-			s.InputTokens = u.InputTokens
-			s.CacheWriteTokens = u.CacheCreationInputTokens
-			s.CacheReadTokens = u.CacheReadInputTokens
-			s.OutputTokens = u.OutputTokens
+			sample.SourceEventID = rec.EventID + "#" + model
+			applyOptionalCounts(&sample, u.optionalUsageCounts, false)
 			if u.CostUSD != nil {
-				s.CostUSD = *u.CostUSD
-				s.CostReported = true
+				sample.CostUSD = *u.CostUSD
+				sample.CostReported = true
 			}
-			out = append(out, s)
+			out = append(out, sample)
 		}
 		return out, nil
 	case "claude/stream_event/message_delta":
-		// One sample per API call, subagent calls included: exact timing,
-		// model left to the thread's selection.
 		var p struct {
 			Event struct {
 				Usage *struct {
-					InputTokens              int64 `json:"input_tokens"`
-					CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-					CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
-					OutputTokens             int64 `json:"output_tokens"`
+					InputTokens              *int64 `json:"input_tokens"`
+					CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens"`
+					CacheReadInputTokens     *int64 `json:"cache_read_input_tokens"`
+					OutputTokens             *int64 `json:"output_tokens"`
 				} `json:"usage"`
 			} `json:"event"`
 		}
 		if err := json.Unmarshal(rec.Raw.Payload, &p); err != nil || p.Event.Usage == nil {
-			return nil, ErrNotUsage
+			return nil, errors.New("claude delta has no usage")
 		}
-		u := p.Event.Usage
-		s := base
-		s.Kind = domain.UsageKindCall
-		s.InputTokens = u.InputTokens
-		s.CacheWriteTokens = u.CacheCreationInputTokens
-		s.CacheReadTokens = u.CacheReadInputTokens
-		s.OutputTokens = u.OutputTokens
-		return []domain.UsageSample{s}, nil
+		sample := base
+		sample.Kind = domain.UsageKindCall
+		counts := optionalUsageCounts{
+			InputTokens: p.Event.Usage.InputTokens, CacheCreationInputTokens: p.Event.Usage.CacheCreationInputTokens,
+			CacheReadInputTokens: p.Event.Usage.CacheReadInputTokens, OutputTokens: p.Event.Usage.OutputTokens,
+		}
+		applyOptionalCounts(&sample, counts, false)
+		return []domain.UsageSample{sample}, nil
 	case "thread/tokenUsage/updated":
 		var p codexTokenUsage
 		if err := json.Unmarshal(rec.Raw.Payload, &p); err != nil || p.TokenUsage.Last == nil {
-			return nil, ErrNotUsage
+			return nil, errors.New("codex update has no last usage")
 		}
-		last := p.TokenUsage.Last
-		s := base
-		s.Kind = domain.UsageKindCall
-		// Codex reports cached tokens as part of inputTokens.
-		s.InputTokens = last.InputTokens - last.CachedInputTokens
-		if s.InputTokens < 0 {
-			s.InputTokens = 0
-		}
-		s.CacheWriteTokens = last.CacheWriteInputTokens
-		s.CacheReadTokens = last.CachedInputTokens
-		s.OutputTokens = last.OutputTokens
+		sample := base
+		sample.Kind = domain.UsageKindCall
+		applyOptionalCounts(&sample, *p.TokenUsage.Last, true)
 		if p.TokenUsage.Total != nil {
-			s.CumulativeTokens = p.TokenUsage.Total.TotalTokens
+			sample.CumulativeTokens = p.TokenUsage.Total.TotalTokens
 		}
-		return []domain.UsageSample{s}, nil
+		return []domain.UsageSample{sample}, nil
 	default:
-		return nil, ErrNotUsage
+		return nil, ErrUnsupportedUsage
 	}
 }
 
-// ScanFile parses every rate-limit observation and usage sample in one log
-// file, in order. It is used by the report backfill.
+// ScanFile parses every rate-limit observation and all measured or diagnostic
+// usage evidence in one log file, in order.
 func ScanFile(path string) ([]domain.QuotaSnapshot, []domain.UsageSample, error) {
 	f, err := openFile(path)
 	if err != nil {
@@ -198,14 +311,14 @@ func ScanFile(path string) ([]domain.QuotaSnapshot, []domain.UsageSample, error)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.Contains(line, EventType) {
-			if s, err := ParseLine(line); err == nil {
-				snaps = append(snaps, s...)
+			if sample, parseErr := ParseLine(line); parseErr == nil {
+				snaps = append(snaps, sample...)
 			}
 			continue
 		}
 		if strings.Contains(line, UsageEventType) {
-			if u, err := ParseUsageLine(line); err == nil {
-				usage = append(usage, u...)
+			if evidence, parseErr := ParseUsageEvidenceLine(line); parseErr == nil {
+				usage = append(usage, evidence...)
 			}
 		}
 	}

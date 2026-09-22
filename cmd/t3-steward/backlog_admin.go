@@ -668,9 +668,10 @@ func renderUsage(out io.Writer, report *domain.UsageReport, semantics string) er
 	}
 	coverage := report.Coverage
 	fmt.Fprintf(out, "Run: %s (%s)\n", report.WorkflowRunID, report.RunProgress)
-	fmt.Fprintf(out, "Coverage: %s; raw=%d normalized=%d overlap-excluded=%d unattributed=%d\n",
+	fmt.Fprintf(out, "Coverage: %s; raw=%d normalized=%d overlap-excluded=%d overlap-ambiguous=%d diagnostics=%d dropped-diagnostics=%d unattributed=%d\n",
 		coverage.State, coverage.RawSampleCount, coverage.NormalizedSampleCount,
-		coverage.ExcludedOverlapCount, coverage.UnattributedCount)
+		coverage.ExcludedOverlapCount, coverage.AmbiguousOverlapCount, coverage.DiagnosticCount,
+		coverage.DiagnosticDroppedCount, coverage.UnattributedCount)
 	if coverage.ObservedFrom != nil && coverage.ObservedThrough != nil {
 		fmt.Fprintf(out, "Observed: %s through %s\n",
 			coverage.ObservedFrom.UTC().Format(time.RFC3339), coverage.ObservedThrough.UTC().Format(time.RFC3339))
@@ -724,9 +725,9 @@ func renderUsageAggregates(out io.Writer, rows []domain.UsageAggregate) error {
 	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(table, "KEY\tOUTCOME\tUNCACHED INPUT\tCACHE WRITE\tCACHE READ\tOUTPUT\tPROVIDER COST\tSAMPLES\tCALLS\tTURNS")
 	for _, row := range rows {
-		cost := "unreported"
+		cost := string(row.Totals.ProviderCostCoverage)
 		if row.Totals.ProviderCostReported {
-			cost = strconv.FormatFloat(row.Totals.ProviderCostUSD, 'f', 6, 64)
+			cost = strconv.FormatFloat(row.Totals.ProviderCostUSD, 'f', 6, 64) + " (" + cost + ")"
 		}
 		fmt.Fprintf(table, "%s\t%s\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\n",
 			row.Key, row.Outcome, row.Totals.UncachedInputTokens, row.Totals.CacheWriteTokens,

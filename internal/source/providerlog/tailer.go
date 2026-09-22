@@ -401,7 +401,7 @@ func (t *Tailer) readNew(ctx context.Context, fs *fileState, output chan<- domai
 			continue
 		}
 		if t.opts.Usage != nil && bytes.Contains(line, []byte(UsageEventType)) {
-			if usage, uerr := ParseUsageLine(string(line)); uerr == nil {
+			if usage, uerr := ParseUsageEvidenceLine(string(line)); uerr == nil {
 				for _, u := range usage {
 					select {
 					case t.opts.Usage <- u:

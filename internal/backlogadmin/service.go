@@ -1,14 +1,17 @@
 package backlogadmin
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -37,7 +40,7 @@ type usageReader interface {
 	AttributedUsage(context.Context, string) (domain.UsageReport, error)
 }
 
-const usageSemantics = "whole-turn rows supersede call rows from the same authenticated session observed no later than that turn summary; later unmatched calls remain visible and make coverage partial; otherwise source-event-deduplicated calls contribute, equal cumulative values are replay duplicates, and counter decreases begin a new rotation"
+const usageSemantics = "a whole-turn row supersedes only calls carrying its exact causal boundary; calls in a summarized session without matching boundary identity are conservatively excluded and explicitly partial; cumulative reset is exact only across provider incarnations with sequence, while an unidentified decrease is excluded as ambiguous"
 
 type UnknownRecoveryWriter interface {
 	RecoverUnknownAssignment(context.Context, domain.UnknownAssignmentRecovery) (domain.UnknownAssignmentRecoveryDecision, error)
@@ -353,12 +356,16 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		taskProgress := map[string]domain.ProgressState{}
 		attemptProgress := map[string]domain.ProgressState{}
 		for _, attempts := range view.attempts {
+			var runAttempts []domain.Attempt
 			for _, attempt := range attempts {
 				if attempt.WorkflowRunID != query.WorkflowRunID {
 					continue
 				}
-				taskProgress[attempt.TaskID] = attempt.Progress
+				runAttempts = append(runAttempts, attempt)
 				attemptProgress[attempt.ID] = attempt.Progress
+			}
+			if latest := latestAttempt(runAttempts); latest != nil {
+				taskProgress[latest.TaskID] = latest.Progress
 			}
 		}
 		hardTruncated := usage.Coverage.Truncated
@@ -369,25 +376,28 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		raw := usage.Samples
 		usage.Samples = nil
 		if query.UsageRaw {
-			offset := 0
+			start := 0
 			if query.UsageCursor != "" {
-				parsed, parseErr := strconv.Atoi(query.UsageCursor)
-				if parseErr != nil || parsed < 0 || parsed > len(raw) {
+				cursor, parseErr := decodeUsageCursor(query.UsageCursor, query.WorkflowRunID)
+				if parseErr != nil {
 					return Response{}, fmt.Errorf("%w: invalid usage cursor", ErrInvalidQuery)
 				}
-				offset = parsed
+				start = sort.Search(len(raw), func(index int) bool { return usageAfterCursor(raw[index], cursor) })
 			}
 			limit := query.UsageLimit
 			if limit == 0 {
 				limit = 100
 			}
-			end := offset + limit
+			end := start + limit
 			if end > len(raw) {
 				end = len(raw)
 			}
-			usage.Samples = append([]domain.UsageSample(nil), raw[offset:end]...)
-			if end < len(raw) {
-				usage.NextCursor = strconv.Itoa(end)
+			usage.Samples = append([]domain.UsageSample(nil), raw[start:end]...)
+			if end < len(raw) && end > start {
+				usage.NextCursor, usageErr = encodeUsageCursor(query.WorkflowRunID, raw[end-1])
+				if usageErr != nil {
+					return Response{}, fmt.Errorf("encode usage cursor: %w", usageErr)
+				}
 			}
 			response.Usage = usage.Samples
 		}
@@ -1600,6 +1610,79 @@ func (v view) events(runID string) []Event {
 func event(id, runID, taskID, attemptID, kind string, at time.Time, detail any) Event {
 	raw, _ := json.Marshal(detail)
 	return Event{ID: id, WorkflowRunID: runID, TaskID: taskID, AttemptID: attemptID, Kind: kind, At: at, Detail: raw}
+}
+
+type usageCursorPayload struct {
+	Version    int       `json:"version"`
+	RunID      string    `json:"runId"`
+	Order      string    `json:"order"`
+	ObservedAt time.Time `json:"observedAt"`
+	WorkerID   string    `json:"workerId"`
+	EventID    string    `json:"eventId"`
+}
+
+type usageCursorEnvelope struct {
+	usageCursorPayload
+	Digest string `json:"digest"`
+}
+
+const usageCursorOrder = "observed-worker-event/v1"
+
+func encodeUsageCursor(runID string, sample domain.UsageSample) (string, error) {
+	payload := usageCursorPayload{
+		Version: 1, RunID: runID, Order: usageCursorOrder, ObservedAt: sample.ObservedAt.UTC(),
+		WorkerID: sample.WorkerID, EventID: sample.SourceEventID,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	envelope := usageCursorEnvelope{usageCursorPayload: payload, Digest: fmt.Sprintf("%x", sha256.Sum256(raw))}
+	raw, err = json.Marshal(envelope)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func decodeUsageCursor(encoded, runID string) (usageCursorPayload, error) {
+	if encoded == "" || len(encoded) > 2048 {
+		return usageCursorPayload{}, errors.New("invalid cursor size")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return usageCursorPayload{}, err
+	}
+	var envelope usageCursorEnvelope
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil {
+		return usageCursorPayload{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return usageCursorPayload{}, errors.New("cursor has trailing content")
+	}
+	payload := envelope.usageCursorPayload
+	unsigned, err := json.Marshal(payload)
+	if err != nil {
+		return usageCursorPayload{}, err
+	}
+	if envelope.Digest != fmt.Sprintf("%x", sha256.Sum256(unsigned)) ||
+		payload.Version != 1 || payload.RunID != runID || payload.Order != usageCursorOrder ||
+		payload.ObservedAt.IsZero() || payload.EventID == "" {
+		return usageCursorPayload{}, errors.New("cursor identity mismatch")
+	}
+	return payload, nil
+}
+
+func usageAfterCursor(sample domain.UsageSample, cursor usageCursorPayload) bool {
+	if !sample.ObservedAt.Equal(cursor.ObservedAt) {
+		return sample.ObservedAt.After(cursor.ObservedAt)
+	}
+	if sample.WorkerID != cursor.WorkerID {
+		return sample.WorkerID > cursor.WorkerID
+	}
+	return sample.SourceEventID > cursor.EventID
 }
 
 func latestAttempt(attempts []domain.Attempt) *domain.Attempt {

@@ -339,7 +339,7 @@ func backlogHelpPages() []helpPage {
 		backlogReadPage("backlog usage", "bounded normalized provider usage joined to authoritative V2 execution identity and outcomes.",
 			"t3-steward backlog usage <workflow-run> [--raw] [--limit 1..200] [--cursor C] [--json]",
 			nil, []string{"usageReport", "usageSemantics"}, backlogReadSites("usage"),
-			"Read-only and report-only. The default contains aggregates, coverage and freshness but no raw history. --raw pages audit detail; whole-turn evidence supersedes only causally earlier calls in the same session."),
+			"Read-only and report-only. The default contains aggregates, coverage and freshness but no raw history. --raw pages audit detail with an opaque run-bound keyset cursor; whole-turn evidence supersedes only calls carrying its exact causal boundary."),
 		backlogReadPage("backlog explain", "why one task is where it is: its dependencies, admission and blockers.",
 			"t3-steward backlog explain <workflow-run>/<task> [--json]",
 			nil, []string{"explanation"}, backlogReadSites("explain"),

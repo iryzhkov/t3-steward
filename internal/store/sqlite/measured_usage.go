@@ -14,6 +14,18 @@ import (
 const MaxWorkerUsageDelivery = 128
 const MaxRunUsageAggregation = 10000
 
+const coordinatorMigrationV28 = `
+ALTER TABLE usage_samples ADD COLUMN field_presence INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE usage_samples ADD COLUMN boundary_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE usage_samples ADD COLUMN incarnation TEXT NOT NULL DEFAULT '';
+ALTER TABLE usage_samples ADD COLUMN causal_sequence INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE usage_samples ADD COLUMN diagnostic_code TEXT NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS usage_diagnostic_overflow (
+	worker_id TEXT PRIMARY KEY,
+	dropped_count INTEGER NOT NULL CHECK(dropped_count >= 0)
+);
+`
+
 const coordinatorMigrationV27 = `
 ALTER TABLE usage_samples ADD COLUMN cost_reported INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX usage_samples_session_order
@@ -269,6 +281,7 @@ const attributedUsageSelect = `SELECT
 	u.worker_id, u.event_id, u.provider, u.thread_id, u.model, u.observed_at,
 	u.input_tokens, u.cache_write_tokens, u.cache_read_tokens, u.output_tokens,
 	u.cost_usd, u.cost_reported, u.kind, u.cumulative_tokens,
+	u.field_presence, u.boundary_id, u.incarnation, u.causal_sequence, u.diagnostic_code,
 	CASE WHEN b.thread_id IS NULL THEN 'unattributed' ELSE 'attributed' END,
 	COALESCE(b.workflow_run_id, ''), COALESCE(b.task_id, ''),
 	COALESCE(b.attempt_id, ''), COALESCE(b.assignment_id, ''),
@@ -289,6 +302,7 @@ func scanAttributedUsage(rows *sql.Rows) ([]domain.UsageSample, error) {
 			&u.WorkerID, &u.SourceEventID, &u.ProviderInstanceID, &u.ThreadID, &u.Model, &at,
 			&u.InputTokens, &u.CacheWriteTokens, &u.CacheReadTokens, &u.OutputTokens,
 			&u.CostUSD, &u.CostReported, &u.Kind, &u.CumulativeTokens,
+			&u.FieldPresence, &u.BoundaryID, &u.Incarnation, &u.Sequence, &u.DiagnosticCode,
 			&u.Attribution.Status, &u.Attribution.WorkflowRunID, &u.Attribution.TaskID,
 			&u.Attribution.AttemptID, &u.Attribution.AssignmentID,
 			&u.Attribution.AssignmentEpoch, &u.Attribution.ActivationID,
@@ -317,6 +331,10 @@ func (s *Store) AttributedUsage(ctx context.Context, runID string) (domain.Usage
 		WHERE b.thread_id IS NULL`).Scan(&report.Coverage.UnscopedUnattributedCount); err != nil {
 		return domain.UsageReport{}, err
 	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(dropped_count), 0) FROM usage_diagnostic_overflow`).Scan(
+		&report.Coverage.DiagnosticDroppedCount); err != nil {
+		return domain.UsageReport{}, err
+	}
 	if runID == "" {
 		return report, nil
 	}
@@ -343,10 +361,43 @@ type usageExecer interface {
 
 func recordUsage(ctx context.Context, execer usageExecer, u domain.UsageSample) error {
 	_, err := execer.ExecContext(ctx,
-		`INSERT OR IGNORE INTO usage_samples(worker_id, event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd, cost_reported, kind, cumulative_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO usage_samples(worker_id, event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd, cost_reported, kind, cumulative_tokens, field_presence, boundary_id, incarnation, causal_sequence, diagnostic_code)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.WorkerID, u.SourceEventID, u.ProviderInstanceID, u.ThreadID, u.Model, u.ObservedAt.UTC().Format(time.RFC3339Nano),
-		u.InputTokens, u.CacheWriteTokens, u.CacheReadTokens, u.OutputTokens, u.CostUSD, u.CostReported, u.Kind, u.CumulativeTokens)
+		u.InputTokens, u.CacheWriteTokens, u.CacheReadTokens, u.OutputTokens, u.CostUSD, u.CostReported, u.Kind, u.CumulativeTokens,
+		u.FieldPresence, u.BoundaryID, u.Incarnation, u.Sequence, u.DiagnosticCode)
+	if err != nil || u.Kind != domain.UsageKindDiagnostic {
+		return err
+	}
+	if u.DiagnosticCode == "overflow" {
+		_, err = execer.ExecContext(ctx, `INSERT INTO usage_diagnostic_overflow(worker_id, dropped_count) VALUES(?, ?)
+			ON CONFLICT(worker_id) DO UPDATE SET dropped_count = MAX(dropped_count, excluded.dropped_count)`, u.WorkerID, u.CumulativeTokens)
+		return err
+	}
+	result, err := execer.ExecContext(ctx, `DELETE FROM usage_samples WHERE rowid IN (
+		SELECT rowid FROM usage_samples WHERE worker_id = ? AND kind = ? AND diagnostic_code <> 'overflow'
+		ORDER BY observed_at DESC, event_id DESC LIMIT -1 OFFSET 1000)`, u.WorkerID, domain.UsageKindDiagnostic)
+	if err != nil {
+		return err
+	}
+	dropped, err := result.RowsAffected()
+	if err != nil || dropped == 0 {
+		return err
+	}
+	_, err = execer.ExecContext(ctx, `INSERT INTO usage_diagnostic_overflow(worker_id, dropped_count) VALUES(?, ?)
+		ON CONFLICT(worker_id) DO UPDATE SET dropped_count = dropped_count + excluded.dropped_count`, u.WorkerID, dropped)
+	if err != nil {
+		return err
+	}
+	if _, err = execer.ExecContext(ctx, `DELETE FROM usage_samples WHERE worker_id = ? AND diagnostic_code = 'overflow'`, u.WorkerID); err != nil {
+		return err
+	}
+	_, err = execer.ExecContext(ctx, `INSERT INTO usage_samples(
+		worker_id,event_id,provider,thread_id,model,observed_at,input_tokens,cache_write_tokens,cache_read_tokens,
+		output_tokens,cost_usd,cost_reported,kind,cumulative_tokens,field_presence,boundary_id,incarnation,causal_sequence,diagnostic_code)
+		SELECT worker_id, 'diagnostic-overflow-' || dropped_count, '', '', '', ?, 0, 0, 0, 0, 0, 0, ?,
+			dropped_count, 0, '', '', 0, 'overflow' FROM usage_diagnostic_overflow WHERE worker_id = ?`,
+		u.ObservedAt.UTC().Format(time.RFC3339Nano), domain.UsageKindDiagnostic, u.WorkerID)
 	return err
 }
 

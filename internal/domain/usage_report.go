@@ -17,17 +17,26 @@ const (
 
 const UsageFreshnessWindow = 15 * time.Minute
 
+type UsageCostCoverage string
+
+const (
+	UsageCostComplete    UsageCostCoverage = "complete"
+	UsageCostPartial     UsageCostCoverage = "partial"
+	UsageCostUnavailable UsageCostCoverage = "unavailable"
+)
+
 type UsageTotals struct {
-	UncachedInputTokens  int64    `json:"uncachedInputTokens"`
-	CacheWriteTokens     int64    `json:"cacheWriteTokens"`
-	CacheReadTokens      int64    `json:"cacheReadTokens"`
-	OutputTokens         int64    `json:"outputTokens"`
-	ProviderCostUSD      float64  `json:"providerCostUsd,omitempty"`
-	ProviderCostReported bool     `json:"providerCostReported"`
-	EstimatedCostUSD     *float64 `json:"estimatedCostUsd,omitempty"`
-	NormalizedSamples    int64    `json:"normalizedSamples"`
-	Calls                int64    `json:"calls"`
-	Turns                int64    `json:"turns"`
+	UncachedInputTokens  int64             `json:"uncachedInputTokens"`
+	CacheWriteTokens     int64             `json:"cacheWriteTokens"`
+	CacheReadTokens      int64             `json:"cacheReadTokens"`
+	OutputTokens         int64             `json:"outputTokens"`
+	ProviderCostUSD      float64           `json:"providerCostUsd,omitempty"`
+	ProviderCostReported bool              `json:"providerCostReported"`
+	ProviderCostCoverage UsageCostCoverage `json:"providerCostCoverage"`
+	EstimatedCostUSD     *float64          `json:"estimatedCostUsd,omitempty"`
+	NormalizedSamples    int64             `json:"normalizedSamples"`
+	Calls                int64             `json:"calls"`
+	Turns                int64             `json:"turns"`
 }
 
 type UsageAggregate struct {
@@ -56,15 +65,7 @@ type usageCandidate struct {
 
 func NormalizeUsageReport(report UsageReport, context UsageNormalizationContext) UsageReport {
 	samples := append([]UsageSample(nil), report.Samples...)
-	sort.SliceStable(samples, func(i, j int) bool {
-		if !samples[i].ObservedAt.Equal(samples[j].ObservedAt) {
-			return samples[i].ObservedAt.Before(samples[j].ObservedAt)
-		}
-		if samples[i].WorkerID != samples[j].WorkerID {
-			return samples[i].WorkerID < samples[j].WorkerID
-		}
-		return samples[i].SourceEventID < samples[j].SourceEventID
-	})
+	sort.SliceStable(samples, func(i, j int) bool { return usageSampleLess(samples[i], samples[j]) })
 	report.Samples = samples
 	report.Coverage.RawSampleCount = int64(len(samples))
 	report.Coverage.AttributedCount = int64(len(samples))
@@ -79,19 +80,16 @@ func NormalizeUsageReport(report UsageReport, context UsageNormalizationContext)
 		report.Coverage.Truncated = true
 		reasons["run usage exceeded the aggregation safety bound"] = true
 	}
+	if report.Coverage.DiagnosticDroppedCount > 0 {
+		reasons["sanitized usage diagnostics exceeded the per-worker retention bound"] = true
+	}
 
-	lastTurnAt := map[string]time.Time{}
+	turnSessions := map[string]bool{}
+	turnBoundaries := map[string]bool{}
 	candidates := make([]usageCandidate, 0, len(samples))
 	seenEvents := map[string]bool{}
 	for _, sample := range samples {
-		if report.Coverage.ObservedFrom == nil || sample.ObservedAt.Before(*report.Coverage.ObservedFrom) {
-			at := sample.ObservedAt
-			report.Coverage.ObservedFrom = &at
-		}
-		if report.Coverage.ObservedThrough == nil || sample.ObservedAt.After(*report.Coverage.ObservedThrough) {
-			at := sample.ObservedAt
-			report.Coverage.ObservedThrough = &at
-		}
+		updateUsageObservedRange(&report.Coverage, sample.ObservedAt)
 		eventKey := sample.WorkerID + "\x00" + sample.SourceEventID
 		if sample.SourceEventID == "" || sample.ObservedAt.IsZero() ||
 			sample.InputTokens < 0 || sample.CacheWriteTokens < 0 ||
@@ -106,45 +104,114 @@ func NormalizeUsageReport(report UsageReport, context UsageNormalizationContext)
 			continue
 		}
 		seenEvents[eventKey] = true
+		if sample.Kind == UsageKindDiagnostic {
+			report.Coverage.DiagnosticCount++
+			switch sample.DiagnosticCode {
+			case "unsupported":
+				report.Coverage.UnsupportedCount++
+				reasons["unsupported provider usage evidence was recorded without content"] = true
+			case "missing-fields":
+				report.Coverage.MissingFieldCount++
+				reasons["provider usage numeric fields were absent"] = true
+			case "overflow":
+				if sample.CumulativeTokens > report.Coverage.DiagnosticDroppedCount {
+					report.Coverage.DiagnosticDroppedCount = sample.CumulativeTokens
+				}
+				reasons["provider usage diagnostics exceeded the bounded retention cap"] = true
+			default:
+				report.Coverage.MalformedCount++
+				reasons["malformed provider usage evidence was recorded without content"] = true
+			}
+			continue
+		}
 		if sample.Kind != UsageKindCall && sample.Kind != UsageKindTurn {
 			report.Coverage.UnsupportedCount++
 			reasons["unsupported provider usage representation was excluded"] = true
 			continue
 		}
+		if sample.FieldPresence != UsageFieldsAll {
+			report.Coverage.MissingFieldCount++
+			reasons["provider usage numeric fields were absent; present fields remain measured"] = true
+		}
 		key := usageSessionKey(sample)
-		if sample.Kind == UsageKindTurn && sample.ObservedAt.After(lastTurnAt[key]) {
-			lastTurnAt[key] = sample.ObservedAt
+		if sample.Kind == UsageKindTurn {
+			turnSessions[key] = true
+			if sample.BoundaryID != "" {
+				turnBoundaries[key+"\x00"+sample.BoundaryID] = true
+			}
 		}
 		candidates = append(candidates, usageCandidate{sample: sample, key: key})
 	}
 
+	sort.SliceStable(candidates, func(i, j int) bool {
+		left, right := candidates[i], candidates[j]
+		if left.key == right.key && left.sample.Incarnation != "" &&
+			left.sample.Incarnation == right.sample.Incarnation &&
+			left.sample.Sequence > 0 && right.sample.Sequence > 0 &&
+			left.sample.Sequence != right.sample.Sequence {
+			return left.sample.Sequence < right.sample.Sequence
+		}
+		return usageSampleLess(left.sample, right.sample)
+	})
+
 	selected := make([]UsageSample, 0, len(candidates))
 	lastCumulative := map[string]int64{}
+	lastSequence := map[string]int64{}
+	seenIncarnation := map[string]map[string]bool{}
 	for _, candidate := range candidates {
 		sample := candidate.sample
-		if sample.Kind == UsageKindCall {
-			if turnAt := lastTurnAt[candidate.key]; !turnAt.IsZero() {
-				if !sample.ObservedAt.After(turnAt) {
-					report.Coverage.ExcludedOverlapCount++
-					continue
-				}
+		if sample.Kind == UsageKindCall && turnSessions[candidate.key] {
+			if sample.BoundaryID != "" && turnBoundaries[candidate.key+"\x00"+sample.BoundaryID] {
+				report.Coverage.ExcludedOverlapCount++
+				reasons["whole-turn totals superseded calls with the same causal boundary"] = true
+			} else {
+				report.Coverage.AmbiguousOverlapCount++
 				report.Coverage.UnmatchedCallCount++
-				reasons["call rows after the latest whole-turn summary were retained as unmatched evidence"] = true
+				reasons["calls without a matching causal turn boundary were conservatively excluded"] = true
 			}
+			continue
 		}
 		if sample.Kind == UsageKindCall && sample.CumulativeTokens > 0 {
-			if previous := lastCumulative[candidate.key]; previous > 0 {
+			causal := sample.Incarnation != "" && sample.Sequence > 0
+			cumulativeKey := candidate.key
+			if causal {
+				cumulativeKey += "\x00" + sample.Incarnation
+				incarnations := seenIncarnation[candidate.key]
+				if incarnations == nil {
+					incarnations = map[string]bool{}
+					seenIncarnation[candidate.key] = incarnations
+				}
+				if !incarnations[sample.Incarnation] {
+					if len(incarnations) > 0 {
+						report.Coverage.ResetCount++
+						reasons["provider cumulative counter changed causal incarnation"] = true
+					}
+					incarnations[sample.Incarnation] = true
+				}
+				if prior := lastSequence[cumulativeKey]; prior > 0 && sample.Sequence <= prior {
+					report.Coverage.DuplicateCount++
+					reasons["replayed causal cumulative updates were deduplicated"] = true
+					continue
+				}
+				lastSequence[cumulativeKey] = sample.Sequence
+			}
+			if previous := lastCumulative[cumulativeKey]; previous > 0 {
 				switch {
 				case sample.CumulativeTokens == previous:
 					report.Coverage.DuplicateCount++
 					reasons["repeated cumulative updates were deduplicated"] = true
 					continue
 				case sample.CumulativeTokens < previous:
-					report.Coverage.ResetCount++
-					reasons["provider cumulative counter rotation/reset was observed"] = true
+					report.Coverage.CumulativeAmbiguityCount++
+					if causal {
+						reasons["cumulative counter decreased within one causal incarnation"] = true
+					} else {
+						reasons["cumulative counter decreased without incarnation/sequence evidence"] = true
+					}
+					continue
 				}
 			}
-			lastCumulative[candidate.key] = sample.CumulativeTokens
+			lastCumulative[cumulativeKey] = sample.CumulativeTokens
 		}
 		if sample.Model == "" {
 			report.Coverage.UnknownModelCount++
@@ -159,10 +226,6 @@ func NormalizeUsageReport(report UsageReport, context UsageNormalizationContext)
 	}
 
 	report.Coverage.NormalizedSampleCount = int64(len(selected))
-	if report.Coverage.ExcludedOverlapCount > 0 {
-		reasons["whole-turn totals superseded overlapping call rows"] = true
-	}
-
 	report.ByTask = aggregateUsage(selected, func(s UsageSample) (string, UsageAggregate) {
 		key := s.Attribution.TaskID
 		if key == "" {
@@ -200,10 +263,14 @@ func NormalizeUsageReport(report UsageReport, context UsageNormalizationContext)
 		context.Now.Sub(*report.Coverage.ObservedThrough) > UsageFreshnessWindow {
 		report.Coverage.State = UsageCoverageStale
 		reasons["latest provider usage evidence is stale for an active workflow"] = true
-	} else if len(selected) == 0 && report.Coverage.UnsupportedCount > 0 && report.Coverage.MalformedCount == 0 {
+	} else if len(selected) == 0 && report.Coverage.UnsupportedCount > 0 &&
+		report.Coverage.MalformedCount == 0 && report.Coverage.MissingFieldCount == 0 {
 		report.Coverage.State = UsageCoverageUnsupported
 	} else if len(selected) == 0 || report.Coverage.UnknownModelCount > 0 || report.Coverage.MalformedCount > 0 ||
-		report.Coverage.UnsupportedCount > 0 || report.Coverage.LateCount > 0 || report.Coverage.UnmatchedCallCount > 0 || report.Coverage.Truncated ||
+		report.Coverage.UnsupportedCount > 0 || report.Coverage.DiagnosticCount > 0 || report.Coverage.DiagnosticDroppedCount > 0 ||
+		report.Coverage.MissingFieldCount > 0 || report.Coverage.AmbiguousOverlapCount > 0 ||
+		report.Coverage.CumulativeAmbiguityCount > 0 || report.Coverage.LateCount > 0 ||
+		report.Coverage.UnmatchedCallCount > 0 || report.Coverage.Truncated ||
 		report.Coverage.UnattributedCount > 0 {
 		report.Coverage.State = UsageCoveragePartial
 	}
@@ -212,6 +279,30 @@ func NormalizeUsageReport(report UsageReport, context UsageNormalizationContext)
 		report.Coverage.Reason = strings.Join(report.Coverage.Reasons, "; ")
 	}
 	return report
+}
+
+func updateUsageObservedRange(coverage *UsageCoverage, observedAt time.Time) {
+	if observedAt.IsZero() {
+		return
+	}
+	if coverage.ObservedFrom == nil || observedAt.Before(*coverage.ObservedFrom) {
+		at := observedAt
+		coverage.ObservedFrom = &at
+	}
+	if coverage.ObservedThrough == nil || observedAt.After(*coverage.ObservedThrough) {
+		at := observedAt
+		coverage.ObservedThrough = &at
+	}
+}
+
+func usageSampleLess(left, right UsageSample) bool {
+	if !left.ObservedAt.Equal(right.ObservedAt) {
+		return left.ObservedAt.Before(right.ObservedAt)
+	}
+	if left.WorkerID != right.WorkerID {
+		return left.WorkerID < right.WorkerID
+	}
+	return left.SourceEventID < right.SourceEventID
 }
 
 func usageSessionKey(sample UsageSample) string {
@@ -230,6 +321,16 @@ func addUsageTotals(total *UsageTotals, sample UsageSample) {
 		total.Calls++
 	} else if sample.Kind == UsageKindTurn {
 		total.Turns++
+	}
+	switch {
+	case sample.CostReported && total.NormalizedSamples == 1:
+		total.ProviderCostCoverage = UsageCostComplete
+	case !sample.CostReported && total.NormalizedSamples == 1:
+		total.ProviderCostCoverage = UsageCostUnavailable
+	case sample.CostReported && total.ProviderCostCoverage == UsageCostUnavailable:
+		total.ProviderCostCoverage = UsageCostPartial
+	case !sample.CostReported && total.ProviderCostCoverage == UsageCostComplete:
+		total.ProviderCostCoverage = UsageCostPartial
 	}
 	if sample.CostReported {
 		total.ProviderCostUSD += sample.CostUSD

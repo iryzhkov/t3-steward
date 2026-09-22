@@ -32,7 +32,10 @@ func TestUsageQueryReturnsAuthoritativeDispatchIdentity(t *testing.T) {
 	store := openAdminTestStore(t)
 	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
 		WorkflowRuns: []domain.WorkflowRun{{ID: "run-usage", Progress: domain.ProgressSucceeded, CreatedAt: adminTestNow, UpdatedAt: adminTestNow, CompletedAt: &adminTestNow}},
-		Attempts:     []domain.Attempt{{ID: "attempt-usage", WorkflowRunID: "run-usage", TaskID: "task-usage", Number: 1, Progress: domain.ProgressSucceeded, CompletedAt: &adminTestNow}},
+		Attempts: []domain.Attempt{
+			{ID: "zzz-old-attempt", WorkflowRunID: "run-usage", TaskID: "task-usage", Number: 1, Revision: 9, Progress: domain.ProgressFailed, CompletedAt: &adminTestNow},
+			{ID: "attempt-usage", WorkflowRunID: "run-usage", TaskID: "task-usage", Number: 2, Revision: 1, Progress: domain.ProgressSucceeded, CompletedAt: &adminTestNow},
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -49,12 +52,21 @@ func TestUsageQueryReturnsAuthoritativeDispatchIdentity(t *testing.T) {
 	if err := store.RecordUsage(ctx, domain.UsageSample{
 		WorkerID: "worker-usage", ProviderInstanceID: "codex-primary", ThreadID: "thread-usage", Model: "gpt",
 		ObservedAt: adminTestNow, SourceEventID: "event-usage", Kind: domain.UsageKindCall, InputTokens: 5,
+		FieldPresence: domain.UsageFieldsAll, CostUSD: 1.25, CostReported: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordUsage(ctx, domain.UsageSample{
+		WorkerID: "worker-usage", ProviderInstanceID: "codex-primary", ThreadID: "thread-usage", Model: "gpt",
+		ObservedAt: adminTestNow.Add(2 * time.Minute), SourceEventID: "event-later", Kind: domain.UsageKindCall,
+		InputTokens: 2, FieldPresence: domain.UsageFieldsAll,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RecordUsage(ctx, domain.UsageSample{
 		WorkerID: "worker-usage", ProviderInstanceID: "codex-primary", ThreadID: "thread-without-binding", Model: "gpt",
 		ObservedAt: adminTestNow, SourceEventID: "event-unscoped", Kind: domain.UsageKindCall, InputTokens: 7,
+		FieldPresence: domain.UsageFieldsAll,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +79,9 @@ func TestUsageQueryReturnsAuthoritativeDispatchIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	if summary.UsageReport == nil || len(summary.Usage) != 0 || len(summary.UsageReport.Samples) != 0 ||
-		summary.UsageReport.Totals.UncachedInputTokens != 5 ||
+		summary.UsageReport.Totals.UncachedInputTokens != 7 ||
+		summary.UsageReport.Totals.ProviderCostUSD != 1.25 ||
+		summary.UsageReport.Totals.ProviderCostCoverage != domain.UsageCostPartial ||
 		len(summary.UsageReport.ByTask) != 1 || summary.UsageReport.ByTask[0].Key != "task-usage" ||
 		summary.UsageReport.ByTask[0].Outcome != domain.ProgressSucceeded ||
 		summary.UsageReport.RunProgress != domain.ProgressSucceeded {
@@ -86,15 +100,43 @@ func TestUsageQueryReturnsAuthoritativeDispatchIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Usage) != 1 {
+	if len(response.Usage) != 1 || response.UsageReport.NextCursor == "" {
 		t.Fatalf("usage = %#v", response.Usage)
 	}
+	cursor := response.UsageReport.NextCursor
 	got := response.Usage[0].Attribution
 	if got.Status != domain.UsageAttributed || got.WorkflowRunID != "run-usage" ||
 		got.TaskID != "task-usage" || got.AttemptID != "attempt-usage" ||
 		got.AssignmentID != "assignment-usage" || got.AssignmentEpoch != 3 ||
 		got.Role != domain.ExecutionRoleTask {
 		t.Fatalf("attribution = %#v", got)
+	}
+	if err := store.RecordUsage(ctx, domain.UsageSample{
+		WorkerID: "worker-usage", ProviderInstanceID: "codex-primary", ThreadID: "thread-usage", Model: "gpt",
+		ObservedAt: adminTestNow.Add(-time.Minute), SourceEventID: "event-inserted-before", Kind: domain.UsageKindCall,
+		InputTokens: 1, FieldPresence: domain.UsageFieldsAll,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordUsage(ctx, domain.UsageSample{
+		WorkerID: "worker-usage", ProviderInstanceID: "codex-primary", ThreadID: "thread-usage", Model: "gpt",
+		ObservedAt: adminTestNow.Add(time.Minute), SourceEventID: "event-inserted-between", Kind: domain.UsageKindCall,
+		InputTokens: 1, FieldPresence: domain.UsageFieldsAll,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage", UsageRaw: true, UsageLimit: 10, UsageCursor: cursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Usage) != 2 || page.Usage[0].SourceEventID != "event-inserted-between" || page.Usage[1].SourceEventID != "event-later" {
+		t.Fatalf("stable keyset page = %#v", page.Usage)
+	}
+	if _, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage", UsageRaw: true, UsageCursor: cursor + "x"}); !errors.Is(err, ErrInvalidQuery) {
+		t.Fatalf("tampered cursor error = %v", err)
+	}
+	if _, err := decodeUsageCursor(cursor, "different-run"); err == nil {
+		t.Fatal("cursor was not bound to its run")
 	}
 	if response.UsageSemantics == "" {
 		t.Fatal("usage overlap semantics are absent")

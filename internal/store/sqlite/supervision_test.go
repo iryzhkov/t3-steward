@@ -138,7 +138,7 @@ func TestSupervisionSchemaMigratesForwardAndRefusesNewerDatabase(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != currentSchemaVersion || currentSchemaVersion != 27 {
+	if version != currentSchemaVersion || currentSchemaVersion != 28 {
 		t.Fatalf("schema version = %d, current = %d", version, currentSchemaVersion)
 	}
 	for _, table := range []string{

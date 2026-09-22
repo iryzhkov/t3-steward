@@ -271,6 +271,11 @@ func TestMeasuredUsageSignedReconcileClaimReplayAndPublicQuery(t *testing.T) {
 	}
 
 	samples := []domain.UsageSample{parsed[0], parsed[1]}
+	diagnostic, err := providerlog.ParseUsageEvidenceLine(`[2026-09-22T18:00:00Z] CANON: {"type":"thread.token-usage.updated","eventId":"bad","providerInstanceId":"claude-agent","threadId":"thread-claude","createdAt":"2026-09-22T18:00:00Z","raw":{"method":"future/usage","payload":{"secret":"must-not-survive"}}}`)
+	if err != nil || len(diagnostic) != 1 {
+		t.Fatalf("diagnostic fixture = %#v, %v", diagnostic, err)
+	}
+	samples = append(samples, diagnostic[0])
 	for i := 1; i < 3; i++ {
 		sample := parsed[i%len(parsed)]
 		sample.ThreadID = roles[i].thread
@@ -359,13 +364,14 @@ func TestMeasuredUsageSignedReconcileClaimReplayAndPublicQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	admin.SetClock(func() time.Time { return causalUsageNow.Add(2 * time.Minute) })
 	response, err := admin.Query(ctx, backlogadmin.Query{
 		Version: backlogadmin.Version, Kind: backlogadmin.QueryUsage, WorkflowRunID: "run", UsageRaw: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Usage) != len(roles) {
+	if len(response.Usage) != len(roles)+1 {
 		t.Fatalf("public attributed usage = %#v", response.Usage)
 	}
 	gotRoles := make(map[domain.ExecutionRole]bool)
@@ -374,6 +380,9 @@ func TestMeasuredUsageSignedReconcileClaimReplayAndPublicQuery(t *testing.T) {
 			t.Fatalf("worker provenance = %#v", sample)
 		}
 		gotRoles[sample.Attribution.Role] = true
+		if strings.Contains(sample.SourceEventID, "must-not-survive") || strings.Contains(sample.DiagnosticCode, "must-not-survive") {
+			t.Fatalf("diagnostic leaked content: %#v", sample)
+		}
 	}
 	for _, item := range roles {
 		if !gotRoles[item.role] {
@@ -381,7 +390,8 @@ func TestMeasuredUsageSignedReconcileClaimReplayAndPublicQuery(t *testing.T) {
 		}
 	}
 	if response.UsageCoverage == nil || response.UsageCoverage.UnscopedUnattributedCount != 2 ||
-		response.UsageCoverage.Reason == "" {
+		response.UsageCoverage.DiagnosticCount != 1 || response.UsageCoverage.UnsupportedCount != 1 ||
+		response.UsageCoverage.State != domain.UsageCoveragePartial || response.UsageCoverage.Reason == "" {
 		t.Fatalf("unscoped coverage = %#v", response.UsageCoverage)
 	}
 }

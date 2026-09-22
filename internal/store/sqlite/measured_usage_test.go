@@ -37,8 +37,8 @@ func TestMeasuredUsageMigrationPreservesHistoryAndReopensIdempotently(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := schemaVersionOf(t, store); got != 27 {
-			t.Fatalf("schema version = %d, want 27", got)
+		if got := schemaVersionOf(t, store); got != 28 {
+			t.Fatalf("schema version = %d, want 28", got)
 		}
 		samples, err := store.UsageSamples(ctx, at.Add(-time.Minute), at.Add(time.Minute))
 		if err != nil {
@@ -235,6 +235,84 @@ func TestAttributedUsageAppliesDeterministicSafetyBound(t *testing.T) {
 		report.Samples[0].SourceEventID != "event-00000" || report.Samples[len(report.Samples)-1].SourceEventID != "event-09999" {
 		t.Fatalf("bounded report: samples=%d coverage=%#v first=%q last=%q", len(report.Samples), report.Coverage,
 			report.Samples[0].SourceEventID, report.Samples[len(report.Samples)-1].SourceEventID)
+	}
+}
+
+func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	for i := 0; i < 1001; i++ {
+		if err := store.RecordUsage(ctx, domain.UsageSample{
+			WorkerID: "worker-diagnostic", ProviderInstanceID: "provider", ThreadID: "thread",
+			ObservedAt: now.Add(time.Duration(i) * time.Second), SourceEventID: fmt.Sprintf("diagnostic-%04d", i),
+			Kind: domain.UsageKindDiagnostic, DiagnosticCode: "malformed",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	samples, err := store.UsageSamples(ctx, now.Add(-time.Second), now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 1001 {
+		t.Fatalf("retained diagnostics = %d", len(samples))
+	}
+	var ordinary, overflow int
+	for _, sample := range samples {
+		if sample.DiagnosticCode == "overflow" {
+			overflow++
+			if sample.CumulativeTokens != 1 {
+				t.Fatalf("overflow marker = %#v", sample)
+			}
+		} else {
+			ordinary++
+		}
+	}
+	if ordinary != 1000 || overflow != 1 {
+		t.Fatalf("ordinary=%d overflow=%d", ordinary, overflow)
+	}
+	report, err := store.AttributedUsage(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Coverage.DiagnosticDroppedCount != 1 {
+		t.Fatalf("overflow coverage = %#v", report.Coverage)
+	}
+
+	coordinator, err := OpenMigrated(filepath.Join(t.TempDir(), "coordinator.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	var acknowledgements []string
+	for {
+		batch, batchErr := store.WorkerUsageBatch(ctx, acknowledgements, MaxWorkerUsageDelivery)
+		if batchErr != nil {
+			t.Fatal(batchErr)
+		}
+		if len(batch) == 0 {
+			break
+		}
+		if err := coordinator.ReceiveWorkerUsage(ctx, "worker-diagnostic", batch); err != nil {
+			t.Fatal(err)
+		}
+		acknowledgements = acknowledgements[:0]
+		for _, sample := range batch {
+			acknowledgements = append(acknowledgements, sample.SourceEventID)
+		}
+	}
+	delivered, err := coordinator.AttributedUsage(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivered.Coverage.DiagnosticDroppedCount != 1 {
+		t.Fatalf("delivered overflow coverage = %#v", delivered.Coverage)
 	}
 }
 

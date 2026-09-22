@@ -1,9 +1,11 @@
 package providerlog
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,7 +49,8 @@ func TestMeasuredUsageProviderFixtures(t *testing.T) {
 			if sample.Kind != tt.wantKind || sample.ThreadID != tt.wantThread ||
 				sample.SourceEventID != tt.wantEvent || sample.Model != tt.wantModel ||
 				sample.InputTokens != tt.wantInput || sample.CacheReadTokens != tt.wantCache ||
-				sample.OutputTokens != tt.wantOutput || sample.CumulativeTokens != tt.wantTotal {
+				sample.OutputTokens != tt.wantOutput || sample.CumulativeTokens != tt.wantTotal ||
+				sample.FieldPresence != domain.UsageFieldsAll {
 				t.Fatalf("sample = %#v", sample)
 			}
 		})
@@ -73,11 +76,41 @@ func TestMeasuredUsageMalformedAndUnsupportedEvidenceIsNotAcceptedAsZero(t *test
 		t.Fatal("malformed usage was accepted")
 	}
 	unsupported := []byte(`{"type":"thread.token-usage.updated","eventId":"future","provider":"future","threadId":"thread","createdAt":"2026-09-22T18:00:00Z","raw":{"method":"future/usage","payload":{}}}`)
-	if _, err := ParseUsageJSON(unsupported, time.Time{}); !errors.Is(err, ErrNotUsage) {
+	if _, err := ParseUsageJSON(unsupported, time.Time{}); !errors.Is(err, ErrUnsupportedUsage) {
 		t.Fatalf("unsupported method error = %v", err)
 	}
 	missing := []byte(`{"type":"thread.token-usage.updated","eventId":"missing","provider":"codex","threadId":"thread","raw":{"method":"thread/tokenUsage/updated","payload":{"tokenUsage":{"last":{"inputTokens":1}}}}}`)
 	if _, err := ParseUsageJSON(missing, time.Time{}); err == nil {
 		t.Fatal("missing timestamp was accepted as zero-time evidence")
+	}
+}
+
+func TestUsageEvidenceSanitizesDiagnosticsAndCarriesPresenceAndCausality(t *testing.T) {
+	secret := "credential-super-secret"
+	malformed := `[2026-09-22T18:00:00Z] CANON: {"type":"thread.token-usage.updated","payload":"` + secret + `"`
+	diagnostics, err := ParseUsageEvidenceLine(malformed)
+	if err != nil || len(diagnostics) != 1 || diagnostics[0].Kind != domain.UsageKindDiagnostic ||
+		diagnostics[0].DiagnosticCode != "malformed" {
+		t.Fatalf("malformed diagnostic = %#v, %v", diagnostics, err)
+	}
+	raw, _ := json.Marshal(diagnostics)
+	if strings.Contains(string(raw), secret) {
+		t.Fatalf("diagnostic retained source content: %s", raw)
+	}
+
+	line := `[2026-09-22T18:00:00Z] CANON: {"type":"thread.token-usage.updated","eventId":"partial","provider":"codex","threadId":"thread","createdAt":"2026-09-22T18:00:00Z","turnId":"turn-7","sequence":4,"raw":{"method":"thread/tokenUsage/updated","payload":{"sessionId":"session-2","tokenUsage":{"last":{"inputTokens":9},"total":{"totalTokens":9}}}}}`
+	usage, err := ParseUsageEvidenceLine(line)
+	if err != nil || len(usage) != 1 {
+		t.Fatalf("partial usage = %#v, %v", usage, err)
+	}
+	if usage[0].FieldPresence != domain.UsageFieldInput || usage[0].BoundaryID != "turn-7" ||
+		usage[0].Incarnation != "session-2" || usage[0].Sequence != 4 {
+		t.Fatalf("presence/causality = %#v", usage[0])
+	}
+
+	unsupportedLine := `[2026-09-22T18:00:00Z] CANON: {"type":"thread.token-usage.updated","eventId":"future","provider":"future","threadId":"thread","createdAt":"2026-09-22T18:00:00Z","raw":{"method":"future/usage","payload":{}}}`
+	unsupportedEvidence, err := ParseUsageEvidenceLine(unsupportedLine)
+	if err != nil || len(unsupportedEvidence) != 1 || unsupportedEvidence[0].DiagnosticCode != "unsupported" {
+		t.Fatalf("unsupported diagnostic = %#v, %v", unsupportedEvidence, err)
 	}
 }
