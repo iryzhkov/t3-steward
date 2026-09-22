@@ -224,9 +224,18 @@ type ActivationSnapshot struct {
 	Gates          []ActivationGateView
 	Incidents      []ActivationIncidentView
 	Triggers       []CoalescedTrigger
+	// Full contracts and evidence are retained only in the immutable evidence
+	// object. The prompt renders the compact views above.
+	TaskContracts  []domain.Task
+	Attempts       []domain.Attempt
+	GateEvidence   []ActivationGateEvidence
+	OverseerPrompt domain.ArtifactDigest
 	// Artifacts are referenced by ID and digest only.
 	Artifacts []domain.ArtifactDigest
-	Actions   []ActivationAction
+	// EvidenceSnapshot names the immutable complete inventory backing a compact
+	// brief. Nil preserves the legacy direct-builder behavior.
+	EvidenceSnapshot *domain.ArtifactDigest
+	Actions          []ActivationAction
 	// Constraints are the exact limits on this activation, rendered verbatim.
 	Constraints     []string
 	ConsumedThrough int64
@@ -289,7 +298,7 @@ func BuildActivationPromptEnvelope(snapshot ActivationSnapshot) (domain.PromptEn
 			"Supervise campaign run %s at activation epoch %d. Review the evidence below and record at most one decision per subject through a scoped supervision command.",
 			snapshot.RunID, snapshot.Epoch),
 		Constraints:     activationConstraints(redactor, snapshot),
-		Inputs:          activationInputs(snapshot.Artifacts),
+		Inputs:          activationInputs(snapshot),
 		RequiredOutputs: activationRequiredOutputs(snapshot.Actions),
 		SafetyRules:     activationSafetyRules,
 		Facts:           activationFacts(redactor, snapshot),
@@ -299,6 +308,9 @@ func BuildActivationPromptEnvelope(snapshot ActivationSnapshot) (domain.PromptEn
 		return domain.PromptEnvelope{}, err
 	}
 	if err := fitPromptEnvelope(&envelope); err != nil {
+		if snapshot.EvidenceSnapshot != nil {
+			return domain.PromptEnvelope{}, &ActivationPackageError{Code: ActivationPackageErrorPromptTooLarge, Cause: err}
+		}
 		return domain.PromptEnvelope{}, err
 	}
 	return envelope, nil
@@ -330,7 +342,11 @@ func activationConstraints(redactor Redactor, snapshot ActivationSnapshot) []str
 
 // activationInputs names every referenced artifact by ID and digest. The bytes
 // stay where they are; an activation fetches what it decides to read.
-func activationInputs(artifacts []domain.ArtifactDigest) []domain.PromptInput {
+func activationInputs(snapshot ActivationSnapshot) []domain.PromptInput {
+	artifacts := snapshot.Artifacts
+	if snapshot.EvidenceSnapshot != nil {
+		artifacts = []domain.ArtifactDigest{*snapshot.EvidenceSnapshot}
+	}
 	ordered := append([]domain.ArtifactDigest(nil), artifacts...)
 	sort.SliceStable(ordered, func(left, right int) bool { return ordered[left].ArtifactID < ordered[right].ArtifactID })
 	var inputs []domain.PromptInput
@@ -374,6 +390,13 @@ func activationFacts(redactor Redactor, snapshot ActivationSnapshot) []domain.Pr
 		})
 	}
 	base := "supervision://" + snapshot.RunID
+	if snapshot.EvidenceSnapshot != nil {
+		add("inventory", "artifact://"+snapshot.EvidenceSnapshot.ArtifactID,
+			fmt.Sprintf("complete immutable inventory %s digest %s at graph revision %d and supervision record revision %d; %d tasks, %d gates, %d incidents, %d artifacts",
+				snapshot.EvidenceSnapshot.ArtifactID, snapshot.EvidenceSnapshot.Digest,
+				snapshot.GraphRevision, snapshot.RecordRevision, len(snapshot.Tasks),
+				len(snapshot.Gates), len(snapshot.Incidents), len(snapshot.Artifacts)))
+	}
 	for _, trigger := range snapshot.Triggers {
 		add("trigger/"+string(trigger.Kind)+"/"+trigger.Subject,
 			base+"/events",
@@ -381,13 +404,29 @@ func activationFacts(redactor Redactor, snapshot ActivationSnapshot) []domain.Pr
 				trigger.Kind, trigger.Subject, strings.Join(trigger.Reasons, " | "),
 				strings.Join(trigger.EventIDs, ","), trigger.FirstSequence, trigger.LastSequence))
 	}
+	relevantTasks := make(map[string]struct{})
 	for _, gate := range snapshot.Gates {
+		if snapshot.EvidenceSnapshot != nil &&
+			(gate.State == domain.GateAccepted || gate.State == domain.GateCancelled) {
+			continue
+		}
+		for _, taskID := range gate.ObservedTaskIDs {
+			relevantTasks[taskID] = struct{}{}
+		}
 		add("gate/"+gate.GateID, base+"/gate/"+gate.GateID,
 			fmt.Sprintf("state %s at graph revision %d; evidence snapshot %s; observes %s; protects %s",
 				gate.State, gate.GraphRevision, gate.EvidenceSnapshotID,
 				strings.Join(gate.ObservedTaskIDs, ","), strings.Join(gate.ProtectedTaskIDs, ",")))
 	}
 	for _, task := range snapshot.Tasks {
+		if snapshot.EvidenceSnapshot != nil {
+			_, relevant := relevantTasks[task.TaskID]
+			if !relevant && (task.State == string(domain.ProgressSucceeded) ||
+				task.State == string(domain.ProgressCancelled) ||
+				task.State == string(domain.ProgressFailed)) {
+				continue
+			}
+		}
 		add("task/"+task.TaskID, base+"/task/"+task.TaskID,
 			fmt.Sprintf("state %s; attempt %s at revision %d; verification %s",
 				task.State, task.AttemptID, task.AttemptRevision, task.Verification))
