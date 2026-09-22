@@ -215,8 +215,9 @@ type TaskWait struct {
 	// leaves evidence that a message may exist. Only observing DeliveryID in
 	// the thread resolves that; absence is not proof of non-delivery and never
 	// authorizes a second send.
-	Delivery    string     `json:"delivery,omitempty"`
-	DeliveredAt *time.Time `json:"deliveredAt,omitempty"`
+	Delivery           string     `json:"delivery,omitempty"`
+	DeliveredAt        *time.Time `json:"deliveredAt,omitempty"`
+	DeliveryObservedAt *time.Time `json:"deliveryObservedAt,omitempty"`
 	// DeliveryID is the stable external identity of this wake. It is derived
 	// once, from the wait, so a retry sends the same command rather than a new
 	// one that would start a second turn.
@@ -271,7 +272,7 @@ func (w TaskWait) Parking() bool {
 	default:
 		// A resumption wake holds the attempt until its message has reached the
 		// thread, or until it is abandoned because no turn can receive it.
-		return w.Delivery != "delivered" && w.Delivery != "abandoned"
+		return w.Delivery != "delivered" && w.Delivery != "observed" && w.Delivery != "abandoned"
 	}
 }
 

@@ -160,18 +160,23 @@ func (r *Runner) deliverTaskWake(ctx context.Context, store TaskWaitStore, contr
 			log.Error("task wake requires manual recovery: grouped payload coverage is unknown", "delivery", wait.DeliveryID)
 			continue
 		}
-		if wait.Delivery == "sending" || wait.Delivery == "recovery-required" {
+		if wait.Delivery == "sending" || wait.Delivery == "recovery-required" || wait.Delivery == "delivered" {
 			found, err := control.ObserveNodeWake(ctx, wake.ThreadID, wait.DeliveryID)
 			if err != nil {
 				continue
 			}
-			to := "recovery-required"
+			to := wait.Delivery
 			if found {
 				to = "delivered"
+				if wait.Attention != nil {
+					to = "observed"
+				}
+			} else if wait.Delivery != "delivered" {
+				to = "recovery-required"
 			}
 			if to != wait.Delivery {
 				if _, err := store.TransitionTaskWake(ctx, wait.ID, wait.Delivery, to, now); err != nil {
-					log.Error("record task wake delivery", "wait", wait.ID, "err", err)
+					log.Error("record task wake delivery observation", "wait", wait.ID, "err", err)
 				}
 			}
 			continue

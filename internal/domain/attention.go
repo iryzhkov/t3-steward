@@ -1,6 +1,9 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -14,9 +17,25 @@ const (
 )
 
 type AttentionRequest struct {
-	Kind         AttentionKind `json:"kind"`
-	Prompt       string        `json:"prompt"`
-	AssignmentID string        `json:"assignmentId"`
+	Kind             AttentionKind `json:"kind"`
+	Prompt           string        `json:"prompt"`
+	AssignmentID     string        `json:"assignmentId"`
+	AssignmentEpoch  int64         `json:"assignmentEpoch,omitempty"`
+	WorkerID         string        `json:"workerId,omitempty"`
+	ContentDigest    string        `json:"contentDigest,omitempty"`
+	DecisionDeadline time.Time     `json:"decisionDeadline,omitempty"`
+}
+
+// AttentionRequestContentDigest is the canonical digest of the operator-visible
+// question. Coordinator-owned execution fences are carried beside it and may
+// change only by creating a new wait.
+func AttentionRequestContentDigest(kind AttentionKind, prompt string) string {
+	raw, _ := json.Marshal(struct {
+		Kind   AttentionKind `json:"kind"`
+		Prompt string        `json:"prompt"`
+	}{Kind: kind, Prompt: prompt})
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 func (r AttentionRequest) Validate() error {
@@ -28,6 +47,13 @@ func (r AttentionRequest) Validate() error {
 	}
 	if strings.TrimSpace(r.AssignmentID) == "" || r.AssignmentID != strings.TrimSpace(r.AssignmentID) {
 		return errors.New("attention request needs the exact assignment ID")
+	}
+	enriched := r.AssignmentEpoch != 0 || r.WorkerID != "" || r.ContentDigest != "" || !r.DecisionDeadline.IsZero()
+	if enriched {
+		if r.AssignmentEpoch < 1 || strings.TrimSpace(r.WorkerID) == "" || r.WorkerID != strings.TrimSpace(r.WorkerID) ||
+			r.ContentDigest != AttentionRequestContentDigest(r.Kind, r.Prompt) || r.DecisionDeadline.IsZero() {
+			return errors.New("attention request has incomplete or invalid coordinator fences")
+		}
 	}
 	return nil
 }
@@ -50,8 +76,12 @@ type AttentionDecision struct {
 	TaskID             string                `json:"taskId"`
 	AttemptID          string                `json:"attemptId"`
 	AssignmentID       string                `json:"assignmentId"`
+	AssignmentEpoch    int64                 `json:"assignmentEpoch"`
+	WorkerID           string                `json:"workerId"`
 	ThreadID           string                `json:"threadId"`
 	RegisteredRevision int64                 `json:"registeredRevision"`
+	ContentDigest      string                `json:"contentDigest"`
+	DecisionDeadline   time.Time             `json:"decisionDeadline"`
 	Kind               AttentionDecisionKind `json:"kind"`
 	Reason             string                `json:"reason"`
 	Change             string                `json:"change,omitempty"`
@@ -62,8 +92,9 @@ func (d AttentionDecision) Validate() error {
 		return errors.New("attention decision needs a trimmed ID of at most 128 bytes")
 	}
 	if d.WaitID == "" || d.RequestID == "" || d.WorkflowRunID == "" || d.TaskID == "" ||
-		d.AttemptID == "" || d.AssignmentID == "" || d.ThreadID == "" || d.RegisteredRevision < 1 {
-		return errors.New("attention decision needs the exact wait, request, run, task, attempt, assignment, thread and registered revision")
+		d.AttemptID == "" || d.AssignmentID == "" || d.AssignmentEpoch < 1 || d.WorkerID == "" ||
+		d.ThreadID == "" || d.RegisteredRevision < 1 || d.ContentDigest == "" || d.DecisionDeadline.IsZero() {
+		return errors.New("attention decision needs the exact wait, request, run, task, attempt, assignment, assignment epoch, worker, thread, registered revision, content digest and deadline")
 	}
 	switch d.Kind {
 	case AttentionApprove, AttentionResume, AttentionHold, AttentionStop, AttentionChange:
@@ -89,6 +120,7 @@ const (
 	AttentionApplied   AttentionReceiptState = "applied"
 	AttentionRejected  AttentionReceiptState = "rejected"
 	AttentionDelivered AttentionReceiptState = "delivered"
+	AttentionObserved  AttentionReceiptState = "observed"
 )
 
 type AttentionReceipt struct {
@@ -98,4 +130,6 @@ type AttentionReceipt struct {
 	Failure     string                `json:"failure,omitempty"`
 	ReceivedAt  time.Time             `json:"receivedAt"`
 	AppliedAt   *time.Time            `json:"appliedAt,omitempty"`
+	DeliveredAt *time.Time            `json:"deliveredAt,omitempty"`
+	ObservedAt  *time.Time            `json:"observedAt,omitempty"`
 }

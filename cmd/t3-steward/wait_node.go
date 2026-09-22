@@ -167,8 +167,12 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 		taskID := fs.String("task-id", "", "task ID")
 		attemptID := fs.String("attempt", "", "attempt ID")
 		assignmentID := fs.String("assignment", "", "assignment ID")
+		assignmentEpochText := fs.String("assignment-epoch", "", "assignment epoch")
+		workerID := fs.String("worker", "", "worker ID")
 		threadID := fs.String("thread", "", "thread ID")
 		revisionText := fs.String("revision", "", "registered revision")
+		contentDigest := fs.String("content-digest", "", "attention content digest")
+		deadlineText := fs.String("deadline", "", "exact attention decision deadline")
 		kind := fs.String("decision", "", "approve, resume, hold, stop or change")
 		reason := fs.String("reason", "", "decision reason")
 		change := fs.String("change", "", "proposed change")
@@ -182,10 +186,20 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 		if err != nil {
 			return fmt.Errorf("--revision must be an integer: %w", err)
 		}
+		assignmentEpoch, err := strconv.ParseInt(*assignmentEpochText, 10, 64)
+		if err != nil {
+			return fmt.Errorf("--assignment-epoch must be an integer: %w", err)
+		}
+		deadline, err := time.Parse(time.RFC3339Nano, *deadlineText)
+		if err != nil {
+			return fmt.Errorf("--deadline must be RFC3339 with its exact precision: %w", err)
+		}
 		decision := domain.AttentionDecision{
 			ID: *decisionID, WaitID: *waitID, RequestID: *requestID, WorkflowRunID: *runID,
-			TaskID: *taskID, AttemptID: *attemptID, AssignmentID: *assignmentID, ThreadID: *threadID,
-			RegisteredRevision: revision, Kind: domain.AttentionDecisionKind(*kind), Reason: *reason, Change: *change,
+			TaskID: *taskID, AttemptID: *attemptID, AssignmentID: *assignmentID, AssignmentEpoch: assignmentEpoch,
+			WorkerID: *workerID, ThreadID: *threadID, RegisteredRevision: revision,
+			ContentDigest: *contentDigest, DecisionDeadline: deadline.UTC(),
+			Kind: domain.AttentionDecisionKind(*kind), Reason: *reason, Change: *change,
 		}
 		if err := decision.Validate(); err != nil {
 			return err

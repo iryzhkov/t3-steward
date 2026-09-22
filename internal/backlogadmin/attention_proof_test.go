@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 func signedApprovalRequest(t *testing.T, now time.Time) (LocalServer, localRequest) {
@@ -80,4 +81,73 @@ func TestApprovalFrameRefusesForgeryAndRelayMutation(t *testing.T) {
 			t.Fatal("expired approval proof was accepted")
 		}
 	})
+}
+
+func TestApproverCredentialIsCapabilityOnlyAndRevocable(t *testing.T) {
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	credentials := AdminCredentials{
+		ClientPrincipal: "human", ClientKeyID: "human-key", ClientSecret: []byte("human-secret-1234"),
+		CoordinatorPrincipal: "coord", CoordinatorKeyID: "coord-key", CoordinatorSecret: []byte("coord-secret-1234"),
+	}
+	server, err := NewRemoteServer(RemoteServerConfig{
+		CoordinatorID: "coord", Clients: map[string]AdminCredentials{"human": credentials},
+		Approvers: map[string]bool{"human": true}, MaxRequestBytes: 1 << 20,
+		MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validate := func(request localRequest) *workerproto.ProtocolError {
+		t.Helper()
+		frame, err := newRemoteFrame(request.Operation, "session", "request", "human", "coord", 1, now, now.Add(time.Minute), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := signRemoteFrame(&frame, credentials.ClientPrincipal, credentials.ClientKeyID, credentials.ClientSecret); err != nil {
+			t.Fatal(err)
+		}
+		_, _, _, protocolErr := server.validate("", frame)
+		return protocolErr
+	}
+	for name, request := range map[string]localRequest{
+		"ordinary mutation": {
+			Version: LocalTransportVersion, Operation: localOperationMutation, Mutation: &Mutation{},
+		},
+		"submission": {
+			Version: LocalTransportVersion, Operation: localOperationSubmission,
+			SubmissionSize: 1, Submission: &LocalSubmissionRequest{ArchiveSHA256: "digest"},
+		},
+		"wait settlement": {
+			Version: LocalTransportVersion, Operation: localOperationNodeWait,
+			NodeWait: &NodeWaitOperation{Action: "settle-task"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if protocolErr := validate(request); protocolErr == nil || protocolErr.Code != workerproto.ErrorAuthorization {
+				t.Fatalf("capability escape accepted: %+v", protocolErr)
+			}
+		})
+	}
+	for _, action := range []string{"inspect-attention", "decide-attention"} {
+		request := localRequest{Version: LocalTransportVersion, Operation: localOperationNodeWait, NodeWait: &NodeWaitOperation{Action: action}}
+		if action == "decide-attention" {
+			request.NodeWait.Decision = &domain.AttentionDecision{}
+		}
+		frame, err := newRemoteFrame(request.Operation, "session", "allowed-"+action, "human", "coord", 1, now, now.Add(time.Minute), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := signRemoteFrame(&frame, credentials.ClientPrincipal, credentials.ClientKeyID, credentials.ClientSecret); err != nil {
+			t.Fatal(err)
+		}
+		relayed, _, _, protocolErr := server.validate("", frame)
+		if protocolErr != nil || relayed.ApprovalFrame == nil {
+			t.Fatalf("%s was not relayed with original proof: request=%+v err=%v", action, relayed, protocolErr)
+		}
+	}
+	delete(server.config.Clients, "human")
+	request := localRequest{Version: LocalTransportVersion, Operation: localOperationNodeWait, NodeWait: &NodeWaitOperation{Action: "inspect-attention"}}
+	if protocolErr := validate(request); protocolErr == nil || protocolErr.Code != workerproto.ErrorAuthentication {
+		t.Fatalf("revoked approver authenticated: %+v", protocolErr)
+	}
 }

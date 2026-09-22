@@ -392,6 +392,11 @@ func (s *RemoteServer) validate(pinned string, frame remoteFrame) (localRequest,
 				"a remote submission must declare its archive digest")
 		}
 	}
+	approver := s.config.Approvers[credentials.ClientPrincipal]
+	if approver && (request.Operation != localOperationNodeWait || request.NodeWait == nil ||
+		(request.NodeWait.Action != "inspect-attention" && request.NodeWait.Action != "decide-attention")) {
+		return signedRefusal(workerproto.ErrorAuthorization, "approver credential is restricted to attention inspection and decision")
+	}
 	assertion := &RemoteAdminAssertion{
 		Principal:   credentials.ClientPrincipal,
 		Coordinator: s.config.CoordinatorID,
@@ -401,7 +406,7 @@ func (s *RemoteServer) validate(pinned string, frame remoteFrame) (localRequest,
 		assertion.Role = SupervisorRole
 	}
 	request.RemoteAdmin = assertion
-	if s.config.Approvers[credentials.ClientPrincipal] && request.NodeWait != nil && request.NodeWait.Action == "decide-attention" {
+	if approver {
 		proof := frame
 		request.ApprovalFrame = &proof
 	}

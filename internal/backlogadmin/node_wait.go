@@ -93,6 +93,8 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 	}
 	if op.Decision != nil {
 		action.Kind, action.WorkflowRunID, action.TaskID = QueryKind("attention-decision"), op.Decision.WorkflowRunID, op.Decision.TaskID
+	} else if op.Action == "inspect-attention" {
+		action.Kind = QueryKind("attention-decision")
 	}
 	if err := s.authorizer.Authorize(ctx, principal, action); err != nil {
 		return result, err
@@ -100,7 +102,7 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 	if op.Action == "settle-task" || op.Action == "expire-task" || op.Action == "wake-task" || op.Action == "pending-task" || op.Action == "transition-task" {
 		return s.taskWaitRuntime(ctx, op)
 	}
-	if op.Action == "register-task" || op.Action == "list-task" || op.Action == "cancel-task" || op.Action == "decide-attention" {
+	if op.Action == "register-task" || op.Action == "list-task" || op.Action == "inspect-attention" || op.Action == "cancel-task" || op.Action == "decide-attention" {
 		return s.taskWait(ctx, principal, op)
 	}
 	store, ok := s.reader.(nodeWaitStore)
@@ -245,17 +247,22 @@ func (s *Service) taskWait(ctx context.Context, principal Principal, op NodeWait
 		}
 		result.TaskWaits = []domain.TaskWait{wait}
 		return result, nil
-	default:
+	case "list-task", "inspect-attention":
 		waits, err := store.ListTaskWaits(ctx)
 		if err != nil {
 			return result, err
 		}
 		for _, wait := range waits {
+			if op.Action == "inspect-attention" && (wait.Kind != domain.WaitKindAttention || wait.Attention == nil) {
+				continue
+			}
 			if op.ID == "" || wait.ID == op.ID {
 				result.TaskWaits = append(result.TaskWaits, wait)
 			}
 		}
 		return result, nil
+	default:
+		return result, errors.New("unknown task-bound wait action")
 	}
 }
 
