@@ -3,6 +3,7 @@ package backlog_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -276,6 +277,21 @@ func TestMeasuredUsageSignedReconcileClaimReplayAndPublicQuery(t *testing.T) {
 		t.Fatalf("diagnostic fixture = %#v, %v", diagnostic, err)
 	}
 	samples = append(samples, diagnostic[0])
+	claudeCall, err := providerlog.ParseUsageEvidenceLine(`[2026-09-22T18:00:30Z] CANON: {"type":"thread.token-usage.updated","eventId":"claude-covered-call","providerInstanceId":"claude-agent","threadId":"thread-claude","createdAt":"2026-09-22T18:00:30Z","turnId":"claude-turn-1","raw":{"method":"claude/stream_event/message_delta","payload":{"event":{"usage":{"input_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":1,"output_tokens":1}}}}}`)
+	if err != nil || len(claudeCall) != 1 {
+		t.Fatalf("claude boundary fixture = %#v, %v", claudeCall, err)
+	}
+	samples = append(samples, claudeCall...)
+	partial, err := providerlog.ParseUsageEvidenceLine(`[2026-09-22T18:01:30Z] CANON: {"type":"thread.token-usage.updated","eventId":"codex-partial","providerInstanceId":"codex-primary","threadId":"thread-codex","createdAt":"2026-09-22T18:01:30Z","incarnation":"codex-session-1","sequence":2,"raw":{"method":"thread/tokenUsage/updated","payload":{"tokenUsage":{"last":{"inputTokens":9},"total":{"totalTokens":63}}}}}`)
+	if err != nil || len(partial) != 2 {
+		t.Fatalf("codex partial fixture = %#v, %v", partial, err)
+	}
+	samples = append(samples, partial...)
+	malformed, err := providerlog.ParseUsageEvidenceLine(`[2026-09-22T18:00:45Z] CANON: {"type":"thread.token-usage.updated","eventId":"malformed","providerInstanceId":"claude-agent","threadId":"thread-claude","createdAt":"2026-09-22T18:00:45Z","raw":{"method":"claude/result","payload":{}}}`)
+	if err != nil || len(malformed) != 1 || malformed[0].DiagnosticCode != "malformed" {
+		t.Fatalf("malformed fixture = %#v, %v", malformed, err)
+	}
+	samples = append(samples, malformed...)
 	for i := 1; i < 3; i++ {
 		sample := parsed[i%len(parsed)]
 		sample.ThreadID = roles[i].thread
@@ -365,13 +381,16 @@ func TestMeasuredUsageSignedReconcileClaimReplayAndPublicQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	admin.SetClock(func() time.Time { return causalUsageNow.Add(2 * time.Minute) })
+	if err := admin.SetUsageCursorKey([]byte("causal-transport-cursor-key")); err != nil {
+		t.Fatal(err)
+	}
 	response, err := admin.Query(ctx, backlogadmin.Query{
 		Version: backlogadmin.Version, Kind: backlogadmin.QueryUsage, WorkflowRunID: "run", UsageRaw: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Usage) != len(roles)+1 {
+	if len(response.Usage) != len(roles)+5 {
 		t.Fatalf("public attributed usage = %#v", response.Usage)
 	}
 	gotRoles := make(map[domain.ExecutionRole]bool)
@@ -389,10 +408,120 @@ func TestMeasuredUsageSignedReconcileClaimReplayAndPublicQuery(t *testing.T) {
 			t.Fatalf("public query omitted role %q: %#v", item.role, response.Usage)
 		}
 	}
-	if response.UsageCoverage == nil || response.UsageCoverage.UnscopedUnattributedCount != 2 ||
-		response.UsageCoverage.DiagnosticCount != 1 || response.UsageCoverage.UnsupportedCount != 1 ||
+	if response.UsageReport == nil || response.UsageReport.Totals.UncachedInputTokens != 65 ||
+		response.UsageReport.Totals.CacheWriteTokens != 10 || response.UsageReport.Totals.CacheReadTokens != 36 ||
+		response.UsageReport.Totals.OutputTokens != 32 || response.UsageReport.Totals.ProviderCostUSD != 0.5 ||
+		response.UsageReport.Totals.ProviderCostCoverage != domain.UsageCostPartial ||
+		response.UsageCoverage == nil || response.UsageCoverage.UnscopedUnattributedCount != 2 ||
+		response.UsageCoverage.DiagnosticCount != 3 || response.UsageCoverage.UnsupportedCount != 1 ||
+		response.UsageCoverage.MalformedCount != 1 || response.UsageCoverage.MissingFieldCount != 1 ||
+		response.UsageCoverage.ExcludedOverlapCount != 1 || response.UsageCoverage.NormalizedSampleCount != 5 ||
 		response.UsageCoverage.State != domain.UsageCoveragePartial || response.UsageCoverage.Reason == "" {
 		t.Fatalf("unscoped coverage = %#v", response.UsageCoverage)
+	}
+}
+
+func TestMeasuredUsageSignedOverflowRevisionsSurviveRestart(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	workerPath := filepath.Join(root, "worker.db")
+	coordinatorPath := filepath.Join(root, "coordinator.db")
+	workerStore, err := sqlite.OpenMigrated(workerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinatorStore, err := sqlite.OpenMigrated(coordinatorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinatorStore.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{{
+			ID: "run-overflow", WorkflowID: "workflow", Progress: domain.ProgressActive,
+			CreatedAt: causalUsageNow, UpdatedAt: causalUsageNow, Revision: 1,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 1001; i++ {
+		if err := workerStore.RecordUsage(ctx, domain.UsageSample{
+			ProviderInstanceID: "claude-agent", ThreadID: "thread-diagnostic",
+			ObservedAt:    causalUsageNow.Add(time.Duration(i) * time.Millisecond),
+			SourceEventID: fmt.Sprintf("diagnostic-%04d", i),
+			Kind:          domain.UsageKindDiagnostic, DiagnosticCode: "malformed",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	worker := newSignedUsageWorker(t, "worker-overflow", "epoch-overflow", workerStore)
+	coordinator := backlog.FleetCoordinator{Store: coordinatorStore, Now: func() time.Time { return causalUsageNow }}
+	for i := 0; i < 10; i++ {
+		client := signedUsageClient(t, worker, fmt.Sprintf("overflow-initial-%d", i), &signedLoopback{worker: worker})
+		if _, err := coordinator.ReconcileWorker(ctx, client, causalOfferBuilder{},
+			backlog.WorkerAdmissionPolicy{QuotaChecksDisabled: true}, nil, nil, time.Minute, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := workerStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinatorStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	workerStore, err = sqlite.OpenMigrated(workerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workerStore.Close()
+	coordinatorStore, err = sqlite.OpenMigrated(coordinatorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinatorStore.Close()
+	worker.store = workerStore
+	coordinator.Store = coordinatorStore
+
+	for i := 1001; i < 1006; i++ {
+		if err := workerStore.RecordUsage(ctx, domain.UsageSample{
+			ProviderInstanceID: "claude-agent", ThreadID: "thread-diagnostic",
+			ObservedAt:    causalUsageNow.Add(time.Duration(i) * time.Millisecond),
+			SourceEventID: fmt.Sprintf("diagnostic-%04d", i),
+			Kind:          domain.UsageKindDiagnostic, DiagnosticCode: "malformed",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lost := &signedLoopback{worker: worker, loseNext: true}
+	if _, err := coordinator.ReconcileWorker(ctx, signedUsageClient(t, worker, "overflow-lost", lost),
+		causalOfferBuilder{}, backlog.WorkerAdmissionPolicy{QuotaChecksDisabled: true},
+		nil, nil, time.Minute, time.Hour); err == nil {
+		t.Fatal("lost overflow revision response unexpectedly reconciled")
+	}
+	for i := 0; i < 4; i++ {
+		client := signedUsageClient(t, worker, fmt.Sprintf("overflow-replay-%d", i), &signedLoopback{worker: worker})
+		if _, err := coordinator.ReconcileWorker(ctx, client, causalOfferBuilder{},
+			backlog.WorkerAdmissionPolicy{QuotaChecksDisabled: true}, nil, nil, time.Minute, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	admin, err := backlogadmin.New(coordinatorStore, causalAuthorizer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.SetUsageCursorKey([]byte("overflow-restart-cursor-key")); err != nil {
+		t.Fatal(err)
+	}
+	response, err := admin.Query(ctx, backlogadmin.Query{
+		Version: backlogadmin.Version, Kind: backlogadmin.QueryUsage, WorkflowRunID: "run-overflow",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.UsageReport == nil || response.UsageReport.Totals.ProviderCostCoverage != domain.UsageCostUnavailable ||
+		response.UsageCoverage == nil || response.UsageCoverage.DiagnosticDroppedCount != 6 {
+		t.Fatalf("signed overflow public coverage = %#v", response)
 	}
 }
 

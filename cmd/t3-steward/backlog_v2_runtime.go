@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
 	"errors"
 	"fmt"
 	"io"
@@ -815,6 +816,29 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 	return coordinatorConfigLoop(ctx, cfg, logger, store, epoch)
 }
 
+func coordinatorUsageCursorKey(clients map[string]config.V2AdminClient) ([]byte, error) {
+	principals := make([]string, 0, len(clients))
+	for principal := range clients {
+		principals = append(principals, principal)
+	}
+	sort.Strings(principals)
+	var key []byte
+	for _, principal := range principals {
+		credentials, err := adminCredentials.ResolveAdmin(clients[principal].Credential)
+		if err != nil {
+			return nil, fmt.Errorf("resolve coordinator cursor key for %q: %w", principal, err)
+		}
+		if len(key) == 0 {
+			key = append([]byte(nil), credentials.CoordinatorSecret...)
+			continue
+		}
+		if !hmac.Equal(key, credentials.CoordinatorSecret) {
+			return nil, errors.New("admin credentials disagree on coordinator secret")
+		}
+	}
+	return key, nil
+}
+
 func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger *slog.Logger, store *sqlite.Store, epoch int64, receipts *reloadReceiptWriter, ready func()) error {
 	// A supervisor capability is enforced server-side, around the ordinary
 	// authorizer rather than instead of it: every other principal is delegated
@@ -826,6 +850,15 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	})
 	if err != nil {
 		return err
+	}
+	cursorKey, err := coordinatorUsageCursorKey(cfg.BacklogV2.Coordinator.AdminClients)
+	if err != nil {
+		return err
+	}
+	if len(cursorKey) != 0 {
+		if err := service.SetUsageCursorKey(cursorKey); err != nil {
+			return err
+		}
 	}
 	service.SetGraphAmendmentSupport(cfg.BacklogV2.Storage.Artifacts, graphTaskValidator(cfg.BacklogV2))
 	configurationDigest, err := coordinatorConfigurationDigest(cfg.BacklogV2)

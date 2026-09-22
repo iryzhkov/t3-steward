@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -13,6 +15,49 @@ import (
 
 const MaxWorkerUsageDelivery = 128
 const MaxRunUsageAggregation = 10000
+
+const coordinatorMigrationV29 = ""
+
+func applyCoordinatorMigrationV29(tx *sql.Tx) error {
+	for _, table := range []string{"worker_usage_forwarded", "coordinator_worker_usage_receipts"} {
+		hasRevision, err := transactionHasColumn(tx, table, "revision")
+		if err != nil {
+			return err
+		}
+		if hasRevision {
+			continue
+		}
+		if _, err := tx.Exec("ALTER TABLE " + table + " ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func transactionHasColumn(tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notnull int
+			dflt    any
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
 
 const coordinatorMigrationV28 = `
 ALTER TABLE usage_samples ADD COLUMN field_presence INTEGER NOT NULL DEFAULT 0;
@@ -370,6 +415,12 @@ func recordUsage(ctx context.Context, execer usageExecer, u domain.UsageSample) 
 		return err
 	}
 	if u.DiagnosticCode == "overflow" {
+		if _, err = execer.ExecContext(ctx, `UPDATE usage_samples SET
+			cumulative_tokens = MAX(cumulative_tokens, ?), observed_at = CASE WHEN cumulative_tokens < ? THEN ? ELSE observed_at END
+			WHERE worker_id = ? AND event_id = ?`, u.CumulativeTokens, u.CumulativeTokens,
+			u.ObservedAt.UTC().Format(time.RFC3339Nano), u.WorkerID, u.SourceEventID); err != nil {
+			return err
+		}
 		_, err = execer.ExecContext(ctx, `INSERT INTO usage_diagnostic_overflow(worker_id, dropped_count) VALUES(?, ?)
 			ON CONFLICT(worker_id) DO UPDATE SET dropped_count = MAX(dropped_count, excluded.dropped_count)`, u.WorkerID, u.CumulativeTokens)
 		return err
@@ -395,10 +446,25 @@ func recordUsage(ctx context.Context, execer usageExecer, u domain.UsageSample) 
 	_, err = execer.ExecContext(ctx, `INSERT INTO usage_samples(
 		worker_id,event_id,provider,thread_id,model,observed_at,input_tokens,cache_write_tokens,cache_read_tokens,
 		output_tokens,cost_usd,cost_reported,kind,cumulative_tokens,field_presence,boundary_id,incarnation,causal_sequence,diagnostic_code)
-		SELECT worker_id, 'diagnostic-overflow-' || dropped_count, '', '', '', ?, 0, 0, 0, 0, 0, 0, ?,
+		SELECT worker_id, 'diagnostic-overflow', '', '', '', ?, 0, 0, 0, 0, 0, 0, ?,
 			dropped_count, 0, '', '', 0, 'overflow' FROM usage_diagnostic_overflow WHERE worker_id = ?`,
 		u.ObservedAt.UTC().Format(time.RFC3339Nano), domain.UsageKindDiagnostic, u.WorkerID)
 	return err
+}
+
+func decodeUsageAcknowledgement(value string) (string, int64, bool) {
+	if value == "" {
+		return "", 0, false
+	}
+	const overflow = "diagnostic-overflow@"
+	if !strings.HasPrefix(value, overflow) {
+		return value, 0, true
+	}
+	revision, err := strconv.ParseInt(strings.TrimPrefix(value, overflow), 10, 64)
+	if err != nil || revision < 1 {
+		return "", 0, false
+	}
+	return "diagnostic-overflow", revision, true
 }
 
 // WorkerUsageBatch applies coordinator acknowledgements and returns the oldest bounded raw batch.
@@ -411,16 +477,24 @@ func (s *Store) WorkerUsageBatch(ctx context.Context, acknowledged []string, lim
 		return nil, err
 	}
 	defer tx.Rollback()
-	for _, id := range acknowledged {
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO worker_usage_forwarded(worker_id,event_id,acknowledged_at)
-			SELECT worker_id, event_id, ? FROM usage_samples WHERE event_id = ?`,
-			time.Now().UTC().Format(time.RFC3339Nano), id); err != nil {
+	for _, acknowledgement := range acknowledged {
+		id, revision, valid := decodeUsageAcknowledgement(acknowledgement)
+		if !valid {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO worker_usage_forwarded(worker_id,event_id,acknowledged_at,revision)
+			SELECT worker_id, event_id, ?, ? FROM usage_samples
+			WHERE event_id = ? AND (? = 0 OR cumulative_tokens = ?)
+			ON CONFLICT(worker_id,event_id) DO UPDATE SET
+				revision = MAX(revision, excluded.revision), acknowledged_at = excluded.acknowledged_at`,
+			time.Now().UTC().Format(time.RFC3339Nano), revision, id, revision, revision); err != nil {
 			return nil, err
 		}
 	}
 	rows, err := tx.QueryContext(ctx, attributedUsageSelect+
 		` WHERE NOT EXISTS (SELECT 1 FROM worker_usage_forwarded AS f
-			WHERE f.worker_id = u.worker_id AND f.event_id = u.event_id)
+			WHERE f.worker_id = u.worker_id AND f.event_id = u.event_id
+			AND f.revision >= CASE WHEN u.diagnostic_code = 'overflow' THEN u.cumulative_tokens ELSE 0 END)
 		ORDER BY u.observed_at, u.event_id LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -456,8 +530,14 @@ func (s *Store) ReceiveWorkerUsage(ctx context.Context, workerID string, samples
 		if err := recordUsage(ctx, tx, sample); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO coordinator_worker_usage_receipts(worker_id,event_id,received_at)
-			VALUES(?,?,?)`, workerID, sample.SourceEventID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		revision := int64(0)
+		if sample.DiagnosticCode == "overflow" {
+			revision = sample.CumulativeTokens
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO coordinator_worker_usage_receipts(worker_id,event_id,received_at,revision)
+			VALUES(?,?,?,?) ON CONFLICT(worker_id,event_id) DO UPDATE SET
+				revision = MAX(revision, excluded.revision), received_at = excluded.received_at`,
+			workerID, sample.SourceEventID, time.Now().UTC().Format(time.RFC3339Nano), revision); err != nil {
 			return err
 		}
 	}
@@ -465,8 +545,8 @@ func (s *Store) ReceiveWorkerUsage(ctx context.Context, workerID string, samples
 }
 
 func (s *Store) WorkerUsageAcknowledgements(ctx context.Context, workerID string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT event_id FROM coordinator_worker_usage_receipts
-		WHERE worker_id = ? ORDER BY received_at, event_id LIMIT ?`, workerID, MaxWorkerUsageDelivery)
+	rows, err := s.db.QueryContext(ctx, `SELECT CASE WHEN revision > 0 THEN event_id || '@' || revision ELSE event_id END
+		FROM coordinator_worker_usage_receipts WHERE worker_id = ? ORDER BY received_at, event_id LIMIT ?`, workerID, MaxWorkerUsageDelivery)
 	if err != nil {
 		return nil, err
 	}

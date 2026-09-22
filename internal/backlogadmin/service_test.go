@@ -2,6 +2,8 @@ package backlogadmin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -74,6 +76,10 @@ func TestUsageQueryReturnsAuthoritativeDispatchIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cursorKey := []byte("restart-stable-coordinator-cursor-key")
+	if err := service.SetUsageCursorKey(cursorKey); err != nil {
+		t.Fatal(err)
+	}
 	summary, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage"})
 	if err != nil {
 		t.Fatal(err)
@@ -135,8 +141,35 @@ func TestUsageQueryReturnsAuthoritativeDispatchIdentity(t *testing.T) {
 	if _, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage", UsageRaw: true, UsageCursor: cursor + "x"}); !errors.Is(err, ErrInvalidQuery) {
 		t.Fatalf("tampered cursor error = %v", err)
 	}
-	if _, err := decodeUsageCursor(cursor, "different-run"); err == nil {
+	if _, err := decodeUsageCursor(cursorKey, cursor, "different-run"); err == nil {
 		t.Fatal("cursor was not bound to its run")
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var forged usageCursorEnvelope
+	if err := json.Unmarshal(decoded, &forged); err != nil {
+		t.Fatal(err)
+	}
+	forged.EventID = "forged-keyset"
+	unsigned, _ := json.Marshal(forged.usageCursorPayload)
+	publicDigest := sha256.Sum256(unsigned)
+	forged.Digest = base64.RawURLEncoding.EncodeToString(publicDigest[:])
+	forgedRaw, _ := json.Marshal(forged)
+	forgedCursor := base64.RawURLEncoding.EncodeToString(forgedRaw)
+	if _, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage", UsageRaw: true, UsageCursor: forgedCursor}); !errors.Is(err, ErrInvalidQuery) {
+		t.Fatalf("publicly recomputed forged cursor error = %v", err)
+	}
+	restarted, err := New(store, &allowAuthorizer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.SetUsageCursorKey(cursorKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage", UsageRaw: true, UsageCursor: cursor}); err != nil {
+		t.Fatalf("cursor did not survive coordinator service restart: %v", err)
 	}
 	if response.UsageSemantics == "" {
 		t.Fatal("usage overlap semantics are absent")

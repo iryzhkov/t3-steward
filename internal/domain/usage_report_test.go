@@ -137,7 +137,13 @@ func TestNormalizeUsageReportCoverageNeverTurnsMissingIntoZero(t *testing.T) {
 		len(report.Coverage.Reasons) == 0 {
 		t.Fatalf("coverage = %#v", report.Coverage)
 	}
-	if report.Totals.NormalizedSamples != 0 || report.Totals.ProviderCostReported {
+	if report.Totals.NormalizedSamples != 0 || report.Totals.ProviderCostReported ||
+		report.Totals.ProviderCostCoverage != UsageCostUnavailable {
 		t.Fatalf("missing evidence became measured totals: %#v", report.Totals)
+	}
+	empty := NormalizeUsageReport(UsageReport{WorkflowRunID: "run"},
+		UsageNormalizationContext{Now: now, RunProgress: ProgressActive})
+	if empty.Totals.ProviderCostCoverage != UsageCostUnavailable {
+		t.Fatalf("empty cost coverage = %q", empty.Totals.ProviderCostCoverage)
 	}
 }

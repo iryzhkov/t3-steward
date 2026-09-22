@@ -406,6 +406,7 @@ var versionedMigrations = []struct {
 	{26, coordinatorMigrationV26},
 	{27, coordinatorMigrationV27},
 	{28, coordinatorMigrationV28},
+	{29, coordinatorMigrationV29},
 }
 
 func (s *Store) applyVersionedMigration(version int, ddl string) error {
@@ -414,7 +415,11 @@ func (s *Store) applyVersionedMigration(version int, ddl string) error {
 		return fmt.Errorf("begin schema migration %d: %w", version, err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(ddl); err != nil {
+	if version == 29 {
+		if err := applyCoordinatorMigrationV29(tx); err != nil {
+			return fmt.Errorf("apply schema migration %d: %w", version, err)
+		}
+	} else if _, err := tx.Exec(ddl); err != nil {
 		return fmt.Errorf("apply schema migration %d: %w", version, err)
 	}
 	if _, err := tx.Exec(`INSERT INTO schema_version(version) VALUES (?)`, version); err != nil {

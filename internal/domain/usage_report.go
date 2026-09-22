@@ -70,6 +70,7 @@ func NormalizeUsageReport(report UsageReport, context UsageNormalizationContext)
 	report.Coverage.RawSampleCount = int64(len(samples))
 	report.Coverage.AttributedCount = int64(len(samples))
 	report.Coverage.State = UsageCoverageComplete
+	report.Totals.ProviderCostCoverage = UsageCostUnavailable
 
 	reasons := map[string]bool{}
 	if report.Coverage.UnscopedUnattributedCount > 0 {
@@ -130,7 +131,6 @@ func NormalizeUsageReport(report UsageReport, context UsageNormalizationContext)
 			continue
 		}
 		if sample.FieldPresence != UsageFieldsAll {
-			report.Coverage.MissingFieldCount++
 			reasons["provider usage numeric fields were absent; present fields remain measured"] = true
 		}
 		key := usageSessionKey(sample)

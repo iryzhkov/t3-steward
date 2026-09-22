@@ -37,8 +37,8 @@ func TestMeasuredUsageMigrationPreservesHistoryAndReopensIdempotently(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := schemaVersionOf(t, store); got != 28 {
-			t.Fatalf("schema version = %d, want 28", got)
+		if got := schemaVersionOf(t, store); got != 29 {
+			t.Fatalf("schema version = %d, want 29", got)
 		}
 		samples, err := store.UsageSamples(ctx, at.Add(-time.Minute), at.Add(time.Minute))
 		if err != nil {
@@ -296,15 +296,18 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 		if batchErr != nil {
 			t.Fatal(batchErr)
 		}
+		if err := coordinator.ClearWorkerUsageAcknowledgements(ctx, "worker-diagnostic", acknowledgements); err != nil {
+			t.Fatal(err)
+		}
 		if len(batch) == 0 {
 			break
 		}
 		if err := coordinator.ReceiveWorkerUsage(ctx, "worker-diagnostic", batch); err != nil {
 			t.Fatal(err)
 		}
-		acknowledgements = acknowledgements[:0]
-		for _, sample := range batch {
-			acknowledgements = append(acknowledgements, sample.SourceEventID)
+		acknowledgements, err = coordinator.WorkerUsageAcknowledgements(ctx, "worker-diagnostic")
+		if err != nil {
+			t.Fatal(err)
 		}
 	}
 	delivered, err := coordinator.AttributedUsage(ctx, "")
@@ -313,6 +316,58 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 	}
 	if delivered.Coverage.DiagnosticDroppedCount != 1 {
 		t.Fatalf("delivered overflow coverage = %#v", delivered.Coverage)
+	}
+
+	// Advance the same overflow state through another cycle. A late acknowledgement
+	// for revision 1 must not suppress revision 6, and neither database may retain
+	// more than one overflow marker for this worker.
+	for i := 1001; i < 1006; i++ {
+		if err := store.RecordUsage(ctx, domain.UsageSample{
+			WorkerID: "worker-diagnostic", ProviderInstanceID: "provider", ThreadID: "thread",
+			ObservedAt: now.Add(time.Duration(i) * time.Second), SourceEventID: fmt.Sprintf("diagnostic-%04d", i),
+			Kind: domain.UsageKindDiagnostic, DiagnosticCode: "malformed",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	batch, err := store.WorkerUsageBatch(ctx, []string{"diagnostic-overflow@1"}, MaxWorkerUsageDelivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var advanced int
+	for _, sample := range batch {
+		if sample.DiagnosticCode == "overflow" {
+			advanced++
+			if sample.SourceEventID != "diagnostic-overflow" || sample.CumulativeTokens != 6 {
+				t.Fatalf("advanced overflow = %#v", sample)
+			}
+		}
+	}
+	if advanced != 1 {
+		t.Fatalf("advanced overflow markers = %d in %#v", advanced, batch)
+	}
+	if err := coordinator.ReceiveWorkerUsage(ctx, "worker-diagnostic", batch); err != nil {
+		t.Fatal(err)
+	}
+	currentAcks, err := coordinator.WorkerUsageAcknowledgements(ctx, "worker-diagnostic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.WorkerUsageBatch(ctx, currentAcks, MaxWorkerUsageDelivery); err != nil {
+		t.Fatal(err)
+	}
+	for name, candidate := range map[string]*Store{"worker": store, "coordinator": coordinator} {
+		var markers int
+		if err := candidate.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples WHERE worker_id = ? AND diagnostic_code = 'overflow'`, "worker-diagnostic").Scan(&markers); err != nil {
+			t.Fatal(err)
+		}
+		if markers != 1 {
+			t.Fatalf("%s overflow rows = %d", name, markers)
+		}
+	}
+	delivered, err = coordinator.AttributedUsage(ctx, "")
+	if err != nil || delivered.Coverage.DiagnosticDroppedCount != 6 {
+		t.Fatalf("advanced delivered overflow = %#v, %v", delivered.Coverage, err)
 	}
 }
 

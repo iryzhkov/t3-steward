@@ -47,7 +47,7 @@ func ParseUsageEvidenceLine(line string) ([]domain.UsageSample, error) {
 	}
 	usage, err := ParseUsageLine(line)
 	if err == nil {
-		return usage, nil
+		return appendMissingFieldDiagnostics(usage), nil
 	}
 	code := "malformed"
 	if errors.Is(err, ErrUnsupportedUsage) {
@@ -75,6 +75,25 @@ func ParseUsageEvidenceLine(line string) ([]domain.UsageSample, error) {
 		Kind:               domain.UsageKindDiagnostic,
 		DiagnosticCode:     code,
 	}}, nil
+}
+
+func appendMissingFieldDiagnostics(samples []domain.UsageSample) []domain.UsageSample {
+	out := append([]domain.UsageSample(nil), samples...)
+	for _, sample := range samples {
+		if sample.FieldPresence == domain.UsageFieldsAll {
+			continue
+		}
+		sum := sha256.Sum256([]byte(sample.SourceEventID))
+		out = append(out, domain.UsageSample{
+			ProviderInstanceID: sample.ProviderInstanceID,
+			ThreadID:           sample.ThreadID,
+			ObservedAt:         sample.ObservedAt,
+			SourceEventID:      "diagnostic-missing-fields-" + hex.EncodeToString(sum[:16]),
+			Kind:               domain.UsageKindDiagnostic,
+			DiagnosticCode:     "missing-fields",
+		})
+	}
+	return out
 }
 
 type usageRecord struct {

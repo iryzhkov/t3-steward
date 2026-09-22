@@ -100,7 +100,8 @@ func TestUsageEvidenceSanitizesDiagnosticsAndCarriesPresenceAndCausality(t *test
 
 	line := `[2026-09-22T18:00:00Z] CANON: {"type":"thread.token-usage.updated","eventId":"partial","provider":"codex","threadId":"thread","createdAt":"2026-09-22T18:00:00Z","turnId":"turn-7","sequence":4,"raw":{"method":"thread/tokenUsage/updated","payload":{"sessionId":"session-2","tokenUsage":{"last":{"inputTokens":9},"total":{"totalTokens":9}}}}}`
 	usage, err := ParseUsageEvidenceLine(line)
-	if err != nil || len(usage) != 1 {
+	if err != nil || len(usage) != 2 || usage[1].Kind != domain.UsageKindDiagnostic ||
+		usage[1].DiagnosticCode != "missing-fields" {
 		t.Fatalf("partial usage = %#v, %v", usage, err)
 	}
 	if usage[0].FieldPresence != domain.UsageFieldInput || usage[0].BoundaryID != "turn-7" ||

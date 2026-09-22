@@ -3,6 +3,7 @@ package backlogadmin
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -87,6 +88,7 @@ type Service struct {
 	// is supplied rather than read because it is the coordinator process's own
 	// effective configuration and appears in no record a query reads.
 	workerProviders map[string][]WorkerProviderAuthorization
+	usageCursorKey  []byte
 }
 
 // SetWorkerAuthorization supplies the provider authorization the coordinator
@@ -98,6 +100,16 @@ type Service struct {
 // that as a fact about the fleet.
 func (s *Service) SetWorkerAuthorization(authorization map[string][]WorkerProviderAuthorization) {
 	s.workerProviders = authorization
+}
+
+// SetUsageCursorKey installs coordinator-held secret material used only to
+// authenticate opaque usage cursors. The caller owns key persistence.
+func (s *Service) SetUsageCursorKey(key []byte) error {
+	if len(key) < 16 {
+		return fmt.Errorf("%w: usage cursor key is too short", ErrInvalidQuery)
+	}
+	s.usageCursorKey = append(s.usageCursorKey[:0], key...)
+	return nil
 }
 
 type RuntimeInfo struct {
@@ -378,7 +390,7 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		if query.UsageRaw {
 			start := 0
 			if query.UsageCursor != "" {
-				cursor, parseErr := decodeUsageCursor(query.UsageCursor, query.WorkflowRunID)
+				cursor, parseErr := decodeUsageCursor(s.usageCursorKey, query.UsageCursor, query.WorkflowRunID)
 				if parseErr != nil {
 					return Response{}, fmt.Errorf("%w: invalid usage cursor", ErrInvalidQuery)
 				}
@@ -394,7 +406,7 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 			}
 			usage.Samples = append([]domain.UsageSample(nil), raw[start:end]...)
 			if end < len(raw) && end > start {
-				usage.NextCursor, usageErr = encodeUsageCursor(query.WorkflowRunID, raw[end-1])
+				usage.NextCursor, usageErr = encodeUsageCursor(s.usageCursorKey, query.WorkflowRunID, raw[end-1])
 				if usageErr != nil {
 					return Response{}, fmt.Errorf("encode usage cursor: %w", usageErr)
 				}
@@ -1628,7 +1640,10 @@ type usageCursorEnvelope struct {
 
 const usageCursorOrder = "observed-worker-event/v1"
 
-func encodeUsageCursor(runID string, sample domain.UsageSample) (string, error) {
+func encodeUsageCursor(key []byte, runID string, sample domain.UsageSample) (string, error) {
+	if len(key) < 16 {
+		return "", errors.New("usage cursor authentication is unavailable")
+	}
 	payload := usageCursorPayload{
 		Version: 1, RunID: runID, Order: usageCursorOrder, ObservedAt: sample.ObservedAt.UTC(),
 		WorkerID: sample.WorkerID, EventID: sample.SourceEventID,
@@ -1637,7 +1652,9 @@ func encodeUsageCursor(runID string, sample domain.UsageSample) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	envelope := usageCursorEnvelope{usageCursorPayload: payload, Digest: fmt.Sprintf("%x", sha256.Sum256(raw))}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(raw)
+	envelope := usageCursorEnvelope{usageCursorPayload: payload, Digest: base64.RawURLEncoding.EncodeToString(mac.Sum(nil))}
 	raw, err = json.Marshal(envelope)
 	if err != nil {
 		return "", err
@@ -1645,8 +1662,8 @@ func encodeUsageCursor(runID string, sample domain.UsageSample) (string, error) 
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func decodeUsageCursor(encoded, runID string) (usageCursorPayload, error) {
-	if encoded == "" || len(encoded) > 2048 {
+func decodeUsageCursor(key []byte, encoded, runID string) (usageCursorPayload, error) {
+	if len(key) < 16 || encoded == "" || len(encoded) > 2048 {
 		return usageCursorPayload{}, errors.New("invalid cursor size")
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(encoded)
@@ -1667,7 +1684,13 @@ func decodeUsageCursor(encoded, runID string) (usageCursorPayload, error) {
 	if err != nil {
 		return usageCursorPayload{}, err
 	}
-	if envelope.Digest != fmt.Sprintf("%x", sha256.Sum256(unsigned)) ||
+	provided, err := base64.RawURLEncoding.DecodeString(envelope.Digest)
+	if err != nil {
+		return usageCursorPayload{}, errors.New("cursor authentication is invalid")
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(unsigned)
+	if !hmac.Equal(provided, mac.Sum(nil)) ||
 		payload.Version != 1 || payload.RunID != runID || payload.Order != usageCursorOrder ||
 		payload.ObservedAt.IsZero() || payload.EventID == "" {
 		return usageCursorPayload{}, errors.New("cursor identity mismatch")
