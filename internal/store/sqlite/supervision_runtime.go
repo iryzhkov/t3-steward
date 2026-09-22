@@ -258,19 +258,30 @@ func (s *Store) TransitionSupervisionOutboxRow(ctx context.Context, id, from, to
 		return false, fmt.Errorf("invalid supervision delivery transition %s to %s", from, to)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil { return false, err }
+	if err != nil {
+		return false, err
+	}
 	defer tx.Rollback()
 	var raw []byte
 	err = tx.QueryRowContext(ctx, "SELECT record FROM coordinator_supervision_outbox WHERE id = ? AND delivery_state = ?", id, from).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) { return false, nil }
-	if err != nil { return false, fmt.Errorf("load supervision outbox entry %q: %w", id, err) }
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("load supervision outbox entry %q: %w", id, err)
+	}
 	var entry map[string]any
-	if err := json.Unmarshal(raw, &entry); err != nil { return false, fmt.Errorf("decode supervision outbox entry %q: %w", id, err) }
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return false, fmt.Errorf("decode supervision outbox entry %q: %w", id, err)
+	}
 	entry["delivery"] = to
 	switch to {
 	case "sending":
-		attempts, _ := entry["attempts"].(float64); entry["attempts"] = attempts + 1
-		entry["lastError"] = ""; entry["nextAction"] = "reconcile the durable delivery receipt"; delete(entry, "nextEligibleAt")
+		attempts, _ := entry["attempts"].(float64)
+		entry["attempts"] = attempts + 1
+		entry["lastError"] = ""
+		entry["nextAction"] = "reconcile the durable delivery receipt"
+		delete(entry, "nextEligibleAt")
 	case "offline", "busy":
 		entry["lastError"] = "delivery target is " + to
 		entry["nextAction"] = "retry after the target becomes available"
@@ -281,16 +292,27 @@ func (s *Store) TransitionSupervisionOutboxRow(ctx context.Context, id, from, to
 		entry["nextAction"] = "reconcile the durable receipt; do not resend without known non-effect"
 		delete(entry, "nextEligibleAt")
 	case "delivered":
-		entry["lastError"] = ""; entry["nextAction"] = ""; delete(entry, "nextEligibleAt"); entry["deliveredAt"] = now.UTC()
+		entry["lastError"] = ""
+		entry["nextAction"] = ""
+		delete(entry, "nextEligibleAt")
+		entry["deliveredAt"] = now.UTC()
 	case "rejected":
-		entry["lastError"] = "delivery was rejected"; entry["nextAction"] = "operator action is required"; delete(entry, "nextEligibleAt")
+		entry["lastError"] = "delivery was rejected"
+		entry["nextAction"] = "operator action is required"
+		delete(entry, "nextEligibleAt")
 	}
 	updated, err := json.Marshal(entry)
-	if err != nil { return false, err }
+	if err != nil {
+		return false, err
+	}
 	result, err := tx.ExecContext(ctx, "UPDATE coordinator_supervision_outbox SET delivery_state = ?, record = ? WHERE id = ? AND delivery_state = ?", to, updated, id, from)
-	if err != nil { return false, fmt.Errorf("transition supervision outbox entry %q: %w", id, err) }
+	if err != nil {
+		return false, fmt.Errorf("transition supervision outbox entry %q: %w", id, err)
+	}
 	changed, _ := result.RowsAffected()
-	if changed != 1 { return false, nil }
+	if changed != 1 {
+		return false, nil
+	}
 	return true, tx.Commit()
 }
 
@@ -301,28 +323,49 @@ func (s *Store) ClaimSupervisionEscalation(ctx context.Context, id, from, payloa
 		return false, fmt.Errorf("invalid supervision delivery transition %s to sending", from)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil { return false, err }
+	if err != nil {
+		return false, err
+	}
 	defer tx.Rollback()
 	var raw []byte
 	err = tx.QueryRowContext(ctx, "SELECT record FROM coordinator_supervision_outbox WHERE id = ? AND delivery_state = ?", id, from).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) { return false, nil }
-	if err != nil { return false, err }
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
 	var entry map[string]any
-	if err := json.Unmarshal(raw, &entry); err != nil { return false, err }
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return false, err
+	}
 	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(payload)))
 	if frozen, _ := entry["payload"].(string); frozen != "" {
 		frozenDigest, _ := entry["payloadDigest"].(string)
-		if frozen != payload || frozenDigest != digest { return false, fmt.Errorf("claim supervision escalation %q: frozen delivery differs", id) }
+		if frozen != payload || frozenDigest != digest {
+			return false, fmt.Errorf("claim supervision escalation %q: frozen delivery differs", id)
+		}
 	}
-	entry["payload"] = payload; entry["payloadDigest"] = digest; entry["delivery"] = "sending"
-	attempts, _ := entry["attempts"].(float64); entry["attempts"] = attempts + 1
-	entry["lastError"] = ""; entry["nextAction"] = "reconcile the durable delivery receipt"; delete(entry, "nextEligibleAt")
+	entry["payload"] = payload
+	entry["payloadDigest"] = digest
+	entry["delivery"] = "sending"
+	attempts, _ := entry["attempts"].(float64)
+	entry["attempts"] = attempts + 1
+	entry["lastError"] = ""
+	entry["nextAction"] = "reconcile the durable delivery receipt"
+	delete(entry, "nextEligibleAt")
 	updated, err := json.Marshal(entry)
-	if err != nil { return false, err }
+	if err != nil {
+		return false, err
+	}
 	result, err := tx.ExecContext(ctx, "UPDATE coordinator_supervision_outbox SET delivery_state='sending', record=? WHERE id=? AND delivery_state=?", updated, id, from)
-	if err != nil { return false, err }
+	if err != nil {
+		return false, err
+	}
 	changed, _ := result.RowsAffected()
-	if changed != 1 { return false, nil }
+	if changed != 1 {
+		return false, nil
+	}
 	return true, tx.Commit()
 }
 
@@ -346,27 +389,35 @@ func (s *Store) PendingSupervisionEscalations(ctx context.Context) ([]domain.Sup
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, run_id, delivery_state, record FROM coordinator_supervision_outbox
 		WHERE delivery_state IN ('pending', 'held', 'offline', 'busy', 'sending', 'recovery-required') ORDER BY id`)
-	if err != nil { return nil, fmt.Errorf("list pending supervision escalations: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("list pending supervision escalations: %w", err)
+	}
 	defer rows.Close()
 	var pending []domain.SupervisionEscalationDelivery
 	for rows.Next() {
 		var id, runID, delivery string
 		var raw []byte
-		if err := rows.Scan(&id, &runID, &delivery, &raw); err != nil { return nil, err }
+		if err := rows.Scan(&id, &runID, &delivery, &raw); err != nil {
+			return nil, err
+		}
 		var entry struct {
-			Kind string `json:"kind"`
-			IncidentID string `json:"incidentId"`
-			ThreadID string `json:"threadId"`
-			Reason string `json:"reason"`
-			Attempts int `json:"attempts"`
-			Payload string `json:"payload"`
-			PayloadDigest string `json:"payloadDigest"`
-			LastError string `json:"lastError"`
-			NextAction string `json:"nextAction"`
+			Kind           string     `json:"kind"`
+			IncidentID     string     `json:"incidentId"`
+			ThreadID       string     `json:"threadId"`
+			Reason         string     `json:"reason"`
+			Attempts       int        `json:"attempts"`
+			Payload        string     `json:"payload"`
+			PayloadDigest  string     `json:"payloadDigest"`
+			LastError      string     `json:"lastError"`
+			NextAction     string     `json:"nextAction"`
 			NextEligibleAt *time.Time `json:"nextEligibleAt"`
 		}
-		if err := json.Unmarshal(raw, &entry); err != nil { return nil, fmt.Errorf("decode supervision outbox entry %q: %w", id, err) }
-		if entry.Kind != "escalation" || entry.ThreadID == "" { continue }
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return nil, fmt.Errorf("decode supervision outbox entry %q: %w", id, err)
+		}
+		if entry.Kind != "escalation" || entry.ThreadID == "" {
+			continue
+		}
 		pending = append(pending, domain.SupervisionEscalationDelivery{
 			ID: id, DeliveryID: id, RunID: runID, IncidentID: entry.IncidentID,
 			ThreadID: entry.ThreadID, Reason: entry.Reason, Delivery: delivery, Attempts: entry.Attempts,

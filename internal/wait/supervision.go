@@ -25,9 +25,13 @@ type SupervisionEscalationClaimer interface {
 // treating bounded-history absence as proof.
 func (r *Runner) tickSupervisionEscalations(ctx context.Context) {
 	store, ok := r.store.(SupervisionEscalationStore)
-	if !ok { return }
+	if !ok {
+		return
+	}
 	control, ok := r.control.(NodeControl)
-	if !ok { return }
+	if !ok {
+		return
+	}
 	pending, err := store.PendingSupervisionEscalations(ctx)
 	if err != nil {
 		logFailure(ctx, r.log, "list supervision escalations", err, "error", err)
@@ -37,7 +41,9 @@ func (r *Runner) tickSupervisionEscalations(ctx context.Context) {
 	for _, escalation := range pending {
 		if escalation.Delivery == "sending" || escalation.Delivery == "recovery-required" {
 			status, observeErr := reconcileNodeWake(ctx, control, escalation.ThreadID, escalation.DeliveryID)
-			if observeErr != nil { continue }
+			if observeErr != nil {
+				continue
+			}
 			to := "recovery-required"
 			switch status {
 			case WakeReceiptDelivered:
@@ -58,7 +64,9 @@ func (r *Runner) tickSupervisionEscalations(ctx context.Context) {
 			}
 			continue
 		}
-		if escalation.DeliveryNextAttemptAt != nil && now.Before(*escalation.DeliveryNextAttemptAt) { continue }
+		if escalation.DeliveryNextAttemptAt != nil && now.Before(*escalation.DeliveryNextAttemptAt) {
+			continue
+		}
 		thread, getErr := r.control.GetThread(ctx, escalation.ThreadID)
 		if getErr != nil || thread == nil {
 			if escalation.Delivery != "offline" {
@@ -92,7 +100,9 @@ func (r *Runner) tickSupervisionEscalations(ctx context.Context) {
 		} else {
 			claimed, err = store.TransitionSupervisionOutboxRow(ctx, escalation.ID, escalation.Delivery, "sending", now)
 		}
-		if err != nil || !claimed { continue }
+		if err != nil || !claimed {
+			continue
+		}
 		if err := control.SendNodeWake(ctx, *thread, escalation.DeliveryID, text); err != nil {
 			_, _ = store.TransitionSupervisionOutboxRow(ctx, escalation.ID, "sending", "recovery-required", now)
 		}

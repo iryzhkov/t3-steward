@@ -366,13 +366,21 @@ func settleStructuredTaskWaitsTx(ctx context.Context, tx *sql.Tx, records nodeSt
 // including admin transports, receives the same legal-transition guard.
 func (s *Store) TransitionNodeWake(ctx context.Context, id, from, to string, now time.Time) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil { return false, err }
+	if err != nil {
+		return false, err
+	}
 	defer tx.Rollback()
 	var raw []byte
-	if err = tx.QueryRowContext(ctx, "SELECT record FROM coordinator_node_waits WHERE id=?", id).Scan(&raw); err != nil { return false, err }
+	if err = tx.QueryRowContext(ctx, "SELECT record FROM coordinator_node_waits WHERE id=?", id).Scan(&raw); err != nil {
+		return false, err
+	}
 	var w domain.NodeWait
-	if err = json.Unmarshal(raw, &w); err != nil { return false, err }
-	if w.Delivery != from { return false, nil }
+	if err = json.Unmarshal(raw, &w); err != nil {
+		return false, err
+	}
+	if w.Delivery != from {
+		return false, nil
+	}
 	settled, allowed := w.SettledAt != nil, false
 	switch from {
 	case "pending":
@@ -384,28 +392,43 @@ func (s *Store) TransitionNodeWake(ctx context.Context, id, from, to string, now
 	case "recovery-required":
 		allowed = to == "delivered" || to == "offline" || to == "rejected"
 	}
-	if !allowed { return false, fmt.Errorf("invalid wake transition %s to %s", from, to) }
+	if !allowed {
+		return false, fmt.Errorf("invalid wake transition %s to %s", from, to)
+	}
 	w.Delivery = to
 	switch to {
 	case "sending":
-		w.DeliveryAttempts++; w.DeliveryError = ""; w.DeliveryNextAction = "reconcile the durable delivery receipt"; w.DeliveryNextAttemptAt = nil
+		w.DeliveryAttempts++
+		w.DeliveryError = ""
+		w.DeliveryNextAction = "reconcile the durable delivery receipt"
+		w.DeliveryNextAttemptAt = nil
 	case "offline", "busy":
 		w.DeliveryError = "delivery target is " + to
 		w.DeliveryNextAction = "retry after the target becomes available"
-		next := now.UTC().Add(deliveryRetryDelay(w.DeliveryAttempts)); w.DeliveryNextAttemptAt = &next
+		next := now.UTC().Add(deliveryRetryDelay(w.DeliveryAttempts))
+		w.DeliveryNextAttemptAt = &next
 	case "recovery-required":
 		w.DeliveryError = "delivery outcome is unknown"
 		w.DeliveryNextAction = "reconcile the durable receipt; do not resend without known non-effect"
 		w.DeliveryNextAttemptAt = nil
 	case "delivered":
-		w.DeliveryError = ""; w.DeliveryNextAction = ""; w.DeliveryNextAttemptAt = nil
-		t := now.UTC(); w.DeliveredAt = &t
+		w.DeliveryError = ""
+		w.DeliveryNextAction = ""
+		w.DeliveryNextAttemptAt = nil
+		t := now.UTC()
+		w.DeliveredAt = &t
 	case "rejected":
-		w.DeliveryError = "delivery was rejected"; w.DeliveryNextAction = "operator action is required"; w.DeliveryNextAttemptAt = nil
+		w.DeliveryError = "delivery was rejected"
+		w.DeliveryNextAction = "operator action is required"
+		w.DeliveryNextAttemptAt = nil
 	}
-	if err = saveNodeWaitTx(ctx, tx, w); err != nil { return false, err }
+	if err = saveNodeWaitTx(ctx, tx, w); err != nil {
+		return false, err
+	}
 	if to == "delivered" || to == "cancelled" || to == "rejected" {
-		if _, err = tx.ExecContext(ctx, "DELETE FROM coordinator_retention_pins WHERE owner=?", "wait:"+id); err != nil { return false, err }
+		if _, err = tx.ExecContext(ctx, "DELETE FROM coordinator_retention_pins WHERE owner=?", "wait:"+id); err != nil {
+			return false, err
+		}
 	}
 	return true, tx.Commit()
 }
@@ -414,10 +437,14 @@ func (s *Store) TransitionNodeWake(ctx context.Context, id, from, to string, now
 // wake-all member represented by it. A replay must name identical bytes,
 // digest, membership, and delivery identity.
 func (s *Store) ClaimNodeWakeGroup(ctx context.Context, leaderID, from, deliveryID, payload string, memberIDs []string, now time.Time) (bool, error) {
-	if len(memberIDs) == 0 { return false, fmt.Errorf("claim node wake group %q: no members", leaderID) }
+	if len(memberIDs) == 0 {
+		return false, fmt.Errorf("claim node wake group %q: no members", leaderID)
+	}
 	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(payload)))
 	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil { return false, err }
+	if err != nil {
+		return false, err
+	}
 	defer tx.Rollback()
 	for _, id := range memberIDs {
 		var raw []byte
@@ -425,28 +452,50 @@ func (s *Store) ClaimNodeWakeGroup(ctx context.Context, leaderID, from, delivery
 			return false, fmt.Errorf("claim node wake member %q: %w", id, err)
 		}
 		var wake domain.NodeWait
-		if err := json.Unmarshal(raw, &wake); err != nil { return false, err }
+		if err := json.Unmarshal(raw, &wake); err != nil {
+			return false, err
+		}
 		expected := wake.Delivery
-		if id == leaderID && expected != from { return false, nil }
-		if expected != "pending" && expected != "held" && expected != "offline" && expected != "busy" { return false, nil }
+		if id == leaderID && expected != from {
+			return false, nil
+		}
+		if expected != "pending" && expected != "held" && expected != "offline" && expected != "busy" {
+			return false, nil
+		}
 		if wake.DeliveryPayload != "" && (wake.DeliveryPayload != payload || wake.DeliveryPayloadDigest != digest ||
 			wake.DeliveryID != deliveryID || !reflect.DeepEqual(wake.DeliveryGroupMembers, memberIDs)) {
 			return false, fmt.Errorf("claim node wake %q: frozen delivery differs", id)
 		}
-		wake.Delivery = "sending"; wake.DeliveryID = deliveryID; wake.DeliveryPayload = payload; wake.DeliveryPayloadDigest = digest
-		wake.DeliveryGroupMembers = append([]string(nil), memberIDs...); wake.DeliveryAttempts++
-		wake.DeliveryError = ""; wake.DeliveryNextAction = "reconcile the durable delivery receipt"; wake.DeliveryNextAttemptAt = nil
+		wake.Delivery = "sending"
+		wake.DeliveryID = deliveryID
+		wake.DeliveryPayload = payload
+		wake.DeliveryPayloadDigest = digest
+		wake.DeliveryGroupMembers = append([]string(nil), memberIDs...)
+		wake.DeliveryAttempts++
+		wake.DeliveryError = ""
+		wake.DeliveryNextAction = "reconcile the durable delivery receipt"
+		wake.DeliveryNextAttemptAt = nil
 		encoded, err := json.Marshal(wake)
-		if err != nil { return false, err }
+		if err != nil {
+			return false, err
+		}
 		result, err := tx.ExecContext(ctx, "UPDATE coordinator_node_waits SET record=? WHERE id=? AND json_extract(record, '$.delivery')=?", encoded, id, expected)
-		if err != nil { return false, err }
-		if changed, _ := result.RowsAffected(); changed != 1 { return false, nil }
+		if err != nil {
+			return false, err
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			return false, nil
+		}
 	}
 	return true, tx.Commit()
 }
 
 func deliveryRetryDelay(attempts int) time.Duration {
-	if attempts < 0 { attempts = 0 }
-	if attempts > 6 { attempts = 6 }
+	if attempts < 0 {
+		attempts = 0
+	}
+	if attempts > 6 {
+		attempts = 6
+	}
 	return time.Second * time.Duration(1<<attempts)
 }

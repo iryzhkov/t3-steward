@@ -229,7 +229,9 @@ func TestFinalSupervisionNotificationIsSentAndObservedThroughRunner(t *testing.T
 	store, _, now := taskWaitFixture(t)
 	entry := SupervisionOutboxRow{ID: "final-notification", Delivery: "pending",
 		Record: json.RawMessage(`{"id":"final-notification","kind":"escalation","incidentId":"campaign-final","threadId":"thread-1","reason":"campaign recovery exhausted"}`)}
-	if written, err := store.AppendSupervisionOutboxRows(ctx, "run-final", []SupervisionOutboxRow{entry}); err != nil || written != 1 { t.Fatal(written, err) }
+	if written, err := store.AppendSupervisionOutboxRows(ctx, "run-final", []SupervisionOutboxRow{entry}); err != nil || written != 1 {
+		t.Fatal(written, err)
+	}
 	clock := now
 	runner, control := fleetRunner(t, store, &clock, nil)
 	runner.NodeHost = "host"
@@ -243,7 +245,9 @@ func TestFinalSupervisionNotificationIsSentAndObservedThroughRunner(t *testing.T
 	if err != nil || len(rows) != 1 || rows[0].Delivery != "delivered" {
 		t.Fatalf("remote observation did not acknowledge durable row: %#v, %v", rows, err)
 	}
-	if len(control.sends) != 1 { t.Fatalf("observed notification resent: %v", control.sends) }
+	if len(control.sends) != 1 {
+		t.Fatalf("observed notification resent: %v", control.sends)
+	}
 }
 
 func TestSupervisionAdminStateBindsEvidenceAndBranchClosure(t *testing.T) {
