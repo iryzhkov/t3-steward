@@ -506,10 +506,14 @@ func packageCarriedInputs(task domain.Task, artifacts map[string]domain.Artifact
 	byProducer := map[string][]domain.CarriedInput{}
 	producers := make([]string, 0, len(task.CarriedInputs))
 	for _, carried := range task.CarriedInputs {
-		if _, seen := byProducer[carried.ProducerTaskID]; !seen {
-			producers = append(producers, carried.ProducerTaskID)
+		producerKey := carried.ProducerTaskID
+		if carried.ProducerNamespace != "" {
+			producerKey = carried.SourceRunID + "\x00" + carried.ProducerTaskID + "\x00" + carried.ProducerNamespace
 		}
-		byProducer[carried.ProducerTaskID] = append(byProducer[carried.ProducerTaskID], carried)
+		if _, seen := byProducer[producerKey]; !seen {
+			producers = append(producers, producerKey)
+		}
+		byProducer[producerKey] = append(byProducer[producerKey], carried)
 	}
 	sort.Strings(producers)
 	result := make([]workerproto.DependencyInput, 0, len(producers))
