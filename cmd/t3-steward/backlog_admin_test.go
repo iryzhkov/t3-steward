@@ -41,6 +41,7 @@ func TestParseBacklogAdminQuery(t *testing.T) {
 		{name: "graph", args: []string{"graph", "run-1", "--json"}, kind: backlogadmin.QueryGraph, runID: "run-1", asJSON: true},
 		{name: "task", args: []string{"task", "show", "run-1/task-1"}, kind: backlogadmin.QueryTask, runID: "run-1", taskID: "task-1"},
 		{name: "events", args: []string{"events", "run-1"}, kind: backlogadmin.QueryEvents, runID: "run-1"},
+		{name: "usage", args: []string{"usage", "run-1"}, kind: backlogadmin.QueryUsage, runID: "run-1"},
 		{name: "explanation", args: []string{"explain", "run-1/task-1"}, kind: backlogadmin.QueryExplanation, runID: "run-1", taskID: "task-1"},
 		{name: "all artifacts", args: []string{"artifacts"}, kind: backlogadmin.QueryArtifacts},
 		{name: "task artifacts", args: []string{"artifacts", "task-1"}, kind: backlogadmin.QueryArtifacts, taskID: "task-1"},

@@ -138,6 +138,14 @@ func TestMeasuredUsageBindingIsAuthoritativeIsolatedAndReplaySafe(t *testing.T) 
 		t.Fatalf("unknown sample inferred from identifiers: %#v", unknown)
 	}
 
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenMigrated(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
 	runA, err := store.AttributedUsage(ctx, "run-a")
 	if err != nil {
 		t.Fatal(err)

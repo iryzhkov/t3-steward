@@ -90,7 +90,7 @@ Talking to the coordinator
   which one answered before you submit anything.
 
   Read-only commands (status, list, show, graph, diagnose, task show, events,
-  explain, artifacts, artifact show/get, commands, command show, schedules list,
+  usage, explain, artifacts, artifact show/get, commands, command show, schedules list,
   show and history) change nothing. Every other command below is mutating.
 
   Exit codes:

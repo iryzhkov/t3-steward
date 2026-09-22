@@ -113,6 +113,9 @@ func (s *Store) PrepareAssignmentDispatch(ctx context.Context, input domain.Assi
 	} else if err := requireNativeAuditEventTx(ctx, tx, assignmentDispatchAuditID(current)); err != nil {
 		return domain.Assignment{}, err
 	}
+	if err := bindAssignmentUsageTx(ctx, tx, current, s.now()); err != nil {
+		return domain.Assignment{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return domain.Assignment{}, fmt.Errorf("commit assignment dispatch preparation %q: %w", prepared.ID, err)
 	}

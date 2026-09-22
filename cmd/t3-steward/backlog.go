@@ -41,6 +41,7 @@ Coordinator read commands:
   diagnose <workflow-run> [--json]
   task show <workflow-run>/<task> [--json]
   events <workflow-run> [--json]
+  usage [<workflow-run>] [--json]   Raw attributed samples; call and turn rows overlap.
   explain <workflow-run>/<task> [--json]
   artifacts [<task>|<workflow-run>/<task>] [--json]
   artifact show <artifact> [--json]
@@ -149,7 +150,7 @@ func isCoordinatorAdmin(args []string) bool {
 		return true
 	}
 	switch args[0] {
-	case "submit", "status", "projects", "workers", "edge", "run", "diagnose", "graph", "task", "events", "explain", "artifacts", "artifact", "commands", "command", "show", "quarantine", "recover":
+	case "submit", "status", "projects", "workers", "edge", "run", "diagnose", "graph", "task", "events", "usage", "explain", "artifacts", "artifact", "commands", "command", "show", "quarantine", "recover":
 		return true
 	case "list":
 		return len(args) != 2 || args[1] != "--all"

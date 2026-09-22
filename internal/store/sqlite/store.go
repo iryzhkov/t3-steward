@@ -401,6 +401,7 @@ var versionedMigrations = []struct {
 	{21, coordinatorMigrationV21},
 	{22, coordinatorMigrationV22},
 	{23, coordinatorMigrationV23},
+	{24, coordinatorMigrationV24},
 }
 
 func (s *Store) applyVersionedMigration(version int, ddl string) error {
@@ -780,29 +781,17 @@ func (s *Store) RecordUsage(ctx context.Context, u domain.UsageSample) error {
 	return err
 }
 
-// UsageSamples returns samples in [from, to), oldest first.
+// UsageSamples returns samples in [from, to), oldest first, joined to the
+// immutable dispatch binding. Rows without one are explicitly unattributed.
 func (s *Store) UsageSamples(ctx context.Context, from, to time.Time) ([]domain.UsageSample, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd, kind, cumulative_tokens
-		 FROM usage_samples WHERE observed_at >= ? AND observed_at < ? ORDER BY observed_at`,
+	rows, err := s.db.QueryContext(ctx, attributedUsageSelect+
+		` WHERE u.observed_at >= ? AND u.observed_at < ?
+		   ORDER BY u.observed_at, u.event_id`,
 		from.UTC().Format(time.RFC3339Nano), to.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []domain.UsageSample
-	for rows.Next() {
-		var (
-			at string
-			u  domain.UsageSample
-		)
-		if err := rows.Scan(&u.SourceEventID, &u.ProviderInstanceID, &u.ThreadID, &u.Model, &at, &u.InputTokens, &u.CacheWriteTokens, &u.CacheReadTokens, &u.OutputTokens, &u.CostUSD, &u.Kind, &u.CumulativeTokens); err != nil {
-			return nil, err
-		}
-		u.ObservedAt, _ = time.Parse(time.RFC3339Nano, at)
-		out = append(out, u)
-	}
-	return out, rows.Err()
+	return scanAttributedUsage(rows)
 }
 
 // PruneHistory deletes observations and usage samples older than the cutoff.

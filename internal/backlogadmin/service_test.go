@@ -27,6 +27,53 @@ func (a *allowAuthorizer) Authorize(_ context.Context, _ Principal, action Actio
 	return a.err
 }
 
+func TestUsageQueryReturnsAuthoritativeDispatchIdentity(t *testing.T) {
+	ctx := context.Background()
+	store := openAdminTestStore(t)
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
+		Attempts: []domain.Attempt{{ID: "attempt-usage", WorkflowRunID: "run-usage", TaskID: "task-usage", Number: 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assignment := domain.Assignment{
+		ID: "assignment-usage", AttemptID: "attempt-usage", WorkerID: "worker-usage", WorkerEpoch: "worker-1",
+		Route: domain.ProviderRoute{WorkerID: "worker-usage", ProviderInstanceID: "codex-primary", Model: "gpt"},
+		State: domain.AssignmentClaimed, Epoch: 3, LeaseToken: "lease-usage",
+		LeaseExpiresAt: adminTestNow.Add(time.Hour), DispatchToken: "dispatch-usage",
+		ThreadID: "thread-usage", CreatedAt: adminTestNow, UpdatedAt: adminTestNow,
+	}
+	if _, err := store.PrepareAssignmentDispatch(ctx, assignment); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordUsage(ctx, domain.UsageSample{
+		ProviderInstanceID: "codex-primary", ThreadID: "thread-usage", Model: "gpt",
+		ObservedAt: adminTestNow, SourceEventID: "event-usage", Kind: domain.UsageKindCall, InputTokens: 5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(store, &allowAuthorizer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Usage) != 1 {
+		t.Fatalf("usage = %#v", response.Usage)
+	}
+	got := response.Usage[0].Attribution
+	if got.Status != domain.UsageAttributed || got.WorkflowRunID != "run-usage" ||
+		got.TaskID != "task-usage" || got.AttemptID != "attempt-usage" ||
+		got.AssignmentID != "assignment-usage" || got.AssignmentEpoch != 3 ||
+		got.Role != domain.ExecutionRoleTask {
+		t.Fatalf("attribution = %#v", got)
+	}
+	if response.UsageSemantics == "" {
+		t.Fatal("usage overlap semantics are absent")
+	}
+}
+
 func TestAdminQueriesTemporaryCoordinatorState(t *testing.T) {
 	store := openAdminTestStore(t)
 	seedAdminTestStore(t, store)
@@ -50,6 +97,7 @@ func TestAdminQueriesTemporaryCoordinatorState(t *testing.T) {
 		{Version: Version, Kind: QueryTask, Principal: principal, WorkflowRunID: "run-1", TaskID: "implement"},
 		{Version: Version, Kind: QueryExplanation, Principal: principal, WorkflowRunID: "run-1", TaskID: "task-implement"},
 		{Version: Version, Kind: QueryEvents, Principal: principal, WorkflowRunID: "run-1"},
+		{Version: Version, Kind: QueryUsage, Principal: principal, WorkflowRunID: "run-1"},
 		{Version: Version, Kind: QueryArtifacts, Principal: principal, WorkflowRunID: "run-1", TaskID: "implement"},
 		{Version: Version, Kind: QueryArtifact, Principal: principal, ArtifactID: "artifact-checkpoint"},
 		{Version: Version, Kind: QuerySchedules, Principal: principal},
@@ -81,6 +129,9 @@ func TestAdminQueriesTemporaryCoordinatorState(t *testing.T) {
 		status.Tasks[domain.ProgressActive] != 1 || status.Workers["offline"] != 1 ||
 		status.QuotaPools[domain.AdmissionDraining] != 1 || status.Reservations != 1 || status.Locks != 1 {
 		t.Fatalf("unexpected status: %#v", status)
+	}
+	if responses[QueryUsage].UsageSemantics == "" {
+		t.Fatal("usage query omitted overlap semantics")
 	}
 	if status.Runtime.Mode != "coordinator" || status.Runtime.Owner != "coordinator-1" ||
 		status.Runtime.Epoch != 7 || status.Runtime.Transport != "ssh" || status.Runtime.Health != "degraded" ||

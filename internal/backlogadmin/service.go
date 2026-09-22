@@ -32,6 +32,12 @@ type Reader interface {
 	LoadQuotaAdmissions(context.Context) ([]domain.QuotaAdmissionRecord, error)
 }
 
+type usageReader interface {
+	AttributedUsage(context.Context, string) ([]domain.UsageSample, error)
+}
+
+const usageSemantics = "raw provider samples: call rows are per API call; turn rows are whole-turn totals and overlap calls, so clients must not sum both; cumulative totals are retained only for replay deduplication"
+
 type UnknownRecoveryWriter interface {
 	RecoverUnknownAssignment(context.Context, domain.UnknownAssignmentRecovery) (domain.UnknownAssignmentRecoveryDecision, error)
 }
@@ -330,6 +336,16 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		response.ResourceLocks = view.locks(query.Filter)
 	case QueryCommands:
 		response.Commands = view.commands(query)
+	case QueryUsage:
+		reader, ok := s.reader.(usageReader)
+		if !ok {
+			return Response{}, fmt.Errorf("%w: usage attribution is unavailable", ErrInvalidQuery)
+		}
+		response.Usage, err = reader.AttributedUsage(ctx, query.WorkflowRunID)
+		if err != nil {
+			return Response{}, fmt.Errorf("load attributed usage: %w", err)
+		}
+		response.UsageSemantics = usageSemantics
 	case QueryQuarantine:
 		quarantined, err := s.quarantinedIntake(ctx)
 		if err != nil {
@@ -409,7 +425,7 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 func validQuery(query Query) bool {
 	switch query.Kind {
 	case QueryStatus, QueryWorkflows, QuerySchedules, QueryWorkers, QueryQuota,
-		QueryReservations, QueryLocks, QueryQuarantine, QueryProjects:
+		QueryReservations, QueryLocks, QueryUsage, QueryQuarantine, QueryProjects:
 		return true
 	case QueryCommands:
 		return query.TaskID == "" || query.WorkflowRunID != ""

@@ -366,6 +366,39 @@ type Observation struct {
 	Model    string `json:"model"`
 }
 
+// ExecutionRole is the stable purpose of one provider session.
+type ExecutionRole string
+
+const (
+	ExecutionRoleTask        ExecutionRole = "task"
+	ExecutionRoleSupervision ExecutionRole = "supervision"
+)
+
+// UsageAttributionStatus says whether an authoritative V2 dispatch binding was
+// present. Unknown sessions are explicit; callers must not infer identity from
+// titles, prompts, paths, or thread ID shape.
+type UsageAttributionStatus string
+
+const (
+	UsageAttributed   UsageAttributionStatus = "attributed"
+	UsageUnattributed UsageAttributionStatus = "unattributed"
+)
+
+// UsageAttribution is the durable coordinator identity bound to a provider
+// thread at dispatch. ActivationID is set for supervision execution; GateID is
+// reserved for execution launched for a durable gate and is otherwise empty.
+type UsageAttribution struct {
+	Status          UsageAttributionStatus `json:"status"`
+	WorkflowRunID   string                 `json:"workflowRunId,omitempty"`
+	TaskID          string                 `json:"taskId,omitempty"`
+	AttemptID       string                 `json:"attemptId,omitempty"`
+	AssignmentID    string                 `json:"assignmentId,omitempty"`
+	AssignmentEpoch int64                  `json:"assignmentEpoch,omitempty"`
+	ActivationID    string                 `json:"activationId,omitempty"`
+	GateID          string                 `json:"gateId,omitempty"`
+	Role            ExecutionRole          `json:"role,omitempty"`
+}
+
 // UsageSample is a token count reported by a provider for one API call or
 // one turn, used to normalize quota consumption by work done.
 type UsageSample struct {
@@ -386,6 +419,9 @@ type UsageSample struct {
 	// CumulativeTokens is the provider's running total for the thread when
 	// it reports one, used to drop repeated notifications of the same call.
 	CumulativeTokens int64 `json:"cumulativeTokens,omitempty"`
+	// Attribution is populated by durable storage queries, never by provider
+	// parsing. Raw ingestion leaves it zero until the store performs the join.
+	Attribution UsageAttribution `json:"attribution"`
 }
 
 // Sample kinds.

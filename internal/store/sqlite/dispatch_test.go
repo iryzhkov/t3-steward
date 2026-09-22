@@ -20,6 +20,11 @@ func TestAssignmentDispatchPreparationAndOptimisticTransitions(t *testing.T) {
 	}
 	defer store.Close()
 	input := assignmentDispatchFixture()
+	if err := store.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{Attempts: []domain.Attempt{{
+		ID: input.AttemptID, WorkflowRunID: "run-1", TaskID: "task-1", Number: 1,
+	}}}); err != nil {
+		t.Fatal(err)
+	}
 
 	prepared, err := store.PrepareAssignmentDispatch(context.Background(), input)
 	if err != nil {

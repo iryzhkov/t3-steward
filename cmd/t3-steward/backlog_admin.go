@@ -408,6 +408,15 @@ func parseBacklogAdminQueryWithoutSink(args []string) (backlogadmin.Query, bool,
 		}
 		kinds := map[string]backlogadmin.QueryKind{"show": backlogadmin.QueryWorkflow, "graph": backlogadmin.QueryGraph, "events": backlogadmin.QueryEvents, "diagnose": backlogadmin.QueryDiagnose}
 		return backlogadmin.Query{Kind: kinds[clean[0]], WorkflowRunID: clean[1]}, asJSON, nil
+	case "usage":
+		if len(clean) > 2 {
+			return backlogadmin.Query{}, false, errors.New("backlog usage accepts at most one workflow-run id")
+		}
+		query := backlogadmin.Query{Kind: backlogadmin.QueryUsage}
+		if len(clean) == 2 {
+			query.WorkflowRunID = clean[1]
+		}
+		return query, asJSON, nil
 	case "task":
 		if len(clean) != 3 || clean[1] != "show" {
 			return backlogadmin.Query{}, false, showOnlyUsage("task", "<workflow-run>/<task>", clean)
@@ -604,6 +613,8 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 		renderExplanation(out, response.Explanation)
 	case backlogadmin.QueryEvents:
 		renderEvents(out, response.Events)
+	case backlogadmin.QueryUsage:
+		return renderUsage(out, response.Usage, response.UsageSemantics)
 	case backlogadmin.QueryArtifacts:
 		renderArtifacts(out, response.Artifacts)
 	case backlogadmin.QueryArtifact:
@@ -620,6 +631,23 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 		return fmt.Errorf("no human renderer for admin response %q", response.Kind)
 	}
 	return nil
+}
+
+func renderUsage(out io.Writer, samples []domain.UsageSample, semantics string) error {
+	if semantics != "" {
+		fmt.Fprintf(out, "Semantics: %s\n", semantics)
+	}
+	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(table, "EVENT\tPROVIDER\tTHREAD\tRUN\tTASK\tATTEMPT\tASSIGNMENT\tROLE\tSTATUS\tKIND\tTOKENS")
+	for _, sample := range samples {
+		a := sample.Attribution
+		tokens := sample.InputTokens + sample.CacheWriteTokens + sample.CacheReadTokens + sample.OutputTokens
+		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\n",
+			sample.SourceEventID, sample.ProviderInstanceID, sample.ThreadID,
+			a.WorkflowRunID, a.TaskID, a.AttemptID, a.AssignmentID, a.Role,
+			a.Status, sample.Kind, tokens)
+	}
+	return table.Flush()
 }
 
 // renderWorkers prints the worker table and, under it, what each worker can

@@ -336,6 +336,9 @@ func mergeUsage(a, b []domain.UsageSample) []domain.UsageSample {
 	seen := map[string]bool{}
 	out := make([]domain.UsageSample, 0, len(a)+len(b))
 	for _, u := range append(a, b...) {
+		if u.Attribution.Status == "" {
+			u.Attribution.Status = domain.UsageUnattributed
+		}
 		if u.SourceEventID != "" && seen[u.SourceEventID] {
 			continue
 		}
