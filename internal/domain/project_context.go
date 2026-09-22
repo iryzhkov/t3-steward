@@ -44,15 +44,22 @@ type ProjectContextArtifactBinding struct {
 	SourceArtifactID string `json:"sourceArtifactId,omitempty" yaml:"source_artifact_id,omitempty"`
 }
 
+type ProjectContextAcceptance struct {
+	GateID             string `json:"gateId" yaml:"-"`
+	DecisionID         string `json:"decisionId" yaml:"-"`
+	EvidenceSnapshotID string `json:"evidenceSnapshotId" yaml:"-"`
+}
+
 type ProjectContextReference struct {
-	ID        string                         `json:"id" yaml:"id"`
-	Kind      ProjectContextReferenceKind    `json:"kind" yaml:"kind"`
-	URI       string                         `json:"uri" yaml:"uri"`
-	Revision  string                         `json:"revision" yaml:"revision"`
-	Status    ProjectContextStatus           `json:"status" yaml:"status"`
-	Authority string                         `json:"authority" yaml:"authority"`
-	Topics    []string                       `json:"topics,omitempty" yaml:"topics,omitempty"`
-	Binding   *ProjectContextArtifactBinding `json:"binding,omitempty" yaml:"binding,omitempty"`
+	ID         string                         `json:"id" yaml:"id"`
+	Kind       ProjectContextReferenceKind    `json:"kind" yaml:"kind"`
+	URI        string                         `json:"uri" yaml:"uri"`
+	Revision   string                         `json:"revision" yaml:"revision"`
+	Status     ProjectContextStatus           `json:"status" yaml:"status"`
+	Authority  string                         `json:"authority" yaml:"authority"`
+	Topics     []string                       `json:"topics,omitempty" yaml:"topics,omitempty"`
+	Binding    *ProjectContextArtifactBinding `json:"binding,omitempty" yaml:"binding,omitempty"`
+	Acceptance *ProjectContextAcceptance      `json:"acceptance,omitempty" yaml:"-"`
 }
 
 type ProjectContextDecision struct {
@@ -186,6 +193,10 @@ func validateProjectContextReference(ref ProjectContextReference) error {
 		if !strings.HasPrefix(ref.URI, "execution:") || strings.Count(strings.TrimPrefix(ref.URI, "execution:"), "/") != 3 ||
 			strings.TrimSpace(ref.Revision) == "" {
 			return errors.New("execution reference requires run/task/attempt/artifact URI and revision")
+		}
+		if ref.Acceptance == nil || strings.TrimSpace(ref.Acceptance.GateID) == "" ||
+			strings.TrimSpace(ref.Acceptance.DecisionID) == "" || strings.TrimSpace(ref.Acceptance.EvidenceSnapshotID) == "" {
+			return errors.New("execution reference requires a resolved accepted gate receipt")
 		}
 	default:
 		return errors.New("unsupported kind")

@@ -90,7 +90,8 @@ func TestProjectContextRejectsWrongCrossRunProducerIdentity(t *testing.T) {
 	ref := domain.ProjectContextReference{
 		ID: "execution-ref", Kind: domain.ContextReferenceExecution,
 		URI:      "execution:source-run/source-task/source-attempt/source-artifact",
-		Revision: object.SHA256, Status: domain.ProjectContextAccepted, Authority: "review-gate",
+		Revision: object.SHA256, Status: domain.ProjectContextAccepted, Authority: "gate-decision:accepted",
+		Acceptance: &domain.ProjectContextAcceptance{GateID: "gate", DecisionID: "accepted", EvidenceSnapshotID: "evidence"},
 		Binding: &domain.ProjectContextArtifactBinding{
 			ArtifactID: object.ID, Path: object.Path, SHA256: object.SHA256,
 			SourceRunID: "source-run", SourceTaskID: "source-task", SourceAttemptID: "source-attempt", SourceArtifactID: "source-artifact",

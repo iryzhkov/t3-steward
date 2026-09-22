@@ -1,6 +1,7 @@
 package workerruntime
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -273,6 +274,9 @@ func (d *LocalDriver) InspectWorkspace(ctx context.Context, pkg workerproto.Exec
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return "", false, errors.New("prepared workspace is not a real directory")
 	}
+	if err := verifyProjectContextFile(pkg, workspace); err != nil {
+		return workspace, false, fmt.Errorf("inspect prepared workspace: %w", err)
+	}
 	if manager := d.containedManager(pkg); manager != nil {
 		if _, err := manager.load(pkg); errors.Is(err, os.ErrNotExist) {
 			return workspace, false, nil
@@ -411,29 +415,97 @@ func (d *LocalDriver) writeTaskIdentity(pkg workerproto.ExecutionPackage, worksp
 	return excludeTaskIdentityFromGit(workspace, directory)
 }
 
-// writeProjectContext materializes the package-signed index for a cold worker.
-// It contains references and decisions, not a mutable transcript or acceptance gate.
+// writeProjectContext atomically materializes the canonical package-bound index.
 func (d *LocalDriver) writeProjectContext(pkg workerproto.ExecutionPackage, workspace string) error {
 	if pkg.Context == nil {
 		return nil
 	}
+	content, err := projectContextContent(pkg)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(workspace, filepath.FromSlash(domain.ProjectContextFile))
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return fmt.Errorf("create project context directory: %w", err)
+	}
+	file, err := os.CreateTemp(directory, ".index-*.tmp")
+	if err != nil {
+		return fmt.Errorf("stage project context: %w", err)
+	}
+	temporary := file.Name()
+	defer os.Remove(temporary)
+	if err := file.Chmod(0o444); err != nil {
+		file.Close()
+		return fmt.Errorf("restrict staged project context: %w", err)
+	}
+	if _, err := file.Write(content); err != nil {
+		file.Close()
+		return fmt.Errorf("write staged project context: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return fmt.Errorf("sync staged project context: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close staged project context: %w", err)
+	}
+	if err := os.Rename(temporary, path); err != nil {
+		return fmt.Errorf("publish project context: %w", err)
+	}
+	parent, err := os.Open(directory)
+	if err != nil {
+		return fmt.Errorf("open project context directory for sync: %w", err)
+	}
+	if err := parent.Sync(); err != nil {
+		parent.Close()
+		return fmt.Errorf("sync project context directory: %w", err)
+	}
+	if err := parent.Close(); err != nil {
+		return fmt.Errorf("close project context directory: %w", err)
+	}
+	return nil
+}
+
+func projectContextContent(pkg workerproto.ExecutionPackage) ([]byte, error) {
 	if err := workerproto.ValidateExecutionPackage(pkg); err != nil {
-		return fmt.Errorf("write project context: %w", err)
+		return nil, fmt.Errorf("project context package: %w", err)
 	}
 	content, err := json.MarshalIndent(pkg.Context, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode project context: %w", err)
+		return nil, fmt.Errorf("encode project context: %w", err)
 	}
-	content = append(content, '\n')
+	return append(content, '\n'), nil
+}
+
+func verifyProjectContextFile(pkg workerproto.ExecutionPackage, workspace string) error {
 	path := filepath.Join(workspace, filepath.FromSlash(domain.ProjectContextFile))
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create project context directory: %w", err)
+	info, err := os.Lstat(path)
+	if pkg.Context == nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect project context: %w", err)
+		}
+		return errors.New("unexpected project context index for package without context")
 	}
-	if err := os.WriteFile(path, content, 0o444); err != nil {
-		return fmt.Errorf("write project context: %w", err)
+	if err != nil {
+		return fmt.Errorf("project context index is missing or unreadable: %w", err)
 	}
-	if err := os.Chmod(path, 0o444); err != nil {
-		return fmt.Errorf("restrict project context: %w", err)
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o444 {
+		return fmt.Errorf("project context index mode is %v; want regular 0444", info.Mode())
+	}
+	expected, err := projectContextContent(pkg)
+	if err != nil {
+		return err
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read project context index: %w", err)
+	}
+	if !bytes.Equal(actual, expected) {
+		return errors.New("project context index bytes do not match the execution package")
 	}
 	return nil
 }

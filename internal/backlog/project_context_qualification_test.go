@@ -16,28 +16,24 @@ func TestProjectContextColdStartCustodySurvivesCrashRestartAndProducerArchive(t 
 	source, manifest, target := externalInputFixture(domain.ProgressSucceeded)
 	digest := strings.Repeat("a", 64)
 	source.records.Artifacts[0].SHA256 = digest
+	source.projections["source-run"].Decisions[0].Evidence.Producers[0].ArtifactDigests[0].Digest = "sha256:" + digest
 
 	now := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
 	fresh := now.Add(24 * time.Hour)
 	index := &domain.ProjectContext{
-		Version: domain.ProjectContextVersion, Revision: "context-1", Status: domain.ProjectContextAccepted,
-		Objective: "complete from retained accepted evidence", Authority: []string{"coordinator:target-run"},
-		Budget: "one attempt", Outputs: []string{"result.txt"},
+		Version: domain.ProjectContextVersion, Revision: "context-1",
+		Objective: "complete from retained accepted evidence",
+		Budget:    "one attempt", Outputs: []string{"result.txt"},
 		RequiredReferences: []string{"accepted-producer"},
 		References: []domain.ProjectContextReference{{
 			ID: "accepted-producer", Kind: domain.ContextReferenceExecution,
 			URI:      "execution:source-run/producer-id/producer-attempt/source-output",
-			Revision: digest, Status: domain.ProjectContextAccepted, Authority: "review-gate",
-			Topics: []string{"accepted", "checkpoint"},
+			Revision: digest,
+			Topics:   []string{"accepted", "checkpoint"},
 		}},
-		Decisions: []domain.ProjectContextDecision{{
-			ID: "reuse-branch", Status: "accepted", Summary: "reuse unchanged accepted producer",
-			Authority: "review-gate", Topics: []string{"resume"},
-		}},
-		CheckpointDelta: []string{"producer accepted; consumer remains"},
-		CodeLocations:   []domain.ProjectContextLocation{{Path: "internal/backlog/external_inputs.go", Revision: strings.Repeat("b", 40)}},
-		InputLocations:  []domain.ProjectContextLocation{{Path: "report.txt", Revision: digest}},
-		Setup:           []string{"go version"}, Checks: []string{"go test ./..."},
+		CodeLocations:  []domain.ProjectContextLocation{{Path: "internal/backlog/external_inputs.go", Revision: strings.Repeat("b", 40)}},
+		InputLocations: []domain.ProjectContextLocation{{Path: "report.txt", Revision: digest}},
+		Setup:          []string{"go version"}, Checks: []string{"go test ./..."},
 		CapabilityRefs: []string{"accepted-producer"},
 		Freshness:      domain.ProjectContextFreshness{ObservedAt: now, FreshThrough: &fresh},
 	}
@@ -74,7 +70,7 @@ func TestProjectContextColdStartCustodySurvivesCrashRestartAndProducerArchive(t 
 	// discard the mutated in-memory records and reopen the durable baseline.
 	staged := target
 	ingester := BundleIngester{Store: source, NewTypedID: func(string) string { return "retained-input" }}
-	if err := ingester.retainExternalInputs(ctx, manifest, &staged); err != nil {
+	if err := ingester.retainExternalInputs(ctx, manifest, &staged, "target-run"); err != nil {
 		t.Fatal(err)
 	}
 	store, err = sqlite.OpenMigrated(dbPath)
@@ -108,13 +104,18 @@ func TestProjectContextColdStartCustodySurvivesCrashRestartAndProducerArchive(t 
 		AttemptID: "parallel-attempt", Kind: domain.ArtifactOutput, Name: "report.txt",
 		MediaType: "text/plain", Size: 7, SHA256: strings.Repeat("c", 64), StoragePath: "parallel/report.txt",
 	})
-	if err := ingester.retainExternalInputs(ctx, manifest, &reopened); err != nil {
+	if err := ingester.retainExternalInputs(ctx, manifest, &reopened, "target-run"); err != nil {
 		t.Fatal(err)
 	}
 	binding := reopened.Tasks[0].Context.References[0].Binding
 	if binding == nil || binding.SourceRunID != "source-run" || binding.SourceAttemptID != "producer-attempt" ||
 		binding.SourceArtifactID != "source-output" {
 		t.Fatalf("wrong producer bound: %+v", binding)
+	}
+	acceptance := reopened.Tasks[0].Context.References[0].Acceptance
+	if acceptance == nil || acceptance.GateID != "gate-accepted" ||
+		acceptance.DecisionID != "decision-accepted" || acceptance.EvidenceSnapshotID != "evidence-accepted" {
+		t.Fatalf("resolved acceptance receipt = %+v", acceptance)
 	}
 	if err := store.SaveCoordinatorRecords(ctx, reopened); err != nil {
 		t.Fatal(err)

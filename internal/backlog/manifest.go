@@ -444,6 +444,34 @@ func validClass(class domain.TaskClass) bool {
 	return class == domain.TaskClassRequired || class == domain.TaskClassSurplus
 }
 
+func validateAuthoredProjectContext(index *domain.ProjectContext) error {
+	if index == nil {
+		return nil
+	}
+	if index.Status != "" || len(index.Authority) != 0 || len(index.Decisions) != 0 || len(index.CheckpointDelta) != 0 {
+		return errors.New("project context acceptance, status, authority, decisions, and checkpoints are coordinator-resolved; they cannot be authored")
+	}
+	for _, ref := range index.References {
+		if ref.Status != "" || ref.Authority != "" || ref.Acceptance != nil || ref.Binding != nil {
+			return fmt.Errorf("project context reference %q acceptance, status, authority, receipt, and binding are coordinator-resolved", ref.ID)
+		}
+	}
+	candidate := *index
+	candidate.Status = domain.ProjectContextPinned
+	candidate.Authority = []string{"coordinator:unresolved"}
+	candidate.References = append([]domain.ProjectContextReference(nil), index.References...)
+	for n := range candidate.References {
+		candidate.References[n].Status = domain.ProjectContextPinned
+		candidate.References[n].Authority = "coordinator:unresolved"
+		if candidate.References[n].Kind == domain.ContextReferenceExecution {
+			candidate.References[n].Acceptance = &domain.ProjectContextAcceptance{
+				GateID: "unresolved", DecisionID: "unresolved", EvidenceSnapshotID: "unresolved",
+			}
+		}
+	}
+	return domain.ValidateProjectContext(&candidate)
+}
+
 func validateManifestTask(name string, task ManifestTask, tasks map[string]ManifestTask) error {
 	prefix := "task " + name
 	if err := directoryresource.ValidateRequests(task.Directories); err != nil {
@@ -505,7 +533,7 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 	if err := validateNonEmptyUnique(prefix+" resource lock", task.ResourceLocks); err != nil {
 		return err
 	}
-	if err := domain.ValidateProjectContext(task.Context); err != nil {
+	if err := validateAuthoredProjectContext(task.Context); err != nil {
 		return fmt.Errorf("%s: %w", prefix, err)
 	}
 

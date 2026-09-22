@@ -169,7 +169,7 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 	if err != nil {
 		return IngestedBundle{}, fmt.Errorf("ingest sink: %w", err)
 	}
-	if err = i.retainExternalInputs(ctx, manifest, &records); err != nil {
+	if err = i.retainExternalInputs(ctx, manifest, &records, runID); err != nil {
 		return IngestedBundle{}, fmt.Errorf("ingest external inputs: %w", err)
 	}
 	finalDir := filepath.Join(workflowsRoot, workflowID)
@@ -346,7 +346,7 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 		}
 		records.Tasks = append(records.Tasks, domain.Task{
 			DirectoryBindings: directoryresource.CloneBindings(directoryBindings[name]),
-			ID:                taskID, WorkflowID: workflowID, Name: name, Class: taskManifest.Class,
+			ID:                taskID, RunID: runID, WorkflowID: workflowID, Name: name, Class: taskManifest.Class,
 			Needs: localNeeds, ExternalNeeds: externalNeeds, PromptArtifactID: promptArtifact.ID,
 			InputArtifactIDs: append([]string(nil), taskInputIDs...), DependencyInputs: cloneStringSlices(taskManifest.InputsFrom),
 			Context: taskManifest.Context, Outputs: outputs, Verification: append([]string(nil), taskManifest.Verify...),

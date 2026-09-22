@@ -18,10 +18,14 @@ type coordinatorRecordLoader interface {
 	LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRecords, error)
 }
 
+type projectContextAcceptanceLoader interface {
+	LoadSupervisionProjection(context.Context, string) (sqlite.SupervisionProjection, error)
+}
+
 // retainExternalInputs resolves cross-run inputs while accepting the campaign.
 // The consumer owns immutable reference metadata; the source bytes and provenance
 // remain under the successful producer and are never selected from a mutable cache.
-func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manifest, records *sqlite.CoordinatorRecords) error {
+func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manifest, records *sqlite.CoordinatorRecords, targetRunID string) error {
 	needsExternal := false
 	for _, task := range manifest.Tasks {
 		for producer := range task.InputsFrom {
@@ -41,16 +45,8 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 	if err != nil {
 		return fmt.Errorf("load external input custody: %w", err)
 	}
-	taskByName := make(map[string]*domain.Task, len(records.Tasks))
-	for index := range records.Tasks {
-		taskByName[records.Tasks[index].Name] = &records.Tasks[index]
-	}
 	for consumerName, authored := range manifest.Tasks {
-		consumer := taskByName[consumerName]
-		if consumer == nil {
-			return fmt.Errorf("external input consumer %q is unavailable", consumerName)
-		}
-		consumerRunID, err := projectContextConsumerRunID(*consumer, records.WorkflowRuns)
+		consumer, consumerRunID, err := exactExternalInputConsumer(records, targetRunID, consumerName)
 		if err != nil {
 			return fmt.Errorf("external input consumer %q: %w", consumerName, err)
 		}
@@ -114,7 +110,11 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 				reference.AttemptID = ""
 				reference.Kind = domain.ArtifactInput
 				namespace := externalProducerNamespace(ref.RunID, producerTask)
-				if err := bindExternalProjectContext(consumer.Context, ref.RunID, producerTask.ID, observation.AttemptID, found[0], reference, namespace); err != nil {
+				acceptance, err := i.resolveExternalAcceptance(ctx, consumer.Context, ref.RunID, producerTask.ID, observation.AttemptID, found[0])
+				if err != nil {
+					return fmt.Errorf("external input %s/%s acceptance: %w", producer, name, err)
+				}
+				if err := bindExternalProjectContext(consumer.Context, ref.RunID, producerTask.ID, observation.AttemptID, found[0], reference, namespace, acceptance); err != nil {
 					return fmt.Errorf("external input %s/%s context: %w", producer, name, err)
 				}
 				records.Artifacts = append(records.Artifacts, reference)
@@ -134,7 +134,55 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 	return nil
 }
 
+func exactExternalInputConsumer(records *sqlite.CoordinatorRecords, runID, name string) (*domain.Task, string, error) {
+	var run *domain.WorkflowRun
+	for index := range records.WorkflowRuns {
+		if records.WorkflowRuns[index].ID == runID {
+			if run != nil {
+				return nil, "", errors.New("exact target run identity is duplicated")
+			}
+			run = &records.WorkflowRuns[index]
+		}
+	}
+	if run == nil {
+		return nil, "", errors.New("exact target run is unavailable")
+	}
+	var consumer *domain.Task
+	if run.Graph != nil {
+		for index := range run.Graph.Tasks {
+			if run.Graph.Tasks[index].Name == name {
+				if consumer != nil {
+					return nil, "", errors.New("exact target graph has duplicate task names")
+				}
+				consumer = &run.Graph.Tasks[index]
+			}
+		}
+	} else {
+		for index := range records.Tasks {
+			candidate := &records.Tasks[index]
+			if candidate.WorkflowID == run.WorkflowID && candidate.RunID == run.ID && candidate.Name == name {
+				if consumer != nil {
+					return nil, "", errors.New("exact target run has duplicate task names")
+				}
+				consumer = candidate
+			}
+		}
+	}
+	if consumer == nil {
+		return nil, "", errors.New("task is unavailable in exact target run projection")
+	}
+	return consumer, run.ID, nil
+}
+
 func projectContextConsumerRunID(task domain.Task, runs []domain.WorkflowRun) (string, error) {
+	if task.RunID != "" {
+		for _, run := range runs {
+			if run.ID == task.RunID && run.WorkflowID == task.WorkflowID {
+				return run.ID, nil
+			}
+		}
+		return "", errors.New("exact target run is unavailable")
+	}
 	var matched string
 	for _, run := range runs {
 		if run.WorkflowID != task.WorkflowID {
@@ -151,7 +199,71 @@ func projectContextConsumerRunID(task domain.Task, runs []domain.WorkflowRun) (s
 	return matched, nil
 }
 
-func bindExternalProjectContext(index *domain.ProjectContext, runID, taskID, attemptID string, source, retained domain.Artifact, namespace string) error {
+func (i BundleIngester) resolveExternalAcceptance(
+	ctx context.Context,
+	index *domain.ProjectContext,
+	runID, taskID, attemptID string,
+	artifact domain.Artifact,
+) (*domain.ProjectContextAcceptance, error) {
+	if index == nil {
+		return nil, nil
+	}
+	uri := "execution:" + runID + "/" + taskID + "/" + attemptID + "/" + artifact.ID
+	needed := false
+	for _, ref := range index.References {
+		if ref.Kind == domain.ContextReferenceExecution && ref.URI == uri {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return nil, nil
+	}
+	loader, ok := i.Store.(projectContextAcceptanceLoader)
+	if !ok {
+		return nil, errors.New("accepted gate receipt custody is unavailable")
+	}
+	projection, err := loader.LoadSupervisionProjection(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("load accepted gate receipt: %w", err)
+	}
+	digestMatches := func(recorded string) bool {
+		recorded = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(recorded)), "sha256:")
+		return recorded == strings.ToLower(artifact.SHA256)
+	}
+	var matches []domain.ProjectContextAcceptance
+	for _, gate := range projection.Gates {
+		if gate.State != domain.GateAccepted || gate.EvidenceSnapshotID == "" || !gate.Definition.Observes(taskID) {
+			continue
+		}
+		for _, decision := range projection.Decisions {
+			if decision.RunID != runID || decision.GateID != gate.Definition.ID ||
+				decision.Outcome != domain.GateDecisionAccept ||
+				decision.Evidence.ID != gate.EvidenceSnapshotID {
+				continue
+			}
+			for _, producer := range decision.Evidence.Producers {
+				if producer.TaskID != taskID || producer.AttemptID != attemptID {
+					continue
+				}
+				for _, digest := range producer.ArtifactDigests {
+					if digest.ArtifactID == artifact.ID && digestMatches(digest.Digest) {
+						matches = append(matches, domain.ProjectContextAcceptance{
+							GateID: gate.Definition.ID, DecisionID: decision.ID,
+							EvidenceSnapshotID: decision.Evidence.ID,
+						})
+					}
+				}
+			}
+		}
+	}
+	if len(matches) != 1 {
+		return nil, fmt.Errorf("source artifact has %d current accepted gate receipts; want exactly one", len(matches))
+	}
+	return &matches[0], nil
+}
+
+func bindExternalProjectContext(index *domain.ProjectContext, runID, taskID, attemptID string, source, retained domain.Artifact, namespace string, acceptance *domain.ProjectContextAcceptance) error {
 	if index == nil {
 		return nil
 	}
@@ -168,10 +280,18 @@ func bindExternalProjectContext(index *domain.ProjectContext, runID, taskID, att
 		if !strings.EqualFold(ref.Revision, source.SHA256) {
 			return fmt.Errorf("execution reference %q revision %q does not match retained digest %q", uri, ref.Revision, source.SHA256)
 		}
+		if acceptance == nil {
+			return fmt.Errorf("execution reference %q has no accepted gate receipt", uri)
+		}
+		ref.Status = domain.ProjectContextAccepted
+		ref.Authority = "gate-decision:" + acceptance.DecisionID
+		ref.Acceptance = acceptance
 		ref.Binding = &domain.ProjectContextArtifactBinding{
 			ArtifactID: retained.ID, Path: "dependencies/" + namespace + "/" + filepath.ToSlash(source.Name), SHA256: source.SHA256,
 			SourceRunID: runID, SourceTaskID: taskID, SourceAttemptID: attemptID, SourceArtifactID: source.ID,
 		}
+		index.Status = domain.ProjectContextAccepted
+		index.Authority = []string{"gate-decision:" + acceptance.DecisionID}
 		matched = true
 	}
 	return nil

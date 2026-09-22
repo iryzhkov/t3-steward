@@ -35,6 +35,7 @@ func validatePackageProjectContext(pkg ExecutionPackage) error {
 	for _, ref := range index.References {
 		refs[ref.ID] = ref
 	}
+	validated := make(map[string]bool, len(index.RequiredReferences))
 	for _, id := range index.RequiredReferences {
 		ref := refs[id]
 		if ref.Binding == nil {
@@ -42,6 +43,18 @@ func validatePackageProjectContext(pkg ExecutionPackage) error {
 		}
 		if err := validateContextBinding(pkg, ref); err != nil {
 			return fmt.Errorf("project context: required reference %q: %w", id, err)
+		}
+		validated[id] = true
+	}
+	for _, ref := range index.References {
+		if ref.Kind != domain.ContextReferenceExecution || validated[ref.ID] {
+			continue
+		}
+		if ref.Binding == nil {
+			return fmt.Errorf("project context: execution reference %q has no retained artifact binding", ref.ID)
+		}
+		if err := validateContextBinding(pkg, ref); err != nil {
+			return fmt.Errorf("project context: execution reference %q: %w", ref.ID, err)
 		}
 	}
 	return nil
@@ -74,6 +87,9 @@ func validateContextBinding(pkg ExecutionPackage, ref domain.ProjectContextRefer
 		return fmt.Errorf("retained artifact %q has %d package matches; want exactly one", binding.ArtifactID, matches)
 	}
 	hasSource := binding.SourceRunID != ""
+	if ref.Kind == domain.ContextReferenceExecution && (!hasSource || matchedProvenance == nil) {
+		return errors.New("execution reference requires retained dependency provenance")
+	}
 	if !hasSource {
 		if matchedProvenance != nil {
 			return errors.New("source provenance is omitted for a cross-run dependency")
