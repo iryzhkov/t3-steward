@@ -1,0 +1,1 @@
+{"type":"thread.token-usage.updated","eventId":"claude-event","providerInstanceId":"claude-agent","threadId":"thread-claude","createdAt":"2026-09-22T18:00:00Z","raw":{"method":"claude/result","payload":{"modelUsage":{"claude-sonnet":{"inputTokens":11,"outputTokens":7,"cacheReadInputTokens":5,"cacheCreationInputTokens":3,"costUSD":0.25,"canonicalModel":"claude-sonnet-4"}}}}}
