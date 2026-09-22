@@ -99,6 +99,9 @@ func (c CoordinatorSupervisionStore) LoadSupervisionActivationState(ctx context.
 			return SupervisionActivationState{}, fmt.Errorf("decode supervision event %q: %w", row.ID, err)
 		}
 		event.Sequence = row.Sequence
+		for _, purpose := range row.AcknowledgedPurposes {
+			event.AcknowledgedPurposes = append(event.AcknowledgedPurposes, domain.RecoveryActivationPurpose(purpose))
+		}
 		state.Pending = append(state.Pending, event)
 	}
 	for _, row := range rows.Outbox {
@@ -132,6 +135,8 @@ func (c CoordinatorSupervisionStore) CommitSupervisionActivation(ctx context.Con
 		Activation:             commit.Activation,
 		ConsumedThrough:        commit.ConsumedThrough,
 		CursorAdvanced:         commit.CursorAdvanced,
+		AcknowledgedEventIDs:   commit.AcknowledgedEventIDs,
+		AcknowledgementPurpose: string(commit.AcknowledgementPurpose),
 		Outbox:                 rows,
 		Receipt:                receipt,
 		RequestID:              commit.RequestID,

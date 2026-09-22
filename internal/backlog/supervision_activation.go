@@ -103,6 +103,8 @@ type SupervisionEvent struct {
 	GraphRevision int64                   `json:"graphRevision,omitempty"`
 	Artifacts     []domain.ArtifactDigest `json:"artifacts,omitempty"`
 	OccurredAt    time.Time               `json:"occurredAt"`
+	// AcknowledgedPurposes is store metadata, never part of the immutable event.
+	AcknowledgedPurposes []domain.RecoveryActivationPurpose `json:"-"`
 }
 
 // Validate rejects an event that cannot be ordered, deduplicated or explained.
@@ -244,6 +246,30 @@ func CoalesceSupervisionEvents(runID string, cursor int64, events []SupervisionE
 	return inbox
 }
 
+func supervisionEventsForPurpose(events []SupervisionEvent, purpose domain.RecoveryActivationPurpose) []SupervisionEvent {
+	selected := make([]SupervisionEvent, 0, len(events))
+	for _, event := range events {
+		eventPurpose := domain.RecoveryActivationPurpose("")
+		if event.Kind == TriggerTaskJudgmentRequired {
+			eventPurpose = domain.RecoveryActivationRepair
+		}
+		if eventPurpose != purpose || eventAcknowledgedFor(event, purpose) {
+			continue
+		}
+		selected = append(selected, event)
+	}
+	return selected
+}
+
+func eventAcknowledgedFor(event SupervisionEvent, purpose domain.RecoveryActivationPurpose) bool {
+	for _, acknowledged := range event.AcknowledgedPurposes {
+		if acknowledged == purpose {
+			return true
+		}
+	}
+	return false
+}
+
 func appendDistinct(values []string, value string) []string {
 	if strings.TrimSpace(value) == "" {
 		return values
@@ -364,8 +390,9 @@ type SupervisionActivationState struct {
 // ActivationSignal is one event applied to one run's activation, with the facts
 // only the caller's transaction can establish.
 type ActivationSignal struct {
-	Event domain.ActivationEvent
-	Actor domain.Actor
+	Event   domain.ActivationEvent
+	Actor   domain.Actor
+	Purpose domain.RecoveryActivationPurpose
 	// IncidentID names the incident this signal belongs to. Escalation
 	// deduplicates on it, and automatic recovery is bounded per incident.
 	IncidentID string
@@ -438,11 +465,13 @@ type ActivationPlan struct {
 	// ConsumedThrough is the high-water mark the activation is bound to, and
 	// CursorAdvanced reports that this commit records it as consumed. They are
 	// written with the outcome or not at all.
-	ConsumedThrough int64
-	CursorAdvanced  bool
-	Outbox          []SupervisionOutboxEntry
-	Dispatch        *ActivationDispatch
-	Receipt         *ContinuationReceipt
+	ConsumedThrough        int64
+	CursorAdvanced         bool
+	AcknowledgedEventIDs   []string
+	AcknowledgementPurpose domain.RecoveryActivationPurpose
+	Outbox                 []SupervisionOutboxEntry
+	Dispatch               *ActivationDispatch
+	Receipt                *ContinuationReceipt
 	// Escalated reports that this plan asks a human to act.
 	Escalated bool
 }
@@ -471,7 +500,27 @@ func PlanActivation(state SupervisionActivationState, signal ActivationSignal, n
 			activation.Epoch = 1
 		}
 	}
-	inbox := CoalesceSupervisionEvents(record.RunID, record.EventCursor, state.Pending)
+	purpose := activation.Purpose
+	if signal.Event == domain.ActivationEventTriggerFired {
+		purpose = signal.Purpose
+	}
+	cursor := int64(0)
+	if purpose == "" {
+		// EventCursor remains the compatibility projection for legacy reviewer
+		// activations. Repair ownership is tracked only by explicit acknowledgements.
+		cursor = record.EventCursor
+	}
+	selected := supervisionEventsForPurpose(state.Pending, purpose)
+	if signal.Event != domain.ActivationEventTriggerFired && activation.ConsumedEventCursor > 0 {
+		bound := selected[:0]
+		for _, event := range selected {
+			if event.Sequence <= activation.ConsumedEventCursor {
+				bound = append(bound, event)
+			}
+		}
+		selected = bound
+	}
+	inbox := CoalesceSupervisionEvents(record.RunID, cursor, selected)
 	result, err := domain.ActivationTransition(domain.ActivationTransitionInput{
 		Activation:                activation,
 		Event:                     signal.Event,
@@ -512,6 +561,7 @@ func PlanActivation(state SupervisionActivationState, signal ActivationSignal, n
 				recovered = 0
 			}
 			next = newActivation(record, result.Epoch, inbox.HighWaterMark, recovered)
+			next.Purpose = purpose
 			if len(inbox.Events) != 0 {
 				next.ReadyAt = inbox.Events[0].OccurredAt.UTC()
 				next.ReadyTieID = inbox.Events[0].ID
@@ -618,8 +668,12 @@ func PlanActivation(state SupervisionActivationState, signal ActivationSignal, n
 	}
 	if next.Outcome == domain.ActivationOutcomeDecided || next.Outcome == domain.ActivationOutcomeNoDecision ||
 		next.Outcome == domain.ActivationOutcomeDecidedByOperator || next.Outcome == domain.ActivationOutcomeExpired {
-		record.EventCursor = next.ConsumedEventCursor
+		if next.Purpose == "" {
+			record.EventCursor = next.ConsumedEventCursor
+		}
 		plan.CursorAdvanced = true
+		plan.AcknowledgedEventIDs = inbox.EventIDs()
+		plan.AcknowledgementPurpose = next.Purpose
 	}
 	plan.ConsumedThrough = next.ConsumedEventCursor
 
@@ -737,6 +791,8 @@ type SupervisionActivationCommit struct {
 	Activation             domain.Activation
 	ConsumedThrough        int64
 	CursorAdvanced         bool
+	AcknowledgedEventIDs   []string
+	AcknowledgementPurpose domain.RecoveryActivationPurpose
 	Outbox                 []SupervisionOutboxEntry
 	Receipt                *ContinuationReceipt
 	RequestID              string
@@ -825,6 +881,8 @@ func (s SupervisionActivationService) Advance(ctx context.Context, runID string,
 		Activation:             plan.Activation,
 		ConsumedThrough:        plan.ConsumedThrough,
 		CursorAdvanced:         plan.CursorAdvanced,
+		AcknowledgedEventIDs:   plan.AcknowledgedEventIDs,
+		AcknowledgementPurpose: plan.AcknowledgementPurpose,
 		Outbox:                 plan.Outbox,
 		Receipt:                plan.Receipt,
 		RequestID:              signal.RequestID,

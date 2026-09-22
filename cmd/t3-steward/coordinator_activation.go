@@ -482,16 +482,13 @@ func (c coordinatorSupervision) activationSignal(
 }
 
 func reviewerSupervisionEvents(events []backlog.SupervisionEvent) []backlog.SupervisionEvent {
+	selected := make([]backlog.SupervisionEvent, 0, len(events))
 	for _, event := range events {
-		if event.Kind == backlog.TriggerTaskJudgmentRequired {
-			// Recovery-v1 has a separately routed repair executor. Until that
-			// role-scoped dispatcher lands, leave the entire inbox pending:
-			// the scalar event cursor must never consume a repair event through
-			// a review activation.
-			return nil
+		if event.Kind != backlog.TriggerTaskJudgmentRequired {
+			selected = append(selected, event)
 		}
 	}
-	return events
+	return selected
 }
 
 // firstIncidentOfInbox names the incident the wake belongs to, which is what

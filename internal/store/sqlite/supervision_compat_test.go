@@ -137,6 +137,7 @@ var supervisionTables = []string{
 	"coordinator_supervision_incidents",
 	"coordinator_supervision_outbox",
 	"coordinator_supervision_inbox",
+	"coordinator_supervision_inbox_ack",
 	"coordinator_supervision_receipts",
 }
 
@@ -168,7 +169,7 @@ func TestSchemaSeventeenMigratesForwardWithPreSupervisionRuns(t *testing.T) {
 		t.Fatalf("migrate %d to %d: %v", preSupervisionSchemaVersion, currentSchemaVersion, err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if version := schemaVersionOf(t, store); version != currentSchemaVersion || currentSchemaVersion != 21 {
+	if version := schemaVersionOf(t, store); version != currentSchemaVersion || currentSchemaVersion != 22 {
 		t.Fatalf("migrated schema version = %d, current = %d", version, currentSchemaVersion)
 	}
 	for _, table := range supervisionTables {

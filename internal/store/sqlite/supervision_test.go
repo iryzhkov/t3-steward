@@ -138,7 +138,7 @@ func TestSupervisionSchemaMigratesForwardAndRefusesNewerDatabase(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != currentSchemaVersion || currentSchemaVersion != 21 {
+	if version != currentSchemaVersion || currentSchemaVersion != 22 {
 		t.Fatalf("schema version = %d, current = %d", version, currentSchemaVersion)
 	}
 	for _, table := range []string{
@@ -150,6 +150,7 @@ func TestSupervisionSchemaMigratesForwardAndRefusesNewerDatabase(t *testing.T) {
 		"coordinator_supervision_incidents",
 		"coordinator_supervision_outbox",
 		"coordinator_supervision_inbox",
+		"coordinator_supervision_inbox_ack",
 		"coordinator_supervision_receipts",
 	} {
 		var name string
@@ -178,7 +179,7 @@ func TestSupervisionSchemaMigratesForwardAndRefusesNewerDatabase(t *testing.T) {
 	}
 
 	// An older binary refuses a newer database rather than opening it.
-	if _, err := store.db.Exec(`INSERT INTO schema_version(version) VALUES (22)`); err != nil {
+	if _, err := store.db.Exec(`INSERT INTO schema_version(version) VALUES (23)`); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Migrate(); err == nil || !strings.Contains(err.Error(), "newer than supported") {

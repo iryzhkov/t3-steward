@@ -399,6 +399,7 @@ var versionedMigrations = []struct {
 	{19, coordinatorMigrationV19},
 	{20, coordinatorMigrationV20},
 	{21, coordinatorMigrationV21},
+	{22, coordinatorMigrationV22},
 }
 
 func (s *Store) applyVersionedMigration(version int, ddl string) error {
