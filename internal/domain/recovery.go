@@ -1,8 +1,11 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -85,6 +88,19 @@ type RecoveryDiagnosticIdentity struct {
 	StrategyFingerprint string `json:"strategyFingerprint"`
 }
 
+// RecoveryStrategyFingerprint binds a strategy to retained content. Artifact
+// identities are provenance only; changing an ID cannot make identical bytes a
+// new recovery approach.
+func RecoveryStrategyFingerprint(instruction ArtifactDigest, checkpoints []ArtifactDigest) string {
+	parts := []string{strings.TrimSpace(instruction.Digest)}
+	for _, checkpoint := range checkpoints {
+		parts = append(parts, strings.TrimSpace(checkpoint.Digest))
+	}
+	sort.Strings(parts[1:])
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+
 type RepairAttemptSupplement struct {
 	OperationID         string                     `json:"operationId"`
 	IncidentID          string                     `json:"incidentId"`
@@ -121,18 +137,22 @@ type RecoveryRetryReceipt struct {
 }
 
 type RecoveryIncident struct {
-	Contract       RecoveryContractVersion    `json:"contract"`
-	Purpose        RecoveryActivationPurpose  `json:"purpose"`
-	Owner          RecoveryOwner              `json:"owner"`
-	State          RecoveryState              `json:"state"`
-	NextAction     RecoveryNextAction         `json:"nextAction"`
-	AttemptBudget  int                        `json:"attemptBudget"`
-	AttemptsUsed   int                        `json:"attemptsUsed"`
-	Deadline       time.Time                  `json:"deadline"`
-	LastProgressAt time.Time                  `json:"lastProgressAt"`
-	Diagnostic     RecoveryDiagnosticIdentity `json:"diagnostic"`
-	WaitReason     string                     `json:"waitReason,omitempty"`
-	NextAttemptAt  *time.Time                 `json:"nextAttemptAt,omitempty"`
+	Contract       RecoveryContractVersion   `json:"contract"`
+	Purpose        RecoveryActivationPurpose `json:"purpose"`
+	Owner          RecoveryOwner             `json:"owner"`
+	State          RecoveryState             `json:"state"`
+	NextAction     RecoveryNextAction        `json:"nextAction"`
+	AttemptBudget  int                       `json:"attemptBudget"`
+	AttemptsUsed   int                       `json:"attemptsUsed"`
+	Deadline       time.Time                 `json:"deadline"`
+	LastProgressAt time.Time                 `json:"lastProgressAt"`
+	// RootDiagnostic is immutable evidence from the failure that opened the episode.
+	RootDiagnostic   RecoveryDiagnosticIdentity `json:"rootDiagnostic"`
+	Diagnostic       RecoveryDiagnosticIdentity `json:"diagnostic"`
+	CurrentAttemptID string                     `json:"currentAttemptId,omitempty"`
+	ExhaustionReason string                     `json:"exhaustionReason,omitempty"`
+	WaitReason       string                     `json:"waitReason,omitempty"`
+	NextAttemptAt    *time.Time                 `json:"nextAttemptAt,omitempty"`
 }
 
 func NewRecoveryIncident(config RecoveryConfig, diagnostic RecoveryDiagnosticIdentity, now time.Time) *RecoveryIncident {
@@ -145,6 +165,7 @@ func NewRecoveryIncident(config RecoveryConfig, diagnostic RecoveryDiagnosticIde
 		AttemptBudget:  config.MaxAttemptsPerIncident,
 		Deadline:       now.UTC().Add(config.IncidentDeadline),
 		LastProgressAt: now.UTC(),
+		RootDiagnostic: diagnostic,
 		Diagnostic:     diagnostic,
 	}
 }

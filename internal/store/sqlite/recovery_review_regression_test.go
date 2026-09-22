@@ -51,6 +51,7 @@ func prepareRecoveryFence(t *testing.T, store *Store, runID, attemptID string, n
 		Route:            domain.ProviderRoute{ProviderInstanceID: "reviewer", Model: "review-model"},
 		PromptArtifactID: "review-prompt", MaxActivations: 2, MaxTurnsPerActivation: 2,
 		ActivationDeadline: time.Hour, Recovery: &config,
+		Escalation: domain.SupervisionEscalation{NotifyThread: true, ThreadID: "thread"},
 	}
 	if _, err := store.PutSupervision(context.Background(), SupervisionMaterialization{Record: domain.SupervisionRecord{RunID: runID, Config: supervision}}); err != nil {
 		t.Fatal(err)

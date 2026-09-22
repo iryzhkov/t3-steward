@@ -76,6 +76,10 @@ func (s *Store) OpenRecoveryIncident(ctx context.Context, request RecoveryIncide
 	if openedAt.IsZero() {
 		openedAt = s.now().UTC()
 	}
+	request.Recovery.CurrentAttemptID = request.SourceAttemptID
+	if request.Recovery.RootDiagnostic == (domain.RecoveryDiagnosticIdentity{}) {
+		request.Recovery.RootDiagnostic = request.Recovery.Diagnostic
+	}
 	incident := domain.ReviewIncident{
 		ID: request.IncidentID, RunID: request.RunID, SourceEventID: request.EventID,
 		SourceTaskID: request.SourceTaskID, SourceAttemptID: request.SourceAttemptID,
