@@ -101,13 +101,14 @@ const (
 	PackageCapabilitySupervisionEvidence = "supervision-evidence-v1"
 	PackageCapabilityRecoveryRetry       = "recovery-retry-v1"
 	PackageCapabilityRecoverySupplement  = "recovery-supplement-v1"
+	PackageCapabilityProjectContext      = "project-context-v1"
 )
 
 // SupportedPackageCapabilities is what this build implements. A package that
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement}
+	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext}
 }
 
 // PreflightStep is one declared step the worker runs after the workspace is
@@ -126,25 +127,26 @@ type RecoveryExecutionContext struct {
 }
 
 type ExecutionPackage struct {
-	Timeout          time.Duration        `json:"timeout,omitempty"`
-	GraphRevision    int64                `json:"graphRevision,omitempty"`
-	TaskRevision     int64                `json:"taskRevision,omitempty"`
-	TaskDigest       string               `json:"taskDigest,omitempty"`
-	Version          int                  `json:"version"`
-	ID               string               `json:"id"`
-	CoordinatorID    string               `json:"coordinatorId"`
-	CoordinatorEpoch int64                `json:"coordinatorEpoch"`
-	WorkerID         string               `json:"workerId"`
-	WorkerEpoch      string               `json:"workerEpoch"`
-	Identity         ExecutionIdentity    `json:"identity"`
-	Class            domain.TaskClass     `json:"class"`
-	Prompt           ArtifactObject       `json:"prompt"`
-	StaticInputs     []ArtifactObject     `json:"staticInputs,omitempty"`
-	Dependencies     []DependencyInput    `json:"dependencies,omitempty"`
-	Route            domain.ProviderRoute `json:"route"`
-	Environment      EnvironmentReference `json:"environment"`
-	Verification     []string             `json:"verification,omitempty"`
-	Preflight        []PreflightStep      `json:"preflight,omitempty"`
+	Timeout          time.Duration          `json:"timeout,omitempty"`
+	GraphRevision    int64                  `json:"graphRevision,omitempty"`
+	TaskRevision     int64                  `json:"taskRevision,omitempty"`
+	TaskDigest       string                 `json:"taskDigest,omitempty"`
+	Version          int                    `json:"version"`
+	ID               string                 `json:"id"`
+	CoordinatorID    string                 `json:"coordinatorId"`
+	CoordinatorEpoch int64                  `json:"coordinatorEpoch"`
+	WorkerID         string                 `json:"workerId"`
+	WorkerEpoch      string                 `json:"workerEpoch"`
+	Identity         ExecutionIdentity      `json:"identity"`
+	Class            domain.TaskClass       `json:"class"`
+	Prompt           ArtifactObject         `json:"prompt"`
+	StaticInputs     []ArtifactObject       `json:"staticInputs,omitempty"`
+	Dependencies     []DependencyInput      `json:"dependencies,omitempty"`
+	Context          *domain.ProjectContext `json:"context,omitempty"`
+	Route            domain.ProviderRoute   `json:"route"`
+	Environment      EnvironmentReference   `json:"environment"`
+	Verification     []string               `json:"verification,omitempty"`
+	Preflight        []PreflightStep        `json:"preflight,omitempty"`
 	// RequiredCapabilities names what a worker must implement to run this
 	// package. The manifest content address already stops an older build from
 	// silently dropping a field it cannot decode; this list makes the refusal
@@ -354,6 +356,9 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 	if err := validatePackageCapabilities(pkg); err != nil {
 		return err
 	}
+	if err := validatePackageProjectContext(pkg); err != nil {
+		return err
+	}
 	if err := validateSupervisionActivation(pkg); err != nil {
 		return err
 	}
@@ -378,6 +383,9 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 		if capability == PackageCapabilityRecoveryRetry && (pkg.Supervision == nil || pkg.Supervision.Purpose != "repair") {
 			return errors.New("execution package: only a repair activation may require recovery retry")
 		}
+		if capability == PackageCapabilityProjectContext && pkg.Context == nil {
+			return errors.New("execution package: project context capability requires a context index")
+		}
 		if !slices.Contains(supported, capability) {
 			return fmt.Errorf("execution package: unsupported required capability %q", capability)
 		}
@@ -391,6 +399,9 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 	}
 	if _, ok := declared[PackageCapabilityRecoverySupplement]; pkg.Recovery != nil && !ok {
 		return errors.New("execution package: recovery context requires the recovery supplement capability")
+	}
+	if _, ok := declared[PackageCapabilityProjectContext]; pkg.Context != nil && !ok {
+		return errors.New("execution package: project context requires the project context capability")
 	}
 	if pkg.Recovery != nil {
 		if pkg.Supervision != nil || pkg.Recovery.IncidentID == "" || pkg.Recovery.InstructionPath != "inputs/recovery/instructions.md" {

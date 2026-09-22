@@ -85,6 +85,7 @@ type ManifestTask struct {
 	PromptFile    string                      `yaml:"prompt_file"`
 	Needs         ManifestNeeds               `yaml:"needs"`
 	InputsFrom    map[string][]string         `yaml:"inputs_from"`
+	Context       *domain.ProjectContext      `yaml:"context"`
 	Outputs       []string                    `yaml:"outputs"`
 	Commits       []ManifestCommit            `yaml:"commits"`
 	Verify        []string                    `yaml:"verify"`
@@ -503,6 +504,9 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 	}
 	if err := validateNonEmptyUnique(prefix+" resource lock", task.ResourceLocks); err != nil {
 		return err
+	}
+	if err := domain.ValidateProjectContext(task.Context); err != nil {
+		return fmt.Errorf("%s: %w", prefix, err)
 	}
 
 	needs := make(map[string]struct{}, len(task.Needs))

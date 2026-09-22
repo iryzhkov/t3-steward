@@ -164,6 +164,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		StaticInputs: staticInputs,
 		Recovery:     recovery,
 		Dependencies: dependencies,
+		Context:      state.task.Context,
 		Route:        cloneProviderRoute(assignment.Route),
 		Environment: workerproto.EnvironmentReference{
 			DirectoryBindings: directoryresource.CloneBindings(state.task.DirectoryBindings),
@@ -254,6 +255,9 @@ func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context,
 	}
 	if pkg.Recovery != nil {
 		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityRecoverySupplement)
+	}
+	if pkg.Context != nil {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityProjectContext)
 	}
 	if len(pkg.RequiredCapabilities) == 0 {
 		return nil

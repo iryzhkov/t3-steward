@@ -50,6 +50,10 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 		if consumer == nil {
 			return fmt.Errorf("external input consumer %q is unavailable", consumerName)
 		}
+		consumerRunID, err := projectContextConsumerRunID(*consumer, records.WorkflowRuns)
+		if err != nil {
+			return fmt.Errorf("external input consumer %q: %w", consumerName, err)
+		}
 		for producer, names := range authored.InputsFrom {
 			if !strings.Contains(producer, "/") {
 				continue
@@ -105,13 +109,17 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 				}
 				reference := found[0]
 				reference.ID = i.newID("input")
-				reference.WorkflowRunID = records.WorkflowRuns[0].ID
+				reference.WorkflowRunID = consumerRunID
 				reference.TaskID = consumer.ID
 				reference.AttemptID = ""
 				reference.Kind = domain.ArtifactInput
+				namespace := externalProducerNamespace(ref.RunID, producerTask)
+				if err := bindExternalProjectContext(consumer.Context, ref.RunID, producerTask.ID, observation.AttemptID, found[0], reference, namespace); err != nil {
+					return fmt.Errorf("external input %s/%s context: %w", producer, name, err)
+				}
 				records.Artifacts = append(records.Artifacts, reference)
 				consumer.CarriedInputs = append(consumer.CarriedInputs, domain.CarriedInput{
-					Producer: producerTask.Name, ProducerNamespace: externalProducerNamespace(ref.RunID, producerTask),
+					Producer: producerTask.Name, ProducerNamespace: namespace,
 					ProducerTaskID: producerTask.ID, SourceRunID: ref.RunID,
 					SourceAttemptID: observation.AttemptID, SourceArtifactID: found[0].ID,
 					Name: name, ArtifactID: reference.ID,
@@ -122,6 +130,49 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 		if len(consumer.DependencyInputs) == 0 {
 			consumer.DependencyInputs = nil
 		}
+	}
+	return nil
+}
+
+func projectContextConsumerRunID(task domain.Task, runs []domain.WorkflowRun) (string, error) {
+	var matched string
+	for _, run := range runs {
+		if run.WorkflowID != task.WorkflowID {
+			continue
+		}
+		if matched != "" && matched != run.ID {
+			return "", errors.New("target run identity is ambiguous")
+		}
+		matched = run.ID
+	}
+	if matched == "" {
+		return "", errors.New("target run is unavailable")
+	}
+	return matched, nil
+}
+
+func bindExternalProjectContext(index *domain.ProjectContext, runID, taskID, attemptID string, source, retained domain.Artifact, namespace string) error {
+	if index == nil {
+		return nil
+	}
+	uri := "execution:" + runID + "/" + taskID + "/" + attemptID + "/" + source.ID
+	matched := false
+	for n := range index.References {
+		ref := &index.References[n]
+		if ref.Kind != domain.ContextReferenceExecution || ref.URI != uri {
+			continue
+		}
+		if matched {
+			return fmt.Errorf("execution reference %q is duplicated", uri)
+		}
+		if !strings.EqualFold(ref.Revision, source.SHA256) {
+			return fmt.Errorf("execution reference %q revision %q does not match retained digest %q", uri, ref.Revision, source.SHA256)
+		}
+		ref.Binding = &domain.ProjectContextArtifactBinding{
+			ArtifactID: retained.ID, Path: "dependencies/" + namespace + "/" + filepath.ToSlash(source.Name), SHA256: source.SHA256,
+			SourceRunID: runID, SourceTaskID: taskID, SourceAttemptID: attemptID, SourceArtifactID: source.ID,
+		}
+		matched = true
 	}
 	return nil
 }

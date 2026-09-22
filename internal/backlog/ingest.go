@@ -349,7 +349,7 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 			ID:                taskID, WorkflowID: workflowID, Name: name, Class: taskManifest.Class,
 			Needs: localNeeds, ExternalNeeds: externalNeeds, PromptArtifactID: promptArtifact.ID,
 			InputArtifactIDs: append([]string(nil), taskInputIDs...), DependencyInputs: cloneStringSlices(taskManifest.InputsFrom),
-			Outputs: outputs, Verification: append([]string(nil), taskManifest.Verify...),
+			Context: taskManifest.Context, Outputs: outputs, Verification: append([]string(nil), taskManifest.Verify...),
 			Placement: domain.Placement{
 				Hosts:        append([]string(nil), taskManifest.Placement.Hosts...),
 				Capabilities: append([]string(nil), taskManifest.Placement.Requires...),

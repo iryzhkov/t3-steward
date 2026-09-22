@@ -226,6 +226,9 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		if err := d.writeTaskIdentity(pkg, workspace); err != nil {
 			return "", err
 		}
+		if err := d.writeProjectContext(pkg, workspace); err != nil {
+			return "", err
+		}
 		return workspace, nil
 	}
 	if pkg.Identity.AssignmentEpoch > 1 {
@@ -245,6 +248,9 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	// a scoped execution sees it through the same directory under its own mount
 	// rather than needing a second copy written against a mapped path.
 	if err := d.writeTaskIdentity(pkg, prepared.WorkspaceDir); err != nil {
+		return "", err
+	}
+	if err := d.writeProjectContext(pkg, prepared.WorkspaceDir); err != nil {
 		return "", err
 	}
 	if manager := d.containedManager(pkg); manager != nil {
@@ -403,6 +409,33 @@ func (d *LocalDriver) writeTaskIdentity(pkg workerproto.ExecutionPackage, worksp
 		return fmt.Errorf("restrict task identity: %w", err)
 	}
 	return excludeTaskIdentityFromGit(workspace, directory)
+}
+
+// writeProjectContext materializes the package-signed index for a cold worker.
+// It contains references and decisions, not a mutable transcript or acceptance gate.
+func (d *LocalDriver) writeProjectContext(pkg workerproto.ExecutionPackage, workspace string) error {
+	if pkg.Context == nil {
+		return nil
+	}
+	if err := workerproto.ValidateExecutionPackage(pkg); err != nil {
+		return fmt.Errorf("write project context: %w", err)
+	}
+	content, err := json.MarshalIndent(pkg.Context, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode project context: %w", err)
+	}
+	content = append(content, '\n')
+	path := filepath.Join(workspace, filepath.FromSlash(domain.ProjectContextFile))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create project context directory: %w", err)
+	}
+	if err := os.WriteFile(path, content, 0o444); err != nil {
+		return fmt.Errorf("write project context: %w", err)
+	}
+	if err := os.Chmod(path, 0o444); err != nil {
+		return fmt.Errorf("restrict project context: %w", err)
+	}
+	return nil
 }
 
 // excludeTaskIdentityFromGit keeps the identity record out of the project's
