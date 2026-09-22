@@ -39,7 +39,11 @@ func (c CoordinatorSupervisionStore) SupervisionProjection(ctx context.Context, 
 	if err != nil {
 		return SupervisionProjection{}, err
 	}
-	return SupervisionProjection{Snapshot: snapshot, Incidents: projection.Incidents}, nil
+	failures, err := c.Store.ListCurrentActivationDispatchFailures(ctx, runID)
+	if err != nil {
+		return SupervisionProjection{}, err
+	}
+	return SupervisionProjection{Snapshot: snapshot, Incidents: projection.Incidents, DispatchFailures: failures}, nil
 }
 
 // SubmitterNotifyThread reports the T3 thread the submitter of this run asked
