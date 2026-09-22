@@ -10,9 +10,11 @@ package backlog
 // worker refuses it by name rather than running a review as work.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -147,7 +149,7 @@ func (b CoordinatorOfferBuilder) buildActivationOffer(
 	if state.Activation.Deadline != nil {
 		dispatch.Deadline = state.Activation.Deadline.UTC()
 	}
-	return BuildActivationOffer(ActivationPackageInput{
+	input := ActivationPackageInput{
 		Workflow: workflow, Run: run, Record: state.Record, Activation: state.Activation,
 		Dispatch: dispatch, Attempt: attempt, Assignment: assignment,
 		Triggers: inbox.Triggers,
@@ -163,7 +165,52 @@ func (b CoordinatorOfferBuilder) buildActivationOffer(
 		MaxArtifactBytes:              b.MaxArtifactBytes,
 		MaxTotalBytes:                 b.MaxTotalBytes,
 		Now:                           assignment.CreatedAt,
-	}, expiresAt)
+	}
+	if b.ActivationEvidence == nil {
+		return workerproto.AssignmentOffer{}, &ActivationPackageError{
+			Code:  ActivationPackageErrorEvidenceMissing,
+			Cause: errors.New("coordinator activation evidence custody is not configured"),
+		}
+	}
+	retained, reader, found, err := b.ActivationEvidence.OpenActivationEvidenceSnapshot(
+		ctx, run.ID, state.Activation.ID)
+	if err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
+	if found {
+		defer reader.Close()
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			return workerproto.AssignmentOffer{}, fmt.Errorf("read retained activation evidence: %w", err)
+		}
+		input.Evidence, err = DecodeActivationEvidenceSnapshot(data)
+		if err != nil {
+			return workerproto.AssignmentOffer{}, err
+		}
+		input.EvidenceArtifact = retained
+	} else {
+		object, err := BuildActivationEvidenceForPackage(input)
+		if err != nil {
+			return workerproto.AssignmentOffer{}, err
+		}
+		artifact := ActivationEvidenceArtifact(run.ID, attempt.TaskID, attempt.ID, object, "", assignment.CreatedAt)
+		retained, err := b.ActivationEvidence.EnsureActivationEvidenceSnapshot(ctx,
+			sqlite.ActivationEvidencePublication{
+				CoordinatorEpoch: b.CoordinatorEpoch,
+				ActivationID:     state.Activation.ID, RunID: run.ID,
+				ActivationEpoch: state.Activation.Epoch, GraphRevision: run.GraphRevision,
+				Artifact: artifact,
+			}, bytes.NewReader(object.Data))
+		if err != nil {
+			return workerproto.AssignmentOffer{}, err
+		}
+		input.Evidence, err = DecodeActivationEvidenceSnapshot(object.Data)
+		if err != nil {
+			return workerproto.AssignmentOffer{}, err
+		}
+		input.EvidenceArtifact = retained
+	}
+	return BuildActivationOffer(input, expiresAt)
 }
 
 // ActivationPackageInput is everything the package builder reads. It is plain

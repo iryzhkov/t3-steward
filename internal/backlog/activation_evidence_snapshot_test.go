@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
@@ -95,6 +96,66 @@ func TestActivationEvidenceSnapshotIsStableAndPreservesReviewContract(t *testing
 	if replayed.SHA256 != first.SHA256 || replayed.ID != first.ID {
 		t.Fatalf("replay replaced frozen evidence: got %s/%s want %s/%s",
 			replayed.ID, replayed.SHA256, first.ID, first.SHA256)
+	}
+}
+
+func TestActivationPackageCarriesRetrievableFrozenEvidence(t *testing.T) {
+	now := supervisionTestTime()
+	record := supervisionTestRecord()
+	record.RunID = "run-1"
+	record.Revision = 11
+	record.Config.PromptArtifactID = "overseer-prompt"
+	input := ActivationPackageInput{
+		Workflow:   domain.Workflow{ID: "workflow-1", Project: "project-1"},
+		Run:        domain.WorkflowRun{ID: "run-1", WorkflowID: "workflow-1", GraphRevision: 7},
+		Record:     record,
+		Activation: domain.Activation{ID: "activation-1", RunID: "run-1", Epoch: 2},
+		Dispatch:   ActivationDispatch{Epoch: 2, LeaseToken: "lease-1", LeaseExpiresAt: now.Add(time.Hour)},
+		Attempt: domain.Attempt{
+			ID: "activation-attempt", WorkflowRunID: "run-1", TaskID: "supervision",
+			Revision: 1, SupervisionActivationID: "activation-1", SupervisionActivationEpoch: 2,
+		},
+		Assignment: domain.Assignment{
+			ID: "assignment-1", AttemptID: "activation-attempt",
+			WorkerID: "worker-1", WorkerEpoch: "worker-epoch-1", Epoch: 1,
+			Route:         domain.ProviderRoute{ProviderInstanceID: "codex-main", Model: "gpt-5.6-sol"},
+			DispatchToken: "dispatch-1", CreatedAt: now,
+		},
+		Triggers: []CoalescedTrigger{{Kind: TriggerGateReviewReady, Subject: "gate-1"}},
+		Artifacts: []domain.Artifact{{
+			ID: "overseer-prompt", WorkflowRunID: "run-1", Kind: domain.ArtifactInput,
+			Name: "overseer.md", MediaType: "text/markdown", Size: 10,
+			SHA256: strings.Repeat("a", 64), StoragePath: "objects/aa/prompt",
+		}},
+		SupervisorPrincipal: "supervisor-1",
+		CoordinatorID:       "coordinator-1", CoordinatorEpoch: 1, CatalogRevision: "catalog-1",
+		PrepareTimeout: time.Minute, VerificationTimeout: time.Minute,
+		MaxArtifactBytes: 1 << 20, MaxTotalBytes: 2 << 20, Now: now,
+	}
+	object, err := BuildActivationEvidenceForPackage(input)
+	if err != nil {
+		t.Fatalf("build frozen evidence: %v", err)
+	}
+	input.Evidence, err = DecodeActivationEvidenceSnapshot(object.Data)
+	if err != nil {
+		t.Fatalf("decode frozen evidence: %v", err)
+	}
+	input.EvidenceArtifact = ActivationEvidenceArtifact("run-1", "supervision", "activation-attempt", object, "objects/aa/evidence", now)
+	pkg, err := BuildActivationPackage(input)
+	if err != nil {
+		t.Fatalf("build activation package: %v", err)
+	}
+	if len(pkg.StaticInputs) != 1 {
+		t.Fatalf("static inputs = %+v, want one frozen evidence object", pkg.StaticInputs)
+	}
+	got := pkg.StaticInputs[0]
+	if got.ID != object.ID || got.SHA256 != object.SHA256 ||
+		got.Path != "inputs/supervision-evidence.json" {
+		t.Fatalf("frozen evidence input = %+v, want %s/%s", got, object.ID, object.SHA256)
+	}
+	if !strings.Contains(pkg.Supervision.Prompt, object.ID) ||
+		!strings.Contains(pkg.Supervision.Prompt, object.SHA256) {
+		t.Fatalf("compact prompt does not pin evidence object: %s", pkg.Supervision.Prompt)
 	}
 }
 

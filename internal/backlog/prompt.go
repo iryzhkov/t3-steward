@@ -162,7 +162,10 @@ func fitPromptEnvelope(envelope *domain.PromptEnvelope) error {
 // is larger than a task prompt because an activation is told about several
 // tasks and gates at once, and still bounded because the alternative is a
 // review whose size depends on how long the run has been going.
-const DefaultActivationPromptByteCap = 32 << 10
+const (
+	DefaultActivationPromptByteCap = 32 << 10
+	ActivationBriefSubjectLimit    = 8
+)
 
 // ActivationTaskView is one task as an activation sees it: identity, state and
 // the verification outcome the coordinator recorded. Never worker prose.
@@ -397,7 +400,10 @@ func activationFacts(redactor Redactor, snapshot ActivationSnapshot) []domain.Pr
 				snapshot.GraphRevision, snapshot.RecordRevision, len(snapshot.Tasks),
 				len(snapshot.Gates), len(snapshot.Incidents), len(snapshot.Artifacts)))
 	}
-	for _, trigger := range snapshot.Triggers {
+	for index, trigger := range snapshot.Triggers {
+		if snapshot.EvidenceSnapshot != nil && index >= ActivationBriefSubjectLimit {
+			break
+		}
 		add("trigger/"+string(trigger.Kind)+"/"+trigger.Subject,
 			base+"/events",
 			fmt.Sprintf("%s on %s; reasons: %s; events: %s; sequences %d-%d",
@@ -405,11 +411,17 @@ func activationFacts(redactor Redactor, snapshot ActivationSnapshot) []domain.Pr
 				strings.Join(trigger.EventIDs, ","), trigger.FirstSequence, trigger.LastSequence))
 	}
 	relevantTasks := make(map[string]struct{})
+	gatesAdded := 0
 	for _, gate := range snapshot.Gates {
-		if snapshot.EvidenceSnapshot != nil &&
-			(gate.State == domain.GateAccepted || gate.State == domain.GateCancelled) {
-			continue
+		if snapshot.EvidenceSnapshot != nil {
+			if gate.State == domain.GateAccepted || gate.State == domain.GateCancelled {
+				continue
+			}
+			if gatesAdded >= ActivationBriefSubjectLimit {
+				continue
+			}
 		}
+		gatesAdded++
 		for _, taskID := range gate.ObservedTaskIDs {
 			relevantTasks[taskID] = struct{}{}
 		}
@@ -418,8 +430,12 @@ func activationFacts(redactor Redactor, snapshot ActivationSnapshot) []domain.Pr
 				gate.State, gate.GraphRevision, gate.EvidenceSnapshotID,
 				strings.Join(gate.ObservedTaskIDs, ","), strings.Join(gate.ProtectedTaskIDs, ",")))
 	}
+	tasksAdded := 0
 	for _, task := range snapshot.Tasks {
 		if snapshot.EvidenceSnapshot != nil {
+			if tasksAdded >= ActivationBriefSubjectLimit {
+				continue
+			}
 			_, relevant := relevantTasks[task.TaskID]
 			if !relevant && (task.State == string(domain.ProgressSucceeded) ||
 				task.State == string(domain.ProgressCancelled) ||
@@ -427,11 +443,15 @@ func activationFacts(redactor Redactor, snapshot ActivationSnapshot) []domain.Pr
 				continue
 			}
 		}
+		tasksAdded++
 		add("task/"+task.TaskID, base+"/task/"+task.TaskID,
 			fmt.Sprintf("state %s; attempt %s at revision %d; verification %s",
 				task.State, task.AttemptID, task.AttemptRevision, task.Verification))
 	}
-	for _, incident := range snapshot.Incidents {
+	for index, incident := range snapshot.Incidents {
+		if snapshot.EvidenceSnapshot != nil && index >= ActivationBriefSubjectLimit {
+			break
+		}
 		add("incident/"+incident.IncidentID, base+"/incident/"+incident.IncidentID,
 			fmt.Sprintf("state %s; requires %s; revision %d; reason %s",
 				incident.State, incident.RequiredDisposition, incident.Revision, incident.Reason))

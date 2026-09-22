@@ -621,6 +621,26 @@ func TestActivationPromptEnvelopeHandlesFortyThreeTaskGateHistory(t *testing.T) 
 		t.Fatalf("envelope is %d bytes, over its %d byte cap", envelope.Size(), envelope.ByteCap)
 	}
 	t.Logf("compact 43-task/43-gate envelope: %d bytes (cap %d)", envelope.Size(), envelope.ByteCap)
+
+	for index := range snapshot.Gates {
+		snapshot.Gates[index].State = domain.GateReadyForReview
+	}
+	evidence, err = BuildActivationEvidenceSnapshot(snapshot)
+	if err != nil {
+		t.Fatalf("build simultaneous-gate evidence: %v", err)
+	}
+	snapshot.EvidenceSnapshot = &domain.ArtifactDigest{ArtifactID: evidence.ID, Digest: evidence.SHA256}
+	envelope, err = BuildActivationPromptEnvelope(snapshot)
+	if err != nil {
+		t.Fatalf("43 simultaneous review-ready gates must remain constructible: %v", err)
+	}
+	if envelope.Size() > envelope.ByteCap {
+		t.Fatalf("simultaneous-gate envelope is %d bytes, over cap %d", envelope.Size(), envelope.ByteCap)
+	}
+	if len(envelope.Facts) > 1+len(snapshot.Triggers)+ActivationBriefSubjectLimit*3 {
+		t.Fatalf("compact brief emitted an unbounded subject list: %d facts", len(envelope.Facts))
+	}
+	t.Logf("compact 43-simultaneous-gate envelope: %d bytes (cap %d)", envelope.Size(), envelope.ByteCap)
 }
 
 func TestActivationSnapshotRequiresScopedActionsAndTriggers(t *testing.T) {
