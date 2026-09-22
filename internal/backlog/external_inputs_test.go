@@ -204,7 +204,7 @@ func TestExternalInputsKeepDistinctNamespacesAndProvenanceAcrossRestart(t *testi
 		Tasks:        []domain.Task{{ID: "consumer-id", WorkflowID: "target-workflow", Name: "consumer"}},
 	}
 	for _, suffix := range []string{"a", "b"} {
-		runID, taskID, attemptID, artifactID := "run-"+suffix, "task-"+suffix, "attempt-"+suffix, "artifact-"+suffix
+		runID, taskID, attemptID, artifactID := "run-"+suffix, "shared-build-task", "attempt-"+suffix, "artifact-"+suffix
 		source.records.WorkflowRuns = append(source.records.WorkflowRuns, domain.WorkflowRun{
 			ID: runID, WorkflowID: "workflow-" + suffix, Progress: domain.ProgressSucceeded,
 		})
