@@ -80,21 +80,35 @@ func (i ExecutionIdentity) TaskEnvironment() map[string]string {
 	}
 }
 
+type DependencyProvenance struct {
+	RunID           string            `json:"runId"`
+	TaskID          string            `json:"taskId"`
+	AttemptID       string            `json:"attemptId"`
+	SourceArtifacts map[string]string `json:"sourceArtifacts"`
+}
+
 type DependencyInput struct {
-	TaskID    string           `json:"taskId"`
-	Artifacts []ArtifactObject `json:"artifacts"`
+	TaskID     string                `json:"taskId"`
+	Provenance *DependencyProvenance `json:"provenance,omitempty"`
+	Artifacts  []ArtifactObject      `json:"artifacts"`
 }
 
 // Package capabilities name behaviour a worker must implement to execute a
 // package faithfully. A package that declares one is only understood by a build
 // that supports it; see ValidateExecutionPackage.
-const PackageCapabilityPreflight = "preflight"
+const (
+	PackageCapabilityPreflight           = "preflight"
+	PackageCapabilitySupervisionEvidence = "supervision-evidence-v1"
+	PackageCapabilityRecoveryRetry       = "recovery-retry-v1"
+	PackageCapabilityRecoverySupplement  = "recovery-supplement-v1"
+	PackageCapabilityProjectContext      = "project-context-v1"
+)
 
 // SupportedPackageCapabilities is what this build implements. A package that
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityPreflight}
+	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext}
 }
 
 // PreflightStep is one declared step the worker runs after the workspace is
@@ -106,26 +120,33 @@ func SupportedPackageCapabilities() []string {
 // spelling of nine fields would only create somewhere for them to drift.
 type PreflightStep = domain.PreflightStep
 
+type RecoveryExecutionContext struct {
+	IncidentID      string   `json:"incidentId"`
+	InstructionPath string   `json:"instructionPath"`
+	CheckpointPaths []string `json:"checkpointPaths,omitempty"`
+}
+
 type ExecutionPackage struct {
-	Timeout          time.Duration        `json:"timeout,omitempty"`
-	GraphRevision    int64                `json:"graphRevision,omitempty"`
-	TaskRevision     int64                `json:"taskRevision,omitempty"`
-	TaskDigest       string               `json:"taskDigest,omitempty"`
-	Version          int                  `json:"version"`
-	ID               string               `json:"id"`
-	CoordinatorID    string               `json:"coordinatorId"`
-	CoordinatorEpoch int64                `json:"coordinatorEpoch"`
-	WorkerID         string               `json:"workerId"`
-	WorkerEpoch      string               `json:"workerEpoch"`
-	Identity         ExecutionIdentity    `json:"identity"`
-	Class            domain.TaskClass     `json:"class"`
-	Prompt           ArtifactObject       `json:"prompt"`
-	StaticInputs     []ArtifactObject     `json:"staticInputs,omitempty"`
-	Dependencies     []DependencyInput    `json:"dependencies,omitempty"`
-	Route            domain.ProviderRoute `json:"route"`
-	Environment      EnvironmentReference `json:"environment"`
-	Verification     []string             `json:"verification,omitempty"`
-	Preflight        []PreflightStep      `json:"preflight,omitempty"`
+	Timeout          time.Duration          `json:"timeout,omitempty"`
+	GraphRevision    int64                  `json:"graphRevision,omitempty"`
+	TaskRevision     int64                  `json:"taskRevision,omitempty"`
+	TaskDigest       string                 `json:"taskDigest,omitempty"`
+	Version          int                    `json:"version"`
+	ID               string                 `json:"id"`
+	CoordinatorID    string                 `json:"coordinatorId"`
+	CoordinatorEpoch int64                  `json:"coordinatorEpoch"`
+	WorkerID         string                 `json:"workerId"`
+	WorkerEpoch      string                 `json:"workerEpoch"`
+	Identity         ExecutionIdentity      `json:"identity"`
+	Class            domain.TaskClass       `json:"class"`
+	Prompt           ArtifactObject         `json:"prompt"`
+	StaticInputs     []ArtifactObject       `json:"staticInputs,omitempty"`
+	Dependencies     []DependencyInput      `json:"dependencies,omitempty"`
+	Context          *domain.ProjectContext `json:"context,omitempty"`
+	Route            domain.ProviderRoute   `json:"route"`
+	Environment      EnvironmentReference   `json:"environment"`
+	Verification     []string               `json:"verification,omitempty"`
+	Preflight        []PreflightStep        `json:"preflight,omitempty"`
 	// RequiredCapabilities names what a worker must implement to run this
 	// package. The manifest content address already stops an older build from
 	// silently dropping a field it cannot decode; this list makes the refusal
@@ -135,6 +156,7 @@ type ExecutionPackage struct {
 	// declared task. It is nil for every task package, which is every package
 	// an unsupervised run produces. See SupervisionActivation.
 	Supervision *SupervisionActivation       `json:"supervision,omitempty"`
+	Recovery    *RecoveryExecutionContext    `json:"recovery,omitempty"`
 	Outputs     []domain.ArtifactDeclaration `json:"outputs,omitempty"`
 	NotBefore   *time.Time                   `json:"notBefore,omitempty"`
 	Deadline    *time.Time                   `json:"deadline,omitempty"`
@@ -278,6 +300,18 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 			return errors.New("execution package: duplicate dependency task")
 		}
 		dependencies[dependency.TaskID] = struct{}{}
+		if provenance := dependency.Provenance; provenance != nil {
+			if strings.TrimSpace(provenance.RunID) == "" || strings.TrimSpace(provenance.TaskID) == "" ||
+				strings.TrimSpace(provenance.AttemptID) == "" ||
+				len(provenance.SourceArtifacts) != len(dependency.Artifacts) {
+				return errors.New("execution package: invalid dependency provenance")
+			}
+			for _, artifact := range dependency.Artifacts {
+				if strings.TrimSpace(provenance.SourceArtifacts[artifact.ID]) == "" {
+					return errors.New("execution package: dependency provenance is missing a source artifact")
+				}
+			}
+		}
 		for _, artifact := range dependency.Artifacts {
 			if err := validatePackageArtifact(artifact, pkg.Limits.MaxArtifactBytes, paths); err != nil {
 				return fmt.Errorf("execution package: dependency input: %w", err)
@@ -322,6 +356,9 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 	if err := validatePackageCapabilities(pkg); err != nil {
 		return err
 	}
+	if err := validatePackageProjectContext(pkg); err != nil {
+		return err
+	}
 	if err := validateSupervisionActivation(pkg); err != nil {
 		return err
 	}
@@ -340,6 +377,15 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 		if capability == CapabilityCampaignSupervision && pkg.Supervision == nil {
 			return errors.New("execution package: only an activation may require the campaign supervision capability")
 		}
+		if capability == PackageCapabilitySupervisionEvidence && pkg.Supervision == nil {
+			return errors.New("execution package: only an activation may require supervision evidence materialization")
+		}
+		if capability == PackageCapabilityRecoveryRetry && (pkg.Supervision == nil || pkg.Supervision.Purpose != "repair") {
+			return errors.New("execution package: only a repair activation may require recovery retry")
+		}
+		if capability == PackageCapabilityProjectContext && pkg.Context == nil {
+			return errors.New("execution package: project context capability requires a context index")
+		}
 		if !slices.Contains(supported, capability) {
 			return fmt.Errorf("execution package: unsupported required capability %q", capability)
 		}
@@ -350,6 +396,22 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 	}
 	if _, ok := declared[PackageCapabilityPreflight]; len(pkg.Preflight) != 0 && !ok {
 		return errors.New("execution package: preflight steps require the preflight capability")
+	}
+	if _, ok := declared[PackageCapabilityRecoverySupplement]; pkg.Recovery != nil && !ok {
+		return errors.New("execution package: recovery context requires the recovery supplement capability")
+	}
+	if _, ok := declared[PackageCapabilityProjectContext]; pkg.Context != nil && !ok {
+		return errors.New("execution package: project context requires the project context capability")
+	}
+	if pkg.Recovery != nil {
+		if pkg.Supervision != nil || pkg.Recovery.IncidentID == "" || pkg.Recovery.InstructionPath != "inputs/recovery/instructions.md" {
+			return errors.New("execution package: recovery context is incomplete or attached to an activation")
+		}
+		for _, checkpoint := range pkg.Recovery.CheckpointPaths {
+			if !strings.HasPrefix(checkpoint, "inputs/recovery/checkpoint-") {
+				return errors.New("execution package: recovery checkpoint path is invalid")
+			}
+		}
 	}
 	return nil
 }

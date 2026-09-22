@@ -280,6 +280,28 @@ func coordinatorConfigLoop(ctx context.Context, cfg config.Config, logger *slog.
 	watchdogDone := make(chan struct{})
 	go func() { defer close(watchdogDone); runWatchdogAlongside(watchdogCtx, cfg, logger, store) }()
 	defer func() { stopWatchdog(); <-watchdogDone }()
+
+	run := func(instanceCtx context.Context, active config.Config, ready func()) error {
+		return runCoordinatorConfiguration(instanceCtx, active, logger, store, epoch, receipts, ready)
+	}
+	return coordinatorConfigurationActivationLoop(ctx, cfg, logger, store, epoch, receipts, reload, run)
+}
+
+type coordinatorConfigurationRunner func(context.Context, config.Config, func()) error
+
+// coordinatorConfigurationActivationLoop is the stop/start/readiness/receipt
+// transaction used by the production SIGHUP loop. Its runner seam keeps tests
+// isolated from listeners while preserving the exact production state machine.
+func coordinatorConfigurationActivationLoop(
+	ctx context.Context,
+	cfg config.Config,
+	logger *slog.Logger,
+	store *sqlite.Store,
+	epoch int64,
+	receipts *reloadReceiptWriter,
+	reload <-chan os.Signal,
+	run coordinatorConfigurationRunner,
+) error {
 	var fallback *config.Config
 	// pending is the accepted receipt of the reload being activated. It is
 	// written once the new configuration is active, or as a rejection when the
@@ -289,9 +311,9 @@ func coordinatorConfigLoop(ctx context.Context, cfg config.Config, logger *slog.
 		instanceCtx, stop := context.WithCancel(ctx)
 		done := make(chan error, 1)
 		ready := make(chan struct{})
-		go func() {
-			done <- runCoordinatorConfiguration(instanceCtx, cfg, logger, store, epoch, receipts, func() { close(ready) })
-		}()
+		go func(active config.Config) {
+			done <- run(instanceCtx, active, func() { close(ready) })
+		}(cfg)
 		select {
 		case <-ready:
 			fallback = nil

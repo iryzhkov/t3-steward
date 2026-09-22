@@ -193,6 +193,49 @@ func (s *CustodyStore) PublishResult(ctx context.Context, pkg workerproto.Execut
 		}
 		objects = append(objects, object)
 	}
+	if result.RecoveryProposal != nil {
+		proposal := *result.RecoveryProposal
+		if proposal.InstructionArtifact.ArtifactID == "" || len(result.RecoveryInstructions) == 0 {
+			return errors.New("publish result: recovery proposal is missing retained instructions")
+		}
+		instruction := objectForBytes(proposal.InstructionArtifact.ArtifactID,
+			"results/recovery/instructions.md", string(domain.ArtifactInput), "text/markdown", result.RecoveryInstructions)
+		if instruction.SHA256 != proposal.InstructionArtifact.Digest {
+			return errors.New("publish result: recovery instruction digest changed")
+		}
+		if err := s.storeObject(bytes.NewReader(result.RecoveryInstructions), instruction); err != nil {
+			return fmt.Errorf("publish recovery instructions: %w", err)
+		}
+		objects = append(objects, instruction)
+		if len(proposal.CheckpointArtifacts) > 1 {
+			return errors.New("publish result: recovery proposal has too many checkpoints")
+		}
+		if len(proposal.CheckpointArtifacts) == 1 {
+			checkpoint := objectForBytes(proposal.CheckpointArtifacts[0].ArtifactID,
+				"results/recovery/checkpoint.tar", string(domain.ArtifactCheckpoint), "application/x-tar", result.RecoveryCheckpointTar)
+			if checkpoint.SHA256 != proposal.CheckpointArtifacts[0].Digest {
+				return errors.New("publish result: recovery checkpoint digest changed")
+			}
+			if err := s.storeObject(bytes.NewReader(result.RecoveryCheckpointTar), checkpoint); err != nil {
+				return fmt.Errorf("publish recovery checkpoint: %w", err)
+			}
+			objects = append(objects, checkpoint)
+		} else if result.RecoveryCheckpointTar != nil {
+			return errors.New("publish result: undeclared recovery checkpoint")
+		}
+		raw, err := json.Marshal(proposal)
+		if err != nil {
+			return err
+		}
+		proposalObject := objectForBytes("recovery-proposal-"+pkg.Identity.AttemptID,
+			"results/recovery/proposal.json", string(domain.ArtifactInput), "application/json", raw)
+		if err := s.storeObject(bytes.NewReader(raw), proposalObject); err != nil {
+			return fmt.Errorf("publish recovery proposal: %w", err)
+		}
+		objects = append(objects, proposalObject)
+	} else if result.RecoveryInstructions != nil || result.RecoveryCheckpointTar != nil {
+		return errors.New("publish result: recovery bytes need a typed proposal")
+	}
 	for _, extra := range []struct {
 		id, path, kind, media string
 		data                  []byte

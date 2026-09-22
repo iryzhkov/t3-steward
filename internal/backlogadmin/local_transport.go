@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,7 @@ const (
 	// granting it the authority to decide.
 	localOperationSupervisionShow     = "supervision-show"
 	localOperationSupervisionDecision = "supervision-decision"
+	localOperationRecoveryRetry       = "recovery-retry"
 )
 
 // Operations is the complete coordinator-admin operation vocabulary, in the
@@ -57,6 +59,7 @@ func Operations() []string {
 		localOperationQuarantineRelease,
 		localOperationSupervisionShow,
 		localOperationSupervisionDecision,
+		localOperationRecoveryRetry,
 	}
 }
 
@@ -173,6 +176,9 @@ func (a *RemoteAdminAssertion) role() string {
 }
 
 type localRequest struct {
+	// ApprovalFrame is the original signed remote envelope. It is accepted only
+	// for a configured approver decision and reverified by the local coordinator.
+	ApprovalFrame      *remoteFrame                    `json:"approvalFrame,omitempty"`
 	RemoteAdmin        *RemoteAdminAssertion           `json:"remoteAdmin,omitempty"`
 	WorkerEnrollment   *domain.WorkerEnrollmentRequest `json:"workerEnrollment,omitempty"`
 	GraphAmendment     *domain.GraphAmendment          `json:"graphAmendment,omitempty"`
@@ -188,6 +194,7 @@ type localRequest struct {
 	UnknownRecovery    *UnknownRecoveryRequest         `json:"unknownRecovery,omitempty"`
 	QuarantineRelease  *QuarantineReleaseRequest       `json:"quarantineRelease,omitempty"`
 	Supervision        *SupervisionRequest             `json:"supervision,omitempty"`
+	RecoveryRetry      *domain.RecoveryRetryRequest    `json:"recoveryRetry,omitempty"`
 }
 
 type localResponse struct {
@@ -204,6 +211,7 @@ type localResponse struct {
 	UnknownRecoveryResponse    *domain.UnknownAssignmentRecoveryDecision `json:"unknownRecoveryResponse,omitempty"`
 	QuarantineReleaseResponse  *domain.QuarantineRelease                 `json:"quarantineReleaseResponse,omitempty"`
 	SupervisionResponse        *SupervisionResponse                      `json:"supervisionResponse,omitempty"`
+	RecoveryRetryResponse      *domain.RecoveryRetryReceipt              `json:"recoveryRetryResponse,omitempty"`
 	Error                      string                                    `json:"error,omitempty"`
 	// ErrorClass lets the server say whether it refused the principal, the
 	// frame or the request itself, so the client does not have to guess a
@@ -227,6 +235,8 @@ type LocalServer struct {
 	// request must name it, so that a client configured for one coordinator
 	// cannot have its request replayed into another.
 	CoordinatorID      string
+	Approvers          map[string]AdminCredentials
+	Now                func() time.Time
 	MaxRequestBytes    int64
 	MaxArtifactBytes   int64
 	MaxSubmissionBytes int64
@@ -331,6 +341,14 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 		_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: "unsupported local admin transport version", ErrorClass: ClassProtocol})
 		return
 	}
+	if request.ApprovalFrame != nil {
+		var proofErr error
+		principal, request, proofErr = s.verifyApprovalFrame(request)
+		if proofErr != nil {
+			_ = writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: proofErr.Error(), ErrorClass: ClassAuthentication})
+			return
+		}
+	}
 	// The restricted SSH command relays a request it has already authenticated
 	// by signature, and says so here. The assertion can only narrow authority:
 	// the peer that made it already holds full local-admin rights through its
@@ -344,6 +362,9 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 		}
 		principal = Principal{ID: RelayedPrincipalID(request.RemoteAdmin.Principal), Roles: []string{request.RemoteAdmin.role()}}
 		request.RemoteAdmin = nil
+	}
+	if request.NodeWait != nil {
+		request.NodeWait.CoordinatorID = s.CoordinatorID
 	}
 	dispatch := adminDispatch{
 		service:            s.Service,
@@ -360,6 +381,68 @@ func (s *LocalServer) serveConnection(ctx context.Context, conn *net.UnixConn) {
 		return
 	}
 	_ = writeLocalJSON(conn, response)
+}
+
+// verifyApprovalFrame derives the deliberately narrow approver role only after
+// the coordinator process has independently verified the original remote HMAC
+// envelope. The relay's ordinary assertion is useful as a consistency check,
+// but can never itself grant this role.
+func (s *LocalServer) verifyApprovalFrame(relayed localRequest) (Principal, localRequest, error) {
+	proof := relayed.ApprovalFrame
+	if proof == nil || relayed.RemoteAdmin == nil {
+		return Principal{}, localRequest{}, errors.New("approver proof and relay assertion are both required")
+	}
+	credentials, ok := s.Approvers[proof.Sender]
+	if !ok || !credentials.Complete() || credentials.ClientPrincipal != proof.Sender {
+		return Principal{}, localRequest{}, errors.New("approval signer is not a configured approver")
+	}
+	now := time.Now().UTC()
+	if s.Now != nil {
+		now = s.Now().UTC()
+	}
+	if proof.Version != RemoteTransportVersion || proof.Operation != localOperationNodeWait ||
+		proof.Recipient != s.CoordinatorID || proof.Authentication.Principal != credentials.ClientPrincipal ||
+		proof.Authentication.KeyID != credentials.ClientKeyID || proof.Deadline.IsZero() ||
+		now.After(proof.Deadline) || proof.Deadline.Before(proof.SentAt) {
+		return Principal{}, localRequest{}, errors.New("approval proof identity, operation or lifetime is invalid")
+	}
+	if err := verifyRemoteFrame(*proof, credentials.ClientSecret); err != nil {
+		return Principal{}, localRequest{}, fmt.Errorf("verify approval proof: %w", err)
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(proof.Payload)))
+	decoder.DisallowUnknownFields()
+	var original localRequest
+	if err := decoder.Decode(&original); err != nil {
+		return Principal{}, localRequest{}, fmt.Errorf("decode approval proof payload: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return Principal{}, localRequest{}, errors.New("approval proof payload has trailing content")
+	}
+	decision := original.NodeWait != nil && original.NodeWait.Action == "decide-attention" &&
+		original.NodeWait.Decision != nil
+	inspection := original.NodeWait != nil && original.NodeWait.Action == "inspect-attention" &&
+		original.NodeWait.Decision == nil && original.NodeWait.Task == nil && original.NodeWait.Result == nil &&
+		original.NodeWait.ID != "" && original.NodeWait.From == "" && original.NodeWait.To == "" &&
+		original.NodeWait.Host == "" && !original.NodeWait.Undelivered &&
+		reflect.DeepEqual(original.NodeWait.Request, domain.NodeWaitRequest{})
+	if original.ApprovalFrame != nil || original.RemoteAdmin != nil ||
+		original.Version != LocalTransportVersion || original.Operation != localOperationNodeWait ||
+		(!decision && !inspection) {
+		return Principal{}, localRequest{}, errors.New("approval proof is not an attention inspection or decision")
+	}
+	if relayed.RemoteAdmin.Principal != credentials.ClientPrincipal ||
+		relayed.RemoteAdmin.Coordinator != s.CoordinatorID ||
+		relayed.RemoteAdmin.RequestID != proof.RequestID || relayed.RemoteAdmin.Role != "" {
+		return Principal{}, localRequest{}, errors.New("approval relay assertion does not match signed proof")
+	}
+	forwarded := relayed
+	forwarded.ApprovalFrame = nil
+	forwarded.RemoteAdmin = nil
+	if !reflect.DeepEqual(forwarded, original) {
+		return Principal{}, localRequest{}, errors.New("relayed approval payload differs from signed proof")
+	}
+	return Principal{ID: RelayedPrincipalID(credentials.ClientPrincipal), Roles: []string{ApproverRole}}, original, nil
 }
 
 func readLocalJSON(reader io.Reader, maxBytes int64, destination any) error {
@@ -477,6 +560,18 @@ func (c LocalClient) ReleaseQuarantine(ctx context.Context, _ Principal, request
 // Supervise sends one supervision operation. The word it travels under is
 // decided by the operation itself, so a read cannot be smuggled in as a
 // decision or the other way round.
+func (c LocalClient) RetryRecovery(ctx context.Context, request domain.RecoveryRetryRequest) (domain.RecoveryRetryReceipt, error) {
+	local := localRequest{Version: LocalTransportVersion, Operation: localOperationRecoveryRetry, RecoveryRetry: &request}
+	var response localResponse
+	if err := c.call(ctx, local, &response); err != nil {
+		return domain.RecoveryRetryReceipt{}, err
+	}
+	if response.RecoveryRetryResponse == nil {
+		return domain.RecoveryRetryReceipt{}, errors.New("local recovery retry returned no response")
+	}
+	return *response.RecoveryRetryResponse, nil
+}
+
 func (c LocalClient) Supervise(ctx context.Context, request SupervisionRequest) (SupervisionResponse, error) {
 	operation := localOperationSupervisionShow
 	if request.Operation.Mutating() {

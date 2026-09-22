@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +128,58 @@ func TestActivationUndeliveredDispatchRetriesWithOriginalIdentity(t *testing.T) 
 	}
 	if plan.Activation.Epoch != 1 {
 		t.Fatalf("epoch = %d, want 1: a retry is the same activation", plan.Activation.Epoch)
+	}
+}
+
+func TestActivationOperatorReassessmentMintsFreshPendingDispatch(t *testing.T) {
+	now := supervisionTestTime()
+	record := supervisionTestRecord()
+	originalID := ActivationID("run-1", 1)
+	state := SupervisionActivationState{
+		Record: record,
+		Activation: domain.Activation{
+			ID: originalID, RunID: "run-1", Epoch: 1,
+			DispatchIdentity:    ActivationDispatchIdentity("run-1", 1),
+			State:               domain.ActivationPendingDispatch,
+			ConsumedEventCursor: 1,
+			IncidentID:          "incident-original",
+			Principal:           "principal-original",
+		},
+		Pending: []SupervisionEvent{
+			supervisionTestEvent("event-1", 1, TriggerGateReviewReady),
+			supervisionTestEvent("reassessment-1", 2, TriggerOperatorReassessment),
+		},
+	}
+	plan, err := PlanActivation(state, ActivationSignal{
+		Event:                  domain.ActivationEventEventsArrived,
+		Actor:                  domain.Actor{Kind: domain.ActorOperator, Principal: "operator"},
+		ExpectedEpoch:          1,
+		ExpectedRecordRevision: record.Revision,
+		OperatorAuthorized:     true,
+		ReassessmentEventID:    "reassessment-1",
+	}, now)
+	if err != nil {
+		t.Fatalf("plan activation: %v", err)
+	}
+	if plan.Activation.ID == originalID || plan.Activation.ID != ActivationID("run-1", 2) {
+		t.Fatalf("activation ID = %q, want fresh epoch-2 identity", plan.Activation.ID)
+	}
+	if plan.Activation.Epoch != 2 || plan.Activation.State != domain.ActivationPendingDispatch {
+		t.Fatalf("activation = epoch %d state %q, want epoch 2 pending-dispatch",
+			plan.Activation.Epoch, plan.Activation.State)
+	}
+	if plan.Dispatch == nil || plan.Dispatch.Identity != ActivationDispatchIdentity("run-1", 2) || plan.Dispatch.Retry {
+		t.Fatalf("dispatch = %+v, want a fresh epoch-2 offer", plan.Dispatch)
+	}
+	if plan.Activation.ConsumedEventCursor != 2 {
+		t.Fatalf("bound high-water mark = %d, want reassessment sequence 2", plan.Activation.ConsumedEventCursor)
+	}
+	if plan.Activation.IncidentID != "incident-original" || plan.Activation.Principal != "principal-original" {
+		t.Fatalf("authority context = incident %q principal %q, want original activation context",
+			plan.Activation.IncidentID, plan.Activation.Principal)
+	}
+	if plan.Record.ActivationsUsed != 0 {
+		t.Fatalf("activations used = %d, want failed never-delivered offer to spend no budget", plan.Record.ActivationsUsed)
 	}
 }
 
@@ -558,6 +611,88 @@ func TestActivationPromptEnvelopeDemotesFactsToReferences(t *testing.T) {
 	if demoted == 0 {
 		t.Fatal("an oversized snapshot must demote facts to references rather than drop evidence")
 	}
+}
+
+func TestActivationPromptEnvelopeHandlesFortyThreeTaskGateHistory(t *testing.T) {
+	snapshot := ActivationSnapshot{
+		ActivationID: "activation-history", RunID: "run-history", Epoch: 43,
+		GraphRevision: 43, RecordRevision: 86, TurnsRemaining: 2,
+		Triggers: []CoalescedTrigger{{
+			Kind: TriggerGateReviewReady, Subject: "gate-42",
+			Reasons: []string{"success review required"}, EventIDs: []string{"event-43"},
+			FirstSequence: 43, LastSequence: 43,
+		}},
+		Actions: []ActivationAction{{
+			Name: "decide",
+			Constraints: []string{
+				"t3-steward campaign supervision decide run-history --gate GATE_ID --accept --evidence EVIDENCE_SNAPSHOT_ID --expected-revision GATE_REVISION --graph-revision GRAPH_REVISION --incident INCIDENT_ID --activation 43 --request-id KEY --reason TEXT",
+				"review all required evidence before accepting",
+			},
+		}},
+		Constraints: []string{
+			"do not waive review gates",
+			"do not grant new permissions",
+		},
+	}
+	for index := 0; index < 43; index++ {
+		taskID := fmt.Sprintf("build-work-package-%02d", index)
+		gateID := fmt.Sprintf("review-build-work-package-%02d", index)
+		snapshot.Tasks = append(snapshot.Tasks, ActivationTaskView{
+			TaskID: taskID, State: "succeeded",
+			AttemptID:       fmt.Sprintf("attempt-%02d-%s", index, strings.Repeat("a", 96)),
+			AttemptRevision: int64(index + 1), Verification: "passed",
+		})
+		snapshot.Gates = append(snapshot.Gates, ActivationGateView{
+			GateID: gateID, State: domain.GateAccepted, GraphRevision: 43,
+			EvidenceSnapshotID: fmt.Sprintf("evidence-%02d-%s", index, strings.Repeat("e", 96)),
+			ObservedTaskIDs:    []string{taskID},
+			ProtectedTaskIDs:   []string{fmt.Sprintf("build-work-package-%02d", index+1)},
+		})
+		snapshot.Artifacts = append(snapshot.Artifacts, domain.ArtifactDigest{
+			ArtifactID: fmt.Sprintf("artifact-%02d-%s", index, strings.Repeat("r", 320)),
+			Digest:     "sha256:" + strings.Repeat("d", 64),
+		})
+	}
+	snapshot.Gates[42].State = domain.GateReadyForReview
+	snapshot.Incidents = []ActivationIncidentView{{
+		IncidentID: "incident-current-review", State: domain.IncidentOpen,
+		RequiredDisposition: domain.DispositionGateDecision, Revision: 1,
+		Reason: "current review gate requires an independent evidence decision",
+	}}
+	evidence, err := BuildActivationEvidenceSnapshot(snapshot)
+	if err != nil {
+		t.Fatalf("build retained evidence: %v", err)
+	}
+	snapshot.EvidenceSnapshot = &domain.ArtifactDigest{ArtifactID: evidence.ID, Digest: evidence.SHA256}
+
+	envelope, err := BuildActivationPromptEnvelope(snapshot)
+	if err != nil {
+		t.Fatalf("43-task/43-gate accumulated history must remain constructible: %v", err)
+	}
+	if envelope.Size() > envelope.ByteCap {
+		t.Fatalf("envelope is %d bytes, over its %d byte cap", envelope.Size(), envelope.ByteCap)
+	}
+	t.Logf("compact 43-task/43-gate envelope: %d bytes (cap %d)", envelope.Size(), envelope.ByteCap)
+
+	for index := range snapshot.Gates {
+		snapshot.Gates[index].State = domain.GateReadyForReview
+	}
+	evidence, err = BuildActivationEvidenceSnapshot(snapshot)
+	if err != nil {
+		t.Fatalf("build simultaneous-gate evidence: %v", err)
+	}
+	snapshot.EvidenceSnapshot = &domain.ArtifactDigest{ArtifactID: evidence.ID, Digest: evidence.SHA256}
+	envelope, err = BuildActivationPromptEnvelope(snapshot)
+	if err != nil {
+		t.Fatalf("43 simultaneous review-ready gates must remain constructible: %v", err)
+	}
+	if envelope.Size() > envelope.ByteCap {
+		t.Fatalf("simultaneous-gate envelope is %d bytes, over cap %d", envelope.Size(), envelope.ByteCap)
+	}
+	if len(envelope.Facts) > 1+len(snapshot.Triggers)+ActivationBriefSubjectLimit*3 {
+		t.Fatalf("compact brief emitted an unbounded subject list: %d facts", len(envelope.Facts))
+	}
+	t.Logf("compact 43-simultaneous-gate envelope: %d bytes (cap %d)", envelope.Size(), envelope.ByteCap)
 }
 
 func TestActivationSnapshotRequiresScopedActionsAndTriggers(t *testing.T) {

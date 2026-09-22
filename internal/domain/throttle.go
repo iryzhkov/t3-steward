@@ -1,6 +1,11 @@
 package domain
 
-import "time"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"time"
+)
 
 // ThrottleSeverity is the outward safety action requested for a quota pool.
 type ThrottleSeverity string
@@ -91,25 +96,58 @@ type CheckpointMetadata struct {
 	CapturedAt time.Time `json:"capturedAt"`
 }
 
+// AttentionStopCommand binds an operator stop to the authenticated coordinator
+// request that created it. The surrounding throttle command carries the exact
+// execution placement; this record carries the authority and revision fences.
+type AttentionStopCommand struct {
+	CoordinatorID      string `json:"coordinatorId"`
+	CoordinatorEpoch   int64  `json:"coordinatorEpoch"`
+	Principal          string `json:"principal"`
+	DecisionID         string `json:"decisionId"`
+	WaitID             string `json:"waitId"`
+	RequestID          string `json:"requestId"`
+	WorkflowRunID      string `json:"workflowRunId"`
+	TaskID             string `json:"taskId"`
+	RegisteredRevision int64  `json:"registeredRevision"`
+	AppliedRevision    int64  `json:"appliedRevision"`
+	RequestDigest      string `json:"requestDigest"`
+	CommandDigest      string `json:"commandDigest"`
+}
+
 // ThrottleCommand is an idempotent worker request. Its execution identity and
 // placement are fixed for the lifetime of the affected attempt.
 type ThrottleCommand struct {
-	ID              string              `json:"id"`
-	DirectiveID     string              `json:"directiveId"`
-	AttemptID       string              `json:"attemptId"`
-	AssignmentID    string              `json:"assignmentId"`
-	AssignmentEpoch int64               `json:"assignmentEpoch"`
-	WorkerID        string              `json:"workerId"`
-	ThreadID        string              `json:"threadId"`
-	WorkspacePath   string              `json:"workspacePath"`
-	Route           ProviderRoute       `json:"route"`
-	Kind            ThrottleCommandKind `json:"kind"`
-	QuotaPoolID     string              `json:"quotaPoolId"`
-	BucketEpochs    []QuotaBucketEpoch  `json:"bucketEpochs"`
-	Reason          string              `json:"reason"`
-	Deadline        *time.Time          `json:"deadline,omitempty"`
-	Checkpoint      *CheckpointMetadata `json:"checkpoint,omitempty"`
-	CreatedAt       time.Time           `json:"createdAt"`
+	ID              string                `json:"id"`
+	DirectiveID     string                `json:"directiveId"`
+	AttemptID       string                `json:"attemptId"`
+	AssignmentID    string                `json:"assignmentId"`
+	AssignmentEpoch int64                 `json:"assignmentEpoch"`
+	WorkerID        string                `json:"workerId"`
+	ThreadID        string                `json:"threadId"`
+	WorkspacePath   string                `json:"workspacePath"`
+	Route           ProviderRoute         `json:"route"`
+	Kind            ThrottleCommandKind   `json:"kind"`
+	QuotaPoolID     string                `json:"quotaPoolId"`
+	BucketEpochs    []QuotaBucketEpoch    `json:"bucketEpochs"`
+	Reason          string                `json:"reason"`
+	Deadline        *time.Time            `json:"deadline,omitempty"`
+	Checkpoint      *CheckpointMetadata   `json:"checkpoint,omitempty"`
+	AttentionStop   *AttentionStopCommand `json:"attentionStop,omitempty"`
+	CreatedAt       time.Time             `json:"createdAt"`
+}
+
+// AttentionStopCommandDigest hashes the complete worker command while clearing
+// only the digest field itself. Any changed authority or execution binding is a
+// different command, even if an attacker reuses its ID.
+func AttentionStopCommandDigest(command ThrottleCommand) string {
+	if command.AttentionStop != nil {
+		binding := *command.AttentionStop
+		binding.CommandDigest = ""
+		command.AttentionStop = &binding
+	}
+	raw, _ := json.Marshal(command)
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 // ThrottleAcknowledgement is a worker's replay-safe response to one command.

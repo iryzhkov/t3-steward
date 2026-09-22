@@ -28,15 +28,19 @@ type RerunProvenance struct {
 // written to expect it. ArtifactID names a reference artifact in the new run
 // whose content address is the source artifact's, so no content is copied.
 type CarriedInput struct {
-	// Producer is the source producer's manifest task name, which is the
-	// directory component the coordinator writes into the package.
+	// Producer is the source producer's manifest task name.
 	Producer string `json:"producer"`
-	// ProducerTaskID is the source producer's durable task ID. The worker
-	// names the dependency directory from it, so keeping the source value is
-	// what makes the file land where it landed in the source run.
-	ProducerTaskID string `json:"producerTaskId"`
-	Name           string `json:"name"`
-	ArtifactID     string `json:"artifactId"`
+	// ProducerNamespace is the collision-free dependency directory. It is empty
+	// for legacy rerun inputs, which continue to use Producer unchanged.
+	ProducerNamespace string `json:"producerNamespace,omitempty"`
+	ProducerTaskID    string `json:"producerTaskId"`
+	// Source identity pins the successful external attempt and original output.
+	// Legacy rerun inputs predate these fields and leave them empty.
+	SourceRunID      string `json:"sourceRunId,omitempty"`
+	SourceAttemptID  string `json:"sourceAttemptId,omitempty"`
+	SourceArtifactID string `json:"sourceArtifactId,omitempty"`
+	Name             string `json:"name"`
+	ArtifactID       string `json:"artifactId"`
 }
 
 // RerunScope is the explicit division of a source run into the part a rerun

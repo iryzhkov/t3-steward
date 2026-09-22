@@ -2,6 +2,7 @@ package backlog
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,16 @@ import (
 // decided to wake an overseer on this worker, so the only thing left between
 // the activation and an older worker is the exchange itself.
 type activationOfferBuilder struct{}
+
+type failingActivationOfferBuilder struct {
+	calls int
+	code  string
+}
+
+func (b *failingActivationOfferBuilder) BuildAssignmentOffer(context.Context, domain.Assignment, time.Time) (workerproto.AssignmentOffer, error) {
+	b.calls++
+	return workerproto.AssignmentOffer{}, &ActivationPackageError{Code: b.code, Cause: errors.New("sensitive raw failure")}
+}
 
 func (activationOfferBuilder) BuildAssignmentOffer(
 	_ context.Context, assignment domain.Assignment, expiresAt time.Time,
@@ -86,6 +97,33 @@ func supervisionCapableSnapshot(sequence int64, capable bool) domain.WorkerSnaps
 	return snapshot
 }
 
+func TestSnapshotActivationIsRefusedBeforeOfferToLegacyWorker(t *testing.T) {
+	offer, err := activationOfferBuilder{}.BuildAssignmentOffer(
+		context.Background(),
+		testActivationAssignment("assignment-evidence", "attempt-evidence", "dispatch-evidence", "thread-evidence"),
+		coordinatorTestTime.Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer.Package.Package.RequiredCapabilities = append(
+		offer.Package.Package.RequiredCapabilities,
+		workerproto.PackageCapabilitySupervisionEvidence,
+	)
+	legacy := supervisionCapableSnapshot(1, true)
+	if err := requireOfferedCapabilities(offer, legacy); err == nil ||
+		!strings.Contains(err.Error(), workerproto.PackageCapabilitySupervisionEvidence) {
+		t.Fatalf("legacy worker refusal = %v, want missing evidence capability", err)
+	}
+	legacy.Inventory.Capabilities = append(
+		legacy.Inventory.Capabilities,
+		workerproto.PackageCapabilitySupervisionEvidence,
+	)
+	if err := requireOfferedCapabilities(offer, legacy); err != nil {
+		t.Fatalf("upgraded worker refused: %v", err)
+	}
+}
+
 func TestRequireOfferedCapabilitiesGatesActivationsOnTheDurableInventory(t *testing.T) {
 	offer, err := activationOfferBuilder{}.BuildAssignmentOffer(
 		context.Background(),
@@ -142,6 +180,11 @@ func TestRequireOfferedCapabilitiesGatesActivationsOnTheDurableInventory(t *test
 // or does not advertise the supervision capability, and reports what the
 // exchange did with the single outstanding activation assignment.
 func reconcileActivationOffer(t *testing.T, capable bool) (WorkerExchangeReport, *exchangeTransport, []domain.Assignment) {
+	report, transport, assignments, _ := reconcileActivationOfferWithBuilder(t, capable, activationOfferBuilder{})
+	return report, transport, assignments
+}
+
+func reconcileActivationOfferWithBuilder(t *testing.T, capable bool, builder AssignmentOfferBuilder) (WorkerExchangeReport, *exchangeTransport, []domain.Assignment, *sqlite.Store) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
@@ -153,6 +196,7 @@ func reconcileActivationOffer(t *testing.T, capable bool) (WorkerExchangeReport,
 	snapshot := supervisionCapableSnapshot(1, capable)
 	attempt := domain.Attempt{
 		ID: "attempt-1", WorkflowRunID: "run-1", TaskID: "task-overseer", AssignmentID: "assignment-1",
+		SupervisionActivationID: "activation-1", SupervisionActivationEpoch: 1,
 		Progress: domain.ProgressReady, Control: domain.ControlUnassigned, Revision: 1, UpdatedAt: coordinatorTestTime,
 	}
 	assignment := domain.Assignment{
@@ -166,7 +210,8 @@ func reconcileActivationOffer(t *testing.T, capable bool) (WorkerExchangeReport,
 		CreatedAt: coordinatorTestTime, UpdatedAt: coordinatorTestTime,
 	}
 	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
-		Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment},
+		WorkflowRuns: []domain.WorkflowRun{{ID: "run-1", WorkflowID: "workflow-1", Progress: domain.ProgressActive, Revision: 1, GraphRevision: 1, CreatedAt: coordinatorTestTime, UpdatedAt: coordinatorTestTime}},
+		Attempts:     []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +220,7 @@ func reconcileActivationOffer(t *testing.T, capable bool) (WorkerExchangeReport,
 	}
 	transport := &exchangeTransport{snapshots: []domain.WorkerSnapshot{snapshot, snapshot}}
 	report, err := (FleetCoordinator{Store: store, Now: func() time.Time { return coordinatorTestTime }}).ReconcileWorker(
-		ctx, transport, activationOfferBuilder{}, WorkerAdmissionPolicy{QuotaChecksDisabled: true},
+		ctx, transport, builder, WorkerAdmissionPolicy{QuotaChecksDisabled: true},
 		nil, nil, time.Minute, time.Hour,
 	)
 	if err != nil {
@@ -185,7 +230,7 @@ func reconcileActivationOffer(t *testing.T, capable bool) (WorkerExchangeReport,
 	if err != nil {
 		t.Fatal(err)
 	}
-	return report, transport, records.Assignments
+	return report, transport, records.Assignments, store
 }
 
 // TestWorkerExchangeWithholdsAnActivationFromAWorkerWithoutTheCapability is the
@@ -209,6 +254,35 @@ func TestWorkerExchangeWithholdsAnActivationFromAWorkerWithoutTheCapability(t *t
 	// activation reaches the worker as soon as it advertises the capability.
 	if len(assignments) != 1 || assignments[0].State != domain.AssignmentOffered {
 		t.Fatalf("durable assignments after a withheld activation = %+v", assignments)
+	}
+}
+
+func TestWorkerExchangePersistsAndSuppressesDeterministicActivationFailure(t *testing.T) {
+	builder := &failingActivationOfferBuilder{code: ActivationPackageErrorPromptTooLarge}
+	first, _, assignments, store := reconcileActivationOfferWithBuilder(t, true, builder)
+	if builder.calls != 1 || len(first.DispatchFailures) != 1 || len(first.Withheld) != 1 {
+		t.Fatalf("first exchange calls=%d report=%+v", builder.calls, first)
+	}
+	if strings.Contains(first.DispatchFailures[0].SafeMessage, "sensitive") {
+		t.Fatalf("diagnostic exposed raw failure: %+v", first.DispatchFailures[0])
+	}
+	snapshot := supervisionCapableSnapshot(3, true)
+	snapshot.ObservedAt = coordinatorTestTime.Add(time.Minute)
+	snapshot.Inventory.ObservedAt = snapshot.ObservedAt
+	snapshot.ValidUntil = snapshot.ObservedAt.Add(time.Hour)
+	transport := &exchangeTransport{snapshots: []domain.WorkerSnapshot{snapshot, snapshot}}
+	second, err := (FleetCoordinator{Store: store, Now: func() time.Time { return coordinatorTestTime.Add(time.Minute) }}).ReconcileWorker(
+		context.Background(), transport, builder, WorkerAdmissionPolicy{QuotaChecksDisabled: true},
+		nil, nil, time.Minute, time.Hour,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builder.calls != 1 {
+		t.Fatalf("identical failure rebuilt package %d times, want once", builder.calls)
+	}
+	if len(second.DispatchFailures) != 1 || len(second.Withheld) != 1 || len(second.Offered) != 0 || len(transport.offers) != 0 {
+		t.Fatalf("suppressed exchange = %+v offers=%+v assignments=%+v", second, transport.offers, assignments)
 	}
 }
 

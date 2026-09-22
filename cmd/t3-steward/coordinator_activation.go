@@ -137,7 +137,7 @@ func (c coordinatorSupervision) DispatchActivations(ctx context.Context, admissi
 		if !wanted {
 			signal, wanted, signalErr = c.activationSignal(records, state)
 		}
-		if signalErr != nil || !wanted || !activationSignalMayDispatch(signal.Event) {
+		if signalErr != nil || !wanted || !activationSignalMayDispatch(signal) {
 			continue
 		}
 		at, id, ageErr := activationDispatchAge(state, signal)
@@ -221,12 +221,50 @@ func (c coordinatorSupervision) dispatchRun(
 			return err
 		}
 	}
+	if signal.ReassessmentEventID != "" {
+		assignment, found := activationAssignmentOf(records, state.Activation)
+		if !found {
+			return fmt.Errorf("reassess activation dispatch: durable assignment is absent")
+		}
+		if assignment.State == domain.AssignmentOffered {
+			failures, failureErr := c.store.ListCurrentActivationDispatchFailures(ctx, run.ID)
+			if failureErr != nil {
+				return fmt.Errorf("reassess activation dispatch: read dispatch failure: %w", failureErr)
+			}
+			qualified := false
+			for _, failure := range failures {
+				if failure.AssignmentID == assignment.ID && failure.AssignmentEpoch == assignment.Epoch &&
+					failure.ActivationID == state.Activation.ID && failure.ActivationEpoch == state.Activation.Epoch {
+					qualified = true
+					break
+				}
+			}
+			if !qualified {
+				// A reassessment cannot replace a healthy offer. Leave it to the
+				// worker exchange unless immutable package-failure evidence exists.
+				return nil
+			}
+		}
+		if err := c.store.SupersedeFailedActivationOffer(ctx, sqlite.FailedActivationOfferSupersession{
+			CoordinatorEpoch:       c.settings.CoordinatorEpoch,
+			RunID:                  run.ID,
+			ActivationID:           state.Activation.ID,
+			ActivationEpoch:        state.Activation.Epoch,
+			ExpectedRecordRevision: state.Record.Revision,
+			AssignmentID:           assignment.ID,
+			AssignmentEpoch:        assignment.Epoch,
+			ReassessmentEventID:    signal.ReassessmentEventID,
+			SupersededAt:           now,
+		}); err != nil {
+			return fmt.Errorf("reassess activation dispatch: %w", err)
+		}
+	}
 	// Placement gates only transitions that can create or retry a dispatch.
 	// Completion, revocation and other reconciliation consume no new provider
 	// or worker capacity, so closed admission or an unhealthy worker must not
 	// prevent those durable lifecycle facts from being committed.
 	var placement backlog.ActivationPlacement
-	if activationSignalMayDispatch(signal.Event) {
+	if activationSignalMayDispatch(signal) {
 		capacityWorkers := make([]domain.WorkerSnapshot, 0, len(workers))
 		for _, worker := range workers {
 			available, capacityErr := c.store.ExecutorSlotAvailable(ctx, worker.WorkerID, now)
@@ -240,8 +278,12 @@ func (c coordinatorSupervision) dispatchRun(
 				capacityWorkers = append(capacityWorkers, worker)
 			}
 		}
+		route := run.Supervision.Config.Route
+		if signal.Purpose == domain.RecoveryActivationRepair && run.Supervision.Config.Recovery != nil {
+			route = run.Supervision.Config.Recovery.Route
+		}
 		placement, err = backlog.PlaceActivation(backlog.ActivationPlacementRequest{
-			Route:     run.Supervision.Config.Route,
+			Route:     route,
 			Workers:   capacityWorkers,
 			Epoch:     c.settings.CoordinatorEpoch,
 			Now:       now,
@@ -324,7 +366,12 @@ func activationDispatchAge(state backlog.SupervisionActivationState, signal back
 				state.Activation.DispatchIdentity, nil
 		}
 	}
-	inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, state.Record.EventCursor, state.Pending)
+	purpose := signal.Purpose
+	if purpose == "" && signal.Event == domain.ActivationEventDispatchUndelivered {
+		purpose = state.Activation.Purpose
+	}
+	cursor, events := activationPurposeEvents(state, purpose)
+	inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, cursor, events)
 	if len(inbox.Events) != 0 {
 		return inbox.Events[0].OccurredAt.UTC(), inbox.Events[0].ID, nil
 	}
@@ -334,10 +381,12 @@ func activationDispatchAge(state backlog.SupervisionActivationState, signal back
 // activationSignalMayDispatch identifies the two lifecycle inputs that can
 // produce assigned work. Keeping this check before Advance preserves the rule
 // that an impossible dispatch spends no activation budget.
-func activationSignalMayDispatch(event domain.ActivationEvent) bool {
-	switch event {
+func activationSignalMayDispatch(signal backlog.ActivationSignal) bool {
+	switch signal.Event {
 	case domain.ActivationEventTriggerFired, domain.ActivationEventDispatchUndelivered:
 		return true
+	case domain.ActivationEventEventsArrived:
+		return signal.ReassessmentEventID != ""
 	default:
 		return false
 	}
@@ -445,9 +494,22 @@ func (c coordinatorSupervision) activationSignal(
 		Principal:              c.settings.principalID(),
 	}
 	if state.Activation.State == domain.ActivationPendingDispatch {
-		if _, offered := activationAssignmentOf(records, state.Activation); offered {
-			// The dispatch is durable. Whether it started is the worker
-			// reconciliation's answer, not this boundary's.
+		if assignment, durable := activationAssignmentOf(records, state.Activation); durable {
+			inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, state.Record.EventCursor, reviewerSupervisionEvents(state.Pending))
+			for _, trigger := range inbox.Triggers {
+				if trigger.Kind == backlog.TriggerOperatorReassessment && len(trigger.EventIDs) != 0 &&
+					(assignment.State == domain.AssignmentOffered || assignment.State == domain.AssignmentReleased) {
+					signal.Event = domain.ActivationEventEventsArrived
+					signal.ExpectedEpoch = state.Activation.Epoch
+					signal.IncidentID = state.Activation.IncidentID
+					signal.OperatorAuthorized = true
+					signal.ReassessmentEventID = trigger.EventIDs[0]
+					signal.Reason = "an operator requested reassessment of the failed pending activation dispatch"
+					return signal, true, nil
+				}
+			}
+			// A claimed, running, unknown, or otherwise durable dispatch is not
+			// replaceable here. Worker reconciliation owns its next transition.
 			return signal, false, nil
 		}
 		signal.Event = domain.ActivationEventDispatchUndelivered
@@ -456,7 +518,17 @@ func (c coordinatorSupervision) activationSignal(
 		signal.Reason = "the planned activation dispatch left no durable assignment"
 		return signal, true, nil
 	}
-	inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, state.Record.EventCursor, state.Pending)
+	// Repair events are a separate authority lane. They do not advance the
+	// reviewer's compatibility cursor, and they must be selected before ordinary
+	// review events so a failed producer is repaired before its success gate can
+	// be reviewed. CommitRecoveryRetry acknowledges the repair purpose, after
+	// which a later review event may dispatch an independent reviewer.
+	purpose := domain.RecoveryActivationPurpose("")
+	if state.Record.Config.Recovery != nil && len(repairSupervisionEvents(state.Pending)) != 0 {
+		purpose = domain.RecoveryActivationRepair
+	}
+	cursor, events := activationPurposeEvents(state, purpose)
+	inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, cursor, events)
 	if !inbox.NonEmpty() || state.OtherValidActivation {
 		return signal, false, nil
 	}
@@ -476,9 +548,51 @@ func (c coordinatorSupervision) activationSignal(
 		return signal, false, nil
 	}
 	signal.ExpectedEpoch = state.Activation.Epoch
+	signal.Purpose = purpose
 	signal.IncidentID = firstIncidentOfInbox(inbox)
-	signal.Reason = fmt.Sprintf("%d supervision event(s) are waiting for review", len(inbox.EventIDs()))
+	if purpose == domain.RecoveryActivationRepair {
+		signal.Reason = fmt.Sprintf("%d recovery event(s) are waiting for repair", len(inbox.EventIDs()))
+	} else {
+		signal.Reason = fmt.Sprintf("%d supervision event(s) are waiting for review", len(inbox.EventIDs()))
+	}
 	return signal, true, nil
+}
+
+func activationPurposeEvents(state backlog.SupervisionActivationState, purpose domain.RecoveryActivationPurpose) (int64, []backlog.SupervisionEvent) {
+	if purpose == domain.RecoveryActivationRepair {
+		return 0, repairSupervisionEvents(state.Pending)
+	}
+	return state.Record.EventCursor, reviewerSupervisionEvents(state.Pending)
+}
+
+func repairSupervisionEvents(events []backlog.SupervisionEvent) []backlog.SupervisionEvent {
+	selected := make([]backlog.SupervisionEvent, 0, len(events))
+	for _, event := range events {
+		if event.Kind != backlog.TriggerTaskJudgmentRequired {
+			continue
+		}
+		acknowledged := false
+		for _, purpose := range event.AcknowledgedPurposes {
+			if purpose == domain.RecoveryActivationRepair {
+				acknowledged = true
+				break
+			}
+		}
+		if !acknowledged {
+			selected = append(selected, event)
+		}
+	}
+	return selected
+}
+
+func reviewerSupervisionEvents(events []backlog.SupervisionEvent) []backlog.SupervisionEvent {
+	selected := make([]backlog.SupervisionEvent, 0, len(events))
+	for _, event := range events {
+		if event.Kind != backlog.TriggerTaskJudgmentRequired {
+			selected = append(selected, event)
+		}
+	}
+	return selected
 }
 
 // firstIncidentOfInbox names the incident the wake belongs to, which is what

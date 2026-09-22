@@ -53,6 +53,7 @@ type remoteFakeService struct {
 	mu                sync.Mutex
 	principals        []Principal
 	submissions       int
+	recoveryRetries   int
 	submittedArchives []string
 	artifact          []byte
 }
@@ -70,6 +71,14 @@ func (s *remoteFakeService) lastPrincipal() Principal {
 		return Principal{}
 	}
 	return s.principals[len(s.principals)-1]
+}
+
+func (s *remoteFakeService) RetryRecovery(_ context.Context, principal Principal, request domain.RecoveryRetryRequest) (domain.RecoveryRetryReceipt, error) {
+	s.record(principal)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recoveryRetries++
+	return domain.RecoveryRetryReceipt{OperationID: request.OperationID, IncidentID: request.IncidentID, AttemptID: "attempt-retry", AttemptNumber: 2}, nil
 }
 
 func (s *remoteFakeService) Query(_ context.Context, query Query) (Response, error) {
@@ -267,6 +276,35 @@ func newRemoteHarness(t *testing.T, replay bool) remoteHarness {
 		return client
 	}
 	return remoteHarness{client: newClient(t), service: service, argv: recorded, replayRoot: replayRoot, newClient: newClient}
+}
+
+func TestRemoteRecoveryRetryRoundTripAndLostResponseReplay(t *testing.T) {
+	harness := newRemoteHarness(t, true)
+	request := domain.RecoveryRetryRequest{OperationID: "repair-op", RunID: "run", IncidentID: "incident"}
+	first, err := harness.client.RetryRecovery(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A fresh SSH client models a caller that lost the first response. The stable
+	// operation-derived request id must return the retained response without
+	// invoking the recovery transaction twice.
+	second, err := harness.newClient(t).RetryRecovery(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second || first.AttemptID != "attempt-retry" {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+	harness.service.mu.Lock()
+	calls := harness.service.recoveryRetries
+	harness.service.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("recovery retry calls=%d want 1", calls)
+	}
+	principal := harness.service.lastPrincipal()
+	if principal.ID != "remote:"+testAdminCredentials().ClientPrincipal {
+		t.Fatalf("principal=%+v", principal)
+	}
 }
 
 func TestRemoteCarrierRoundTripAndPrincipalOverwrite(t *testing.T) {

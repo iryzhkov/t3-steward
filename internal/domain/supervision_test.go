@@ -404,6 +404,32 @@ func TestActivationTransitionTable(t *testing.T) {
 			wantErr: ErrSupervisionPrerequisite,
 		},
 		{
+			name: "pending-dispatch, operator reassessment advances the epoch", state: ActivationPendingDispatch,
+			event: ActivationEventEventsArrived,
+			mutate: func(in *ActivationTransitionInput) {
+				in.Actor = Actor{Kind: ActorOperator, Principal: "operator"}
+				in.OperatorAuthorized, in.InboxNonEmpty, in.ActivationBudgetRemaining = true, true, true
+			},
+			want: ActivationTransitionResult{State: ActivationPendingDispatch, Epoch: 4},
+		},
+		{
+			name: "pending-dispatch, reassessment without operator authority is refused", state: ActivationPendingDispatch,
+			event: ActivationEventEventsArrived,
+			mutate: func(in *ActivationTransitionInput) {
+				in.InboxNonEmpty, in.ActivationBudgetRemaining = true, true
+			},
+			wantErr: ErrSupervisionUnauthorizedActor,
+		},
+		{
+			name: "pending-dispatch, reassessment without a durable event is refused", state: ActivationPendingDispatch,
+			event: ActivationEventEventsArrived,
+			mutate: func(in *ActivationTransitionInput) {
+				in.Actor = Actor{Kind: ActorOperator, Principal: "operator"}
+				in.OperatorAuthorized, in.ActivationBudgetRemaining = true, true
+			},
+			wantErr: ErrSupervisionPrerequisite,
+		},
+		{
 			name: "pending-dispatch, dispatch confirmed spends one activation", state: ActivationPendingDispatch,
 			event:  ActivationEventDispatchConfirmed,
 			mutate: func(in *ActivationTransitionInput) { in.LeaseValid = true },

@@ -16,10 +16,14 @@ type NodeWaitOperation struct {
 	// Task carries a task-bound registration. It rides the node-wait operation
 	// rather than a new transport method because the two are the same admin
 	// privilege over the same coordinator records; only what they park differs.
-	Task   *domain.TaskWaitRegistration `json:"task,omitempty"`
-	Result *domain.TaskWaitResult       `json:"result,omitempty"`
-	From   string                       `json:"from,omitempty"`
-	To     string                       `json:"to,omitempty"`
+	Task     *domain.TaskWaitRegistration `json:"task,omitempty"`
+	Result   *domain.TaskWaitResult       `json:"result,omitempty"`
+	Decision *domain.AttentionDecision    `json:"decision,omitempty"`
+	// CoordinatorID is injected by the authenticated server boundary and is
+	// never accepted from request JSON.
+	CoordinatorID string `json:"-"`
+	From          string `json:"from,omitempty"`
+	To            string `json:"to,omitempty"`
 	// Host is the host whose steward delivers the wake of this registration.
 	// A T3 thread exists only on the host that opened it, and a wake is sent by
 	// the wait runner whose NodeHost matches the wait's host, so a registration
@@ -64,10 +68,11 @@ type NodeWaitOperation struct {
 const NodeWaitTransitionAction = "transition-node"
 
 type NodeWaitResponse struct {
-	Waits     []domain.NodeWait            `json:"waits"`
-	TaskWaits []domain.TaskWait            `json:"taskWaits,omitempty"`
-	TaskWakes []domain.TaskWaitWakeContext `json:"taskWakes,omitempty"`
-	Changed   bool                         `json:"changed,omitempty"`
+	Waits            []domain.NodeWait            `json:"waits"`
+	TaskWaits        []domain.TaskWait            `json:"taskWaits,omitempty"`
+	TaskWakes        []domain.TaskWaitWakeContext `json:"taskWakes,omitempty"`
+	Changed          bool                         `json:"changed,omitempty"`
+	AttentionReceipt *domain.AttentionReceipt     `json:"attentionReceipt,omitempty"`
 }
 type nodeWaitStore interface {
 	RegisterNodeWait(context.Context, domain.NodeWaitRequest, string, string, time.Time) (domain.NodeWait, error)
@@ -80,6 +85,7 @@ type taskWaitStore interface {
 	RegisterTaskWait(context.Context, domain.TaskWaitRegistration, time.Time) (domain.TaskWait, error)
 	ListTaskWaits(context.Context) ([]domain.TaskWait, error)
 	CancelTaskWait(context.Context, string, time.Time) (domain.TaskWait, error)
+	DecideAttentionForCoordinator(context.Context, domain.AttentionDecision, string, string, time.Time) (domain.TaskWait, domain.AttentionReceipt, error)
 }
 
 func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWaitOperation) (NodeWaitResponse, error) {
@@ -88,14 +94,19 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 	if op.Task != nil {
 		action.WorkflowRunID, action.TaskID = op.Task.WorkflowRunID, op.Task.TaskID
 	}
+	if op.Decision != nil {
+		action.Kind, action.WorkflowRunID, action.TaskID = QueryKind("attention-decision"), op.Decision.WorkflowRunID, op.Decision.TaskID
+	} else if op.Action == "inspect-attention" {
+		action.Kind = QueryKind("attention-decision")
+	}
 	if err := s.authorizer.Authorize(ctx, principal, action); err != nil {
 		return result, err
 	}
 	if op.Action == "settle-task" || op.Action == "expire-task" || op.Action == "wake-task" || op.Action == "pending-task" || op.Action == "transition-task" {
 		return s.taskWaitRuntime(ctx, op)
 	}
-	if op.Action == "register-task" || op.Action == "list-task" || op.Action == "cancel-task" {
-		return s.taskWait(ctx, op)
+	if op.Action == "register-task" || op.Action == "list-task" || op.Action == "inspect-attention" || op.Action == "cancel-task" || op.Action == "decide-attention" {
+		return s.taskWait(ctx, principal, op)
 	}
 	store, ok := s.reader.(nodeWaitStore)
 	if !ok {
@@ -201,7 +212,7 @@ func listedNodeWait(w domain.NodeWait, op NodeWaitOperation) bool {
 // terminal or its revision has moved: the caller is an agent that can act on a
 // plain command error, and guessing on its behalf is how a thread acquires a
 // reason to keep working for a task it no longer owns.
-func (s *Service) taskWait(ctx context.Context, op NodeWaitOperation) (NodeWaitResponse, error) {
+func (s *Service) taskWait(ctx context.Context, principal Principal, op NodeWaitOperation) (NodeWaitResponse, error) {
 	var result NodeWaitResponse
 	store, ok := s.reader.(taskWaitStore)
 	if !ok {
@@ -218,6 +229,17 @@ func (s *Service) taskWait(ctx context.Context, op NodeWaitOperation) (NodeWaitR
 		}
 		result.TaskWaits = []domain.TaskWait{wait}
 		return result, nil
+	case "decide-attention":
+		if op.Decision == nil {
+			return result, errors.New("attention decision is missing")
+		}
+		wait, receipt, err := store.DecideAttentionForCoordinator(ctx, *op.Decision, principal.ID, op.CoordinatorID, s.now())
+		if err != nil {
+			return result, err
+		}
+		result.TaskWaits = []domain.TaskWait{wait}
+		result.AttentionReceipt = &receipt
+		return result, nil
 	case "cancel-task":
 		if op.ID == "" {
 			return result, errors.New("task-bound wait ID required")
@@ -228,17 +250,22 @@ func (s *Service) taskWait(ctx context.Context, op NodeWaitOperation) (NodeWaitR
 		}
 		result.TaskWaits = []domain.TaskWait{wait}
 		return result, nil
-	default:
+	case "list-task", "inspect-attention":
 		waits, err := store.ListTaskWaits(ctx)
 		if err != nil {
 			return result, err
 		}
 		for _, wait := range waits {
+			if op.Action == "inspect-attention" && (wait.Kind != domain.WaitKindAttention || wait.Attention == nil) {
+				continue
+			}
 			if op.ID == "" || wait.ID == op.ID {
 				result.TaskWaits = append(result.TaskWaits, wait)
 			}
 		}
 		return result, nil
+	default:
+		return result, errors.New("unknown task-bound wait action")
 	}
 }
 

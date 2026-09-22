@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
@@ -50,6 +51,8 @@ type CoordinatorOfferBuilder struct {
 	// from. It is nil in a deployment that runs no supervised campaign, and an
 	// activation assignment is then refused rather than built as a task.
 	Supervision SupervisionOfferSource
+	// ActivationEvidence retains and retrieves immutable activation snapshots.
+	ActivationEvidence *CoordinatorArtifactStore
 	// SupervisorPrincipal and SupervisorCredentialReference describe the admin
 	// client an overseer authenticates as on the worker host. See the
 	// co-tenancy limitation recorded on workerproto.SupervisionActivation.
@@ -132,6 +135,11 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		}
 		staticInputs = append(staticInputs, object)
 	}
+	var recovery *workerproto.RecoveryExecutionContext
+	staticInputs, recovery, err = appendRecoverySupplementInputs(ctx, b.Store, state, staticInputs)
+	if err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
 	dependencies, err := packageDependencies(state.task, state.tasks, state.artifacts, state.run.ID)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: dependencies: %w", err)
@@ -154,7 +162,9 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		Class:        state.task.Class,
 		Prompt:       prompt,
 		StaticInputs: staticInputs,
+		Recovery:     recovery,
 		Dependencies: dependencies,
+		Context:      state.task.Context,
 		Route:        cloneProviderRoute(assignment.Route),
 		Environment: workerproto.EnvironmentReference{
 			DirectoryBindings: directoryresource.CloneBindings(state.task.DirectoryBindings),
@@ -191,11 +201,67 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 // build one the selected worker cannot honour. Capability negotiation happens
 // before dispatch: a worker that does not understand preflight is never handed
 // a package whose evidence it would silently never produce.
+type recoverySupplementStore interface {
+	LoadRecoverySupplement(context.Context, string) (domain.RepairAttemptSupplement, bool, error)
+}
+
+func appendRecoverySupplementInputs(ctx context.Context, store ExecutionPackageRecordStore, state executionPackageState, inputs []workerproto.ArtifactObject) ([]workerproto.ArtifactObject, *workerproto.RecoveryExecutionContext, error) {
+	reader, ok := store.(recoverySupplementStore)
+	if !ok {
+		return inputs, nil, nil
+	}
+	supplement, found, err := reader.LoadRecoverySupplement(ctx, state.attempt.ID)
+	if err != nil || !found {
+		return inputs, nil, err
+	}
+	for _, input := range inputs {
+		if strings.HasPrefix(filepath.ToSlash(input.Path), "inputs/recovery/") {
+			return nil, nil, fmt.Errorf("execution package builder: static input path %q collides with reserved recovery inputs", input.Path)
+		}
+	}
+	context := &workerproto.RecoveryExecutionContext{IncidentID: supplement.IncidentID, InstructionPath: "inputs/recovery/instructions.md"}
+	digests := append([]domain.ArtifactDigest{supplement.InstructionArtifact}, supplement.CheckpointArtifacts...)
+	for index, digest := range digests {
+		var retained *domain.Artifact
+		for _, artifact := range state.artifacts {
+			if artifact.ID == digest.ArtifactID && artifact.SHA256 == digest.Digest && artifact.WorkflowRunID == state.run.ID {
+				copy := artifact
+				retained = &copy
+				break
+			}
+		}
+		if retained == nil {
+			return nil, nil, fmt.Errorf("execution package builder: recovery supplement artifact %q with digest %q is not retained by this run", digest.ArtifactID, digest.Digest)
+		}
+		name := "inputs/recovery/instructions.md"
+		if index > 0 {
+			name = fmt.Sprintf("inputs/recovery/checkpoint-%02d", index)
+		}
+		object, err := packageArtifact(*retained, name, "input")
+		if err != nil {
+			return nil, nil, fmt.Errorf("execution package builder: recovery supplement: %w", err)
+		}
+		inputs = append(inputs, object)
+		if index > 0 {
+			context.CheckpointPaths = append(context.CheckpointPaths, name)
+		}
+	}
+	return inputs, context, nil
+}
+
 func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context, pkg *workerproto.ExecutionPackage) error {
-	if len(pkg.Preflight) == 0 {
+	if len(pkg.Preflight) > 0 {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityPreflight)
+	}
+	if pkg.Recovery != nil {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityRecoverySupplement)
+	}
+	if pkg.Context != nil {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityProjectContext)
+	}
+	if len(pkg.RequiredCapabilities) == 0 {
 		return nil
 	}
-	pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityPreflight)
 	advertised, known, err := b.advertisedCapabilities(ctx, pkg.WorkerID)
 	if err != nil {
 		return err
@@ -504,29 +570,63 @@ func packageCarriedInputs(task domain.Task, artifacts map[string]domain.Artifact
 	byProducer := map[string][]domain.CarriedInput{}
 	producers := make([]string, 0, len(task.CarriedInputs))
 	for _, carried := range task.CarriedInputs {
-		if _, seen := byProducer[carried.ProducerTaskID]; !seen {
-			producers = append(producers, carried.ProducerTaskID)
+		producerKey := carried.ProducerTaskID
+		if carried.ProducerNamespace != "" {
+			producerKey = carried.SourceRunID + "\x00" + carried.ProducerTaskID + "\x00" + carried.ProducerNamespace
 		}
-		byProducer[carried.ProducerTaskID] = append(byProducer[carried.ProducerTaskID], carried)
+		if _, seen := byProducer[producerKey]; !seen {
+			producers = append(producers, producerKey)
+		}
+		byProducer[producerKey] = append(byProducer[producerKey], carried)
 	}
 	sort.Strings(producers)
 	result := make([]workerproto.DependencyInput, 0, len(producers))
+	seenPaths := map[string]bool{}
 	for _, producerTaskID := range producers {
 		group := append([]domain.CarriedInput(nil), byProducer[producerTaskID]...)
 		sort.Slice(group, func(i, j int) bool { return group[i].Name < group[j].Name })
-		dependency := workerproto.DependencyInput{TaskID: producerTaskID}
+		dependencyTaskID := producerTaskID
+		if group[0].ProducerNamespace != "" {
+			dependencyTaskID = group[0].ProducerNamespace
+		}
+		dependency := workerproto.DependencyInput{TaskID: dependencyTaskID}
 		for _, carried := range group {
+			if carried.ProducerNamespace != group[0].ProducerNamespace {
+				return nil, fmt.Errorf("carried producer %q mixes dependency namespaces", carried.Producer)
+			}
 			artifact, exists := artifacts[carried.ArtifactID]
 			if !exists {
 				return nil, fmt.Errorf("missing carried input %q from %q", carried.Name, carried.Producer)
 			}
-			object, err := packageArtifact(
-				artifact,
-				"dependencies/"+carried.Producer+"/"+filepath.ToSlash(carried.Name),
-				"dependency",
-			)
+			namespace := carried.ProducerNamespace
+			if namespace == "" {
+				namespace = carried.Producer
+			}
+			path := "dependencies/" + namespace + "/" + filepath.ToSlash(carried.Name)
+			if seenPaths[path] {
+				return nil, fmt.Errorf("duplicate carried input path %q", path)
+			}
+			seenPaths[path] = true
+			object, err := packageArtifact(artifact, path, "dependency")
 			if err != nil {
 				return nil, err
+			}
+			if carried.SourceRunID != "" || carried.SourceAttemptID != "" || carried.SourceArtifactID != "" {
+				if carried.SourceRunID == "" || carried.SourceAttemptID == "" || carried.SourceArtifactID == "" {
+					return nil, fmt.Errorf("carried input %q has incomplete source provenance", carried.Name)
+				}
+				if dependency.Provenance == nil {
+					dependency.Provenance = &workerproto.DependencyProvenance{
+						RunID: carried.SourceRunID, TaskID: carried.ProducerTaskID,
+						AttemptID: carried.SourceAttemptID, SourceArtifacts: map[string]string{},
+					}
+				}
+				if dependency.Provenance.RunID != carried.SourceRunID ||
+					dependency.Provenance.TaskID != carried.ProducerTaskID ||
+					dependency.Provenance.AttemptID != carried.SourceAttemptID {
+					return nil, fmt.Errorf("carried producer %q mixes source provenance", carried.Producer)
+				}
+				dependency.Provenance.SourceArtifacts[artifact.ID] = carried.SourceArtifactID
 			}
 			dependency.Artifacts = append(dependency.Artifacts, object)
 		}

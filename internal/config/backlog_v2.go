@@ -34,6 +34,7 @@ func (c *Config) validateBacklogV2() error {
 	default:
 		return fmt.Errorf("backlog_v2: mode must be disabled, coordinator, or worker (got %q)", v.Mode)
 	}
+	credentialRoles := make(map[string]string)
 	for id, client := range v.Coordinator.AdminClients {
 		if strings.TrimSpace(id) != id || id == "" {
 			return fmt.Errorf("backlog_v2: coordinator.admin_clients key %q must be trimmed and non-empty", id)
@@ -41,6 +42,20 @@ func (c *Config) validateBacklogV2() error {
 		if err := validateAdminCredentialReference(client.Credential); err != nil {
 			return fmt.Errorf("backlog_v2: coordinator.admin_clients %q: %w", id, err)
 		}
+		if client.Supervisor && client.Approver {
+			return fmt.Errorf("backlog_v2: coordinator.admin_clients %q cannot be both supervisor and approver", id)
+		}
+		role := "remote-admin"
+		if client.Supervisor {
+			role = "supervisor"
+		}
+		if client.Approver {
+			role = "approver"
+		}
+		if prior, exists := credentialRoles[client.Credential]; exists && prior != role {
+			return fmt.Errorf("backlog_v2: credential %q is reused across %s and %s roles", client.Credential, prior, role)
+		}
+		credentialRoles[client.Credential] = role
 	}
 	if v.Mode == "coordinator" && c.Backlog.Enabled {
 		return errors.New("backlog_v2: coordinator mode and legacy backlog.enabled are mutually exclusive")

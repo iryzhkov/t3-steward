@@ -418,6 +418,10 @@ func (r *Runtime) DeliverThrottle(ctx context.Context, commands []domain.Throttl
 }
 
 func (r *Runtime) deliverThrottle(ctx context.Context, command domain.ThrottleCommand) (domain.ThrottleAcknowledgement, error) {
+	if command.AttentionStop != nil && (command.Kind != domain.ThrottleCommandHardStop ||
+		command.AttentionStop.CommandDigest == "" || command.AttentionStop.CommandDigest != domain.AttentionStopCommandDigest(command)) {
+		return r.finishThrottle(command, false, "", nil, "invalid attention stop command binding or digest")
+	}
 	state, err := r.journal.snapshot()
 	if err != nil {
 		return domain.ThrottleAcknowledgement{}, err
@@ -1237,6 +1241,10 @@ func (r *Runtime) finishThrottle(command domain.ThrottleCommand, accepted bool, 
 				record.Phase = PhaseStopped
 			case domain.ThrottleCommandHardStop:
 				record.Phase = PhaseStopped
+				if command.AttentionStop != nil {
+					record.StopConfirmed = true
+					record.ObservedThreadState = "stopped"
+				}
 			case domain.ThrottleCommandResume:
 				record.StopObservedSequence = 0
 				record.Phase = PhaseRunning
@@ -1323,6 +1331,32 @@ func claim(assignment domain.Assignment, config Config, now time.Time) domain.As
 	}
 }
 
+func hasAcceptedAttentionStop(record AttemptRecord) bool {
+	if record.Phase != PhaseStopped || !record.StopConfirmed {
+		return false
+	}
+	pkg := record.Package.Package
+	for id, command := range record.ThrottleRequests {
+		binding := command.AttentionStop
+		acknowledgement, ok := record.ThrottleResults[id]
+		if !ok || command.Kind != domain.ThrottleCommandHardStop || binding == nil ||
+			binding.CommandDigest == "" || binding.CommandDigest != domain.AttentionStopCommandDigest(command) ||
+			command.ID != acknowledgement.CommandID || command.AttemptID != acknowledgement.AttemptID ||
+			!acknowledgement.Accepted || acknowledgement.Result != domain.ThrottleResultStopped {
+			continue
+		}
+		if command.AssignmentID == record.Assignment.ID && command.AttemptID == record.Assignment.AttemptID &&
+			command.AssignmentEpoch == record.Assignment.Epoch && command.WorkerID == record.Assignment.WorkerID &&
+			command.ThreadID == pkg.Identity.ThreadID && command.WorkspacePath == record.WorkspacePath &&
+			reflect.DeepEqual(command.Route, pkg.Route) && command.QuotaPoolID == pkg.Route.QuotaPoolID &&
+			binding.CoordinatorID == pkg.CoordinatorID && binding.CoordinatorEpoch == pkg.CoordinatorEpoch &&
+			binding.WorkflowRunID == pkg.Identity.WorkflowRunID && binding.TaskID == pkg.Identity.TaskID {
+			return true
+		}
+	}
+	return false
+}
+
 // observation is the worker's report on one attempt. The pause reason and the
 // thread state in the journal excerpt are the quota-observations-v1 fields:
 // the coordinator decodes snapshots strictly, so they are included only when
@@ -1354,7 +1388,7 @@ func observation(record AttemptRecord, now time.Time, detailed bool) domain.Work
 		// worker's own quota pause makes the stop a pause.
 		state = domain.AssignmentClaimed
 		control = domain.ControlRunning
-		if record.StopConfirmed && hasCommandRequest(record, domain.WorkerCommandStop) {
+		if record.StopConfirmed && (hasCommandRequest(record, domain.WorkerCommandStop) || hasAcceptedAttentionStop(record)) {
 			state = domain.AssignmentReleased
 			control = domain.ControlStopped
 		} else if len(record.ThrottleRequests) != 0 || record.LocalThrottle != nil {

@@ -228,4 +228,18 @@ func TestActivationDispatchStillRequiresAdmission(t *testing.T) {
 	if state.Record.ActivationsUsed != 0 {
 		t.Fatalf("activations used = %d, want no budget spent while admission is closed", state.Record.ActivationsUsed)
 	}
+
+	fixture.coordinator.DispatchActivations(context.Background(), backlog.WorkerAdmissionPolicy{
+		OpenQuotaPools: map[string]struct{}{"claude-main": {}},
+	})
+	state, err = fixture.supervision.LoadSupervisionActivationState(context.Background(), activationLeaseRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Activation.State != domain.ActivationPendingDispatch {
+		t.Fatalf("activation state after quota reopened = %q, want pending dispatch", state.Activation.State)
+	}
+	if state.Record.ActivationsUsed != 0 {
+		t.Fatalf("activations used after offer = %d, want no repair/review attempt spent before claim", state.Record.ActivationsUsed)
+	}
 }

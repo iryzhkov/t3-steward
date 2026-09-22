@@ -85,6 +85,7 @@ type ManifestTask struct {
 	PromptFile    string                      `yaml:"prompt_file"`
 	Needs         ManifestNeeds               `yaml:"needs"`
 	InputsFrom    map[string][]string         `yaml:"inputs_from"`
+	Context       *domain.ProjectContext      `yaml:"context"`
 	Outputs       []string                    `yaml:"outputs"`
 	Commits       []ManifestCommit            `yaml:"commits"`
 	Verify        []string                    `yaml:"verify"`
@@ -443,6 +444,34 @@ func validClass(class domain.TaskClass) bool {
 	return class == domain.TaskClassRequired || class == domain.TaskClassSurplus
 }
 
+func validateAuthoredProjectContext(index *domain.ProjectContext) error {
+	if index == nil {
+		return nil
+	}
+	if index.Status != "" || len(index.Authority) != 0 || len(index.Decisions) != 0 || len(index.CheckpointDelta) != 0 {
+		return errors.New("project context acceptance, status, authority, decisions, and checkpoints are coordinator-resolved; they cannot be authored")
+	}
+	for _, ref := range index.References {
+		if ref.Status != "" || ref.Authority != "" || ref.Acceptance != nil || ref.Binding != nil {
+			return fmt.Errorf("project context reference %q acceptance, status, authority, receipt, and binding are coordinator-resolved", ref.ID)
+		}
+	}
+	candidate := *index
+	candidate.Status = domain.ProjectContextPinned
+	candidate.Authority = []string{"coordinator:unresolved"}
+	candidate.References = append([]domain.ProjectContextReference(nil), index.References...)
+	for n := range candidate.References {
+		candidate.References[n].Status = domain.ProjectContextPinned
+		candidate.References[n].Authority = "coordinator:unresolved"
+		if candidate.References[n].Kind == domain.ContextReferenceExecution {
+			candidate.References[n].Acceptance = &domain.ProjectContextAcceptance{
+				GateID: "unresolved", DecisionID: "unresolved", EvidenceSnapshotID: "unresolved",
+			}
+		}
+	}
+	return domain.ValidateProjectContext(&candidate)
+}
+
 func validateManifestTask(name string, task ManifestTask, tasks map[string]ManifestTask) error {
 	prefix := "task " + name
 	if err := directoryresource.ValidateRequests(task.Directories); err != nil {
@@ -504,6 +533,9 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 	if err := validateNonEmptyUnique(prefix+" resource lock", task.ResourceLocks); err != nil {
 		return err
 	}
+	if err := validateAuthoredProjectContext(task.Context); err != nil {
+		return fmt.Errorf("%s: %w", prefix, err)
+	}
 
 	needs := make(map[string]struct{}, len(task.Needs))
 	for _, dependency := range task.Needs {
@@ -529,22 +561,37 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 		if err := validateNonEmptyUnique(prefix+" inputs_from "+producer, artifacts); err != nil {
 			return err
 		}
-		outputs := make(map[string]struct{}, len(tasks[producer].Outputs)+len(tasks[producer].Commits))
-		for _, output := range tasks[producer].Outputs {
-			outputs[output] = struct{}{}
+		external := strings.Contains(producer, "/")
+		if external {
+			ref, err := domain.ParseNodeRef(producer)
+			if err != nil {
+				return err
+			}
+			if ref.TaskID == domain.SinkTaskName {
+				return fmt.Errorf("%s inputs_from cannot consume outputs from a run sink", prefix)
+			}
 		}
-		// A declared commit is consumed by name like any other declared output.
-		// What the successor receives is its provenance record, and the commit
-		// itself is fetched by the campaign ref that record names.
-		for _, commit := range tasks[producer].Commits {
-			outputs[commit.Name] = struct{}{}
+		outputs := make(map[string]struct{})
+		if !external {
+			outputs = make(map[string]struct{}, len(tasks[producer].Outputs)+len(tasks[producer].Commits))
+			for _, output := range tasks[producer].Outputs {
+				outputs[output] = struct{}{}
+			}
+			// A declared commit is consumed by name like any other declared output.
+			// What the successor receives is its provenance record, and the commit
+			// itself is fetched by the campaign ref that record names.
+			for _, commit := range tasks[producer].Commits {
+				outputs[commit.Name] = struct{}{}
+			}
 		}
 		for _, artifact := range artifacts {
 			if err := validateRelativePath(artifact, false); err != nil {
 				return fmt.Errorf("%s inputs_from %s artifact %q: %w", prefix, producer, artifact, err)
 			}
-			if _, ok := outputs[artifact]; !ok {
-				return fmt.Errorf("%s references undeclared artifact %q from %s", prefix, artifact, producer)
+			if !external {
+				if _, ok := outputs[artifact]; !ok {
+					return fmt.Errorf("%s references undeclared artifact %q from %s", prefix, artifact, producer)
+				}
 			}
 		}
 	}

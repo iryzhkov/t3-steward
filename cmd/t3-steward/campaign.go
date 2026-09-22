@@ -36,7 +36,7 @@ Mutating, checks first and creates one workflow and one run:
   submit   <directory|workflow.yaml> --idempotency-key KEY [--json] [--no-notify]
            [--allow-unverified --reason TEXT] [--notify-thread <current|id>]
 Mutating recovery, creates a second run and never changes the first:
-  rerun    <run> --from TASK --idempotency-key KEY [--reason TEXT] [--json]
+  rerun <run> --from TASK --idempotency-key KEY [--prompt TEXT] [--reason TEXT] [--json]
 
 Lifecycle (delegated to backlog, unchanged; explain is read-only and live):
   list [--project P] [--progress STATES] [--class CLASS] [--json]
@@ -193,7 +193,8 @@ type campaignCLI struct {
 	// The identity is a parameter of this seam and of no other, which is how the
 	// CLI refuses to sign anything but supervision with a supervisor credential:
 	// no other command family can reach a transport built from one.
-	superviseAs func(context.Context, supervisorIdentity, backlogadmin.SupervisionRequest) (backlogadmin.SupervisionResponse, error)
+	superviseAs     func(context.Context, supervisorIdentity, backlogadmin.SupervisionRequest) (backlogadmin.SupervisionResponse, error)
+	retryRecoveryAs func(context.Context, supervisorIdentity, domain.RecoveryRetryRequest) (domain.RecoveryRetryReceipt, error)
 	// principal names who is running the command. It appears in the audit
 	// record of a submission that skipped the live check.
 	principal string
@@ -281,6 +282,17 @@ func campaignCLIFor(cfg config.Config) campaignCLI {
 		},
 		resolveThread: func(explicit string) (string, error) { return resolveThread(cfg, explicit) },
 		delivery:      nodeWakeDeliveryFor(cfg),
+		retryRecoveryAs: func(ctx context.Context, identity supervisorIdentity, request domain.RecoveryRetryRequest) (domain.RecoveryRetryReceipt, error) {
+			transport, err := newCoordinatorTransportAs(cfg, identity)
+			if err != nil {
+				return domain.RecoveryRetryReceipt{}, err
+			}
+			carrier, ok := transport.client.(backlogadmin.RecoveryRetryTransport)
+			if !ok {
+				return domain.RecoveryRetryReceipt{}, errors.New("coordinator recovery retry is unavailable")
+			}
+			return carrier.RetryRecovery(ctx, request)
+		},
 		superviseAs: func(ctx context.Context, identity supervisorIdentity, request backlogadmin.SupervisionRequest) (backlogadmin.SupervisionResponse, error) {
 			// This is the only construction in the CLI that may carry a supervisor
 			// credential, and it is reached only from the supervision verbs.
@@ -366,6 +378,8 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 		return c.runRerun(ctx, args[1:])
 	case "supervision":
 		return c.runSupervision(ctx, args[1:])
+	case "recovery":
+		return c.runRecovery(ctx, args[1:])
 	case "list", "graph", "cancel":
 		if args[0] == "cancel" && isCampaignRunCancel(args) {
 			// "cancel <run>" is a command of its own: one revision-fenced

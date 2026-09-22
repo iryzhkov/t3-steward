@@ -139,6 +139,10 @@ func requestIdentity(request localRequest) (string, error) {
 		return prefix + "/" + id, nil
 	}
 	switch request.Operation {
+	case localOperationRecoveryRetry:
+		if request.RecoveryRetry != nil {
+			return stable(localOperationRecoveryRetry, request.RecoveryRetry.OperationID)
+		}
 	case localOperationSubmission:
 		if request.Submission != nil {
 			return stable(localOperationSubmission, request.Submission.IdempotencyKey)
@@ -508,6 +512,19 @@ func (c *SSHClient) AmendGraph(ctx context.Context, amendment domain.GraphAmendm
 
 // Supervise sends one supervision operation under the word its own operation
 // selects, so that a key pinned to supervision-show cannot carry a decision.
+func (c *SSHClient) RetryRecovery(ctx context.Context, request domain.RecoveryRetryRequest) (domain.RecoveryRetryReceipt, error) {
+	response, _, err := c.roundTrip(ctx, localRequest{
+		Version: LocalTransportVersion, Operation: localOperationRecoveryRetry, RecoveryRetry: &request,
+	}, nil, false)
+	if err != nil {
+		return domain.RecoveryRetryReceipt{}, err
+	}
+	if response.RecoveryRetryResponse == nil {
+		return domain.RecoveryRetryReceipt{}, c.fail(ClassProtocol, localOperationRecoveryRetry, errors.New("coordinator recovery retry returned no response"))
+	}
+	return *response.RecoveryRetryResponse, nil
+}
+
 func (c *SSHClient) Supervise(ctx context.Context, request SupervisionRequest) (SupervisionResponse, error) {
 	operation := localOperationSupervisionShow
 	if request.Operation.Mutating() {

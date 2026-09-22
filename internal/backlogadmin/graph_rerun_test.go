@@ -326,6 +326,46 @@ func TestRerunRefusesWhenAnAncestorArtifactIsUnretrievable(t *testing.T) {
 	}
 }
 
+func TestRerunMayReplaceOnlyTheFailedRootPrompt(t *testing.T) {
+	ctx := context.Background()
+	service, store, _ := rerunFixture(t)
+	request := rerunRequest("rerun-corrected", "implement")
+	request.Prompt = "corrected root instructions"
+	result, err := service.AmendGraph(ctx, Principal{ID: "operator"}, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root, descendant domain.Task
+	for _, task := range result.Graph.Tasks {
+		switch task.Name {
+		case "implement":
+			root = task
+		case "qualify":
+			descendant = task
+		}
+	}
+	if root.PromptArtifactID != "input:rerun:rerun-corrected:prompt" {
+		t.Fatalf("root prompt = %q", root.PromptArtifactID)
+	}
+	if descendant.PromptArtifactID == "" || descendant.PromptArtifactID == root.PromptArtifactID {
+		t.Fatalf("descendant prompt was replaced: %+v", descendant)
+	}
+	records, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range domain.TasksForRun(records.WorkflowRuns[0], records.Tasks) {
+		if task.Name == "implement" && task.PromptArtifactID != "prompt-implement" {
+			t.Fatal("source prompt changed")
+		}
+	}
+	changed := request
+	changed.Prompt = "different corrected instructions"
+	if _, err = service.AmendGraph(ctx, Principal{ID: "operator"}, changed); err == nil {
+		t.Fatal("idempotent replay accepted a changed corrected prompt")
+	}
+}
+
 func TestRerunIdempotencyReturnsTheSameRunAndRefusesChangedContent(t *testing.T) {
 	ctx := context.Background()
 	service, store, _ := rerunFixture(t)

@@ -6,17 +6,14 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-// MaxActivationPromptBytes bounds the activation snapshot carried inside an
-// execution package.
-//
-// The snapshot travels in the package rather than as an artifact because it is
-// built for exactly one activation at exactly one epoch and is never read
-// again: making it a retained artifact would mint one immutable object per
-// wake-up for no reader. It is bounded for the same reason the prompt envelope
-// it is rendered from is bounded, and the bound is checked here so an
-// oversized snapshot is refused before it reaches a worker.
+// MaxActivationPromptBytes bounds the inline activation brief carried inside an
+// execution package. Snapshot-backed packages also carry a complete immutable
+// evidence artifact; legacy packages may carry their complete evidence inline.
+// The exact final model prompt has the tighter SupervisionPromptByteCap.
 const MaxActivationPromptBytes = 64 << 10
 
 // SupervisionAction is one action an activation is scoped to perform, and the
@@ -44,10 +41,24 @@ type SupervisionAction struct {
 // must never be sent one, which is why the capability is a worker inventory
 // capability rather than a package capability: only the worker can say which
 // build is running on its host.
+type RecoveryProposalScope struct {
+	Version                  int                               `json:"version"`
+	ExpectedIncidentRevision int64                             `json:"expectedIncidentRevision"`
+	SourceAttemptID          string                            `json:"sourceAttemptId"`
+	SourceAttemptRevision    int64                             `json:"sourceAttemptRevision"`
+	Diagnostic               domain.RecoveryDiagnosticIdentity `json:"diagnostic"`
+}
+
 type SupervisionActivation struct {
 	ActivationID string `json:"activationId"`
-	RunID        string `json:"runId"`
-	Epoch        int64  `json:"epoch"`
+	// Purpose is empty for legacy reviewer packages and "repair" for a scoped recovery executor.
+	Purpose    string `json:"purpose,omitempty"`
+	IncidentID string `json:"incidentId,omitempty"`
+	// RecoveryProposal is present only for repair-purpose packages. It freezes
+	// the incident and failed-attempt identities the worker proposal must retain.
+	RecoveryProposal *RecoveryProposalScope `json:"recoveryProposal,omitempty"`
+	RunID            string                 `json:"runId"`
+	Epoch            int64                  `json:"epoch"`
 	// RecordRevision is the supervision record revision every decision must
 	// name as its expected revision.
 	RecordRevision int64 `json:"recordRevision"`
@@ -78,6 +89,9 @@ type SupervisionActivation struct {
 	MaxTurns int `json:"maxTurns"`
 	// Prompt is the rendered bounded activation snapshot.
 	Prompt string `json:"prompt"`
+	// EvidenceFiles declares that the package materializes the immutable
+	// evidence snapshot and authored prompt at the standard input paths.
+	EvidenceFiles bool `json:"evidenceFiles,omitempty"`
 	// Actions is the exact scoped action set. An action absent from it is not
 	// available, whatever the prompt says.
 	Actions []SupervisionAction `json:"actions"`
@@ -251,6 +265,21 @@ func validateSupervisionActivation(pkg ExecutionPackage) error {
 	if activation.RunID != pkg.Identity.WorkflowRunID {
 		return errors.New("execution package supervision: activation belongs to another run")
 	}
+	if activation.Purpose != "" && activation.Purpose != "repair" {
+		return errors.New("execution package supervision: unsupported activation purpose")
+	}
+	if activation.Purpose == "repair" {
+		scope := activation.RecoveryProposal
+		if strings.TrimSpace(activation.IncidentID) == "" || scope == nil ||
+			scope.Version != domain.RecoveryProposalVersion || scope.ExpectedIncidentRevision < 1 ||
+			!identityPattern.MatchString(scope.SourceAttemptID) || scope.SourceAttemptRevision < 1 ||
+			strings.TrimSpace(scope.Diagnostic.FailureFingerprint) == "" ||
+			strings.TrimSpace(scope.Diagnostic.EvidenceFingerprint) == "" {
+			return errors.New("execution package supervision: repair activation needs a complete recovery proposal scope")
+		}
+	} else if activation.RecoveryProposal != nil {
+		return errors.New("execution package supervision: reviewer activation cannot carry repair proposal authority")
+	}
 	if activation.Epoch < 1 || activation.RecordRevision < 0 || activation.MaxTurns < 1 {
 		return errors.New("execution package supervision: epoch, revision and turn budget must be positive")
 	}
@@ -302,6 +331,9 @@ func validateSupervisionActivation(pkg ExecutionPackage) error {
 	}
 	if !slices.Contains(pkg.RequiredCapabilities, CapabilityCampaignSupervision) {
 		return fmt.Errorf("execution package supervision: an activation must require %q", CapabilityCampaignSupervision)
+	}
+	if activation.Purpose == "repair" && !slices.Contains(pkg.RequiredCapabilities, PackageCapabilityRecoveryRetry) {
+		return fmt.Errorf("execution package supervision: a repair activation must require %q", PackageCapabilityRecoveryRetry)
 	}
 	return nil
 }

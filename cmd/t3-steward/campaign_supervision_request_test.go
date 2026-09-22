@@ -160,9 +160,9 @@ func TestSupervisorCredentialFlagBelongsToSupervisionOnly(t *testing.T) {
 	if parsed.supervisorCredential != "secretref:f03-admin/supervisor" {
 		t.Fatalf("credential = %q", parsed.supervisorCredential)
 	}
-	// The structural half of the same rule: exactly one seam of the CLI takes a
-	// supervisor identity, so no other command family can reach a transport
-	// built from one. A seam added with that parameter fails here.
+	// The structural half of the same rule: only activation-scoped command
+	// families take a supervisor identity. A general command seam added with that
+	// parameter fails here.
 	cli := reflect.TypeOf(campaignCLI{})
 	identity := reflect.TypeOf(supervisorIdentity{})
 	var carriers []string
@@ -177,7 +177,8 @@ func TestSupervisorCredentialFlagBelongsToSupervisionOnly(t *testing.T) {
 			}
 		}
 	}
-	if len(carriers) != 1 || carriers[0] != "superviseAs" {
-		t.Fatalf("seams carrying a supervisor identity = %v, want only superviseAs", carriers)
+	want := []string{"superviseAs", "retryRecoveryAs"}
+	if !reflect.DeepEqual(carriers, want) {
+		t.Fatalf("seams carrying a supervisor identity = %v, want %v", carriers, want)
 	}
 }

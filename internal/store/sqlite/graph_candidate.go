@@ -43,9 +43,10 @@ func validateGraphCandidateTx(ctx context.Context, tx *sql.Tx, c GraphCommit, ru
 	if !reflect.DeepEqual(tasks, c.Tasks) {
 		return errors.New("prepared graph does not match amendment intent")
 	}
-	if request.Operation == "task-add" {
+	wantsPrompt := request.Operation == "task-add" || (request.Operation == "task-set" && request.Prompt != "")
+	if wantsPrompt {
 		if len(c.Inputs) != 1 || c.Inputs[0].ID != "input:graph:"+request.ID {
-			return errors.New("task add requires its single prepared prompt")
+			return errors.New("prompt amendment requires its single prepared prompt")
 		}
 	} else if len(c.Inputs) != 0 {
 		return errors.New("unexpected amendment input metadata")

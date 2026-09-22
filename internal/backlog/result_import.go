@@ -23,6 +23,7 @@ type ResultImportStore interface {
 	ArtifactCatalog
 	TurnOutcomeStore
 	LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRecords, error)
+	CommitRecoveryRetry(context.Context, domain.RecoveryRetryRequest) (domain.RecoveryRetryReceipt, error)
 }
 
 // WorkerUploadOpener opens one exact object advertised by a worker upload.
@@ -44,6 +45,7 @@ type CoordinatorResultImporter struct {
 type ResultImportReport struct {
 	Artifacts  []domain.Artifact
 	Transition []domain.TurnOutcomeTransition
+	Recovery   *domain.RecoveryRetryReceipt
 }
 
 // Import verifies custody, copies every object into coordinator ownership, and
@@ -158,6 +160,10 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		}
 		payloads[index] = data
 	}
+	proposal, err := recoveryProposalFromResult(artifacts, payloads, attempt, assignment)
+	if err != nil {
+		return report, err
+	}
 	verificationPassed, failure, summary, err := evaluateResultEvidence(task, assignment.ThreadID, artifacts, payloads, missingOutputs)
 	if err != nil {
 		return report, err
@@ -180,6 +186,27 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 			return report, err
 		}
 		report.Artifacts = append(report.Artifacts, published)
+	}
+	if proposal != nil {
+		request, requestErr := proposal.RetryRequest()
+		if requestErr != nil {
+			return report, requestErr
+		}
+		for _, artifact := range report.Artifacts {
+			if artifact.Name == "recovery/proposal.json" {
+				request.ProposalReceipt = domain.RecoveryProposalReceipt{
+					ProposalArtifact:    domain.ArtifactDigest{ArtifactID: artifact.ID, Digest: artifact.SHA256},
+					ActivationAttemptID: attempt.ID,
+					AssignmentID:        assignment.ID, AssignmentEpoch: assignment.Epoch,
+				}
+				break
+			}
+		}
+		receipt, commitErr := i.Store.CommitRecoveryRetry(ctx, request)
+		if commitErr != nil {
+			return report, fmt.Errorf("result import recovery proposal: %w", commitErr)
+		}
+		report.Recovery = &receipt
 	}
 	report.Transition, err = ReconcileTurnOutcomes(ctx, i.Store, []domain.TurnOutcome{{
 		ID: outcomeID, AttemptID: attempt.ID,
@@ -356,6 +383,10 @@ func resultArtifact(object workerproto.ArtifactObject, manifest workerproto.Arti
 	switch kind {
 	case domain.ArtifactOutput:
 	case domain.ArtifactVerification, domain.ArtifactSummary, domain.ArtifactLog:
+	case domain.ArtifactInput, domain.ArtifactCheckpoint:
+		if !attempt.IsSupervisionActivation() || !strings.HasPrefix(name, "recovery/") {
+			return domain.Artifact{}, fmt.Errorf("result import object %q cannot publish recovery content", object.ID)
+		}
 	default:
 		return domain.Artifact{}, fmt.Errorf("result import object %q has invalid kind %q", object.ID, object.Kind)
 	}
@@ -408,6 +439,69 @@ func validateDeclaredResultOutputs(task domain.Task, outputs map[string]string) 
 	}
 	sort.Strings(missing)
 	return missing, nil
+}
+
+func recoveryProposalFromResult(artifacts []domain.Artifact, payloads [][]byte, attempt domain.Attempt, assignment domain.Assignment) (*domain.RecoveryProposal, error) {
+	var proposal *domain.RecoveryProposal
+	byID := make(map[string]domain.Artifact)
+	recoveryArtifacts := 0
+	for index, artifact := range artifacts {
+		byID[artifact.ID] = artifact
+		if !strings.HasPrefix(artifact.Name, "recovery/") {
+			continue
+		}
+		recoveryArtifacts++
+		if artifact.Name != "recovery/proposal.json" {
+			continue
+		}
+		if proposal != nil || artifact.Kind != domain.ArtifactInput || artifact.MediaType != "application/json" ||
+			artifact.ID != "recovery-proposal-"+attempt.ID {
+			return nil, errors.New("result import recovery proposal identity mismatch")
+		}
+		var decoded domain.RecoveryProposal
+		decoder := json.NewDecoder(bytes.NewReader(payloads[index]))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&decoded); err != nil {
+			return nil, fmt.Errorf("result import recovery proposal: %w", err)
+		}
+		var extra json.RawMessage
+		if err := decoder.Decode(&extra); err != io.EOF {
+			return nil, errors.New("result import recovery proposal has trailing content")
+		}
+		proposal = &decoded
+	}
+	if recoveryArtifacts == 0 {
+		return nil, nil
+	}
+	if proposal == nil || !attempt.IsSupervisionActivation() {
+		return nil, errors.New("result import recovery artifacts need a typed activation proposal")
+	}
+	request, err := proposal.RetryRequest()
+	if err != nil {
+		return nil, err
+	}
+	if proposal.RunID != attempt.WorkflowRunID || proposal.ActivationID != attempt.SupervisionActivationID ||
+		proposal.ActivationEpoch != attempt.SupervisionActivationEpoch || proposal.AssignmentID != assignment.ID ||
+		proposal.AssignmentEpoch != assignment.Epoch || proposal.GraphRevision < 1 {
+		return nil, errors.New("result import recovery proposal authority mismatch")
+	}
+	instruction, ok := byID[request.InstructionArtifact.ArtifactID]
+	if !ok || instruction.Name != "recovery/instructions.md" || instruction.Kind != domain.ArtifactInput ||
+		instruction.MediaType != "text/markdown" || instruction.SHA256 != request.InstructionArtifact.Digest {
+		return nil, errors.New("result import recovery instruction identity mismatch")
+	}
+	wantCount := 2 + len(request.CheckpointArtifacts)
+	for _, digest := range request.CheckpointArtifacts {
+		checkpoint, ok := byID[digest.ArtifactID]
+		if !ok || checkpoint.Name != "recovery/checkpoint.tar" || checkpoint.Kind != domain.ArtifactCheckpoint ||
+			checkpoint.MediaType != "application/x-tar" || checkpoint.SHA256 != digest.Digest {
+			return nil, errors.New("result import recovery checkpoint identity mismatch")
+		}
+	}
+	if recoveryArtifacts != wantCount {
+		return nil, errors.New("result import recovery proposal contains undeclared payload")
+	}
+	return proposal, nil
 }
 
 func evaluateResultEvidence(task domain.Task, threadID string, artifacts []domain.Artifact, payloads [][]byte, missingOutputs []string) (bool, string, domain.Artifact, error) {

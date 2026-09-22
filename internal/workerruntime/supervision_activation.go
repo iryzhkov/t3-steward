@@ -29,13 +29,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"strings"
-	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -48,51 +48,86 @@ import (
 // with them. Nothing here grants anything: the coordinator authorizes every
 // invocation against the activation's live lease, epoch and record revision.
 func ActivationPrompt(activation workerproto.SupervisionActivation) string {
-	var prompt strings.Builder
-	prompt.WriteString(activation.Prompt)
-	prompt.WriteString("\n\nScoped commands\n")
-	prompt.WriteString(fmt.Sprintf(
-		"You are supervisor %q on run %s at activation epoch %d. These commands are your only authority.\n"+
-			"Read the current revisions with show before every decision, and give every mutating command a\n"+
-			"--request-id you have not used: repeating a key with the same payload returns the first answer,\n"+
-			"and the same key with a different payload is refused.\n",
-		activation.Principal, activation.RunID, activation.Epoch))
-	if activation.CredentialReference != "" {
-		prompt.WriteString("Admin credential reference: " + activation.CredentialReference + "\n")
-	}
-	if !activation.Deadline.IsZero() {
-		prompt.WriteString("This activation ends at " + activation.Deadline.UTC().Format(time.RFC3339) +
-			", after which your decisions are refused.\n")
-	}
-	prompt.WriteString(fmt.Sprintf("Turns available to this activation: %d.\n", activation.MaxTurns))
-	prompt.WriteString("Do not delegate this review to a native subagent. Every separately scheduled\n" +
-		"session is a campaign task the manifest declared.\n")
-	for _, action := range activation.Actions {
-		prompt.WriteString("\n  " + strings.Join(action.Command, " ") + "\n")
-		for _, constraint := range action.Constraints {
-			prompt.WriteString("    - " + constraint + "\n")
-		}
-	}
-	prompt.WriteString("\nEnding this turn is not a decision. If the evidence does not support one you are\n" +
-		"scoped to make, escalate and stop.\n")
-	return prompt.String()
+	return workerproto.RenderSupervisionPrompt(activation)
 }
 
-// prepareActivation gives the activation an empty workspace of its own.
-//
-// Empty is the requirement, not a simplification. The activation reads evidence
-// through its scoped commands and through artifact reads, never from a checkout,
-// so a repository here would buy nothing and would take the workflow checkout
-// lock its reviewed tasks need.
-func (d *LocalDriver) prepareActivation(pkg workerproto.ExecutionPackage) (string, error) {
+// prepareActivation gives the activation an isolated evidence workspace without
+// checking out a repository or taking its workspace lock.
+func (d *LocalDriver) prepareActivation(ctx context.Context, pkg workerproto.ExecutionPackage) (string, error) {
 	workspace := filepath.Join(d.workspacePath(pkg), "activation")
 	if err := ensureRealDirectory(workspace); err != nil {
 		return "", fmt.Errorf("prepare supervision activation workspace: %w", err)
+	}
+	if err := os.Chmod(workspace, 0o700); err != nil {
+		return "", fmt.Errorf("restrict supervision activation workspace: %w", err)
+	}
+	objects := append([]workerproto.ArtifactObject{pkg.Prompt}, pkg.StaticInputs...)
+	for _, object := range objects {
+		if _, err := d.cacheArtifact(ctx, object, pkg.Limits.MaxArtifactBytes); err != nil {
+			return "", err
+		}
+	}
+	if err := d.materializeActivationArtifact(pkg.Prompt, filepath.Join(workspace, "inputs", "supervision-prompt.md"), pkg.Limits.MaxArtifactBytes); err != nil {
+		return "", err
+	}
+	for _, object := range pkg.StaticInputs {
+		if filepath.ToSlash(object.Path) != "inputs/supervision-evidence.json" {
+			return "", fmt.Errorf("prepare supervision activation: unsupported static input path %q", object.Path)
+		}
+		if err := d.materializeActivationArtifact(object, filepath.Join(workspace, "inputs", "supervision-evidence.json"), pkg.Limits.MaxArtifactBytes); err != nil {
+			return "", err
+		}
 	}
 	if err := d.writeSupervisionIdentity(pkg, workspace); err != nil {
 		return "", err
 	}
 	return workspace, nil
+}
+
+func (d *LocalDriver) materializeActivationArtifact(object workerproto.ArtifactObject, destination string, maxBytes int64) error {
+	data, err := d.readCachedArtifact(object, maxBytes)
+	if err != nil {
+		return fmt.Errorf("read supervision artifact %q: %w", object.ID, err)
+	}
+	parent := filepath.Dir(destination)
+	if err := ensureRealDirectory(parent); err != nil {
+		return fmt.Errorf("create supervision inputs directory: %w", err)
+	}
+	if err := os.Chmod(parent, 0o700); err != nil {
+		return fmt.Errorf("restrict supervision inputs directory: %w", err)
+	}
+	if info, err := os.Lstat(destination); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("supervision artifact destination %q is not a regular file", destination)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	stage, err := os.CreateTemp(parent, ".supervision-input-*")
+	if err != nil {
+		return err
+	}
+	stagePath := stage.Name()
+	defer os.Remove(stagePath)
+	if err := stage.Chmod(0o600); err != nil {
+		stage.Close()
+		return err
+	}
+	if _, err := stage.Write(data); err != nil {
+		stage.Close()
+		return err
+	}
+	if err := stage.Sync(); err != nil {
+		stage.Close()
+		return err
+	}
+	if err := stage.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(stagePath, destination); err != nil {
+		return fmt.Errorf("materialize supervision artifact %q: %w", object.ID, err)
+	}
+	return nil
 }
 
 // writeSupervisionIdentity records which admin client the overseer's CLI must
@@ -195,17 +230,96 @@ func (d *LocalDriver) createActivationThread(ctx context.Context, pkg workerprot
 	for name, value := range activation.ActivationEnvironment() {
 		environment[name] = value
 	}
+	modelPrompt := ActivationPrompt(*activation)
+	if len(modelPrompt) > workerproto.SupervisionPromptByteCap {
+		return &backlog.ActivationPackageError{
+			Code: backlog.ActivationPackageErrorPromptTooLarge,
+			Cause: fmt.Errorf("final activation prompt is %d bytes over its %d byte cap",
+				len(modelPrompt)-workerproto.SupervisionPromptByteCap, workerproto.SupervisionPromptByteCap),
+		}
+	}
 	threadID, err := d.T3.CreateAndStartThread(ctx, t3control.NewThreadInput{
 		ThreadID: pkg.Identity.ThreadID, DispatchToken: pkg.Identity.DispatchToken,
 		ProjectID: projectID, Title: activation.ActivationID,
 		ModelSelection: selection, RuntimeMode: "full-access", InteractionMode: "default",
-		WorktreePath: workspace, Prompt: ActivationPrompt(*activation),
+		WorktreePath: workspace, Prompt: modelPrompt,
 		Environment: environment,
 	})
 	if threadID != "" && threadID != pkg.Identity.ThreadID {
 		return errors.New("T3 returned a different deterministic thread identity")
 	}
 	return err
+}
+
+func readRecoveryOutput(path string, limit int64, required bool) ([]byte, error) {
+	file, err := openRegular(path)
+	if err != nil {
+		if !required && errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, errors.New("recovery proposal artifact exceeds package limit")
+	}
+	if required && len(data) == 0 {
+		return nil, errors.New("repair activation produced empty recovery instructions")
+	}
+	return data, nil
+}
+
+func (d *LocalDriver) collectRecoveryProposal(pkg workerproto.ExecutionPackage, workspace string) (*domain.RecoveryProposal, []byte, []byte, error) {
+	activation := pkg.Supervision
+	if activation == nil || activation.Purpose != string(domain.RecoveryActivationRepair) {
+		return nil, nil, nil, nil
+	}
+	scope := activation.RecoveryProposal
+	if scope == nil {
+		return nil, nil, nil, errors.New("repair activation has no recovery proposal scope")
+	}
+	instructions, err := readRecoveryOutput(filepath.Join(workspace, "recovery", "instructions.md"), pkg.Limits.MaxArtifactBytes, true)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("collect repair instructions: %w", err)
+	}
+	checkpoint, err := readRecoveryOutput(filepath.Join(workspace, "recovery", "checkpoint.tar"), pkg.Limits.MaxArtifactBytes, false)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("collect repair checkpoint: %w", err)
+	}
+	instructionSum := sha256.Sum256(instructions)
+	instruction := domain.ArtifactDigest{
+		ArtifactID: "recovery-instructions-" + pkg.Identity.AttemptID,
+		Digest:     hex.EncodeToString(instructionSum[:]),
+	}
+	var checkpoints []domain.ArtifactDigest
+	if checkpoint != nil {
+		sum := sha256.Sum256(checkpoint)
+		checkpoints = []domain.ArtifactDigest{{
+			ArtifactID: "recovery-checkpoint-" + pkg.Identity.AttemptID,
+			Digest:     hex.EncodeToString(sum[:]),
+		}}
+	}
+	diagnostic := scope.Diagnostic
+	diagnostic.StrategyFingerprint = domain.RecoveryStrategyFingerprint(instruction, checkpoints)
+	proposal, err := domain.SealRecoveryProposal(domain.RecoveryProposal{
+		Version: domain.RecoveryProposalVersion, OperationID: "proposal:" + pkg.Identity.AssignmentID,
+		RunID: activation.RunID, IncidentID: activation.IncidentID,
+		ExpectedIncidentRevision: scope.ExpectedIncidentRevision, GraphRevision: activation.GraphRevision,
+		ActivationID: activation.ActivationID, ActivationEpoch: activation.Epoch,
+		AssignmentID: pkg.Identity.AssignmentID, AssignmentEpoch: pkg.Identity.AssignmentEpoch,
+		Principal: activation.Principal, SourceAttemptID: scope.SourceAttemptID,
+		SourceAttemptRevision: scope.SourceAttemptRevision,
+		InstructionArtifact:   instruction, CheckpointArtifacts: checkpoints,
+		Diagnostic: diagnostic, ProposedAt: d.Now().UTC(),
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return &proposal, instructions, checkpoint, nil
 }
 
 // collectActivation ends the activation's turn.
@@ -247,6 +361,10 @@ func (d *LocalDriver) collectActivation(ctx context.Context, pkg workerproto.Exe
 	d.logger().Info("supervision activation turn ended",
 		"activation", pkg.Supervision.ActivationID, "run", pkg.Supervision.RunID,
 		"epoch", pkg.Supervision.Epoch, "outcome", outcome, "reason", failure)
+	proposal, instructions, checkpoint, err := d.collectRecoveryProposal(pkg, workspace)
+	if err != nil {
+		return err
+	}
 	// The identity record leaves the workspace before anything is finalized
 	// from it, for the same reason a task's does.
 	if err := d.removeSupervisionIdentity(workspace); err != nil {
@@ -261,6 +379,7 @@ func (d *LocalDriver) collectActivation(ctx context.Context, pkg workerproto.Exe
 	}
 	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
 		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
+		RecoveryProposal: proposal, RecoveryInstructions: instructions, RecoveryCheckpointTar: checkpoint,
 	}); err != nil {
 		return fmt.Errorf("publish supervision activation custody: %w", err)
 	}

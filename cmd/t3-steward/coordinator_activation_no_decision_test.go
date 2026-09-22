@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
@@ -159,13 +160,16 @@ func TestOperatorReassessmentDispatchesAFreshActivationAtTheNextEpoch(t *testing
 	fixture.endTurnWithoutDeciding(t)
 
 	fixture.now = activationLeaseTime.Add(10 * time.Minute)
-	if _, err := fixture.supervision.AppendSupervisionEvents(ctx, activationLeaseRun,
-		[]backlog.SupervisionEvent{{
-			ID:    "supervision-event:reassess:" + activationLeaseRun + ":request-reassess",
-			RunID: activationLeaseRun, Kind: backlog.TriggerOperatorReassessment,
-			Reason: "an operator asked for another review", IncidentID: activationLeaseIncident,
-			OccurredAt: fixture.now,
-		}}); err != nil {
+	admin, err := backlogadmin.New(fixture.store, localAdminAuthorizer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin.SetSupervisionStore(backlogadmin.CoordinatorSupervisionStore{Store: fixture.store})
+	projection, err := fixture.store.LoadSupervisionProjection(ctx, activationLeaseRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Supervise(ctx, backlogadmin.Principal{ID: "operator", Roles: []string{"local-admin"}}, backlogadmin.SupervisionRequest{Version: backlogadmin.SupervisionVersion, Operation: backlogadmin.SupervisionReassess, RunID: activationLeaseRun, RequestKey: "request-reassess", ExpectedRevision: projection.Record.Revision, Reason: "an operator asked for another review"}); err != nil {
 		t.Fatal(err)
 	}
 

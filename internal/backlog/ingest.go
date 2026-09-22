@@ -169,6 +169,9 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 	if err != nil {
 		return IngestedBundle{}, fmt.Errorf("ingest sink: %w", err)
 	}
+	if err = i.retainExternalInputs(ctx, manifest, &records, runID); err != nil {
+		return IngestedBundle{}, fmt.Errorf("ingest external inputs: %w", err)
+	}
 	finalDir := filepath.Join(workflowsRoot, workflowID)
 	if err := os.Rename(stageDir, finalDir); err != nil {
 		return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: publish files: %w", err)
@@ -257,12 +260,14 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 	artifactIDByPath["workflow.yaml"] = manifestArtifact.ID
 	workflowInputIDs := []string{manifestArtifact.ID}
 	taskInputIDs := make([]string, 0, len(inputPaths))
+	contextInputs := make(map[string]domain.Artifact, len(inputPaths))
 	for _, relative := range inputPaths {
 		artifact := i.artifact(runID, "", files[relative], now)
 		records.Artifacts = append(records.Artifacts, artifact)
 		artifactIDByPath[relative] = artifact.ID
 		workflowInputIDs = append(workflowInputIDs, artifact.ID)
 		taskInputIDs = append(taskInputIDs, artifact.ID)
+		contextInputs[filepath.ToSlash(relative)] = artifact
 	}
 	// The overseer prompt and every gate rubric are retained as run inputs, so a
 	// review reads the exact bytes the submission declared.
@@ -324,6 +329,10 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 				Commit: &domain.CommitOutput{Revision: commit.Revision},
 			})
 		}
+		resolvedContext, err := resolveAuthoredProjectContext(taskManifest.Context, contextInputs, now)
+		if err != nil {
+			return sqlite.CoordinatorRecords{}, nil, fmt.Errorf("task %q project context: %w", name, err)
+		}
 		routes := make([]domain.ProviderRoute, 0, len(taskManifest.Routes))
 		for _, route := range taskManifest.Routes {
 			routes = append(routes, domain.ProviderRoute{
@@ -343,10 +352,10 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 		}
 		records.Tasks = append(records.Tasks, domain.Task{
 			DirectoryBindings: directoryresource.CloneBindings(directoryBindings[name]),
-			ID:                taskID, WorkflowID: workflowID, Name: name, Class: taskManifest.Class,
+			ID:                taskID, RunID: runID, WorkflowID: workflowID, Name: name, Class: taskManifest.Class,
 			Needs: localNeeds, ExternalNeeds: externalNeeds, PromptArtifactID: promptArtifact.ID,
 			InputArtifactIDs: append([]string(nil), taskInputIDs...), DependencyInputs: cloneStringSlices(taskManifest.InputsFrom),
-			Outputs: outputs, Verification: append([]string(nil), taskManifest.Verify...),
+			Context: resolvedContext, Outputs: outputs, Verification: append([]string(nil), taskManifest.Verify...),
 			Placement: domain.Placement{
 				Hosts:        append([]string(nil), taskManifest.Placement.Hosts...),
 				Capabilities: append([]string(nil), taskManifest.Placement.Requires...),

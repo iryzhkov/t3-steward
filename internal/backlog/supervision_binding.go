@@ -39,7 +39,11 @@ func (c CoordinatorSupervisionStore) SupervisionProjection(ctx context.Context, 
 	if err != nil {
 		return SupervisionProjection{}, err
 	}
-	return SupervisionProjection{Snapshot: snapshot, Incidents: projection.Incidents}, nil
+	failures, err := c.Store.ListCurrentActivationDispatchFailures(ctx, runID)
+	if err != nil {
+		return SupervisionProjection{}, err
+	}
+	return SupervisionProjection{Snapshot: snapshot, Incidents: projection.Incidents, DispatchFailures: failures}, nil
 }
 
 // SubmitterNotifyThread reports the T3 thread the submitter of this run asked
@@ -99,6 +103,9 @@ func (c CoordinatorSupervisionStore) LoadSupervisionActivationState(ctx context.
 			return SupervisionActivationState{}, fmt.Errorf("decode supervision event %q: %w", row.ID, err)
 		}
 		event.Sequence = row.Sequence
+		for _, purpose := range row.AcknowledgedPurposes {
+			event.AcknowledgedPurposes = append(event.AcknowledgedPurposes, domain.RecoveryActivationPurpose(purpose))
+		}
 		state.Pending = append(state.Pending, event)
 	}
 	for _, row := range rows.Outbox {
@@ -132,6 +139,8 @@ func (c CoordinatorSupervisionStore) CommitSupervisionActivation(ctx context.Con
 		Activation:             commit.Activation,
 		ConsumedThrough:        commit.ConsumedThrough,
 		CursorAdvanced:         commit.CursorAdvanced,
+		AcknowledgedEventIDs:   commit.AcknowledgedEventIDs,
+		AcknowledgementPurpose: string(commit.AcknowledgementPurpose),
 		Outbox:                 rows,
 		Receipt:                receipt,
 		RequestID:              commit.RequestID,
@@ -140,6 +149,10 @@ func (c CoordinatorSupervisionStore) CommitSupervisionActivation(ctx context.Con
 }
 
 // AppendSupervisionEvents appends observed triggers and assigns their sequences.
+func (c CoordinatorSupervisionStore) OpenRecoveryIncident(ctx context.Context, request sqlite.RecoveryIncidentRequest) (sqlite.SupervisionDecision, bool, error) {
+	return c.Store.OpenRecoveryIncident(ctx, request)
+}
+
 func (c CoordinatorSupervisionStore) AppendSupervisionEvents(ctx context.Context, runID string, events []SupervisionEvent) (int, error) {
 	rows := make([]sqlite.SupervisionInboxRow, 0, len(events))
 	for _, event := range events {

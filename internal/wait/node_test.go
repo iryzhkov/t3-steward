@@ -39,6 +39,21 @@ type nativeControl struct {
 	texts []string
 }
 
+type receiptControl struct {
+	nativeControl
+	thread  *domain.Thread
+	getErr  error
+	receipt WakeReceiptStatus
+}
+
+func (c *receiptControl) GetThread(context.Context, string) (*domain.Thread, error) {
+	return c.thread, c.getErr
+}
+
+func (c *receiptControl) ReconcileNodeWake(context.Context, string, string) (WakeReceiptStatus, error) {
+	return c.receipt, nil
+}
+
 func (c *nativeControl) GetThread(context.Context, string) (*domain.Thread, error) {
 	return &domain.Thread{ID: "thread"}, nil
 }
@@ -87,6 +102,84 @@ func TestNativeWakeHeldRestartLostResponseAndObservation(t *testing.T) {
 	if control.sends != 1 || store.w.Delivery != "delivered" {
 		t.Fatal(control.sends, store.w.Delivery)
 	}
+}
+
+func TestNodeDeliveryOfflineBusyRecoveryAndReceiptOutcomes(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	newStore := func(id string) *nativeMemory {
+		return &nativeMemory{w: domain.NodeWait{
+			Request: domain.NodeWaitRequest{ID: id, ThreadID: "thread"},
+			Host:    "host", SettledAt: &now, Observation: &domain.NodeObservation{ExitCode: 0},
+			DeliveryID: "token-" + id, Delivery: "pending",
+		}}
+	}
+
+	t.Run("offline then online", func(t *testing.T) {
+		store := newStore("offline")
+		control := &receiptControl{getErr: errors.New("offline"), receipt: WakeReceiptUnknown}
+		runner := New(store, control, nil)
+		runner.NodeHost = "host"
+		runner.DisableQuotaChecks = true
+		runner.Tick(ctx, nil, nil)
+		if store.w.Delivery != "offline" || control.sends != 0 {
+			t.Fatal(store.w.Delivery, control.sends)
+		}
+		control.getErr = nil
+		control.thread = &domain.Thread{ID: "thread"}
+		runner.Tick(ctx, nil, nil)
+		if store.w.Delivery != "sending" || control.sends != 1 {
+			t.Fatal(store.w.Delivery, control.sends)
+		}
+		control.receipt = WakeReceiptUnknown
+		runner.Tick(ctx, nil, nil)
+		if store.w.Delivery != "recovery-required" || control.sends != 1 {
+			t.Fatal(store.w.Delivery, control.sends)
+		}
+		control.receipt = WakeReceiptDelivered
+		runner.Tick(ctx, nil, nil)
+		if store.w.Delivery != "delivered" || control.sends != 1 {
+			t.Fatal(store.w.Delivery, control.sends)
+		}
+	})
+
+	t.Run("busy then idle", func(t *testing.T) {
+		store := newStore("busy")
+		control := &receiptControl{thread: &domain.Thread{ID: "thread"}}
+		runner := New(store, control, nil)
+		runner.NodeHost = "host"
+		buckets := []domain.BucketState{{Phase: domain.PhaseStopped}}
+		runner.Tick(ctx, nil, buckets)
+		if store.w.Delivery != "busy" || control.sends != 0 {
+			t.Fatal(store.w.Delivery, control.sends)
+		}
+		runner.Tick(ctx, nil, nil)
+		if store.w.Delivery != "sending" || control.sends != 1 {
+			t.Fatal(store.w.Delivery, control.sends)
+		}
+	})
+
+	t.Run("authoritative no effect retries but rejection settles", func(t *testing.T) {
+		store := newStore("receipt")
+		store.w.Delivery = "sending"
+		control := &receiptControl{thread: &domain.Thread{ID: "thread"}, receipt: WakeReceiptKnownNoEffect}
+		runner := New(store, control, nil)
+		runner.NodeHost = "host"
+		runner.DisableQuotaChecks = true
+		runner.Tick(ctx, nil, nil)
+		if store.w.Delivery != "offline" || control.sends != 0 {
+			t.Fatal(store.w.Delivery, control.sends)
+		}
+		runner.Tick(ctx, nil, nil)
+		if store.w.Delivery != "sending" || control.sends != 1 {
+			t.Fatal(store.w.Delivery, control.sends)
+		}
+		control.receipt = WakeReceiptRejected
+		runner.Tick(ctx, nil, nil)
+		if store.w.Delivery != "rejected" || control.sends != 1 {
+			t.Fatal(store.w.Delivery, control.sends)
+		}
+	})
 }
 
 // nativeGroupMemory holds several node waits, for a --wake all group.

@@ -256,8 +256,31 @@ func (c activationOlderOrdinaryConstraint) Evaluate(candidate backlog.PlanningCa
 
 func (activationOlderOrdinaryConstraint) Reserve(backlog.PlanningCandidate) {}
 
+func activationAlreadyYieldedOpportunity(records sqlite.CoordinatorRecords, candidate activationFairnessCandidate) bool {
+	activationAttempts := make(map[string]struct{})
+	for _, attempt := range records.Attempts {
+		if attempt.SupervisionActivationID != "" {
+			activationAttempts[attempt.ID] = struct{}{}
+		}
+	}
+	for _, assignment := range records.Assignments {
+		if assignment.CreatedAt.Before(candidate.ReadyAt) {
+			continue
+		}
+		if _, activation := activationAttempts[assignment.AttemptID]; activation {
+			continue
+		}
+		if assignment.WorkerID == candidate.Worker ||
+			(candidate.Pool != "" && assignment.Route.QuotaPoolID == candidate.Pool) {
+			return true
+		}
+	}
+	return false
+}
+
 // yieldToOlderActivationContender admits already-eligible work only when its
-// durable age wins at a worker or quota-pool bottleneck used by candidate.
+// durable age wins at a worker or quota-pool bottleneck used by candidate, but
+// permits only one such durable ordinary batch after the activation became due.
 func (p coordinatorPlanner) yieldToOlderActivationContender(ctx context.Context, quota backlog.QuotaBridgeReport, candidate activationFairnessCandidate) (bool, error) {
 	now := time.Now().UTC()
 	if p.now != nil {
@@ -269,6 +292,13 @@ func (p coordinatorPlanner) yieldToOlderActivationContender(ctx context.Context,
 	records, err := p.store.LoadCoordinatorRecords(ctx)
 	if err != nil {
 		return false, fmt.Errorf("load activation arbitration snapshot: %w", err)
+	}
+	if activationAlreadyYieldedOpportunity(records, candidate) {
+		// At most one older ordinary batch may consume a shared bottleneck
+		// after this activation became eligible. The durable assignment is the
+		// marker, so restart cannot reset the bound and an unbounded ordinary
+		// backlog cannot win every newly free opportunity.
+		return false, nil
 	}
 	snapshots, err := p.store.LoadWorkerSnapshots(ctx)
 	if err != nil {
@@ -942,6 +972,20 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	}
 	service.SetWorkerEnrollmentHandler(coordinatorEnrollmentHandler(cfg.BacklogV2, store, epoch, artifactStore))
 	scheduleDefinitions := &backlog.ScheduleDefinitionService{Store: store}
+	approvers := make(map[string]backlogadmin.AdminCredentials)
+	for principal, client := range cfg.BacklogV2.Coordinator.AdminClients {
+		if !client.Approver {
+			continue
+		}
+		credentials, resolveErr := adminCredentials.ResolveAdmin(client.Credential)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve approver %q: %w", principal, resolveErr)
+		}
+		if credentials.ClientPrincipal != principal {
+			return fmt.Errorf("approver %q resolves to principal %q", principal, credentials.ClientPrincipal)
+		}
+		approvers[principal] = credentials
+	}
 	server := backlogadmin.LocalServer{
 		Listener: listener,
 		Service: coordinatorLocalService{
@@ -949,6 +993,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		},
 		AllowedUID:         uint32(os.Getuid()),
 		CoordinatorID:      cfg.BacklogV2.Coordinator.ID,
+		Approvers:          approvers,
 		MaxRequestBytes:    int64(cfg.BacklogV2.MessageLimits.MaxBytes),
 		MaxArtifactBytes:   int64(cfg.BacklogV2.MessageLimits.MaxArtifactBytes),
 		MaxSubmissionBytes: cfg.BacklogV2.MessageLimits.MaxBytes,

@@ -198,8 +198,13 @@ type SupervisionEscalationDelivery struct {
 	Reason     string `json:"reason,omitempty"`
 	// Delivery is the outbox delivery state as the store holds it, which is the
 	// value a compare-and-set claim must name.
-	Delivery string `json:"delivery"`
-	Attempts int    `json:"attempts,omitempty"`
+	Delivery              string     `json:"delivery"`
+	Attempts              int        `json:"attempts,omitempty"`
+	Payload               string     `json:"payload,omitempty"`
+	PayloadDigest         string     `json:"payloadDigest,omitempty"`
+	DeliveryError         string     `json:"deliveryError,omitempty"`
+	DeliveryNextAction    string     `json:"deliveryNextAction,omitempty"`
+	DeliveryNextAttemptAt *time.Time `json:"deliveryNextAttemptAt,omitempty"`
 }
 
 // SupervisionConfig is the declared supervision of one workflow, carried
@@ -219,6 +224,9 @@ type SupervisionConfig struct {
 	ActivationDeadline    time.Duration         `json:"activationDeadline"`
 	IdleEscalationAfter   time.Duration         `json:"idleEscalationAfter,omitempty"`
 	Escalation            SupervisionEscalation `json:"escalation,omitempty"`
+	// Recovery is absent for the review-only v1 contract. Its presence is an
+	// explicit opt-in to the separately routed recovery-v1 contract.
+	Recovery *RecoveryConfig `json:"recovery,omitempty"`
 }
 
 // Validate checks a declared supervision configuration.
@@ -236,6 +244,9 @@ func (c SupervisionConfig) Validate() error {
 		return fmt.Errorf("supervision needs an activation deadline above zero and at most %s", MaxSupervisionActivationDeadline)
 	case c.IdleEscalationAfter < 0 || c.IdleEscalationAfter > MaxSupervisionIdleEscalation:
 		return fmt.Errorf("supervision needs an idle escalation of at most %s", MaxSupervisionIdleEscalation)
+	}
+	if c.Recovery != nil {
+		return c.Recovery.Validate()
 	}
 	return nil
 }
@@ -525,9 +536,11 @@ const (
 // from this record, not from conversation history: a replacement thread is
 // started from a compact snapshot at a new epoch.
 type Activation struct {
-	ID    string `json:"id"`
-	RunID string `json:"runId"`
-	Epoch int64  `json:"epoch"`
+	ID            string                    `json:"id"`
+	RunID         string                    `json:"runId"`
+	Epoch         int64                     `json:"epoch"`
+	Purpose       RecoveryActivationPurpose `json:"purpose,omitempty"`
+	GraphRevision int64                     `json:"graphRevision,omitempty"`
 	// DispatchIdentity is deterministic. A provably undelivered dispatch is
 	// retried with this same identity rather than a new one.
 	DispatchIdentity string `json:"dispatchIdentity"`
@@ -645,6 +658,9 @@ type ReviewIncident struct {
 	Reason     string             `json:"reason"`
 	Resolution *ResolutionReceipt `json:"resolution,omitempty"`
 	OpenedAt   time.Time          `json:"openedAt"`
+	// Recovery is present only for a task-recovery incident. Gate-review
+	// incidents retain their existing shape and authority.
+	Recovery *RecoveryIncident `json:"recovery,omitempty"`
 }
 
 // containsID is a small shared membership test. The sets involved are task and
@@ -1043,6 +1059,19 @@ func ActivationTransition(in ActivationTransitionInput) (ActivationTransitionRes
 		return stay(ActivationPendingDispatch)
 	case ActivationPendingDispatch:
 		switch in.Event {
+		case ActivationEventEventsArrived:
+			if !in.OperatorAuthorized || in.Actor.Kind != ActorOperator {
+				return ActivationTransitionResult{}, fmt.Errorf("%w: only an operator may replace a pending dispatch",
+					ErrSupervisionUnauthorizedActor)
+			}
+			if !in.InboxNonEmpty {
+				return ActivationTransitionResult{}, fmt.Errorf("%w: reassessment requires a pending supervision event",
+					ErrSupervisionPrerequisite)
+			}
+			if !in.ActivationBudgetRemaining {
+				return stay(ActivationEscalated)
+			}
+			return ActivationTransitionResult{State: ActivationPendingDispatch, Epoch: epoch + 1}, nil
 		case ActivationEventDispatchConfirmed:
 			if !in.LeaseValid {
 				return ActivationTransitionResult{}, fmt.Errorf("%w: dispatch was confirmed without a live lease",

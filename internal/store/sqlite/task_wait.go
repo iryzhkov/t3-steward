@@ -2,10 +2,13 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -43,6 +46,14 @@ CREATE INDEX IF NOT EXISTS coordinator_task_waits_live
 `
 
 func taskWaitID(requestID string) string { return "tw-" + requestID }
+
+func sameAttentionRegistration(stored, requested *domain.AttentionRequest) bool {
+	if stored == nil || requested == nil {
+		return stored == nil && requested == nil
+	}
+	return stored.Kind == requested.Kind && stored.Prompt == requested.Prompt &&
+		stored.AssignmentID == requested.AssignmentID
+}
 
 func saveTaskWaitTx(ctx context.Context, tx *sql.Tx, w domain.TaskWait) error {
 	raw, err := json.Marshal(w)
@@ -139,7 +150,7 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		if wait.AttemptID != request.AttemptID || wait.ThreadID != request.ThreadID ||
 			wait.Wake != request.Wake || wait.MaxDuration != request.MaxDuration ||
 			wait.WorkflowRunID != request.WorkflowRunID || wait.TaskID != request.TaskID ||
-			wait.Kind.OrShell() != request.Kind.OrShell() {
+			wait.Kind.OrShell() != request.Kind.OrShell() || !sameAttentionRegistration(wait.Attention, request.Attention) {
 			return domain.TaskWait{}, domain.ErrTaskWaitReplayChanged
 		}
 		// A replay may only report a park that is actually in force. The wait
@@ -206,6 +217,20 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 			return wait, err
 		}
 	}
+	if request.Attention != nil {
+		assignment, err := loadAssignmentTx(ctx, tx, request.Attention.AssignmentID)
+		if err != nil {
+			return wait, err
+		}
+		if attempt.AssignmentID != assignment.ID || assignment.AttemptID != attempt.ID ||
+			assignment.State != domain.AssignmentClaimed {
+			return wait, errors.New("attention request assignment no longer owns the live attempt")
+		}
+		request.Attention.AssignmentEpoch = assignment.Epoch
+		request.Attention.WorkerID = assignment.WorkerID
+		request.Attention.ContentDigest = domain.AttentionRequestContentDigest(request.Attention.Kind, request.Attention.Prompt)
+		request.Attention.DecisionDeadline = now.Add(request.MaxDuration).UTC()
+	}
 
 	expected := attempt.Revision
 	id := taskWaitID(request.RequestID)
@@ -214,7 +239,7 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		AttemptID: request.AttemptID, IssuedRevision: request.IssuedRevision,
 		ThreadID: request.ThreadID, Wake: request.Wake, MaxDuration: request.MaxDuration,
 		RequestID: request.RequestID, Name: request.Name, Condition: request.Condition,
-		Kind: request.Kind.OrShell(), OrTimeout: request.OrTimeout, Node: request.Node, Quota: request.Quota,
+		Kind: request.Kind.OrShell(), OrTimeout: request.OrTimeout, Node: request.Node, Quota: request.Quota, Attention: request.Attention,
 		RegisteredRevision: expected + 1,
 		RegisteredAt:       now.UTC(),
 		Deadline:           now.Add(request.MaxDuration).UTC(),
@@ -290,6 +315,8 @@ func validateStructuredRegistrationTx(ctx context.Context, tx *sql.Tx, request *
 		if request.Condition == "" {
 			request.Condition = request.Node.String()
 		}
+	case request.Attention != nil:
+		request.Condition = "attention " + string(request.Attention.Kind) + ": " + request.Attention.Prompt
 	case request.Quota != nil:
 		if request.Quota.Reset && request.Quota.ResetAt == nil {
 			resetAt, err := quotaResetAt(*request.Quota, records)
@@ -513,6 +540,9 @@ func (s *Store) SettleTaskWait(ctx context.Context, id string, result domain.Tas
 	if err = json.Unmarshal(raw, &wait); err != nil {
 		return wait, err
 	}
+	if wait.Kind == domain.WaitKindAttention {
+		return wait, errors.New("attention waits may only be settled by an authenticated attention decision")
+	}
 	if wait, err = settleTaskWaitTx(ctx, tx, wait, result, now); err != nil {
 		return wait, err
 	}
@@ -535,6 +565,270 @@ func settleTaskWaitTx(ctx context.Context, tx *sql.Tx, wait domain.TaskWait, res
 	wait.Result = &result
 	wait.SettledAt = &settled
 	return wait, saveTaskWaitTx(ctx, tx, wait)
+}
+
+// DecideAttention is the in-process compatibility entry point. Network-facing
+// callers use DecideAttentionForCoordinator so the trusted server identity is
+// bound into stop commands rather than accepted from request JSON.
+func (s *Store) DecideAttention(ctx context.Context, decision domain.AttentionDecision, requestedBy string, now time.Time) (domain.TaskWait, domain.AttentionReceipt, error) {
+	return s.DecideAttentionForCoordinator(ctx, decision, requestedBy, "coordinator", now)
+}
+
+// DecideAttentionForCoordinator records an authenticated response against the
+// exact parked execution identity. Receipt facts and settlement are committed
+// together. Resume/approval use the ordinary wake transaction; stop instead
+// commits a cancellation barrier and durable hard-stop intent atomically.
+func (s *Store) DecideAttentionForCoordinator(ctx context.Context, decision domain.AttentionDecision, requestedBy, coordinatorID string, now time.Time) (domain.TaskWait, domain.AttentionReceipt, error) {
+	var wait domain.TaskWait
+	var receipt domain.AttentionReceipt
+	if err := decision.Validate(); err != nil {
+		return wait, receipt, err
+	}
+	if requestedBy == "" || coordinatorID == "" || now.IsZero() {
+		return wait, receipt, errors.New("attention decision needs an authenticated principal, coordinator and timestamp")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wait, receipt, err
+	}
+	defer tx.Rollback()
+	var raw []byte
+	if err = tx.QueryRowContext(ctx, "SELECT record FROM coordinator_task_waits WHERE id=?", decision.WaitID).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return wait, receipt, fmt.Errorf("attention wait %q is unknown", decision.WaitID)
+		}
+		return wait, receipt, err
+	}
+	if err = json.Unmarshal(raw, &wait); err != nil {
+		return wait, receipt, err
+	}
+	var replay *domain.AttentionReceipt
+	for index := range wait.AttentionReceipts {
+		prior := &wait.AttentionReceipts[index]
+		if prior.Decision.ID != decision.ID {
+			continue
+		}
+		if !reflect.DeepEqual(prior.Decision, decision) || prior.RequestedBy != requestedBy {
+			return wait, receipt, errors.New("attention decision replay changed immutable content or principal")
+		}
+		replay = prior
+	}
+	if replay != nil {
+		return wait, *replay, tx.Commit()
+	}
+	if wait.Kind != domain.WaitKindAttention || wait.Attention == nil {
+		return wait, receipt, errors.New("attention decision names a wait that is not an attention request")
+	}
+	request := wait.Attention
+	if wait.RequestID != decision.RequestID || wait.WorkflowRunID != decision.WorkflowRunID ||
+		wait.TaskID != decision.TaskID || wait.AttemptID != decision.AttemptID ||
+		wait.ThreadID != decision.ThreadID || wait.RegisteredRevision != decision.RegisteredRevision ||
+		request.AssignmentID != decision.AssignmentID || request.AssignmentEpoch != decision.AssignmentEpoch ||
+		request.WorkerID != decision.WorkerID || request.ContentDigest != decision.ContentDigest ||
+		!request.DecisionDeadline.Equal(decision.DecisionDeadline) || !wait.Deadline.Equal(decision.DecisionDeadline) {
+		return wait, receipt, errors.New("attention decision execution identity or immutable request content does not match the registered request")
+	}
+	attempt, err := loadAttemptTx(ctx, tx, wait.AttemptID)
+	if err != nil {
+		return wait, receipt, err
+	}
+	assignment, err := loadAssignmentTx(ctx, tx, decision.AssignmentID)
+	if err != nil {
+		return wait, receipt, err
+	}
+	runs, err := loadJSON[domain.WorkflowRun](ctx, tx, "coordinator_workflow_runs")
+	if err != nil {
+		return wait, receipt, err
+	}
+	tasks, err := loadJSON[domain.Task](ctx, tx, "coordinator_tasks")
+	if err != nil {
+		return wait, receipt, err
+	}
+	runCurrent, taskCurrent, workflowID := false, false, ""
+	for _, run := range runs {
+		if run.ID == decision.WorkflowRunID && !run.Progress.Terminal() {
+			runCurrent, workflowID = true, run.WorkflowID
+		}
+	}
+	for _, task := range tasks {
+		if task.ID == decision.TaskID && task.WorkflowID == workflowID && workflowID != "" {
+			taskCurrent = true
+		}
+	}
+	fenceCurrent := runCurrent && taskCurrent && wait.Live() &&
+		attempt.WorkflowRunID == wait.WorkflowRunID && attempt.TaskID == wait.TaskID &&
+		attempt.AssignmentID == assignment.ID && attempt.AssignmentID == decision.AssignmentID &&
+		attempt.ThreadID == wait.ThreadID && attempt.Revision >= wait.RegisteredRevision &&
+		attempt.Progress == domain.ProgressWaitingExternal && attempt.Control == domain.ControlWaitingExternal &&
+		assignment.AttemptID == attempt.ID && assignment.WorkerID == decision.WorkerID &&
+		assignment.Epoch == decision.AssignmentEpoch && assignment.State == domain.AssignmentClaimed
+	received := now.UTC()
+	receivedReceipt := domain.AttentionReceipt{
+		Decision: decision, RequestedBy: requestedBy, State: domain.AttentionReceived, ReceivedAt: received,
+	}
+	wait.AttentionReceipts = append(wait.AttentionReceipts, receivedReceipt)
+	reject := func(failure string) (domain.TaskWait, domain.AttentionReceipt, error) {
+		rejected := receivedReceipt
+		rejected.State, rejected.Failure = domain.AttentionRejected, failure
+		wait.AttentionReceipts = append(wait.AttentionReceipts, rejected)
+		if saveErr := saveTaskWaitTx(ctx, tx, wait); saveErr != nil {
+			return wait, rejected, saveErr
+		}
+		return wait, rejected, tx.Commit()
+	}
+	if !now.Before(decision.DecisionDeadline) {
+		return reject("attention decision deadline has expired")
+	}
+	if !fenceCurrent {
+		return reject("attention request lost its current run, task, attempt, assignment, worker or thread fence")
+	}
+	for _, prior := range wait.AttentionReceipts[:len(wait.AttentionReceipts)-1] {
+		if prior.State == domain.AttentionApplied || prior.State == domain.AttentionDelivered || prior.State == domain.AttentionObserved {
+			return reject(fmt.Sprintf("attention wait already has applied decision %s", prior.Decision.ID))
+		}
+	}
+	allowed := decision.Kind == domain.AttentionApprove && request.Kind == domain.AttentionApproval ||
+		decision.Kind == domain.AttentionResume && request.Kind == domain.AttentionDirection ||
+		decision.Kind == domain.AttentionStop
+	if !allowed {
+		return reject("the requested decision is not supported for this attention request")
+	}
+	if decision.Kind == domain.AttentionStop {
+		snapshot, found, bindingErr := loadWorkerSnapshotTx(ctx, tx, assignment.WorkerID)
+		if bindingErr != nil {
+			return wait, receivedReceipt, bindingErr
+		}
+		if !found || snapshot.WorkerEpoch != assignment.WorkerEpoch || snapshot.CoordinatorEpoch < 1 {
+			return reject("attention stop has no durable worker/coordinator epoch binding")
+		}
+		exactWorkspace := false
+		for _, observation := range snapshot.Assignments {
+			if observation.AssignmentID == assignment.ID && observation.AssignmentEpoch == assignment.Epoch &&
+				observation.ThreadID == assignment.ThreadID && observation.WorkspacePath != "" {
+				exactWorkspace = true
+				break
+			}
+		}
+		if !exactWorkspace || assignment.Route.QuotaPoolID == "" {
+			return reject("attention stop has no exact workspace and route observation")
+		}
+		return applyAttentionStopTx(ctx, tx, wait, attempt, assignment, decision, receivedReceipt, requestedBy, coordinatorID, now)
+	}
+	applied := received
+	receipt = receivedReceipt
+	receipt.State, receipt.AppliedAt = domain.AttentionApplied, &applied
+	wait.AttentionReceipts = append(wait.AttentionReceipts, receipt)
+	result := domain.TaskWaitResult{
+		Outcome: domain.TaskWaitMet, ExitCode: 0, Reason: decision.Reason, ObservedAt: received,
+		Fields: map[string]string{
+			"decision": string(decision.Kind), "decision-id": decision.ID, "principal": requestedBy,
+			"request": decision.RequestID, "run": decision.WorkflowRunID, "task": decision.TaskID,
+			"attempt": decision.AttemptID, "assignment": decision.AssignmentID,
+			"assignment-epoch": fmt.Sprint(decision.AssignmentEpoch), "worker": decision.WorkerID,
+			"thread": decision.ThreadID, "revision": fmt.Sprint(decision.RegisteredRevision),
+			"content-digest": decision.ContentDigest, "deadline": decision.DecisionDeadline.Format(time.RFC3339Nano),
+		},
+	}
+	if wait, err = settleTaskWaitTx(ctx, tx, wait, result, now); err != nil {
+		return wait, receipt, err
+	}
+	return wait, receipt, tx.Commit()
+}
+
+func applyAttentionStopTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	wait domain.TaskWait,
+	attempt domain.Attempt,
+	assignment domain.Assignment,
+	decision domain.AttentionDecision,
+	received domain.AttentionReceipt,
+	requestedBy, coordinatorID string,
+	now time.Time,
+) (domain.TaskWait, domain.AttentionReceipt, error) {
+	snapshot, found, err := loadWorkerSnapshotTx(ctx, tx, assignment.WorkerID)
+	if err != nil {
+		return wait, received, err
+	}
+	if !found || snapshot.WorkerEpoch != assignment.WorkerEpoch || snapshot.CoordinatorEpoch < 1 {
+		return wait, received, errors.New("attention stop has no durable worker/coordinator epoch binding")
+	}
+	workspace := ""
+	for _, observation := range snapshot.Assignments {
+		if observation.AssignmentID == assignment.ID && observation.AssignmentEpoch == assignment.Epoch &&
+			observation.ThreadID == assignment.ThreadID {
+			workspace = observation.WorkspacePath
+			break
+		}
+	}
+	if workspace == "" || assignment.Route.QuotaPoolID == "" {
+		return wait, received, errors.New("attention stop has no exact workspace and route observation")
+	}
+	directiveID := attentionStopStableID("attention-stop-directive", decision.ID)
+	command := domain.ThrottleCommand{
+		ID: attentionStopStableID("attention-stop-command", decision.ID), DirectiveID: directiveID,
+		AttemptID: attempt.ID, AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
+		WorkerID: assignment.WorkerID, ThreadID: assignment.ThreadID, WorkspacePath: workspace,
+		Route: assignment.Route, Kind: domain.ThrottleCommandHardStop, QuotaPoolID: assignment.Route.QuotaPoolID,
+		Reason: decision.Reason, CreatedAt: now.UTC(),
+		AttentionStop: &domain.AttentionStopCommand{
+			CoordinatorID: coordinatorID, CoordinatorEpoch: snapshot.CoordinatorEpoch, Principal: requestedBy,
+			DecisionID: decision.ID, WaitID: decision.WaitID, RequestID: decision.RequestID,
+			WorkflowRunID: decision.WorkflowRunID, TaskID: decision.TaskID,
+			RegisteredRevision: decision.RegisteredRevision, AppliedRevision: attempt.Revision + 1,
+			RequestDigest: decision.ContentDigest,
+		},
+	}
+	command.AttentionStop.CommandDigest = domain.AttentionStopCommandDigest(command)
+	record := domain.ThrottleAttemptRecord{
+		DirectiveID: directiveID, AttemptID: attempt.ID, Revision: 1, Command: command,
+		Delivery: domain.ThrottleDeliveryPending, Control: domain.ControlDraining, UpdatedAt: now.UTC(),
+	}
+	rawRecord, err := json.Marshal(record)
+	if err != nil {
+		return wait, received, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO coordinator_throttle_attempts(directive_id, attempt_id, revision, delivery, record) VALUES (?, ?, ?, ?, ?)`,
+		record.DirectiveID, record.AttemptID, record.Revision, record.Delivery, rawRecord); err != nil {
+		return wait, received, fmt.Errorf("persist attention stop intent: %w", err)
+	}
+	next := attempt
+	next.Progress, next.Control = domain.ProgressCancelled, domain.ControlDraining
+	next.Revision++
+	next.AdminForceStart = false
+	next.UpdatedAt = now.UTC()
+	completed := now.UTC()
+	next.CompletedAt = &completed
+	if err = updateAdminAttemptTx(ctx, tx, next, attempt.Revision); err != nil {
+		return wait, received, err
+	}
+	applied := now.UTC()
+	receipt := received
+	receipt.State, receipt.AppliedAt = domain.AttentionApplied, &applied
+	receipt.CommandID, receipt.CommandDigest = command.ID, command.AttentionStop.CommandDigest
+	wait.AttentionReceipts = append(wait.AttentionReceipts, receipt)
+	result := domain.TaskWaitResult{
+		Outcome: domain.TaskWaitCancelled, ExitCode: 2, Reason: decision.Reason, ObservedAt: applied,
+		Fields: map[string]string{
+			"decision": string(decision.Kind), "decision-id": decision.ID, "principal": requestedBy,
+			"coordinator": coordinatorID, "coordinator-epoch": fmt.Sprint(snapshot.CoordinatorEpoch),
+			"request": decision.RequestID, "run": decision.WorkflowRunID, "task": decision.TaskID,
+			"attempt": decision.AttemptID, "assignment": decision.AssignmentID,
+			"assignment-epoch": fmt.Sprint(decision.AssignmentEpoch), "worker": decision.WorkerID,
+			"thread": decision.ThreadID, "workspace": workspace, "revision": fmt.Sprint(next.Revision),
+			"content-digest": decision.ContentDigest, "command": command.ID,
+			"command-digest": command.AttentionStop.CommandDigest,
+		},
+	}
+	if wait, err = settleTaskWaitTx(ctx, tx, wait, result, now); err != nil {
+		return wait, receipt, err
+	}
+	return wait, receipt, tx.Commit()
+}
+
+func attentionStopStableID(prefix, id string) string {
+	sum := sha256.Sum256([]byte(prefix + "\x00" + id))
+	return prefix + "-" + hex.EncodeToString(sum[:12])
 }
 
 // ExpireTaskWaits enforces every wait's maximum duration.
@@ -976,6 +1270,42 @@ func markTaskWaitsWokenTx(ctx context.Context, tx *sql.Tx, waits []domain.TaskWa
 	return nil
 }
 
+func advanceAttentionReceipt(wait *domain.TaskWait, state domain.AttentionReceiptState, now time.Time) {
+	if wait.Attention == nil {
+		return
+	}
+	var latest *domain.AttentionReceipt
+	for index := range wait.AttentionReceipts {
+		candidate := &wait.AttentionReceipts[index]
+		switch candidate.State {
+		case domain.AttentionApplied, domain.AttentionDelivered, domain.AttentionObserved:
+			latest = candidate
+		}
+	}
+	if latest == nil || latest.State == domain.AttentionObserved ||
+		state == domain.AttentionDelivered && latest.State == domain.AttentionDelivered {
+		return
+	}
+	at := now.UTC()
+	if state == domain.AttentionObserved && latest.State == domain.AttentionApplied {
+		delivered := *latest
+		delivered.State, delivered.DeliveredAt = domain.AttentionDelivered, &at
+		wait.AttentionReceipts = append(wait.AttentionReceipts, delivered)
+		latest = &wait.AttentionReceipts[len(wait.AttentionReceipts)-1]
+	}
+	next := *latest
+	next.State = state
+	if state == domain.AttentionDelivered {
+		next.DeliveredAt = &at
+	} else if state == domain.AttentionObserved {
+		if next.DeliveredAt == nil {
+			next.DeliveredAt = &at
+		}
+		next.ObservedAt = &at
+	}
+	wait.AttentionReceipts = append(wait.AttentionReceipts, next)
+}
+
 // TransitionTaskWake fences wake delivery ownership exactly as node waits do.
 // Once sending is durable, a lost reply requires positive observation of the
 // delivery ID; its absence never authorizes a second send.
@@ -998,8 +1328,9 @@ func (s *Store) TransitionTaskWake(ctx context.Context, id, from, to string, now
 	}
 	allowed := wait.Woken() && (from == "pending" && (to == "held" || to == "sending") ||
 		from == "held" && (to == "pending" || to == "sending") ||
-		(from == "sending" || from == "recovery-required") && (to == "delivered" || to == "recovery-required") ||
-		to == "abandoned" && from != "delivered")
+		(from == "sending" || from == "recovery-required") && (to == "delivered" || to == "observed" || to == "recovery-required") ||
+		from == "delivered" && to == "observed" ||
+		to == "abandoned" && from != "delivered" && from != "observed")
 	if !allowed {
 		return false, fmt.Errorf("invalid task wake transition %s to %s", from, to)
 	}
@@ -1025,6 +1356,12 @@ func (s *Store) TransitionTaskWake(ctx context.Context, id, from, to string, now
 		if to == "delivered" {
 			delivered := now.UTC()
 			member.DeliveredAt = &delivered
+			advanceAttentionReceipt(&member, domain.AttentionDelivered, now)
+		}
+		if to == "observed" {
+			observed := now.UTC()
+			member.DeliveryObservedAt = &observed
+			advanceAttentionReceipt(&member, domain.AttentionObserved, now)
 		}
 		if err = saveTaskWaitTx(ctx, tx, member); err != nil {
 			return false, err
@@ -1035,7 +1372,7 @@ func (s *Store) TransitionTaskWake(ctx context.Context, id, from, to string, now
 			if err := recordTaskWaitEventTx(ctx, tx, taskWakeGroupClaim(group, now)); err != nil {
 				return false, err
 			}
-		} else if to == "delivered" {
+		} else if to == "delivered" || to == "observed" {
 			claimed, err := taskWakeGroupClaimedTx(ctx, tx, group)
 			if err != nil || !claimed {
 				return false, err
@@ -1068,7 +1405,8 @@ func (s *Store) TaskWakesAwaitingDelivery(ctx context.Context, now time.Time) ([
 	byAttempt := make(map[string][]domain.TaskWait)
 	var order []string
 	for _, wait := range waits {
-		if !wait.Woken() || wait.Delivery == "delivered" || wait.Delivery == "abandoned" {
+		if !wait.Woken() || wait.Delivery == "observed" || wait.Delivery == "abandoned" ||
+			wait.Delivery == "delivered" && wait.Attention == nil {
 			continue
 		}
 		if _, seen := byAttempt[wait.AttemptID]; !seen {
@@ -1095,7 +1433,7 @@ func (s *Store) TaskWakesAwaitingDelivery(ctx context.Context, now time.Time) ([
 			live = append(live, wait)
 		}
 		for _, wait := range stale {
-			if wait.Delivery == "sending" || wait.Delivery == "recovery-required" || wait.Delivery == "manual-recovery-required" {
+			if wait.Delivery == "sending" || wait.Delivery == "recovery-required" || wait.Delivery == "manual-recovery-required" || wait.Delivery == "delivered" {
 				// A message may already exist. Abandoning it here would claim a
 				// certainty we do not have, so it stays for observation.
 				live = append(live, wait)

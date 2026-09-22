@@ -10,9 +10,11 @@ package backlog
 // worker refuses it by name rather than running a review as work.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -131,7 +133,14 @@ func (b CoordinatorOfferBuilder) buildActivationOffer(
 			attempts = append(attempts, candidate)
 		}
 	}
-	inbox := CoalesceSupervisionEvents(run.ID, state.Record.EventCursor, state.Pending)
+	pending := supervisionEventsForPurpose(state.Pending, state.Activation.Purpose)
+	cursor := state.Record.EventCursor
+	if state.Activation.Purpose == domain.RecoveryActivationRepair {
+		// Repair ownership is acknowledged per event. The legacy reviewer cursor
+		// must never hide an unacknowledged repair event that has a lower sequence.
+		cursor = 0
+	}
+	inbox := CoalesceSupervisionEvents(run.ID, cursor, pending)
 	if len(inbox.Triggers) == 0 {
 		return workerproto.AssignmentOffer{}, fmt.Errorf(
 			"supervision activation: run %q has nothing pending for activation %q to review",
@@ -147,7 +156,7 @@ func (b CoordinatorOfferBuilder) buildActivationOffer(
 	if state.Activation.Deadline != nil {
 		dispatch.Deadline = state.Activation.Deadline.UTC()
 	}
-	return BuildActivationOffer(ActivationPackageInput{
+	input := ActivationPackageInput{
 		Workflow: workflow, Run: run, Record: state.Record, Activation: state.Activation,
 		Dispatch: dispatch, Attempt: attempt, Assignment: assignment,
 		Triggers: inbox.Triggers,
@@ -163,7 +172,52 @@ func (b CoordinatorOfferBuilder) buildActivationOffer(
 		MaxArtifactBytes:              b.MaxArtifactBytes,
 		MaxTotalBytes:                 b.MaxTotalBytes,
 		Now:                           assignment.CreatedAt,
-	}, expiresAt)
+	}
+	if b.ActivationEvidence == nil {
+		return workerproto.AssignmentOffer{}, &ActivationPackageError{
+			Code:  ActivationPackageErrorEvidenceMissing,
+			Cause: errors.New("coordinator activation evidence custody is not configured"),
+		}
+	}
+	retained, reader, found, err := b.ActivationEvidence.OpenActivationEvidenceSnapshot(
+		ctx, run.ID, state.Activation.ID)
+	if err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
+	if found {
+		defer reader.Close()
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			return workerproto.AssignmentOffer{}, fmt.Errorf("read retained activation evidence: %w", err)
+		}
+		input.Evidence, err = DecodeActivationEvidenceSnapshot(data)
+		if err != nil {
+			return workerproto.AssignmentOffer{}, err
+		}
+		input.EvidenceArtifact = retained
+	} else {
+		object, err := BuildActivationEvidenceForPackage(input)
+		if err != nil {
+			return workerproto.AssignmentOffer{}, err
+		}
+		artifact := ActivationEvidenceArtifact(run.ID, attempt.TaskID, attempt.ID, object, "", assignment.CreatedAt)
+		retained, err := b.ActivationEvidence.EnsureActivationEvidenceSnapshot(ctx,
+			sqlite.ActivationEvidencePublication{
+				CoordinatorEpoch: b.CoordinatorEpoch,
+				ActivationID:     state.Activation.ID, RunID: run.ID,
+				ActivationEpoch: state.Activation.Epoch, GraphRevision: run.GraphRevision,
+				Artifact: artifact,
+			}, bytes.NewReader(object.Data))
+		if err != nil {
+			return workerproto.AssignmentOffer{}, err
+		}
+		input.Evidence, err = DecodeActivationEvidenceSnapshot(object.Data)
+		if err != nil {
+			return workerproto.AssignmentOffer{}, err
+		}
+		input.EvidenceArtifact = retained
+	}
+	return BuildActivationOffer(input, expiresAt)
 }
 
 // ActivationPackageInput is everything the package builder reads. It is plain
@@ -189,6 +243,10 @@ type ActivationPackageInput struct {
 	// reach the overseer; the bytes are fetched on demand through the artifact
 	// reads the supervisor capability already allows.
 	Artifacts []domain.Artifact
+	// Evidence is the first immutable inventory frozen for this activation.
+	// EvidenceArtifact is its retained coordinator artifact metadata.
+	Evidence         ActivationEvidenceSnapshot
+	EvidenceArtifact domain.Artifact
 	// SupervisorPrincipal is the admin principal the CLI on the worker host
 	// authenticates as. It is configuration rather than a derived value: the
 	// coordinator has to be told which client it will see, and it records the
@@ -224,6 +282,90 @@ func BuildActivationOffer(input ActivationPackageInput, expiresAt time.Time) (wo
 	return workerproto.AssignmentOffer{Assignment: input.Assignment, Package: manifest, ExpiresAt: expiresAt}, nil
 }
 
+// BuildActivationEvidenceForPackage creates the complete immutable inventory
+// that must be persisted before the first dispatch of an activation. A retry
+// opens and decodes the retained object instead of calling this helper again.
+func BuildActivationEvidenceForPackage(input ActivationPackageInput) (ActivationEvidenceObject, error) {
+	artifacts := activationArtifactDigests(input.Artifacts)
+	promptID, err := activationPromptArtifactID(input)
+	if err != nil {
+		return ActivationEvidenceObject{}, err
+	}
+	var overseerPrompt domain.ArtifactDigest
+	for _, artifact := range artifacts {
+		if artifact.ArtifactID == promptID {
+			overseerPrompt = artifact
+			break
+		}
+	}
+	gateEvidence := make([]ActivationGateEvidence, 0, len(input.Gates))
+	for _, facts := range input.Gates {
+		var evidence *domain.EvidenceSnapshot
+		if facts.Evidence != nil {
+			copy := *facts.Evidence
+			copy.Producers = append([]domain.ProducerEvidence(nil), facts.Evidence.Producers...)
+			evidence = &copy
+		}
+		gateEvidence = append(gateEvidence, ActivationGateEvidence{Gate: facts.Gate, Evidence: evidence})
+	}
+	actions := activationScopedActions(input.Activation, input.Run.ID)
+	return BuildActivationEvidenceSnapshot(ActivationSnapshot{
+		ActivationID: input.Activation.ID, RunID: input.Run.ID,
+		Epoch: input.Activation.Epoch, GraphRevision: input.Run.GraphRevision,
+		RecordRevision: input.Record.Revision, Deadline: input.Dispatch.Deadline,
+		TurnsRemaining: input.Record.Config.MaxTurnsPerActivation - input.Activation.TurnsUsed,
+		Tasks:          activationTaskViews(input.Tasks, input.Attempts),
+		Gates:          activationGateViews(input.Gates),
+		Incidents:      activationIncidentViews(input.Incidents),
+		Triggers:       input.Triggers, Artifacts: artifacts,
+		TaskContracts: append([]domain.Task(nil), input.Tasks...),
+		Attempts:      append([]domain.Attempt(nil), domain.DeclaredTaskAttempts(input.Attempts)...),
+		GateEvidence:  gateEvidence, OverseerPrompt: overseerPrompt,
+		Actions:         activationPromptActions(actions),
+		Constraints:     ActivationPromptConstraints(input),
+		ConsumedThrough: input.Activation.ConsumedEventCursor,
+	})
+}
+
+func activationRecoveryProposalScope(input ActivationPackageInput) (*workerproto.RecoveryProposalScope, error) {
+	if input.Activation.Purpose != domain.RecoveryActivationRepair {
+		return nil, nil
+	}
+	var incident domain.ReviewIncident
+	for _, candidate := range input.Incidents {
+		if candidate.ID == input.Activation.IncidentID {
+			incident = candidate
+			break
+		}
+	}
+	if incident.ID == "" || incident.RunID != input.Run.ID || incident.State != domain.IncidentOpen ||
+		incident.Recovery == nil || incident.Recovery.Contract != domain.RecoveryContractV1 ||
+		incident.Recovery.Purpose != domain.RecoveryActivationRepair ||
+		incident.Recovery.Owner.Role != domain.RecoveryRoleRepairExecutor {
+		return nil, errors.New("supervision activation package: repair incident authority is stale or mismatched")
+	}
+	sourceID := incident.Recovery.CurrentAttemptID
+	if sourceID == "" {
+		sourceID = incident.SourceAttemptID
+	}
+	var source domain.Attempt
+	for _, candidate := range input.Attempts {
+		if candidate.ID == sourceID {
+			source = candidate
+			break
+		}
+	}
+	if source.ID == "" || source.WorkflowRunID != input.Run.ID || source.TaskID != incident.SourceTaskID ||
+		source.Progress != domain.ProgressFailed || source.Revision < 1 {
+		return nil, errors.New("supervision activation package: repair source attempt is stale or mismatched")
+	}
+	return &workerproto.RecoveryProposalScope{
+		Version: domain.RecoveryProposalVersion, ExpectedIncidentRevision: incident.Revision,
+		SourceAttemptID: source.ID, SourceAttemptRevision: source.Revision,
+		Diagnostic: incident.Recovery.Diagnostic,
+	}, nil
+}
+
 // BuildActivationPackage assembles the activation package.
 func BuildActivationPackage(input ActivationPackageInput) (workerproto.ExecutionPackage, error) {
 	switch {
@@ -243,25 +385,75 @@ func BuildActivationPackage(input ActivationPackageInput) (workerproto.Execution
 	if turns < 1 {
 		return workerproto.ExecutionPackage{}, errors.New("supervision activation package: max_turns_per_activation must be positive")
 	}
-	artifacts := activationArtifactDigests(input.Artifacts)
-	actions := ActivationScopedActions(input.Run.ID, input.Activation.Epoch)
+	actions := activationScopedActions(input.Activation, input.Run.ID)
+	if input.Evidence.ActivationID != input.Activation.ID ||
+		input.Evidence.RunID != input.Run.ID ||
+		input.Evidence.Epoch != input.Activation.Epoch ||
+		input.Evidence.GraphRevision != input.Run.GraphRevision {
+		return workerproto.ExecutionPackage{}, &ActivationPackageError{
+			Code: ActivationPackageErrorEvidenceMismatch,
+			Cause: fmt.Errorf("frozen evidence identity does not match activation %s epoch %d graph %d",
+				input.Activation.ID, input.Activation.Epoch, input.Run.GraphRevision),
+		}
+	}
+	if err := validateActivationEvidenceArtifact(input.Evidence, input.EvidenceArtifact); err != nil {
+		return workerproto.ExecutionPackage{}, err
+	}
+	evidenceObject, err := packageArtifact(input.EvidenceArtifact, "inputs/supervision-evidence.json", "input")
+	if err != nil {
+		return workerproto.ExecutionPackage{}, &ActivationPackageError{Code: ActivationPackageErrorEvidenceMismatch, Cause: err}
+	}
+	evidenceDigest := domain.ArtifactDigest{ArtifactID: input.EvidenceArtifact.ID, Digest: input.EvidenceArtifact.SHA256}
+	recoveryProposal, err := activationRecoveryProposalScope(input)
+	if err != nil {
+		return workerproto.ExecutionPackage{}, err
+	}
+	activation := &workerproto.SupervisionActivation{
+		ActivationID: input.Activation.ID, RunID: input.Run.ID,
+		Purpose: string(input.Activation.Purpose), IncidentID: input.Activation.IncidentID,
+		RecoveryProposal: recoveryProposal,
+		Epoch:            input.Activation.Epoch, RecordRevision: input.Record.Revision,
+		GraphRevision:       input.Run.GraphRevision,
+		Principal:           input.SupervisorPrincipal,
+		CredentialReference: input.SupervisorCredentialReference,
+		LeaseToken:          input.Dispatch.LeaseToken,
+		LeaseExpiresAt:      input.Dispatch.LeaseExpiresAt.UTC(),
+		MaxTurns:            turns,
+		Actions:             actions,
+		EvidenceFiles:       true,
+	}
+	if !input.Dispatch.Deadline.IsZero() {
+		activation.Deadline = input.Dispatch.Deadline.UTC()
+	}
+	finalCap := input.ByteCap
+	if finalCap <= 0 {
+		finalCap = workerproto.SupervisionPromptByteCap
+	}
+	overhead := len(workerproto.RenderSupervisionPrompt(*activation))
+	if overhead >= finalCap {
+		return workerproto.ExecutionPackage{}, &ActivationPackageError{
+			Code:  ActivationPackageErrorPromptTooLarge,
+			Cause: fmt.Errorf("mandatory activation authority is %d bytes for a %d byte final prompt cap", overhead, finalCap),
+		}
+	}
 	snapshot := ActivationSnapshot{
-		ActivationID:    input.Activation.ID,
-		RunID:           input.Run.ID,
-		Epoch:           input.Activation.Epoch,
-		GraphRevision:   input.Run.GraphRevision,
-		RecordRevision:  input.Record.Revision,
-		Deadline:        input.Dispatch.Deadline,
-		TurnsRemaining:  turns - input.Activation.TurnsUsed,
-		Tasks:           activationTaskViews(input.Tasks, input.Attempts),
-		Gates:           activationGateViews(input.Gates),
-		Incidents:       activationIncidentViews(input.Incidents),
-		Triggers:        input.Triggers,
-		Artifacts:       artifacts,
-		Actions:         activationPromptActions(actions),
-		Constraints:     ActivationPromptConstraints(input),
-		ConsumedThrough: input.Activation.ConsumedEventCursor,
-		ByteCap:         input.ByteCap,
+		ActivationID:     input.Activation.ID,
+		RunID:            input.Run.ID,
+		Epoch:            input.Activation.Epoch,
+		GraphRevision:    input.Run.GraphRevision,
+		RecordRevision:   input.Record.Revision,
+		Deadline:         input.Dispatch.Deadline,
+		TurnsRemaining:   turns - input.Activation.TurnsUsed,
+		Tasks:            input.Evidence.Tasks,
+		Gates:            input.Evidence.Gates,
+		Incidents:        input.Evidence.Incidents,
+		Triggers:         input.Evidence.Triggers,
+		Artifacts:        input.Evidence.Artifacts,
+		EvidenceSnapshot: &evidenceDigest,
+		Actions:          activationPromptActions(actions),
+		Constraints:      ActivationPromptConstraints(input),
+		ConsumedThrough:  input.Activation.ConsumedEventCursor,
+		ByteCap:          finalCap - overhead,
 	}
 	envelope, err := BuildActivationPromptEnvelope(snapshot)
 	if err != nil {
@@ -297,26 +489,16 @@ func BuildActivationPackage(input ActivationPackageInput) (workerproto.Execution
 		// An activation is required work: it is the thing a blocked run is
 		// waiting for, so running it only out of forecast surplus would let a
 		// busy fleet leave every gate undecided.
-		Class:  domain.TaskClassRequired,
-		Prompt: prompt,
-		Route:  cloneProviderRoute(input.Assignment.Route),
+		Class:        domain.TaskClassRequired,
+		Prompt:       prompt,
+		StaticInputs: []workerproto.ArtifactObject{evidenceObject},
+		Route:        cloneProviderRoute(input.Assignment.Route),
 		Environment: workerproto.EnvironmentReference{
 			Type: "fresh", CatalogRevision: input.CatalogRevision, Project: project,
 			Scope: "task", SetupProfile: ActivationSetupProfile,
 		},
-		RequiredCapabilities: []string{workerproto.CapabilityCampaignSupervision},
-		Supervision: &workerproto.SupervisionActivation{
-			ActivationID: input.Activation.ID, RunID: input.Run.ID,
-			Epoch: input.Activation.Epoch, RecordRevision: input.Record.Revision,
-			GraphRevision:       input.Run.GraphRevision,
-			Principal:           input.SupervisorPrincipal,
-			CredentialReference: input.SupervisorCredentialReference,
-			LeaseToken:          input.Dispatch.LeaseToken,
-			LeaseExpiresAt:      input.Dispatch.LeaseExpiresAt.UTC(),
-			MaxTurns:            turns,
-			Prompt:              rendered,
-			Actions:             actions,
-		},
+		RequiredCapabilities: activationPackageCapabilities(input.Activation),
+		Supervision:          activation,
 		Limits: workerproto.ExecutionLimits{
 			MaxTurns: turns, PrepareTimeout: input.PrepareTimeout,
 			VerificationTimeout: input.VerificationTimeout,
@@ -334,6 +516,14 @@ func BuildActivationPackage(input ActivationPackageInput) (workerproto.Execution
 		// act on.
 		expiry := bounded
 		pkg.ExpiresAt = &expiry
+	}
+	pkg.Supervision.Prompt = rendered
+	finalPrompt := workerproto.RenderSupervisionPrompt(*pkg.Supervision)
+	if len(finalPrompt) > finalCap {
+		return workerproto.ExecutionPackage{}, &ActivationPackageError{
+			Code:  ActivationPackageErrorPromptTooLarge,
+			Cause: fmt.Errorf("final activation prompt is %d bytes over its %d byte cap", len(finalPrompt)-finalCap, finalCap),
+		}
 	}
 	return pkg, nil
 }
@@ -377,6 +567,42 @@ func ActivationPromptConstraints(input ActivationPackageInput) []string {
 // placeholder in upper case. The coordinator authorizes each invocation on its
 // own side against the activation's live lease, epoch and record revision; this
 // list tells the overseer what to type, and grants nothing.
+func activationPackageCapabilities(activation domain.Activation) []string {
+	result := []string{workerproto.CapabilityCampaignSupervision, workerproto.PackageCapabilitySupervisionEvidence}
+	if activation.Purpose == domain.RecoveryActivationRepair {
+		result = append(result, workerproto.PackageCapabilityRecoveryRetry)
+	}
+	return result
+}
+
+func activationScopedActions(activation domain.Activation, runID string) []workerproto.SupervisionAction {
+	if activation.Purpose == domain.RecoveryActivationRepair {
+		return []workerproto.SupervisionAction{{
+			Name: "retry",
+			Command: []string{ActivationCLI, "campaign", "recovery", "retry", runID,
+				"--incident", activation.IncidentID,
+				"--activation-id", activation.ID,
+				"--activation", strconv.FormatInt(activation.Epoch, 10),
+				"--operation-id", "KEY",
+				"--expected-incident-revision", "INCIDENT_REVISION",
+				"--graph-revision", "GRAPH_REVISION",
+				"--source-attempt", "ATTEMPT_ID",
+				"--source-attempt-revision", "ATTEMPT_REVISION",
+				"--instruction-artifact", "ARTIFACT_ID:DIGEST",
+				"--failure-fingerprint", "FAILURE_FINGERPRINT",
+				"--evidence-fingerprint", "EVIDENCE_FINGERPRINT",
+				"--strategy-fingerprint", "STRATEGY_FINGERPRINT",
+			},
+			Constraints: []string{
+				"write new repair instructions to recovery/instructions.md; an optional checkpoint tar belongs at recovery/checkpoint.tar",
+				"the worker publishes a typed retry proposal only after those bytes enter result custody; do not invoke this command before custody",
+				"this action creates a fresh ordinary attempt; it cannot decide or release a review gate",
+			},
+		}}
+	}
+	return ActivationScopedActions(runID, activation.Epoch)
+}
+
 func ActivationScopedActions(runID string, epoch int64) []workerproto.SupervisionAction {
 	activation := strconv.FormatInt(epoch, 10)
 	base := func(verb string) []string {
@@ -450,8 +676,22 @@ func activationPromptActions(actions []workerproto.SupervisionAction) []Activati
 // ingestion, and it is separate from the per-activation snapshot for the same
 // reason a task's prompt is separate from its inputs: one is authored once, the
 // other is assembled per dispatch.
+func activationPromptArtifactID(input ActivationPackageInput) (string, error) {
+	if input.Activation.Purpose != domain.RecoveryActivationRepair {
+		return input.Record.Config.PromptArtifactID, nil
+	}
+	if input.Record.Config.Recovery == nil || input.Record.Config.Recovery.Version != domain.RecoveryContractV1 ||
+		strings.TrimSpace(input.Record.Config.Recovery.PromptArtifactID) == "" {
+		return "", errors.New("supervision activation package: repair prompt contract is unavailable")
+	}
+	return input.Record.Config.Recovery.PromptArtifactID, nil
+}
+
 func activationPromptArtifact(input ActivationPackageInput) (workerproto.ArtifactObject, error) {
-	id := input.Record.Config.PromptArtifactID
+	id, err := activationPromptArtifactID(input)
+	if err != nil {
+		return workerproto.ArtifactObject{}, err
+	}
 	for _, artifact := range input.Artifacts {
 		if artifact.ID != id {
 			continue

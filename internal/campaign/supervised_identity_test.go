@@ -148,7 +148,7 @@ func activationPackage(
 	if state.Activation.Deadline != nil {
 		dispatch.Deadline = state.Activation.Deadline.UTC()
 	}
-	pkg, err := backlog.BuildActivationPackage(backlog.ActivationPackageInput{
+	input := backlog.ActivationPackageInput{
 		Workflow: workflow, Run: workflowRun, Record: state.Record, Activation: state.Activation,
 		Dispatch: dispatch, Attempt: attempt, Assignment: assignment,
 		Triggers: inbox.Triggers, Tasks: domain.TasksForRun(workflowRun, records.Tasks),
@@ -163,7 +163,19 @@ func activationPackage(
 		MaxArtifactBytes:              1 << 20,
 		MaxTotalBytes:                 2 << 20,
 		Now:                           run.now,
-	})
+	}
+	object, err := backlog.BuildActivationEvidenceForPackage(input)
+	if err != nil {
+		t.Fatalf("freeze the activation evidence: %v", err)
+	}
+	input.Evidence, err = backlog.DecodeActivationEvidenceSnapshot(object.Data)
+	if err != nil {
+		t.Fatalf("decode the activation evidence: %v", err)
+	}
+	input.EvidenceArtifact = backlog.ActivationEvidenceArtifact(
+		workflowRun.ID, attempt.TaskID, attempt.ID, object, "objects/"+object.ID, run.now,
+	)
+	pkg, err := backlog.BuildActivationPackage(input)
 	if err != nil {
 		t.Fatalf("build the activation package: %v", err)
 	}

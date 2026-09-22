@@ -74,6 +74,9 @@ func AuthorizeSupervisionActor(
 	if activation.State != ActivationActive {
 		return fmt.Errorf("%w: the activation is %s, not active", ErrSupervisionPrerequisite, activation.State)
 	}
+	if activation.Purpose == RecoveryActivationRepair {
+		return fmt.Errorf("%w: a repair activation has no reviewer or hold authority", ErrSupervisionUnauthorizedActor)
+	}
 	if !ActivationLeaseLive(activation, now) {
 		return fmt.Errorf("%w: the activation lease expired, so its decision authority is revoked",
 			ErrSupervisionPrerequisite)

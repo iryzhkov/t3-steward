@@ -23,9 +23,10 @@ import (
 // quota. The coordinator settles these from its own records; the worker
 // registers no local check.
 type coordinatorWaitSpec struct {
-	Kind  domain.WaitKind
-	Node  *domain.NodeWaitCondition
-	Quota *domain.QuotaWaitCondition
+	Kind      domain.WaitKind
+	Node      *domain.NodeWaitCondition
+	Quota     *domain.QuotaWaitCondition
+	Attention *domain.AttentionRequest
 
 	Name, Condition string
 	Timeout         time.Duration
@@ -45,7 +46,7 @@ func coordinatorWaitArgs(args []string) bool {
 		if arg == "--" {
 			return false
 		}
-		for _, name := range []string{"--node", "-node", "--quota", "-quota"} {
+		for _, name := range []string{"--node", "-node", "--quota", "-quota", "--attention", "-attention"} {
 			if arg == name || strings.HasPrefix(arg, name+"=") {
 				return true
 			}
@@ -73,6 +74,8 @@ func parseCoordinatorWaitSpec(args []string) (coordinatorWaitSpec, error) {
 	node := fs.String("node", "", "<run>[/<task>]")
 	state := fs.String("state", "", "node state")
 	quota := fs.String("quota", "", "quota pool")
+	attention := fs.String("attention", "", "approval or direction")
+	prompt := fs.String("prompt", "", "question or direction needed")
 	below := fs.String("below", "", "usage percent the pool must be below")
 	phase := fs.String("phase", "", "phase the pool must be in (normal)")
 	reset := fs.Bool("reset", false, "wait for the pool's window to reset")
@@ -93,8 +96,17 @@ func parseCoordinatorWaitSpec(args []string) (coordinatorWaitSpec, error) {
 	if spec.Timeout <= 0 || spec.Timeout > domain.MaxTaskWaitDuration {
 		return spec, fmt.Errorf("--timeout must be above zero and at most %s", domain.MaxTaskWaitDuration)
 	}
-	if *node != "" && *quota != "" {
-		return spec, errors.New("one wait has one kind; give --node or --quota, not both")
+	namedKinds := 0
+	for _, value := range []string{*node, *quota, *attention} {
+		if value != "" {
+			namedKinds++
+		}
+	}
+	if namedKinds != 1 {
+		return spec, errors.New("one wait has one kind; give exactly one of --node, --quota or --attention")
+	}
+	if *attention == "" && *prompt != "" {
+		return spec, errors.New("--prompt belongs to --attention")
 	}
 	if *quota == "" && (*below != "" || *phase != "" || *reset) {
 		return spec, errors.New("--below, --phase and --reset belong to --quota")
@@ -103,6 +115,16 @@ func parseCoordinatorWaitSpec(args []string) (coordinatorWaitSpec, error) {
 		return spec, errors.New("--state belongs to --node (and to --github)")
 	}
 	switch {
+	case *attention != "":
+		request := domain.AttentionRequest{Kind: domain.AttentionKind(*attention), Prompt: *prompt}
+		if request.Kind != domain.AttentionApproval && request.Kind != domain.AttentionDirection {
+			return spec, errors.New("--attention must be approval or direction")
+		}
+		if strings.TrimSpace(request.Prompt) == "" || request.Prompt != strings.TrimSpace(request.Prompt) {
+			return spec, errors.New("--prompt must be trimmed and non-empty")
+		}
+		spec.Kind, spec.Attention = domain.WaitKindAttention, &request
+		spec.Condition = "attention " + *attention + ": " + *prompt
 	case *quota != "":
 		condition := domain.QuotaWaitCondition{Pool: strings.TrimSpace(*quota), Phase: domain.Phase(*phase), Reset: *reset}
 		if *below != "" {
@@ -167,6 +189,9 @@ func cmdCoordinatorWaitAdd(ctx context.Context, cfg config.Config, client coordi
 	}
 	if spec.Task != "" {
 		return errors.New("--task current is a task-bound wait and is routed before this point")
+	}
+	if spec.Attention != nil {
+		return errors.New("--attention is task-bound and requires --task current")
 	}
 	if spec.WakeMode == "all" && spec.Group == "" {
 		return errors.New("--wake all needs --group")
@@ -305,6 +330,9 @@ func cmdTaskCoordinatorWaitAdd(ctx context.Context, cfg config.Config, args []st
 		return err
 	}
 	spec.RequestID = taskWaitRequestID(spec.RequestID, identity, os.Stderr)
+	if spec.Attention != nil {
+		spec.Attention.AssignmentID = identity.AssignmentID
+	}
 	transport, err := newCoordinatorTransport(cfg)
 	if err != nil {
 		return err
@@ -316,7 +344,7 @@ func cmdTaskCoordinatorWaitAdd(ctx context.Context, cfg config.Config, args []st
 			AttemptID: identity.AttemptID, IssuedRevision: identity.AttemptRevision,
 			ThreadID: identity.ThreadID, Wake: domain.WakeMode(spec.WakeMode), MaxDuration: spec.Timeout,
 			Name: spec.Name, Condition: spec.Condition, Kind: spec.Kind, OrTimeout: spec.OrTimeout,
-			Node: spec.Node, Quota: spec.Quota,
+			Node: spec.Node, Quota: spec.Quota, Attention: spec.Attention,
 		},
 	})
 	if err != nil {

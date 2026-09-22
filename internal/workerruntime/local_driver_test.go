@@ -144,6 +144,18 @@ func TestLocalDriverBindsCatalogArtifactsWorkspaceAndT3(t *testing.T) {
 	pkg.Environment.Ref = commit
 	pkg.Environment.RequiredCredentials = []string{"github-token"}
 	pkg.StaticInputs = []workerproto.ArtifactObject{testArtifact("input-1", "inputs/context.md", "context")}
+	pkg.Dependencies = []workerproto.DependencyInput{
+		{
+			TaskID:     "build--aaaa",
+			Provenance: &workerproto.DependencyProvenance{RunID: "source-run-a", TaskID: "source-task-a", AttemptID: "attempt-a", SourceArtifacts: map[string]string{"carried-a": "artifact-a"}},
+			Artifacts:  []workerproto.ArtifactObject{testArtifact("carried-a", "dependencies/build--aaaa/result.txt", "one")},
+		},
+		{
+			TaskID:     "build--bbbb",
+			Provenance: &workerproto.DependencyProvenance{RunID: "source-run-b", TaskID: "source-task-b", AttemptID: "attempt-b", SourceArtifacts: map[string]string{"carried-b": "artifact-b"}},
+			Artifacts:  []workerproto.ArtifactObject{testArtifact("carried-b", "dependencies/build--bbbb/result.txt", "two")},
+		},
+	}
 	manifest, err := workerproto.BuildExecutionPackageManifest(pkg)
 	if err != nil {
 		t.Fatal(err)
@@ -167,6 +179,8 @@ func TestLocalDriverBindsCatalogArtifactsWorkspaceAndT3(t *testing.T) {
 	source := mapArtifactSource{
 		pkg.Prompt.ID:          []byte("prompt"),
 		pkg.StaticInputs[0].ID: []byte("context"),
+		"carried-a":            []byte("one"),
+		"carried-b":            []byte("two"),
 	}
 	driver, err := NewLocalDriver(LocalDriver{
 		Config: LocalDriverConfig{
@@ -194,6 +208,15 @@ func TestLocalDriverBindsCatalogArtifactsWorkspaceAndT3(t *testing.T) {
 	input, err := os.ReadFile(filepath.Join(workspace, ".t3", "inputs", "context.md"))
 	if err != nil || string(input) != "context" {
 		t.Fatalf("materialized input=%q err=%v", input, err)
+	}
+	for path, want := range map[string]string{
+		"build--aaaa/result.txt": "one",
+		"build--bbbb/result.txt": "two",
+	} {
+		got, readErr := os.ReadFile(filepath.Join(workspace, ".t3", "dependencies", filepath.FromSlash(path)))
+		if readErr != nil || string(got) != want {
+			t.Fatalf("materialized dependency %s=%q err=%v", path, got, readErr)
+		}
 	}
 	if err := driver.CreateThread(context.Background(), pkg, workspace); err != nil {
 		t.Fatal(err)
@@ -268,6 +291,36 @@ func TestLocalDriverResolvesProjectBeforeCreate(t *testing.T) {
 	}
 	if len(control.created) != 1 {
 		t.Fatalf("create proceeded after resolver failure: %+v", control.created)
+	}
+}
+
+func TestRecoveryRetryPromptAppliesSupplementWithoutReplacingOriginal(t *testing.T) {
+	pkg := testPackage()
+	pkg.Recovery = &workerproto.RecoveryExecutionContext{
+		IncidentID: "incident", InstructionPath: "inputs/recovery/instructions.md",
+		CheckpointPaths: []string{"inputs/recovery/checkpoint-01"},
+	}
+	root := t.TempDir()
+	control := &recordingT3{projectID: "project-uuid"}
+	driver := &LocalDriver{Config: LocalDriverConfig{ArtifactRoot: root}, T3: control}
+	cachePath := filepath.Join(root, "objects", pkg.Prompt.SHA256)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, []byte("prompt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.CreateThread(context.Background(), pkg, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.created) != 1 {
+		t.Fatalf("created=%+v", control.created)
+	}
+	prompt := control.created[0].Prompt
+	for _, required := range []string{"prompt", "Keep the original task contract, outputs, and verification authoritative", "inputs/recovery/instructions.md", "inputs/recovery/checkpoint-01"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("prompt missing %q: %s", required, prompt)
+		}
 	}
 }
 

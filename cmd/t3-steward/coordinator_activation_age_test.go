@@ -31,6 +31,23 @@ func TestActivationDispatchAgeFreshTriggerIgnoresPriorEpochAge(t *testing.T) {
 	}
 }
 
+func TestActivationDispatchAgeRepairUsesRepairInboxDespiteReviewerCursor(t *testing.T) {
+	repairAt := time.Date(2026, 9, 20, 9, 0, 0, 0, time.UTC)
+	state := backlog.SupervisionActivationState{
+		Record: domain.SupervisionRecord{RunID: "run", EventCursor: 99},
+		Pending: []backlog.SupervisionEvent{
+			{ID: "ordinary", RunID: "run", Sequence: 100, OccurredAt: repairAt.Add(-time.Hour), Kind: backlog.TriggerOperatorReassessment},
+			{ID: "repair", RunID: "run", Sequence: 1, OccurredAt: repairAt, Kind: backlog.TriggerTaskJudgmentRequired},
+		},
+	}
+	at, id, err := activationDispatchAge(state, backlog.ActivationSignal{
+		Event: domain.ActivationEventTriggerFired, Purpose: domain.RecoveryActivationRepair,
+	})
+	if err != nil || !at.Equal(repairAt) || id != "repair" {
+		t.Fatalf("repair ordering=(%s,%q) err=%v, want (%s,%q)", at, id, err, repairAt, "repair")
+	}
+}
+
 func TestActivationDispatchAgeLegacyRetryUsesStableDeadlineEvidence(t *testing.T) {
 	planned := time.Date(2026, 9, 20, 8, 0, 0, 0, time.UTC)
 	deadline := planned.Add(2 * time.Hour)

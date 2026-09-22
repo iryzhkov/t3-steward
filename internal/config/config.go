@@ -369,6 +369,8 @@ type V2AdminClient struct {
 	// coordinator command outright. The default is false, which is the ordinary
 	// deployment in which no client is a supervisor.
 	Supervisor bool `yaml:"supervisor"`
+	// Approver marks a credential reserved for authenticated attention decisions.
+	Approver bool `yaml:"approver"`
 }
 
 // V2CoordinatorClient points a host that is not the coordinator at the

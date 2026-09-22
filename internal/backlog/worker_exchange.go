@@ -45,17 +45,83 @@ type AssignmentOfferBuilder interface {
 	BuildAssignmentOffer(context.Context, domain.Assignment, time.Time) (workerproto.AssignmentOffer, error)
 }
 
+type ActivationDispatchFailureStore interface {
+	LoadActivationDispatchFailure(context.Context, string, int64) (domain.ActivationDispatchFailure, bool, error)
+	RecordActivationDispatchFailure(context.Context, int64, domain.ActivationDispatchFailure) (domain.ActivationDispatchFailure, bool, error)
+}
+
+var _ ActivationDispatchFailureStore = (*sqlite.Store)(nil)
+
 type WorkerExchangeReport struct {
-	Snapshot    domain.WorkerSnapshot
-	Expired     []domain.Assignment
-	Offered     []domain.Assignment
-	Claimed     []domain.Assignment
-	Renewed     []domain.Assignment
-	Withheld    []domain.Assignment
-	Delivery    WorkerDeliveryReport
-	Throttle    []ThrottleDeliveryReport
-	Imports     []ResultImportReport
-	Checkpoints []domain.Artifact
+	Snapshot         domain.WorkerSnapshot
+	Expired          []domain.Assignment
+	Offered          []domain.Assignment
+	Claimed          []domain.Assignment
+	Renewed          []domain.Assignment
+	Withheld         []domain.Assignment
+	DispatchFailures []domain.ActivationDispatchFailure
+	Delivery         WorkerDeliveryReport
+	Throttle         []ThrottleDeliveryReport
+	Imports          []ResultImportReport
+	Checkpoints      []domain.Artifact
+}
+
+func activationDispatchFailure(records sqlite.CoordinatorRecords, assignment domain.Assignment, packageFailure *ActivationPackageError, now time.Time) (domain.ActivationDispatchFailure, error) {
+	var attempt domain.Attempt
+	for _, candidate := range records.Attempts {
+		if candidate.ID == assignment.AttemptID {
+			attempt = candidate
+			break
+		}
+	}
+	if attempt.ID == "" || !attempt.IsSupervisionActivation() {
+		return domain.ActivationDispatchFailure{}, errors.New("typed activation package failure has no activation attempt")
+	}
+	var graphRevision int64
+	for _, run := range records.WorkflowRuns {
+		if run.ID == attempt.WorkflowRunID {
+			graphRevision = run.GraphRevision
+			break
+		}
+	}
+	if graphRevision == 0 {
+		return domain.ActivationDispatchFailure{}, errors.New("typed activation package failure has no workflow graph revision")
+	}
+	message := map[string]string{
+		ActivationPackageErrorPromptTooLarge:   "activation prompt exceeds the final model context limit",
+		ActivationPackageErrorEvidenceMissing:  "immutable activation evidence is unavailable",
+		ActivationPackageErrorEvidenceMismatch: "immutable activation evidence does not match this activation",
+	}[packageFailure.Code]
+	if message == "" {
+		return domain.ActivationDispatchFailure{}, fmt.Errorf("unsupported activation package failure code %q", packageFailure.Code)
+	}
+	evidenceRef := fmt.Sprintf("activation://%s@%d/graph/%d", attempt.SupervisionActivationID, attempt.SupervisionActivationEpoch, graphRevision)
+	identity := fmt.Sprintf("%s@%d\x00%s\x00%s", assignment.ID, assignment.Epoch, packageFailure.Code, evidenceRef)
+	return domain.ActivationDispatchFailure{
+		ID: stableCoordinatorID("activation-dispatch-failure", identity), Code: packageFailure.Code,
+		SafeMessage: message, NextAction: fmt.Sprintf("t3-steward campaign supervision reassess %s --request-id KEY --reason TEXT", attempt.WorkflowRunID),
+		AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch, AttemptID: attempt.ID,
+		ActivationID: attempt.SupervisionActivationID, ActivationEpoch: attempt.SupervisionActivationEpoch,
+		RunID: attempt.WorkflowRunID, GraphRevision: graphRevision, EvidenceRef: evidenceRef,
+		FirstSeenAt: now, LastSeenAt: now,
+	}, nil
+}
+
+func activationDispatchFailureCurrent(records sqlite.CoordinatorRecords, assignment domain.Assignment, failure domain.ActivationDispatchFailure) bool {
+	if failure.AssignmentID != assignment.ID || failure.AssignmentEpoch != assignment.Epoch {
+		return false
+	}
+	for _, run := range records.WorkflowRuns {
+		if run.ID == failure.RunID && run.GraphRevision != failure.GraphRevision {
+			return false
+		}
+	}
+	for _, attempt := range records.Attempts {
+		if attempt.ID == assignment.AttemptID {
+			return attempt.ID == failure.AttemptID && attempt.SupervisionActivationID == failure.ActivationID && attempt.SupervisionActivationEpoch == failure.ActivationEpoch
+		}
+	}
+	return false
 }
 
 // TaskWaitParkStore exposes the attempts the coordinator's task-bound waits
@@ -219,7 +285,19 @@ func (c FleetCoordinator) ReconcileWorker(
 	assignments := offeredAssignmentsForWorker(records.Assignments, snapshot)
 	assignments, report.Withheld = admission.filterOffers(assignments, records.Attempts)
 	offers := make([]workerproto.AssignmentOffer, 0, len(assignments))
+	failureStore, recordsFailures := store.(ActivationDispatchFailureStore)
 	for _, assignment := range assignments {
+		if recordsFailures {
+			failure, exists, err := failureStore.LoadActivationDispatchFailure(ctx, assignment.ID, assignment.Epoch)
+			if err != nil {
+				return report, err
+			}
+			if exists && activationDispatchFailureCurrent(records, assignment, failure) {
+				report.Withheld = append(report.Withheld, assignment)
+				report.DispatchFailures = append(report.DispatchFailures, failure)
+				continue
+			}
+		}
 		leased := assignment
 		leased.LeaseExpiresAt = now.Add(leaseDuration)
 		offer, err := builder.BuildAssignmentOffer(ctx, leased, now.Add(offerTTL))
@@ -234,6 +312,18 @@ func (c FleetCoordinator) ReconcileWorker(
 			// commands, or collection for every other assignment.
 			slog.Warn("assignment offer withheld", "assignment", assignment.ID, "error", err)
 			report.Withheld = append(report.Withheld, assignment)
+			var packageFailure *ActivationPackageError
+			if errors.As(err, &packageFailure) && recordsFailures {
+				failure, buildErr := activationDispatchFailure(records, assignment, packageFailure, now)
+				if buildErr != nil {
+					return report, buildErr
+				}
+				failure, _, buildErr = failureStore.RecordActivationDispatchFailure(ctx, epoch, failure)
+				if buildErr != nil {
+					return report, buildErr
+				}
+				report.DispatchFailures = append(report.DispatchFailures, failure)
+			}
 			continue
 		}
 		offers = append(offers, offer)
@@ -468,10 +558,12 @@ func requireOfferedCapabilities(offer workerproto.AssignmentOffer, snapshot doma
 	if !offer.Package.Package.IsActivation() {
 		return nil
 	}
-	if !slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityCampaignSupervision) {
-		return fmt.Errorf(
-			"worker %q does not advertise capability %q; a supervision activation is not offered to it",
-			snapshot.WorkerID, workerproto.CapabilityCampaignSupervision)
+	for _, capability := range offer.Package.Package.RequiredCapabilities {
+		if !slices.Contains(snapshot.Inventory.Capabilities, capability) {
+			return fmt.Errorf(
+				"worker %q does not advertise capability %q; a supervision activation is not offered to it",
+				snapshot.WorkerID, capability)
+		}
 	}
 	return nil
 }
