@@ -1054,6 +1054,15 @@ func ActivationTransition(in ActivationTransitionInput) (ActivationTransitionRes
 		return stay(ActivationPendingDispatch)
 	case ActivationPendingDispatch:
 		switch in.Event {
+		case ActivationEventEventsArrived:
+			if !in.OperatorAuthorized || in.Actor.Kind != ActorOperator {
+				return ActivationTransitionResult{}, fmt.Errorf("%w: only an operator may replace a pending dispatch",
+					ErrSupervisionUnauthorizedActor)
+			}
+			if !in.ActivationBudgetRemaining {
+				return stay(ActivationEscalated)
+			}
+			return ActivationTransitionResult{State: ActivationPendingDispatch, Epoch: epoch + 1}, nil
 		case ActivationEventDispatchConfirmed:
 			if !in.LeaseValid {
 				return ActivationTransitionResult{}, fmt.Errorf("%w: dispatch was confirmed without a live lease",

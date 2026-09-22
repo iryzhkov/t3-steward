@@ -446,6 +446,22 @@ func (c coordinatorSupervision) activationSignal(
 	}
 	if state.Activation.State == domain.ActivationPendingDispatch {
 		if _, offered := activationAssignmentOf(records, state.Activation); offered {
+			inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, state.Record.EventCursor, reviewerSupervisionEvents(state.Pending))
+			for _, trigger := range inbox.Triggers {
+				if trigger.Kind == backlog.TriggerOperatorReassessment {
+					// A deterministic package failure leaves a durable offered
+					// assignment which can never cross the wire. An explicit
+					// operator reassessment supersedes that dispatch at a fresh
+					// epoch; the old assignment remains immutable history and its
+					// activation fence prevents it from being offered later.
+					signal.Event = domain.ActivationEventEventsArrived
+					signal.ExpectedEpoch = state.Activation.Epoch
+					signal.IncidentID = state.Activation.IncidentID
+					signal.OperatorAuthorized = true
+					signal.Reason = "an operator requested reassessment of the pending activation dispatch"
+					return signal, true, nil
+				}
+			}
 			// The dispatch is durable. Whether it started is the worker
 			// reconciliation's answer, not this boundary's.
 			return signal, false, nil

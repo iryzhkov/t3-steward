@@ -601,7 +601,16 @@ func PlanActivation(state SupervisionActivationState, signal ActivationSignal, n
 			next.LeaseToken, next.LeaseExpiresAt = "", nil
 		}
 	case domain.ActivationEventEventsArrived, domain.ActivationEventReconciliationAcknowledged:
-		if result.State == domain.ActivationIdle {
+		if activation.State == domain.ActivationPendingDispatch && result.State == domain.ActivationPendingDispatch {
+			next = newActivation(record, result.Epoch, inbox.HighWaterMark, 0)
+			next.IncidentID = signal.IncidentID
+			next.Principal = signal.Principal
+			if len(inbox.Events) != 0 {
+				next.ReadyAt = inbox.Events[0].OccurredAt.UTC()
+				next.ReadyTieID = inbox.Events[0].ID
+			}
+			plan.Dispatch = issueActivationLease(&next, record, now, false)
+		} else if result.State == domain.ActivationIdle {
 			// The machine raised the epoch, so this is a new activation rather
 			// than the old one at a new number. Minting the record here is what
 			// keeps the derived identities and the epoch in agreement: carrying

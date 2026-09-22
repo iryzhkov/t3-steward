@@ -60,6 +60,82 @@ type ActivationAssignmentCommit struct {
 // provably undelivered dispatch recomputes the same attempt and the same
 // assignment, finds them already offered, and returns the existing records
 // rather than creating a second overseer.
+// releaseSupersededActivationOffersTx closes only activation offers which never
+// crossed the worker start boundary. A claimed assignment is intentionally not
+// selected: reassessment cannot revoke execution which may already be running.
+func releaseSupersededActivationOffersTx(ctx context.Context, tx *sql.Tx, runID, currentActivationID string, coordinatorEpoch int64, now time.Time) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT assignment.record, attempt.record
+		FROM coordinator_assignments AS assignment
+		JOIN coordinator_attempts AS attempt ON attempt.id = assignment.attempt_id
+		WHERE attempt.workflow_run_id = ?
+		  AND COALESCE(json_extract(attempt.record, '$.supervisionActivationId'), '') <> ''
+		  AND json_extract(attempt.record, '$.supervisionActivationId') <> ?
+		  AND assignment.assignment_state = ?
+		ORDER BY assignment.id`, runID, currentActivationID, string(domain.AssignmentOffered))
+	if err != nil {
+		return fmt.Errorf("load superseded activation offers of run %q: %w", runID, err)
+	}
+	type pair struct {
+		assignment domain.Assignment
+		attempt    domain.Attempt
+	}
+	var offered []pair
+	for rows.Next() {
+		var assignmentRaw, attemptRaw []byte
+		if err := rows.Scan(&assignmentRaw, &attemptRaw); err != nil {
+			rows.Close()
+			return err
+		}
+		var item pair
+		if err := json.Unmarshal(assignmentRaw, &item.assignment); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := json.Unmarshal(attemptRaw, &item.attempt); err != nil {
+			rows.Close()
+			return err
+		}
+		offered = append(offered, item)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, item := range offered {
+		next := item.assignment
+		next.State = domain.AssignmentReleased
+		next.LeaseExpiresAt = time.Time{}
+		next.UpdatedAt = now
+		raw, err := json.Marshal(next)
+		if err != nil {
+			return fmt.Errorf("encode superseded activation assignment %q: %w", next.ID, err)
+		}
+		result, err := tx.ExecContext(ctx, `
+			UPDATE coordinator_assignments
+			SET assignment_state = ?, lease_expires_at = '', record = ?
+			WHERE id = ? AND assignment_state = ?`,
+			next.State, raw, next.ID, string(domain.AssignmentOffered))
+		if err != nil {
+			return fmt.Errorf("release superseded activation assignment %q: %w", next.ID, err)
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			return fmt.Errorf("%w: activation assignment %q crossed the offer boundary", ErrActivationDispatch, next.ID)
+		}
+		if _, err := insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+			ID:   "activation-offer-superseded:" + next.ID,
+			Kind: "assignment-released", WorkflowRunID: runID,
+			AttemptID: item.attempt.ID, TargetType: domain.AdminTargetAssignment, TargetID: next.ID,
+			Actor: "coordinator", Reason: "operator reassessment superseded an undelivered activation offer", CreatedAt: now,
+			Detail: nativeAuditDetail{CoordinatorEpoch: coordinatorEpoch, AssignmentEpoch: next.Epoch,
+				IdempotencyIdentity: "activation-offer-superseded:" + next.ID, Outcome: string(domain.AssignmentReleased)},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Store) CommitActivationAssignment(ctx context.Context, commit ActivationAssignmentCommit) (domain.Assignment, error) {
 	attempt, assignment := commit.Attempt, commit.Assignment
 	assignment.WorkerEpoch = commit.WorkerEpoch
@@ -110,6 +186,9 @@ func (s *Store) CommitActivationAssignment(ctx context.Context, commit Activatio
 		// revoked, so dispatching a review into a settled run would produce an
 		// overseer with nothing it is allowed to do.
 		return domain.Assignment{}, fmt.Errorf("%w: run %q has settled", ErrActivationDispatch, run.ID)
+	}
+	if err := releaseSupersededActivationOffersTx(ctx, tx, attempt.WorkflowRunID, attempt.SupervisionActivationID, commit.CoordinatorEpoch, commit.CommittedAt); err != nil {
+		return domain.Assignment{}, err
 	}
 	snapshot, exists, err := loadWorkerSnapshotTx(ctx, tx, assignment.WorkerID)
 	if err != nil {
