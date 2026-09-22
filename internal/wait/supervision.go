@@ -40,12 +40,12 @@ func (r *Runner) tickSupervisionEscalations(ctx context.Context) {
 	}
 	for _, escalation := range pending {
 		if escalation.Delivery == "sending" || escalation.Delivery == "recovery-required" {
-			found, err := control.ObserveNodeWake(ctx, escalation.ThreadID, escalation.DeliveryID)
+			status, err := reconcileNodeWake(ctx, control, escalation.ThreadID, escalation.DeliveryID)
 			if err != nil {
 				continue
 			}
 			to := "recovery-required"
-			if found {
+			if status == WakeReceiptDelivered {
 				to = "delivered"
 			}
 			if to != escalation.Delivery {

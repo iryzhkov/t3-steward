@@ -160,7 +160,15 @@ func TestSupervisionOutboxDeduplicatesAndFencesDelivery(t *testing.T) {
 		pending[0].IncidentID != "incident-1" {
 		t.Fatalf("pending escalations = %#v (err %v)", pending, err)
 	}
-	claimed, err := store.TransitionSupervisionOutboxRow(ctx, "escalation-1", "pending", "sending", supervisionTestTime)
+	held, err := store.TransitionSupervisionOutboxRow(ctx, "escalation-1", "pending", "held", supervisionTestTime)
+	if err != nil || !held {
+		t.Fatalf("hold = %v (err %v)", held, err)
+	}
+	pending, err = store.PendingSupervisionEscalations(ctx)
+	if err != nil || len(pending) != 1 || pending[0].Delivery != "held" {
+		t.Fatalf("dry-run held escalation was stranded: %#v (err %v)", pending, err)
+	}
+	claimed, err := store.TransitionSupervisionOutboxRow(ctx, "escalation-1", "held", "sending", supervisionTestTime)
 	if err != nil || !claimed {
 		t.Fatalf("claim = %v (err %v)", claimed, err)
 	}

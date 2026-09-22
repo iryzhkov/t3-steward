@@ -116,3 +116,37 @@ func TestInteractiveNodeWaitsGroupWithWakeAll(t *testing.T) {
 		}
 	}
 }
+
+func TestClaimNodeWakeGroupFreezesExactPayloadAtomically(t *testing.T) {
+	ctx := context.Background()
+	store, _, now := taskWaitFixture(t)
+	otherRun(t, store, now, domain.ProgressSucceeded)
+	for _, id := range []string{"nw-a", "nw-b"} {
+		request := domain.NodeWaitRequest{ID: id, ThreadID: "thread-1", Name: id, Target: domain.NodeRef{RunID: "r2", TaskID: "deploy"}, Timeout: time.Hour}
+		if _, err := store.RegisterNodeWait(ctx, request, "operator", "host", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SettleNodeWaits(ctx, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	members := []string{"nw-a", "nw-b"}
+	claimed, err := store.ClaimNodeWakeGroup(ctx, "nw-a", "pending", "delivery-a", "frozen bytes", members, now.Add(time.Minute))
+	if err != nil || !claimed {
+		t.Fatalf("claim = %v, %v", claimed, err)
+	}
+	waits, err := store.ListNodeWaits(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wake := range waits {
+		if wake.Delivery != "sending" || wake.DeliveryID != "delivery-a" || wake.DeliveryPayload != "frozen bytes" ||
+			wake.DeliveryPayloadDigest == "" || len(wake.DeliveryGroupMembers) != 2 {
+			t.Fatalf("wake was not frozen atomically: %+v", wake)
+		}
+	}
+	claimed, err = store.ClaimNodeWakeGroup(ctx, "nw-a", "sending", "delivery-a", "changed bytes", members, now.Add(2*time.Minute))
+	if err == nil || claimed || !strings.Contains(err.Error(), "frozen delivery differs") {
+		t.Fatalf("changed replay = %v, %v", claimed, err)
+	}
+}

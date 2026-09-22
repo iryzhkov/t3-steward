@@ -273,11 +273,17 @@ func (s *Store) TransitionSupervisionOutboxRow(ctx context.Context, id, from, to
 		return false, fmt.Errorf("decode supervision outbox entry %q: %w", id, err)
 	}
 	entry["delivery"] = to
+	if to == "recovery-required" {
+		entry["deliveryError"] = "delivery outcome is unknown"
+		entry["deliveryNextAction"] = "reconcile the durable receipt; do not resend without known non-effect"
+	}
 	if to == "sending" {
 		attempts, _ := entry["attempts"].(float64)
 		entry["attempts"] = attempts + 1
 	}
 	if to == "delivered" {
+		entry["deliveryError"] = ""
+		entry["deliveryNextAction"] = ""
 		entry["deliveredAt"] = now.UTC()
 	}
 	updated, err := json.Marshal(entry)
@@ -307,7 +313,7 @@ func (s *Store) TransitionSupervisionOutboxRow(ctx context.Context, id, from, to
 func (s *Store) PendingSupervisionEscalations(ctx context.Context) ([]domain.SupervisionEscalationDelivery, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, run_id, delivery_state, record FROM coordinator_supervision_outbox
-		WHERE delivery_state IN ('pending', 'sending', 'recovery-required') ORDER BY id`)
+		WHERE delivery_state IN ('pending', 'held', 'sending', 'recovery-required') ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list pending supervision escalations: %w", err)
 	}
@@ -320,11 +326,13 @@ func (s *Store) PendingSupervisionEscalations(ctx context.Context) ([]domain.Sup
 			return nil, err
 		}
 		var entry struct {
-			Kind       string `json:"kind"`
-			IncidentID string `json:"incidentId"`
-			ThreadID   string `json:"threadId"`
-			Reason     string `json:"reason"`
-			Attempts   int    `json:"attempts"`
+			Kind               string `json:"kind"`
+			IncidentID         string `json:"incidentId"`
+			ThreadID           string `json:"threadId"`
+			Reason             string `json:"reason"`
+			Attempts           int    `json:"attempts"`
+			DeliveryError      string `json:"deliveryError"`
+			DeliveryNextAction string `json:"deliveryNextAction"`
 		}
 		if err := json.Unmarshal(raw, &entry); err != nil {
 			return nil, fmt.Errorf("decode supervision outbox entry %q: %w", id, err)
@@ -337,6 +345,7 @@ func (s *Store) PendingSupervisionEscalations(ctx context.Context) ([]domain.Sup
 		pending = append(pending, domain.SupervisionEscalationDelivery{
 			ID: id, DeliveryID: id, RunID: runID, IncidentID: entry.IncidentID,
 			ThreadID: entry.ThreadID, Reason: entry.Reason, Delivery: delivery, Attempts: entry.Attempts,
+			DeliveryError: entry.DeliveryError, DeliveryNextAction: entry.DeliveryNextAction,
 		})
 	}
 	return pending, rows.Err()

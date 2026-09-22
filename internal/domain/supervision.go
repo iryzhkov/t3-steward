@@ -198,8 +198,10 @@ type SupervisionEscalationDelivery struct {
 	Reason     string `json:"reason,omitempty"`
 	// Delivery is the outbox delivery state as the store holds it, which is the
 	// value a compare-and-set claim must name.
-	Delivery string `json:"delivery"`
-	Attempts int    `json:"attempts,omitempty"`
+	Delivery           string `json:"delivery"`
+	Attempts           int    `json:"attempts,omitempty"`
+	DeliveryError      string `json:"deliveryError,omitempty"`
+	DeliveryNextAction string `json:"deliveryNextAction,omitempty"`
 }
 
 // SupervisionConfig is the declared supervision of one workflow, carried

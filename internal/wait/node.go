@@ -35,6 +35,38 @@ type NodeControl interface {
 	SendNodeWake(context.Context, domain.Thread, string, string) error
 }
 
+// WakeReceiptStatus distinguishes positive evidence from an unknown effect.
+// Unknown never authorizes another send.
+type WakeReceiptStatus string
+
+const (
+	WakeReceiptDelivered WakeReceiptStatus = "delivered"
+	WakeReceiptRejected  WakeReceiptStatus = "rejected"
+	WakeReceiptUnknown   WakeReceiptStatus = "unknown"
+)
+
+// NodeWakeReceiptControl explicitly advertises tri-state reconciliation.
+type NodeWakeReceiptControl interface {
+	ReconcileNodeWake(context.Context, string, string) (WakeReceiptStatus, error)
+}
+
+func reconcileNodeWake(ctx context.Context, control NodeControl, threadID, deliveryID string) (WakeReceiptStatus, error) {
+	if receipts, ok := control.(NodeWakeReceiptControl); ok {
+		return receipts.ReconcileNodeWake(ctx, threadID, deliveryID)
+	}
+	found, err := control.ObserveNodeWake(ctx, threadID, deliveryID)
+	if found {
+		return WakeReceiptDelivered, err
+	}
+	return WakeReceiptUnknown, err
+}
+
+// NodeGroupClaimer atomically freezes a wake's exact payload and, for wake-all,
+// every member that rides in the same external effect.
+type NodeGroupClaimer interface {
+	ClaimNodeWakeGroup(ctx context.Context, leaderID, from, deliveryID, payload string, memberIDs []string, now time.Time) (bool, error)
+}
+
 // nodeWakeProse is the human part of a node or quota wake, after the trailer.
 func nodeWakeProse(w domain.NodeWait) string {
 	if w.Request.Quota != nil {
@@ -117,12 +149,22 @@ func (r *Runner) tickNodes(ctx context.Context) {
 			}
 		}
 		if w.Delivery == "sending" || w.Delivery == "recovery-required" {
-			found, err := control.ObserveNodeWake(ctx, w.Request.ThreadID, w.DeliveryID)
+			status := WakeReceiptUnknown
+			var err error
+			if receipts, ok := control.(NodeWakeReceiptControl); ok {
+				status, err = receipts.ReconcileNodeWake(ctx, w.Request.ThreadID, w.DeliveryID)
+			} else {
+				var found bool
+				found, err = control.ObserveNodeWake(ctx, w.Request.ThreadID, w.DeliveryID)
+				if found {
+					status = WakeReceiptDelivered
+				}
+			}
 			if err != nil {
 				continue
 			}
 			to := "recovery-required"
-			if found {
+			if status == WakeReceiptDelivered {
 				to = "delivered"
 			}
 			if to != w.Delivery {
@@ -147,19 +189,27 @@ func (r *Runner) tickNodes(ctx context.Context) {
 		if healthy, _ := r.healthy(*thread); !healthy {
 			continue
 		}
-		claimed, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "sending", r.now())
+		text := nodeTrailer(w) + "\n\n" + nodeWakeProse(w)
+		memberIDs := []string{w.Request.ID}
+		if grouped {
+			text = nodeGroupMessage(members)
+			memberIDs = memberIDs[:0]
+			for _, member := range members {
+				memberIDs = append(memberIDs, member.Request.ID)
+			}
+		}
+		var claimed bool
+		if freezer, ok := store.(NodeGroupClaimer); ok {
+			claimed, err = freezer.ClaimNodeWakeGroup(ctx, w.Request.ID, w.Delivery, w.DeliveryID, text, memberIDs, r.now())
+		} else {
+			claimed, err = store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "sending", r.now())
+		}
 		if err != nil {
 			logNodeWakeTransition(ctx, r, w.Request.ID, w.Delivery, "sending", host, err)
 			continue
 		}
 		if !claimed {
-			// Another runner holds this wake. That is the fence working, not a
-			// fault, so it is not reported as one.
 			continue
-		}
-		text := nodeTrailer(w) + "\n\n" + nodeWakeProse(w)
-		if grouped {
-			text = nodeGroupMessage(members)
 		}
 		if err := control.SendNodeWake(ctx, *thread, w.DeliveryID, text); err != nil {
 			if _, err := store.TransitionNodeWake(ctx, w.Request.ID, "sending", "recovery-required", r.now()); err != nil {
@@ -168,25 +218,17 @@ func (r *Runner) tickNodes(ctx context.Context) {
 			continue
 		}
 		if grouped {
-			// The other members rode in the same message. A crash here leaves
-			// them pending while this one becomes delivered on a later tick;
-			// nodeWaitGroups then leaves the delivered member out, so the
-			// earliest member still pending carries one more send naming the
-			// rest, rather than every remaining member being skipped forever
-			// as "not the earliest". That is the honest degradation.
+			_, frozen := store.(NodeGroupClaimer)
 			for _, member := range members[1:] {
-				if member.Delivery != "pending" && member.Delivery != "held" {
-					continue
-				}
-				claimed, err := store.TransitionNodeWake(ctx, member.Request.ID, member.Delivery, "sending", r.now())
-				if err != nil {
-					logNodeWakeTransition(ctx, r, member.Request.ID, member.Delivery, "sending", host, err)
-					continue
-				}
-				if !claimed {
-					// Another runner carried this member: the same fence as
-					// above, and the same silence.
-					continue
+				if !frozen {
+					claimed, err := store.TransitionNodeWake(ctx, member.Request.ID, member.Delivery, "sending", r.now())
+					if err != nil {
+						logNodeWakeTransition(ctx, r, member.Request.ID, member.Delivery, "sending", host, err)
+						continue
+					}
+					if !claimed {
+						continue
+					}
 				}
 				if _, err := store.TransitionNodeWake(ctx, member.Request.ID, "sending", "delivered", r.now()); err != nil {
 					logNodeWakeTransition(ctx, r, member.Request.ID, "sending", "delivered", host, err)

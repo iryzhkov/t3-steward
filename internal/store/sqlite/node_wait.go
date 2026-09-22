@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -386,7 +387,13 @@ func (s *Store) TransitionNodeWake(ctx context.Context, id, from, to string, now
 		return false, fmt.Errorf("invalid wake transition %s to %s", from, to)
 	}
 	w.Delivery = to
+	if to == "recovery-required" {
+		w.DeliveryError = "delivery outcome is unknown"
+		w.DeliveryNextAction = "reconcile the durable receipt; do not resend without known non-effect"
+	}
 	if to == "delivered" {
+		w.DeliveryError = ""
+		w.DeliveryNextAction = ""
 		t := now.UTC()
 		w.DeliveredAt = &t
 	}
@@ -398,6 +405,63 @@ func (s *Store) TransitionNodeWake(ctx context.Context, id, from, to string, now
 	if to == "delivered" || to == "cancelled" {
 		if _, err = tx.ExecContext(ctx, "DELETE FROM coordinator_retention_pins WHERE owner=?", "wait:"+id); err != nil {
 			return false, err
+		}
+	}
+	return true, tx.Commit()
+}
+
+// ClaimNodeWakeGroup atomically freezes one external effect and claims every
+// member that it represents. Existing frozen bytes must match exactly.
+func (s *Store) ClaimNodeWakeGroup(ctx context.Context, leaderID, from, deliveryID, payload string, memberIDs []string, now time.Time) (bool, error) {
+	if len(memberIDs) == 0 {
+		return false, fmt.Errorf("claim node wake group %q: no members", leaderID)
+	}
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(payload)))
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	for _, id := range memberIDs {
+		var raw []byte
+		if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_node_waits WHERE id=?", id).Scan(&raw); err != nil {
+			return false, fmt.Errorf("claim node wake member %q: %w", id, err)
+		}
+		var wake domain.NodeWait
+		if err := json.Unmarshal(raw, &wake); err != nil {
+			return false, err
+		}
+		expected := "pending"
+		if id == leaderID {
+			expected = from
+		} else if wake.Delivery == "held" {
+			expected = "held"
+		}
+		if wake.Delivery != expected {
+			return false, nil
+		}
+		if wake.DeliveryPayload != "" && (wake.DeliveryPayload != payload || wake.DeliveryPayloadDigest != digest || !reflect.DeepEqual(wake.DeliveryGroupMembers, memberIDs)) {
+			return false, fmt.Errorf("claim node wake %q: frozen delivery differs", id)
+		}
+		wake.Delivery = "sending"
+		wake.DeliveryID = deliveryID
+		wake.DeliveryPayload = payload
+		wake.DeliveryPayloadDigest = digest
+		wake.DeliveryGroupMembers = append([]string(nil), memberIDs...)
+		wake.DeliveryAttempts++
+		wake.DeliveryError = ""
+		wake.DeliveryNextAction = "reconcile the durable delivery receipt; do not resend on an unknown outcome"
+		wake.DeliveryNextAttemptAt = nil
+		encoded, err := json.Marshal(wake)
+		if err != nil {
+			return false, err
+		}
+		result, err := tx.ExecContext(ctx, "UPDATE coordinator_node_waits SET record=? WHERE id=? AND json_extract(record, '$.delivery')=?", encoded, id, expected)
+		if err != nil {
+			return false, err
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			return false, nil
 		}
 	}
 	return true, tx.Commit()

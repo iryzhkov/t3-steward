@@ -303,6 +303,16 @@ type NodeWait struct {
 	Observation        *NodeObservation `json:"observation,omitempty"`
 	SettledAt          *time.Time       `json:"settledAt,omitempty"`
 	DeliveryID         string           `json:"deliveryId"`
+	// DeliveryPayload and DeliveryPayloadDigest freeze the exact external effect
+	// before the durable sending transition. GroupMembers freezes the membership
+	// of a wake-all effect so recovery never elects a different leader.
+	DeliveryPayload       string     `json:"deliveryPayload,omitempty"`
+	DeliveryPayloadDigest string     `json:"deliveryPayloadDigest,omitempty"`
+	DeliveryGroupMembers  []string   `json:"deliveryGroupMembers,omitempty"`
+	DeliveryError         string     `json:"deliveryError,omitempty"`
+	DeliveryNextAction    string     `json:"deliveryNextAction,omitempty"`
+	DeliveryAttempts      int        `json:"deliveryAttempts,omitempty"`
+	DeliveryNextAttemptAt *time.Time `json:"deliveryNextAttemptAt,omitempty"`
 	// pending, held, sending, recovery-required, delivered or cancelled.
 	Delivery    string     `json:"delivery"`
 	DeliveredAt *time.Time `json:"deliveredAt,omitempty"`
