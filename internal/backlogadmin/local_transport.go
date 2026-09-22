@@ -416,11 +416,17 @@ func (s *LocalServer) verifyApprovalFrame(relayed localRequest) (Principal, loca
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return Principal{}, localRequest{}, errors.New("approval proof payload has trailing content")
 	}
+	decision := original.NodeWait != nil && original.NodeWait.Action == "decide-attention" &&
+		original.NodeWait.Decision != nil
+	inspection := original.NodeWait != nil && original.NodeWait.Action == "inspect-attention" &&
+		original.NodeWait.Decision == nil && original.NodeWait.Task == nil && original.NodeWait.Result == nil &&
+		original.NodeWait.ID != "" && original.NodeWait.From == "" && original.NodeWait.To == "" &&
+		original.NodeWait.Host == "" && !original.NodeWait.Undelivered &&
+		reflect.DeepEqual(original.NodeWait.Request, domain.NodeWaitRequest{})
 	if original.ApprovalFrame != nil || original.RemoteAdmin != nil ||
 		original.Version != LocalTransportVersion || original.Operation != localOperationNodeWait ||
-		original.NodeWait == nil || original.NodeWait.Action != "decide-attention" ||
-		original.NodeWait.Decision == nil {
-		return Principal{}, localRequest{}, errors.New("approval proof is not an attention decision")
+		(!decision && !inspection) {
+		return Principal{}, localRequest{}, errors.New("approval proof is not an attention inspection or decision")
 	}
 	if relayed.RemoteAdmin.Principal != credentials.ClientPrincipal ||
 		relayed.RemoteAdmin.Coordinator != s.CoordinatorID ||

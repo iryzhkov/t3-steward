@@ -11,7 +11,7 @@ import (
 )
 
 func TestNativeWaitRoutingNeverOpensShellCheck(t *testing.T) {
-	for _, args := range [][]string{{"add", "--task", "r/t"}, {"add", "--run=r"}, {"list", "--native"}, {"cancel", "nw-123"}, {"run-now", "nw-123"}} {
+	for _, args := range [][]string{{"add", "--task", "r/t"}, {"add", "--run=r"}, {"list", "--native"}, {"inspect", "tw-attention"}, {"cancel", "nw-123"}, {"run-now", "nw-123"}} {
 		if !nativeWaitArgs(args) {
 			t.Fatalf("native command routed to shell/store: %v", args)
 		}
@@ -20,6 +20,23 @@ func TestNativeWaitRoutingNeverOpensShellCheck(t *testing.T) {
 		t.Fatal("shell command routed as native")
 	}
 }
+
+func TestAttentionInspectIsDiscoverable(t *testing.T) {
+	for _, page := range fleetHelpPages() {
+		if page.Path != "wait inspect" {
+			continue
+		}
+		if len(page.Usage) != 1 || page.Usage[0] != "t3-steward wait inspect <attention-id>" {
+			t.Fatalf("inspect usage = %v", page.Usage)
+		}
+		if len(page.Parsers) != 1 || page.Parsers[0].Func != "cmdNodeWait" || page.Parsers[0].Case != "inspect" {
+			t.Fatalf("inspect parser coverage = %+v", page.Parsers)
+		}
+		return
+	}
+	t.Fatal("wait inspect is missing from generated help")
+}
+
 func TestCoordinatorSettlesNodeWaitDespiteQuotaFailure(t *testing.T) {
 	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {

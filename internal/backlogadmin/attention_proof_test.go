@@ -58,6 +58,52 @@ func TestApprovalFrameIsReverifiedAtFinalBoundary(t *testing.T) {
 	}
 }
 
+func TestAttentionInspectionSurvivesRemoteRelayAndFinalBoundary(t *testing.T) {
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	credentials := AdminCredentials{
+		ClientPrincipal: "human", ClientKeyID: "human-key", ClientSecret: []byte("human-secret-1234"),
+		CoordinatorPrincipal: "coord", CoordinatorKeyID: "coord-key", CoordinatorSecret: []byte("coord-secret-1234"),
+	}
+	original := localRequest{
+		Version: LocalTransportVersion, Operation: localOperationNodeWait,
+		NodeWait: &NodeWaitOperation{Action: "inspect-attention", ID: "tw-attention-1"},
+	}
+	frame, err := newRemoteFrame(localOperationNodeWait, "session-inspect", "request-inspect",
+		"human", "coord", 1, now, now.Add(time.Minute), original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signRemoteFrame(&frame, credentials.ClientPrincipal, credentials.ClientKeyID, credentials.ClientSecret); err != nil {
+		t.Fatal(err)
+	}
+	remote, err := NewRemoteServer(RemoteServerConfig{
+		CoordinatorID: "coord", Clients: map[string]AdminCredentials{"human": credentials},
+		Approvers: map[string]bool{"human": true}, MaxRequestBytes: 1 << 20,
+		MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayed, _, verified, protocolErr := remote.validate("", frame)
+	if protocolErr != nil || !verified || relayed.ApprovalFrame == nil {
+		t.Fatalf("remote validation: verified=%v request=%+v err=%v", verified, relayed, protocolErr)
+	}
+	local := LocalServer{
+		CoordinatorID: "coord", Approvers: map[string]AdminCredentials{"human": credentials},
+		Now: func() time.Time { return now.Add(time.Second) },
+	}
+	principal, verifiedRequest, err := local.verifyApprovalFrame(relayed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if principal.ID != RelayedPrincipalID("human") || len(principal.Roles) != 1 ||
+		principal.Roles[0] != ApproverRole || verifiedRequest.NodeWait == nil ||
+		verifiedRequest.NodeWait.Action != "inspect-attention" ||
+		verifiedRequest.NodeWait.ID != "tw-attention-1" || verifiedRequest.NodeWait.Decision != nil {
+		t.Fatalf("final inspection request=%+v principal=%+v", verifiedRequest, principal)
+	}
+}
+
 func TestApprovalFrameRefusesForgeryAndRelayMutation(t *testing.T) {
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	t.Run("forged signature", func(t *testing.T) {

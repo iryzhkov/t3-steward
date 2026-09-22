@@ -33,7 +33,7 @@ func currentTaskWaitArgs(args []string) bool {
 }
 
 func nativeWaitArgs(args []string) bool {
-	if len(args) != 0 && args[0] == "answer" {
+	if len(args) != 0 && (args[0] == "answer" || args[0] == "inspect") {
 		return true
 	}
 	for _, arg := range args {
@@ -158,6 +158,11 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 			return fmt.Errorf("wait list --native takes no arguments (got %q)", strings.Join(fs.Args(), " "))
 		}
 		scope.thread, scope.host, scope.asJSON = *nativeThread, *nativeHost, *asJSON
+	case "inspect":
+		if len(args) != 2 || strings.TrimSpace(args[1]) == "" {
+			return errors.New("wait inspect needs exactly one attention wait ID")
+		}
+		op.Action, op.ID = "inspect-attention", args[1]
 	case "answer":
 		fs := flag.NewFlagSet("wait answer", flag.ContinueOnError)
 		decisionID := fs.String("decision-id", "decision-"+strings.TrimPrefix(newWaitID(), "w-"), "stable decision ID")
@@ -239,6 +244,13 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 			return errors.New("the coordinator returned no attention receipt")
 		}
 		return json.NewEncoder(os.Stdout).Encode(result.AttentionReceipt)
+	}
+	if op.Action == "inspect-attention" {
+		if len(result.TaskWaits) != 1 || result.TaskWaits[0].Kind != domain.WaitKindAttention ||
+			result.TaskWaits[0].Attention == nil {
+			return errors.New("the coordinator returned no matching attention request")
+		}
+		return json.NewEncoder(os.Stdout).Encode(result.TaskWaits[0])
 	}
 	if op.Action == "cancel-task" && len(result.TaskWaits) == 1 {
 		// The coordinator has settled the wait; the local check on this host,

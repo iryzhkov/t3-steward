@@ -86,6 +86,19 @@ func fleetHelpPages() []helpPage {
 			Parsers:  []parserSite{{Func: "parseWaitListArgs"}, {Func: "cmdNodeWait", Case: "list"}},
 		},
 		{
+			Path:    "wait inspect",
+			Purpose: "inspect one attention request with the restricted approver credential.",
+			Usage:   []string{"t3-steward wait inspect <attention-id>"},
+			Exits:   []helpExit{{0, "exact attention request returned as JSON"}, {1, "no id or no matching attention request"}, {3, "client configuration"}, {4, "approver authentication"}, {5, "no coordinator answered"}, {6, "timeout"}, {8, "inspection refused"}},
+			JSONKeys: []string{
+				"id", "workflowRunId", "taskId", "attemptId", "threadId", "requestId",
+				"registeredRevision", "deadline", "attention", "attentionReceipts", "result",
+				"settledAt", "wokenAt", "delivery", "deliveryId",
+			},
+			Notes:   "This is the only read available to an approver credential. It returns the immutable request, every decision fence and the append-only receipt history needed to construct wait answer; generic wait list remains forbidden.",
+			Parsers: []parserSite{{Func: "cmdNodeWait", Case: "inspect"}},
+		},
+		{
 			Path:    "wait answer",
 			Purpose: "submit one authenticated, revision-fenced answer to a parked attention request.",
 			Usage:   []string{"t3-steward wait answer [flags]"},
