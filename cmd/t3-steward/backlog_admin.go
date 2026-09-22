@@ -96,12 +96,20 @@ func (localAdminAuthorizer) Authorize(_ context.Context, principal backlogadmin.
 	if principal.ID == "" {
 		return errors.New("local admin principal is required")
 	}
+	if action.Kind == backlogadmin.QueryKind("attention-decision") {
+		if len(principal.Roles) == 1 && principal.Roles[0] == backlogadmin.ApproverRole {
+			return nil
+		}
+		return errors.New("attention decisions require the separately authenticated approver role")
+	}
 	for _, role := range principal.Roles {
 		switch role {
 		case backlogadmin.LocalAdminRole:
 			return nil
 		case backlogadmin.RemoteAdminRole:
 			return authorizeRemoteAdmin(action)
+		case backlogadmin.ApproverRole:
+			return errors.New("approver role is limited to attention decisions")
 		}
 	}
 	return errors.New("local-admin or remote-admin role is required")

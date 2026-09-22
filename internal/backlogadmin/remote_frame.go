@@ -64,6 +64,10 @@ const LocalAdminRole = "local-admin"
 // rather than by anything the credential carries. See SupervisorAuthorizer.
 const SupervisorRole = "supervisor"
 
+// ApproverRole is derived only by re-verifying a configured approver's signed
+// decision frame at the coordinator's final local trust boundary.
+const ApproverRole = "approver"
+
 // ValidateAdminCredentialReference refuses anything outside the admin
 // namespace, and says so by name when a worker reference was supplied.
 func ValidateAdminCredentialReference(reference string) error {

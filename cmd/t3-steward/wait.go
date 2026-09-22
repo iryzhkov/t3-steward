@@ -55,7 +55,7 @@ that parks safely and a task that is verified against work it has not done.
       state: it wakes the selected thread and creates or alters nothing else.
       No task is parked, nothing is held, nothing is released.
 
-Every wait has one of five conditions, its KIND. Both forms take every kind.
+Every wait has one condition, its KIND. Attention is task-bound; the other kinds support both forms.
 
   LOCAL KINDS  settled by this host's wait runner, with a local check row
     shell    -- <command...>          exit 0 met, exit 2 gave up, else not yet
@@ -85,6 +85,9 @@ Every wait has one of five conditions, its KIND. Both forms take every kind.
                                       observations of the pool: usage under N
                                       percent, every bucket normal, or the
                                       window current at registration reset
+    attention --task current --attention approval|direction --prompt TEXT
+                                      parks only this task for an authenticated
+                                      approver decision
 
 Outcomes: met, failed, gave-up, cancelled, timed-out. --or-timeout makes the
 deadline a normal outcome for every kind: the wake still says timed-out, with
@@ -123,6 +126,8 @@ Commands:
                                 joined answer: node, quota and every task-bound
                                 wait it holds, in every state, scoped the same
                                 way and printed in the same row shape.
+  answer [flags]                Submit a signed approver decision; every fence
+                                must match the parked attention request.
   cancel <id> | run-now <id>    Control an interactive wait or a local check.
   cancel <w-tw-id> | cancel <tw-id>
                                 Cancel a task-bound wait, by its local check or
@@ -216,6 +221,7 @@ Examples, inside a task:
   t3-steward wait add --task current --for 30m --or-timeout
   t3-steward wait add --task current --node <run>/<task> --state succeeded
   t3-steward wait add --task current --quota claude --phase normal
+  t3-steward wait add --task current --attention approval --prompt "Deploy to production?"
   t3-steward wait add --task current --name "deploy finished" -- ./scripts/deployed.sh
 
 Then end the turn. Nothing is collected or verified until the steward resumes
@@ -247,6 +253,8 @@ func cmdWait(g globalFlags, args []string) error {
 	defer store.Close()
 	ctx := context.Background()
 	switch args[0] {
+	case "answer":
+		return cmdNodeWait(ctx, cfg, args)
 	case "add":
 		return cmdWaitAdd(ctx, cfg, store, args[1:])
 	case "list":

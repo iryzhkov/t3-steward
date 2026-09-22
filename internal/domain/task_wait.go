@@ -193,6 +193,9 @@ type TaskWait struct {
 	// Quota is the structured condition of a quota wait, settled by the same
 	// pass from the merged bucket observations.
 	Quota *QuotaWaitCondition `json:"quota,omitempty"`
+	// Attention is the immutable operator question and its authenticated receipt.
+	Attention         *AttentionRequest  `json:"attention,omitempty"`
+	AttentionReceipts []AttentionReceipt `json:"attentionReceipts,omitempty"`
 
 	// RegisteredRevision is the attempt revision this registration produced. It
 	// is the fence a later wake is checked against.
@@ -293,6 +296,8 @@ type TaskWaitRegistration struct {
 	Node *NodeWaitCondition `json:"node,omitempty"`
 	// Quota is the structured condition of a quota wait.
 	Quota *QuotaWaitCondition `json:"quota,omitempty"`
+	// Attention is the typed operator decision request.
+	Attention *AttentionRequest `json:"attention,omitempty"`
 }
 
 // MaxTaskWaitDuration bounds any single task-bound wait. Directory writer
@@ -375,6 +380,15 @@ func (r TaskWaitRegistration) Validate() error {
 		return errors.New("a quota wait needs its pool and condition")
 	case r.Kind != WaitKindQuota && r.Quota != nil:
 		return fmt.Errorf("a %s wait carries no quota condition", r.Kind.OrShell())
+	case r.Kind == WaitKindAttention && r.Attention == nil:
+		return errors.New("an attention wait needs its typed request")
+	case r.Kind != WaitKindAttention && r.Attention != nil:
+		return fmt.Errorf("a %s wait carries no attention request", r.Kind.OrShell())
+	}
+	if r.Attention != nil {
+		if err := r.Attention.Validate(); err != nil {
+			return err
+		}
 	}
 	if r.Node != nil {
 		if _, err := ParseNodeWaitState(string(r.Node.State)); err != nil {

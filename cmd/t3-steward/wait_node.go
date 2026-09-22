@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +33,9 @@ func currentTaskWaitArgs(args []string) bool {
 }
 
 func nativeWaitArgs(args []string) bool {
+	if len(args) != 0 && args[0] == "answer" {
+		return true
+	}
 	for _, arg := range args {
 		if arg == "--native" || arg == "--task" || strings.HasPrefix(arg, "--task=") || arg == "--run" || strings.HasPrefix(arg, "--run=") || arg == "--node" || strings.HasPrefix(arg, "--node=") || arg == "--quota" || strings.HasPrefix(arg, "--quota=") || strings.HasPrefix(arg, "nw-") || strings.HasPrefix(arg, "tw-") {
 			return true
@@ -153,6 +158,39 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 			return fmt.Errorf("wait list --native takes no arguments (got %q)", strings.Join(fs.Args(), " "))
 		}
 		scope.thread, scope.host, scope.asJSON = *nativeThread, *nativeHost, *asJSON
+	case "answer":
+		fs := flag.NewFlagSet("wait answer", flag.ContinueOnError)
+		decisionID := fs.String("decision-id", "decision-"+strings.TrimPrefix(newWaitID(), "w-"), "stable decision ID")
+		waitID := fs.String("wait", "", "attention wait ID")
+		requestID := fs.String("request-id", "", "attention request ID")
+		runID := fs.String("run", "", "workflow run ID")
+		taskID := fs.String("task-id", "", "task ID")
+		attemptID := fs.String("attempt", "", "attempt ID")
+		assignmentID := fs.String("assignment", "", "assignment ID")
+		threadID := fs.String("thread", "", "thread ID")
+		revisionText := fs.String("revision", "", "registered revision")
+		kind := fs.String("decision", "", "approve, resume, hold, stop or change")
+		reason := fs.String("reason", "", "decision reason")
+		change := fs.String("change", "", "proposed change")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return errors.New("wait answer takes flags only")
+		}
+		revision, err := strconv.ParseInt(*revisionText, 10, 64)
+		if err != nil {
+			return fmt.Errorf("--revision must be an integer: %w", err)
+		}
+		decision := domain.AttentionDecision{
+			ID: *decisionID, WaitID: *waitID, RequestID: *requestID, WorkflowRunID: *runID,
+			TaskID: *taskID, AttemptID: *attemptID, AssignmentID: *assignmentID, ThreadID: *threadID,
+			RegisteredRevision: revision, Kind: domain.AttentionDecisionKind(*kind), Reason: *reason, Change: *change,
+		}
+		if err := decision.Validate(); err != nil {
+			return err
+		}
+		op.Action, op.Decision = "decide-attention", &decision
 	case "cancel", "run-now":
 		for _, arg := range args[1:] {
 			if arg == "--json" {
@@ -181,6 +219,12 @@ func cmdNodeWait(ctx context.Context, cfg config.Config, args []string) error {
 	result, err := client.NodeWait(ctx, op)
 	if err != nil {
 		return err
+	}
+	if op.Action == "decide-attention" {
+		if result.AttentionReceipt == nil {
+			return errors.New("the coordinator returned no attention receipt")
+		}
+		return json.NewEncoder(os.Stdout).Encode(result.AttentionReceipt)
 	}
 	if op.Action == "cancel-task" && len(result.TaskWaits) == 1 {
 		// The coordinator has settled the wait; the local check on this host,

@@ -34,7 +34,10 @@ type RemoteServerConfig struct {
 	// remote-admin, which is strictly narrower: bound to one run and one
 	// activation epoch by the coordinator's own authorizer. An empty map is
 	// the ordinary deployment, in which no client is a supervisor.
-	Supervisors        map[string]bool
+	Supervisors map[string]bool
+	// Approvers are distinct signed clients whose original decision frame is
+	// reverified by the coordinator process before any approver role is derived.
+	Approvers          map[string]bool
 	Relay              LocalClient
 	Replay             *RemoteReplayStore
 	MaxRequestBytes    int64
@@ -59,6 +62,14 @@ func NewRemoteServer(config RemoteServerConfig) (*RemoteServer, error) {
 		}
 		if credentials.ClientPrincipal != principal {
 			return nil, fmt.Errorf("coordinator-exchange: admin client %q resolves to principal %q", principal, credentials.ClientPrincipal)
+		}
+	}
+	for principal := range config.Approvers {
+		if config.Supervisors[principal] {
+			return nil, fmt.Errorf("coordinator-exchange: admin client %q cannot be both supervisor and approver", principal)
+		}
+		if _, ok := config.Clients[principal]; !ok {
+			return nil, fmt.Errorf("coordinator-exchange: approver %q is not a configured client", principal)
 		}
 	}
 	if config.MaxRequestBytes <= 0 || config.MaxArtifactBytes <= 0 || config.MaxSubmissionBytes <= 0 {
@@ -390,6 +401,10 @@ func (s *RemoteServer) validate(pinned string, frame remoteFrame) (localRequest,
 		assertion.Role = SupervisorRole
 	}
 	request.RemoteAdmin = assertion
+	if s.config.Approvers[credentials.ClientPrincipal] && request.NodeWait != nil && request.NodeWait.Action == "decide-attention" {
+		proof := frame
+		request.ApprovalFrame = &proof
+	}
 	return request, credentials, true, nil
 }
 

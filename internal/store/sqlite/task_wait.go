@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -139,7 +140,7 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		if wait.AttemptID != request.AttemptID || wait.ThreadID != request.ThreadID ||
 			wait.Wake != request.Wake || wait.MaxDuration != request.MaxDuration ||
 			wait.WorkflowRunID != request.WorkflowRunID || wait.TaskID != request.TaskID ||
-			wait.Kind.OrShell() != request.Kind.OrShell() {
+			wait.Kind.OrShell() != request.Kind.OrShell() || !reflect.DeepEqual(wait.Attention, request.Attention) {
 			return domain.TaskWait{}, domain.ErrTaskWaitReplayChanged
 		}
 		// A replay may only report a park that is actually in force. The wait
@@ -214,7 +215,7 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		AttemptID: request.AttemptID, IssuedRevision: request.IssuedRevision,
 		ThreadID: request.ThreadID, Wake: request.Wake, MaxDuration: request.MaxDuration,
 		RequestID: request.RequestID, Name: request.Name, Condition: request.Condition,
-		Kind: request.Kind.OrShell(), OrTimeout: request.OrTimeout, Node: request.Node, Quota: request.Quota,
+		Kind: request.Kind.OrShell(), OrTimeout: request.OrTimeout, Node: request.Node, Quota: request.Quota, Attention: request.Attention,
 		RegisteredRevision: expected + 1,
 		RegisteredAt:       now.UTC(),
 		Deadline:           now.Add(request.MaxDuration).UTC(),
@@ -290,6 +291,8 @@ func validateStructuredRegistrationTx(ctx context.Context, tx *sql.Tx, request *
 		if request.Condition == "" {
 			request.Condition = request.Node.String()
 		}
+	case request.Attention != nil:
+		request.Condition = "attention " + string(request.Attention.Kind) + ": " + request.Attention.Prompt
 	case request.Quota != nil:
 		if request.Quota.Reset && request.Quota.ResetAt == nil {
 			resetAt, err := quotaResetAt(*request.Quota, records)
@@ -513,6 +516,9 @@ func (s *Store) SettleTaskWait(ctx context.Context, id string, result domain.Tas
 	if err = json.Unmarshal(raw, &wait); err != nil {
 		return wait, err
 	}
+	if wait.Kind == domain.WaitKindAttention {
+		return wait, errors.New("attention waits may only be settled by an authenticated attention decision")
+	}
 	if wait, err = settleTaskWaitTx(ctx, tx, wait, result, now); err != nil {
 		return wait, err
 	}
@@ -535,6 +541,107 @@ func settleTaskWaitTx(ctx context.Context, tx *sql.Tx, wait domain.TaskWait, res
 	wait.Result = &result
 	wait.SettledAt = &settled
 	return wait, saveTaskWaitTx(ctx, tx, wait)
+}
+
+// DecideAttention records an authenticated response against the exact parked
+// execution identity. The receipt and grant are one task-wait row write; the
+// ordinary wake transaction later owns attempt resumption and outbox creation.
+func (s *Store) DecideAttention(ctx context.Context, decision domain.AttentionDecision, requestedBy string, now time.Time) (domain.TaskWait, domain.AttentionReceipt, error) {
+	var wait domain.TaskWait
+	var receipt domain.AttentionReceipt
+	if err := decision.Validate(); err != nil {
+		return wait, receipt, err
+	}
+	if requestedBy == "" || now.IsZero() {
+		return wait, receipt, errors.New("attention decision needs an authenticated principal and timestamp")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wait, receipt, err
+	}
+	defer tx.Rollback()
+	var raw []byte
+	if err = tx.QueryRowContext(ctx, "SELECT record FROM coordinator_task_waits WHERE id=?", decision.WaitID).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return wait, receipt, fmt.Errorf("attention wait %q is unknown", decision.WaitID)
+		}
+		return wait, receipt, err
+	}
+	if err = json.Unmarshal(raw, &wait); err != nil {
+		return wait, receipt, err
+	}
+	for _, prior := range wait.AttentionReceipts {
+		if prior.Decision.ID != decision.ID {
+			continue
+		}
+		if !reflect.DeepEqual(prior.Decision, decision) || prior.RequestedBy != requestedBy {
+			return wait, receipt, errors.New("attention decision replay changed immutable content or principal")
+		}
+		return wait, prior, tx.Commit()
+	}
+	for _, prior := range wait.AttentionReceipts {
+		if prior.State == domain.AttentionApplied {
+			return wait, receipt, fmt.Errorf("attention wait %s already has applied decision %s", wait.ID, prior.Decision.ID)
+		}
+	}
+	if wait.Kind != domain.WaitKindAttention || wait.Attention == nil {
+		return wait, receipt, errors.New("attention decision names a wait that is not an attention request")
+	}
+	if !wait.Live() {
+		return wait, receipt, errors.New("attention decision names an already settled wait")
+	}
+	if wait.RequestID != decision.RequestID || wait.WorkflowRunID != decision.WorkflowRunID ||
+		wait.TaskID != decision.TaskID || wait.AttemptID != decision.AttemptID ||
+		wait.ThreadID != decision.ThreadID || wait.RegisteredRevision != decision.RegisteredRevision ||
+		wait.Attention.AssignmentID != decision.AssignmentID {
+		return wait, receipt, errors.New("attention decision execution identity does not match the registered request")
+	}
+	attempt, err := loadAttemptTx(ctx, tx, wait.AttemptID)
+	if err != nil {
+		return wait, receipt, err
+	}
+	if attempt.WorkflowRunID != wait.WorkflowRunID || attempt.TaskID != wait.TaskID ||
+		attempt.AssignmentID != decision.AssignmentID || attempt.ThreadID != wait.ThreadID ||
+		attempt.Revision != wait.RegisteredRevision ||
+		attempt.Progress != domain.ProgressWaitingExternal || attempt.Control != domain.ControlWaitingExternal {
+		return wait, receipt, errors.New("attention decision lost its parked attempt fence")
+	}
+	assignment, err := loadAssignmentTx(ctx, tx, decision.AssignmentID)
+	if err != nil {
+		return wait, receipt, err
+	}
+	if assignment.AttemptID != attempt.ID {
+		return wait, receipt, errors.New("attention decision assignment no longer owns the attempt")
+	}
+	received := now.UTC()
+	receipt = domain.AttentionReceipt{Decision: decision, RequestedBy: requestedBy, State: domain.AttentionReceived, ReceivedAt: received}
+	allowed := decision.Kind == domain.AttentionApprove && wait.Attention.Kind == domain.AttentionApproval ||
+		decision.Kind == domain.AttentionResume && wait.Attention.Kind == domain.AttentionDirection
+	if !allowed {
+		receipt.State = domain.AttentionRejected
+		receipt.Failure = "the requested decision is not supported for this attention request"
+		wait.AttentionReceipts = append(wait.AttentionReceipts, receipt)
+		if err = saveTaskWaitTx(ctx, tx, wait); err != nil {
+			return wait, receipt, err
+		}
+		return wait, receipt, tx.Commit()
+	}
+	applied := received
+	receipt.State, receipt.AppliedAt = domain.AttentionApplied, &applied
+	wait.AttentionReceipts = append(wait.AttentionReceipts, receipt)
+	result := domain.TaskWaitResult{
+		Outcome: domain.TaskWaitMet, ExitCode: 0, Reason: decision.Reason, ObservedAt: received,
+		Fields: map[string]string{
+			"decision": string(decision.Kind), "decision-id": decision.ID, "principal": requestedBy,
+			"request": decision.RequestID, "run": decision.WorkflowRunID, "task": decision.TaskID,
+			"attempt": decision.AttemptID, "assignment": decision.AssignmentID,
+			"thread": decision.ThreadID, "revision": fmt.Sprint(decision.RegisteredRevision),
+		},
+	}
+	if wait, err = settleTaskWaitTx(ctx, tx, wait, result, now); err != nil {
+		return wait, receipt, err
+	}
+	return wait, receipt, tx.Commit()
 }
 
 // ExpireTaskWaits enforces every wait's maximum duration.

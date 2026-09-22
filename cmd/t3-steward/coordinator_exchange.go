@@ -72,6 +72,7 @@ func cmdCoordinatorExchange(g globalFlags, operation string) error {
 	}
 	clients := make(map[string]backlogadmin.AdminCredentials, len(cfg.BacklogV2.Coordinator.AdminClients))
 	supervisors := make(map[string]bool)
+	approvers := make(map[string]bool)
 	for principal, client := range cfg.BacklogV2.Coordinator.AdminClients {
 		credentials, err := adminCredentials.ResolveAdmin(client.Credential)
 		if err != nil {
@@ -80,6 +81,9 @@ func cmdCoordinatorExchange(g globalFlags, operation string) error {
 		clients[principal] = credentials
 		if client.Supervisor {
 			supervisors[principal] = true
+		}
+		if client.Approver {
+			approvers[principal] = true
 		}
 	}
 	socketPath, err := resolveBacklogV2AdminSocketPath(cfg)
@@ -94,6 +98,7 @@ func cmdCoordinatorExchange(g globalFlags, operation string) error {
 		CoordinatorID: cfg.BacklogV2.Coordinator.ID,
 		Clients:       clients,
 		Supervisors:   supervisors,
+		Approvers:     approvers,
 		Replay:        replay,
 		Relay: backlogadmin.LocalClient{
 			Path:               socketPath,

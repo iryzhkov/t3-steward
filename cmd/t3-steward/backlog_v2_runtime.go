@@ -972,6 +972,20 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	}
 	service.SetWorkerEnrollmentHandler(coordinatorEnrollmentHandler(cfg.BacklogV2, store, epoch, artifactStore))
 	scheduleDefinitions := &backlog.ScheduleDefinitionService{Store: store}
+	approvers := make(map[string]backlogadmin.AdminCredentials)
+	for principal, client := range cfg.BacklogV2.Coordinator.AdminClients {
+		if !client.Approver {
+			continue
+		}
+		credentials, resolveErr := adminCredentials.ResolveAdmin(client.Credential)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve approver %q: %w", principal, resolveErr)
+		}
+		if credentials.ClientPrincipal != principal {
+			return fmt.Errorf("approver %q resolves to principal %q", principal, credentials.ClientPrincipal)
+		}
+		approvers[principal] = credentials
+	}
 	server := backlogadmin.LocalServer{
 		Listener: listener,
 		Service: coordinatorLocalService{
@@ -979,6 +993,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		},
 		AllowedUID:         uint32(os.Getuid()),
 		CoordinatorID:      cfg.BacklogV2.Coordinator.ID,
+		Approvers:          approvers,
 		MaxRequestBytes:    int64(cfg.BacklogV2.MessageLimits.MaxBytes),
 		MaxArtifactBytes:   int64(cfg.BacklogV2.MessageLimits.MaxArtifactBytes),
 		MaxSubmissionBytes: cfg.BacklogV2.MessageLimits.MaxBytes,

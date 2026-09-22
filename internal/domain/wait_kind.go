@@ -25,6 +25,8 @@ const (
 	WaitKindNode WaitKind = "node"
 	// WaitKindQuota observes a quota pool's merged bucket observations.
 	WaitKindQuota WaitKind = "quota"
+	// WaitKindAttention waits for a separately authenticated operator decision.
+	WaitKindAttention WaitKind = "attention"
 )
 
 // Local reports whether the registering host's wait runner settles this kind.
@@ -39,7 +41,7 @@ func (k WaitKind) Local() bool {
 // Coordinator reports whether the coordinator settles this kind from its own
 // records.
 func (k WaitKind) Coordinator() bool {
-	return k == WaitKindNode || k == WaitKindQuota
+	return k == WaitKindNode || k == WaitKindQuota || k == WaitKindAttention
 }
 
 // OrShell is the kind with the historical default applied: a record written
@@ -53,7 +55,7 @@ func (k WaitKind) OrShell() WaitKind {
 
 // WaitKinds lists every kind, local first, in the order help describes them.
 func WaitKinds() []WaitKind {
-	return []WaitKind{WaitKindShell, WaitKindTime, WaitKindGitHub, WaitKindNode, WaitKindQuota}
+	return []WaitKind{WaitKindShell, WaitKindTime, WaitKindGitHub, WaitKindNode, WaitKindQuota, WaitKindAttention}
 }
 
 // NodeWaitState is the state a node wait waits for.
