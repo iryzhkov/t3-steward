@@ -12,9 +12,11 @@ const SupervisionPromptByteCap = 32 << 10
 func RenderSupervisionPrompt(activation SupervisionActivation) string {
 	var prompt strings.Builder
 	prompt.WriteString(activation.Prompt)
-	prompt.WriteString("\n\nFrozen evidence is available at inputs/supervision-evidence.json.\n")
-	prompt.WriteString("The authored supervisor prompt is available at inputs/supervision-prompt.md.\n")
-	prompt.WriteString("Read only the subjects needed for the current decision; do not reload the full inventory into context.\n")
+	if activation.EvidenceFiles {
+		prompt.WriteString("\n\nFrozen evidence is available at inputs/supervision-evidence.json.\n")
+		prompt.WriteString("The authored supervisor prompt is available at inputs/supervision-prompt.md.\n")
+		prompt.WriteString("Read only the subjects needed for the current decision; do not reload the full inventory into context.\n")
+	}
 	prompt.WriteString("\nScoped commands\n")
 	prompt.WriteString(fmt.Sprintf(
 		"You are supervisor %q on run %s at activation epoch %d. These commands are your only authority.\n"+

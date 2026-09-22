@@ -87,17 +87,43 @@ func (d *LocalDriver) materializeActivationArtifact(object workerproto.ArtifactO
 	if err != nil {
 		return fmt.Errorf("read supervision artifact %q: %w", object.ID, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+	parent := filepath.Dir(destination)
+	if err := ensureRealDirectory(parent); err != nil {
 		return fmt.Errorf("create supervision inputs directory: %w", err)
 	}
-	if err := os.Chmod(filepath.Dir(destination), 0o700); err != nil {
+	if err := os.Chmod(parent, 0o700); err != nil {
 		return fmt.Errorf("restrict supervision inputs directory: %w", err)
 	}
-	if err := os.WriteFile(destination, data, 0o600); err != nil {
-		return fmt.Errorf("materialize supervision artifact %q: %w", object.ID, err)
+	if info, err := os.Lstat(destination); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("supervision artifact destination %q is not a regular file", destination)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
-	if err := os.Chmod(destination, 0o600); err != nil {
-		return fmt.Errorf("restrict supervision artifact %q: %w", object.ID, err)
+	stage, err := os.CreateTemp(parent, ".supervision-input-*")
+	if err != nil {
+		return err
+	}
+	stagePath := stage.Name()
+	defer os.Remove(stagePath)
+	if err := stage.Chmod(0o600); err != nil {
+		stage.Close()
+		return err
+	}
+	if _, err := stage.Write(data); err != nil {
+		stage.Close()
+		return err
+	}
+	if err := stage.Sync(); err != nil {
+		stage.Close()
+		return err
+	}
+	if err := stage.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(stagePath, destination); err != nil {
+		return fmt.Errorf("materialize supervision artifact %q: %w", object.ID, err)
 	}
 	return nil
 }

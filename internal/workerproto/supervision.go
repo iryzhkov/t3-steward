@@ -8,15 +8,10 @@ import (
 	"time"
 )
 
-// MaxActivationPromptBytes bounds the activation snapshot carried inside an
-// execution package.
-//
-// The snapshot travels in the package rather than as an artifact because it is
-// built for exactly one activation at exactly one epoch and is never read
-// again: making it a retained artifact would mint one immutable object per
-// wake-up for no reader. It is bounded for the same reason the prompt envelope
-// it is rendered from is bounded, and the bound is checked here so an
-// oversized snapshot is refused before it reaches a worker.
+// MaxActivationPromptBytes bounds the inline activation brief carried inside an
+// execution package. Snapshot-backed packages also carry a complete immutable
+// evidence artifact; legacy packages may carry their complete evidence inline.
+// The exact final model prompt has the tighter SupervisionPromptByteCap.
 const MaxActivationPromptBytes = 64 << 10
 
 // SupervisionAction is one action an activation is scoped to perform, and the
@@ -78,6 +73,9 @@ type SupervisionActivation struct {
 	MaxTurns int `json:"maxTurns"`
 	// Prompt is the rendered bounded activation snapshot.
 	Prompt string `json:"prompt"`
+	// EvidenceFiles declares that the package materializes the immutable
+	// evidence snapshot and authored prompt at the standard input paths.
+	EvidenceFiles bool `json:"evidenceFiles,omitempty"`
 	// Actions is the exact scoped action set. An action absent from it is not
 	// available, whatever the prompt says.
 	Actions []SupervisionAction `json:"actions"`

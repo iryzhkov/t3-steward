@@ -364,6 +364,7 @@ func BuildActivationPackage(input ActivationPackageInput) (workerproto.Execution
 		LeaseExpiresAt:      input.Dispatch.LeaseExpiresAt.UTC(),
 		MaxTurns:            turns,
 		Actions:             actions,
+		EvidenceFiles:       true,
 	}
 	if !input.Dispatch.Deadline.IsZero() {
 		activation.Deadline = input.Dispatch.Deadline.UTC()
