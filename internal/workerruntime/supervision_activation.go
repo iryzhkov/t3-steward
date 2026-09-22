@@ -31,8 +31,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
@@ -48,37 +46,7 @@ import (
 // with them. Nothing here grants anything: the coordinator authorizes every
 // invocation against the activation's live lease, epoch and record revision.
 func ActivationPrompt(activation workerproto.SupervisionActivation) string {
-	var prompt strings.Builder
-	prompt.WriteString(activation.Prompt)
-	prompt.WriteString("\n\nFrozen evidence is available at inputs/supervision-evidence.json.\n")
-	prompt.WriteString("The authored supervisor prompt is available at inputs/supervision-prompt.md.\n")
-	prompt.WriteString("Read only the subjects needed for the current decision; do not reload the full inventory into context.\n")
-	prompt.WriteString("\nScoped commands\n")
-	prompt.WriteString(fmt.Sprintf(
-		"You are supervisor %q on run %s at activation epoch %d. These commands are your only authority.\n"+
-			"Read the current revisions with show before every decision, and give every mutating command a\n"+
-			"--request-id you have not used: repeating a key with the same payload returns the first answer,\n"+
-			"and the same key with a different payload is refused.\n",
-		activation.Principal, activation.RunID, activation.Epoch))
-	if activation.CredentialReference != "" {
-		prompt.WriteString("Admin credential reference: " + activation.CredentialReference + "\n")
-	}
-	if !activation.Deadline.IsZero() {
-		prompt.WriteString("This activation ends at " + activation.Deadline.UTC().Format(time.RFC3339) +
-			", after which your decisions are refused.\n")
-	}
-	prompt.WriteString(fmt.Sprintf("Turns available to this activation: %d.\n", activation.MaxTurns))
-	prompt.WriteString("Do not delegate this review to a native subagent. Every separately scheduled\n" +
-		"session is a campaign task the manifest declared.\n")
-	for _, action := range activation.Actions {
-		prompt.WriteString("\n  " + strings.Join(action.Command, " ") + "\n")
-		for _, constraint := range action.Constraints {
-			prompt.WriteString("    - " + constraint + "\n")
-		}
-	}
-	prompt.WriteString("\nEnding this turn is not a decision. If the evidence does not support one you are\n" +
-		"scoped to make, escalate and stop.\n")
-	return prompt.String()
+	return workerproto.RenderSupervisionPrompt(activation)
 }
 
 // prepareActivation gives the activation an isolated evidence workspace without
@@ -119,17 +87,43 @@ func (d *LocalDriver) materializeActivationArtifact(object workerproto.ArtifactO
 	if err != nil {
 		return fmt.Errorf("read supervision artifact %q: %w", object.ID, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+	parent := filepath.Dir(destination)
+	if err := ensureRealDirectory(parent); err != nil {
 		return fmt.Errorf("create supervision inputs directory: %w", err)
 	}
-	if err := os.Chmod(filepath.Dir(destination), 0o700); err != nil {
+	if err := os.Chmod(parent, 0o700); err != nil {
 		return fmt.Errorf("restrict supervision inputs directory: %w", err)
 	}
-	if err := os.WriteFile(destination, data, 0o600); err != nil {
-		return fmt.Errorf("materialize supervision artifact %q: %w", object.ID, err)
+	if info, err := os.Lstat(destination); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("supervision artifact destination %q is not a regular file", destination)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
-	if err := os.Chmod(destination, 0o600); err != nil {
-		return fmt.Errorf("restrict supervision artifact %q: %w", object.ID, err)
+	stage, err := os.CreateTemp(parent, ".supervision-input-*")
+	if err != nil {
+		return err
+	}
+	stagePath := stage.Name()
+	defer os.Remove(stagePath)
+	if err := stage.Chmod(0o600); err != nil {
+		stage.Close()
+		return err
+	}
+	if _, err := stage.Write(data); err != nil {
+		stage.Close()
+		return err
+	}
+	if err := stage.Sync(); err != nil {
+		stage.Close()
+		return err
+	}
+	if err := stage.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(stagePath, destination); err != nil {
+		return fmt.Errorf("materialize supervision artifact %q: %w", object.ID, err)
 	}
 	return nil
 }
@@ -234,11 +228,19 @@ func (d *LocalDriver) createActivationThread(ctx context.Context, pkg workerprot
 	for name, value := range activation.ActivationEnvironment() {
 		environment[name] = value
 	}
+	modelPrompt := ActivationPrompt(*activation)
+	if len(modelPrompt) > workerproto.SupervisionPromptByteCap {
+		return &backlog.ActivationPackageError{
+			Code: backlog.ActivationPackageErrorPromptTooLarge,
+			Cause: fmt.Errorf("final activation prompt is %d bytes over its %d byte cap",
+				len(modelPrompt)-workerproto.SupervisionPromptByteCap, workerproto.SupervisionPromptByteCap),
+		}
+	}
 	threadID, err := d.T3.CreateAndStartThread(ctx, t3control.NewThreadInput{
 		ThreadID: pkg.Identity.ThreadID, DispatchToken: pkg.Identity.DispatchToken,
 		ProjectID: projectID, Title: activation.ActivationID,
 		ModelSelection: selection, RuntimeMode: "full-access", InteractionMode: "default",
-		WorktreePath: workspace, Prompt: ActivationPrompt(*activation),
+		WorktreePath: workspace, Prompt: modelPrompt,
 		Environment: environment,
 	})
 	if threadID != "" && threadID != pkg.Identity.ThreadID {

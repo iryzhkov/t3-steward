@@ -95,6 +95,23 @@ func TestActivationPrepareMaterializesVerifiedEvidenceAndPrompt(t *testing.T) {
 	if info, err := os.Lstat(workspace); err != nil || info.Mode().Perm() != 0o700 {
 		t.Fatalf("activation workspace mode = %v, err %v", info.Mode(), err)
 	}
+	evidencePath := filepath.Join(workspace, "inputs", "supervision-evidence.json")
+	outside := filepath.Join(root, "outside")
+	if err := os.WriteFile(outside, []byte("outside unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(evidencePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, evidencePath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := driver.Prepare(context.Background(), pkg); err == nil {
+		t.Fatal("re-prepare followed a model-writable evidence symlink")
+	}
+	if got, err := os.ReadFile(outside); err != nil || string(got) != "outside unchanged" {
+		t.Fatalf("outside target changed to %q, err %v", got, err)
+	}
 
 	corruptRoot := t.TempDir()
 	corrupt := &LocalDriver{
@@ -109,6 +126,12 @@ func TestActivationPrepareMaterializesVerifiedEvidenceAndPrompt(t *testing.T) {
 func TestActivationRenderedPromptNamesEvidenceAndFitsCap(t *testing.T) {
 	pkg := testActivationPackage()
 	pkg.Supervision.Prompt = strings.Repeat("bounded evidence line\n", 1200)
+	legacy := ActivationPrompt(*pkg.Supervision)
+	if strings.Contains(legacy, "inputs/supervision-evidence.json") ||
+		!strings.Contains(legacy, pkg.Supervision.Prompt) {
+		t.Fatalf("legacy activation prompt invented evidence files or lost inline evidence: %s", legacy)
+	}
+	pkg.Supervision.EvidenceFiles = true
 	rendered := ActivationPrompt(*pkg.Supervision)
 	if len(rendered) > 32<<10 {
 		t.Fatalf("model-bound prompt is %d bytes, exceeds 32768", len(rendered))
