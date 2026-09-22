@@ -529,22 +529,37 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 		if err := validateNonEmptyUnique(prefix+" inputs_from "+producer, artifacts); err != nil {
 			return err
 		}
-		outputs := make(map[string]struct{}, len(tasks[producer].Outputs)+len(tasks[producer].Commits))
-		for _, output := range tasks[producer].Outputs {
-			outputs[output] = struct{}{}
+		external := strings.Contains(producer, "/")
+		if external {
+			ref, err := domain.ParseNodeRef(producer)
+			if err != nil {
+				return err
+			}
+			if ref.TaskID == domain.SinkTaskName {
+				return fmt.Errorf("%s inputs_from cannot consume outputs from a run sink", prefix)
+			}
 		}
-		// A declared commit is consumed by name like any other declared output.
-		// What the successor receives is its provenance record, and the commit
-		// itself is fetched by the campaign ref that record names.
-		for _, commit := range tasks[producer].Commits {
-			outputs[commit.Name] = struct{}{}
+		outputs := make(map[string]struct{})
+		if !external {
+			outputs = make(map[string]struct{}, len(tasks[producer].Outputs)+len(tasks[producer].Commits))
+			for _, output := range tasks[producer].Outputs {
+				outputs[output] = struct{}{}
+			}
+			// A declared commit is consumed by name like any other declared output.
+			// What the successor receives is its provenance record, and the commit
+			// itself is fetched by the campaign ref that record names.
+			for _, commit := range tasks[producer].Commits {
+				outputs[commit.Name] = struct{}{}
+			}
 		}
 		for _, artifact := range artifacts {
 			if err := validateRelativePath(artifact, false); err != nil {
 				return fmt.Errorf("%s inputs_from %s artifact %q: %w", prefix, producer, artifact, err)
 			}
-			if _, ok := outputs[artifact]; !ok {
-				return fmt.Errorf("%s references undeclared artifact %q from %s", prefix, artifact, producer)
+			if !external {
+				if _, ok := outputs[artifact]; !ok {
+					return fmt.Errorf("%s references undeclared artifact %q from %s", prefix, artifact, producer)
+				}
 			}
 		}
 	}

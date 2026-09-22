@@ -169,6 +169,9 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 	if err != nil {
 		return IngestedBundle{}, fmt.Errorf("ingest sink: %w", err)
 	}
+	if err = i.retainExternalInputs(ctx, manifest, &records); err != nil {
+		return IngestedBundle{}, fmt.Errorf("ingest external inputs: %w", err)
+	}
 	finalDir := filepath.Join(workflowsRoot, workflowID)
 	if err := os.Rename(stageDir, finalDir); err != nil {
 		return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: publish files: %w", err)
