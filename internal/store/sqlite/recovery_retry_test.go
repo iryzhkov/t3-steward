@@ -62,6 +62,12 @@ func TestRecoveryRetryIsAtomicScopedAndIdempotent(t *testing.T) {
 	if _, err := store.CommitRecoveryRetry(ctx, claimed); err == nil {
 		t.Fatal("caller-controlled strategy fingerprint accepted")
 	}
+	forgedEvidence := request
+	forgedEvidence.OperationID = "forged-evidence"
+	forgedEvidence.Diagnostic.EvidenceFingerprint = "caller-forged-evidence"
+	if _, err := store.CommitRecoveryRetry(ctx, forgedEvidence); err == nil {
+		t.Fatal("caller-controlled evidence fingerprint accepted")
+	}
 	receipt, err := store.CommitRecoveryRetry(ctx, request)
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +75,10 @@ func TestRecoveryRetryIsAtomicScopedAndIdempotent(t *testing.T) {
 	replayed, err := store.CommitRecoveryRetry(ctx, request)
 	if err != nil || replayed != receipt {
 		t.Fatalf("replay=%+v err=%v want %+v", replayed, err, receipt)
+	}
+	supplement, found, err := store.LoadRecoverySupplement(ctx, receipt.AttemptID)
+	if err != nil || !found || supplement.InstructionArtifact != request.InstructionArtifact || supplement.Diagnostic != request.Diagnostic {
+		t.Fatalf("supplement=%+v found=%v err=%v", supplement, found, err)
 	}
 	records, err := store.LoadCoordinatorRecords(ctx)
 	if err != nil {

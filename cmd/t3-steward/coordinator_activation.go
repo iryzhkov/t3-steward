@@ -240,8 +240,12 @@ func (c coordinatorSupervision) dispatchRun(
 				capacityWorkers = append(capacityWorkers, worker)
 			}
 		}
+		route := run.Supervision.Config.Route
+		if signal.Purpose == domain.RecoveryActivationRepair && run.Supervision.Config.Recovery != nil {
+			route = run.Supervision.Config.Recovery.Route
+		}
 		placement, err = backlog.PlaceActivation(backlog.ActivationPlacementRequest{
-			Route:     run.Supervision.Config.Route,
+			Route:     route,
 			Workers:   capacityWorkers,
 			Epoch:     c.settings.CoordinatorEpoch,
 			Now:       now,

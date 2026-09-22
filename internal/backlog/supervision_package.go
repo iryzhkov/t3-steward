@@ -133,7 +133,14 @@ func (b CoordinatorOfferBuilder) buildActivationOffer(
 			attempts = append(attempts, candidate)
 		}
 	}
-	inbox := CoalesceSupervisionEvents(run.ID, state.Record.EventCursor, state.Pending)
+	pending := supervisionEventsForPurpose(state.Pending, state.Activation.Purpose)
+	cursor := state.Record.EventCursor
+	if state.Activation.Purpose == domain.RecoveryActivationRepair {
+		// Repair ownership is acknowledged per event. The legacy reviewer cursor
+		// must never hide an unacknowledged repair event that has a lower sequence.
+		cursor = 0
+	}
+	inbox := CoalesceSupervisionEvents(run.ID, cursor, pending)
 	if len(inbox.Triggers) == 0 {
 		return workerproto.AssignmentOffer{}, fmt.Errorf(
 			"supervision activation: run %q has nothing pending for activation %q to review",
@@ -297,7 +304,7 @@ func BuildActivationEvidenceForPackage(input ActivationPackageInput) (Activation
 		}
 		gateEvidence = append(gateEvidence, ActivationGateEvidence{Gate: facts.Gate, Evidence: evidence})
 	}
-	actions := ActivationScopedActions(input.Run.ID, input.Activation.Epoch)
+	actions := activationScopedActions(input.Activation, input.Run.ID)
 	return BuildActivationEvidenceSnapshot(ActivationSnapshot{
 		ActivationID: input.Activation.ID, RunID: input.Run.ID,
 		Epoch: input.Activation.Epoch, GraphRevision: input.Run.GraphRevision,
@@ -335,7 +342,7 @@ func BuildActivationPackage(input ActivationPackageInput) (workerproto.Execution
 	if turns < 1 {
 		return workerproto.ExecutionPackage{}, errors.New("supervision activation package: max_turns_per_activation must be positive")
 	}
-	actions := ActivationScopedActions(input.Run.ID, input.Activation.Epoch)
+	actions := activationScopedActions(input.Activation, input.Run.ID)
 	if input.Evidence.ActivationID != input.Activation.ID ||
 		input.Evidence.RunID != input.Run.ID ||
 		input.Evidence.Epoch != input.Activation.Epoch ||
@@ -356,6 +363,7 @@ func BuildActivationPackage(input ActivationPackageInput) (workerproto.Execution
 	evidenceDigest := domain.ArtifactDigest{ArtifactID: input.EvidenceArtifact.ID, Digest: input.EvidenceArtifact.SHA256}
 	activation := &workerproto.SupervisionActivation{
 		ActivationID: input.Activation.ID, RunID: input.Run.ID,
+		Purpose: string(input.Activation.Purpose), IncidentID: input.Activation.IncidentID,
 		Epoch: input.Activation.Epoch, RecordRevision: input.Record.Revision,
 		GraphRevision:       input.Run.GraphRevision,
 		Principal:           input.SupervisorPrincipal,
@@ -441,11 +449,8 @@ func BuildActivationPackage(input ActivationPackageInput) (workerproto.Execution
 			Type: "fresh", CatalogRevision: input.CatalogRevision, Project: project,
 			Scope: "task", SetupProfile: ActivationSetupProfile,
 		},
-		RequiredCapabilities: []string{
-			workerproto.CapabilityCampaignSupervision,
-			workerproto.PackageCapabilitySupervisionEvidence,
-		},
-		Supervision: activation,
+		RequiredCapabilities: activationPackageCapabilities(input.Activation),
+		Supervision:          activation,
 		Limits: workerproto.ExecutionLimits{
 			MaxTurns: turns, PrepareTimeout: input.PrepareTimeout,
 			VerificationTimeout: input.VerificationTimeout,
@@ -514,6 +519,40 @@ func ActivationPromptConstraints(input ActivationPackageInput) []string {
 // placeholder in upper case. The coordinator authorizes each invocation on its
 // own side against the activation's live lease, epoch and record revision; this
 // list tells the overseer what to type, and grants nothing.
+func activationPackageCapabilities(activation domain.Activation) []string {
+	result := []string{workerproto.CapabilityCampaignSupervision, workerproto.PackageCapabilitySupervisionEvidence}
+	if activation.Purpose == domain.RecoveryActivationRepair {
+		result = append(result, workerproto.PackageCapabilityRecoveryRetry)
+	}
+	return result
+}
+
+func activationScopedActions(activation domain.Activation, runID string) []workerproto.SupervisionAction {
+	if activation.Purpose == domain.RecoveryActivationRepair {
+		return []workerproto.SupervisionAction{{
+			Name: "retry",
+			Command: []string{ActivationCLI, "campaign", "recovery", "retry", runID,
+				"--incident", activation.IncidentID,
+				"--activation-id", activation.ID,
+				"--activation", strconv.FormatInt(activation.Epoch, 10),
+				"--operation-id", "KEY",
+				"--expected-incident-revision", "INCIDENT_REVISION",
+				"--source-attempt", "ATTEMPT_ID",
+				"--source-attempt-revision", "ATTEMPT_REVISION",
+				"--instruction-artifact", "ARTIFACT_ID:DIGEST",
+				"--failure-fingerprint", "FAILURE_FINGERPRINT",
+				"--evidence-fingerprint", "EVIDENCE_FINGERPRINT",
+				"--strategy-fingerprint", "STRATEGY_FINGERPRINT",
+			},
+			Constraints: []string{
+				"retain repair instructions and any checkpoints before invoking retry",
+				"this action creates a fresh ordinary attempt; it cannot decide or release a review gate",
+			},
+		}}
+	}
+	return ActivationScopedActions(runID, activation.Epoch)
+}
+
 func ActivationScopedActions(runID string, epoch int64) []workerproto.SupervisionAction {
 	activation := strconv.FormatInt(epoch, 10)
 	base := func(verb string) []string {

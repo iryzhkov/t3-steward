@@ -24,6 +24,29 @@ type adminDispatch struct {
 // frame and then streams exactly ArtifactSize raw bytes after it. body is the
 // carrier's stream positioned immediately after the request frame, which only
 // the submission operation reads.
+type recoveryRetryService interface {
+	RetryRecovery(context.Context, Principal, domain.RecoveryRetryRequest) (domain.RecoveryRetryReceipt, error)
+}
+
+func (d adminDispatch) retryRecovery(ctx context.Context, principal Principal, request localRequest, response *localResponse) {
+	handler, ok := d.service.(recoveryRetryService)
+	if !ok {
+		response.Error = "recovery retry is unavailable"
+		return
+	}
+	if request.RecoveryRetry == nil || request.Supervision != nil || request.Query != nil || request.Mutation != nil ||
+		request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 {
+		response.Error = "malformed recovery retry request"
+		return
+	}
+	value, err := handler.RetryRecovery(ctx, principal, *request.RecoveryRetry)
+	if err != nil {
+		response.Error = err.Error()
+		return
+	}
+	response.RecoveryRetryResponse = &value
+}
+
 func (d adminDispatch) handle(
 	ctx context.Context,
 	principal Principal,
@@ -31,6 +54,10 @@ func (d adminDispatch) handle(
 	body io.Reader,
 ) (localResponse, *ArtifactContent) {
 	response := localResponse{Version: LocalTransportVersion}
+	if request.RecoveryRetry != nil && request.Operation != localOperationRecoveryRetry {
+		response.Error = "unexpected recovery retry request"
+		return response, nil
+	}
 	if request.NodeWait != nil && request.Operation != localOperationNodeWait {
 		response.Error = "unexpected native wait"
 		return response, nil
@@ -48,6 +75,8 @@ func (d adminDispatch) handle(
 		return response, nil
 	}
 	switch request.Operation {
+	case localOperationRecoveryRetry:
+		d.retryRecovery(ctx, principal, request, &response)
 	case localOperationSupervisionShow, localOperationSupervisionDecision:
 		d.supervise(ctx, principal, request, &response)
 	case localOperationWorkerEnrollment:
