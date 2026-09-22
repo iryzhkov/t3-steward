@@ -175,28 +175,29 @@ type UnknownRecoveryRequest struct {
 }
 
 type Response struct {
-	Diagnosis      *Diagnosis           `json:"diagnosis,omitempty"`
-	Version        string               `json:"version"`
-	Kind           QueryKind            `json:"kind"`
-	GeneratedAt    time.Time            `json:"generatedAt"`
-	Status         *Status              `json:"status,omitempty"`
-	Workflows      []WorkflowSummary    `json:"workflows,omitempty"`
-	Workflow       *WorkflowDetail      `json:"workflow,omitempty"`
-	Graph          *Graph               `json:"graph,omitempty"`
-	Task           *TaskDetail          `json:"task,omitempty"`
-	Explanation    *Explanation         `json:"explanation,omitempty"`
-	Events         []Event              `json:"events,omitempty"`
-	Artifacts      []Artifact           `json:"artifacts,omitempty"`
-	Artifact       *Artifact            `json:"artifact,omitempty"`
-	Schedules      []Schedule           `json:"schedules,omitempty"`
-	Workers        []Worker             `json:"workers,omitempty"`
-	Quotas         []Quota              `json:"quotas,omitempty"`
-	Reservations   []Reservation        `json:"reservations,omitempty"`
-	ResourceLocks  []ResourceLock       `json:"resourceLocks,omitempty"`
-	Commands       []Command            `json:"commands,omitempty"`
-	Usage          []domain.UsageSample `json:"usage,omitempty"`
-	UsageSemantics string               `json:"usageSemantics,omitempty"`
-	Viability      *ViabilityMatrix     `json:"viability,omitempty"`
+	Diagnosis      *Diagnosis            `json:"diagnosis,omitempty"`
+	Version        string                `json:"version"`
+	Kind           QueryKind             `json:"kind"`
+	GeneratedAt    time.Time             `json:"generatedAt"`
+	Status         *Status               `json:"status,omitempty"`
+	Workflows      []WorkflowSummary     `json:"workflows,omitempty"`
+	Workflow       *WorkflowDetail       `json:"workflow,omitempty"`
+	Graph          *Graph                `json:"graph,omitempty"`
+	Task           *TaskDetail           `json:"task,omitempty"`
+	Explanation    *Explanation          `json:"explanation,omitempty"`
+	Events         []Event               `json:"events,omitempty"`
+	Artifacts      []Artifact            `json:"artifacts,omitempty"`
+	Artifact       *Artifact             `json:"artifact,omitempty"`
+	Schedules      []Schedule            `json:"schedules,omitempty"`
+	Workers        []Worker              `json:"workers,omitempty"`
+	Quotas         []Quota               `json:"quotas,omitempty"`
+	Reservations   []Reservation         `json:"reservations,omitempty"`
+	ResourceLocks  []ResourceLock        `json:"resourceLocks,omitempty"`
+	Commands       []Command             `json:"commands,omitempty"`
+	Usage          []domain.UsageSample  `json:"usage,omitempty"`
+	UsageCoverage  *domain.UsageCoverage `json:"usageCoverage,omitempty"`
+	UsageSemantics string                `json:"usageSemantics,omitempty"`
+	Viability      *ViabilityMatrix      `json:"viability,omitempty"`
 	// Quarantine is the whole list on a QueryQuarantine response. It is absent
 	// when nothing is quarantined, which the text renderer states in words so
 	// that an empty answer is never mistaken for a failed query.

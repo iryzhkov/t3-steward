@@ -614,7 +614,7 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 	case backlogadmin.QueryEvents:
 		renderEvents(out, response.Events)
 	case backlogadmin.QueryUsage:
-		return renderUsage(out, response.Usage, response.UsageSemantics)
+		return renderUsage(out, response.Usage, response.UsageCoverage, response.UsageSemantics)
 	case backlogadmin.QueryArtifacts:
 		renderArtifacts(out, response.Artifacts)
 	case backlogadmin.QueryArtifact:
@@ -633,7 +633,11 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 	return nil
 }
 
-func renderUsage(out io.Writer, samples []domain.UsageSample, semantics string) error {
+func renderUsage(out io.Writer, samples []domain.UsageSample, coverage *domain.UsageCoverage, semantics string) error {
+	if coverage != nil {
+		fmt.Fprintf(out, "Coverage: %d global/unscoped unattributed samples (%s)\n",
+			coverage.UnscopedUnattributedCount, coverage.Reason)
+	}
 	if semantics != "" {
 		fmt.Fprintf(out, "Semantics: %s\n", semantics)
 	}

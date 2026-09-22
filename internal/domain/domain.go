@@ -370,8 +370,14 @@ type Observation struct {
 type ExecutionRole string
 
 const (
-	ExecutionRoleTask        ExecutionRole = "task"
-	ExecutionRoleSupervision ExecutionRole = "supervision"
+	ExecutionRoleExecutor             ExecutionRole = "executor"
+	ExecutionRoleRepairExecutor       ExecutionRole = "repair-executor"
+	ExecutionRoleGateReviewer         ExecutionRole = "gate-reviewer"
+	ExecutionRoleSupervisorActivation ExecutionRole = "supervisor-activation"
+
+	// Compatibility names retain source compatibility while emitting stable role values.
+	ExecutionRoleTask        = ExecutionRoleExecutor
+	ExecutionRoleSupervision = ExecutionRoleSupervisorActivation
 )
 
 // UsageAttributionStatus says whether an authoritative V2 dispatch binding was
@@ -397,6 +403,17 @@ type UsageAttribution struct {
 	ActivationID    string                 `json:"activationId,omitempty"`
 	GateID          string                 `json:"gateId,omitempty"`
 	Role            ExecutionRole          `json:"role,omitempty"`
+}
+
+// UsageCoverage reports evidence deliberately excluded from a run-scoped result.
+type UsageCoverage struct {
+	UnscopedUnattributedCount int64  `json:"unscopedUnattributedCount"`
+	Reason                    string `json:"reason,omitempty"`
+}
+
+type UsageReport struct {
+	Samples  []UsageSample `json:"samples,omitempty"`
+	Coverage UsageCoverage `json:"coverage"`
 }
 
 // UsageSample is a token count reported by a provider for one API call or

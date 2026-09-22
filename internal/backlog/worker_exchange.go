@@ -25,6 +25,9 @@ type WorkerExchangeStore interface {
 	ExpireAssignmentLeases(context.Context, int64, time.Time) ([]domain.Assignment, error)
 	ThrottleDeliveryStore
 	LoadQuotaAdmissions(context.Context) ([]domain.QuotaAdmissionRecord, error)
+	ReceiveWorkerUsage(context.Context, string, []domain.UsageSample) error
+	WorkerUsageAcknowledgements(context.Context, string) ([]string, error)
+	ClearWorkerUsageAcknowledgements(context.Context, string, []string) error
 }
 
 // WorkerControlTransport is one fresh, epoch-bound coordinator session.
@@ -41,6 +44,18 @@ type WorkerControlTransport interface {
 
 // AssignmentOfferBuilder resolves the immutable package for an already-durable
 // offered assignment.
+type workerUsageTransport interface {
+	SnapshotObservations(context.Context, workerproto.SnapshotRequest) (workerproto.Observations, error)
+}
+
+func snapshotObservations(ctx context.Context, transport WorkerControlTransport, request workerproto.SnapshotRequest) (workerproto.Observations, error) {
+	if usage, ok := transport.(workerUsageTransport); ok {
+		return usage.SnapshotObservations(ctx, request)
+	}
+	snapshot, err := transport.Snapshot(ctx, request)
+	return workerproto.Observations{Snapshot: snapshot}, err
+}
+
 type AssignmentOfferBuilder interface {
 	BuildAssignmentOffer(context.Context, domain.Assignment, time.Time) (workerproto.AssignmentOffer, error)
 }
@@ -267,8 +282,19 @@ func (c FleetCoordinator) ReconcileWorker(
 	if err != nil {
 		return WorkerExchangeReport{}, err
 	}
-	snapshot, err := transport.Snapshot(ctx, parked)
+	parked.UsageAcknowledgements, err = store.WorkerUsageAcknowledgements(ctx, transport.WorkerID())
 	if err != nil {
+		return WorkerExchangeReport{}, err
+	}
+	observations, err := snapshotObservations(ctx, transport, parked)
+	if err != nil {
+		return WorkerExchangeReport{}, err
+	}
+	snapshot := observations.Snapshot
+	if err := store.ReceiveWorkerUsage(ctx, snapshot.WorkerID, observations.Usage); err != nil {
+		return WorkerExchangeReport{}, err
+	}
+	if err := store.ClearWorkerUsageAcknowledgements(ctx, snapshot.WorkerID, observations.AcknowledgedUsageEventIDs); err != nil {
 		return WorkerExchangeReport{}, err
 	}
 	if snapshot.CoordinatorEpoch != epoch {
@@ -362,8 +388,19 @@ func (c FleetCoordinator) ReconcileWorker(
 		if parked, err = c.parkedAssignments(ctx, transport.WorkerID()); err != nil {
 			return report, err
 		}
-		snapshot, err = transport.Snapshot(ctx, parked)
+		parked.UsageAcknowledgements, err = store.WorkerUsageAcknowledgements(ctx, transport.WorkerID())
 		if err != nil {
+			return report, err
+		}
+		observations, err = snapshotObservations(ctx, transport, parked)
+		if err != nil {
+			return report, err
+		}
+		snapshot = observations.Snapshot
+		if err := store.ReceiveWorkerUsage(ctx, snapshot.WorkerID, observations.Usage); err != nil {
+			return report, err
+		}
+		if err := store.ClearWorkerUsageAcknowledgements(ctx, snapshot.WorkerID, observations.AcknowledgedUsageEventIDs); err != nil {
 			return report, err
 		}
 		if snapshot.CoordinatorEpoch != epoch || snapshot.WorkerID != report.Snapshot.WorkerID ||

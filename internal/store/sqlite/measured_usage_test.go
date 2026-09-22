@@ -35,8 +35,8 @@ func TestMeasuredUsageMigrationPreservesHistoryAndReopensIdempotently(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := schemaVersionOf(t, store); got != 24 {
-			t.Fatalf("schema version = %d, want 24", got)
+		if got := schemaVersionOf(t, store); got != 25 {
+			t.Fatalf("schema version = %d, want 25", got)
 		}
 		samples, err := store.UsageSamples(ctx, at.Add(-time.Minute), at.Add(time.Minute))
 		if err != nil {
@@ -84,9 +84,40 @@ func TestMeasuredUsageBindingIsAuthoritativeIsolatedAndReplaySafe(t *testing.T) 
 			{ID: "attempt-b1", WorkflowRunID: "run-b", TaskID: "task-b", Number: 1},
 			{ID: "activation-a", WorkflowRunID: "run-a", TaskID: "task-a", Number: 3,
 				SupervisionActivationID: "activation-7", SupervisionActivationEpoch: 2},
+			{ID: "activation-gate", WorkflowRunID: "run-a", TaskID: "task-a", Number: 4,
+				SupervisionActivationID: "activation-gate-7", SupervisionActivationEpoch: 3},
 		},
 	}
 	if err := store.SaveCoordinatorRecords(ctx, records); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saveSupervisionActivationTx(ctx, tx, domain.Activation{
+		ID: "activation-7", RunID: "run-a", Epoch: 2,
+		State: domain.ActivationPendingDispatch, DispatchIdentity: "dispatch-activation-7",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveSupervisionIncidentTx(ctx, tx, domain.ReviewIncident{
+		ID: "incident-gate", RunID: "run-a", GateID: "gate-7", State: domain.IncidentOpen, Revision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveSupervisionActivationTx(ctx, tx, domain.Activation{
+		ID: "activation-gate-7", RunID: "run-a", Epoch: 3, IncidentID: "incident-gate",
+		State: domain.ActivationPendingDispatch, DispatchIdentity: "dispatch-activation-gate-7",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO coordinator_recovery_supplements(
+		operation_id,run_id,incident_id,attempt_id,record) VALUES(?,?,?,?,?)`,
+		"repair-operation", "run-a", "repair-incident", "attempt-a2", "{}"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	assignments := []domain.Assignment{
@@ -94,6 +125,7 @@ func TestMeasuredUsageBindingIsAuthoritativeIsolatedAndReplaySafe(t *testing.T) 
 		measuredAssignment("assignment-a2", "attempt-a2", "thread-repair", "claude-agent", 2, now),
 		measuredAssignment("assignment-b1", "attempt-b1", "thread-shared-looking-b", "codex-primary", 1, now),
 		measuredAssignment("assignment-activation", "activation-a", "thread-activation", "claude-agent", 1, now),
+		measuredAssignment("assignment-gate", "activation-gate", "thread-gate", "claude-agent", 3, now),
 	}
 	for _, assignment := range assignments {
 		if _, err := store.PrepareAssignmentDispatch(ctx, assignment); err != nil {
@@ -105,7 +137,8 @@ func TestMeasuredUsageBindingIsAuthoritativeIsolatedAndReplaySafe(t *testing.T) 
 		{ProviderInstanceID: "claude-agent", ThreadID: "thread-repair", ObservedAt: now.Add(time.Second), SourceEventID: "claude-repair#model", Kind: domain.UsageKindTurn, OutputTokens: 4},
 		{ProviderInstanceID: "codex-primary", ThreadID: "thread-shared-looking-b", ObservedAt: now.Add(2 * time.Second), SourceEventID: "codex-b", Kind: domain.UsageKindCall, InputTokens: 12},
 		{ProviderInstanceID: "claude-agent", ThreadID: "thread-activation", ObservedAt: now.Add(3 * time.Second), SourceEventID: "claude-activation#model", Kind: domain.UsageKindTurn, OutputTokens: 6},
-		{ProviderInstanceID: "codex-primary", ThreadID: "run-a/task-a/prompt-looking-but-unknown", ObservedAt: now.Add(4 * time.Second), SourceEventID: "unknown", Kind: domain.UsageKindCall, InputTokens: 99},
+		{ProviderInstanceID: "claude-agent", ThreadID: "thread-gate", ObservedAt: now.Add(4 * time.Second), SourceEventID: "claude-gate#model", Kind: domain.UsageKindTurn, OutputTokens: 3},
+		{ProviderInstanceID: "codex-primary", ThreadID: "run-a/task-a/prompt-looking-but-unknown", ObservedAt: now.Add(5 * time.Second), SourceEventID: "unknown", Kind: domain.UsageKindCall, InputTokens: 99},
 	}
 	for _, sample := range samples {
 		if err := store.RecordUsage(ctx, sample); err != nil {
@@ -126,10 +159,14 @@ func TestMeasuredUsageBindingIsAuthoritativeIsolatedAndReplaySafe(t *testing.T) 
 	for _, sample := range got {
 		byEvent[sample.SourceEventID] = sample
 	}
-	assertUsageBinding(t, byEvent["codex-a"], "run-a", "task-a", "attempt-a1", "assignment-a1", domain.ExecutionRoleTask)
-	assertUsageBinding(t, byEvent["claude-repair#model"], "run-a", "task-a", "attempt-a2", "assignment-a2", domain.ExecutionRoleTask)
-	assertUsageBinding(t, byEvent["codex-b"], "run-b", "task-b", "attempt-b1", "assignment-b1", domain.ExecutionRoleTask)
-	assertUsageBinding(t, byEvent["claude-activation#model"], "run-a", "task-a", "activation-a", "assignment-activation", domain.ExecutionRoleSupervision)
+	assertUsageBinding(t, byEvent["codex-a"], "run-a", "task-a", "attempt-a1", "assignment-a1", domain.ExecutionRoleExecutor)
+	assertUsageBinding(t, byEvent["claude-repair#model"], "run-a", "task-a", "attempt-a2", "assignment-a2", domain.ExecutionRoleRepairExecutor)
+	assertUsageBinding(t, byEvent["codex-b"], "run-b", "task-b", "attempt-b1", "assignment-b1", domain.ExecutionRoleExecutor)
+	assertUsageBinding(t, byEvent["claude-activation#model"], "run-a", "task-a", "activation-a", "assignment-activation", domain.ExecutionRoleSupervisorActivation)
+	assertUsageBinding(t, byEvent["claude-gate#model"], "run-a", "task-a", "activation-gate", "assignment-gate", domain.ExecutionRoleGateReviewer)
+	if byEvent["claude-gate#model"].Attribution.GateID != "gate-7" {
+		t.Fatalf("gate attribution = %#v", byEvent["claude-gate#model"].Attribution)
+	}
 	if byEvent["claude-activation#model"].Attribution.ActivationID != "activation-7" {
 		t.Fatalf("activation attribution = %#v", byEvent["claude-activation#model"].Attribution)
 	}
@@ -150,10 +187,10 @@ func TestMeasuredUsageBindingIsAuthoritativeIsolatedAndReplaySafe(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runA) != 3 {
+	if len(runA.Samples) != 4 || runA.Coverage.UnscopedUnattributedCount != 1 || runA.Coverage.Reason == "" {
 		t.Fatalf("run-a usage = %#v", runA)
 	}
-	for _, sample := range runA {
+	for _, sample := range runA.Samples {
 		if sample.Attribution.WorkflowRunID != "run-a" {
 			t.Fatalf("cross-run leakage: %#v", sample)
 		}

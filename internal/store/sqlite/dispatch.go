@@ -74,15 +74,18 @@ func (s *Store) PrepareAssignmentDispatch(ctx context.Context, input domain.Assi
 	prepared.DispatchConfirmedAt = nil
 	prepared.DispatchError = ""
 
-	raw, err := json.Marshal(prepared)
-	if err != nil {
-		return domain.Assignment{}, fmt.Errorf("encode assignment dispatch %q: %w", prepared.ID, err)
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.Assignment{}, fmt.Errorf("begin assignment dispatch preparation: %w", err)
 	}
 	defer tx.Rollback()
+	if _, _, err := resolveAssignmentUsageIdentityTx(ctx, tx, &prepared); err != nil {
+		return domain.Assignment{}, fmt.Errorf("resolve assignment execution identity: %w", err)
+	}
+	raw, err := json.Marshal(prepared)
+	if err != nil {
+		return domain.Assignment{}, fmt.Errorf("encode assignment dispatch %q: %w", prepared.ID, err)
+	}
 	insertResult, err := tx.ExecContext(ctx,
 		`INSERT INTO coordinator_assignments(
 			id, attempt_id, dispatch_token, dispatch_revision, dispatch_state,
@@ -299,6 +302,9 @@ func sameDispatchIdentity(left, right domain.Assignment) bool {
 		left.LeaseExpiresAt.Equal(right.LeaseExpiresAt) &&
 		left.DispatchToken == right.DispatchToken &&
 		left.ThreadID == right.ThreadID &&
+		left.ExecutionRole == right.ExecutionRole &&
+		left.ActivationID == right.ActivationID &&
+		left.GateID == right.GateID &&
 		left.CreatedAt.Equal(right.CreatedAt)
 }
 

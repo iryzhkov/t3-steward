@@ -345,6 +345,9 @@ type Assignment struct {
 	LeaseExpiresAt      time.Time              `json:"leaseExpiresAt"`
 	DispatchToken       string                 `json:"dispatchToken"`
 	ThreadID            string                 `json:"threadId,omitempty"`
+	ExecutionRole       ExecutionRole          `json:"executionRole,omitempty"`
+	ActivationID        string                 `json:"activationId,omitempty"`
+	GateID              string                 `json:"gateId,omitempty"`
 	DispatchState       DispatchState          `json:"dispatchState,omitempty"`
 	DispatchRevision    int64                  `json:"dispatchRevision,omitempty"`
 	DispatchConfirmedAt *time.Time             `json:"dispatchConfirmedAt,omitempty"`

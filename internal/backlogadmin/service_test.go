@@ -51,6 +51,12 @@ func TestUsageQueryReturnsAuthoritativeDispatchIdentity(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.RecordUsage(ctx, domain.UsageSample{
+		ProviderInstanceID: "codex-primary", ThreadID: "thread-without-binding", Model: "gpt",
+		ObservedAt: adminTestNow, SourceEventID: "event-unscoped", Kind: domain.UsageKindCall, InputTokens: 7,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	service, err := New(store, &allowAuthorizer{})
 	if err != nil {
 		t.Fatal(err)
@@ -71,6 +77,9 @@ func TestUsageQueryReturnsAuthoritativeDispatchIdentity(t *testing.T) {
 	}
 	if response.UsageSemantics == "" {
 		t.Fatal("usage overlap semantics are absent")
+	}
+	if response.UsageCoverage == nil || response.UsageCoverage.UnscopedUnattributedCount != 1 || response.UsageCoverage.Reason == "" {
+		t.Fatalf("usage coverage = %#v", response.UsageCoverage)
 	}
 }
 

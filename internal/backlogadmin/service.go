@@ -33,7 +33,7 @@ type Reader interface {
 }
 
 type usageReader interface {
-	AttributedUsage(context.Context, string) ([]domain.UsageSample, error)
+	AttributedUsage(context.Context, string) (domain.UsageReport, error)
 }
 
 const usageSemantics = "raw provider samples: call rows are per API call; turn rows are whole-turn totals and overlap calls, so clients must not sum both; cumulative totals are retained only for replay deduplication"
@@ -341,10 +341,12 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		if !ok {
 			return Response{}, fmt.Errorf("%w: usage attribution is unavailable", ErrInvalidQuery)
 		}
-		response.Usage, err = reader.AttributedUsage(ctx, query.WorkflowRunID)
-		if err != nil {
-			return Response{}, fmt.Errorf("load attributed usage: %w", err)
+		usage, usageErr := reader.AttributedUsage(ctx, query.WorkflowRunID)
+		if usageErr != nil {
+			return Response{}, fmt.Errorf("load attributed usage: %w", usageErr)
 		}
+		response.Usage = usage.Samples
+		response.UsageCoverage = &usage.Coverage
 		response.UsageSemantics = usageSemantics
 	case QueryQuarantine:
 		quarantined, err := s.quarantinedIntake(ctx)
