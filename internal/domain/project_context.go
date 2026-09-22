@@ -51,10 +51,13 @@ type ProjectContextAcceptance struct {
 }
 
 type ProjectContextReference struct {
-	ID         string                         `json:"id" yaml:"id"`
-	Kind       ProjectContextReferenceKind    `json:"kind" yaml:"kind"`
-	URI        string                         `json:"uri" yaml:"uri"`
-	Revision   string                         `json:"revision" yaml:"revision"`
+	ID       string                      `json:"id" yaml:"id"`
+	Kind     ProjectContextReferenceKind `json:"kind" yaml:"kind"`
+	URI      string                      `json:"uri" yaml:"uri"`
+	Revision string                      `json:"revision" yaml:"revision"`
+	// Artifact selects the exact retained manifest input whose immutable bytes
+	// back a Git or Jocasta reference. It is authored; Binding is coordinator-owned.
+	Artifact   string                         `json:"artifact,omitempty" yaml:"artifact,omitempty"`
 	Status     ProjectContextStatus           `json:"status" yaml:"status"`
 	Authority  string                         `json:"authority" yaml:"authority"`
 	Topics     []string                       `json:"topics,omitempty" yaml:"topics,omitempty"`
@@ -164,7 +167,7 @@ func ValidateProjectContext(index *ProjectContext) error {
 	}
 	for _, decision := range index.Decisions {
 		if !projectContextIDPattern.MatchString(decision.ID) || decision.Status != "accepted" ||
-			strings.TrimSpace(decision.Summary) == "" || strings.TrimSpace(decision.Authority) == "" {
+			strings.TrimSpace(decision.Authority) == "" {
 			return fmt.Errorf("project context: decision %q is not an accepted authoritative decision", decision.ID)
 		}
 	}
@@ -185,14 +188,23 @@ func validateProjectContextReference(ref ProjectContextReference) error {
 		if strings.TrimSpace(ref.URI) == "" || !projectContextSHA.MatchString(ref.Revision) {
 			return errors.New("git reference requires a repository URI and exact 40- or 64-hex revision")
 		}
+		if strings.TrimSpace(ref.Artifact) == "" && ref.Binding == nil {
+			return errors.New("git reference requires an explicit retained artifact selector")
+		}
 	case ContextReferenceJocasta:
 		if !projectContextJocasta.MatchString(ref.URI) || !strings.HasSuffix(ref.URI, "@"+ref.Revision) {
 			return errors.New("jocasta reference must be jocasta:ID@REVISION and match revision")
+		}
+		if strings.TrimSpace(ref.Artifact) == "" && ref.Binding == nil {
+			return errors.New("jocasta reference requires an explicit retained artifact selector")
 		}
 	case ContextReferenceExecution:
 		if !strings.HasPrefix(ref.URI, "execution:") || strings.Count(strings.TrimPrefix(ref.URI, "execution:"), "/") != 3 ||
 			strings.TrimSpace(ref.Revision) == "" {
 			return errors.New("execution reference requires run/task/attempt/artifact URI and revision")
+		}
+		if ref.Artifact != "" {
+			return errors.New("execution reference cannot select an authored artifact")
 		}
 		if ref.Acceptance == nil || strings.TrimSpace(ref.Acceptance.GateID) == "" ||
 			strings.TrimSpace(ref.Acceptance.DecisionID) == "" || strings.TrimSpace(ref.Acceptance.EvidenceSnapshotID) == "" {

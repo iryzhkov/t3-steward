@@ -35,7 +35,7 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 		}
 	}
 	if !needsExternal {
-		return nil
+		return finalizeProjectContexts(records, targetRunID)
 	}
 	loader, ok := i.Store.(coordinatorRecordLoader)
 	if !ok {
@@ -131,7 +131,7 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 			consumer.DependencyInputs = nil
 		}
 	}
-	return nil
+	return finalizeProjectContexts(records, targetRunID)
 }
 
 func exactExternalInputConsumer(records *sqlite.CoordinatorRecords, runID, name string) (*domain.Task, string, error) {
@@ -204,7 +204,7 @@ func (i BundleIngester) resolveExternalAcceptance(
 	index *domain.ProjectContext,
 	runID, taskID, attemptID string,
 	artifact domain.Artifact,
-) (*domain.ProjectContextAcceptance, error) {
+) (*resolvedProjectContextAcceptance, error) {
 	if index == nil {
 		return nil, nil
 	}
@@ -231,15 +231,15 @@ func (i BundleIngester) resolveExternalAcceptance(
 		recorded = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(recorded)), "sha256:")
 		return recorded == strings.ToLower(artifact.SHA256)
 	}
-	var matches []domain.ProjectContextAcceptance
+	var matches []resolvedProjectContextAcceptance
 	for _, gate := range projection.Gates {
 		if gate.State != domain.GateAccepted || gate.EvidenceSnapshotID == "" || !gate.Definition.Observes(taskID) {
 			continue
 		}
 		for _, decision := range projection.Decisions {
 			if decision.RunID != runID || decision.GateID != gate.Definition.ID ||
-				decision.Outcome != domain.GateDecisionAccept ||
-				decision.Evidence.ID != gate.EvidenceSnapshotID {
+				decision.Outcome != domain.GateDecisionAccept || decision.GraphRevision != gate.GraphRevision ||
+				decision.Evidence.ID != gate.EvidenceSnapshotID || decision.Evidence.GraphRevision != decision.GraphRevision {
 				continue
 			}
 			for _, producer := range decision.Evidence.Producers {
@@ -248,9 +248,12 @@ func (i BundleIngester) resolveExternalAcceptance(
 				}
 				for _, digest := range producer.ArtifactDigests {
 					if digest.ArtifactID == artifact.ID && digestMatches(digest.Digest) {
-						matches = append(matches, domain.ProjectContextAcceptance{
-							GateID: gate.Definition.ID, DecisionID: decision.ID,
-							EvidenceSnapshotID: decision.Evidence.ID,
+						matches = append(matches, resolvedProjectContextAcceptance{
+							Receipt: domain.ProjectContextAcceptance{
+								GateID: gate.Definition.ID, DecisionID: decision.ID,
+								EvidenceSnapshotID: decision.Evidence.ID,
+							},
+							Decision: decision,
 						})
 					}
 				}
@@ -263,7 +266,7 @@ func (i BundleIngester) resolveExternalAcceptance(
 	return &matches[0], nil
 }
 
-func bindExternalProjectContext(index *domain.ProjectContext, runID, taskID, attemptID string, source, retained domain.Artifact, namespace string, acceptance *domain.ProjectContextAcceptance) error {
+func bindExternalProjectContext(index *domain.ProjectContext, runID, taskID, attemptID string, source, retained domain.Artifact, namespace string, acceptance *resolvedProjectContextAcceptance) error {
 	if index == nil {
 		return nil
 	}
@@ -284,14 +287,14 @@ func bindExternalProjectContext(index *domain.ProjectContext, runID, taskID, att
 			return fmt.Errorf("execution reference %q has no accepted gate receipt", uri)
 		}
 		ref.Status = domain.ProjectContextAccepted
-		ref.Authority = "gate-decision:" + acceptance.DecisionID
-		ref.Acceptance = acceptance
+		ref.Authority = "gate-decision:" + acceptance.Receipt.DecisionID
+		receipt := acceptance.Receipt
+		ref.Acceptance = &receipt
 		ref.Binding = &domain.ProjectContextArtifactBinding{
 			ArtifactID: retained.ID, Path: "dependencies/" + namespace + "/" + filepath.ToSlash(source.Name), SHA256: source.SHA256,
 			SourceRunID: runID, SourceTaskID: taskID, SourceAttemptID: attemptID, SourceArtifactID: source.ID,
 		}
-		index.Status = domain.ProjectContextAccepted
-		index.Authority = []string{"gate-decision:" + acceptance.DecisionID}
+		appendResolvedDecision(index, acceptance.Decision)
 		matched = true
 	}
 	return nil
