@@ -147,12 +147,12 @@ func TestLocalDriverBindsCatalogArtifactsWorkspaceAndT3(t *testing.T) {
 	pkg.Dependencies = []workerproto.DependencyInput{
 		{
 			TaskID:     "build--aaaa",
-			Provenance: &workerproto.DependencyProvenance{RunID: "source-run-a", TaskID: "source-task-a", AttemptID: "attempt-a", ArtifactID: "artifact-a"},
+			Provenance: &workerproto.DependencyProvenance{RunID: "source-run-a", TaskID: "source-task-a", AttemptID: "attempt-a", SourceArtifacts: map[string]string{"carried-a": "artifact-a"}},
 			Artifacts:  []workerproto.ArtifactObject{testArtifact("carried-a", "dependencies/build--aaaa/result.txt", "one")},
 		},
 		{
 			TaskID:     "build--bbbb",
-			Provenance: &workerproto.DependencyProvenance{RunID: "source-run-b", TaskID: "source-task-b", AttemptID: "attempt-b", ArtifactID: "artifact-b"},
+			Provenance: &workerproto.DependencyProvenance{RunID: "source-run-b", TaskID: "source-task-b", AttemptID: "attempt-b", SourceArtifacts: map[string]string{"carried-b": "artifact-b"}},
 			Artifacts:  []workerproto.ArtifactObject{testArtifact("carried-b", "dependencies/build--bbbb/result.txt", "two")},
 		},
 	}

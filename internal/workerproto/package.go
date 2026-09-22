@@ -81,10 +81,10 @@ func (i ExecutionIdentity) TaskEnvironment() map[string]string {
 }
 
 type DependencyProvenance struct {
-	RunID      string `json:"runId"`
-	TaskID     string `json:"taskId"`
-	AttemptID  string `json:"attemptId"`
-	ArtifactID string `json:"artifactId"`
+	RunID           string            `json:"runId"`
+	TaskID          string            `json:"taskId"`
+	AttemptID       string            `json:"attemptId"`
+	SourceArtifacts map[string]string `json:"sourceArtifacts"`
 }
 
 type DependencyInput struct {
@@ -291,8 +291,14 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 		dependencies[dependency.TaskID] = struct{}{}
 		if provenance := dependency.Provenance; provenance != nil {
 			if strings.TrimSpace(provenance.RunID) == "" || strings.TrimSpace(provenance.TaskID) == "" ||
-				strings.TrimSpace(provenance.AttemptID) == "" || strings.TrimSpace(provenance.ArtifactID) == "" {
+				strings.TrimSpace(provenance.AttemptID) == "" ||
+				len(provenance.SourceArtifacts) != len(dependency.Artifacts) {
 				return errors.New("execution package: invalid dependency provenance")
+			}
+			for _, artifact := range dependency.Artifacts {
+				if strings.TrimSpace(provenance.SourceArtifacts[artifact.ID]) == "" {
+					return errors.New("execution package: dependency provenance is missing a source artifact")
+				}
 			}
 		}
 		for _, artifact := range dependency.Artifacts {

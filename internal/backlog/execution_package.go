@@ -547,14 +547,18 @@ func packageCarriedInputs(task domain.Task, artifacts map[string]domain.Artifact
 				if carried.SourceRunID == "" || carried.SourceAttemptID == "" || carried.SourceArtifactID == "" {
 					return nil, fmt.Errorf("carried input %q has incomplete source provenance", carried.Name)
 				}
-				provenance := &workerproto.DependencyProvenance{
-					RunID: carried.SourceRunID, TaskID: carried.ProducerTaskID,
-					AttemptID: carried.SourceAttemptID, ArtifactID: carried.SourceArtifactID,
+				if dependency.Provenance == nil {
+					dependency.Provenance = &workerproto.DependencyProvenance{
+						RunID: carried.SourceRunID, TaskID: carried.ProducerTaskID,
+						AttemptID: carried.SourceAttemptID, SourceArtifacts: map[string]string{},
+					}
 				}
-				if dependency.Provenance != nil && *dependency.Provenance != *provenance {
+				if dependency.Provenance.RunID != carried.SourceRunID ||
+					dependency.Provenance.TaskID != carried.ProducerTaskID ||
+					dependency.Provenance.AttemptID != carried.SourceAttemptID {
 					return nil, fmt.Errorf("carried producer %q mixes source provenance", carried.Producer)
 				}
-				dependency.Provenance = provenance
+				dependency.Provenance.SourceArtifacts[artifact.ID] = carried.SourceArtifactID
 			}
 			dependency.Artifacts = append(dependency.Artifacts, object)
 		}
