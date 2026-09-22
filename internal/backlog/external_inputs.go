@@ -111,7 +111,9 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 				reference.Kind = domain.ArtifactInput
 				records.Artifacts = append(records.Artifacts, reference)
 				consumer.CarriedInputs = append(consumer.CarriedInputs, domain.CarriedInput{
-					Producer: producerTask.Name, ProducerTaskID: producerTask.ID,
+					Producer: producerTask.Name, ProducerNamespace: externalProducerNamespace(ref.RunID, producerTask),
+					ProducerTaskID: producerTask.ID, SourceRunID: ref.RunID,
+					SourceAttemptID: observation.AttemptID, SourceArtifactID: found[0].ID,
 					Name: name, ArtifactID: reference.ID,
 				})
 			}
@@ -122,6 +124,11 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 		}
 	}
 	return nil
+}
+
+func externalProducerNamespace(runID string, task domain.Task) string {
+	sum := sha256.Sum256([]byte(runID + "\x00" + task.ID))
+	return fmt.Sprintf("%s--%x", task.Name, sum[:6])
 }
 
 func (i BundleIngester) verifyExternalArtifact(artifact domain.Artifact) error {
