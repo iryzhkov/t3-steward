@@ -13,6 +13,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.dat
 # STATICCHECK_VERSION is the newest release that supports it. Raise both together.
 LINT_TOOLCHAIN ?= go1.25.0
 STATICCHECK_VERSION ?= v0.7.0
+GOFMT ?= $(shell GOTOOLCHAIN=$(LINT_TOOLCHAIN) go env GOROOT)/bin/gofmt
 
 .PHONY: build test lint install clean
 
@@ -26,7 +27,7 @@ test:
 
 lint:
 	GOTOOLCHAIN=$(LINT_TOOLCHAIN) go run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION) ./...
-	test -z "$$(gofmt -l .)"
+	test -z "$$($(GOFMT) -l .)"
 
 install: build
 	install -d $(HOME)/.local/bin
