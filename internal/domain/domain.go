@@ -435,16 +435,18 @@ type UsageCoverage struct {
 }
 
 type UsageReport struct {
-	WorkflowRunID string           `json:"workflowRunId,omitempty"`
-	RunProgress   ProgressState    `json:"runProgress,omitempty"`
-	Totals        UsageTotals      `json:"totals"`
-	ByTask        []UsageAggregate `json:"byTask,omitempty"`
-	ByAttempt     []UsageAggregate `json:"byAttempt,omitempty"`
-	ByRole        []UsageAggregate `json:"byRole,omitempty"`
-	ByModel       []UsageAggregate `json:"byModel,omitempty"`
-	Samples       []UsageSample    `json:"samples,omitempty"`
-	NextCursor    string           `json:"nextCursor,omitempty"`
-	Coverage      UsageCoverage    `json:"coverage"`
+	WorkflowRunID                     string           `json:"workflowRunId,omitempty"`
+	RunProgress                       ProgressState    `json:"runProgress,omitempty"`
+	AcceptedOutcomeCount              int64            `json:"acceptedOutcomeCount"`
+	MeasuredCostPerAcceptedOutcomeUSD *float64         `json:"measuredCostPerAcceptedOutcomeUsd,omitempty"`
+	Totals                            UsageTotals      `json:"totals"`
+	ByTask                            []UsageAggregate `json:"byTask,omitempty"`
+	ByAttempt                         []UsageAggregate `json:"byAttempt,omitempty"`
+	ByRole                            []UsageAggregate `json:"byRole,omitempty"`
+	ByModel                           []UsageAggregate `json:"byModel,omitempty"`
+	Samples                           []UsageSample    `json:"samples,omitempty"`
+	NextCursor                        string           `json:"nextCursor,omitempty"`
+	Coverage                          UsageCoverage    `json:"coverage"`
 }
 
 // UsageSample is a token count reported by a provider for one API call or

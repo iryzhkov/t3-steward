@@ -255,6 +255,20 @@ func NormalizeUsageReport(report UsageReport, context UsageNormalizationContext)
 		return key, UsageAggregate{Key: key, Model: s.Model}
 	})
 	report.RunProgress = context.RunProgress
+	acceptedTasks := map[string]bool{}
+	for _, sample := range selected {
+		role := sample.Attribution.Role
+		taskID := sample.Attribution.TaskID
+		if taskID != "" && context.TaskProgress[taskID] == ProgressSucceeded &&
+			(role == ExecutionRoleTask || role == ExecutionRoleRepairExecutor) {
+			acceptedTasks[taskID] = true
+		}
+	}
+	report.AcceptedOutcomeCount = int64(len(acceptedTasks))
+	if report.AcceptedOutcomeCount > 0 && report.Totals.ProviderCostCoverage == UsageCostComplete {
+		costPerOutcome := report.Totals.ProviderCostUSD / float64(report.AcceptedOutcomeCount)
+		report.MeasuredCostPerAcceptedOutcomeUSD = &costPerOutcome
+	}
 
 	if len(selected) == 0 {
 		reasons["no usable provider usage evidence was observed"] = true

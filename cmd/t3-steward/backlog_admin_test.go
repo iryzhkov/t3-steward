@@ -88,6 +88,39 @@ func TestParseBacklogUsageRawBounds(t *testing.T) {
 	}
 }
 
+func TestRenderUsageQualifiesAcceptedOutcomeCost(t *testing.T) {
+	cost := 0.43
+	report := domain.UsageReport{
+		WorkflowRunID: "run-1", RunProgress: domain.ProgressSucceeded,
+		AcceptedOutcomeCount: 1, MeasuredCostPerAcceptedOutcomeUSD: &cost,
+		Totals: domain.UsageTotals{
+			ProviderCostUSD: 0.43, ProviderCostReported: true,
+			ProviderCostCoverage: domain.UsageCostComplete,
+		},
+		Coverage: domain.UsageCoverage{State: domain.UsageCoverageComplete},
+	}
+	var out bytes.Buffer
+	if err := renderUsage(&out, &report, "frozen semantics"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Accepted outcomes: 1",
+		"Measured provider cost per accepted outcome: 0.430000",
+		"not subscription quota savings",
+		"By role",
+	} {
+		if want == "By role" {
+			if strings.Contains(out.String(), want) {
+				t.Fatalf("empty role overhead section rendered: %s", out.String())
+			}
+			continue
+		}
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("human usage report missing %q: %s", want, out.String())
+		}
+	}
+}
+
 func TestParseWorkflowFilters(t *testing.T) {
 	query, display, err := parseBacklogAdminQuery([]string{
 		"list", "--project", "steward", "--schedule", "nightly",

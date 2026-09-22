@@ -668,6 +668,13 @@ func renderUsage(out io.Writer, report *domain.UsageReport, semantics string) er
 	}
 	coverage := report.Coverage
 	fmt.Fprintf(out, "Run: %s (%s)\n", report.WorkflowRunID, report.RunProgress)
+	fmt.Fprintf(out, "Accepted outcomes: %d\n", report.AcceptedOutcomeCount)
+	if report.MeasuredCostPerAcceptedOutcomeUSD != nil {
+		fmt.Fprintf(out, "Measured provider cost per accepted outcome: %.6f\n", *report.MeasuredCostPerAcceptedOutcomeUSD)
+	} else {
+		fmt.Fprintln(out, "Measured provider cost per accepted outcome: unavailable (requires complete provider cost coverage)")
+	}
+	fmt.Fprintln(out, "Token totals are measured execution evidence, not subscription quota savings.")
 	fmt.Fprintf(out, "Coverage: %s; raw=%d normalized=%d overlap-excluded=%d overlap-ambiguous=%d diagnostics=%d dropped-diagnostics=%d unattributed=%d\n",
 		coverage.State, coverage.RawSampleCount, coverage.NormalizedSampleCount,
 		coverage.ExcludedOverlapCount, coverage.AmbiguousOverlapCount, coverage.DiagnosticCount,
