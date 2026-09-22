@@ -294,6 +294,36 @@ func TestLocalDriverResolvesProjectBeforeCreate(t *testing.T) {
 	}
 }
 
+func TestRecoveryRetryPromptAppliesSupplementWithoutReplacingOriginal(t *testing.T) {
+	pkg := testPackage()
+	pkg.Recovery = &workerproto.RecoveryExecutionContext{
+		IncidentID: "incident", InstructionPath: "inputs/recovery/instructions.md",
+		CheckpointPaths: []string{"inputs/recovery/checkpoint-01"},
+	}
+	root := t.TempDir()
+	control := &recordingT3{projectID: "project-uuid"}
+	driver := &LocalDriver{Config: LocalDriverConfig{ArtifactRoot: root}, T3: control}
+	cachePath := filepath.Join(root, "objects", pkg.Prompt.SHA256)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, []byte("prompt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.CreateThread(context.Background(), pkg, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.created) != 1 {
+		t.Fatalf("created=%+v", control.created)
+	}
+	prompt := control.created[0].Prompt
+	for _, required := range []string{"prompt", "Keep the original task contract, outputs, and verification authoritative", "inputs/recovery/instructions.md", "inputs/recovery/checkpoint-01"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("prompt missing %q: %s", required, prompt)
+		}
+	}
+}
+
 func TestLocalDriverStopSettlesRunningAndAlreadyStoppedThreads(t *testing.T) {
 	pkg := testPackage()
 	control := &recordingT3{thread: &domain.Thread{ID: pkg.Identity.ThreadID, Running: true}}

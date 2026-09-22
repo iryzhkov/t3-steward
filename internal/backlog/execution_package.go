@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
@@ -134,7 +135,8 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		}
 		staticInputs = append(staticInputs, object)
 	}
-	staticInputs, err = appendRecoverySupplementInputs(ctx, b.Store, state, staticInputs)
+	var recovery *workerproto.RecoveryExecutionContext
+	staticInputs, recovery, err = appendRecoverySupplementInputs(ctx, b.Store, state, staticInputs)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, err
 	}
@@ -160,6 +162,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		Class:        state.task.Class,
 		Prompt:       prompt,
 		StaticInputs: staticInputs,
+		Recovery:     recovery,
 		Dependencies: dependencies,
 		Route:        cloneProviderRoute(assignment.Route),
 		Environment: workerproto.EnvironmentReference{
@@ -201,15 +204,21 @@ type recoverySupplementStore interface {
 	LoadRecoverySupplement(context.Context, string) (domain.RepairAttemptSupplement, bool, error)
 }
 
-func appendRecoverySupplementInputs(ctx context.Context, store ExecutionPackageRecordStore, state executionPackageState, inputs []workerproto.ArtifactObject) ([]workerproto.ArtifactObject, error) {
+func appendRecoverySupplementInputs(ctx context.Context, store ExecutionPackageRecordStore, state executionPackageState, inputs []workerproto.ArtifactObject) ([]workerproto.ArtifactObject, *workerproto.RecoveryExecutionContext, error) {
 	reader, ok := store.(recoverySupplementStore)
 	if !ok {
-		return inputs, nil
+		return inputs, nil, nil
 	}
 	supplement, found, err := reader.LoadRecoverySupplement(ctx, state.attempt.ID)
 	if err != nil || !found {
-		return inputs, err
+		return inputs, nil, err
 	}
+	for _, input := range inputs {
+		if strings.HasPrefix(filepath.ToSlash(input.Path), "inputs/recovery/") {
+			return nil, nil, fmt.Errorf("execution package builder: static input path %q collides with reserved recovery inputs", input.Path)
+		}
+	}
+	context := &workerproto.RecoveryExecutionContext{IncidentID: supplement.IncidentID, InstructionPath: "inputs/recovery/instructions.md"}
 	digests := append([]domain.ArtifactDigest{supplement.InstructionArtifact}, supplement.CheckpointArtifacts...)
 	for index, digest := range digests {
 		var retained *domain.Artifact
@@ -221,7 +230,7 @@ func appendRecoverySupplementInputs(ctx context.Context, store ExecutionPackageR
 			}
 		}
 		if retained == nil {
-			return nil, fmt.Errorf("execution package builder: recovery supplement artifact %q with digest %q is not retained by this run", digest.ArtifactID, digest.Digest)
+			return nil, nil, fmt.Errorf("execution package builder: recovery supplement artifact %q with digest %q is not retained by this run", digest.ArtifactID, digest.Digest)
 		}
 		name := "inputs/recovery/instructions.md"
 		if index > 0 {
@@ -229,18 +238,26 @@ func appendRecoverySupplementInputs(ctx context.Context, store ExecutionPackageR
 		}
 		object, err := packageArtifact(*retained, name, "input")
 		if err != nil {
-			return nil, fmt.Errorf("execution package builder: recovery supplement: %w", err)
+			return nil, nil, fmt.Errorf("execution package builder: recovery supplement: %w", err)
 		}
 		inputs = append(inputs, object)
+		if index > 0 {
+			context.CheckpointPaths = append(context.CheckpointPaths, name)
+		}
 	}
-	return inputs, nil
+	return inputs, context, nil
 }
 
 func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context, pkg *workerproto.ExecutionPackage) error {
-	if len(pkg.Preflight) == 0 {
+	if len(pkg.Preflight) > 0 {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityPreflight)
+	}
+	if pkg.Recovery != nil {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityRecoverySupplement)
+	}
+	if len(pkg.RequiredCapabilities) == 0 {
 		return nil
 	}
-	pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityPreflight)
 	advertised, known, err := b.advertisedCapabilities(ctx, pkg.WorkerID)
 	if err != nil {
 		return err

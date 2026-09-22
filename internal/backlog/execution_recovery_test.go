@@ -6,6 +6,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 type recoverySupplementPackageStore struct {
@@ -27,7 +28,7 @@ func TestRecoverySupplementBecomesOrdinaryAttemptInputs(t *testing.T) {
 	instruction := domain.ArtifactDigest{ArtifactID: "repair-instruction", Digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	checkpoint := domain.ArtifactDigest{ArtifactID: "repair-checkpoint", Digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
 	store := recoverySupplementPackageStore{found: true, supplement: domain.RepairAttemptSupplement{
-		AttemptID: "attempt-2", InstructionArtifact: instruction, CheckpointArtifacts: []domain.ArtifactDigest{checkpoint},
+		AttemptID: "attempt-2", IncidentID: "incident", InstructionArtifact: instruction, CheckpointArtifacts: []domain.ArtifactDigest{checkpoint},
 	}}
 	state := executionPackageState{
 		run:     domain.WorkflowRun{ID: "run"},
@@ -37,9 +38,15 @@ func TestRecoverySupplementBecomesOrdinaryAttemptInputs(t *testing.T) {
 			checkpoint.ArtifactID:  {ID: checkpoint.ArtifactID, WorkflowRunID: "run", Name: "repair", SHA256: checkpoint.Digest, Size: 9, MediaType: "application/octet-stream", StoragePath: "objects/b"},
 		},
 	}
-	inputs, err := appendRecoverySupplementInputs(context.Background(), store, state, nil)
+	inputs, recovery, err := appendRecoverySupplementInputs(context.Background(), store, state, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if recovery == nil || recovery.InstructionPath != "inputs/recovery/instructions.md" || recovery.IncidentID == "" {
+		t.Fatalf("recovery context = %+v", recovery)
+	}
+	if _, _, err := appendRecoverySupplementInputs(context.Background(), store, state, []workerproto.ArtifactObject{{Path: "inputs/recovery/instructions.md"}}); err == nil {
+		t.Fatal("reserved recovery input collision accepted")
 	}
 	if len(inputs) != 2 || inputs[0].ID != instruction.ArtifactID || inputs[0].Path != "inputs/recovery/instructions.md" ||
 		inputs[1].ID != checkpoint.ArtifactID || inputs[1].Path != "inputs/recovery/checkpoint-01" {

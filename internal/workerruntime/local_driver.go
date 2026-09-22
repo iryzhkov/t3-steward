@@ -551,6 +551,12 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 	if err != nil {
 		return err
 	}
+	if pkg.Recovery != nil {
+		prompt += "\n\n## Recovery supplement\nThis is a retry of the original task. Keep the original task contract, outputs, and verification authoritative. Read and apply the retained repair instructions at `" + pkg.Recovery.InstructionPath + "`."
+		for _, checkpoint := range pkg.Recovery.CheckpointPaths {
+			prompt += "\nReview retained checkpoint `" + checkpoint + "`."
+		}
+	}
 	var projectID string
 	if d.scoped {
 		workspace = "/workspace"

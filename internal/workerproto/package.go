@@ -100,13 +100,14 @@ const (
 	PackageCapabilityPreflight           = "preflight"
 	PackageCapabilitySupervisionEvidence = "supervision-evidence-v1"
 	PackageCapabilityRecoveryRetry       = "recovery-retry-v1"
+	PackageCapabilityRecoverySupplement  = "recovery-supplement-v1"
 )
 
 // SupportedPackageCapabilities is what this build implements. A package that
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry}
+	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement}
 }
 
 // PreflightStep is one declared step the worker runs after the workspace is
@@ -117,6 +118,12 @@ func SupportedPackageCapabilities() []string {
 // package carries them to the worker, and both name the same struct: a third
 // spelling of nine fields would only create somewhere for them to drift.
 type PreflightStep = domain.PreflightStep
+
+type RecoveryExecutionContext struct {
+	IncidentID      string   `json:"incidentId"`
+	InstructionPath string   `json:"instructionPath"`
+	CheckpointPaths []string `json:"checkpointPaths,omitempty"`
+}
 
 type ExecutionPackage struct {
 	Timeout          time.Duration        `json:"timeout,omitempty"`
@@ -147,6 +154,7 @@ type ExecutionPackage struct {
 	// declared task. It is nil for every task package, which is every package
 	// an unsupervised run produces. See SupervisionActivation.
 	Supervision *SupervisionActivation       `json:"supervision,omitempty"`
+	Recovery    *RecoveryExecutionContext    `json:"recovery,omitempty"`
 	Outputs     []domain.ArtifactDeclaration `json:"outputs,omitempty"`
 	NotBefore   *time.Time                   `json:"notBefore,omitempty"`
 	Deadline    *time.Time                   `json:"deadline,omitempty"`
@@ -380,6 +388,19 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 	}
 	if _, ok := declared[PackageCapabilityPreflight]; len(pkg.Preflight) != 0 && !ok {
 		return errors.New("execution package: preflight steps require the preflight capability")
+	}
+	if _, ok := declared[PackageCapabilityRecoverySupplement]; pkg.Recovery != nil && !ok {
+		return errors.New("execution package: recovery context requires the recovery supplement capability")
+	}
+	if pkg.Recovery != nil {
+		if pkg.Supervision != nil || pkg.Recovery.IncidentID == "" || pkg.Recovery.InstructionPath != "inputs/recovery/instructions.md" {
+			return errors.New("execution package: recovery context is incomplete or attached to an activation")
+		}
+		for _, checkpoint := range pkg.Recovery.CheckpointPaths {
+			if !strings.HasPrefix(checkpoint, "inputs/recovery/checkpoint-") {
+				return errors.New("execution package: recovery checkpoint path is invalid")
+			}
+		}
 	}
 	return nil
 }
