@@ -13,6 +13,81 @@ import (
 
 const MaxWorkerUsageDelivery = 128
 
+const coordinatorMigrationV26 = `
+DROP TRIGGER IF EXISTS immutable_coordinator_usage_binding;
+DROP INDEX IF EXISTS coordinator_usage_bindings_run;
+CREATE TABLE coordinator_usage_bindings_v26 (
+	worker_id TEXT NOT NULL,
+	provider TEXT NOT NULL,
+	thread_id TEXT NOT NULL,
+	workflow_run_id TEXT NOT NULL,
+	task_id TEXT NOT NULL,
+	attempt_id TEXT NOT NULL,
+	assignment_id TEXT NOT NULL,
+	assignment_epoch INTEGER NOT NULL,
+	activation_id TEXT NOT NULL,
+	gate_id TEXT NOT NULL,
+	execution_role TEXT NOT NULL,
+	bound_at TEXT NOT NULL,
+	PRIMARY KEY(worker_id, provider, thread_id),
+	UNIQUE(assignment_id, assignment_epoch)
+);
+INSERT INTO coordinator_usage_bindings_v26(
+	worker_id, provider, thread_id, workflow_run_id, task_id, attempt_id,
+	assignment_id, assignment_epoch, activation_id, gate_id, execution_role, bound_at
+)
+SELECT '', provider, thread_id, workflow_run_id, task_id, attempt_id,
+	assignment_id, assignment_epoch, activation_id, gate_id, execution_role, bound_at
+FROM coordinator_usage_bindings;
+DROP TABLE coordinator_usage_bindings;
+ALTER TABLE coordinator_usage_bindings_v26 RENAME TO coordinator_usage_bindings;
+CREATE INDEX coordinator_usage_bindings_run
+	ON coordinator_usage_bindings(workflow_run_id, task_id, attempt_id);
+CREATE TRIGGER immutable_coordinator_usage_binding
+	BEFORE UPDATE ON coordinator_usage_bindings
+	BEGIN SELECT RAISE(ABORT, 'usage binding is immutable'); END;
+
+CREATE TABLE usage_samples_v26 (
+	worker_id TEXT NOT NULL,
+	event_id TEXT NOT NULL,
+	provider TEXT NOT NULL,
+	thread_id TEXT NOT NULL,
+	model TEXT NOT NULL,
+	observed_at TEXT NOT NULL,
+	input_tokens INTEGER NOT NULL,
+	cache_write_tokens INTEGER NOT NULL,
+	cache_read_tokens INTEGER NOT NULL,
+	output_tokens INTEGER NOT NULL,
+	cost_usd REAL NOT NULL,
+	kind TEXT NOT NULL DEFAULT '',
+	cumulative_tokens INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY(worker_id, event_id)
+);
+INSERT INTO usage_samples_v26(
+	worker_id, event_id, provider, thread_id, model, observed_at,
+	input_tokens, cache_write_tokens, cache_read_tokens, output_tokens,
+	cost_usd, kind, cumulative_tokens
+)
+SELECT '', event_id, provider, thread_id, model, observed_at,
+	input_tokens, cache_write_tokens, cache_read_tokens, output_tokens,
+	cost_usd, kind, cumulative_tokens
+FROM usage_samples;
+CREATE TABLE worker_usage_forwarded_v26 (
+	worker_id TEXT NOT NULL,
+	event_id TEXT NOT NULL,
+	acknowledged_at TEXT NOT NULL,
+	PRIMARY KEY(worker_id, event_id),
+	FOREIGN KEY(worker_id, event_id) REFERENCES usage_samples_v26(worker_id, event_id) ON DELETE CASCADE
+);
+INSERT INTO worker_usage_forwarded_v26(worker_id, event_id, acknowledged_at)
+SELECT '', event_id, acknowledged_at FROM worker_usage_forwarded;
+DROP TABLE worker_usage_forwarded;
+DROP TABLE usage_samples;
+ALTER TABLE usage_samples_v26 RENAME TO usage_samples;
+ALTER TABLE worker_usage_forwarded_v26 RENAME TO worker_usage_forwarded;
+CREATE INDEX usage_samples_at ON usage_samples(observed_at);
+`
+
 const coordinatorMigrationV25 = `
 CREATE TABLE IF NOT EXISTS coordinator_worker_usage_receipts (
 	worker_id TEXT NOT NULL,
@@ -51,6 +126,7 @@ CREATE TRIGGER IF NOT EXISTS immutable_coordinator_usage_binding
 `
 
 type usageBinding struct {
+	WorkerID        string
 	Provider        string
 	ThreadID        string
 	WorkflowRunID   string
@@ -137,36 +213,39 @@ func resolveAssignmentUsageIdentityTx(ctx context.Context, tx *sql.Tx, assignmen
 }
 
 // bindAssignmentUsageTx records identity at the V2 dispatch boundary.
-func bindAssignmentUsageTx(ctx context.Context, tx *sql.Tx, assignment domain.Assignment, boundAt time.Time) error {
-	if assignment.Route.ProviderInstanceID == "" || assignment.ThreadID == "" {
-		return fmt.Errorf("bind assignment usage %q: provider instance and thread are required", assignment.ID)
+func bindAssignmentUsageTx(ctx context.Context, tx *sql.Tx, assignment *domain.Assignment, boundAt time.Time) error {
+	if assignment.ThreadID == "" {
+		return nil
 	}
-	runID, taskID, err := resolveAssignmentUsageIdentityTx(ctx, tx, &assignment)
+	if assignment.WorkerID == "" || assignment.Route.ProviderInstanceID == "" || assignment.ThreadID == "" {
+		return fmt.Errorf("bind assignment usage %q: worker, provider instance, and thread must be complete", assignment.ID)
+	}
+	runID, taskID, err := resolveAssignmentUsageIdentityTx(ctx, tx, assignment)
 	if err != nil {
 		return fmt.Errorf("bind assignment usage %q: %w", assignment.ID, err)
 	}
 	want := usageBinding{
-		Provider: assignment.Route.ProviderInstanceID, ThreadID: assignment.ThreadID,
+		WorkerID: assignment.WorkerID, Provider: assignment.Route.ProviderInstanceID, ThreadID: assignment.ThreadID,
 		WorkflowRunID: runID, TaskID: taskID, AttemptID: assignment.AttemptID,
 		AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
 		ActivationID: assignment.ActivationID, GateID: assignment.GateID, Role: assignment.ExecutionRole,
 		BoundAt: boundAt.UTC().Format(time.RFC3339Nano),
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO coordinator_usage_bindings(
-		provider, thread_id, workflow_run_id, task_id, attempt_id, assignment_id,
+		worker_id, provider, thread_id, workflow_run_id, task_id, attempt_id, assignment_id,
 		assignment_epoch, activation_id, gate_id, execution_role, bound_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
-		want.Provider, want.ThreadID, want.WorkflowRunID, want.TaskID, want.AttemptID,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+		want.WorkerID, want.Provider, want.ThreadID, want.WorkflowRunID, want.TaskID, want.AttemptID,
 		want.AssignmentID, want.AssignmentEpoch, want.ActivationID, want.GateID,
 		want.Role, want.BoundAt); err != nil {
 		return fmt.Errorf("bind assignment usage %q: %w", assignment.ID, err)
 	}
 	var got usageBinding
-	if err := tx.QueryRowContext(ctx, `SELECT provider, thread_id, workflow_run_id,
+	if err := tx.QueryRowContext(ctx, `SELECT worker_id, provider, thread_id, workflow_run_id,
 		task_id, attempt_id, assignment_id, assignment_epoch, activation_id, gate_id,
 		execution_role, bound_at FROM coordinator_usage_bindings
-		WHERE provider = ? AND thread_id = ?`, want.Provider, want.ThreadID).Scan(
-		&got.Provider, &got.ThreadID, &got.WorkflowRunID, &got.TaskID, &got.AttemptID,
+		WHERE worker_id = ? AND provider = ? AND thread_id = ?`, want.WorkerID, want.Provider, want.ThreadID).Scan(
+		&got.WorkerID, &got.Provider, &got.ThreadID, &got.WorkflowRunID, &got.TaskID, &got.AttemptID,
 		&got.AssignmentID, &got.AssignmentEpoch, &got.ActivationID, &got.GateID,
 		&got.Role, &got.BoundAt,
 	); err != nil {
@@ -180,7 +259,7 @@ func bindAssignmentUsageTx(ctx context.Context, tx *sql.Tx, assignment domain.As
 }
 
 const attributedUsageSelect = `SELECT
-	u.event_id, u.provider, u.thread_id, u.model, u.observed_at,
+	u.worker_id, u.event_id, u.provider, u.thread_id, u.model, u.observed_at,
 	u.input_tokens, u.cache_write_tokens, u.cache_read_tokens, u.output_tokens,
 	u.cost_usd, u.kind, u.cumulative_tokens,
 	CASE WHEN b.thread_id IS NULL THEN 'unattributed' ELSE 'attributed' END,
@@ -190,7 +269,8 @@ const attributedUsageSelect = `SELECT
 	COALESCE(b.gate_id, ''), COALESCE(b.execution_role, '')
 FROM usage_samples AS u
 LEFT JOIN coordinator_usage_bindings AS b
-	ON b.provider = u.provider AND b.thread_id = u.thread_id`
+	ON u.worker_id <> '' AND b.worker_id = u.worker_id
+	AND b.provider = u.provider AND b.thread_id = u.thread_id`
 
 func scanAttributedUsage(rows *sql.Rows) ([]domain.UsageSample, error) {
 	defer rows.Close()
@@ -199,7 +279,7 @@ func scanAttributedUsage(rows *sql.Rows) ([]domain.UsageSample, error) {
 		var at string
 		var u domain.UsageSample
 		if err := rows.Scan(
-			&u.SourceEventID, &u.ProviderInstanceID, &u.ThreadID, &u.Model, &at,
+			&u.WorkerID, &u.SourceEventID, &u.ProviderInstanceID, &u.ThreadID, &u.Model, &at,
 			&u.InputTokens, &u.CacheWriteTokens, &u.CacheReadTokens, &u.OutputTokens,
 			&u.CostUSD, &u.Kind, &u.CumulativeTokens,
 			&u.Attribution.Status, &u.Attribution.WorkflowRunID, &u.Attribution.TaskID,
@@ -210,6 +290,9 @@ func scanAttributedUsage(rows *sql.Rows) ([]domain.UsageSample, error) {
 			return nil, err
 		}
 		u.ObservedAt, _ = time.Parse(time.RFC3339Nano, at)
+		if u.Attribution.Status == domain.UsageAttributed {
+			u.Attribution.WorkerID = u.WorkerID
+		}
 		out = append(out, u)
 	}
 	return out, rows.Err()
@@ -222,7 +305,8 @@ func (s *Store) AttributedUsage(ctx context.Context, runID string) (domain.Usage
 	}}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples AS u
 		LEFT JOIN coordinator_usage_bindings AS b
-		ON b.provider = u.provider AND b.thread_id = u.thread_id
+		ON u.worker_id <> '' AND b.worker_id = u.worker_id
+		AND b.provider = u.provider AND b.thread_id = u.thread_id
 		WHERE b.thread_id IS NULL`).Scan(&report.Coverage.UnscopedUnattributedCount); err != nil {
 		return domain.UsageReport{}, err
 	}
@@ -238,6 +322,19 @@ func (s *Store) AttributedUsage(ctx context.Context, runID string) (domain.Usage
 	return report, err
 }
 
+type usageExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func recordUsage(ctx context.Context, execer usageExecer, u domain.UsageSample) error {
+	_, err := execer.ExecContext(ctx,
+		`INSERT OR IGNORE INTO usage_samples(worker_id, event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd, kind, cumulative_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.WorkerID, u.SourceEventID, u.ProviderInstanceID, u.ThreadID, u.Model, u.ObservedAt.UTC().Format(time.RFC3339Nano),
+		u.InputTokens, u.CacheWriteTokens, u.CacheReadTokens, u.OutputTokens, u.CostUSD, u.Kind, u.CumulativeTokens)
+	return err
+}
+
 // WorkerUsageBatch applies coordinator acknowledgements and returns the oldest bounded raw batch.
 func (s *Store) WorkerUsageBatch(ctx context.Context, acknowledged []string, limit int) ([]domain.UsageSample, error) {
 	if limit < 1 || limit > MaxWorkerUsageDelivery || len(acknowledged) > MaxWorkerUsageDelivery {
@@ -249,14 +346,15 @@ func (s *Store) WorkerUsageBatch(ctx context.Context, acknowledged []string, lim
 	}
 	defer tx.Rollback()
 	for _, id := range acknowledged {
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO worker_usage_forwarded(event_id,acknowledged_at)
-			SELECT event_id, ? FROM usage_samples WHERE event_id = ?`,
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO worker_usage_forwarded(worker_id,event_id,acknowledged_at)
+			SELECT worker_id, event_id, ? FROM usage_samples WHERE event_id = ?`,
 			time.Now().UTC().Format(time.RFC3339Nano), id); err != nil {
 			return nil, err
 		}
 	}
 	rows, err := tx.QueryContext(ctx, attributedUsageSelect+
-		` WHERE NOT EXISTS (SELECT 1 FROM worker_usage_forwarded AS f WHERE f.event_id = u.event_id)
+		` WHERE NOT EXISTS (SELECT 1 FROM worker_usage_forwarded AS f
+			WHERE f.worker_id = u.worker_id AND f.event_id = u.event_id)
 		ORDER BY u.observed_at, u.event_id LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -269,6 +367,7 @@ func (s *Store) WorkerUsageBatch(ctx context.Context, acknowledged []string, lim
 		return nil, err
 	}
 	for i := range samples {
+		samples[i].WorkerID = ""
 		samples[i].Attribution = domain.UsageAttribution{}
 	}
 	return samples, nil
@@ -278,16 +377,25 @@ func (s *Store) ReceiveWorkerUsage(ctx context.Context, workerID string, samples
 	if workerID == "" || len(samples) > MaxWorkerUsageDelivery {
 		return fmt.Errorf("invalid worker usage delivery")
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	for _, sample := range samples {
-		if err := s.RecordUsage(ctx, sample); err != nil {
+		if sample.WorkerID != "" && sample.WorkerID != workerID {
+			return fmt.Errorf("worker usage sample provenance conflicts with authenticated worker")
+		}
+		sample.WorkerID = workerID
+		if err := recordUsage(ctx, tx, sample); err != nil {
 			return err
 		}
-		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO coordinator_worker_usage_receipts(worker_id,event_id,received_at)
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO coordinator_worker_usage_receipts(worker_id,event_id,received_at)
 			VALUES(?,?,?)`, workerID, sample.SourceEventID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (s *Store) WorkerUsageAcknowledgements(ctx context.Context, workerID string) ([]string, error) {

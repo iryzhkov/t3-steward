@@ -47,12 +47,21 @@ func TestAssignmentPlanCommitsBeforeEpochBoundClaim(t *testing.T) {
 		t.Fatalf("offered attempt projection = %#v", records.Attempts)
 	}
 
-	claimed, err := store.ClaimAssignment(context.Background(), fleetClaim(1, "worker-epoch-1", fleetTestTime.Add(time.Second), fleetTestTime.Add(time.Minute)))
+	claimRequest := fleetClaim(1, "worker-epoch-1", fleetTestTime.Add(time.Second), fleetTestTime.Add(time.Minute))
+	claimed, err := store.ClaimAssignment(context.Background(), claimRequest)
 	if err != nil {
 		t.Fatalf("claim assignment: %v", err)
 	}
-	if claimed.State != domain.AssignmentClaimed || claimed.LeaseExpiresAt != fleetTestTime.Add(time.Minute) {
+	if claimed.State != domain.AssignmentClaimed || claimed.LeaseExpiresAt != fleetTestTime.Add(time.Minute) ||
+		claimed.ExecutionRole != domain.ExecutionRoleExecutor {
 		t.Fatalf("claimed assignment = %#v", claimed)
+	}
+	replayedClaim, err := store.ClaimAssignment(context.Background(), claimRequest)
+	if err != nil {
+		t.Fatalf("replay assignment claim: %v", err)
+	}
+	if replayedClaim.ID != claimed.ID || replayedClaim.ExecutionRole != claimed.ExecutionRole {
+		t.Fatalf("replayed assignment claim = %#v, want identity and role from %#v", replayedClaim, claimed)
 	}
 	records, err = store.LoadCoordinatorRecords(context.Background())
 	if err != nil {

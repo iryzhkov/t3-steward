@@ -20,10 +20,11 @@ func TestMeasuredUsageMigrationPreservesHistoryAndReopensIdempotently(t *testing
 		t.Fatal(err)
 	}
 	at := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
-	if err := legacy.RecordUsage(ctx, domain.UsageSample{
-		ProviderInstanceID: "codex-primary", ThreadID: "legacy-thread", Model: "gpt",
-		ObservedAt: at, SourceEventID: "legacy-event", Kind: domain.UsageKindCall, InputTokens: 8,
-	}); err != nil {
+	if _, err := legacy.db.ExecContext(ctx, `INSERT INTO usage_samples(
+		event_id,provider,thread_id,model,observed_at,input_tokens,cache_write_tokens,
+		cache_read_tokens,output_tokens,cost_usd,kind,cumulative_tokens
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, "legacy-event", "codex-primary", "legacy-thread", "gpt",
+		at.Format(time.RFC3339Nano), 8, 0, 0, 0, 0, domain.UsageKindCall, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := legacy.Close(); err != nil {
@@ -35,8 +36,8 @@ func TestMeasuredUsageMigrationPreservesHistoryAndReopensIdempotently(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := schemaVersionOf(t, store); got != 25 {
-			t.Fatalf("schema version = %d, want 25", got)
+		if got := schemaVersionOf(t, store); got != 26 {
+			t.Fatalf("schema version = %d, want 26", got)
 		}
 		samples, err := store.UsageSamples(ctx, at.Add(-time.Minute), at.Add(time.Minute))
 		if err != nil {
@@ -133,12 +134,13 @@ func TestMeasuredUsageBindingIsAuthoritativeIsolatedAndReplaySafe(t *testing.T) 
 		}
 	}
 	samples := []domain.UsageSample{
-		{ProviderInstanceID: "codex-primary", ThreadID: "thread-shared-looking-a", ObservedAt: now, SourceEventID: "codex-a", Kind: domain.UsageKindCall, InputTokens: 10},
-		{ProviderInstanceID: "claude-agent", ThreadID: "thread-repair", ObservedAt: now.Add(time.Second), SourceEventID: "claude-repair#model", Kind: domain.UsageKindTurn, OutputTokens: 4},
-		{ProviderInstanceID: "codex-primary", ThreadID: "thread-shared-looking-b", ObservedAt: now.Add(2 * time.Second), SourceEventID: "codex-b", Kind: domain.UsageKindCall, InputTokens: 12},
-		{ProviderInstanceID: "claude-agent", ThreadID: "thread-activation", ObservedAt: now.Add(3 * time.Second), SourceEventID: "claude-activation#model", Kind: domain.UsageKindTurn, OutputTokens: 6},
-		{ProviderInstanceID: "claude-agent", ThreadID: "thread-gate", ObservedAt: now.Add(4 * time.Second), SourceEventID: "claude-gate#model", Kind: domain.UsageKindTurn, OutputTokens: 3},
-		{ProviderInstanceID: "codex-primary", ThreadID: "run-a/task-a/prompt-looking-but-unknown", ObservedAt: now.Add(5 * time.Second), SourceEventID: "unknown", Kind: domain.UsageKindCall, InputTokens: 99},
+		// Coordinator ingestion stamps this authenticated worker provenance.
+		{WorkerID: "worker", ProviderInstanceID: "codex-primary", ThreadID: "thread-shared-looking-a", ObservedAt: now, SourceEventID: "codex-a", Kind: domain.UsageKindCall, InputTokens: 10},
+		{WorkerID: "worker", ProviderInstanceID: "claude-agent", ThreadID: "thread-repair", ObservedAt: now.Add(time.Second), SourceEventID: "claude-repair#model", Kind: domain.UsageKindTurn, OutputTokens: 4},
+		{WorkerID: "worker", ProviderInstanceID: "codex-primary", ThreadID: "thread-shared-looking-b", ObservedAt: now.Add(2 * time.Second), SourceEventID: "codex-b", Kind: domain.UsageKindCall, InputTokens: 12},
+		{WorkerID: "worker", ProviderInstanceID: "claude-agent", ThreadID: "thread-activation", ObservedAt: now.Add(3 * time.Second), SourceEventID: "claude-activation#model", Kind: domain.UsageKindTurn, OutputTokens: 6},
+		{WorkerID: "worker", ProviderInstanceID: "claude-agent", ThreadID: "thread-gate", ObservedAt: now.Add(4 * time.Second), SourceEventID: "claude-gate#model", Kind: domain.UsageKindTurn, OutputTokens: 3},
+		{WorkerID: "worker", ProviderInstanceID: "codex-primary", ThreadID: "run-a/task-a/prompt-looking-but-unknown", ObservedAt: now.Add(5 * time.Second), SourceEventID: "unknown", Kind: domain.UsageKindCall, InputTokens: 99},
 	}
 	for _, sample := range samples {
 		if err := store.RecordUsage(ctx, sample); err != nil {

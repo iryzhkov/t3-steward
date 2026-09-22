@@ -98,7 +98,8 @@ func (c *Client) Catalog(ctx context.Context, request any) (map[string]string, e
 
 // WorkerID names the worker this session speaks to, so a caller can address a
 // coordinator-owned statement to exactly that worker's assignments.
-func (c *Client) WorkerID() string { return c.config.WorkerID }
+func (c *Client) WorkerID() string    { return c.config.WorkerID }
+func (c *Client) WorkerEpoch() string { return c.config.WorkerEpoch }
 
 // Snapshot asks the worker to publish a fresh observation and, in the same
 // exchange, tells it which of its assignments are parked on a task-bound wait.

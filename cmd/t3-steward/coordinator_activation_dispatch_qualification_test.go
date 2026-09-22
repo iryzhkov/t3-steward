@@ -19,7 +19,8 @@ type reassessmentExchangeTransport struct {
 	offers   []workerproto.AssignmentOffer
 }
 
-func (t *reassessmentExchangeTransport) WorkerID() string { return t.snapshot.WorkerID }
+func (t *reassessmentExchangeTransport) WorkerID() string    { return t.snapshot.WorkerID }
+func (t *reassessmentExchangeTransport) WorkerEpoch() string { return t.snapshot.WorkerEpoch }
 func (t *reassessmentExchangeTransport) Snapshot(context.Context, workerproto.SnapshotRequest) (domain.WorkerSnapshot, error) {
 	return t.snapshot, nil
 }

@@ -169,7 +169,7 @@ func TestSchemaSeventeenMigratesForwardWithPreSupervisionRuns(t *testing.T) {
 		t.Fatalf("migrate %d to %d: %v", preSupervisionSchemaVersion, currentSchemaVersion, err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if version := schemaVersionOf(t, store); version != currentSchemaVersion || currentSchemaVersion != 25 {
+	if version := schemaVersionOf(t, store); version != currentSchemaVersion || currentSchemaVersion != 26 {
 		t.Fatalf("migrated schema version = %d, current = %d", version, currentSchemaVersion)
 	}
 	for _, table := range supervisionTables {

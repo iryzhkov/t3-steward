@@ -36,10 +36,24 @@ type WorkerControlTransport interface {
 	// WorkerID names the worker on the far end, so the coordinator can build a
 	// statement about that worker's assignments and no others.
 	WorkerID() string
+	WorkerEpoch() string
 	Snapshot(context.Context, workerproto.SnapshotRequest) (domain.WorkerSnapshot, error)
 	DeliverOffers(context.Context, []workerproto.AssignmentOffer) ([]domain.AssignmentClaimRequest, error)
 	DeliverLeaseRenewals(context.Context, []domain.AssignmentLeaseRenewal) (domain.WorkerSnapshot, error)
 	DeliverThrottle(context.Context, domain.WorkerSnapshot, []domain.ThrottleCommand) ([]domain.ThrottleAcknowledgement, error)
+}
+
+func validateObservationIdentity(transport WorkerControlTransport, snapshot domain.WorkerSnapshot, coordinatorEpoch int64) error {
+	if snapshot.WorkerID != transport.WorkerID() {
+		return fmt.Errorf("worker snapshot identity %q does not match authenticated worker %q", snapshot.WorkerID, transport.WorkerID())
+	}
+	if snapshot.WorkerEpoch != transport.WorkerEpoch() {
+		return fmt.Errorf("worker snapshot epoch %q does not match authenticated session epoch %q", snapshot.WorkerEpoch, transport.WorkerEpoch())
+	}
+	if snapshot.CoordinatorEpoch != coordinatorEpoch {
+		return fmt.Errorf("worker snapshot coordinator epoch %d does not match authority %d", snapshot.CoordinatorEpoch, coordinatorEpoch)
+	}
+	return nil
 }
 
 // AssignmentOfferBuilder resolves the immutable package for an already-durable
@@ -291,14 +305,14 @@ func (c FleetCoordinator) ReconcileWorker(
 		return WorkerExchangeReport{}, err
 	}
 	snapshot := observations.Snapshot
-	if err := store.ReceiveWorkerUsage(ctx, snapshot.WorkerID, observations.Usage); err != nil {
+	if err := validateObservationIdentity(transport, snapshot, epoch); err != nil {
 		return WorkerExchangeReport{}, err
 	}
-	if err := store.ClearWorkerUsageAcknowledgements(ctx, snapshot.WorkerID, observations.AcknowledgedUsageEventIDs); err != nil {
+	if err := store.ReceiveWorkerUsage(ctx, transport.WorkerID(), observations.Usage); err != nil {
 		return WorkerExchangeReport{}, err
 	}
-	if snapshot.CoordinatorEpoch != epoch {
-		return WorkerExchangeReport{}, fmt.Errorf("worker snapshot coordinator epoch %d does not match authority %d", snapshot.CoordinatorEpoch, epoch)
+	if err := store.ClearWorkerUsageAcknowledgements(ctx, transport.WorkerID(), observations.AcknowledgedUsageEventIDs); err != nil {
+		return WorkerExchangeReport{}, err
 	}
 	if err := store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
 		return WorkerExchangeReport{}, err
@@ -397,15 +411,17 @@ func (c FleetCoordinator) ReconcileWorker(
 			return report, err
 		}
 		snapshot = observations.Snapshot
-		if err := store.ReceiveWorkerUsage(ctx, snapshot.WorkerID, observations.Usage); err != nil {
+		if err := validateObservationIdentity(transport, snapshot, epoch); err != nil {
 			return report, err
 		}
-		if err := store.ClearWorkerUsageAcknowledgements(ctx, snapshot.WorkerID, observations.AcknowledgedUsageEventIDs); err != nil {
-			return report, err
-		}
-		if snapshot.CoordinatorEpoch != epoch || snapshot.WorkerID != report.Snapshot.WorkerID ||
-			snapshot.WorkerEpoch != report.Snapshot.WorkerEpoch {
+		if snapshot.WorkerID != report.Snapshot.WorkerID || snapshot.WorkerEpoch != report.Snapshot.WorkerEpoch {
 			return report, errors.New("worker identity changed during exchange")
+		}
+		if err := store.ReceiveWorkerUsage(ctx, transport.WorkerID(), observations.Usage); err != nil {
+			return report, err
+		}
+		if err := store.ClearWorkerUsageAcknowledgements(ctx, transport.WorkerID(), observations.AcknowledgedUsageEventIDs); err != nil {
+			return report, err
 		}
 		if err := store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
 			return report, err

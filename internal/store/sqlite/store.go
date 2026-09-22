@@ -403,6 +403,7 @@ var versionedMigrations = []struct {
 	{23, coordinatorMigrationV23},
 	{24, coordinatorMigrationV24},
 	{25, coordinatorMigrationV25},
+	{26, coordinatorMigrationV26},
 }
 
 func (s *Store) applyVersionedMigration(version int, ddl string) error {
@@ -772,14 +773,9 @@ func (s *Store) Observations(ctx context.Context, from, to time.Time) ([]domain.
 	return out, rows.Err()
 }
 
-// RecordUsage stores one token usage sample. Duplicates are ignored.
+// RecordUsage stores one token usage sample. Duplicates are ignored per worker.
 func (s *Store) RecordUsage(ctx context.Context, u domain.UsageSample) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO usage_samples(event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd, kind, cumulative_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.SourceEventID, u.ProviderInstanceID, u.ThreadID, u.Model, u.ObservedAt.UTC().Format(time.RFC3339Nano),
-		u.InputTokens, u.CacheWriteTokens, u.CacheReadTokens, u.OutputTokens, u.CostUSD, u.Kind, u.CumulativeTokens)
-	return err
+	return recordUsage(ctx, s.db, u)
 }
 
 // UsageSamples returns samples in [from, to), oldest first, joined to the

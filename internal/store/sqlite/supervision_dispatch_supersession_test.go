@@ -28,6 +28,7 @@ func failedOfferSupersessionFixture(t *testing.T) (*Store, FailedActivationOffer
 	assignment := records.Assignments[0]
 	assignment.WorkerID = "normandy"
 	assignment.WorkerEpoch = "worker-epoch-1"
+	assignment.Route = domain.ProviderRoute{WorkerID: "normandy", ProviderInstanceID: "claude", Model: "claude"}
 	assignment.LeaseToken = "lease-token-1"
 	assignment.LeaseExpiresAt = supervisionTestTime.Add(time.Hour)
 	var attempt domain.Attempt

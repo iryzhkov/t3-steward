@@ -212,6 +212,10 @@ func reconcileActivationOfferWithBuilder(t *testing.T, capable bool, builder Ass
 	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
 		WorkflowRuns: []domain.WorkflowRun{{ID: "run-1", WorkflowID: "workflow-1", Progress: domain.ProgressActive, Revision: 1, GraphRevision: 1, CreatedAt: coordinatorTestTime, UpdatedAt: coordinatorTestTime}},
 		Attempts:     []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment},
+		Activations: []domain.Activation{{
+			ID: "activation-1", RunID: "run-1", Epoch: 1,
+			State: domain.ActivationPendingDispatch, DispatchIdentity: "dispatch-activation-1",
+		}},
 	}); err != nil {
 		t.Fatal(err)
 	}

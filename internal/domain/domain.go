@@ -395,6 +395,7 @@ const (
 // reserved for execution launched for a durable gate and is otherwise empty.
 type UsageAttribution struct {
 	Status          UsageAttributionStatus `json:"status"`
+	WorkerID        string                 `json:"workerId,omitempty"`
 	WorkflowRunID   string                 `json:"workflowRunId,omitempty"`
 	TaskID          string                 `json:"taskId,omitempty"`
 	AttemptID       string                 `json:"attemptId,omitempty"`
@@ -419,6 +420,9 @@ type UsageReport struct {
 // UsageSample is a token count reported by a provider for one API call or
 // one turn, used to normalize quota consumption by work done.
 type UsageSample struct {
+	// WorkerID is assigned only at the authenticated worker-to-coordinator boundary.
+	// Provider parsers and legacy rows leave it empty and therefore unattributed.
+	WorkerID           string    `json:"workerId,omitempty"`
 	ProviderInstanceID string    `json:"providerInstanceId"`
 	ThreadID           string    `json:"threadId"`
 	Model              string    `json:"model"`

@@ -46,13 +46,13 @@ func TestUsageQueryReturnsAuthoritativeDispatchIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.RecordUsage(ctx, domain.UsageSample{
-		ProviderInstanceID: "codex-primary", ThreadID: "thread-usage", Model: "gpt",
+		WorkerID: "worker-usage", ProviderInstanceID: "codex-primary", ThreadID: "thread-usage", Model: "gpt",
 		ObservedAt: adminTestNow, SourceEventID: "event-usage", Kind: domain.UsageKindCall, InputTokens: 5,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RecordUsage(ctx, domain.UsageSample{
-		ProviderInstanceID: "codex-primary", ThreadID: "thread-without-binding", Model: "gpt",
+		WorkerID: "worker-usage", ProviderInstanceID: "codex-primary", ThreadID: "thread-without-binding", Model: "gpt",
 		ObservedAt: adminTestNow, SourceEventID: "event-unscoped", Kind: domain.UsageKindCall, InputTokens: 7,
 	}); err != nil {
 		t.Fatal(err)
