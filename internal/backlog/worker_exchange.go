@@ -99,7 +99,7 @@ func activationDispatchFailure(records sqlite.CoordinatorRecords, assignment dom
 	identity := fmt.Sprintf("%s@%d\x00%s\x00%s", assignment.ID, assignment.Epoch, packageFailure.Code, evidenceRef)
 	return domain.ActivationDispatchFailure{
 		ID: stableCoordinatorID("activation-dispatch-failure", identity), Code: packageFailure.Code,
-		SafeMessage: message, NextAction: "repair-activation-input",
+		SafeMessage: message, NextAction: fmt.Sprintf("t3-steward campaign supervision reassess %s --request-id KEY --reason TEXT", attempt.WorkflowRunID),
 		AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch, AttemptID: attempt.ID,
 		ActivationID: attempt.SupervisionActivationID, ActivationEpoch: attempt.SupervisionActivationEpoch,
 		RunID: attempt.WorkflowRunID, GraphRevision: graphRevision, EvidenceRef: evidenceRef,
