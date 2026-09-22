@@ -46,7 +46,7 @@ func (s *Store) OpenRecoveryIncident(ctx context.Context, request RecoveryIncide
 		if err := json.Unmarshal(raw, &existing); err != nil {
 			return SupervisionDecision{}, false, err
 		}
-		if existing.SourceTaskID != request.SourceTaskID || existing.SourceAttemptID != request.SourceAttemptID || existing.Recovery == nil ||
+		if existing.SourceEventID != request.EventID || existing.SourceTaskID != request.SourceTaskID || existing.SourceAttemptID != request.SourceAttemptID || existing.Recovery == nil ||
 			existing.Recovery.Diagnostic.FailureFingerprint != request.Recovery.Diagnostic.FailureFingerprint ||
 			existing.Recovery.Diagnostic.EvidenceFingerprint != request.Recovery.Diagnostic.EvidenceFingerprint {
 			return SupervisionDecision{}, false, fmt.Errorf("%w: recovery incident %q changed identity", ErrSupervisionRequestConflict, request.IncidentID)
@@ -86,12 +86,17 @@ func (s *Store) OpenRecoveryIncident(ctx context.Context, request RecoveryIncide
 }
 
 func appendRecoveryInboxTx(ctx context.Context, tx *sql.Tx, request RecoveryIncidentRequest) (bool, error) {
-	var present int
-	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM coordinator_supervision_inbox WHERE id = ?", request.EventID).Scan(&present); err != nil {
-		return false, err
-	}
-	if present != 0 {
+	var existingRun string
+	var existingRecord []byte
+	err := tx.QueryRowContext(ctx, "SELECT run_id, record FROM coordinator_supervision_inbox WHERE id = ?", request.EventID).Scan(&existingRun, &existingRecord)
+	if err == nil {
+		if existingRun != request.RunID || !recoveryEventEqual(existingRecord, request.EventRecord) {
+			return false, fmt.Errorf("%w: recovery event %q changed identity", ErrSupervisionRequestConflict, request.EventID)
+		}
 		return false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, err
 	}
 	var high sql.NullInt64
 	if err := tx.QueryRowContext(ctx, "SELECT MAX(sequence) FROM coordinator_supervision_inbox WHERE run_id = ?", request.RunID).Scan(&high); err != nil {
@@ -101,4 +106,25 @@ func appendRecoveryInboxTx(ctx context.Context, tx *sql.Tx, request RecoveryInci
 		return false, fmt.Errorf("append recovery event %q: %w", request.EventID, err)
 	}
 	return true, nil
+}
+
+func recoveryEventEqual(left, right []byte) bool {
+	var a, b any
+	if json.Unmarshal(left, &a) != nil || json.Unmarshal(right, &b) != nil {
+		return string(left) == string(right)
+	}
+	deleteVolatileRecoveryEventFields(a)
+	deleteVolatileRecoveryEventFields(b)
+	leftCanonical, _ := json.Marshal(a)
+	rightCanonical, _ := json.Marshal(b)
+	return string(leftCanonical) == string(rightCanonical)
+}
+
+func deleteVolatileRecoveryEventFields(value any) {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	delete(object, "occurredAt")
+	delete(object, "sequence")
 }

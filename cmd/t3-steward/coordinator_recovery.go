@@ -27,6 +27,16 @@ func (c coordinatorSupervision) observeRecoveryFailures(ctx context.Context, run
 	if err != nil {
 		return err
 	}
+	state, err := c.store.LoadSupervisionAdminState(ctx, run.ID)
+	if err != nil {
+		return err
+	}
+	ownedAttempts := make(map[string]bool)
+	for _, facts := range state.Incidents {
+		if facts.Incident.Recovery != nil {
+			ownedAttempts[facts.Incident.SourceAttemptID] = true
+		}
+	}
 	latest := make(map[string]domain.Attempt)
 	for _, attempt := range domain.DeclaredTaskAttempts(records.Attempts) {
 		if attempt.WorkflowRunID != run.ID {
@@ -38,7 +48,7 @@ func (c coordinatorSupervision) observeRecoveryFailures(ctx context.Context, run
 		}
 	}
 	for _, attempt := range latest {
-		if attempt.Progress != domain.ProgressFailed {
+		if attempt.Progress != domain.ProgressFailed || ownedAttempts[attempt.ID] {
 			continue
 		}
 		artifacts := recoveryArtifactDigests(records.Artifacts, run.ID, attempt)

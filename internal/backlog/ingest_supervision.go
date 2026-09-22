@@ -57,6 +57,13 @@ func buildSupervision(
 		return nil, err
 	}
 	config.PromptArtifactID = promptID
+	if config.Recovery != nil {
+		recoveryPromptID, err := artifactFor("recovery prompt", config.Recovery.PromptArtifactID)
+		if err != nil {
+			return nil, err
+		}
+		config.Recovery.PromptArtifactID = recoveryPromptID
+	}
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
