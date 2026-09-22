@@ -99,13 +99,14 @@ type DependencyInput struct {
 const (
 	PackageCapabilityPreflight           = "preflight"
 	PackageCapabilitySupervisionEvidence = "supervision-evidence-v1"
+	PackageCapabilityRecoveryRetry       = "recovery-retry-v1"
 )
 
 // SupportedPackageCapabilities is what this build implements. A package that
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence}
+	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry}
 }
 
 // PreflightStep is one declared step the worker runs after the workspace is
@@ -365,6 +366,9 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 		}
 		if capability == PackageCapabilitySupervisionEvidence && pkg.Supervision == nil {
 			return errors.New("execution package: only an activation may require supervision evidence materialization")
+		}
+		if capability == PackageCapabilityRecoveryRetry && (pkg.Supervision == nil || pkg.Supervision.Purpose != "repair") {
+			return errors.New("execution package: only a repair activation may require recovery retry")
 		}
 		if !slices.Contains(supported, capability) {
 			return fmt.Errorf("execution package: unsupported required capability %q", capability)

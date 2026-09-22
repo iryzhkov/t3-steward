@@ -134,6 +134,10 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		}
 		staticInputs = append(staticInputs, object)
 	}
+	staticInputs, err = appendRecoverySupplementInputs(ctx, b.Store, state, staticInputs)
+	if err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
 	dependencies, err := packageDependencies(state.task, state.tasks, state.artifacts, state.run.ID)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: dependencies: %w", err)
@@ -193,6 +197,45 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 // build one the selected worker cannot honour. Capability negotiation happens
 // before dispatch: a worker that does not understand preflight is never handed
 // a package whose evidence it would silently never produce.
+type recoverySupplementStore interface {
+	LoadRecoverySupplement(context.Context, string) (domain.RepairAttemptSupplement, bool, error)
+}
+
+func appendRecoverySupplementInputs(ctx context.Context, store ExecutionPackageRecordStore, state executionPackageState, inputs []workerproto.ArtifactObject) ([]workerproto.ArtifactObject, error) {
+	reader, ok := store.(recoverySupplementStore)
+	if !ok {
+		return inputs, nil
+	}
+	supplement, found, err := reader.LoadRecoverySupplement(ctx, state.attempt.ID)
+	if err != nil || !found {
+		return inputs, err
+	}
+	digests := append([]domain.ArtifactDigest{supplement.InstructionArtifact}, supplement.CheckpointArtifacts...)
+	for index, digest := range digests {
+		var retained *domain.Artifact
+		for _, artifact := range state.artifacts {
+			if artifact.ID == digest.ArtifactID && artifact.SHA256 == digest.Digest && artifact.WorkflowRunID == state.run.ID {
+				copy := artifact
+				retained = &copy
+				break
+			}
+		}
+		if retained == nil {
+			return nil, fmt.Errorf("execution package builder: recovery supplement artifact %q with digest %q is not retained by this run", digest.ArtifactID, digest.Digest)
+		}
+		name := "inputs/recovery/instructions.md"
+		if index > 0 {
+			name = fmt.Sprintf("inputs/recovery/checkpoint-%02d", index)
+		}
+		object, err := packageArtifact(*retained, name, "input")
+		if err != nil {
+			return nil, fmt.Errorf("execution package builder: recovery supplement: %w", err)
+		}
+		inputs = append(inputs, object)
+	}
+	return inputs, nil
+}
+
 func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context, pkg *workerproto.ExecutionPackage) error {
 	if len(pkg.Preflight) == 0 {
 		return nil

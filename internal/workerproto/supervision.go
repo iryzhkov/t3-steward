@@ -41,8 +41,11 @@ type SupervisionAction struct {
 // build is running on its host.
 type SupervisionActivation struct {
 	ActivationID string `json:"activationId"`
-	RunID        string `json:"runId"`
-	Epoch        int64  `json:"epoch"`
+	// Purpose is empty for legacy reviewer packages and "repair" for a scoped recovery executor.
+	Purpose    string `json:"purpose,omitempty"`
+	IncidentID string `json:"incidentId,omitempty"`
+	RunID      string `json:"runId"`
+	Epoch      int64  `json:"epoch"`
 	// RecordRevision is the supervision record revision every decision must
 	// name as its expected revision.
 	RecordRevision int64 `json:"recordRevision"`
@@ -249,6 +252,12 @@ func validateSupervisionActivation(pkg ExecutionPackage) error {
 	if activation.RunID != pkg.Identity.WorkflowRunID {
 		return errors.New("execution package supervision: activation belongs to another run")
 	}
+	if activation.Purpose != "" && activation.Purpose != "repair" {
+		return errors.New("execution package supervision: unsupported activation purpose")
+	}
+	if activation.Purpose == "repair" && strings.TrimSpace(activation.IncidentID) == "" {
+		return errors.New("execution package supervision: repair activation needs an incident")
+	}
 	if activation.Epoch < 1 || activation.RecordRevision < 0 || activation.MaxTurns < 1 {
 		return errors.New("execution package supervision: epoch, revision and turn budget must be positive")
 	}
@@ -300,6 +309,9 @@ func validateSupervisionActivation(pkg ExecutionPackage) error {
 	}
 	if !slices.Contains(pkg.RequiredCapabilities, CapabilityCampaignSupervision) {
 		return fmt.Errorf("execution package supervision: an activation must require %q", CapabilityCampaignSupervision)
+	}
+	if activation.Purpose == "repair" && !slices.Contains(pkg.RequiredCapabilities, PackageCapabilityRecoveryRetry) {
+		return fmt.Errorf("execution package supervision: a repair activation must require %q", PackageCapabilityRecoveryRetry)
 	}
 	return nil
 }

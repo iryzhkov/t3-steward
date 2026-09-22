@@ -38,6 +38,7 @@ const (
 	// granting it the authority to decide.
 	localOperationSupervisionShow     = "supervision-show"
 	localOperationSupervisionDecision = "supervision-decision"
+	localOperationRecoveryRetry       = "recovery-retry"
 )
 
 // Operations is the complete coordinator-admin operation vocabulary, in the
@@ -57,6 +58,7 @@ func Operations() []string {
 		localOperationQuarantineRelease,
 		localOperationSupervisionShow,
 		localOperationSupervisionDecision,
+		localOperationRecoveryRetry,
 	}
 }
 
@@ -188,6 +190,7 @@ type localRequest struct {
 	UnknownRecovery    *UnknownRecoveryRequest         `json:"unknownRecovery,omitempty"`
 	QuarantineRelease  *QuarantineReleaseRequest       `json:"quarantineRelease,omitempty"`
 	Supervision        *SupervisionRequest             `json:"supervision,omitempty"`
+	RecoveryRetry      *domain.RecoveryRetryRequest    `json:"recoveryRetry,omitempty"`
 }
 
 type localResponse struct {
@@ -204,6 +207,7 @@ type localResponse struct {
 	UnknownRecoveryResponse    *domain.UnknownAssignmentRecoveryDecision `json:"unknownRecoveryResponse,omitempty"`
 	QuarantineReleaseResponse  *domain.QuarantineRelease                 `json:"quarantineReleaseResponse,omitempty"`
 	SupervisionResponse        *SupervisionResponse                      `json:"supervisionResponse,omitempty"`
+	RecoveryRetryResponse      *domain.RecoveryRetryReceipt              `json:"recoveryRetryResponse,omitempty"`
 	Error                      string                                    `json:"error,omitempty"`
 	// ErrorClass lets the server say whether it refused the principal, the
 	// frame or the request itself, so the client does not have to guess a
@@ -477,6 +481,18 @@ func (c LocalClient) ReleaseQuarantine(ctx context.Context, _ Principal, request
 // Supervise sends one supervision operation. The word it travels under is
 // decided by the operation itself, so a read cannot be smuggled in as a
 // decision or the other way round.
+func (c LocalClient) RetryRecovery(ctx context.Context, request domain.RecoveryRetryRequest) (domain.RecoveryRetryReceipt, error) {
+	local := localRequest{Version: LocalTransportVersion, Operation: localOperationRecoveryRetry, RecoveryRetry: &request}
+	var response localResponse
+	if err := c.call(ctx, local, &response); err != nil {
+		return domain.RecoveryRetryReceipt{}, err
+	}
+	if response.RecoveryRetryResponse == nil {
+		return domain.RecoveryRetryReceipt{}, errors.New("local recovery retry returned no response")
+	}
+	return *response.RecoveryRetryResponse, nil
+}
+
 func (c LocalClient) Supervise(ctx context.Context, request SupervisionRequest) (SupervisionResponse, error) {
 	operation := localOperationSupervisionShow
 	if request.Operation.Mutating() {

@@ -70,9 +70,12 @@ func (s *Store) CommitRecoveryRetry(ctx context.Context, request domain.Recovery
 	if request.Diagnostic.StrategyFingerprint != canonicalStrategy {
 		return domain.RecoveryRetryReceipt{}, errors.New("recovery strategy fingerprint is not bound to retained instruction content")
 	}
-	if request.Diagnostic.EvidenceFingerprint == incident.Recovery.Diagnostic.EvidenceFingerprint &&
-		canonicalStrategy == incident.Recovery.Diagnostic.StrategyFingerprint {
-		return domain.RecoveryRetryReceipt{}, errors.New("recovery retry needs substantively changed evidence or strategy")
+	if request.Diagnostic.FailureFingerprint != incident.Recovery.Diagnostic.FailureFingerprint ||
+		request.Diagnostic.EvidenceFingerprint != incident.Recovery.Diagnostic.EvidenceFingerprint {
+		return domain.RecoveryRetryReceipt{}, errors.New("recovery diagnosis is not bound to the current durable failure evidence")
+	}
+	if canonicalStrategy == incident.Recovery.Diagnostic.StrategyFingerprint {
+		return domain.RecoveryRetryReceipt{}, errors.New("recovery retry needs substantively changed retained strategy content")
 	}
 	if err := authorizeRecoveryRetryTx(ctx, tx, request, now); err != nil {
 		return domain.RecoveryRetryReceipt{}, err
