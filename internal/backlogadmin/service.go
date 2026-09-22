@@ -371,6 +371,18 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 	if loaded.supervision, err = s.supervisionSnapshots(ctx, records, workers); err != nil {
 		return view{}, err
 	}
+	if source, ok := s.reader.(interface {
+		ListCurrentActivationDispatchFailures(context.Context, string) ([]domain.ActivationDispatchFailure, error)
+	}); ok {
+		loaded.dispatchFailures = make(map[string][]domain.ActivationDispatchFailure)
+		for _, run := range records.WorkflowRuns {
+			failures, loadErr := source.ListCurrentActivationDispatchFailures(ctx, run.ID)
+			if loadErr != nil {
+				return view{}, loadErr
+			}
+			loaded.dispatchFailures[run.ID] = failures
+		}
+	}
 	if waits, ok := s.reader.(interface {
 		ListTaskWaits(context.Context) ([]domain.TaskWait, error)
 	}); ok {
@@ -440,7 +452,8 @@ type view struct {
 	// supervision is the readiness snapshot of every supervised run in records,
 	// keyed by run ID. An absent run is unsupervised, which is every run on a
 	// coordinator that has never accepted a supervised campaign.
-	supervision map[string]domain.SupervisionSnapshot
+	supervision      map[string]domain.SupervisionSnapshot
+	dispatchFailures map[string][]domain.ActivationDispatchFailure
 	// supervisorClientConfigured is this coordinator's own configuration; see
 	// Service.SetSupervisorClientConfigured.
 	supervisorClientConfigured bool
@@ -952,6 +965,13 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 		}
 	}
 	v.addSupervisionBlocker(&explanation, runID, task)
+	if attempt != nil {
+		for _, failure := range v.dispatchFailures[runID] {
+			if failure.AttemptID == attempt.ID {
+				explanation.Blockers = append(explanation.Blockers, Blocker{Code: "activation-dispatch-failure", Detail: failure.SafeMessage + "; next action: " + failure.NextAction})
+			}
+		}
+	}
 	v.addWorkerBlocker(&explanation, task)
 	v.addRouteBlocker(&explanation, task, attempt)
 	v.addQuotaBlocker(&explanation, task, attempt)
