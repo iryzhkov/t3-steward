@@ -140,6 +140,10 @@ func (c CoordinatorSupervisionStore) CommitSupervisionActivation(ctx context.Con
 }
 
 // AppendSupervisionEvents appends observed triggers and assigns their sequences.
+func (c CoordinatorSupervisionStore) OpenRecoveryIncident(ctx context.Context, request sqlite.RecoveryIncidentRequest) (sqlite.SupervisionDecision, bool, error) {
+	return c.Store.OpenRecoveryIncident(ctx, request)
+}
+
 func (c CoordinatorSupervisionStore) AppendSupervisionEvents(ctx context.Context, runID string, events []SupervisionEvent) (int, error) {
 	rows := make([]sqlite.SupervisionInboxRow, 0, len(events))
 	for _, event := range events {

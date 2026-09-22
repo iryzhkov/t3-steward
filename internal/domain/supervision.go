@@ -219,6 +219,9 @@ type SupervisionConfig struct {
 	ActivationDeadline    time.Duration         `json:"activationDeadline"`
 	IdleEscalationAfter   time.Duration         `json:"idleEscalationAfter,omitempty"`
 	Escalation            SupervisionEscalation `json:"escalation,omitempty"`
+	// Recovery is absent for the review-only v1 contract. Its presence is an
+	// explicit opt-in to the separately routed recovery-v1 contract.
+	Recovery *RecoveryConfig `json:"recovery,omitempty"`
 }
 
 // Validate checks a declared supervision configuration.
@@ -236,6 +239,9 @@ func (c SupervisionConfig) Validate() error {
 		return fmt.Errorf("supervision needs an activation deadline above zero and at most %s", MaxSupervisionActivationDeadline)
 	case c.IdleEscalationAfter < 0 || c.IdleEscalationAfter > MaxSupervisionIdleEscalation:
 		return fmt.Errorf("supervision needs an idle escalation of at most %s", MaxSupervisionIdleEscalation)
+	}
+	if c.Recovery != nil {
+		return c.Recovery.Validate()
 	}
 	return nil
 }
@@ -645,6 +651,9 @@ type ReviewIncident struct {
 	Reason     string             `json:"reason"`
 	Resolution *ResolutionReceipt `json:"resolution,omitempty"`
 	OpenedAt   time.Time          `json:"openedAt"`
+	// Recovery is present only for a task-recovery incident. Gate-review
+	// incidents retain their existing shape and authority.
+	Recovery *RecoveryIncident `json:"recovery,omitempty"`
 }
 
 // containsID is a small shared membership test. The sets involved are task and
