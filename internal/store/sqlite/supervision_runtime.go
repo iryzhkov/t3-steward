@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -250,93 +251,128 @@ func supervisionOutboxRowsTx(ctx context.Context, tx *sql.Tx, runID string) ([]S
 	return rows, cursor.Err()
 }
 
-// TransitionSupervisionOutboxRow fences delivery ownership with a compare and
-// set on the current delivery state, exactly as TransitionNodeWake does. It
-// reports whether this caller won the transition.
+// TransitionSupervisionOutboxRow is the authoritative compare-and-set boundary
+// for delivery. Illegal moves are rejected here rather than trusted to callers.
 func (s *Store) TransitionSupervisionOutboxRow(ctx context.Context, id, from, to string, now time.Time) (bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
+	if !supervisionDeliveryTransitionAllowed(from, to) {
+		return false, fmt.Errorf("invalid supervision delivery transition %s to %s", from, to)
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil { return false, err }
 	defer tx.Rollback()
 	var raw []byte
-	err = tx.QueryRowContext(ctx,
-		"SELECT record FROM coordinator_supervision_outbox WHERE id = ? AND delivery_state = ?", id, from).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("load supervision outbox entry %q: %w", id, err)
-	}
+	err = tx.QueryRowContext(ctx, "SELECT record FROM coordinator_supervision_outbox WHERE id = ? AND delivery_state = ?", id, from).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) { return false, nil }
+	if err != nil { return false, fmt.Errorf("load supervision outbox entry %q: %w", id, err) }
 	var entry map[string]any
-	if err := json.Unmarshal(raw, &entry); err != nil {
-		return false, fmt.Errorf("decode supervision outbox entry %q: %w", id, err)
-	}
+	if err := json.Unmarshal(raw, &entry); err != nil { return false, fmt.Errorf("decode supervision outbox entry %q: %w", id, err) }
 	entry["delivery"] = to
-	if to == "sending" {
+	switch to {
+	case "sending":
+		attempts, _ := entry["attempts"].(float64); entry["attempts"] = attempts + 1
+		entry["lastError"] = ""; entry["nextAction"] = "reconcile the durable delivery receipt"; delete(entry, "nextEligibleAt")
+	case "offline", "busy":
+		entry["lastError"] = "delivery target is " + to
+		entry["nextAction"] = "retry after the target becomes available"
 		attempts, _ := entry["attempts"].(float64)
-		entry["attempts"] = attempts + 1
-	}
-	if to == "delivered" {
-		entry["deliveredAt"] = now.UTC()
+		entry["nextEligibleAt"] = now.UTC().Add(deliveryRetryDelay(int(attempts)))
+	case "recovery-required":
+		entry["lastError"] = "delivery outcome is unknown"
+		entry["nextAction"] = "reconcile the durable receipt; do not resend without known non-effect"
+		delete(entry, "nextEligibleAt")
+	case "delivered":
+		entry["lastError"] = ""; entry["nextAction"] = ""; delete(entry, "nextEligibleAt"); entry["deliveredAt"] = now.UTC()
+	case "rejected":
+		entry["lastError"] = "delivery was rejected"; entry["nextAction"] = "operator action is required"; delete(entry, "nextEligibleAt")
 	}
 	updated, err := json.Marshal(entry)
-	if err != nil {
-		return false, err
-	}
-	result, err := tx.ExecContext(ctx,
-		"UPDATE coordinator_supervision_outbox SET delivery_state = ?, record = ? WHERE id = ? AND delivery_state = ?",
-		to, updated, id, from)
-	if err != nil {
-		return false, fmt.Errorf("transition supervision outbox entry %q: %w", id, err)
-	}
+	if err != nil { return false, err }
+	result, err := tx.ExecContext(ctx, "UPDATE coordinator_supervision_outbox SET delivery_state = ?, record = ? WHERE id = ? AND delivery_state = ?", to, updated, id, from)
+	if err != nil { return false, fmt.Errorf("transition supervision outbox entry %q: %w", id, err) }
 	changed, _ := result.RowsAffected()
-	if changed != 1 {
-		return false, nil
-	}
+	if changed != 1 { return false, nil }
 	return true, tx.Commit()
 }
 
-// PendingSupervisionEscalations lists every escalation of every run that has
-// not been delivered yet, across the whole coordinator, so one delivery loop
-// can drain them the way the node-wait loop drains wakes.
-//
-// A delivered or cancelled entry is not returned: an escalation is deduplicated
-// on its incident, so a re-escalation of the same incident is the same entry and
-// is never sent twice.
+// ClaimSupervisionEscalation freezes the exact message and digest in the same
+// transaction that claims sending ownership.
+func (s *Store) ClaimSupervisionEscalation(ctx context.Context, id, from, payload string, now time.Time) (bool, error) {
+	if !supervisionDeliveryTransitionAllowed(from, "sending") {
+		return false, fmt.Errorf("invalid supervision delivery transition %s to sending", from)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil { return false, err }
+	defer tx.Rollback()
+	var raw []byte
+	err = tx.QueryRowContext(ctx, "SELECT record FROM coordinator_supervision_outbox WHERE id = ? AND delivery_state = ?", id, from).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) { return false, nil }
+	if err != nil { return false, err }
+	var entry map[string]any
+	if err := json.Unmarshal(raw, &entry); err != nil { return false, err }
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(payload)))
+	if frozen, _ := entry["payload"].(string); frozen != "" {
+		frozenDigest, _ := entry["payloadDigest"].(string)
+		if frozen != payload || frozenDigest != digest { return false, fmt.Errorf("claim supervision escalation %q: frozen delivery differs", id) }
+	}
+	entry["payload"] = payload; entry["payloadDigest"] = digest; entry["delivery"] = "sending"
+	attempts, _ := entry["attempts"].(float64); entry["attempts"] = attempts + 1
+	entry["lastError"] = ""; entry["nextAction"] = "reconcile the durable delivery receipt"; delete(entry, "nextEligibleAt")
+	updated, err := json.Marshal(entry)
+	if err != nil { return false, err }
+	result, err := tx.ExecContext(ctx, "UPDATE coordinator_supervision_outbox SET delivery_state='sending', record=? WHERE id=? AND delivery_state=?", updated, id, from)
+	if err != nil { return false, err }
+	changed, _ := result.RowsAffected()
+	if changed != 1 { return false, nil }
+	return true, tx.Commit()
+}
+
+func supervisionDeliveryTransitionAllowed(from, to string) bool {
+	switch from {
+	case "pending":
+		return to == "held" || to == "offline" || to == "busy" || to == "sending" || to == "rejected" || to == "cancelled"
+	case "held", "offline", "busy":
+		return to == "offline" || to == "busy" || to == "sending" || to == "rejected" || to == "cancelled"
+	case "sending":
+		return to == "delivered" || to == "recovery-required" || to == "offline" || to == "rejected"
+	case "recovery-required":
+		return to == "delivered" || to == "offline" || to == "rejected"
+	}
+	return false
+}
+
+// PendingSupervisionEscalations lists every nonterminal escalation, including
+// dry-run holds and known-no-effect retry states, so a live restart can resume it.
 func (s *Store) PendingSupervisionEscalations(ctx context.Context) ([]domain.SupervisionEscalationDelivery, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, run_id, delivery_state, record FROM coordinator_supervision_outbox
-		WHERE delivery_state IN ('pending', 'sending', 'recovery-required') ORDER BY id`)
-	if err != nil {
-		return nil, fmt.Errorf("list pending supervision escalations: %w", err)
-	}
+		WHERE delivery_state IN ('pending', 'held', 'offline', 'busy', 'sending', 'recovery-required') ORDER BY id`)
+	if err != nil { return nil, fmt.Errorf("list pending supervision escalations: %w", err) }
 	defer rows.Close()
 	var pending []domain.SupervisionEscalationDelivery
 	for rows.Next() {
 		var id, runID, delivery string
 		var raw []byte
-		if err := rows.Scan(&id, &runID, &delivery, &raw); err != nil {
-			return nil, err
-		}
+		if err := rows.Scan(&id, &runID, &delivery, &raw); err != nil { return nil, err }
 		var entry struct {
-			Kind       string `json:"kind"`
+			Kind string `json:"kind"`
 			IncidentID string `json:"incidentId"`
-			ThreadID   string `json:"threadId"`
-			Reason     string `json:"reason"`
-			Attempts   int    `json:"attempts"`
+			ThreadID string `json:"threadId"`
+			Reason string `json:"reason"`
+			Attempts int `json:"attempts"`
+			Payload string `json:"payload"`
+			PayloadDigest string `json:"payloadDigest"`
+			LastError string `json:"lastError"`
+			NextAction string `json:"nextAction"`
+			NextEligibleAt *time.Time `json:"nextEligibleAt"`
 		}
-		if err := json.Unmarshal(raw, &entry); err != nil {
-			return nil, fmt.Errorf("decode supervision outbox entry %q: %w", id, err)
-		}
-		if entry.Kind != "escalation" || entry.ThreadID == "" {
-			// A wake is delivered by dispatching the activation as assigned work,
-			// not by messaging a thread.
-			continue
-		}
+		if err := json.Unmarshal(raw, &entry); err != nil { return nil, fmt.Errorf("decode supervision outbox entry %q: %w", id, err) }
+		if entry.Kind != "escalation" || entry.ThreadID == "" { continue }
 		pending = append(pending, domain.SupervisionEscalationDelivery{
 			ID: id, DeliveryID: id, RunID: runID, IncidentID: entry.IncidentID,
 			ThreadID: entry.ThreadID, Reason: entry.Reason, Delivery: delivery, Attempts: entry.Attempts,
+			Payload: entry.Payload, PayloadDigest: entry.PayloadDigest,
+			DeliveryError: entry.LastError, DeliveryNextAction: entry.NextAction,
+			DeliveryNextAttemptAt: entry.NextEligibleAt,
 		})
 	}
 	return pending, rows.Err()
