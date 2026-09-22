@@ -513,22 +513,48 @@ func packageCarriedInputs(task domain.Task, artifacts map[string]domain.Artifact
 	}
 	sort.Strings(producers)
 	result := make([]workerproto.DependencyInput, 0, len(producers))
+	seenPaths := map[string]bool{}
 	for _, producerTaskID := range producers {
 		group := append([]domain.CarriedInput(nil), byProducer[producerTaskID]...)
 		sort.Slice(group, func(i, j int) bool { return group[i].Name < group[j].Name })
-		dependency := workerproto.DependencyInput{TaskID: producerTaskID}
+		dependencyTaskID := producerTaskID
+		if group[0].ProducerNamespace != "" {
+			dependencyTaskID = group[0].ProducerNamespace
+		}
+		dependency := workerproto.DependencyInput{TaskID: dependencyTaskID}
 		for _, carried := range group {
+			if carried.ProducerNamespace != group[0].ProducerNamespace {
+				return nil, fmt.Errorf("carried producer %q mixes dependency namespaces", carried.Producer)
+			}
 			artifact, exists := artifacts[carried.ArtifactID]
 			if !exists {
 				return nil, fmt.Errorf("missing carried input %q from %q", carried.Name, carried.Producer)
 			}
-			object, err := packageArtifact(
-				artifact,
-				"dependencies/"+carried.Producer+"/"+filepath.ToSlash(carried.Name),
-				"dependency",
-			)
+			namespace := carried.ProducerNamespace
+			if namespace == "" {
+				namespace = carried.Producer
+			}
+			path := "dependencies/" + namespace + "/" + filepath.ToSlash(carried.Name)
+			if seenPaths[path] {
+				return nil, fmt.Errorf("duplicate carried input path %q", path)
+			}
+			seenPaths[path] = true
+			object, err := packageArtifact(artifact, path, "dependency")
 			if err != nil {
 				return nil, err
+			}
+			if carried.SourceRunID != "" || carried.SourceAttemptID != "" || carried.SourceArtifactID != "" {
+				if carried.SourceRunID == "" || carried.SourceAttemptID == "" || carried.SourceArtifactID == "" {
+					return nil, fmt.Errorf("carried input %q has incomplete source provenance", carried.Name)
+				}
+				provenance := &workerproto.DependencyProvenance{
+					RunID: carried.SourceRunID, TaskID: carried.ProducerTaskID,
+					AttemptID: carried.SourceAttemptID, ArtifactID: carried.SourceArtifactID,
+				}
+				if dependency.Provenance != nil && *dependency.Provenance != *provenance {
+					return nil, fmt.Errorf("carried producer %q mixes source provenance", carried.Producer)
+				}
+				dependency.Provenance = provenance
 			}
 			dependency.Artifacts = append(dependency.Artifacts, object)
 		}

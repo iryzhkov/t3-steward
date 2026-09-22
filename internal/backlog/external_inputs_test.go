@@ -2,6 +2,8 @@ package backlog
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -67,7 +69,11 @@ func TestRetainExternalInputsPinsExactSuccessfulArtifact(t *testing.T) {
 	}
 	task := target.Tasks[0]
 	if len(task.CarriedInputs) != 1 || task.CarriedInputs[0].ArtifactID != "retained-input" ||
-		task.CarriedInputs[0].Producer != "producer" || task.CarriedInputs[0].Name != "report.txt" {
+		task.CarriedInputs[0].Producer != "producer" || task.CarriedInputs[0].Name != "report.txt" ||
+		task.CarriedInputs[0].ProducerNamespace == "" ||
+		task.CarriedInputs[0].SourceRunID != "source-run" ||
+		task.CarriedInputs[0].SourceAttemptID != "producer-attempt" ||
+		task.CarriedInputs[0].SourceArtifactID != "source-output" {
 		t.Fatalf("carried inputs = %+v", task.CarriedInputs)
 	}
 	if len(task.DependencyInputs) != 0 {
@@ -88,8 +94,41 @@ func TestRetainExternalInputsPinsExactSuccessfulArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(dependencies) != 1 || len(dependencies[0].Artifacts) != 1 ||
-		dependencies[0].Artifacts[0].SHA256 != "abc" {
+		dependencies[0].Artifacts[0].SHA256 != "abc" ||
+		dependencies[0].Provenance == nil ||
+		dependencies[0].Provenance.RunID != "source-run" ||
+		dependencies[0].Provenance.AttemptID != "producer-attempt" ||
+		dependencies[0].Provenance.ArtifactID != "source-output" {
 		t.Fatalf("packaged dependency = %+v", dependencies)
+	}
+}
+
+func TestRetainExternalCampaignCommitKeepsExactProvenance(t *testing.T) {
+	store, manifest, target := externalInputFixture(domain.ProgressSucceeded)
+	store.records.Tasks[0].Outputs = []domain.ArtifactDeclaration{{
+		Name: "implementation", MediaType: "application/json",
+		Commit: &domain.CommitOutput{Revision: "HEAD"},
+	}}
+	source := &store.records.Artifacts[0]
+	source.Name = "implementation"
+	source.MediaType = "application/json"
+	source.SHA256 = "commit-record-digest"
+	source.StoragePath = "objects/commit-record"
+	manifest.Tasks["consumer"].InputsFrom["source-run/producer"] = []string{"implementation"}
+	target.Tasks[0].DependencyInputs["source-run/producer"] = []string{"implementation"}
+	ingester := BundleIngester{Store: store, NewTypedID: func(string) string { return "retained-commit" }}
+	if err := ingester.retainExternalInputs(context.Background(), manifest, &target); err != nil {
+		t.Fatal(err)
+	}
+	dependencies, err := packageDependencies(target.Tasks[0], target.Tasks, mapArtifacts(target.Artifacts), "target-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dependencies) != 1 || dependencies[0].Provenance == nil ||
+		dependencies[0].Provenance.ArtifactID != "source-output" ||
+		dependencies[0].Artifacts[0].SHA256 != "commit-record-digest" ||
+		dependencies[0].Artifacts[0].MediaType != "application/json" {
+		t.Fatalf("packaged campaign commit = %+v", dependencies)
 	}
 }
 
@@ -112,6 +151,94 @@ func TestRetainExternalInputsRefusesFailedOrMismatchedProducer(t *testing.T) {
 	if err := ingester.retainExternalInputs(context.Background(), manifest, &target); err == nil {
 		t.Fatal("undeclared external output was accepted")
 	}
+}
+
+func TestExternalInputsKeepDistinctNamespacesAndProvenanceAcrossRestart(t *testing.T) {
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	source := &externalInputStore{}
+	manifest := Manifest{Tasks: map[string]ManifestTask{"consumer": {
+		InputsFrom: map[string][]string{
+			"run-a/build": {"result.txt"},
+			"run-b/build": {"result.txt"},
+		},
+	}}}
+	target := sqlite.CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{{ID: "target-run", WorkflowID: "target-workflow"}},
+		Tasks:        []domain.Task{{ID: "consumer-id", WorkflowID: "target-workflow", Name: "consumer"}},
+	}
+	for _, suffix := range []string{"a", "b"} {
+		runID, taskID, attemptID, artifactID := "run-"+suffix, "task-"+suffix, "attempt-"+suffix, "artifact-"+suffix
+		source.records.WorkflowRuns = append(source.records.WorkflowRuns, domain.WorkflowRun{
+			ID: runID, WorkflowID: "workflow-" + suffix, Progress: domain.ProgressSucceeded,
+		})
+		source.records.Tasks = append(source.records.Tasks, domain.Task{
+			ID: taskID, WorkflowID: "workflow-" + suffix, Name: "build",
+			Outputs: []domain.ArtifactDeclaration{{Name: "result.txt", MediaType: "text/plain"}},
+		})
+		source.records.Attempts = append(source.records.Attempts, domain.Attempt{
+			ID: attemptID, WorkflowRunID: runID, TaskID: taskID, Number: 1,
+			Revision: 1, Progress: domain.ProgressSucceeded, Control: domain.ControlStopped,
+		})
+		source.records.Artifacts = append(source.records.Artifacts, domain.Artifact{
+			ID: artifactID, WorkflowRunID: runID, TaskID: taskID, AttemptID: attemptID,
+			Kind: domain.ArtifactOutput, Name: "result.txt", MediaType: "text/plain",
+			Size: 1, SHA256: "digest-" + suffix, StoragePath: "objects/" + suffix,
+			CreatedAt: now,
+		})
+	}
+	next := 0
+	ingester := BundleIngester{Store: source, NewTypedID: func(string) string {
+		next++
+		return fmt.Sprintf("input-%d", next)
+	}}
+	if err := ingester.retainExternalInputs(context.Background(), manifest, &target); err != nil {
+		t.Fatal(err)
+	}
+	dependencies, err := packageDependencies(target.Tasks[0], target.Tasks, mapArtifacts(target.Artifacts), "target-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dependencies) != 2 || dependencies[0].Artifacts[0].Path == dependencies[1].Artifacts[0].Path {
+		t.Fatalf("external package paths collide: %+v", dependencies)
+	}
+	for _, dependency := range dependencies {
+		if dependency.Provenance == nil || dependency.Provenance.RunID == "" ||
+			dependency.Provenance.AttemptID == "" || dependency.Provenance.ArtifactID == "" {
+			t.Fatalf("missing package provenance: %+v", dependency)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := sqlite.OpenMigrated(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveCoordinatorRecords(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = sqlite.OpenMigrated(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	reopened, err := store.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := domain.TasksForRun(reopened.WorkflowRuns[0], reopened.Tasks)[0].CarriedInputs
+	if len(got) != 2 || got[0].SourceRunID == "" || got[1].SourceRunID == "" {
+		t.Fatalf("reopened provenance = %+v", got)
+	}
+}
+
+func mapArtifacts(values []domain.Artifact) map[string]domain.Artifact {
+	result := make(map[string]domain.Artifact, len(values))
+	for _, artifact := range values {
+		result[artifact.ID] = artifact
+	}
+	return result
 }
 
 func TestManifestExternalInputsValidateShapeWithoutGuessingOutputs(t *testing.T) {

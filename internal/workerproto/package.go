@@ -80,9 +80,17 @@ func (i ExecutionIdentity) TaskEnvironment() map[string]string {
 	}
 }
 
+type DependencyProvenance struct {
+	RunID      string `json:"runId"`
+	TaskID     string `json:"taskId"`
+	AttemptID  string `json:"attemptId"`
+	ArtifactID string `json:"artifactId"`
+}
+
 type DependencyInput struct {
-	TaskID    string           `json:"taskId"`
-	Artifacts []ArtifactObject `json:"artifacts"`
+	TaskID     string                `json:"taskId"`
+	Provenance *DependencyProvenance `json:"provenance,omitempty"`
+	Artifacts  []ArtifactObject      `json:"artifacts"`
 }
 
 // Package capabilities name behaviour a worker must implement to execute a
@@ -281,6 +289,12 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 			return errors.New("execution package: duplicate dependency task")
 		}
 		dependencies[dependency.TaskID] = struct{}{}
+		if provenance := dependency.Provenance; provenance != nil {
+			if strings.TrimSpace(provenance.RunID) == "" || strings.TrimSpace(provenance.TaskID) == "" ||
+				strings.TrimSpace(provenance.AttemptID) == "" || strings.TrimSpace(provenance.ArtifactID) == "" {
+				return errors.New("execution package: invalid dependency provenance")
+			}
+		}
 		for _, artifact := range dependency.Artifacts {
 			if err := validatePackageArtifact(artifact, pkg.Limits.MaxArtifactBytes, paths); err != nil {
 				return fmt.Errorf("execution package: dependency input: %w", err)
