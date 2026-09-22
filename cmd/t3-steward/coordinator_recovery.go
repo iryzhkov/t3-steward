@@ -180,9 +180,7 @@ func (c coordinatorSupervision) recoverySupportedWait(
 		if wait.Live() {
 			return "repair attempt is deliberately parked on a task-bound external wait", nil
 		}
-		if wait.Settled() && !wait.Woken() {
-			return "repair attempt has a settled external effect awaiting durable wake delivery", nil
-		}
+
 	}
 	for _, assignment := range records.Assignments {
 		if assignment.AttemptID != attempt.ID {
@@ -199,22 +197,98 @@ func (c coordinatorSupervision) recoverySupportedWait(
 				(assignment.State == domain.AssignmentOffered || assignment.State == domain.AssignmentClaimed) {
 				return "repair diagnosis has an active supervision assignment", nil
 			}
-			switch state.Activation.State {
-			case "", domain.ActivationIdle, domain.ActivationPendingDispatch:
-				return "repair diagnosis is durably queued for quota and executor capacity admission", nil
+			if state.Activation.State == "" || state.Activation.State == domain.ActivationIdle ||
+				state.Activation.State == domain.ActivationPendingDispatch {
+				blocked, reason, blockErr := c.recoveryDispatchBlocked(ctx, runID, incident.ID, state, records)
+				if blockErr != nil {
+					return "", blockErr
+				}
+				if blocked {
+					return reason, nil
+				}
 			}
 		}
 		if err != nil && !errors.Is(err, backlog.ErrSupervisionNotConfigured) {
 			return "", err
 		}
 	}
-	switch attempt.Progress {
-	case domain.ProgressQueued, domain.ProgressBlocked, domain.ProgressReady:
-		return "repair attempt is awaiting scheduler dependency, quota, or executor capacity admission", nil
-	case domain.ProgressWaitingExternal:
-		return "repair attempt is awaiting a durable external effect", nil
-	}
 	return "", nil
+}
+
+func (c coordinatorSupervision) recoveryDispatchBlocked(
+	ctx context.Context,
+	runID string,
+	incidentID string,
+	state backlog.SupervisionActivationState,
+	records sqlite.CoordinatorRecords,
+) (bool, string, error) {
+	pendingRepair := false
+	for _, event := range repairSupervisionEvents(state.Pending) {
+		if event.IncidentID == incidentID {
+			pendingRepair = true
+			break
+		}
+	}
+	if !pendingRepair {
+		return false, "", nil
+	}
+	var route domain.ProviderRoute
+	for _, run := range records.WorkflowRuns {
+		if run.ID == runID && run.Supervision != nil && run.Supervision.Config.Recovery != nil {
+			route = run.Supervision.Config.Recovery.Route
+			break
+		}
+	}
+	if route.ProviderInstanceID == "" || route.QuotaPoolID == "" {
+		return false, "", nil
+	}
+	quotaOpen := false
+	for _, pool := range records.QuotaPools {
+		if pool.ID != route.QuotaPoolID {
+			continue
+		}
+		if pool.Admission != domain.AdmissionOpen ||
+			(pool.MaxConcurrent > 0 && pool.ActiveAssignments >= pool.MaxConcurrent) {
+			return true, "repair trigger is durably queued behind a closed or exhausted quota pool", nil
+		}
+		quotaOpen = true
+		break
+	}
+	if !quotaOpen || c.workers == nil {
+		return false, "", nil
+	}
+	workers, err := c.workers(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	now := time.Now().UTC()
+	if c.now != nil {
+		now = c.now().UTC()
+	}
+	capacity := make([]domain.WorkerSnapshot, 0, len(workers))
+	for _, worker := range workers {
+		available, capacityErr := c.store.ExecutorSlotAvailable(ctx, worker.WorkerID, now)
+		if capacityErr != nil {
+			if errors.Is(capacityErr, sqlite.ErrExecutorCapacityEvidence) {
+				continue
+			}
+			return false, "", capacityErr
+		}
+		if available {
+			capacity = append(capacity, worker)
+		}
+	}
+	_, err = backlog.PlaceActivation(backlog.ActivationPlacementRequest{
+		Route: route, Workers: capacity, Epoch: c.settings.CoordinatorEpoch, Now: now,
+		Admission: backlog.WorkerAdmissionPolicy{OpenQuotaPools: map[string]struct{}{route.QuotaPoolID: {}}},
+	})
+	if errors.Is(err, backlog.ErrActivationUnplaceable) {
+		return true, "repair trigger is durably queued without a capable worker executor slot", nil
+	}
+	if err != nil {
+		return false, "", err
+	}
+	return false, "", nil
 }
 
 func recoveryFailureEvidence(attempt domain.Attempt, artifacts []domain.ArtifactDigest) (string, string) {

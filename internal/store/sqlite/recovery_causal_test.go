@@ -48,7 +48,7 @@ func TestRecoveryRetriesAdvanceOneEpisodeToBoundedExhaustion(t *testing.T) {
 		{ID: "repair-1", WorkflowRunID: "run", TaskID: "task", AttemptID: "attempt-1", Kind: domain.ArtifactCheckpoint, Name: "repair-1.md", SHA256: "strategy-one", Size: 1, MediaType: "text/markdown", StoragePath: "objects/one", CreatedAt: now},
 		{ID: "repair-2", WorkflowRunID: "run", TaskID: "task", AttemptID: "attempt-1", Kind: domain.ArtifactCheckpoint, Name: "repair-2.md", SHA256: "strategy-two", Size: 1, MediaType: "text/markdown", StoragePath: "objects/two", CreatedAt: now},
 	}
-	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Tasks: []domain.Task{{ID: "task", WorkflowID: "workflow-run", Name: "task", Class: domain.TaskClassRequired}}, Artifacts: artifacts}); err != nil {
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Tasks: []domain.Task{{ID: "task", WorkflowID: "workflow-run", Name: "task", Class: domain.TaskClassRequired}}}); err != nil {
 		t.Fatal(err)
 	}
 	expires := now.Add(time.Hour)
@@ -56,11 +56,13 @@ func TestRecoveryRetriesAdvanceOneEpisodeToBoundedExhaustion(t *testing.T) {
 	insertRecoveryActivation(t, store, activation1)
 	makeRequest := func(operation string, activation domain.Activation, source string, sourceRevision, incidentRevision int64, artifact domain.Artifact, failure, evidence string) domain.RecoveryRetryRequest {
 		digest := domain.ArtifactDigest{ArtifactID: artifact.ID, Digest: artifact.SHA256}
-		return domain.RecoveryRetryRequest{OperationID: operation, RunID: "run", IncidentID: "incident", ExpectedIncidentRevision: incidentRevision, GraphRevision: 1,
+		request := domain.RecoveryRetryRequest{OperationID: operation, RunID: "run", IncidentID: "incident", ExpectedIncidentRevision: incidentRevision, GraphRevision: 1,
 			ActivationID: activation.ID, ActivationEpoch: activation.Epoch, Principal: activation.Principal,
 			SourceAttemptID: source, SourceAttemptRevision: sourceRevision, InstructionArtifact: digest,
 			Diagnostic:  domain.RecoveryDiagnosticIdentity{FailureFingerprint: failure, EvidenceFingerprint: evidence, StrategyFingerprint: domain.RecoveryStrategyFingerprint(digest, nil)},
 			RequestedAt: now.Add(time.Minute)}
+		prepareImportedRecoveryProposal(t, store, &request, activation, now)
+		return request
 	}
 	first, err := store.CommitRecoveryRetry(ctx, makeRequest("retry-1", activation1, "attempt-1", 1, 1, artifacts[0], "failure-1", "evidence-1"))
 	if err != nil {

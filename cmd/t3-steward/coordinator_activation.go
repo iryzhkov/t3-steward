@@ -366,7 +366,12 @@ func activationDispatchAge(state backlog.SupervisionActivationState, signal back
 				state.Activation.DispatchIdentity, nil
 		}
 	}
-	inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, state.Record.EventCursor, reviewerSupervisionEvents(state.Pending))
+	purpose := signal.Purpose
+	if purpose == "" && signal.Event == domain.ActivationEventDispatchUndelivered {
+		purpose = state.Activation.Purpose
+	}
+	cursor, events := activationPurposeEvents(state, purpose)
+	inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, cursor, events)
 	if len(inbox.Events) != 0 {
 		return inbox.Events[0].OccurredAt.UTC(), inbox.Events[0].ID, nil
 	}
@@ -519,15 +524,10 @@ func (c coordinatorSupervision) activationSignal(
 	// be reviewed. CommitRecoveryRetry acknowledges the repair purpose, after
 	// which a later review event may dispatch an independent reviewer.
 	purpose := domain.RecoveryActivationPurpose("")
-	cursor := state.Record.EventCursor
-	events := reviewerSupervisionEvents(state.Pending)
-	if state.Record.Config.Recovery != nil {
-		if repairs := repairSupervisionEvents(state.Pending); len(repairs) != 0 {
-			purpose = domain.RecoveryActivationRepair
-			cursor = 0
-			events = repairs
-		}
+	if state.Record.Config.Recovery != nil && len(repairSupervisionEvents(state.Pending)) != 0 {
+		purpose = domain.RecoveryActivationRepair
 	}
+	cursor, events := activationPurposeEvents(state, purpose)
 	inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, cursor, events)
 	if !inbox.NonEmpty() || state.OtherValidActivation {
 		return signal, false, nil
@@ -556,6 +556,13 @@ func (c coordinatorSupervision) activationSignal(
 		signal.Reason = fmt.Sprintf("%d supervision event(s) are waiting for review", len(inbox.EventIDs()))
 	}
 	return signal, true, nil
+}
+
+func activationPurposeEvents(state backlog.SupervisionActivationState, purpose domain.RecoveryActivationPurpose) (int64, []backlog.SupervisionEvent) {
+	if purpose == domain.RecoveryActivationRepair {
+		return 0, repairSupervisionEvents(state.Pending)
+	}
+	return state.Record.EventCursor, reviewerSupervisionEvents(state.Pending)
 }
 
 func repairSupervisionEvents(events []backlog.SupervisionEvent) []backlog.SupervisionEvent {

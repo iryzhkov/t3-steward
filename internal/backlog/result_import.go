@@ -192,6 +192,16 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		if requestErr != nil {
 			return report, requestErr
 		}
+		for _, artifact := range report.Artifacts {
+			if artifact.Name == "recovery/proposal.json" {
+				request.ProposalReceipt = domain.RecoveryProposalReceipt{
+					ProposalArtifact:    domain.ArtifactDigest{ArtifactID: artifact.ID, Digest: artifact.SHA256},
+					ActivationAttemptID: attempt.ID,
+					AssignmentID:        assignment.ID, AssignmentEpoch: assignment.Epoch,
+				}
+				break
+			}
+		}
 		receipt, commitErr := i.Store.CommitRecoveryRetry(ctx, request)
 		if commitErr != nil {
 			return report, fmt.Errorf("result import recovery proposal: %w", commitErr)

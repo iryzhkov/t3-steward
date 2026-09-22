@@ -113,6 +113,13 @@ type RepairAttemptSupplement struct {
 	CreatedAt           time.Time                  `json:"createdAt"`
 }
 
+type RecoveryProposalReceipt struct {
+	ProposalArtifact    ArtifactDigest `json:"proposalArtifact"`
+	ActivationAttemptID string         `json:"activationAttemptId"`
+	AssignmentID        string         `json:"assignmentId"`
+	AssignmentEpoch     int64          `json:"assignmentEpoch"`
+}
+
 type RecoveryRetryRequest struct {
 	OperationID              string                     `json:"operationId"`
 	RunID                    string                     `json:"runId"`
@@ -121,12 +128,15 @@ type RecoveryRetryRequest struct {
 	GraphRevision            int64                      `json:"graphRevision"`
 	ActivationID             string                     `json:"activationId"`
 	ActivationEpoch          int64                      `json:"activationEpoch"`
+	AssignmentID             string                     `json:"assignmentId"`
+	AssignmentEpoch          int64                      `json:"assignmentEpoch"`
 	Principal                string                     `json:"principal"`
 	SourceAttemptID          string                     `json:"sourceAttemptId"`
 	SourceAttemptRevision    int64                      `json:"sourceAttemptRevision"`
 	InstructionArtifact      ArtifactDigest             `json:"instructionArtifact"`
 	CheckpointArtifacts      []ArtifactDigest           `json:"checkpointArtifacts,omitempty"`
 	Diagnostic               RecoveryDiagnosticIdentity `json:"diagnostic"`
+	ProposalReceipt          RecoveryProposalReceipt    `json:"proposalReceipt"`
 	RequestedAt              time.Time                  `json:"requestedAt"`
 }
 
@@ -201,7 +211,8 @@ func (p RecoveryProposal) RetryRequest() (RecoveryRetryRequest, error) {
 	return RecoveryRetryRequest{
 		OperationID: p.OperationID, RunID: p.RunID, IncidentID: p.IncidentID,
 		ExpectedIncidentRevision: p.ExpectedIncidentRevision, GraphRevision: p.GraphRevision,
-		ActivationID: p.ActivationID, ActivationEpoch: p.ActivationEpoch, Principal: p.Principal,
+		ActivationID: p.ActivationID, ActivationEpoch: p.ActivationEpoch,
+		AssignmentID: p.AssignmentID, AssignmentEpoch: p.AssignmentEpoch, Principal: p.Principal,
 		SourceAttemptID: p.SourceAttemptID, SourceAttemptRevision: p.SourceAttemptRevision,
 		InstructionArtifact: p.InstructionArtifact, CheckpointArtifacts: append([]ArtifactDigest(nil), p.CheckpointArtifacts...),
 		Diagnostic: p.Diagnostic, RequestedAt: p.ProposedAt,

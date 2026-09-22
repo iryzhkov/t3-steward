@@ -28,8 +28,14 @@ func (s *Store) CommitRecoveryRetry(ctx context.Context, request domain.Recovery
 	if strings.TrimSpace(request.OperationID) == "" || strings.TrimSpace(request.RunID) == "" ||
 		strings.TrimSpace(request.IncidentID) == "" || request.ExpectedIncidentRevision < 1 || request.GraphRevision < 1 ||
 		strings.TrimSpace(request.ActivationID) == "" || request.ActivationEpoch < 1 ||
+		strings.TrimSpace(request.AssignmentID) == "" || request.AssignmentEpoch < 1 ||
 		strings.TrimSpace(request.Principal) == "" || strings.TrimSpace(request.SourceAttemptID) == "" ||
 		request.SourceAttemptRevision < 1 || request.RequestedAt.IsZero() ||
+		strings.TrimSpace(request.ProposalReceipt.ProposalArtifact.ArtifactID) == "" ||
+		strings.TrimSpace(request.ProposalReceipt.ProposalArtifact.Digest) == "" ||
+		strings.TrimSpace(request.ProposalReceipt.ActivationAttemptID) == "" ||
+		request.ProposalReceipt.AssignmentID != request.AssignmentID ||
+		request.ProposalReceipt.AssignmentEpoch != request.AssignmentEpoch ||
 		strings.TrimSpace(request.InstructionArtifact.ArtifactID) == "" || strings.TrimSpace(request.InstructionArtifact.Digest) == "" ||
 		strings.TrimSpace(request.Diagnostic.FailureFingerprint) == "" ||
 		strings.TrimSpace(request.Diagnostic.EvidenceFingerprint) == "" ||
@@ -77,7 +83,8 @@ func (s *Store) CommitRecoveryRetry(ctx context.Context, request domain.Recovery
 	if canonicalStrategy == incident.Recovery.Diagnostic.StrategyFingerprint {
 		return domain.RecoveryRetryReceipt{}, errors.New("recovery retry needs substantively changed retained strategy content")
 	}
-	if err := authorizeRecoveryRetryTx(ctx, tx, request, now); err != nil {
+	producer, err := authorizeRecoveryRetryTx(ctx, tx, request, now)
+	if err != nil {
 		return domain.RecoveryRetryReceipt{}, err
 	}
 	source, err := loadAttemptTx(ctx, tx, request.SourceAttemptID)
@@ -97,11 +104,17 @@ func (s *Store) CommitRecoveryRetry(ctx context.Context, request domain.Recovery
 		WHERE workflow_run_id = ? AND task_id = ? ORDER BY number DESC LIMIT 1`, request.RunID, source.TaskID).Scan(&latestID); err != nil || latestID != source.ID {
 		return domain.RecoveryRetryReceipt{}, fmt.Errorf("%w: recovery source is no longer latest", ErrSupervisionRequestConflict)
 	}
-	if err := requireRecoveryArtifactTx(ctx, tx, request.RunID, request.InstructionArtifact); err != nil {
+	if err := requireRecoveryArtifactTx(ctx, tx, request.RunID, request.ProposalReceipt.ProposalArtifact,
+		"recovery/proposal.json", domain.ArtifactInput, "application/json", producer, request.ProposalReceipt.ActivationAttemptID); err != nil {
+		return domain.RecoveryRetryReceipt{}, err
+	}
+	if err := requireRecoveryArtifactTx(ctx, tx, request.RunID, request.InstructionArtifact,
+		"recovery/instructions.md", domain.ArtifactInput, "text/markdown", producer, request.ProposalReceipt.ActivationAttemptID); err != nil {
 		return domain.RecoveryRetryReceipt{}, err
 	}
 	for _, artifact := range request.CheckpointArtifacts {
-		if err := requireRecoveryArtifactTx(ctx, tx, request.RunID, artifact); err != nil {
+		if err := requireRecoveryArtifactTx(ctx, tx, request.RunID, artifact,
+			"recovery/checkpoint.tar", domain.ArtifactCheckpoint, "application/x-tar", producer, request.ProposalReceipt.ActivationAttemptID); err != nil {
 			return domain.RecoveryRetryReceipt{}, err
 		}
 	}
@@ -188,27 +201,27 @@ func loadRecoveryRetryIncidentTx(ctx context.Context, tx *sql.Tx, request domain
 	return incident, nil
 }
 
-func authorizeRecoveryRetryTx(ctx context.Context, tx *sql.Tx, request domain.RecoveryRetryRequest, now time.Time) error {
+func authorizeRecoveryRetryTx(ctx context.Context, tx *sql.Tx, request domain.RecoveryRetryRequest, now time.Time) (string, error) {
 	var raw []byte
 	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_supervision_activations WHERE id = ? AND run_id = ?",
 		request.ActivationID, request.RunID).Scan(&raw); err != nil {
-		return err
+		return "", err
 	}
 	var activation domain.Activation
 	if err := json.Unmarshal(raw, &activation); err != nil {
-		return err
+		return "", err
 	}
 	var supervisionRaw, runRaw []byte
 	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_supervision WHERE run_id = ?", request.RunID).Scan(&supervisionRaw); err != nil {
-		return err
+		return "", err
 	}
 	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_workflow_runs WHERE id = ?", request.RunID).Scan(&runRaw); err != nil {
-		return err
+		return "", err
 	}
 	var supervision domain.SupervisionRecord
 	var run domain.WorkflowRun
 	if json.Unmarshal(supervisionRaw, &supervision) != nil || json.Unmarshal(runRaw, &run) != nil {
-		return errors.New("repair executor authority state is invalid")
+		return "", errors.New("repair executor authority state is invalid")
 	}
 	recovery := supervision.Config.Recovery
 	liveLease := activation.State == domain.ActivationActive && activation.LeaseToken != "" && activation.LeaseExpiresAt != nil &&
@@ -218,9 +231,24 @@ func authorizeRecoveryRetryTx(ctx context.Context, tx *sql.Tx, request domain.Re
 		activation.Principal != request.Principal || activation.Epoch != request.ActivationEpoch ||
 		activation.Epoch != supervision.ActivationEpoch || recovery == nil ||
 		activation.Principal == "" {
-		return errors.New("repair executor authority is stale or out of scope")
+		return "", errors.New("repair executor authority is stale or out of scope")
 	}
-	return nil
+	assignment, err := loadAssignmentTx(ctx, tx, request.AssignmentID)
+	if err != nil {
+		return "", err
+	}
+	activationAttempt, err := loadAttemptTx(ctx, tx, request.ProposalReceipt.ActivationAttemptID)
+	if err != nil {
+		return "", err
+	}
+	if assignment.ID != request.ProposalReceipt.AssignmentID || assignment.Epoch != request.AssignmentEpoch ||
+		assignment.AttemptID != activationAttempt.ID || activationAttempt.AssignmentID != assignment.ID ||
+		activationAttempt.WorkflowRunID != request.RunID ||
+		activationAttempt.SupervisionActivationID != request.ActivationID ||
+		activationAttempt.SupervisionActivationEpoch != request.ActivationEpoch {
+		return "", errors.New("recovery proposal receipt is not bound to the activation assignment")
+	}
+	return "worker:" + assignment.WorkerID, nil
 }
 
 func recoveryRetryProgressTx(ctx context.Context, tx *sql.Tx, runID, taskID string) (domain.ProgressState, error) {
@@ -249,12 +277,25 @@ func recoveryRetryProgressTx(ctx context.Context, tx *sql.Tx, runID, taskID stri
 	return domain.ProgressReady, nil
 }
 
-func requireRecoveryArtifactTx(ctx context.Context, tx *sql.Tx, runID string, digest domain.ArtifactDigest) error {
-	var stored string
-	err := tx.QueryRowContext(ctx, "SELECT sha256 FROM coordinator_artifacts WHERE id = ? AND workflow_run_id = ?",
-		digest.ArtifactID, runID).Scan(&stored)
-	if err != nil || stored != digest.Digest {
-		return fmt.Errorf("recovery artifact %q is unavailable or changed", digest.ArtifactID)
+func requireRecoveryArtifactTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	runID string,
+	digest domain.ArtifactDigest,
+	name string,
+	kind domain.ArtifactKind,
+	mediaType string,
+	producer string,
+	attemptID string,
+) error {
+	var raw []byte
+	err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_artifacts WHERE id = ? AND workflow_run_id = ?",
+		digest.ArtifactID, runID).Scan(&raw)
+	var artifact domain.Artifact
+	if err != nil || json.Unmarshal(raw, &artifact) != nil ||
+		artifact.SHA256 != digest.Digest || artifact.Name != name || artifact.Kind != kind ||
+		artifact.MediaType != mediaType || artifact.Producer != producer || artifact.AttemptID != attemptID {
+		return fmt.Errorf("recovery artifact %q is unavailable or has mismatched custody provenance", digest.ArtifactID)
 	}
 	return nil
 }
