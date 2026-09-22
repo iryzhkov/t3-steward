@@ -10,6 +10,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
+	waitdelivery "github.com/iryzhkov/t3-steward/internal/wait"
 )
 
 func TestNodeWakeUsesObservableStableMessageIdentity(t *testing.T) {
@@ -48,5 +49,9 @@ func TestNodeWakeUsesObservableStableMessageIdentity(t *testing.T) {
 	found, err = control.ObserveNodeWake(context.Background(), "thread", "other")
 	if err != nil || found {
 		t.Fatal(found, err)
+	}
+	status, err := control.ReconcileNodeWake(context.Background(), "thread", "other")
+	if err != nil || status != waitdelivery.WakeReceiptUnknown {
+		t.Fatalf("bounded-history absence = %q, %v; want unknown", status, err)
 	}
 }

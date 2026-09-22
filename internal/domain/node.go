@@ -303,7 +303,17 @@ type NodeWait struct {
 	Observation        *NodeObservation `json:"observation,omitempty"`
 	SettledAt          *time.Time       `json:"settledAt,omitempty"`
 	DeliveryID         string           `json:"deliveryId"`
-	// pending, held, sending, recovery-required, delivered or cancelled.
+	// The exact payload, digest, and wake-all membership are frozen before the
+	// durable sending claim. Recovery must use these bytes and identity.
+	DeliveryPayload       string     `json:"deliveryPayload,omitempty"`
+	DeliveryPayloadDigest string     `json:"deliveryPayloadDigest,omitempty"`
+	DeliveryGroupMembers  []string   `json:"deliveryGroupMembers,omitempty"`
+	DeliveryError         string     `json:"deliveryError,omitempty"`
+	DeliveryNextAction    string     `json:"deliveryNextAction,omitempty"`
+	DeliveryAttempts      int        `json:"deliveryAttempts,omitempty"`
+	DeliveryNextAttemptAt *time.Time `json:"deliveryNextAttemptAt,omitempty"`
+	// pending, held, offline, busy, sending, recovery-required, delivered,
+	// rejected or cancelled.
 	Delivery    string     `json:"delivery"`
 	DeliveredAt *time.Time `json:"deliveredAt,omitempty"`
 }

@@ -35,6 +35,40 @@ type NodeControl interface {
 	SendNodeWake(context.Context, domain.Thread, string, string) error
 }
 
+// WakeReceiptStatus distinguishes authoritative evidence from a bounded,
+// inconclusive observation. Unknown never authorizes another send.
+type WakeReceiptStatus string
+
+const (
+	WakeReceiptDelivered     WakeReceiptStatus = "delivered"
+	WakeReceiptRejected      WakeReceiptStatus = "rejected"
+	WakeReceiptKnownNoEffect WakeReceiptStatus = "known-no-effect"
+	WakeReceiptUnknown       WakeReceiptStatus = "unknown"
+)
+
+// NodeWakeReceiptControl is implemented only by transports that can state the
+// strength of their receipt evidence.
+type NodeWakeReceiptControl interface {
+	ReconcileNodeWake(context.Context, string, string) (WakeReceiptStatus, error)
+}
+
+func reconcileNodeWake(ctx context.Context, control NodeControl, threadID, deliveryID string) (WakeReceiptStatus, error) {
+	if receipts, ok := control.(NodeWakeReceiptControl); ok {
+		return receipts.ReconcileNodeWake(ctx, threadID, deliveryID)
+	}
+	found, err := control.ObserveNodeWake(ctx, threadID, deliveryID)
+	if found {
+		return WakeReceiptDelivered, err
+	}
+	return WakeReceiptUnknown, err
+}
+
+// NodeGroupClaimer atomically freezes an exact payload and every wake-all
+// member represented by that one external effect.
+type NodeGroupClaimer interface {
+	ClaimNodeWakeGroup(ctx context.Context, leaderID, from, deliveryID, payload string, memberIDs []string, now time.Time) (bool, error)
+}
+
 // nodeWakeProse is the human part of a node or quota wake, after the trailer.
 func nodeWakeProse(w domain.NodeWait) string {
 	if w.Request.Quota != nil {
@@ -64,13 +98,10 @@ func nodeWakeObservation(w domain.NodeWait) string {
 	}
 }
 
-// tickNodes never repeats an uncertain external send. The durable sending state
-// survives a crash before or after Dispatch. Only positive message evidence
-// resolves it; absence in a bounded read is not proof of non-delivery.
+// tickNodes owns durable node-wake delivery. It freezes the exact external
+// effect before sending, retries only outcomes known to have had no effect, and
+// never treats absence from a bounded observation window as non-delivery.
 func (r *Runner) tickNodes(ctx context.Context) {
-	// A configured transport wins over the local store. On a host that runs no
-	// coordinator the local store answers this interface and holds no node
-	// waits at all, so preferring it would deliver nothing and say nothing.
 	store := r.NodeStore
 	if store == nil {
 		local, ok := r.store.(NodeStore)
@@ -79,7 +110,8 @@ func (r *Runner) tickNodes(ctx context.Context) {
 		}
 		store = local
 	}
-	if err := store.SettleNodeWaits(ctx, r.now()); err != nil {
+	now := r.now()
+	if err := store.SettleNodeWaits(ctx, now); err != nil {
 		logFailure(ctx, r.log, "settle node waits", err, "error", err)
 		return
 	}
@@ -101,32 +133,30 @@ func (r *Runner) tickNodes(ctx context.Context) {
 	}
 	groups := nodeWaitGroups(waits, host)
 	for _, w := range waits {
-		if w.Host != host {
-			continue
-		}
-		if w.SettledAt == nil || w.Delivery == "delivered" || w.Delivery == "cancelled" {
+		if w.Host != host || w.SettledAt == nil || w.Delivery == "delivered" || w.Delivery == "rejected" || w.Delivery == "cancelled" {
 			continue
 		}
 		members, grouped := groups[nodeGroupKey(w)]
-		if grouped {
-			// A --wake all group wakes once, with one message, when every member
-			// has settled; the earliest member carries the send and the others
-			// are marked delivered with it.
-			if !nodeGroupSettled(members) || members[0].Request.ID != w.Request.ID {
-				continue
-			}
+		if grouped && w.Delivery != "sending" && w.Delivery != "recovery-required" &&
+			(!nodeGroupSettled(members) || members[0].Request.ID != w.Request.ID) {
+			continue
 		}
 		if w.Delivery == "sending" || w.Delivery == "recovery-required" {
-			found, err := control.ObserveNodeWake(ctx, w.Request.ThreadID, w.DeliveryID)
-			if err != nil {
+			status, observeErr := reconcileNodeWake(ctx, control, w.Request.ThreadID, w.DeliveryID)
+			if observeErr != nil {
 				continue
 			}
 			to := "recovery-required"
-			if found {
+			switch status {
+			case WakeReceiptDelivered:
 				to = "delivered"
+			case WakeReceiptRejected:
+				to = "rejected"
+			case WakeReceiptKnownNoEffect:
+				to = "offline"
 			}
 			if to != w.Delivery {
-				if _, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, to, r.now()); err != nil {
+				if _, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, to, now); err != nil {
 					logNodeWakeTransition(ctx, r, w.Request.ID, w.Delivery, to, host, err)
 				}
 			}
@@ -134,61 +164,82 @@ func (r *Runner) tickNodes(ctx context.Context) {
 		}
 		if r.NodeDryRun {
 			if w.Delivery == "pending" {
-				if _, err := store.TransitionNodeWake(ctx, w.Request.ID, "pending", "held", r.now()); err != nil {
+				if _, err := store.TransitionNodeWake(ctx, w.Request.ID, "pending", "held", now); err != nil {
 					logNodeWakeTransition(ctx, r, w.Request.ID, "pending", "held", host, err)
 				}
 			}
 			continue
 		}
-		thread, err := r.control.GetThread(ctx, w.Request.ThreadID)
-		if err != nil || thread == nil || thread.ArchivedAt != nil {
+		if w.DeliveryNextAttemptAt != nil && now.Before(*w.DeliveryNextAttemptAt) {
+			continue
+		}
+		thread, getErr := r.control.GetThread(ctx, w.Request.ThreadID)
+		if getErr != nil || thread == nil {
+			if w.Delivery != "offline" {
+				if _, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "offline", now); err != nil {
+					logNodeWakeTransition(ctx, r, w.Request.ID, w.Delivery, "offline", host, err)
+				}
+			}
+			continue
+		}
+		if thread.ArchivedAt != nil {
+			if _, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "rejected", now); err != nil {
+				logNodeWakeTransition(ctx, r, w.Request.ID, w.Delivery, "rejected", host, err)
+			}
 			continue
 		}
 		if healthy, _ := r.healthy(*thread); !healthy {
+			if w.Delivery != "busy" {
+				if _, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "busy", now); err != nil {
+					logNodeWakeTransition(ctx, r, w.Request.ID, w.Delivery, "busy", host, err)
+				}
+			}
 			continue
 		}
-		claimed, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "sending", r.now())
+		text := nodeTrailer(w) + "\n\n" + nodeWakeProse(w)
+		memberIDs := []string{w.Request.ID}
+		if grouped {
+			text = nodeGroupMessage(members)
+			memberIDs = memberIDs[:0]
+			for _, member := range members {
+				memberIDs = append(memberIDs, member.Request.ID)
+			}
+		}
+		var claimed bool
+		if freezer, ok := store.(NodeGroupClaimer); ok {
+			claimed, err = freezer.ClaimNodeWakeGroup(ctx, w.Request.ID, w.Delivery, w.DeliveryID, text, memberIDs, now)
+		} else {
+			claimed, err = store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "sending", now)
+		}
 		if err != nil {
 			logNodeWakeTransition(ctx, r, w.Request.ID, w.Delivery, "sending", host, err)
 			continue
 		}
 		if !claimed {
-			// Another runner holds this wake. That is the fence working, not a
-			// fault, so it is not reported as one.
 			continue
 		}
-		text := nodeTrailer(w) + "\n\n" + nodeWakeProse(w)
-		if grouped {
-			text = nodeGroupMessage(members)
-		}
 		if err := control.SendNodeWake(ctx, *thread, w.DeliveryID, text); err != nil {
-			if _, err := store.TransitionNodeWake(ctx, w.Request.ID, "sending", "recovery-required", r.now()); err != nil {
+			if _, err := store.TransitionNodeWake(ctx, w.Request.ID, "sending", "recovery-required", now); err != nil {
 				logNodeWakeTransition(ctx, r, w.Request.ID, "sending", "recovery-required", host, err)
 			}
 			continue
 		}
 		if grouped {
-			// The other members rode in the same message. A crash here leaves
-			// them pending while this one becomes delivered on a later tick;
-			// nodeWaitGroups then leaves the delivered member out, so the
-			// earliest member still pending carries one more send naming the
-			// rest, rather than every remaining member being skipped forever
-			// as "not the earliest". That is the honest degradation.
+			if _, frozen := store.(NodeGroupClaimer); frozen {
+				// Every member names the same frozen effect and remains sending
+				// until the shared remote message is positively observed.
+				continue
+			}
 			for _, member := range members[1:] {
-				if member.Delivery != "pending" && member.Delivery != "held" {
-					continue
-				}
-				claimed, err := store.TransitionNodeWake(ctx, member.Request.ID, member.Delivery, "sending", r.now())
+				claimed, err := store.TransitionNodeWake(ctx, member.Request.ID, member.Delivery, "sending", now)
 				if err != nil {
 					logNodeWakeTransition(ctx, r, member.Request.ID, member.Delivery, "sending", host, err)
 					continue
 				}
 				if !claimed {
-					// Another runner carried this member: the same fence as
-					// above, and the same silence.
 					continue
 				}
-				if _, err := store.TransitionNodeWake(ctx, member.Request.ID, "sending", "delivered", r.now()); err != nil {
+				if _, err := store.TransitionNodeWake(ctx, member.Request.ID, "sending", "delivered", now); err != nil {
 					logNodeWakeTransition(ctx, r, member.Request.ID, "sending", "delivered", host, err)
 				}
 			}
@@ -237,7 +288,7 @@ func nodeGroupKey(w domain.NodeWait) string {
 func nodeWaitGroups(waits []domain.NodeWait, host string) map[string][]domain.NodeWait {
 	groups := map[string][]domain.NodeWait{}
 	for _, w := range waits {
-		if w.Host != host || w.Request.Group == "" || w.Request.Wake != domain.WakeAll || w.Delivery == "delivered" || w.Delivery == "cancelled" {
+		if w.Host != host || w.Request.Group == "" || w.Request.Wake != domain.WakeAll || w.Delivery == "delivered" || w.Delivery == "rejected" || w.Delivery == "cancelled" {
 			continue
 		}
 		key := nodeGroupKey(w)

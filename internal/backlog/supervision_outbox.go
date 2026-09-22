@@ -11,7 +11,7 @@ import (
 )
 
 // Supervision outbox: one durable wake or escalation intent per reason to talk
-// to somebody, delivered at least once.
+// to somebody, reconciled through a stable external-effect identity.
 //
 // This mirrors the node-wait delivery machinery (`coordinator_node_waits` plus
 // `Store.TransitionNodeWake`) rather than inventing a second one. The node-wait
@@ -41,9 +41,12 @@ type SupervisionDelivery string
 const (
 	SupervisionDeliveryPending          SupervisionDelivery = "pending"
 	SupervisionDeliveryHeld             SupervisionDelivery = "held"
+	SupervisionDeliveryOffline          SupervisionDelivery = "offline"
+	SupervisionDeliveryBusy             SupervisionDelivery = "busy"
 	SupervisionDeliverySending          SupervisionDelivery = "sending"
 	SupervisionDeliveryDelivered        SupervisionDelivery = "delivered"
 	SupervisionDeliveryRecoveryRequired SupervisionDelivery = "recovery-required"
+	SupervisionDeliveryRejected         SupervisionDelivery = "rejected"
 	SupervisionDeliveryCancelled        SupervisionDelivery = "cancelled"
 )
 
@@ -66,12 +69,17 @@ type SupervisionOutboxEntry struct {
 	ThreadID string `json:"threadId,omitempty"`
 	// Reason is the normalized, human-readable cause. EventIDs preserves every
 	// evidence reference the coalescer folded together.
-	Reason      string              `json:"reason,omitempty"`
-	EventIDs    []string            `json:"eventIds,omitempty"`
-	Delivery    SupervisionDelivery `json:"delivery"`
-	Attempts    int                 `json:"attempts,omitempty"`
-	CreatedAt   time.Time           `json:"createdAt"`
-	DeliveredAt *time.Time          `json:"deliveredAt,omitempty"`
+	Reason         string              `json:"reason,omitempty"`
+	EventIDs       []string            `json:"eventIds,omitempty"`
+	Delivery       SupervisionDelivery `json:"delivery"`
+	Attempts       int                 `json:"attempts,omitempty"`
+	Payload        string              `json:"payload,omitempty"`
+	PayloadDigest  string              `json:"payloadDigest,omitempty"`
+	LastError      string              `json:"lastError,omitempty"`
+	NextAction     string              `json:"nextAction,omitempty"`
+	NextEligibleAt *time.Time          `json:"nextEligibleAt,omitempty"`
+	CreatedAt      time.Time           `json:"createdAt"`
+	DeliveredAt    *time.Time          `json:"deliveredAt,omitempty"`
 }
 
 // Validate rejects an entry that cannot be delivered or deduplicated.
@@ -180,9 +188,9 @@ func ActivationWakeOutboxEntry(activation domain.Activation, reason string, even
 }
 
 // AppendSupervisionOutbox adds an entry unless an entry with the same
-// deduplication key is already live. A cancelled or recovery-required entry
-// does not suppress a fresh one; a pending, sending or delivered one does,
-// which is what "deduplicate on incident ID" means for a re-escalation.
+// deduplication key is already live. Pending, held, retryable, ambiguous,
+// sending, or delivered rows all suppress a fresh intent; only a terminal
+// cancelled or rejected intent permits a separately identified replacement.
 //
 // It returns the new slice and whether the entry was added.
 func AppendSupervisionOutbox(existing []SupervisionOutboxEntry, entry SupervisionOutboxEntry) ([]SupervisionOutboxEntry, bool) {
@@ -191,7 +199,9 @@ func AppendSupervisionOutbox(existing []SupervisionOutboxEntry, entry Supervisio
 			continue
 		}
 		switch current.Delivery {
-		case SupervisionDeliveryPending, SupervisionDeliveryHeld, SupervisionDeliverySending, SupervisionDeliveryDelivered:
+		case SupervisionDeliveryPending, SupervisionDeliveryHeld, SupervisionDeliveryOffline,
+			SupervisionDeliveryBusy, SupervisionDeliverySending, SupervisionDeliveryRecoveryRequired,
+			SupervisionDeliveryDelivered:
 			return existing, false
 		}
 	}
@@ -201,9 +211,8 @@ func AppendSupervisionOutbox(existing []SupervisionOutboxEntry, entry Supervisio
 // TransitionSupervisionDelivery moves one entry's delivery ownership.
 //
 // A repeated delivery of an entry already in the target state is idempotent: it
-// reports no change and no error, because at-least-once delivery means the same
-// acknowledgement arrives more than once and the second one must not be read as
-// a second send. An entry in some other state reports no change either, so a
+// reports no change and no error, because the same authoritative receipt can
+// arrive more than once and the second one must not be read as a second send. An entry in some other state reports no change either, so a
 // caller that lost a race retries from what it reads rather than overwriting.
 // Only a move the machine has no row for is an error.
 func TransitionSupervisionDelivery(
@@ -235,11 +244,13 @@ func TransitionSupervisionDelivery(
 func supervisionDeliveryAllowed(from, to SupervisionDelivery) bool {
 	switch from {
 	case SupervisionDeliveryPending:
-		return to == SupervisionDeliveryHeld || to == SupervisionDeliverySending || to == SupervisionDeliveryCancelled
-	case SupervisionDeliveryHeld:
-		return to == SupervisionDeliverySending || to == SupervisionDeliveryCancelled
-	case SupervisionDeliverySending, SupervisionDeliveryRecoveryRequired:
-		return to == SupervisionDeliveryDelivered || to == SupervisionDeliveryRecoveryRequired
+		return to == SupervisionDeliveryHeld || to == SupervisionDeliveryOffline || to == SupervisionDeliveryBusy || to == SupervisionDeliverySending || to == SupervisionDeliveryRejected || to == SupervisionDeliveryCancelled
+	case SupervisionDeliveryHeld, SupervisionDeliveryOffline, SupervisionDeliveryBusy:
+		return to == SupervisionDeliveryOffline || to == SupervisionDeliveryBusy || to == SupervisionDeliverySending || to == SupervisionDeliveryRejected || to == SupervisionDeliveryCancelled
+	case SupervisionDeliverySending:
+		return to == SupervisionDeliveryDelivered || to == SupervisionDeliveryRecoveryRequired || to == SupervisionDeliveryRejected
+	case SupervisionDeliveryRecoveryRequired:
+		return to == SupervisionDeliveryDelivered || to == SupervisionDeliveryRejected
 	}
 	return false
 }

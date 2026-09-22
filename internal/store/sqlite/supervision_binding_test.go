@@ -12,6 +12,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -176,6 +177,73 @@ func TestSupervisionOutboxDeduplicatesAndFencesDelivery(t *testing.T) {
 	if err != nil || len(delivered) != 0 {
 		t.Fatalf("delivered escalation is still pending: %#v (err %v)", delivered, err)
 	}
+}
+
+func TestSupervisionDeliveryBoundaryFreezesPayloadAndRecoversHeldIntent(t *testing.T) {
+	ctx := context.Background()
+	store := openSupervisionStore(t, filepath.Join(t.TempDir(), "state.db"))
+	seedSupervisedRun(t, store, nil)
+	entry := SupervisionOutboxRow{ID: "escalation-durable", Delivery: "pending",
+		Record: json.RawMessage(`{"id":"escalation-durable","kind":"escalation","incidentId":"incident-1","threadId":"thread-1","reason":"final outcome"}`)}
+	if written, err := store.AppendSupervisionOutboxRows(ctx, "run-1", []SupervisionOutboxRow{entry}); err != nil || written != 1 {
+		t.Fatal(written, err)
+	}
+	if ok, err := store.TransitionSupervisionOutboxRow(ctx, entry.ID, "pending", "delivered", supervisionTestTime); err == nil || ok {
+		t.Fatalf("SQLite accepted illegal pending->delivered: %v, %v", ok, err)
+	}
+	if ok, err := store.TransitionSupervisionOutboxRow(ctx, entry.ID, "pending", "held", supervisionTestTime); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	pending, err := store.PendingSupervisionEscalations(ctx)
+	if err != nil || len(pending) != 1 || pending[0].Delivery != "held" {
+		t.Fatalf("held intent stranded: %#v %v", pending, err)
+	}
+	if ok, err := store.ClaimSupervisionEscalation(ctx, entry.ID, "held", "exact final payload", supervisionTestTime.Add(time.Second)); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if ok, err := store.ClaimSupervisionEscalation(ctx, entry.ID, "held", "exact final payload", supervisionTestTime.Add(time.Second)); err != nil || ok {
+		t.Fatalf("second sender won: %v, %v", ok, err)
+	}
+	pending, err = store.PendingSupervisionEscalations(ctx)
+	if err != nil || len(pending) != 1 || pending[0].Payload != "exact final payload" || pending[0].PayloadDigest == "" || pending[0].Attempts != 1 {
+		t.Fatalf("frozen claim = %#v, %v", pending, err)
+	}
+	if ok, err := store.TransitionSupervisionOutboxRow(ctx, entry.ID, "sending", "recovery-required", supervisionTestTime.Add(2*time.Second)); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	pending, _ = store.PendingSupervisionEscalations(ctx)
+	if len(pending) != 1 || pending[0].DeliveryError == "" || pending[0].DeliveryNextAction == "" {
+		t.Fatalf("ambiguous effect has no visible recovery action: %#v", pending)
+	}
+	if ok, err := store.TransitionSupervisionOutboxRow(ctx, entry.ID, "recovery-required", "offline", supervisionTestTime.Add(3*time.Second)); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	pending, _ = store.PendingSupervisionEscalations(ctx)
+	if len(pending) != 1 || pending[0].DeliveryNextAttemptAt == nil || !pending[0].DeliveryNextAttemptAt.After(supervisionTestTime) {
+		t.Fatalf("known-no-effect retry is not bounded: %#v", pending)
+	}
+}
+
+func TestFinalSupervisionNotificationIsSentAndObservedThroughRunner(t *testing.T) {
+	ctx := context.Background()
+	store, _, now := taskWaitFixture(t)
+	entry := SupervisionOutboxRow{ID: "final-notification", Delivery: "pending",
+		Record: json.RawMessage(`{"id":"final-notification","kind":"escalation","incidentId":"campaign-final","threadId":"thread-1","reason":"campaign recovery exhausted"}`)}
+	if written, err := store.AppendSupervisionOutboxRows(ctx, "run-final", []SupervisionOutboxRow{entry}); err != nil || written != 1 { t.Fatal(written, err) }
+	clock := now
+	runner, control := fleetRunner(t, store, &clock, nil)
+	runner.NodeHost = "host"
+	runner.Tick(ctx, nil, nil)
+	if len(control.sends) != 1 || !strings.Contains(control.texts[0], "campaign recovery exhausted") {
+		t.Fatalf("notification did not reach fake remote: sends=%v texts=%v", control.sends, control.texts)
+	}
+	clock = clock.Add(time.Second)
+	runner.Tick(ctx, nil, nil)
+	rows, err := store.ListSupervisionOutboxRows(ctx, "run-final")
+	if err != nil || len(rows) != 1 || rows[0].Delivery != "delivered" {
+		t.Fatalf("remote observation did not acknowledge durable row: %#v, %v", rows, err)
+	}
+	if len(control.sends) != 1 { t.Fatalf("observed notification resent: %v", control.sends) }
 }
 
 func TestSupervisionAdminStateBindsEvidenceAndBranchClosure(t *testing.T) {
