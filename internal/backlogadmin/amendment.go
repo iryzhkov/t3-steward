@@ -102,8 +102,17 @@ func (s *Service) AmendGraph(ctx context.Context, p Principal, r domain.GraphAme
 		}
 	}
 	var inputs []domain.Artifact
-	if r.Operation == "task-add" {
-		a, err := backlog.PrepareGraphInput(s.graphInputRoot, promptID, run.ID, taskID, r.Prompt, now)
+	if r.Operation == "task-add" || (r.Operation == "task-set" && r.Prompt != "") {
+		ownerID := taskID
+		if r.Operation == "task-set" {
+			for _, task := range tasks {
+				if task.ID == r.TaskID || task.Name == r.TaskID {
+					ownerID = task.ID
+					break
+				}
+			}
+		}
+		a, err := backlog.PrepareGraphInput(s.graphInputRoot, promptID, run.ID, ownerID, r.Prompt, now)
 		if err != nil {
 			return result, err
 		}

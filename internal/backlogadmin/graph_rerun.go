@@ -8,6 +8,7 @@ import (
 	"io"
 	"slices"
 
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
@@ -65,7 +66,15 @@ func (s *Service) rerunGraph(
 		task.ID = idMap[sourceTaskID]
 		task.RunID = runID
 		task.DefinitionRevision = 1
-		if task.PromptArtifactID, err = builder.reference(ctx, task.PromptArtifactID, task.ID); err != nil {
+		if sourceTaskID == scope.From.ID && r.Prompt != "" {
+			promptID := "input:rerun:" + r.ID + ":prompt"
+			prompt, prepareErr := backlog.PrepareGraphInput(s.graphInputRoot, promptID, runID, task.ID, r.Prompt, s.now().UTC())
+			if prepareErr != nil {
+				return result, prepareErr
+			}
+			builder.inputs = append(builder.inputs, prompt)
+			task.PromptArtifactID = promptID
+		} else if task.PromptArtifactID, err = builder.reference(ctx, task.PromptArtifactID, task.ID); err != nil {
 			return result, err
 		}
 		for position, id := range task.InputArtifactIDs {

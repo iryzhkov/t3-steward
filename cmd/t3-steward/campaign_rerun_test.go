@@ -88,14 +88,14 @@ func TestCampaignRerunFencesOnTheSourceRunAndReportsBothRuns(t *testing.T) {
 	cli := campaignRerunCLI(&out, &sent, campaignRerunResult(), nil)
 	err := cli.run(context.Background(), []string{
 		"rerun", "run-1", "--from", "implement",
-		"--idempotency-key", "rerun-1", "--reason", "the clone failed",
+		"--idempotency-key", "rerun-1", "--reason", "the clone failed", "--prompt", "corrected instructions",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := domain.GraphAmendment{
 		ID: "rerun-1", RunID: "run-1", ExpectedRevision: 4,
-		Operation: "rerun", TaskID: "implement", Reason: "the clone failed",
+		Operation: "rerun", TaskID: "implement", Reason: "the clone failed", Prompt: "corrected instructions",
 	}
 	if sent != want {
 		t.Fatalf("amendment = %+v, want %+v", sent, want)

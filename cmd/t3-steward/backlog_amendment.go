@@ -97,7 +97,7 @@ func parseGraphAmendment(args []string) (domain.GraphAmendment, error) {
 			allowed[key] = true
 		}
 	case "task-set":
-		for _, key := range []string{"model", "provider", "timeout", "options", "verify"} {
+		for _, key := range []string{"model", "provider", "timeout", "options", "verify", "prompt"} {
 			allowed[key] = true
 		}
 	case "edge-add", "edge-remove", "clone":

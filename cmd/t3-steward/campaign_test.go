@@ -582,7 +582,7 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// tightening the sentence they are in, so the cap is unchanged, and
 	// campaign_family_help_test.go now ties this page to the campaign submit
 	// page so that it cannot describe a superseded submit again.
-	const wantDigest = "14c9813785d13e57057013aca9f3dbdd2ee2f64560272c289188084ad8330af3"
+	const wantDigest = "62cc380c31d80cb915bff691ce4ac4821836a40e6cca86d8f9c1e287cb3d2f71"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)
@@ -613,7 +613,7 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 		"schemaVersion",
 		"docs/examples/campaign/single-lead",
 		"docs/examples/campaign/three-node",
-		"rerun    <run> --from TASK --idempotency-key KEY [--reason TEXT] [--json]",
+		"rerun <run> --from TASK --idempotency-key KEY [--prompt TEXT] [--reason TEXT] [--json]",
 		"creates a second run and never changes the first",
 		"[--notify-thread <current|id>]",
 		"static-versus-dynamic, plan, graph, commits, rerun, notify.",

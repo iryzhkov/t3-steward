@@ -46,6 +46,7 @@ type campaignRerunArgs struct {
 	from   string
 	key    string
 	reason string
+	prompt string
 	asJSON bool
 }
 
@@ -58,7 +59,7 @@ func parseCampaignRerunArgs(args []string) (campaignRerunArgs, error) {
 				return campaignRerunArgs{}, errors.New("--json may be supplied only once")
 			}
 			parsed.asJSON = true
-		case "--from", "--idempotency-key", "--reason":
+		case "--from", "--idempotency-key", "--reason", "--prompt":
 			if index+1 >= len(args) || args[index+1] == "" {
 				return campaignRerunArgs{}, fmt.Errorf("%s needs one nonempty value", argument)
 			}
@@ -68,6 +69,8 @@ func parseCampaignRerunArgs(args []string) (campaignRerunArgs, error) {
 				target = &parsed.key
 			case "--reason":
 				target = &parsed.reason
+			case "--prompt":
+				target = &parsed.prompt
 			}
 			if *target != "" {
 				return campaignRerunArgs{}, fmt.Errorf("%s may be supplied only once", argument)
@@ -124,6 +127,7 @@ func (c campaignCLI) runRerun(ctx context.Context, args []string) error {
 		Operation:        "rerun",
 		TaskID:           parsed.from,
 		Reason:           reason,
+		Prompt:           parsed.prompt,
 	})
 	if err != nil {
 		return err

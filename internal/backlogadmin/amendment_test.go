@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -298,6 +299,55 @@ func TestGraphAmendmentVerificationRejectsIncompleteAddAndRepairsLegacyTask(t *t
 				t.Fatal("repair changed original definition")
 			}
 		}
+	}
+}
+
+func TestGraphAmendmentReplacesPromptOnlyForFutureUnassignedTask(t *testing.T) {
+	ctx := context.Background()
+	s, store := graphFixture(t)
+	r := graphRequest("prompt-repair", "task-set", "a", 1)
+	r.Prompt = "corrected self-contained instructions"
+	result, err := s.AmendGraph(ctx, Principal{ID: "operator"}, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var amended domain.Task
+	for _, task := range result.Graph.Tasks {
+		if task.Name == "a" {
+			amended = task
+		}
+	}
+	if amended.PromptArtifactID != "input:graph:prompt-repair" {
+		t.Fatalf("prompt artifact = %q", amended.PromptArtifactID)
+	}
+	records, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, artifact := range records.Artifacts {
+		if artifact.ID == amended.PromptArtifactID {
+			found = artifact.TaskID == amended.ID && artifact.WorkflowRunID == "run"
+		}
+	}
+	if !found {
+		t.Fatal("corrected prompt was not retained under task custody")
+	}
+	for i := range records.Attempts {
+		if records.Attempts[i].TaskID == "b" {
+			records.Attempts[i].AssignmentID = "assigned-b"
+			records.Attempts[i].Control = domain.ControlRunning
+		}
+	}
+	if err = store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Attempts: records.Attempts}); err != nil {
+		t.Fatal(err)
+	}
+	r.ID = "assigned-prompt"
+	r.ExpectedRevision = 2
+	r.TaskID = "b"
+	if _, err = s.AmendGraph(ctx, Principal{ID: "operator"}, r); err == nil ||
+		!strings.Contains(err.Error(), "assigned task") {
+		t.Fatalf("assigned prompt amendment = %v", err)
 	}
 }
 
