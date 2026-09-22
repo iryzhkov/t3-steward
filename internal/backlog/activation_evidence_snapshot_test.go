@@ -202,6 +202,18 @@ func TestActivationPackageCarriesRetrievableFrozenEvidence(t *testing.T) {
 		!strings.Contains(pkg.Supervision.Prompt, object.SHA256) {
 		t.Fatalf("compact prompt does not pin evidence object: %s", pkg.Supervision.Prompt)
 	}
+	finalPrompt := workerproto.RenderSupervisionPrompt(*pkg.Supervision)
+	if len(finalPrompt) > workerproto.SupervisionPromptByteCap {
+		t.Fatalf("model-bound prompt = %d bytes, cap %d", len(finalPrompt), workerproto.SupervisionPromptByteCap)
+	}
+
+	oversized := input
+	oversized.SupervisorPrincipal = strings.Repeat("p", workerproto.SupervisionPromptByteCap)
+	_, err = BuildActivationPackage(oversized)
+	var packageErr *ActivationPackageError
+	if !errors.As(err, &packageErr) || packageErr.Code != ActivationPackageErrorPromptTooLarge {
+		t.Fatalf("oversized final prompt error = %v, want typed %s", err, ActivationPackageErrorPromptTooLarge)
+	}
 }
 
 func TestActivationPromptIrreducibleMandatoryContextIsTyped(t *testing.T) {

@@ -354,6 +354,31 @@ func BuildActivationPackage(input ActivationPackageInput) (workerproto.Execution
 		return workerproto.ExecutionPackage{}, &ActivationPackageError{Code: ActivationPackageErrorEvidenceMismatch, Cause: err}
 	}
 	evidenceDigest := domain.ArtifactDigest{ArtifactID: input.EvidenceArtifact.ID, Digest: input.EvidenceArtifact.SHA256}
+	activation := &workerproto.SupervisionActivation{
+		ActivationID: input.Activation.ID, RunID: input.Run.ID,
+		Epoch: input.Activation.Epoch, RecordRevision: input.Record.Revision,
+		GraphRevision:       input.Run.GraphRevision,
+		Principal:           input.SupervisorPrincipal,
+		CredentialReference: input.SupervisorCredentialReference,
+		LeaseToken:          input.Dispatch.LeaseToken,
+		LeaseExpiresAt:      input.Dispatch.LeaseExpiresAt.UTC(),
+		MaxTurns:            turns,
+		Actions:             actions,
+	}
+	if !input.Dispatch.Deadline.IsZero() {
+		activation.Deadline = input.Dispatch.Deadline.UTC()
+	}
+	finalCap := input.ByteCap
+	if finalCap <= 0 {
+		finalCap = workerproto.SupervisionPromptByteCap
+	}
+	overhead := len(workerproto.RenderSupervisionPrompt(*activation))
+	if overhead >= finalCap {
+		return workerproto.ExecutionPackage{}, &ActivationPackageError{
+			Code:  ActivationPackageErrorPromptTooLarge,
+			Cause: fmt.Errorf("mandatory activation authority is %d bytes for a %d byte final prompt cap", overhead, finalCap),
+		}
+	}
 	snapshot := ActivationSnapshot{
 		ActivationID:     input.Activation.ID,
 		RunID:            input.Run.ID,
@@ -371,7 +396,7 @@ func BuildActivationPackage(input ActivationPackageInput) (workerproto.Execution
 		Actions:          activationPromptActions(actions),
 		Constraints:      ActivationPromptConstraints(input),
 		ConsumedThrough:  input.Activation.ConsumedEventCursor,
-		ByteCap:          input.ByteCap,
+		ByteCap:          finalCap - overhead,
 	}
 	envelope, err := BuildActivationPromptEnvelope(snapshot)
 	if err != nil {
@@ -419,18 +444,7 @@ func BuildActivationPackage(input ActivationPackageInput) (workerproto.Execution
 			workerproto.CapabilityCampaignSupervision,
 			workerproto.PackageCapabilitySupervisionEvidence,
 		},
-		Supervision: &workerproto.SupervisionActivation{
-			ActivationID: input.Activation.ID, RunID: input.Run.ID,
-			Epoch: input.Activation.Epoch, RecordRevision: input.Record.Revision,
-			GraphRevision:       input.Run.GraphRevision,
-			Principal:           input.SupervisorPrincipal,
-			CredentialReference: input.SupervisorCredentialReference,
-			LeaseToken:          input.Dispatch.LeaseToken,
-			LeaseExpiresAt:      input.Dispatch.LeaseExpiresAt.UTC(),
-			MaxTurns:            turns,
-			Prompt:              rendered,
-			Actions:             actions,
-		},
+		Supervision: activation,
 		Limits: workerproto.ExecutionLimits{
 			MaxTurns: turns, PrepareTimeout: input.PrepareTimeout,
 			VerificationTimeout: input.VerificationTimeout,
@@ -448,6 +462,14 @@ func BuildActivationPackage(input ActivationPackageInput) (workerproto.Execution
 		// act on.
 		expiry := bounded
 		pkg.ExpiresAt = &expiry
+	}
+	pkg.Supervision.Prompt = rendered
+	finalPrompt := workerproto.RenderSupervisionPrompt(*pkg.Supervision)
+	if len(finalPrompt) > finalCap {
+		return workerproto.ExecutionPackage{}, &ActivationPackageError{
+			Code:  ActivationPackageErrorPromptTooLarge,
+			Cause: fmt.Errorf("final activation prompt is %d bytes over its %d byte cap", len(finalPrompt)-finalCap, finalCap),
+		}
 	}
 	return pkg, nil
 }
