@@ -18,6 +18,9 @@ const (
 	DefaultSupervisionMaxActivations        = 12
 	DefaultSupervisionMaxTurnsPerActivation = 3
 	DefaultSupervisionActivationDeadline    = 2 * time.Hour
+	DefaultRecoveryMaxAttemptsPerIncident   = 3
+	DefaultRecoveryIncidentDeadline         = 24 * time.Hour
+	DefaultRecoveryStalledAfter             = 2 * time.Hour
 )
 
 // ManifestSupervision declares the optional campaign overseer. Its absence is
@@ -41,6 +44,18 @@ type ManifestSupervision struct {
 	// no idle escalation.
 	ActivationDeadline  time.Duration `yaml:"activation_deadline"`
 	IdleEscalationAfter time.Duration `yaml:"idle_escalation_after"`
+	// Recovery is an explicit, versioned opt-in. An existing supervision block
+	// with no recovery member remains the review-only v1 contract.
+	Recovery *ManifestRecovery `yaml:"recovery,omitempty"`
+}
+
+type ManifestRecovery struct {
+	Version                string        `yaml:"version"`
+	Route                  ManifestRoute `yaml:"route"`
+	PromptFile             string        `yaml:"prompt_file"`
+	MaxAttemptsPerIncident int           `yaml:"max_attempts_per_incident"`
+	IncidentDeadline       time.Duration `yaml:"incident_deadline"`
+	StalledAfter           time.Duration `yaml:"stalled_after"`
 }
 
 // ManifestSupervisionEscalation reuses the existing notify-thread
@@ -108,6 +123,21 @@ func (m Manifest) SupervisionConfig() (domain.SupervisionConfig, bool) {
 			ThreadID:     declared.Escalation.ThreadID,
 		},
 	}
+	if declared.Recovery != nil {
+		recovery := declared.Recovery
+		config.Recovery = &domain.RecoveryConfig{
+			Version:          domain.RecoveryContractVersion(recovery.Version),
+			Route:            domain.ProviderRoute{WorkerID: recovery.Route.Host, ProviderInstanceID: recovery.Route.Instance, Model: recovery.Route.Model, QuotaPoolID: recovery.Route.QuotaPool},
+			PromptArtifactID: recovery.PromptFile, MaxAttemptsPerIncident: recovery.MaxAttemptsPerIncident,
+			IncidentDeadline: recovery.IncidentDeadline, StalledAfter: recovery.StalledAfter,
+		}
+		if len(recovery.Route.Options) > 0 {
+			config.Recovery.Route.Options = make(map[string]string, len(recovery.Route.Options))
+			for option, value := range recovery.Route.Options {
+				config.Recovery.Route.Options[option] = value
+			}
+		}
+	}
 	if len(declared.Route.Options) > 0 {
 		config.Route.Options = make(map[string]string, len(declared.Route.Options))
 		for option, value := range declared.Route.Options {
@@ -154,6 +184,17 @@ func applyManifestSupervisionDefaults(manifest *Manifest) {
 	if manifest.Supervision.ActivationDeadline == 0 {
 		manifest.Supervision.ActivationDeadline = DefaultSupervisionActivationDeadline
 	}
+	if recovery := manifest.Supervision.Recovery; recovery != nil {
+		if recovery.MaxAttemptsPerIncident == 0 {
+			recovery.MaxAttemptsPerIncident = DefaultRecoveryMaxAttemptsPerIncident
+		}
+		if recovery.IncidentDeadline == 0 {
+			recovery.IncidentDeadline = DefaultRecoveryIncidentDeadline
+		}
+		if recovery.StalledAfter == 0 {
+			recovery.StalledAfter = DefaultRecoveryStalledAfter
+		}
+	}
 }
 
 // validateManifestSupervision applies the eleven authoring rules of the
@@ -184,6 +225,17 @@ func validateSupervisionBlock(manifest Manifest) error {
 	if err := validateSupervisionRoutePlacement(manifest); err != nil {
 		return err
 	}
+	if recovery := declared.Recovery; recovery != nil {
+		if err := validateRoutes("recovery route", []ManifestRoute{recovery.Route}); err != nil {
+			return err
+		}
+		if err := validateRouteHostPlacement("recovery route", recovery.Route.Host, manifest.Placement.Hosts); err != nil {
+			return err
+		}
+		if err := validateRelativePath(recovery.PromptFile, false); err != nil {
+			return fmt.Errorf("recovery prompt_file: %w", err)
+		}
+	}
 	// Rule 2: the overseer prompt is a relative bundle path.
 	if err := validateRelativePath(declared.PromptFile, false); err != nil {
 		return fmt.Errorf("supervision prompt_file: %w", err)
@@ -201,16 +253,19 @@ func validateSupervisionBlock(manifest Manifest) error {
 // the workflow's placement excludes. Such a route can never be placed, and a
 // campaign whose gates can never be decided is permanently held.
 func validateSupervisionRoutePlacement(manifest Manifest) error {
-	host := manifest.Supervision.Route.Host
-	if host == "" || len(manifest.Placement.Hosts) == 0 {
+	return validateRouteHostPlacement("supervision route", manifest.Supervision.Route.Host, manifest.Placement.Hosts)
+}
+
+func validateRouteHostPlacement(label, host string, eligibleHosts []string) error {
+	if host == "" || len(eligibleHosts) == 0 {
 		return nil
 	}
-	for _, eligible := range manifest.Placement.Hosts {
+	for _, eligible := range eligibleHosts {
 		if eligible == host {
 			return nil
 		}
 	}
-	return fmt.Errorf("supervision route host %q is not an eligible workflow host", host)
+	return fmt.Errorf("%s host %q is not an eligible workflow host", label, host)
 }
 
 func validateManifestGates(manifest Manifest, taskNames []string) error {
@@ -401,6 +456,9 @@ func supervisionBundleFiles(manifest Manifest) []string {
 	var files []string
 	if manifest.Supervision != nil && manifest.Supervision.PromptFile != "" {
 		files = append(files, manifest.Supervision.PromptFile)
+		if recovery := manifest.Supervision.Recovery; recovery != nil && recovery.PromptFile != "" {
+			files = append(files, recovery.PromptFile)
+		}
 	}
 	for _, name := range manifest.GateNames() {
 		if rubric := manifest.Gates[name].RubricFile; rubric != "" {

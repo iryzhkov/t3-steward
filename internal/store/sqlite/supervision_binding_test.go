@@ -83,7 +83,7 @@ func TestSupervisionActivationCommitFencesOnTheRecordRevision(t *testing.T) {
 			// is asserted below.
 			LeaseToken: "lease-1", LeaseExpiresAt: &liveLease,
 		},
-		ConsumedThrough: 1, CursorAdvanced: true,
+		ConsumedThrough: 1, CursorAdvanced: true, AcknowledgedEventIDs: []string{"event-1"},
 		Outbox: []SupervisionOutboxRow{{
 			ID: "wake-1", ActivationID: "activation-1", Delivery: "pending",
 			Record: json.RawMessage(`{"id":"wake-1","kind":"wake"}`),

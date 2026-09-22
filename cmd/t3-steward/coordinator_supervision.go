@@ -129,6 +129,9 @@ func (c coordinatorSupervision) advanceRun(
 	workers []domain.WorkerSnapshot,
 	now time.Time,
 ) (err error) {
+	if err := c.observeRecoveryFailures(ctx, run, now); err != nil {
+		return err
+	}
 	advanced, err := c.store.AdvanceSupervisionGates(ctx, run.ID, now)
 	if err != nil {
 		return err

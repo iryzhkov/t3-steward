@@ -21,11 +21,12 @@ import (
 
 // SupervisionInboxRow is one durable supervision event.
 type SupervisionInboxRow struct {
-	ID       string          `json:"id"`
-	RunID    string          `json:"runId"`
-	Sequence int64           `json:"sequence"`
-	Consumed bool            `json:"consumed"`
-	Record   json.RawMessage `json:"record"`
+	ID                   string          `json:"id"`
+	RunID                string          `json:"runId"`
+	Sequence             int64           `json:"sequence"`
+	Consumed             bool            `json:"consumed"`
+	AcknowledgedPurposes []string        `json:"acknowledgedPurposes,omitempty"`
+	Record               json.RawMessage `json:"record"`
 }
 
 // SupervisionOutboxRow is one durable delivery intent.
@@ -58,6 +59,8 @@ type SupervisionActivationRowCommit struct {
 	Activation             domain.Activation
 	ConsumedThrough        int64
 	CursorAdvanced         bool
+	AcknowledgedEventIDs   []string
+	AcknowledgementPurpose string
 	Outbox                 []SupervisionOutboxRow
 	// Receipt is an encoded operator continuation receipt, when the plan issued
 	// one. It is stored beside the idempotency receipts, because it answers the
@@ -123,6 +126,9 @@ func (s *Store) ListSupervisionInbox(ctx context.Context, runID string) ([]Super
 	if err != nil {
 		return nil, err
 	}
+	if err := loadSupervisionInboxAcknowledgementsTx(ctx, tx, runID, rows); err != nil {
+		return nil, err
+	}
 	return rows, tx.Commit()
 }
 
@@ -146,6 +152,29 @@ func supervisionInboxRowsTx(ctx context.Context, tx *sql.Tx, runID string) ([]Su
 		rows = append(rows, row)
 	}
 	return rows, cursor.Err()
+}
+
+func loadSupervisionInboxAcknowledgementsTx(ctx context.Context, tx *sql.Tx, runID string, inbox []SupervisionInboxRow) error {
+	byID := make(map[string]*SupervisionInboxRow, len(inbox))
+	for i := range inbox {
+		byID[inbox[i].ID] = &inbox[i]
+	}
+	rows, err := tx.QueryContext(ctx,
+		"SELECT event_id, purpose FROM coordinator_supervision_inbox_ack WHERE run_id = ? ORDER BY event_id, purpose", runID)
+	if err != nil {
+		return fmt.Errorf("list supervision inbox acknowledgements of run %q: %w", runID, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var eventID, purpose string
+		if err := rows.Scan(&eventID, &purpose); err != nil {
+			return err
+		}
+		if row := byID[eventID]; row != nil {
+			row.AcknowledgedPurposes = append(row.AcknowledgedPurposes, purpose)
+		}
+	}
+	return rows.Err()
 }
 
 // AppendSupervisionOutboxRows persists delivery intents. An ID already present
@@ -345,6 +374,9 @@ func (s *Store) LoadSupervisionActivationRows(ctx context.Context, runID string)
 	if state.Inbox, err = supervisionInboxRowsTx(ctx, tx, runID); err != nil {
 		return SupervisionActivationRows{}, err
 	}
+	if err := loadSupervisionInboxAcknowledgementsTx(ctx, tx, runID, state.Inbox); err != nil {
+		return SupervisionActivationRows{}, err
+	}
 	if state.Outbox, err = supervisionOutboxRowsTx(ctx, tx, runID); err != nil {
 		return SupervisionActivationRows{}, err
 	}
@@ -355,6 +387,10 @@ func (s *Store) LoadSupervisionActivationRows(ctx context.Context, runID string)
 // the record revision the plan read. The consumed high-water mark, the outcome,
 // the counters and the delivery intents land together or not at all.
 func (s *Store) CommitSupervisionActivationRows(ctx context.Context, commit SupervisionActivationRowCommit) error {
+	if commit.CursorAdvanced && commit.AcknowledgementPurpose != "" &&
+		commit.AcknowledgementPurpose != string(domain.RecoveryActivationRepair) {
+		return fmt.Errorf("acknowledge supervision inbox: unknown purpose %q", commit.AcknowledgementPurpose)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin supervision activation commit: %w", err)
@@ -392,11 +428,42 @@ func (s *Store) CommitSupervisionActivationRows(ctx context.Context, commit Supe
 			return err
 		}
 	}
-	if commit.CursorAdvanced && commit.ConsumedThrough > 0 {
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE coordinator_supervision_inbox SET consumed = 1 WHERE run_id = ? AND sequence <= ?",
-			commit.RunID, commit.ConsumedThrough); err != nil {
-			return fmt.Errorf("consume supervision inbox of run %q: %w", commit.RunID, err)
+	if commit.CursorAdvanced {
+		seen := make(map[string]struct{}, len(commit.AcknowledgedEventIDs))
+		for _, eventID := range commit.AcknowledgedEventIDs {
+			if eventID == "" {
+				return errors.New("acknowledge supervision inbox: empty event id")
+			}
+			if _, duplicate := seen[eventID]; duplicate {
+				continue
+			}
+			seen[eventID] = struct{}{}
+			result, err := tx.ExecContext(ctx, `
+				INSERT INTO coordinator_supervision_inbox_ack(event_id, run_id, purpose, acknowledged_at)
+				SELECT id, run_id, ?, ? FROM coordinator_supervision_inbox
+				WHERE id = ? AND run_id = ? ON CONFLICT(event_id, purpose) DO NOTHING`,
+				commit.AcknowledgementPurpose, now.Format(time.RFC3339Nano), eventID, commit.RunID)
+			if err != nil {
+				return fmt.Errorf("acknowledge supervision event %q: %w", eventID, err)
+			}
+			if changed, _ := result.RowsAffected(); changed == 0 {
+				var exists int
+				if err := tx.QueryRowContext(ctx,
+					"SELECT COUNT(*) FROM coordinator_supervision_inbox WHERE id = ? AND run_id = ?", eventID, commit.RunID).Scan(&exists); err != nil {
+					return err
+				}
+				if exists == 0 {
+					return fmt.Errorf("acknowledge supervision event %q: event does not belong to run %q", eventID, commit.RunID)
+				}
+			}
+			// The old consumed bit remains a projection for legacy reviewer
+			// readers. Schema 22 binaries use the acknowledgement table.
+			if commit.AcknowledgementPurpose == "" {
+				if _, err := tx.ExecContext(ctx,
+					"UPDATE coordinator_supervision_inbox SET consumed = 1 WHERE id = ? AND run_id = ?", eventID, commit.RunID); err != nil {
+					return fmt.Errorf("project reviewer acknowledgement of event %q: %w", eventID, err)
+				}
+			}
 		}
 	}
 	if _, err := appendSupervisionOutboxTx(ctx, tx, commit.RunID, commit.Outbox); err != nil {

@@ -324,7 +324,7 @@ func activationDispatchAge(state backlog.SupervisionActivationState, signal back
 				state.Activation.DispatchIdentity, nil
 		}
 	}
-	inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, state.Record.EventCursor, state.Pending)
+	inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, state.Record.EventCursor, reviewerSupervisionEvents(state.Pending))
 	if len(inbox.Events) != 0 {
 		return inbox.Events[0].OccurredAt.UTC(), inbox.Events[0].ID, nil
 	}
@@ -456,7 +456,7 @@ func (c coordinatorSupervision) activationSignal(
 		signal.Reason = "the planned activation dispatch left no durable assignment"
 		return signal, true, nil
 	}
-	inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, state.Record.EventCursor, state.Pending)
+	inbox := backlog.CoalesceSupervisionEvents(state.Record.RunID, state.Record.EventCursor, reviewerSupervisionEvents(state.Pending))
 	if !inbox.NonEmpty() || state.OtherValidActivation {
 		return signal, false, nil
 	}
@@ -479,6 +479,16 @@ func (c coordinatorSupervision) activationSignal(
 	signal.IncidentID = firstIncidentOfInbox(inbox)
 	signal.Reason = fmt.Sprintf("%d supervision event(s) are waiting for review", len(inbox.EventIDs()))
 	return signal, true, nil
+}
+
+func reviewerSupervisionEvents(events []backlog.SupervisionEvent) []backlog.SupervisionEvent {
+	selected := make([]backlog.SupervisionEvent, 0, len(events))
+	for _, event := range events {
+		if event.Kind != backlog.TriggerTaskJudgmentRequired {
+			selected = append(selected, event)
+		}
+	}
+	return selected
 }
 
 // firstIncidentOfInbox names the incident the wake belongs to, which is what
