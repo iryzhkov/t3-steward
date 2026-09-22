@@ -98,8 +98,45 @@ func TestRetainExternalInputsPinsExactSuccessfulArtifact(t *testing.T) {
 		dependencies[0].Provenance == nil ||
 		dependencies[0].Provenance.RunID != "source-run" ||
 		dependencies[0].Provenance.AttemptID != "producer-attempt" ||
-		dependencies[0].Provenance.ArtifactID != "source-output" {
+		dependencies[0].Provenance.SourceArtifacts["retained-input"] != "source-output" {
 		t.Fatalf("packaged dependency = %+v", dependencies)
+	}
+}
+
+func TestRetainExternalInputsMapsEachOutputToItsSourceArtifact(t *testing.T) {
+	store, manifest, target := externalInputFixture(domain.ProgressSucceeded)
+	store.records.Tasks[0].Outputs = append(store.records.Tasks[0].Outputs,
+		domain.ArtifactDeclaration{Name: "campaign-commit.json", MediaType: "application/json"})
+	store.records.Artifacts = append(store.records.Artifacts, domain.Artifact{
+		ID: "source-commit", WorkflowRunID: "source-run", TaskID: "producer-id",
+		AttemptID: "producer-attempt", Kind: domain.ArtifactOutput, Name: "campaign-commit.json",
+		MediaType: "application/json", Size: 9, SHA256: "commit-digest",
+		StoragePath: "source/campaign-commit.json",
+	})
+	manifest.Tasks["consumer"].InputsFrom["source-run/producer"] = []string{"report.txt", "campaign-commit.json"}
+	target.Tasks[0].DependencyInputs["source-run/producer"] = []string{"report.txt", "campaign-commit.json"}
+	next := 0
+	ingester := BundleIngester{Store: store, NewTypedID: func(string) string {
+		next++
+		return fmt.Sprintf("retained-%d", next)
+	}}
+	if err := ingester.retainExternalInputs(context.Background(), manifest, &target); err != nil {
+		t.Fatal(err)
+	}
+	dependencies, err := packageDependencies(target.Tasks[0], target.Tasks, mapArtifacts(target.Artifacts), "target-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dependencies) != 1 || len(dependencies[0].Artifacts) != 2 ||
+		dependencies[0].Provenance == nil || len(dependencies[0].Provenance.SourceArtifacts) != 2 {
+		t.Fatalf("multi-output dependency = %+v", dependencies)
+	}
+	got := map[string]string{}
+	for _, artifact := range dependencies[0].Artifacts {
+		got[artifact.Path] = dependencies[0].Provenance.SourceArtifacts[artifact.ID]
+	}
+	if got[dependencies[0].Artifacts[0].Path] == got[dependencies[0].Artifacts[1].Path] {
+		t.Fatalf("distinct outputs lost source artifact identity: %+v", dependencies[0])
 	}
 }
 
@@ -125,7 +162,7 @@ func TestRetainExternalCampaignCommitKeepsExactProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(dependencies) != 1 || dependencies[0].Provenance == nil ||
-		dependencies[0].Provenance.ArtifactID != "source-output" ||
+		dependencies[0].Provenance.SourceArtifacts["retained-commit"] != "source-output" ||
 		dependencies[0].Artifacts[0].SHA256 != "commit-record-digest" ||
 		dependencies[0].Artifacts[0].MediaType != "application/json" {
 		t.Fatalf("packaged campaign commit = %+v", dependencies)
@@ -203,7 +240,7 @@ func TestExternalInputsKeepDistinctNamespacesAndProvenanceAcrossRestart(t *testi
 	}
 	for _, dependency := range dependencies {
 		if dependency.Provenance == nil || dependency.Provenance.RunID == "" ||
-			dependency.Provenance.AttemptID == "" || dependency.Provenance.ArtifactID == "" {
+			dependency.Provenance.AttemptID == "" || len(dependency.Provenance.SourceArtifacts) != 1 {
 			t.Fatalf("missing package provenance: %+v", dependency)
 		}
 	}
