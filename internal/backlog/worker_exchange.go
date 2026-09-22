@@ -468,10 +468,12 @@ func requireOfferedCapabilities(offer workerproto.AssignmentOffer, snapshot doma
 	if !offer.Package.Package.IsActivation() {
 		return nil
 	}
-	if !slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityCampaignSupervision) {
-		return fmt.Errorf(
-			"worker %q does not advertise capability %q; a supervision activation is not offered to it",
-			snapshot.WorkerID, workerproto.CapabilityCampaignSupervision)
+	for _, capability := range offer.Package.Package.RequiredCapabilities {
+		if !slices.Contains(snapshot.Inventory.Capabilities, capability) {
+			return fmt.Errorf(
+				"worker %q does not advertise capability %q; a supervision activation is not offered to it",
+				snapshot.WorkerID, capability)
+		}
 	}
 	return nil
 }

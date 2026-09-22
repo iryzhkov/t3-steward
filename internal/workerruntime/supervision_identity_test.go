@@ -10,6 +10,9 @@ package workerruntime
 // decision receipt named an operator instead of the supervisor.
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +53,73 @@ func testActivationPackage() workerproto.ExecutionPackage {
 // Preparing an activation writes the record, private, carrying selectors and no
 // secret. It is written before any thread exists, because the CLI inside that
 // thread is what reads it.
+func TestActivationPrepareMaterializesVerifiedEvidenceAndPrompt(t *testing.T) {
+	root := t.TempDir()
+	pkg := testActivationPackage()
+	prompt := []byte("authored supervisor prompt")
+	evidence := []byte("{\"activationId\":\"activation-1\",\"gates\":[\"gate-1\"]}")
+	object := func(id, path string, data []byte) workerproto.ArtifactObject {
+		sum := sha256.Sum256(data)
+		return workerproto.ArtifactObject{
+			ID: id, Path: path, Kind: "input", MediaType: "application/octet-stream",
+			Size: int64(len(data)), SHA256: hex.EncodeToString(sum[:]),
+		}
+	}
+	pkg.Prompt = object("supervision-prompt", "prompt.md", prompt)
+	pkg.StaticInputs = []workerproto.ArtifactObject{
+		object("activation-evidence", "inputs/supervision-evidence.json", evidence),
+	}
+	pkg.Limits.MaxArtifactBytes = 1 << 20
+	driver := &LocalDriver{
+		Config: LocalDriverConfig{ArtifactRoot: filepath.Join(root, "artifacts"), RunsRoot: filepath.Join(root, "runs")},
+		Source: mapArtifactSource{pkg.Prompt.ID: prompt, pkg.StaticInputs[0].ID: evidence},
+	}
+	workspace, err := driver.Prepare(context.Background(), pkg)
+	if err != nil {
+		t.Fatalf("prepare activation: %v", err)
+	}
+	for path, want := range map[string][]byte{
+		"inputs/supervision-prompt.md":     prompt,
+		"inputs/supervision-evidence.json": evidence,
+	} {
+		fullPath := filepath.Join(workspace, filepath.FromSlash(path))
+		got, err := os.ReadFile(fullPath)
+		if err != nil || string(got) != string(want) {
+			t.Fatalf("materialized %s = %q, err %v", path, got, err)
+		}
+		info, err := os.Lstat(fullPath)
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+			t.Fatalf("materialized %s mode = %v, err %v", path, info.Mode(), err)
+		}
+	}
+	if info, err := os.Lstat(workspace); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("activation workspace mode = %v, err %v", info.Mode(), err)
+	}
+
+	corruptRoot := t.TempDir()
+	corrupt := &LocalDriver{
+		Config: LocalDriverConfig{ArtifactRoot: filepath.Join(corruptRoot, "artifacts"), RunsRoot: filepath.Join(corruptRoot, "runs")},
+		Source: mapArtifactSource{pkg.Prompt.ID: prompt, pkg.StaticInputs[0].ID: []byte("wrong evidence")},
+	}
+	if _, err := corrupt.Prepare(context.Background(), pkg); err == nil {
+		t.Fatal("prepare accepted evidence with the wrong digest and size")
+	}
+}
+
+func TestActivationRenderedPromptNamesEvidenceAndFitsCap(t *testing.T) {
+	pkg := testActivationPackage()
+	pkg.Supervision.Prompt = strings.Repeat("bounded evidence line\n", 1200)
+	rendered := ActivationPrompt(*pkg.Supervision)
+	if len(rendered) > 32<<10 {
+		t.Fatalf("model-bound prompt is %d bytes, exceeds 32768", len(rendered))
+	}
+	for _, required := range []string{"inputs/supervision-evidence.json", "inputs/supervision-prompt.md", "Read only the subjects needed"} {
+		if !strings.Contains(rendered, required) {
+			t.Fatalf("model-bound prompt does not name %q: %s", required, rendered)
+		}
+	}
+}
+
 func TestActivationWorkspaceCarriesThePrivateSupervisorIdentity(t *testing.T) {
 	workspace := t.TempDir()
 	driver := &LocalDriver{}

@@ -50,7 +50,10 @@ import (
 func ActivationPrompt(activation workerproto.SupervisionActivation) string {
 	var prompt strings.Builder
 	prompt.WriteString(activation.Prompt)
-	prompt.WriteString("\n\nScoped commands\n")
+	prompt.WriteString("\n\nFrozen evidence is available at inputs/supervision-evidence.json.\n")
+	prompt.WriteString("The authored supervisor prompt is available at inputs/supervision-prompt.md.\n")
+	prompt.WriteString("Read only the subjects needed for the current decision; do not reload the full inventory into context.\n")
+	prompt.WriteString("\nScoped commands\n")
 	prompt.WriteString(fmt.Sprintf(
 		"You are supervisor %q on run %s at activation epoch %d. These commands are your only authority.\n"+
 			"Read the current revisions with show before every decision, and give every mutating command a\n"+
@@ -78,21 +81,57 @@ func ActivationPrompt(activation workerproto.SupervisionActivation) string {
 	return prompt.String()
 }
 
-// prepareActivation gives the activation an empty workspace of its own.
-//
-// Empty is the requirement, not a simplification. The activation reads evidence
-// through its scoped commands and through artifact reads, never from a checkout,
-// so a repository here would buy nothing and would take the workflow checkout
-// lock its reviewed tasks need.
-func (d *LocalDriver) prepareActivation(pkg workerproto.ExecutionPackage) (string, error) {
+// prepareActivation gives the activation an isolated evidence workspace without
+// checking out a repository or taking its workspace lock.
+func (d *LocalDriver) prepareActivation(ctx context.Context, pkg workerproto.ExecutionPackage) (string, error) {
 	workspace := filepath.Join(d.workspacePath(pkg), "activation")
 	if err := ensureRealDirectory(workspace); err != nil {
 		return "", fmt.Errorf("prepare supervision activation workspace: %w", err)
+	}
+	if err := os.Chmod(workspace, 0o700); err != nil {
+		return "", fmt.Errorf("restrict supervision activation workspace: %w", err)
+	}
+	objects := append([]workerproto.ArtifactObject{pkg.Prompt}, pkg.StaticInputs...)
+	for _, object := range objects {
+		if _, err := d.cacheArtifact(ctx, object, pkg.Limits.MaxArtifactBytes); err != nil {
+			return "", err
+		}
+	}
+	if err := d.materializeActivationArtifact(pkg.Prompt, filepath.Join(workspace, "inputs", "supervision-prompt.md"), pkg.Limits.MaxArtifactBytes); err != nil {
+		return "", err
+	}
+	for _, object := range pkg.StaticInputs {
+		if filepath.ToSlash(object.Path) != "inputs/supervision-evidence.json" {
+			return "", fmt.Errorf("prepare supervision activation: unsupported static input path %q", object.Path)
+		}
+		if err := d.materializeActivationArtifact(object, filepath.Join(workspace, "inputs", "supervision-evidence.json"), pkg.Limits.MaxArtifactBytes); err != nil {
+			return "", err
+		}
 	}
 	if err := d.writeSupervisionIdentity(pkg, workspace); err != nil {
 		return "", err
 	}
 	return workspace, nil
+}
+
+func (d *LocalDriver) materializeActivationArtifact(object workerproto.ArtifactObject, destination string, maxBytes int64) error {
+	data, err := d.readCachedArtifact(object, maxBytes)
+	if err != nil {
+		return fmt.Errorf("read supervision artifact %q: %w", object.ID, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		return fmt.Errorf("create supervision inputs directory: %w", err)
+	}
+	if err := os.Chmod(filepath.Dir(destination), 0o700); err != nil {
+		return fmt.Errorf("restrict supervision inputs directory: %w", err)
+	}
+	if err := os.WriteFile(destination, data, 0o600); err != nil {
+		return fmt.Errorf("materialize supervision artifact %q: %w", object.ID, err)
+	}
+	if err := os.Chmod(destination, 0o600); err != nil {
+		return fmt.Errorf("restrict supervision artifact %q: %w", object.ID, err)
+	}
+	return nil
 }
 
 // writeSupervisionIdentity records which admin client the overseer's CLI must

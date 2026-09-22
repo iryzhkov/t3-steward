@@ -89,18 +89,21 @@ func (s *Store) CommitGraphRerun(ctx context.Context, c GraphCommit) (domain.Gra
 		if input.WorkflowRunID != run.ID || input.Kind != domain.ArtifactInput {
 			return result, errors.New("invalid rerun input")
 		}
-		// Match the retained source content inside the transaction as well as
-		// in the verified opener before it. A reference is only a reference if
-		// what it points at is still there when the run is created.
-		var count int
-		err = tx.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM coordinator_artifacts WHERE workflow_run_id=? AND sha256=? AND json_extract(record,'$.storagePath')=?",
-			source.Run.ID, input.SHA256, input.StoragePath).Scan(&count)
-		if err != nil {
-			return result, err
-		}
-		if count == 0 {
-			return result, fmt.Errorf("rerun source artifact %s disappeared", input.SHA256)
+		correctedPrompt := c.Request.Prompt != "" && input.ID == "input:rerun:"+c.Request.ID+":prompt"
+		if !correctedPrompt {
+			// Match retained source content inside the transaction as well as in
+			// the verified opener. A reference is only a reference while its
+			// source remains in custody.
+			var count int
+			err = tx.QueryRowContext(ctx,
+				"SELECT COUNT(*) FROM coordinator_artifacts WHERE workflow_run_id=? AND sha256=? AND json_extract(record,'$.storagePath')=?",
+				source.Run.ID, input.SHA256, input.StoragePath).Scan(&count)
+			if err != nil {
+				return result, err
+			}
+			if count == 0 {
+				return result, fmt.Errorf("rerun source artifact %s disappeared", input.SHA256)
+			}
 		}
 		if err = insertImmutableJSON(ctx, tx, "rerun input", input.ID,
 			"INSERT INTO coordinator_artifacts(id,workflow_run_id,task_id,attempt_id,sha256,record) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
