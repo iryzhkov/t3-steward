@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +58,9 @@ func (t recoveryQualificationTransport) DeliverWorkerCommands(
 }
 
 func TestRecoveryProposalCausallyReentersOriginalGateAndContinuesDependency(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("causal recovery qualification executes original verification through Linux systemd containment")
+	}
 	ctx := context.Background()
 	now := time.Date(2026, 9, 22, 15, 0, 0, 0, time.UTC)
 	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))

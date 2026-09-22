@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -71,6 +72,9 @@ exit 0
 }
 
 func TestAttentionStopObservationIsProducedByRuntimeAndConsumedBySQLite(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("durable provider and verification containment requires Linux systemd")
+	}
 	ctx := context.Background()
 	now := runtimeTestNow
 	root := t.TempDir()
