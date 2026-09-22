@@ -404,15 +404,34 @@ type usageExecer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
+type usageMutationHook func(string) error
+
+func usageMutationCheckpoint(hook usageMutationHook, stage string) error {
+	if hook == nil {
+		return nil
+	}
+	return hook(stage)
+}
+
 func recordUsage(ctx context.Context, execer usageExecer, u domain.UsageSample) error {
+	return recordUsageWithHook(ctx, execer, u, nil)
+}
+
+func recordUsageWithHook(ctx context.Context, execer usageExecer, u domain.UsageSample, hook usageMutationHook) error {
 	_, err := execer.ExecContext(ctx,
 		`INSERT OR IGNORE INTO usage_samples(worker_id, event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd, cost_reported, kind, cumulative_tokens, field_presence, boundary_id, incarnation, causal_sequence, diagnostic_code)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.WorkerID, u.SourceEventID, u.ProviderInstanceID, u.ThreadID, u.Model, u.ObservedAt.UTC().Format(time.RFC3339Nano),
 		u.InputTokens, u.CacheWriteTokens, u.CacheReadTokens, u.OutputTokens, u.CostUSD, u.CostReported, u.Kind, u.CumulativeTokens,
 		u.FieldPresence, u.BoundaryID, u.Incarnation, u.Sequence, u.DiagnosticCode)
-	if err != nil || u.Kind != domain.UsageKindDiagnostic {
+	if err != nil {
 		return err
+	}
+	if err := usageMutationCheckpoint(hook, "sample-inserted"); err != nil {
+		return err
+	}
+	if u.Kind != domain.UsageKindDiagnostic {
+		return nil
 	}
 	if u.DiagnosticCode == "overflow" {
 		if _, err = execer.ExecContext(ctx, `UPDATE usage_samples SET
@@ -421,9 +440,15 @@ func recordUsage(ctx context.Context, execer usageExecer, u domain.UsageSample) 
 			u.ObservedAt.UTC().Format(time.RFC3339Nano), u.WorkerID, u.SourceEventID); err != nil {
 			return err
 		}
+		if err := usageMutationCheckpoint(hook, "overflow-marker-updated"); err != nil {
+			return err
+		}
 		_, err = execer.ExecContext(ctx, `INSERT INTO usage_diagnostic_overflow(worker_id, dropped_count) VALUES(?, ?)
 			ON CONFLICT(worker_id) DO UPDATE SET dropped_count = MAX(dropped_count, excluded.dropped_count)`, u.WorkerID, u.CumulativeTokens)
-		return err
+		if err != nil {
+			return err
+		}
+		return usageMutationCheckpoint(hook, "overflow-count-updated")
 	}
 	result, err := execer.ExecContext(ctx, `DELETE FROM usage_samples WHERE rowid IN (
 		SELECT rowid FROM usage_samples WHERE worker_id = ? AND kind = ? AND diagnostic_code <> 'overflow'
@@ -432,15 +457,34 @@ func recordUsage(ctx context.Context, execer usageExecer, u domain.UsageSample) 
 		return err
 	}
 	dropped, err := result.RowsAffected()
-	if err != nil || dropped == 0 {
+	if err != nil {
 		return err
+	}
+	if err := usageMutationCheckpoint(hook, "diagnostics-pruned"); err != nil {
+		return err
+	}
+	if dropped == 0 {
+		return nil
 	}
 	_, err = execer.ExecContext(ctx, `INSERT INTO usage_diagnostic_overflow(worker_id, dropped_count) VALUES(?, ?)
 		ON CONFLICT(worker_id) DO UPDATE SET dropped_count = dropped_count + excluded.dropped_count`, u.WorkerID, dropped)
 	if err != nil {
 		return err
 	}
+	if err := usageMutationCheckpoint(hook, "overflow-count-updated"); err != nil {
+		return err
+	}
+	if _, err = execer.ExecContext(ctx, `DELETE FROM worker_usage_forwarded
+		WHERE worker_id = ? AND event_id = 'diagnostic-overflow'`, u.WorkerID); err != nil {
+		return err
+	}
+	if err := usageMutationCheckpoint(hook, "forwarded-marker-cleared"); err != nil {
+		return err
+	}
 	if _, err = execer.ExecContext(ctx, `DELETE FROM usage_samples WHERE worker_id = ? AND diagnostic_code = 'overflow'`, u.WorkerID); err != nil {
+		return err
+	}
+	if err := usageMutationCheckpoint(hook, "overflow-marker-cleared"); err != nil {
 		return err
 	}
 	_, err = execer.ExecContext(ctx, `INSERT INTO usage_samples(
@@ -449,7 +493,10 @@ func recordUsage(ctx context.Context, execer usageExecer, u domain.UsageSample) 
 		SELECT worker_id, 'diagnostic-overflow', '', '', '', ?, 0, 0, 0, 0, 0, 0, ?,
 			dropped_count, 0, '', '', 0, 'overflow' FROM usage_diagnostic_overflow WHERE worker_id = ?`,
 		u.ObservedAt.UTC().Format(time.RFC3339Nano), domain.UsageKindDiagnostic, u.WorkerID)
-	return err
+	if err != nil {
+		return err
+	}
+	return usageMutationCheckpoint(hook, "overflow-marker-written")
 }
 
 func decodeUsageAcknowledgement(value string) (string, int64, bool) {
@@ -562,14 +609,31 @@ func (s *Store) WorkerUsageAcknowledgements(ctx context.Context, workerID string
 	return ids, rows.Err()
 }
 
-func (s *Store) ClearWorkerUsageAcknowledgements(ctx context.Context, workerID string, ids []string) error {
-	if len(ids) > MaxWorkerUsageDelivery {
+func (s *Store) ClearWorkerUsageAcknowledgements(ctx context.Context, workerID string, acknowledgements []string) error {
+	if len(acknowledgements) > MaxWorkerUsageDelivery {
 		return fmt.Errorf("worker usage acknowledgement exceeds bound")
 	}
-	for _, id := range ids {
-		if _, err := s.db.ExecContext(ctx, `DELETE FROM coordinator_worker_usage_receipts WHERE worker_id = ? AND event_id = ?`, workerID, id); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, acknowledgement := range acknowledgements {
+		id, revision, valid := decodeUsageAcknowledgement(acknowledgement)
+		if !valid {
+			continue
+		}
+		if revision > 0 {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM coordinator_worker_usage_receipts
+				WHERE worker_id = ? AND event_id = ? AND revision <= ?`, workerID, id, revision); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM coordinator_worker_usage_receipts
+			WHERE worker_id = ? AND event_id = ? AND revision = 0`, workerID, id); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }

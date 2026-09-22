@@ -1,7 +1,9 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -238,6 +240,148 @@ func TestAttributedUsageAppliesDeterministicSafetyBound(t *testing.T) {
 	}
 }
 
+func TestCoordinatorUsageCursorKeyPersistsAndRejectsCorruption(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "coordinator.db")
+	store, err := OpenMigrated(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.CoordinatorUsageCursorKey(ctx)
+	if err != nil || len(first) != 32 {
+		t.Fatalf("first key length=%d err=%v", len(first), err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenMigrated(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	second, err := store.CoordinatorUsageCursorKey(ctx)
+	if err != nil || !bytes.Equal(first, second) {
+		t.Fatalf("restart key changed: equal=%v err=%v", bytes.Equal(first, second), err)
+	}
+	encoded, ok, err := store.GetKV(ctx, coordinatorUsageCursorKeyName)
+	if err != nil || !ok {
+		t.Fatalf("stored key missing: ok=%v err=%v", ok, err)
+	}
+	if err := store.SetKV(ctx, coordinatorUsageCursorKeyName, "corrupt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CoordinatorUsageCursorKey(ctx); err == nil {
+		t.Fatal("corrupt coordinator cursor key was accepted")
+	}
+	if err := store.SetKV(ctx, coordinatorUsageCursorKeyName, encoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM kv WHERE key = ?`, coordinatorUsageCursorKeyName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CoordinatorUsageCursorKey(ctx); err == nil {
+		t.Fatal("missing initialized coordinator cursor key was regenerated")
+	}
+}
+
+func TestRecordUsageRollsBackDiagnosticOverflowAtEveryCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "worker.db")
+	store, err := OpenMigrated(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	for i := 0; i < 1001; i++ {
+		if err := store.RecordUsage(ctx, domain.UsageSample{
+			WorkerID: "worker-atomic", ProviderInstanceID: "provider", ThreadID: "thread",
+			ObservedAt: now.Add(time.Duration(i) * time.Second), SourceEventID: fmt.Sprintf("baseline-%04d", i),
+			Kind: domain.UsageKindDiagnostic, DiagnosticCode: "malformed",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.WorkerUsageBatch(ctx, []string{"diagnostic-overflow@1"}, MaxWorkerUsageDelivery); err != nil {
+		t.Fatal(err)
+	}
+	assertOriginal := func() {
+		t.Helper()
+		var ordinary, dropped, marker, forwarded, candidate int64
+		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples
+			WHERE worker_id = 'worker-atomic' AND diagnostic_code <> 'overflow'`).Scan(&ordinary); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.db.QueryRowContext(ctx, `SELECT dropped_count FROM usage_diagnostic_overflow
+			WHERE worker_id = 'worker-atomic'`).Scan(&dropped); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.db.QueryRowContext(ctx, `SELECT cumulative_tokens FROM usage_samples
+			WHERE worker_id = 'worker-atomic' AND diagnostic_code = 'overflow'`).Scan(&marker); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM worker_usage_forwarded
+			WHERE worker_id = 'worker-atomic' AND event_id = 'diagnostic-overflow' AND revision = 1`).Scan(&forwarded); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples
+			WHERE worker_id = 'worker-atomic' AND event_id = 'candidate'`).Scan(&candidate); err != nil {
+			t.Fatal(err)
+		}
+		if ordinary != 1000 || dropped != 1 || marker != 1 || forwarded != 1 || candidate != 0 {
+			t.Fatalf("rollback state ordinary=%d dropped=%d marker=%d forwarded=%d candidate=%d",
+				ordinary, dropped, marker, forwarded, candidate)
+		}
+	}
+	candidate := domain.UsageSample{
+		WorkerID: "worker-atomic", ProviderInstanceID: "provider", ThreadID: "thread",
+		ObservedAt: now.Add(2 * time.Hour), SourceEventID: "candidate",
+		Kind: domain.UsageKindDiagnostic, DiagnosticCode: "malformed",
+	}
+	for _, stage := range []string{
+		"sample-inserted", "diagnostics-pruned", "overflow-count-updated",
+		"forwarded-marker-cleared", "overflow-marker-cleared", "overflow-marker-written",
+	} {
+		store.usageRecordHook = func(got string) error {
+			if got == stage {
+				return errors.New("injected interruption")
+			}
+			return nil
+		}
+		if err := store.RecordUsage(ctx, candidate); err == nil {
+			t.Fatalf("checkpoint %q did not interrupt", stage)
+		}
+		store.usageRecordHook = nil
+		assertOriginal()
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenMigrated(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.RecordUsage(ctx, candidate); err != nil {
+		t.Fatal(err)
+	}
+	var dropped, marker, forwarded int64
+	if err := store.db.QueryRowContext(ctx, `SELECT dropped_count FROM usage_diagnostic_overflow
+		WHERE worker_id = 'worker-atomic'`).Scan(&dropped); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT cumulative_tokens FROM usage_samples
+		WHERE worker_id = 'worker-atomic' AND diagnostic_code = 'overflow'`).Scan(&marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM worker_usage_forwarded
+		WHERE worker_id = 'worker-atomic' AND event_id = 'diagnostic-overflow'`).Scan(&forwarded); err != nil {
+		t.Fatal(err)
+	}
+	if dropped != 2 || marker != 2 || forwarded != 0 {
+		t.Fatalf("retry state dropped=%d marker=%d forwarded=%d", dropped, marker, forwarded)
+	}
+}
+
 func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
@@ -353,8 +497,29 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := coordinator.ClearWorkerUsageAcknowledgements(ctx, "worker-diagnostic", []string{"diagnostic-overflow@1"}); err != nil {
+		t.Fatal(err)
+	}
+	afterStale, err := coordinator.WorkerUsageAcknowledgements(ctx, "worker-diagnostic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retainedCurrent bool
+	for _, acknowledgement := range afterStale {
+		retainedCurrent = retainedCurrent || acknowledgement == "diagnostic-overflow@6"
+	}
+	if !retainedCurrent {
+		t.Fatalf("stale cleanup removed current receipt: %#v", afterStale)
+	}
 	if _, err := store.WorkerUsageBatch(ctx, currentAcks, MaxWorkerUsageDelivery); err != nil {
 		t.Fatal(err)
+	}
+	if err := coordinator.ClearWorkerUsageAcknowledgements(ctx, "worker-diagnostic", currentAcks); err != nil {
+		t.Fatal(err)
+	}
+	remainingAcks, err := coordinator.WorkerUsageAcknowledgements(ctx, "worker-diagnostic")
+	if err != nil || len(remainingAcks) != 0 {
+		t.Fatalf("current cleanup left receipts=%#v err=%v", remainingAcks, err)
 	}
 	for name, candidate := range map[string]*Store{"worker": store, "coordinator": coordinator} {
 		var markers int

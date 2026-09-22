@@ -4,8 +4,10 @@ package sqlite
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,10 +25,11 @@ import (
 
 // Store is the SQLite-backed state store.
 type Store struct {
-	db        *sql.DB
-	now       func() time.Time
-	path      string
-	ownerLock *os.File
+	db              *sql.DB
+	now             func() time.Time
+	path            string
+	ownerLock       *os.File
+	usageRecordHook usageMutationHook
 }
 
 var migrations = []string{
@@ -735,6 +738,48 @@ func (s *Store) SetKV(ctx context.Context, key, value string) error {
 	return err
 }
 
+const (
+	coordinatorUsageCursorKeyName    = "coordinator.usage-cursor-key.v1"
+	coordinatorUsageCursorMarkerName = "coordinator.usage-cursor-key.initialized.v1"
+)
+
+// CoordinatorUsageCursorKey loads the coordinator-local cursor authentication
+// key, creating it transactionally on first use. The key never crosses a
+// protocol boundary; the encoded value remains part of coordinator DB backups.
+func (s *Store) CoordinatorUsageCursorKey(ctx context.Context) ([]byte, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var encoded, marker string
+	keyErr := tx.QueryRowContext(ctx, `SELECT value FROM kv WHERE key = ?`, coordinatorUsageCursorKeyName).Scan(&encoded)
+	markerErr := tx.QueryRowContext(ctx, `SELECT value FROM kv WHERE key = ?`, coordinatorUsageCursorMarkerName).Scan(&marker)
+	switch {
+	case errors.Is(keyErr, sql.ErrNoRows) && errors.Is(markerErr, sql.ErrNoRows):
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return nil, fmt.Errorf("generate coordinator usage cursor key: %w", err)
+		}
+		encoded = base64.RawURLEncoding.EncodeToString(key)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO kv(key, value) VALUES (?, ?), (?, ?)`,
+			coordinatorUsageCursorKeyName, encoded, coordinatorUsageCursorMarkerName, "1"); err != nil {
+			return nil, fmt.Errorf("persist coordinator usage cursor key: %w", err)
+		}
+	case keyErr != nil || markerErr != nil || marker != "1":
+		return nil, errors.New("coordinator usage cursor key is missing or corrupt")
+	}
+	key, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(key) != 32 {
+		return nil, errors.New("coordinator usage cursor key is corrupt")
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit coordinator usage cursor key: %w", err)
+	}
+	return key, nil
+}
+
 // RecordObservation stores one accepted quota reading. Duplicate event ids
 // per bucket are ignored.
 func (s *Store) RecordObservation(ctx context.Context, o domain.Observation) error {
@@ -782,7 +827,15 @@ func (s *Store) Observations(ctx context.Context, from, to time.Time) ([]domain.
 
 // RecordUsage stores one token usage sample. Duplicates are ignored per worker.
 func (s *Store) RecordUsage(ctx context.Context, u domain.UsageSample) error {
-	return recordUsage(ctx, s.db, u)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := recordUsageWithHook(ctx, tx, u, s.usageRecordHook); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UsageSamples returns samples in [from, to), oldest first, joined to the

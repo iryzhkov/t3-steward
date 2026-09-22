@@ -1,6 +1,7 @@
 package backupsnapshot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,10 @@ func TestSnapshotBackupRestoreDrill(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.SetKV(context.Background(), "snapshot-test", "preserved"); err != nil {
+		t.Fatal(err)
+	}
+	cursorKey, err := store.CoordinatorUsageCursorKey(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -66,6 +71,10 @@ func TestSnapshotBackupRestoreDrill(t *testing.T) {
 	value, ok, err := restored.GetKV(context.Background(), "snapshot-test")
 	if err != nil || !ok || value != "preserved" {
 		t.Fatalf("restored kv = %q, %v, %v", value, ok, err)
+	}
+	restoredCursorKey, err := restored.CoordinatorUsageCursorKey(context.Background())
+	if err != nil || !bytes.Equal(cursorKey, restoredCursorKey) {
+		t.Fatalf("restored cursor key changed: equal=%v err=%v", bytes.Equal(cursorKey, restoredCursorKey), err)
 	}
 	raw, err := os.ReadFile(filepath.Join(restoredArtifacts, "runs", "run-1", "result.txt"))
 	if err != nil || string(raw) != "verified artifact\n" {

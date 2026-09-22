@@ -2,6 +2,7 @@ package backlogadmin
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -76,7 +77,10 @@ func TestUsageQueryReturnsAuthoritativeDispatchIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cursorKey := []byte("restart-stable-coordinator-cursor-key")
+	cursorKey, err := store.CoordinatorUsageCursorKey(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := service.SetUsageCursorKey(cursorKey); err != nil {
 		t.Fatal(err)
 	}
@@ -160,6 +164,23 @@ func TestUsageQueryReturnsAuthoritativeDispatchIdentity(t *testing.T) {
 	forgedCursor := base64.RawURLEncoding.EncodeToString(forgedRaw)
 	if _, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage", UsageRaw: true, UsageCursor: forgedCursor}); !errors.Is(err, ErrInvalidQuery) {
 		t.Fatalf("publicly recomputed forged cursor error = %v", err)
+	}
+	// A remote admin client has both protocol-direction credentials. Neither is
+	// the coordinator-local cursor key persisted in the coordinator database.
+	for _, credential := range [][]byte{
+		[]byte("remote-client-request-secret"),
+		[]byte("remote-client-response-verification-secret"),
+	} {
+		forged.EventID = "credential-forged-keyset"
+		unsigned, _ = json.Marshal(forged.usageCursorPayload)
+		mac := hmac.New(sha256.New, credential)
+		_, _ = mac.Write(unsigned)
+		forged.Digest = base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+		forgedRaw, _ = json.Marshal(forged)
+		forgedCursor = base64.RawURLEncoding.EncodeToString(forgedRaw)
+		if _, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage", UsageRaw: true, UsageCursor: forgedCursor}); !errors.Is(err, ErrInvalidQuery) {
+			t.Fatalf("remote credential forged cursor: %v", err)
+		}
 	}
 	restarted, err := New(store, &allowAuthorizer{})
 	if err != nil {
