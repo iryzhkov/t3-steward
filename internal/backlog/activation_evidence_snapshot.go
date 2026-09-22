@@ -92,7 +92,9 @@ type ActivationEvidenceObject struct {
 	SHA256    string
 }
 
-// BuildActivationEvidenceSnapshot builds canonical, redacted bytes. Ordering is
+// BuildActivationEvidenceSnapshot builds canonical bytes. Untrusted free prose
+// is redacted; exact authored task and gate contracts remain authoritative and
+// are retained verbatim behind supervisor-only artifact access. Ordering is
 // normalized so replaying the same activation produces the same ID and digest.
 func BuildActivationEvidenceSnapshot(snapshot ActivationSnapshot) (ActivationEvidenceObject, error) {
 	if err := snapshot.Validate(); err != nil {
@@ -211,10 +213,11 @@ func BuildActivationEvidenceObject(evidence ActivationEvidenceSnapshot) (Activat
 
 // ActivationEvidenceArtifact constructs metadata for bytes already placed in
 // immutable coordinator artifact custody by the integration layer.
-func ActivationEvidenceArtifact(runID string, object ActivationEvidenceObject, storagePath string, createdAt time.Time) domain.Artifact {
+func ActivationEvidenceArtifact(runID, taskID, attemptID string, object ActivationEvidenceObject, storagePath string, createdAt time.Time) domain.Artifact {
+	evidence, _ := DecodeActivationEvidenceSnapshot(object.Data)
 	return domain.Artifact{
-		ID: object.ID, WorkflowRunID: runID, Kind: domain.ArtifactInput,
-		Name: "supervision-evidence.json", MediaType: object.MediaType,
+		ID: object.ID, WorkflowRunID: runID, TaskID: taskID, AttemptID: attemptID, Kind: domain.ArtifactInput,
+		Name: "supervision-evidence-" + evidence.ActivationID + ".json", MediaType: object.MediaType,
 		Size: object.Size, SHA256: object.SHA256, StoragePath: storagePath,
 		Producer: "coordinator/supervision", CreatedAt: createdAt.UTC(),
 	}
@@ -229,7 +232,7 @@ func validateActivationEvidenceArtifact(evidence ActivationEvidenceSnapshot, art
 		return err
 	}
 	if artifact.ID != object.ID || artifact.WorkflowRunID != evidence.RunID ||
-		artifact.Kind != domain.ArtifactInput || artifact.Name != "supervision-evidence.json" ||
+		artifact.Kind != domain.ArtifactInput || artifact.Name != "supervision-evidence-"+evidence.ActivationID+".json" ||
 		artifact.MediaType != object.MediaType || artifact.Size != object.Size ||
 		artifact.SHA256 != object.SHA256 || artifact.StoragePath == "" {
 		return &ActivationPackageError{

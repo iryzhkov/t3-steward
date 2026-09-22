@@ -50,6 +50,8 @@ type CoordinatorOfferBuilder struct {
 	// from. It is nil in a deployment that runs no supervised campaign, and an
 	// activation assignment is then refused rather than built as a task.
 	Supervision SupervisionOfferSource
+	// ActivationEvidence retains and retrieves immutable activation snapshots.
+	ActivationEvidence *CoordinatorArtifactStore
 	// SupervisorPrincipal and SupervisorCredentialReference describe the admin
 	// client an overseer authenticates as on the worker host. See the
 	// co-tenancy limitation recorded on workerproto.SupervisionActivation.
