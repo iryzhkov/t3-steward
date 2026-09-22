@@ -99,6 +99,46 @@ func TestActivationEvidenceSnapshotIsStableAndPreservesReviewContract(t *testing
 	}
 }
 
+func TestActivationEvidenceSnapshotRedactsFreeTextWithoutMutatingContracts(t *testing.T) {
+	const secret = "literal-secret-value"
+	snapshot := ActivationSnapshot{
+		ActivationID: "activation-1", RunID: "run-1", Epoch: 1,
+		Tasks: []ActivationTaskView{{
+			TaskID: "task-1", State: "failed", Verification: "failure included " + secret,
+		}},
+		TaskContracts: []domain.Task{{
+			ID: "task-1", Verification: []string{"authoritative command " + secret},
+		}},
+		Incidents: []ActivationIncidentView{{
+			IncidentID: "incident-1", Reason: "operator note " + secret,
+		}},
+		Triggers:    []CoalescedTrigger{{Kind: TriggerGateReviewReady, Subject: "incident-1", Reasons: []string{"trigger " + secret}}},
+		Actions:     []ActivationAction{{Name: "review"}},
+		Constraints: []string{"free-form constraint " + secret},
+		Redactor:    Redactor{Literals: []string{secret}},
+	}
+	object, err := BuildActivationEvidenceSnapshot(snapshot)
+	if err != nil {
+		t.Fatalf("build redacted snapshot: %v", err)
+	}
+	if strings.Contains(string(object.Data), "operator note "+secret) ||
+		strings.Contains(string(object.Data), "failure included "+secret) ||
+		strings.Contains(string(object.Data), "free-form constraint "+secret) {
+		t.Fatalf("snapshot retained secret in free text: %s", object.Data)
+	}
+	frozen, err := DecodeActivationEvidenceSnapshot(object.Data)
+	if err != nil {
+		t.Fatalf("decode redacted snapshot: %v", err)
+	}
+	if frozen.TaskContracts[0].Verification[0] != "authoritative command "+secret {
+		t.Fatalf("authoritative contract changed: %+v", frozen.TaskContracts[0])
+	}
+	if snapshot.Tasks[0].Verification != "failure included "+secret ||
+		snapshot.Incidents[0].Reason != "operator note "+secret {
+		t.Fatalf("snapshot builder mutated its input: %+v", snapshot)
+	}
+}
+
 func TestActivationPackageCarriesRetrievableFrozenEvidence(t *testing.T) {
 	now := supervisionTestTime()
 	record := supervisionTestRecord()
