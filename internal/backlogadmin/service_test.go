@@ -31,7 +31,8 @@ func TestUsageQueryReturnsAuthoritativeDispatchIdentity(t *testing.T) {
 	ctx := context.Background()
 	store := openAdminTestStore(t)
 	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
-		Attempts: []domain.Attempt{{ID: "attempt-usage", WorkflowRunID: "run-usage", TaskID: "task-usage", Number: 1}},
+		WorkflowRuns: []domain.WorkflowRun{{ID: "run-usage", Progress: domain.ProgressSucceeded, CreatedAt: adminTestNow, UpdatedAt: adminTestNow, CompletedAt: &adminTestNow}},
+		Attempts:     []domain.Attempt{{ID: "attempt-usage", WorkflowRunID: "run-usage", TaskID: "task-usage", Number: 1, Progress: domain.ProgressSucceeded, CompletedAt: &adminTestNow}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +62,27 @@ func TestUsageQueryReturnsAuthoritativeDispatchIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage"})
+	summary, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.UsageReport == nil || len(summary.Usage) != 0 || len(summary.UsageReport.Samples) != 0 ||
+		summary.UsageReport.Totals.UncachedInputTokens != 5 ||
+		len(summary.UsageReport.ByTask) != 1 || summary.UsageReport.ByTask[0].Key != "task-usage" ||
+		summary.UsageReport.ByTask[0].Outcome != domain.ProgressSucceeded ||
+		summary.UsageReport.RunProgress != domain.ProgressSucceeded {
+		t.Fatalf("bounded summary = %#v", summary)
+	}
+	rawJSON, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"prompt text", "transcript", "credential"} {
+		if strings.Contains(string(rawJSON), secret) {
+			t.Fatalf("usage JSON leaked private content %q: %s", secret, rawJSON)
+		}
+	}
+	response, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage", UsageRaw: true, UsageLimit: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

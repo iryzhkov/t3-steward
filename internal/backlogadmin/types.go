@@ -123,6 +123,9 @@ type Query struct {
 	ArtifactID    string    `json:"artifactId,omitempty"`
 	CommandID     string    `json:"commandId,omitempty"`
 	Filter        Filter    `json:"filter,omitempty"`
+	UsageRaw      bool      `json:"usageRaw,omitempty"`
+	UsageLimit    int       `json:"usageLimit,omitempty"`
+	UsageCursor   string    `json:"usageCursor,omitempty"`
 	// Viability carries the projected requirements of a campaign that has not
 	// been submitted. It is present only on a QueryViability query, and it
 	// never carries the bundle.
@@ -195,6 +198,7 @@ type Response struct {
 	ResourceLocks  []ResourceLock        `json:"resourceLocks,omitempty"`
 	Commands       []Command             `json:"commands,omitempty"`
 	Usage          []domain.UsageSample  `json:"usage,omitempty"`
+	UsageReport    *domain.UsageReport   `json:"usageReport,omitempty"`
 	UsageCoverage  *domain.UsageCoverage `json:"usageCoverage,omitempty"`
 	UsageSemantics string                `json:"usageSemantics,omitempty"`
 	Viability      *ViabilityMatrix      `json:"viability,omitempty"`

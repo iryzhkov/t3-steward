@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,7 +37,7 @@ type usageReader interface {
 	AttributedUsage(context.Context, string) (domain.UsageReport, error)
 }
 
-const usageSemantics = "raw provider samples: call rows are per API call; turn rows are whole-turn totals and overlap calls, so clients must not sum both; cumulative totals are retained only for replay deduplication"
+const usageSemantics = "whole-turn rows supersede call rows from the same authenticated session observed no later than that turn summary; later unmatched calls remain visible and make coverage partial; otherwise source-event-deduplicated calls contribute, equal cumulative values are replay duplicates, and counter decreases begin a new rotation"
 
 type UnknownRecoveryWriter interface {
 	RecoverUnknownAssignment(context.Context, domain.UnknownAssignmentRecovery) (domain.UnknownAssignmentRecoveryDecision, error)
@@ -337,6 +338,10 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 	case QueryCommands:
 		response.Commands = view.commands(query)
 	case QueryUsage:
+		run, exists := view.runs[query.WorkflowRunID]
+		if !exists {
+			return Response{}, notFound("workflow run", query.WorkflowRunID)
+		}
 		reader, ok := s.reader.(usageReader)
 		if !ok {
 			return Response{}, fmt.Errorf("%w: usage attribution is unavailable", ErrInvalidQuery)
@@ -345,7 +350,48 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		if usageErr != nil {
 			return Response{}, fmt.Errorf("load attributed usage: %w", usageErr)
 		}
-		response.Usage = usage.Samples
+		taskProgress := map[string]domain.ProgressState{}
+		attemptProgress := map[string]domain.ProgressState{}
+		for _, attempts := range view.attempts {
+			for _, attempt := range attempts {
+				if attempt.WorkflowRunID != query.WorkflowRunID {
+					continue
+				}
+				taskProgress[attempt.TaskID] = attempt.Progress
+				attemptProgress[attempt.ID] = attempt.Progress
+			}
+		}
+		hardTruncated := usage.Coverage.Truncated
+		usage = domain.NormalizeUsageReport(usage, domain.UsageNormalizationContext{
+			Now: view.now, RunProgress: run.Progress, RunCompletedAt: run.CompletedAt,
+			TaskProgress: taskProgress, AttemptProgress: attemptProgress, HardTruncated: hardTruncated,
+		})
+		raw := usage.Samples
+		usage.Samples = nil
+		if query.UsageRaw {
+			offset := 0
+			if query.UsageCursor != "" {
+				parsed, parseErr := strconv.Atoi(query.UsageCursor)
+				if parseErr != nil || parsed < 0 || parsed > len(raw) {
+					return Response{}, fmt.Errorf("%w: invalid usage cursor", ErrInvalidQuery)
+				}
+				offset = parsed
+			}
+			limit := query.UsageLimit
+			if limit == 0 {
+				limit = 100
+			}
+			end := offset + limit
+			if end > len(raw) {
+				end = len(raw)
+			}
+			usage.Samples = append([]domain.UsageSample(nil), raw[offset:end]...)
+			if end < len(raw) {
+				usage.NextCursor = strconv.Itoa(end)
+			}
+			response.Usage = usage.Samples
+		}
+		response.UsageReport = &usage
 		response.UsageCoverage = &usage.Coverage
 		response.UsageSemantics = usageSemantics
 	case QueryQuarantine:
@@ -427,8 +473,10 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 func validQuery(query Query) bool {
 	switch query.Kind {
 	case QueryStatus, QueryWorkflows, QuerySchedules, QueryWorkers, QueryQuota,
-		QueryReservations, QueryLocks, QueryUsage, QueryQuarantine, QueryProjects:
+		QueryReservations, QueryLocks, QueryQuarantine, QueryProjects:
 		return true
+	case QueryUsage:
+		return query.WorkflowRunID != "" && query.UsageLimit >= 0 && query.UsageLimit <= 200
 	case QueryCommands:
 		return query.TaskID == "" || query.WorkflowRunID != ""
 	case QueryWorkflow, QueryGraph, QueryEvents, QueryDiagnose:

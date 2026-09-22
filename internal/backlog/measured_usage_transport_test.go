@@ -360,7 +360,7 @@ func TestMeasuredUsageSignedReconcileClaimReplayAndPublicQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	response, err := admin.Query(ctx, backlogadmin.Query{
-		Version: backlogadmin.Version, Kind: backlogadmin.QueryUsage, WorkflowRunID: "run",
+		Version: backlogadmin.Version, Kind: backlogadmin.QueryUsage, WorkflowRunID: "run", UsageRaw: true,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -67,6 +67,27 @@ func TestParseBacklogAdminQuery(t *testing.T) {
 	}
 }
 
+func TestParseBacklogUsageRawBounds(t *testing.T) {
+	query, display, err := parseBacklogAdminQuery([]string{"usage", "run-1", "--raw", "--limit", "17", "--cursor", "3", "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !display.JSON || query.Kind != backlogadmin.QueryUsage || query.WorkflowRunID != "run-1" ||
+		!query.UsageRaw || query.UsageLimit != 17 || query.UsageCursor != "3" {
+		t.Fatalf("usage query = %#v, display = %#v", query, display)
+	}
+	for _, args := range [][]string{
+		{"usage"},
+		{"usage", "run-1", "--limit", "1"},
+		{"usage", "run-1", "--raw", "--limit", "201"},
+		{"usage", "run-1", "--raw", "--raw"},
+	} {
+		if _, _, err := parseBacklogAdminQuery(args); err == nil {
+			t.Errorf("parseBacklogAdminQuery(%q) succeeded", args)
+		}
+	}
+}
+
 func TestParseWorkflowFilters(t *testing.T) {
 	query, display, err := parseBacklogAdminQuery([]string{
 		"list", "--project", "steward", "--schedule", "nightly",

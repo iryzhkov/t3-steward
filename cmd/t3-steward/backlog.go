@@ -41,7 +41,7 @@ Coordinator read commands:
   diagnose <workflow-run> [--json]
   task show <workflow-run>/<task> [--json]
   events <workflow-run> [--json]
-  usage [<workflow-run>] [--json]   Raw attributed samples; call and turn rows overlap.
+  usage <workflow-run> [--raw] [--limit N] [--cursor C] [--json]   Bounded normalized usage.
   explain <workflow-run>/<task> [--json]
   artifacts [<task>|<workflow-run>/<task>] [--json]
   artifact show <artifact> [--json]
