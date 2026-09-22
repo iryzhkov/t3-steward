@@ -531,9 +531,10 @@ const (
 // from this record, not from conversation history: a replacement thread is
 // started from a compact snapshot at a new epoch.
 type Activation struct {
-	ID    string `json:"id"`
-	RunID string `json:"runId"`
-	Epoch int64  `json:"epoch"`
+	ID      string                    `json:"id"`
+	RunID   string                    `json:"runId"`
+	Epoch   int64                     `json:"epoch"`
+	Purpose RecoveryActivationPurpose `json:"purpose,omitempty"`
 	// DispatchIdentity is deterministic. A provably undelivered dispatch is
 	// retried with this same identity rather than a new one.
 	DispatchIdentity string `json:"dispatchIdentity"`

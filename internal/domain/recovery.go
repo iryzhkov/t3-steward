@@ -85,6 +85,41 @@ type RecoveryDiagnosticIdentity struct {
 	StrategyFingerprint string `json:"strategyFingerprint"`
 }
 
+type RepairAttemptSupplement struct {
+	OperationID         string                     `json:"operationId"`
+	IncidentID          string                     `json:"incidentId"`
+	SourceAttemptID     string                     `json:"sourceAttemptId"`
+	AttemptID           string                     `json:"attemptId"`
+	InstructionArtifact ArtifactDigest             `json:"instructionArtifact"`
+	CheckpointArtifacts []ArtifactDigest           `json:"checkpointArtifacts,omitempty"`
+	Diagnostic          RecoveryDiagnosticIdentity `json:"diagnostic"`
+	CreatedAt           time.Time                  `json:"createdAt"`
+}
+
+type RecoveryRetryRequest struct {
+	OperationID              string                     `json:"operationId"`
+	RunID                    string                     `json:"runId"`
+	IncidentID               string                     `json:"incidentId"`
+	ExpectedIncidentRevision int64                      `json:"expectedIncidentRevision"`
+	ActivationID             string                     `json:"activationId"`
+	ActivationEpoch          int64                      `json:"activationEpoch"`
+	Principal                string                     `json:"principal"`
+	SourceAttemptID          string                     `json:"sourceAttemptId"`
+	SourceAttemptRevision    int64                      `json:"sourceAttemptRevision"`
+	InstructionArtifact      ArtifactDigest             `json:"instructionArtifact"`
+	CheckpointArtifacts      []ArtifactDigest           `json:"checkpointArtifacts,omitempty"`
+	Diagnostic               RecoveryDiagnosticIdentity `json:"diagnostic"`
+	RequestedAt              time.Time                  `json:"requestedAt"`
+}
+
+type RecoveryRetryReceipt struct {
+	OperationID   string    `json:"operationId"`
+	IncidentID    string    `json:"incidentId"`
+	AttemptID     string    `json:"attemptId"`
+	AttemptNumber int       `json:"attemptNumber"`
+	CommittedAt   time.Time `json:"committedAt"`
+}
+
 type RecoveryIncident struct {
 	Contract       RecoveryContractVersion    `json:"contract"`
 	Purpose        RecoveryActivationPurpose  `json:"purpose"`
