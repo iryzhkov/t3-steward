@@ -12,6 +12,13 @@ import (
 )
 
 const MaxWorkerUsageDelivery = 128
+const MaxRunUsageAggregation = 10000
+
+const coordinatorMigrationV27 = `
+ALTER TABLE usage_samples ADD COLUMN cost_reported INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX usage_samples_session_order
+	ON usage_samples(worker_id, provider, thread_id, observed_at, event_id);
+`
 
 const coordinatorMigrationV26 = `
 DROP TRIGGER IF EXISTS immutable_coordinator_usage_binding;
@@ -261,7 +268,7 @@ func bindAssignmentUsageTx(ctx context.Context, tx *sql.Tx, assignment *domain.A
 const attributedUsageSelect = `SELECT
 	u.worker_id, u.event_id, u.provider, u.thread_id, u.model, u.observed_at,
 	u.input_tokens, u.cache_write_tokens, u.cache_read_tokens, u.output_tokens,
-	u.cost_usd, u.kind, u.cumulative_tokens,
+	u.cost_usd, u.cost_reported, u.kind, u.cumulative_tokens,
 	CASE WHEN b.thread_id IS NULL THEN 'unattributed' ELSE 'attributed' END,
 	COALESCE(b.workflow_run_id, ''), COALESCE(b.task_id, ''),
 	COALESCE(b.attempt_id, ''), COALESCE(b.assignment_id, ''),
@@ -281,7 +288,7 @@ func scanAttributedUsage(rows *sql.Rows) ([]domain.UsageSample, error) {
 		if err := rows.Scan(
 			&u.WorkerID, &u.SourceEventID, &u.ProviderInstanceID, &u.ThreadID, &u.Model, &at,
 			&u.InputTokens, &u.CacheWriteTokens, &u.CacheReadTokens, &u.OutputTokens,
-			&u.CostUSD, &u.Kind, &u.CumulativeTokens,
+			&u.CostUSD, &u.CostReported, &u.Kind, &u.CumulativeTokens,
 			&u.Attribution.Status, &u.Attribution.WorkflowRunID, &u.Attribution.TaskID,
 			&u.Attribution.AttemptID, &u.Attribution.AssignmentID,
 			&u.Attribution.AssignmentEpoch, &u.Attribution.ActivationID,
@@ -300,7 +307,7 @@ func scanAttributedUsage(rows *sql.Rows) ([]domain.UsageSample, error) {
 
 // AttributedUsage is bounded to one run and separately reports global unknown coverage.
 func (s *Store) AttributedUsage(ctx context.Context, runID string) (domain.UsageReport, error) {
-	report := domain.UsageReport{Coverage: domain.UsageCoverage{
+	report := domain.UsageReport{WorkflowRunID: runID, Coverage: domain.UsageCoverage{
 		Reason: "provider samples without an authoritative dispatch binding are global/unscoped and are not assigned to this run",
 	}}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples AS u
@@ -314,12 +321,20 @@ func (s *Store) AttributedUsage(ctx context.Context, runID string) (domain.Usage
 		return report, nil
 	}
 	rows, err := s.db.QueryContext(ctx, attributedUsageSelect+
-		` WHERE b.workflow_run_id = ? ORDER BY u.observed_at, u.event_id`, runID)
+		` WHERE b.workflow_run_id = ? ORDER BY u.observed_at, u.worker_id, u.event_id LIMIT ?`,
+		runID, MaxRunUsageAggregation+1)
 	if err != nil {
 		return domain.UsageReport{}, err
 	}
 	report.Samples, err = scanAttributedUsage(rows)
-	return report, err
+	if err != nil {
+		return domain.UsageReport{}, err
+	}
+	if len(report.Samples) > MaxRunUsageAggregation {
+		report.Samples = report.Samples[:MaxRunUsageAggregation]
+		report.Coverage.Truncated = true
+	}
+	return report, nil
 }
 
 type usageExecer interface {
@@ -328,10 +343,10 @@ type usageExecer interface {
 
 func recordUsage(ctx context.Context, execer usageExecer, u domain.UsageSample) error {
 	_, err := execer.ExecContext(ctx,
-		`INSERT OR IGNORE INTO usage_samples(worker_id, event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd, kind, cumulative_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO usage_samples(worker_id, event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd, cost_reported, kind, cumulative_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.WorkerID, u.SourceEventID, u.ProviderInstanceID, u.ThreadID, u.Model, u.ObservedAt.UTC().Format(time.RFC3339Nano),
-		u.InputTokens, u.CacheWriteTokens, u.CacheReadTokens, u.OutputTokens, u.CostUSD, u.Kind, u.CumulativeTokens)
+		u.InputTokens, u.CacheWriteTokens, u.CacheReadTokens, u.OutputTokens, u.CostUSD, u.CostReported, u.Kind, u.CumulativeTokens)
 	return err
 }
 

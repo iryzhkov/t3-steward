@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,8 +24,9 @@ var ErrNotUsage = errors.New("not a usable token-usage event")
 //
 // Claude: the `claude/result` message that ends a turn carries
 // `modelUsage`, one entry per model the turn used (subagents included), so
-// each entry becomes a sample with an exact model. Per-call
-// `message_delta` events are ignored to avoid double counting.
+// each entry becomes a sample with an exact model. Per-call `message_delta`
+// events are retained as raw evidence; report normalization excludes only
+// calls causally covered by a later whole-turn result.
 //
 // Codex: every `thread/tokenUsage/updated` notification carries the last
 // call's counts in `tokenUsage.last`; the model is left empty and filled in
@@ -55,12 +57,12 @@ type usageRecord struct {
 }
 
 type claudeModelUsage struct {
-	InputTokens              int64   `json:"inputTokens"`
-	OutputTokens             int64   `json:"outputTokens"`
-	CacheReadInputTokens     int64   `json:"cacheReadInputTokens"`
-	CacheCreationInputTokens int64   `json:"cacheCreationInputTokens"`
-	CostUSD                  float64 `json:"costUSD"`
-	CanonicalModel           string  `json:"canonicalModel"`
+	InputTokens              int64    `json:"inputTokens"`
+	OutputTokens             int64    `json:"outputTokens"`
+	CacheReadInputTokens     int64    `json:"cacheReadInputTokens"`
+	CacheCreationInputTokens int64    `json:"cacheCreationInputTokens"`
+	CostUSD                  *float64 `json:"costUSD"`
+	CanonicalModel           string   `json:"canonicalModel"`
 }
 
 type codexTokenUsage struct {
@@ -107,8 +109,14 @@ func ParseUsageJSON(body []byte, fallbackObservedAt time.Time) ([]domain.UsageSa
 		if err := json.Unmarshal(rec.Raw.Payload, &p); err != nil || len(p.ModelUsage) == 0 {
 			return nil, ErrNotUsage
 		}
-		var out []domain.UsageSample
-		for model, u := range p.ModelUsage {
+		models := make([]string, 0, len(p.ModelUsage))
+		for model := range p.ModelUsage {
+			models = append(models, model)
+		}
+		sort.Strings(models)
+		out := make([]domain.UsageSample, 0, len(models))
+		for _, model := range models {
+			u := p.ModelUsage[model]
 			s := base
 			s.Kind = domain.UsageKindTurn
 			s.Model = model
@@ -120,7 +128,10 @@ func ParseUsageJSON(body []byte, fallbackObservedAt time.Time) ([]domain.UsageSa
 			s.CacheWriteTokens = u.CacheCreationInputTokens
 			s.CacheReadTokens = u.CacheReadInputTokens
 			s.OutputTokens = u.OutputTokens
-			s.CostUSD = u.CostUSD
+			if u.CostUSD != nil {
+				s.CostUSD = *u.CostUSD
+				s.CostReported = true
+			}
 			out = append(out, s)
 		}
 		return out, nil

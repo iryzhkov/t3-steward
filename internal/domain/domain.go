@@ -408,13 +408,38 @@ type UsageAttribution struct {
 
 // UsageCoverage reports evidence deliberately excluded from a run-scoped result.
 type UsageCoverage struct {
-	UnscopedUnattributedCount int64  `json:"unscopedUnattributedCount"`
-	Reason                    string `json:"reason,omitempty"`
+	State                     UsageCoverageState `json:"state"`
+	Reasons                   []string           `json:"reasons,omitempty"`
+	Reason                    string             `json:"reason,omitempty"`
+	ObservedFrom              *time.Time         `json:"observedFrom,omitempty"`
+	ObservedThrough           *time.Time         `json:"observedThrough,omitempty"`
+	RawSampleCount            int64              `json:"rawSampleCount"`
+	NormalizedSampleCount     int64              `json:"normalizedSampleCount"`
+	AttributedCount           int64              `json:"attributedCount"`
+	UnattributedCount         int64              `json:"unattributedCount"`
+	UnscopedUnattributedCount int64              `json:"unscopedUnattributedCount"`
+	ExcludedOverlapCount      int64              `json:"excludedOverlapCount"`
+	UnmatchedCallCount        int64              `json:"unmatchedCallCount"`
+	DuplicateCount            int64              `json:"duplicateCount"`
+	ResetCount                int64              `json:"resetCount"`
+	UnknownModelCount         int64              `json:"unknownModelCount"`
+	MalformedCount            int64              `json:"malformedCount"`
+	UnsupportedCount          int64              `json:"unsupportedCount"`
+	LateCount                 int64              `json:"lateCount"`
+	Truncated                 bool               `json:"truncated"`
 }
 
 type UsageReport struct {
-	Samples  []UsageSample `json:"samples,omitempty"`
-	Coverage UsageCoverage `json:"coverage"`
+	WorkflowRunID string           `json:"workflowRunId,omitempty"`
+	RunProgress   ProgressState    `json:"runProgress,omitempty"`
+	Totals        UsageTotals      `json:"totals"`
+	ByTask        []UsageAggregate `json:"byTask,omitempty"`
+	ByAttempt     []UsageAggregate `json:"byAttempt,omitempty"`
+	ByRole        []UsageAggregate `json:"byRole,omitempty"`
+	ByModel       []UsageAggregate `json:"byModel,omitempty"`
+	Samples       []UsageSample    `json:"samples,omitempty"`
+	NextCursor    string           `json:"nextCursor,omitempty"`
+	Coverage      UsageCoverage    `json:"coverage"`
 }
 
 // UsageSample is a token count reported by a provider for one API call or
@@ -433,7 +458,8 @@ type UsageSample struct {
 	CacheReadTokens    int64     `json:"cacheReadTokens"`
 	OutputTokens       int64     `json:"outputTokens"`
 	// CostUSD is the provider's own cost figure when it reports one.
-	CostUSD float64 `json:"costUsd"`
+	CostUSD      float64 `json:"costUsd"`
+	CostReported bool    `json:"costReported,omitempty"`
 	// Kind is "call" for one API call or "turn" for a whole turn. Turn
 	// samples carry exact per-model counts; call samples carry timing.
 	Kind string `json:"kind"`

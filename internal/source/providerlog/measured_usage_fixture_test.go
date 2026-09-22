@@ -1,6 +1,7 @@
 package providerlog
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,5 +51,33 @@ func TestMeasuredUsageProviderFixtures(t *testing.T) {
 				t.Fatalf("sample = %#v", sample)
 			}
 		})
+	}
+}
+
+func TestMeasuredUsageClaudeModelsAreDeterministicAndCostEvidenceIsExplicit(t *testing.T) {
+	body := []byte(`{"type":"thread.token-usage.updated","eventId":"turn","provider":"claude","threadId":"thread","createdAt":"2026-09-22T18:00:00Z","raw":{"method":"claude/result","payload":{"modelUsage":{"z-subagent":{"inputTokens":3,"outputTokens":4,"costUSD":0.2},"a-parent":{"inputTokens":1,"outputTokens":2}}}}}`)
+	got, err := ParseUsageJSON(body, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Model != "a-parent" || got[1].Model != "z-subagent" {
+		t.Fatalf("model order = %#v", got)
+	}
+	if got[0].CostReported || !got[1].CostReported || got[1].CostUSD != .2 {
+		t.Fatalf("cost evidence = %#v", got)
+	}
+}
+
+func TestMeasuredUsageMalformedAndUnsupportedEvidenceIsNotAcceptedAsZero(t *testing.T) {
+	if _, err := ParseUsageJSON([]byte(`{"type":"thread.token-usage.updated"`), time.Time{}); err == nil {
+		t.Fatal("malformed usage was accepted")
+	}
+	unsupported := []byte(`{"type":"thread.token-usage.updated","eventId":"future","provider":"future","threadId":"thread","createdAt":"2026-09-22T18:00:00Z","raw":{"method":"future/usage","payload":{}}}`)
+	if _, err := ParseUsageJSON(unsupported, time.Time{}); !errors.Is(err, ErrNotUsage) {
+		t.Fatalf("unsupported method error = %v", err)
+	}
+	missing := []byte(`{"type":"thread.token-usage.updated","eventId":"missing","provider":"codex","threadId":"thread","raw":{"method":"thread/tokenUsage/updated","payload":{"tokenUsage":{"last":{"inputTokens":1}}}}}`)
+	if _, err := ParseUsageJSON(missing, time.Time{}); err == nil {
+		t.Fatal("missing timestamp was accepted as zero-time evidence")
 	}
 }

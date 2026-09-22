@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -36,8 +37,8 @@ func TestMeasuredUsageMigrationPreservesHistoryAndReopensIdempotently(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := schemaVersionOf(t, store); got != 26 {
-			t.Fatalf("schema version = %d, want 26", got)
+		if got := schemaVersionOf(t, store); got != 27 {
+			t.Fatalf("schema version = %d, want 27", got)
 		}
 		samples, err := store.UsageSamples(ctx, at.Add(-time.Minute), at.Add(time.Minute))
 		if err != nil {
@@ -196,6 +197,44 @@ func TestMeasuredUsageBindingIsAuthoritativeIsolatedAndReplaySafe(t *testing.T) 
 		if sample.Attribution.WorkflowRunID != "run-a" {
 			t.Fatalf("cross-run leakage: %#v", sample)
 		}
+	}
+}
+
+func TestAttributedUsageAppliesDeterministicSafetyBound(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{{ID: "run-bound"}},
+		Attempts:     []domain.Attempt{{ID: "attempt-bound", WorkflowRunID: "run-bound", TaskID: "task-bound", Number: 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PrepareAssignmentDispatch(ctx, measuredAssignment("assignment-bound", "attempt-bound", "thread-bound", "codex", 1, now)); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i <= MaxRunUsageAggregation; i++ {
+		if err := store.RecordUsage(ctx, domain.UsageSample{
+			WorkerID: "worker", ProviderInstanceID: "codex", ThreadID: "thread-bound", Model: "gpt",
+			ObservedAt: now.Add(time.Duration(i) * time.Second), SourceEventID: fmt.Sprintf("event-%05d", i),
+			Kind: domain.UsageKindCall, InputTokens: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := store.AttributedUsage(ctx, "run-bound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Samples) != MaxRunUsageAggregation || !report.Coverage.Truncated ||
+		report.Samples[0].SourceEventID != "event-00000" || report.Samples[len(report.Samples)-1].SourceEventID != "event-09999" {
+		t.Fatalf("bounded report: samples=%d coverage=%#v first=%q last=%q", len(report.Samples), report.Coverage,
+			report.Samples[0].SourceEventID, report.Samples[len(report.Samples)-1].SourceEventID)
 	}
 }
 
