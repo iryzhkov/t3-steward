@@ -422,6 +422,10 @@ type ActivationSignal struct {
 	Outcome   domain.ActivationOutcome
 	Reason    string
 	RequestID string
+	// ReassessmentEventID is the durable operator event which authorizes
+	// replacing a failed pending dispatch. The sqlite release fence verifies it
+	// before giving up the old offer's executor reservation.
+	ReassessmentEventID string
 }
 
 // ContinuationReceipt records an operator-authorized continuation. Counters are
@@ -511,7 +515,7 @@ func PlanActivation(state SupervisionActivationState, signal ActivationSignal, n
 		cursor = record.EventCursor
 	}
 	selected := supervisionEventsForPurpose(state.Pending, purpose)
-	if signal.Event != domain.ActivationEventTriggerFired && activation.ConsumedEventCursor > 0 {
+	if signal.Event != domain.ActivationEventTriggerFired && activation.State != domain.ActivationPendingDispatch && activation.ConsumedEventCursor > 0 {
 		bound := selected[:0]
 		for _, event := range selected {
 			if event.Sequence <= activation.ConsumedEventCursor {
@@ -601,7 +605,19 @@ func PlanActivation(state SupervisionActivationState, signal ActivationSignal, n
 			next.LeaseToken, next.LeaseExpiresAt = "", nil
 		}
 	case domain.ActivationEventEventsArrived, domain.ActivationEventReconciliationAcknowledged:
-		if result.State == domain.ActivationIdle {
+		if activation.State == domain.ActivationPendingDispatch && result.State == domain.ActivationPendingDispatch {
+			next = newActivation(record, result.Epoch, inbox.HighWaterMark, 0)
+			// Supersession replaces only the failed delivery attempt. Keep the
+			// original activation's routing and authority context intact.
+			next.Purpose = activation.Purpose
+			next.IncidentID = activation.IncidentID
+			next.Principal = activation.Principal
+			if len(inbox.Events) != 0 {
+				next.ReadyAt = inbox.Events[0].OccurredAt.UTC()
+				next.ReadyTieID = inbox.Events[0].ID
+			}
+			plan.Dispatch = issueActivationLease(&next, record, now, false)
+		} else if result.State == domain.ActivationIdle {
 			// The machine raised the epoch, so this is a new activation rather
 			// than the old one at a new number. Minting the record here is what
 			// keeps the derived identities and the epoch in agreement: carrying

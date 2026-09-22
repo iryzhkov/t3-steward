@@ -131,6 +131,58 @@ func TestActivationUndeliveredDispatchRetriesWithOriginalIdentity(t *testing.T) 
 	}
 }
 
+func TestActivationOperatorReassessmentMintsFreshPendingDispatch(t *testing.T) {
+	now := supervisionTestTime()
+	record := supervisionTestRecord()
+	originalID := ActivationID("run-1", 1)
+	state := SupervisionActivationState{
+		Record: record,
+		Activation: domain.Activation{
+			ID: originalID, RunID: "run-1", Epoch: 1,
+			DispatchIdentity:    ActivationDispatchIdentity("run-1", 1),
+			State:               domain.ActivationPendingDispatch,
+			ConsumedEventCursor: 1,
+			IncidentID:          "incident-original",
+			Principal:           "principal-original",
+		},
+		Pending: []SupervisionEvent{
+			supervisionTestEvent("event-1", 1, TriggerGateReviewReady),
+			supervisionTestEvent("reassessment-1", 2, TriggerOperatorReassessment),
+		},
+	}
+	plan, err := PlanActivation(state, ActivationSignal{
+		Event:                  domain.ActivationEventEventsArrived,
+		Actor:                  domain.Actor{Kind: domain.ActorOperator, Principal: "operator"},
+		ExpectedEpoch:          1,
+		ExpectedRecordRevision: record.Revision,
+		OperatorAuthorized:     true,
+		ReassessmentEventID:    "reassessment-1",
+	}, now)
+	if err != nil {
+		t.Fatalf("plan activation: %v", err)
+	}
+	if plan.Activation.ID == originalID || plan.Activation.ID != ActivationID("run-1", 2) {
+		t.Fatalf("activation ID = %q, want fresh epoch-2 identity", plan.Activation.ID)
+	}
+	if plan.Activation.Epoch != 2 || plan.Activation.State != domain.ActivationPendingDispatch {
+		t.Fatalf("activation = epoch %d state %q, want epoch 2 pending-dispatch",
+			plan.Activation.Epoch, plan.Activation.State)
+	}
+	if plan.Dispatch == nil || plan.Dispatch.Identity != ActivationDispatchIdentity("run-1", 2) || plan.Dispatch.Retry {
+		t.Fatalf("dispatch = %+v, want a fresh epoch-2 offer", plan.Dispatch)
+	}
+	if plan.Activation.ConsumedEventCursor != 2 {
+		t.Fatalf("bound high-water mark = %d, want reassessment sequence 2", plan.Activation.ConsumedEventCursor)
+	}
+	if plan.Activation.IncidentID != "incident-original" || plan.Activation.Principal != "principal-original" {
+		t.Fatalf("authority context = incident %q principal %q, want original activation context",
+			plan.Activation.IncidentID, plan.Activation.Principal)
+	}
+	if plan.Record.ActivationsUsed != 0 {
+		t.Fatalf("activations used = %d, want failed never-delivered offer to spend no budget", plan.Record.ActivationsUsed)
+	}
+}
+
 func TestActivationUndeliveredDispatchRefusedAfterExecutionObserved(t *testing.T) {
 	state := SupervisionActivationState{
 		Record: supervisionTestRecord(),

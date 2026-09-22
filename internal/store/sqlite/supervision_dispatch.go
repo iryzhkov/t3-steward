@@ -54,6 +54,155 @@ type ActivationAssignmentCommit struct {
 	QuotaMaxConcurrent     int
 }
 
+// FailedActivationOfferSupersession identifies the one failed offer an explicit
+// operator reassessment may release before replacement placement is attempted.
+type FailedActivationOfferSupersession struct {
+	CoordinatorEpoch       int64
+	RunID                  string
+	ActivationID           string
+	ActivationEpoch        int64
+	ExpectedRecordRevision int64
+	AssignmentID           string
+	AssignmentEpoch        int64
+	ReassessmentEventID    string
+	SupersededAt           time.Time
+}
+
+// SupersedeFailedActivationOffer releases one provably never-delivered
+// activation offer. Every qualification and the offered-to-released transition
+// share the claim transaction boundary, so either a worker claim wins or this
+// release wins; neither side can overwrite the other.
+func (s *Store) SupersedeFailedActivationOffer(ctx context.Context, request FailedActivationOfferSupersession) error {
+	if request.CoordinatorEpoch < 1 || request.RunID == "" || request.ActivationID == "" ||
+		request.ActivationEpoch < 1 || request.ExpectedRecordRevision < 1 || request.AssignmentID == "" ||
+		request.AssignmentEpoch < 1 || request.ReassessmentEventID == "" || request.SupersededAt.IsZero() {
+		return fmt.Errorf("%w: incomplete failed-offer supersession fence", ErrActivationDispatch)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin activation offer supersession: %w", err)
+	}
+	defer tx.Rollback()
+	if err := requireCoordinatorEpoch(ctx, tx, request.CoordinatorEpoch); err != nil {
+		return err
+	}
+	context_, supervised, err := supervisionContextTx(ctx, tx, request.RunID, false)
+	if err != nil {
+		return err
+	}
+	if !supervised || context_.Record.Revision != request.ExpectedRecordRevision ||
+		context_.Record.ActivationEpoch != request.ActivationEpoch {
+		return fmt.Errorf("%w: supervision record moved before offer supersession", ErrActivationDispatch)
+	}
+	activations, err := loadSupervisionActivationsTx(ctx, tx, request.RunID)
+	if err != nil {
+		return err
+	}
+	current := false
+	for _, activation := range activations {
+		if activation.ID == request.ActivationID && activation.Epoch == request.ActivationEpoch &&
+			activation.State == domain.ActivationPendingDispatch {
+			current = true
+			break
+		}
+	}
+	if !current {
+		return fmt.Errorf("%w: activation is not the current pending dispatch", ErrActivationDispatch)
+	}
+	var eventRaw []byte
+	var eventSequence int64
+	var eventConsumed int
+	if err := tx.QueryRowContext(ctx,
+		"SELECT sequence, consumed, record FROM coordinator_supervision_inbox WHERE id = ? AND run_id = ?",
+		request.ReassessmentEventID, request.RunID).Scan(&eventSequence, &eventConsumed, &eventRaw); err != nil {
+		return fmt.Errorf("%w: supported operator reassessment event is absent", ErrActivationDispatch)
+	}
+	var event struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(eventRaw, &event); err != nil {
+		return fmt.Errorf("decode reassessment event %q: %w", request.ReassessmentEventID, err)
+	}
+	if event.Kind != "operator-reassessment" || eventConsumed != 0 || eventSequence <= context_.Record.EventCursor {
+		return fmt.Errorf("%w: event %q is not a pending operator reassessment", ErrActivationDispatch, request.ReassessmentEventID)
+	}
+	assignment, err := loadAssignmentTx(ctx, tx, request.AssignmentID)
+	if err != nil {
+		return err
+	}
+	attempt, err := loadAttemptTx(ctx, tx, assignment.AttemptID)
+	if err != nil {
+		return err
+	}
+	if assignment.Epoch != request.AssignmentEpoch || attempt.WorkflowRunID != request.RunID ||
+		attempt.SupervisionActivationID != request.ActivationID ||
+		attempt.SupervisionActivationEpoch != request.ActivationEpoch || assignment.DispatchState != "" {
+		return fmt.Errorf("%w: assignment does not match the failed pending activation", ErrActivationDispatch)
+	}
+	var failureRaw []byte
+	if err := tx.QueryRowContext(ctx, `SELECT record FROM coordinator_activation_dispatch_failures
+		WHERE assignment_id = ? AND assignment_epoch = ? AND run_id = ? AND activation_id = ?`,
+		request.AssignmentID, request.AssignmentEpoch, request.RunID, request.ActivationID).Scan(&failureRaw); err != nil {
+		return fmt.Errorf("%w: immutable dispatch-failure evidence is absent", ErrActivationDispatch)
+	}
+	var failure domain.ActivationDispatchFailure
+	if err := json.Unmarshal(failureRaw, &failure); err != nil {
+		return fmt.Errorf("decode activation dispatch failure: %w", err)
+	}
+	if failure.AssignmentID != request.AssignmentID || failure.AssignmentEpoch != request.AssignmentEpoch ||
+		failure.AttemptID != attempt.ID || failure.ActivationID != request.ActivationID ||
+		failure.ActivationEpoch != request.ActivationEpoch || failure.RunID != request.RunID {
+		return fmt.Errorf("%w: dispatch-failure identity changed", ErrActivationDispatch)
+	}
+	auditID := "activation-offer-superseded:" + assignment.ID
+	if assignment.State == domain.AssignmentReleased {
+		var present int
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM coordinator_audit_events WHERE id = ?", auditID).Scan(&present); err != nil {
+			return err
+		}
+		if present != 1 {
+			return fmt.Errorf("%w: activation offer was released by another authority", ErrActivationDispatch)
+		}
+		return tx.Commit()
+	}
+	if assignment.State != domain.AssignmentOffered {
+		return fmt.Errorf("%w: activation assignment %q is %s, not offered", ErrActivationDispatch, assignment.ID, assignment.State)
+	}
+	next := assignment
+	next.State = domain.AssignmentReleased
+	next.LeaseExpiresAt = time.Time{}
+	next.UpdatedAt = request.SupersededAt.UTC()
+	raw, err := json.Marshal(next)
+	if err != nil {
+		return fmt.Errorf("encode superseded activation assignment %q: %w", next.ID, err)
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE coordinator_assignments
+		SET assignment_state = ?, lease_expires_at = '', record = ?
+		WHERE id = ? AND assignment_epoch = ? AND assignment_state = ?`,
+		next.State, raw, assignment.ID, request.AssignmentEpoch, domain.AssignmentOffered)
+	if err != nil {
+		return fmt.Errorf("release failed activation offer %q: %w", assignment.ID, err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return fmt.Errorf("%w: activation offer %q crossed the claim boundary", ErrActivationDispatch, assignment.ID)
+	}
+	if _, err := insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+		ID: auditID, Kind: "assignment-released", WorkflowRunID: request.RunID,
+		AttemptID: attempt.ID, TargetType: domain.AdminTargetAssignment, TargetID: assignment.ID,
+		Actor: "coordinator", Reason: "operator reassessment superseded a failed undelivered activation offer",
+		CreatedAt: request.SupersededAt.UTC(),
+		Detail: nativeAuditDetail{CoordinatorEpoch: request.CoordinatorEpoch, AssignmentEpoch: assignment.Epoch,
+			ExpectedRevision: request.ActivationEpoch, Revision: request.ExpectedRecordRevision,
+			IdempotencyIdentity: auditID, Outcome: string(domain.AssignmentReleased)},
+	}); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit activation offer supersession %q: %w", assignment.ID, err)
+	}
+	return nil
+}
+
 // CommitActivationAssignment offers one activation to its placed worker.
 //
 // It is idempotent on the activation's deterministic identity: a retry of a
