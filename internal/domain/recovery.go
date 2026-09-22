@@ -3,6 +3,7 @@ package domain
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -117,6 +118,7 @@ type RecoveryRetryRequest struct {
 	RunID                    string                     `json:"runId"`
 	IncidentID               string                     `json:"incidentId"`
 	ExpectedIncidentRevision int64                      `json:"expectedIncidentRevision"`
+	GraphRevision            int64                      `json:"graphRevision"`
 	ActivationID             string                     `json:"activationId"`
 	ActivationEpoch          int64                      `json:"activationEpoch"`
 	Principal                string                     `json:"principal"`
@@ -134,6 +136,76 @@ type RecoveryRetryReceipt struct {
 	AttemptID     string    `json:"attemptId"`
 	AttemptNumber int       `json:"attemptNumber"`
 	CommittedAt   time.Time `json:"committedAt"`
+}
+
+const RecoveryProposalVersion = 1
+
+// RecoveryProposal is the versioned result-import contract emitted by a repair
+// activation. Its retained object digests are part of PayloadDigest; the
+// coordinator still rechecks live incident, graph, activation, assignment,
+// principal and source-attempt authority before creating a retry.
+type RecoveryProposal struct {
+	Version                  int                        `json:"version"`
+	OperationID              string                     `json:"operationId"`
+	RunID                    string                     `json:"runId"`
+	IncidentID               string                     `json:"incidentId"`
+	ExpectedIncidentRevision int64                      `json:"expectedIncidentRevision"`
+	GraphRevision            int64                      `json:"graphRevision"`
+	ActivationID             string                     `json:"activationId"`
+	ActivationEpoch          int64                      `json:"activationEpoch"`
+	AssignmentID             string                     `json:"assignmentId"`
+	AssignmentEpoch          int64                      `json:"assignmentEpoch"`
+	Principal                string                     `json:"principal"`
+	SourceAttemptID          string                     `json:"sourceAttemptId"`
+	SourceAttemptRevision    int64                      `json:"sourceAttemptRevision"`
+	InstructionArtifact      ArtifactDigest             `json:"instructionArtifact"`
+	CheckpointArtifacts      []ArtifactDigest           `json:"checkpointArtifacts,omitempty"`
+	Diagnostic               RecoveryDiagnosticIdentity `json:"diagnostic"`
+	ProposedAt               time.Time                  `json:"proposedAt"`
+	PayloadDigest            string                     `json:"payloadDigest"`
+}
+
+func (p RecoveryProposal) canonicalDigest() (string, error) {
+	p.PayloadDigest = ""
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func SealRecoveryProposal(proposal RecoveryProposal) (RecoveryProposal, error) {
+	digest, err := proposal.canonicalDigest()
+	if err != nil {
+		return RecoveryProposal{}, err
+	}
+	proposal.PayloadDigest = digest
+	return proposal, nil
+}
+
+func (p RecoveryProposal) RetryRequest() (RecoveryRetryRequest, error) {
+	switch {
+	case p.Version != RecoveryProposalVersion:
+		return RecoveryRetryRequest{}, errors.New("recovery proposal version is unsupported")
+	case strings.TrimSpace(p.PayloadDigest) == "":
+		return RecoveryRetryRequest{}, errors.New("recovery proposal payload digest is required")
+	}
+	digest, err := p.canonicalDigest()
+	if err != nil {
+		return RecoveryRetryRequest{}, err
+	}
+	if !strings.EqualFold(digest, p.PayloadDigest) {
+		return RecoveryRetryRequest{}, errors.New("recovery proposal payload digest mismatch")
+	}
+	return RecoveryRetryRequest{
+		OperationID: p.OperationID, RunID: p.RunID, IncidentID: p.IncidentID,
+		ExpectedIncidentRevision: p.ExpectedIncidentRevision, GraphRevision: p.GraphRevision,
+		ActivationID: p.ActivationID, ActivationEpoch: p.ActivationEpoch, Principal: p.Principal,
+		SourceAttemptID: p.SourceAttemptID, SourceAttemptRevision: p.SourceAttemptRevision,
+		InstructionArtifact: p.InstructionArtifact, CheckpointArtifacts: append([]ArtifactDigest(nil), p.CheckpointArtifacts...),
+		Diagnostic: p.Diagnostic, RequestedAt: p.ProposedAt,
+	}, nil
 }
 
 type RecoveryIncident struct {

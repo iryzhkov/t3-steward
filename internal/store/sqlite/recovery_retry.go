@@ -26,7 +26,7 @@ CREATE INDEX IF NOT EXISTS coordinator_recovery_supplements_incident
 
 func (s *Store) CommitRecoveryRetry(ctx context.Context, request domain.RecoveryRetryRequest) (domain.RecoveryRetryReceipt, error) {
 	if strings.TrimSpace(request.OperationID) == "" || strings.TrimSpace(request.RunID) == "" ||
-		strings.TrimSpace(request.IncidentID) == "" || request.ExpectedIncidentRevision < 1 ||
+		strings.TrimSpace(request.IncidentID) == "" || request.ExpectedIncidentRevision < 1 || request.GraphRevision < 1 ||
 		strings.TrimSpace(request.ActivationID) == "" || request.ActivationEpoch < 1 ||
 		strings.TrimSpace(request.Principal) == "" || strings.TrimSpace(request.SourceAttemptID) == "" ||
 		request.SourceAttemptRevision < 1 || request.RequestedAt.IsZero() ||
@@ -201,7 +201,7 @@ func authorizeRecoveryRetryTx(ctx context.Context, tx *sql.Tx, request domain.Re
 	liveLease := activation.State == domain.ActivationActive && activation.LeaseToken != "" && activation.LeaseExpiresAt != nil &&
 		now.Before(activation.LeaseExpiresAt.UTC()) && !domain.ActivationPastDeadline(activation, now)
 	if activation.Purpose != domain.RecoveryActivationRepair || activation.IncidentID != request.IncidentID ||
-		activation.ID != request.ActivationID || !liveLease || activation.GraphRevision != run.GraphRevision ||
+		activation.ID != request.ActivationID || !liveLease || activation.GraphRevision != request.GraphRevision || activation.GraphRevision != run.GraphRevision ||
 		activation.Principal != request.Principal || activation.Epoch != request.ActivationEpoch ||
 		activation.Epoch != supervision.ActivationEpoch || recovery == nil ||
 		activation.Principal == "" {

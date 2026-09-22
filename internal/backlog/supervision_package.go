@@ -287,9 +287,13 @@ func BuildActivationOffer(input ActivationPackageInput, expiresAt time.Time) (wo
 // opens and decodes the retained object instead of calling this helper again.
 func BuildActivationEvidenceForPackage(input ActivationPackageInput) (ActivationEvidenceObject, error) {
 	artifacts := activationArtifactDigests(input.Artifacts)
+	promptID, err := activationPromptArtifactID(input)
+	if err != nil {
+		return ActivationEvidenceObject{}, err
+	}
 	var overseerPrompt domain.ArtifactDigest
 	for _, artifact := range artifacts {
-		if artifact.ArtifactID == input.Record.Config.PromptArtifactID {
+		if artifact.ArtifactID == promptID {
 			overseerPrompt = artifact
 			break
 		}
@@ -321,6 +325,45 @@ func BuildActivationEvidenceForPackage(input ActivationPackageInput) (Activation
 		Constraints:     ActivationPromptConstraints(input),
 		ConsumedThrough: input.Activation.ConsumedEventCursor,
 	})
+}
+
+func activationRecoveryProposalScope(input ActivationPackageInput) (*workerproto.RecoveryProposalScope, error) {
+	if input.Activation.Purpose != domain.RecoveryActivationRepair {
+		return nil, nil
+	}
+	var incident domain.ReviewIncident
+	for _, candidate := range input.Incidents {
+		if candidate.ID == input.Activation.IncidentID {
+			incident = candidate
+			break
+		}
+	}
+	if incident.ID == "" || incident.RunID != input.Run.ID || incident.State != domain.IncidentOpen ||
+		incident.Recovery == nil || incident.Recovery.Contract != domain.RecoveryContractV1 ||
+		incident.Recovery.Purpose != domain.RecoveryActivationRepair ||
+		incident.Recovery.Owner.Role != domain.RecoveryRoleRepairExecutor {
+		return nil, errors.New("supervision activation package: repair incident authority is stale or mismatched")
+	}
+	sourceID := incident.Recovery.CurrentAttemptID
+	if sourceID == "" {
+		sourceID = incident.SourceAttemptID
+	}
+	var source domain.Attempt
+	for _, candidate := range input.Attempts {
+		if candidate.ID == sourceID {
+			source = candidate
+			break
+		}
+	}
+	if source.ID == "" || source.WorkflowRunID != input.Run.ID || source.TaskID != incident.SourceTaskID ||
+		source.Progress != domain.ProgressFailed || source.Revision < 1 {
+		return nil, errors.New("supervision activation package: repair source attempt is stale or mismatched")
+	}
+	return &workerproto.RecoveryProposalScope{
+		Version: domain.RecoveryProposalVersion, ExpectedIncidentRevision: incident.Revision,
+		SourceAttemptID: source.ID, SourceAttemptRevision: source.Revision,
+		Diagnostic: incident.Recovery.Diagnostic,
+	}, nil
 }
 
 // BuildActivationPackage assembles the activation package.
@@ -361,10 +404,15 @@ func BuildActivationPackage(input ActivationPackageInput) (workerproto.Execution
 		return workerproto.ExecutionPackage{}, &ActivationPackageError{Code: ActivationPackageErrorEvidenceMismatch, Cause: err}
 	}
 	evidenceDigest := domain.ArtifactDigest{ArtifactID: input.EvidenceArtifact.ID, Digest: input.EvidenceArtifact.SHA256}
+	recoveryProposal, err := activationRecoveryProposalScope(input)
+	if err != nil {
+		return workerproto.ExecutionPackage{}, err
+	}
 	activation := &workerproto.SupervisionActivation{
 		ActivationID: input.Activation.ID, RunID: input.Run.ID,
 		Purpose: string(input.Activation.Purpose), IncidentID: input.Activation.IncidentID,
-		Epoch: input.Activation.Epoch, RecordRevision: input.Record.Revision,
+		RecoveryProposal: recoveryProposal,
+		Epoch:            input.Activation.Epoch, RecordRevision: input.Record.Revision,
 		GraphRevision:       input.Run.GraphRevision,
 		Principal:           input.SupervisorPrincipal,
 		CredentialReference: input.SupervisorCredentialReference,
@@ -537,6 +585,7 @@ func activationScopedActions(activation domain.Activation, runID string) []worke
 				"--activation", strconv.FormatInt(activation.Epoch, 10),
 				"--operation-id", "KEY",
 				"--expected-incident-revision", "INCIDENT_REVISION",
+				"--graph-revision", "GRAPH_REVISION",
 				"--source-attempt", "ATTEMPT_ID",
 				"--source-attempt-revision", "ATTEMPT_REVISION",
 				"--instruction-artifact", "ARTIFACT_ID:DIGEST",
@@ -545,7 +594,8 @@ func activationScopedActions(activation domain.Activation, runID string) []worke
 				"--strategy-fingerprint", "STRATEGY_FINGERPRINT",
 			},
 			Constraints: []string{
-				"retain repair instructions and any checkpoints before invoking retry",
+				"write new repair instructions to recovery/instructions.md; an optional checkpoint tar belongs at recovery/checkpoint.tar",
+				"the worker publishes a typed retry proposal only after those bytes enter result custody; do not invoke this command before custody",
 				"this action creates a fresh ordinary attempt; it cannot decide or release a review gate",
 			},
 		}}
@@ -626,8 +676,22 @@ func activationPromptActions(actions []workerproto.SupervisionAction) []Activati
 // ingestion, and it is separate from the per-activation snapshot for the same
 // reason a task's prompt is separate from its inputs: one is authored once, the
 // other is assembled per dispatch.
+func activationPromptArtifactID(input ActivationPackageInput) (string, error) {
+	if input.Activation.Purpose != domain.RecoveryActivationRepair {
+		return input.Record.Config.PromptArtifactID, nil
+	}
+	if input.Record.Config.Recovery == nil || input.Record.Config.Recovery.Version != domain.RecoveryContractV1 ||
+		strings.TrimSpace(input.Record.Config.Recovery.PromptArtifactID) == "" {
+		return "", errors.New("supervision activation package: repair prompt contract is unavailable")
+	}
+	return input.Record.Config.Recovery.PromptArtifactID, nil
+}
+
 func activationPromptArtifact(input ActivationPackageInput) (workerproto.ArtifactObject, error) {
-	id := input.Record.Config.PromptArtifactID
+	id, err := activationPromptArtifactID(input)
+	if err != nil {
+		return workerproto.ArtifactObject{}, err
+	}
 	for _, artifact := range input.Artifacts {
 		if artifact.ID != id {
 			continue

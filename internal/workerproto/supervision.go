@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // MaxActivationPromptBytes bounds the inline activation brief carried inside an
@@ -39,13 +41,24 @@ type SupervisionAction struct {
 // must never be sent one, which is why the capability is a worker inventory
 // capability rather than a package capability: only the worker can say which
 // build is running on its host.
+type RecoveryProposalScope struct {
+	Version                  int                               `json:"version"`
+	ExpectedIncidentRevision int64                             `json:"expectedIncidentRevision"`
+	SourceAttemptID          string                            `json:"sourceAttemptId"`
+	SourceAttemptRevision    int64                             `json:"sourceAttemptRevision"`
+	Diagnostic               domain.RecoveryDiagnosticIdentity `json:"diagnostic"`
+}
+
 type SupervisionActivation struct {
 	ActivationID string `json:"activationId"`
 	// Purpose is empty for legacy reviewer packages and "repair" for a scoped recovery executor.
 	Purpose    string `json:"purpose,omitempty"`
 	IncidentID string `json:"incidentId,omitempty"`
-	RunID      string `json:"runId"`
-	Epoch      int64  `json:"epoch"`
+	// RecoveryProposal is present only for repair-purpose packages. It freezes
+	// the incident and failed-attempt identities the worker proposal must retain.
+	RecoveryProposal *RecoveryProposalScope `json:"recoveryProposal,omitempty"`
+	RunID            string                 `json:"runId"`
+	Epoch            int64                  `json:"epoch"`
 	// RecordRevision is the supervision record revision every decision must
 	// name as its expected revision.
 	RecordRevision int64 `json:"recordRevision"`
@@ -255,8 +268,17 @@ func validateSupervisionActivation(pkg ExecutionPackage) error {
 	if activation.Purpose != "" && activation.Purpose != "repair" {
 		return errors.New("execution package supervision: unsupported activation purpose")
 	}
-	if activation.Purpose == "repair" && strings.TrimSpace(activation.IncidentID) == "" {
-		return errors.New("execution package supervision: repair activation needs an incident")
+	if activation.Purpose == "repair" {
+		scope := activation.RecoveryProposal
+		if strings.TrimSpace(activation.IncidentID) == "" || scope == nil ||
+			scope.Version != domain.RecoveryProposalVersion || scope.ExpectedIncidentRevision < 1 ||
+			!identityPattern.MatchString(scope.SourceAttemptID) || scope.SourceAttemptRevision < 1 ||
+			strings.TrimSpace(scope.Diagnostic.FailureFingerprint) == "" ||
+			strings.TrimSpace(scope.Diagnostic.EvidenceFingerprint) == "" {
+			return errors.New("execution package supervision: repair activation needs a complete recovery proposal scope")
+		}
+	} else if activation.RecoveryProposal != nil {
+		return errors.New("execution package supervision: reviewer activation cannot carry repair proposal authority")
 	}
 	if activation.Epoch < 1 || activation.RecordRevision < 0 || activation.MaxTurns < 1 {
 		return errors.New("execution package supervision: epoch, revision and turn budget must be positive")

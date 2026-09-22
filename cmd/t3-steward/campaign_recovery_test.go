@@ -17,7 +17,7 @@ func TestCampaignRecoveryRetryBuildsStructuredRequest(t *testing.T) {
 		return domain.RecoveryRetryReceipt{OperationID: request.OperationID, IncidentID: request.IncidentID, AttemptID: "attempt-2", AttemptNumber: 2}, nil
 	}}
 	args := []string{"retry", "run-1", "--incident", "incident-1", "--activation-id", "activation-1", "--activation", "3",
-		"--operation-id", "op-1", "--expected-incident-revision", "4", "--source-attempt", "attempt-1",
+		"--operation-id", "op-1", "--expected-incident-revision", "4", "--graph-revision", "7", "--source-attempt", "attempt-1",
 		"--source-attempt-revision", "7", "--instruction-artifact", "instruction:digest-a",
 		"--checkpoint-artifact", "checkpoint:digest-b", "--failure-fingerprint", "failure",
 		"--evidence-fingerprint", "evidence", "--strategy-fingerprint", "strategy",

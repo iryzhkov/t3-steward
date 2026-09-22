@@ -49,7 +49,7 @@ func TestRecoveryRetryIsAtomicScopedAndIdempotent(t *testing.T) {
 	}
 	strategy := domain.RecoveryStrategyFingerprint(domain.ArtifactDigest{ArtifactID: "instruction", Digest: "content-a"}, nil)
 	request := domain.RecoveryRetryRequest{
-		OperationID: "repair-op", RunID: "run", IncidentID: "incident", ExpectedIncidentRevision: 1,
+		OperationID: "repair-op", RunID: "run", IncidentID: "incident", ExpectedIncidentRevision: 1, GraphRevision: 1,
 		ActivationID: "activation", ActivationEpoch: 1, Principal: "repair-principal",
 		SourceAttemptID: "attempt-1", SourceAttemptRevision: 1,
 		InstructionArtifact: domain.ArtifactDigest{ArtifactID: "instruction", Digest: "content-a"},
@@ -67,6 +67,12 @@ func TestRecoveryRetryIsAtomicScopedAndIdempotent(t *testing.T) {
 	forgedEvidence.Diagnostic.EvidenceFingerprint = "caller-forged-evidence"
 	if _, err := store.CommitRecoveryRetry(ctx, forgedEvidence); err == nil {
 		t.Fatal("caller-controlled evidence fingerprint accepted")
+	}
+	staleGraph := request
+	staleGraph.OperationID = "stale-graph"
+	staleGraph.GraphRevision++
+	if _, err := store.CommitRecoveryRetry(ctx, staleGraph); err == nil {
+		t.Fatal("stale graph recovery retry accepted")
 	}
 	receipt, err := store.CommitRecoveryRetry(ctx, request)
 	if err != nil {
@@ -142,7 +148,7 @@ func TestRecoveryRetryRejectsReviewerAndUnchangedDiagnosis(t *testing.T) {
 		VALUES (?, ?, ?, ?, ?, ?)`, reviewer.ID, reviewer.RunID, reviewer.Epoch, reviewer.State, "dispatch", raw); err != nil {
 		t.Fatal(err)
 	}
-	request := domain.RecoveryRetryRequest{OperationID: "op", RunID: "run", IncidentID: "incident", ExpectedIncidentRevision: 1,
+	request := domain.RecoveryRetryRequest{OperationID: "op", RunID: "run", IncidentID: "incident", ExpectedIncidentRevision: 1, GraphRevision: 1,
 		ActivationID: "review", ActivationEpoch: 1, Principal: "reviewer", SourceAttemptID: "attempt-1", SourceAttemptRevision: 1,
 		InstructionArtifact: domain.ArtifactDigest{ArtifactID: "instruction", Digest: "content"}, Diagnostic: diagnostic, RequestedAt: now.Add(time.Minute)}
 	if _, err := store.CommitRecoveryRetry(ctx, request); err == nil {

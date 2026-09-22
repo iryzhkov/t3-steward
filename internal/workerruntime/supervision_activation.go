@@ -29,11 +29,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -249,6 +251,77 @@ func (d *LocalDriver) createActivationThread(ctx context.Context, pkg workerprot
 	return err
 }
 
+func readRecoveryOutput(path string, limit int64, required bool) ([]byte, error) {
+	file, err := openRegular(path)
+	if err != nil {
+		if !required && errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, errors.New("recovery proposal artifact exceeds package limit")
+	}
+	if required && len(data) == 0 {
+		return nil, errors.New("repair activation produced empty recovery instructions")
+	}
+	return data, nil
+}
+
+func (d *LocalDriver) collectRecoveryProposal(pkg workerproto.ExecutionPackage, workspace string) (*domain.RecoveryProposal, []byte, []byte, error) {
+	activation := pkg.Supervision
+	if activation == nil || activation.Purpose != string(domain.RecoveryActivationRepair) {
+		return nil, nil, nil, nil
+	}
+	scope := activation.RecoveryProposal
+	if scope == nil {
+		return nil, nil, nil, errors.New("repair activation has no recovery proposal scope")
+	}
+	instructions, err := readRecoveryOutput(filepath.Join(workspace, "recovery", "instructions.md"), pkg.Limits.MaxArtifactBytes, true)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("collect repair instructions: %w", err)
+	}
+	checkpoint, err := readRecoveryOutput(filepath.Join(workspace, "recovery", "checkpoint.tar"), pkg.Limits.MaxArtifactBytes, false)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("collect repair checkpoint: %w", err)
+	}
+	instructionSum := sha256.Sum256(instructions)
+	instruction := domain.ArtifactDigest{
+		ArtifactID: "recovery-instructions-" + pkg.Identity.AttemptID,
+		Digest:     hex.EncodeToString(instructionSum[:]),
+	}
+	var checkpoints []domain.ArtifactDigest
+	if checkpoint != nil {
+		sum := sha256.Sum256(checkpoint)
+		checkpoints = []domain.ArtifactDigest{{
+			ArtifactID: "recovery-checkpoint-" + pkg.Identity.AttemptID,
+			Digest:     hex.EncodeToString(sum[:]),
+		}}
+	}
+	diagnostic := scope.Diagnostic
+	diagnostic.StrategyFingerprint = domain.RecoveryStrategyFingerprint(instruction, checkpoints)
+	proposal, err := domain.SealRecoveryProposal(domain.RecoveryProposal{
+		Version: domain.RecoveryProposalVersion, OperationID: "proposal:" + pkg.Identity.AssignmentID,
+		RunID: activation.RunID, IncidentID: activation.IncidentID,
+		ExpectedIncidentRevision: scope.ExpectedIncidentRevision, GraphRevision: activation.GraphRevision,
+		ActivationID: activation.ActivationID, ActivationEpoch: activation.Epoch,
+		AssignmentID: pkg.Identity.AssignmentID, AssignmentEpoch: pkg.Identity.AssignmentEpoch,
+		Principal: activation.Principal, SourceAttemptID: scope.SourceAttemptID,
+		SourceAttemptRevision: scope.SourceAttemptRevision,
+		InstructionArtifact:   instruction, CheckpointArtifacts: checkpoints,
+		Diagnostic: diagnostic, ProposedAt: d.Now().UTC(),
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return &proposal, instructions, checkpoint, nil
+}
+
 // collectActivation ends the activation's turn.
 //
 // It publishes the turn the way a task result is published, because that is how
@@ -288,6 +361,10 @@ func (d *LocalDriver) collectActivation(ctx context.Context, pkg workerproto.Exe
 	d.logger().Info("supervision activation turn ended",
 		"activation", pkg.Supervision.ActivationID, "run", pkg.Supervision.RunID,
 		"epoch", pkg.Supervision.Epoch, "outcome", outcome, "reason", failure)
+	proposal, instructions, checkpoint, err := d.collectRecoveryProposal(pkg, workspace)
+	if err != nil {
+		return err
+	}
 	// The identity record leaves the workspace before anything is finalized
 	// from it, for the same reason a task's does.
 	if err := d.removeSupervisionIdentity(workspace); err != nil {
@@ -302,6 +379,7 @@ func (d *LocalDriver) collectActivation(ctx context.Context, pkg workerproto.Exe
 	}
 	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
 		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
+		RecoveryProposal: proposal, RecoveryInstructions: instructions, RecoveryCheckpointTar: checkpoint,
 	}); err != nil {
 		return fmt.Errorf("publish supervision activation custody: %w", err)
 	}

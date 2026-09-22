@@ -26,9 +26,12 @@ type ArtifactSource interface {
 }
 
 type PublishedResult struct {
-	Finalized     backlog.FinalizedAttempt
-	FinalMessage  string
-	ThreadArchive []byte
+	Finalized             backlog.FinalizedAttempt
+	FinalMessage          string
+	ThreadArchive         []byte
+	RecoveryProposal      *domain.RecoveryProposal
+	RecoveryInstructions  []byte
+	RecoveryCheckpointTar []byte
 }
 
 type ArtifactPublisher interface {

@@ -206,6 +206,54 @@ func TestActivationPackageCarriesRetrievableFrozenEvidence(t *testing.T) {
 	if len(finalPrompt) > workerproto.SupervisionPromptByteCap {
 		t.Fatalf("model-bound prompt = %d bytes, cap %d", len(finalPrompt), workerproto.SupervisionPromptByteCap)
 	}
+	if pkg.Supervision.RecoveryProposal != nil {
+		t.Fatal("reviewer package gained repair proposal authority")
+	}
+
+	repair := input
+	repair.Record.Config.Recovery = &domain.RecoveryConfig{
+		Version:          domain.RecoveryContractV1,
+		Route:            domain.ProviderRoute{ProviderInstanceID: "repairer", Model: "repair-model"},
+		PromptArtifactID: "repair-prompt", MaxAttemptsPerIncident: 2,
+		IncidentDeadline: time.Hour, StalledAfter: time.Minute,
+	}
+	repair.Activation.Purpose = domain.RecoveryActivationRepair
+	repair.Activation.IncidentID = "incident-1"
+	repair.Artifacts = append(append([]domain.Artifact(nil), input.Artifacts...), domain.Artifact{
+		ID: "repair-prompt", WorkflowRunID: "run-1", Kind: domain.ArtifactInput,
+		Name: "repair.md", MediaType: "text/markdown", Size: 11,
+		SHA256: strings.Repeat("b", 64), StoragePath: "objects/bb/prompt",
+	})
+	diagnostic := domain.RecoveryDiagnosticIdentity{FailureFingerprint: "failed-check", EvidenceFingerprint: "evidence-v1"}
+	recovery := domain.NewRecoveryIncident(*repair.Record.Config.Recovery, diagnostic, now)
+	repair.Incidents = []domain.ReviewIncident{{
+		ID: "incident-1", RunID: "run-1", SourceTaskID: "task-1", SourceAttemptID: "attempt-1",
+		Revision: 4, State: domain.IncidentOpen, Recovery: recovery,
+	}}
+	repair.Attempts = []domain.Attempt{{
+		ID: "attempt-1", WorkflowRunID: "run-1", TaskID: "task-1",
+		Progress: domain.ProgressFailed, Revision: 5,
+	}}
+	repairObject, err := BuildActivationEvidenceForPackage(repair)
+	if err != nil {
+		t.Fatalf("build repair evidence: %v", err)
+	}
+	repair.Evidence, err = DecodeActivationEvidenceSnapshot(repairObject.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repair.EvidenceArtifact = ActivationEvidenceArtifact("run-1", "supervision", "activation-attempt", repairObject, "objects/aa/repair-evidence", now)
+	repairPkg, err := BuildActivationPackage(repair)
+	if err != nil {
+		t.Fatalf("build repair package: %v", err)
+	}
+	if repairPkg.Prompt.ID != "repair-prompt" || len(repairPkg.RequiredCapabilities) != 3 ||
+		repairPkg.Supervision.RecoveryProposal == nil ||
+		repairPkg.Supervision.RecoveryProposal.ExpectedIncidentRevision != 4 ||
+		repairPkg.Supervision.RecoveryProposal.SourceAttemptRevision != 5 ||
+		len(repairPkg.Supervision.Actions) != 1 || repairPkg.Supervision.Actions[0].Name != "retry" {
+		t.Fatalf("repair package = %+v", repairPkg)
+	}
 
 	oversized := input
 	oversized.SupervisorPrincipal = strings.Repeat("p", workerproto.SupervisionPromptByteCap)

@@ -12,7 +12,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-const campaignRecoveryUsage = "Usage: t3-steward campaign recovery retry RUN --incident ID --activation-id ID --activation EPOCH --operation-id KEY --expected-incident-revision N --source-attempt ID --source-attempt-revision N --instruction-artifact ID:DIGEST --failure-fingerprint VALUE --evidence-fingerprint VALUE --strategy-fingerprint VALUE [--checkpoint-artifact ID:DIGEST]\n"
+const campaignRecoveryUsage = "Usage: t3-steward campaign recovery retry RUN --incident ID --activation-id ID --activation EPOCH --operation-id KEY --expected-incident-revision N --graph-revision N --source-attempt ID --source-attempt-revision N --instruction-artifact ID:DIGEST --failure-fingerprint VALUE --evidence-fingerprint VALUE --strategy-fingerprint VALUE [--checkpoint-artifact ID:DIGEST]\n"
 
 func parseRecoveryArtifact(value string) (domain.ArtifactDigest, error) {
 	parts := strings.SplitN(value, ":", 2)
@@ -53,7 +53,7 @@ func (c campaignCLI) runRecovery(ctx context.Context, args []string) error {
 		}
 		values[flag] = value
 	}
-	required := []string{"--incident", "--activation-id", "--activation", "--operation-id", "--expected-incident-revision", "--source-attempt", "--source-attempt-revision", "--instruction-artifact", "--failure-fingerprint", "--evidence-fingerprint", "--strategy-fingerprint"}
+	required := []string{"--incident", "--activation-id", "--activation", "--operation-id", "--expected-incident-revision", "--graph-revision", "--source-attempt", "--source-attempt-revision", "--instruction-artifact", "--failure-fingerprint", "--evidence-fingerprint", "--strategy-fingerprint"}
 	for _, flag := range required {
 		if strings.TrimSpace(values[flag]) == "" {
 			return fmt.Errorf("recovery retry requires %s", flag)
@@ -71,6 +71,10 @@ func (c campaignCLI) runRecovery(ctx context.Context, args []string) error {
 	request.ExpectedIncidentRevision, err = strconv.ParseInt(values["--expected-incident-revision"], 10, 64)
 	if err != nil {
 		return fmt.Errorf("--expected-incident-revision: %w", err)
+	}
+	request.GraphRevision, err = strconv.ParseInt(values["--graph-revision"], 10, 64)
+	if err != nil {
+		return fmt.Errorf("--graph-revision: %w", err)
 	}
 	request.SourceAttemptRevision, err = strconv.ParseInt(values["--source-attempt-revision"], 10, 64)
 	if err != nil {

@@ -56,7 +56,7 @@ func TestRecoveryRetriesAdvanceOneEpisodeToBoundedExhaustion(t *testing.T) {
 	insertRecoveryActivation(t, store, activation1)
 	makeRequest := func(operation string, activation domain.Activation, source string, sourceRevision, incidentRevision int64, artifact domain.Artifact, failure, evidence string) domain.RecoveryRetryRequest {
 		digest := domain.ArtifactDigest{ArtifactID: artifact.ID, Digest: artifact.SHA256}
-		return domain.RecoveryRetryRequest{OperationID: operation, RunID: "run", IncidentID: "incident", ExpectedIncidentRevision: incidentRevision,
+		return domain.RecoveryRetryRequest{OperationID: operation, RunID: "run", IncidentID: "incident", ExpectedIncidentRevision: incidentRevision, GraphRevision: 1,
 			ActivationID: activation.ID, ActivationEpoch: activation.Epoch, Principal: activation.Principal,
 			SourceAttemptID: source, SourceAttemptRevision: sourceRevision, InstructionArtifact: digest,
 			Diagnostic:  domain.RecoveryDiagnosticIdentity{FailureFingerprint: failure, EvidenceFingerprint: evidence, StrategyFingerprint: domain.RecoveryStrategyFingerprint(digest, nil)},
