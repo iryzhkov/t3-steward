@@ -47,13 +47,20 @@ func TestRecoveryRetryIsAtomicScopedAndIdempotent(t *testing.T) {
 		VALUES (?, ?, ?, ?, ?, ?)`, activation.ID, activation.RunID, activation.Epoch, activation.State, "dispatch", raw); err != nil {
 		t.Fatal(err)
 	}
+	strategy := domain.RecoveryStrategyFingerprint(domain.ArtifactDigest{ArtifactID: "instruction", Digest: "content-a"}, nil)
 	request := domain.RecoveryRetryRequest{
 		OperationID: "repair-op", RunID: "run", IncidentID: "incident", ExpectedIncidentRevision: 1,
 		ActivationID: "activation", ActivationEpoch: 1, Principal: "repair-principal",
 		SourceAttemptID: "attempt-1", SourceAttemptRevision: 1,
 		InstructionArtifact: domain.ArtifactDigest{ArtifactID: "instruction", Digest: "content-a"},
-		Diagnostic:          domain.RecoveryDiagnosticIdentity{FailureFingerprint: "check-category", EvidenceFingerprint: "content-old", StrategyFingerprint: "strategy-new"},
+		Diagnostic:          domain.RecoveryDiagnosticIdentity{FailureFingerprint: "check-category", EvidenceFingerprint: "content-old", StrategyFingerprint: strategy},
 		RequestedAt:         now.Add(time.Minute),
+	}
+	claimed := request
+	claimed.OperationID = "claimed-strategy"
+	claimed.Diagnostic.StrategyFingerprint = "caller-controlled"
+	if _, err := store.CommitRecoveryRetry(ctx, claimed); err == nil {
+		t.Fatal("caller-controlled strategy fingerprint accepted")
 	}
 	receipt, err := store.CommitRecoveryRetry(ctx, request)
 	if err != nil {
@@ -84,7 +91,7 @@ func TestRecoveryRetryIsAtomicScopedAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := state.Incidents[0].Incident
-	if got.Recovery.AttemptsUsed != 1 || got.Recovery.Diagnostic.StrategyFingerprint != "strategy-new" {
+	if got.Recovery.AttemptsUsed != 1 || got.Recovery.Diagnostic.StrategyFingerprint != strategy {
 		t.Fatalf("incident=%+v", got)
 	}
 	changed := request

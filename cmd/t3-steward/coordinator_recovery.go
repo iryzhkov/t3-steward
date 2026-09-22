@@ -27,16 +27,6 @@ func (c coordinatorSupervision) observeRecoveryFailures(ctx context.Context, run
 	if err != nil {
 		return err
 	}
-	state, err := c.store.LoadSupervisionAdminState(ctx, run.ID)
-	if err != nil {
-		return err
-	}
-	ownedAttempts := make(map[string]bool)
-	for _, facts := range state.Incidents {
-		if facts.Incident.Recovery != nil {
-			ownedAttempts[facts.Incident.SourceAttemptID] = true
-		}
-	}
 	latest := make(map[string]domain.Attempt)
 	for _, attempt := range domain.DeclaredTaskAttempts(records.Attempts) {
 		if attempt.WorkflowRunID != run.ID {
@@ -48,16 +38,55 @@ func (c coordinatorSupervision) observeRecoveryFailures(ctx context.Context, run
 		}
 	}
 	for _, attempt := range latest {
-		if attempt.Progress != domain.ProgressFailed || ownedAttempts[attempt.ID] {
+		incident, owned, err := c.store.RecoveryEpisodeForAttempt(ctx, run.ID, attempt.ID)
+		if err != nil {
+			return err
+		}
+		if owned {
+			if incident.Recovery == nil || incident.Recovery.CurrentAttemptID != attempt.ID ||
+				incident.Recovery.State != domain.RecoveryRecovering {
+				continue
+			}
+			switch attempt.Progress {
+			case domain.ProgressSucceeded:
+				if _, err := c.store.ResolveRecoveryEpisode(ctx, sqlite.RecoveryAttemptSuccessRequest{
+					RunID: run.ID, IncidentID: incident.ID, AttemptID: attempt.ID,
+					ExpectedIncidentRevision: incident.Revision, ExpectedGraphRevision: run.GraphRevision,
+					AttemptRevision: attempt.Revision,
+				}); err != nil {
+					return err
+				}
+			case domain.ProgressFailed:
+				artifacts := recoveryArtifactDigests(records.Artifacts, run.ID, attempt)
+				failure, evidence := recoveryFailureEvidence(attempt, artifacts)
+				eventID := "supervision-event:recovery:" + recoveryDigest(incident.ID, attempt.ID)[:24]
+				reason := fmt.Sprintf("task %s attempt %s failed: %s", attempt.TaskID, attempt.ID, strings.TrimSpace(attempt.Failure))
+				event := backlog.SupervisionEvent{
+					ID: eventID, RunID: run.ID, Kind: backlog.TriggerTaskJudgmentRequired,
+					Reason: reason, TaskID: attempt.TaskID, AttemptID: attempt.ID,
+					IncidentID: incident.ID, GraphRevision: run.GraphRevision,
+					Artifacts: artifacts, OccurredAt: now.UTC(),
+				}
+				raw, err := json.Marshal(event)
+				if err != nil {
+					return err
+				}
+				if _, err := c.store.RecordRecoveryAttemptFailure(ctx, sqlite.RecoveryAttemptFailureRequest{
+					RunID: run.ID, IncidentID: incident.ID, EventID: eventID, AttemptID: attempt.ID, Reason: reason,
+					ExpectedIncidentRevision: incident.Revision, ExpectedGraphRevision: run.GraphRevision,
+					AttemptRevision: attempt.Revision, FailureFingerprint: failure, EvidenceFingerprint: evidence,
+					EventRecord: raw,
+				}); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if attempt.Progress != domain.ProgressFailed {
 			continue
 		}
 		artifacts := recoveryArtifactDigests(records.Artifacts, run.ID, attempt)
-		failure := recoveryDigest(string(attempt.Progress), strings.TrimSpace(attempt.Failure))
-		evidenceParts := []string{attempt.ID, fmt.Sprint(attempt.Number)}
-		for _, artifact := range artifacts {
-			evidenceParts = append(evidenceParts, artifact.ArtifactID, artifact.Digest)
-		}
-		evidence := recoveryDigest(evidenceParts...)
+		failure, evidence := recoveryFailureEvidence(attempt, artifacts)
 		incidentID := "incident:recovery:" + recoveryDigest(run.ID, attempt.TaskID, attempt.ID)[:24]
 		eventID := "supervision-event:" + incidentID
 		reason := fmt.Sprintf("task %s attempt %s failed: %s", attempt.TaskID, attempt.ID, strings.TrimSpace(attempt.Failure))
@@ -86,6 +115,16 @@ func (c coordinatorSupervision) observeRecoveryFailures(ctx context.Context, run
 		}
 	}
 	return nil
+}
+
+func recoveryFailureEvidence(attempt domain.Attempt, artifacts []domain.ArtifactDigest) (string, string) {
+	failure := recoveryDigest(string(attempt.Progress), strings.TrimSpace(attempt.Failure))
+	digests := make([]string, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		digests = append(digests, artifact.Digest)
+	}
+	sort.Strings(digests)
+	return failure, recoveryDigest(digests...)
 }
 
 func recoveryArtifactDigests(all []domain.Artifact, runID string, attempt domain.Attempt) []domain.ArtifactDigest {

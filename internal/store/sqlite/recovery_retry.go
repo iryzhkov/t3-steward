@@ -66,8 +66,12 @@ func (s *Store) CommitRecoveryRetry(ctx context.Context, request domain.Recovery
 	if !now.Before(incident.Recovery.Deadline.UTC()) {
 		return domain.RecoveryRetryReceipt{}, errors.New("recovery incident deadline reached")
 	}
+	canonicalStrategy := domain.RecoveryStrategyFingerprint(request.InstructionArtifact, request.CheckpointArtifacts)
+	if request.Diagnostic.StrategyFingerprint != canonicalStrategy {
+		return domain.RecoveryRetryReceipt{}, errors.New("recovery strategy fingerprint is not bound to retained instruction content")
+	}
 	if request.Diagnostic.EvidenceFingerprint == incident.Recovery.Diagnostic.EvidenceFingerprint &&
-		request.Diagnostic.StrategyFingerprint == incident.Recovery.Diagnostic.StrategyFingerprint {
+		canonicalStrategy == incident.Recovery.Diagnostic.StrategyFingerprint {
 		return domain.RecoveryRetryReceipt{}, errors.New("recovery retry needs substantively changed evidence or strategy")
 	}
 	if err := authorizeRecoveryRetryTx(ctx, tx, request, now); err != nil {
@@ -77,7 +81,11 @@ func (s *Store) CommitRecoveryRetry(ctx context.Context, request domain.Recovery
 	if err != nil {
 		return domain.RecoveryRetryReceipt{}, err
 	}
-	if source.WorkflowRunID != request.RunID || source.ID != incident.SourceAttemptID ||
+	currentAttemptID := incident.Recovery.CurrentAttemptID
+	if currentAttemptID == "" {
+		currentAttemptID = incident.SourceAttemptID
+	}
+	if source.WorkflowRunID != request.RunID || source.ID != currentAttemptID ||
 		source.Revision != request.SourceAttemptRevision || source.Progress != domain.ProgressFailed {
 		return domain.RecoveryRetryReceipt{}, fmt.Errorf("%w: recovery source attempt changed", ErrSupervisionRequestConflict)
 	}
@@ -130,6 +138,7 @@ func (s *Store) CommitRecoveryRetry(ctx context.Context, request domain.Recovery
 	incident.Revision++
 	incident.Recovery.AttemptsUsed++
 	incident.Recovery.Diagnostic = request.Diagnostic
+	incident.Recovery.CurrentAttemptID = attemptID
 	incident.Recovery.State = domain.RecoveryRecovering
 	incident.Recovery.NextAction = domain.RecoveryNoAction
 	incident.Recovery.LastProgressAt = now
