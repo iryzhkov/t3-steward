@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 func TestActivationEvidenceSnapshotIsStableAndPreservesReviewContract(t *testing.T) {
@@ -187,6 +188,10 @@ func TestActivationPackageCarriesRetrievableFrozenEvidence(t *testing.T) {
 	}
 	if len(pkg.StaticInputs) != 1 {
 		t.Fatalf("static inputs = %+v, want one frozen evidence object", pkg.StaticInputs)
+	}
+	if len(pkg.RequiredCapabilities) != 2 ||
+		pkg.RequiredCapabilities[1] != workerproto.PackageCapabilitySupervisionEvidence {
+		t.Fatalf("required capabilities = %v, want versioned evidence materialization", pkg.RequiredCapabilities)
 	}
 	got := pkg.StaticInputs[0]
 	if got.ID != object.ID || got.SHA256 != object.SHA256 ||

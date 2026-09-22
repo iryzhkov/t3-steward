@@ -415,7 +415,10 @@ func BuildActivationPackage(input ActivationPackageInput) (workerproto.Execution
 			Type: "fresh", CatalogRevision: input.CatalogRevision, Project: project,
 			Scope: "task", SetupProfile: ActivationSetupProfile,
 		},
-		RequiredCapabilities: []string{workerproto.CapabilityCampaignSupervision},
+		RequiredCapabilities: []string{
+			workerproto.CapabilityCampaignSupervision,
+			workerproto.PackageCapabilitySupervisionEvidence,
+		},
 		Supervision: &workerproto.SupervisionActivation{
 			ActivationID: input.Activation.ID, RunID: input.Run.ID,
 			Epoch: input.Activation.Epoch, RecordRevision: input.Record.Revision,

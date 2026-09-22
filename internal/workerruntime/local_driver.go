@@ -137,7 +137,7 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		// An activation has no declared task, so there is nothing to resolve
 		// against the catalog and nothing to check out. See
 		// supervision_activation.go for why its workspace is empty.
-		return d.prepareActivation(pkg)
+		return d.prepareActivation(ctx, pkg)
 	}
 	environment, task, attempt, err := d.executionRecords(pkg)
 	if err != nil {

@@ -88,13 +88,16 @@ type DependencyInput struct {
 // Package capabilities name behaviour a worker must implement to execute a
 // package faithfully. A package that declares one is only understood by a build
 // that supports it; see ValidateExecutionPackage.
-const PackageCapabilityPreflight = "preflight"
+const (
+	PackageCapabilityPreflight           = "preflight"
+	PackageCapabilitySupervisionEvidence = "supervision-evidence-v1"
+)
 
 // SupportedPackageCapabilities is what this build implements. A package that
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityPreflight}
+	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence}
 }
 
 // PreflightStep is one declared step the worker runs after the workspace is
@@ -339,6 +342,9 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 	for _, capability := range pkg.RequiredCapabilities {
 		if capability == CapabilityCampaignSupervision && pkg.Supervision == nil {
 			return errors.New("execution package: only an activation may require the campaign supervision capability")
+		}
+		if capability == PackageCapabilitySupervisionEvidence && pkg.Supervision == nil {
+			return errors.New("execution package: only an activation may require supervision evidence materialization")
 		}
 		if !slices.Contains(supported, capability) {
 			return fmt.Errorf("execution package: unsupported required capability %q", capability)
