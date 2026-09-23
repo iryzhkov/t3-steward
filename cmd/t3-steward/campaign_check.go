@@ -35,6 +35,7 @@ func campaignViabilityRequest(plan campaign.Plan, bundleBytes int64, bundleFiles
 		request.Tasks = append(request.Tasks, backlogadmin.ViabilityTask{
 			Name:          task.Name,
 			Project:       plan.Environment.Project,
+			Type:          plan.Environment.Type,
 			Ref:           plan.Environment.Ref,
 			Class:         domain.TaskClass(task.Class),
 			Hosts:         append([]string(nil), task.Placement.Hosts...),

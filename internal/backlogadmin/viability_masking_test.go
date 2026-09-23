@@ -311,6 +311,7 @@ func TestEveryCandidateRecordsWhetherItWasObserved(t *testing.T) {
 			v := viabilityView(t, test.mutate)
 			task := viabilityTaskRequest()
 			if test.name == "the project prepares a fresh workspace" {
+				task.Type = backlog.EnvironmentFresh
 				task.Ref = ""
 			}
 			matrix := v.viability(context.Background(), test.settings(t),

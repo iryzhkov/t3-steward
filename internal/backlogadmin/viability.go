@@ -26,6 +26,7 @@ const (
 // workflow exists, because waiting cannot change the answer.
 const (
 	ReasonUnknownProject          = "unknown-project"
+	ReasonWorkspaceTypeMismatch   = "workspace-type-mismatch"
 	ReasonUnknownSetupProfile     = "unknown-setup-profile"
 	ReasonUnknownProviderInstance = "unknown-provider-instance"
 	ReasonUnknownModel            = "unknown-model"
@@ -107,6 +108,7 @@ const (
 // permanentReasons is the closed set of codes that refuse a submission.
 var permanentReasons = map[string]bool{
 	ReasonUnknownProject:          true,
+	ReasonWorkspaceTypeMismatch:   true,
 	ReasonUnknownSetupProfile:     true,
 	ReasonUnknownProviderInstance: true,
 	ReasonUnknownModel:            true,
@@ -168,6 +170,7 @@ type ViabilitySupervision struct {
 type ViabilityTask struct {
 	Name          string                      `json:"name"`
 	Project       string                      `json:"project"`
+	Type          string                      `json:"type,omitempty"`
 	Ref           string                      `json:"ref,omitempty"`
 	Class         domain.TaskClass            `json:"class,omitempty"`
 	Hosts         []string                    `json:"hosts,omitempty"`

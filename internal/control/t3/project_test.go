@@ -3,10 +3,12 @@ package t3
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -68,6 +70,205 @@ func TestEnsureProjectReconcilesCreation(t *testing.T) {
 			defer mu.Unlock()
 			if creates != 1 || len(projects) != 2 {
 				t.Fatalf("created %d commands, %d projects", creates, len(projects))
+			}
+		})
+	}
+}
+
+func TestEnsureProjectDelayedVisibilityStartsOneThread(t *testing.T) {
+	input := ManagedProject{Key: "task-thread", Title: "Steward: git-task", WorkspaceRoot: t.TempDir()}
+	const threadID = "task-thread"
+	const dispatchToken = "task-dispatch"
+	var mu sync.Mutex
+	var project *t3api.ProjectShell
+	creates := 0
+	threadCreates := 0
+	turnStarts := 0
+	postCreateSnapshots := 0
+	seen := map[string]bool{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodGet && r.URL.Path == "/api/orchestration/shell" {
+			var projects []t3api.ProjectShell
+			if project != nil {
+				postCreateSnapshots++
+				if postCreateSnapshots > 1 {
+					projects = append(projects, *project)
+				}
+			}
+			_ = json.NewEncoder(w).Encode(t3api.ShellSnapshot{Projects: projects})
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/api/orchestration/dispatch" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		var command map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&command); err != nil {
+			t.Error(err)
+			http.Error(w, "bad command", http.StatusBadRequest)
+			return
+		}
+		commandID, _ := command["commandId"].(string)
+		if seen[commandID] {
+			_ = json.NewEncoder(w).Encode(map[string]int{"sequence": 1})
+			return
+		}
+		seen[commandID] = true
+		switch command["type"] {
+		case "project.create":
+			creates++
+			if commandID != deterministicID(input.Key, "steward.project.create") {
+				t.Errorf("unexpected project command ID %q", commandID)
+			}
+			project = &t3api.ProjectShell{ID: command["projectId"].(string), Title: command["title"].(string), WorkspaceRoot: command["workspaceRoot"].(string)}
+		case "thread.create":
+			threadCreates++
+			if project == nil || postCreateSnapshots <= 1 || command["projectId"] != project.ID {
+				t.Errorf("thread created before verified project: %+v", command)
+			}
+		case "thread.turn.start":
+			turnStarts++
+		default:
+			t.Errorf("unexpected command: %+v", command)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]int{"sequence": 1})
+	}))
+	defer server.Close()
+
+	for i := 0; i < 2; i++ {
+		// Reconstruct the adapter, as retry/restart does. Stable command IDs
+		// make the repeated thread request one T3 effect.
+		control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second),
+			slog.New(slog.NewTextHandler(io.Discard, nil)), false)
+		projectID, err := control.EnsureProject(context.Background(), input)
+		if err != nil {
+			t.Fatalf("ensure on attempt %d: %v", i, err)
+		}
+		gotThread, err := control.CreateAndStartThread(context.Background(), NewThreadInput{
+			ThreadID: threadID, DispatchToken: dispatchToken, ProjectID: projectID,
+			Title: "seed", WorktreePath: input.WorkspaceRoot, Prompt: "go",
+		})
+		if err != nil || gotThread != threadID {
+			t.Fatalf("start on attempt %d: thread %q, error %v", i, gotThread, err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if creates != 1 || threadCreates != 1 || turnStarts != 1 {
+		t.Fatalf("effects: projects=%d threads=%d turns=%d", creates, threadCreates, turnStarts)
+	}
+}
+
+func TestEnsureProjectRestartBeforeVisibilityReplaysOneCommand(t *testing.T) {
+	input := ManagedProject{Key: "task-thread", Title: "Steward: git-task", WorkspaceRoot: t.TempDir()}
+	var mu sync.Mutex
+	var project *t3api.ProjectShell
+	visible := false
+	dispatches := 0
+	creates := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodGet {
+			var projects []t3api.ProjectShell
+			if visible {
+				projects = append(projects, *project)
+			}
+			_ = json.NewEncoder(w).Encode(t3api.ShellSnapshot{Projects: projects})
+			return
+		}
+		var command map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&command); err != nil {
+			t.Error(err)
+			http.Error(w, "bad command", http.StatusBadRequest)
+			return
+		}
+		if command["type"] != "project.create" ||
+			command["commandId"] != deterministicID(input.Key, "steward.project.create") {
+			t.Errorf("unexpected command: %+v", command)
+		}
+		dispatches++
+		if project == nil {
+			creates++
+			project = &t3api.ProjectShell{ID: command["projectId"].(string), Title: command["title"].(string), WorkspaceRoot: command["workspaceRoot"].(string)}
+		} else {
+			// The replayed command is idempotent and its project becomes
+			// visible only after this second dispatch.
+			visible = true
+		}
+		_ = json.NewEncoder(w).Encode(map[string]int{"sequence": 1})
+	}))
+	defer server.Close()
+
+	newControl := func() *Control {
+		return New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second),
+			slog.New(slog.NewTextHandler(io.Discard, nil)), false)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	if _, err := newControl().EnsureProject(ctx, input); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("hidden project should hit deadline, got %v", err)
+	}
+	got, err := newControl().EnsureProject(context.Background(), input)
+	if err != nil || got != deterministicID(input.Key, "steward.project") {
+		t.Fatalf("restart ensure = %q, %v", got, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if dispatches != 2 || creates != 1 {
+		t.Fatalf("project dispatches=%d effects=%d, want replay of one effect", dispatches, creates)
+	}
+}
+
+func TestEnsureProjectDelayedVisibilityFailsClosed(t *testing.T) {
+	for _, scenario := range []string{"wrong title", "deadline", "cancelled"} {
+		t.Run(scenario, func(t *testing.T) {
+			input := ManagedProject{Key: "task-thread", Title: "Steward: git-task", WorkspaceRoot: t.TempDir()}
+			creates := 0
+			observations := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					creates++
+					_ = json.NewEncoder(w).Encode(map[string]int{"sequence": 1})
+					return
+				}
+				observations++
+				var projects []t3api.ProjectShell
+				if scenario == "wrong title" && observations > 2 {
+					projects = []t3api.ProjectShell{{ID: "conflict", Title: "another", WorkspaceRoot: input.WorkspaceRoot}}
+				}
+				_ = json.NewEncoder(w).Encode(t3api.ShellSnapshot{Projects: projects})
+			}))
+			defer server.Close()
+			control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second),
+				slog.New(slog.NewTextHandler(io.Discard, nil)), false)
+			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			if scenario == "cancelled" {
+				cancel()
+			} else {
+				defer cancel()
+			}
+			_, err := control.EnsureProject(ctx, input)
+			if err == nil {
+				t.Fatal("unverified project was accepted")
+			}
+			if scenario == "wrong title" && !strings.Contains(err.Error(), "rather than") {
+				t.Fatalf("title conflict was not reported: %v", err)
+			}
+			if scenario == "deadline" && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("deadline not preserved: %v", err)
+			}
+			if scenario == "cancelled" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancellation not preserved: %v", err)
+			}
+			wantCreates := 1
+			if scenario == "cancelled" {
+				wantCreates = 0
+			}
+			if creates != wantCreates {
+				t.Fatalf("create commands = %d, want %d", creates, wantCreates)
 			}
 		})
 	}
@@ -176,7 +377,9 @@ func TestEnsureProjectFailsClosed(t *testing.T) {
 			defer server.Close()
 			control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second),
 				slog.New(slog.NewTextHandler(io.Discard, nil)), scenario == "dry run")
-			_, err := control.EnsureProject(context.Background(), input)
+			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			defer cancel()
+			_, err := control.EnsureProject(ctx, input)
 			if (err == nil) != (scenario == "dry run") {
 				t.Fatalf("unexpected error: %v", err)
 			}

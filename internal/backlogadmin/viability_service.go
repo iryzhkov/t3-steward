@@ -278,6 +278,21 @@ func (v view) viabilityTask(ctx context.Context, settings ViabilitySettings, tas
 		result.Outcome = ViabilityImpossible
 		return result
 	}
+	requestedType := task.Type
+	if requestedType == "" {
+		requestedType = backlog.EnvironmentGit
+	}
+	catalogType := project.Type
+	if catalogType == "" {
+		catalogType = backlog.EnvironmentGit
+	}
+	if requestedType != catalogType {
+		result.Reasons = append(result.Reasons, newViabilityReason(ReasonWorkspaceTypeMismatch,
+			fmt.Sprintf("project %q requests workspace type %q, but this coordinator's catalog declares %q; change the manifest environment.type or the catalog project type to match",
+				task.Project, requestedType, catalogType)))
+		result.Outcome = ViabilityImpossible
+		return result
+	}
 	if _, known := settings.profile(project.SetupProfile); !known {
 		result.Reasons = append(result.Reasons, newViabilityReason(ReasonUnknownSetupProfile,
 			fmt.Sprintf("project %q names setup profile %q, which this coordinator does not have",

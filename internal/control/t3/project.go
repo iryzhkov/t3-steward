@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/iryzhkov/t3-steward/internal/t3api"
@@ -94,21 +95,38 @@ func (c *Control) EnsureProject(ctx context.Context, in ManagedProject) (string,
 	}
 	// Observe after both success and failure. A lost response is not evidence that
 	// creation failed, and an acknowledgement alone is not matching metadata.
-	snapshot, err = c.client.ShellSnapshot(ctx)
-	if err != nil {
-		return id, fmt.Errorf("ensure T3 project: observe creation: %w", errors.Join(dispatchErr, err))
+	// A newly accepted project can be absent from the first shell projection.
+	// Reconcile only this same owned root, within a deadline, without dispatching
+	// another create command or attaching a thread to unverified metadata.
+	const visibilityDeadline = 5 * time.Second
+	const visibilityInterval = 100 * time.Millisecond
+	reconcileCtx, cancel := context.WithTimeout(ctx, visibilityDeadline)
+	defer cancel()
+	ticker := time.NewTicker(visibilityInterval)
+	defer ticker.Stop()
+	observations := 0
+	var observeErr error
+	for {
+		observations++
+		snapshot, observeErr = c.client.ShellSnapshot(reconcileCtx)
+		if observeErr == nil {
+			found, matchErr := adopted(snapshot)
+			if matchErr != nil {
+				return id, matchErr
+			}
+			if found != "" {
+				c.log.Info("managed project visible at owned workspace root",
+					"project", found, "workspace", in.WorkspaceRoot, "observations", observations)
+				return found, nil
+			}
+		}
+		select {
+		case <-reconcileCtx.Done():
+			return id, fmt.Errorf("ensure T3 project: creation not yet visible at owned workspace root %s after %d observations: %w",
+				in.WorkspaceRoot, observations, errors.Join(dispatchErr, observeErr, reconcileCtx.Err()))
+		case <-ticker.C:
+		}
 	}
-	found, err := adopted(snapshot)
-	if err != nil {
-		return id, err
-	}
-	if found != "" {
-		return found, nil
-	}
-	if dispatchErr != nil {
-		return id, fmt.Errorf("ensure T3 project: create: %w", dispatchErr)
-	}
-	return id, errors.New("ensure T3 project: creation not yet visible; reconcile the same owned workspace root")
 }
 
 // refusedForASpentProjectID reports T3's own refusal to create a project under
