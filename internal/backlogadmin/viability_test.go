@@ -449,7 +449,7 @@ func TestViabilityRefusesACredentiallessWorker(t *testing.T) {
 // permanent/temporary line the ADR puts it on.
 func TestViabilityPermanenceTable(t *testing.T) {
 	permanent := []string{
-		ReasonUnknownProject, ReasonUnknownSetupProfile, ReasonUnknownProviderInstance,
+		ReasonUnknownProject, ReasonWorkspaceTypeMismatch, ReasonUnknownSetupProfile, ReasonUnknownProviderInstance,
 		ReasonUnknownModel, ReasonUnknownQuotaPool, ReasonWorkerNotEligible,
 		ReasonCapabilityMissing, ReasonCPUClassImpossible, ReasonResourcesImpossible,
 		ReasonDirectoryImpossible, ReasonCredentialMissing, ReasonRepositorySyntaxInvalid,

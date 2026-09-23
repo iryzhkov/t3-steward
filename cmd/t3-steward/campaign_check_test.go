@@ -507,7 +507,7 @@ func TestCampaignHelpDocumentsEveryVerb(t *testing.T) {
 func TestCampaignPlanProjectionCarriesRequirements(t *testing.T) {
 	plan := campaign.Plan{
 		Name:        "demo",
-		Environment: campaign.Environment{Project: "t3-steward", Ref: "main"},
+		Environment: campaign.Environment{Project: "t3-steward", Type: "git", Ref: "main"},
 		Tasks: []campaign.Task{{
 			Name: "implement", Class: "required",
 			Placement: campaign.Placement{Hosts: []string{"homelab"}, Requires: []string{"git"}},
@@ -527,7 +527,7 @@ func TestCampaignPlanProjectionCarriesRequirements(t *testing.T) {
 		t.Fatalf("tasks = %+v", request.Tasks)
 	}
 	task := request.Tasks[0]
-	if task.Project != "t3-steward" || task.Ref != "main" || string(task.Class) != "required" ||
+	if task.Project != "t3-steward" || task.Type != "git" || task.Ref != "main" || string(task.Class) != "required" ||
 		len(task.Hosts) != 1 || len(task.Capabilities) != 1 ||
 		string(task.Resources.MinCPUClass) != "high" || len(task.ResourceLocks) != 1 {
 		t.Fatalf("task = %+v", task)
@@ -539,5 +539,19 @@ func TestCampaignPlanProjectionCarriesRequirements(t *testing.T) {
 	}
 	if request.BundleBytes != 2048 || request.BundleFiles != 7 {
 		t.Fatalf("bundle description = %d bytes, %d files", request.BundleBytes, request.BundleFiles)
+	}
+}
+
+func TestCampaignProjectionCarriesFreshWorkspaceType(t *testing.T) {
+	plan := campaign.Plan{
+		Environment: campaign.Environment{Project: "scratch", Type: "fresh"},
+		Tasks:       []campaign.Task{{Name: "work"}},
+	}
+	request, err := campaignViabilityRequest(plan, 0, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(request.Tasks) != 1 || request.Tasks[0].Type != "fresh" {
+		t.Fatalf("fresh workspace type lost in readiness request: %+v", request.Tasks)
 	}
 }
