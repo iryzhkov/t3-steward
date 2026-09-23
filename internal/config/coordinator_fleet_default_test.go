@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"gopkg.in/yaml.v3"
 	"os"
@@ -55,6 +56,88 @@ func TestFleetProjectWithoutLocalBindingLoadsWithDefaults(t *testing.T) {
 
 // A configuration with no defaulted project reports none, so a caller can log
 // or annotate exactly the projects that were defaulted and nothing else.
+func TestFleetProjectTypeIsOptionalAndFreshIsAuthoritative(t *testing.T) {
+	t.Run("absent preserves legacy local type and wire", func(t *testing.T) {
+		fleet := reviewFleet()
+		raw, err := json.Marshal(fleet)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(raw, []byte(`"type"`)) {
+			t.Fatalf("legacy projection acquired a type field: %s", raw)
+		}
+		cfg := reviewConfig()
+		if err := cfg.ApplyCoordinatorFleet(fleet); err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.BacklogV2.Projects["keep"].Type; got != "git" {
+			t.Fatalf("absent type changed local binding: %q", got)
+		}
+	})
+
+	t.Run("fresh projects need no repository or setup profile", func(t *testing.T) {
+		fleet := reviewFleet()
+		fleet.Projects["scratch"] = CoordinatorFleetProject{Type: "fresh", EligibleWorkers: []string{"keep"}}
+		raw, err := json.Marshal(fleet)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := DecodeCoordinatorFleet(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := reviewConfig()
+		if err := cfg.ApplyCoordinatorFleet(decoded); err != nil {
+			t.Fatal(err)
+		}
+		project := cfg.BacklogV2.Projects["scratch"]
+		if project.Type != "fresh" || project.Repository != "" || project.DefaultRef != "" || project.SetupProfile != "" ||
+			!reflect.DeepEqual(project.Workers, []string{"keep"}) {
+			t.Fatalf("fresh project projection = %+v", project)
+		}
+	})
+
+	t.Run("explicit git overrides local fresh type", func(t *testing.T) {
+		cfg := reviewConfig()
+		project := cfg.BacklogV2.Projects["keep"]
+		project.Type = "fresh"
+		project.Repository = ""
+		project.DefaultRef = ""
+		project.SetupProfile = ""
+		cfg.BacklogV2.Projects["keep"] = project
+		fleet := reviewFleet()
+		desired := fleet.Projects["keep"]
+		desired.Type = "git"
+		fleet.Projects["keep"] = desired
+		if err := cfg.ApplyCoordinatorFleet(fleet); err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.BacklogV2.Projects["keep"].Type; got != "git" {
+			t.Fatalf("explicit git type was not applied: %q", got)
+		}
+	})
+
+	for _, tc := range []struct {
+		name, projectType, repository, ref string
+	}{
+		{name: "invalid type", projectType: "container"},
+		{name: "fresh repository", projectType: "fresh", repository: "https://example.invalid/repo.git"},
+		{name: "fresh ref", projectType: "fresh", ref: "main"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fleet := reviewFleet()
+			fleet.Projects["keep"] = CoordinatorFleetProject{Type: tc.projectType, Repository: tc.repository, DefaultRef: tc.ref, EligibleWorkers: []string{"keep"}}
+			raw, err := json.Marshal(fleet)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := DecodeCoordinatorFleet(raw); err == nil {
+				t.Fatal("invalid project projection decoded")
+			}
+		})
+	}
+}
+
 func TestFleetProjectsAllBoundReportsNoDefaults(t *testing.T) {
 	c := reviewConfig()
 	if err := c.ApplyCoordinatorFleet(reviewFleet()); err != nil {

@@ -76,6 +76,10 @@ type DroppedFleetProvider struct {
 	Remedy string
 }
 type CoordinatorFleetProject struct {
+	// Type is optional for wire compatibility. An absent value preserves the
+	// local project type and the historical Git default; explicit values are
+	// authoritative fleet intent.
+	Type            string   `json:"type,omitempty"`
 	Repository      string   `json:"repository"`
 	DefaultRef      string   `json:"default_ref"`
 	SetupProfile    string   `json:"setup_profile"`
@@ -101,6 +105,17 @@ func DecodeCoordinatorFleet(raw []byte) (CoordinatorFleet, error) {
 	}
 	if fleet.Workers == nil || fleet.Projects == nil {
 		return fleet, errors.New("coordinator fleet projection requires workers and projects")
+	}
+	for name, project := range fleet.Projects {
+		switch project.Type {
+		case "", "git":
+		case "fresh":
+			if project.Repository != "" || project.DefaultRef != "" {
+				return fleet, fmt.Errorf("fleet project %q: fresh workspace must not declare repository or ref", name)
+			}
+		default:
+			return fleet, fmt.Errorf("fleet project %q has unsupported workspace type %q", name, project.Type)
+		}
 	}
 	for name, worker := range fleet.Workers {
 		if name == "" || worker.WorkerID != name || !ValidCPUClass(worker.CPUClass) || worker.CPUClass == "" ||
@@ -222,6 +237,9 @@ func (c *Config) ApplyCoordinatorFleet(fleet CoordinatorFleet) error {
 			if _, exists := workers[worker]; !exists {
 				return fmt.Errorf("fleet project %q names unknown worker %q", name, worker)
 			}
+		}
+		if desired.Type != "" {
+			project.Type = desired.Type
 		}
 		project.Repository = desired.Repository
 		project.DefaultRef = desired.DefaultRef
