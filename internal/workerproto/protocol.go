@@ -102,7 +102,9 @@ type Acknowledgements struct {
 }
 
 type Observations struct {
-	Snapshot domain.WorkerSnapshot `json:"snapshot"`
+	Snapshot                  domain.WorkerSnapshot `json:"snapshot"`
+	Usage                     []domain.UsageSample  `json:"usage,omitempty"`
+	AcknowledgedUsageEventIDs []string              `json:"acknowledgedUsageEventIds,omitempty"`
 }
 
 // ParkedAssignment is the coordinator's statement that one claimed assignment
@@ -184,8 +186,11 @@ type SnapshotRequest struct {
 	// QuotaObservationsWanted asks the worker to include its host's bucket
 	// observations in the snapshot. It is sent only to a worker advertising
 	// CapabilityQuotaObservations.
-	QuotaObservationsWanted bool `json:"quotaObservationsWanted,omitempty"`
+	QuotaObservationsWanted bool     `json:"quotaObservationsWanted,omitempty"`
+	UsageAcknowledgements   []string `json:"usageAcknowledgements,omitempty"`
 }
+
+const MaxUsageDelivery = 128
 
 // MaxParkedAssignments bounds one report so a malformed or hostile coordinator
 // message cannot grow a worker's durable journal without limit.
@@ -200,6 +205,9 @@ const MaxRetainedCampaignRuns = 1024
 // stores it. A report that cannot be trusted whole is rejected whole: acting on
 // half of a complete list would turn a missing entry into "not parked".
 func ValidateSnapshotRequest(request SnapshotRequest) error {
+	if len(request.UsageAcknowledgements) > MaxUsageDelivery {
+		return &ProtocolError{Code: ErrorLimit, Message: "too many usage acknowledgements"}
+	}
 	if request.ObservedSequence < 0 || (request.ObservedWorkerEpoch == "") != (request.ObservedSequence == 0) {
 		return errors.New("worker protocol: snapshot acknowledgement requires an epoch and positive sequence")
 	}

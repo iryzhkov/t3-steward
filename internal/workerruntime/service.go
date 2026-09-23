@@ -34,6 +34,7 @@ type WorkerServiceOptions struct {
 	// behind the restricted command today; the coordinator's own refusal is
 	// then the only check, and it is the authoritative one.
 	LiveTaskWait func(context.Context, workerproto.ExecutionPackage) (bool, error)
+	Usage        UsageDeliveryStore
 	// Quota is the host watchdog's bucket state, when the host runs a
 	// watchdog. See QuotaGuard.
 	Quota QuotaGuard
@@ -227,6 +228,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 			Runtime: runtime,
 			Server:  server,
 			Custody: custody,
+			Usage:   options.Usage,
 		},
 	}, nil
 }

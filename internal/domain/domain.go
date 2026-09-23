@@ -366,9 +366,108 @@ type Observation struct {
 	Model    string `json:"model"`
 }
 
+// ExecutionRole is the stable purpose of one provider session.
+type ExecutionRole string
+
+const (
+	ExecutionRoleExecutor             ExecutionRole = "executor"
+	ExecutionRoleRepairExecutor       ExecutionRole = "repair-executor"
+	ExecutionRoleGateReviewer         ExecutionRole = "gate-reviewer"
+	ExecutionRoleSupervisorActivation ExecutionRole = "supervisor-activation"
+
+	// Compatibility names retain source compatibility while emitting stable role values.
+	ExecutionRoleTask        = ExecutionRoleExecutor
+	ExecutionRoleSupervision = ExecutionRoleSupervisorActivation
+)
+
+// UsageAttributionStatus says whether an authoritative V2 dispatch binding was
+// present. Unknown sessions are explicit; callers must not infer identity from
+// titles, prompts, paths, or thread ID shape.
+type UsageAttributionStatus string
+
+const (
+	UsageAttributed   UsageAttributionStatus = "attributed"
+	UsageUnattributed UsageAttributionStatus = "unattributed"
+)
+
+// UsageAttribution is the durable coordinator identity bound to a provider
+// thread at dispatch. ActivationID is set for supervision execution; GateID is
+// reserved for execution launched for a durable gate and is otherwise empty.
+type UsageAttribution struct {
+	Status          UsageAttributionStatus `json:"status"`
+	WorkerID        string                 `json:"workerId,omitempty"`
+	WorkflowRunID   string                 `json:"workflowRunId,omitempty"`
+	TaskID          string                 `json:"taskId,omitempty"`
+	AttemptID       string                 `json:"attemptId,omitempty"`
+	AssignmentID    string                 `json:"assignmentId,omitempty"`
+	AssignmentEpoch int64                  `json:"assignmentEpoch,omitempty"`
+	ActivationID    string                 `json:"activationId,omitempty"`
+	GateID          string                 `json:"gateId,omitempty"`
+	Role            ExecutionRole          `json:"role,omitempty"`
+}
+
+// UsageExecutionSession is an authoritative dispatch binding expected to
+// produce provider usage evidence. It contains identity only, never provider
+// content, prompts, transcripts, or credentials.
+type UsageExecutionSession struct {
+	WorkerID           string           `json:"workerId"`
+	ProviderInstanceID string           `json:"providerInstanceId"`
+	ThreadID           string           `json:"threadId"`
+	Attribution        UsageAttribution `json:"attribution"`
+}
+
+// UsageCoverage reports evidence deliberately excluded from a run-scoped result.
+type UsageCoverage struct {
+	State                     UsageCoverageState `json:"state"`
+	Reasons                   []string           `json:"reasons,omitempty"`
+	Reason                    string             `json:"reason,omitempty"`
+	ObservedFrom              *time.Time         `json:"observedFrom,omitempty"`
+	ObservedThrough           *time.Time         `json:"observedThrough,omitempty"`
+	RawSampleCount            int64              `json:"rawSampleCount"`
+	NormalizedSampleCount     int64              `json:"normalizedSampleCount"`
+	ExpectedSessionCount      int64              `json:"expectedSessionCount"`
+	MissingLogSessionCount    int64              `json:"missingLogSessionCount"`
+	AttributedCount           int64              `json:"attributedCount"`
+	UnattributedCount         int64              `json:"unattributedCount"`
+	UnscopedUnattributedCount int64              `json:"unscopedUnattributedCount"`
+	ExcludedOverlapCount      int64              `json:"excludedOverlapCount"`
+	UnmatchedCallCount        int64              `json:"unmatchedCallCount"`
+	DuplicateCount            int64              `json:"duplicateCount"`
+	ResetCount                int64              `json:"resetCount"`
+	UnknownModelCount         int64              `json:"unknownModelCount"`
+	MalformedCount            int64              `json:"malformedCount"`
+	UnsupportedCount          int64              `json:"unsupportedCount"`
+	DiagnosticCount           int64              `json:"diagnosticCount"`
+	DiagnosticDroppedCount    int64              `json:"diagnosticDroppedCount"`
+	MissingFieldCount         int64              `json:"missingFieldCount"`
+	AmbiguousOverlapCount     int64              `json:"ambiguousOverlapCount"`
+	CumulativeAmbiguityCount  int64              `json:"cumulativeAmbiguityCount"`
+	LateCount                 int64              `json:"lateCount"`
+	Truncated                 bool               `json:"truncated"`
+}
+
+type UsageReport struct {
+	WorkflowRunID                     string                  `json:"workflowRunId,omitempty"`
+	RunProgress                       ProgressState           `json:"runProgress,omitempty"`
+	AcceptedOutcomeCount              int64                   `json:"acceptedOutcomeCount"`
+	MeasuredCostPerAcceptedOutcomeUSD *float64                `json:"measuredCostPerAcceptedOutcomeUsd,omitempty"`
+	Totals                            UsageTotals             `json:"totals"`
+	ByTask                            []UsageAggregate        `json:"byTask,omitempty"`
+	ByAttempt                         []UsageAggregate        `json:"byAttempt,omitempty"`
+	ByRole                            []UsageAggregate        `json:"byRole,omitempty"`
+	ByModel                           []UsageAggregate        `json:"byModel,omitempty"`
+	ExpectedSessions                  []UsageExecutionSession `json:"expectedSessions,omitempty"`
+	Samples                           []UsageSample           `json:"samples,omitempty"`
+	NextCursor                        string                  `json:"nextCursor,omitempty"`
+	Coverage                          UsageCoverage           `json:"coverage"`
+}
+
 // UsageSample is a token count reported by a provider for one API call or
 // one turn, used to normalize quota consumption by work done.
 type UsageSample struct {
+	// WorkerID is assigned only at the authenticated worker-to-coordinator boundary.
+	// Provider parsers and legacy rows leave it empty and therefore unattributed.
+	WorkerID           string    `json:"workerId,omitempty"`
 	ProviderInstanceID string    `json:"providerInstanceId"`
 	ThreadID           string    `json:"threadId"`
 	Model              string    `json:"model"`
@@ -379,20 +478,46 @@ type UsageSample struct {
 	CacheReadTokens    int64     `json:"cacheReadTokens"`
 	OutputTokens       int64     `json:"outputTokens"`
 	// CostUSD is the provider's own cost figure when it reports one.
-	CostUSD float64 `json:"costUsd"`
-	// Kind is "call" for one API call or "turn" for a whole turn. Turn
-	// samples carry exact per-model counts; call samples carry timing.
-	Kind string `json:"kind"`
+	CostUSD      float64 `json:"costUsd"`
+	CostReported bool    `json:"costReported,omitempty"`
+	// Kind is "call" for one API call, "turn" for a whole turn, or
+	// "diagnostic" for bounded sanitized parse evidence carrying no content.
+	Kind           string `json:"kind"`
+	DiagnosticCode string `json:"diagnosticCode,omitempty"`
+	// FieldPresence distinguishes an absent numeric field from a measured zero.
+	FieldPresence UsageFieldPresence `json:"fieldPresence,omitempty"`
+	// BoundaryID proves that a call belongs to a particular whole-turn summary.
+	// It is empty when the provider's canonical event supplies no such identity.
+	BoundaryID string `json:"boundaryId,omitempty"`
+	// Incarnation and Sequence provide causal ordering for cumulative counters.
+	// A reset is exact only when the provider supplies a new incarnation.
+	Incarnation string `json:"incarnation,omitempty"`
+	Sequence    int64  `json:"sequence,omitempty"`
 	// CumulativeTokens is the provider's running total for the thread when
 	// it reports one, used to drop repeated notifications of the same call.
 	CumulativeTokens int64 `json:"cumulativeTokens,omitempty"`
+	// Attribution is populated by durable storage queries, never by provider
+	// parsing. Raw ingestion leaves it zero until the store performs the join.
+	Attribution UsageAttribution `json:"attribution"`
 }
 
 // Sample kinds.
 const (
-	UsageKindCall = "call"
-	UsageKindTurn = "turn"
+	UsageKindCall       = "call"
+	UsageKindTurn       = "turn"
+	UsageKindDiagnostic = "diagnostic"
 )
+
+type UsageFieldPresence uint32
+
+const (
+	UsageFieldInput UsageFieldPresence = 1 << iota
+	UsageFieldCacheWrite
+	UsageFieldCacheRead
+	UsageFieldOutput
+)
+
+const UsageFieldsAll = UsageFieldInput | UsageFieldCacheWrite | UsageFieldCacheRead | UsageFieldOutput
 
 // FreshTokens are the tokens that are not cache reads: input, cache
 // writes and output. Cache reads are reported separately because their

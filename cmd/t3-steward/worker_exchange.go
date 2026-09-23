@@ -13,6 +13,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/config"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
@@ -60,6 +61,15 @@ func cmdWorkerExchange(g globalFlags, pinned string) error {
 	if cfg.BacklogV2.Mode != "worker" {
 		return errors.New("worker-exchange requires backlog_v2.mode=worker")
 	}
+	statePath, err := cfg.ResolveStatePath()
+	if err != nil {
+		return err
+	}
+	usageStore, err := sqlite.OpenMigrated(statePath)
+	if err != nil {
+		return err
+	}
+	defer usageStore.Close()
 	// The worker runs as a short-lived SSH command whose stderr reaches the
 	// coordinator only when the process fails, so it also appends to a durable
 	// log beside its journal for later diagnosis.
@@ -81,6 +91,7 @@ func cmdWorkerExchange(g globalFlags, pinned string) error {
 		CoordinatorEpoch:    local.CoordinatorEpoch,
 		ProtocolCredentials: workerruntime.ProtocolResolver{},
 		ProjectCredentials:  workerruntime.EnvironmentCredentialChecker{},
+		Usage:               usageStore,
 		DryRun:              cfg.Policy.DryRun,
 		Logger:              logger,
 	}

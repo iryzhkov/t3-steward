@@ -43,9 +43,16 @@ func TestClientSequencesSignedTypedExchanges(t *testing.T) {
 		}
 		switch request.Type {
 		case MessageSnapshot:
-			return clientResponse(t, request, MessageObservations, Observations{Snapshot: domain.WorkerSnapshot{
-				WorkerID: "normandy", WorkerEpoch: "worker-1", CoordinatorEpoch: 9, Sequence: 4,
-			}})
+			return clientResponse(t, request, MessageObservations, Observations{
+				Snapshot: domain.WorkerSnapshot{
+					WorkerID: "normandy", WorkerEpoch: "worker-1", CoordinatorEpoch: 9, Sequence: 4,
+				},
+				Usage: []domain.UsageSample{{
+					ProviderInstanceID: "codex", ThreadID: "thread", SourceEventID: "event",
+					ObservedAt: now, Kind: domain.UsageKindCall, InputTokens: 3,
+				}},
+				AcknowledgedUsageEventIDs: []string{"prior-event"},
+			})
 		case MessageCommands:
 			var delivery CommandDelivery
 			if err := DecodePayload(request, MessageCommands, &delivery); err != nil {
@@ -68,11 +75,17 @@ func TestClientSequencesSignedTypedExchanges(t *testing.T) {
 		}
 	})
 	client := newProtocolClient(t, now, transport)
-	snapshot, err := client.Snapshot(context.Background(), SnapshotRequest{ParkedReported: true})
+	observations, err := client.SnapshotObservations(context.Background(), SnapshotRequest{
+		ParkedReported: true, UsageAcknowledgements: []string{"prior-event"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	acks, err := client.DeliverWorkerCommands(context.Background(), snapshot, []domain.WorkerCommand{{
+	if len(observations.Usage) != 1 || observations.Usage[0].SourceEventID != "event" ||
+		len(observations.AcknowledgedUsageEventIDs) != 1 {
+		t.Fatalf("usage observations = %#v", observations)
+	}
+	acks, err := client.DeliverWorkerCommands(context.Background(), observations.Snapshot, []domain.WorkerCommand{{
 		ID: "command-1", WorkerID: "normandy", WorkerEpoch: "worker-1", CoordinatorEpoch: 9,
 	}})
 	if err != nil {

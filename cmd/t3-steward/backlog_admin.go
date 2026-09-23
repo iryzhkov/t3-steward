@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -408,6 +409,42 @@ func parseBacklogAdminQueryWithoutSink(args []string) (backlogadmin.Query, bool,
 		}
 		kinds := map[string]backlogadmin.QueryKind{"show": backlogadmin.QueryWorkflow, "graph": backlogadmin.QueryGraph, "events": backlogadmin.QueryEvents, "diagnose": backlogadmin.QueryDiagnose}
 		return backlogadmin.Query{Kind: kinds[clean[0]], WorkflowRunID: clean[1]}, asJSON, nil
+	case "usage":
+		if len(clean) < 2 || strings.HasPrefix(clean[1], "--") {
+			return backlogadmin.Query{}, false, errors.New("backlog usage needs a workflow-run id")
+		}
+		query := backlogadmin.Query{Kind: backlogadmin.QueryUsage, WorkflowRunID: clean[1]}
+		for i := 2; i < len(clean); i++ {
+			switch clean[i] {
+			case "--raw":
+				if query.UsageRaw {
+					return backlogadmin.Query{}, false, errors.New("--raw may only be specified once")
+				}
+				query.UsageRaw = true
+			case "--limit":
+				if i+1 >= len(clean) {
+					return backlogadmin.Query{}, false, errors.New("--limit needs a value")
+				}
+				i++
+				limit, parseErr := strconv.Atoi(clean[i])
+				if parseErr != nil || limit < 1 || limit > 200 {
+					return backlogadmin.Query{}, false, errors.New("--limit must be between 1 and 200")
+				}
+				query.UsageLimit = limit
+			case "--cursor":
+				if i+1 >= len(clean) || clean[i+1] == "" {
+					return backlogadmin.Query{}, false, errors.New("--cursor needs a value")
+				}
+				i++
+				query.UsageCursor = clean[i]
+			default:
+				return backlogadmin.Query{}, false, fmt.Errorf("unknown backlog usage flag %q", clean[i])
+			}
+		}
+		if (query.UsageLimit != 0 || query.UsageCursor != "") && !query.UsageRaw {
+			return backlogadmin.Query{}, false, errors.New("--limit and --cursor require --raw")
+		}
+		return query, asJSON, nil
 	case "task":
 		if len(clean) != 3 || clean[1] != "show" {
 			return backlogadmin.Query{}, false, showOnlyUsage("task", "<workflow-run>/<task>", clean)
@@ -604,6 +641,8 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 		renderExplanation(out, response.Explanation)
 	case backlogadmin.QueryEvents:
 		renderEvents(out, response.Events)
+	case backlogadmin.QueryUsage:
+		return renderUsage(out, response.UsageReport, response.UsageSemantics)
 	case backlogadmin.QueryArtifacts:
 		renderArtifacts(out, response.Artifacts)
 	case backlogadmin.QueryArtifact:
@@ -620,6 +659,90 @@ func renderAdminResponse(out io.Writer, response backlogadmin.Response, selector
 		return fmt.Errorf("no human renderer for admin response %q", response.Kind)
 	}
 	return nil
+}
+
+func renderUsage(out io.Writer, report *domain.UsageReport, semantics string) error {
+	if report == nil {
+		_, err := fmt.Fprintln(out, "usage report unavailable")
+		return err
+	}
+	coverage := report.Coverage
+	fmt.Fprintf(out, "Run: %s (%s)\n", report.WorkflowRunID, report.RunProgress)
+	fmt.Fprintf(out, "Accepted outcomes: %d\n", report.AcceptedOutcomeCount)
+	if report.MeasuredCostPerAcceptedOutcomeUSD != nil {
+		fmt.Fprintf(out, "Measured provider cost per accepted outcome: %.6f\n", *report.MeasuredCostPerAcceptedOutcomeUSD)
+	} else {
+		fmt.Fprintln(out, "Measured provider cost per accepted outcome: unavailable (requires complete provider cost coverage)")
+	}
+	fmt.Fprintln(out, "Token totals are measured execution evidence, not subscription quota savings.")
+	fmt.Fprintf(out, "Coverage: %s; raw=%d normalized=%d expected-sessions=%d missing-logs=%d overlap-excluded=%d overlap-ambiguous=%d diagnostics=%d dropped-diagnostics=%d unattributed=%d\n",
+		coverage.State, coverage.RawSampleCount, coverage.NormalizedSampleCount,
+		coverage.ExpectedSessionCount, coverage.MissingLogSessionCount,
+		coverage.ExcludedOverlapCount, coverage.AmbiguousOverlapCount, coverage.DiagnosticCount,
+		coverage.DiagnosticDroppedCount, coverage.UnattributedCount)
+	if coverage.ObservedFrom != nil && coverage.ObservedThrough != nil {
+		fmt.Fprintf(out, "Observed: %s through %s\n",
+			coverage.ObservedFrom.UTC().Format(time.RFC3339), coverage.ObservedThrough.UTC().Format(time.RFC3339))
+	}
+	for _, reason := range coverage.Reasons {
+		fmt.Fprintf(out, "Coverage reason: %s\n", reason)
+	}
+	if semantics != "" {
+		fmt.Fprintf(out, "Semantics: %s\n", semantics)
+	}
+	fmt.Fprintln(out, "Totals:")
+	if err := renderUsageAggregates(out, []domain.UsageAggregate{{Key: "workflow", Totals: report.Totals}}); err != nil {
+		return err
+	}
+	for _, section := range []struct {
+		name string
+		rows []domain.UsageAggregate
+	}{
+		{"By task", report.ByTask}, {"By attempt", report.ByAttempt},
+		{"By role", report.ByRole}, {"By model", report.ByModel},
+	} {
+		if len(section.rows) == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "%s:\n", section.name)
+		if err := renderUsageAggregates(out, section.rows); err != nil {
+			return err
+		}
+	}
+	if len(report.Samples) > 0 {
+		fmt.Fprintln(out, "Raw detail:")
+		table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(table, "EVENT\tPROVIDER\tTHREAD\tTASK\tATTEMPT\tROLE\tKIND\tMODEL")
+		for _, sample := range report.Samples {
+			a := sample.Attribution
+			fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				sample.SourceEventID, sample.ProviderInstanceID, sample.ThreadID,
+				a.TaskID, a.AttemptID, a.Role, sample.Kind, sample.Model)
+		}
+		if err := table.Flush(); err != nil {
+			return err
+		}
+	}
+	if report.NextCursor != "" {
+		fmt.Fprintf(out, "Next cursor: %s\n", report.NextCursor)
+	}
+	return nil
+}
+
+func renderUsageAggregates(out io.Writer, rows []domain.UsageAggregate) error {
+	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(table, "KEY\tOUTCOME\tUNCACHED INPUT\tCACHE WRITE\tCACHE READ\tOUTPUT\tPROVIDER COST\tSAMPLES\tCALLS\tTURNS")
+	for _, row := range rows {
+		cost := string(row.Totals.ProviderCostCoverage)
+		if row.Totals.ProviderCostReported {
+			cost = strconv.FormatFloat(row.Totals.ProviderCostUSD, 'f', 6, 64) + " (" + cost + ")"
+		}
+		fmt.Fprintf(table, "%s\t%s\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\n",
+			row.Key, row.Outcome, row.Totals.UncachedInputTokens, row.Totals.CacheWriteTokens,
+			row.Totals.CacheReadTokens, row.Totals.OutputTokens, cost,
+			row.Totals.NormalizedSamples, row.Totals.Calls, row.Totals.Turns)
+	}
+	return table.Flush()
 }
 
 // renderWorkers prints the worker table and, under it, what each worker can

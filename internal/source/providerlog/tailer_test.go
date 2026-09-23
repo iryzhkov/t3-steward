@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -111,6 +112,41 @@ func TestTailerBootstrapTailAndFollow(t *testing.T) {
 	got = collect(t, out, 1, 2*time.Second)
 	if got[0].SourceEventID != "new-2" {
 		t.Fatalf("got %s", got[0].SourceEventID)
+	}
+}
+
+func TestTailerAndScanFilePreserveSanitizedUsageDiagnostics(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.usage.log")
+	appendFile(t, path, "")
+	usageOut := make(chan domain.UsageSample, 4)
+	tailer := NewTailer(Options{Dir: dir, ScanInterval: 20 * time.Millisecond, Usage: usageOut}, newMemPositions())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	quotaOut := make(chan domain.QuotaSnapshot, 4)
+	go func() { _ = tailer.Run(ctx, quotaOut) }()
+	time.Sleep(50 * time.Millisecond)
+
+	line := "[2026-09-22T18:00:00Z] CANON: {\"type\":\"thread.token-usage.updated\",\"eventId\":\"bad\",\"provider\":\"future\",\"threadId\":\"thread\",\"createdAt\":\"2026-09-22T18:00:00Z\",\"raw\":{\"method\":\"future/usage\",\"payload\":{\"credential\":\"must-not-survive\"}}}\n"
+	appendFile(t, path, line)
+	tailer.RequestScan()
+	select {
+	case diagnostic := <-usageOut:
+		if diagnostic.Kind != domain.UsageKindDiagnostic || diagnostic.DiagnosticCode != "unsupported" ||
+			strings.Contains(diagnostic.SourceEventID, "must-not-survive") {
+			t.Fatalf("live diagnostic = %#v", diagnostic)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for live usage diagnostic")
+	}
+
+	_, backfill, err := ScanFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backfill) != 1 || backfill[0].Kind != domain.UsageKindDiagnostic ||
+		backfill[0].SourceEventID == "" || strings.Contains(backfill[0].SourceEventID, "must-not-survive") {
+		t.Fatalf("backfill diagnostics = %#v", backfill)
 	}
 }
 

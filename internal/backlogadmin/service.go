@@ -1,10 +1,15 @@
 package backlogadmin
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"slices"
 	"sort"
@@ -31,6 +36,12 @@ type Reader interface {
 	LoadWorkerSnapshots(context.Context) ([]domain.WorkerSnapshot, error)
 	LoadQuotaAdmissions(context.Context) ([]domain.QuotaAdmissionRecord, error)
 }
+
+type usageReader interface {
+	AttributedUsage(context.Context, string) (domain.UsageReport, error)
+}
+
+const usageSemantics = "a whole-turn row supersedes only calls carrying its exact causal boundary; calls in a summarized session without matching boundary identity are conservatively excluded and explicitly partial; cumulative reset is exact only across provider incarnations with sequence, while an unidentified decrease is excluded as ambiguous"
 
 type UnknownRecoveryWriter interface {
 	RecoverUnknownAssignment(context.Context, domain.UnknownAssignmentRecovery) (domain.UnknownAssignmentRecoveryDecision, error)
@@ -77,6 +88,7 @@ type Service struct {
 	// is supplied rather than read because it is the coordinator process's own
 	// effective configuration and appears in no record a query reads.
 	workerProviders map[string][]WorkerProviderAuthorization
+	usageCursorKey  []byte
 }
 
 // SetWorkerAuthorization supplies the provider authorization the coordinator
@@ -88,6 +100,16 @@ type Service struct {
 // that as a fact about the fleet.
 func (s *Service) SetWorkerAuthorization(authorization map[string][]WorkerProviderAuthorization) {
 	s.workerProviders = authorization
+}
+
+// SetUsageCursorKey installs coordinator-held secret material used only to
+// authenticate opaque usage cursors. The caller owns key persistence.
+func (s *Service) SetUsageCursorKey(key []byte) error {
+	if len(key) < 16 {
+		return fmt.Errorf("%w: usage cursor key is too short", ErrInvalidQuery)
+	}
+	s.usageCursorKey = append(s.usageCursorKey[:0], key...)
+	return nil
 }
 
 type RuntimeInfo struct {
@@ -330,6 +352,78 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		response.ResourceLocks = view.locks(query.Filter)
 	case QueryCommands:
 		response.Commands = view.commands(query)
+	case QueryUsage:
+		run, exists := view.runs[query.WorkflowRunID]
+		if !exists {
+			return Response{}, notFound("workflow run", query.WorkflowRunID)
+		}
+		reader, ok := s.reader.(usageReader)
+		if !ok {
+			return Response{}, fmt.Errorf("%w: usage attribution is unavailable", ErrInvalidQuery)
+		}
+		usage, usageErr := reader.AttributedUsage(ctx, query.WorkflowRunID)
+		if usageErr != nil {
+			return Response{}, fmt.Errorf("load attributed usage: %w", usageErr)
+		}
+		taskProgress := map[string]domain.ProgressState{}
+		attemptProgress := map[string]domain.ProgressState{}
+		for _, attempts := range view.attempts {
+			var runAttempts []domain.Attempt
+			for _, attempt := range attempts {
+				if attempt.WorkflowRunID != query.WorkflowRunID {
+					continue
+				}
+				runAttempts = append(runAttempts, attempt)
+				attemptProgress[attempt.ID] = attempt.Progress
+			}
+			if latest := latestAttempt(runAttempts); latest != nil {
+				taskProgress[latest.TaskID] = latest.Progress
+			}
+		}
+		var acceptedOutcomes int64
+		for _, task := range view.runTasks(query.WorkflowRunID) {
+			if latest := latestAttempt(view.attempts[query.WorkflowRunID+"\x00"+task.ID]); latest != nil &&
+				latest.Progress == domain.ProgressSucceeded {
+				acceptedOutcomes++
+			}
+		}
+		hardTruncated := usage.Coverage.Truncated
+		usage = domain.NormalizeUsageReport(usage, domain.UsageNormalizationContext{
+			Now: view.now, RunProgress: run.Progress, RunCompletedAt: run.CompletedAt,
+			TaskProgress: taskProgress, AttemptProgress: attemptProgress,
+			AcceptedOutcomeCount: acceptedOutcomes, HardTruncated: hardTruncated,
+		})
+		raw := usage.Samples
+		usage.Samples = nil
+		if query.UsageRaw {
+			start := 0
+			if query.UsageCursor != "" {
+				cursor, parseErr := decodeUsageCursor(s.usageCursorKey, query.UsageCursor, query.WorkflowRunID)
+				if parseErr != nil {
+					return Response{}, fmt.Errorf("%w: invalid usage cursor", ErrInvalidQuery)
+				}
+				start = sort.Search(len(raw), func(index int) bool { return usageAfterCursor(raw[index], cursor) })
+			}
+			limit := query.UsageLimit
+			if limit == 0 {
+				limit = 100
+			}
+			end := start + limit
+			if end > len(raw) {
+				end = len(raw)
+			}
+			usage.Samples = append([]domain.UsageSample(nil), raw[start:end]...)
+			if end < len(raw) && end > start {
+				usage.NextCursor, usageErr = encodeUsageCursor(s.usageCursorKey, query.WorkflowRunID, raw[end-1])
+				if usageErr != nil {
+					return Response{}, fmt.Errorf("encode usage cursor: %w", usageErr)
+				}
+			}
+			response.Usage = usage.Samples
+		}
+		response.UsageReport = &usage
+		response.UsageCoverage = &usage.Coverage
+		response.UsageSemantics = usageSemantics
 	case QueryQuarantine:
 		quarantined, err := s.quarantinedIntake(ctx)
 		if err != nil {
@@ -411,6 +505,8 @@ func validQuery(query Query) bool {
 	case QueryStatus, QueryWorkflows, QuerySchedules, QueryWorkers, QueryQuota,
 		QueryReservations, QueryLocks, QueryQuarantine, QueryProjects:
 		return true
+	case QueryUsage:
+		return query.WorkflowRunID != "" && query.UsageLimit >= 0 && query.UsageLimit <= 200
 	case QueryCommands:
 		return query.TaskID == "" || query.WorkflowRunID != ""
 	case QueryWorkflow, QueryGraph, QueryEvents, QueryDiagnose:
@@ -1534,6 +1630,90 @@ func (v view) events(runID string) []Event {
 func event(id, runID, taskID, attemptID, kind string, at time.Time, detail any) Event {
 	raw, _ := json.Marshal(detail)
 	return Event{ID: id, WorkflowRunID: runID, TaskID: taskID, AttemptID: attemptID, Kind: kind, At: at, Detail: raw}
+}
+
+type usageCursorPayload struct {
+	Version    int       `json:"version"`
+	RunID      string    `json:"runId"`
+	Order      string    `json:"order"`
+	ObservedAt time.Time `json:"observedAt"`
+	WorkerID   string    `json:"workerId"`
+	EventID    string    `json:"eventId"`
+}
+
+type usageCursorEnvelope struct {
+	usageCursorPayload
+	Digest string `json:"digest"`
+}
+
+const usageCursorOrder = "observed-worker-event/v1"
+
+func encodeUsageCursor(key []byte, runID string, sample domain.UsageSample) (string, error) {
+	if len(key) < 16 {
+		return "", errors.New("usage cursor authentication is unavailable")
+	}
+	payload := usageCursorPayload{
+		Version: 1, RunID: runID, Order: usageCursorOrder, ObservedAt: sample.ObservedAt.UTC(),
+		WorkerID: sample.WorkerID, EventID: sample.SourceEventID,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(raw)
+	envelope := usageCursorEnvelope{usageCursorPayload: payload, Digest: base64.RawURLEncoding.EncodeToString(mac.Sum(nil))}
+	raw, err = json.Marshal(envelope)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func decodeUsageCursor(key []byte, encoded, runID string) (usageCursorPayload, error) {
+	if len(key) < 16 || encoded == "" || len(encoded) > 2048 {
+		return usageCursorPayload{}, errors.New("invalid cursor size")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return usageCursorPayload{}, err
+	}
+	var envelope usageCursorEnvelope
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil {
+		return usageCursorPayload{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return usageCursorPayload{}, errors.New("cursor has trailing content")
+	}
+	payload := envelope.usageCursorPayload
+	unsigned, err := json.Marshal(payload)
+	if err != nil {
+		return usageCursorPayload{}, err
+	}
+	provided, err := base64.RawURLEncoding.DecodeString(envelope.Digest)
+	if err != nil {
+		return usageCursorPayload{}, errors.New("cursor authentication is invalid")
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(unsigned)
+	if !hmac.Equal(provided, mac.Sum(nil)) ||
+		payload.Version != 1 || payload.RunID != runID || payload.Order != usageCursorOrder ||
+		payload.ObservedAt.IsZero() || payload.EventID == "" {
+		return usageCursorPayload{}, errors.New("cursor identity mismatch")
+	}
+	return payload, nil
+}
+
+func usageAfterCursor(sample domain.UsageSample, cursor usageCursorPayload) bool {
+	if !sample.ObservedAt.Equal(cursor.ObservedAt) {
+		return sample.ObservedAt.After(cursor.ObservedAt)
+	}
+	if sample.WorkerID != cursor.WorkerID {
+		return sample.WorkerID > cursor.WorkerID
+	}
+	return sample.SourceEventID > cursor.EventID
 }
 
 func latestAttempt(attempts []domain.Attempt) *domain.Attempt {

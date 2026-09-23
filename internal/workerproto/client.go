@@ -98,19 +98,28 @@ func (c *Client) Catalog(ctx context.Context, request any) (map[string]string, e
 
 // WorkerID names the worker this session speaks to, so a caller can address a
 // coordinator-owned statement to exactly that worker's assignments.
-func (c *Client) WorkerID() string { return c.config.WorkerID }
+func (c *Client) WorkerID() string    { return c.config.WorkerID }
+func (c *Client) WorkerEpoch() string { return c.config.WorkerEpoch }
 
 // Snapshot asks the worker to publish a fresh observation and, in the same
 // exchange, tells it which of its assignments are parked on a task-bound wait.
 func (c *Client) Snapshot(ctx context.Context, request SnapshotRequest) (domain.WorkerSnapshot, error) {
+	observations, err := c.SnapshotObservations(ctx, request)
+	return observations.Snapshot, err
+}
+
+func (c *Client) SnapshotObservations(ctx context.Context, request SnapshotRequest) (Observations, error) {
 	if err := ValidateSnapshotRequest(request); err != nil {
-		return domain.WorkerSnapshot{}, err
+		return Observations{}, err
 	}
 	var observations Observations
 	if err := c.exchange(ctx, MessageSnapshot, MessageObservations, request, &observations); err != nil {
-		return domain.WorkerSnapshot{}, err
+		return Observations{}, err
 	}
-	return observations.Snapshot, nil
+	if len(observations.Usage) > MaxUsageDelivery || len(observations.AcknowledgedUsageEventIDs) > MaxUsageDelivery {
+		return Observations{}, &ProtocolError{Code: ErrorLimit, Message: "usage delivery exceeds bound"}
+	}
+	return observations, nil
 }
 
 func (c *Client) DeliverOffers(ctx context.Context, offers []AssignmentOffer) ([]domain.AssignmentClaimRequest, error) {

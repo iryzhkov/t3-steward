@@ -25,6 +25,9 @@ type WorkerExchangeStore interface {
 	ExpireAssignmentLeases(context.Context, int64, time.Time) ([]domain.Assignment, error)
 	ThrottleDeliveryStore
 	LoadQuotaAdmissions(context.Context) ([]domain.QuotaAdmissionRecord, error)
+	ReceiveWorkerUsage(context.Context, string, []domain.UsageSample) error
+	WorkerUsageAcknowledgements(context.Context, string) ([]string, error)
+	ClearWorkerUsageAcknowledgements(context.Context, string, []string) error
 }
 
 // WorkerControlTransport is one fresh, epoch-bound coordinator session.
@@ -33,14 +36,40 @@ type WorkerControlTransport interface {
 	// WorkerID names the worker on the far end, so the coordinator can build a
 	// statement about that worker's assignments and no others.
 	WorkerID() string
+	WorkerEpoch() string
 	Snapshot(context.Context, workerproto.SnapshotRequest) (domain.WorkerSnapshot, error)
 	DeliverOffers(context.Context, []workerproto.AssignmentOffer) ([]domain.AssignmentClaimRequest, error)
 	DeliverLeaseRenewals(context.Context, []domain.AssignmentLeaseRenewal) (domain.WorkerSnapshot, error)
 	DeliverThrottle(context.Context, domain.WorkerSnapshot, []domain.ThrottleCommand) ([]domain.ThrottleAcknowledgement, error)
 }
 
+func validateObservationIdentity(transport WorkerControlTransport, snapshot domain.WorkerSnapshot, coordinatorEpoch int64) error {
+	if snapshot.WorkerID != transport.WorkerID() {
+		return fmt.Errorf("worker snapshot identity %q does not match authenticated worker %q", snapshot.WorkerID, transport.WorkerID())
+	}
+	if snapshot.WorkerEpoch != transport.WorkerEpoch() {
+		return fmt.Errorf("worker snapshot epoch %q does not match authenticated session epoch %q", snapshot.WorkerEpoch, transport.WorkerEpoch())
+	}
+	if snapshot.CoordinatorEpoch != coordinatorEpoch {
+		return fmt.Errorf("worker snapshot coordinator epoch %d does not match authority %d", snapshot.CoordinatorEpoch, coordinatorEpoch)
+	}
+	return nil
+}
+
 // AssignmentOfferBuilder resolves the immutable package for an already-durable
 // offered assignment.
+type workerUsageTransport interface {
+	SnapshotObservations(context.Context, workerproto.SnapshotRequest) (workerproto.Observations, error)
+}
+
+func snapshotObservations(ctx context.Context, transport WorkerControlTransport, request workerproto.SnapshotRequest) (workerproto.Observations, error) {
+	if usage, ok := transport.(workerUsageTransport); ok {
+		return usage.SnapshotObservations(ctx, request)
+	}
+	snapshot, err := transport.Snapshot(ctx, request)
+	return workerproto.Observations{Snapshot: snapshot}, err
+}
+
 type AssignmentOfferBuilder interface {
 	BuildAssignmentOffer(context.Context, domain.Assignment, time.Time) (workerproto.AssignmentOffer, error)
 }
@@ -267,12 +296,23 @@ func (c FleetCoordinator) ReconcileWorker(
 	if err != nil {
 		return WorkerExchangeReport{}, err
 	}
-	snapshot, err := transport.Snapshot(ctx, parked)
+	parked.UsageAcknowledgements, err = store.WorkerUsageAcknowledgements(ctx, transport.WorkerID())
 	if err != nil {
 		return WorkerExchangeReport{}, err
 	}
-	if snapshot.CoordinatorEpoch != epoch {
-		return WorkerExchangeReport{}, fmt.Errorf("worker snapshot coordinator epoch %d does not match authority %d", snapshot.CoordinatorEpoch, epoch)
+	observations, err := snapshotObservations(ctx, transport, parked)
+	if err != nil {
+		return WorkerExchangeReport{}, err
+	}
+	snapshot := observations.Snapshot
+	if err := validateObservationIdentity(transport, snapshot, epoch); err != nil {
+		return WorkerExchangeReport{}, err
+	}
+	if err := store.ReceiveWorkerUsage(ctx, transport.WorkerID(), observations.Usage); err != nil {
+		return WorkerExchangeReport{}, err
+	}
+	if err := store.ClearWorkerUsageAcknowledgements(ctx, transport.WorkerID(), observations.AcknowledgedUsageEventIDs); err != nil {
+		return WorkerExchangeReport{}, err
 	}
 	if err := store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
 		return WorkerExchangeReport{}, err
@@ -362,13 +402,26 @@ func (c FleetCoordinator) ReconcileWorker(
 		if parked, err = c.parkedAssignments(ctx, transport.WorkerID()); err != nil {
 			return report, err
 		}
-		snapshot, err = transport.Snapshot(ctx, parked)
+		parked.UsageAcknowledgements, err = store.WorkerUsageAcknowledgements(ctx, transport.WorkerID())
 		if err != nil {
 			return report, err
 		}
-		if snapshot.CoordinatorEpoch != epoch || snapshot.WorkerID != report.Snapshot.WorkerID ||
-			snapshot.WorkerEpoch != report.Snapshot.WorkerEpoch {
+		observations, err = snapshotObservations(ctx, transport, parked)
+		if err != nil {
+			return report, err
+		}
+		snapshot = observations.Snapshot
+		if err := validateObservationIdentity(transport, snapshot, epoch); err != nil {
+			return report, err
+		}
+		if snapshot.WorkerID != report.Snapshot.WorkerID || snapshot.WorkerEpoch != report.Snapshot.WorkerEpoch {
 			return report, errors.New("worker identity changed during exchange")
+		}
+		if err := store.ReceiveWorkerUsage(ctx, transport.WorkerID(), observations.Usage); err != nil {
+			return report, err
+		}
+		if err := store.ClearWorkerUsageAcknowledgements(ctx, transport.WorkerID(), observations.AcknowledgedUsageEventIDs); err != nil {
+			return report, err
 		}
 		if err := store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
 			return report, err

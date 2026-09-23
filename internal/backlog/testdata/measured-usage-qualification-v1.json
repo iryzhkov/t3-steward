@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "disclaimer": "Synthetic deterministic provider evidence qualifies accounting behavior only; token totals are not subscription quota savings and do not claim live-provider generality.",
+  "scenarios": [
+    {
+      "id": "straight-through-success",
+      "runId": "qual-straight",
+      "runProgress": "succeeded",
+      "assignments": [
+        {"id":"straight","taskId":"task-straight","attemptId":"attempt-straight","attemptNumber":1,"progress":"succeeded","workerId":"worker-straight","provider":"claude-agent","model":"claude-sonnet","thread":"thread-straight","role":"executor"}
+      ],
+      "evidence": [
+        {"assignmentId":"straight","line":"[2026-09-22T18:00:00Z] CANON: {\"type\":\"thread.token-usage.updated\",\"eventId\":\"straight-result\",\"providerInstanceId\":\"claude-agent\",\"threadId\":\"thread-straight\",\"createdAt\":\"2026-09-22T18:00:00Z\",\"turnId\":\"straight-turn\",\"raw\":{\"method\":\"claude/result\",\"payload\":{\"modelUsage\":{\"reported\":{\"inputTokens\":10,\"cacheCreationInputTokens\":2,\"cacheReadInputTokens\":3,\"outputTokens\":4,\"costUSD\":0.10,\"canonicalModel\":\"claude-sonnet\"}}}}}"}
+      ],
+      "expected": {
+        "runProgress":"succeeded","acceptedOutcomes":1,"costPerAcceptedOutcomeUsd":0.10,
+        "totals":{"input":10,"cacheWrite":2,"cacheRead":3,"output":4,"cost":0.10,"costCoverage":"complete","samples":1,"calls":0,"turns":1},
+        "coverage":{"state":"complete","raw":1,"normalized":1,"expectedSessions":1},
+        "tasks":{"task-straight":{"outcome":"succeeded","totals":{"input":10,"cacheWrite":2,"cacheRead":3,"output":4,"cost":0.10,"costCoverage":"complete","samples":1,"calls":0,"turns":1}}},
+        "attempts":{"attempt-straight":{"outcome":"succeeded","totals":{"input":10,"cacheWrite":2,"cacheRead":3,"output":4,"cost":0.10,"costCoverage":"complete","samples":1,"calls":0,"turns":1}}},
+        "roles":{"executor":{"totals":{"input":10,"cacheWrite":2,"cacheRead":3,"output":4,"cost":0.10,"costCoverage":"complete","samples":1,"calls":0,"turns":1}}},
+        "models":{"claude-sonnet":{"totals":{"input":10,"cacheWrite":2,"cacheRead":3,"output":4,"cost":0.10,"costCoverage":"complete","samples":1,"calls":0,"turns":1}}}
+      }
+    },
+    {
+      "id": "repair-review-supervision",
+      "runId": "qual-repair",
+      "runProgress": "succeeded",
+      "assignments": [
+        {"id":"initial","taskId":"task-main","attemptId":"attempt-main-1","attemptNumber":1,"progress":"failed","workerId":"worker-repair","provider":"claude-agent","model":"claude-sonnet","thread":"thread-initial","role":"executor"},
+        {"id":"repair","taskId":"task-main","attemptId":"attempt-main-2","attemptNumber":2,"progress":"succeeded","workerId":"worker-repair","provider":"claude-agent","model":"claude-sonnet","thread":"thread-repair","role":"repair-executor"},
+        {"id":"review","taskId":"task-review","attemptId":"attempt-review","attemptNumber":1,"progress":"succeeded","workerId":"worker-repair","provider":"claude-agent","model":"claude-opus","thread":"thread-review","role":"gate-reviewer"},
+        {"id":"supervision","taskId":"task-supervision","attemptId":"attempt-supervision","attemptNumber":1,"progress":"succeeded","workerId":"worker-repair","provider":"claude-agent","model":"claude-sonnet","thread":"thread-supervision","role":"supervisor-activation"}
+      ],
+      "evidence": [
+        {"assignmentId":"initial","line":"[2026-09-22T18:01:00Z] CANON: {\"type\":\"thread.token-usage.updated\",\"eventId\":\"initial-result\",\"providerInstanceId\":\"claude-agent\",\"threadId\":\"thread-initial\",\"createdAt\":\"2026-09-22T18:01:00Z\",\"turnId\":\"initial-turn\",\"raw\":{\"method\":\"claude/result\",\"payload\":{\"modelUsage\":{\"reported\":{\"inputTokens\":20,\"cacheCreationInputTokens\":3,\"cacheReadInputTokens\":4,\"outputTokens\":5,\"costUSD\":0.20,\"canonicalModel\":\"claude-sonnet\"}}}}}"},
+        {"assignmentId":"repair","line":"[2026-09-22T18:02:00Z] CANON: {\"type\":\"thread.token-usage.updated\",\"eventId\":\"repair-result\",\"providerInstanceId\":\"claude-agent\",\"threadId\":\"thread-repair\",\"createdAt\":\"2026-09-22T18:02:00Z\",\"turnId\":\"repair-turn\",\"raw\":{\"method\":\"claude/result\",\"payload\":{\"modelUsage\":{\"reported\":{\"inputTokens\":15,\"cacheCreationInputTokens\":2,\"cacheReadInputTokens\":6,\"outputTokens\":4,\"costUSD\":0.15,\"canonicalModel\":\"claude-sonnet\"}}}}}"},
+        {"assignmentId":"review","line":"[2026-09-22T18:03:00Z] CANON: {\"type\":\"thread.token-usage.updated\",\"eventId\":\"review-result\",\"providerInstanceId\":\"claude-agent\",\"threadId\":\"thread-review\",\"createdAt\":\"2026-09-22T18:03:00Z\",\"turnId\":\"review-turn\",\"raw\":{\"method\":\"claude/result\",\"payload\":{\"modelUsage\":{\"reported\":{\"inputTokens\":5,\"cacheCreationInputTokens\":0,\"cacheReadInputTokens\":1,\"outputTokens\":2,\"costUSD\":0.05,\"canonicalModel\":\"claude-opus\"}}}}}"},
+        {"assignmentId":"supervision","line":"[2026-09-22T18:04:00Z] CANON: {\"type\":\"thread.token-usage.updated\",\"eventId\":\"supervision-result\",\"providerInstanceId\":\"claude-agent\",\"threadId\":\"thread-supervision\",\"createdAt\":\"2026-09-22T18:04:00Z\",\"turnId\":\"supervision-turn\",\"raw\":{\"method\":\"claude/result\",\"payload\":{\"modelUsage\":{\"reported\":{\"inputTokens\":3,\"cacheCreationInputTokens\":0,\"cacheReadInputTokens\":2,\"outputTokens\":1,\"costUSD\":0.03,\"canonicalModel\":\"claude-sonnet\"}}}}}"}
+      ],
+      "expected": {
+        "runProgress":"succeeded","acceptedOutcomes":1,"costPerAcceptedOutcomeUsd":0.43,
+        "totals":{"input":43,"cacheWrite":5,"cacheRead":13,"output":12,"cost":0.43,"costCoverage":"complete","samples":4,"calls":0,"turns":4},
+        "coverage":{"state":"complete","raw":4,"normalized":4,"expectedSessions":4},
+        "tasks":{
+          "task-main":{"outcome":"succeeded","totals":{"input":35,"cacheWrite":5,"cacheRead":10,"output":9,"cost":0.35,"costCoverage":"complete","samples":2,"calls":0,"turns":2}},
+          "task-review":{"outcome":"succeeded","totals":{"input":5,"cacheWrite":0,"cacheRead":1,"output":2,"cost":0.05,"costCoverage":"complete","samples":1,"calls":0,"turns":1}},
+          "task-supervision":{"outcome":"succeeded","totals":{"input":3,"cacheWrite":0,"cacheRead":2,"output":1,"cost":0.03,"costCoverage":"complete","samples":1,"calls":0,"turns":1}}
+        },
+        "attempts":{
+          "attempt-main-1":{"outcome":"failed","totals":{"input":20,"cacheWrite":3,"cacheRead":4,"output":5,"cost":0.20,"costCoverage":"complete","samples":1,"calls":0,"turns":1}},
+          "attempt-main-2":{"outcome":"succeeded","totals":{"input":15,"cacheWrite":2,"cacheRead":6,"output":4,"cost":0.15,"costCoverage":"complete","samples":1,"calls":0,"turns":1}},
+          "attempt-review":{"outcome":"succeeded","totals":{"input":5,"cacheWrite":0,"cacheRead":1,"output":2,"cost":0.05,"costCoverage":"complete","samples":1,"calls":0,"turns":1}},
+          "attempt-supervision":{"outcome":"succeeded","totals":{"input":3,"cacheWrite":0,"cacheRead":2,"output":1,"cost":0.03,"costCoverage":"complete","samples":1,"calls":0,"turns":1}}
+        },
+        "roles":{
+          "executor":{"totals":{"input":20,"cacheWrite":3,"cacheRead":4,"output":5,"cost":0.20,"costCoverage":"complete","samples":1,"calls":0,"turns":1}},
+          "repair-executor":{"totals":{"input":15,"cacheWrite":2,"cacheRead":6,"output":4,"cost":0.15,"costCoverage":"complete","samples":1,"calls":0,"turns":1}},
+          "gate-reviewer":{"totals":{"input":5,"cacheWrite":0,"cacheRead":1,"output":2,"cost":0.05,"costCoverage":"complete","samples":1,"calls":0,"turns":1}},
+          "supervisor-activation":{"totals":{"input":3,"cacheWrite":0,"cacheRead":2,"output":1,"cost":0.03,"costCoverage":"complete","samples":1,"calls":0,"turns":1}}
+        },
+        "models":{
+          "claude-opus":{"totals":{"input":5,"cacheWrite":0,"cacheRead":1,"output":2,"cost":0.05,"costCoverage":"complete","samples":1,"calls":0,"turns":1}},
+          "claude-sonnet":{"totals":{"input":38,"cacheWrite":5,"cacheRead":12,"output":10,"cost":0.38,"costCoverage":"complete","samples":3,"calls":0,"turns":3}}
+        }
+      }
+    },
+    {
+      "id": "parallel-cross-run-isolation",
+      "runId": "qual-parallel",
+      "runProgress": "succeeded",
+      "assignments": [
+        {"id":"parallel-a","taskId":"task-a","attemptId":"attempt-a","attemptNumber":1,"progress":"succeeded","workerId":"worker-parallel","provider":"claude-agent","model":"claude-sonnet","thread":"thread-parallel-a","role":"executor"},
+        {"id":"parallel-b","taskId":"task-b","attemptId":"attempt-b","attemptNumber":1,"progress":"succeeded","workerId":"worker-parallel","provider":"claude-agent","model":"claude-sonnet","thread":"thread-parallel-b","role":"executor"},
+        {"id":"shadow-a","runId":"qual-shadow","taskId":"task-shadow","attemptId":"attempt-shadow","attemptNumber":1,"progress":"succeeded","workerId":"worker-shadow","provider":"claude-agent","model":"claude-sonnet","thread":"thread-parallel-a","role":"executor"}
+      ],
+      "evidence": [
+        {"assignmentId":"parallel-a","line":"[2026-09-22T18:05:00Z] CANON: {\"type\":\"thread.token-usage.updated\",\"eventId\":\"parallel-a-result\",\"providerInstanceId\":\"claude-agent\",\"threadId\":\"thread-parallel-a\",\"createdAt\":\"2026-09-22T18:05:00Z\",\"turnId\":\"parallel-a-turn\",\"raw\":{\"method\":\"claude/result\",\"payload\":{\"modelUsage\":{\"reported\":{\"inputTokens\":8,\"cacheCreationInputTokens\":1,\"cacheReadInputTokens\":2,\"outputTokens\":3,\"costUSD\":0.08,\"canonicalModel\":\"claude-sonnet\"}}}}}"},
+        {"assignmentId":"parallel-b","line":"[2026-09-22T18:06:00Z] CANON: {\"type\":\"thread.token-usage.updated\",\"eventId\":\"parallel-b-result\",\"providerInstanceId\":\"claude-agent\",\"threadId\":\"thread-parallel-b\",\"createdAt\":\"2026-09-22T18:06:00Z\",\"turnId\":\"parallel-b-turn\",\"raw\":{\"method\":\"claude/result\",\"payload\":{\"modelUsage\":{\"reported\":{\"inputTokens\":12,\"cacheCreationInputTokens\":0,\"cacheReadInputTokens\":4,\"outputTokens\":2,\"canonicalModel\":\"claude-sonnet\"}}}}}"},
+        {"assignmentId":"shadow-a","line":"[2026-09-22T18:05:00Z] CANON: {\"type\":\"thread.token-usage.updated\",\"eventId\":\"parallel-a-result\",\"providerInstanceId\":\"claude-agent\",\"threadId\":\"thread-parallel-a\",\"createdAt\":\"2026-09-22T18:05:00Z\",\"turnId\":\"parallel-a-turn\",\"raw\":{\"method\":\"claude/result\",\"payload\":{\"modelUsage\":{\"reported\":{\"inputTokens\":99,\"cacheCreationInputTokens\":9,\"cacheReadInputTokens\":9,\"outputTokens\":9,\"costUSD\":0.99,\"canonicalModel\":\"claude-sonnet\"}}}}}"}
+      ],
+      "expected": {
+        "runProgress":"succeeded","acceptedOutcomes":2,
+        "totals":{"input":20,"cacheWrite":1,"cacheRead":6,"output":5,"cost":0.08,"costCoverage":"partial","samples":2,"calls":0,"turns":2},
+        "coverage":{"state":"complete","raw":2,"normalized":2,"expectedSessions":2},
+        "tasks":{
+          "task-a":{"outcome":"succeeded","totals":{"input":8,"cacheWrite":1,"cacheRead":2,"output":3,"cost":0.08,"costCoverage":"complete","samples":1,"calls":0,"turns":1}},
+          "task-b":{"outcome":"succeeded","totals":{"input":12,"cacheWrite":0,"cacheRead":4,"output":2,"cost":0,"costCoverage":"unavailable","samples":1,"calls":0,"turns":1}}
+        },
+        "attempts":{
+          "attempt-a":{"outcome":"succeeded","totals":{"input":8,"cacheWrite":1,"cacheRead":2,"output":3,"cost":0.08,"costCoverage":"complete","samples":1,"calls":0,"turns":1}},
+          "attempt-b":{"outcome":"succeeded","totals":{"input":12,"cacheWrite":0,"cacheRead":4,"output":2,"cost":0,"costCoverage":"unavailable","samples":1,"calls":0,"turns":1}}
+        },
+        "roles":{"executor":{"totals":{"input":20,"cacheWrite":1,"cacheRead":6,"output":5,"cost":0.08,"costCoverage":"partial","samples":2,"calls":0,"turns":2}}},
+        "models":{"claude-sonnet":{"totals":{"input":20,"cacheWrite":1,"cacheRead":6,"output":5,"cost":0.08,"costCoverage":"partial","samples":2,"calls":0,"turns":2}}}
+      }
+    },
+    {
+      "id": "checkpoint-restart-replay-rotation",
+      "runId": "qual-restart",
+      "runProgress": "succeeded",
+      "signedReplay": true,
+      "assignments": [
+        {"id":"restart","taskId":"task-restart","attemptId":"attempt-restart","attemptNumber":1,"progress":"succeeded","workerId":"worker-restart","provider":"codex-primary","model":"gpt-6-sol","thread":"thread-restart","role":"executor"}
+      ],
+      "evidence": [
+        {"assignmentId":"restart","replay":2,"line":"[2026-09-22T18:07:00Z] CANON: {\"type\":\"thread.token-usage.updated\",\"eventId\":\"restart-1\",\"providerInstanceId\":\"codex-primary\",\"threadId\":\"thread-restart\",\"createdAt\":\"2026-09-22T18:07:00Z\",\"incarnation\":\"session-1\",\"sequence\":1,\"raw\":{\"method\":\"thread/tokenUsage/updated\",\"payload\":{\"tokenUsage\":{\"last\":{\"inputTokens\":10,\"cacheWriteInputTokens\":2,\"cachedInputTokens\":3,\"outputTokens\":4},\"total\":{\"totalTokens\":19}}}}}"},
+        {"assignmentId":"restart","line":"[2026-09-22T18:08:00Z] CANON: {\"type\":\"thread.token-usage.updated\",\"eventId\":\"restart-2\",\"providerInstanceId\":\"codex-primary\",\"threadId\":\"thread-restart\",\"createdAt\":\"2026-09-22T18:08:00Z\",\"incarnation\":\"session-1\",\"sequence\":2,\"raw\":{\"method\":\"thread/tokenUsage/updated\",\"payload\":{\"tokenUsage\":{\"last\":{\"inputTokens\":5,\"cacheWriteInputTokens\":1,\"cachedInputTokens\":2,\"outputTokens\":2},\"total\":{\"totalTokens\":29}}}}}"},
+        {"assignmentId":"restart","line":"[2026-09-22T18:09:00Z] CANON: {\"type\":\"thread.token-usage.updated\",\"eventId\":\"restart-3\",\"providerInstanceId\":\"codex-primary\",\"threadId\":\"thread-restart\",\"createdAt\":\"2026-09-22T18:09:00Z\",\"incarnation\":\"session-2\",\"sequence\":1,\"raw\":{\"method\":\"thread/tokenUsage/updated\",\"payload\":{\"tokenUsage\":{\"last\":{\"inputTokens\":7,\"cacheWriteInputTokens\":0,\"cachedInputTokens\":1,\"outputTokens\":3},\"total\":{\"totalTokens\":11}}}}}"}
+      ],
+      "expected": {
+        "runProgress":"succeeded","acceptedOutcomes":1,
+        "totals":{"input":16,"cacheWrite":3,"cacheRead":6,"output":9,"cost":0,"costCoverage":"unavailable","samples":3,"calls":3,"turns":0},
+        "coverage":{"state":"partial","raw":3,"normalized":3,"expectedSessions":1,"resets":1,"unknownModels":3},
+        "tasks":{"task-restart":{"outcome":"succeeded","totals":{"input":16,"cacheWrite":3,"cacheRead":6,"output":9,"cost":0,"costCoverage":"unavailable","samples":3,"calls":3,"turns":0}}},
+        "attempts":{"attempt-restart":{"outcome":"succeeded","totals":{"input":16,"cacheWrite":3,"cacheRead":6,"output":9,"cost":0,"costCoverage":"unavailable","samples":3,"calls":3,"turns":0}}},
+        "roles":{"executor":{"totals":{"input":16,"cacheWrite":3,"cacheRead":6,"output":9,"cost":0,"costCoverage":"unavailable","samples":3,"calls":3,"turns":0}}},
+        "models":{"unknown":{"totals":{"input":16,"cacheWrite":3,"cacheRead":6,"output":9,"cost":0,"costCoverage":"unavailable","samples":3,"calls":3,"turns":0}}}
+      }
+    }
+  ]
+}

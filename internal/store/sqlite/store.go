@@ -4,8 +4,10 @@ package sqlite
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,10 +25,12 @@ import (
 
 // Store is the SQLite-backed state store.
 type Store struct {
-	db        *sql.DB
-	now       func() time.Time
-	path      string
-	ownerLock *os.File
+	db               *sql.DB
+	now              func() time.Time
+	path             string
+	ownerLock        *os.File
+	usageRecordHook  usageMutationHook
+	pruneHistoryHook usageMutationHook
 }
 
 var migrations = []string{
@@ -401,6 +405,12 @@ var versionedMigrations = []struct {
 	{21, coordinatorMigrationV21},
 	{22, coordinatorMigrationV22},
 	{23, coordinatorMigrationV23},
+	{24, coordinatorMigrationV24},
+	{25, coordinatorMigrationV25},
+	{26, coordinatorMigrationV26},
+	{27, coordinatorMigrationV27},
+	{28, coordinatorMigrationV28},
+	{29, coordinatorMigrationV29},
 }
 
 func (s *Store) applyVersionedMigration(version int, ddl string) error {
@@ -409,7 +419,11 @@ func (s *Store) applyVersionedMigration(version int, ddl string) error {
 		return fmt.Errorf("begin schema migration %d: %w", version, err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(ddl); err != nil {
+	if version == 29 {
+		if err := applyCoordinatorMigrationV29(tx); err != nil {
+			return fmt.Errorf("apply schema migration %d: %w", version, err)
+		}
+	} else if _, err := tx.Exec(ddl); err != nil {
 		return fmt.Errorf("apply schema migration %d: %w", version, err)
 	}
 	if _, err := tx.Exec(`INSERT INTO schema_version(version) VALUES (?)`, version); err != nil {
@@ -725,6 +739,48 @@ func (s *Store) SetKV(ctx context.Context, key, value string) error {
 	return err
 }
 
+const (
+	coordinatorUsageCursorKeyName    = "coordinator.usage-cursor-key.v1"
+	coordinatorUsageCursorMarkerName = "coordinator.usage-cursor-key.initialized.v1"
+)
+
+// CoordinatorUsageCursorKey loads the coordinator-local cursor authentication
+// key, creating it transactionally on first use. The key never crosses a
+// protocol boundary; the encoded value remains part of coordinator DB backups.
+func (s *Store) CoordinatorUsageCursorKey(ctx context.Context) ([]byte, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var encoded, marker string
+	keyErr := tx.QueryRowContext(ctx, `SELECT value FROM kv WHERE key = ?`, coordinatorUsageCursorKeyName).Scan(&encoded)
+	markerErr := tx.QueryRowContext(ctx, `SELECT value FROM kv WHERE key = ?`, coordinatorUsageCursorMarkerName).Scan(&marker)
+	switch {
+	case errors.Is(keyErr, sql.ErrNoRows) && errors.Is(markerErr, sql.ErrNoRows):
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return nil, fmt.Errorf("generate coordinator usage cursor key: %w", err)
+		}
+		encoded = base64.RawURLEncoding.EncodeToString(key)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO kv(key, value) VALUES (?, ?), (?, ?)`,
+			coordinatorUsageCursorKeyName, encoded, coordinatorUsageCursorMarkerName, "1"); err != nil {
+			return nil, fmt.Errorf("persist coordinator usage cursor key: %w", err)
+		}
+	case keyErr != nil || markerErr != nil || marker != "1":
+		return nil, errors.New("coordinator usage cursor key is missing or corrupt")
+	}
+	key, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(key) != 32 {
+		return nil, errors.New("coordinator usage cursor key is corrupt")
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit coordinator usage cursor key: %w", err)
+	}
+	return key, nil
+}
+
 // RecordObservation stores one accepted quota reading. Duplicate event ids
 // per bucket are ignored.
 func (s *Store) RecordObservation(ctx context.Context, o domain.Observation) error {
@@ -770,49 +826,83 @@ func (s *Store) Observations(ctx context.Context, from, to time.Time) ([]domain.
 	return out, rows.Err()
 }
 
-// RecordUsage stores one token usage sample. Duplicates are ignored.
+// RecordUsage stores one token usage sample. Duplicates are ignored per worker.
 func (s *Store) RecordUsage(ctx context.Context, u domain.UsageSample) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO usage_samples(event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd, kind, cumulative_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.SourceEventID, u.ProviderInstanceID, u.ThreadID, u.Model, u.ObservedAt.UTC().Format(time.RFC3339Nano),
-		u.InputTokens, u.CacheWriteTokens, u.CacheReadTokens, u.OutputTokens, u.CostUSD, u.Kind, u.CumulativeTokens)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := recordUsageWithHook(ctx, tx, u, s.usageRecordHook); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-// UsageSamples returns samples in [from, to), oldest first.
+// UsageSamples returns samples in [from, to), oldest first, joined to the
+// immutable dispatch binding. Rows without one are explicitly unattributed.
 func (s *Store) UsageSamples(ctx context.Context, from, to time.Time) ([]domain.UsageSample, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd, kind, cumulative_tokens
-		 FROM usage_samples WHERE observed_at >= ? AND observed_at < ? ORDER BY observed_at`,
+	rows, err := s.db.QueryContext(ctx, attributedUsageSelect+
+		` WHERE u.observed_at >= ? AND u.observed_at < ?
+		   ORDER BY u.observed_at, u.event_id`,
 		from.UTC().Format(time.RFC3339Nano), to.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []domain.UsageSample
-	for rows.Next() {
-		var (
-			at string
-			u  domain.UsageSample
-		)
-		if err := rows.Scan(&u.SourceEventID, &u.ProviderInstanceID, &u.ThreadID, &u.Model, &at, &u.InputTokens, &u.CacheWriteTokens, &u.CacheReadTokens, &u.OutputTokens, &u.CostUSD, &u.Kind, &u.CumulativeTokens); err != nil {
-			return nil, err
-		}
-		u.ObservedAt, _ = time.Parse(time.RFC3339Nano, at)
-		out = append(out, u)
-	}
-	return out, rows.Err()
+	return scanAttributedUsage(rows)
 }
 
-// PruneHistory deletes observations and usage samples older than the cutoff.
+// PruneHistory atomically deletes observations, usage samples, and delivery
+// bookkeeping older than the cutoff. Receipt deletion is joined to the exact
+// worker-scoped sample identity so a later event-id reuse cannot inherit an ack.
 func (s *Store) PruneHistory(ctx context.Context, before time.Time) error {
 	cutoff := before.UTC().Format(time.RFC3339Nano)
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM observations WHERE observed_at < ?`, cutoff); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM usage_samples WHERE observed_at < ?`, cutoff)
-	return err
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM observations WHERE observed_at < ?`, cutoff); err != nil {
+		return err
+	}
+	if err := usageMutationCheckpoint(s.pruneHistoryHook, "observations-pruned"); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM coordinator_worker_usage_receipts
+		WHERE EXISTS (SELECT 1 FROM usage_samples AS u
+			WHERE u.worker_id = coordinator_worker_usage_receipts.worker_id
+			AND u.event_id = coordinator_worker_usage_receipts.event_id
+			AND u.observed_at < ?)`, cutoff); err != nil {
+		return err
+	}
+	if err := usageMutationCheckpoint(s.pruneHistoryHook, "receipts-pruned"); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM worker_usage_forwarded
+		WHERE EXISTS (SELECT 1 FROM usage_samples AS u
+			WHERE u.worker_id = worker_usage_forwarded.worker_id
+			AND u.event_id = worker_usage_forwarded.event_id
+			AND u.observed_at < ?)`, cutoff); err != nil {
+		return err
+	}
+	if err := usageMutationCheckpoint(s.pruneHistoryHook, "forwarded-pruned"); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_samples WHERE observed_at < ?`, cutoff); err != nil {
+		return err
+	}
+	if err := usageMutationCheckpoint(s.pruneHistoryHook, "usage-pruned"); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_diagnostic_overflow
+		WHERE NOT EXISTS (SELECT 1 FROM usage_samples AS u
+			WHERE u.worker_id = usage_diagnostic_overflow.worker_id AND u.diagnostic_code = 'overflow')`); err != nil {
+		return err
+	}
+	if err := usageMutationCheckpoint(s.pruneHistoryHook, "overflow-pruned"); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // RegisterDispatchedThread records that a thread was started by the

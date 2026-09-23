@@ -1,0 +1,688 @@
+package sqlite
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
+)
+
+func TestMeasuredUsageMigrationPreservesHistoryAndReopensIdempotently(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	legacy, err := open(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.migrateThrough(23); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	if _, err := legacy.db.ExecContext(ctx, `INSERT INTO usage_samples(
+		event_id,provider,thread_id,model,observed_at,input_tokens,cache_write_tokens,
+		cache_read_tokens,output_tokens,cost_usd,kind,cumulative_tokens
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, "legacy-event", "codex-primary", "legacy-thread", "gpt",
+		at.Format(time.RFC3339Nano), 8, 0, 0, 0, 0, domain.UsageKindCall, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for reopen := 0; reopen < 2; reopen++ {
+		store, err := OpenMigrated(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := schemaVersionOf(t, store); got != 29 {
+			t.Fatalf("schema version = %d, want 29", got)
+		}
+		samples, err := store.UsageSamples(ctx, at.Add(-time.Minute), at.Add(time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(samples) != 1 || samples[0].SourceEventID != "legacy-event" ||
+			samples[0].Attribution.Status != domain.UsageUnattributed {
+			t.Fatalf("migrated samples = %#v", samples)
+		}
+		if err := store.Migrate(); err != nil {
+			t.Fatalf("repeat migration: %v", err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestMeasuredUsageBindingIsAuthoritativeIsolatedAndReplaySafe(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := OpenMigrated(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	records := CoordinatorRecords{
+		Workflows: []domain.Workflow{
+			{ID: "workflow-a", Name: "identical title", TaskIDs: []string{"task-a"}},
+			{ID: "workflow-b", Name: "identical title", TaskIDs: []string{"task-b"}},
+		},
+		WorkflowRuns: []domain.WorkflowRun{
+			{ID: "run-a", WorkflowID: "workflow-a"},
+			{ID: "run-b", WorkflowID: "workflow-b"},
+		},
+		Tasks: []domain.Task{
+			{ID: "task-a", WorkflowID: "workflow-a", Name: "same task", PromptArtifactID: "prompt-containing-run-b"},
+			{ID: "task-b", WorkflowID: "workflow-b", Name: "same task", PromptArtifactID: "prompt-containing-run-a"},
+		},
+		Attempts: []domain.Attempt{
+			{ID: "attempt-a1", WorkflowRunID: "run-a", TaskID: "task-a", Number: 1},
+			{ID: "attempt-a2", WorkflowRunID: "run-a", TaskID: "task-a", Number: 2},
+			{ID: "attempt-b1", WorkflowRunID: "run-b", TaskID: "task-b", Number: 1},
+			{ID: "activation-a", WorkflowRunID: "run-a", TaskID: "task-a", Number: 3,
+				SupervisionActivationID: "activation-7", SupervisionActivationEpoch: 2},
+			{ID: "activation-gate", WorkflowRunID: "run-a", TaskID: "task-a", Number: 4,
+				SupervisionActivationID: "activation-gate-7", SupervisionActivationEpoch: 3},
+		},
+	}
+	if err := store.SaveCoordinatorRecords(ctx, records); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saveSupervisionActivationTx(ctx, tx, domain.Activation{
+		ID: "activation-7", RunID: "run-a", Epoch: 2,
+		State: domain.ActivationPendingDispatch, DispatchIdentity: "dispatch-activation-7",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveSupervisionIncidentTx(ctx, tx, domain.ReviewIncident{
+		ID: "incident-gate", RunID: "run-a", GateID: "gate-7", State: domain.IncidentOpen, Revision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveSupervisionActivationTx(ctx, tx, domain.Activation{
+		ID: "activation-gate-7", RunID: "run-a", Epoch: 3, IncidentID: "incident-gate",
+		State: domain.ActivationPendingDispatch, DispatchIdentity: "dispatch-activation-gate-7",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO coordinator_recovery_supplements(
+		operation_id,run_id,incident_id,attempt_id,record) VALUES(?,?,?,?,?)`,
+		"repair-operation", "run-a", "repair-incident", "attempt-a2", "{}"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	assignments := []domain.Assignment{
+		measuredAssignment("assignment-a1", "attempt-a1", "thread-shared-looking-a", "codex-primary", 1, now),
+		measuredAssignment("assignment-a2", "attempt-a2", "thread-repair", "claude-agent", 2, now),
+		measuredAssignment("assignment-b1", "attempt-b1", "thread-shared-looking-b", "codex-primary", 1, now),
+		measuredAssignment("assignment-activation", "activation-a", "thread-activation", "claude-agent", 1, now),
+		measuredAssignment("assignment-gate", "activation-gate", "thread-gate", "claude-agent", 3, now),
+	}
+	for _, assignment := range assignments {
+		if _, err := store.PrepareAssignmentDispatch(ctx, assignment); err != nil {
+			t.Fatalf("prepare %s: %v", assignment.ID, err)
+		}
+	}
+	samples := []domain.UsageSample{
+		// Coordinator ingestion stamps this authenticated worker provenance.
+		{WorkerID: "worker", ProviderInstanceID: "codex-primary", ThreadID: "thread-shared-looking-a", ObservedAt: now, SourceEventID: "codex-a", Kind: domain.UsageKindCall, InputTokens: 10},
+		{WorkerID: "worker", ProviderInstanceID: "claude-agent", ThreadID: "thread-repair", ObservedAt: now.Add(time.Second), SourceEventID: "claude-repair#model", Kind: domain.UsageKindTurn, OutputTokens: 4},
+		{WorkerID: "worker", ProviderInstanceID: "codex-primary", ThreadID: "thread-shared-looking-b", ObservedAt: now.Add(2 * time.Second), SourceEventID: "codex-b", Kind: domain.UsageKindCall, InputTokens: 12},
+		{WorkerID: "worker", ProviderInstanceID: "claude-agent", ThreadID: "thread-activation", ObservedAt: now.Add(3 * time.Second), SourceEventID: "claude-activation#model", Kind: domain.UsageKindTurn, OutputTokens: 6},
+		{WorkerID: "worker", ProviderInstanceID: "claude-agent", ThreadID: "thread-gate", ObservedAt: now.Add(4 * time.Second), SourceEventID: "claude-gate#model", Kind: domain.UsageKindTurn, OutputTokens: 3},
+		{WorkerID: "worker", ProviderInstanceID: "codex-primary", ThreadID: "run-a/task-a/prompt-looking-but-unknown", ObservedAt: now.Add(5 * time.Second), SourceEventID: "unknown", Kind: domain.UsageKindCall, InputTokens: 99},
+	}
+	for _, sample := range samples {
+		if err := store.RecordUsage(ctx, sample); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.RecordUsage(ctx, sample); err != nil {
+			t.Fatalf("replay %s: %v", sample.SourceEventID, err)
+		}
+	}
+	got, err := store.UsageSamples(ctx, now.Add(-time.Second), now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(samples) {
+		t.Fatalf("samples after replay = %d, want %d", len(got), len(samples))
+	}
+	byEvent := make(map[string]domain.UsageSample, len(got))
+	for _, sample := range got {
+		byEvent[sample.SourceEventID] = sample
+	}
+	assertUsageBinding(t, byEvent["codex-a"], "run-a", "task-a", "attempt-a1", "assignment-a1", domain.ExecutionRoleExecutor)
+	assertUsageBinding(t, byEvent["claude-repair#model"], "run-a", "task-a", "attempt-a2", "assignment-a2", domain.ExecutionRoleRepairExecutor)
+	assertUsageBinding(t, byEvent["codex-b"], "run-b", "task-b", "attempt-b1", "assignment-b1", domain.ExecutionRoleExecutor)
+	assertUsageBinding(t, byEvent["claude-activation#model"], "run-a", "task-a", "activation-a", "assignment-activation", domain.ExecutionRoleSupervisorActivation)
+	assertUsageBinding(t, byEvent["claude-gate#model"], "run-a", "task-a", "activation-gate", "assignment-gate", domain.ExecutionRoleGateReviewer)
+	if byEvent["claude-gate#model"].Attribution.GateID != "gate-7" {
+		t.Fatalf("gate attribution = %#v", byEvent["claude-gate#model"].Attribution)
+	}
+	if byEvent["claude-activation#model"].Attribution.ActivationID != "activation-7" {
+		t.Fatalf("activation attribution = %#v", byEvent["claude-activation#model"].Attribution)
+	}
+	if unknown := byEvent["unknown"]; unknown.Attribution.Status != domain.UsageUnattributed ||
+		unknown.Attribution.WorkflowRunID != "" {
+		t.Fatalf("unknown sample inferred from identifiers: %#v", unknown)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenMigrated(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	runA, err := store.AttributedUsage(ctx, "run-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runA.Samples) != 4 || runA.Coverage.UnscopedUnattributedCount != 1 || runA.Coverage.Reason == "" {
+		t.Fatalf("run-a usage = %#v", runA)
+	}
+	for _, sample := range runA.Samples {
+		if sample.Attribution.WorkflowRunID != "run-a" {
+			t.Fatalf("cross-run leakage: %#v", sample)
+		}
+	}
+}
+
+func TestAttributedUsageAppliesDeterministicSafetyBound(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{{ID: "run-bound"}},
+		Attempts:     []domain.Attempt{{ID: "attempt-bound", WorkflowRunID: "run-bound", TaskID: "task-bound", Number: 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PrepareAssignmentDispatch(ctx, measuredAssignment("assignment-bound", "attempt-bound", "thread-bound", "codex", 1, now)); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i <= MaxRunUsageAggregation; i++ {
+		if err := store.RecordUsage(ctx, domain.UsageSample{
+			WorkerID: "worker", ProviderInstanceID: "codex", ThreadID: "thread-bound", Model: "gpt",
+			ObservedAt: now.Add(time.Duration(i) * time.Second), SourceEventID: fmt.Sprintf("event-%05d", i),
+			Kind: domain.UsageKindCall, InputTokens: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := store.AttributedUsage(ctx, "run-bound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Samples) != MaxRunUsageAggregation || !report.Coverage.Truncated ||
+		report.Samples[0].SourceEventID != "event-00000" || report.Samples[len(report.Samples)-1].SourceEventID != "event-09999" {
+		t.Fatalf("bounded report: samples=%d coverage=%#v first=%q last=%q", len(report.Samples), report.Coverage,
+			report.Samples[0].SourceEventID, report.Samples[len(report.Samples)-1].SourceEventID)
+	}
+}
+
+func TestCoordinatorUsageCursorKeyPersistsAndRejectsCorruption(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "coordinator.db")
+	store, err := OpenMigrated(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.CoordinatorUsageCursorKey(ctx)
+	if err != nil || len(first) != 32 {
+		t.Fatalf("first key length=%d err=%v", len(first), err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenMigrated(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	second, err := store.CoordinatorUsageCursorKey(ctx)
+	if err != nil || !bytes.Equal(first, second) {
+		t.Fatalf("restart key changed: equal=%v err=%v", bytes.Equal(first, second), err)
+	}
+	encoded, ok, err := store.GetKV(ctx, coordinatorUsageCursorKeyName)
+	if err != nil || !ok {
+		t.Fatalf("stored key missing: ok=%v err=%v", ok, err)
+	}
+	if err := store.SetKV(ctx, coordinatorUsageCursorKeyName, "corrupt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CoordinatorUsageCursorKey(ctx); err == nil {
+		t.Fatal("corrupt coordinator cursor key was accepted")
+	}
+	if err := store.SetKV(ctx, coordinatorUsageCursorKeyName, encoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM kv WHERE key = ?`, coordinatorUsageCursorKeyName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CoordinatorUsageCursorKey(ctx); err == nil {
+		t.Fatal("missing initialized coordinator cursor key was regenerated")
+	}
+}
+
+func TestRecordUsageRollsBackDiagnosticOverflowAtEveryCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "worker.db")
+	store, err := OpenMigrated(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	for i := 0; i < 1001; i++ {
+		if err := store.RecordUsage(ctx, domain.UsageSample{
+			WorkerID: "worker-atomic", ProviderInstanceID: "provider", ThreadID: "thread",
+			ObservedAt: now.Add(time.Duration(i) * time.Second), SourceEventID: fmt.Sprintf("baseline-%04d", i),
+			Kind: domain.UsageKindDiagnostic, DiagnosticCode: "malformed",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.WorkerUsageBatch(ctx, []string{"diagnostic-overflow@1"}, MaxWorkerUsageDelivery); err != nil {
+		t.Fatal(err)
+	}
+	assertOriginal := func() {
+		t.Helper()
+		var ordinary, dropped, marker, forwarded, candidate int64
+		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples
+			WHERE worker_id = 'worker-atomic' AND diagnostic_code <> 'overflow'`).Scan(&ordinary); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.db.QueryRowContext(ctx, `SELECT dropped_count FROM usage_diagnostic_overflow
+			WHERE worker_id = 'worker-atomic'`).Scan(&dropped); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.db.QueryRowContext(ctx, `SELECT cumulative_tokens FROM usage_samples
+			WHERE worker_id = 'worker-atomic' AND diagnostic_code = 'overflow'`).Scan(&marker); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM worker_usage_forwarded
+			WHERE worker_id = 'worker-atomic' AND event_id = 'diagnostic-overflow' AND revision = 1`).Scan(&forwarded); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples
+			WHERE worker_id = 'worker-atomic' AND event_id = 'candidate'`).Scan(&candidate); err != nil {
+			t.Fatal(err)
+		}
+		if ordinary != 1000 || dropped != 1 || marker != 1 || forwarded != 1 || candidate != 0 {
+			t.Fatalf("rollback state ordinary=%d dropped=%d marker=%d forwarded=%d candidate=%d",
+				ordinary, dropped, marker, forwarded, candidate)
+		}
+	}
+	candidate := domain.UsageSample{
+		WorkerID: "worker-atomic", ProviderInstanceID: "provider", ThreadID: "thread",
+		ObservedAt: now.Add(2 * time.Hour), SourceEventID: "candidate",
+		Kind: domain.UsageKindDiagnostic, DiagnosticCode: "malformed",
+	}
+	for _, stage := range []string{
+		"sample-inserted", "diagnostics-pruned", "overflow-count-updated",
+		"forwarded-marker-cleared", "overflow-marker-cleared", "overflow-marker-written",
+	} {
+		store.usageRecordHook = func(got string) error {
+			if got == stage {
+				return errors.New("injected interruption")
+			}
+			return nil
+		}
+		if err := store.RecordUsage(ctx, candidate); err == nil {
+			t.Fatalf("checkpoint %q did not interrupt", stage)
+		}
+		store.usageRecordHook = nil
+		assertOriginal()
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenMigrated(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.RecordUsage(ctx, candidate); err != nil {
+		t.Fatal(err)
+	}
+	var dropped, marker, forwarded int64
+	if err := store.db.QueryRowContext(ctx, `SELECT dropped_count FROM usage_diagnostic_overflow
+		WHERE worker_id = 'worker-atomic'`).Scan(&dropped); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT cumulative_tokens FROM usage_samples
+		WHERE worker_id = 'worker-atomic' AND diagnostic_code = 'overflow'`).Scan(&marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM worker_usage_forwarded
+		WHERE worker_id = 'worker-atomic' AND event_id = 'diagnostic-overflow'`).Scan(&forwarded); err != nil {
+		t.Fatal(err)
+	}
+	if dropped != 2 || marker != 2 || forwarded != 0 {
+		t.Fatalf("retry state dropped=%d marker=%d forwarded=%d", dropped, marker, forwarded)
+	}
+}
+
+func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	for i := 0; i < 1001; i++ {
+		if err := store.RecordUsage(ctx, domain.UsageSample{
+			WorkerID: "worker-diagnostic", ProviderInstanceID: "provider", ThreadID: "thread",
+			ObservedAt: now.Add(time.Duration(i) * time.Second), SourceEventID: fmt.Sprintf("diagnostic-%04d", i),
+			Kind: domain.UsageKindDiagnostic, DiagnosticCode: "malformed",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	samples, err := store.UsageSamples(ctx, now.Add(-time.Second), now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 1001 {
+		t.Fatalf("retained diagnostics = %d", len(samples))
+	}
+	var ordinary, overflow int
+	for _, sample := range samples {
+		if sample.DiagnosticCode == "overflow" {
+			overflow++
+			if sample.CumulativeTokens != 1 {
+				t.Fatalf("overflow marker = %#v", sample)
+			}
+		} else {
+			ordinary++
+		}
+	}
+	if ordinary != 1000 || overflow != 1 {
+		t.Fatalf("ordinary=%d overflow=%d", ordinary, overflow)
+	}
+	report, err := store.AttributedUsage(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Coverage.DiagnosticDroppedCount != 1 {
+		t.Fatalf("overflow coverage = %#v", report.Coverage)
+	}
+
+	coordinator, err := OpenMigrated(filepath.Join(t.TempDir(), "coordinator.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	var acknowledgements []string
+	for {
+		batch, batchErr := store.WorkerUsageBatch(ctx, acknowledgements, MaxWorkerUsageDelivery)
+		if batchErr != nil {
+			t.Fatal(batchErr)
+		}
+		if err := coordinator.ClearWorkerUsageAcknowledgements(ctx, "worker-diagnostic", acknowledgements); err != nil {
+			t.Fatal(err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+		if err := coordinator.ReceiveWorkerUsage(ctx, "worker-diagnostic", batch); err != nil {
+			t.Fatal(err)
+		}
+		acknowledgements, err = coordinator.WorkerUsageAcknowledgements(ctx, "worker-diagnostic")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	delivered, err := coordinator.AttributedUsage(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivered.Coverage.DiagnosticDroppedCount != 1 {
+		t.Fatalf("delivered overflow coverage = %#v", delivered.Coverage)
+	}
+
+	// Advance the same overflow state through another cycle. A late acknowledgement
+	// for revision 1 must not suppress revision 6, and neither database may retain
+	// more than one overflow marker for this worker.
+	for i := 1001; i < 1006; i++ {
+		if err := store.RecordUsage(ctx, domain.UsageSample{
+			WorkerID: "worker-diagnostic", ProviderInstanceID: "provider", ThreadID: "thread",
+			ObservedAt: now.Add(time.Duration(i) * time.Second), SourceEventID: fmt.Sprintf("diagnostic-%04d", i),
+			Kind: domain.UsageKindDiagnostic, DiagnosticCode: "malformed",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	batch, err := store.WorkerUsageBatch(ctx, []string{"diagnostic-overflow@1"}, MaxWorkerUsageDelivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var advanced int
+	for _, sample := range batch {
+		if sample.DiagnosticCode == "overflow" {
+			advanced++
+			if sample.SourceEventID != "diagnostic-overflow" || sample.CumulativeTokens != 6 {
+				t.Fatalf("advanced overflow = %#v", sample)
+			}
+		}
+	}
+	if advanced != 1 {
+		t.Fatalf("advanced overflow markers = %d in %#v", advanced, batch)
+	}
+	if err := coordinator.ReceiveWorkerUsage(ctx, "worker-diagnostic", batch); err != nil {
+		t.Fatal(err)
+	}
+	currentAcks, err := coordinator.WorkerUsageAcknowledgements(ctx, "worker-diagnostic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.ClearWorkerUsageAcknowledgements(ctx, "worker-diagnostic", []string{"diagnostic-overflow@1"}); err != nil {
+		t.Fatal(err)
+	}
+	afterStale, err := coordinator.WorkerUsageAcknowledgements(ctx, "worker-diagnostic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retainedCurrent bool
+	for _, acknowledgement := range afterStale {
+		retainedCurrent = retainedCurrent || acknowledgement == "diagnostic-overflow@6"
+	}
+	if !retainedCurrent {
+		t.Fatalf("stale cleanup removed current receipt: %#v", afterStale)
+	}
+	if _, err := store.WorkerUsageBatch(ctx, currentAcks, MaxWorkerUsageDelivery); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.ClearWorkerUsageAcknowledgements(ctx, "worker-diagnostic", currentAcks); err != nil {
+		t.Fatal(err)
+	}
+	remainingAcks, err := coordinator.WorkerUsageAcknowledgements(ctx, "worker-diagnostic")
+	if err != nil || len(remainingAcks) != 0 {
+		t.Fatalf("current cleanup left receipts=%#v err=%v", remainingAcks, err)
+	}
+	for name, candidate := range map[string]*Store{"worker": store, "coordinator": coordinator} {
+		var markers int
+		if err := candidate.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples WHERE worker_id = ? AND diagnostic_code = 'overflow'`, "worker-diagnostic").Scan(&markers); err != nil {
+			t.Fatal(err)
+		}
+		if markers != 1 {
+			t.Fatalf("%s overflow rows = %d", name, markers)
+		}
+	}
+	delivered, err = coordinator.AttributedUsage(ctx, "")
+	if err != nil || delivered.Coverage.DiagnosticDroppedCount != 6 {
+		t.Fatalf("advanced delivered overflow = %#v, %v", delivered.Coverage, err)
+	}
+}
+
+type pruneHistoryCounts struct {
+	observations int
+	usage        int
+	forwarded    int
+	receipts     int
+	overflow     int
+}
+
+func TestPruneHistoryIsAtomicAndForgetsExactDeliveryIdentity(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	stages := []string{"observations-pruned", "receipts-pruned", "forwarded-pruned", "usage-pruned", "overflow-pruned"}
+	for _, stage := range stages {
+		t.Run(stage, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.db")
+			store, err := OpenMigrated(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedPruneHistoryFixture(t, store, now)
+			before := loadPruneHistoryCounts(t, store)
+			store.pruneHistoryHook = func(got string) error {
+				if got == stage {
+					return errors.New("injected prune interruption")
+				}
+				return nil
+			}
+			if err := store.PruneHistory(ctx, now); err == nil {
+				t.Fatalf("checkpoint %q did not interrupt", stage)
+			}
+			if after := loadPruneHistoryCounts(t, store); after != before {
+				t.Fatalf("partial prune at %q: got %#v want %#v", stage, after, before)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, err = OpenMigrated(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			store.pruneHistoryHook = nil
+			if reopened := loadPruneHistoryCounts(t, store); reopened != before {
+				t.Fatalf("reopen after rollback = %#v, want %#v", reopened, before)
+			}
+			if err := store.PruneHistory(ctx, now); err != nil {
+				t.Fatal(err)
+			}
+			got := loadPruneHistoryCounts(t, store)
+			if got.observations != 1 || got.usage != 1 || got.forwarded != 0 || got.receipts != 0 || got.overflow != 0 {
+				t.Fatalf("pruned bookkeeping = %#v", got)
+			}
+			acks, err := store.WorkerUsageAcknowledgements(ctx, "offline-worker")
+			if err != nil || len(acks) != 0 {
+				t.Fatalf("stale offline receipt survived: %#v, %v", acks, err)
+			}
+			reused := domain.UsageSample{
+				ProviderInstanceID: "provider", ThreadID: "thread-new", Model: "model",
+				ObservedAt: now.Add(time.Hour), SourceEventID: "old-event",
+				Kind: domain.UsageKindCall, FieldPresence: domain.UsageFieldsAll, InputTokens: 7,
+			}
+			if err := store.ReceiveWorkerUsage(ctx, "offline-worker", []domain.UsageSample{reused}); err != nil {
+				t.Fatal(err)
+			}
+			acks, err = store.WorkerUsageAcknowledgements(ctx, "offline-worker")
+			if err != nil || len(acks) != 1 || acks[0] != "old-event" {
+				t.Fatalf("reused event identity receipt = %#v, %v", acks, err)
+			}
+		})
+	}
+}
+
+func seedPruneHistoryFixture(t *testing.T, store *Store, now time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	old := now.Add(-time.Hour)
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO observations(
+		bucket,observed_at,used_percent,resets_at,event_id,thread_id,model)
+		VALUES(?,?,?,?,?,?,?),(?,?,?,?,?,?,?)`,
+		"bucket", old.Format(time.RFC3339Nano), 1, "", "old-observation", "thread", "model",
+		"bucket", now.Add(time.Hour).Format(time.RFC3339Nano), 2, "", "new-observation", "thread", "model"); err != nil {
+		t.Fatal(err)
+	}
+	oldSample := domain.UsageSample{
+		ProviderInstanceID: "provider", ThreadID: "thread-old", Model: "model",
+		ObservedAt: old, SourceEventID: "old-event", Kind: domain.UsageKindCall,
+		FieldPresence: domain.UsageFieldsAll, InputTokens: 3,
+	}
+	overflow := domain.UsageSample{
+		ProviderInstanceID: "provider", ObservedAt: old.Add(time.Second),
+		SourceEventID: "diagnostic-overflow", Kind: domain.UsageKindDiagnostic,
+		DiagnosticCode: "overflow", CumulativeTokens: 9,
+	}
+	newSample := domain.UsageSample{
+		ProviderInstanceID: "provider", ThreadID: "thread-new", Model: "model",
+		ObservedAt: now.Add(time.Hour), SourceEventID: "new-event", Kind: domain.UsageKindCall,
+		FieldPresence: domain.UsageFieldsAll, InputTokens: 5,
+	}
+	if err := store.ReceiveWorkerUsage(ctx, "offline-worker", []domain.UsageSample{oldSample, overflow}); err != nil {
+		t.Fatal(err)
+	}
+	newSample.WorkerID = "offline-worker"
+	if err := store.RecordUsage(ctx, newSample); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO worker_usage_forwarded(
+		worker_id,event_id,acknowledged_at,revision) VALUES(?,?,?,?)`,
+		"offline-worker", "old-event", now.Format(time.RFC3339Nano), 0); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func loadPruneHistoryCounts(t *testing.T, store *Store) pruneHistoryCounts {
+	t.Helper()
+	var got pruneHistoryCounts
+	for _, item := range []struct {
+		table string
+		value *int
+	}{
+		{"observations", &got.observations},
+		{"usage_samples", &got.usage},
+		{"worker_usage_forwarded", &got.forwarded},
+		{"coordinator_worker_usage_receipts", &got.receipts},
+		{"usage_diagnostic_overflow", &got.overflow},
+	} {
+		if err := store.db.QueryRow("SELECT COUNT(*) FROM " + item.table).Scan(item.value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return got
+}
+
+func measuredAssignment(id, attempt, thread, provider string, epoch int64, now time.Time) domain.Assignment {
+	return domain.Assignment{
+		ID: id, AttemptID: attempt, WorkerID: "worker", WorkerEpoch: "worker-1",
+		Route: domain.ProviderRoute{WorkerID: "worker", ProviderInstanceID: provider, Model: "model"},
+		State: domain.AssignmentClaimed, Epoch: epoch, LeaseToken: "lease-" + id,
+		LeaseExpiresAt: now.Add(time.Hour), DispatchToken: "dispatch-" + id, ThreadID: thread,
+		CreatedAt: now, UpdatedAt: now,
+	}
+}
+
+func assertUsageBinding(t *testing.T, sample domain.UsageSample, run, task, attempt, assignment string, role domain.ExecutionRole) {
+	t.Helper()
+	got := sample.Attribution
+	if got.Status != domain.UsageAttributed || got.WorkflowRunID != run || got.TaskID != task ||
+		got.AttemptID != attempt || got.AssignmentID != assignment || got.Role != role {
+		t.Fatalf("attribution = %#v", got)
+	}
+}

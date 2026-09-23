@@ -187,6 +187,11 @@ func openDispatchTestStore(t *testing.T, path string) *sqlite.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SaveCoordinatorRecords(context.Background(), sqlite.CoordinatorRecords{
+		Attempts: []domain.Attempt{{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: "task-1", Number: 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	return store
 }
 

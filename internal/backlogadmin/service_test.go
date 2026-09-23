@@ -2,6 +2,9 @@ package backlogadmin
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -27,6 +30,176 @@ func (a *allowAuthorizer) Authorize(_ context.Context, _ Principal, action Actio
 	return a.err
 }
 
+func TestUsageQueryReturnsAuthoritativeDispatchIdentity(t *testing.T) {
+	ctx := context.Background()
+	store := openAdminTestStore(t)
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{{ID: "run-usage", Progress: domain.ProgressSucceeded, CreatedAt: adminTestNow, UpdatedAt: adminTestNow, CompletedAt: &adminTestNow}},
+		Attempts: []domain.Attempt{
+			{ID: "zzz-old-attempt", WorkflowRunID: "run-usage", TaskID: "task-usage", Number: 1, Revision: 9, Progress: domain.ProgressFailed, CompletedAt: &adminTestNow},
+			{ID: "attempt-usage", WorkflowRunID: "run-usage", TaskID: "task-usage", Number: 2, Revision: 1, Progress: domain.ProgressSucceeded, CompletedAt: &adminTestNow},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assignment := domain.Assignment{
+		ID: "assignment-usage", AttemptID: "attempt-usage", WorkerID: "worker-usage", WorkerEpoch: "worker-1",
+		Route: domain.ProviderRoute{WorkerID: "worker-usage", ProviderInstanceID: "codex-primary", Model: "gpt"},
+		State: domain.AssignmentClaimed, Epoch: 3, LeaseToken: "lease-usage",
+		LeaseExpiresAt: adminTestNow.Add(time.Hour), DispatchToken: "dispatch-usage",
+		ThreadID: "thread-usage", CreatedAt: adminTestNow, UpdatedAt: adminTestNow,
+	}
+	if _, err := store.PrepareAssignmentDispatch(ctx, assignment); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordUsage(ctx, domain.UsageSample{
+		WorkerID: "worker-usage", ProviderInstanceID: "codex-primary", ThreadID: "thread-usage", Model: "gpt",
+		ObservedAt: adminTestNow, SourceEventID: "event-usage", Kind: domain.UsageKindCall, InputTokens: 5,
+		FieldPresence: domain.UsageFieldsAll, CostUSD: 1.25, CostReported: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordUsage(ctx, domain.UsageSample{
+		WorkerID: "worker-usage", ProviderInstanceID: "codex-primary", ThreadID: "thread-usage", Model: "gpt",
+		ObservedAt: adminTestNow.Add(2 * time.Minute), SourceEventID: "event-later", Kind: domain.UsageKindCall,
+		InputTokens: 2, FieldPresence: domain.UsageFieldsAll,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordUsage(ctx, domain.UsageSample{
+		WorkerID: "worker-usage", ProviderInstanceID: "codex-primary", ThreadID: "thread-without-binding", Model: "gpt",
+		ObservedAt: adminTestNow, SourceEventID: "event-unscoped", Kind: domain.UsageKindCall, InputTokens: 7,
+		FieldPresence: domain.UsageFieldsAll,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(store, &allowAuthorizer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursorKey, err := store.CoordinatorUsageCursorKey(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetUsageCursorKey(cursorKey); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.UsageReport == nil || len(summary.Usage) != 0 || len(summary.UsageReport.Samples) != 0 ||
+		summary.UsageReport.Totals.UncachedInputTokens != 7 ||
+		summary.UsageReport.Totals.ProviderCostUSD != 1.25 ||
+		summary.UsageReport.Totals.ProviderCostCoverage != domain.UsageCostPartial ||
+		len(summary.UsageReport.ByTask) != 1 || summary.UsageReport.ByTask[0].Key != "task-usage" ||
+		summary.UsageReport.ByTask[0].Outcome != domain.ProgressSucceeded ||
+		summary.UsageReport.RunProgress != domain.ProgressSucceeded {
+		t.Fatalf("bounded summary = %#v", summary)
+	}
+	rawJSON, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"prompt text", "transcript", "credential"} {
+		if strings.Contains(string(rawJSON), secret) {
+			t.Fatalf("usage JSON leaked private content %q: %s", secret, rawJSON)
+		}
+	}
+	response, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage", UsageRaw: true, UsageLimit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Usage) != 1 || response.UsageReport.NextCursor == "" {
+		t.Fatalf("usage = %#v", response.Usage)
+	}
+	cursor := response.UsageReport.NextCursor
+	got := response.Usage[0].Attribution
+	if got.Status != domain.UsageAttributed || got.WorkflowRunID != "run-usage" ||
+		got.TaskID != "task-usage" || got.AttemptID != "attempt-usage" ||
+		got.AssignmentID != "assignment-usage" || got.AssignmentEpoch != 3 ||
+		got.Role != domain.ExecutionRoleTask {
+		t.Fatalf("attribution = %#v", got)
+	}
+	if err := store.RecordUsage(ctx, domain.UsageSample{
+		WorkerID: "worker-usage", ProviderInstanceID: "codex-primary", ThreadID: "thread-usage", Model: "gpt",
+		ObservedAt: adminTestNow.Add(-time.Minute), SourceEventID: "event-inserted-before", Kind: domain.UsageKindCall,
+		InputTokens: 1, FieldPresence: domain.UsageFieldsAll,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordUsage(ctx, domain.UsageSample{
+		WorkerID: "worker-usage", ProviderInstanceID: "codex-primary", ThreadID: "thread-usage", Model: "gpt",
+		ObservedAt: adminTestNow.Add(time.Minute), SourceEventID: "event-inserted-between", Kind: domain.UsageKindCall,
+		InputTokens: 1, FieldPresence: domain.UsageFieldsAll,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage", UsageRaw: true, UsageLimit: 10, UsageCursor: cursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Usage) != 2 || page.Usage[0].SourceEventID != "event-inserted-between" || page.Usage[1].SourceEventID != "event-later" {
+		t.Fatalf("stable keyset page = %#v", page.Usage)
+	}
+	if _, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage", UsageRaw: true, UsageCursor: cursor + "x"}); !errors.Is(err, ErrInvalidQuery) {
+		t.Fatalf("tampered cursor error = %v", err)
+	}
+	if _, err := decodeUsageCursor(cursorKey, cursor, "different-run"); err == nil {
+		t.Fatal("cursor was not bound to its run")
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var forged usageCursorEnvelope
+	if err := json.Unmarshal(decoded, &forged); err != nil {
+		t.Fatal(err)
+	}
+	forged.EventID = "forged-keyset"
+	unsigned, _ := json.Marshal(forged.usageCursorPayload)
+	publicDigest := sha256.Sum256(unsigned)
+	forged.Digest = base64.RawURLEncoding.EncodeToString(publicDigest[:])
+	forgedRaw, _ := json.Marshal(forged)
+	forgedCursor := base64.RawURLEncoding.EncodeToString(forgedRaw)
+	if _, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage", UsageRaw: true, UsageCursor: forgedCursor}); !errors.Is(err, ErrInvalidQuery) {
+		t.Fatalf("publicly recomputed forged cursor error = %v", err)
+	}
+	// A remote admin client has both protocol-direction credentials. Neither is
+	// the coordinator-local cursor key persisted in the coordinator database.
+	for _, credential := range [][]byte{
+		[]byte("remote-client-request-secret"),
+		[]byte("remote-client-response-verification-secret"),
+	} {
+		forged.EventID = "credential-forged-keyset"
+		unsigned, _ = json.Marshal(forged.usageCursorPayload)
+		mac := hmac.New(sha256.New, credential)
+		_, _ = mac.Write(unsigned)
+		forged.Digest = base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+		forgedRaw, _ = json.Marshal(forged)
+		forgedCursor = base64.RawURLEncoding.EncodeToString(forgedRaw)
+		if _, err := service.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage", UsageRaw: true, UsageCursor: forgedCursor}); !errors.Is(err, ErrInvalidQuery) {
+			t.Fatalf("remote credential forged cursor: %v", err)
+		}
+	}
+	restarted, err := New(store, &allowAuthorizer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.SetUsageCursorKey(cursorKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Query(ctx, Query{Version: Version, Kind: QueryUsage, WorkflowRunID: "run-usage", UsageRaw: true, UsageCursor: cursor}); err != nil {
+		t.Fatalf("cursor did not survive coordinator service restart: %v", err)
+	}
+	if response.UsageSemantics == "" {
+		t.Fatal("usage overlap semantics are absent")
+	}
+	if response.UsageCoverage == nil || response.UsageCoverage.UnscopedUnattributedCount != 1 || response.UsageCoverage.Reason == "" {
+		t.Fatalf("usage coverage = %#v", response.UsageCoverage)
+	}
+}
+
 func TestAdminQueriesTemporaryCoordinatorState(t *testing.T) {
 	store := openAdminTestStore(t)
 	seedAdminTestStore(t, store)
@@ -50,6 +223,7 @@ func TestAdminQueriesTemporaryCoordinatorState(t *testing.T) {
 		{Version: Version, Kind: QueryTask, Principal: principal, WorkflowRunID: "run-1", TaskID: "implement"},
 		{Version: Version, Kind: QueryExplanation, Principal: principal, WorkflowRunID: "run-1", TaskID: "task-implement"},
 		{Version: Version, Kind: QueryEvents, Principal: principal, WorkflowRunID: "run-1"},
+		{Version: Version, Kind: QueryUsage, Principal: principal, WorkflowRunID: "run-1"},
 		{Version: Version, Kind: QueryArtifacts, Principal: principal, WorkflowRunID: "run-1", TaskID: "implement"},
 		{Version: Version, Kind: QueryArtifact, Principal: principal, ArtifactID: "artifact-checkpoint"},
 		{Version: Version, Kind: QuerySchedules, Principal: principal},
@@ -81,6 +255,9 @@ func TestAdminQueriesTemporaryCoordinatorState(t *testing.T) {
 		status.Tasks[domain.ProgressActive] != 1 || status.Workers["offline"] != 1 ||
 		status.QuotaPools[domain.AdmissionDraining] != 1 || status.Reservations != 1 || status.Locks != 1 {
 		t.Fatalf("unexpected status: %#v", status)
+	}
+	if responses[QueryUsage].UsageSemantics == "" {
+		t.Fatal("usage query omitted overlap semantics")
 	}
 	if status.Runtime.Mode != "coordinator" || status.Runtime.Owner != "coordinator-1" ||
 		status.Runtime.Epoch != 7 || status.Runtime.Transport != "ssh" || status.Runtime.Health != "degraded" ||

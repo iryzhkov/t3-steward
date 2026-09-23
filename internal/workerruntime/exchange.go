@@ -4,13 +4,19 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
+
+type UsageDeliveryStore interface {
+	WorkerUsageBatch(context.Context, []string, int) ([]domain.UsageSample, error)
+}
 
 type Exchange struct {
 	Runtime *Runtime
 	Server  *workerproto.Server
 	Custody *CustodyStore
+	Usage   UsageDeliveryStore
 }
 
 func (e Exchange) Handle(ctx context.Context, envelope workerproto.Envelope) (workerproto.Envelope, error) {
@@ -47,7 +53,15 @@ func (e Exchange) handle(ctx context.Context, envelope workerproto.Envelope) (wo
 			return "", nil, err
 		}
 		snapshot, err := e.Runtime.Snapshot(ctx)
-		return workerproto.MessageObservations, workerproto.Observations{Snapshot: snapshot}, err
+		if err != nil {
+			return "", nil, err
+		}
+		observations := workerproto.Observations{Snapshot: snapshot}
+		if e.Usage != nil {
+			observations.Usage, err = e.Usage.WorkerUsageBatch(ctx, request.UsageAcknowledgements, workerproto.MaxUsageDelivery)
+			observations.AcknowledgedUsageEventIDs = append([]string(nil), request.UsageAcknowledgements...)
+		}
+		return workerproto.MessageObservations, observations, err
 	case workerproto.MessageOffers:
 		var offers workerproto.AssignmentOffers
 		if err := workerproto.DecodePayload(envelope, workerproto.MessageOffers, &offers); err != nil {

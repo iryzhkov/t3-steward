@@ -41,6 +41,7 @@ func TestParseBacklogAdminQuery(t *testing.T) {
 		{name: "graph", args: []string{"graph", "run-1", "--json"}, kind: backlogadmin.QueryGraph, runID: "run-1", asJSON: true},
 		{name: "task", args: []string{"task", "show", "run-1/task-1"}, kind: backlogadmin.QueryTask, runID: "run-1", taskID: "task-1"},
 		{name: "events", args: []string{"events", "run-1"}, kind: backlogadmin.QueryEvents, runID: "run-1"},
+		{name: "usage", args: []string{"usage", "run-1"}, kind: backlogadmin.QueryUsage, runID: "run-1"},
 		{name: "explanation", args: []string{"explain", "run-1/task-1"}, kind: backlogadmin.QueryExplanation, runID: "run-1", taskID: "task-1"},
 		{name: "all artifacts", args: []string{"artifacts"}, kind: backlogadmin.QueryArtifacts},
 		{name: "task artifacts", args: []string{"artifacts", "task-1"}, kind: backlogadmin.QueryArtifacts, taskID: "task-1"},
@@ -63,6 +64,61 @@ func TestParseBacklogAdminQuery(t *testing.T) {
 				t.Fatalf("display.JSON = %t, want %t", display.JSON, test.asJSON)
 			}
 		})
+	}
+}
+
+func TestParseBacklogUsageRawBounds(t *testing.T) {
+	query, display, err := parseBacklogAdminQuery([]string{"usage", "run-1", "--raw", "--limit", "17", "--cursor", "3", "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !display.JSON || query.Kind != backlogadmin.QueryUsage || query.WorkflowRunID != "run-1" ||
+		!query.UsageRaw || query.UsageLimit != 17 || query.UsageCursor != "3" {
+		t.Fatalf("usage query = %#v, display = %#v", query, display)
+	}
+	for _, args := range [][]string{
+		{"usage"},
+		{"usage", "run-1", "--limit", "1"},
+		{"usage", "run-1", "--raw", "--limit", "201"},
+		{"usage", "run-1", "--raw", "--raw"},
+	} {
+		if _, _, err := parseBacklogAdminQuery(args); err == nil {
+			t.Errorf("parseBacklogAdminQuery(%q) succeeded", args)
+		}
+	}
+}
+
+func TestRenderUsageQualifiesAcceptedOutcomeCost(t *testing.T) {
+	cost := 0.43
+	report := domain.UsageReport{
+		WorkflowRunID: "run-1", RunProgress: domain.ProgressSucceeded,
+		AcceptedOutcomeCount: 1, MeasuredCostPerAcceptedOutcomeUSD: &cost,
+		Totals: domain.UsageTotals{
+			ProviderCostUSD: 0.43, ProviderCostReported: true,
+			ProviderCostCoverage: domain.UsageCostComplete,
+		},
+		Coverage: domain.UsageCoverage{State: domain.UsageCoverageComplete, ExpectedSessionCount: 2},
+	}
+	var out bytes.Buffer
+	if err := renderUsage(&out, &report, "frozen semantics"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Accepted outcomes: 1",
+		"Measured provider cost per accepted outcome: 0.430000",
+		"not subscription quota savings",
+		"expected-sessions=2 missing-logs=0",
+		"By role",
+	} {
+		if want == "By role" {
+			if strings.Contains(out.String(), want) {
+				t.Fatalf("empty role overhead section rendered: %s", out.String())
+			}
+			continue
+		}
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("human usage report missing %q: %s", want, out.String())
+		}
 	}
 }
 

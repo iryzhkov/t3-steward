@@ -606,8 +606,18 @@ func (s *Store) ClaimAssignment(ctx context.Context, request domain.AssignmentCl
 		assignment.Epoch != request.AssignmentEpoch || assignment.LeaseToken != request.LeaseToken {
 		return domain.Assignment{}, fmt.Errorf("%w: identity mismatch for %q", ErrAssignmentClaim, request.AssignmentID)
 	}
+	if err := bindAssignmentUsageTx(ctx, tx, &assignment, request.ClaimedAt); err != nil {
+		return domain.Assignment{}, err
+	}
 	if assignment.State == domain.AssignmentClaimed {
 		if assignment.LeaseExpiresAt.Equal(request.LeaseExpiresAt) {
+			raw, marshalErr := json.Marshal(assignment)
+			if marshalErr != nil {
+				return domain.Assignment{}, fmt.Errorf("encode replayed assignment %q: %w", assignment.ID, marshalErr)
+			}
+			if _, updateErr := tx.ExecContext(ctx, `UPDATE coordinator_assignments SET record = ? WHERE id = ?`, raw, assignment.ID); updateErr != nil {
+				return domain.Assignment{}, updateErr
+			}
 			attempt, loadErr := loadAttemptTx(ctx, tx, assignment.AttemptID)
 			if loadErr != nil {
 				return domain.Assignment{}, loadErr

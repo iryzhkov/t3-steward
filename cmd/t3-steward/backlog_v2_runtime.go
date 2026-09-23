@@ -827,6 +827,13 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	if err != nil {
 		return err
 	}
+	cursorKey, err := store.CoordinatorUsageCursorKey(ctx)
+	if err != nil {
+		return err
+	}
+	if err := service.SetUsageCursorKey(cursorKey); err != nil {
+		return err
+	}
 	service.SetGraphAmendmentSupport(cfg.BacklogV2.Storage.Artifacts, graphTaskValidator(cfg.BacklogV2))
 	configurationDigest, err := coordinatorConfigurationDigest(cfg.BacklogV2)
 	if err != nil {

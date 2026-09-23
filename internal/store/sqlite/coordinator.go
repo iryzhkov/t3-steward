@@ -10,7 +10,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-const currentSchemaVersion = 23
+const currentSchemaVersion = 29
 
 // CurrentSchemaVersion is the newest coordinator schema this binary can open.
 // Snapshot verification uses it without migrating the inspected database.
@@ -145,6 +145,8 @@ type CoordinatorRecords struct {
 	Tasks             []domain.Task
 	Attempts          []domain.Attempt
 	Assignments       []domain.Assignment
+	Activations       []domain.Activation
+	Incidents         []domain.ReviewIncident
 	Schedules         []domain.Schedule
 	ScheduleTemplates []domain.ScheduleTemplate
 	Triggers          []domain.Trigger
@@ -198,6 +200,16 @@ func (s *Store) SaveCoordinatorRecords(ctx context.Context, records CoordinatorR
 			 task_id = excluded.task_id, number = excluded.number,
 			 revision = excluded.revision, record = excluded.record`,
 			[]any{record.ID, record.WorkflowRunID, record.TaskID, record.Number, record.Revision}, record); err != nil {
+			return err
+		}
+	}
+	for _, record := range records.Activations {
+		if err := saveSupervisionActivationTx(ctx, tx, record); err != nil {
+			return err
+		}
+	}
+	for _, record := range records.Incidents {
+		if err := saveSupervisionIncidentTx(ctx, tx, record); err != nil {
 			return err
 		}
 	}
