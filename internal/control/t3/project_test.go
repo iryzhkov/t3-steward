@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -72,6 +73,70 @@ func TestEnsureProjectReconcilesCreation(t *testing.T) {
 				t.Fatalf("created %d commands, %d projects", creates, len(projects))
 			}
 		})
+	}
+}
+
+func TestEnsureProjectRecreatesDeletedProjectFromOldAcceptedReceipt(t *testing.T) {
+	input := ManagedProject{Key: "worker/project", Title: "Steward: swept", WorkspaceRoot: t.TempDir()}
+	oldID := deterministicID(input.Key, "steward.project")
+	oldCommand := deterministicID(input.Key, "steward.project.create")
+	const oldSequence int64 = 7
+	const snapshotSequence int64 = 42
+	replacementToken := input.Key + "\x00receipt\x00" + strconv.FormatInt(oldSequence, 10)
+	replacementID := deterministicID(replacementToken, "steward.project")
+	replacementCommand := deterministicID(replacementToken, "steward.project.create")
+	var mu sync.Mutex
+	var active []t3api.ProjectShell
+	dispatches := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodGet && r.URL.Path == "/api/orchestration/shell" {
+			_ = json.NewEncoder(w).Encode(t3api.ShellSnapshot{SnapshotSequence: snapshotSequence, Projects: active})
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/api/orchestration/dispatch" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		var command map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&command); err != nil {
+			t.Error(err)
+			http.Error(w, "bad command", http.StatusBadRequest)
+			return
+		}
+		commandID, _ := command["commandId"].(string)
+		dispatches = append(dispatches, commandID)
+		switch commandID {
+		case oldCommand:
+			if command["projectId"] != oldID {
+				t.Errorf("old command used project %v, want %s", command["projectId"], oldID)
+			}
+			_ = json.NewEncoder(w).Encode(t3api.DispatchResult{Sequence: oldSequence})
+		case replacementCommand:
+			if command["projectId"] != replacementID {
+				t.Errorf("replacement command used project %v, want %s", command["projectId"], replacementID)
+			}
+			active = []t3api.ProjectShell{{ID: replacementID, Title: input.Title, WorkspaceRoot: input.WorkspaceRoot}}
+			_ = json.NewEncoder(w).Encode(t3api.DispatchResult{Sequence: snapshotSequence + 1})
+		default:
+			t.Errorf("unexpected command ID %s", commandID)
+			http.Error(w, "unexpected command", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	for i := 0; i < 2; i++ {
+		control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second),
+			slog.New(slog.NewTextHandler(io.Discard, nil)), false)
+		got, err := control.EnsureProject(context.Background(), input)
+		if err != nil || got != replacementID {
+			t.Fatalf("ensure attempt %d = %q, %v; want %s", i, got, err, replacementID)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dispatches) != 2 || dispatches[0] != oldCommand || dispatches[1] != replacementCommand {
+		t.Fatalf("dispatches = %v; want one old receipt and one stable replacement", dispatches)
 	}
 }
 

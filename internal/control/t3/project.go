@@ -47,9 +47,9 @@ func (c *Control) EnsureProject(ctx context.Context, in ManagedProject) (string,
 		return "", errors.New("ensure T3 project: stable key, title and clean absolute owned workspace root are required")
 	}
 	id := deterministicID(in.Key, "steward.project")
-	// The snapshot carries active projects only, so a project that is absent
-	// here is either not created yet or deleted, and the two are the same
-	// question to this function: does the owned root hold a project now.
+	// The snapshot carries active projects only. Its sequence also fences a
+	// create receipt: an accepted command older than a root-absent snapshot
+	// cannot make that project active by replaying the same command ID.
 	adopted := func(snapshot *t3api.ShellSnapshot) (string, error) {
 		for _, p := range snapshot.Projects {
 			if p.WorkspaceRoot != in.WorkspaceRoot {
@@ -74,30 +74,49 @@ func (c *Control) EnsureProject(ctx context.Context, in ManagedProject) (string,
 		c.log.Info("dry-run: would create managed project", "project", id, "workspace", in.WorkspaceRoot)
 		return id, nil
 	}
-	create := func(projectID, commandToken string) error {
-		_, err := c.client.Dispatch(ctx, map[string]any{
+	create := func(projectID, commandToken string) (*t3api.DispatchResult, error) {
+		return c.client.Dispatch(ctx, map[string]any{
 			"type": "project.create", "commandId": deterministicID(commandToken, "steward.project.create"),
 			"projectId": projectID, "title": in.Title, "workspaceRoot": in.WorkspaceRoot,
 			"createWorkspaceRootIfMissing": true, "createdAt": now(),
 		})
-		return err
 	}
-	dispatchErr := create(id, in.Key)
-	if dispatchErr != nil && refusedForASpentProjectID(dispatchErr) {
-		// This key's derived identity has been used and deleted. The key keeps
-		// its meaning, the root keeps the reconciling, and the project gets an
-		// identity that has not been spent. The command ID travels with it so
-		// two creations are never one command.
-		c.log.Info("managed project identity is spent; recreating the owned root under a fresh identity",
-			"spent", id, "workspace", in.WorkspaceRoot)
-		id = newID()
-		dispatchErr = create(id, id)
+	commandToken := in.Key
+	var dispatchErr error
+	dispatched := false
+	const maxCreateGenerations = 8
+	for generation := 0; generation < maxCreateGenerations; generation++ {
+		result, createErr := create(id, commandToken)
+		dispatchErr = createErr
+		if refusedForASpentProjectID(createErr) {
+			c.log.Info("managed project identity is spent; trying a stable replacement",
+				"spent", id, "workspace", in.WorkspaceRoot, "generation", generation)
+			commandToken = in.Key + "\x00spent\x00" + id
+			id = deterministicID(commandToken, "steward.project")
+			continue
+		}
+		if createErr == nil && result != nil && result.Sequence > 0 &&
+			snapshot.SnapshotSequence >= result.Sequence {
+			// T3 acknowledged a previous invocation of this command. The
+			// root was absent from a snapshot at or after that receipt, so
+			// replaying it cannot recreate a project that was later deleted.
+			c.log.Info("managed project create receipt predates root-absent snapshot; trying a stable replacement",
+				"project", id, "receipt_sequence", result.Sequence,
+				"snapshot_sequence", snapshot.SnapshotSequence, "generation", generation)
+			commandToken = in.Key + "\x00receipt\x00" + fmt.Sprint(result.Sequence)
+			id = deterministicID(commandToken, "steward.project")
+			continue
+		}
+		dispatched = true
+		break
 	}
-	// Observe after both success and failure. A lost response is not evidence that
-	// creation failed, and an acknowledgement alone is not matching metadata.
-	// A newly accepted project can be absent from the first shell projection.
-	// Reconcile only this same owned root, within a deadline, without dispatching
-	// another create command or attaching a thread to unverified metadata.
+	if !dispatched {
+		return id, fmt.Errorf("ensure T3 project: exhausted %d distinct creation identities at owned workspace root %s",
+			maxCreateGenerations, in.WorkspaceRoot)
+	}
+	// Observe after both success and failure. A lost response is not evidence
+	// that creation failed, and an acknowledgement alone is not matching
+	// metadata. Reconcile only this same owned root, within a deadline.
 	const visibilityDeadline = 5 * time.Second
 	const visibilityInterval = 100 * time.Millisecond
 	reconcileCtx, cancel := context.WithTimeout(ctx, visibilityDeadline)
