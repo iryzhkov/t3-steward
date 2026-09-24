@@ -225,6 +225,15 @@ func newCoordinatorTransportAs(cfg config.Config, identity supervisorIdentity) (
 		if err := identity.checkResolved(credentials); err != nil {
 			return coordinatorTransport{}, err
 		}
+		// Reuse one ssh connection across requests. The daemon polls every few
+		// seconds, and a coordinator whose firewall rate-limits new SSH
+		// connections (ufw "limit": six in 30 s) otherwise rejects this host
+		// as soon as an interactive command adds a few more. Without a safe
+		// runtime directory the client falls back to a connection per request.
+		controlDir, err := backlogadmin.PrepareControlDir(os.Getenv("XDG_RUNTIME_DIR"))
+		if err != nil {
+			controlDir = ""
+		}
 		remote, err := backlogadmin.NewSSHClient(backlogadmin.SSHClientConfig{
 			CoordinatorID:      client.CoordinatorID,
 			Address:            client.Address,
@@ -234,6 +243,7 @@ func newCoordinatorTransportAs(cfg config.Config, identity supervisorIdentity) (
 			MaxResponseBytes:   client.MessageLimits.MaxBytes,
 			MaxArtifactBytes:   client.MessageLimits.MaxArtifactBytes,
 			MaxSubmissionBytes: client.MessageLimits.MaxBytes,
+			ControlDir:         controlDir,
 		})
 		if err != nil {
 			return coordinatorTransport{}, err

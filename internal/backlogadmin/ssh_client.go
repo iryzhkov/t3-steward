@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -45,10 +46,23 @@ type SSHClientConfig struct {
 	SessionID          string
 	Now                func() time.Time
 	Factory            workerproto.CommandFactory
+	// ControlDir, when set, is a private directory (see PrepareControlDir) in
+	// which ssh keeps one multiplexed master connection per destination, so
+	// consecutive requests reuse a single TCP connection instead of opening a
+	// new one each. Empty means one connection per request.
+	ControlDir string
+	// ControlPersist is how long an idle master stays up; zero means
+	// DefaultControlPersist.
+	ControlPersist time.Duration
 }
 
+// DefaultControlPersist keeps an idle master long enough to cover the daemon's
+// polling cadence without leaving a connection open for hours.
+const DefaultControlPersist = 60 * time.Second
+
 // SSHClient is the remote carrier: one SSH session per request, invoking the
-// restricted forced command on the coordinator host.
+// restricted forced command on the coordinator host. With a ControlDir the
+// sessions share one connection; each is still its own forced-command run.
 type SSHClient struct {
 	config SSHClientConfig
 }
@@ -75,6 +89,14 @@ func NewSSHClient(config SSHClientConfig) (*SSHClient, error) {
 	}
 	if config.MaxStderrBytes <= 0 {
 		config.MaxStderrBytes = 64 << 10
+	}
+	if config.ControlDir != "" {
+		if !filepath.IsAbs(config.ControlDir) || !sshTokenPattern.MatchString(config.ControlDir) {
+			return nil, configurationError("ssh control directory must be a safe absolute path")
+		}
+		if config.ControlPersist <= 0 {
+			config.ControlPersist = DefaultControlPersist
+		}
 	}
 	if config.Now == nil {
 		config.Now = time.Now
@@ -119,13 +141,46 @@ func (c *SSHClient) arguments(operation string) ([]string, error) {
 		return nil, configurationError(fmt.Sprintf("unknown coordinator-admin operation %q", operation))
 	}
 	connectSeconds := max(int(c.config.ConnectTimeout.Round(time.Second)/time.Second), 1)
-	return []string{
+	arguments := []string{
 		"-oBatchMode=yes",
 		"-oStrictHostKeyChecking=yes",
 		"-oConnectTimeout=" + strconv.Itoa(connectSeconds),
+	}
+	if c.config.ControlDir != "" {
+		// Command-line options override ~/.ssh/config, so a host block that
+		// disables multiplexing, or one that would share another identity's
+		// master, cannot capture these sessions: the path is private to this
+		// client and derived from its destination. Keepalives bound how long a
+		// request can wait on a master whose network went away.
+		persistSeconds := max(int(c.config.ControlPersist.Round(time.Second)/time.Second), 1)
+		arguments = append(arguments,
+			"-oControlMaster=auto",
+			"-oControlPath="+c.controlPath(),
+			"-oControlPersist="+strconv.Itoa(persistSeconds),
+			"-oServerAliveInterval=10",
+			"-oServerAliveCountMax=2",
+		)
+	}
+	return append(arguments,
 		"--", c.config.Address, c.config.RemoteCommand, CoordinatorExchangeCommand, operation,
-	}, nil
+	), nil
 }
+
+// controlPath names the master socket. It is a hash rather than ssh's %C so
+// that it passes the argv gate, and it covers everything that selects the
+// remote endpoint, so two clients share a master only when they would have
+// opened the same connection. It stays short enough for a Unix socket path.
+func (c *SSHClient) controlPath() string {
+	sum := sha256.Sum256([]byte(c.config.Address + "\x00" + c.config.RemoteCommand + "\x00" + c.config.CoordinatorID))
+	return filepath.Join(c.config.ControlDir, "admin-"+hex.EncodeToString(sum[:])[:controlNameHexLength])
+}
+
+const (
+	controlNameHexLength = 20
+	// maxControlPath leaves room under the smallest sun_path (104 bytes) for
+	// the random suffix ssh appends to the socket name while it binds.
+	maxControlPath = 80
+)
 
 // requestIdentity derives the request id from whatever idempotency key the
 // operation already carries, so that retrying a lost answer with the same key
@@ -328,7 +383,31 @@ func (c *SSHClient) exchangeError(ctxErr error, operation string, exchange *remo
 	if cause == nil {
 		cause = err
 	}
-	return classify(ClassOf(err), operation, c.config.CoordinatorID, fmt.Errorf("%w: %s", cause, detail))
+	class := ClassOf(err)
+	if sshConnectFailure(detail) {
+		// ssh never reached the coordinator, so the empty stream is not a
+		// protocol mismatch: nothing answered, which is usually temporary.
+		class = ClassUnavailable
+	}
+	return classify(class, operation, c.config.CoordinatorID, fmt.Errorf("%w: %s", cause, detail))
+}
+
+// sshConnectFailures are the ssh client messages for a connection that was
+// never established: refused (including a firewall rate limit that rejects),
+// timed out, unroutable, unresolvable, or dropped before key exchange.
+var sshConnectFailures = []string{
+	"ssh: connect to host",
+	"Could not resolve hostname",
+	"kex_exchange_identification",
+}
+
+func sshConnectFailure(stderr string) bool {
+	for _, marker := range sshConnectFailures {
+		if strings.Contains(stderr, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *SSHClient) readResponse(exchange *remoteExchange, request remoteFrame) (localResponse, error) {
