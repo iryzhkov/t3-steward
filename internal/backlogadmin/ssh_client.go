@@ -172,8 +172,15 @@ func (c *SSHClient) arguments(operation string) ([]string, error) {
 // opened the same connection. It stays short enough for a Unix socket path.
 func (c *SSHClient) controlPath() string {
 	sum := sha256.Sum256([]byte(c.config.Address + "\x00" + c.config.RemoteCommand + "\x00" + c.config.CoordinatorID))
-	return filepath.Join(c.config.ControlDir, "admin-"+hex.EncodeToString(sum[:])[:20])
+	return filepath.Join(c.config.ControlDir, "admin-"+hex.EncodeToString(sum[:])[:controlNameHexLength])
 }
+
+const (
+	controlNameHexLength = 20
+	// maxControlPath leaves room under the smallest sun_path (104 bytes) for
+	// the random suffix ssh appends to the socket name while it binds.
+	maxControlPath = 80
+)
 
 // requestIdentity derives the request id from whatever idempotency key the
 // operation already carries, so that retrying a lost answer with the same key

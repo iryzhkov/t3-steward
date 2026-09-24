@@ -13,6 +13,18 @@ import (
 	"time"
 )
 
+// shortControlRoot is a temporary runtime directory short enough for a socket
+// path on every platform; macOS's default temporary directory is not.
+func shortControlRoot(t *testing.T) string {
+	t.Helper()
+	root, err := os.MkdirTemp("/tmp", "t3-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	return root
+}
+
 func controlTestConfig(controlDir string) SSHClientConfig {
 	return SSHClientConfig{
 		CoordinatorID: testCoordinatorID, Address: "normandy-steward-admin", RemoteCommand: "t3-steward",
@@ -39,7 +51,7 @@ func optionValue(t *testing.T, argv []string, name string) (string, bool) {
 // the daemon's polling and interactive commands share one TCP connection and
 // a coordinator's rate limit on new SSH connections never sees them.
 func TestSSHClientSharesOneMasterPerDestination(t *testing.T) {
-	dir, err := PrepareControlDir(shortTempRoot(t))
+	dir, err := PrepareControlDir(shortControlRoot(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +79,7 @@ func TestSSHClientSharesOneMasterPerDestination(t *testing.T) {
 			t.Fatalf("ControlPath %q is outside the private directory %q", path, dir)
 		}
 		// ssh appends a temporary suffix while it binds; sun_path is 104-108 bytes.
-		if len(path) > 80 {
+		if len(path) > maxControlPath {
 			t.Fatalf("ControlPath %q is too long for a Unix socket", path)
 		}
 		if !sshTokenPattern.MatchString(path) {
@@ -125,7 +137,7 @@ func TestPrepareControlDirIsPrivate(t *testing.T) {
 	if dir, err := PrepareControlDir(""); dir != "" || err != nil {
 		t.Fatalf("empty runtime dir = %q, %v", dir, err)
 	}
-	root := shortTempRoot(t)
+	root := shortControlRoot(t)
 	dir, err := PrepareControlDir(root)
 	if err != nil {
 		t.Fatal(err)
@@ -148,7 +160,7 @@ func TestPrepareControlDirIsPrivate(t *testing.T) {
 		t.Fatal("accepted a directory other users can read")
 	}
 
-	linked := shortTempRoot(t)
+	linked := shortControlRoot(t)
 	if err := os.Mkdir(filepath.Join(linked, "t3-steward"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +169,14 @@ func TestPrepareControlDirIsPrivate(t *testing.T) {
 	}
 	if _, err := PrepareControlDir(linked); err == nil {
 		t.Fatal("accepted a symlinked control directory")
+	}
+
+	long := filepath.Join(shortControlRoot(t), strings.Repeat("d", 60))
+	if err := os.Mkdir(long, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if dir, err := PrepareControlDir(long); err == nil {
+		t.Fatalf("accepted %q, too long for a socket path", dir)
 	}
 }
 

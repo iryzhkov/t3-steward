@@ -33,6 +33,11 @@ func PrepareControlDir(runtimeDir string) (string, error) {
 			return "", err
 		}
 	}
+	// A socket path must fit sun_path (104 bytes on macOS) with the socket
+	// name and the temporary suffix ssh appends while binding.
+	if len(dir)+len("/admin-")+controlNameHexLength > maxControlPath {
+		return "", fmt.Errorf("ssh control directory: %s is too long for a Unix socket path", dir)
+	}
 	return dir, nil
 }
 
