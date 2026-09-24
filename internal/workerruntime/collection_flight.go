@@ -70,6 +70,39 @@ func (r *Runtime) collectionRunning(record AttemptRecord) bool {
 	}
 }
 
+// collectionRegistered reports whether a collection of this attempt is running
+// or has finished without its result having been taken yet. Either way the
+// attempt's outcome belongs to that collection: its result may already be in
+// custody, and nothing may decide the attempt differently until a pass takes
+// it.
+func (r *Runtime) collectionRegistered(record AttemptRecord) bool {
+	collectionFlights.Lock()
+	_, ok := collectionFlights.running[r.collectionFlightKey(record)]
+	collectionFlights.Unlock()
+	return ok
+}
+
+// DrainCollections waits until every collection this process started has
+// finished, or ctx ends. A worker calls it on shutdown after cancelling its
+// lifetime, so that no verification it started is still running when the
+// next process collects the same attempt again.
+func DrainCollections(ctx context.Context) error {
+	collectionFlights.Lock()
+	pending := make([]*collectionFlight, 0, len(collectionFlights.running))
+	for _, flight := range collectionFlights.running {
+		pending = append(pending, flight)
+	}
+	collectionFlights.Unlock()
+	for _, flight := range pending {
+		select {
+		case <-flight.done:
+		case <-ctx.Done():
+			return fmt.Errorf("collections still running at shutdown: %w", ctx.Err())
+		}
+	}
+	return nil
+}
+
 // finalizationTimeout is the budget one collection of the attempt runs under.
 func (r *Runtime) finalizationTimeout(record AttemptRecord) time.Duration {
 	budget := r.config.FinalizationTimeout

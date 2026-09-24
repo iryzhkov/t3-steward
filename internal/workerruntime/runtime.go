@@ -287,6 +287,14 @@ func (r *Runtime) containSuperseded(ctx context.Context, existing AttemptRecord)
 		return r.stopPreparation(ctx, existing.Package.Package)
 	case PhaseCompleted, PhaseFailed:
 		return nil
+	case PhaseCollecting:
+		// A collection of the older epoch is still verifying in this
+		// workspace, or has published a result no pass has taken yet. The
+		// offer is withheld and retried rather than waited for here, where the
+		// journal lock is held; the next pass takes the collection's result.
+		if r.collectionRegistered(existing) {
+			return errors.New("a collection of the superseded epoch is still in progress")
+		}
 	}
 	if existing.Package.Package.Identity.ThreadID == "" {
 		return nil
@@ -657,6 +665,12 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 		if isJournalError(err) {
 			return err
 		}
+		if errors.Is(err, errCollectionRunning) {
+			// Expected on every pass while a long verification runs; the start
+			// of that collection is already logged once.
+			r.log.Debug("attempt collection still running", "assignment", id, "detail", err)
+			return nil
+		}
 		r.log.Warn("attempt reconciliation deferred", "assignment", id, "phase", record.Phase, "error", err)
 	}
 	return nil
@@ -929,11 +943,16 @@ func (r *Runtime) stop(ctx context.Context, id string) error {
 	case PhaseUnknown:
 		return r.recoverUnknown(ctx, id, record)
 	case PhaseCollecting:
-		// A collection still running from an earlier pass is about to publish
-		// a result. The stop waits for it, exactly as it did when collection
-		// could only run inside the pass that also delivered the stop.
-		if r.collectionRunning(record) {
-			return errors.New("stop deferred: the attempt's collection is still running")
+		// A collection started by an earlier pass is running or has already
+		// published its result. The stop yields to it, exactly as it did when
+		// collection could only run inside the pass that delivered the stop:
+		// the result is taken if it is ready, and the stop is otherwise
+		// deferred. Once the attempt completes the stop has nothing to do.
+		if r.collectionRegistered(record) {
+			if err := r.collect(ctx, id); err != nil {
+				return fmt.Errorf("stop deferred: %w", err)
+			}
+			return nil
 		}
 	}
 	if err := r.markPhase(id, PhaseStopping, "", record.WorkspacePath, record.ThreadID); err != nil {
@@ -1119,9 +1138,10 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 			return err
 		}
 	}
-	// A collection already running owns the workspace until it finishes, and
-	// its own outcome says what became of it.
-	if record.WorkspacePath != "" && !r.collectionRunning(record) {
+	// A collection already started owns the workspace until its result is
+	// taken, and its own outcome says what became of it. Failing the attempt
+	// here could supersede a good result already in custody.
+	if record.WorkspacePath != "" && !r.collectionRegistered(record) {
 		// A workspace that vanished (host cleanup, an older binary's eager
 		// cleanup, a rollback) can never be finalized; publish the failure
 		// instead of retrying collection forever.
