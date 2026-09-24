@@ -59,8 +59,9 @@ type LocalThrottleRequest struct {
 	Reason      string    `json:"reason"`
 	RequestedAt time.Time `json:"requestedAt"`
 	// StoppedAt is when the thread was observed stopped after the request.
-	StoppedAt  *time.Time                 `json:"stoppedAt,omitempty"`
-	Checkpoint *domain.CheckpointMetadata `json:"checkpoint,omitempty"`
+	StoppedAt     *time.Time                 `json:"stoppedAt,omitempty"`
+	StoppedTurnID string                     `json:"stoppedTurnId,omitempty"`
+	Checkpoint    *domain.CheckpointMetadata `json:"checkpoint,omitempty"`
 	// ResumedAt is set once the worker resumed the thread; the request then
 	// moves to LastLocalThrottle.
 	ResumedAt *time.Time `json:"resumedAt,omitempty"`

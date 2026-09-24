@@ -556,7 +556,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			// The drain request was honoured: the thread checkpointed and
 			// ended its turn. This is the pause taking effect, not the
 			// attempt finishing, so nothing is collected.
-			err = r.markLocalPauseStopped(id, nil)
+			err = r.markLocalPauseStopped(ctx, id, nil)
 		case threadState == backlog.DispatchThreadStopped:
 			if err = r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID); err == nil {
 				err = r.collectUnlessWaiting(ctx, id, record)

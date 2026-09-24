@@ -119,13 +119,13 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 			r.log.Warn("drain requested; thread has not stopped yet", "assignment", id, "error", err)
 			return nil
 		}
-		return r.markLocalPauseStopped(id, checkpoint)
+		return r.markLocalPauseStopped(ctx, id, checkpoint)
 	default:
 		if err := r.driver.StopThread(ctx, pkg); err != nil {
 			r.log.Warn("quota stop outcome is unproven; retrying next reconcile", "assignment", id, "error", err)
 			return nil
 		}
-		return r.markLocalPauseStopped(id, nil)
+		return r.markLocalPauseStopped(ctx, id, nil)
 	}
 }
 
@@ -150,7 +150,24 @@ func (r *Runtime) localThrottleCommand(record AttemptRecord, request LocalThrott
 
 // markLocalPauseStopped records that the paused thread has stopped. The
 // phase becomes stopped; collection is withheld by LocalThrottle.
-func (r *Runtime) markLocalPauseStopped(id string, checkpoint *domain.CheckpointMetadata) error {
+func (r *Runtime) markLocalPauseStopped(ctx context.Context, id string, checkpoint *domain.CheckpointMetadata) error {
+	// Fence any later completion claim to the turn that actually stopped for
+	// this drain. A later user ping must not turn a checkpoint into a result.
+	turnID := ""
+	if observer, ok := r.driver.(interface {
+		ObserveThreadTurn(context.Context, workerproto.ExecutionPackage) (backlog.DispatchThreadState, string, error)
+	}); ok {
+		state, err := r.journal.snapshot()
+		if err != nil {
+			return err
+		}
+		if record, exists := state.Attempts[id]; exists {
+			observed, observedTurnID, err := observer.ObserveThreadTurn(ctx, record.Package.Package)
+			if err == nil && observed == backlog.DispatchThreadStopped {
+				turnID = observedTurnID
+			}
+		}
+	}
 	now := r.now()
 	return r.journal.update(func(state *journalState) error {
 		current, ok := state.Attempts[id]
@@ -166,6 +183,9 @@ func (r *Runtime) markLocalPauseStopped(id string, checkpoint *domain.Checkpoint
 		}
 		if checkpoint != nil {
 			request.Checkpoint = checkpoint
+		}
+		if request.StoppedTurnID == "" {
+			request.StoppedTurnID = turnID
 		}
 		current.LocalThrottle = &request
 		current.Phase = PhaseStopped
@@ -232,6 +252,11 @@ func (r *Runtime) reconcileLocalPause(ctx context.Context, id string, record Att
 	case backlog.DispatchThreadMissing:
 		return r.markUnknown(id, "paused T3 thread is missing")
 	}
+	if completed, err := r.collectCompletedLocalPause(ctx, id, record); err != nil {
+		return err
+	} else if completed {
+		return nil
+	}
 	if live, why := attemptLive(record, now); !live {
 		r.log.Debug("paused attempt is not resumed", "assignment", id, "reason", why)
 		return nil
@@ -262,6 +287,50 @@ func (r *Runtime) reconcileLocalPause(ctx context.Context, id string, record Att
 	}
 	r.log.Info("quota recovered; owned attempt resumed", "assignment", id, "thread", pkg.Identity.ThreadID, "reason", why)
 	return r.endLocalPause(id, why)
+}
+
+// collectCompletedLocalPause accepts only an explicit completion from the
+// exact turn stopped by the quota drain. It clears the pause before the normal
+// task-wait fence and result collector run; neither step spends provider quota.
+func (r *Runtime) collectCompletedLocalPause(ctx context.Context, id string, record AttemptRecord) (bool, error) {
+	if record.LocalThrottle == nil || record.LocalThrottle.StoppedTurnID == "" {
+		return false, nil
+	}
+	probe, ok := r.driver.(interface {
+		QuotaPauseCompleted(context.Context, workerproto.ExecutionPackage, string) (bool, error)
+	})
+	if !ok {
+		return false, nil
+	}
+	completed, err := probe.QuotaPauseCompleted(ctx, record.Package.Package, record.LocalThrottle.StoppedTurnID)
+	if err != nil {
+		r.log.Warn("quota-pause completion evidence unavailable; attempt remains paused", "assignment", id, "error", err)
+		return false, nil
+	}
+	if !completed {
+		return false, nil
+	}
+	if err := r.journal.update(func(state *journalState) error {
+		current, ok := state.Attempts[id]
+		if !ok || current.LocalThrottle == nil || current.LocalThrottle.StoppedTurnID != record.LocalThrottle.StoppedTurnID {
+			return fmt.Errorf("quota-pause completion fence changed for assignment %q", id)
+		}
+		current.LastLocalThrottle = current.LocalThrottle
+		current.LocalThrottle = nil
+		current.StopObservedSequence = 0
+		current.UpdatedAt = r.now()
+		state.Attempts[id] = current
+		state.Sequence++
+		return nil
+	}); err != nil {
+		return false, err
+	}
+	state, err := r.journal.snapshot()
+	if err != nil {
+		return false, err
+	}
+	r.log.Info("quota-drained turn explicitly completed; collecting without a provider resume", "assignment", id, "turn", record.LocalThrottle.StoppedTurnID)
+	return true, r.collectUnlessWaiting(ctx, id, state.Attempts[id])
 }
 
 // endLocalPause moves the pause to LastLocalThrottle and returns the attempt
