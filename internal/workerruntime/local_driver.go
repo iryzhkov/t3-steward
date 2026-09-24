@@ -371,7 +371,10 @@ func (d *LocalDriver) ObserveThreadTurn(ctx context.Context, pkg workerproto.Exe
 // A newly accepted T3 start may be visible before its turn and session.
 // Only positive terminal evidence permits collection or skipping containment.
 func workerThreadTerminal(thread domain.Thread) bool {
-	if thread.Running || thread.BackgroundWork == "working" {
+	// A native T3 question may leave the latest turn completed while the
+	// provider waits for the user's answer. Keep this owned task thread live:
+	// collecting now would reject pending input and release its dependencies.
+	if thread.Running || thread.BackgroundWork == "working" || thread.HasPendingUserInput || thread.HasPendingApprovals {
 		return false
 	}
 	if thread.Settled() {
