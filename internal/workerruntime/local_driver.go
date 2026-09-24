@@ -1004,7 +1004,7 @@ func (d *LocalDriver) Checkpoint(ctx context.Context, pkg workerproto.ExecutionP
 	if err != nil {
 		return nil, err
 	}
-	text := command.Reason + "\nWrite .t3/checkpoint.md, leave the workspace consistent, and end this turn."
+	text := command.Reason + "\nWrite .t3/checkpoint.md and leave the workspace consistent. If the task is fully complete and all declared outputs are ready, end your final message with the exact line 'backlog status: done'. Otherwise end it with 'backlog status: continue'. End this turn."
 	if err := d.T3.WarnThread(ctx, thread, domain.Warning{Kind: domain.ActionDrain, Text: text}); err != nil {
 		return nil, err
 	}
@@ -1021,6 +1021,50 @@ func (d *LocalDriver) Checkpoint(ctx context.Context, pkg workerproto.ExecutionP
 		return nil, fmt.Errorf("read checkpoint: %w", err)
 	}
 	return d.Publisher.PublishCheckpoint(ctx, pkg, ".t3/checkpoint.md", data)
+}
+
+// QuotaPauseCompleted checks the exact drained turn, its explicit final status,
+// and the same structured provider completion gate used by result collection.
+func (d *LocalDriver) QuotaPauseCompleted(ctx context.Context, pkg workerproto.ExecutionPackage, stoppedTurnID string) (bool, error) {
+	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
+		return false, err
+	} else if scoped != nil {
+		return scoped.QuotaPauseCompleted(ctx, pkg, stoppedTurnID)
+	}
+	if d.Config.DryRun || stoppedTurnID == "" {
+		return false, nil
+	}
+	state, turnID, err := d.ObserveThreadTurn(ctx, pkg)
+	if err != nil || state != backlog.DispatchThreadStopped || turnID != stoppedTurnID {
+		return false, err
+	}
+	message, err := d.T3.LastAssistantMessage(ctx, pkg.Identity.ThreadID)
+	if err != nil {
+		return false, err
+	}
+	lines := strings.Split(strings.TrimSpace(message), "\n")
+	if !strings.EqualFold(strings.TrimSpace(lines[len(lines)-1]), "backlog status: done") {
+		return false, nil
+	}
+	archive, err := d.T3.ExportThread(ctx, pkg.Identity.ThreadID)
+	if err != nil {
+		return false, err
+	}
+	var snapshot struct {
+		Thread struct {
+			LatestTurn *struct {
+				TurnID string `json:"turnId"`
+			} `json:"latestTurn"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(archive, &snapshot); err != nil {
+		return false, err
+	}
+	if snapshot.Thread.LatestTurn == nil || snapshot.Thread.LatestTurn.TurnID != stoppedTurnID {
+		return false, nil
+	}
+	reason, err := backlog.ResultCompletionFailure(archive, pkg.Identity.ThreadID, message)
+	return err == nil && reason == "", err
 }
 
 func (d *LocalDriver) Resume(ctx context.Context, pkg workerproto.ExecutionPackage, command domain.ThrottleCommand) error {
