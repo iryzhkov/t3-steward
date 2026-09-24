@@ -41,10 +41,14 @@ type WorkerServiceOptions struct {
 	// PauseEscalation is the daemon's stop_verify_timeout, the window a drain
 	// notice gets before a local quota stop escalates; see Config.
 	PauseEscalation time.Duration
-	T3              T3Control
-	DryRun          bool
-	Now             func() time.Time
-	Logger          *slog.Logger
+	// Lifetime is the worker process's lifetime: work the runtime lets outlive
+	// a request, such as a long verification, is cancelled when it ends. See
+	// Config.Lifetime.
+	Lifetime context.Context
+	T3       T3Control
+	DryRun   bool
+	Now      func() time.Time
+	Logger   *slog.Logger
 }
 
 // WorkerService owns the bounded codec and authenticated exchange used by the
@@ -177,6 +181,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		LiveTaskWait:     options.LiveTaskWait,
 		Quota:            options.Quota,
 		PauseEscalation:  options.PauseEscalation,
+		Lifetime:         options.Lifetime,
 		// The same store the finalizer publishes into. The coordinator
 		// states which campaigns are still alive on every snapshot
 		// exchange, and this is what acts on that statement.

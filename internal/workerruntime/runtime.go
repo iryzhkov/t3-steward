@@ -68,18 +68,28 @@ type Config struct {
 	// gets before the worker escalates to the driver's stop while the thread
 	// keeps working: the daemon's stop_verify_timeout. Zero escalates on the
 	// first reconcile after the notice failed to end the turn.
-	PauseEscalation  time.Duration
-	WorkerID         string
-	WorkerEpoch      string
-	CoordinatorID    string
-	CoordinatorEpoch int64
-	SnapshotTTL      time.Duration
-	LeaseDuration    time.Duration
-	MaxPackageBytes  int64
-	Inventory        domain.WorkerInventory
-	Retention        time.Duration
-	Now              func() time.Time
-	Logger           *slog.Logger
+	PauseEscalation time.Duration
+	// Lifetime bounds work the runtime starts on its own behalf and lets outlive
+	// the call that started it: today, the collection of an attempt, whose
+	// verification commands may run for minutes. It is the worker process's
+	// lifetime, never a request's. Nil means context.Background().
+	Lifetime context.Context
+	// FinalizationTimeout bounds one collection of an attempt, verification
+	// included, independently of the reconcile pass or exchange that started
+	// it. Zero uses DefaultFinalizationTimeout; a package whose declared
+	// verification limits add up to more gets the larger budget.
+	FinalizationTimeout time.Duration
+	WorkerID            string
+	WorkerEpoch         string
+	CoordinatorID       string
+	CoordinatorEpoch    int64
+	SnapshotTTL         time.Duration
+	LeaseDuration       time.Duration
+	MaxPackageBytes     int64
+	Inventory           domain.WorkerInventory
+	Retention           time.Duration
+	Now                 func() time.Time
+	Logger              *slog.Logger
 }
 
 type Runtime struct {
@@ -119,6 +129,9 @@ func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
 	}
 	if config.Retention <= 0 {
 		config.Retention = DefaultRetention
+	}
+	if config.Lifetime == nil {
+		config.Lifetime = context.Background()
 	}
 	logger := config.Logger
 	if logger == nil {
@@ -915,6 +928,13 @@ func (r *Runtime) stop(ctx context.Context, id string) error {
 		return r.confirmStop(id)
 	case PhaseUnknown:
 		return r.recoverUnknown(ctx, id, record)
+	case PhaseCollecting:
+		// A collection still running from an earlier pass is about to publish
+		// a result. The stop waits for it, exactly as it did when collection
+		// could only run inside the pass that also delivered the stop.
+		if r.collectionRunning(record) {
+			return errors.New("stop deferred: the attempt's collection is still running")
+		}
 	}
 	if err := r.markPhase(id, PhaseStopping, "", record.WorkspacePath, record.ThreadID); err != nil {
 		return err
@@ -1099,7 +1119,9 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 			return err
 		}
 	}
-	if record.WorkspacePath != "" {
+	// A collection already running owns the workspace until it finishes, and
+	// its own outcome says what became of it.
+	if record.WorkspacePath != "" && !r.collectionRunning(record) {
 		// A workspace that vanished (host cleanup, an older binary's eager
 		// cleanup, a rollback) can never be finalized; publish the failure
 		// instead of retrying collection forever.
@@ -1110,7 +1132,10 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 			return r.collect(ctx, id)
 		}
 	}
-	if err := r.collectWithPauseEvidence(ctx, record); err != nil {
+	// The collection runs under its own budget, not under ctx: ctx belongs to
+	// a reconcile pass or an exchange and is far shorter than a verification
+	// command may legitimately take. See collectOnce.
+	if err := r.collectOnce(ctx, record); err != nil {
 		if !errors.Is(err, ErrSettleUnproven) {
 			return fmt.Errorf("collection deferred: %w", err)
 		}

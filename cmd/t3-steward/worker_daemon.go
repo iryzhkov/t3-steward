@@ -189,7 +189,11 @@ func cmdWorker(g globalFlags, args []string) error {
 		// A local quota stop sends the drain notice first and escalates to the
 		// stop after the window the watchdog itself gives a stop to take effect.
 		PauseEscalation: cfg.Policy.StopVerifyTimeout.D(),
-		T3:              control, DryRun: cfg.Policy.DryRun, Logger: logger,
+		// A collection outlives the exchange or reconcile tick that starts it,
+		// because its verification commands may run for minutes; it ends with
+		// the daemon, never with a request.
+		Lifetime: ctx,
+		T3:       control, DryRun: cfg.Policy.DryRun, Logger: logger,
 	}}
 	if err = host.Load(ctx); err != nil {
 		return err
