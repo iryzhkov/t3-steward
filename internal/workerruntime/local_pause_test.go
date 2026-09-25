@@ -292,6 +292,51 @@ func TestLocalQuotaPauseNeverResumesACancelledAttempt(t *testing.T) {
 	}
 }
 
+// PR #21 follow-up: a collection owns the attempt from the moment it starts,
+// and its verification may be running in the workspace. A quota resume must
+// not start a new turn there while the collection is registered.
+func TestLocalQuotaResumeWaitsForARegisteredCollection(t *testing.T) {
+	now := runtimeTestNow
+	driver := &fakeDriver{workspace: filepath.Join(t.TempDir(), "workspace"), workspaceReady: true,
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}}
+	guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
+	runtime := runningRuntime(t, driver, guard, &now)
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	record := journalRecord(t, runtime)
+	if record.LocalThrottle == nil {
+		t.Fatal("pause not recorded")
+	}
+	key := runtime.collectionFlightKey(record)
+	collectionFlights.Lock()
+	collectionFlights.running[key] = &collectionFlight{done: make(chan struct{})}
+	collectionFlights.Unlock()
+	t.Cleanup(func() {
+		collectionFlights.Lock()
+		delete(collectionFlights.running, key)
+		collectionFlights.Unlock()
+	})
+	guard.pauseNeeded = false
+	guard.resumeOK, guard.resumeWhy = true, "recovered"
+	now = now.Add(time.Minute)
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if driver.resumeCalls != 0 {
+		t.Fatalf("a paused attempt was resumed while its collection was registered: %d resumes", driver.resumeCalls)
+	}
+	collectionFlights.Lock()
+	delete(collectionFlights.running, key)
+	collectionFlights.Unlock()
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if driver.resumeCalls != 1 {
+		t.Fatalf("resumes after the collection was gone = %d, want 1", driver.resumeCalls)
+	}
+}
+
 // A paused attempt whose lease has expired, or whose bucket has not
 // recovered, stays paused; only both conditions together resume it.
 func TestLocalQuotaResumeIsGatedOnRecoveryAndLiveness(t *testing.T) {

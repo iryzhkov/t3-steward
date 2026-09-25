@@ -488,6 +488,14 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 	if command.Kind == domain.ThrottleCommandResume && pkg.Timeout > 0 && !r.now().Before(pkg.CreatedAt.Add(pkg.Timeout)) {
 		return r.finishThrottle(command, false, "", nil, "task timeout expired")
 	}
+	// A collection owns the attempt's outcome from the moment it starts: its
+	// turn is over and its verification may be running in the workspace. A
+	// resume would start a new turn in that same workspace, under the running
+	// checks. PR #21 kept a stop from overtaking a collection; a resume must
+	// not either.
+	if command.Kind == domain.ThrottleCommandResume && r.collectionRegistered(record) {
+		return r.finishThrottle(command, false, "", nil, "the attempt is being collected; its turn is over and nothing is resumed")
+	}
 	var result domain.ThrottleAcknowledgementResult
 	var checkpoint *domain.CheckpointMetadata
 	switch command.Kind {
