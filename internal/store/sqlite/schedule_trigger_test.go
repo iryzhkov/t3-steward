@@ -76,7 +76,7 @@ func TestCommitScheduleTriggerSerializesSimultaneousFirings(t *testing.T) {
 		t.Fatalf("accepted = %d, suppressed = %d", accepted, suppressed)
 	}
 
-	records, err := first.LoadCoordinatorRecords(context.Background())
+	records, err := first.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestCommitScheduleTriggerPersistsMisfireAndReplaysAfterRestart(t *testing.T
 	} else if result.Trigger.Reason != "misfire-skipped" {
 		t.Fatalf("catch-up result = %#v", result)
 	}
-	records, err := store.LoadCoordinatorRecords(context.Background())
+	records, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestCommitScheduleTriggerFailurePoliciesAndManualRefusal(t *testing.T) {
 		if _, err := store.CommitScheduleTrigger(context.Background(), manual); !errors.Is(err, ErrScheduleFailureHeld) {
 			t.Fatalf("manual hold error = %v", err)
 		}
-		records, err := store.LoadCoordinatorRecords(context.Background())
+		records, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -232,7 +232,7 @@ func TestCommitScheduleTriggerAcceptsAndReplaysManualRun(t *testing.T) {
 	if !replay.Replay || replay.WorkflowRun == nil || replay.WorkflowRun.ID != "manual-run-1" {
 		t.Fatalf("manual replay = %#v", replay)
 	}
-	records, err := store.LoadCoordinatorRecords(context.Background())
+	records, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestCommitScheduleTriggerAcceptsAndReplaysManualRun(t *testing.T) {
 func TestScheduleTriggerHonorsAdminDelayNext(t *testing.T) {
 	store := openScheduleTriggerStore(t, filepath.Join(t.TempDir(), "state.db"), domain.ScheduleFailureNextCycle, nil)
 	defer store.Close()
-	records, err := store.LoadCoordinatorRecords(context.Background())
+	records, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestScheduleTriggerHonorsAdminDelayNext(t *testing.T) {
 	if result.Trigger.State != domain.TriggerAccepted || result.WorkflowRun == nil {
 		t.Fatalf("after delay = %#v", result)
 	}
-	records, err = store.LoadCoordinatorRecords(context.Background())
+	records, err = store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +355,7 @@ func TestAScheduledRunArrivesWithAnAttemptForEveryTask(t *testing.T) {
 	if _, err := store.CommitScheduleTrigger(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
-	records, err := store.LoadCoordinatorRecords(context.Background())
+	records, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +377,7 @@ func TestAScheduledRunArrivesWithAnAttemptForEveryTask(t *testing.T) {
 	if _, err := store.CommitScheduleTrigger(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
-	replayed, err := store.LoadCoordinatorRecords(context.Background())
+	replayed, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +428,7 @@ func TestCommitScheduleTriggerRollsBackWhenNativeEventConflicts(t *testing.T) {
 	if _, err := store.CommitScheduleTrigger(context.Background(), request); err == nil {
 		t.Fatal("schedule trigger with conflicting event succeeded")
 	}
-	records, err := store.LoadCoordinatorRecords(context.Background())
+	records, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

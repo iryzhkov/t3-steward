@@ -44,7 +44,7 @@ func TestCommitQuotaAdmissionTransitionsAtomicReplayAndStaleRevision(t *testing.
 	if len(directives) != 2 || directives[0].QuotaPoolID != "a-pool" || directives[1].QuotaPoolID != "z-pool" {
 		t.Fatalf("directives = %#v", directives)
 	}
-	coordinatorRecords, err := store.LoadCoordinatorRecords(context.Background())
+	coordinatorRecords, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestCommitQuotaAdmissionTransitionsAtomicReplayAndStaleRevision(t *testing.
 	if !reflect.DeepEqual(directivesAfter, directives) {
 		t.Fatalf("stale batch persisted directives:\nafter %#v\nbefore %#v", directivesAfter, directives)
 	}
-	coordinatorRecordsAfter, err := store.LoadCoordinatorRecords(context.Background())
+	coordinatorRecordsAfter, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

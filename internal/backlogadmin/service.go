@@ -331,6 +331,9 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		if _, ok := view.runs[query.WorkflowRunID]; !ok {
 			return Response{}, notFound("workflow run", query.WorkflowRunID)
 		}
+		if err := s.loadRunAudit(ctx, &view, query.WorkflowRunID); err != nil {
+			return Response{}, err
+		}
 		response.Events = view.events(query.WorkflowRunID)
 	case QueryArtifacts:
 		response.Artifacts = view.artifacts(query)
@@ -443,6 +446,25 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		response.Projects = view.projects(s.viabilitySettings, query.Filter)
 	}
 	return response, nil
+}
+
+// loadRunAudit fills the view with one run's audit events, for the queries that
+// report them. The coordinator's store does not load audit history with the
+// records, because it is the one table that grows without bound and almost no
+// query reads it; a reader that cannot load it by run keeps what it loaded.
+func (s *Service) loadRunAudit(ctx context.Context, v *view, runID string) error {
+	auditReader, ok := s.reader.(interface {
+		LoadAuditEvents(context.Context, string) ([]domain.AuditEvent, error)
+	})
+	if !ok {
+		return nil
+	}
+	events, err := auditReader.LoadAuditEvents(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("load audit events of run %s: %w", runID, err)
+	}
+	v.records.AuditEvents = events
+	return nil
 }
 
 // loadView reads the one consistent snapshot every query is answered from.

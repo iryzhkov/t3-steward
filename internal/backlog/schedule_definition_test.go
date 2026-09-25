@@ -79,7 +79,7 @@ func TestScheduleDefinitionAdministrationRevisionReplayAndTimer(t *testing.T) {
 		report.Results[0].Trigger.ScheduleVersion != 2 {
 		t.Fatalf("timer after definition update = %#v", report)
 	}
-	records, err := store.LoadCoordinatorRecords(ctx)
+	records, err := store.LoadCoordinatorRecordsWithAudit(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

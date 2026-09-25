@@ -143,7 +143,7 @@ func TestCompleteSubmissionPersistsOneNativeEventAcrossReplay(t *testing.T) {
 	if _, replay, err := store.CompleteSubmission(context.Background(), proposed.Key, proposed.Digest, now.Add(2*time.Minute)); err != nil || !replay {
 		t.Fatalf("completion replay: replay %v, err %v", replay, err)
 	}
-	records, err := store.LoadCoordinatorRecords(context.Background())
+	records, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

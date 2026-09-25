@@ -461,7 +461,7 @@ func TestBacklogMutationSubmitsAndReplaysWithoutExecuting(t *testing.T) {
 		!replayResponse.Command.CreatedAt.Equal(firstResponse.Command.CreatedAt) {
 		t.Fatalf("first = %+v, replay = %+v", firstResponse.Command, replayResponse.Command)
 	}
-	loaded, err := store.LoadCoordinatorRecords(context.Background())
+	loaded, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

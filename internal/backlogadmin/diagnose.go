@@ -63,6 +63,9 @@ func (s *Service) diagnose(ctx context.Context, v view, runID string) (Diagnosis
 		return Diagnosis{}, notFound("workflow run", runID)
 	}
 	graph, _ := v.graph(runID)
+	if err := s.loadRunAudit(ctx, &v, runID); err != nil {
+		return Diagnosis{}, err
+	}
 	result := Diagnosis{GraphRevision: graph.GraphRevision, GeneratedAt: v.now,
 		Status: v.status(), Workflow: detail, Graph: graph, Events: v.events(runID),
 		Commands: v.commands(Query{WorkflowRunID: runID})}
