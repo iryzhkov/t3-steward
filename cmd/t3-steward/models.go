@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
@@ -26,7 +27,10 @@ fail separately:
   advertised   at least one worker reports the instance with its models, so
                there is somewhere to run it
   quota        the pool's admission state and the worst of its buckets, phase
-               and used percent, from the observations workers report
+               and used percent, from the observations workers report; AGE
+               is how old the newest reading is, and "stale" marks one older
+               than an hour or taken before its window reset, whose phase and
+               percent describe a window that may be over
 
 Each row is one instance/model pair, in the form "t3-steward task run --model
 [INSTANCE/]MODEL" takes. A bare model name is enough when exactly one instance
@@ -143,6 +147,15 @@ type modelsInstance struct {
 	// the pool has reached this coordinator.
 	Phase   string   `json:"phase,omitempty"`
 	Percent *float64 `json:"percent,omitempty"`
+	// ObservedAt is when the oldest of those readings was taken and ResetsAt
+	// the earliest reset they report. Stale marks a pool one of whose buckets
+	// was read more than modelsStaleAfter ago, or before its own reset, which
+	// has since passed: its phase and percent may describe a window that is
+	// over (S2: a pool read 98% draining for hours after its seven-day window
+	// had reset).
+	ObservedAt *time.Time `json:"observedAt,omitempty"`
+	ResetsAt   *time.Time `json:"resetsAt,omitempty"`
+	Stale      bool       `json:"stale,omitempty"`
 	// Models is every model the eligible workers advertise for the instance,
 	// deduplicated and sorted.
 	Models  []string       `json:"models,omitempty"`
@@ -307,6 +320,13 @@ func (c modelsCLI) query(ctx context.Context, query backlogadmin.Query) (backlog
 // eligible, when not nil, is the set of workers whose advertisement counts;
 // the quota observations are always read from every worker, because a pool's
 // state is a fleet fact and does not depend on which project is asking.
+// modelsNow is the clock the quota age is read against; a seam for tests.
+var modelsNow = time.Now
+
+// modelsStaleAfter is the age past which a pool reading is marked stale. It
+// matches the coordinator's default freshness.quota_max_age.
+const modelsStaleAfter = time.Hour
+
 func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas []backlogadmin.Quota, eligible map[string]bool) modelsDocument {
 	snapshots := make([]domain.WorkerSnapshot, 0, len(workers))
 	for _, worker := range workers {
@@ -337,6 +357,8 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 				percent := observation.Percent
 				item.Phase = string(observation.Phase)
 				item.Percent = &percent
+				item.ResetsAt = observation.ResetsAt
+				item.ObservedAt, item.Stale = modelsPoolFreshness(quota.Pool, states, modelsNow())
 			}
 		}
 	}
@@ -540,7 +562,7 @@ func renderModels(out io.Writer, document modelsDocument) error {
 		fmt.Fprintf(out, "project %s\n\n", document.Project)
 	}
 	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(table, "ROUTE\tPOOL\tPHASE\tUSED\tADMISSION\tWORKERS\tSTATUS")
+	fmt.Fprintln(table, "ROUTE\tPOOL\tPHASE\tUSED\tAGE\tADMISSION\tWORKERS\tSTATUS")
 	for _, instance := range document.Instances {
 		// The column counts the workers that are offering the route now, not
 		// the ones it is authorized for: a worker that does not advertise it
@@ -563,6 +585,13 @@ func renderModels(out io.Writer, document modelsDocument) error {
 		if instance.Percent != nil {
 			used = fmt.Sprintf("%.0f%%", *instance.Percent)
 		}
+		age := "-"
+		if instance.ObservedAt != nil {
+			age = modelsAge(modelsNow().Sub(*instance.ObservedAt))
+			if instance.Stale {
+				age += " stale"
+			}
+		}
 		routes := instance.Models
 		if len(routes) == 0 {
 			routes = []string{""}
@@ -572,9 +601,9 @@ func renderModels(out io.Writer, document modelsDocument) error {
 			if model != "" {
 				route += "/" + model
 			}
-			fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", route,
+			fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", route,
 				firstNonEmptyText(instance.QuotaPool, "(none)"),
-				firstNonEmptyText(instance.Phase, "unknown"), used,
+				firstNonEmptyText(instance.Phase, "unknown"), used, age,
 				firstNonEmptyText(instance.Admission, "unknown"), workers,
 				modelsStatus(instance))
 		}
@@ -638,6 +667,59 @@ func modelsReasonText(reason string) string {
 	default:
 		return reason
 	}
+}
+
+// modelsPoolFreshness judges each bucket of the pool on its own: a bucket is
+// stale when its reading is older than modelsStaleAfter or was taken before
+// its own reset, which has since passed. The pool is stale when any of its
+// buckets is, and its age is its oldest bucket's, because that is the reading
+// its phase and percent may still rest on. The buckets are the ones
+// ObserveQuotaPool counts: the pool's named buckets, or its instances' buckets
+// when it names none.
+func modelsPoolFreshness(pool domain.QuotaPool, states []domain.BucketState, now time.Time) (*time.Time, bool) {
+	named := make(map[domain.BucketKey]bool, len(pool.Buckets))
+	for _, key := range pool.Buckets {
+		named[key] = true
+	}
+	instances := make(map[string]bool, len(pool.ProviderInstanceIDs))
+	for _, instance := range pool.ProviderInstanceIDs {
+		instances[instance] = true
+	}
+	var oldest *time.Time
+	stale := false
+	for _, state := range states {
+		belongs := named[state.Key]
+		if len(named) == 0 {
+			belongs = instances[state.Key.ProviderInstanceID] && (pool.AccountID == "" || pool.AccountID == state.Key.AccountID)
+		}
+		if !belongs {
+			continue
+		}
+		observed := state.ObservedAt
+		if oldest == nil || observed.Before(*oldest) {
+			oldest = &observed
+		}
+		if now.Sub(observed) > modelsStaleAfter ||
+			state.ResetsAt != nil && observed.Before(*state.ResetsAt) && !now.Before(*state.ResetsAt) {
+			stale = true
+		}
+	}
+	return oldest, stale
+}
+
+// modelsAge prints a reading's age at the precision a person reads it at.
+func modelsAge(age time.Duration) string {
+	switch {
+	case age < 0:
+		return "0s"
+	case age < time.Minute:
+		return fmt.Sprintf("%ds", int(age.Seconds()))
+	case age < time.Hour:
+		return fmt.Sprintf("%dm", int(age.Minutes()))
+	case age < 48*time.Hour:
+		return fmt.Sprintf("%dh", int(age.Hours()))
+	}
+	return fmt.Sprintf("%dd", int(age.Hours()/24))
 }
 
 // modelsStatusAvailable is the status of a route that can run now. --available

@@ -81,6 +81,19 @@ func TestLoadRejectsMultipleDocuments(t *testing.T) {
 	}
 }
 
+// PR #21 follow-up: a verification command's limit was the transport request
+// timeout (30 s in the field), so a contained worker killed every declared
+// check that ran longer than one protocol request. It has its own setting.
+func TestBacklogV2VerificationCommandTimeoutIsItsOwnSetting(t *testing.T) {
+	cfg := Default()
+	if got := cfg.BacklogV2.Verification.CommandTimeout.D(); got != 30*time.Minute {
+		t.Fatalf("default verification command timeout = %s, want 30m", got)
+	}
+	if cfg.BacklogV2.Verification.CommandTimeout.D() <= cfg.BacklogV2.Transport.RequestTimeout.D() {
+		t.Fatal("a verification command must be allowed longer than one protocol request")
+	}
+}
+
 func TestBacklogV2CoordinatorConfigurationAndReferences(t *testing.T) {
 	cfg := validBacklogV2Config(t)
 	if err := cfg.Validate(); err != nil {
@@ -121,7 +134,11 @@ func TestBacklogV2CoordinatorConfigurationAndReferences(t *testing.T) {
 				},
 			}
 		},
-		"unsafe root":        func(c *Config) { c.BacklogV2.Storage.Bundles = "/" },
+		"unsafe root":               func(c *Config) { c.BacklogV2.Storage.Bundles = "/" },
+		"zero verification timeout": func(c *Config) { c.BacklogV2.Verification.CommandTimeout = 0 },
+		"unbounded verification timeout": func(c *Config) {
+			c.BacklogV2.Verification.CommandTimeout = Duration(7 * time.Hour)
+		},
 		"invalid file limit": func(c *Config) { c.BacklogV2.MessageLimits.MaxFiles = 0 },
 		"invalid pool concurrency": func(c *Config) {
 			pool := c.BacklogV2.QuotaPools["codex-main"]

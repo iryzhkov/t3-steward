@@ -542,6 +542,29 @@ func TestThrottleCheckpointResumeAndReplay(t *testing.T) {
 	}
 }
 
+// A coordinator Resume that reaches an attempt whose collection is running is
+// refused, not applied: the turn is over and its checks may be running in the
+// workspace. The same holds after a restart, from the journal's phase alone.
+func TestThrottleResumeIsRefusedWhileTheAttemptIsCollected(t *testing.T) {
+	root := t.TempDir()
+	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}
+	runtime := newClaimedRuntime(t, root, driver)
+	prepare := testCommand(t, runtime, domain.WorkerCommandPrepare, "prepare")
+	if _, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{prepare}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.markPhase("assignment-1", PhaseCollecting, "", driver.workspace, "thread-1"); err != nil {
+		t.Fatal(err)
+	}
+	resume := testThrottle(runtime, domain.ThrottleCommandResume, "resume-while-collecting")
+	resume.WorkspacePath = driver.workspace
+	acks, err := reopenTestRuntime(t, root, driver).DeliverThrottle(context.Background(), []domain.ThrottleCommand{resume})
+	if err != nil || len(acks) != 1 || acks[0].Accepted || driver.resumeCalls != 0 ||
+		!strings.Contains(acks[0].Error, "being collected") {
+		t.Fatalf("resume during collection: %+v calls=%d err=%v", acks, driver.resumeCalls, err)
+	}
+}
+
 func TestAttentionStopRequiresExactDigestAndReplaysStopReceipt(t *testing.T) {
 	root := t.TempDir()
 	driver := &fakeDriver{workspace: filepath.Join(root, "workspace")}

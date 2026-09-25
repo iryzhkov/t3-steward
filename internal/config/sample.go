@@ -203,6 +203,9 @@ backlog_v2:
   scheduling:
     interval: 10s
     catch_up_max: 100
+  # The limit on one runner verification command a task declares (1s-6h).
+  verification:
+    command_timeout: 30m
   # Startup is always closed; no worker or T3 contact occurs in this state.
   startup_admission: closed
 

@@ -574,8 +574,12 @@ func (s *Store) WorkerUsageBatch(ctx context.Context, acknowledged []string, lim
 			return nil, err
 		}
 	}
+	// Only this host's own readings are forwarded. On the coordinator's host the
+	// worker shares the coordinator's database, which also holds the samples
+	// other workers delivered; forwarding those would claim them for this
+	// worker.
 	rows, err := tx.QueryContext(ctx, attributedUsageSelect+
-		` WHERE NOT EXISTS (SELECT 1 FROM worker_usage_forwarded AS f
+		` WHERE u.worker_id = '' AND NOT EXISTS (SELECT 1 FROM worker_usage_forwarded AS f
 			WHERE f.worker_id = u.worker_id AND f.event_id = u.event_id
 			AND f.revision >= CASE WHEN u.diagnostic_code = 'overflow' THEN u.cumulative_tokens ELSE 0 END)
 		ORDER BY u.observed_at, u.event_id LIMIT ?`, limit)

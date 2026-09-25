@@ -181,8 +181,13 @@ func cmdWorker(g globalFlags, args []string) error {
 	if closer, ok := quota.(interface{ Close() error }); ok {
 		defer closer.Close()
 	}
+	usage := hostUsageStore(cfg, logger)
+	if usage != nil {
+		defer usage.Close()
+	}
 	host := &workerruntime.CatalogHost{Home: home, Bootstrap: bootstrap, Options: workerruntime.WorkerServiceOptions{
 		RuntimeIdentity:     &domain.WorkerRuntimeIdentity{Release: version, Commit: commit, BootstrapDigest: digest},
+		Usage:               workerUsageSource(usage, logger),
 		ProtocolCredentials: credentials, ProjectCredentials: workerruntime.EnvironmentCredentialChecker{},
 		ObserveInventory: observeHostInventory(control, dataDir),
 		Quota:            quota,
@@ -250,6 +255,53 @@ type storeQuotaGuard struct {
 }
 
 func (g storeQuotaGuard) Close() error { return g.store.Close() }
+
+// hostUsageStore opens the host watchdog's state database, where the provider
+// token readings of this host's sessions are recorded, so the persistent worker
+// can forward them on its exchanges. Only the one-shot worker-exchange command
+// used to; the persistent worker every host runs forwarded nothing, and every
+// run's usage read zero attributed samples (S8). Without the database there
+// is nothing to forward, which is logged once.
+func hostUsageStore(cfg config.Config, logger *slog.Logger) *sqlite.Store {
+	statePath, err := cfg.ResolveStatePath()
+	if err != nil {
+		logger.Warn("watchdog state path unavailable; this worker forwards no usage", "err", err)
+		return nil
+	}
+	store, err := sqlite.Open(statePath)
+	if err != nil {
+		logger.Warn("watchdog state unavailable; this worker forwards no usage", "path", statePath, "err", err)
+		return nil
+	}
+	return store
+}
+
+// workerUsageSource keeps a nil store a nil interface, so the exchange sees no
+// usage source rather than one that fails every call, and wraps a real one so
+// that a usage read that fails (a busy database, an older schema) costs this
+// exchange its usage rather than its snapshot.
+func workerUsageSource(store *sqlite.Store, logger *slog.Logger) workerruntime.UsageDeliveryStore {
+	if store == nil {
+		return nil
+	}
+	return tolerantUsage{store: store, logger: logger}
+}
+
+// tolerantUsage reports a failed usage read and forwards nothing that time.
+// The readings stay in the watchdog's database and go on the next exchange.
+type tolerantUsage struct {
+	store  workerruntime.UsageDeliveryStore
+	logger *slog.Logger
+}
+
+func (u tolerantUsage) WorkerUsageBatch(ctx context.Context, acknowledged []string, limit int) ([]domain.UsageSample, error) {
+	samples, err := u.store.WorkerUsageBatch(ctx, acknowledged, limit)
+	if err != nil {
+		u.logger.Warn("usage readings not forwarded on this exchange", "err", err)
+		return nil, nil
+	}
+	return samples, nil
+}
 
 // hostQuotaGuard opens the watchdog's state database on this host for the
 // worker's local quota pauses, or returns nil when there is none. threads is

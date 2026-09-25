@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -88,6 +89,64 @@ func modelsFixture() *modelsFixtureService {
 				{Worker: "normandy", Advertises: true, Enrolled: true, Ready: true, State: "observed"},
 			},
 		}},
+	}
+}
+
+// S2: the merged claude-main observation read 98% draining for hours after
+// the seven-day window had reset, and models printed it as current, with no
+// age. A reading shows its age, and one that is older than an hour or was
+// taken before a reset that has since passed is marked stale.
+func TestModelsShowsQuotaReadingAgeAndStaleness(t *testing.T) {
+	observed := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	reset := observed.Add(30 * time.Minute)
+	fixture := modelsFixture()
+	fixture.workers[0].Snapshot.QuotaObservations[0].ResetsAt = &reset
+	for _, tc := range []struct {
+		name      string
+		now       time.Time
+		wantStale bool
+		wantAge   string
+	}{
+		{name: "fresh, before the reset", now: observed.Add(5 * time.Minute), wantAge: "5m"},
+		{name: "young but the window has reset", now: observed.Add(40 * time.Minute), wantStale: true, wantAge: "40m stale"},
+		{name: "older than an hour", now: observed.Add(3 * time.Hour), wantStale: true, wantAge: "3h stale"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previous := modelsNow
+			modelsNow = func() time.Time { return tc.now }
+			t.Cleanup(func() { modelsNow = previous })
+			document := buildModelsDocument("", fixture.workers, fixture.quotas, nil)
+			instance := modelsInstanceByName(t, document, "t3-primary")
+			if instance.ObservedAt == nil || !instance.ObservedAt.Equal(observed) || instance.Stale != tc.wantStale {
+				t.Fatalf("observedAt=%v stale=%v, want %v and %v", instance.ObservedAt, instance.Stale, observed, tc.wantStale)
+			}
+			var out bytes.Buffer
+			if err := renderModels(&out, document); err != nil {
+				t.Fatal(err)
+			}
+			if !regexp.MustCompile(`82%\s+` + regexp.QuoteMeta(tc.wantAge) + `\s`).MatchString(out.String()) {
+				t.Fatalf("table does not show age %q:\n%s", tc.wantAge, out.String())
+			}
+		})
+	}
+}
+
+// A fresh five-hour reading must not hide a seven-day reading taken before its
+// own window reset: the pool is judged bucket by bucket.
+func TestModelsJudgesStalenessPerBucket(t *testing.T) {
+	observed := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	reset := observed.Add(time.Minute)
+	now := observed.Add(30 * time.Minute)
+	seven := domain.BucketKey{ProviderInstanceID: "t3-primary", LimitID: "claude", Window: "seven_day"}
+	five := domain.BucketKey{ProviderInstanceID: "t3-primary", LimitID: "claude", Window: "five_hour"}
+	pool := domain.QuotaPool{ID: "pool-claude", ProviderInstanceIDs: []string{"t3-primary"}, Buckets: []domain.BucketKey{seven, five}}
+	states := []domain.BucketState{
+		{Key: seven, UsedPercent: 98, ObservedAt: observed, ResetsAt: &reset},
+		{Key: five, UsedPercent: 3, ObservedAt: now.Add(-time.Minute)},
+	}
+	oldest, stale := modelsPoolFreshness(pool, states, now)
+	if !stale || oldest == nil || !oldest.Equal(observed) {
+		t.Fatalf("stale=%v oldest=%v, want stale from the pre-reset seven-day reading", stale, oldest)
 	}
 }
 

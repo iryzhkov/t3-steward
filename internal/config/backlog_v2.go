@@ -78,6 +78,9 @@ func (c *Config) validateBacklogV2() error {
 	if v.Transport.RequestTimeout.D() <= 0 {
 		return errors.New("backlog_v2: transport.request_timeout must be positive")
 	}
+	if timeout := v.Verification.CommandTimeout.D(); timeout < time.Second || timeout > 6*time.Hour {
+		return errors.New("backlog_v2: verification.command_timeout must be between 1s and 6h")
+	}
 	if v.MessageLimits.MaxBytes <= 0 || v.MessageLimits.MaxFiles <= 0 ||
 		v.MessageLimits.MaxArtifactBytes <= 0 {
 		return errors.New("backlog_v2: message byte, file, and artifact limits must be positive")

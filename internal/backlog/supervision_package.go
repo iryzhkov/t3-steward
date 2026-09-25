@@ -11,6 +11,7 @@ package backlog
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -167,8 +168,8 @@ func (b CoordinatorOfferBuilder) buildActivationOffer(
 		CoordinatorID:                 b.CoordinatorID,
 		CoordinatorEpoch:              b.CoordinatorEpoch,
 		CatalogRevision:               b.CatalogRevision,
-		PrepareTimeout:                b.VerificationTimeout,
-		VerificationTimeout:           b.VerificationTimeout,
+		PrepareTimeout:                cmp.Or(b.ActivationPrepareTimeout, b.VerificationTimeout),
+		VerificationTimeout:           cmp.Or(b.ActivationPrepareTimeout, b.VerificationTimeout),
 		MaxArtifactBytes:              b.MaxArtifactBytes,
 		MaxTotalBytes:                 b.MaxTotalBytes,
 		Now:                           assignment.CreatedAt,
