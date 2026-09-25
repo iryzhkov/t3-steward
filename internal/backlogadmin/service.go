@@ -1090,7 +1090,7 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 	for _, ref := range task.ExternalNeeds {
 		obs, err := domain.ResolveNode(ref, v.records.WorkflowRuns, v.records.Tasks, v.records.Attempts, v.records.Assignments)
 		if err != nil || obs.ExitCode != 0 {
-			explanation.Blockers = append(explanation.Blockers, Blocker{Code: "cross-run-dependency", Detail: "source has not succeeded", DependsOn: ref.String()})
+			explanation.Blockers = append(explanation.Blockers, Blocker{Code: "cross-run-dependency", Detail: "source " + ref.String() + " has not succeeded", DependsOn: ref.String()})
 		}
 	}
 	v.addSupervisionBlocker(&explanation, runID, task)

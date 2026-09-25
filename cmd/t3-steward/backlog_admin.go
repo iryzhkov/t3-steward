@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
@@ -404,9 +405,14 @@ func takeListWindowFlags(args []string) ([]string, listWindow, error) {
 // recent runs and which time.ParseDuration does not accept.
 func parseListSince(value string) (time.Duration, error) {
 	if days, ok := strings.CutSuffix(value, "d"); ok {
-		count, err := strconv.Atoi(days)
+		count, err := strconv.ParseInt(days, 10, 64)
 		if err != nil {
 			return 0, err
+		}
+		// A count past this would overflow the duration and wrap negative or
+		// small, which reads as a narrower window than the one asked for.
+		if count > math.MaxInt64/int64(24*time.Hour) {
+			return 0, fmt.Errorf("%s is more days than a duration can hold", value)
 		}
 		return time.Duration(count) * 24 * time.Hour, nil
 	}
@@ -884,8 +890,10 @@ func renderUsage(out io.Writer, report *domain.UsageReport, semantics string) er
 			// session: Claude Code reports a small model's calls, such as title
 			// generation, in the same turn's per-model usage. Those rows are
 			// measured and belong to the run, so they stay in every total; the
-			// note only says why a model the run was not routed to appears.
-			fmt.Fprintln(out, "Note: a model other than the task's route is the provider's own auxiliary calls in the same session (such as title generation); it is counted in the totals above.")
+			// note only says why a model the run was not routed to may appear.
+			// The usage report does not carry the run's routes, so the note
+			// cannot say which row is which and is worded as a possibility.
+			fmt.Fprintln(out, "Note: a model the task was not routed to may be the provider's own auxiliary calls in the same session (such as title generation); every row is counted in the totals above.")
 		}
 	}
 	if len(report.Samples) > 0 {

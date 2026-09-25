@@ -482,7 +482,9 @@ go through that one function. No version bump and no feature flag is needed for 
 message should be checked for quality: the default yaml error names the unknown field, which is
 adequate, but a `campaign validate` against an old binary should ideally say "this binary does not
 support supervision" rather than "field supervision not found in type backlog.Manifest". That is a
-message-quality item, not a safety item.
+message-quality item, not a safety item. (Since addressed: the refusal names the release that
+refused the field, and from rc.97 the decoder text reads "field supervision not found in the
+workflow" rather than naming the Go type.)
 
 **An older worker is the real gap**, and it needs an explicit capability. A worker one release behind
 would happily execute an activation execution package as if it were an ordinary task, produce a turn,

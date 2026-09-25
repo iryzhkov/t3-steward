@@ -58,6 +58,11 @@ func TestBacklogListIsBoundedClientSide(t *testing.T) {
 	if text, _, err = list("--since", "1d"); err != nil || rows(text) != 25 {
 		t.Fatalf("--since 1d printed %d rows (%v)", rows(text), err)
 	}
+	// The largest day count a duration holds is accepted; one more is refused
+	// below rather than wrapping into a narrower window.
+	if text, _, err = list("--since", "106751d"); err != nil || rows(text) != 50 {
+		t.Fatalf("--since 106751d printed %d rows (%v)", rows(text), err)
+	}
 	if text, _, err = list("--json", "--limit", "3"); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +73,7 @@ func TestBacklogListIsBoundedClientSide(t *testing.T) {
 	if text, _, err = list("--json"); err != nil || json.Unmarshal([]byte(text), &document) != nil || len(document.Workflows) != 120 {
 		t.Fatalf("--json without --limit trimmed the list to %d (%v)", len(document.Workflows), err)
 	}
-	for _, bad := range [][]string{{"--limit", "-1"}, {"--limit"}, {"--since", "yesterday"}, {"--since", "xd"}, {"--since", "0d"}, {"--limit", "1", "--limit", "2"}} {
+	for _, bad := range [][]string{{"--limit", "-1"}, {"--limit"}, {"--since", "yesterday"}, {"--since", "xd"}, {"--since", "0d"}, {"--since", "106752d"}, {"--since", "99999999999999d"}, {"--limit", "1", "--limit", "2"}} {
 		if _, _, err := list(bad...); err == nil {
 			t.Fatalf("%v was accepted", bad)
 		}
@@ -101,7 +106,7 @@ func TestUsageTextLabelsProgressAndAuxiliaryModels(t *testing.T) {
 	if err := renderUsage(&out, report, ""); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Run: run-1 (progress: ready)", "provider's own auxiliary calls in the same session"} {
+	for _, want := range []string{"Run: run-1 (progress: ready)", "may be the provider's own auxiliary calls in the same session"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("usage text does not say %q:\n%s", want, out.String())
 		}

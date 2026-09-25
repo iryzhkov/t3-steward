@@ -87,20 +87,31 @@ const gitHubTargetForms = "run <id>, run owner/name#<id>, run https://github.com
 
 // parseGitHubTarget reads run:<id>, pr:<n>, run/<id> or pr/<n>, where the id
 // may be qualified by its repository as owner/name#<id> or given as the
-// target's github.com URL. A URL alone, without a kind, names its own kind. A
-// repository named by the target is recorded as if it had been given with
+// target's github.com URL. A URL alone, without a kind, names its own kind,
+// and owner/name#<n> alone is a pull request, the form gh and GitHub print for
+// one. A repository named by the target is recorded as if it had been given with
 // --repo, and one that disagrees with --repo is refused rather than guessed
 // between.
 func parseGitHubTarget(spec, state, repo string) (wait.GitHubTarget, error) {
 	spec = strings.TrimSpace(spec)
 	kind, id, ok := gitHubURLKind(spec)
-	if !ok {
-		if kind, id, ok = strings.Cut(spec, ":"); !ok {
+	explicitKind := false
+	switch {
+	case ok:
+	case gitHubQualifiedNumber(spec):
+		kind, id = "pr", spec
+	default:
+		if kind, id, explicitKind = strings.Cut(spec, ":"); !explicitKind {
 			kind, id, _ = strings.Cut(spec, "/")
 		}
 	}
 	id = strings.TrimSpace(id)
-	if kind != "run" && kind != "pr" && gitHubKindWord(kind) {
+	// The unknown-kind refusal is for a value that names a kind: one with an
+	// explicit kind: separator, or a bare word such as issue. owner/name#45
+	// splits on its / into "owner", which is a repository owner, not a kind,
+	// and is answered with the accepted forms instead.
+	namesAKind := explicitKind || !strings.ContainsAny(spec, "#/")
+	if kind != "run" && kind != "pr" && namesAKind && gitHubKindWord(kind) {
 		return wait.GitHubTarget{}, fmt.Errorf("unknown --github kind %q; use run or pr", kind)
 	}
 	if kind != "run" && kind != "pr" {
@@ -129,6 +140,14 @@ func parseGitHubTarget(spec, state, repo string) (wait.GitHubTarget, error) {
 		return target, err
 	}
 	return target, nil
+}
+
+// gitHubQualifiedNumber reports owner/name#<number>.
+func gitHubQualifiedNumber(s string) bool {
+	named, number, found := strings.Cut(s, "#")
+	owner, name, ok := strings.Cut(named, "/")
+	return found && ok && owner != "" && name != "" && !strings.Contains(name, "/") &&
+		!strings.Contains(owner, ":") && gitHubNumber(number)
 }
 
 // gitHubKindWord reports a value that reads as a kind name, such as issue or
