@@ -67,7 +67,22 @@ func (s *ScheduleDefinitionService) Put(ctx context.Context, request ScheduleDef
 		return ScheduleDefinitionResult{}, err
 	}
 	eventID := "schedule-definition:" + request.RequestID
-	for _, event := range records.AuditEvents {
+	replays := records.AuditEvents
+	if auditStore, ok := s.Store.(interface {
+		LoadAuditEvent(context.Context, string) (domain.AuditEvent, bool, error)
+	}); ok {
+		// The coordinator's store does not load audit history with the
+		// records; the replay is one event, read by its id.
+		replays = nil
+		event, found, err := auditStore.LoadAuditEvent(ctx, eventID)
+		if err != nil {
+			return ScheduleDefinitionResult{}, err
+		}
+		if found {
+			replays = []domain.AuditEvent{event}
+		}
+	}
+	for _, event := range replays {
 		if event.ID != eventID {
 			continue
 		}

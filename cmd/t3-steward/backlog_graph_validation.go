@@ -13,6 +13,14 @@ import (
 
 // Validation uses configured authority, independent of worker freshness/quota.
 // Scheduling still applies those dynamic gates before offering any work.
+//
+// A worker's capabilities are what it advertises: its configured list plus the
+// ones its build supplies. Readiness reads the advertised inventory, so a check
+// that read only the configured list refused an amendment (a rerun with a new
+// prompt, a task set) that check and submit accepted for the same task, on
+// every task that requires a build capability such as
+// task-wait-collection-fence-v1 (S11). An older worker lacking one is still
+// excluded at scheduling, from its real inventory.
 func graphTaskValidator(settings config.BacklogV2) func(domain.Workflow, domain.Task) error {
 	return func(workflow domain.Workflow, task domain.Task) error {
 		for _, route := range task.Routes {
@@ -30,8 +38,9 @@ func graphTaskValidator(settings config.BacklogV2) func(domain.Workflow, domain.
 					continue
 				}
 				capable := true
+				advertised := workerruntime.AdvertisedCapabilities(worker.Capabilities)
 				for _, cap := range task.Placement.Capabilities {
-					if !slices.Contains(worker.Capabilities, cap) {
+					if !slices.Contains(advertised, cap) {
 						capable = false
 					}
 				}

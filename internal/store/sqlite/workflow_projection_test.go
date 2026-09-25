@@ -80,7 +80,7 @@ func TestSinkProjectionFencesEveryReadSetMutation(t *testing.T) {
 			if err := store.CommitWorkflowProjection(context.Background(), before, run, before.Attempts, now); !errors.Is(err, ErrStaleWorkflowProjection) {
 				t.Fatalf("error=%v", err)
 			}
-			got, err := store.LoadCoordinatorRecords(context.Background())
+			got, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -117,7 +117,7 @@ func TestConcurrentSinkSettlementPublishesExactlyOnce(t *testing.T) {
 	if successes != 1 {
 		t.Fatalf("successes=%d", successes)
 	}
-	got, err := store.LoadCoordinatorRecords(context.Background())
+	got, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestConcurrentSinkSettlementPublishesExactlyOnce(t *testing.T) {
 	if err != nil || decision.Command.State != domain.AdminCommandRejected {
 		t.Fatalf("retry=%+v err=%v", decision, err)
 	}
-	got, err = store.LoadCoordinatorRecords(context.Background())
+	got, err = store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestMigrationV12BackfillsStableSinkWithoutAttempts(t *testing.T) {
 	if err := store.Migrate(); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.LoadCoordinatorRecords(context.Background())
+	got, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestMigrationV12BackfillsStableSinkWithoutAttempts(t *testing.T) {
 	if err := store.Migrate(); err != nil {
 		t.Fatal(err)
 	}
-	again, err := store.LoadCoordinatorRecords(context.Background())
+	again, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

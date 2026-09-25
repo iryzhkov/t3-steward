@@ -153,7 +153,15 @@ type CoordinatorRecords struct {
 	QuotaPools        []domain.QuotaPool
 	Artifacts         []domain.Artifact
 	AdminCommands     []domain.AdminCommand
-	AuditEvents       []domain.AuditEvent
+	// AuditEvents are written by SaveCoordinatorRecords but never filled by
+	// LoadCoordinatorRecords. The audit table is append-only history, the
+	// largest table by far (217,834 rows and 109 MB of JSON on the fleet
+	// coordinator), and almost no caller reads it; decoding all of it on every
+	// load, from dozens of call sites a boundary, pinned a core and stretched a
+	// 10 s scheduling boundary to 40-50 s, which in turn delayed every
+	// collection by one or two boundaries. Read it with LoadAuditEvents (one run)
+	// or LoadAuditEvent (one id).
+	AuditEvents []domain.AuditEvent
 }
 
 // SaveCoordinatorRecords atomically inserts or updates the supplied records.
@@ -418,9 +426,7 @@ func (s *Store) LoadCoordinatorRecords(ctx context.Context) (CoordinatorRecords,
 	if records.AdminCommands, err = loadJSON[domain.AdminCommand](ctx, tx, "coordinator_admin_commands"); err != nil {
 		return CoordinatorRecords{}, err
 	}
-	if records.AuditEvents, err = loadAuditEventsTx(ctx, tx, ""); err != nil {
-		return CoordinatorRecords{}, err
-	}
+	// Audit events are deliberately not loaded here; see CoordinatorRecords.
 	if err := tx.Commit(); err != nil {
 		return CoordinatorRecords{}, fmt.Errorf("commit coordinator load: %w", err)
 	}

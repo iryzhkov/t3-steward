@@ -49,7 +49,14 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 	if err := workerproto.ValidateArtifactTransferManifest(manifest, i.MaxArtifactBytes, i.MaxTotalBytes, now); err != nil {
 		return domain.Artifact{}, err
 	}
-	if manifest.Direction != "upload" || manifest.CoordinatorEpoch != i.CoordinatorEpoch || len(manifest.Objects) != 1 {
+	// A checkpoint announced under an earlier coordinator epoch is still this
+	// worker's own execution, exactly as a result is (ResultImporter). Requiring
+	// the current epoch made every checkpoint pending across a coordinator
+	// restart unimportable, and since the upload is only acknowledged after an
+	// import, the worker offered it again on every boundary and its whole
+	// exchange failed each time (S14: homelab, from epoch 224 on).
+	if manifest.Direction != "upload" || manifest.CoordinatorEpoch < 1 || manifest.CoordinatorEpoch > i.CoordinatorEpoch ||
+		len(manifest.Objects) != 1 {
 		return domain.Artifact{}, errors.New("checkpoint import manifest authority or object count mismatch")
 	}
 	if err := validateWorkerUploadCustody(response, i.CoordinatorID); err != nil {
@@ -66,6 +73,9 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 	}
 	assignment, attempt, task, err := checkpointImportBinding(records, manifest)
 	if err != nil {
+		if checkpointBindingIsFinal(assignment, attempt, manifest) {
+			return domain.Artifact{}, fmt.Errorf("%w: %w", ErrCheckpointImportRejected, err)
+		}
 		return domain.Artifact{}, err
 	}
 	throttle, err := i.Store.LoadThrottleAttemptRecords(ctx)
@@ -74,6 +84,10 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 	}
 	checkpoint, err := checkpointImportEvidence(throttle, attempt.ID, object)
 	if err != nil {
+		// Evidence for a settled assignment will never arrive.
+		if assignment.State == domain.AssignmentCompleted {
+			return domain.Artifact{}, fmt.Errorf("%w: %w", ErrCheckpointImportRejected, err)
+		}
 		return domain.Artifact{}, err
 	}
 	reader, err := opener.OpenWorkerUpload(ctx, object)
@@ -107,6 +121,29 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 	}, bytes.NewReader(data))
 }
 
+// ErrCheckpointImportRejected marks a checkpoint upload that can never be
+// imported, because the assignment it names is gone or settled without it, or
+// its attempt has since recorded a different checkpoint. The caller discards
+// it, loudly, instead of failing the worker's whole exchange on every boundary
+// for as long as the worker keeps offering it. The bytes stay in the worker's
+// acknowledged custody.
+var ErrCheckpointImportRejected = errors.New("checkpoint import rejected")
+
+// checkpointBindingIsFinal reports whether a binding refusal can never turn
+// into an import: the assignment is gone, at another epoch, released, or
+// settled. A claimed assignment is never final; discarding its checkpoint could
+// lose the resume context.
+func checkpointBindingIsFinal(assignment domain.Assignment, attempt domain.Attempt, manifest workerproto.ArtifactTransferManifest) bool {
+	if assignment.ID == "" || assignment.Epoch != manifest.AssignmentEpoch ||
+		(assignment.State != domain.AssignmentClaimed && assignment.State != domain.AssignmentCompleted) {
+		return true
+	}
+	// While the assignment is claimed nothing is final: the attempt's recorded
+	// checkpoint is projected from throttle records and is not guaranteed to
+	// move only forward. A settled assignment's attempt will not change again.
+	return assignment.State == domain.AssignmentCompleted
+}
+
 func checkpointImportBinding(records sqlite.CoordinatorRecords, manifest workerproto.ArtifactTransferManifest) (domain.Assignment, domain.Attempt, domain.Task, error) {
 	var assignment domain.Assignment
 	for _, candidate := range records.Assignments {
@@ -126,7 +163,11 @@ func checkpointImportBinding(records sqlite.CoordinatorRecords, manifest workerp
 			break
 		}
 	}
-	validProgress := assignment.State == domain.AssignmentClaimed && attempt.Control == domain.ControlPaused ||
+	// A claimed attempt binds while it still records this checkpoint, whatever
+	// its control: a pause that is later resumed keeps the checkpoint it took,
+	// and an import that missed the paused window must not become impossible
+	// (and block the worker's exchange) just because the attempt is running.
+	validProgress := assignment.State == domain.AssignmentClaimed && !attempt.Progress.Terminal() ||
 		assignment.State == domain.AssignmentCompleted && attempt.Progress.Terminal()
 	if attempt.ID == "" || attempt.AssignmentID != assignment.ID || !validProgress ||
 		attempt.CheckpointArtifactID != manifest.Objects[0].ID {
@@ -142,8 +183,11 @@ func checkpointImportBinding(records sqlite.CoordinatorRecords, manifest workerp
 func checkpointImportEvidence(records []domain.ThrottleAttemptRecord, attemptID string, object workerproto.ArtifactObject) (*domain.CheckpointMetadata, error) {
 	var found *domain.CheckpointMetadata
 	for _, record := range records {
-		if record.AttemptID != attemptID || record.Delivery != domain.ThrottleDeliveryAcknowledged ||
-			record.Result != domain.ThrottleResultCheckpointed || record.Checkpoint == nil ||
+		// The checkpoint itself is the durable evidence: it is set only from a
+		// validated checkpointed acknowledgement, and planning a resume rewrites
+		// the record's delivery and result while keeping it. Requiring the
+		// acknowledged checkpointed state refused every import after a resume.
+		if record.AttemptID != attemptID || record.Checkpoint == nil ||
 			record.Checkpoint.ArtifactID != object.ID {
 			continue
 		}

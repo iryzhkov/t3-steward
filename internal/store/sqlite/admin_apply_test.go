@@ -57,7 +57,7 @@ func TestApplyAdminCommandAtomicallyTransitionsAndReplaysAfterRestart(t *testing
 	if replay.Command.State != domain.AdminCommandApplied || replay.Event.ID != first.Event.ID {
 		t.Fatalf("replay = %#v", replay)
 	}
-	loaded, err := store.LoadCoordinatorRecords(context.Background())
+	loaded, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestApplyAdminStartRequiresSafetyFingerprint(t *testing.T) {
 	if !errors.Is(err, ErrInvalidAdminCommandOutcome) {
 		t.Fatalf("missing safety fingerprint error = %v", err)
 	}
-	loaded, err := store.LoadCoordinatorRecords(context.Background())
+	loaded, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestApplyAdminStartRejectsMissingOrExpiredWorkerSafetyValidity(t *testing.T
 	if _, err := store.ApplyAdminCommand(context.Background(), application); !errors.Is(err, ErrStaleAdminSafetyFence) {
 		t.Fatalf("expired worker safety validity error = %v", err)
 	}
-	loaded, err := store.LoadCoordinatorRecords(context.Background())
+	loaded, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestConcurrentAdminCommandApplicationHasOneTransitionAndOutcome(t *testing.
 			t.Errorf("event IDs = %q and %q", eventID, decision.Event.ID)
 		}
 	}
-	loaded, err := store.LoadCoordinatorRecords(context.Background())
+	loaded, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestApplyManualScheduleRunRollsBackTriggerWithOutcomeConflict(t *testing.T)
 	}); err == nil {
 		t.Fatal("expected audit conflict")
 	}
-	loaded, err := store.LoadCoordinatorRecords(context.Background())
+	loaded, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestApplyManualScheduleRunDurablyRejectsApplyTimeOpenRun(t *testing.T) {
 		decision.Command.Failure != ErrManualScheduleRunOpen.Error() {
 		t.Fatalf("decision = %#v", decision)
 	}
-	loaded, err := store.LoadCoordinatorRecords(context.Background())
+	loaded, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +367,7 @@ func TestApplyAdminCommandRejectsTargetChangedAfterPlanning(t *testing.T) {
 	if decision.Command.State != domain.AdminCommandRejected || decision.CurrentTarget == nil || decision.CurrentTarget.Revision != 8 {
 		t.Fatalf("decision = %#v", decision)
 	}
-	loaded, err := store.LoadCoordinatorRecords(context.Background())
+	loaded, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

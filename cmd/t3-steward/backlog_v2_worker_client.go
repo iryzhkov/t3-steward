@@ -245,21 +245,38 @@ func importCoordinatorWorkerCheckpoint(ctx context.Context, session coordinatorW
 	if session.Client == nil || session.ArtifactClient == nil || maxArtifactBytes < 1 {
 		return report, fmt.Errorf("coordinator worker checkpoint import requires control, artifact transport, and a positive limit")
 	}
-	upload, err := session.Client.PollArtifact(ctx, "checkpoint")
-	if err != nil || upload == nil {
-		return report, err
-	}
-	fetched, err := session.ArtifactClient.FetchArtifact(ctx, *upload, maxArtifactBytes, maxArtifactBytes)
-	if err != nil {
-		return report, err
-	}
-	imported, err := session.CheckpointImporter.Import(ctx, fetched.Response, fetched)
-	if err != nil {
-		return report, err
-	}
-	report.Checkpoints = append(report.Checkpoints, imported)
-	if err := session.Client.AcknowledgeArtifact(ctx, upload.Manifest.ID); err != nil {
-		return report, err
+	// Checkpoints are discovered one at a time, like results. A checkpoint that
+	// cannot be imported yet is skipped for the rest of this pass rather than
+	// failing the exchange: it used to fail this worker's whole exchange on
+	// every boundary, so its results, commands and offers stopped too (S14).
+	var deferred []string
+	for round := 0; round < 32; round++ {
+		upload, err := session.Client.PollArtifact(ctx, "checkpoint", deferred...)
+		if err != nil || upload == nil {
+			return report, err
+		}
+		fetched, err := session.ArtifactClient.FetchArtifact(ctx, *upload, maxArtifactBytes, maxArtifactBytes)
+		if err != nil {
+			return report, err
+		}
+		imported, err := session.CheckpointImporter.Import(ctx, fetched.Response, fetched)
+		if errors.Is(err, backlog.ErrCheckpointImportRejected) {
+			// Retrying cannot help; the bytes stay in the worker's custody.
+			slog.Error("worker checkpoint rejected and discarded", "manifest", upload.Manifest.ID,
+				"worker", upload.Manifest.WorkerID, "reason", err)
+			if err := session.Client.AcknowledgeArtifact(ctx, upload.Manifest.ID); err != nil {
+				return report, err
+			}
+			continue
+		}
+		if err != nil {
+			slog.Warn("worker checkpoint import deferred", "manifest", upload.Manifest.ID,
+				"worker", upload.Manifest.WorkerID, "reason", err)
+			deferred = append(deferred, upload.Manifest.ID)
+			continue
+		}
+		report.Checkpoints = append(report.Checkpoints, imported)
+		return report, session.Client.AcknowledgeArtifact(ctx, upload.Manifest.ID)
 	}
 	return report, nil
 }

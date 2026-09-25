@@ -515,6 +515,33 @@ func insertAuditEventTx(ctx context.Context, tx *sql.Tx, event domain.AuditEvent
 	return event, nil
 }
 
+// LoadCoordinatorRecordsWithAudit is LoadCoordinatorRecords plus the whole
+// audit history. It is for a caller that must see every event, which is a test
+// or an offline inspection; nothing on the coordinator's own boundary path
+// should use it, because the history grows without bound.
+func (s *Store) LoadCoordinatorRecordsWithAudit(ctx context.Context) (CoordinatorRecords, error) {
+	records, err := s.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		return CoordinatorRecords{}, err
+	}
+	if records.AuditEvents, err = s.LoadAuditEvents(ctx, ""); err != nil {
+		return CoordinatorRecords{}, err
+	}
+	return records, nil
+}
+
+// LoadAuditEvent reads one audit event by its identifier, for a caller that
+// needs to know whether one request was already recorded without reading the
+// whole audit history.
+func (s *Store) LoadAuditEvent(ctx context.Context, id string) (domain.AuditEvent, bool, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return domain.AuditEvent{}, false, fmt.Errorf("begin coordinator audit event load: %w", err)
+	}
+	defer tx.Rollback()
+	return loadAuditEventTx(ctx, tx, id)
+}
+
 func loadAuditEventTx(ctx context.Context, tx *sql.Tx, id string) (domain.AuditEvent, bool, error) {
 	var sequence int64
 	var raw []byte

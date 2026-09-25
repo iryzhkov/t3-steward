@@ -103,7 +103,7 @@ func TestAdminCommandSubmissionRevisionReplayAndOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	store = openAdminCommandStore(t, path)
-	records, err := store.LoadCoordinatorRecords(context.Background())
+	records, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestConcurrentAdminCommandSubmissionHasOneCommandAndEvent(t *testing.T) {
 			t.Fatalf("unexpected concurrent decision: %#v", decision)
 		}
 	}
-	records, err := store.LoadCoordinatorRecords(context.Background())
+	records, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestAdminCommandTransactionsRollBackWithAuditConflict(t *testing.T) {
 	if _, err := store.SubmitAdminCommand(context.Background(), adminCommand("command-submit-rollback", 3)); err == nil {
 		t.Fatal("submission with conflicting audit event succeeded")
 	}
-	records, err := store.LoadCoordinatorRecords(context.Background())
+	records, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestAdminCommandTransactionsRollBackWithAuditConflict(t *testing.T) {
 	}); err == nil {
 		t.Fatal("outcome with conflicting audit event succeeded")
 	}
-	records, err = store.LoadCoordinatorRecords(context.Background())
+	records, err = store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestAdminCommandsAreImmutableOutsideOutcomeTransaction(t *testing.T) {
 	}); err == nil {
 		t.Fatal("general coordinator save mutated an admin command")
 	}
-	records, err := store.LoadCoordinatorRecords(context.Background())
+	records, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

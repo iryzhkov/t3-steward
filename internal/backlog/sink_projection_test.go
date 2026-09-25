@@ -47,7 +47,7 @@ func TestSinkProjectionFanOutFailureAndRestart(t *testing.T) {
 	if _, err := ProjectWorkflowRuns(ctx, store, now); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.LoadCoordinatorRecords(ctx)
+	got, err := store.LoadCoordinatorRecordsWithAudit(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestSinkProjectionFanOutFailureAndRestart(t *testing.T) {
 	if _, err := ProjectWorkflowRuns(ctx, store, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	final, err := store.LoadCoordinatorRecords(ctx)
+	final, err := store.LoadCoordinatorRecordsWithAudit(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestSinkProjectionFanOutFailureAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	replay, err := store.LoadCoordinatorRecords(ctx)
+	replay, err := store.LoadCoordinatorRecordsWithAudit(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestEmptyBundleCreatesOnlyCoordinatorSink(t *testing.T) {
 	if _, err := ProjectWorkflowRuns(context.Background(), store, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	final, err := store.LoadCoordinatorRecords(context.Background())
+	final, err := store.LoadCoordinatorRecordsWithAudit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
