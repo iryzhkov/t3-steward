@@ -98,6 +98,17 @@ func (c coordinatorSupervision) DispatchActivations(ctx context.Context, admissi
 	if c.activations.Store == nil || !c.settings.configured() {
 		return
 	}
+	// An unclaimed offer outlives an activation that closes, spends or is
+	// revoked, and a retained assignment refuses every catalog reload on its
+	// worker. Releasing it first also repairs offers leaked before this ran.
+	if c.store.Store != nil {
+		released, err := c.store.ReleaseDeadActivationOffers(ctx, c.settings.CoordinatorEpoch, c.at())
+		if err != nil {
+			c.logger.Error("releasing dead activation offers failed", "error", err)
+		} else if len(released) != 0 {
+			c.logger.Info("released unclaimed offers of activations that ended", "assignments", released)
+		}
+	}
 	records, err := c.store.LoadCoordinatorRecords(ctx)
 	if err != nil {
 		c.logger.Error("load records for activation dispatch", "error", err)
