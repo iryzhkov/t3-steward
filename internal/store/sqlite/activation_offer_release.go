@@ -94,7 +94,7 @@ func (s *Store) ReleaseDeadActivationOffers(ctx context.Context, coordinatorEpoc
 		if changed, _ := result.RowsAffected(); changed != 1 {
 			continue
 		}
-		auditID := "activation-offer-released:" + assignment.ID
+		auditID := fmt.Sprintf("activation-offer-released:%s:epoch:%d", assignment.ID, assignment.Epoch)
 		if _, err := insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
 			ID: auditID, Kind: "assignment-released", WorkflowRunID: attempt.WorkflowRunID,
 			AttemptID: attempt.ID, TargetType: domain.AdminTargetAssignment, TargetID: assignment.ID,
@@ -131,6 +131,18 @@ func activationOfferIsDeadTx(ctx context.Context, tx *sql.Tx, attempt domain.Att
 	}
 	if epoch != attempt.SupervisionActivationEpoch {
 		return true, fmt.Sprintf("the activation moved from epoch %d to %d", attempt.SupervisionActivationEpoch, epoch), nil
+	}
+	// Raising the epoch writes a new activation row and leaves the old one as
+	// it was, so the old row can still say pending-dispatch at its own epoch.
+	// The run's supervision record holds the current epoch.
+	var current int64
+	err = tx.QueryRowContext(ctx, `SELECT activation_epoch FROM coordinator_supervision WHERE run_id = ?`,
+		attempt.WorkflowRunID).Scan(&current)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, "", fmt.Errorf("load supervision of run %q: %w", attempt.WorkflowRunID, err)
+	}
+	if err == nil && attempt.SupervisionActivationEpoch < current {
+		return true, fmt.Sprintf("the run's activation moved from epoch %d to %d", attempt.SupervisionActivationEpoch, current), nil
 	}
 	switch domain.ActivationState(state) {
 	case domain.ActivationClosed, domain.ActivationSpent, domain.ActivationRevoked:
