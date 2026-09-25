@@ -622,6 +622,41 @@ func (d *LocalDriver) removeTaskIdentity(pkg workerproto.ExecutionPackage, works
 	return nil
 }
 
+// taskCompletionSupplement tells the agent the one rule its own harness does not:
+// ending the turn completes the task. A task that started its long checks in the
+// background and ended its turn to wait for them was collected at once, with no
+// outputs, and failed (S12); nothing it could read said that the turn was the
+// task. The supplement names the declared outputs, because they are what is
+// collected, and the task-bound wait, which is the supported way to wait.
+func taskCompletionSupplement(pkg workerproto.ExecutionPackage) string {
+	var b strings.Builder
+	b.WriteString("\n\n## How this task ends\n")
+	b.WriteString("This task runs unattended and gets one turn: when your turn ends with no task-bound wait registered, the task is complete. ")
+	b.WriteString("There is no next turn, so do not end with BACKLOG STATUS: continue. ")
+	b.WriteString("When the turn ends, the Steward collects the declared outputs from the workspace and runs verification; ")
+	b.WriteString("processes you started in the background (shell jobs, background commands) are not waited for.")
+	var files, commits []string
+	for _, output := range pkg.Outputs {
+		if output.Commit == nil {
+			files = append(files, "`"+output.Name+"`")
+		} else {
+			commits = append(commits, "`"+output.Name+"`")
+		}
+	}
+	if len(files) != 0 {
+		b.WriteString(" Declared outputs, which must exist when the turn ends: " + strings.Join(files, ", ") + ".")
+	}
+	if len(commits) != 0 {
+		b.WriteString(" Declared commits, which must be committed when the turn ends: " + strings.Join(commits, ", ") + ".")
+	}
+	b.WriteString("\nRun long checks in the foreground and wait for them. To wait for something outside this session ")
+	b.WriteString("(CI, another run, a time), register a task-bound wait and then end the turn; ")
+	b.WriteString("the Steward resumes this same session with the outcome, for example ")
+	b.WriteString("`t3-steward wait add --task current --for 30m --or-timeout` ")
+	b.WriteString("(`t3-steward wait --help` lists every kind).")
+	return b.String()
+}
+
 func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
 	if pkg.IsActivation() {
 		return d.createActivationThread(ctx, pkg, workspace)
@@ -662,6 +697,7 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 	if err != nil {
 		return err
 	}
+	prompt += taskCompletionSupplement(pkg)
 	if pkg.Recovery != nil {
 		prompt += "\n\n## Recovery supplement\nThis is a retry of the original task. Keep the original task contract, outputs, and verification authoritative. Read and apply the retained repair instructions at `" + pkg.Recovery.InstructionPath + "`."
 		for _, checkpoint := range pkg.Recovery.CheckpointPaths {

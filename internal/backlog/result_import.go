@@ -566,7 +566,7 @@ func evaluateResultEvidence(task domain.Task, threadID string, artifacts []domai
 		}
 	}
 	if len(missingOutputs) != 0 {
-		failures = append(failures, "missing declared output: "+strings.Join(missingOutputs, ", "))
+		failures = append(failures, MissingOutputFailure(missingOutputs))
 	}
 	return len(failures) == 0, strings.Join(failures, "; "), summary, nil
 }

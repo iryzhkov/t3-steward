@@ -121,6 +121,7 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 	}
 	outputs := make([]outputSource, 0, len(request.Task.Outputs))
 	var commits []domain.ArtifactDeclaration
+	var missing []string
 	for _, declaration := range request.Task.Outputs {
 		if declaration.Commit != nil {
 			// A declared commit is not a file in the workspace. It is published
@@ -131,7 +132,7 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		resolved, resolveErr := safeBundleFile(request.WorkspaceDir, declaration.Name)
 		if resolveErr != nil {
 			if errors.Is(resolveErr, os.ErrNotExist) {
-				failures = append(failures, "missing declared output: "+declaration.Name)
+				missing = append(missing, declaration.Name)
 				continue
 			}
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt output %q: %w", declaration.Name, resolveErr)
@@ -141,6 +142,9 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt output %q: %w", declaration.Name, relativeErr)
 		}
 		outputs = append(outputs, outputSource{declaration: declaration, relative: relative})
+	}
+	if len(missing) != 0 {
+		failures = append(failures, MissingOutputFailure(missing))
 	}
 
 	runRoot := filepath.Join(f.StorageRoot, "runs", request.Attempt.WorkflowRunID, request.Task.ID)
@@ -410,6 +414,16 @@ func (f AttemptFinalizer) newID(kind string) string {
 		return f.NewID(kind)
 	}
 	return kind + "-" + uuid.NewString()
+}
+
+// MissingOutputFailure is the failure of an attempt whose turn ended without
+// the declared outputs. The commonest cause in the field was a task that
+// started its work in the background and ended its turn to wait for it, which
+// completes the task (S12), so the failure says that and names the supported
+// way to wait.
+func MissingOutputFailure(names []string) string {
+	return "missing declared output: " + strings.Join(names, ", ") +
+		" (the turn ended before it was written; ending the turn completes the task, so wait for background work first, or park with t3-steward wait add --task current)"
 }
 
 // MaterializeDependencies copies the selected immutable output artifacts into
