@@ -347,6 +347,9 @@ func parseTaskRunArgs(args []string) (taskRunArgs, error) {
 	if parsed.class != string(domain.TaskClassSurplus) && parsed.class != string(domain.TaskClassRequired) {
 		return taskRunArgs{}, fmt.Errorf("--class takes surplus or required (got %q)", parsed.class)
 	}
+	if parsed.fresh && parsed.ref != "" {
+		return taskRunArgs{}, errors.New("--fresh and --ref contradict each other: a fresh task starts in an empty directory, with no repository to check a ref out of")
+	}
 	if parsed.noNotify && parsed.notifyThread != "" {
 		return taskRunArgs{}, errors.New("--no-notify and --notify-thread contradict each other: one says nobody is woken, the other names who is")
 	}
@@ -771,7 +774,7 @@ func taskRunFreshProjectList(projects []backlogadmin.Project) string {
 		}
 	}
 	if len(names) == 0 {
-		return "this coordinator has no fresh project; an operator declares one with \"upkeeper project add NAME --type fresh --workers a,b\""
+		return backlogadmin.NoFreshProjectHint
 	}
 	sort.Strings(names)
 	return "the fresh projects are " + strings.Join(names, ", ") + "; pass --project NAME"

@@ -347,9 +347,6 @@ func TestTaskRunDerivesProjectRefRouteAndKeyFromTheCheckout(t *testing.T) {
 	}
 }
 
-// The key is what makes a repeat safe, so it must depend on the inputs and on
-// nothing else: the same command twice is the same run, a different prompt is
-// a different run.
 // TestTaskRunFreshNeedsNoCheckoutAndPicksTheFreshProject is the single-task
 // repository-free start: from a directory that is not a checkout, --fresh
 // takes the catalog's one fresh project and derives no ref.
@@ -389,6 +386,8 @@ func TestTaskRunFreshRefusesWithTheFreshProjects(t *testing.T) {
 			want: "the fresh projects are scratch, spike; pass --project NAME"},
 		{name: "named Git project", fresh: []string{"scratch"}, args: []string{"--fresh", "--project", "steward"},
 			want: `--fresh needs a project of type fresh, and "steward" is a Git project; the fresh projects are scratch`},
+		{name: "a ref with --fresh", fresh: []string{"scratch"}, args: []string{"--fresh", "--ref", "main"},
+			want: "--fresh and --ref contradict each other"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newTaskRunHarness()
@@ -408,6 +407,9 @@ func TestTaskRunFreshRefusesWithTheFreshProjects(t *testing.T) {
 	}
 }
 
+// The key is what makes a repeat safe, so it must depend on the inputs and on
+// nothing else: the same command twice is the same run, a different prompt is
+// a different run.
 func TestTaskRunIdempotencyKeyIsStableAndPromptSensitive(t *testing.T) {
 	first := newTaskRunHarness()
 	if err := first.run("--model", "opus", "--json", "--", "one"); err != nil {

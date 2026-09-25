@@ -16,7 +16,7 @@ func TestFreshHelpIsDiscoverable(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"type: fresh", "t3-steward backlog projects", "upkeeper project add scratch --type fresh",
-		"task run --fresh", ".t3/dependencies/<task>/", "workspace-type-mismatch"} {
+		"task run --fresh", ".t3/dependencies/<producer task id>/", "workspace-type-mismatch"} {
 		if !strings.Contains(fresh, want) {
 			t.Fatalf("fresh help topic does not say %q", want)
 		}

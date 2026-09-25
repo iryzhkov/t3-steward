@@ -470,7 +470,9 @@ task (the default). Everything else is the same as a Git campaign: routes, needs
 outputs, inputs_from, verify, placement and check. A task's declared outputs are
 the only thing collected from its directory, so declare every file a successor
 or the owner needs. A successor finds its inputs_from files under
-.t3/dependencies/<task>/, and campaign inputs are under .t3/inputs/.
+.t3/dependencies/<producer task id>/, an id assigned at submission, so a prompt
+lists .t3/dependencies/ rather than hard-coding it. Campaign inputs are under
+.t3/inputs/.
 
 The project must be declared with type fresh in the coordinator catalog.
 "t3-steward backlog projects" shows each project's TYPE; check refuses a Git

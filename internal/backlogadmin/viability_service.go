@@ -79,6 +79,11 @@ func (v ViabilitySettings) project(name string) (backlog.ProjectDefinition, bool
 	return backlog.ProjectDefinition{}, false
 }
 
+// NoFreshProjectHint is what a repository-free request is told when the
+// catalog holds no fresh project. It is shared with the client's own refusal
+// so that the two cannot drift apart.
+const NoFreshProjectHint = "this coordinator has no fresh project; an operator declares one with \"upkeeper project add NAME --type fresh --workers a,b\""
+
 // freshProjectHint tells the author of a repository-free manifest which
 // projects can hold it. A fresh workspace needs a catalog project whose type
 // is fresh, and the refusal is only actionable when it names them, or says
@@ -91,7 +96,7 @@ func (v ViabilitySettings) freshProjectHint() string {
 		}
 	}
 	if len(names) == 0 {
-		return "this coordinator has no fresh project; an operator declares one with \"upkeeper project add NAME --type fresh --workers a,b\""
+		return NoFreshProjectHint
 	}
 	sort.Strings(names)
 	return "fresh projects in this catalog: " + strings.Join(names, ", ")
