@@ -534,12 +534,9 @@ func (v view) viabilityCandidate(
 				worker.id, worker.dto.SnapshotAgeSeconds, worker.dto.State)))
 	}
 
-	inventories := []domain.WorkerInventory{worker.inventory}
-	placement, err := backlog.MatchWorkers(backlog.WorkerPlacementRequest{
-		Task: domainTask, Project: task.Project, Now: v.now,
-		// Freshness was judged above; this bound is deliberately not binding.
-		MaxSnapshotAge: time.Duration(1 << 62),
-	}, inventories)
+	// Freshness was judged above, and the view presented the inventory as
+	// observed now, so the matcher applies no staleness rule of its own.
+	matchReasons, err := WorkerMatchReasons(domainTask, task.Project, worker.inventory, v.records.QuotaPools, v.now)
 	if err != nil {
 		candidate.Reasons = append(candidate.Reasons, newViabilityReason(ReasonWorkerNotEligible,
 			"placement could not be evaluated: "+err.Error()))
@@ -549,14 +546,7 @@ func (v view) viabilityCandidate(
 		candidate.Outcome = outcomeFor(candidate.Reasons)
 		return candidate
 	}
-	for _, evaluation := range placement.Evaluations {
-		for _, exclusion := range evaluation.Exclusions {
-			candidate.Reasons = append(candidate.Reasons,
-				newViabilityReason(placementReasonCode(exclusion.Code), exclusion.Detail))
-		}
-	}
-
-	candidate.Reasons = append(candidate.Reasons, v.routeReasons(domainTask, worker)...)
+	candidate.Reasons = append(candidate.Reasons, matchReasons...)
 	candidate.Reasons = append(candidate.Reasons, v.quotaReasons(domainTask, worker)...)
 	credentialReasons, credentialUnchecked := v.credentialReasons(ctx, settings, project, worker)
 	candidate.Reasons = append(candidate.Reasons, credentialReasons...)
@@ -670,16 +660,50 @@ func placementReasonCode(exclusion string) string {
 	}
 }
 
+// WorkerMatchReasons is the worker-matching half of readiness: every reason
+// the placement matcher and the provider router give for one worker inventory
+// not serving a task, named with viability codes.
+//
+// Readiness calls it for each candidate's observed snapshot, and graph-amendment
+// validation calls it for each configured worker's inventory. It is one
+// function rather than two copies of the rules because two copies disagreed:
+// amendment validation refused a rerun that check and submit had accepted for
+// the same task (S11), and the copy it kept also demanded that every fallback
+// route resolve and never read accept_backlog or the CPU-class floor. The
+// callers still differ in which inventory they present, and each decides which
+// returned reasons refuse through PermanentViabilityReason.
+//
+// The inventory is taken as observed at now: freshness is the caller's
+// judgement, made before the call, so the matcher applies no staleness rule of
+// its own. The error reports an inventory the matcher could not evaluate.
+func WorkerMatchReasons(task domain.Task, project string, inventory domain.WorkerInventory, pools []domain.QuotaPool, now time.Time) ([]ViabilityReason, error) {
+	inventory.ObservedAt = now
+	placement, err := backlog.MatchWorkers(backlog.WorkerPlacementRequest{
+		Task: task, Project: project, Now: now,
+		MaxSnapshotAge: time.Duration(1 << 62),
+	}, []domain.WorkerInventory{inventory})
+	if err != nil {
+		return nil, err
+	}
+	var reasons []ViabilityReason
+	for _, evaluation := range placement.Evaluations {
+		for _, exclusion := range evaluation.Exclusions {
+			reasons = append(reasons, newViabilityReason(placementReasonCode(exclusion.Code), exclusion.Detail))
+		}
+	}
+	return append(reasons, routeReasons(task, inventory, pools)...), nil
+}
+
 // routeReasons explains a task no configured provider route can serve on this
 // worker. It reads the router's own blockers rather than re-deriving them, so
 // the answer cannot disagree with the planner's.
-func (v view) routeReasons(task domain.Task, worker viabilityWorker) []ViabilityReason {
+func routeReasons(task domain.Task, inventory domain.WorkerInventory, pools []domain.QuotaPool) []ViabilityReason {
 	if len(task.Routes) == 0 {
 		// An unconstrained task takes whatever route the planner finds later.
 		return nil
 	}
 	resolved, blockers, err := backlog.ExplainProviderRoutePools(
-		task, domain.Attempt{}, []domain.WorkerInventory{worker.inventory}, v.records.QuotaPools)
+		task, domain.Attempt{}, []domain.WorkerInventory{inventory}, pools)
 	if err != nil {
 		return []ViabilityReason{newViabilityReason(ReasonNoConfiguredRoute,
 			"provider routing could not be evaluated: "+err.Error())}
@@ -693,7 +717,7 @@ func (v view) routeReasons(task domain.Task, worker viabilityWorker) []Viability
 	}
 	if len(reasons) == 0 {
 		reasons = append(reasons, newViabilityReason(ReasonNoConfiguredRoute,
-			fmt.Sprintf("worker %q offers none of the declared routes", worker.id)))
+			fmt.Sprintf("worker %q offers none of the declared routes", inventory.ID)))
 	}
 	return reasons
 }
