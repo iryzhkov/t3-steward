@@ -1274,6 +1274,7 @@ notifications:
   discord:
     webhook_url_file: ~/.config/t3-steward/discord-webhook
     events: [run-failed, run-cancelled, needs-input, supervision-escalated]
+    scheduled_success: false
   command:
     argv: [/usr/local/bin/notify-owner]
 ```
@@ -1283,13 +1284,23 @@ its URL alone into the file (`install -m 600 /dev/null FILE`, then paste it in)
 and restart or reload the coordinator. The file must be a regular file owned by
 the coordinator's user with mode 0600; the coordinator refuses to load a
 configuration whose file is missing, readable by anyone else or not an https URL,
-and the URL itself is never logged, printed or stored anywhere else.
+and the URL itself is never logged, printed or stored anywhere else. Only the
+coordinator reads the file; another host sharing the configuration checks the
+event names and nothing else.
 
 The events are `run-succeeded`, `run-failed`, `run-cancelled` and `run-skipped`
 (a run reached that outcome), `needs-input` (an attention request awaits an
 answer), `supervision-escalated` (an escalated incident or gate, or an overseer
 whose budget is spent or whose dispatch needs reconciling) and `gate-review` (a
 gate is ready for review). The default is every event except `gate-review`.
+A run created by a schedule reports `run-succeeded` and `run-skipped` only to a
+channel with `scheduled_success: true`; its failures, cancellations and
+questions are reported either way, and campaign and `task run` runs report
+everything selected. Turning `scheduled_success` on later does not replay the
+scheduled successes that already happened. An escalated incident and an
+overseer activation spent or stuck on that incident are one episode, keyed by
+the incident and its revision, and send one message; an activation with no
+incident sends its own.
 
 Every event is recorded in the `coordinator_owner_notifications` table (schema
 30) before it is sent, keyed by channel, event and what happened, and delivered

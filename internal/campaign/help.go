@@ -474,20 +474,24 @@ They are declared in the coordinator's config.yaml and are off until declared:
     discord:
       webhook_url_file: ~/.config/t3-steward/discord-webhook   # chmod 600
       events: [run-failed, run-cancelled, needs-input]         # optional
+      scheduled_success: false  # true: also successes of scheduled runs
     command:
       argv: [/usr/local/bin/notify-owner]   # event JSON on stdin; exit 0 = sent
 
 The webhook URL is a credential. It lives only in that file, which must be a
 regular file owned by the coordinator's user with mode 0600, and it is never
 logged or printed; the coordinator refuses to start when the file is missing
-or readable by anyone else.
+or readable by anyone else. A host that is not the coordinator never reads it.
 
 Events: run-succeeded, run-failed, run-cancelled, run-skipped (a run reached
 that outcome), needs-input (a task's attention request awaits an answer),
 supervision-escalated (an escalated incident or gate, or an overseer whose
 budget is spent or whose dispatch needs reconciling) and gate-review (a gate is
 ready for review). The default is every event except gate-review. Each covers
-every run on the coordinator, submitted with or without --notify-thread.
+every run on the coordinator, submitted with or without --notify-thread, except
+that a run a schedule created reports run-succeeded and run-skipped only to a
+channel with scheduled_success: true. An escalated incident and the overseer
+spent on it are one episode and send one message.
 
 Delivery is durable and at least once: each event is recorded in the
 coordinator's store before it is sent, keyed by channel, event and what

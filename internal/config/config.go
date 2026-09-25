@@ -251,6 +251,16 @@ type DiscordNotifications struct {
 	// Events are the event names to deliver; empty means the default set.
 	// See ownernotify.Events for the accepted names.
 	Events []string `yaml:"events"`
+	// ScheduledSuccess also sends run-succeeded and run-skipped for runs a
+	// schedule created, which are otherwise not sent. See
+	// ownernotify.Selection.
+	ScheduledSuccess bool `yaml:"scheduled_success"`
+}
+
+// Selection is what this sink delivers. The events were validated at load.
+func (d DiscordNotifications) Selection() (ownernotify.Selection, error) {
+	events, err := ownernotify.ParseEvents(d.Events)
+	return ownernotify.Selection{Events: events, ScheduledSuccess: d.ScheduledSuccess}, err
 }
 
 // CommandNotifications is the generic owner channel: a program run from an
@@ -259,6 +269,14 @@ type CommandNotifications struct {
 	Argv []string `yaml:"argv"`
 	// Events are the event names to deliver; empty means the default set.
 	Events []string `yaml:"events"`
+	// ScheduledSuccess is as for DiscordNotifications.
+	ScheduledSuccess bool `yaml:"scheduled_success"`
+}
+
+// Selection is what this sink delivers. The events were validated at load.
+func (c CommandNotifications) Selection() (ownernotify.Selection, error) {
+	events, err := ownernotify.ParseEvents(c.Events)
+	return ownernotify.Selection{Events: events, ScheduledSuccess: c.ScheduledSuccess}, err
 }
 
 // maxWebhookURLFileBytes bounds the webhook file. A Discord webhook URL is
@@ -306,16 +324,22 @@ func (d DiscordNotifications) WebhookURL() (string, error) {
 	return webhook, nil
 }
 
-// validate checks the owner channels. It reads the webhook file, so a
-// coordinator whose file is missing or readable by others refuses to start
-// rather than failing its first delivery hours later.
-func (n Notifications) validate() error {
+// validate checks the owner channels. On a coordinator it reads the webhook
+// file, so a coordinator whose file is missing or readable by others refuses
+// to start rather than failing its first delivery hours later. Any other host
+// never delivers and so never reads the file: a configuration shared with a
+// worker does not need a copy of the credential there.
+func (n Notifications) validate(coordinator bool) error {
 	if n.Discord != nil {
 		if _, err := ownernotify.ParseEvents(n.Discord.Events); err != nil {
 			return fmt.Errorf("notifications.discord: events: %w", err)
 		}
-		if _, err := n.Discord.WebhookURL(); err != nil {
-			return err
+		if coordinator {
+			if _, err := n.Discord.WebhookURL(); err != nil {
+				return err
+			}
+		} else if strings.TrimSpace(n.Discord.WebhookURLFile) == "" {
+			return errors.New("notifications.discord: webhook_url_file is required")
 		}
 	}
 	if n.Command != nil {
@@ -1157,7 +1181,7 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Messages.Warn) == "" || strings.TrimSpace(c.Messages.Drain) == "" {
 		return errors.New("messages: warn and drain must not be empty")
 	}
-	if err := c.Notifications.validate(); err != nil {
+	if err := c.Notifications.validate(c.BacklogV2.Mode == "coordinator"); err != nil {
 		return err
 	}
 	return c.validateBacklogV2()

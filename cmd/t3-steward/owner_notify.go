@@ -18,22 +18,22 @@ import (
 func ownerNotificationSinks(notifications config.Notifications, logger *slog.Logger) []ownernotify.Sink {
 	var sinks []ownernotify.Sink
 	if discord := notifications.Discord; discord != nil {
-		events, eventsErr := ownernotify.ParseEvents(discord.Events)
+		selection, selectionErr := discord.Selection()
 		webhook, err := discord.WebhookURL()
 		switch {
-		case eventsErr != nil:
-			logger.Error("discord owner notifications are disabled", "error", eventsErr)
+		case selectionErr != nil:
+			logger.Error("discord owner notifications are disabled", "error", selectionErr)
 		case err != nil:
 			logger.Error("discord owner notifications are disabled", "error", err)
 		default:
-			sinks = append(sinks, ownernotify.NewDiscord(webhook, events, nil))
+			sinks = append(sinks, ownernotify.NewDiscord(webhook, selection, nil))
 		}
 	}
 	if command := notifications.Command; command != nil {
-		if events, err := ownernotify.ParseEvents(command.Events); err != nil {
+		if selection, err := command.Selection(); err != nil {
 			logger.Error("command owner notifications are disabled", "error", err)
 		} else {
-			sinks = append(sinks, ownernotify.NewCommand(command.Argv, events))
+			sinks = append(sinks, ownernotify.NewCommand(command.Argv, selection))
 		}
 	}
 	return sinks

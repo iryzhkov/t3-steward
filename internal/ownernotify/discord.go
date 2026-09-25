@@ -30,24 +30,25 @@ const discordContentLimit = 2000
 // URL it failed to reach in its errors and those errors are logged and stored.
 type Discord struct {
 	webhookURL string
-	events     []Event
+	selection  Selection
 	client     *http.Client
 }
 
 // NewDiscord returns a Discord sink. A nil client uses a client with no
 // timeout of its own: every send is bounded by the notifier's context.
-func NewDiscord(webhookURL string, events []Event, client *http.Client) *Discord {
+func NewDiscord(webhookURL string, selection Selection, client *http.Client) *Discord {
 	if client == nil {
 		client = &http.Client{}
 	}
-	return &Discord{webhookURL: webhookURL, events: append([]Event(nil), events...), client: client}
+	selection.Events = append([]Event(nil), selection.Events...)
+	return &Discord{webhookURL: webhookURL, selection: selection, client: client}
 }
 
 // Name implements Sink.
 func (d *Discord) Name() string { return DiscordSinkName }
 
-// Events implements Sink.
-func (d *Discord) Events() []Event { return append([]Event(nil), d.events...) }
+// Selection implements Sink.
+func (d *Discord) Selection() Selection { return d.selection }
 
 // String and GoString keep the webhook URL out of any formatted value.
 func (d *Discord) String() string   { return "discord webhook" }

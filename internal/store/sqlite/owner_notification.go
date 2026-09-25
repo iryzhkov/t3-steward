@@ -19,8 +19,11 @@ import (
 // A row's id is sink, event and the identity of what happened, joined with
 // "|". That identity is the run for a terminal outcome, the attention wait for
 // a question, and the supervision record together with the revision-like part
-// that changes when the same record needs the operator again (an activation's
-// state, a gate's evidence snapshot). Detection inserts with that key and
+// that changes when the same record needs the operator again (an incident's
+// revision, an activation's state, a gate's evidence snapshot). An escalated
+// or unrecoverable activation that was woken for an incident is keyed as that
+// incident at its current revision, so the incident and the spent overseer of
+// one episode send one message, not two. Detection inserts with that key and
 // ignores a conflict, so a coordinator restart re-detects nothing it already
 // recorded and loses nothing it had not yet sent.
 //
@@ -83,11 +86,16 @@ WHERE json_extract(w.record, '$.settledAt') IS NULL
   AND NOT EXISTS (SELECT 1 FROM coordinator_owner_notifications n WHERE n.id = ?1 || w.id)`,
 	ownernotify.EventSupervisionEscalated: `
 SELECT subject, run_id, record, kind FROM (
-  SELECT 'incident:' || id AS subject, run_id, record, 'incident' AS kind
+  SELECT 'incident:' || id || ':' || revision AS subject, run_id, record, 'incident' AS kind
   FROM coordinator_supervision_incidents WHERE state = 'escalated'
   UNION ALL
-  SELECT 'activation:' || id || ':' || state, run_id, record, 'activation'
-  FROM coordinator_supervision_activations WHERE state IN ('escalated', 'recovery-required')
+  SELECT CASE WHEN i.id IS NULL THEN 'activation:' || a.id || ':' || a.state
+              ELSE 'incident:' || i.id || ':' || i.revision END,
+         a.run_id, a.record, 'activation'
+  FROM coordinator_supervision_activations a
+  LEFT JOIN coordinator_supervision_incidents i
+    ON i.id = json_extract(a.record, '$.incidentId') AND i.run_id = a.run_id
+  WHERE a.state IN ('escalated', 'recovery-required')
   UNION ALL
   SELECT 'gate:' || id || ':' || evidence_snapshot_id || ':escalated', run_id, record, 'gate'
   FROM coordinator_supervision_gates WHERE state = 'escalated'
@@ -101,18 +109,56 @@ WHERE g.state = 'ready-for-review'
     WHERE n.id = ?1 || 'gate:' || g.id || ':' || g.evidence_snapshot_id)`,
 }
 
-// ownerNotificationRunQuery selects terminal runs of one outcome.
+// ownerNotificationRunQuery selects terminal runs of one outcome. The third
+// parameter narrows them to runs a schedule created, runs it did not, or all.
 const ownerNotificationRunQuery = `
 SELECT r.id, r.id, r.record, 'run'
 FROM coordinator_workflow_runs r
 WHERE r.progress = ?2
+  AND (?3 = 'all' OR (?3 = 'scheduled') = (r.schedule_id <> ''))
   AND NOT EXISTS (SELECT 1 FROM coordinator_owner_notifications n WHERE n.id = ?1 || r.id)`
+
+// Run scopes of one detection pass.
+const (
+	ownerNotificationAllRuns         = "all"
+	ownerNotificationUnscheduledRuns = "unscheduled"
+	ownerNotificationScheduledRuns   = "scheduled"
+)
+
+// ownerNotificationPass is one detection query and the baseline it belongs to.
+//
+// Scheduled successes have a baseline of their own. They are detected only
+// once a sink opts into them, and at that point every scheduled success in
+// the coordinator's history is new to the sink; sharing the event's baseline
+// would send all of it.
+type ownerNotificationPass struct {
+	event    ownernotify.Event
+	baseline string
+	runs     string
+}
+
+func ownerNotificationPasses(selection ownernotify.Selection) []ownerNotificationPass {
+	var passes []ownerNotificationPass
+	for _, event := range selection.Events {
+		if !ownernotify.ScheduledSuccessEvent(event) {
+			passes = append(passes, ownerNotificationPass{event: event, baseline: string(event), runs: ownerNotificationAllRuns})
+			continue
+		}
+		passes = append(passes, ownerNotificationPass{event: event, baseline: string(event), runs: ownerNotificationUnscheduledRuns})
+		if selection.ScheduledSuccess {
+			passes = append(passes, ownerNotificationPass{
+				event: event, baseline: string(event) + ":scheduled", runs: ownerNotificationScheduledRuns,
+			})
+		}
+	}
+	return passes
+}
 
 // DetectOwnerNotifications implements ownernotify.Store.
 //
 // Everything happens in one transaction, so a pass that records an event kind's
 // baseline cannot interleave with a pass that records the same kind as pending.
-func (s *Store) DetectOwnerNotifications(ctx context.Context, sink string, events []ownernotify.Event, now time.Time) (ownernotify.Detection, error) {
+func (s *Store) DetectOwnerNotifications(ctx context.Context, sink string, selection ownernotify.Selection, now time.Time) (ownernotify.Detection, error) {
 	var detection ownernotify.Detection
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -121,17 +167,18 @@ func (s *Store) DetectOwnerNotifications(ctx context.Context, sink string, event
 	defer tx.Rollback()
 	enrich := ownerNotificationEnricher{tx: tx, campaigns: map[string]string{}, tasks: map[string]string{}}
 	at := ownerNotificationTime(now)
-	for _, event := range events {
+	for _, pass := range ownerNotificationPasses(selection) {
+		event := pass.event
 		var baselined bool
 		switch err := tx.QueryRowContext(ctx,
 			`SELECT 1 FROM coordinator_owner_notification_baselines WHERE sink = ? AND event = ?`,
-			sink, string(event)).Scan(new(int)); {
+			sink, pass.baseline).Scan(new(int)); {
 		case err == nil:
 			baselined = true
 		case !errors.Is(err, sql.ErrNoRows):
 			return detection, fmt.Errorf("read owner notification baseline: %w", err)
 		}
-		candidates, err := ownerNotificationCandidatesTx(ctx, tx, sink, event)
+		candidates, err := ownerNotificationCandidatesTx(ctx, tx, sink, event, pass.runs)
 		if err != nil {
 			return detection, err
 		}
@@ -173,7 +220,7 @@ func (s *Store) DetectOwnerNotifications(ctx context.Context, sink string, event
 		if !baselined {
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO coordinator_owner_notification_baselines(sink, event, baselined_at) VALUES (?, ?, ?)`,
-				sink, string(event), at); err != nil {
+				sink, pass.baseline, at); err != nil {
 				return detection, fmt.Errorf("record owner notification baseline: %w", err)
 			}
 		}
@@ -188,12 +235,12 @@ func ownerNotificationID(sink string, event ownernotify.Event, subject string) s
 	return sink + "|" + string(event) + "|" + subject
 }
 
-func ownerNotificationCandidatesTx(ctx context.Context, tx *sql.Tx, sink string, event ownernotify.Event) ([]ownerNotificationCandidate, error) {
+func ownerNotificationCandidatesTx(ctx context.Context, tx *sql.Tx, sink string, event ownernotify.Event, runs string) ([]ownerNotificationCandidate, error) {
 	prefix := ownerNotificationID(sink, event, "")
 	var rows *sql.Rows
 	var err error
 	if progress, ok := ownerNotificationRunProgress(event); ok {
-		rows, err = tx.QueryContext(ctx, ownerNotificationRunQuery, prefix, progress)
+		rows, err = tx.QueryContext(ctx, ownerNotificationRunQuery, prefix, progress, runs)
 	} else if query, known := ownerNotificationCandidateQueries[event]; known {
 		rows, err = tx.QueryContext(ctx, query, prefix)
 	} else {

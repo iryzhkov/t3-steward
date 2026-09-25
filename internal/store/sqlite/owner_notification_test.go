@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -19,13 +20,19 @@ import (
 
 // recordingSink accepts every notification and remembers it.
 type recordingSink struct {
-	mu     sync.Mutex
-	events []ownernotify.Event
-	got    []ownernotify.Notification
+	mu        sync.Mutex
+	name      string
+	selection ownernotify.Selection
+	got       []ownernotify.Notification
 }
 
-func (s *recordingSink) Name() string                { return "recording" }
-func (s *recordingSink) Events() []ownernotify.Event { return s.events }
+func (s *recordingSink) Name() string {
+	if s.name == "" {
+		return "recording"
+	}
+	return s.name
+}
+func (s *recordingSink) Selection() ownernotify.Selection { return s.selection }
 func (s *recordingSink) Deliver(_ context.Context, n ownernotify.Notification) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -94,7 +101,7 @@ func TestOwnerNotificationsBaselineHistoryAndDeliverOnceAcrossRestart(t *testing
 	notifierFor := func(store *Store) *ownernotify.Notifier {
 		return &ownernotify.Notifier{
 			Store:  store,
-			Sinks:  []ownernotify.Sink{ownernotify.NewDiscord(server.URL+"/api/webhooks/1/token", ownernotify.DefaultEvents(), server.Client())},
+			Sinks:  []ownernotify.Sink{ownernotify.NewDiscord(server.URL+"/api/webhooks/1/token", ownernotify.Selection{Events: ownernotify.DefaultEvents()}, server.Client())},
 			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 			Now:    func() time.Time { return now },
 		}
@@ -137,7 +144,7 @@ func TestOwnerNotificationsBaselineHistoryAndDeliverOnceAcrossRestart(t *testing
 	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{run}}); err != nil {
 		t.Fatal(err)
 	}
-	detection, err := store.DetectOwnerNotifications(ctx, ownernotify.DiscordSinkName, ownernotify.DefaultEvents(), now)
+	detection, err := store.DetectOwnerNotifications(ctx, ownernotify.DiscordSinkName, ownernotify.Selection{Events: ownernotify.DefaultEvents()}, now)
 	if err != nil || detection.Enqueued != 1 {
 		t.Fatalf("detection = %+v, %v", detection, err)
 	}
@@ -218,9 +225,9 @@ func TestOwnerNotificationsDetectOperatorAttention(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	sink := &recordingSink{events: []ownernotify.Event{
+	sink := &recordingSink{selection: ownernotify.Selection{Events: []ownernotify.Event{
 		ownernotify.EventNeedsInput, ownernotify.EventSupervisionEscalated, ownernotify.EventGateReview,
-	}}
+	}}}
 	notifier := &ownernotify.Notifier{Store: store, Sinks: []ownernotify.Sink{sink},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: func() time.Time { return now }}
 	notifier.Tick(ctx) // Nothing exists yet, so the baseline is empty.
@@ -250,7 +257,8 @@ func TestOwnerNotificationsDetectOperatorAttention(t *testing.T) {
 	incident := domain.ReviewIncident{ID: "inc-1", RunID: "r", State: domain.IncidentEscalated, Reason: "producer failed twice", OpenedAt: now}
 	insertJSON(`INSERT INTO coordinator_supervision_incidents(id, run_id, state, revision, gate_id, record) VALUES (?, ?, ?, 1, '', ?)`,
 		incident.ID, incident.RunID, string(incident.State), marshal(incident))
-	activation := domain.Activation{ID: "act-1", RunID: "r", Epoch: 1, State: domain.ActivationEscalated}
+	// The overseer woken for that incident spent its budget: the same episode.
+	activation := domain.Activation{ID: "act-1", RunID: "r", Epoch: 1, State: domain.ActivationEscalated, IncidentID: "inc-1"}
 	insertJSON(`INSERT INTO coordinator_supervision_activations(id, run_id, epoch, state, record) VALUES (?, ?, 1, ?, ?)`,
 		activation.ID, activation.RunID, string(activation.State), marshal(activation))
 	gate := domain.Gate{Definition: domain.GateDefinition{ID: "g-1", Name: "design-review"}, RunID: "r", State: domain.GateReadyForReview, EvidenceSnapshotID: "ev-1"}
@@ -267,8 +275,8 @@ func TestOwnerNotificationsDetectOperatorAttention(t *testing.T) {
 		got[0].Prompt != "Deploy to production?" || got[0].Campaign != "release" {
 		t.Fatalf("needs-input = %+v", got)
 	}
-	if got := byEvent[ownernotify.EventSupervisionEscalated]; len(got) != 2 {
-		t.Fatalf("supervision-escalated = %+v", got)
+	if got := byEvent[ownernotify.EventSupervisionEscalated]; len(got) != 1 || got[0].ID != "recording|supervision-escalated|incident:inc-1:1" {
+		t.Fatalf("one episode was not collapsed into one message: %+v", got)
 	}
 	if got := byEvent[ownernotify.EventGateReview]; len(got) != 1 || got[0].Gate != "design-review" {
 		t.Fatalf("gate-review = %+v", got)
@@ -278,7 +286,75 @@ func TestOwnerNotificationsDetectOperatorAttention(t *testing.T) {
 	// the unchanged records are not reported again.
 	insertJSON(`UPDATE coordinator_supervision_gates SET evidence_snapshot_id = 'ev-2' WHERE id = 'g-1'`)
 	notifier.Tick(ctx)
-	if got := len(sink.delivered()); got != 5 {
-		t.Fatalf("delivered %d notifications after new gate evidence, want 5", got)
+	if got := len(sink.delivered()); got != 4 {
+		t.Fatalf("delivered %d notifications after new gate evidence, want 4", got)
+	}
+
+	// An escalated activation with no incident behind it is its own episode.
+	lone := domain.Activation{ID: "act-2", RunID: "r", Epoch: 2, State: domain.ActivationRecoveryRequired}
+	insertJSON(`INSERT INTO coordinator_supervision_activations(id, run_id, epoch, state, record) VALUES (?, ?, 2, ?, ?)`,
+		lone.ID, lone.RunID, string(lone.State), marshal(lone))
+	notifier.Tick(ctx)
+	if got := sink.delivered(); len(got) != 5 || got[4].ActivationID != "act-2" {
+		t.Fatalf("a lone activation was not reported: %+v", got)
+	}
+}
+
+// A run a schedule created reports its failures by default and its successes
+// only to a sink that opted in; campaign runs report both. Opting in later
+// does not replay the scheduled successes that already happened.
+func TestOwnerNotificationsReportScheduledSuccessesOnlyWhenOptedIn(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	save := func(id, schedule string, progress domain.ProgressState) {
+		t.Helper()
+		run := domain.WorkflowRun{ID: id, WorkflowID: "w", ScheduleID: schedule, Revision: 2, Progress: progress, CreatedAt: now, UpdatedAt: now, CompletedAt: &now}
+		if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{run}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("old-scheduled-ok", "hourly", domain.ProgressSucceeded)
+	defaults := &recordingSink{name: "defaults", selection: ownernotify.Selection{Events: ownernotify.DefaultEvents()}}
+	optedIn := &recordingSink{name: "opted-in", selection: ownernotify.Selection{Events: ownernotify.DefaultEvents(), ScheduledSuccess: true}}
+	notifier := &ownernotify.Notifier{Store: store, Sinks: []ownernotify.Sink{defaults, optedIn},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: func() time.Time { return now }}
+	notifier.Tick(ctx) // Baseline: the old success is history for both.
+
+	save("campaign-ok", "", domain.ProgressSucceeded)
+	save("scheduled-ok", "hourly", domain.ProgressSucceeded)
+	save("scheduled-skipped", "hourly", domain.ProgressSkipped)
+	save("scheduled-failed", "hourly", domain.ProgressFailed)
+	notifier.Tick(ctx)
+	runs := func(sink *recordingSink) []string {
+		var ids []string
+		for _, n := range sink.delivered() {
+			ids = append(ids, n.RunID)
+		}
+		sort.Strings(ids)
+		return ids
+	}
+	if got := strings.Join(runs(defaults), ","); got != "campaign-ok,scheduled-failed" {
+		t.Fatalf("default sink delivered %s", got)
+	}
+	if got := strings.Join(runs(optedIn), ","); got != "campaign-ok,scheduled-failed,scheduled-ok,scheduled-skipped" {
+		t.Fatalf("opted-in sink delivered %s", got)
+	}
+
+	// The default sink opts in: what already happened is baselined, and only
+	// a scheduled success after that is sent.
+	defaults.selection.ScheduledSuccess = true
+	notifier.Tick(ctx)
+	if got := strings.Join(runs(defaults), ","); got != "campaign-ok,scheduled-failed" {
+		t.Fatalf("opting in replayed history: %s", got)
+	}
+	save("scheduled-ok-2", "hourly", domain.ProgressSucceeded)
+	notifier.Tick(ctx)
+	if got := strings.Join(runs(defaults), ","); got != "campaign-ok,scheduled-failed,scheduled-ok-2" {
+		t.Fatalf("after opting in: %s", got)
 	}
 }

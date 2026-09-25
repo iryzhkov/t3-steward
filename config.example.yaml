@@ -234,9 +234,13 @@ notifications:
   # sent. See "t3-steward campaign help notify".
   # discord:
   #   # A private file (chmod 600) holding the webhook URL and nothing else.
-  #   # The URL is a credential and is never written in this file.
+  #   # The URL is a credential and is never written in this file. Only a
+  #   # coordinator reads it.
   #   webhook_url_file: ~/.config/t3-steward/discord-webhook
   #   events: [run-failed, run-cancelled, needs-input, supervision-escalated]
+  #   # Runs a schedule created send run-succeeded and run-skipped only when
+  #   # this is true; their failures are sent either way.
+  #   scheduled_success: false
   # command:
   #   # Run with no shell; the event arrives as JSON on standard input and
   #   # exit status 0 means delivered. The same event may arrive twice.

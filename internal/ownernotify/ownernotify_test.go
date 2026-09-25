@@ -45,7 +45,7 @@ func newMemoryStore(notifications ...Notification) *memoryStore {
 	return s
 }
 
-func (s *memoryStore) DetectOwnerNotifications(context.Context, string, []Event, time.Time) (Detection, error) {
+func (s *memoryStore) DetectOwnerNotifications(context.Context, string, Selection, time.Time) (Detection, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.detects++
@@ -178,7 +178,7 @@ func TestNotifierRetriesWithBackoffAndGivesUp(t *testing.T) {
 	clk := &clock{now: time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)}
 	var logs bytes.Buffer
 	notifier := &Notifier{
-		Store: store, Sinks: []Sink{NewDiscord(server.url(), DefaultEvents(), server.server.Client())},
+		Store: store, Sinks: []Sink{NewDiscord(server.url(), Selection{Events: DefaultEvents()}, server.server.Client())},
 		Logger: slog.New(slog.NewTextHandler(&logs, nil)), Now: clk.Now, MaxAttempts: 4,
 	}
 	id := runFailed("run-1").ID
@@ -215,7 +215,7 @@ func TestNotifierRetriesWithBackoffAndGivesUp(t *testing.T) {
 func TestNotifierAbandonsAPermanentRefusalAtOnce(t *testing.T) {
 	server := newWebhookServer(t, http.StatusNotFound)
 	store := newMemoryStore(runFailed("run-1"))
-	notifier := &Notifier{Store: store, Sinks: []Sink{NewDiscord(server.url(), DefaultEvents(), server.server.Client())},
+	notifier := &Notifier{Store: store, Sinks: []Sink{NewDiscord(server.url(), Selection{Events: DefaultEvents()}, server.server.Client())},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	notifier.Tick(context.Background())
 	if got := store.row(runFailed("run-1").ID); got.State != StateAbandoned || got.Attempts != 1 {
@@ -230,7 +230,7 @@ func TestNotifierHonoursDiscordRetryAfter(t *testing.T) {
 	server.headers = []http.Header{{"Retry-After": {"7"}}}
 	store := newMemoryStore(runFailed("run-1"), runFailed("run-2"))
 	clk := &clock{now: time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)}
-	notifier := &Notifier{Store: store, Sinks: []Sink{NewDiscord(server.url(), DefaultEvents(), server.server.Client())},
+	notifier := &Notifier{Store: store, Sinks: []Sink{NewDiscord(server.url(), Selection{Events: DefaultEvents()}, server.server.Client())},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: clk.Now}
 	notifier.Tick(context.Background())
 	if sent := len(server.requests()); sent != 1 {
@@ -269,7 +269,7 @@ func TestDiscordSecretNeverAppearsInLogsOrErrors(t *testing.T) {
 	webhook := "http://" + address + "/api/webhooks/123456/" + testWebhookToken
 	store := newMemoryStore(runFailed("run-1"))
 	var logs bytes.Buffer
-	sink := NewDiscord(webhook, DefaultEvents(), nil)
+	sink := NewDiscord(webhook, Selection{Events: DefaultEvents()}, nil)
 	notifier := &Notifier{Store: store, Sinks: []Sink{sink},
 		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})), MaxAttempts: 2}
 	notifier.Tick(context.Background())
@@ -300,7 +300,7 @@ func TestDiscordSecretNeverAppearsInLogsOrErrors(t *testing.T) {
 func TestDiscordDeliversOneShortMessage(t *testing.T) {
 	server := newWebhookServer(t)
 	store := newMemoryStore(runFailed("run-1"))
-	notifier := &Notifier{Store: store, Sinks: []Sink{NewDiscord(server.url(), DefaultEvents(), server.server.Client())},
+	notifier := &Notifier{Store: store, Sinks: []Sink{NewDiscord(server.url(), Selection{Events: DefaultEvents()}, server.server.Client())},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	notifier.Tick(context.Background())
 	notifier.Tick(context.Background())
@@ -359,7 +359,7 @@ func TestCommandSinkWritesJSONOnStdinAndRetriesAFailure(t *testing.T) {
 		t.Skip("no /bin/sh")
 	}
 	out := filepath.Join(t.TempDir(), "event.json")
-	sink := NewCommand([]string{"/bin/sh", "-c", `cat > "$0"`, out}, DefaultEvents())
+	sink := NewCommand([]string{"/bin/sh", "-c", `cat > "$0"`, out}, Selection{Events: DefaultEvents()})
 	notification := runFailed("run-1")
 	notification.Sink = CommandSinkName
 	if err := sink.Deliver(context.Background(), notification); err != nil {
@@ -380,7 +380,7 @@ func TestCommandSinkWritesJSONOnStdinAndRetriesAFailure(t *testing.T) {
 	if commands, _ := payload["commands"].(map[string]any); commands["result"] != "t3-steward task result run-1" {
 		t.Fatalf("payload commands = %v", payload["commands"])
 	}
-	failing := NewCommand([]string{"/bin/sh", "-c", "echo webhook down >&2; exit 3"}, DefaultEvents())
+	failing := NewCommand([]string{"/bin/sh", "-c", "echo webhook down >&2; exit 3"}, Selection{Events: DefaultEvents()})
 	err = failing.Deliver(context.Background(), notification)
 	var classified *DeliveryError
 	if !errors.As(err, &classified) || classified.Permanent || !strings.Contains(classified.Reason, "status 3") ||

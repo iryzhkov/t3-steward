@@ -30,14 +30,46 @@ func writeWebhookFile(t *testing.T, content string, mode os.FileMode) string {
 	return path
 }
 
+// validateAsCoordinator validates a file's owner channels as the coordinator
+// does. A full coordinator configuration needs a fleet this test has no use
+// for, and the mode is the only thing the check reads from it.
+func validateAsCoordinator(t *testing.T, path string) error {
+	t.Helper()
+	cfg, err := loadFile(path)
+	if err != nil {
+		return err
+	}
+	return cfg.Notifications.validate(true)
+}
+
+// A host that is not the coordinator never delivers, so it does not read the
+// webhook file and does not need a copy of the credential.
+func TestDiscordWebhookFileIsCheckedOnlyOnTheCoordinator(t *testing.T) {
+	path := writeNotificationConfig(t, "notifications:\n  discord:\n    webhook_url_file: "+
+		filepath.Join(t.TempDir(), "absent")+"\n")
+	if _, err := Load(path); err != nil {
+		t.Fatalf("a non-coordinator host checked the webhook file: %v", err)
+	}
+	if err := validateAsCoordinator(t, path); err == nil {
+		t.Fatal("the coordinator accepted a missing webhook file")
+	}
+}
+
 // A private webhook file loads; the URL is readable on demand and is nowhere
 // in the loaded configuration itself.
 func TestDiscordNotificationsLoadFromAPrivateFile(t *testing.T) {
 	webhook := writeWebhookFile(t, testWebhook+"\n", 0o600)
-	cfg, err := Load(writeNotificationConfig(t, "notifications:\n  discord:\n    webhook_url_file: "+webhook+
-		"\n    events: [run-failed, needs-input]\n"))
+	path := writeNotificationConfig(t, "notifications:\n  discord:\n    webhook_url_file: "+webhook+
+		"\n    events: [run-failed, needs-input]\n    scheduled_success: true\n")
+	if err := validateAsCoordinator(t, path); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if selection, err := cfg.Notifications.Discord.Selection(); err != nil || !selection.ScheduledSuccess || len(selection.Events) != 2 {
+		t.Fatalf("selection = %+v, %v", selection, err)
 	}
 	if cfg.Notifications.Discord == nil || len(cfg.Notifications.Discord.Events) != 2 {
 		t.Fatalf("discord = %+v", cfg.Notifications.Discord)
@@ -93,7 +125,7 @@ func TestDiscordNotificationsRefuseUnsafeOrInvalidConfiguration(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := Load(writeNotificationConfig(t, "notifications:\n  discord:\n    "+tc.config(t)+"\n"))
+			err := validateAsCoordinator(t, writeNotificationConfig(t, "notifications:\n  discord:\n    "+tc.config(t)+"\n"))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}

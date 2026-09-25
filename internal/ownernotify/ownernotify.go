@@ -210,12 +210,32 @@ type AttemptResult struct {
 	At    time.Time
 }
 
+// Selection is what one sink is told about.
+type Selection struct {
+	// Events are the event kinds delivered.
+	Events []Event
+	// ScheduledSuccess also delivers run-succeeded and run-skipped for runs a
+	// schedule created. It is off by default: a schedule that runs every hour
+	// would otherwise post every hour, and a recurring job's owner needs to
+	// hear when it breaks, not that it worked again. Failures, cancellations
+	// and anything waiting for a person are delivered for scheduled runs
+	// either way.
+	ScheduledSuccess bool
+}
+
+// ScheduledSuccessEvent reports whether an event is one that a scheduled run
+// delivers only when the sink opted into scheduled successes.
+func ScheduledSuccessEvent(event Event) bool {
+	return event == EventRunSucceeded || event == EventRunSkipped
+}
+
 // Store is the coordinator outbox.
 type Store interface {
-	// DetectOwnerNotifications records every event of the given kinds that
-	// has no row for this sink yet. The first pass for a (sink, event) pair
-	// records what already exists as baseline instead of pending.
-	DetectOwnerNotifications(ctx context.Context, sink string, events []Event, now time.Time) (Detection, error)
+	// DetectOwnerNotifications records every selected event that has no row
+	// for this sink yet. The first pass for a (sink, event) pair records what
+	// already exists as baseline instead of pending; scheduled successes are
+	// baselined separately, so opting into them later replays nothing.
+	DetectOwnerNotifications(ctx context.Context, sink string, selection Selection, now time.Time) (Detection, error)
 	// DueOwnerNotifications returns pending rows whose next attempt is due,
 	// oldest first.
 	DueOwnerNotifications(ctx context.Context, sink string, now time.Time, limit int) ([]Notification, error)
@@ -229,8 +249,8 @@ type Sink interface {
 	// Name is the sink's stable identity. It is part of every outbox key, so
 	// renaming a sink starts it over from a fresh baseline.
 	Name() string
-	// Events are the event kinds this sink delivers.
-	Events() []Event
+	// Selection is what this sink delivers.
+	Selection() Selection
 	// Deliver sends one notification. A *DeliveryError says whether and when
 	// to retry; any other error is retried with the ordinary backoff.
 	Deliver(ctx context.Context, notification Notification) error
@@ -318,7 +338,7 @@ func (n *Notifier) Tick(ctx context.Context) {
 
 func (n *Notifier) tickSink(ctx context.Context, sink Sink) {
 	logger := n.logger().With("sink", sink.Name())
-	detection, err := n.Store.DetectOwnerNotifications(ctx, sink.Name(), sink.Events(), n.now())
+	detection, err := n.Store.DetectOwnerNotifications(ctx, sink.Name(), sink.Selection(), n.now())
 	if err != nil {
 		logger.Error("owner notification detection failed", "error", err)
 		// Rows already recorded can still be delivered.

@@ -26,20 +26,21 @@ const CommandPayloadVersion = 1
 // a failure retried with the same backoff as a webhook, and the program must
 // therefore tolerate receiving the same id more than once.
 type Command struct {
-	argv   []string
-	events []Event
+	argv      []string
+	selection Selection
 }
 
 // NewCommand returns a command sink.
-func NewCommand(argv []string, events []Event) *Command {
-	return &Command{argv: append([]string(nil), argv...), events: append([]Event(nil), events...)}
+func NewCommand(argv []string, selection Selection) *Command {
+	selection.Events = append([]Event(nil), selection.Events...)
+	return &Command{argv: append([]string(nil), argv...), selection: selection}
 }
 
 // Name implements Sink.
 func (c *Command) Name() string { return CommandSinkName }
 
-// Events implements Sink.
-func (c *Command) Events() []Event { return append([]Event(nil), c.events...) }
+// Selection implements Sink.
+func (c *Command) Selection() Selection { return c.selection }
 
 // CommandPayload is what a command sink receives on standard input.
 type CommandPayload struct {
