@@ -225,9 +225,10 @@ the namespace of outputs, so one task cannot declare a commit and an output of
 the same name. revision is resolved in the producing task's own workspace when
 that task finishes, and defaults to HEAD.
 
-revision must be a ref name or a full 40-character commit id: HEAD, a branch,
-a tag or refs/... Revision expressions are refused by validate ("not a safe Git
-ref"): HEAD~1, main^, @{u}, a..b, and anything with ~ ^ : ? * [ or a space. A
+revision must be a ref name or a commit id (use the full 40-character id; an
+abbreviated one can become ambiguous): HEAD, a branch, a tag or refs/...
+Revision expressions are refused by validate ("not a safe Git ref"), for
+example HEAD~1, main^, @{u}, a..b, and anything with ~ ^ : ? * [ \ or a space. A
 task that hands over several commits commits each to its own branch and
 declares one entry per branch:
 
@@ -255,9 +256,10 @@ Why this exists: a successor must receive the exact commit whether or not it
 was ever pushed anywhere, and the worker's repository cache is no place to keep
 one: each task's preparation refreshes it with --prune, which deletes any ref
 the project repository does not have. The campaign ref is in a store beside the
-cache that is never pruned, and it is kept for the campaign's lifetime. (Since 0.11.0-rc.91 a task's git push origin reaches the project
-repository rather than the cache; a declared commit is still how a successor
-receives a commit, and a push is how the owner does.)
+cache that is never pruned, and it is kept for the campaign's lifetime. (Since
+0.11.0-rc.91 a task's git push origin reaches the project repository rather
+than the cache; a declared commit is still how a successor receives a commit,
+and a push is how the owner does.)
 
 plan cannot print the ref. It contains the workflow run and task IDs, which are
 assigned at ingestion, so a static plan reports the declaration and the revision
@@ -532,9 +534,11 @@ to. Naming a different pool is refused by check (unknown-quota-pool).
 
 options is a map of T3 model-selection options, each sent to T3 as
 {id, value} exactly as written. The option T3 honours for Claude and Codex
-instances is effort (for example low, medium, high); an option T3 does not
-know for that model is ignored by T3, not refused here. Keys and values are
-non-empty strings without surrounding spaces.
+instances is effort (for example low, medium, high). Steward does not check
+option names against the model: an unrecognised option is passed through, and
+what happens to it is up to T3. validate refuses an empty option name or value;
+check and submit also refuse surrounding spaces, names over 128 bytes and
+values over 1024 bytes.
 
 Task context (context:) is accepted by the schema for a pinned project-context
 index, but it has not been qualified in the field: do not rely on it. Pass the
