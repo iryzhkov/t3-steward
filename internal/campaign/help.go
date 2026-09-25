@@ -481,7 +481,8 @@ campaign runs in a new, empty directory per task instead of a checkout:
     type: fresh
 
 A fresh campaign names no ref and no repository, and its environment scope is
-task (the default). Everything else is the same as a Git campaign: routes, needs,
+task (the default). It cannot declare commits, since there is no Git
+repository to commit to; validate refuses them. Everything else is the same as a Git campaign: routes, needs,
 outputs, inputs_from, verify, placement and check. A task's declared outputs are
 the only thing collected from its directory, so declare every file a successor
 or the owner needs. A successor finds its inputs_from files under
@@ -510,7 +511,7 @@ A minimal two-task example:
       inputs_from: {research: [findings.md]}
       prompt_file: prompts/review.md
       outputs: [review.md]
-      verify: ['test -s review.md']
+      verify: ['grep -q "^## Verdict" review.md']
 `
 
 // RoutesHelp documents the routes field. It was undocumented anywhere an

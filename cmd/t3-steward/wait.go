@@ -220,7 +220,7 @@ Examples, inside a task:
   t3-steward wait add --task current --github run $(gh run list --limit 1 --json databaseId --jq '.[0].databaseId') --timeout 2h
   t3-steward wait add --task current --for 30m --or-timeout
   t3-steward wait add --task current --node <run>/<task> --state succeeded
-  t3-steward wait add --task current --quota claude --phase normal
+  t3-steward wait add --task current --quota claude-main --phase normal
   t3-steward wait add --task current --attention approval --prompt "Deploy to production?"
   t3-steward wait add --task current --name "deploy finished" -- ./scripts/deployed.sh
 

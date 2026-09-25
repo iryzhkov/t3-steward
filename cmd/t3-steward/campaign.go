@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/campaign"
 	"github.com/iryzhkov/t3-steward/internal/config"
@@ -86,12 +87,12 @@ mkdir -p demo/prompts && echo 'do the work' > demo/prompts/implement.md
 cat > demo/workflow.yaml <<'YAML'
 version: 2
 name: demo
-environment: {project: t3-steward}
+environment: {project: scratch, type: fresh}
+routes: [{instance: claudeAgent, model: claude-sonnet-5}]
 tasks: {implement: {prompt_file: prompts/implement.md}}
 YAML
 t3-steward campaign check demo --json
-t3-steward campaign submit demo --idempotency-key demo-1 --json
-t3-steward campaign show <run>
+t3-steward campaign submit demo --idempotency-key demo-1
 
 Exit codes: 0 on success and 1 on any error, plus the transport classes below for
 check, submit, rerun and the lifecycle verbs; an impossible campaign is refused with
@@ -409,8 +410,28 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 		c.supervisionAppendix(ctx, args)
 		return nil
 	default:
-		return fmt.Errorf("unknown campaign command %q; recovery and graph amendment stay under \"t3-steward backlog\"", args[0])
+		const elsewhere = "\"t3-steward campaign help\" lists every command; task, edge and artifact commands stay under \"t3-steward backlog\""
+		if near := nearestCampaignCommand(args[0]); near != "" {
+			return fmt.Errorf("unknown campaign command %q; did you mean %q? %s", args[0], near, elsewhere)
+		}
+		return fmt.Errorf("unknown campaign command %q; %s", args[0], elsewhere)
 	}
+}
+
+// campaignCommands are the subcommands run dispatches, in the order a
+// did-you-mean suggestion prefers them.
+var campaignCommands = []string{"validate", "plan", "check", "submit", "list", "show", "explain", "graph", "cancel", "rerun", "supervision", "recovery", "help"}
+
+// nearestCampaignCommand returns the campaign subcommand within two edits of
+// name, or "" when none is that close.
+func nearestCampaignCommand(name string) string {
+	best, bestDistance := "", 3
+	for _, command := range campaignCommands {
+		if distance := backlog.EditDistance(strings.ToLower(name), command); distance < bestDistance {
+			best, bestDistance = command, distance
+		}
+	}
+	return best
 }
 
 // admitCampaignHelp is this family's one help admission, before any argument

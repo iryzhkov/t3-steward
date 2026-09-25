@@ -589,7 +589,11 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// authors of research campaigns looking for one.
 	//
 	// Updated when the routes field got its own topic: the topic list names it.
-	const wantDigest = "1b0a484a0ba9e4b6c69c59af7315280aa7a23260a118c269c74376e1154cc06f"
+	//
+	// Updated when the complete example became one that can run: it declares a
+	// route and uses the fresh scratch project, and its submit prints text so
+	// that the show command it names replaces the example's own show line.
+	const wantDigest = "f0705a126769fcdaf393d66164faec1be12f122bb0ae101873362e211f72905d"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)
@@ -615,7 +619,7 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 		"required",
 		"placement.hosts",
 		"same --idempotency-key with the same directory returns the",
-		"t3-steward campaign show <run>",
+		"routes: [{instance: claudeAgent, model: claude-sonnet-5}]",
 		"Exit codes",
 		"schemaVersion",
 		"docs/examples/campaign/single-lead",

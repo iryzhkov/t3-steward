@@ -133,7 +133,7 @@ func ReleaseVersion() string { return releaseVersion }
 
 // unknownFieldPattern matches one line of the yaml decoder's strict-mode
 // refusal, "line N: field NAME not found in type PKG.TYPE".
-var unknownFieldPattern = regexp.MustCompile(`^line (\d+): field (\S+) not found in type \S+$`)
+var unknownFieldPattern = regexp.MustCompile(`^line (\d+): field (\S+) not found in type (\S+)$`)
 
 // UnknownManifestFieldError is the refusal of a manifest that declares a field
 // this release does not know. Its message names each field with its line and
@@ -146,6 +146,9 @@ type UnknownManifestFieldError struct {
 	Fields []string
 	// Lines are the manifest lines of Fields, index for index.
 	Lines []int
+	// Suggestions are, index for index, a known field of the same object whose
+	// name is within a typo of the unknown one, or empty when none is.
+	Suggestions []string
 	// Release is the version the refusal was made by.
 	Release string
 	// Cause is the decoder's own error, kept for errors.Is and errors.As.
@@ -155,6 +158,11 @@ type UnknownManifestFieldError struct {
 func (e *UnknownManifestFieldError) Error() string {
 	var text strings.Builder
 	for index, field := range e.Fields {
+		if index < len(e.Suggestions) && e.Suggestions[index] != "" {
+			fmt.Fprintf(&text, "field %s (line %d) is not a field of this object in release %s; did you mean %s? If not, a newer t3-steward release may be required\n",
+				field, e.Lines[index], e.Release, e.Suggestions[index])
+			continue
+		}
 		fmt.Fprintf(&text, "field %s (line %d) is not supported by this release %s; a newer t3-steward release may be required\n",
 			field, e.Lines[index], e.Release)
 	}
@@ -166,8 +174,9 @@ func (e *UnknownManifestFieldError) Unwrap() error { return e.Cause }
 
 // describeUnknownFields rewrites a strict-mode decode refusal into an
 // UnknownManifestFieldError when it names unknown fields, and returns any other
-// error unchanged.
-func describeUnknownFields(err error) error {
+// error unchanged. into is the value the decoder was filling, whose field names
+// are the candidates for a did-you-mean suggestion.
+func describeUnknownFields(err error, into any) error {
 	var typeErr *yaml.TypeError
 	if !errors.As(err, &typeErr) {
 		return err
@@ -184,6 +193,7 @@ func describeUnknownFields(err error) error {
 		}
 		unknown.Fields = append(unknown.Fields, match[2])
 		unknown.Lines = append(unknown.Lines, number)
+		unknown.Suggestions = append(unknown.Suggestions, suggestManifestField(into, match[3], match[2]))
 	}
 	if len(unknown.Fields) == 0 {
 		return err
@@ -199,7 +209,7 @@ func decodeManifestStrict(raw []byte, into any) error {
 	decoder := yaml.NewDecoder(bytes.NewReader(raw))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(into); err != nil {
-		return fmt.Errorf("decode workflow manifest: %w", describeUnknownFields(err))
+		return fmt.Errorf("decode workflow manifest: %w", describeUnknownFields(err, into))
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
@@ -422,6 +432,12 @@ func validateManifest(manifest Manifest) error {
 		}
 		if len(manifest.Tasks[name].Directories) > 0 && (manifest.Environment.Type != EnvironmentFresh || manifest.Environment.Scope != EnvironmentScopeTask) {
 			return fmt.Errorf("task %s: directory attachments require a fresh task workspace", name)
+		}
+		// A fresh workspace is an empty directory with no Git repository, so a
+		// declared commit could only fail when the task finishes, after its
+		// quota was spent.
+		if len(manifest.Tasks[name].Commits) > 0 && manifest.Environment.Type == EnvironmentFresh {
+			return fmt.Errorf("task %s: commits need a Git workspace, and environment.type is fresh; declare the files as outputs instead", name)
 		}
 		if err := validateManifestTask(name, manifest.Tasks[name], manifest.Tasks); err != nil {
 			return err

@@ -438,6 +438,20 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `campaign validate` refuses `commits` on a task whose environment is
+  `type: fresh`. A fresh workspace has no Git repository, so the declaration
+  was accepted and failed only when the task finished, after its quota was
+  spent. `campaign help fresh` says so, and its example verify checks the
+  output's content instead of restating that the output exists.
+- A manifest field within a typo of a known field of the same object is
+  refused with `did you mean <field>?` ahead of the advice that a newer
+  release may be required; a field that is not close to any known one gets
+  only that advice. An unknown `campaign` subcommand likewise names the nearby
+  command, and every such refusal points at `t3-steward campaign help` rather
+  than claiming that recovery lives under `backlog`.
+- The complete example in `t3-steward campaign help` runs as written: it
+  declares a route and uses the fresh `scratch` project. The `wait` usage names
+  the `claude-main` pool rather than a pool that does not exist.
 - Cold storage measures a thread's retention from its settlement rather than
   from T3's `updatedAt`. Hiding a settled session updates the thread, so every
   session the UI archive hid started its retention again from the act of hiding
