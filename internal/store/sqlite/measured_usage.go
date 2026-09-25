@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -600,35 +601,97 @@ func (s *Store) WorkerUsageBatch(ctx context.Context, acknowledged []string, lim
 	return samples, nil
 }
 
-func (s *Store) ReceiveWorkerUsage(ctx context.Context, workerID string, samples []domain.UsageSample) error {
+// WorkerUsageRejection names one delivered usage sample the coordinator
+// refused to store, and why.
+type WorkerUsageRejection struct {
+	EventID string
+	Reason  string
+}
+
+// WorkerUsageReceipt reports what one delivered usage batch became. Rejected
+// lists only samples refused for the first time, so a caller that logs it
+// reports each bad sample once rather than on every boundary.
+type WorkerUsageReceipt struct {
+	Stored   int
+	Rejected []WorkerUsageRejection
+}
+
+// validateWorkerUsageSample returns why a delivered sample cannot be stored,
+// or an empty string when it can. Only properties the coordinator relies on
+// are checked: provenance, an acknowledgeable identity, and numbers SQLite
+// can hold (a NaN cost is stored as NULL and fails the NOT NULL constraint,
+// which would otherwise surface as a storage error and fail the whole batch).
+func validateWorkerUsageSample(workerID string, sample domain.UsageSample) string {
+	switch {
+	case sample.WorkerID != "" && sample.WorkerID != workerID:
+		return "sample provenance conflicts with the authenticated worker"
+	case sample.SourceEventID == "" || strings.TrimSpace(sample.SourceEventID) != sample.SourceEventID:
+		return "sample event id is empty or untrimmed"
+	case sample.InputTokens < 0 || sample.CacheWriteTokens < 0 || sample.CacheReadTokens < 0 ||
+		sample.OutputTokens < 0 || sample.CumulativeTokens < 0:
+		return "sample has a negative token count"
+	case math.IsNaN(sample.CostUSD) || math.IsInf(sample.CostUSD, 0) || sample.CostUSD < 0:
+		return "sample cost is not a finite non-negative number"
+	}
+	return ""
+}
+
+// ReceiveWorkerUsage stores one delivered usage batch and records a receipt
+// for every sample it settles, which the next exchange acknowledges to the
+// worker. A sample that fails validation is rejected on its own: it gets a
+// receipt too, so the worker stops offering it, but is not stored. One bad
+// sample used to fail the whole batch, and because an unacknowledged batch is
+// offered again unchanged, that worker's usage stopped reaching the
+// coordinator for good (the same shape as S14). A storage error still fails
+// the whole batch and commits nothing, so that it is retried intact.
+func (s *Store) ReceiveWorkerUsage(ctx context.Context, workerID string, samples []domain.UsageSample) (WorkerUsageReceipt, error) {
 	if workerID == "" || len(samples) > MaxWorkerUsageDelivery {
-		return fmt.Errorf("invalid worker usage delivery")
+		return WorkerUsageReceipt{}, fmt.Errorf("invalid worker usage delivery")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return WorkerUsageReceipt{}, err
 	}
 	defer tx.Rollback()
+	var receipt WorkerUsageReceipt
 	for _, sample := range samples {
-		if sample.WorkerID != "" && sample.WorkerID != workerID {
-			return fmt.Errorf("worker usage sample provenance conflicts with authenticated worker")
-		}
-		sample.WorkerID = workerID
-		if err := recordUsage(ctx, tx, sample); err != nil {
-			return err
+		if reason := validateWorkerUsageSample(workerID, sample); reason != "" {
+			if sample.SourceEventID == "" {
+				// There is no identity to acknowledge, so there is nothing to
+				// record; the sample is only reported.
+				receipt.Rejected = append(receipt.Rejected, WorkerUsageRejection{Reason: reason})
+				continue
+			}
+			var known int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM coordinator_worker_usage_receipts
+				WHERE worker_id = ? AND event_id = ?`, workerID, sample.SourceEventID).Scan(&known); err != nil {
+				return WorkerUsageReceipt{}, err
+			}
+			if known == 0 {
+				receipt.Rejected = append(receipt.Rejected, WorkerUsageRejection{EventID: sample.SourceEventID, Reason: reason})
+			}
+		} else {
+			sample.WorkerID = workerID
+			if err := recordUsage(ctx, tx, sample); err != nil {
+				return WorkerUsageReceipt{}, err
+			}
+			receipt.Stored++
 		}
 		revision := int64(0)
-		if sample.DiagnosticCode == "overflow" {
+		if sample.DiagnosticCode == "overflow" && sample.CumulativeTokens > 0 {
 			revision = sample.CumulativeTokens
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO coordinator_worker_usage_receipts(worker_id,event_id,received_at,revision)
 			VALUES(?,?,?,?) ON CONFLICT(worker_id,event_id) DO UPDATE SET
 				revision = MAX(revision, excluded.revision), received_at = excluded.received_at`,
 			workerID, sample.SourceEventID, time.Now().UTC().Format(time.RFC3339Nano), revision); err != nil {
-			return err
+			return WorkerUsageReceipt{}, err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return WorkerUsageReceipt{}, err
+	}
+	return receipt, nil
 }
 
 func (s *Store) WorkerUsageAcknowledgements(ctx context.Context, workerID string) ([]string, error) {

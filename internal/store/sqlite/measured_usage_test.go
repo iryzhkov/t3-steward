@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -399,7 +401,7 @@ func TestWorkerUsageBatchForwardsOnlyThisHostsReadings(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ReceiveWorkerUsage(ctx, "homelab", []domain.UsageSample{{
+	if _, err := store.ReceiveWorkerUsage(ctx, "homelab", []domain.UsageSample{{
 		ProviderInstanceID: "claudeAgent", ThreadID: "thread-remote", Model: "claude-haiku-4-5",
 		ObservedAt: now, SourceEventID: "remote-1", Kind: domain.UsageKindCall, InputTokens: 20,
 	}}); err != nil {
@@ -480,7 +482,7 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 		if len(batch) == 0 {
 			break
 		}
-		if err := coordinator.ReceiveWorkerUsage(ctx, "worker-diagnostic", batch); err != nil {
+		if _, err := coordinator.ReceiveWorkerUsage(ctx, "worker-diagnostic", batch); err != nil {
 			t.Fatal(err)
 		}
 		acknowledgements, err = coordinator.WorkerUsageAcknowledgements(ctx, "worker-diagnostic")
@@ -526,7 +528,7 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 	if advanced != 1 {
 		t.Fatalf("advanced overflow markers = %d in %#v", advanced, batch)
 	}
-	if err := coordinator.ReceiveWorkerUsage(ctx, "worker-diagnostic", batch); err != nil {
+	if _, err := coordinator.ReceiveWorkerUsage(ctx, "worker-diagnostic", batch); err != nil {
 		t.Fatal(err)
 	}
 	currentAcks, err := coordinator.WorkerUsageAcknowledgements(ctx, "worker-diagnostic")
@@ -638,7 +640,7 @@ func TestPruneHistoryIsAtomicAndForgetsExactDeliveryIdentity(t *testing.T) {
 				ObservedAt: now.Add(time.Hour), SourceEventID: "old-event",
 				Kind: domain.UsageKindCall, FieldPresence: domain.UsageFieldsAll, InputTokens: 7,
 			}
-			if err := store.ReceiveWorkerUsage(ctx, "offline-worker", []domain.UsageSample{reused}); err != nil {
+			if _, err := store.ReceiveWorkerUsage(ctx, "offline-worker", []domain.UsageSample{reused}); err != nil {
 				t.Fatal(err)
 			}
 			acks, err = store.WorkerUsageAcknowledgements(ctx, "offline-worker")
@@ -646,6 +648,74 @@ func TestPruneHistoryIsAtomicAndForgetsExactDeliveryIdentity(t *testing.T) {
 				t.Fatalf("reused event identity receipt = %#v, %v", acks, err)
 			}
 		})
+	}
+}
+
+// One bad sample used to fail the whole delivered batch, which then stayed
+// unacknowledged and was offered again unchanged on every boundary, so none of
+// that worker's usage reached the coordinator again. A bad sample is now
+// rejected and acknowledged on its own, while a storage error still fails the
+// batch intact.
+func TestReceiveWorkerUsageRejectsBadSamplesIndividually(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	sample := func(id string) domain.UsageSample {
+		return domain.UsageSample{
+			ProviderInstanceID: "provider", ThreadID: "thread", Model: "model", ObservedAt: now,
+			SourceEventID: id, Kind: domain.UsageKindCall, FieldPresence: domain.UsageFieldsAll, InputTokens: 4,
+		}
+	}
+	foreign := sample("foreign")
+	foreign.WorkerID = "other-worker"
+	notANumber := sample("nan-cost")
+	notANumber.CostUSD, notANumber.CostReported = math.NaN(), true
+	batch := []domain.UsageSample{sample("good-1"), foreign, notANumber, sample("good-2")}
+
+	receipt, err := store.ReceiveWorkerUsage(ctx, "worker-a", batch)
+	if err != nil {
+		t.Fatalf("a batch with bad samples failed as a whole: %v", err)
+	}
+	if receipt.Stored != 2 || len(receipt.Rejected) != 2 ||
+		receipt.Rejected[0].EventID != "foreign" || receipt.Rejected[1].EventID != "nan-cost" {
+		t.Fatalf("receipt = %#v", receipt)
+	}
+	acks, err := store.WorkerUsageAcknowledgements(ctx, "worker-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(acks)
+	if !slices.Equal(acks, []string{"foreign", "good-1", "good-2", "nan-cost"}) {
+		t.Fatalf("acknowledgements = %v; every settled sample must be acknowledged", acks)
+	}
+	var stored int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples WHERE worker_id = 'worker-a'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 2 {
+		t.Fatalf("stored samples = %d, want only the two valid ones", stored)
+	}
+	// Offered again before the worker saw the acknowledgement, the same bad
+	// samples are not reported a second time.
+	if receipt, err = store.ReceiveWorkerUsage(ctx, "worker-a", batch); err != nil || len(receipt.Rejected) != 0 {
+		t.Fatalf("replayed batch receipt = %#v, %v", receipt, err)
+	}
+
+	// A storage error is not a bad sample: the batch fails and nothing of it
+	// is committed, so it is retried whole.
+	if _, err := store.db.ExecContext(ctx, `CREATE TRIGGER refuse_usage_storage BEFORE INSERT ON usage_samples
+		WHEN NEW.event_id = 'storage-failure' BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReceiveWorkerUsage(ctx, "worker-b", []domain.UsageSample{sample("good-3"), sample("storage-failure")}); err == nil {
+		t.Fatal("a storage error did not fail the batch")
+	}
+	if acks, err := store.WorkerUsageAcknowledgements(ctx, "worker-b"); err != nil || len(acks) != 0 {
+		t.Fatalf("a failed batch left acknowledgements %v, %v", acks, err)
 	}
 }
 
@@ -675,7 +745,7 @@ func seedPruneHistoryFixture(t *testing.T, store *Store, now time.Time) {
 		ObservedAt: now.Add(time.Hour), SourceEventID: "new-event", Kind: domain.UsageKindCall,
 		FieldPresence: domain.UsageFieldsAll, InputTokens: 5,
 	}
-	if err := store.ReceiveWorkerUsage(ctx, "offline-worker", []domain.UsageSample{oldSample, overflow}); err != nil {
+	if _, err := store.ReceiveWorkerUsage(ctx, "offline-worker", []domain.UsageSample{oldSample, overflow}); err != nil {
 		t.Fatal(err)
 	}
 	newSample.WorkerID = "offline-worker"
