@@ -8,6 +8,30 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Owner-channel notifications. A top-level `notifications` section sends
+  campaign events to Discord (`discord.webhook_url_file`, a 0600 file owned by
+  the coordinator's user that holds the webhook URL and is never logged) or to
+  a command (`command.argv`, event JSON on standard input, a minimal
+  environment, its own process group). The events are `run-succeeded`,
+  `run-failed`, `run-cancelled`, `run-skipped`, `needs-input`,
+  `supervision-escalated` (one message per episode) and `gate-review`, and
+  every one except `gate-review` is on by default. A scheduled run reports a
+  success or skip only with `scheduled_success: true`. Delivery runs from an
+  outbox in the coordinator store, at least once, off the scheduling loop,
+  with backoff up to 30 minutes over 8 attempts, honouring Discord's
+  Retry-After. A per-event watermark means that enabling a sink or event
+  never replays history. Settled rows are pruned after 30 days, and the
+  section can be changed by a reload. Schema 30 adds the outbox: release
+  0.11.0-rc.95 cannot open a schema-30 store, so rolling back needs the backup
+  taken before the upgrade. See `campaign help notify` and the operations
+  guide.
+- `backlog list` and `campaign list` take `--limit N` and `--since DURATION`.
+  Text output shows the newest 50 runs by default and says how many were left
+  out; `--json` stays unbounded unless `--limit` is given.
+- A coordinator that rejects and discards a worker checkpoint records a
+  `checkpoint-import-rejected` audit event, which `backlog events` and
+  `diagnose` show. If the event cannot be written, the upload stays retryable.
+
 - The steward removes the T3 projects it created itself, once they are empty.
   Every backlog task and every supervision activation opens its thread in a
   project whose workspace root is a directory the worker owns, and nothing
@@ -438,6 +462,46 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The coordinator releases the unclaimed offer of an overseer activation that
+  has closed, spent or been revoked, or whose epoch the run's supervision has
+  moved past. Such an offer was re-offered and withheld on every boundary, and
+  it blocked every catalog reload touching its worker. If the sweep fails,
+  activation dispatch waits for the next pass. A row from an older activation
+  epoch no longer counts as another valid activation, so it cannot block a
+  replacement; the old overseer's decisions are still refused by the epoch
+  check.
+- Graph amendments (`campaign rerun --prompt`, task edits) are judged by the
+  same worker matcher as `campaign check` and submit, so validation and
+  readiness can no longer disagree. Amendments that submit already refused
+  are now refused too: `accept_backlog: false` without a named host, and an
+  unmet CPU-class minimum.
+- A worker no longer holds the lock that every coordinator exchange needs while
+  it waits for a collection to finish, so exchanges, lease renewal and offers
+  go through during a long verification. Two passes that race on the same
+  attempt now collect it once. Throttle commands are refused while an attempt
+  is being collected. A result whose attempt was superseded meanwhile is
+  discarded, not completed.
+- One malformed usage sample no longer holds back the worker's whole usage
+  batch. It is rejected on its own, and one warning per batch names the
+  sample and the reason. A storage error still fails the batch. Workers no
+  longer send readings that have no event id.
+- `backlog usage <run>` judges coverage from the run. Unbound samples make a
+  run partial only if they could be its own: any provider, on a worker the
+  run was dispatched to, inside the run's window. The fleet's unbound samples
+  in that window are shown as context (`unscopedUnattributedCount` now counts
+  only those). A coordinator host's local copy of a forwarded sample is no
+  longer counted twice.
+- `wait add --github` accepts `owner/name#N` and GitHub URLs for both `pr`
+  and `run`, deriving `--repo`, and refuses an unparseable target with the
+  forms it accepts. A branch name still works for `pr`.
+- `campaign submit` and `check` say plainly that an `accepted_waiting`
+  campaign was accepted and what it waits for. A note that every worker of a
+  task shares is printed once, and workers the project does not use are
+  summarised on one line instead of being shown as impossible.
+- Quota planning no longer warns that a woken parked attempt is "paused
+  without a durable throttle record"; the warning returns if such an attempt
+  stays resuming for more than 75 minutes. `backlog list --all` combined with
+  other arguments is refused with a pointer to `--limit`.
 - `campaign validate` refuses `commits` on a task whose environment is
   `type: fresh`. A fresh workspace has no Git repository, so the declaration
   was accepted and failed only when the task finished, after its quota was
