@@ -1177,29 +1177,19 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 	// The collection runs under its own budget, not under ctx: ctx belongs to
 	// a reconcile pass or an exchange and is far shorter than a verification
 	// command may legitimately take. See collectOnce.
-	if err := r.collectOnce(ctx, record); err != nil {
-		if !errors.Is(err, ErrSettleUnproven) {
+	flight, err := r.collectOnce(ctx, id, record)
+	if err != nil {
+		if errors.Is(err, errCollectionRunning) {
 			return fmt.Errorf("collection deferred: %w", err)
 		}
-		// The result is durable in custody; only the provider settlement is
-		// still unproven. Complete the attempt and retry settlement later
-		// instead of repeating collection.
-		r.log.Warn("result published; T3 settlement deferred", "assignment", id, "error", err)
-		return r.journal.update(func(state *journalState) error {
-			current, ok := state.Attempts[id]
-			if !ok {
-				return fmt.Errorf("worker journal: unknown assignment %q", id)
-			}
-			current.Phase = PhaseCompleted
-			current.Failure = ""
-			current.SettlePending = true
-			current.UpdatedAt = r.now()
-			state.Attempts[id] = current
-			state.Sequence++
-			return nil
-		})
+		return err
 	}
-	return r.markPhase(id, PhaseCompleted, "", record.WorkspacePath, record.ThreadID)
+	if flight == nil {
+		// The journal no longer names the attempt as collecting: another pass
+		// took its result first, or it was superseded. Nothing is left here.
+		return nil
+	}
+	return r.finishCollection(id, record, flight)
 }
 
 func (r *Runtime) validateOffer(offer workerproto.AssignmentOffer, now time.Time) error {
