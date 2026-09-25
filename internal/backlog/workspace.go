@@ -243,7 +243,7 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 		// which is local and was refreshed a moment ago, but a push to origin
 		// goes to the project's own repository, which is what a task told to
 		// publish a branch means by it.
-		if err := runLoggedCommand(ctx, logFile, "", p.git(), "-C", workspaceDir, "remote", "set-url", "--push", "origin", request.Environment.Repository); err != nil {
+		if err := runLoggedCommand(ctx, logFile, "", p.git(), "-C", workspaceDir, "remote", "set-url", "--push", "--", "origin", request.Environment.Repository); err != nil {
 			return fail(fmt.Errorf("point the workspace's origin push URL at the project repository: %w", err))
 		}
 		if err := runLoggedCommand(ctx, logFile, "", p.git(), "-C", workspaceDir, "checkout", "--detach", commit); err != nil {
