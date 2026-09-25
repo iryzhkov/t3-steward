@@ -479,7 +479,10 @@ All notable changes to this project are documented here. The format follows
   that state: an already released activation assignment whose unassigned
   attempt belongs to an ended activation has the attempt cancelled on the
   first pass after upgrade. A claimed attempt, or one whose activation is
-  still live, is never touched.
+  still live, is never touched. An offered overseer assignment whose attempt
+  row no longer exists is released too, since it still blocked catalog
+  reloads; an offered assignment without an attempt that is not identifiable
+  as an overseer's is left offered and counted in a warning.
 - Graph amendments (`campaign rerun --prompt`, task edits) are judged by the
   same worker matcher as `campaign check` and submit, so validation and
   readiness can no longer disagree. Amendments that submit already refused

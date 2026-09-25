@@ -1,9 +1,13 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,6 +190,109 @@ func TestReleaseDeadActivationOffersReleasesOnlyOffersOfEndedActivations(t *test
 	for _, attempt := range reloaded.Attempts {
 		if attempt.Progress == domain.ProgressCancelled && (attempt.Revision != 2 || !attempt.UpdatedAt.Equal(ended)) {
 			t.Fatalf("a repeated pass rewrote %s: %+v", attempt.ID, attempt)
+		}
+	}
+}
+
+// An offered overseer assignment whose attempt row is gone still blocks a
+// catalog reload, so the sweep releases it; an offer nothing identifies as an
+// overseer's is left for its owner. A released offer whose attempt cleared its
+// assignment reference, as releaseNarrowedOffersTx does, still ends the
+// attempt, and one whose attempt names another assignment does not.
+func TestReleaseDeadActivationOffersHandlesOrphanedOffersAndClearedReferences(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	epoch, err := store.AcquireCoordinator(ctx, "coordinator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 22, 3, 4, 42, 0, time.UTC)
+	for _, orphan := range []domain.Assignment{
+		{ID: "assignment-orphan-activation", AttemptID: "activation-attempt-0123456789abcdef0123456789abcdef"},
+		{ID: "assignment-orphan-task", AttemptID: "attempt:task-gone:1"},
+	} {
+		orphan.WorkerID, orphan.WorkerEpoch, orphan.State, orphan.Epoch = "homelab", "worker-1", domain.AssignmentOffered, 2
+		orphan.DispatchToken, orphan.LeaseToken, orphan.CreatedAt, orphan.UpdatedAt = "dispatch-"+orphan.ID, "lease-"+orphan.ID, now, now
+		raw, err := json.Marshal(orphan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO coordinator_assignments(
+			id, attempt_id, dispatch_token, dispatch_revision, dispatch_state,
+			worker_id, worker_epoch, assignment_epoch, assignment_state, lease_expires_at, record
+		) VALUES (?, ?, ?, 0, '', ?, ?, ?, ?, '', ?)`, orphan.ID, orphan.AttemptID, orphan.DispatchToken,
+			orphan.WorkerID, orphan.WorkerEpoch, orphan.Epoch, orphan.State, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var records CoordinatorRecords
+	for name, reference := range map[string]string{"cleared": "", "elsewhere": "assignment-other"} {
+		records.Attempts = append(records.Attempts, domain.Attempt{ID: "attempt-" + name, WorkflowRunID: "run-" + name,
+			TaskID: "activation-" + name, Number: 1, Progress: domain.ProgressReady, Control: domain.ControlUnassigned,
+			Revision: 1, AssignmentID: reference, UpdatedAt: now,
+			SupervisionActivationID: "activation-" + name, SupervisionActivationEpoch: 1})
+		records.Assignments = append(records.Assignments, domain.Assignment{ID: "assignment-" + name, AttemptID: "attempt-" + name,
+			WorkerID: "homelab", WorkerEpoch: "worker-1", State: domain.AssignmentReleased, Epoch: 1,
+			LeaseToken: "lease-" + name, DispatchToken: "dispatch-" + name, CreatedAt: now, UpdatedAt: now})
+	}
+	if err := store.SaveCoordinatorRecords(ctx, records); err != nil {
+		t.Fatal(err)
+	}
+
+	var logged bytes.Buffer
+	restore := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(restore) })
+
+	for pass := range 2 {
+		released, err := store.ReleaseDeadActivationOffers(ctx, epoch, now.Add(time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"assignment-orphan-activation"}
+		if pass > 0 {
+			want = nil
+		}
+		if !slices.Equal(released, want) {
+			t.Fatalf("pass %d released %v, want %v", pass, released, want)
+		}
+	}
+	if !strings.Contains(logged.String(), "count=1") {
+		t.Fatalf("the unidentifiable orphan was not reported:\n%s", logged.String())
+	}
+	event, found, err := store.LoadAuditEvent(ctx, "activation-offer-released:assignment-orphan-activation:epoch:2")
+	if err != nil || !found || !strings.HasSuffix(event.Reason, "the activation attempt no longer exists") {
+		t.Fatalf("orphan release audit = %+v found=%v err=%v", event, found, err)
+	}
+	states := map[string]domain.AssignmentState{}
+	rows, err := store.db.QueryContext(ctx, `SELECT id, assignment_state FROM coordinator_assignments`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id string
+		var state domain.AssignmentState
+		if err := rows.Scan(&id, &state); err != nil {
+			t.Fatal(err)
+		}
+		states[id] = state
+	}
+	rows.Close()
+	if states["assignment-orphan-activation"] != domain.AssignmentReleased || states["assignment-orphan-task"] != domain.AssignmentOffered {
+		t.Fatalf("orphan states = %v", states)
+	}
+	loaded, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, attempt := range loaded.Attempts {
+		wantCancelled := attempt.ID == "attempt-cleared"
+		if (attempt.Progress == domain.ProgressCancelled) != wantCancelled {
+			t.Fatalf("%s is %s/%s, want cancelled=%v", attempt.ID, attempt.Progress, attempt.Control, wantCancelled)
 		}
 	}
 }
