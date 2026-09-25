@@ -1,6 +1,8 @@
 package backlog
 
 import (
+	"bytes"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -138,6 +140,61 @@ func TestDeriveQuotaPlanningStateLeavesForcedNonQuotaPauseOperatorManaged(t *tes
 		if window.PausedRequiredWorkRemainder != 25 {
 			t.Fatalf("paused remainder = %v, want 25 with only the inconsistent attempt isolated", window.PausedRequiredWorkRemainder)
 		}
+	}
+}
+
+// Waking a parked attempt moves it to resuming with no throttle directive
+// behind it, and it stays resuming until its outputs are collected. Quota
+// planning called that inconsistent and warned on every tick for the whole
+// collection (about 30 lines in 12 hours on the coordinator).
+func TestDeriveQuotaPlanningStateTreatsAWakeResumeAsRunning(t *testing.T) {
+	input := quotaRecoveryFixture()
+	filtered := input.ThrottleRecords[:0]
+	for _, record := range input.ThrottleRecords {
+		if record.AttemptID != "resuming" {
+			filtered = append(filtered, record)
+		}
+	}
+	input.ThrottleRecords = filtered
+	for index := range input.Attempts {
+		if input.Attempts[index].ID == "resuming" {
+			input.Attempts[index].UpdatedAt = throttleDeliveryTime
+		}
+	}
+	input.Now = throttleDeliveryTime.Add(40 * time.Minute)
+
+	var logged bytes.Buffer
+	restore := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(restore) })
+
+	state, err := DeriveQuotaPlanningState(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output := logged.String(); strings.Contains(output, "attempt=resuming") {
+		t.Fatalf("a wake-resumed attempt was called inconsistent: %s", output)
+	}
+	for _, reservation := range state.ResumeReservations {
+		if reservation.AttemptID == "resuming" {
+			t.Fatalf("a wake resume gained a quota resume reservation: %#v", reservation)
+		}
+	}
+	// It still holds the slot it is resuming into.
+	if len(state.QuotaPools) != 1 || state.QuotaPools[0].ActiveAssignments != 2 {
+		t.Fatalf("runtime occupancy = %#v, want 2 active slots", state.QuotaPools)
+	}
+
+	// Resuming for longer than any collection takes is stuck, not a wake in
+	// progress, and is reported again.
+	logged.Reset()
+	input.Now = throttleDeliveryTime.Add(WakeResumeGrace + time.Minute)
+	if _, err := DeriveQuotaPlanningState(input); err != nil {
+		t.Fatal(err)
+	}
+	if output := logged.String(); !strings.Contains(output, "attempt=resuming") ||
+		!strings.Contains(output, "quota planning skipped an inconsistent attempt") {
+		t.Fatalf("a stale resuming attempt did not warn: %q", output)
 	}
 }
 

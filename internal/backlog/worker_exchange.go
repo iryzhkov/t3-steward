@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -25,7 +26,7 @@ type WorkerExchangeStore interface {
 	ExpireAssignmentLeases(context.Context, int64, time.Time) ([]domain.Assignment, error)
 	ThrottleDeliveryStore
 	LoadQuotaAdmissions(context.Context) ([]domain.QuotaAdmissionRecord, error)
-	ReceiveWorkerUsage(context.Context, string, []domain.UsageSample) error
+	ReceiveWorkerUsage(context.Context, string, []domain.UsageSample) (sqlite.WorkerUsageReceipt, error)
 	WorkerUsageAcknowledgements(context.Context, string) ([]string, error)
 	ClearWorkerUsageAcknowledgements(context.Context, string, []string) error
 }
@@ -52,6 +53,30 @@ func validateObservationIdentity(transport WorkerControlTransport, snapshot doma
 	}
 	if snapshot.CoordinatorEpoch != coordinatorEpoch {
 		return fmt.Errorf("worker snapshot coordinator epoch %d does not match authority %d", snapshot.CoordinatorEpoch, coordinatorEpoch)
+	}
+	return nil
+}
+
+// receiveWorkerUsage stores a worker's delivered usage batch. Samples the
+// store rejected are logged in one line per batch, each with its provider,
+// thread, model, event id and reason: the coordinator keeps nothing else of a
+// rejected sample, so the line is what finds it again in the worker's own
+// database. Each is reported only the first time it is refused, so a sample
+// is logged once rather than on every boundary until the worker has seen its
+// acknowledgement.
+func receiveWorkerUsage(ctx context.Context, store WorkerExchangeStore, workerID string, samples []domain.UsageSample) error {
+	receipt, err := store.ReceiveWorkerUsage(ctx, workerID, samples)
+	if err != nil {
+		return err
+	}
+	if len(receipt.Rejected) != 0 {
+		rejected := make([]string, 0, len(receipt.Rejected))
+		for _, rejection := range receipt.Rejected {
+			rejected = append(rejected, fmt.Sprintf("event=%q provider=%q thread=%q model=%q reason=%q",
+				rejection.EventID, rejection.ProviderInstanceID, rejection.ThreadID, rejection.Model, rejection.Reason))
+		}
+		slog.Warn("worker usage samples rejected and acknowledged", "worker", workerID,
+			"rejected", len(receipt.Rejected), "stored", receipt.Stored, "samples", strings.Join(rejected, "; "))
 	}
 	return nil
 }
@@ -308,7 +333,7 @@ func (c FleetCoordinator) ReconcileWorker(
 	if err := validateObservationIdentity(transport, snapshot, epoch); err != nil {
 		return WorkerExchangeReport{}, err
 	}
-	if err := store.ReceiveWorkerUsage(ctx, transport.WorkerID(), observations.Usage); err != nil {
+	if err := receiveWorkerUsage(ctx, store, transport.WorkerID(), observations.Usage); err != nil {
 		return WorkerExchangeReport{}, err
 	}
 	if err := store.ClearWorkerUsageAcknowledgements(ctx, transport.WorkerID(), observations.AcknowledgedUsageEventIDs); err != nil {
@@ -417,7 +442,7 @@ func (c FleetCoordinator) ReconcileWorker(
 		if snapshot.WorkerID != report.Snapshot.WorkerID || snapshot.WorkerEpoch != report.Snapshot.WorkerEpoch {
 			return report, errors.New("worker identity changed during exchange")
 		}
-		if err := store.ReceiveWorkerUsage(ctx, transport.WorkerID(), observations.Usage); err != nil {
+		if err := receiveWorkerUsage(ctx, store, transport.WorkerID(), observations.Usage); err != nil {
 			return report, err
 		}
 		if err := store.ClearWorkerUsageAcknowledgements(ctx, transport.WorkerID(), observations.AcknowledgedUsageEventIDs); err != nil {

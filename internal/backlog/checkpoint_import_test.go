@@ -2,8 +2,10 @@ package backlog
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,9 +147,48 @@ func TestCoordinatorCheckpointImporterAcceptsAnEarlierEpochAndRejectsASettledBin
 	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Assignments: []domain.Assignment{released}}); err != nil {
 		t.Fatal(err)
 	}
+	// While the rejection cannot be recorded it is not a rejection: the
+	// caller would acknowledge and discard the upload with no trace left, so
+	// the refusal stays an ordinary, retryable one.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.ExecContext(ctx, `CREATE TRIGGER reject_checkpoint_audit BEFORE INSERT ON coordinator_audit_events
+		WHEN NEW.kind = 'checkpoint-import-rejected' BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = importer.Import(ctx, workerproto.ArtifactUploadResponse{Manifest: stale, Custody: resultCustody(t, stale, "coordinator")}, resultUploadOpener{other.ID: []byte("stale\n")})
+	if err == nil || errors.Is(err, ErrCheckpointImportRejected) || !strings.Contains(err.Error(), "injected audit failure") {
+		t.Fatalf("an unrecorded rejection was not left retryable: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `DROP TRIGGER reject_checkpoint_audit`); err != nil {
+		t.Fatal(err)
+	}
 	_, err = importer.Import(ctx, workerproto.ArtifactUploadResponse{Manifest: stale, Custody: resultCustody(t, stale, "coordinator")}, resultUploadOpener{other.ID: []byte("stale\n")})
 	if !errors.Is(err, ErrCheckpointImportRejected) {
 		t.Fatalf("a checkpoint for a released assignment was not rejected: %v", err)
+	}
+	// The discard is recorded on the attempt's run, so `backlog events` shows
+	// it, and offering the same upload again does not add a second event.
+	if _, err := importer.Import(ctx, workerproto.ArtifactUploadResponse{Manifest: stale, Custody: resultCustody(t, stale, "coordinator")}, resultUploadOpener{other.ID: []byte("stale\n")}); !errors.Is(err, ErrCheckpointImportRejected) {
+		t.Fatalf("a replayed rejected checkpoint was not rejected: %v", err)
+	}
+	events, err := store.LoadAuditEvents(ctx, attempt.WorkflowRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rejections []domain.AuditEvent
+	for _, event := range events {
+		if event.Kind == "checkpoint-import-rejected" {
+			rejections = append(rejections, event)
+		}
+	}
+	if len(rejections) != 1 || rejections[0].ID != sqlite.CheckpointImportRejectionEventID(stale.ID) ||
+		rejections[0].AttemptID != attempt.ID || rejections[0].TaskID != task.ID || rejections[0].TargetID != other.ID ||
+		!strings.Contains(rejections[0].Reason, "assignment-1") {
+		t.Fatalf("checkpoint rejection events = %#v", rejections)
 	}
 
 	// A claimed assignment whose attempt is not marked paused yet may still
