@@ -418,32 +418,41 @@ type UsageExecutionSession struct {
 
 // UsageCoverage reports evidence deliberately excluded from a run-scoped result.
 type UsageCoverage struct {
-	State                     UsageCoverageState `json:"state"`
-	Reasons                   []string           `json:"reasons,omitempty"`
-	Reason                    string             `json:"reason,omitempty"`
-	ObservedFrom              *time.Time         `json:"observedFrom,omitempty"`
-	ObservedThrough           *time.Time         `json:"observedThrough,omitempty"`
-	RawSampleCount            int64              `json:"rawSampleCount"`
-	NormalizedSampleCount     int64              `json:"normalizedSampleCount"`
-	ExpectedSessionCount      int64              `json:"expectedSessionCount"`
-	MissingLogSessionCount    int64              `json:"missingLogSessionCount"`
-	AttributedCount           int64              `json:"attributedCount"`
-	UnattributedCount         int64              `json:"unattributedCount"`
-	UnscopedUnattributedCount int64              `json:"unscopedUnattributedCount"`
-	ExcludedOverlapCount      int64              `json:"excludedOverlapCount"`
-	UnmatchedCallCount        int64              `json:"unmatchedCallCount"`
-	DuplicateCount            int64              `json:"duplicateCount"`
-	ResetCount                int64              `json:"resetCount"`
-	UnknownModelCount         int64              `json:"unknownModelCount"`
-	MalformedCount            int64              `json:"malformedCount"`
-	UnsupportedCount          int64              `json:"unsupportedCount"`
-	DiagnosticCount           int64              `json:"diagnosticCount"`
-	DiagnosticDroppedCount    int64              `json:"diagnosticDroppedCount"`
-	MissingFieldCount         int64              `json:"missingFieldCount"`
-	AmbiguousOverlapCount     int64              `json:"ambiguousOverlapCount"`
-	CumulativeAmbiguityCount  int64              `json:"cumulativeAmbiguityCount"`
-	LateCount                 int64              `json:"lateCount"`
-	Truncated                 bool               `json:"truncated"`
+	State                  UsageCoverageState `json:"state"`
+	Reasons                []string           `json:"reasons,omitempty"`
+	Reason                 string             `json:"reason,omitempty"`
+	ObservedFrom           *time.Time         `json:"observedFrom,omitempty"`
+	ObservedThrough        *time.Time         `json:"observedThrough,omitempty"`
+	RawSampleCount         int64              `json:"rawSampleCount"`
+	NormalizedSampleCount  int64              `json:"normalizedSampleCount"`
+	ExpectedSessionCount   int64              `json:"expectedSessionCount"`
+	MissingLogSessionCount int64              `json:"missingLogSessionCount"`
+	AttributedCount        int64              `json:"attributedCount"`
+	UnattributedCount      int64              `json:"unattributedCount"`
+	// UnscopedUnattributedCount is every sample without a dispatch binding in
+	// the run's window, on any worker. It is context: most of it is work no
+	// dispatch of the run could have produced, so it does not by itself make
+	// the run's coverage partial.
+	UnscopedUnattributedCount int64 `json:"unscopedUnattributedCount"`
+	// RunWindowUnattributedCount is the part of the unscoped samples that could
+	// be this run's own evidence: any provider on a worker the run was
+	// dispatched to, inside the run's window. It is what UnattributedCount
+	// reports, and it keeps coverage partial.
+	RunWindowUnattributedCount int64 `json:"runWindowUnattributedCount"`
+	ExcludedOverlapCount       int64 `json:"excludedOverlapCount"`
+	UnmatchedCallCount         int64 `json:"unmatchedCallCount"`
+	DuplicateCount             int64 `json:"duplicateCount"`
+	ResetCount                 int64 `json:"resetCount"`
+	UnknownModelCount          int64 `json:"unknownModelCount"`
+	MalformedCount             int64 `json:"malformedCount"`
+	UnsupportedCount           int64 `json:"unsupportedCount"`
+	DiagnosticCount            int64 `json:"diagnosticCount"`
+	DiagnosticDroppedCount     int64 `json:"diagnosticDroppedCount"`
+	MissingFieldCount          int64 `json:"missingFieldCount"`
+	AmbiguousOverlapCount      int64 `json:"ambiguousOverlapCount"`
+	CumulativeAmbiguityCount   int64 `json:"cumulativeAmbiguityCount"`
+	LateCount                  int64 `json:"lateCount"`
+	Truncated                  bool  `json:"truncated"`
 }
 
 type UsageReport struct {

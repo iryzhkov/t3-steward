@@ -180,6 +180,15 @@ func TestCampaignRerunAndNotifyHelpTopicsAnswerTheContract(t *testing.T) {
 			"resolved, not",
 			"creates and alters no workflow state",
 			"t3-steward wait add --run",
+			// The owner channels are documented beside the thread wake they
+			// add to, because an operator looking for "how am I told" reads
+			// this topic and nowhere else.
+			"webhook_url_file",
+			"mode 0600",
+			"never\nlogged or printed",
+			"gate-review",
+			"at least once",
+			"Retry-After",
 		},
 	} {
 		body, ok := topics[name]

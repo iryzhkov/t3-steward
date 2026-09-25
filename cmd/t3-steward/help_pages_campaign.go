@@ -110,7 +110,7 @@ func campaignHelpPages() []helpPage {
 		},
 		{Path: "campaign supervision", Body: campaignSupervisionUsage, Parsers: []parserSite{{Func: "parseCampaignSupervisionArgs"}}},
 		campaignAliasPage("campaign list", "the campaign runs the coordinator holds, filtered.",
-			"t3-steward campaign list [--project P] [--progress STATES] [--class CLASS] [--json]",
+			"t3-steward campaign list [--project P] [--progress STATES] [--class CLASS] [--limit N] [--since DURATION] [--json]",
 			"backlog list"),
 		campaignAliasPage("campaign show", "one campaign run with its tasks, plus its supervision projection.",
 			"t3-steward campaign show <run> [--json]",

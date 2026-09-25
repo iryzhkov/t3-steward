@@ -76,13 +76,47 @@ func normalizeKindArgs(args []string) []string {
 	return out
 }
 
-// parseGitHubTarget reads run:<id>, pr:<n>, run/<id> or pr/<n>.
+// gitHubTargetForms names every form --github accepts. A refusal of a target
+// that does not parse quotes it, because the forms an agent reaches for first
+// -- owner/name#<n> and a pull request URL copied from gh or a browser -- used
+// to pass straight through to gh, which read owner/name#<n> as a branch name
+// and answered "no pull requests found for branch", a message that says
+// nothing about the form being wrong.
+const gitHubTargetForms = "run <id>, run owner/name#<id>, run https://github.com/owner/name/actions/runs/<id>, " +
+	"pr <n>, pr owner/name#<n>, pr https://github.com/owner/name/pull/<n> or pr <branch>"
+
+// parseGitHubTarget reads run:<id>, pr:<n>, run/<id> or pr/<n>, where the id
+// may be qualified by its repository as owner/name#<id> or given as the
+// target's github.com URL. A URL alone, without a kind, names its own kind. A
+// repository named by the target is recorded as if it had been given with
+// --repo, and one that disagrees with --repo is refused rather than guessed
+// between.
 func parseGitHubTarget(spec, state, repo string) (wait.GitHubTarget, error) {
-	kind, id, ok := strings.Cut(spec, ":")
+	spec = strings.TrimSpace(spec)
+	kind, id, ok := gitHubURLKind(spec)
 	if !ok {
-		kind, id, _ = strings.Cut(spec, "/")
+		if kind, id, ok = strings.Cut(spec, ":"); !ok {
+			kind, id, _ = strings.Cut(spec, "/")
+		}
 	}
-	target := wait.GitHubTarget{Kind: kind, ID: strings.TrimSpace(id), State: state, Repo: repo}
+	id = strings.TrimSpace(id)
+	if kind != "run" && kind != "pr" {
+		return wait.GitHubTarget{}, fmt.Errorf("--github %q is not a target; --github takes %s", spec, gitHubTargetForms)
+	}
+	if id != "" {
+		number, named, err := splitGitHubTargetID(kind, id)
+		if err != nil {
+			return wait.GitHubTarget{}, err
+		}
+		if named != "" && repo != "" && !strings.EqualFold(named, repo) {
+			return wait.GitHubTarget{}, fmt.Errorf("--github %s names %s but --repo names %s; give one repository", id, named, repo)
+		}
+		if named != "" {
+			repo = named
+		}
+		id = number
+	}
+	target := wait.GitHubTarget{Kind: kind, ID: id, State: state, Repo: repo}
 	if target.State == "" {
 		if states := wait.GitHubStates(kind); len(states) != 0 {
 			target.State = states[0]
@@ -92,6 +126,100 @@ func parseGitHubTarget(spec, state, repo string) (wait.GitHubTarget, error) {
 		return target, err
 	}
 	return target, nil
+}
+
+// gitHubURLKind recognises a --github value that is a whole github.com URL,
+// without a kind in front of it, and returns the kind the URL names with the
+// URL itself as the id for splitGitHubTargetID to read.
+func gitHubURLKind(spec string) (kind, id string, ok bool) {
+	kind, _, _, ok = parseGitHubURL(spec)
+	return kind, spec, ok
+}
+
+// parseGitHubURL reads https://github.com/owner/name/pull/<n> as a pull
+// request and https://github.com/owner/name/actions/runs/<id> as a workflow
+// run. Anything after the number, such as /files, /job/<id> or a query, is a
+// view of the same target and is ignored.
+func parseGitHubURL(raw string) (kind, repo, id string, ok bool) {
+	rest := raw
+	for _, scheme := range []string{"https://", "http://"} {
+		rest = strings.TrimPrefix(rest, scheme)
+	}
+	rest = strings.TrimPrefix(rest, "www.")
+	rest, found := strings.CutPrefix(rest, "github.com/")
+	if !found {
+		return "", "", "", false
+	}
+	if cut := strings.IndexAny(rest, "?#"); cut >= 0 {
+		rest = rest[:cut]
+	}
+	parts := strings.Split(rest, "/")
+	switch {
+	case len(parts) >= 4 && parts[2] == "pull":
+		kind, id = "pr", parts[3]
+	case len(parts) >= 5 && parts[2] == "actions" && parts[3] == "runs":
+		kind, id = "run", parts[4]
+	default:
+		return "", "", "", false
+	}
+	if parts[0] == "" || parts[1] == "" {
+		return "", "", "", false
+	}
+	return kind, parts[0] + "/" + parts[1], id, true
+}
+
+// splitGitHubTargetID reads the id of a run or pr target: a bare number,
+// owner/name#<number>, or the target's github.com URL. It returns the id and
+// the repository the id named, if any.
+//
+// Any other pr id is passed to gh unchanged as a branch name, which gh pr view
+// has always accepted and which worked before these forms were added. A run
+// id has no such reading, so anything else is refused with the accepted forms
+// before gh is asked. A URL on any host but github.com is refused for both:
+// gh would need --hostname for a GitHub Enterprise host, which the wait does
+// not carry, and passing the URL on as a branch name would only fail later.
+func splitGitHubTargetID(kind, raw string) (id, repo string, err error) {
+	refuse := fmt.Errorf("--github %s %q is not a target; --github takes %s (GitHub Enterprise hosts are not supported)",
+		kind, raw, gitHubTargetForms)
+	branch := func() (string, string, error) {
+		if kind == "pr" && !strings.Contains(raw, "://") {
+			return raw, "", nil
+		}
+		return "", "", refuse
+	}
+	switch {
+	case strings.Contains(raw, "://") && !strings.Contains(raw, "github.com/"):
+		return "", "", refuse
+	case strings.Contains(raw, "github.com/"):
+		urlKind, named, number, ok := parseGitHubURL(raw)
+		if !ok {
+			return "", "", refuse
+		}
+		if urlKind != kind {
+			return "", "", fmt.Errorf("--github %s was given the URL of a %s: %s; --github takes %s", kind, urlKind, raw, gitHubTargetForms)
+		}
+		if !gitHubNumber(number) {
+			return "", "", refuse
+		}
+		id, repo = number, named
+	case strings.Contains(raw, "#"):
+		named, number, _ := strings.Cut(raw, "#")
+		owner, name, ok := strings.Cut(named, "/")
+		if !ok || owner == "" || name == "" || strings.Contains(name, "/") || !gitHubNumber(number) {
+			return branch()
+		}
+		id, repo = number, named
+	case !gitHubNumber(raw):
+		return branch()
+	default:
+		id = raw
+	}
+	return id, repo, nil
+}
+
+// gitHubNumber reports a run id or pull request number: digits only.
+func gitHubNumber(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789") == ""
 }
 
 // localWaitSpec is a parsed `wait add` for a local kind: shell, time or

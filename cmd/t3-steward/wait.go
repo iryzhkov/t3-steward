@@ -63,7 +63,11 @@ Every wait has one condition, its KIND. Attention is task-bound; the other kinds
                                       met when the instant passes; the poll
                                       interval follows the remaining time
     github   --github run <id> | pr <n> [--state STATE] [--repo owner/name]
-                                      reads the target with gh and fixed
+                                      the id may also be owner/name#<n> or
+                                      the target's github.com URL (.../pull/<n>,
+                                      .../actions/runs/<id>), which names the
+                                      repository, and a pr may be a branch
+                                      name; reads the target with gh and fixed
                                       arguments; run: completed (met on
                                       conclusion success, failed otherwise);
                                       pr: merged (default), reviewed,
@@ -218,6 +222,7 @@ Exit codes: 0 registered or listed, 1 refused or failed.
 Examples, inside a task:
 
   t3-steward wait add --task current --github run $(gh run list --limit 1 --json databaseId --jq '.[0].databaseId') --timeout 2h
+  t3-steward wait add --task current --github pr owner/name#45 --state checks-passed
   t3-steward wait add --task current --for 30m --or-timeout
   t3-steward wait add --task current --node <run>/<task> --state succeeded
   t3-steward wait add --task current --quota claude-main --phase normal

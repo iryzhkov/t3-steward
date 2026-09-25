@@ -138,7 +138,8 @@ func TestSupervisionSchemaMigratesForwardAndRefusesNewerDatabase(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != currentSchemaVersion || currentSchemaVersion != 29 {
+	// Schema 30 added the owner-notification outbox after supervision.
+	if version != currentSchemaVersion || currentSchemaVersion != 30 {
 		t.Fatalf("schema version = %d, current = %d", version, currentSchemaVersion)
 	}
 	for _, table := range []string{

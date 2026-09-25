@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -39,8 +41,10 @@ func TestMeasuredUsageMigrationPreservesHistoryAndReopensIdempotently(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := schemaVersionOf(t, store); got != 29 {
-			t.Fatalf("schema version = %d, want 29", got)
+		// Schema 30 (the owner-notification outbox) is applied on the same
+		// forward path and leaves the usage history alone.
+		if got := schemaVersionOf(t, store); got != 30 {
+			t.Fatalf("schema version = %d, want 30", got)
 		}
 		samples, err := store.UsageSamples(ctx, at.Add(-time.Minute), at.Add(time.Minute))
 		if err != nil {
@@ -131,6 +135,9 @@ func TestMeasuredUsageBindingIsAuthoritativeIsolatedAndReplaySafe(t *testing.T) 
 		measuredAssignment("assignment-activation", "activation-a", "thread-activation", "claude-agent", 1, now),
 		measuredAssignment("assignment-gate", "activation-gate", "thread-gate", "claude-agent", 3, now),
 	}
+	// Dispatch happens before the samples, as it does on a fleet: a run's
+	// window starts at its first binding.
+	store.SetClock(func() time.Time { return now })
 	for _, assignment := range assignments {
 		if _, err := store.PrepareAssignmentDispatch(ctx, assignment); err != nil {
 			t.Fatalf("prepare %s: %v", assignment.ID, err)
@@ -237,6 +244,136 @@ func TestAttributedUsageAppliesDeterministicSafetyBound(t *testing.T) {
 		report.Samples[0].SourceEventID != "event-00000" || report.Samples[len(report.Samples)-1].SourceEventID != "event-09999" {
 		t.Fatalf("bounded report: samples=%d coverage=%#v first=%q last=%q", len(report.Samples), report.Coverage,
 			report.Samples[0].SourceEventID, report.Samples[len(report.Samples)-1].SourceEventID)
+	}
+}
+
+// A run's unattributed count is the unbound samples that could be its own --
+// any provider on a worker it ran on, inside its window -- and the fleet's
+// other unbound samples in the window are reported apart.
+// A local row the coordinator host's own worker has already forwarded under
+// its worker id is one reading, not two, and is counted once.
+func TestAttributedUsageSeparatesTheRunsAmbiguityFromTheFleets(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	completed := now.Add(time.Hour)
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{{ID: "run-window", Progress: domain.ProgressSucceeded, CompletedAt: &completed}},
+		Attempts:     []domain.Attempt{{ID: "attempt-window", WorkflowRunID: "run-window", TaskID: "task-window", Number: 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.SetClock(func() time.Time { return now })
+	if _, err := store.PrepareAssignmentDispatch(ctx, measuredAssignment("assignment-window", "attempt-window", "thread-run", "claude", 1, now)); err != nil {
+		t.Fatal(err)
+	}
+	record := func(worker, provider, thread, event string, at time.Time) {
+		t.Helper()
+		if err := store.RecordUsage(ctx, domain.UsageSample{
+			WorkerID: worker, ProviderInstanceID: provider, ThreadID: thread, Model: "model",
+			ObservedAt: at, SourceEventID: event, Kind: domain.UsageKindTurn, OutputTokens: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The run's own reading, stored twice on the coordinator's host: the
+	// local row and the copy forwarded under the worker's id.
+	record("worker", "claude", "thread-run", "run-turn", now.Add(time.Minute))
+	record("", "claude", "thread-run", "run-turn", now.Add(time.Minute))
+	// Could be the run's: its worker and provider, inside its window, on a
+	// thread nothing bound. One was forwarded, one is a local row not yet
+	// forwarded, whose worker is unknown.
+	record("worker", "claude", "thread-renamed", "ambiguous-forwarded", now.Add(2*time.Minute))
+	record("", "claude", "thread-local", "ambiguous-local", now.Add(3*time.Minute))
+	// Could be the run's too: a provider log that names the instance
+	// differently from the route the run was bound under.
+	record("worker", "claude-main", "thread-run", "provider-renamed", now.Add(5*time.Minute))
+	// Cannot be the run's: another worker.
+	record("other-worker", "claude", "thread-elsewhere", "other-worker", now.Add(4*time.Minute))
+	// Outside the window entirely: long before dispatch, long after completion.
+	record("worker", "claude", "thread-before", "before", now.Add(-time.Hour))
+	record("worker", "claude", "thread-after", "after", completed.Add(time.Hour))
+
+	report, err := store.AttributedUsage(ctx, "run-window")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Samples) != 1 || report.Samples[0].SourceEventID != "run-turn" {
+		t.Fatalf("samples = %#v", report.Samples)
+	}
+	if got := report.Coverage.RunWindowUnattributedCount; got != 3 {
+		t.Fatalf("run-window unattributed = %d, want 3 (the renamed thread, the renamed provider and the unforwarded local row)", got)
+	}
+	if got := report.Coverage.UnscopedUnattributedCount; got != 4 {
+		t.Fatalf("fleet unscoped in the window = %d, want 4 (the forwarded run turn's local copy is not a second reading)", got)
+	}
+
+	normalized := domain.NormalizeUsageReport(report, domain.UsageNormalizationContext{Now: completed, RunProgress: domain.ProgressSucceeded, RunCompletedAt: &completed})
+	if normalized.Coverage.State != domain.UsageCoveragePartial || normalized.Coverage.UnattributedCount != 3 {
+		t.Fatalf("coverage = %#v", normalized.Coverage)
+	}
+
+	// Without anything that could be the run's, the fleet's unbound samples
+	// leave the run's coverage complete.
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM usage_samples WHERE event_id IN ('ambiguous-forwarded', 'ambiguous-local', 'provider-renamed')`); err != nil {
+		t.Fatal(err)
+	}
+	if report, err = store.AttributedUsage(ctx, "run-window"); err != nil {
+		t.Fatal(err)
+	}
+	normalized = domain.NormalizeUsageReport(report, domain.UsageNormalizationContext{Now: completed, RunProgress: domain.ProgressSucceeded, RunCompletedAt: &completed})
+	if normalized.Coverage.State != domain.UsageCoverageComplete || normalized.Coverage.UnattributedCount != 0 ||
+		normalized.Coverage.UnscopedUnattributedCount != 1 {
+		t.Fatalf("fully attributed run: coverage = %#v", normalized.Coverage)
+	}
+}
+
+// An assignment dispatched without a thread writes no usage binding, so every
+// sample of its session is unbound. The run was still dispatched to that
+// worker, and those samples keep its coverage partial rather than letting a
+// run with no bindings at all read as having nothing unattributed.
+func TestAttributedUsageCountsSamplesOfAnAssignmentWithoutABinding(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	// The assignment is recorded as it stands before a thread exists, which
+	// is the state bindAssignmentUsageTx writes no binding for.
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{{ID: "run-threadless"}},
+		Attempts:     []domain.Attempt{{ID: "attempt-threadless", WorkflowRunID: "run-threadless", TaskID: "task", Number: 1}},
+		Assignments:  []domain.Assignment{measuredAssignment("assignment-threadless", "attempt-threadless", "", "claude", 1, now)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var bindings int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM coordinator_usage_bindings`).Scan(&bindings); err != nil || bindings != 0 {
+		t.Fatalf("bindings = %d (%v); the case needs an assignment without one", bindings, err)
+	}
+	for i, worker := range []string{"worker", "other-worker"} {
+		if err := store.RecordUsage(ctx, domain.UsageSample{
+			WorkerID: worker, ProviderInstanceID: "claude", ThreadID: "thread-" + worker, Model: "model",
+			ObservedAt: now.Add(time.Duration(i+1) * time.Minute), SourceEventID: "event-" + worker,
+			Kind: domain.UsageKindTurn, OutputTokens: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := store.AttributedUsage(ctx, "run-threadless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Coverage.RunWindowUnattributedCount != 1 || report.Coverage.UnscopedUnattributedCount != 2 {
+		t.Fatalf("coverage = %#v", report.Coverage)
 	}
 }
 
@@ -399,7 +536,7 @@ func TestWorkerUsageBatchForwardsOnlyThisHostsReadings(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ReceiveWorkerUsage(ctx, "homelab", []domain.UsageSample{{
+	if _, err := store.ReceiveWorkerUsage(ctx, "homelab", []domain.UsageSample{{
 		ProviderInstanceID: "claudeAgent", ThreadID: "thread-remote", Model: "claude-haiku-4-5",
 		ObservedAt: now, SourceEventID: "remote-1", Kind: domain.UsageKindCall, InputTokens: 20,
 	}}); err != nil {
@@ -480,7 +617,7 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 		if len(batch) == 0 {
 			break
 		}
-		if err := coordinator.ReceiveWorkerUsage(ctx, "worker-diagnostic", batch); err != nil {
+		if _, err := coordinator.ReceiveWorkerUsage(ctx, "worker-diagnostic", batch); err != nil {
 			t.Fatal(err)
 		}
 		acknowledgements, err = coordinator.WorkerUsageAcknowledgements(ctx, "worker-diagnostic")
@@ -526,7 +663,7 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 	if advanced != 1 {
 		t.Fatalf("advanced overflow markers = %d in %#v", advanced, batch)
 	}
-	if err := coordinator.ReceiveWorkerUsage(ctx, "worker-diagnostic", batch); err != nil {
+	if _, err := coordinator.ReceiveWorkerUsage(ctx, "worker-diagnostic", batch); err != nil {
 		t.Fatal(err)
 	}
 	currentAcks, err := coordinator.WorkerUsageAcknowledgements(ctx, "worker-diagnostic")
@@ -638,7 +775,7 @@ func TestPruneHistoryIsAtomicAndForgetsExactDeliveryIdentity(t *testing.T) {
 				ObservedAt: now.Add(time.Hour), SourceEventID: "old-event",
 				Kind: domain.UsageKindCall, FieldPresence: domain.UsageFieldsAll, InputTokens: 7,
 			}
-			if err := store.ReceiveWorkerUsage(ctx, "offline-worker", []domain.UsageSample{reused}); err != nil {
+			if _, err := store.ReceiveWorkerUsage(ctx, "offline-worker", []domain.UsageSample{reused}); err != nil {
 				t.Fatal(err)
 			}
 			acks, err = store.WorkerUsageAcknowledgements(ctx, "offline-worker")
@@ -646,6 +783,119 @@ func TestPruneHistoryIsAtomicAndForgetsExactDeliveryIdentity(t *testing.T) {
 				t.Fatalf("reused event identity receipt = %#v, %v", acks, err)
 			}
 		})
+	}
+}
+
+// One bad sample used to fail the whole delivered batch, which then stayed
+// unacknowledged and was offered again unchanged on every boundary, so none of
+// that worker's usage reached the coordinator again. A bad sample is now
+// rejected and acknowledged on its own, while a storage error still fails the
+// batch intact.
+func TestReceiveWorkerUsageRejectsBadSamplesIndividually(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	sample := func(id string) domain.UsageSample {
+		return domain.UsageSample{
+			ProviderInstanceID: "provider", ThreadID: "thread", Model: "model", ObservedAt: now,
+			SourceEventID: id, Kind: domain.UsageKindCall, FieldPresence: domain.UsageFieldsAll, InputTokens: 4,
+		}
+	}
+	foreign := sample("foreign")
+	foreign.WorkerID = "other-worker"
+	notANumber := sample("nan-cost")
+	notANumber.CostUSD, notANumber.CostReported = math.NaN(), true
+	negative := sample("negative")
+	negative.OutputTokens = -1
+	infinite := sample("inf-cost")
+	infinite.CostUSD, infinite.CostReported = math.Inf(1), true
+	anonymous := sample("")
+	batch := []domain.UsageSample{sample("good-1"), foreign, notANumber, negative, infinite, anonymous, sample("good-2")}
+
+	receipt, err := store.ReceiveWorkerUsage(ctx, "worker-a", batch)
+	if err != nil {
+		t.Fatalf("a batch with bad samples failed as a whole: %v", err)
+	}
+	var rejected []string
+	for _, rejection := range receipt.Rejected {
+		if rejection.ProviderInstanceID != "provider" || rejection.ThreadID != "thread" ||
+			rejection.Model != "model" || rejection.Reason == "" {
+			t.Fatalf("rejection lost the sample's identity: %#v", rejection)
+		}
+		rejected = append(rejected, rejection.EventID)
+	}
+	if receipt.Stored != 2 || !slices.Equal(rejected, []string{"foreign", "nan-cost", "negative", "inf-cost", ""}) {
+		t.Fatalf("receipt = %#v", receipt)
+	}
+	acks, err := store.WorkerUsageAcknowledgements(ctx, "worker-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(acks)
+	// Every sample with an identity is settled; one without has nothing to
+	// acknowledge.
+	if !slices.Equal(acks, []string{"foreign", "good-1", "good-2", "inf-cost", "nan-cost", "negative"}) {
+		t.Fatalf("acknowledgements = %v; every settled sample must be acknowledged", acks)
+	}
+	var stored int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples WHERE worker_id = 'worker-a'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 2 {
+		t.Fatalf("stored samples = %d, want only the two valid ones", stored)
+	}
+	// Offered again before the worker saw the acknowledgement, the same bad
+	// samples are not reported a second time. Only the one without an
+	// identity is, since nothing about it could be recorded; a current worker
+	// never offers it (TestWorkerUsageBatchNeverOffersASampleWithoutAnEventID).
+	if receipt, err = store.ReceiveWorkerUsage(ctx, "worker-a", batch); err != nil ||
+		len(receipt.Rejected) != 1 || receipt.Rejected[0].EventID != "" {
+		t.Fatalf("replayed batch receipt = %#v, %v", receipt, err)
+	}
+
+	// A storage error is not a bad sample: the batch fails and nothing of it
+	// is committed, so it is retried whole.
+	if _, err := store.db.ExecContext(ctx, `CREATE TRIGGER refuse_usage_storage BEFORE INSERT ON usage_samples
+		WHEN NEW.event_id = 'storage-failure' BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReceiveWorkerUsage(ctx, "worker-b", []domain.UsageSample{sample("good-3"), sample("storage-failure")}); err == nil {
+		t.Fatal("a storage error did not fail the batch")
+	}
+	if acks, err := store.WorkerUsageAcknowledgements(ctx, "worker-b"); err != nil || len(acks) != 0 {
+		t.Fatalf("a failed batch left acknowledgements %v, %v", acks, err)
+	}
+}
+
+// The coordinator cannot acknowledge a reading without an event id, so a
+// worker that offered one would offer it on every exchange, where it would
+// take a place in every batch.
+func TestWorkerUsageBatchNeverOffersASampleWithoutAnEventID(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	for index, id := range []string{"", "identified"} {
+		if err := store.RecordUsage(ctx, domain.UsageSample{
+			ProviderInstanceID: "provider", ThreadID: "thread", Model: "model",
+			ObservedAt: now.Add(time.Duration(index) * time.Second), SourceEventID: id,
+			Kind: domain.UsageKindCall, FieldPresence: domain.UsageFieldsAll, InputTokens: 2,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		batch, err := store.WorkerUsageBatch(ctx, nil, 1)
+		if err != nil || len(batch) != 1 || batch[0].SourceEventID != "identified" {
+			t.Fatalf("worker usage batch = %#v, %v", batch, err)
+		}
 	}
 }
 
@@ -675,7 +925,7 @@ func seedPruneHistoryFixture(t *testing.T, store *Store, now time.Time) {
 		ObservedAt: now.Add(time.Hour), SourceEventID: "new-event", Kind: domain.UsageKindCall,
 		FieldPresence: domain.UsageFieldsAll, InputTokens: 5,
 	}
-	if err := store.ReceiveWorkerUsage(ctx, "offline-worker", []domain.UsageSample{oldSample, overflow}); err != nil {
+	if _, err := store.ReceiveWorkerUsage(ctx, "offline-worker", []domain.UsageSample{oldSample, overflow}); err != nil {
 		t.Fatal(err)
 	}
 	newSample.WorkerID = "offline-worker"

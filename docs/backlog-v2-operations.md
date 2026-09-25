@@ -1262,6 +1262,85 @@ and exit 7 with a message about an unknown field, on a command that ought to hav
 reported something specific. Upgrade both together; UpKeeper already converges
 them as one unit.
 
+## Owner notifications
+
+The coordinator can report campaign events to its owner on a channel of their
+own, in addition to the thread wake a submission registers. Both channels are
+declared under `notifications` in the coordinator's `config.yaml` and are off
+until declared:
+
+```yaml
+notifications:
+  discord:
+    webhook_url_file: ~/.config/t3-steward/discord-webhook
+    events: [run-failed, run-cancelled, needs-input, supervision-escalated]
+    scheduled_success: false
+  command:
+    argv: [/usr/local/bin/notify-owner]
+```
+
+To enable Discord, create a webhook in the channel's integration settings, write
+its URL alone into the file (`install -m 600 /dev/null FILE`, then paste it in)
+and restart or reload the coordinator. The file must be a regular file owned by
+the coordinator's user with mode 0600; the coordinator refuses to load a
+configuration whose file is missing, readable by anyone else or not an https URL,
+and the URL itself is never logged, printed or stored anywhere else. Only the
+coordinator reads the file; another host sharing the configuration checks the
+event names and nothing else.
+
+The events are `run-succeeded`, `run-failed`, `run-cancelled` and `run-skipped`
+(a run reached that outcome), `needs-input` (an attention request awaits an
+answer), `supervision-escalated` (an escalated incident or gate, or an overseer
+whose budget is spent or whose dispatch needs reconciling) and `gate-review` (a
+gate is ready for review). The default is every event except `gate-review`.
+A run created by a schedule reports `run-succeeded` and `run-skipped` only to a
+channel with `scheduled_success: true`; its failures, cancellations and
+questions are reported either way, and campaign and `task run` runs report
+everything selected. Turning `scheduled_success` on later does not replay the
+scheduled successes that already happened. An escalated incident and an
+overseer activation spent or stuck on that incident are one episode, keyed by
+the incident and its revision, and send one message; an activation with no
+incident sends its own.
+
+Every event is recorded in the `coordinator_owner_notifications` table (schema
+30) before it is sent, keyed by channel, event and what happened, and delivered
+from a loop beside the scheduling boundaries rather than inside them. Delivery
+is at least once: a restart neither repeats a delivered event nor loses a
+recorded one, but a crash between a send and its record sends it again, so a
+command receiver should deduplicate on the payload's `id`. A failed send is
+retried on a doubling delay from 30 s up to 30 min; a Discord 429 waits for its
+`Retry-After`; after 8 attempts, or at once on a refusal such as a deleted
+webhook (4xx), the row is marked `abandoned` with its last error and one
+`owner notification abandoned` warning is logged. A send that succeeded is
+recorded even when a reload or shutdown begins right after it. A retried
+`needs-input`, `supervision-escalated` or `gate-review` row is re-checked when
+it comes due and marked `resolved`, not sent, when the question was answered or
+the escalation resolved in the meantime.
+
+Each channel keeps a watermark per event (and one for scheduled successes): the
+time that event became active for it. Only runs and questions at or after the
+watermark are reported, and supervision conditions already waiting when it is
+set are recorded as `baseline` and never sent, so enabling a webhook does not
+replay history. Removing a channel, an event or `scheduled_success` drops its
+watermark, so adding it back later starts from that moment and does not replay
+what finished in between. Settled rows are pruned after 30 days, at most 500 per
+hourly pass, and the watermark moves up with every prune.
+
+The `notifications` section is reloadable: a reload (SIGHUP) that changes it
+restarts the notifier with the new channels and re-reads the webhook file. A
+reload that changes nothing leaves the notifier running, so replacing only the
+webhook file's content takes effect on the next change or restart.
+
+A command channel runs with no shell, in a process group of its own that a
+timeout kills whole, and with only `PATH`, `HOME`, `LANG` and the variables named
+in its `env` list. Discord messages disable mentions and escape Markdown in
+campaign names, prompts and reasons, so free text cannot add a link, a header or
+a line of its own.
+
+Schema 30 adds these tables and two indexes. A release before it (rc.95 and
+earlier) refuses to open a schema 30 database, so rolling back past this
+release needs the database backup taken before the upgrade (see Backup).
+
 ## Recovery procedures
 
 ### Coordinator restart or lost response

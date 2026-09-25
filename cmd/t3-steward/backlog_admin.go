@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -269,6 +270,7 @@ func (c backlogAdminCLI) queryAndRender(ctx context.Context, query backlogadmin.
 		}
 	}
 	response = adoptDeprecatedWaitKeys(response)
+	response, matched := display.List.apply(response, display.JSON)
 	if display.JSON {
 		encoder := json.NewEncoder(c.stdout)
 		encoder.SetIndent("", "  ")
@@ -277,7 +279,14 @@ func (c backlogAdminCLI) queryAndRender(ctx context.Context, query backlogadmin.
 		}
 		return encoder.Encode(response)
 	}
-	return renderAdminResponse(c.stdout, response, selector, display)
+	if err := renderAdminResponse(c.stdout, response, selector, display); err != nil {
+		return err
+	}
+	if response.Kind == backlogadmin.QueryWorkflows && matched > len(response.Workflows) {
+		fmt.Fprintf(c.stdout, "showing the newest %d of %d runs; --limit N shows more, --limit 0 every one, --since DURATION only recent ones\n",
+			len(response.Workflows), matched)
+	}
+	return nil
 }
 
 // adoptDeprecatedWaitKeys gives a document decoded from an older coordinator
@@ -318,6 +327,110 @@ type commandDisplay struct {
 	// projects summarises, so parseBacklogAdminQuery refuses the flag for every
 	// other verb rather than accepting it and doing nothing with it.
 	Verbose bool
+	// List bounds the runs "backlog list" prints. Only list sets it.
+	List listWindow
+}
+
+// listWindow is how many of the runs "backlog list" answered are printed and
+// how far back they reach. The coordinator answers every run it holds, newest
+// first, which on a fleet that has been running for months is hundreds of
+// rows an agent has to page through to find the one it submitted.
+//
+// It is applied here, to the answer, rather than sent to the coordinator:
+// the admin protocol decodes a query strictly, so a filter field a coordinator
+// of the previous release does not know would have it refuse the whole
+// question. Trimming the answer keeps every coordinator readable at the cost
+// of carrying rows that are then dropped.
+type listWindow struct {
+	// Limit is the most runs printed; zero prints every run. Unset, it is
+	// defaultListLimit for the text form and unbounded for --json, whose
+	// readers are scripts that may count on the whole list.
+	Limit    int
+	LimitSet bool
+	// Since keeps only runs created within this long of the answer's
+	// generation time; zero keeps every run.
+	Since time.Duration
+}
+
+// defaultListLimit is how many runs the text form of "backlog list" prints
+// when --limit is not given.
+const defaultListLimit = 50
+
+// takeListWindowFlags removes --limit and --since from the arguments of
+// "backlog list". It is a function of its own because it is the parser site
+// the list help page derives the flags from, and "backlog usage" has a --limit
+// of its own with another meaning.
+func takeListWindowFlags(args []string) ([]string, listWindow, error) {
+	clean := make([]string, 0, len(args))
+	var window listWindow
+	sinceSet := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--limit":
+			if window.LimitSet {
+				return nil, window, errors.New("--limit may only be specified once")
+			}
+			if i+1 >= len(args) {
+				return nil, window, errors.New("--limit needs a value")
+			}
+			i++
+			limit, err := strconv.Atoi(args[i])
+			if err != nil || limit < 0 {
+				return nil, window, fmt.Errorf("--limit %q is not a count of runs; 0 prints every run", args[i])
+			}
+			window.Limit, window.LimitSet = limit, true
+		case "--since":
+			if sinceSet {
+				return nil, window, errors.New("--since may only be specified once")
+			}
+			if i+1 >= len(args) {
+				return nil, window, errors.New("--since needs a value")
+			}
+			i++
+			since, err := time.ParseDuration(args[i])
+			if err != nil || since <= 0 {
+				return nil, window, fmt.Errorf("--since %q is not a positive duration such as 24h", args[i])
+			}
+			window.Since, sinceSet = since, true
+		default:
+			clean = append(clean, args[i])
+		}
+	}
+	return clean, window, nil
+}
+
+// apply trims a list answer to the window and returns how many runs matched
+// before the limit, so the text form can say what it left out. The answer is
+// already newest first, so the limit keeps the newest runs.
+func (w listWindow) apply(response backlogadmin.Response, asJSON bool) (backlogadmin.Response, int) {
+	if response.Kind != backlogadmin.QueryWorkflows {
+		return response, 0
+	}
+	runs := response.Workflows
+	if w.Since > 0 {
+		now := response.GeneratedAt
+		if now.IsZero() {
+			now = time.Now()
+		}
+		cutoff := now.Add(-w.Since)
+		kept := make([]backlogadmin.WorkflowSummary, 0, len(runs))
+		for _, run := range runs {
+			if !run.Run.CreatedAt.Before(cutoff) {
+				kept = append(kept, run)
+			}
+		}
+		runs = kept
+	}
+	matched := len(runs)
+	limit := w.Limit
+	if !w.LimitSet && !asJSON {
+		limit = defaultListLimit
+	}
+	if limit > 0 && len(runs) > limit {
+		runs = runs[:limit]
+	}
+	response.Workflows = runs
+	return response, matched
 }
 
 // takeVerboseFlag removes --verbose from the arguments. It is a function of
@@ -344,6 +457,15 @@ func parseBacklogAdminQuery(args []string) (backlogadmin.Query, commandDisplay, 
 	if err != nil {
 		return backlogadmin.Query{}, commandDisplay{}, err
 	}
+	var window listWindow
+	if backlogQueryVerb(args) == "list" {
+		if err := refuseLegacyListAll(args); err != nil {
+			return backlogadmin.Query{}, commandDisplay{Verbose: verbose}, err
+		}
+		if args, window, err = takeListWindowFlags(args); err != nil {
+			return backlogadmin.Query{}, commandDisplay{Verbose: verbose}, err
+		}
+	}
 	clean := make([]string, 0, len(args))
 	include := false
 	for _, arg := range args {
@@ -357,7 +479,7 @@ func parseBacklogAdminQuery(args []string) (backlogadmin.Query, commandDisplay, 
 		}
 	}
 	query, asJSON, err := parseBacklogAdminQueryWithoutSink(clean)
-	display := commandDisplay{JSON: asJSON, Verbose: verbose}
+	display := commandDisplay{JSON: asJSON, Verbose: verbose, List: window}
 	if err != nil {
 		return query, display, err
 	}
@@ -369,6 +491,32 @@ func parseBacklogAdminQuery(args []string) (backlogadmin.Query, commandDisplay, 
 	}
 	query.IncludeSink = include
 	return query, display, nil
+}
+
+// refuseLegacyListAll explains "backlog list --all" given with other
+// arguments. "backlog list --all" alone is the offline legacy task-file
+// listing, which takes no options; with anything beside it the command is
+// routed to the coordinator, where --all used to be read as a filter missing
+// its value. Neither verb can honour the combination, so it is refused with
+// the two commands it could have meant. It is not a parser site of the list
+// page, because --all is not an option of the coordinator verb.
+func refuseLegacyListAll(args []string) error {
+	if slices.Contains(args, "--all") {
+		return errors.New("backlog list --all is the offline legacy task-file listing and takes no other argument; " +
+			"to bound the coordinator's runs, drop --all: backlog list --limit N [--since DURATION]")
+	}
+	return nil
+}
+
+// backlogQueryVerb is the verb of a backlog read: its first argument that is
+// not one of the output flags every read accepts in any position.
+func backlogQueryVerb(args []string) string {
+	for _, arg := range args {
+		if arg != "--json" && arg != "--include-sink" {
+			return arg
+		}
+	}
+	return ""
 }
 
 func parseBacklogAdminQueryWithoutSink(args []string) (backlogadmin.Query, bool, error) {
@@ -680,6 +828,12 @@ func renderUsage(out io.Writer, report *domain.UsageReport, semantics string) er
 		coverage.ExpectedSessionCount, coverage.MissingLogSessionCount,
 		coverage.ExcludedOverlapCount, coverage.AmbiguousOverlapCount, coverage.DiagnosticCount,
 		coverage.DiagnosticDroppedCount, coverage.UnattributedCount)
+	if coverage.UnscopedUnattributedCount > 0 {
+		// Context, not coverage: the fleet's unbound samples in the run's
+		// window, of which only the unattributed count above could be the run's.
+		fmt.Fprintf(out, "Fleet samples in this window without a dispatch binding: %d (not this run's unless counted as unattributed above)\n",
+			coverage.UnscopedUnattributedCount)
+	}
 	if coverage.ObservedFrom != nil && coverage.ObservedThrough != nil {
 		fmt.Fprintf(out, "Observed: %s through %s\n",
 			coverage.ObservedFrom.UTC().Format(time.RFC3339), coverage.ObservedThrough.UTC().Format(time.RFC3339))

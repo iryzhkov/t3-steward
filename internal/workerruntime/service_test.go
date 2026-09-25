@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/config"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -55,6 +56,50 @@ func TestWorkerServiceComposesRestrictedAuthenticatedExchange(t *testing.T) {
 	}
 	if err := workerproto.VerifyEnvelopeSignature(response, []byte("worker-response-secret")); err != nil {
 		t.Fatalf("verify response: %v", err)
+	}
+}
+
+type recordingUsageSource struct {
+	samples      []domain.UsageSample
+	acknowledged []string
+}
+
+func (u *recordingUsageSource) WorkerUsageBatch(_ context.Context, acknowledged []string, _ int) ([]domain.UsageSample, error) {
+	u.acknowledged = append([]string(nil), acknowledged...)
+	return u.samples, nil
+}
+
+// The service must hand its options' usage source to the exchange: a worker
+// whose snapshot answers carry no usage forwards nothing, silently (S8).
+func TestWorkerServiceForwardsItsUsageSourceOnSnapshots(t *testing.T) {
+	usage := &recordingUsageSource{samples: []domain.UsageSample{{
+		ProviderInstanceID: "provider", ThreadID: "thread", Model: "model", ObservedAt: runtimeTestNow,
+		SourceEventID: "host-event", Kind: domain.UsageKindCall, InputTokens: 3,
+	}}}
+	service, err := NewWorkerService(context.Background(), WorkerServiceOptions{
+		Settings: testWorkerServiceSettings(t), WorkerID: "normandy", WorkerEpoch: "worker-1",
+		CoordinatorEpoch: 9, ProtocolCredentials: &staticProtocolResolver{credentials: testProtocolCredentials()},
+		Usage: usage, DryRun: true, Now: func() time.Time { return runtimeTestNow },
+	})
+	if err != nil {
+		t.Fatalf("new worker service: %v", err)
+	}
+	request := signedWorkerRequest(t, workerproto.MessageSnapshot, 1, workerproto.SnapshotRequest{UsageAcknowledgements: []string{"earlier-event"}})
+	var output bytes.Buffer
+	if err := service.Serve(context.Background(), bytes.NewReader(mustEncodeEnvelope(t, service.Codec, request)), &output); err != nil {
+		t.Fatalf("serve snapshot: %v", err)
+	}
+	var response workerproto.Envelope
+	if err := service.Codec.Decode(&output, &response); err != nil {
+		t.Fatal(err)
+	}
+	var observations workerproto.Observations
+	if err := workerproto.DecodePayload(response, workerproto.MessageObservations, &observations); err != nil {
+		t.Fatal(err)
+	}
+	if len(observations.Usage) != 1 || observations.Usage[0].SourceEventID != "host-event" ||
+		len(usage.acknowledged) != 1 || usage.acknowledged[0] != "earlier-event" {
+		t.Fatalf("observations usage = %#v, acknowledged to source = %v", observations.Usage, usage.acknowledged)
 	}
 }
 

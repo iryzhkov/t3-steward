@@ -593,7 +593,10 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// Updated when the complete example became one that can run: it declares a
 	// route and uses the fresh scratch project, and its submit prints text so
 	// that the show command it names replaces the example's own show line.
-	const wantDigest = "f0705a126769fcdaf393d66164faec1be12f122bb0ae101873362e211f72905d"
+	//
+	// Updated when list gained --limit and --since: the synopsis names them,
+	// with the class placeholder shortened to keep the line inside the cap.
+	const wantDigest = "1f0889869929065c43f9548d29a0d124070416304c18ae0f77b29b0a63ae8d2e"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)

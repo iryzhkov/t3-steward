@@ -1135,7 +1135,12 @@ func renderTaskRunState(out io.Writer, record taskRunRecord) {
 	if renderRunProgress(out, record.wake()) {
 		return
 	}
-	if record.Check != "" {
+	switch record.Check {
+	case "":
+	case string(backlogadmin.ViabilityAcceptedWaiting):
+		// The bare word read as a failure; the run exists and is queued.
+		fmt.Fprintf(out, "check %s: accepted, the run is queued until a worker can start it\n", record.Check)
+	default:
 		fmt.Fprintf(out, "check %s\n", record.Check)
 	}
 }

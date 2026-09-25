@@ -18,6 +18,7 @@ type CheckpointImportStore interface {
 	ArtifactCatalog
 	LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRecords, error)
 	LoadThrottleAttemptRecords(context.Context) ([]domain.ThrottleAttemptRecord, error)
+	RecordCheckpointImportRejection(context.Context, sqlite.CheckpointImportRejection) (domain.AuditEvent, error)
 }
 
 type CoordinatorCheckpointImporter struct {
@@ -74,7 +75,7 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 	assignment, attempt, task, err := checkpointImportBinding(records, manifest)
 	if err != nil {
 		if checkpointBindingIsFinal(assignment, attempt, manifest) {
-			return domain.Artifact{}, fmt.Errorf("%w: %w", ErrCheckpointImportRejected, err)
+			return domain.Artifact{}, i.reject(ctx, records, manifest, now, err)
 		}
 		return domain.Artifact{}, err
 	}
@@ -86,7 +87,7 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 	if err != nil {
 		// Evidence for a settled assignment will never arrive.
 		if assignment.State == domain.AssignmentCompleted {
-			return domain.Artifact{}, fmt.Errorf("%w: %w", ErrCheckpointImportRejected, err)
+			return domain.Artifact{}, i.reject(ctx, records, manifest, now, err)
 		}
 		return domain.Artifact{}, err
 	}
@@ -128,6 +129,44 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 // for as long as the worker keeps offering it. The bytes stay in the worker's
 // acknowledged custody.
 var ErrCheckpointImportRejected = errors.New("checkpoint import rejected")
+
+// reject records a final refusal as an audit event on the attempt the upload
+// was taken for, then reports it as ErrCheckpointImportRejected. The event is
+// written before the caller acknowledges the upload, so a discarded checkpoint
+// always shows in the run's events rather than only in the coordinator's
+// journal. When the event cannot be written the refusal is returned as an
+// ordinary error, which the caller defers and retries, because acknowledging
+// without the record would lose the only trace of the checkpoint.
+func (i CoordinatorCheckpointImporter) reject(ctx context.Context, records sqlite.CoordinatorRecords, manifest workerproto.ArtifactTransferManifest, now time.Time, cause error) error {
+	var attemptID string
+	for _, assignment := range records.Assignments {
+		if assignment.ID == manifest.AssignmentID {
+			attemptID = assignment.AttemptID
+			break
+		}
+	}
+	var attempt domain.Attempt
+	for _, candidate := range records.Attempts {
+		if attemptID != "" && candidate.ID == attemptID {
+			attempt = candidate
+			break
+		}
+	}
+	object := manifest.Objects[0]
+	if _, err := i.Store.RecordCheckpointImportRejection(ctx, sqlite.CheckpointImportRejection{
+		ManifestID: manifest.ID, ArtifactID: object.ID,
+		WorkerID: manifest.WorkerID, WorkerEpoch: manifest.WorkerEpoch,
+		AssignmentID: manifest.AssignmentID, AssignmentEpoch: manifest.AssignmentEpoch,
+		WorkflowRunID: attempt.WorkflowRunID, TaskID: attempt.TaskID, AttemptID: attempt.ID,
+		CoordinatorEpoch: i.CoordinatorEpoch,
+		Reason: fmt.Sprintf("worker %s checkpoint for assignment %s discarded: %v",
+			manifest.WorkerID, manifest.AssignmentID, cause),
+		RejectedAt: now,
+	}); err != nil {
+		return fmt.Errorf("record checkpoint import rejection: %w (refusal: %w)", err, cause)
+	}
+	return fmt.Errorf("%w: %w", ErrCheckpointImportRejected, cause)
+}
 
 // checkpointBindingIsFinal reports whether a binding refusal can never turn
 // into an import: the assignment is gone, at another epoch, released, or

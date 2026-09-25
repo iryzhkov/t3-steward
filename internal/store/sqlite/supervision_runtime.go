@@ -429,6 +429,25 @@ func (s *Store) PendingSupervisionEscalations(ctx context.Context) ([]domain.Sup
 	return pending, rows.Err()
 }
 
+// otherActivationValid reports whether an activation other than the one being
+// decided still counts against the run's rule that at most one activation is
+// valid.
+//
+// An activation below the run's current activation epoch never counts,
+// whatever state its row still records. Raising the epoch writes the
+// replacement as a new row and leaves the old one as it was, so an old row can
+// say pending-dispatch or active at an epoch whose authority is gone: every
+// supervision decision is fenced on the record's epoch, and
+// ReleaseDeadActivationOffers releases the offer of such a row for the same
+// reason. Counting it refused every trigger of the replacement, and the run
+// could never wake its overseer again.
+func otherActivationValid(candidate domain.Activation, currentEpoch int64) bool {
+	if candidate.Epoch < currentEpoch {
+		return false
+	}
+	return candidate.State == domain.ActivationPendingDispatch || candidate.State == domain.ActivationActive
+}
+
 // LoadSupervisionActivationRows reads one run's activation decision state. An
 // unsupervised run reports Supervised false, because absence of the record is
 // the unsupervised case rather than an empty one.
@@ -454,7 +473,7 @@ func (s *Store) LoadSupervisionActivationRows(ctx context.Context, runID string)
 			state.Activation = candidate
 			continue
 		}
-		if candidate.State == domain.ActivationPendingDispatch || candidate.State == domain.ActivationActive {
+		if otherActivationValid(candidate, state.Record.ActivationEpoch) {
 			state.OtherValidActivation = true
 		}
 	}
