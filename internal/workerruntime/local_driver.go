@@ -631,22 +631,28 @@ func (d *LocalDriver) removeTaskIdentity(pkg workerproto.ExecutionPackage, works
 func taskCompletionSupplement(pkg workerproto.ExecutionPackage) string {
 	var b strings.Builder
 	b.WriteString("\n\n## How this task ends\n")
-	b.WriteString("This task runs unattended, and it is complete when your turn ends. Nobody replies between turns. ")
-	b.WriteString("When the turn ends, the Steward collects the declared outputs from the workspace and runs verification, ")
-	b.WriteString("so anything still running in the background at that moment is not waited for.")
-	var files []string
+	b.WriteString("This task runs unattended and gets one turn: when your turn ends with no task-bound wait registered, the task is complete. ")
+	b.WriteString("There is no next turn, so do not end with BACKLOG STATUS: continue. ")
+	b.WriteString("When the turn ends, the Steward collects the declared outputs from the workspace and runs verification; ")
+	b.WriteString("processes you started in the background (shell jobs, background commands) are not waited for.")
+	var files, commits []string
 	for _, output := range pkg.Outputs {
 		if output.Commit == nil {
 			files = append(files, "`"+output.Name+"`")
+		} else {
+			commits = append(commits, "`"+output.Name+"`")
 		}
 	}
 	if len(files) != 0 {
 		b.WriteString(" Declared outputs, which must exist when the turn ends: " + strings.Join(files, ", ") + ".")
 	}
+	if len(commits) != 0 {
+		b.WriteString(" Declared commits, which must be committed when the turn ends: " + strings.Join(commits, ", ") + ".")
+	}
 	b.WriteString("\nRun long checks in the foreground and wait for them. To wait for something outside this session ")
-	b.WriteString("(CI, another run, a time, a background job's marker file), park the task and then end the turn; ")
-	b.WriteString("the Steward resumes this same session with the outcome:\n")
-	b.WriteString("`t3-steward wait add --task current --for 30m --or-timeout` or `t3-steward wait add --task current -- test -f done.marker` ")
+	b.WriteString("(CI, another run, a time), register a task-bound wait and then end the turn; ")
+	b.WriteString("the Steward resumes this same session with the outcome, for example ")
+	b.WriteString("`t3-steward wait add --task current --for 30m --or-timeout` ")
 	b.WriteString("(`t3-steward wait --help` lists every kind).")
 	return b.String()
 }

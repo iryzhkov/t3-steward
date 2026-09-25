@@ -352,17 +352,16 @@ func TestTaskPromptSaysEndingTheTurnCompletesTheTask(t *testing.T) {
 		t.Fatalf("the author's prompt must come first and unchanged: %q", prompt)
 	}
 	for _, want := range []string{
-		"it is complete when your turn ends",
-		"not waited for",
+		"when your turn ends with no task-bound wait registered, the task is complete",
+		"do not end with BACKLOG STATUS: continue",
+		"(shell jobs, background commands) are not waited for",
 		"Declared outputs, which must exist when the turn ends: `report.md`.",
+		"Declared commits, which must be committed when the turn ends: `implementation`.",
 		"t3-steward wait add --task current",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt does not say %q:\n%s", want, prompt)
 		}
-	}
-	if strings.Contains(prompt, "`implementation`") {
-		t.Fatalf("a commit output is not a file the workspace must hold:\n%s", prompt)
 	}
 }
 
