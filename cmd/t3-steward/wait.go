@@ -66,7 +66,8 @@ Every wait has one condition, its KIND. Attention is task-bound; the other kinds
                                       the id may also be owner/name#<n> or
                                       the target's github.com URL (.../pull/<n>,
                                       .../actions/runs/<id>), which names the
-                                      repository;                                      reads the target with gh and fixed
+                                      repository, and a pr may be a branch
+                                      name; reads the target with gh and fixed
                                       arguments; run: completed (met on
                                       conclusion success, failed otherwise);
                                       pr: merged (default), reviewed,

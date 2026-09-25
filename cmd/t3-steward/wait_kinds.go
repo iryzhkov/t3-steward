@@ -83,7 +83,7 @@ func normalizeKindArgs(args []string) []string {
 // and answered "no pull requests found for branch", a message that says
 // nothing about the form being wrong.
 const gitHubTargetForms = "run <id>, run owner/name#<id>, run https://github.com/owner/name/actions/runs/<id>, " +
-	"pr <n>, pr owner/name#<n> or pr https://github.com/owner/name/pull/<n>"
+	"pr <n>, pr owner/name#<n>, pr https://github.com/owner/name/pull/<n> or pr <branch>"
 
 // parseGitHubTarget reads run:<id>, pr:<n>, run/<id> or pr/<n>, where the id
 // may be qualified by its repository as owner/name#<id> or given as the
@@ -169,13 +169,27 @@ func parseGitHubURL(raw string) (kind, repo, id string, ok bool) {
 }
 
 // splitGitHubTargetID reads the id of a run or pr target: a bare number,
-// owner/name#<number>, or the target's github.com URL. It returns the number
-// and the repository the id named, if any. Anything else is refused with the
-// accepted forms, before gh is asked, since gh reads a pr id that is not a
-// number as a branch name.
+// owner/name#<number>, or the target's github.com URL. It returns the id and
+// the repository the id named, if any.
+//
+// Any other pr id is passed to gh unchanged as a branch name, which gh pr view
+// has always accepted and which worked before these forms were added. A run
+// id has no such reading, so anything else is refused with the accepted forms
+// before gh is asked. A URL on any host but github.com is refused for both:
+// gh would need --hostname for a GitHub Enterprise host, which the wait does
+// not carry, and passing the URL on as a branch name would only fail later.
 func splitGitHubTargetID(kind, raw string) (id, repo string, err error) {
-	refuse := fmt.Errorf("--github %s %q is not a target; --github takes %s", kind, raw, gitHubTargetForms)
+	refuse := fmt.Errorf("--github %s %q is not a target; --github takes %s (GitHub Enterprise hosts are not supported)",
+		kind, raw, gitHubTargetForms)
+	branch := func() (string, string, error) {
+		if kind == "pr" && !strings.Contains(raw, "://") {
+			return raw, "", nil
+		}
+		return "", "", refuse
+	}
 	switch {
+	case strings.Contains(raw, "://") && !strings.Contains(raw, "github.com/"):
+		return "", "", refuse
 	case strings.Contains(raw, "github.com/"):
 		urlKind, named, number, ok := parseGitHubURL(raw)
 		if !ok {
@@ -184,21 +198,28 @@ func splitGitHubTargetID(kind, raw string) (id, repo string, err error) {
 		if urlKind != kind {
 			return "", "", fmt.Errorf("--github %s was given the URL of a %s: %s; --github takes %s", kind, urlKind, raw, gitHubTargetForms)
 		}
+		if !gitHubNumber(number) {
+			return "", "", refuse
+		}
 		id, repo = number, named
 	case strings.Contains(raw, "#"):
 		named, number, _ := strings.Cut(raw, "#")
 		owner, name, ok := strings.Cut(named, "/")
-		if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
-			return "", "", refuse
+		if !ok || owner == "" || name == "" || strings.Contains(name, "/") || !gitHubNumber(number) {
+			return branch()
 		}
 		id, repo = number, named
+	case !gitHubNumber(raw):
+		return branch()
 	default:
 		id = raw
 	}
-	if id == "" || strings.Trim(id, "0123456789") != "" {
-		return "", "", refuse
-	}
 	return id, repo, nil
+}
+
+// gitHubNumber reports a run id or pull request number: digits only.
+func gitHubNumber(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789") == ""
 }
 
 // localWaitSpec is a parsed `wait add` for a local kind: shell, time or

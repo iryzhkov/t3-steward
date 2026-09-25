@@ -80,9 +80,30 @@ func TestGitHubWaitTargetAcceptsQualifiedForms(t *testing.T) {
 			t.Fatalf("%v asks gh %q", c.args, got)
 		}
 	}
+	// A pr id in none of those forms is a branch name, which gh pr view has
+	// always accepted, and it reaches gh unchanged.
+	for _, branch := range []string{"feature-branch", "fix/rc96-ax-cli", "owner#45", "owner/repo#next"} {
+		spec, err := parseLocalWaitSpec([]string{"--github", "pr", branch}, now)
+		if err != nil {
+			t.Fatalf("pr %s: %v", branch, err)
+		}
+		if spec.GitHub.ID != branch || spec.GitHub.Repo != "" || spec.GitHub.Args()[2] != branch {
+			t.Fatalf("pr %s parsed as %+v", branch, spec.GitHub)
+		}
+	}
+	// A run has no branch reading, and no kind accepts another host's URL; both
+	// refusals say GitHub Enterprise is not supported.
 	for _, args := range [][]string{
-		{"--github", "pr", "feature-branch"},
-		{"--github", "pr", "owner#45"},
+		{"--github", "run", "feature-branch"},
+		{"--github", "run", "owner#45"},
+		{"--github", "pr", "https://github.example.com/owner/repo/pull/45"},
+	} {
+		_, err := parseLocalWaitSpec(args, now)
+		if err == nil || !strings.Contains(err.Error(), "GitHub Enterprise hosts are not supported") {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	for _, args := range [][]string{
 		{"--github", "pr", "https://github.com/owner/repo/issues/45"},
 		{"--github", "pr", "https://github.com/owner/repo/actions/runs/987"},
 		{"--github", "pr", "owner/repo#45", "--repo", "other/repo"},
