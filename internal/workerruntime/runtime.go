@@ -156,6 +156,15 @@ func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
 // worker still refuses a package requiring an unsupported capability when it
 // validates one, so this is the explanation, not the only defence.
 func advertisedCapabilities(configured []string) []string {
+	return AdvertisedCapabilities(configured)
+}
+
+// AdvertisedCapabilities is advertisedCapabilities for the coordinator, which
+// runs the same build. Validation that reads only the operator's configured
+// list refuses a task requiring a capability every current worker supplies
+// itself, such as task-wait-collection-fence-v1, which readiness accepts
+// because it reads the advertised inventory.
+func AdvertisedCapabilities(configured []string) []string {
 	merged := append([]string(nil), configured...)
 	if !slices.Contains(merged, workerproto.CapabilityTaskWaitCollectionFence) {
 		merged = append(merged, workerproto.CapabilityTaskWaitCollectionFence)
