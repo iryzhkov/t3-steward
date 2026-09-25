@@ -68,16 +68,16 @@ func failedOfferSupersessionFixture(t *testing.T) (*Store, FailedActivationOffer
 		t.Fatal(err)
 	}
 	return store, FailedActivationOfferSupersession{
-			CoordinatorEpoch: 1, RunID: failure.RunID,
-			ActivationID: failure.ActivationID, ActivationEpoch: failure.ActivationEpoch,
-			ExpectedRecordRevision: state.Record.Revision,
-			AssignmentID:           failure.AssignmentID, AssignmentEpoch: failure.AssignmentEpoch,
-			ReassessmentEventID: eventID, SupersededAt: supervisionTestTime.Add(2 * time.Minute),
-		}, domain.AssignmentClaimRequest{
-			CoordinatorEpoch: 1, WorkerID: assignment.WorkerID, WorkerEpoch: assignment.WorkerEpoch,
-			AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch, LeaseToken: assignment.LeaseToken,
-			ClaimedAt: supervisionTestTime.Add(2 * time.Minute), LeaseExpiresAt: supervisionTestTime.Add(time.Hour),
-		}
+		CoordinatorEpoch: 1, RunID: failure.RunID,
+		ActivationID: failure.ActivationID, ActivationEpoch: failure.ActivationEpoch,
+		ExpectedRecordRevision: state.Record.Revision,
+		AssignmentID:           failure.AssignmentID, AssignmentEpoch: failure.AssignmentEpoch,
+		ReassessmentEventID: eventID, SupersededAt: supervisionTestTime.Add(2 * time.Minute),
+	}, domain.AssignmentClaimRequest{
+		CoordinatorEpoch: 1, WorkerID: assignment.WorkerID, WorkerEpoch: assignment.WorkerEpoch,
+		AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch, LeaseToken: assignment.LeaseToken,
+		ClaimedAt: supervisionTestTime.Add(2 * time.Minute), LeaseExpiresAt: supervisionTestTime.Add(time.Hour),
+	}
 }
 
 func TestFailedActivationOfferClaimReassessmentRaceHasOneWinner(t *testing.T) {
@@ -121,6 +121,81 @@ func TestFailedActivationOfferClaimReassessmentRaceHasOneWinner(t *testing.T) {
 	state := records.Assignments[0].State
 	if state != domain.AssignmentReleased && state != domain.AssignmentClaimed {
 		t.Fatalf("race left unsafe assignment state %q", state)
+	}
+	attempt := activationAttemptOfAssignment(t, records, records.Assignments[0])
+	switch state {
+	case domain.AssignmentReleased:
+		// The superseded offer never runs, so its attempt ends with the release
+		// rather than staying ready beside a released assignment.
+		if attempt.Progress != domain.ProgressCancelled || attempt.Control != domain.ControlStopped || attempt.CompletedAt == nil {
+			t.Fatalf("superseded offer left its attempt %s/%s", attempt.Progress, attempt.Control)
+		}
+	case domain.AssignmentClaimed:
+		if attempt.Progress != domain.ProgressActive || attempt.Control != domain.ControlPreparing {
+			t.Fatalf("claimed offer's attempt is %s/%s", attempt.Progress, attempt.Control)
+		}
+	}
+}
+
+func activationAttemptOfAssignment(t *testing.T, records CoordinatorRecords, assignment domain.Assignment) domain.Attempt {
+	t.Helper()
+	for _, attempt := range records.Attempts {
+		if attempt.ID == assignment.AttemptID {
+			return attempt
+		}
+	}
+	t.Fatalf("assignment %q has no attempt", assignment.ID)
+	return domain.Attempt{}
+}
+
+// A supersession committed before its attempt was ended with it left the
+// attempt ready beside a released assignment. Replaying the supersession ends
+// it exactly once.
+func TestFailedActivationOfferSupersessionEndsItsAttemptOnceAcrossReplays(t *testing.T) {
+	ctx := context.Background()
+	store, request, _ := failedOfferSupersessionFixture(t)
+	if err := store.SupersedeFailedActivationOffer(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := activationAttemptOfAssignment(t, records, records.Assignments[0])
+	if records.Assignments[0].State != domain.AssignmentReleased || attempt.Progress != domain.ProgressCancelled ||
+		attempt.Control != domain.ControlStopped || attempt.CompletedAt == nil {
+		t.Fatalf("supersession left %s with attempt %s/%s", records.Assignments[0].State, attempt.Progress, attempt.Control)
+	}
+	ended := attempt.Revision
+
+	// Put the attempt back the way the earlier binary left it.
+	stale := attempt
+	stale.Progress, stale.Control, stale.CompletedAt, stale.Revision = domain.ProgressReady, domain.ControlUnassigned, nil, ended+1
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Attempts: []domain.Attempt{stale}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM coordinator_audit_events WHERE id = ?`,
+		"activation-attempt-cancelled:"+attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := store.SupersedeFailedActivationOffer(ctx, request); err != nil {
+			t.Fatalf("replayed supersession: %v", err)
+		}
+	}
+	records, err = store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repaired := activationAttemptOfAssignment(t, records, records.Assignments[0])
+	if repaired.Progress != domain.ProgressCancelled || repaired.Control != domain.ControlStopped || repaired.Revision != ended+2 {
+		t.Fatalf("replay left attempt %s/%s at revision %d, want cancelled at %d",
+			repaired.Progress, repaired.Control, repaired.Revision, ended+2)
+	}
+	var events int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM coordinator_audit_events WHERE id = ?`,
+		"activation-attempt-cancelled:"+attempt.ID).Scan(&events); err != nil || events != 1 {
+		t.Fatalf("attempt cancellation audit events = %d, %v; want 1", events, err)
 	}
 }
 

@@ -68,10 +68,13 @@ type FailedActivationOfferSupersession struct {
 	SupersededAt           time.Time
 }
 
+const supersededActivationOfferReason = "operator reassessment superseded a failed undelivered activation offer"
+
 // SupersedeFailedActivationOffer releases one provably never-delivered
-// activation offer. Every qualification and the offered-to-released transition
-// share the claim transaction boundary, so either a worker claim wins or this
-// release wins; neither side can overwrite the other.
+// activation offer and cancels its never-started attempt. Every qualification
+// and the offered-to-released transition share the claim transaction boundary,
+// so either a worker claim wins or this release wins; neither side can
+// overwrite the other.
 func (s *Store) SupersedeFailedActivationOffer(ctx context.Context, request FailedActivationOfferSupersession) error {
 	if request.CoordinatorEpoch < 1 || request.RunID == "" || request.ActivationID == "" ||
 		request.ActivationEpoch < 1 || request.ExpectedRecordRevision < 1 || request.AssignmentID == "" ||
@@ -163,6 +166,13 @@ func (s *Store) SupersedeFailedActivationOffer(ctx context.Context, request Fail
 		if present != 1 {
 			return fmt.Errorf("%w: activation offer was released by another authority", ErrActivationDispatch)
 		}
+		// A supersession committed by an earlier binary released the offer and
+		// left its attempt ready; the replay ends it, which is a no-op when the
+		// attempt already ended with the release.
+		if err := endUnstartedActivationAttemptTx(ctx, tx, attempt, assignment, request.CoordinatorEpoch,
+			supersededActivationOfferReason, request.SupersededAt); err != nil {
+			return err
+		}
 		return tx.Commit()
 	}
 	if assignment.State != domain.AssignmentOffered {
@@ -189,12 +199,20 @@ func (s *Store) SupersedeFailedActivationOffer(ctx context.Context, request Fail
 	if _, err := insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
 		ID: auditID, Kind: "assignment-released", WorkflowRunID: request.RunID,
 		AttemptID: attempt.ID, TargetType: domain.AdminTargetAssignment, TargetID: assignment.ID,
-		Actor: "coordinator", Reason: "operator reassessment superseded a failed undelivered activation offer",
+		Actor: "coordinator", Reason: supersededActivationOfferReason,
 		CreatedAt: request.SupersededAt.UTC(),
 		Detail: nativeAuditDetail{CoordinatorEpoch: request.CoordinatorEpoch, AssignmentEpoch: assignment.Epoch,
 			ExpectedRevision: request.ActivationEpoch, Revision: request.ExpectedRecordRevision,
 			IdempotencyIdentity: auditID, Outcome: string(domain.AssignmentReleased)},
 	}); err != nil {
+		return err
+	}
+	// The superseded offer's attempt never runs: the continuation that follows
+	// wakes a replacement at a new epoch, which is a new attempt. Ending it with
+	// the release keeps planning from finding a ready attempt on a released
+	// assignment, which it reports as an inconsistency on every boundary.
+	if err := endUnstartedActivationAttemptTx(ctx, tx, attempt, next, request.CoordinatorEpoch,
+		supersededActivationOfferReason, request.SupersededAt); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

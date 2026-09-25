@@ -22,9 +22,17 @@ import (
 // reload that changes its worker's catalog (S13: an overseer offer to homelab
 // from 2026-09-22 blocked every later catalog change on homelab). An offered
 // assignment was never claimed, so no worker holds work for it and releasing it
-// cannot abandon anything. Only the assignment changes, exactly as when an
-// operator reassessment supersedes an undelivered offer; each release is one
-// audit event.
+// cannot abandon anything. Each release is one audit event.
+//
+// The offer's attempt ends in the same transaction. An activation attempt is
+// never planned again once its offer is gone -- a later wake is a new attempt
+// at a new epoch -- so an attempt left ready/unassigned beside a released
+// assignment is not waiting for anything; it is an inconsistency that coordinator
+// planning and quota planning both reported on every boundary (rc.96 released
+// the offer and left the attempt, and logged it 374 times in 30 minutes). The
+// same sweep repairs that state: an already released activation assignment
+// whose never-started attempt is still nonterminal and whose activation is dead
+// by the same judgement has its attempt ended too.
 func (s *Store) ReleaseDeadActivationOffers(ctx context.Context, coordinatorEpoch int64, now time.Time) ([]string, error) {
 	if coordinatorEpoch < 1 || now.IsZero() {
 		return nil, errors.New("release dead activation offers: coordinator epoch and time are required")
@@ -37,12 +45,21 @@ func (s *Store) ReleaseDeadActivationOffers(ctx context.Context, coordinatorEpoc
 	if err := requireCoordinatorEpoch(ctx, tx, coordinatorEpoch); err != nil {
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT record FROM coordinator_assignments WHERE assignment_state = ?`,
-		string(domain.AssignmentOffered))
+	// Only activation attempts are read. A released assignment is read only
+	// while its attempt still says unassigned, which is the never-started
+	// shape the repair looks for; every released task assignment and every
+	// activation attempt already ended is left out of the scan.
+	rows, err := tx.QueryContext(ctx, `SELECT assignment.record FROM coordinator_assignments AS assignment
+		JOIN coordinator_attempts AS attempt ON attempt.id = assignment.attempt_id
+		WHERE COALESCE(json_extract(attempt.record, '$.supervisionActivationId'), '') != ''
+		  AND (assignment.assignment_state = ?
+		    OR (assignment.assignment_state = ? AND json_extract(attempt.record, '$.control') = ?))
+		ORDER BY assignment.id`,
+		string(domain.AssignmentOffered), string(domain.AssignmentReleased), string(domain.ControlUnassigned))
 	if err != nil {
-		return nil, fmt.Errorf("load offered assignments: %w", err)
+		return nil, fmt.Errorf("load activation assignments: %w", err)
 	}
-	var offered []domain.Assignment
+	var candidates []domain.Assignment
 	for rows.Next() {
 		var raw []byte
 		if err := rows.Scan(&raw); err != nil {
@@ -52,16 +69,16 @@ func (s *Store) ReleaseDeadActivationOffers(ctx context.Context, coordinatorEpoc
 		var assignment domain.Assignment
 		if err := json.Unmarshal(raw, &assignment); err != nil {
 			rows.Close()
-			return nil, fmt.Errorf("decode offered assignment: %w", err)
+			return nil, fmt.Errorf("decode activation assignment: %w", err)
 		}
-		offered = append(offered, assignment)
+		candidates = append(candidates, assignment)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	var released []string
-	for _, assignment := range offered {
+	for _, assignment := range candidates {
 		attempt, err := loadAttemptTx(ctx, tx, assignment.AttemptID)
 		if err != nil {
 			return nil, err
@@ -74,6 +91,13 @@ func (s *Store) ReleaseDeadActivationOffers(ctx context.Context, coordinatorEpoc
 			return nil, err
 		}
 		if !dead {
+			continue
+		}
+		if assignment.State == domain.AssignmentReleased {
+			if err := endUnstartedActivationAttemptTx(ctx, tx, attempt, assignment, coordinatorEpoch,
+				"the activation attempt's offer was released and its activation ended: "+why, now); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		next := assignment
@@ -106,12 +130,69 @@ func (s *Store) ReleaseDeadActivationOffers(ctx context.Context, coordinatorEpoc
 		}); err != nil {
 			return nil, err
 		}
+		if err := endUnstartedActivationAttemptTx(ctx, tx, attempt, next, coordinatorEpoch,
+			"the activation attempt's unclaimed offer outlived its activation: "+why, now); err != nil {
+			return nil, err
+		}
 		released = append(released, assignment.ID)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit dead activation offer release: %w", err)
 	}
 	return released, nil
+}
+
+// endUnstartedActivationAttemptTx cancels the attempt of an activation offer
+// that has been released without ever being claimed, and reports nothing when
+// the attempt is already terminal or has started.
+//
+// Cancelled and stopped is what cancelling an unfinished task writes
+// (DAGExecution.CancelTask): the work did not fail, it will never run. Failure
+// is left empty for the same reason, and the reason is carried by the audit
+// event instead. The attempt keeps its assignment reference, so the released
+// assignment stays the record of the offer it was.
+//
+// Only a never-started attempt is ended here: one still unassigned, whose
+// assignment is the released one. A claim moves the attempt out of unassigned
+// in the claim transaction, so an attempt that ever reached a worker is never
+// touched, and a released assignment is required so that a live offer is never
+// orphaned from the attempt it belongs to.
+func endUnstartedActivationAttemptTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	attempt domain.Attempt,
+	assignment domain.Assignment,
+	coordinatorEpoch int64,
+	reason string,
+	now time.Time,
+) error {
+	if !attempt.IsSupervisionActivation() || attempt.Progress.Terminal() ||
+		attempt.Control != domain.ControlUnassigned || attempt.AssignmentID != assignment.ID ||
+		assignment.AttemptID != attempt.ID || assignment.State != domain.AssignmentReleased {
+		return nil
+	}
+	expected := attempt.Revision
+	completed := now.UTC()
+	attempt.Progress = domain.ProgressCancelled
+	attempt.Control = domain.ControlStopped
+	attempt.Failure = ""
+	attempt.Revision++
+	attempt.UpdatedAt = completed
+	attempt.CompletedAt = &completed
+	if err := updateAttemptTx(ctx, tx, attempt, expected); err != nil {
+		return err
+	}
+	auditID := "activation-attempt-cancelled:" + attempt.ID
+	_, err := insertNativeAuditEventTx(ctx, tx, nativeAuditInput{
+		ID: auditID, Kind: "attempt-cancelled", WorkflowRunID: attempt.WorkflowRunID,
+		TaskID: attempt.TaskID, AttemptID: attempt.ID,
+		TargetType: domain.AdminTargetAttempt, TargetID: attempt.ID,
+		Actor: "coordinator", Reason: reason, CreatedAt: completed,
+		Detail: nativeAuditDetail{CoordinatorEpoch: coordinatorEpoch, AssignmentEpoch: assignment.Epoch,
+			ExpectedRevision: expected, Revision: attempt.Revision,
+			IdempotencyIdentity: auditID, Outcome: string(domain.ProgressCancelled)},
+	})
+	return err
 }
 
 // activationOfferIsDeadTx reports whether the activation an offered attempt

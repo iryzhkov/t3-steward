@@ -470,6 +470,16 @@ All notable changes to this project are documented here. The format follows
   epoch no longer counts as another valid activation, so it cannot block a
   replacement; the old overseer's decisions are still refused by the epoch
   check.
+- Releasing a dead overseer offer, and superseding a failed one on operator
+  reassessment, now also cancels the offer's never-started attempt
+  (cancelled/stopped, one `attempt-cancelled` audit event) in the same
+  transaction. rc.96 released the offer and left the attempt ready/unassigned,
+  so coordinator planning and quota planning warned about a nonterminal
+  attempt on a settled assignment on every boundary. The sweep also repairs
+  that state: an already released activation assignment whose unassigned
+  attempt belongs to an ended activation has the attempt cancelled on the
+  first pass after upgrade. A claimed attempt, or one whose activation is
+  still live, is never touched.
 - Graph amendments (`campaign rerun --prompt`, task edits) are judged by the
   same worker matcher as `campaign check` and submit, so validation and
   readiness can no longer disagree. Amendments that submit already refused

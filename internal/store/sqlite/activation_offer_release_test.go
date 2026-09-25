@@ -34,16 +34,28 @@ func TestReleaseDeadActivationOffersReleasesOnlyOffersOfEndedActivations(t *test
 		assignmentState domain.AssignmentState
 		activation      bool
 		wantReleased    bool
+		// wantCancelled is whether the never-started attempt ends. Every
+		// released offer's attempt does, and so does the attempt of an offer
+		// an earlier binary released without ending it.
+		wantCancelled bool
 	}
 	cases := []offer{
 		// The field case: the run settled and closed the activation.
-		{name: "closed", activationState: domain.ActivationClosed, activationEpoch: 3, runEpoch: 3, assignmentState: domain.AssignmentOffered, activation: true, wantReleased: true},
-		{name: "spent", activationState: domain.ActivationSpent, activationEpoch: 1, runEpoch: 1, assignmentState: domain.AssignmentOffered, activation: true, wantReleased: true},
-		{name: "revoked", activationState: domain.ActivationRevoked, activationEpoch: 1, runEpoch: 1, assignmentState: domain.AssignmentOffered, activation: true, wantReleased: true},
-		{name: "missing", activationState: "", activationEpoch: 1, runEpoch: 1, assignmentState: domain.AssignmentOffered, activation: true, wantReleased: true},
+		{name: "closed", activationState: domain.ActivationClosed, activationEpoch: 3, runEpoch: 3, assignmentState: domain.AssignmentOffered, activation: true, wantReleased: true, wantCancelled: true},
+		{name: "spent", activationState: domain.ActivationSpent, activationEpoch: 1, runEpoch: 1, assignmentState: domain.AssignmentOffered, activation: true, wantReleased: true, wantCancelled: true},
+		{name: "revoked", activationState: domain.ActivationRevoked, activationEpoch: 1, runEpoch: 1, assignmentState: domain.AssignmentOffered, activation: true, wantReleased: true, wantCancelled: true},
+		{name: "missing", activationState: "", activationEpoch: 1, runEpoch: 1, assignmentState: domain.AssignmentOffered, activation: true, wantReleased: true, wantCancelled: true},
 		// A continuation writes a new row at epoch 2 and leaves the old one
 		// saying pending-dispatch at epoch 1; only the run's record says so.
-		{name: "superseded", activationState: domain.ActivationPendingDispatch, activationEpoch: 1, runEpoch: 2, assignmentState: domain.AssignmentOffered, activation: true, wantReleased: true},
+		{name: "superseded", activationState: domain.ActivationPendingDispatch, activationEpoch: 1, runEpoch: 2, assignmentState: domain.AssignmentOffered, activation: true, wantReleased: true, wantCancelled: true},
+		// rc.96 released the offer and left the attempt ready/unassigned, which
+		// planning reported on every boundary; the sweep repairs that row.
+		{name: "released-closed", activationState: domain.ActivationClosed, activationEpoch: 3, runEpoch: 3, assignmentState: domain.AssignmentReleased, activation: true, wantCancelled: true},
+		{name: "released-superseded", activationState: domain.ActivationPendingDispatch, activationEpoch: 1, runEpoch: 2, assignmentState: domain.AssignmentReleased, activation: true, wantCancelled: true},
+		// A released offer of a live activation is the undelivered-dispatch
+		// retry's evidence, and its attempt is left alone.
+		{name: "released-pending", activationState: domain.ActivationPendingDispatch, activationEpoch: 1, runEpoch: 1, assignmentState: domain.AssignmentReleased, activation: true},
+		{name: "released-task", assignmentState: domain.AssignmentReleased},
 		{name: "pending", activationState: domain.ActivationPendingDispatch, activationEpoch: 1, runEpoch: 1, assignmentState: domain.AssignmentOffered, activation: true},
 		{name: "active", activationState: domain.ActivationActive, activationEpoch: 1, runEpoch: 1, assignmentState: domain.AssignmentOffered, activation: true},
 		{name: "escalated", activationState: domain.ActivationEscalated, activationEpoch: 1, runEpoch: 1, assignmentState: domain.AssignmentOffered, activation: true},
@@ -117,11 +129,63 @@ func TestReleaseDeadActivationOffersReleasesOnlyOffersOfEndedActivations(t *test
 			t.Fatalf("%s is %s, want %s", assignment.ID, assignment.State, wantState)
 		}
 	}
+	ended := now.Add(time.Hour)
+	for _, attempt := range loaded.Attempts {
+		var c offer
+		for _, candidate := range cases {
+			if "attempt-"+candidate.name == attempt.ID {
+				c = candidate
+			}
+		}
+		if !c.wantCancelled {
+			if attempt.Progress != domain.ProgressReady || attempt.Control != domain.ControlUnassigned ||
+				attempt.Revision != 1 || attempt.CompletedAt != nil {
+				t.Fatalf("%s changed: %s/%s revision %d", attempt.ID, attempt.Progress, attempt.Control, attempt.Revision)
+			}
+			continue
+		}
+		if attempt.Progress != domain.ProgressCancelled || attempt.Control != domain.ControlStopped ||
+			attempt.Revision != 2 || !attempt.UpdatedAt.Equal(ended) ||
+			attempt.CompletedAt == nil || !attempt.CompletedAt.Equal(ended) ||
+			attempt.AssignmentID != "assignment-"+c.name || attempt.Failure != "" {
+			t.Fatalf("%s did not end as a cancelled never-started attempt: %+v", attempt.ID, attempt)
+		}
+		var revision int64
+		if err := store.db.QueryRowContext(ctx, `SELECT revision FROM coordinator_attempts WHERE id = ?`, attempt.ID).Scan(&revision); err != nil || revision != 2 {
+			t.Fatalf("%s revision column = %d, %v; want 2", attempt.ID, revision, err)
+		}
+	}
 	if _, found, err := store.LoadAuditEvent(ctx, "activation-offer-released:assignment-closed:epoch:1"); err != nil || !found {
 		t.Fatalf("release left no audit event: found=%v err=%v", found, err)
 	}
-	// A second boundary finds nothing more to do.
+	for _, id := range []string{"attempt-closed", "attempt-released-closed"} {
+		event, found, err := store.LoadAuditEvent(ctx, "activation-attempt-cancelled:"+id)
+		if err != nil || !found || event.Kind != "attempt-cancelled" || event.TargetID != id {
+			t.Fatalf("ending %s left no audit event: %+v found=%v err=%v", id, event, found, err)
+		}
+	}
+	auditCount := func() int {
+		var count int
+		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM coordinator_audit_events`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	before := auditCount()
+	// A second boundary finds nothing more to do, and records nothing more.
 	if again, err := store.ReleaseDeadActivationOffers(ctx, epoch, now.Add(2*time.Hour)); err != nil || len(again) != 0 {
 		t.Fatalf("second release = %v, %v", again, err)
+	}
+	if after := auditCount(); after != before {
+		t.Fatalf("a repeated pass wrote %d more audit events", after-before)
+	}
+	reloaded, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, attempt := range reloaded.Attempts {
+		if attempt.Progress == domain.ProgressCancelled && (attempt.Revision != 2 || !attempt.UpdatedAt.Equal(ended)) {
+			t.Fatalf("a repeated pass rewrote %s: %+v", attempt.ID, attempt)
+		}
 	}
 }
