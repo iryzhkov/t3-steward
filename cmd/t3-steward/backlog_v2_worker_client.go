@@ -254,6 +254,13 @@ func importCoordinatorWorkerCheckpoint(ctx context.Context, session coordinatorW
 		return report, err
 	}
 	imported, err := session.CheckpointImporter.Import(ctx, fetched.Response, fetched)
+	if errors.Is(err, backlog.ErrCheckpointImportRejected) {
+		// Retrying cannot help, and an unacknowledged upload is offered again on
+		// every boundary, failing this worker's whole exchange each time.
+		slog.Error("worker checkpoint rejected and discarded", "manifest", upload.Manifest.ID,
+			"worker", upload.Manifest.WorkerID, "reason", err)
+		return report, session.Client.AcknowledgeArtifact(ctx, upload.Manifest.ID)
+	}
 	if err != nil {
 		return report, err
 	}
