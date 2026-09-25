@@ -638,7 +638,16 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			err = r.confirmStop(id)
 		}
 	case PhaseCollecting:
-		err = r.collect(ctx, id)
+		// A stop accepted while a collection was running was deferred, not
+		// dropped. stop yields to a collection that is still running or has a
+		// result waiting, so a good result still wins; once none is left, as
+		// after a failed collection, the stop takes effect instead of another
+		// collection starting.
+		if hasCommandRequest(record, domain.WorkerCommandStop) && !record.StopConfirmed {
+			err = r.stop(ctx, id)
+		} else {
+			err = r.collect(ctx, id)
+		}
 	case PhaseUnknown:
 		err = r.recoverUnknown(ctx, id, record)
 	case PhaseCompleted:

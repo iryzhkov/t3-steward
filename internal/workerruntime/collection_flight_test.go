@@ -2,6 +2,7 @@ package workerruntime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -18,6 +20,8 @@ import (
 type slowVerifyDriver struct {
 	*fakeDriver
 	verify time.Duration
+	// fail is what a collection that runs to the end returns.
+	fail error
 
 	mu         sync.Mutex
 	calls      int
@@ -45,7 +49,9 @@ func (d *slowVerifyDriver) Collect(ctx context.Context, _ workerproto.ExecutionP
 	}()
 	select {
 	case <-time.After(d.verify):
-		return nil
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.fail
 	case <-ctx.Done():
 		d.mu.Lock()
 		d.cancelled++
@@ -325,6 +331,40 @@ func TestStopYieldsToCollection(t *testing.T) {
 	if after.Phase != PhaseCompleted || after.StopConfirmed || driver.stopCalls != 0 || runtime.collectionRegistered(record) {
 		t.Fatalf("after: phase=%q stopConfirmed=%v stops=%d registered=%v; want the result taken and no stop",
 			after.Phase, after.StopConfirmed, driver.stopCalls, runtime.collectionRegistered(record))
+	}
+}
+
+// A stop accepted while a collection runs is deferred, not dropped. When that
+// collection fails, the stop takes effect on a later pass instead of another
+// collection starting in its place.
+func TestDeferredStopSurvivesFailedCollection(t *testing.T) {
+	runtime, driver := startSlowCollection(t, 300*time.Millisecond)
+	driver.mu.Lock()
+	driver.fail = errors.New("collect thread archive: T3 unreachable")
+	driver.mu.Unlock()
+	stop := testCommand(t, runtime, domain.WorkerCommandStop, "stop-1")
+	acks, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{stop}})
+	if err != nil || len(acks.Acknowledgements) != 1 || !acks.Acknowledgements[0].Accepted {
+		t.Fatalf("stop acknowledgement = %+v, err = %v", acks, err)
+	}
+	if record := attemptRecord(t, runtime); record.Phase != PhaseCollecting || driver.stopCalls != 0 {
+		t.Fatalf("during: phase=%q stops=%d; want the stop deferred behind the collection", record.Phase, driver.stopCalls)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	record := attemptRecord(t, runtime)
+	for time.Now().Before(deadline) && !record.StopConfirmed {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		err := runtime.Reconcile(ctx)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		record = attemptRecord(t, runtime)
+	}
+	calls, _, _, _ := driver.counts()
+	if record.Phase != PhaseStopped || !record.StopConfirmed || driver.stopCalls != 1 || calls != 1 {
+		t.Fatalf("phase=%q stopConfirmed=%v stops=%d collections=%d; want the stop confirmed and no second collection",
+			record.Phase, record.StopConfirmed, driver.stopCalls, calls)
 	}
 }
 
