@@ -365,17 +365,127 @@ func scanAttributedUsage(rows *sql.Rows) ([]domain.UsageSample, error) {
 	return out, rows.Err()
 }
 
-// AttributedUsage is bounded to one run and separately reports global unknown coverage.
+// unboundUsageWhere selects the samples no dispatch binding claims, counted
+// once each.
+//
+// A row with an empty worker_id is a reading this host's own worker took. On
+// the coordinator's host the worker shares the coordinator's database, so the
+// same reading is stored twice: once as the local row, which never joins a
+// binding, and again under the worker's id when WorkerUsageBatch forwards it
+// and the coordinator records the delivery. Counting both made every reading
+// of the coordinator host's own worker look unattributed even when its
+// forwarded copy was bound to a run. A local row is therefore left out once a
+// forwarded copy with the same event, provider and thread exists; until then
+// it is the only record of the reading and still counts.
+const unboundUsageWhere = `NOT EXISTS (SELECT 1 FROM coordinator_usage_bindings AS b
+		WHERE u.worker_id <> '' AND b.worker_id = u.worker_id
+		AND b.provider = u.provider AND b.thread_id = u.thread_id)
+	AND (u.worker_id <> '' OR (u.event_id, u.provider, u.thread_id) NOT IN (
+		SELECT event_id, provider, thread_id FROM usage_samples WHERE worker_id <> ''))`
+
+// runUsageSkewDays is how far before its dispatch a sample may be observed
+// and still be the run's: fifteen minutes, in julian days. The dispatch is
+// stamped with the coordinator's clock and a sample with the worker's, and the
+// two are not assumed to agree; erring wide only makes coverage partial more
+// often, never complete wrongly.
+const runUsageSkewDays = "(15.0 / 1440)"
+
+// runUsageDispatches is every dispatch of the run as (worker_id, since): the
+// usage bindings, and also the assignments themselves, because an assignment
+// dispatched without a thread writes no binding (bindAssignmentUsageTx) and
+// its samples are then unbound however the run went. since is NULL for an
+// assignment whose creation time was never recorded, which bounds nothing.
+// It takes the run id twice.
+const runUsageDispatches = `SELECT worker_id, julianday(bound_at) AS since
+		FROM coordinator_usage_bindings WHERE workflow_run_id = ?
+	UNION ALL
+	SELECT json_extract(a.record, '$.workerId'),
+		CASE WHEN json_extract(a.record, '$.createdAt') > '2000'
+			THEN julianday(json_extract(a.record, '$.createdAt')) END
+		FROM coordinator_assignments AS a
+		JOIN coordinator_attempts AS t ON t.id = a.attempt_id
+		WHERE t.workflow_run_id = ?`
+
+// runUsageWindow is the span in which a run's provider sessions could have
+// produced evidence, as SQLite julian days: from its first dispatch, less
+// runUsageSkewDays, to a minute after it completed, the same allowance
+// NormalizeUsageReport gives late evidence. End is empty while the run has not
+// completed, and the window is then open-ended. Start is empty when the run
+// was never dispatched.
+//
+// The times are compared through julianday rather than as text because
+// RFC 3339 with trimmed fractional seconds does not sort as text: "...00Z"
+// sorts after "...00.5Z".
+type runUsageWindow struct {
+	Start, End sql.NullFloat64
+}
+
+func (s *Store) runUsageWindow(ctx context.Context, runID string) (runUsageWindow, error) {
+	var window runUsageWindow
+	if err := s.db.QueryRowContext(ctx, `SELECT
+		(SELECT MIN(since) - `+runUsageSkewDays+` FROM (`+runUsageDispatches+`)),
+		(SELECT julianday(json_extract(record, '$.completedAt')) + 1.0 / 1440
+			FROM coordinator_workflow_runs WHERE id = ?)`, runID, runID, runID).Scan(&window.Start, &window.End); err != nil {
+		return runUsageWindow{}, err
+	}
+	return window, nil
+}
+
+// AttributedUsage is bounded to one run and separately reports the unbound
+// samples around it, split by whether they could be the run's own.
+//
+// A sample without a dispatch binding cannot be assigned to any run, so it
+// is never added to a run's totals. What it does to the run's coverage depends
+// on whether it could have been this run's evidence:
+//
+//   - RunWindowUnattributedCount holds the unbound samples that could be: on a
+//     worker the run was dispatched to (or this host's own not-yet-forwarded
+//     readings, whose worker is not recorded), for any provider, observed no
+//     earlier than that dispatch less the skew allowance and no later than a
+//     minute after the run completed. A binding that was never written, a
+//     thread the provider renamed, or a provider log that names the instance
+//     differently from the route (claude against claude-main) all look exactly
+//     like this, so these keep the run's coverage partial. The provider is
+//     deliberately not matched: matching it would call such a run complete.
+//   - UnscopedUnattributedCount holds every unbound sample in the run's window
+//     on any worker. Most of it is interactive work and other hosts' sessions,
+//     which no dispatch of this run could have produced; it is reported as
+//     context and does not by itself make the run's coverage partial. Before
+//     this split the fleet-wide count, over all time, was the run's
+//     unattributed count, so a fully attributed run always read partial.
+//
+// With no run, or a run that was never dispatched, there is no window and the
+// unscoped count is over all retained samples.
 func (s *Store) AttributedUsage(ctx context.Context, runID string) (domain.UsageReport, error) {
 	report := domain.UsageReport{WorkflowRunID: runID, Coverage: domain.UsageCoverage{
 		Reason: "provider samples without an authoritative dispatch binding are global/unscoped and are not assigned to this run",
 	}}
+	var window runUsageWindow
+	if runID != "" {
+		var err error
+		if window, err = s.runUsageWindow(ctx, runID); err != nil {
+			return domain.UsageReport{}, err
+		}
+	}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples AS u
-		LEFT JOIN coordinator_usage_bindings AS b
-		ON u.worker_id <> '' AND b.worker_id = u.worker_id
-		AND b.provider = u.provider AND b.thread_id = u.thread_id
-		WHERE b.thread_id IS NULL`).Scan(&report.Coverage.UnscopedUnattributedCount); err != nil {
+		WHERE `+unboundUsageWhere+`
+		AND (? IS NULL OR julianday(u.observed_at) >= ?)
+		AND (? IS NULL OR julianday(u.observed_at) <= ?)`,
+		window.Start, window.Start, window.End, window.End,
+	).Scan(&report.Coverage.UnscopedUnattributedCount); err != nil {
 		return domain.UsageReport{}, err
+	}
+	if window.Start.Valid {
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples AS u
+			WHERE `+unboundUsageWhere+`
+			AND EXISTS (SELECT 1 FROM (`+runUsageDispatches+`) AS d
+				WHERE (d.worker_id = u.worker_id OR u.worker_id = '')
+				AND (d.since IS NULL OR julianday(u.observed_at) >= d.since - `+runUsageSkewDays+`))
+			AND (? IS NULL OR julianday(u.observed_at) <= ?)`,
+			runID, runID, window.End, window.End,
+		).Scan(&report.Coverage.RunWindowUnattributedCount); err != nil {
+			return domain.UsageReport{}, err
+		}
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(dropped_count), 0) FROM usage_diagnostic_overflow`).Scan(
 		&report.Coverage.DiagnosticDroppedCount); err != nil {

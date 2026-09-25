@@ -40,7 +40,7 @@ Mutating recovery, creates a second run and never changes the first:
   rerun <run> --from TASK --idempotency-key KEY [--prompt TEXT] [--reason TEXT] [--json]
 
 Lifecycle (delegated to backlog, unchanged; explain is read-only and live):
-  list [--project P] [--progress STATES] [--class CLASS] [--json]
+  list [--project P] [--progress STATES] [--class C] [--limit N] [--since DUR] [--json]
   show <run> [--json]   graph <run> [--json|--dot]   explain <run>/<task> [--json]
   cancel <run>[/<task>] --reason TEXT [--command-id ID] [--json]   no task = whole run
     cancel --json prints willCancel, the tasks it covers, not the outcome it applied.
@@ -618,9 +618,13 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 		})
 	}
 	if matrix.Outcome == backlogadmin.ViabilityAcceptedWaiting {
-		if _, err := fmt.Fprint(c.stdout,
-			"accepted_waiting: nothing can start this campaign yet, and nothing about it is\n"+
-				"permanently wrong. It stays queued until the obstruction clears.\n"); err != nil {
+		// Accepted comes first: the run exists. The old banner opened with
+		// "nothing can start this campaign", which agents read as a failed
+		// submission and retried.
+		if _, err := fmt.Fprintf(c.stdout,
+			"accepted: the campaign was accepted and its run is queued (accepted_waiting).\n"+
+				"It is waiting for %s, and starts on its own once that clears; nothing about it\n"+
+				"is permanently wrong. Readiness at submission:\n", campaignWaitingFor(matrix)); err != nil {
 			return err
 		}
 		if err := renderCampaignCheck(c.stdout, campaignCheck{

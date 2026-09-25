@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -290,61 +291,165 @@ func campaignSupervisionTransportClass(class backlogadmin.SupervisionErrorClass)
 	}
 }
 
-func renderCampaignCheck(out interface{ Write([]byte) (int, error) }, document campaignCheck) error {
-	if _, err := fmt.Fprintf(out, "campaign %s is %s\n", document.Name, document.Matrix.Outcome); err != nil {
-		return err
+// campaignOutcomeHeadline is the first line of a check. accepted_waiting is
+// spelled out, because the bare word next to "campaign X is" read as a failure
+// to agents that had just been told a submission would succeed: it says what
+// submit does with the campaign and names the obstruction it waits for.
+func campaignOutcomeHeadline(name string, matrix backlogadmin.ViabilityMatrix) string {
+	if matrix.Outcome != backlogadmin.ViabilityAcceptedWaiting {
+		return fmt.Sprintf("campaign %s is %s", name, matrix.Outcome)
 	}
-	for _, reason := range document.Matrix.Reasons {
-		if _, err := fmt.Fprintf(out, "  %s  %s: %s\n",
-			permanenceLabel(reason.Permanent), reason.Code, reason.Detail); err != nil {
-			return err
+	return fmt.Sprintf("campaign %s is accepted_waiting: submit accepts it and it waits, queued, for %s; nothing about it is permanently wrong",
+		name, campaignWaitingFor(matrix))
+}
+
+// campaignWaitingFor names what an accepted_waiting campaign is waiting for:
+// the distinct temporary reason codes anywhere in the matrix, which are the
+// obstructions that clear on their own or by an operator's hand.
+func campaignWaitingFor(matrix backlogadmin.ViabilityMatrix) string {
+	seen := map[string]bool{}
+	var codes []string
+	add := func(reasons []backlogadmin.ViabilityReason) {
+		for _, reason := range reasons {
+			if !reason.Permanent && !seen[reason.Code] {
+				seen[reason.Code] = true
+				codes = append(codes, reason.Code)
+			}
 		}
+	}
+	add(matrix.Reasons)
+	for _, task := range matrix.Tasks {
+		add(task.Reasons)
+		for _, candidate := range task.Candidates {
+			add(candidate.Reasons)
+		}
+	}
+	if len(codes) == 0 {
+		return "a worker that can start it"
+	}
+	sort.Strings(codes)
+	return strings.Join(codes, ", ") + " to clear"
+}
+
+// candidateNotEligible reports a worker that may not serve the task at all,
+// as configured: every finding against it is worker-not-eligible, such as a
+// worker outside the project's worker set or the task's placement hosts. It
+// is not an obstruction of this campaign but a statement about the fleet, and
+// printing it as "impossible" beside a ready worker read as a fault to fix.
+func candidateNotEligible(candidate backlogadmin.ViabilityCandidate) bool {
+	if candidate.Outcome != backlogadmin.ViabilityImpossible || len(candidate.Reasons) == 0 {
+		return false
+	}
+	for _, reason := range candidate.Reasons {
+		if reason.Code != backlogadmin.ReasonWorkerNotEligible {
+			return false
+		}
+	}
+	return true
+}
+
+// candidateNotes are the lines about what a candidate's answer did and did
+// not look at, in the order they are printed.
+func candidateNotes(candidate backlogadmin.ViabilityCandidate) []string {
+	var notes []string
+	// What was not checked is printed with what was. A reader of "ready"
+	// has to be able to tell a passed check from a question nobody asked.
+	if observation := candidate.Repository; observation != nil {
+		if observation.Observed {
+			notes = append(notes, "repository  observed: "+observation.Class)
+		} else {
+			notes = append(notes, "repository  not observed: "+observation.Unobserved)
+		}
+	}
+	for _, note := range candidate.Unchecked {
+		notes = append(notes, "unchecked   "+note)
+	}
+	return notes
+}
+
+// renderCampaignCheck prints the matrix for a reader. Two things are folded
+// that the JSON document keeps in full. A note every listed worker of a task
+// shares, such as a fresh workspace having no repository to reach, is printed
+// once for the task rather than once per worker. Workers that are not eligible
+// for the task at all are counted and named on one line after the eligible
+// ones, rather than listed as impossible candidates.
+func renderCampaignCheck(out interface{ Write([]byte) (int, error) }, document campaignCheck) error {
+	var lines []string
+	linef := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	linef("%s", campaignOutcomeHeadline(document.Name, document.Matrix))
+	for _, reason := range document.Matrix.Reasons {
+		linef("  %s  %s: %s", permanenceLabel(reason.Permanent), reason.Code, reason.Detail)
 	}
 	for _, task := range document.Matrix.Tasks {
-		if _, err := fmt.Fprintf(out, "  %s  %s\n", task.Task, task.Outcome); err != nil {
-			return err
-		}
+		linef("  %s  %s", task.Task, task.Outcome)
 		for _, reason := range task.Reasons {
-			if _, err := fmt.Fprintf(out, "    %s  %s: %s\n",
-				permanenceLabel(reason.Permanent), reason.Code, reason.Detail); err != nil {
-				return err
+			linef("    %s  %s: %s", permanenceLabel(reason.Permanent), reason.Code, reason.Detail)
+		}
+		var listed, excluded []backlogadmin.ViabilityCandidate
+		for _, candidate := range task.Candidates {
+			if candidateNotEligible(candidate) {
+				excluded = append(excluded, candidate)
+			} else {
+				listed = append(listed, candidate)
 			}
 		}
-		for _, candidate := range task.Candidates {
-			if _, err := fmt.Fprintf(out, "    %s  %s\n", candidate.Worker, candidate.Outcome); err != nil {
-				return err
-			}
-			// What was not checked is printed with what was. A reader of "ready"
-			// has to be able to tell a passed check from a question nobody asked.
-			if observation := candidate.Repository; observation != nil {
-				line := "      repository  observed: " + observation.Class + "\n"
-				if !observation.Observed {
-					line = "      repository  not observed: " + observation.Unobserved + "\n"
+		// A note is shared when every listed worker carries it; with one worker
+		// there is nothing to fold.
+		shared := map[string]bool{}
+		var sharedOrder []string
+		if len(listed) > 1 {
+			for _, note := range candidateNotes(listed[0]) {
+				all := true
+				for _, other := range listed[1:] {
+					if !slices.Contains(candidateNotes(other), note) {
+						all = false
+						break
+					}
 				}
-				if _, err := fmt.Fprint(out, line); err != nil {
-					return err
+				if all && !shared[note] {
+					shared[note] = true
+					sharedOrder = append(sharedOrder, note)
 				}
 			}
-			for _, note := range candidate.Unchecked {
-				if _, err := fmt.Fprintf(out, "      unchecked   %s\n", note); err != nil {
-					return err
+		}
+		for _, note := range sharedOrder {
+			linef("    every worker below: %s", note)
+		}
+		for _, candidate := range listed {
+			linef("    %s  %s", candidate.Worker, candidate.Outcome)
+			for _, note := range candidateNotes(candidate) {
+				if !shared[note] {
+					linef("      %s", note)
 				}
 			}
 			for _, reason := range candidate.Reasons {
-				line := fmt.Sprintf("      %s  %s: %s\n",
-					permanenceLabel(reason.Permanent), reason.Code, reason.Detail)
 				if reason.Desired != "" || reason.Observed != "" {
-					line = fmt.Sprintf("      %s  %s: %s (desired %s, observed %s, expected revision %d)\n",
+					linef("      %s  %s: %s (desired %s, observed %s, expected revision %d)",
 						permanenceLabel(reason.Permanent), reason.Code, reason.Detail,
 						reason.Desired, reason.Observed, reason.Revision)
-				}
-				if _, err := fmt.Fprint(out, line); err != nil {
-					return err
+				} else {
+					linef("      %s  %s: %s", permanenceLabel(reason.Permanent), reason.Code, reason.Detail)
 				}
 			}
 		}
+		if len(excluded) > 0 {
+			workers := "workers"
+			if len(excluded) == 1 {
+				workers = "worker"
+			}
+			details := make([]string, 0, len(excluded))
+			for _, candidate := range excluded {
+				findings := make([]string, 0, len(candidate.Reasons))
+				for _, reason := range candidate.Reasons {
+					findings = append(findings, reason.Detail)
+				}
+				details = append(details, candidate.Worker+" ("+strings.Join(findings, "; ")+")")
+			}
+			linef("    not eligible, omitted: %d %s: %s", len(excluded), workers, strings.Join(details, ", "))
+		}
 	}
-	return nil
+	_, err := fmt.Fprint(out, strings.Join(lines, "\n")+"\n")
+	return err
 }
 
 func permanenceLabel(permanent bool) string {

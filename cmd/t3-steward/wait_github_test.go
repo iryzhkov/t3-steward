@@ -50,6 +50,75 @@ func TestGitHubWaitRegistrationParsesTheTarget(t *testing.T) {
 	}
 }
 
+// A github target may name its repository, as owner/name#<n> or as the URL gh
+// and the browser show, and that repository is recorded as --repo would be. A
+// target in any other form is refused before gh is asked, with the forms that
+// are accepted, rather than handed to gh as a branch name.
+func TestGitHubWaitTargetAcceptsQualifiedForms(t *testing.T) {
+	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		args           []string
+		kind, id, repo string
+	}{
+		{[]string{"--github", "pr", "owner/repo#45"}, "pr", "45", "owner/repo"},
+		{[]string{"--github", "pr", "https://github.com/owner/repo/pull/45"}, "pr", "45", "owner/repo"},
+		{[]string{"--github", "pr", "https://github.com/owner/repo/pull/45/files?x=1"}, "pr", "45", "owner/repo"},
+		{[]string{"--github", "https://github.com/owner/repo/pull/45"}, "pr", "45", "owner/repo"},
+		{[]string{"--github", "run", "https://github.com/owner/repo/actions/runs/987/job/1"}, "run", "987", "owner/repo"},
+		{[]string{"--github", "https://github.com/owner/repo/actions/runs/987"}, "run", "987", "owner/repo"},
+		{[]string{"--github", "run", "owner/repo#987"}, "run", "987", "owner/repo"},
+		{[]string{"--github=pr:owner/repo#45", "--repo", "OWNER/repo"}, "pr", "45", "owner/repo"},
+	} {
+		spec, err := parseLocalWaitSpec(c.args, now)
+		if err != nil {
+			t.Fatalf("%v: %v", c.args, err)
+		}
+		if spec.GitHub.Kind != c.kind || spec.GitHub.ID != c.id || spec.GitHub.Repo != c.repo {
+			t.Fatalf("%v parsed as %+v", c.args, spec.GitHub)
+		}
+		if got := strings.Join(spec.GitHub.Args(), " "); !strings.Contains(got, " "+c.id+" ") || !strings.HasSuffix(got, "--repo "+c.repo) {
+			t.Fatalf("%v asks gh %q", c.args, got)
+		}
+	}
+	// A pr id in none of those forms is a branch name, which gh pr view has
+	// always accepted, and it reaches gh unchanged.
+	for _, branch := range []string{"feature-branch", "fix/rc96-ax-cli", "owner#45", "owner/repo#next"} {
+		spec, err := parseLocalWaitSpec([]string{"--github", "pr", branch}, now)
+		if err != nil {
+			t.Fatalf("pr %s: %v", branch, err)
+		}
+		if spec.GitHub.ID != branch || spec.GitHub.Repo != "" || spec.GitHub.Args()[2] != branch {
+			t.Fatalf("pr %s parsed as %+v", branch, spec.GitHub)
+		}
+	}
+	// A run has no branch reading, and no kind accepts another host's URL; both
+	// refusals say GitHub Enterprise is not supported.
+	for _, args := range [][]string{
+		{"--github", "run", "feature-branch"},
+		{"--github", "run", "owner#45"},
+		{"--github", "pr", "https://github.example.com/owner/repo/pull/45"},
+	} {
+		_, err := parseLocalWaitSpec(args, now)
+		if err == nil || !strings.Contains(err.Error(), "GitHub Enterprise hosts are not supported") {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"--github", "pr", "https://github.com/owner/repo/issues/45"},
+		{"--github", "pr", "https://github.com/owner/repo/actions/runs/987"},
+		{"--github", "pr", "owner/repo#45", "--repo", "other/repo"},
+		{"--github=issue:45"},
+	} {
+		_, err := parseLocalWaitSpec(args, now)
+		if err == nil {
+			t.Fatalf("%v was accepted", args)
+		}
+		if !strings.Contains(err.Error(), "owner/name#<n>") && !strings.Contains(err.Error(), "--repo names") {
+			t.Fatalf("%v was refused without the accepted forms: %v", args, err)
+		}
+	}
+}
+
 // --task current --github parks the attempt on a github record: gh is read once
 // at registration, a run that is still in progress is accepted, and one that
 // is already complete or unreadable is refused.
