@@ -68,16 +68,16 @@ func failedOfferSupersessionFixture(t *testing.T) (*Store, FailedActivationOffer
 		t.Fatal(err)
 	}
 	return store, FailedActivationOfferSupersession{
-		CoordinatorEpoch: 1, RunID: failure.RunID,
-		ActivationID: failure.ActivationID, ActivationEpoch: failure.ActivationEpoch,
-		ExpectedRecordRevision: state.Record.Revision,
-		AssignmentID:           failure.AssignmentID, AssignmentEpoch: failure.AssignmentEpoch,
-		ReassessmentEventID: eventID, SupersededAt: supervisionTestTime.Add(2 * time.Minute),
-	}, domain.AssignmentClaimRequest{
-		CoordinatorEpoch: 1, WorkerID: assignment.WorkerID, WorkerEpoch: assignment.WorkerEpoch,
-		AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch, LeaseToken: assignment.LeaseToken,
-		ClaimedAt: supervisionTestTime.Add(2 * time.Minute), LeaseExpiresAt: supervisionTestTime.Add(time.Hour),
-	}
+			CoordinatorEpoch: 1, RunID: failure.RunID,
+			ActivationID: failure.ActivationID, ActivationEpoch: failure.ActivationEpoch,
+			ExpectedRecordRevision: state.Record.Revision,
+			AssignmentID:           failure.AssignmentID, AssignmentEpoch: failure.AssignmentEpoch,
+			ReassessmentEventID: eventID, SupersededAt: supervisionTestTime.Add(2 * time.Minute),
+		}, domain.AssignmentClaimRequest{
+			CoordinatorEpoch: 1, WorkerID: assignment.WorkerID, WorkerEpoch: assignment.WorkerEpoch,
+			AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch, LeaseToken: assignment.LeaseToken,
+			ClaimedAt: supervisionTestTime.Add(2 * time.Minute), LeaseExpiresAt: supervisionTestTime.Add(time.Hour),
+		}
 }
 
 func TestFailedActivationOfferClaimReassessmentRaceHasOneWinner(t *testing.T) {
