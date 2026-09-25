@@ -77,7 +77,7 @@ func TestCreateThreadWithoutPreflightKeepsTheExistingPrompt(t *testing.T) {
 	if err := driver.CreateThread(context.Background(), pkg, workspace); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	if len(control.created) != 1 || control.created[0].Prompt != "prompt" {
+	if len(control.created) != 1 || !strings.HasPrefix(control.created[0].Prompt, "prompt\n\n## How this task ends\n") {
 		t.Fatalf("a task without preflight must launch with today's prompt, got %+v", control.created)
 	}
 	if _, err := os.Stat(filepath.Join(driver.preflightDir(pkg), "state.json")); !errors.Is(err, os.ErrNotExist) {

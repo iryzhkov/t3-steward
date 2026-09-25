@@ -162,6 +162,11 @@ func TestAttemptFinalizerMissingOutputIsTaskFailure(t *testing.T) {
 	if !strings.Contains(result.Completion.Failure, "missing declared output: absent.txt") {
 		t.Fatalf("failure = %q", result.Completion.Failure)
 	}
+	// S12: the failure names the likely cause and the supported way to wait.
+	if !strings.Contains(result.Completion.Failure, "ending the turn completes the task") ||
+		!strings.Contains(result.Completion.Failure, "t3-steward wait add --task current") {
+		t.Fatalf("failure does not explain the turn boundary: %q", result.Completion.Failure)
+	}
 	if _, err := os.Stat(filepath.Join(workspace, "should-not-be-skipped")); err != nil {
 		t.Fatalf("verification did not run before output capture: %v", err)
 	}

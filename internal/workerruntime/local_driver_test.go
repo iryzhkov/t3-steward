@@ -223,7 +223,7 @@ func TestLocalDriverBindsCatalogArtifactsWorkspaceAndT3(t *testing.T) {
 	}
 	if len(control.created) != 1 || control.created[0].ThreadID != "thread-1" ||
 		control.created[0].DispatchToken != "dispatch-1" || control.created[0].WorktreePath != workspace ||
-		control.created[0].Prompt != "prompt" {
+		!strings.HasPrefix(control.created[0].Prompt, "prompt\n\n## How this task ends\n") {
 		t.Fatalf("create input = %+v", control.created)
 	}
 	if state, err := driver.ObserveThread(context.Background(), pkg); err != nil || state != backlog.DispatchThreadActive {
@@ -321,6 +321,48 @@ func TestRecoveryRetryPromptAppliesSupplementWithoutReplacingOriginal(t *testing
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("prompt missing %q: %s", required, prompt)
 		}
+	}
+}
+
+// S12: a task that started its checks in the background and ended its turn was
+// collected at once with no outputs, because nothing it could read said that
+// ending the turn completes the task. Every task prompt now says so, names the
+// declared file outputs, and names the task-bound wait.
+func TestTaskPromptSaysEndingTheTurnCompletesTheTask(t *testing.T) {
+	pkg := testPackage()
+	pkg.Outputs = []domain.ArtifactDeclaration{
+		{Name: "report.md"},
+		{Name: "implementation", Commit: &domain.CommitOutput{}},
+	}
+	root := t.TempDir()
+	control := &recordingT3{projectID: "project-uuid"}
+	driver := &LocalDriver{Config: LocalDriverConfig{ArtifactRoot: root}, T3: control}
+	cachePath := filepath.Join(root, "objects", pkg.Prompt.SHA256)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, []byte("prompt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.CreateThread(context.Background(), pkg, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	prompt := control.created[0].Prompt
+	if !strings.HasPrefix(prompt, "prompt\n\n") {
+		t.Fatalf("the author's prompt must come first and unchanged: %q", prompt)
+	}
+	for _, want := range []string{
+		"it is complete when your turn ends",
+		"not waited for",
+		"Declared outputs, which must exist when the turn ends: `report.md`.",
+		"t3-steward wait add --task current",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt does not say %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "`implementation`") {
+		t.Fatalf("a commit output is not a file the workspace must hold:\n%s", prompt)
 	}
 }
 
