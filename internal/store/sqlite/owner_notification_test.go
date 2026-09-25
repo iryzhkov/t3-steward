@@ -111,8 +111,9 @@ func TestOwnerNotificationsBaselineHistoryAndDeliverOnceAcrossRestart(t *testing
 	if len(sent()) != 0 {
 		t.Fatalf("history was sent: %v", sent())
 	}
-	if state, _ := ownerNotificationState(t, store, "discord|run-succeeded|history"); state != string(ownernotify.StateBaseline) {
-		t.Fatalf("history row state = %s", state)
+	// History is older than the watermark, so it is not even recorded.
+	if err := store.db.QueryRow(`SELECT 1 FROM coordinator_owner_notifications WHERE run_id = 'history'`).Scan(new(int)); err == nil {
+		t.Fatal("a run older than the watermark was recorded")
 	}
 
 	// A live run with a failed task and a thread waiting on its sink.
@@ -297,6 +298,165 @@ func TestOwnerNotificationsDetectOperatorAttention(t *testing.T) {
 	notifier.Tick(ctx)
 	if got := sink.delivered(); len(got) != 5 || got[4].ActivationID != "act-2" {
 		t.Fatalf("a lone activation was not reported: %+v", got)
+	}
+}
+
+// clockedNotifier is a notifier over the store with a clock the test moves.
+func clockedNotifier(store *Store, now *time.Time, sinks ...ownernotify.Sink) *ownernotify.Notifier {
+	return &ownernotify.Notifier{Store: store, Sinks: sinks,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: func() time.Time { return *now }}
+}
+
+func openOwnerNotificationStore(t *testing.T) *Store {
+	t.Helper()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+func deliveredRuns(sink *recordingSink) string {
+	var ids []string
+	for _, n := range sink.delivered() {
+		ids = append(ids, n.RunID)
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ",")
+}
+
+// A channel removed and added back later, or a scheduled_success turned off
+// and on again, does not replay what finished while it was gone.
+func TestOwnerNotificationsDoNotReplayAGapWhenAScopeComesBack(t *testing.T) {
+	ctx := context.Background()
+	store := openOwnerNotificationStore(t)
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	discord := &recordingSink{name: "discord", selection: ownernotify.Selection{Events: ownernotify.DefaultEvents()}}
+	scheduled := &recordingSink{name: "command", selection: ownernotify.Selection{Events: ownernotify.DefaultEvents(), ScheduledSuccess: true}}
+	notifier := clockedNotifier(store, &now, discord, scheduled)
+	notifier.Tick(ctx)
+
+	// Discord is removed from the configuration, and the command sink stops
+	// asking for scheduled successes.
+	now = now.Add(time.Minute)
+	scheduled.selection.ScheduledSuccess = false
+	notifier.Sinks = []ownernotify.Sink{scheduled}
+	notifier.Tick(ctx)
+	terminalRun(t, store, "gap-failed", domain.ProgressFailed, now.Add(time.Minute))
+	gapScheduled := domain.WorkflowRun{ID: "gap-scheduled-ok", WorkflowID: "w", ScheduleID: "hourly", Revision: 2,
+		Progress: domain.ProgressSucceeded, CreatedAt: now, UpdatedAt: now, CompletedAt: &now}
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{gapScheduled}}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute)
+	notifier.Tick(ctx)
+
+	// Both come back.
+	now = now.Add(time.Minute)
+	scheduled.selection.ScheduledSuccess = true
+	notifier.Sinks = []ownernotify.Sink{discord, scheduled}
+	notifier.Tick(ctx)
+	if got := deliveredRuns(discord); got != "" {
+		t.Fatalf("re-added discord replayed %s", got)
+	}
+	if got := deliveredRuns(scheduled); got != "gap-failed" {
+		t.Fatalf("the command sink delivered %q; the failure was in scope throughout, the scheduled success was not", got)
+	}
+
+	// What finishes after the return is delivered.
+	terminalRun(t, store, "after", domain.ProgressFailed, now.Add(time.Minute))
+	now = now.Add(2 * time.Minute)
+	notifier.Tick(ctx)
+	if got := deliveredRuns(discord); got != "after" {
+		t.Fatalf("after the return discord delivered %q", got)
+	}
+}
+
+// Settled rows are pruned after the retention bound, and a pruned run is not
+// detected again, because the watermark moved past it.
+func TestOwnerNotificationsPruneSettledRowsWithoutRedelivering(t *testing.T) {
+	ctx := context.Background()
+	store := openOwnerNotificationStore(t)
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	sink := &recordingSink{name: "discord", selection: ownernotify.Selection{Events: ownernotify.DefaultEvents()}}
+	notifier := clockedNotifier(store, &now, sink)
+	notifier.Tick(ctx)
+	terminalRun(t, store, "old", domain.ProgressFailed, now.Add(time.Minute))
+	now = now.Add(2 * time.Minute)
+	notifier.Tick(ctx)
+	if got := deliveredRuns(sink); got != "old" {
+		t.Fatalf("delivered %q", got)
+	}
+
+	now = now.Add(40 * 24 * time.Hour)
+	notifier.Tick(ctx)
+	var rows int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM coordinator_owner_notifications`).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("rows after prune = %d, %v", rows, err)
+	}
+	now = now.Add(time.Minute)
+	notifier.Tick(ctx)
+	if got := deliveredRuns(sink); got != "old" {
+		t.Fatalf("a pruned run was delivered again: %q", got)
+	}
+}
+
+// flakySink fails its first send and accepts the rest.
+type flakySink struct {
+	recordingSink
+	failed bool
+}
+
+func (s *flakySink) Deliver(ctx context.Context, n ownernotify.Notification) error {
+	if !s.failed {
+		s.failed = true
+		return &ownernotify.DeliveryError{Reason: "webhook down"}
+	}
+	return s.recordingSink.Deliver(ctx, n)
+}
+
+// A question answered while its notification waited for a retry is dropped as
+// resolved rather than sent.
+func TestOwnerNotificationRetryIsDroppedWhenTheQuestionWasAnswered(t *testing.T) {
+	ctx := context.Background()
+	store := openOwnerNotificationStore(t)
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{{ID: "r", WorkflowID: "w", Revision: 1, Progress: domain.ProgressActive, CreatedAt: now, UpdatedAt: now}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sink := &flakySink{recordingSink: recordingSink{name: "discord", selection: ownernotify.Selection{Events: []ownernotify.Event{ownernotify.EventNeedsInput}}}}
+	notifier := clockedNotifier(store, &now, sink)
+	notifier.Tick(ctx)
+
+	wait := domain.TaskWait{ID: "tw-q", WorkflowRunID: "r", TaskID: "t", AttemptID: "a", RequestID: "q",
+		Kind: domain.WaitKindAttention, RegisteredAt: now.Add(time.Minute),
+		Attention: &domain.AttentionRequest{Kind: domain.AttentionApproval, Prompt: "Ship?", AssignmentID: "as"}}
+	raw, _ := json.Marshal(wait)
+	if _, err := store.db.Exec(`INSERT INTO coordinator_task_waits(id, request_id, attempt_id, thread_id, record) VALUES (?, ?, ?, ?, ?)`,
+		wait.ID, wait.RequestID, wait.AttemptID, "thread", string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute)
+	notifier.Tick(ctx) // The first send fails.
+	if state, attempts := ownerNotificationState(t, store, "discord|needs-input|tw-q"); state != "pending" || attempts != 1 {
+		t.Fatalf("after a failed send: %s, %d", state, attempts)
+	}
+
+	wait.SettledAt = &now
+	raw, _ = json.Marshal(wait)
+	if _, err := store.db.Exec(`UPDATE coordinator_task_waits SET record = ? WHERE id = ?`, string(raw), wait.ID); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Hour)
+	notifier.Tick(ctx)
+	if got := sink.delivered(); len(got) != 0 {
+		t.Fatalf("an answered question was sent: %+v", got)
+	}
+	if state, _ := ownerNotificationState(t, store, "discord|needs-input|tw-q"); state != string(ownernotify.StateResolved) {
+		t.Fatalf("row state = %s, want resolved", state)
 	}
 }
 

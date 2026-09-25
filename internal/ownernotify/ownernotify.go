@@ -188,6 +188,10 @@ const (
 	// delivering that event kind. It is recorded so that it is never sent: a
 	// newly configured webhook must not replay the coordinator's history.
 	StateBaseline State = "baseline"
+	// StateResolved is a retried question or escalation whose condition no
+	// longer holds when its next attempt came due. It is terminal: telling
+	// the owner about a question somebody already answered is noise.
+	StateResolved State = "resolved"
 )
 
 // Detection is what one detection pass recorded for one sink.
@@ -229,12 +233,58 @@ func ScheduledSuccessEvent(event Event) bool {
 	return event == EventRunSucceeded || event == EventRunSkipped
 }
 
+// RunScope narrows a run event to the runs a schedule created, the runs it did
+// not, or all of them.
+type RunScope string
+
+const (
+	RunsAll         RunScope = "all"
+	RunsUnscheduled RunScope = "unscheduled"
+	RunsScheduled   RunScope = "scheduled"
+)
+
+// Scope is one detection scope of a sink: an event, and for scheduled
+// successes the runs it covers. Key is its identity in the watermark table.
+//
+// A scope has a watermark, the time it became active. Only what happened at or
+// after the watermark is new to the sink; a scope that drops out of the
+// configuration loses its watermark, so re-adding it later starts from then
+// and does not replay whatever finished in between.
+type Scope struct {
+	Event Event
+	Key   string
+	Runs  RunScope
+}
+
+// Scopes lists the detection scopes of a selection. Scheduled successes are a
+// scope of their own, so opting into them later starts a fresh watermark.
+func (s Selection) Scopes() []Scope {
+	var scopes []Scope
+	for _, event := range s.Events {
+		if !ScheduledSuccessEvent(event) {
+			scopes = append(scopes, Scope{Event: event, Key: string(event), Runs: RunsAll})
+			continue
+		}
+		scopes = append(scopes, Scope{Event: event, Key: string(event), Runs: RunsUnscheduled})
+		if s.ScheduledSuccess {
+			scopes = append(scopes, Scope{Event: event, Key: string(event) + ":scheduled", Runs: RunsScheduled})
+		}
+	}
+	return scopes
+}
+
+// ConditionEvent reports whether an event describes a condition that can stop
+// holding before it is delivered: a question, an escalation, a gate review.
+func ConditionEvent(event Event) bool {
+	return event == EventNeedsInput || event == EventSupervisionEscalated || event == EventGateReview
+}
+
 // Store is the coordinator outbox.
 type Store interface {
-	// DetectOwnerNotifications records every selected event that has no row
-	// for this sink yet. The first pass for a (sink, event) pair records what
-	// already exists as baseline instead of pending; scheduled successes are
-	// baselined separately, so opting into them later replays nothing.
+	// DetectOwnerNotifications records every selected event that happened at
+	// or after its scope's watermark and has no row for this sink yet. The
+	// first pass for a scope sets the watermark and records supervision
+	// conditions already waiting as baseline instead of pending.
 	DetectOwnerNotifications(ctx context.Context, sink string, selection Selection, now time.Time) (Detection, error)
 	// DueOwnerNotifications returns pending rows whose next attempt is due,
 	// oldest first.
@@ -242,6 +292,17 @@ type Store interface {
 	// RecordOwnerNotificationAttempt stores the outcome of one send. It
 	// changes only a row that is still pending.
 	RecordOwnerNotificationAttempt(ctx context.Context, id string, result AttemptResult) error
+	// SyncOwnerNotificationScopes drops the watermark of every scope that is
+	// not active, keyed by sink name. A scope removed and later re-added then
+	// starts over from the moment it came back.
+	SyncOwnerNotificationScopes(ctx context.Context, active map[string][]Scope) error
+	// PruneOwnerNotifications removes settled rows recorded before the given
+	// time and moves every watermark up to it, so a pruned row cannot be
+	// detected again. It removes at most limit rows and reports how many.
+	PruneOwnerNotifications(ctx context.Context, before time.Time, limit int) (int, error)
+	// OwnerNotificationHolds reports whether the condition a question,
+	// escalation or gate-review row describes still holds.
+	OwnerNotificationHolds(ctx context.Context, notification Notification) (bool, error)
 }
 
 // Sink is one owner channel.
@@ -285,6 +346,13 @@ const (
 	// for longer than this is treated as this, so a malformed header cannot
 	// park the outbox for days.
 	maxRetryAfter = time.Hour
+	// DefaultRetention is how long a settled row is kept. The watermark moves
+	// up with every prune, so nothing older can come back.
+	DefaultRetention = 30 * 24 * time.Hour
+	// pruneEvery and pruneBatch keep pruning rare and each transaction short,
+	// so a scheduling boundary never waits behind it for long.
+	pruneEvery = time.Hour
+	pruneBatch = 500
 )
 
 // Notifier runs detection and delivery for a set of sinks.
@@ -303,7 +371,12 @@ type Notifier struct {
 	BatchSize int
 	// SendTimeout bounds one send. Zero means DefaultSendTimeout.
 	SendTimeout time.Duration
-	Now         func() time.Time
+	// Retention is how long settled rows are kept. Zero means
+	// DefaultRetention.
+	Retention time.Duration
+	Now       func() time.Time
+
+	lastPrune time.Time
 }
 
 // Run executes a pass immediately and then on every interval until ctx ends.
@@ -328,11 +401,48 @@ func (n *Notifier) Run(ctx context.Context) {
 // Tick runs one detection and delivery pass for every sink. A failure in one
 // sink is logged and does not stop the others.
 func (n *Notifier) Tick(ctx context.Context) {
+	if err := SyncScopes(ctx, n.Store, n.Sinks); err != nil {
+		n.logger().Error("owner notification scopes could not be synchronized", "error", err)
+	}
 	for _, sink := range n.Sinks {
 		if ctx.Err() != nil {
 			return
 		}
 		n.tickSink(ctx, sink)
+	}
+	n.prune(ctx)
+}
+
+// SyncScopes drops the watermark of every scope the given sinks do not
+// declare. The coordinator calls it when no sink is configured at all, so
+// removing every channel resets them too.
+func SyncScopes(ctx context.Context, store Store, sinks []Sink) error {
+	active := make(map[string][]Scope, len(sinks))
+	for _, sink := range sinks {
+		active[sink.Name()] = sink.Selection().Scopes()
+	}
+	return store.SyncOwnerNotificationScopes(ctx, active)
+}
+
+// prune removes settled rows past retention, at most once per pruneEvery and
+// in bounded batches.
+func (n *Notifier) prune(ctx context.Context) {
+	now := n.now()
+	if !n.lastPrune.IsZero() && now.Sub(n.lastPrune) < pruneEvery {
+		return
+	}
+	n.lastPrune = now
+	retention := n.Retention
+	if retention <= 0 {
+		retention = DefaultRetention
+	}
+	removed, err := n.Store.PruneOwnerNotifications(ctx, now.Add(-retention), pruneBatch)
+	if err != nil {
+		n.logger().Error("owner notification outbox prune failed", "error", err)
+		return
+	}
+	if removed != 0 {
+		n.logger().Debug("owner notification outbox pruned", "rows", removed)
 	}
 }
 
@@ -375,6 +485,26 @@ func (n *Notifier) tickSink(ctx context.Context, sink Sink) {
 // deliver sends one row and records the outcome. It reports whether the
 // receiver rate-limited the send.
 func (n *Notifier) deliver(ctx context.Context, logger *slog.Logger, sink Sink, notification Notification) bool {
+	fields := []any{"event", notification.Event, "run", notification.RunID, "id", notification.ID, "attempts", notification.Attempts}
+	if notification.Attempts > 0 && ConditionEvent(notification.Event) {
+		// A retry comes due minutes later, and the question may have been
+		// answered or the escalation resolved in the meantime.
+		holds, err := n.Store.OwnerNotificationHolds(ctx, notification)
+		if err != nil {
+			logger.Error("owner notification condition could not be checked", append(fields, "error", err)...)
+			return false
+		}
+		if !holds {
+			if err := n.Store.RecordOwnerNotificationAttempt(context.WithoutCancel(ctx), notification.ID, AttemptResult{
+				State: StateResolved, Attempts: notification.Attempts, At: n.now(),
+			}); err != nil {
+				logger.Error("owner notification resolution could not be recorded", append(fields, "error", err)...)
+				return false
+			}
+			logger.Info("owner notification dropped; its condition was resolved before it was sent", fields...)
+			return false
+		}
+	}
 	timeout := n.SendTimeout
 	if timeout <= 0 {
 		timeout = DefaultSendTimeout
@@ -384,9 +514,13 @@ func (n *Notifier) deliver(ctx context.Context, logger *slog.Logger, sink Sink, 
 	cancel()
 	now := n.now()
 	attempts := notification.Attempts + 1
-	fields := []any{"event", notification.Event, "run", notification.RunID, "id", notification.ID, "attempts", attempts}
+	fields = []any{"event", notification.Event, "run", notification.RunID, "id", notification.ID, "attempts", attempts}
+	// The outcome is recorded even when the context has just ended. A send
+	// that succeeded right before a reload or shutdown must not stay pending,
+	// or the next coordinator sends it a second time.
+	recordCtx := context.WithoutCancel(ctx)
 	if sendErr == nil {
-		if err := n.Store.RecordOwnerNotificationAttempt(ctx, notification.ID, AttemptResult{
+		if err := n.Store.RecordOwnerNotificationAttempt(recordCtx, notification.ID, AttemptResult{
 			State: StateDelivered, Attempts: attempts, At: now,
 		}); err != nil {
 			// The send happened and its record did not. The row stays pending
@@ -419,7 +553,7 @@ func (n *Notifier) deliver(ctx context.Context, logger *slog.Logger, sink Sink, 
 	default:
 		result.NextAttemptAt = now.Add(n.backoff(attempts))
 	}
-	if err := n.Store.RecordOwnerNotificationAttempt(ctx, notification.ID, result); err != nil {
+	if err := n.Store.RecordOwnerNotificationAttempt(recordCtx, notification.ID, result); err != nil {
 		logger.Error("owner notification attempt could not be recorded", append(fields, "error", err)...)
 		return classified.RetryAfter > 0
 	}

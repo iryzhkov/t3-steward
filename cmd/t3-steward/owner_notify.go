@@ -33,7 +33,7 @@ func ownerNotificationSinks(notifications config.Notifications, logger *slog.Log
 		if selection, err := command.Selection(); err != nil {
 			logger.Error("command owner notifications are disabled", "error", err)
 		} else {
-			sinks = append(sinks, ownernotify.NewCommand(command.Argv, selection))
+			sinks = append(sinks, ownernotify.NewCommand(command.Argv, command.Env, selection))
 		}
 	}
 	return sinks
@@ -46,6 +46,14 @@ func ownerNotificationSinks(notifications config.Notifications, logger *slog.Log
 func startOwnerNotifier(ctx context.Context, notifications config.Notifications, store ownernotify.Store, logger *slog.Logger) func() {
 	sinks := ownerNotificationSinks(notifications, logger)
 	if len(sinks) == 0 {
+		// With no channel configured nothing runs, but every watermark is
+		// still dropped: a channel removed now and added back later must
+		// start from then, not replay what finished in between.
+		if store != nil {
+			if err := ownernotify.SyncScopes(ctx, store, nil); err != nil {
+				logger.Error("owner notification scopes could not be synchronized", "error", err)
+			}
+		}
 		return func() {}
 	}
 	names := make([]string, 0, len(sinks))

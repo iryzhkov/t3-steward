@@ -13,9 +13,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -80,6 +82,18 @@ func (s *memoryStore) RecordOwnerNotificationAttempt(_ context.Context, id strin
 	}
 	row.result = result
 	return nil
+}
+
+func (s *memoryStore) SyncOwnerNotificationScopes(context.Context, map[string][]Scope) error {
+	return nil
+}
+
+func (s *memoryStore) PruneOwnerNotifications(context.Context, time.Time, int) (int, error) {
+	return 0, nil
+}
+
+func (s *memoryStore) OwnerNotificationHolds(context.Context, Notification) (bool, error) {
+	return true, nil
 }
 
 func (s *memoryStore) row(id string) AttemptResult {
@@ -352,6 +366,128 @@ func TestRenderDiscordStaysUnderTheContentLimit(t *testing.T) {
 	}
 }
 
+// cancellingSink ends the notifier's context from inside a successful send,
+// which is what a reload or shutdown right after the send looks like.
+type cancellingSink struct {
+	cancel context.CancelFunc
+	sent   int
+}
+
+func (s *cancellingSink) Name() string         { return DiscordSinkName }
+func (s *cancellingSink) Selection() Selection { return Selection{Events: DefaultEvents()} }
+func (s *cancellingSink) Deliver(context.Context, Notification) error {
+	s.sent++
+	s.cancel()
+	return nil
+}
+
+// A send that succeeded is recorded even when the context ends right after
+// it, so the next coordinator does not send it again.
+func TestNotifierRecordsASuccessfulSendAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := newMemoryStore(runFailed("run-1"))
+	sink := &cancellingSink{cancel: cancel}
+	notifier := &Notifier{Store: store, Sinks: []Sink{sink}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	notifier.Tick(ctx)
+	if got := store.row(runFailed("run-1").ID); sink.sent != 1 || got.State != StateDelivered {
+		t.Fatalf("sent %d, row %+v", sink.sent, got)
+	}
+}
+
+// Free text cannot format the owner's channel: no emphasis, header, link,
+// masked link, quote or new line survives from a campaign name, prompt or
+// reason.
+func TestRenderDiscordEscapesMarkdownInFreeText(t *testing.T) {
+	hostile := "# Pwned **bold** [click](https://evil.example) _x_ ~~s~~ ||spoiler|| @everyone\n> quoted"
+	for _, n := range []Notification{
+		{Event: EventRunFailed, RunID: "run-1", Campaign: hostile, Outcome: "failed"},
+		{Event: EventNeedsInput, RunID: "run-1", Task: "t", WaitID: "tw-1", Prompt: hostile},
+		{Event: EventSupervisionEscalated, RunID: "run-1", Reason: hostile},
+	} {
+		content := RenderDiscord(n)
+		for _, forbidden := range []string{"**bold**", "[click]", "](", "https://", "_x_", "~~s~~", "||spoiler", "\n> quoted", "\n#"} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("%s: %q survives in %q", n.Event, forbidden, content)
+			}
+		}
+		// Every header mark and mention is escaped. (Mentions are also
+		// disabled in the request itself.)
+		if unescaped := regexp.MustCompile(`(^|[^\\])[#@]`); unescaped.MatchString(content) {
+			t.Fatalf("%s: an unescaped # or @ survives in %q", n.Event, content)
+		}
+		if !strings.Contains(content, `\*\*bold\*\*`) {
+			t.Fatalf("%s: the text itself was lost: %q", n.Event, content)
+		}
+	}
+}
+
+// The program sees PATH, HOME, LANG and the variables it was given, and none
+// of the rest of the coordinator's environment.
+func TestCommandSinkGetsAMinimalEnvironment(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	t.Setenv("T3_STEWARD_TEST_SECRET", "hunter2")
+	t.Setenv("NOTIFY_TOPIC", "fleet")
+	out := filepath.Join(t.TempDir(), "env")
+	sink := NewCommand([]string{"/bin/sh", "-c", `env > "$0"`, out}, []string{"NOTIFY_TOPIC"}, Selection{Events: DefaultEvents()})
+	if err := sink.Deliver(context.Background(), runFailed("run-1")); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := string(raw)
+	if strings.Contains(environment, "hunter2") || !strings.Contains(environment, "NOTIFY_TOPIC=fleet") ||
+		!strings.Contains(environment, "PATH=") {
+		t.Fatalf("environment:\n%s", environment)
+	}
+}
+
+// A timeout kills the program's whole process group, including a child it
+// left running in the background.
+func TestCommandSinkTimeoutKillsTheProcessGroup(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	pidFile := filepath.Join(t.TempDir(), "child")
+	sink := NewCommand([]string{"/bin/sh", "-c", `sleep 60 & echo $! > "$0"; wait`, pidFile}, nil, Selection{Events: DefaultEvents()})
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if err := sink.Deliver(ctx, runFailed("run-1")); err == nil {
+		t.Fatal("a timed-out command reported delivery")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("the timeout took %s", elapsed)
+	}
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if _, err := fmt.Sscan(strings.TrimSpace(string(raw)), &pid); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for processAlive(pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("background child %d survived the timeout", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func processAlive(pid int) bool {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return process.Signal(syscall.Signal(0)) == nil
+}
+
 // The command sink receives the event as versioned JSON on stdin, and a
 // non-zero exit is a retryable failure that quotes the program's stderr.
 func TestCommandSinkWritesJSONOnStdinAndRetriesAFailure(t *testing.T) {
@@ -359,7 +495,7 @@ func TestCommandSinkWritesJSONOnStdinAndRetriesAFailure(t *testing.T) {
 		t.Skip("no /bin/sh")
 	}
 	out := filepath.Join(t.TempDir(), "event.json")
-	sink := NewCommand([]string{"/bin/sh", "-c", `cat > "$0"`, out}, Selection{Events: DefaultEvents()})
+	sink := NewCommand([]string{"/bin/sh", "-c", `cat > "$0"`, out}, nil, Selection{Events: DefaultEvents()})
 	notification := runFailed("run-1")
 	notification.Sink = CommandSinkName
 	if err := sink.Deliver(context.Background(), notification); err != nil {
@@ -380,7 +516,7 @@ func TestCommandSinkWritesJSONOnStdinAndRetriesAFailure(t *testing.T) {
 	if commands, _ := payload["commands"].(map[string]any); commands["result"] != "t3-steward task result run-1" {
 		t.Fatalf("payload commands = %v", payload["commands"])
 	}
-	failing := NewCommand([]string{"/bin/sh", "-c", "echo webhook down >&2; exit 3"}, Selection{Events: DefaultEvents()})
+	failing := NewCommand([]string{"/bin/sh", "-c", "echo webhook down >&2; exit 3"}, nil, Selection{Events: DefaultEvents()})
 	err = failing.Deliver(context.Background(), notification)
 	var classified *DeliveryError
 	if !errors.As(err, &classified) || classified.Permanent || !strings.Contains(classified.Reason, "status 3") ||

@@ -271,6 +271,9 @@ type CommandNotifications struct {
 	Events []string `yaml:"events"`
 	// ScheduledSuccess is as for DiscordNotifications.
 	ScheduledSuccess bool `yaml:"scheduled_success"`
+	// Env names environment variables passed through to the program beside
+	// PATH, HOME and LANG. Nothing else of the coordinator's environment is.
+	Env []string `yaml:"env"`
 }
 
 // Selection is what this sink delivers. The events were validated at load.
@@ -354,6 +357,11 @@ func (n Notifications) validate(coordinator bool) error {
 		}
 		if _, err := ownernotify.ParseEvents(n.Command.Events); err != nil {
 			return fmt.Errorf("notifications.command: events: %w", err)
+		}
+		for _, name := range n.Command.Env {
+			if name == "" || strings.ContainsAny(name, "= \t\r\n") {
+				return fmt.Errorf("notifications.command: env entry %q must be a variable name", name)
+			}
 		}
 	}
 	return nil

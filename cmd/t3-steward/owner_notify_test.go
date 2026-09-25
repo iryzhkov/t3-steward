@@ -12,6 +12,22 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/ownernotify"
 )
 
+// The owner channels may change on a reload; the rest of the host lifecycle
+// still may not.
+func TestCoordinatorReloadAcceptsOwnerChannelChanges(t *testing.T) {
+	current := config.Default()
+	next := config.Default()
+	next.Notifications.Command = &config.CommandNotifications{Argv: []string{"/bin/true"}}
+	next.Notifications.Discord = &config.DiscordNotifications{WebhookURLFile: "/nonexistent"}
+	if err := validateCoordinatorReload(current, next); err != nil {
+		t.Fatalf("a notifications change was refused: %v", err)
+	}
+	next.Notifications.Desktop = !current.Notifications.Desktop
+	if err := validateCoordinatorReload(current, next); err == nil {
+		t.Fatal("a host lifecycle change was accepted")
+	}
+}
+
 // A webhook file that became unsafe after the configuration was loaded
 // disables that channel with one error line and leaves the coordinator, and
 // every other channel, running. The line names the file, not the URL.

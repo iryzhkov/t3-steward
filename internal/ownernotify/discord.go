@@ -171,11 +171,11 @@ func RenderDiscord(n Notification) string {
 	var b strings.Builder
 	subject := "run " + code(n.RunID)
 	if n.Campaign != "" {
-		subject = "campaign **" + inline(n.Campaign) + "** " + subject
+		subject = "campaign **" + escapeMarkdown(truncate(n.Campaign, 200)) + "** " + subject
 	}
 	switch n.Event {
 	case EventRunSucceeded, EventRunFailed, EventRunCancelled, EventRunSkipped:
-		fmt.Fprintf(&b, "t3-steward: %s **%s**.", subject, n.Outcome)
+		fmt.Fprintf(&b, "t3-steward: %s **%s**.", subject, escapeMarkdown(n.Outcome))
 		if len(n.FailedTasks) != 0 {
 			fmt.Fprintf(&b, " Failed: %s.", taskList(n.FailedTasks))
 		}
@@ -190,7 +190,7 @@ func RenderDiscord(n Notification) string {
 		}
 		b.WriteString(".")
 		if n.Prompt != "" {
-			b.WriteString("\n> " + strings.ReplaceAll(truncate(inline(n.Prompt), 600), "\n", "\n> "))
+			b.WriteString("\n> " + escapeMarkdown(truncate(n.Prompt, 600)))
 		}
 		fmt.Fprintf(&b, "\nInspect: %s", code("t3-steward wait inspect "+n.WaitID))
 	case EventSupervisionEscalated:
@@ -200,7 +200,7 @@ func RenderDiscord(n Notification) string {
 		}
 		b.WriteString(".")
 		if n.Reason != "" {
-			b.WriteString(" " + truncate(inline(n.Reason), 400))
+			b.WriteString(" " + escapeMarkdown(truncate(n.Reason, 400)))
 		}
 		fmt.Fprintf(&b, "\nSupervision: %s", code("t3-steward campaign supervision show "+n.RunID))
 	case EventGateReview:
@@ -227,23 +227,40 @@ func taskList(tasks []string) string {
 	return list
 }
 
-// code renders an identifier as inline code. A backtick inside it would end
-// the span early, so it is replaced.
+// code renders an identifier as inline code. Markdown is not interpreted
+// inside a code span, but a backtick would end the span early, so it is
+// replaced, and the span is kept on one line.
 func code(text string) string {
 	return "`" + strings.ReplaceAll(inline(text), "`", "'") + "`"
 }
 
-// inline trims text and removes control characters other than newlines.
+// inline trims text and turns every control character, newlines included,
+// into a space, so free text stays on its own line of the message.
 func inline(text string) string {
 	return strings.Map(func(r rune) rune {
-		if r == '\n' {
-			return r
-		}
 		if r < 0x20 || r == 0x7f {
 			return ' '
 		}
 		return r
 	}, strings.TrimSpace(text))
+}
+
+// markdownEscaper backslash-escapes every character Discord gives a meaning:
+// emphasis, strikethrough, spoilers, code, quotes, headers, lists and masked
+// links.
+var markdownEscaper = strings.NewReplacer(
+	`\`, `\\`, "*", `\*`, "_", `\_`, "~", `\~`, "`", "\\`", "|", `\|`, ">", `\>`,
+	"#", `\#`, "-", `\-`, "[", `\[`, "]", `\]`, "(", `\(`, ")", `\)`, "<", `\<`, "@", `\@`,
+	// A bare URL is linked by Discord whatever surrounds it; a zero-width
+	// space after the scheme keeps it as text.
+	"://", ":"+string(rune(0x200b))+"//",
+)
+
+// escapeMarkdown renders free text (campaign names, prompts, reasons) as
+// plain text on one line, so nothing a campaign author or an agent wrote can
+// format the owner's channel, add a link or start a header.
+func escapeMarkdown(text string) string {
+	return markdownEscaper.Replace(inline(text))
 }
 
 // truncate shortens text to at most limit characters, marking the cut.

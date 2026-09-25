@@ -27,10 +27,23 @@ import (
 // ignores a conflict, so a coordinator restart re-detects nothing it already
 // recorded and loses nothing it had not yet sent.
 //
-// The baselines table records which (sink, event) pairs have started
-// delivering. The first detection for a pair records what already exists as
-// baseline rows that are never sent, so enabling a webhook on a coordinator
-// with a long history does not replay that history into the channel.
+// The scopes table holds one watermark per sink and scope (an event, or the
+// scheduled successes of one): the time the scope became active. A run or a
+// question is new to the sink only when it happened at or after the
+// watermark, so enabling a webhook on a coordinator with a long history does
+// not replay that history. A scope that leaves the configuration loses its
+// watermark, so re-adding it later does not replay what finished in between
+// either. Supervision records carry no time of their own; when their scope is
+// created, the ones already waiting are recorded as baseline rows instead,
+// which are never sent.
+//
+// Settled rows are pruned after a retention bound, and the watermark moves up
+// with every prune. A supervision row is pruned only once its run is
+// terminal, and detection reports supervision conditions only of runs that
+// are not, so a pruned row cannot be detected again.
+//
+// The two indexes on existing tables serve the per-pass scans: terminal runs
+// by outcome and completion time, and settled outbox rows by age.
 const coordinatorMigrationV30 = `
 CREATE TABLE IF NOT EXISTS coordinator_owner_notifications(
 	id TEXT PRIMARY KEY,
@@ -47,13 +60,21 @@ CREATE TABLE IF NOT EXISTS coordinator_owner_notifications(
 );
 CREATE INDEX IF NOT EXISTS coordinator_owner_notifications_due
 	ON coordinator_owner_notifications(sink, state, next_attempt_at);
-CREATE TABLE IF NOT EXISTS coordinator_owner_notification_baselines(
+CREATE INDEX IF NOT EXISTS coordinator_owner_notifications_age
+	ON coordinator_owner_notifications(state, created_at);
+CREATE TABLE IF NOT EXISTS coordinator_owner_notification_scopes(
 	sink TEXT NOT NULL,
-	event TEXT NOT NULL,
-	baselined_at TEXT NOT NULL,
-	PRIMARY KEY(sink, event)
+	scope TEXT NOT NULL,
+	since TEXT NOT NULL,
+	PRIMARY KEY(sink, scope)
 );
+CREATE INDEX IF NOT EXISTS coordinator_workflow_runs_completion
+	ON coordinator_workflow_runs(progress,
+		julianday(COALESCE(json_extract(record, '$.completedAt'), json_extract(record, '$.updatedAt'))));
 `
+
+// ownerNotificationTerminal is the SQL list of terminal run progress values.
+const ownerNotificationTerminal = `('succeeded', 'failed', 'cancelled', 'skipped')`
 
 // The coordinator hands this store to the notifier as its outbox.
 var _ ownernotify.Store = (*Store)(nil)
@@ -72,18 +93,22 @@ type ownerNotificationCandidate struct {
 	kind    string
 }
 
-// ownerNotificationCandidateQueries select, per event, every record that is
-// in the reported condition and has no outbox row for this sink yet. The
-// first parameter is the id prefix "sink|event|"; the NOT EXISTS against the
-// primary key keeps a steady-state pass from re-reading history it already
-// recorded.
-var ownerNotificationCandidateQueries = map[ownernotify.Event]string{
-	ownernotify.EventNeedsInput: `
+// ownerNotificationNeedsInputQuery selects unanswered attention waits
+// registered at or after the watermark (?2) with no row for this sink yet.
+// The first parameter is the id prefix "sink|event|"; the NOT EXISTS against
+// the primary key keeps a pass from re-reading what it already recorded.
+const ownerNotificationNeedsInputQuery = `
 SELECT w.id, json_extract(w.record, '$.workflowRunId'), w.record, 'wait'
 FROM coordinator_task_waits w
 WHERE json_extract(w.record, '$.settledAt') IS NULL
   AND json_extract(w.record, '$.kind') = 'attention'
-  AND NOT EXISTS (SELECT 1 FROM coordinator_owner_notifications n WHERE n.id = ?1 || w.id)`,
+  AND julianday(json_extract(w.record, '$.registeredAt')) >= julianday(?2)
+  AND NOT EXISTS (SELECT 1 FROM coordinator_owner_notifications n WHERE n.id = ?1 || w.id)`
+
+// ownerNotificationSupervisionQueries select, per event, every supervision
+// record of a live run that is in the reported condition and has no row for
+// this sink yet. The first parameter is the id prefix.
+var ownerNotificationSupervisionQueries = map[ownernotify.Event]string{
 	ownernotify.EventSupervisionEscalated: `
 SELECT subject, run_id, record, kind FROM (
   SELECT 'incident:' || id || ':' || revision AS subject, run_id, record, 'incident' AS kind
@@ -100,64 +125,37 @@ SELECT subject, run_id, record, kind FROM (
   SELECT 'gate:' || id || ':' || evidence_snapshot_id || ':escalated', run_id, record, 'gate'
   FROM coordinator_supervision_gates WHERE state = 'escalated'
 ) c
-WHERE NOT EXISTS (SELECT 1 FROM coordinator_owner_notifications n WHERE n.id = ?1 || c.subject)`,
+WHERE NOT EXISTS (SELECT 1 FROM coordinator_owner_notifications n WHERE n.id = ?1 || c.subject)
+  AND EXISTS (SELECT 1 FROM coordinator_workflow_runs r
+    WHERE r.id = c.run_id AND r.progress NOT IN ` + ownerNotificationTerminal + `)`,
 	ownernotify.EventGateReview: `
 SELECT 'gate:' || g.id || ':' || g.evidence_snapshot_id, g.run_id, g.record, 'gate'
 FROM coordinator_supervision_gates g
 WHERE g.state = 'ready-for-review'
   AND NOT EXISTS (SELECT 1 FROM coordinator_owner_notifications n
-    WHERE n.id = ?1 || 'gate:' || g.id || ':' || g.evidence_snapshot_id)`,
+    WHERE n.id = ?1 || 'gate:' || g.id || ':' || g.evidence_snapshot_id)
+  AND EXISTS (SELECT 1 FROM coordinator_workflow_runs r
+    WHERE r.id = g.run_id AND r.progress NOT IN ` + ownerNotificationTerminal + `)`,
 }
 
-// ownerNotificationRunQuery selects terminal runs of one outcome. The third
-// parameter narrows them to runs a schedule created, runs it did not, or all.
+// ownerNotificationRunQuery selects runs of one outcome that completed at or
+// after the watermark (?4). The third parameter narrows them to runs a
+// schedule created, runs it did not, or all. The completion expression is the
+// indexed one, so the scan reads only runs newer than the watermark.
 const ownerNotificationRunQuery = `
 SELECT r.id, r.id, r.record, 'run'
 FROM coordinator_workflow_runs r
 WHERE r.progress = ?2
+  AND julianday(COALESCE(json_extract(r.record, '$.completedAt'), json_extract(r.record, '$.updatedAt'))) >= julianday(?4)
   AND (?3 = 'all' OR (?3 = 'scheduled') = (r.schedule_id <> ''))
   AND NOT EXISTS (SELECT 1 FROM coordinator_owner_notifications n WHERE n.id = ?1 || r.id)`
 
-// Run scopes of one detection pass.
-const (
-	ownerNotificationAllRuns         = "all"
-	ownerNotificationUnscheduledRuns = "unscheduled"
-	ownerNotificationScheduledRuns   = "scheduled"
-)
-
-// ownerNotificationPass is one detection query and the baseline it belongs to.
-//
-// Scheduled successes have a baseline of their own. They are detected only
-// once a sink opts into them, and at that point every scheduled success in
-// the coordinator's history is new to the sink; sharing the event's baseline
-// would send all of it.
-type ownerNotificationPass struct {
-	event    ownernotify.Event
-	baseline string
-	runs     string
-}
-
-func ownerNotificationPasses(selection ownernotify.Selection) []ownerNotificationPass {
-	var passes []ownerNotificationPass
-	for _, event := range selection.Events {
-		if !ownernotify.ScheduledSuccessEvent(event) {
-			passes = append(passes, ownerNotificationPass{event: event, baseline: string(event), runs: ownerNotificationAllRuns})
-			continue
-		}
-		passes = append(passes, ownerNotificationPass{event: event, baseline: string(event), runs: ownerNotificationUnscheduledRuns})
-		if selection.ScheduledSuccess {
-			passes = append(passes, ownerNotificationPass{
-				event: event, baseline: string(event) + ":scheduled", runs: ownerNotificationScheduledRuns,
-			})
-		}
-	}
-	return passes
-}
-
 // DetectOwnerNotifications implements ownernotify.Store.
 //
-// Everything happens in one transaction, so a pass that records an event kind's
-// baseline cannot interleave with a pass that records the same kind as pending.
+// Everything happens in one transaction, so a pass that creates a scope's
+// watermark cannot interleave with a pass that records the same scope as
+// pending. The transaction reads only what is newer than the watermarks and
+// not yet recorded, so it stays short.
 func (s *Store) DetectOwnerNotifications(ctx context.Context, sink string, selection ownernotify.Selection, now time.Time) (ownernotify.Detection, error) {
 	var detection ownernotify.Detection
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -167,18 +165,19 @@ func (s *Store) DetectOwnerNotifications(ctx context.Context, sink string, selec
 	defer tx.Rollback()
 	enrich := ownerNotificationEnricher{tx: tx, campaigns: map[string]string{}, tasks: map[string]string{}}
 	at := ownerNotificationTime(now)
-	for _, pass := range ownerNotificationPasses(selection) {
-		event := pass.event
+	for _, scope := range selection.Scopes() {
+		event := scope.Event
 		var baselined bool
+		since := at
 		switch err := tx.QueryRowContext(ctx,
-			`SELECT 1 FROM coordinator_owner_notification_baselines WHERE sink = ? AND event = ?`,
-			sink, pass.baseline).Scan(new(int)); {
+			`SELECT since FROM coordinator_owner_notification_scopes WHERE sink = ? AND scope = ?`,
+			sink, scope.Key).Scan(&since); {
 		case err == nil:
 			baselined = true
 		case !errors.Is(err, sql.ErrNoRows):
-			return detection, fmt.Errorf("read owner notification baseline: %w", err)
+			return detection, fmt.Errorf("read owner notification watermark: %w", err)
 		}
-		candidates, err := ownerNotificationCandidatesTx(ctx, tx, sink, event, pass.runs)
+		candidates, err := ownerNotificationCandidatesTx(ctx, tx, sink, scope, since)
 		if err != nil {
 			return detection, err
 		}
@@ -219,9 +218,9 @@ func (s *Store) DetectOwnerNotifications(ctx context.Context, sink string, selec
 		}
 		if !baselined {
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO coordinator_owner_notification_baselines(sink, event, baselined_at) VALUES (?, ?, ?)`,
-				sink, pass.baseline, at); err != nil {
-				return detection, fmt.Errorf("record owner notification baseline: %w", err)
+				`INSERT INTO coordinator_owner_notification_scopes(sink, scope, since) VALUES (?, ?, ?)`,
+				sink, scope.Key, at); err != nil {
+				return detection, fmt.Errorf("record owner notification watermark: %w", err)
 			}
 		}
 	}
@@ -235,13 +234,16 @@ func ownerNotificationID(sink string, event ownernotify.Event, subject string) s
 	return sink + "|" + string(event) + "|" + subject
 }
 
-func ownerNotificationCandidatesTx(ctx context.Context, tx *sql.Tx, sink string, event ownernotify.Event, runs string) ([]ownerNotificationCandidate, error) {
+func ownerNotificationCandidatesTx(ctx context.Context, tx *sql.Tx, sink string, scope ownernotify.Scope, since string) ([]ownerNotificationCandidate, error) {
+	event := scope.Event
 	prefix := ownerNotificationID(sink, event, "")
 	var rows *sql.Rows
 	var err error
 	if progress, ok := ownerNotificationRunProgress(event); ok {
-		rows, err = tx.QueryContext(ctx, ownerNotificationRunQuery, prefix, progress, runs)
-	} else if query, known := ownerNotificationCandidateQueries[event]; known {
+		rows, err = tx.QueryContext(ctx, ownerNotificationRunQuery, prefix, progress, string(scope.Runs), since)
+	} else if event == ownernotify.EventNeedsInput {
+		rows, err = tx.QueryContext(ctx, ownerNotificationNeedsInputQuery, prefix, since)
+	} else if query, known := ownerNotificationSupervisionQueries[event]; known {
 		rows, err = tx.QueryContext(ctx, query, prefix)
 	} else {
 		return nil, fmt.Errorf("owner notification event %q has no detection", event)
@@ -422,6 +424,115 @@ func (s *Store) DueOwnerNotifications(ctx context.Context, sink string, now time
 		due = append(due, notification)
 	}
 	return due, rows.Err()
+}
+
+// SyncOwnerNotificationScopes implements ownernotify.Store. It deletes the
+// watermark of every scope that no active sink declares.
+func (s *Store) SyncOwnerNotificationScopes(ctx context.Context, active map[string][]ownernotify.Scope) error {
+	keep := map[string]bool{}
+	for sink, scopes := range active {
+		for _, scope := range scopes {
+			keep[sink+"\x00"+scope.Key] = true
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT sink, scope FROM coordinator_owner_notification_scopes`)
+	if err != nil {
+		return fmt.Errorf("read owner notification watermarks: %w", err)
+	}
+	var stale [][2]string
+	for rows.Next() {
+		var sink, scope string
+		if err := rows.Scan(&sink, &scope); err != nil {
+			rows.Close()
+			return fmt.Errorf("read owner notification watermark: %w", err)
+		}
+		if !keep[sink+"\x00"+scope] {
+			stale = append(stale, [2]string{sink, scope})
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, key := range stale {
+		if _, err := s.db.ExecContext(ctx,
+			`DELETE FROM coordinator_owner_notification_scopes WHERE sink = ? AND scope = ?`, key[0], key[1]); err != nil {
+			return fmt.Errorf("drop owner notification watermark: %w", err)
+		}
+	}
+	return nil
+}
+
+// PruneOwnerNotifications implements ownernotify.Store. The watermarks move up
+// to the bound in the same transaction as the delete, so nothing the delete
+// removes can be detected again.
+func (s *Store) PruneOwnerNotifications(ctx context.Context, before time.Time, limit int) (int, error) {
+	cutoff := ownerNotificationTime(before)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin owner notification prune: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE coordinator_owner_notification_scopes SET since = ?1 WHERE since < ?1`, cutoff); err != nil {
+		return 0, fmt.Errorf("advance owner notification watermarks: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM coordinator_owner_notifications WHERE id IN (
+		SELECT n.id FROM coordinator_owner_notifications n
+		WHERE n.state IN ('delivered', 'abandoned', 'baseline', 'resolved') AND n.created_at < ?1
+		  AND (n.event NOT IN ('supervision-escalated', 'gate-review')
+		    OR NOT EXISTS (SELECT 1 FROM coordinator_workflow_runs r
+		      WHERE r.id = n.run_id AND r.progress NOT IN `+ownerNotificationTerminal+`))
+		LIMIT ?2)`, cutoff, limit)
+	if err != nil {
+		return 0, fmt.Errorf("prune owner notifications: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit owner notification prune: %w", err)
+	}
+	removed, _ := result.RowsAffected()
+	return int(removed), nil
+}
+
+// OwnerNotificationHolds implements ownernotify.Store. A condition of a run
+// that has since become terminal no longer holds.
+func (s *Store) OwnerNotificationHolds(ctx context.Context, n ownernotify.Notification) (bool, error) {
+	exists := func(query string, args ...any) (bool, error) {
+		err := s.db.QueryRowContext(ctx, query, args...).Scan(new(int))
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return err == nil, err
+	}
+	live, err := exists(`SELECT 1 FROM coordinator_workflow_runs WHERE id = ? AND progress NOT IN `+ownerNotificationTerminal, n.RunID)
+	if err != nil || !live {
+		return false, err
+	}
+	incidentEscalated := func() (bool, error) {
+		return exists(`SELECT 1 FROM coordinator_supervision_incidents WHERE id = ? AND state = 'escalated'`, n.IncidentID)
+	}
+	switch n.Event {
+	case ownernotify.EventNeedsInput:
+		return exists(`SELECT 1 FROM coordinator_task_waits WHERE id = ? AND json_extract(record, '$.settledAt') IS NULL`, n.WaitID)
+	case ownernotify.EventSupervisionEscalated:
+		switch {
+		case n.ActivationID != "":
+			if held, err := exists(`SELECT 1 FROM coordinator_supervision_activations
+				WHERE id = ? AND state IN ('escalated', 'recovery-required')`, n.ActivationID); err != nil || held {
+				return held, err
+			}
+			if n.IncidentID == "" {
+				return false, nil
+			}
+			return incidentEscalated()
+		case n.IncidentID != "":
+			return incidentEscalated()
+		case n.GateID != "":
+			return exists(`SELECT 1 FROM coordinator_supervision_gates WHERE id = ? AND state = 'escalated'`, n.GateID)
+		}
+	case ownernotify.EventGateReview:
+		return exists(`SELECT 1 FROM coordinator_supervision_gates WHERE id = ? AND state = 'ready-for-review'`, n.GateID)
+	}
+	return true, nil
 }
 
 // RecordOwnerNotificationAttempt implements ownernotify.Store. It changes only

@@ -265,6 +265,8 @@ notifications:
   #   # exit status 0 means delivered. The same event may arrive twice.
   #   argv: [/usr/local/bin/notify-owner]
   #   events: []
+  #   # The program gets PATH, HOME and LANG only, plus the names listed here.
+  #   env: []
 
 # SQLite state database. Empty means $XDG_STATE_HOME/t3-steward/state.db
 state_path: ""

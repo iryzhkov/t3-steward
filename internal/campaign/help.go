@@ -498,9 +498,10 @@ coordinator's store before it is sent, keyed by channel, event and what
 happened, so a restart neither repeats nor loses it. A failed send is retried
 with a doubling delay from 30s, a Discord 429 waits for its Retry-After, and
 after 8 attempts, or at once on a refusal such as a deleted webhook, the event
-is abandoned with a log line. Events that already existed when an event kind is
-first enabled are recorded and not sent. A Discord message is one short line
-with the outcome, the failed tasks and the command to read the result.
+is abandoned with a log line. Nothing that happened before a channel or event
+was enabled, or while it was removed, is sent. A Discord message is one short
+line with the outcome, the failed tasks and the command to read the result.
+The notifications section may change on a reload.
 `
 
 // FreshHelp tells an author how to run a campaign that needs no repository.

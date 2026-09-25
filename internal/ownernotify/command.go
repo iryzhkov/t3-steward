@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -25,15 +26,43 @@ const CommandPayloadVersion = 1
 // become part of a command line. Exit status 0 is delivery; anything else is
 // a failure retried with the same backoff as a webhook, and the program must
 // therefore tolerate receiving the same id more than once.
+//
+// The program gets a minimal environment -- PATH, HOME and LANG, plus the
+// variables the operator names -- because the coordinator's own environment
+// can hold credentials that a notification script has no business reading.
+// It runs in a process group of its own, so a timeout kills everything it
+// started and not only the program itself.
 type Command struct {
 	argv      []string
+	env       []string
 	selection Selection
 }
 
-// NewCommand returns a command sink.
-func NewCommand(argv []string, selection Selection) *Command {
+// commandBaseEnvironment is what every command receives from the
+// coordinator's environment, when set.
+var commandBaseEnvironment = []string{"PATH", "HOME", "LANG"}
+
+// NewCommand returns a command sink. env names further variables to pass
+// through from the coordinator's environment.
+func NewCommand(argv, env []string, selection Selection) *Command {
 	selection.Events = append([]Event(nil), selection.Events...)
-	return &Command{argv: append([]string(nil), argv...), selection: selection}
+	return &Command{argv: append([]string(nil), argv...), env: append([]string(nil), env...), selection: selection}
+}
+
+// environment is the program's whole environment.
+func (c *Command) environment() []string {
+	var environment []string
+	seen := map[string]bool{}
+	for _, name := range append(append([]string(nil), commandBaseEnvironment...), c.env...) {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if value, ok := os.LookupEnv(name); ok {
+			environment = append(environment, name+"="+value)
+		}
+	}
+	return environment
 }
 
 // Name implements Sink.
@@ -74,6 +103,9 @@ func (c *Command) Deliver(ctx context.Context, notification Notification) error 
 	}
 	command := exec.CommandContext(ctx, c.argv[0], c.argv[1:]...)
 	command.Stdin = bytes.NewReader(payload)
+	// A non-nil empty slice, not nil: nil would inherit everything.
+	command.Env = append([]string{}, c.environment()...)
+	isolateProcessGroup(command)
 	var stderr limitedBuffer
 	stderr.limit = 512
 	command.Stderr = &stderr

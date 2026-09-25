@@ -246,7 +246,10 @@ func evaluateCoordinatorReload(ctx context.Context, current config.Config, logge
 		logger.Warn("configuration reload rejected; retaining effective configuration", "error", err, "receipt", receipts.path)
 		return reloadDecision{receipt: receipt}
 	}
-	if nextDigest == currentDigest {
+	// The digest covers backlog_v2 alone, and it is recorded and compared
+	// elsewhere, so a change to the owner channels is detected beside it
+	// rather than folded into it.
+	if nextDigest == currentDigest && reflect.DeepEqual(current.Notifications, next.Notifications) {
 		receipt.Outcome = backlogadmin.ReloadUnchanged
 		receipt.CompletedAt = receipts.now()
 		if writeErr := receipts.Write(receipt); writeErr != nil {
@@ -535,6 +538,11 @@ func validateCoordinatorReload(current, next config.Config) error {
 	oldOuter, newOuter := current.LifecycleView(), next.LifecycleView()
 	oldOuter.BacklogV2 = config.BacklogV2{}
 	newOuter.BacklogV2 = config.BacklogV2{}
+	// The owner channels belong to the configuration instance, not to the
+	// host lifecycle: the notifier starts and stops with it and re-reads the
+	// webhook file when it starts, so they may change on a reload.
+	oldOuter.Notifications.Discord, oldOuter.Notifications.Command = nil, nil
+	newOuter.Notifications.Discord, newOuter.Notifications.Command = nil, nil
 	if !reflect.DeepEqual(oldOuter, newOuter) {
 		return errors.New("reload only accepts backlog_v2 catalog and policy; host lifecycle settings require restart")
 	}
