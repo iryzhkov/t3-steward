@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
@@ -24,7 +25,21 @@ type QuotaPlanningStateInput struct {
 	// their own hosts; the bridge merges them with the coordinator's own by
 	// bucket key, keeping the freshest. Older workers report none.
 	WorkerSnapshots []domain.WorkerSnapshot
+	// Now is the planning time. It bounds how long a resume that no throttle
+	// directive stands behind is taken for a wake in progress; see
+	// WakeResumeGrace. Zero treats every such resume as inconsistent.
+	Now time.Time
 }
+
+// WakeResumeGrace is how long an attempt may stay resuming without a throttle
+// record before quota planning calls it inconsistent. A woken attempt stays
+// resuming until the worker has collected it, and one collection is bounded
+// by the worker's finalization budget, workerruntime.DefaultFinalizationTimeout
+// (one hour; this package cannot import it, and a test in the command package
+// keeps the two in step). The quarter hour on top covers the exchanges that
+// report the collection's end, which can themselves be delayed while the
+// worker is busy collecting.
+const WakeResumeGrace = time.Hour + 15*time.Minute
 
 // QuotaPlanningState contains detached, deterministic planner inputs. Pool
 // occupancy is reconstructed from attempts that hold slots; paused required
@@ -208,14 +223,21 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 			}
 			if attempt.Control == domain.ControlResuming {
 				// Not every resume is a quota resume. Waking a parked attempt
-				// (a settled task-bound wait) moves it to resuming with no
-				// throttle directive behind it, and it stays resuming until the
-				// worker reports the thread running again, which after a turn
-				// that already ended is only once its outputs are collected:
-				// half an hour for a long verification. Its slot and cost are
-				// counted like a running attempt's; there is no quota resume to
-				// reserve. Calling it inconsistent logged a warning on every
-				// planning tick for the whole collection.
+				// (a settled task-bound wait, or an operator's rewake or
+				// resume) moves it to resuming with no throttle directive
+				// behind it, and it stays resuming until the worker reports the
+				// thread running again, which after a turn that already ended
+				// is only once its outputs are collected: half an hour for a
+				// long verification. Its slot and cost are counted like a
+				// running attempt's; there is no quota resume to reserve.
+				// Calling it inconsistent logged a warning on every planning
+				// tick for the whole collection. It is quiet only for
+				// WakeResumeGrace after its last durable change, so an attempt
+				// that is stuck resuming still warns.
+				if !input.Now.IsZero() && input.Now.Sub(attempt.UpdatedAt) < WakeResumeGrace {
+					continue
+				}
+				skip(attempt, "resuming without a durable throttle record for longer than a collection takes")
 				continue
 			}
 			skip(attempt, "paused without a durable throttle record")

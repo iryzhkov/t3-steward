@@ -156,6 +156,12 @@ func TestDeriveQuotaPlanningStateTreatsAWakeResumeAsRunning(t *testing.T) {
 		}
 	}
 	input.ThrottleRecords = filtered
+	for index := range input.Attempts {
+		if input.Attempts[index].ID == "resuming" {
+			input.Attempts[index].UpdatedAt = throttleDeliveryTime
+		}
+	}
+	input.Now = throttleDeliveryTime.Add(40 * time.Minute)
 
 	var logged bytes.Buffer
 	restore := slog.Default()
@@ -177,6 +183,18 @@ func TestDeriveQuotaPlanningStateTreatsAWakeResumeAsRunning(t *testing.T) {
 	// It still holds the slot it is resuming into.
 	if len(state.QuotaPools) != 1 || state.QuotaPools[0].ActiveAssignments != 2 {
 		t.Fatalf("runtime occupancy = %#v, want 2 active slots", state.QuotaPools)
+	}
+
+	// Resuming for longer than any collection takes is stuck, not a wake in
+	// progress, and is reported again.
+	logged.Reset()
+	input.Now = throttleDeliveryTime.Add(WakeResumeGrace + time.Minute)
+	if _, err := DeriveQuotaPlanningState(input); err != nil {
+		t.Fatal(err)
+	}
+	if output := logged.String(); !strings.Contains(output, "attempt=resuming") ||
+		!strings.Contains(output, "quota planning skipped an inconsistent attempt") {
+		t.Fatalf("a stale resuming attempt did not warn: %q", output)
 	}
 }
 

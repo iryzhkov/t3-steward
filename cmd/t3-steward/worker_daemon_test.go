@@ -7,12 +7,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
+
+// Quota planning stays quiet about a woken attempt for as long as one
+// collection may take; its grace must outlast the worker's collection budget.
+func TestWakeResumeGraceOutlastsACollection(t *testing.T) {
+	if backlog.WakeResumeGrace <= workerruntime.DefaultFinalizationTimeout {
+		t.Fatalf("wake resume grace %s does not outlast the collection budget %s",
+			backlog.WakeResumeGrace, workerruntime.DefaultFinalizationTimeout)
+	}
+}
 
 // S8: the persistent worker every host runs once handed its exchange no usage
 // source, so it forwarded nothing and every run read zero attributed samples.

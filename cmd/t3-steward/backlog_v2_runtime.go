@@ -194,7 +194,7 @@ func (r coordinatorQuotaReconciler) Tick(ctx context.Context) (backlog.QuotaBrid
 	report, err := r.bridge.ReconcileState(ctx, backlog.QuotaPlanningStateInput{
 		Tasks: records.Tasks, Attempts: records.Attempts,
 		Assignments: records.Assignments, ThrottleRecords: throttleRecords,
-		WorkerSnapshots: workers,
+		WorkerSnapshots: workers, Now: time.Now().UTC(),
 	})
 	if err != nil {
 		return backlog.QuotaBridgeReport{}, err
