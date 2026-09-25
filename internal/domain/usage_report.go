@@ -75,9 +75,13 @@ func NormalizeUsageReport(report UsageReport, context UsageNormalizationContext)
 	report.MeasuredCostPerAcceptedOutcomeUSD = nil
 
 	reasons := map[string]bool{}
-	if report.Coverage.UnscopedUnattributedCount > 0 {
-		report.Coverage.UnattributedCount = report.Coverage.UnscopedUnattributedCount
-		reasons["unscoped samples lack an authoritative dispatch binding"] = true
+	// Only the unbound samples that could be this run's own make its coverage
+	// partial; the rest of the fleet's unbound samples in the same window are
+	// reported beside it as context. See sqlite.Store.AttributedUsage for how
+	// the two are told apart.
+	if report.Coverage.RunWindowUnattributedCount > 0 {
+		report.Coverage.UnattributedCount = report.Coverage.RunWindowUnattributedCount
+		reasons["samples without an authoritative dispatch binding share a worker, provider and time window with this run"] = true
 	}
 	if context.HardTruncated {
 		report.Coverage.Truncated = true

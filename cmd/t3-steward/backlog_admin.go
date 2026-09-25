@@ -809,6 +809,12 @@ func renderUsage(out io.Writer, report *domain.UsageReport, semantics string) er
 		coverage.ExpectedSessionCount, coverage.MissingLogSessionCount,
 		coverage.ExcludedOverlapCount, coverage.AmbiguousOverlapCount, coverage.DiagnosticCount,
 		coverage.DiagnosticDroppedCount, coverage.UnattributedCount)
+	if coverage.UnscopedUnattributedCount > 0 {
+		// Context, not coverage: the fleet's unbound samples in the run's
+		// window, of which only the unattributed count above could be the run's.
+		fmt.Fprintf(out, "Fleet samples in this window without a dispatch binding: %d (not this run's unless counted as unattributed above)\n",
+			coverage.UnscopedUnattributedCount)
+	}
 	if coverage.ObservedFrom != nil && coverage.ObservedThrough != nil {
 		fmt.Fprintf(out, "Observed: %s through %s\n",
 			coverage.ObservedFrom.UTC().Format(time.RFC3339), coverage.ObservedThrough.UTC().Format(time.RFC3339))

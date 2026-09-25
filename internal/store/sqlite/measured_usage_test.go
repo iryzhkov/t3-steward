@@ -131,6 +131,9 @@ func TestMeasuredUsageBindingIsAuthoritativeIsolatedAndReplaySafe(t *testing.T) 
 		measuredAssignment("assignment-activation", "activation-a", "thread-activation", "claude-agent", 1, now),
 		measuredAssignment("assignment-gate", "activation-gate", "thread-gate", "claude-agent", 3, now),
 	}
+	// Dispatch happens before the samples, as it does on a fleet: a run's
+	// window starts at its first binding.
+	store.SetClock(func() time.Time { return now })
 	for _, assignment := range assignments {
 		if _, err := store.PrepareAssignmentDispatch(ctx, assignment); err != nil {
 			t.Fatalf("prepare %s: %v", assignment.ID, err)
@@ -237,6 +240,90 @@ func TestAttributedUsageAppliesDeterministicSafetyBound(t *testing.T) {
 		report.Samples[0].SourceEventID != "event-00000" || report.Samples[len(report.Samples)-1].SourceEventID != "event-09999" {
 		t.Fatalf("bounded report: samples=%d coverage=%#v first=%q last=%q", len(report.Samples), report.Coverage,
 			report.Samples[0].SourceEventID, report.Samples[len(report.Samples)-1].SourceEventID)
+	}
+}
+
+// A run's unattributed count is the unbound samples that could be its own --
+// the provider it was dispatched to on the worker it ran on, inside its window
+// -- and the fleet's other unbound samples in the window are reported apart.
+// A local row the coordinator host's own worker has already forwarded under
+// its worker id is one reading, not two, and is counted once.
+func TestAttributedUsageSeparatesTheRunsAmbiguityFromTheFleets(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	completed := now.Add(time.Hour)
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{{ID: "run-window", Progress: domain.ProgressSucceeded, CompletedAt: &completed}},
+		Attempts:     []domain.Attempt{{ID: "attempt-window", WorkflowRunID: "run-window", TaskID: "task-window", Number: 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.SetClock(func() time.Time { return now })
+	if _, err := store.PrepareAssignmentDispatch(ctx, measuredAssignment("assignment-window", "attempt-window", "thread-run", "claude", 1, now)); err != nil {
+		t.Fatal(err)
+	}
+	record := func(worker, provider, thread, event string, at time.Time) {
+		t.Helper()
+		if err := store.RecordUsage(ctx, domain.UsageSample{
+			WorkerID: worker, ProviderInstanceID: provider, ThreadID: thread, Model: "model",
+			ObservedAt: at, SourceEventID: event, Kind: domain.UsageKindTurn, OutputTokens: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The run's own reading, stored twice on the coordinator's host: the
+	// local row and the copy forwarded under the worker's id.
+	record("worker", "claude", "thread-run", "run-turn", now.Add(time.Minute))
+	record("", "claude", "thread-run", "run-turn", now.Add(time.Minute))
+	// Could be the run's: its worker and provider, inside its window, on a
+	// thread nothing bound. One was forwarded, one is a local row not yet
+	// forwarded, whose worker is unknown.
+	record("worker", "claude", "thread-renamed", "ambiguous-forwarded", now.Add(2*time.Minute))
+	record("", "claude", "thread-local", "ambiguous-local", now.Add(3*time.Minute))
+	// Cannot be the run's: another worker, another provider.
+	record("other-worker", "claude", "thread-elsewhere", "other-worker", now.Add(4*time.Minute))
+	record("worker", "codex", "thread-interactive", "other-provider", now.Add(5*time.Minute))
+	// Outside the window entirely: long before dispatch, long after completion.
+	record("worker", "claude", "thread-before", "before", now.Add(-time.Hour))
+	record("worker", "claude", "thread-after", "after", completed.Add(time.Hour))
+
+	report, err := store.AttributedUsage(ctx, "run-window")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Samples) != 1 || report.Samples[0].SourceEventID != "run-turn" {
+		t.Fatalf("samples = %#v", report.Samples)
+	}
+	if got := report.Coverage.RunWindowUnattributedCount; got != 2 {
+		t.Fatalf("run-window unattributed = %d, want 2 (the renamed thread and the unforwarded local row)", got)
+	}
+	if got := report.Coverage.UnscopedUnattributedCount; got != 4 {
+		t.Fatalf("fleet unscoped in the window = %d, want 4 (the forwarded run turn's local copy is not a second reading)", got)
+	}
+
+	normalized := domain.NormalizeUsageReport(report, domain.UsageNormalizationContext{Now: completed, RunProgress: domain.ProgressSucceeded, RunCompletedAt: &completed})
+	if normalized.Coverage.State != domain.UsageCoveragePartial || normalized.Coverage.UnattributedCount != 2 {
+		t.Fatalf("coverage = %#v", normalized.Coverage)
+	}
+
+	// Without anything that could be the run's, the fleet's unbound samples
+	// leave the run's coverage complete.
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM usage_samples WHERE event_id IN ('ambiguous-forwarded', 'ambiguous-local')`); err != nil {
+		t.Fatal(err)
+	}
+	if report, err = store.AttributedUsage(ctx, "run-window"); err != nil {
+		t.Fatal(err)
+	}
+	normalized = domain.NormalizeUsageReport(report, domain.UsageNormalizationContext{Now: completed, RunProgress: domain.ProgressSucceeded, RunCompletedAt: &completed})
+	if normalized.Coverage.State != domain.UsageCoverageComplete || normalized.Coverage.UnattributedCount != 0 ||
+		normalized.Coverage.UnscopedUnattributedCount != 2 {
+		t.Fatalf("fully attributed run: coverage = %#v", normalized.Coverage)
 	}
 }
 
