@@ -365,6 +365,36 @@ func TestTaskPromptSaysEndingTheTurnCompletesTheTask(t *testing.T) {
 	}
 }
 
+// PR #21 follow-up: a worker that restarts mid-collection collects again and
+// exports the thread again; by then T3 may have idled the provider session
+// out and the export reads as unfinished, failing a task whose turn finished.
+// The first finished read is recorded and judged again for the same turn only.
+func TestRepeatedCollectionJudgesTheTurnItRecorded(t *testing.T) {
+	pkg := testPackage()
+	driver := &LocalDriver{Config: LocalDriverConfig{ArtifactRoot: t.TempDir()}}
+	finished := []byte(`{"thread":{"id":"` + pkg.Identity.ThreadID + `","latestTurn":{"turnId":"turn-1","state":"completed","startedAt":"2026-09-13T05:00:00Z","completedAt":"2026-09-13T05:01:00Z"},"session":{"threadId":"` + pkg.Identity.ThreadID + `","status":"ready","activeTurnId":null,"lastError":null}}}`)
+	thread := domain.Thread{ID: pkg.Identity.ThreadID, TurnID: "turn-1"}
+	failure, err := backlog.ResultCompletionFailureWithPause(finished, pkg.Identity.ThreadID, "finished", "")
+	if err != nil || failure != "" {
+		t.Fatalf("fixture archive does not read as finished: %q %v", failure, err)
+	}
+	if _, _, got, err := driver.settleCollectedTurn(pkg, thread, "finished", finished, "", ""); err != nil || got != "" {
+		t.Fatalf("first collection = %q, %v", got, err)
+	}
+
+	idled := []byte(`{"thread":{"id":"` + pkg.Identity.ThreadID + `"}}`)
+	message, archive, got, err := driver.settleCollectedTurn(pkg, thread, "", idled, "provider session is not ready without an active turn or error", "")
+	if err != nil || got != "" || message != "finished" || string(archive) != string(finished) {
+		t.Fatalf("repeated collection of the same turn = %q %q %v", got, message, err)
+	}
+
+	later := thread
+	later.TurnID = "turn-2"
+	if _, _, got, err := driver.settleCollectedTurn(pkg, later, "", idled, "not finished", ""); err != nil || got != "not finished" {
+		t.Fatalf("a different turn reused the recorded one: %q %v", got, err)
+	}
+}
+
 func TestLocalDriverStopSettlesRunningAndAlreadyStoppedThreads(t *testing.T) {
 	pkg := testPackage()
 	control := &recordingT3{thread: &domain.Thread{ID: pkg.Identity.ThreadID, Running: true}}

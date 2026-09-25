@@ -876,6 +876,11 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if err != nil {
 		return err
 	}
+	if thread != nil {
+		if message, archive, failure, err = d.settleCollectedTurn(pkg, *thread, message, archive, failure, pauseReason); err != nil {
+			return err
+		}
+	}
 	task, attempt := packageRecords(pkg, d.Now().UTC())
 	// Preflight logs are captured with the attempt's own outputs, in the same
 	// pass, because the capture tree is sealed before it is published.
@@ -912,6 +917,67 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		return fmt.Errorf("%w: %v", ErrSettleUnproven, err)
 	}
 	return nil
+}
+
+// collectedTurn is the finished turn a collection read, kept so that a
+// collection started again after a worker restart judges the same turn.
+type collectedTurn struct {
+	ThreadID string `json:"threadId"`
+	TurnID   string `json:"turnId"`
+	Message  string `json:"message"`
+	Archive  []byte `json:"archive"`
+}
+
+// settleCollectedTurn records the first finished turn a collection reads and
+// reuses it when a later collection of the same turn reads it as unfinished.
+//
+// A worker that restarts mid-collection collects again from its journal and
+// exports the thread again. By then T3 may have idled the provider session
+// out, and the new export reads "provider session is not ready without an
+// active turn or error", so a task whose turn finished and whose verification
+// was running failed on the restart alone. The snapshot is written before
+// verification starts, is keyed on the thread and its latest turn, and is used
+// only when the thread still reports that same turn: a turn that really did
+// not finish never had a snapshot to reuse.
+func (d *LocalDriver) settleCollectedTurn(pkg workerproto.ExecutionPackage, thread domain.Thread, message string, archive []byte, failure, pauseReason string) (string, []byte, string, error) {
+	if d.Config.ArtifactRoot == "" || thread.TurnID == "" {
+		return message, archive, failure, nil
+	}
+	directory := filepath.Join(d.Config.ArtifactRoot, "collected-turns")
+	path := filepath.Join(directory, pkg.Identity.AttemptID+".json")
+	if failure == "" {
+		if _, err := os.Stat(path); err == nil {
+			return message, archive, failure, nil
+		}
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			return "", nil, "", fmt.Errorf("record collected turn: %w", err)
+		}
+		if err := privateJSON(path, collectedTurn{ThreadID: pkg.Identity.ThreadID, TurnID: thread.TurnID, Message: message, Archive: archive}); err != nil {
+			return "", nil, "", fmt.Errorf("record collected turn: %w", err)
+		}
+		return message, archive, failure, nil
+	}
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return message, archive, failure, nil
+	}
+	if err != nil {
+		return "", nil, "", fmt.Errorf("read collected turn: %w", err)
+	}
+	var recorded collectedTurn
+	if err := json.Unmarshal(raw, &recorded); err != nil {
+		return "", nil, "", fmt.Errorf("decode collected turn: %w", err)
+	}
+	if recorded.ThreadID != pkg.Identity.ThreadID || recorded.TurnID != thread.TurnID {
+		return message, archive, failure, nil
+	}
+	recordedFailure, err := backlog.ResultCompletionFailureWithPause(recorded.Archive, pkg.Identity.ThreadID, recorded.Message, pauseReason)
+	if err != nil || recordedFailure != "" {
+		return message, archive, failure, nil
+	}
+	d.logger().Info("the turn read as unfinished on a repeated collection; judging the turn this collection recorded when it started",
+		"attempt", pkg.Identity.AttemptID, "thread", pkg.Identity.ThreadID, "turn", thread.TurnID, "reading", failure)
+	return recorded.Message, recorded.Archive, "", nil
 }
 
 // ErrSettleUnproven reports that the result was published but T3 has not yet
