@@ -435,7 +435,7 @@ type UsageCoverage struct {
 	// the run's coverage partial.
 	UnscopedUnattributedCount int64 `json:"unscopedUnattributedCount"`
 	// RunWindowUnattributedCount is the part of the unscoped samples that could
-	// be this run's own evidence: the same provider on a worker the run was
+	// be this run's own evidence: any provider on a worker the run was
 	// dispatched to, inside the run's window. It is what UnattributedCount
 	// reports, and it keeps coverage partial.
 	RunWindowUnattributedCount int64 `json:"runWindowUnattributedCount"`

@@ -244,8 +244,8 @@ func TestAttributedUsageAppliesDeterministicSafetyBound(t *testing.T) {
 }
 
 // A run's unattributed count is the unbound samples that could be its own --
-// the provider it was dispatched to on the worker it ran on, inside its window
-// -- and the fleet's other unbound samples in the window are reported apart.
+// any provider on a worker it ran on, inside its window -- and the fleet's
+// other unbound samples in the window are reported apart.
 // A local row the coordinator host's own worker has already forwarded under
 // its worker id is one reading, not two, and is counted once.
 func TestAttributedUsageSeparatesTheRunsAmbiguityFromTheFleets(t *testing.T) {
@@ -286,9 +286,11 @@ func TestAttributedUsageSeparatesTheRunsAmbiguityFromTheFleets(t *testing.T) {
 	// forwarded, whose worker is unknown.
 	record("worker", "claude", "thread-renamed", "ambiguous-forwarded", now.Add(2*time.Minute))
 	record("", "claude", "thread-local", "ambiguous-local", now.Add(3*time.Minute))
-	// Cannot be the run's: another worker, another provider.
+	// Could be the run's too: a provider log that names the instance
+	// differently from the route the run was bound under.
+	record("worker", "claude-main", "thread-run", "provider-renamed", now.Add(5*time.Minute))
+	// Cannot be the run's: another worker.
 	record("other-worker", "claude", "thread-elsewhere", "other-worker", now.Add(4*time.Minute))
-	record("worker", "codex", "thread-interactive", "other-provider", now.Add(5*time.Minute))
 	// Outside the window entirely: long before dispatch, long after completion.
 	record("worker", "claude", "thread-before", "before", now.Add(-time.Hour))
 	record("worker", "claude", "thread-after", "after", completed.Add(time.Hour))
@@ -300,21 +302,21 @@ func TestAttributedUsageSeparatesTheRunsAmbiguityFromTheFleets(t *testing.T) {
 	if len(report.Samples) != 1 || report.Samples[0].SourceEventID != "run-turn" {
 		t.Fatalf("samples = %#v", report.Samples)
 	}
-	if got := report.Coverage.RunWindowUnattributedCount; got != 2 {
-		t.Fatalf("run-window unattributed = %d, want 2 (the renamed thread and the unforwarded local row)", got)
+	if got := report.Coverage.RunWindowUnattributedCount; got != 3 {
+		t.Fatalf("run-window unattributed = %d, want 3 (the renamed thread, the renamed provider and the unforwarded local row)", got)
 	}
 	if got := report.Coverage.UnscopedUnattributedCount; got != 4 {
 		t.Fatalf("fleet unscoped in the window = %d, want 4 (the forwarded run turn's local copy is not a second reading)", got)
 	}
 
 	normalized := domain.NormalizeUsageReport(report, domain.UsageNormalizationContext{Now: completed, RunProgress: domain.ProgressSucceeded, RunCompletedAt: &completed})
-	if normalized.Coverage.State != domain.UsageCoveragePartial || normalized.Coverage.UnattributedCount != 2 {
+	if normalized.Coverage.State != domain.UsageCoveragePartial || normalized.Coverage.UnattributedCount != 3 {
 		t.Fatalf("coverage = %#v", normalized.Coverage)
 	}
 
 	// Without anything that could be the run's, the fleet's unbound samples
 	// leave the run's coverage complete.
-	if _, err := store.db.ExecContext(ctx, `DELETE FROM usage_samples WHERE event_id IN ('ambiguous-forwarded', 'ambiguous-local')`); err != nil {
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM usage_samples WHERE event_id IN ('ambiguous-forwarded', 'ambiguous-local', 'provider-renamed')`); err != nil {
 		t.Fatal(err)
 	}
 	if report, err = store.AttributedUsage(ctx, "run-window"); err != nil {
@@ -322,8 +324,52 @@ func TestAttributedUsageSeparatesTheRunsAmbiguityFromTheFleets(t *testing.T) {
 	}
 	normalized = domain.NormalizeUsageReport(report, domain.UsageNormalizationContext{Now: completed, RunProgress: domain.ProgressSucceeded, RunCompletedAt: &completed})
 	if normalized.Coverage.State != domain.UsageCoverageComplete || normalized.Coverage.UnattributedCount != 0 ||
-		normalized.Coverage.UnscopedUnattributedCount != 2 {
+		normalized.Coverage.UnscopedUnattributedCount != 1 {
 		t.Fatalf("fully attributed run: coverage = %#v", normalized.Coverage)
+	}
+}
+
+// An assignment dispatched without a thread writes no usage binding, so every
+// sample of its session is unbound. The run was still dispatched to that
+// worker, and those samples keep its coverage partial rather than letting a
+// run with no bindings at all read as having nothing unattributed.
+func TestAttributedUsageCountsSamplesOfAnAssignmentWithoutABinding(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	// The assignment is recorded as it stands before a thread exists, which
+	// is the state bindAssignmentUsageTx writes no binding for.
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{{ID: "run-threadless"}},
+		Attempts:     []domain.Attempt{{ID: "attempt-threadless", WorkflowRunID: "run-threadless", TaskID: "task", Number: 1}},
+		Assignments:  []domain.Assignment{measuredAssignment("assignment-threadless", "attempt-threadless", "", "claude", 1, now)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var bindings int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM coordinator_usage_bindings`).Scan(&bindings); err != nil || bindings != 0 {
+		t.Fatalf("bindings = %d (%v); the case needs an assignment without one", bindings, err)
+	}
+	for i, worker := range []string{"worker", "other-worker"} {
+		if err := store.RecordUsage(ctx, domain.UsageSample{
+			WorkerID: worker, ProviderInstanceID: "claude", ThreadID: "thread-" + worker, Model: "model",
+			ObservedAt: now.Add(time.Duration(i+1) * time.Minute), SourceEventID: "event-" + worker,
+			Kind: domain.UsageKindTurn, OutputTokens: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := store.AttributedUsage(ctx, "run-threadless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Coverage.RunWindowUnattributedCount != 1 || report.Coverage.UnscopedUnattributedCount != 2 {
+		t.Fatalf("coverage = %#v", report.Coverage)
 	}
 }
 

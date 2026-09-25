@@ -382,17 +382,35 @@ const unboundUsageWhere = `NOT EXISTS (SELECT 1 FROM coordinator_usage_bindings 
 	AND (u.worker_id <> '' OR (u.event_id, u.provider, u.thread_id) NOT IN (
 		SELECT event_id, provider, thread_id FROM usage_samples WHERE worker_id <> ''))`
 
-// runUsageSkewDays is how far before its dispatch binding a sample may be
-// observed and still be the run's: five minutes, in julian days. The binding
-// is stamped with the coordinator's clock and a sample with the worker's, and
-// the two are not assumed to agree to the second.
-const runUsageSkewDays = "(5.0 / 1440)"
+// runUsageSkewDays is how far before its dispatch a sample may be observed
+// and still be the run's: fifteen minutes, in julian days. The dispatch is
+// stamped with the coordinator's clock and a sample with the worker's, and the
+// two are not assumed to agree; erring wide only makes coverage partial more
+// often, never complete wrongly.
+const runUsageSkewDays = "(15.0 / 1440)"
+
+// runUsageDispatches is every dispatch of the run as (worker_id, since): the
+// usage bindings, and also the assignments themselves, because an assignment
+// dispatched without a thread writes no binding (bindAssignmentUsageTx) and
+// its samples are then unbound however the run went. since is NULL for an
+// assignment whose creation time was never recorded, which bounds nothing.
+// It takes the run id twice.
+const runUsageDispatches = `SELECT worker_id, julianday(bound_at) AS since
+		FROM coordinator_usage_bindings WHERE workflow_run_id = ?
+	UNION ALL
+	SELECT json_extract(a.record, '$.workerId'),
+		CASE WHEN json_extract(a.record, '$.createdAt') > '2000'
+			THEN julianday(json_extract(a.record, '$.createdAt')) END
+		FROM coordinator_assignments AS a
+		JOIN coordinator_attempts AS t ON t.id = a.attempt_id
+		WHERE t.workflow_run_id = ?`
 
 // runUsageWindow is the span in which a run's provider sessions could have
-// produced evidence, as SQLite julian days: from its first dispatch binding,
-// less runUsageSkewDays, to a minute after it completed, the same allowance NormalizeUsageReport gives
-// late evidence. End is empty while the run has not completed, and the window
-// is then open-ended. Start is empty when the run was never dispatched.
+// produced evidence, as SQLite julian days: from its first dispatch, less
+// runUsageSkewDays, to a minute after it completed, the same allowance
+// NormalizeUsageReport gives late evidence. End is empty while the run has not
+// completed, and the window is then open-ended. Start is empty when the run
+// was never dispatched.
 //
 // The times are compared through julianday rather than as text because
 // RFC 3339 with trimmed fractional seconds does not sort as text: "...00Z"
@@ -404,9 +422,9 @@ type runUsageWindow struct {
 func (s *Store) runUsageWindow(ctx context.Context, runID string) (runUsageWindow, error) {
 	var window runUsageWindow
 	if err := s.db.QueryRowContext(ctx, `SELECT
-		(SELECT MIN(julianday(bound_at)) - `+runUsageSkewDays+` FROM coordinator_usage_bindings WHERE workflow_run_id = ?),
+		(SELECT MIN(since) - `+runUsageSkewDays+` FROM (`+runUsageDispatches+`)),
 		(SELECT julianday(json_extract(record, '$.completedAt')) + 1.0 / 1440
-			FROM coordinator_workflow_runs WHERE id = ?)`, runID, runID).Scan(&window.Start, &window.End); err != nil {
+			FROM coordinator_workflow_runs WHERE id = ?)`, runID, runID, runID).Scan(&window.Start, &window.End); err != nil {
 		return runUsageWindow{}, err
 	}
 	return window, nil
@@ -419,12 +437,15 @@ func (s *Store) runUsageWindow(ctx context.Context, runID string) (runUsageWindo
 // is never added to a run's totals. What it does to the run's coverage depends
 // on whether it could have been this run's evidence:
 //
-//   - RunWindowUnattributedCount holds the unbound samples that could be: the
-//     same provider on a worker the run was dispatched to (or this host's own
-//     not-yet-forwarded readings, whose worker is not recorded), observed no
-//     earlier than that dispatch and no later than a minute after the run
-//     completed. A binding that was lost, or a thread the provider renamed, would
-//     look exactly like this, so these keep the run's coverage partial.
+//   - RunWindowUnattributedCount holds the unbound samples that could be: on a
+//     worker the run was dispatched to (or this host's own not-yet-forwarded
+//     readings, whose worker is not recorded), for any provider, observed no
+//     earlier than that dispatch less the skew allowance and no later than a
+//     minute after the run completed. A binding that was never written, a
+//     thread the provider renamed, or a provider log that names the instance
+//     differently from the route (claude against claude-main) all look exactly
+//     like this, so these keep the run's coverage partial. The provider is
+//     deliberately not matched: matching it would call such a run complete.
 //   - UnscopedUnattributedCount holds every unbound sample in the run's window
 //     on any worker. Most of it is interactive work and other hosts' sessions,
 //     which no dispatch of this run could have produced; it is reported as
@@ -456,12 +477,11 @@ func (s *Store) AttributedUsage(ctx context.Context, runID string) (domain.Usage
 	if window.Start.Valid {
 		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples AS u
 			WHERE `+unboundUsageWhere+`
-			AND EXISTS (SELECT 1 FROM coordinator_usage_bindings AS r
-				WHERE r.workflow_run_id = ? AND r.provider = u.provider
-				AND (r.worker_id = u.worker_id OR u.worker_id = '')
-				AND julianday(u.observed_at) >= julianday(r.bound_at) - `+runUsageSkewDays+`)
+			AND EXISTS (SELECT 1 FROM (`+runUsageDispatches+`) AS d
+				WHERE (d.worker_id = u.worker_id OR u.worker_id = '')
+				AND (d.since IS NULL OR julianday(u.observed_at) >= d.since - `+runUsageSkewDays+`))
 			AND (? IS NULL OR julianday(u.observed_at) <= ?)`,
-			runID, window.End, window.End,
+			runID, runID, window.End, window.End,
 		).Scan(&report.Coverage.RunWindowUnattributedCount); err != nil {
 			return domain.UsageReport{}, err
 		}
