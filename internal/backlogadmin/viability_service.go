@@ -761,7 +761,7 @@ func (v view) quotaReasons(task domain.Task, worker viabilityWorker) []Viability
 func (v view) admissionState(poolID string) (domain.AdmissionState, time.Time, bool) {
 	for _, admission := range v.admissions {
 		if admission.QuotaPoolID == poolID {
-			return admission.Admission, admission.ObservedAt, true
+			return admission.Admission, v.poolObservedAt(poolID, admission.ObservedAt), true
 		}
 	}
 	for _, pool := range v.records.QuotaPools {
@@ -770,6 +770,32 @@ func (v view) admissionState(poolID string) (domain.AdmissionState, time.Time, b
 		}
 	}
 	return "", time.Time{}, false
+}
+
+// poolObservedAt is when the pool was last observed: the newer of its admission
+// record and the bucket readings the workers reported for it.
+//
+// An admission record is rewritten only when the admission it projects
+// changes, so its observation time freezes at the last transition. On the
+// fleet coordinator it was twelve days old while workers reported the pool's
+// buckets on every exchange, and check called every campaign snapshot-stale.
+// The workers' readings are what admission itself is derived from each
+// boundary (QuotaBridge merges them), so they are what freshness is judged by.
+func (v view) poolObservedAt(poolID string, recorded time.Time) time.Time {
+	var pool domain.QuotaPool
+	for _, candidate := range v.records.QuotaPools {
+		if candidate.ID == poolID {
+			pool = candidate
+		}
+	}
+	if pool.ID == "" {
+		return recorded
+	}
+	observation := domain.ObserveQuotaPool(pool, domain.MergeQuotaObservations(nil, v.workers))
+	if observation.Buckets > 0 && observation.ObservedAt.After(recorded) {
+		return observation.ObservedAt
+	}
+	return recorded
 }
 
 // credentialReasons reports required credential references the worker cannot
