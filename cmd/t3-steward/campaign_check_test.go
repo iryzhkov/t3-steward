@@ -346,6 +346,66 @@ func TestCampaignSubmitProceedsWhileWaiting(t *testing.T) {
 			t.Fatalf("output %q does not contain %q", out.String(), want)
 		}
 	}
+	// The first thing said is that the campaign was accepted, and what it
+	// waits for; the old banner opened with "nothing can start", which read as
+	// a failed submission.
+	if first, _, _ := strings.Cut(out.String(), "\n"); !strings.HasPrefix(first, "accepted: the campaign was accepted") {
+		t.Fatalf("first line = %q", first)
+	}
+	if !strings.Contains(out.String(), "waiting for "+backlogadmin.ReasonQuotaClosed+" to clear") {
+		t.Fatalf("the banner does not name the obstruction:\n%s", out.String())
+	}
+}
+
+// The text form of check folds what the JSON keeps in full: a note every
+// listed worker shares is printed once for the task, and workers that may not
+// serve the task at all are counted on one line instead of being listed as
+// impossible beside the ready ones. The JSON document is the coordinator's
+// matrix unchanged.
+func TestCampaignCheckTextFoldsSharedNotesAndIneligibleWorkers(t *testing.T) {
+	fresh := &backlogadmin.ViabilityRepositoryObservation{Unobserved: "project \"scratch\" prepares a fresh workspace and has no repository to reach"}
+	defaulted := "project-binding-defaulted: project \"scratch\" has no backlog_v2.projects entry"
+	notEligible := func(worker string) backlogadmin.ViabilityCandidate {
+		return backlogadmin.ViabilityCandidate{
+			Worker: worker, Outcome: backlogadmin.ViabilityImpossible, Repository: fresh, Unchecked: []string{defaulted},
+			Reasons: []backlogadmin.ViabilityReason{{Code: backlogadmin.ReasonWorkerNotEligible, Permanent: true,
+				Detail: "worker \"" + worker + "\" cannot prepare project \"scratch\""}},
+		}
+	}
+	matrix := backlogadmin.ViabilityMatrix{
+		Outcome: backlogadmin.ViabilityAcceptedWaiting,
+		Tasks: []backlogadmin.ViabilityTaskResult{{
+			Task: "implement", Outcome: backlogadmin.ViabilityAcceptedWaiting,
+			Candidates: []backlogadmin.ViabilityCandidate{
+				notEligible("homelab"),
+				{Worker: "normandy", Outcome: backlogadmin.ViabilityAcceptedWaiting, Repository: fresh, Unchecked: []string{defaulted},
+					Reasons: []backlogadmin.ViabilityReason{{Code: backlogadmin.ReasonQuotaClosed, Detail: "pool claude is closed"}}},
+				{Worker: "omarchy-pc", Outcome: backlogadmin.ViabilityAcceptedWaiting, Repository: fresh, Unchecked: []string{defaulted, "only-here"},
+					Reasons: []backlogadmin.ViabilityReason{{Code: backlogadmin.ReasonWorkerAtCapacity, Detail: "every slot is taken"}}},
+				notEligible("spare"),
+			},
+		}},
+	}
+	var out bytes.Buffer
+	if err := renderCampaignCheck(&out, campaignCheck{Name: "demo", Matrix: matrix}); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"campaign demo is accepted_waiting: submit accepts it and it waits, queued, for " +
+			backlogadmin.ReasonQuotaClosed + ", " + backlogadmin.ReasonWorkerAtCapacity + " to clear",
+		"not eligible, omitted: 2 workers: homelab (worker \"homelab\" cannot prepare project \"scratch\"), spare (",
+		"      unchecked   only-here\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("output does not contain %q:\n%s", want, text)
+		}
+	}
+	for line, count := range map[string]int{"not observed: project": 1, "project-binding-defaulted": 1, "impossible": 0, "    homelab  ": 0} {
+		if got := strings.Count(text, line); got != count {
+			t.Fatalf("%q appears %d times, want %d:\n%s", line, got, count, text)
+		}
+	}
 }
 
 func TestCampaignSubmitAllowUnverifiedIsAuditedAndLoud(t *testing.T) {
