@@ -219,6 +219,30 @@ func TestImportCoordinatorWorkerResultDoesNotAcknowledgeCorruptFetch(t *testing.
 }
 
 func TestImportCoordinatorWorkerCheckpointPublishesThenAcknowledges(t *testing.T) {
+	report, acked, objectID, err := importCoordinatorWorkerCheckpointCase(t, domain.AssignmentClaimed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !acked || len(report.Checkpoints) != 1 || report.Checkpoints[0].ID != objectID {
+		t.Fatalf("checkpoint report=%#v acknowledged=%t", report, acked)
+	}
+}
+
+// S14: a checkpoint that can never be imported used to fail this worker's whole
+// exchange on every boundary, because only an import acknowledged it. It is
+// now acknowledged, discarded, and the exchange goes on.
+func TestImportCoordinatorWorkerCheckpointDiscardsARejectedUpload(t *testing.T) {
+	report, acked, _, err := importCoordinatorWorkerCheckpointCase(t, domain.AssignmentReleased)
+	if err != nil {
+		t.Fatalf("a checkpoint for a released assignment failed the exchange: %v", err)
+	}
+	if !acked || len(report.Checkpoints) != 0 {
+		t.Fatalf("rejected checkpoint report=%#v acknowledged=%t", report, acked)
+	}
+}
+
+func importCoordinatorWorkerCheckpointCase(t *testing.T, state domain.AssignmentState) (backlog.WorkerExchangeReport, bool, string, error) {
+	t.Helper()
 	ctx := context.Background()
 	now := time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC)
 	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
@@ -228,7 +252,7 @@ func TestImportCoordinatorWorkerCheckpointPublishesThenAcknowledges(t *testing.T
 	defer store.Close()
 	task := domain.Task{ID: "task-1", WorkflowID: "workflow-1", Name: "task"}
 	attempt := domain.Attempt{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: task.ID, Number: 1, Progress: domain.ProgressActive, Control: domain.ControlRunning, Revision: 1, AssignmentID: "assignment-1", UpdatedAt: now}
-	assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "normandy", WorkerEpoch: "worker-1", State: domain.AssignmentClaimed, Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
+	assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "normandy", WorkerEpoch: "worker-1", State: state, Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
 	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{{ID: attempt.WorkflowRunID, WorkflowID: task.WorkflowID}}, Tasks: []domain.Task{task}, Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment}}); err != nil {
 		t.Fatal(err)
 	}
@@ -257,12 +281,7 @@ func TestImportCoordinatorWorkerCheckpointPublishesThenAcknowledges(t *testing.T
 		CheckpointImporter: backlog.CoordinatorCheckpointImporter{CoordinatorID: "coordinator", CoordinatorEpoch: 1, Store: store, Artifacts: backlog.CoordinatorArtifactStore{Root: filepath.Join(t.TempDir(), "artifacts"), Catalog: store}, MaxArtifactBytes: 1024, MaxTotalBytes: 1024, Now: func() time.Time { return now.Add(3 * time.Minute) }},
 	}
 	report, err := importCoordinatorWorkerCheckpoint(ctx, session, backlog.WorkerExchangeReport{}, 1024)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !controlTransport.acked || len(report.Checkpoints) != 1 || report.Checkpoints[0].ID != object.ID {
-		t.Fatalf("checkpoint report=%#v acknowledged=%t", report, controlTransport.acked)
-	}
+	return report, controlTransport.acked, object.ID, err
 }
 
 func coordinatorResultClient(t *testing.T, now time.Time, suffix string, transport workerproto.RoundTripper) *workerproto.Client {

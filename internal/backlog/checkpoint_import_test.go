@@ -118,6 +118,23 @@ func TestCoordinatorCheckpointImporterAcceptsAnEarlierEpochAndRejectsASettledBin
 		t.Fatalf("a checkpoint from an earlier coordinator epoch was refused: %#v, %v", artifact, err)
 	}
 
+	// Pause, then resume before the import: planning the resume rewrites the
+	// throttle record's delivery and result but keeps its checkpoint, and the
+	// running attempt still records it, so the import must still bind.
+	resumed := record
+	resumed.Revision, resumed.Delivery, resumed.Result, resumed.Control = 2, domain.ThrottleDeliveryPending, "", domain.ControlRunning
+	if err := store.CommitThrottleAttemptTransitions(ctx, []domain.ThrottleAttemptTransition{{ExpectedRevision: 1, Record: resumed}}); err != nil {
+		t.Fatal(err)
+	}
+	resumedAttempt := attempt
+	resumedAttempt.Control, resumedAttempt.Revision = domain.ControlRunning, 3
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Attempts: []domain.Attempt{resumedAttempt}}); err != nil {
+		t.Fatal(err)
+	}
+	if artifact, err := importer.Import(ctx, response, opener); err != nil || artifact.ID != object.ID {
+		t.Fatalf("a checkpoint of a paused-then-resumed attempt was refused: %#v, %v", artifact, err)
+	}
+
 	// A different checkpoint for an assignment that has since been released
 	// can never be imported: it is rejected so the caller can discard it.
 	other := resultObject("checkpoint-attempt-1-cafebabe", "checkpoints/checkpoint-attempt-1-cafebabe.md", "checkpoint", "text/markdown", []byte("stale\n"))
