@@ -127,7 +127,26 @@ func (h *CatalogHost) activate(ctx context.Context, c retainedCatalog) error {
 }
 
 // Reconcile continues retained execution even when every SSH bridge disconnects.
+//
+// The pass never waits for a collection while it holds h.mu, which every
+// exchange also needs: a collection's verification commands may run for many
+// minutes, and a worker whose exchanges queue behind them stops renewing its
+// leases and taking offers. The pass starts collections and returns; the wait
+// for the ones it started happens here with the lock released, and a
+// collection that finished within it has its result taken by a second pass
+// at once instead of on the next tick.
 func (h *CatalogHost) Reconcile(ctx context.Context) error {
+	pass := &collectionPass{}
+	if err := h.reconcileOnce(withCollectionPass(ctx, pass)); err != nil {
+		return err
+	}
+	if !pass.wait(ctx, collectionWaitGrace) {
+		return nil
+	}
+	return h.reconcileOnce(withCollectionPass(ctx, nil))
+}
+
+func (h *CatalogHost) reconcileOnce(ctx context.Context) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.service == nil {
@@ -136,9 +155,14 @@ func (h *CatalogHost) Reconcile(ctx context.Context) error {
 	return h.service.Exchange.Runtime.Reconcile(ctx)
 }
 
+// HandleFrame serves one coordinator exchange. It holds h.mu for the whole
+// exchange, so nothing under it waits for a collection: an attempt being
+// collected is reported as collecting, and its result is taken by a later
+// pass once the collection has finished.
 func (h *CatalogHost) HandleFrame(ctx context.Context, raw []byte) ([]byte, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	ctx = withCollectionPass(ctx, nil)
 	codec := workerproto.Codec{MaxBytes: 8 << 20}
 	envelope, buffered, err := ReadStreamEnvelope(bytes.NewReader(raw), codec)
 	if err != nil {

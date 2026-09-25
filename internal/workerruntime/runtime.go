@@ -489,14 +489,23 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 		return r.finishThrottle(command, false, "", nil, "task timeout expired")
 	}
 	// A collection owns the attempt's outcome from the moment it starts: its
-	// turn is over and its verification may be running in the workspace. A
-	// resume would start a new turn in that same workspace, under the running
-	// checks. PR #21 kept a stop from overtaking a collection; a resume must
-	// not either.
+	// turn is over and its verification may be running in the workspace. PR #21
+	// kept a stop from overtaking a collection, and no throttle command may
+	// either. A resume, a warning or a drain notice would start a new turn in
+	// that workspace, under the running checks. An accepted drain or hard stop
+	// would also move the attempt to stopped, a phase from which a throttled
+	// attempt is never collected again, so the collection's result would never
+	// be taken and its registry entry would refuse every later resume.
+	//
+	// The refusal is final for the command. The coordinator records it as
+	// rejected and does not reissue a command for the same directive; a drain
+	// whose deadline passes is escalated once to a hard stop, which is refused
+	// the same way. The assignment itself keeps following the worker's
+	// observations, which report it collecting and then completed.
 	// The registry is this process's; after a restart it is empty until a
 	// reconcile reaches the attempt, and the journal phase says so durably.
-	if command.Kind == domain.ThrottleCommandResume && (r.collectionRegistered(record) || record.Phase == PhaseCollecting) {
-		return r.finishThrottle(command, false, "", nil, "the attempt is being collected; its turn is over and nothing is resumed")
+	if r.collectionRegistered(record) || record.Phase == PhaseCollecting {
+		return r.finishThrottle(command, false, "", nil, "the attempt is being collected; its turn is over and no throttle command applies")
 	}
 	var result domain.ThrottleAcknowledgementResult
 	var checkpoint *domain.CheckpointMetadata
@@ -1177,29 +1186,19 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 	// The collection runs under its own budget, not under ctx: ctx belongs to
 	// a reconcile pass or an exchange and is far shorter than a verification
 	// command may legitimately take. See collectOnce.
-	if err := r.collectOnce(ctx, record); err != nil {
-		if !errors.Is(err, ErrSettleUnproven) {
+	flight, err := r.collectOnce(ctx, id, record)
+	if err != nil {
+		if errors.Is(err, errCollectionRunning) {
 			return fmt.Errorf("collection deferred: %w", err)
 		}
-		// The result is durable in custody; only the provider settlement is
-		// still unproven. Complete the attempt and retry settlement later
-		// instead of repeating collection.
-		r.log.Warn("result published; T3 settlement deferred", "assignment", id, "error", err)
-		return r.journal.update(func(state *journalState) error {
-			current, ok := state.Attempts[id]
-			if !ok {
-				return fmt.Errorf("worker journal: unknown assignment %q", id)
-			}
-			current.Phase = PhaseCompleted
-			current.Failure = ""
-			current.SettlePending = true
-			current.UpdatedAt = r.now()
-			state.Attempts[id] = current
-			state.Sequence++
-			return nil
-		})
+		return err
 	}
-	return r.markPhase(id, PhaseCompleted, "", record.WorkspacePath, record.ThreadID)
+	if flight == nil {
+		// The journal no longer names the attempt as collecting: another pass
+		// took its result first, or it was superseded. Nothing is left here.
+		return nil
+	}
+	return r.finishCollection(id, record, flight)
 }
 
 func (r *Runtime) validateOffer(offer workerproto.AssignmentOffer, now time.Time) error {
