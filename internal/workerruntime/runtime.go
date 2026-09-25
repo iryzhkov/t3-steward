@@ -68,18 +68,28 @@ type Config struct {
 	// gets before the worker escalates to the driver's stop while the thread
 	// keeps working: the daemon's stop_verify_timeout. Zero escalates on the
 	// first reconcile after the notice failed to end the turn.
-	PauseEscalation  time.Duration
-	WorkerID         string
-	WorkerEpoch      string
-	CoordinatorID    string
-	CoordinatorEpoch int64
-	SnapshotTTL      time.Duration
-	LeaseDuration    time.Duration
-	MaxPackageBytes  int64
-	Inventory        domain.WorkerInventory
-	Retention        time.Duration
-	Now              func() time.Time
-	Logger           *slog.Logger
+	PauseEscalation time.Duration
+	// Lifetime bounds work the runtime starts on its own behalf and lets outlive
+	// the call that started it: today, the collection of an attempt, whose
+	// verification commands may run for minutes. It is the worker process's
+	// lifetime, never a request's. Nil means context.Background().
+	Lifetime context.Context
+	// FinalizationTimeout bounds one collection of an attempt, verification
+	// included, independently of the reconcile pass or exchange that started
+	// it. Zero uses DefaultFinalizationTimeout; a package whose declared
+	// verification limits add up to more gets the larger budget.
+	FinalizationTimeout time.Duration
+	WorkerID            string
+	WorkerEpoch         string
+	CoordinatorID       string
+	CoordinatorEpoch    int64
+	SnapshotTTL         time.Duration
+	LeaseDuration       time.Duration
+	MaxPackageBytes     int64
+	Inventory           domain.WorkerInventory
+	Retention           time.Duration
+	Now                 func() time.Time
+	Logger              *slog.Logger
 }
 
 type Runtime struct {
@@ -119,6 +129,9 @@ func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
 	}
 	if config.Retention <= 0 {
 		config.Retention = DefaultRetention
+	}
+	if config.Lifetime == nil {
+		config.Lifetime = context.Background()
 	}
 	logger := config.Logger
 	if logger == nil {
@@ -274,6 +287,14 @@ func (r *Runtime) containSuperseded(ctx context.Context, existing AttemptRecord)
 		return r.stopPreparation(ctx, existing.Package.Package)
 	case PhaseCompleted, PhaseFailed:
 		return nil
+	case PhaseCollecting:
+		// A collection of the older epoch is still verifying in this
+		// workspace, or has published a result no pass has taken yet. The
+		// offer is withheld and retried rather than waited for here, where the
+		// journal lock is held; the next pass takes the collection's result.
+		if r.collectionRegistered(existing) {
+			return errors.New("a collection of the superseded epoch is still in progress")
+		}
 	}
 	if existing.Package.Package.Identity.ThreadID == "" {
 		return nil
@@ -617,7 +638,16 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			err = r.confirmStop(id)
 		}
 	case PhaseCollecting:
-		err = r.collect(ctx, id)
+		// A stop accepted while a collection was running was deferred, not
+		// dropped. stop yields to a collection that is still running or has a
+		// result waiting, so a good result still wins; once none is left, as
+		// after a failed collection, the stop takes effect instead of another
+		// collection starting.
+		if hasCommandRequest(record, domain.WorkerCommandStop) && !record.StopConfirmed {
+			err = r.stop(ctx, id)
+		} else {
+			err = r.collect(ctx, id)
+		}
 	case PhaseUnknown:
 		err = r.recoverUnknown(ctx, id, record)
 	case PhaseCompleted:
@@ -643,6 +673,12 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 	if err != nil {
 		if isJournalError(err) {
 			return err
+		}
+		if errors.Is(err, errCollectionRunning) {
+			// Expected on every pass while a long verification runs; the start
+			// of that collection is already logged once.
+			r.log.Debug("attempt collection still running", "assignment", id, "detail", err)
+			return nil
 		}
 		r.log.Warn("attempt reconciliation deferred", "assignment", id, "phase", record.Phase, "error", err)
 	}
@@ -915,6 +951,18 @@ func (r *Runtime) stop(ctx context.Context, id string) error {
 		return r.confirmStop(id)
 	case PhaseUnknown:
 		return r.recoverUnknown(ctx, id, record)
+	case PhaseCollecting:
+		// A collection started by an earlier pass is running or has already
+		// published its result. The stop yields to it, exactly as it did when
+		// collection could only run inside the pass that delivered the stop:
+		// the result is taken if it is ready, and the stop is otherwise
+		// deferred. Once the attempt completes the stop has nothing to do.
+		if r.collectionRegistered(record) {
+			if err := r.collect(ctx, id); err != nil {
+				return fmt.Errorf("stop deferred: %w", err)
+			}
+			return nil
+		}
 	}
 	if err := r.markPhase(id, PhaseStopping, "", record.WorkspacePath, record.ThreadID); err != nil {
 		return err
@@ -1099,7 +1147,10 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 			return err
 		}
 	}
-	if record.WorkspacePath != "" {
+	// A collection already started owns the workspace until its result is
+	// taken, and its own outcome says what became of it. Failing the attempt
+	// here could supersede a good result already in custody.
+	if record.WorkspacePath != "" && !r.collectionRegistered(record) {
 		// A workspace that vanished (host cleanup, an older binary's eager
 		// cleanup, a rollback) can never be finalized; publish the failure
 		// instead of retrying collection forever.
@@ -1110,7 +1161,10 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 			return r.collect(ctx, id)
 		}
 	}
-	if err := r.collectWithPauseEvidence(ctx, record); err != nil {
+	// The collection runs under its own budget, not under ctx: ctx belongs to
+	// a reconcile pass or an exchange and is far shorter than a verification
+	// command may legitimately take. See collectOnce.
+	if err := r.collectOnce(ctx, record); err != nil {
 		if !errors.Is(err, ErrSettleUnproven) {
 			return fmt.Errorf("collection deferred: %w", err)
 		}

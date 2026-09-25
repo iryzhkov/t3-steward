@@ -189,7 +189,11 @@ func cmdWorker(g globalFlags, args []string) error {
 		// A local quota stop sends the drain notice first and escalates to the
 		// stop after the window the watchdog itself gives a stop to take effect.
 		PauseEscalation: cfg.Policy.StopVerifyTimeout.D(),
-		T3:              control, DryRun: cfg.Policy.DryRun, Logger: logger,
+		// A collection outlives the exchange or reconcile tick that starts it,
+		// because its verification commands may run for minutes; it ends with
+		// the daemon, never with a request.
+		Lifetime: ctx,
+		T3:       control, DryRun: cfg.Policy.DryRun, Logger: logger,
 	}}
 	if err = host.Load(ctx); err != nil {
 		return err
@@ -218,7 +222,18 @@ func cmdWorker(g globalFlags, args []string) error {
 			}
 		}
 	}()
-	defer func() { cancel(); <-reconcileDone }()
+	defer func() {
+		cancel()
+		<-reconcileDone
+		// Cancelling ctx cancels every running collection, which kills its
+		// verification scope. Wait for them, so that none is still running
+		// when the next daemon collects the same attempt again.
+		drainCtx, stopDrain := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stopDrain()
+		if err := workerruntime.DrainCollections(drainCtx); err != nil {
+			logger.Warn("worker shutdown", "error", err)
+		}
+	}()
 	logger.Info("persistent worker listening", "worker", bootstrap.WorkerID, "bootstrap_digest", digest)
 	err = workerruntime.ServeWorkerListener(ctx, listener, (8<<20)+workerproto.StreamArtifactLimit, 2*time.Minute, 4, host.HandleFrame)
 	if errors.Is(err, context.Canceled) {
