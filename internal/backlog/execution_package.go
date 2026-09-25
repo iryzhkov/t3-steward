@@ -37,8 +37,12 @@ type CoordinatorOfferBuilder struct {
 	CoordinatorID       string
 	CoordinatorEpoch    int64
 	VerificationTimeout time.Duration
-	MaxArtifactBytes    int64
-	MaxTotalBytes       int64
+	// ActivationPrepareTimeout bounds an overseer activation's preparation.
+	// Zero falls back to VerificationTimeout, which is what it was before the
+	// two were separated.
+	ActivationPrepareTimeout time.Duration
+	MaxArtifactBytes         int64
+	MaxTotalBytes            int64
 	// WorkerCapabilities overrides what a worker is taken to advertise, for
 	// tests and for a caller that has a fresher view than the store. When it is
 	// nil the builder reads the worker's own reported snapshot instead.

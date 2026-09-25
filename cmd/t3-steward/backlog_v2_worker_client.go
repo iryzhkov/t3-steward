@@ -473,9 +473,12 @@ func newCoordinatorWorkerSession(
 				Store:         store, Catalog: binding.Catalog, CatalogRevision: binding.CatalogRevision,
 				ActivationEvidence: &artifacts,
 				CoordinatorID:      settings.Coordinator.ID, CoordinatorEpoch: coordinatorEpoch,
-				VerificationTimeout: requestTimeout,
-				MaxArtifactBytes:    settings.MessageLimits.MaxArtifactBytes,
-				MaxTotalBytes:       settings.MessageLimits.MaxArtifactBytes,
+				VerificationTimeout: settings.Verification.CommandTimeout.D(),
+				// An overseer activation's preparation is a protocol-sized step;
+				// it keeps the request timeout it always had.
+				ActivationPrepareTimeout: requestTimeout,
+				MaxArtifactBytes:         settings.MessageLimits.MaxArtifactBytes,
+				MaxTotalBytes:            settings.MessageLimits.MaxArtifactBytes,
 				// WorkerCapabilities stays nil on purpose: the builder then reads
 				// what the worker reported about itself, which is the only source
 				// that knows which build is running on that host.

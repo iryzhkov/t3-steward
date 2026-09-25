@@ -347,6 +347,18 @@ type BacklogV2 struct {
 	Leases            V2Leases                  `yaml:"leases"`
 	Scheduling        V2Scheduling              `yaml:"scheduling"`
 	StartupAdmission  string                    `yaml:"startup_admission"`
+	Verification      V2Verification            `yaml:"verification"`
+}
+
+// V2Verification bounds the runner verification commands a task declares.
+//
+// CommandTimeout is the limit on one verification command, sent to the worker
+// in every execution package. It used to be transport.request_timeout, the
+// limit on one protocol request (30 s in the field), so a contained worker
+// killed any declared check that took longer than a request may, however long
+// the collection budget was.
+type V2Verification struct {
+	CommandTimeout Duration `yaml:"command_timeout"`
 }
 
 type V2Coordinator struct {
@@ -699,6 +711,7 @@ func Default() Config {
 	c.BacklogV2.Leases.RenewInterval = Duration(30 * time.Second)
 	c.BacklogV2.Scheduling.Interval = Duration(10 * time.Second)
 	c.BacklogV2.Scheduling.CatchUpMax = 100
+	c.BacklogV2.Verification.CommandTimeout = Duration(30 * time.Minute)
 	c.LogLevel = "info"
 	return c
 }
