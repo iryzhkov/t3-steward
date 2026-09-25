@@ -2,6 +2,7 @@ package backlog
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -144,6 +145,25 @@ func TestCoordinatorCheckpointImporterAcceptsAnEarlierEpochAndRejectsASettledBin
 	released := assignment
 	released.State = domain.AssignmentReleased
 	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Assignments: []domain.Assignment{released}}); err != nil {
+		t.Fatal(err)
+	}
+	// While the rejection cannot be recorded it is not a rejection: the
+	// caller would acknowledge and discard the upload with no trace left, so
+	// the refusal stays an ordinary, retryable one.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.ExecContext(ctx, `CREATE TRIGGER reject_checkpoint_audit BEFORE INSERT ON coordinator_audit_events
+		WHEN NEW.kind = 'checkpoint-import-rejected' BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = importer.Import(ctx, workerproto.ArtifactUploadResponse{Manifest: stale, Custody: resultCustody(t, stale, "coordinator")}, resultUploadOpener{other.ID: []byte("stale\n")})
+	if err == nil || errors.Is(err, ErrCheckpointImportRejected) || !strings.Contains(err.Error(), "injected audit failure") {
+		t.Fatalf("an unrecorded rejection was not left retryable: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `DROP TRIGGER reject_checkpoint_audit`); err != nil {
 		t.Fatal(err)
 	}
 	_, err = importer.Import(ctx, workerproto.ArtifactUploadResponse{Manifest: stale, Custody: resultCustody(t, stale, "coordinator")}, resultUploadOpener{other.ID: []byte("stale\n")})
