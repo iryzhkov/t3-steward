@@ -301,12 +301,13 @@ Outcomes:
                     refused and no workflow run is created
 
 Permanent reason codes. Waiting cannot change any of them, so submit refuses:
-  unknown-project, unknown-setup-profile, unknown-provider-instance,
-  unknown-model, unknown-quota-pool, worker-not-eligible, capability-missing,
-  cpu-class-impossible, resources-impossible, directory-impossible,
-  credential-missing, repository-syntax-invalid,
-  repository-authentication-failed, repository-not-found, ref-not-found,
-  no-route, no-configured-route, timing-window-closed, message-limit-exceeded.
+  unknown-project, workspace-type-mismatch, unknown-setup-profile,
+  unknown-provider-instance, unknown-model, unknown-quota-pool,
+  worker-not-eligible, capability-missing, cpu-class-impossible,
+  resources-impossible, directory-impossible, credential-missing,
+  repository-syntax-invalid, repository-authentication-failed,
+  repository-not-found, ref-not-found, no-route, no-configured-route,
+  supervisor-client-missing, timing-window-closed, message-limit-exceeded.
 
 no-route means a task declares no provider route (instance and model) at all.
 The coordinator never chooses one: declare routes in workflow.yaml, or start a
@@ -332,7 +333,8 @@ and the credential references, so rotating a credential or renaming a
 repository invalidates it. No credential value ever appears in the result.
 
 Recovery:
-  unknown-project            t3-steward backlog workers --json
+  unknown-project            t3-steward backlog projects
+  workspace-type-mismatch    match environment.type to the project TYPE (t3-steward campaign help fresh)
   repository-syntax-invalid  fix backlog_v2.projects.<name>.repository
   ref-not-found              fix environment.ref in workflow.yaml
   no-route                   declare routes: [{instance, model}] in workflow.yaml (t3-steward models lists them)
@@ -450,6 +452,52 @@ the run. The run exists; register the wait separately with
 After a successful registration, end the turn. The steward wakes the thread.
 `
 
+// FreshHelp tells an author how to run a campaign that needs no repository.
+// Research, spike and review campaigns that produce findings rather than
+// commits are the common case, and without this topic the only hint was one
+// comment in the skill's example manifest.
+const FreshHelp = `Campaigns that need no Git repository: environment.type fresh.
+
+Research, spike and review work often produces findings, not commits. Such a
+campaign runs in a new, empty directory per task instead of a checkout:
+
+  environment:
+    project: scratch      # a catalog project of type fresh
+    type: fresh
+
+A fresh campaign names no ref and no repository, and its environment scope is
+task (the default). Everything else is the same as a Git campaign: routes, needs,
+outputs, inputs_from, verify, placement and check. A task's declared outputs are
+the only thing collected from its directory, so declare every file a successor
+or the owner needs. A successor finds its inputs_from files under
+.t3/dependencies/<producer task id>/, an id assigned at submission, so a prompt
+lists .t3/dependencies/ rather than hard-coding it. Campaign inputs are under
+.t3/inputs/.
+
+The project must be declared with type fresh in the coordinator catalog.
+"t3-steward backlog projects" shows each project's TYPE; check refuses a Git
+project with workspace-type-mismatch and names the fresh projects that exist.
+When none exists, an operator declares one through UpKeeper:
+  upkeeper project add scratch --type fresh --workers homelab,omarchy-pc
+
+One task: t3-steward task run --fresh --model [INSTANCE/]MODEL -- "<prompt>"
+works from any directory, with no checkout, and picks the one fresh project.
+
+A minimal two-task example:
+  version: 2
+  name: findings
+  environment: {project: scratch, type: fresh}
+  routes: [{instance: claudeAgent, model: claude-sonnet-5}]
+  tasks:
+    research: {prompt_file: prompts/research.md, outputs: [findings.md]}
+    review:
+      needs: [research]
+      inputs_from: {research: [findings.md]}
+      prompt_file: prompts/review.md
+      outputs: [review.md]
+      verify: ['test -s review.md']
+`
+
 // HelpTopic is one named block of help the command tree can attach wherever it
 // wants it.
 type HelpTopic struct {
@@ -461,6 +509,7 @@ type HelpTopic struct {
 func HelpTopics() []HelpTopic {
 	return []HelpTopic{
 		{Name: "authoring", Body: AuthoringHelp},
+		{Name: "fresh", Body: FreshHelp},
 		{Name: "plan", Body: PlanHelp},
 		{Name: "graph", Body: GraphHelp},
 		{Name: "dag-semantics", Body: DAGSemanticsHelp},

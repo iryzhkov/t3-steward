@@ -582,7 +582,12 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// tightening the sentence they are in, so the cap is unchanged, and
 	// campaign_family_help_test.go now ties this page to the campaign submit
 	// page so that it cannot describe a superseded submit again.
-	const wantDigest = "62cc380c31d80cb915bff691ce4ac4821836a40e6cca86d8f9c1e287cb3d2f71"
+	//
+	// Updated when repository-free campaigns became discoverable: the topic
+	// list names fresh, and the configuration
+	// paragraph no longer says every project has a repository, which sent
+	// authors of research campaigns looking for one.
+	const wantDigest = "7c892e0f631bf6334a905adb116a6491b59f6443dcb1e5ea2aaf2d6a06d109d7"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)
@@ -622,7 +627,8 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 		"is its own Steward-scheduled T3 session",
 		"must not use native",
 		"subagents in place of declared tasks",
-		"Help topics: authoring, readiness,",
+		"Help topics: authoring, fresh, readiness,",
+		"type fresh has none (research): campaign help fresh.",
 	} {
 		if !strings.Contains(campaignUsage, want) {
 			t.Fatalf("usage no longer covers %q", want)
