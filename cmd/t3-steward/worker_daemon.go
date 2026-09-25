@@ -185,21 +185,8 @@ func cmdWorker(g globalFlags, args []string) error {
 	if usage != nil {
 		defer usage.Close()
 	}
-	host := &workerruntime.CatalogHost{Home: home, Bootstrap: bootstrap, Options: workerruntime.WorkerServiceOptions{
-		RuntimeIdentity:     &domain.WorkerRuntimeIdentity{Release: version, Commit: commit, BootstrapDigest: digest},
-		Usage:               workerUsageSource(usage, logger),
-		ProtocolCredentials: credentials, ProjectCredentials: workerruntime.EnvironmentCredentialChecker{},
-		ObserveInventory: observeHostInventory(control, dataDir),
-		Quota:            quota,
-		// A local quota stop sends the drain notice first and escalates to the
-		// stop after the window the watchdog itself gives a stop to take effect.
-		PauseEscalation: cfg.Policy.StopVerifyTimeout.D(),
-		// A collection outlives the exchange or reconcile tick that starts it,
-		// because its verification commands may run for minutes; it ends with
-		// the daemon, never with a request.
-		Lifetime: ctx,
-		T3:       control, DryRun: cfg.Policy.DryRun, Logger: logger,
-	}}
+	host := &workerruntime.CatalogHost{Home: home, Bootstrap: bootstrap,
+		Options: persistentWorkerOptions(ctx, cfg, logger, control, dataDir, digest, credentials, quota, usage)}
 	if err = host.Load(ctx); err != nil {
 		return err
 	}
@@ -245,6 +232,38 @@ func cmdWorker(g globalFlags, args []string) error {
 		return nil
 	}
 	return err
+}
+
+// persistentWorkerOptions is the service configuration the persistent worker
+// serves every exchange with. It is built apart from serve so that a test can
+// see what the daemon actually hands its exchange: the usage source was once
+// missing here, and the persistent worker every host runs forwarded no usage
+// without anything failing (S8).
+func persistentWorkerOptions(
+	ctx context.Context,
+	cfg config.Config,
+	logger *slog.Logger,
+	control *t3control.Control,
+	dataDir, digest string,
+	credentials workerruntime.ProtocolCredentialResolver,
+	quota workerruntime.QuotaGuard,
+	usage *sqlite.Store,
+) workerruntime.WorkerServiceOptions {
+	return workerruntime.WorkerServiceOptions{
+		RuntimeIdentity:     &domain.WorkerRuntimeIdentity{Release: version, Commit: commit, BootstrapDigest: digest},
+		Usage:               workerUsageSource(usage, logger),
+		ProtocolCredentials: credentials, ProjectCredentials: workerruntime.EnvironmentCredentialChecker{},
+		ObserveInventory: observeHostInventory(control, dataDir),
+		Quota:            quota,
+		// A local quota stop sends the drain notice first and escalates to the
+		// stop after the window the watchdog itself gives a stop to take effect.
+		PauseEscalation: cfg.Policy.StopVerifyTimeout.D(),
+		// A collection outlives the exchange or reconcile tick that starts it,
+		// because its verification commands may run for minutes; it ends with
+		// the daemon, never with a request.
+		Lifetime: ctx,
+		T3:       control, DryRun: cfg.Policy.DryRun, Logger: logger,
+	}
 }
 
 // storeQuotaGuard is a HostQuotaGuard over the watchdog's state database that
