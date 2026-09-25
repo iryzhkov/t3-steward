@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,6 +96,47 @@ func TestWorkspacePreparerPinsCommitAndMaterializesInputs(t *testing.T) {
 	assertReadOnly(t, prepared.PreparationLog)
 	assertReadOnly(t, filepath.Join(prepared.InputsDir, "input.txt"))
 	assertReadOnly(t, filepath.Join(prepared.DependenciesDir, "producer", "result.txt"))
+}
+
+// S9: a task told to push its branch to the project remote pushed into the
+// worker's repository cache, which is origin in the workspace, and the next
+// cache refresh with --prune dropped it. A push to origin must reach the
+// project repository and survive a refresh.
+func TestWorkspacePushToOriginReachesTheProjectRepository(t *testing.T) {
+	repository := newGitFixture(t)
+	commit := gitOutput(t, repository, "rev-parse", "HEAD")
+	runsRoot := t.TempDir()
+	preparer := workspacePreparer(runsRoot, t.TempDir())
+	prepared, err := preparer.Prepare(context.Background(),
+		workspaceRequest(repository, commit, workspaceTask("task-id", "publisher"), "attempt-1"))
+	if err != nil {
+		t.Fatalf("prepare workspace: %v", err)
+	}
+	cleanupImmutable(t, prepared.RootDir)
+
+	workspace := prepared.WorkspaceDir
+	gitRun(t, workspace, "checkout", "-b", "task-branch")
+	writeGitFile(t, workspace, "published.txt", "published\n")
+	gitRun(t, workspace, "add", "published.txt")
+	gitRun(t, workspace, "-c", "user.name=task", "-c", "user.email=task@example.invalid", "commit", "-m", "publish")
+	pushed := gitOutput(t, workspace, "rev-parse", "HEAD")
+	gitRun(t, workspace, "push", "origin", "task-branch")
+
+	if got := gitOutput(t, repository, "rev-parse", "refs/heads/task-branch"); got != pushed {
+		t.Fatalf("project repository task-branch = %q, want the pushed commit %q", got, pushed)
+	}
+	// The refresh a later task's preparation runs must not lose it: the
+	// branch lives in the project repository, so the mirror gains it.
+	cached, err := preparer.Cache.Prepare(context.Background(), repository, io.Discard)
+	if err != nil {
+		t.Fatalf("refresh cache: %v", err)
+	}
+	if got := gitOutput(t, cached.Path, "rev-parse", "refs/heads/task-branch"); got != pushed {
+		t.Fatalf("refreshed cache task-branch = %q, want %q", got, pushed)
+	}
+	if fetch := gitOutput(t, workspace, "remote", "get-url", "origin"); fetch != cached.Path {
+		t.Fatalf("origin fetch URL = %q, want the local cache %q", fetch, cached.Path)
+	}
 }
 
 func TestWorkspacePreparerReusesCacheWithIndependentClones(t *testing.T) {
