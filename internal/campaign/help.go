@@ -531,7 +531,8 @@ The project must be declared with type fresh in the coordinator catalog.
 "t3-steward backlog projects" shows each project's TYPE; check refuses a Git
 project with workspace-type-mismatch and names the fresh projects that exist.
 When none exists, an operator declares one through UpKeeper:
-  upkeeper project add scratch --type fresh --workers homelab,omarchy-pc
+  upkeeper project add scratch --type fresh --workers <worker>,<worker>
+naming workers that can prepare a fresh workspace; check says which cannot.
 
 One task: t3-steward task run --fresh --model [INSTANCE/]MODEL -- "<prompt>"
 works from any directory, with no checkout, and picks the one fresh project.

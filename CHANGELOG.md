@@ -462,6 +462,53 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `wait add --github issue 5` is refused as `unknown --github kind "issue";
+  use run or pr`. The id left behind as a positional argument used to be
+  reported as a command after `--` that was never given.
+- A `--github` target with a `#` that is not `owner/name#<number>`, such as
+  `pr owner/name#abc`, is refused as malformed with the accepted forms instead
+  of being passed to gh as a branch name. `owner/name#<n>` with no kind is read
+  as a pull request.
+- `campaign submit`, `campaign rerun` and `backlog submit` text output starts
+  with `run <id>`, as `task run` does. The `next:` lines of `campaign submit`
+  include `t3-steward task result <run>`. The campaign
+  help says that `task result` collects the outcome, and that a caller with no
+  thread polls `campaign show <run>`, because `task result` exits 1 until the
+  run ends. It also lists `supervision` among the help topics and points at
+  `campaign recovery retry`.
+- `backlog usage` labels the run's progress as `backlog show` does
+  (`Run: <id> (progress: ready)`). Both read the same field. The run moves
+  from queued to ready between the two reads, so an unlabelled `(ready)` looked
+  like it contradicted `show`. When more than one model appears in `By model`,
+  a note says that a model the task was not routed to may be the provider's
+  own auxiliary call in the same session. For Claude this is Haiku, which the
+  provider reports in the turn's per-model usage. Totals are unchanged.
+- `campaign plan` labels a task's importance, difficulty and max turns as
+  `scheduling`, noting that importance sets dispatch order and difficulty seeds
+  the admission estimate. The old label, `effort`, is also the name of a route
+  option.
+- The `campaign help fresh` UpKeeper example names placeholder workers rather
+  than homelab, which cannot prepare a fresh workspace.
+- `campaign list --since` and `backlog list --since` accept a whole number of
+  days (`1d`, `7d`) as well as a Go duration. The help says that `--limit 0`
+  lists every run.
+- `explain` names a dependency that has not succeeded by its manifest name and
+  gives its progress, and a cross-run blocker names its source node.
+  `campaign explain <run>` without a task lists the run's
+  tasks and their states instead of failing with a bare format error.
+- `campaign validate --json` carries the validation document's `schemaVersion`
+  in its error envelope. The error message on stderr is kept, as for every
+  other `--json` failure. An unknown manifest field now names the manifest
+  object (`a task`, `the workflow`) instead of the Go type
+  `backlog.ManifestTask`.
+- A missing prompt file is reported as `prompt_file prompts/review.md does not
+  exist (paths are relative to the campaign directory)` instead of the raw
+  `lstat` error.
+- A misspelt top-level command such as `t3-steward campagin` suggests the
+  closest family and is refused before its flags are parsed.
+- `check` and `explain` no longer attach the `project-binding-defaulted`
+  detail to a fresh project, because a fresh project has no credentials or
+  setup profile to bind. Git projects still get the detail.
 - The coordinator releases the unclaimed offer of an overseer activation that
   has closed, spent or been revoked, or whose epoch the run's supervision has
   moved past. Such an offer was re-offered and withheld on every boundary, and
@@ -470,6 +517,19 @@ All notable changes to this project are documented here. The format follows
   epoch no longer counts as another valid activation, so it cannot block a
   replacement; the old overseer's decisions are still refused by the epoch
   check.
+- Releasing a dead overseer offer, and superseding a failed one on operator
+  reassessment, now also cancels the offer's never-started attempt
+  (cancelled/stopped, one `attempt-cancelled` audit event) in the same
+  transaction. rc.96 released the offer and left the attempt ready/unassigned,
+  so coordinator planning and quota planning warned about a nonterminal
+  attempt on a settled assignment on every boundary. The sweep also repairs
+  that state: an already released activation assignment whose unassigned
+  attempt belongs to an ended activation has the attempt cancelled on the
+  first pass after upgrade. A claimed attempt, or one whose activation is
+  still live, is never touched. An offered overseer assignment whose attempt
+  row no longer exists is released too, since it still blocked catalog
+  reloads; an offered assignment without an attempt that is not identifiable
+  as an overseer's is left offered and counted in a warning.
 - Graph amendments (`campaign rerun --prompt`, task edits) are judged by the
   same worker matcher as `campaign check` and submit, so validation and
   readiness can no longer disagree. Amendments that submit already refused

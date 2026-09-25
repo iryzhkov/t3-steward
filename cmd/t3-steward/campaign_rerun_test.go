@@ -111,6 +111,10 @@ func TestCampaignRerunFencesOnTheSourceRunAndReportsBothRuns(t *testing.T) {
 			t.Fatalf("rerun output does not say %q:\n%s", fragment, out.String())
 		}
 	}
+	// The record leads with the new run, as every verb that starts one does.
+	if first, _, _ := strings.Cut(out.String(), "\n"); first != "run run:rerun:rerun-1" {
+		t.Fatalf("first line = %q", first)
+	}
 }
 
 func TestCampaignRerunJSONIsVersionedAndCarriesProvenance(t *testing.T) {

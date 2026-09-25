@@ -346,11 +346,12 @@ func TestCampaignSubmitProceedsWhileWaiting(t *testing.T) {
 			t.Fatalf("output %q does not contain %q", out.String(), want)
 		}
 	}
-	// The first thing said is that the campaign was accepted, and what it
-	// waits for; the old banner opened with "nothing can start", which read as
-	// a failed submission.
-	if first, _, _ := strings.Cut(out.String(), "\n"); !strings.HasPrefix(first, "accepted: the campaign was accepted") {
-		t.Fatalf("first line = %q", first)
+	// The first line is the run, as on "task run", and the next thing said is
+	// that the campaign was accepted, and what it waits for; the old banner
+	// opened with "nothing can start", which read as a failed submission.
+	lines := strings.SplitN(out.String(), "\n", 3)
+	if len(lines) < 2 || lines[0] != "run run-1" || !strings.HasPrefix(lines[1], "accepted: the campaign was accepted") {
+		t.Fatalf("first lines = %q", lines)
 	}
 	if !strings.Contains(out.String(), "waiting for "+backlogadmin.ReasonQuotaClosed+" to clear") {
 		t.Fatalf("the banner does not name the obstruction:\n%s", out.String())

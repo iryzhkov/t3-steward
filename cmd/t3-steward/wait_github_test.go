@@ -80,9 +80,9 @@ func TestGitHubWaitTargetAcceptsQualifiedForms(t *testing.T) {
 			t.Fatalf("%v asks gh %q", c.args, got)
 		}
 	}
-	// A pr id in none of those forms is a branch name, which gh pr view has
-	// always accepted, and it reaches gh unchanged.
-	for _, branch := range []string{"feature-branch", "fix/rc96-ax-cli", "owner#45", "owner/repo#next"} {
+	// A pr id in none of those forms and without a # is a branch name, which gh
+	// pr view has always accepted, and it reaches gh unchanged.
+	for _, branch := range []string{"feature-branch", "fix/rc96-ax-cli"} {
 		spec, err := parseLocalWaitSpec([]string{"--github", "pr", branch}, now)
 		if err != nil {
 			t.Fatalf("pr %s: %v", branch, err)
@@ -95,7 +95,6 @@ func TestGitHubWaitTargetAcceptsQualifiedForms(t *testing.T) {
 	// refusals say GitHub Enterprise is not supported.
 	for _, args := range [][]string{
 		{"--github", "run", "feature-branch"},
-		{"--github", "run", "owner#45"},
 		{"--github", "pr", "https://github.example.com/owner/repo/pull/45"},
 	} {
 		_, err := parseLocalWaitSpec(args, now)
@@ -108,14 +107,65 @@ func TestGitHubWaitTargetAcceptsQualifiedForms(t *testing.T) {
 		{"--github", "pr", "https://github.com/owner/repo/actions/runs/987"},
 		{"--github", "pr", "owner/repo#45", "--repo", "other/repo"},
 		{"--github=issue:45"},
+		{"--github", "pr", "owner/repo#abc"},
+		{"--github", "pr", "owner/repo#next"},
+		{"--github", "pr", "owner#45"},
+		{"--github", "run", "owner#45"},
 	} {
 		_, err := parseLocalWaitSpec(args, now)
 		if err == nil {
 			t.Fatalf("%v was accepted", args)
 		}
-		if !strings.Contains(err.Error(), "owner/name#<n>") && !strings.Contains(err.Error(), "--repo names") {
+		if !strings.Contains(err.Error(), "owner/name#<n>") && !strings.Contains(err.Error(), "--repo names") &&
+			!strings.Contains(err.Error(), "unknown --github kind") {
 			t.Fatalf("%v was refused without the accepted forms: %v", args, err)
 		}
+	}
+}
+
+// A target with a # that is not owner/name#<number> is refused as malformed
+// rather than handed to gh as a branch name, which gh answered with "no pull
+// requests found for branch".
+func TestGitHubWaitRefusesMalformedQualifiedTarget(t *testing.T) {
+	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	_, err := parseLocalWaitSpec([]string{"--github", "pr", "owner/name#abc"}, now)
+	if err == nil || !strings.Contains(err.Error(), "malformed") || !strings.Contains(err.Error(), "pr owner/name#<n>") {
+		t.Fatalf("owner/name#abc: %v", err)
+	}
+}
+
+// An unknown --github kind is named as such. Its id is left behind as a
+// positional argument, which used to be reported as a command after -- that
+// was never given.
+func TestGitHubWaitNamesAnUnknownKind(t *testing.T) {
+	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	_, err := parseLocalWaitSpec([]string{"--github", "issue", "5"}, now)
+	if err == nil || err.Error() != `unknown --github kind "issue"; use run or pr` {
+		t.Fatalf("--github issue 5: %v", err)
+	}
+	if _, err := parseLocalWaitSpec([]string{"--github=issue:5"}, now); err == nil || !strings.Contains(err.Error(), `unknown --github kind "issue"`) {
+		t.Fatalf("--github=issue:5: %v", err)
+	}
+	// A value with a / or # and no kind separator does not name a kind: its
+	// first segment is a repository owner, and the refusal lists the forms.
+	for _, value := range []string{"iryzhkov/t3-steward#abc", "iryzhkov/t3-steward"} {
+		_, err := parseLocalWaitSpec([]string{"--github", value}, now)
+		if err == nil || strings.Contains(err.Error(), "unknown --github kind") || !strings.Contains(err.Error(), "owner/name#<n>") {
+			t.Fatalf("--github %s: %v", value, err)
+		}
+	}
+}
+
+// owner/name#<n> with no kind is the form gh and GitHub print for a pull
+// request, and is read as one.
+func TestGitHubWaitReadsAQualifiedNumberWithoutAKindAsAPullRequest(t *testing.T) {
+	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	spec, err := parseLocalWaitSpec([]string{"--github", "iryzhkov/t3-steward#45"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.GitHub.Kind != "pr" || spec.GitHub.ID != "45" || spec.GitHub.Repo != "iryzhkov/t3-steward" {
+		t.Fatalf("parsed as %+v", spec.GitHub)
 	}
 }
 

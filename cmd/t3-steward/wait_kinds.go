@@ -87,19 +87,33 @@ const gitHubTargetForms = "run <id>, run owner/name#<id>, run https://github.com
 
 // parseGitHubTarget reads run:<id>, pr:<n>, run/<id> or pr/<n>, where the id
 // may be qualified by its repository as owner/name#<id> or given as the
-// target's github.com URL. A URL alone, without a kind, names its own kind. A
-// repository named by the target is recorded as if it had been given with
+// target's github.com URL. A URL alone, without a kind, names its own kind,
+// and owner/name#<n> alone is a pull request, the form gh and GitHub print for
+// one. A repository named by the target is recorded as if it had been given with
 // --repo, and one that disagrees with --repo is refused rather than guessed
 // between.
 func parseGitHubTarget(spec, state, repo string) (wait.GitHubTarget, error) {
 	spec = strings.TrimSpace(spec)
 	kind, id, ok := gitHubURLKind(spec)
-	if !ok {
-		if kind, id, ok = strings.Cut(spec, ":"); !ok {
+	explicitKind := false
+	switch {
+	case ok:
+	case gitHubQualifiedNumber(spec):
+		kind, id = "pr", spec
+	default:
+		if kind, id, explicitKind = strings.Cut(spec, ":"); !explicitKind {
 			kind, id, _ = strings.Cut(spec, "/")
 		}
 	}
 	id = strings.TrimSpace(id)
+	// The unknown-kind refusal is for a value that names a kind: one with an
+	// explicit kind: separator, or a bare word such as issue. owner/name#45
+	// splits on its / into "owner", which is a repository owner, not a kind,
+	// and is answered with the accepted forms instead.
+	namesAKind := explicitKind || !strings.ContainsAny(spec, "#/")
+	if kind != "run" && kind != "pr" && namesAKind && gitHubKindWord(kind) {
+		return wait.GitHubTarget{}, fmt.Errorf("unknown --github kind %q; use run or pr", kind)
+	}
 	if kind != "run" && kind != "pr" {
 		return wait.GitHubTarget{}, fmt.Errorf("--github %q is not a target; --github takes %s", spec, gitHubTargetForms)
 	}
@@ -126,6 +140,20 @@ func parseGitHubTarget(spec, state, repo string) (wait.GitHubTarget, error) {
 		return target, err
 	}
 	return target, nil
+}
+
+// gitHubQualifiedNumber reports owner/name#<number>.
+func gitHubQualifiedNumber(s string) bool {
+	named, number, found := strings.Cut(s, "#")
+	owner, name, ok := strings.Cut(named, "/")
+	return found && ok && owner != "" && name != "" && !strings.Contains(name, "/") &&
+		!strings.Contains(owner, ":") && gitHubNumber(number)
+}
+
+// gitHubKindWord reports a value that reads as a kind name, such as issue or
+// workflow, rather than a malformed target: letters only.
+func gitHubKindWord(s string) bool {
+	return s != "" && strings.Trim(strings.ToLower(s), "abcdefghijklmnopqrstuvwxyz") == ""
 }
 
 // gitHubURLKind recognises a --github value that is a whole github.com URL,
@@ -172,9 +200,12 @@ func parseGitHubURL(raw string) (kind, repo, id string, ok bool) {
 // owner/name#<number>, or the target's github.com URL. It returns the id and
 // the repository the id named, if any.
 //
-// Any other pr id is passed to gh unchanged as a branch name, which gh pr view
-// has always accepted and which worked before these forms were added. A run
-// id has no such reading, so anything else is refused with the accepted forms
+// Any other pr id without a # is passed to gh unchanged as a branch name,
+// which gh pr view has always accepted and which worked before these forms were
+// added. An id with a # that is not owner/name#<number> is a malformed
+// qualified target, such as owner/name#abc, and is refused rather than read as
+// a branch that gh would then report as having no pull request. A run id has
+// no branch reading, so anything else is refused with the accepted forms
 // before gh is asked. A URL on any host but github.com is refused for both:
 // gh would need --hostname for a GitHub Enterprise host, which the wait does
 // not carry, and passing the URL on as a branch name would only fail later.
@@ -206,7 +237,8 @@ func splitGitHubTargetID(kind, raw string) (id, repo string, err error) {
 		named, number, _ := strings.Cut(raw, "#")
 		owner, name, ok := strings.Cut(named, "/")
 		if !ok || owner == "" || name == "" || strings.Contains(name, "/") || !gitHubNumber(number) {
-			return branch()
+			return "", "", fmt.Errorf("--github %s %q is malformed: a target with # must be owner/name#<number>; --github takes %s",
+				kind, raw, gitHubTargetForms)
 		}
 		id, repo = number, named
 	case !gitHubNumber(raw):
@@ -297,6 +329,18 @@ func parseLocalWaitSpec(args []string, now time.Time) (localWaitSpec, error) {
 		spec.Command = spec.Command[1:]
 	}
 
+	// A --github value is parsed before the kinds are counted: `--github issue
+	// 5` leaves 5 behind as a positional argument, and the refusal that matters
+	// is the unknown kind, not a command after -- that was never given.
+	var gitHubTarget wait.GitHubTarget
+	if *github != "" {
+		target, err := parseGitHubTarget(*github, *state, *repo)
+		if err != nil {
+			return spec, err
+		}
+		gitHubTarget = target
+	}
+
 	var kinds []string
 	if *at != "" || *after != "" {
 		kinds = append(kinds, "--at/--for")
@@ -319,10 +363,7 @@ func parseLocalWaitSpec(args []string, now time.Time) (localWaitSpec, error) {
 
 	switch {
 	case *github != "":
-		target, err := parseGitHubTarget(*github, *state, *repo)
-		if err != nil {
-			return spec, err
-		}
+		target := gitHubTarget
 		spec.Kind = domain.WaitKindGitHub
 		spec.GitHub = &target
 		spec.Condition = "github " + target.Ref() + " " + target.State

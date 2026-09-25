@@ -364,10 +364,16 @@ func TestCampaignSubmitSendsThePackedArchive(t *testing.T) {
 		"submission campaign-1: workflow=workflow-1 run=run-1 state=accepted",
 		"t3-steward campaign show run-1",
 		"t3-steward campaign graph run-1",
+		"t3-steward task result run-1",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output %q does not contain %q", out.String(), want)
 		}
+	}
+	// The text record leads with the run, as "task run" does, so a caller finds
+	// the id in one place whichever verb started it.
+	if first, _, _ := strings.Cut(out.String(), "\n"); first != "run run-1" {
+		t.Fatalf("first line = %q", first)
 	}
 
 	out.Reset()
@@ -596,7 +602,14 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	//
 	// Updated when list gained --limit and --since: the synopsis names them,
 	// with the class placeholder shortened to keep the line inside the cap.
-	const wantDigest = "1f0889869929065c43f9548d29a0d124070416304c18ae0f77b29b0a63ae8d2e"
+	//
+	// Updated for the rc.97 clarity fixes: list says --limit 0 lists every run
+	// and --since takes days; the supervision entry names campaign recovery
+	// retry; the topic list names supervision; and submit's paragraph names
+	// "task result" as the collection step and "campaign show" as the poll for
+	// a caller with no thread, with task result's exit codes. The retry
+	// paragraph lost its note on deterministic packing to make room.
+	const wantDigest = "cbd5c2a7ebb6e596957e00396d5ab23cd5f6c77621c3c3373788c558e19ce18d"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)
@@ -630,7 +643,11 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 		"rerun <run> --from TASK --idempotency-key KEY [--prompt TEXT] [--reason TEXT] [--json]",
 		"creates a second run and never changes the first",
 		"[--notify-thread <current|id>]",
-		"static-versus-dynamic, plan, graph, commits, rerun, notify, routes.",
+		"static-versus-dynamic, plan, graph, commits, rerun, notify, routes,\nsupervision.",
+		"campaign recovery retry <run>",
+		"t3-steward task result <run>[/<task>]",
+		"poll campaign show <run>: task result exits 1 until the run ends",
+		"--limit 0 lists every run",
 		"commits (a Git commit a successor needs)",
 		"Multi-task work is a static DAG",
 		"is its own Steward-scheduled T3 session",
@@ -648,7 +665,11 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 			t.Fatalf("usage line %d is %d columns wide: %q", index+1, len(line), line)
 		}
 	}
-	if lines := strings.Count(campaignUsage, "\n"); lines > 100 {
+	// The cap was 100 until the rc.97 clarity fixes, which added the list
+	// window hint, the recovery pointer, the supervision topic and the
+	// task-result paragraph; the rest of the page was tightened to keep the
+	// growth to four lines.
+	if lines := strings.Count(campaignUsage, "\n"); lines > 104 {
 		t.Fatalf("usage is %d lines; it has to stay short enough to enter agent context", lines)
 	}
 }

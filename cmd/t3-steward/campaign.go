@@ -41,6 +41,7 @@ Mutating recovery, creates a second run and never changes the first:
 
 Lifecycle (delegated to backlog, unchanged; explain is read-only and live):
   list [--project P] [--progress STATES] [--class C] [--limit N] [--since DUR] [--json]
+    --limit 0 lists every run; --since takes a duration such as 24h or 7d.
   show <run> [--json]   graph <run> [--json|--dot]   explain <run>/<task> [--json]
   cancel <run>[/<task>] --reason TEXT [--command-id ID] [--json]   no task = whole run
     cancel --json prints willCancel, the tasks it covers, not the outcome it applied.
@@ -48,6 +49,7 @@ Supervised runs, structured decisions only and never prose:
   supervision <show|decide|hold|release|escalate|resolve> <run> [flags] [--json]
     Mutating verbs need --request-id KEY, --reason TEXT and --expected-revision N.
     Flags and refusal classes: t3-steward campaign supervision --help
+    Recovery: campaign recovery retry <run> [flags]; see campaign recovery --help
 Graph amendment and artifact commands stay under "t3-steward backlog".
 Graph fields: needs (run only after these succeed; acyclic), inputs_from (named
 artifacts from a direct dependency, read-only), outputs (the files a task
@@ -57,7 +59,8 @@ run. plan reports waves, edges and the digest submit will send, and can never
 promise a worker, a route or quota. Multi-task work is a static DAG: each task
 is its own Steward-scheduled T3 session, and a task prompt must not use native
 subagents in place of declared tasks. Help topics: authoring, fresh, readiness,
-dag-semantics, static-versus-dynamic, plan, graph, commits, rerun, notify, routes.
+dag-semantics, static-versus-dynamic, plan, graph, commits, rerun, notify, routes,
+supervision.
 
 check reports one outcome per task and per worker:
   ready             at least one worker can take every task now
@@ -75,12 +78,13 @@ submit runs check first. --allow-unverified skips only the client-side check; th
 coordinator still refuses an impossible campaign and records the principal and --reason.
 Agents should not use it. accepted_waiting is a success: the run exists and stays
 queued, so end the turn: this thread is notified by default, and --no-notify opts out.
+Collect with t3-steward task result <run>[/<task>]; with no thread (--no-notify)
+poll campaign show <run>: task result exits 1 until the run ends, 2 if one failed.
 
 class: surplus is the default and runs on spare quota, required is admitted first;
 placement.hosts and placement.requires narrow eligible workers, never choose one.
 Retrying is safe: the same --idempotency-key with the same directory returns the
-same run, the archive being packed deterministically; the same key with
-different content is refused. rerun behaves the same way. check needs no key.
+same run; different content under it is refused. rerun is the same; check needs no key.
 
 A complete example, from an empty directory to a running campaign:
 mkdir -p demo/prompts && echo 'do the work' > demo/prompts/implement.md
@@ -404,6 +408,11 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 		if c.admin == nil {
 			return errors.New("coordinator admin transport is unavailable")
 		}
+		if args[0] == "explain" {
+			if err := c.explainNamesATask(ctx, args[1:]); err != nil {
+				return err
+			}
+		}
 		if err := c.admin(args); err != nil {
 			return err
 		}
@@ -416,6 +425,41 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 		}
 		return fmt.Errorf("unknown campaign command %q; %s", args[0], elsewhere)
 	}
+}
+
+// explainNamesATask refuses "campaign explain <run>" with the run's tasks and
+// their state, rather than letting the forwarded verb answer with a bare
+// format error: explain is about one task, and the caller who named only the
+// run needs the names to choose from. Any other argument shape is left to the
+// forwarded verb, which owns its parsing.
+func (c campaignCLI) explainNamesATask(ctx context.Context, args []string) error {
+	var positional []string
+	for _, arg := range args {
+		if arg != "--json" {
+			positional = append(positional, arg)
+		}
+	}
+	if len(positional) != 1 || strings.Contains(positional[0], "/") || strings.HasPrefix(positional[0], "-") || c.detail == nil {
+		return nil
+	}
+	run := positional[0]
+	usage := fmt.Sprintf("campaign explain needs <run>/<task>, such as %s/<task>", run)
+	detail, err := c.detail(ctx, run)
+	if err != nil {
+		return fmt.Errorf("%s; the run's tasks could not be read: %w", usage, err)
+	}
+	var tasks []string
+	for _, task := range detail.Tasks {
+		if task.Sink != nil {
+			continue
+		}
+		state, _, _ := taskState(task)
+		tasks = append(tasks, fmt.Sprintf("%s (%s)", task.Task.Name, state))
+	}
+	if len(tasks) == 0 {
+		return errors.New(usage)
+	}
+	return fmt.Errorf("%s; run %s has tasks %s", usage, run, strings.Join(tasks, ", "))
 }
 
 // campaignCommands are the subcommands run dispatches, in the order a
@@ -464,6 +508,9 @@ func admitCampaignHelp(out io.Writer, args []string) (bool, error) {
 			for _, topic := range campaign.HelpTopics() {
 				names = append(names, topic.Name)
 			}
+			// supervision is answered above rather than from the topic set, and is
+			// a topic all the same.
+			names = append(names, "supervision")
 			return true, fmt.Errorf("unknown campaign help topic %q; try one of %s", word, strings.Join(names, ", "))
 		}
 	}
@@ -473,11 +520,11 @@ func admitCampaignHelp(out io.Writer, args []string) (bool, error) {
 func (c campaignCLI) runValidate(args []string) error {
 	parsed, err := parseCampaignArgs("validate", args, false, false)
 	if err != nil {
-		return err
+		return withSchemaVersion(err, campaignValidationSchemaVersion)
 	}
 	bundle, plan, err := c.prepare(parsed.source)
 	if err != nil {
-		return err
+		return withSchemaVersion(err, campaignValidationSchemaVersion)
 	}
 	summary := campaignValidation{
 		SchemaVersion: campaignValidationSchemaVersion,
@@ -617,8 +664,13 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 			Notify:                  notification,
 		})
 	}
+	// The first line is the run, as it is on "task run": one convention for
+	// where a caller finds the id, whichever verb started the run.
+	if _, err := fmt.Fprintf(c.stdout, "run %s\n", response.RunID); err != nil {
+		return err
+	}
 	if matrix.Outcome == backlogadmin.ViabilityAcceptedWaiting {
-		// Accepted comes first: the run exists. The old banner opened with
+		// Accepted comes next: the run exists. The old banner opened with
 		// "nothing can start this campaign", which agents read as a failed
 		// submission and retried.
 		if _, err := fmt.Fprintf(c.stdout,
@@ -644,8 +696,8 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 	renderRunProgress(c.stdout, wake)
 	renderWake(c.stdout, wake)
 	_, err = fmt.Fprintf(c.stdout,
-		"next:\n  t3-steward campaign show %s\n  t3-steward campaign graph %s\n",
-		response.RunID, response.RunID)
+		"next:\n  t3-steward campaign show %s\n  t3-steward campaign graph %s\n  t3-steward task result %s\n",
+		response.RunID, response.RunID, response.RunID)
 	return err
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
@@ -387,9 +388,9 @@ func takeListWindowFlags(args []string) ([]string, listWindow, error) {
 				return nil, window, errors.New("--since needs a value")
 			}
 			i++
-			since, err := time.ParseDuration(args[i])
+			since, err := parseListSince(args[i])
 			if err != nil || since <= 0 {
-				return nil, window, fmt.Errorf("--since %q is not a positive duration such as 24h", args[i])
+				return nil, window, fmt.Errorf("--since %q is not a positive duration such as 24h or 7d", args[i])
 			}
 			window.Since, sinceSet = since, true
 		default:
@@ -397,6 +398,25 @@ func takeListWindowFlags(args []string) ([]string, listWindow, error) {
 		}
 	}
 	return clean, window, nil
+}
+
+// parseListSince reads a --since value: a Go duration such as 24h or 90m, or
+// a whole number of days such as 1d or 7d, which is how a person asks for
+// recent runs and which time.ParseDuration does not accept.
+func parseListSince(value string) (time.Duration, error) {
+	if days, ok := strings.CutSuffix(value, "d"); ok {
+		count, err := strconv.ParseInt(days, 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		// A count past this would overflow the duration and wrap negative or
+		// small, which reads as a narrower window than the one asked for.
+		if count > math.MaxInt64/int64(24*time.Hour) {
+			return 0, fmt.Errorf("%s is more days than a duration can hold", value)
+		}
+		return time.Duration(count) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(value)
 }
 
 // apply trims a list answer to the window and returns how many runs matched
@@ -815,7 +835,10 @@ func renderUsage(out io.Writer, report *domain.UsageReport, semantics string) er
 		return err
 	}
 	coverage := report.Coverage
-	fmt.Fprintf(out, "Run: %s (%s)\n", report.WorkflowRunID, report.RunProgress)
+	// The run's progress is labelled as "backlog show" labels it, because it
+	// is the same field; an unlabelled word in parentheses read as a state of
+	// its own that disagreed with show.
+	fmt.Fprintf(out, "Run: %s (progress: %s)\n", report.WorkflowRunID, report.RunProgress)
 	fmt.Fprintf(out, "Accepted outcomes: %d\n", report.AcceptedOutcomeCount)
 	if report.MeasuredCostPerAcceptedOutcomeUSD != nil {
 		fmt.Fprintf(out, "Measured provider cost per accepted outcome: %.6f\n", *report.MeasuredCostPerAcceptedOutcomeUSD)
@@ -861,6 +884,16 @@ func renderUsage(out io.Writer, report *domain.UsageReport, semantics string) er
 		fmt.Fprintf(out, "%s:\n", section.name)
 		if err := renderUsageAggregates(out, section.rows); err != nil {
 			return err
+		}
+		if section.name == "By model" && len(section.rows) > 1 {
+			// A provider may bill a model of its own choosing inside the task's
+			// session: Claude Code reports a small model's calls, such as title
+			// generation, in the same turn's per-model usage. Those rows are
+			// measured and belong to the run, so they stay in every total; the
+			// note only says why a model the run was not routed to may appear.
+			// The usage report does not carry the run's routes, so the note
+			// cannot say which row is which and is worded as a possibility.
+			fmt.Fprintln(out, "Note: a model the task was not routed to may be the provider's own auxiliary calls in the same session (such as title generation); every row is counted in the totals above.")
 		}
 	}
 	if len(report.Samples) > 0 {

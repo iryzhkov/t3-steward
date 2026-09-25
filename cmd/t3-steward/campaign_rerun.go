@@ -166,9 +166,10 @@ func campaignRerunDocument(parsed campaignRerunArgs, sourceRunID string, result 
 }
 
 func renderCampaignRerun(out interface{ Write([]byte) (int, error) }, document campaignRerun) error {
+	// The first line is the run, as on "task run" and "campaign submit".
 	if _, err := fmt.Fprintf(out,
-		"rerun %s: run=%s workflow=%s replay=%t\n  source  %s from task %s\n  reruns  %s\n",
-		document.Provenance.IdempotencyKey, document.RunID, document.WorkflowID, document.Replay,
+		"run %s\nrerun %s: run=%s workflow=%s replay=%t\n  source  %s from task %s\n  reruns  %s\n",
+		document.RunID, document.Provenance.IdempotencyKey, document.RunID, document.WorkflowID, document.Replay,
 		document.SourceRunID, document.SourceTaskID, campaignList(document.Rerun)); err != nil {
 		return err
 	}

@@ -2,8 +2,11 @@ package backlogadmin
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 )
 
 // A project the coordinator loaded with default local bindings is reported on
@@ -33,6 +36,18 @@ func TestViabilityNotesADefaultedProjectBindingWithoutBlocking(t *testing.T) {
 	}
 	if PermanentViabilityReason(ReasonProjectBindingDefaulted) {
 		t.Fatal("the detail is in the permanent reason set")
+	}
+	// A fresh project needs no repository, credentials or setup profile, so a
+	// default binding leaves nothing unchecked for it and it carries no detail
+	// in check or explain; a Git project on the same list still does.
+	fresh := settings
+	fresh.Projects = append(slices.Clone(settings.Projects), backlog.ProjectDefinition{Name: "scratch", Type: backlog.EnvironmentFresh})
+	fresh.DefaultedProjects = []string{"scratch", "t3-steward"}
+	if fresh.defaulted("scratch") || !fresh.defaulted("t3-steward") {
+		t.Fatalf("defaulted: scratch=%t t3-steward=%t", fresh.defaulted("scratch"), fresh.defaulted("t3-steward"))
+	}
+	if got := fresh.defaultedDetailProjects(); !slices.Equal(got, []string{"t3-steward"}) {
+		t.Fatalf("explain carries the detail for %v, want only the Git project", got)
 	}
 	// A project with an explicit binding carries no such note.
 	settings.DefaultedProjects = nil
