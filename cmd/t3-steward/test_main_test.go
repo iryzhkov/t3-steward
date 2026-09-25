@@ -18,6 +18,15 @@ import (
 // otherwise every run downloads the module graph again beneath the scratch
 // directory and leaves a read-only tree that RemoveAll cannot delete.
 func TestMain(m *testing.M) {
+	// Several tests re-execute this test binary as a helper process (the
+	// qualification roles, the idle coordinator RSS child, the remote task-wait
+	// helper). A child inherits the parent's environment, so HOME is already
+	// the parent's scratch directory and the caches are already pinned. A
+	// scratch HOME of its own would never be removed, because a child ends in
+	// os.Exit or is killed; that leaked one empty directory per child.
+	if inherited := os.Getenv(scratchHomeMarker); inherited != "" && inherited == os.Getenv("HOME") {
+		os.Exit(m.Run())
+	}
 	caches, err := goCacheLocations()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -29,6 +38,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	values := map[string]string{
+		scratchHomeMarker: dir,
 		"HOME":            dir,
 		"XDG_CONFIG_HOME": filepath.Join(dir, ".config"),
 		"XDG_STATE_HOME":  filepath.Join(dir, ".local/state"),
@@ -48,6 +58,10 @@ func TestMain(m *testing.M) {
 	removeScratchHome(dir)
 	os.Exit(code)
 }
+
+// scratchHomeMarker names the scratch HOME TestMain created, so a re-executed
+// child can tell that its HOME is already isolated.
+const scratchHomeMarker = "T3_STEWARD_CLI_TEST_HOME"
 
 // goCacheLocations returns GOMODCACHE, GOCACHE and GOPATH as the toolchain
 // resolves them with the real HOME still in place.
