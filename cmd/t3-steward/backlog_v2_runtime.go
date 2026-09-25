@@ -1077,6 +1077,13 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	if err := store.RecordCoordinatorConfiguration(ctx, epoch, configurationDigest, appliedAt); err != nil {
 		return err
 	}
+	// Owner notifications run for as long as this configuration does. A
+	// reload that changes the notifications section is accepted (see
+	// validateCoordinatorReload) and restarts the loop with the new sinks,
+	// re-reading the webhook file; a reload that changes nothing leaves it
+	// running, so a replaced webhook file alone needs a change or a restart.
+	stopOwnerNotifier := startOwnerNotifier(ctx, cfg.Notifications, store, logger)
+	defer stopOwnerNotifier()
 	ready()
 	return serveCoordinatorBoundaries(ctx, &server, cycle, cfg.BacklogV2.Scheduling.Interval.D())
 }

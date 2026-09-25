@@ -465,6 +465,43 @@ the run. The run exists; register the wait separately with
   t3-steward wait add --run <run> --thread <id>
 
 After a successful registration, end the turn. The steward wakes the thread.
+
+Owner channels. Independently of any thread, the coordinator can report
+campaign events to its owner: a Discord webhook, a local command, or both.
+They are declared in the coordinator's config.yaml and are off until declared:
+
+  notifications:
+    discord:
+      webhook_url_file: ~/.config/t3-steward/discord-webhook   # chmod 600
+      events: [run-failed, run-cancelled, needs-input]         # optional
+      scheduled_success: false  # true: also successes of scheduled runs
+    command:
+      argv: [/usr/local/bin/notify-owner]   # event JSON on stdin; exit 0 = sent
+
+The webhook URL is a credential. It lives only in that file, which must be a
+regular file owned by the coordinator's user with mode 0600, and it is never
+logged or printed; the coordinator refuses to start when the file is missing
+or readable by anyone else. A host that is not the coordinator never reads it.
+
+Events: run-succeeded, run-failed, run-cancelled, run-skipped (a run reached
+that outcome), needs-input (a task's attention request awaits an answer),
+supervision-escalated (an escalated incident or gate, or an overseer whose
+budget is spent or whose dispatch needs reconciling) and gate-review (a gate is
+ready for review). The default is every event except gate-review. Each covers
+every run on the coordinator, submitted with or without --notify-thread, except
+that a run a schedule created reports run-succeeded and run-skipped only to a
+channel with scheduled_success: true. An escalated incident and the overseer
+spent on it are one episode and send one message.
+
+Delivery is durable and at least once: each event is recorded in the
+coordinator's store before it is sent, keyed by channel, event and what
+happened, so a restart neither repeats nor loses it. A failed send is retried
+with a doubling delay from 30s, a Discord 429 waits for its Retry-After, and
+after 8 attempts, or at once on a refusal such as a deleted webhook, the event
+is abandoned with a log line. Nothing that happened before a channel or event
+was enabled, or while it was removed, is sent. A Discord message is one short
+line with the outcome, the failed tasks and the command to read the result.
+The notifications section may change on a reload.
 `
 
 // FreshHelp tells an author how to run a campaign that needs no repository.

@@ -245,6 +245,28 @@ notifications:
   # Desktop notification (notify-send on Linux) when a stop fails or when
   # a thread is stopped or resumed.
   desktop: true
+  # Owner channels for campaign events, delivered by the coordinator only and
+  # in addition to the thread wake a submission registers. Each is off until
+  # declared. Events default to run-succeeded, run-failed, run-cancelled,
+  # run-skipped, needs-input and supervision-escalated; gate-review is opt-in.
+  # Events that already exist when an event kind is first enabled are not
+  # sent. See "t3-steward campaign help notify".
+  # discord:
+  #   # A private file (chmod 600) holding the webhook URL and nothing else.
+  #   # The URL is a credential and is never written in this file. Only a
+  #   # coordinator reads it.
+  #   webhook_url_file: ~/.config/t3-steward/discord-webhook
+  #   events: [run-failed, run-cancelled, needs-input, supervision-escalated]
+  #   # Runs a schedule created send run-succeeded and run-skipped only when
+  #   # this is true; their failures are sent either way.
+  #   scheduled_success: false
+  # command:
+  #   # Run with no shell; the event arrives as JSON on standard input and
+  #   # exit status 0 means delivered. The same event may arrive twice.
+  #   argv: [/usr/local/bin/notify-owner]
+  #   events: []
+  #   # The program gets PATH, HOME and LANG only, plus the names listed here.
+  #   env: []
 
 # SQLite state database. Empty means $XDG_STATE_HOME/t3-steward/state.db
 state_path: ""
