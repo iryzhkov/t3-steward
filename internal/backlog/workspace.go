@@ -237,6 +237,15 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 		if err := runLoggedCommand(ctx, logFile, "", p.git(), "clone", "--no-local", "--no-checkout", "--", cached.Path, workspaceDir); err != nil {
 			return fail(fmt.Errorf("clone task workspace: %w", err))
 		}
+		// The clone's origin is the worker's repository cache, which is a
+		// mirror: a push into it lands nowhere the owner can see, and the
+		// next refresh with --prune deletes it. Fetching stays on the cache,
+		// which is local and was refreshed a moment ago, but a push to origin
+		// goes to the project's own repository, which is what a task told to
+		// publish a branch means by it.
+		if err := runLoggedCommand(ctx, logFile, "", p.git(), "-C", workspaceDir, "remote", "set-url", "--push", "--", "origin", request.Environment.Repository); err != nil {
+			return fail(fmt.Errorf("point the workspace's origin push URL at the project repository: %w", err))
+		}
 		if err := runLoggedCommand(ctx, logFile, "", p.git(), "-C", workspaceDir, "checkout", "--detach", commit); err != nil {
 			return fail(fmt.Errorf("checkout pinned commit %s: %w", commit, err))
 		}
