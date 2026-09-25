@@ -382,6 +382,38 @@ func TestRecordUsageRollsBackDiagnosticOverflowAtEveryCheckpoint(t *testing.T) {
 	}
 }
 
+// S8: on the coordinator's host the worker shares the coordinator's database,
+// which also holds the samples other workers delivered. The worker forwards
+// only its own host's readings, never another worker's as its own.
+func TestWorkerUsageBatchForwardsOnlyThisHostsReadings(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 9, 25, 8, 0, 0, 0, time.UTC)
+	if err := store.RecordUsage(ctx, domain.UsageSample{
+		ProviderInstanceID: "claudeAgent", ThreadID: "thread-local", Model: "claude-haiku-4-5",
+		ObservedAt: now, SourceEventID: "local-1", Kind: domain.UsageKindCall, InputTokens: 10,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReceiveWorkerUsage(ctx, "homelab", []domain.UsageSample{{
+		ProviderInstanceID: "claudeAgent", ThreadID: "thread-remote", Model: "claude-haiku-4-5",
+		ObservedAt: now, SourceEventID: "remote-1", Kind: domain.UsageKindCall, InputTokens: 20,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := store.WorkerUsageBatch(ctx, nil, MaxWorkerUsageDelivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch) != 1 || batch[0].SourceEventID != "local-1" {
+		t.Fatalf("forwarded %#v, want only this host's reading", batch)
+	}
+}
+
 func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
@@ -393,7 +425,9 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
 	for i := 0; i < 1001; i++ {
 		if err := store.RecordUsage(ctx, domain.UsageSample{
-			WorkerID: "worker-diagnostic", ProviderInstanceID: "provider", ThreadID: "thread",
+			// The worker's own watchdog records its host's samples unowned,
+			// exactly as production does; only those are forwarded.
+			WorkerID: "", ProviderInstanceID: "provider", ThreadID: "thread",
 			ObservedAt: now.Add(time.Duration(i) * time.Second), SourceEventID: fmt.Sprintf("diagnostic-%04d", i),
 			Kind: domain.UsageKindDiagnostic, DiagnosticCode: "malformed",
 		}); err != nil {
@@ -467,7 +501,9 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 	// more than one overflow marker for this worker.
 	for i := 1001; i < 1006; i++ {
 		if err := store.RecordUsage(ctx, domain.UsageSample{
-			WorkerID: "worker-diagnostic", ProviderInstanceID: "provider", ThreadID: "thread",
+			// The worker's own watchdog records its host's samples unowned,
+			// exactly as production does; only those are forwarded.
+			WorkerID: "", ProviderInstanceID: "provider", ThreadID: "thread",
 			ObservedAt: now.Add(time.Duration(i) * time.Second), SourceEventID: fmt.Sprintf("diagnostic-%04d", i),
 			Kind: domain.UsageKindDiagnostic, DiagnosticCode: "malformed",
 		}); err != nil {
@@ -521,9 +557,14 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 	if err != nil || len(remainingAcks) != 0 {
 		t.Fatalf("current cleanup left receipts=%#v err=%v", remainingAcks, err)
 	}
-	for name, candidate := range map[string]*Store{"worker": store, "coordinator": coordinator} {
+	// The worker holds its marker unowned; the coordinator holds the delivered
+	// copy under the worker that delivered it.
+	for name, candidate := range map[string]struct {
+		store *Store
+		owner string
+	}{"worker": {store, ""}, "coordinator": {coordinator, "worker-diagnostic"}} {
 		var markers int
-		if err := candidate.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples WHERE worker_id = ? AND diagnostic_code = 'overflow'`, "worker-diagnostic").Scan(&markers); err != nil {
+		if err := candidate.store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples WHERE worker_id = ? AND diagnostic_code = 'overflow'`, candidate.owner).Scan(&markers); err != nil {
 			t.Fatal(err)
 		}
 		if markers != 1 {

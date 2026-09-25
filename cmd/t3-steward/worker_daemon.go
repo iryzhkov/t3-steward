@@ -181,8 +181,13 @@ func cmdWorker(g globalFlags, args []string) error {
 	if closer, ok := quota.(interface{ Close() error }); ok {
 		defer closer.Close()
 	}
+	usage := hostUsageStore(cfg, logger)
+	if usage != nil {
+		defer usage.Close()
+	}
 	host := &workerruntime.CatalogHost{Home: home, Bootstrap: bootstrap, Options: workerruntime.WorkerServiceOptions{
 		RuntimeIdentity:     &domain.WorkerRuntimeIdentity{Release: version, Commit: commit, BootstrapDigest: digest},
+		Usage:               workerUsageSource(usage),
 		ProtocolCredentials: credentials, ProjectCredentials: workerruntime.EnvironmentCredentialChecker{},
 		ObserveInventory: observeHostInventory(control, dataDir),
 		Quota:            quota,
@@ -255,6 +260,35 @@ func (g storeQuotaGuard) Close() error { return g.store.Close() }
 // worker's local quota pauses, or returns nil when there is none. threads is
 // the worker's T3 control client, which the probe rule asks whether anything
 // on the host is running that would produce a reading.
+// hostUsageStore opens the host watchdog's state database, where the provider
+// token readings of this host's sessions are recorded, so the persistent worker
+// can forward them on its exchanges. Only the one-shot worker-exchange command
+// used to; the persistent worker every host runs forwarded nothing, and every
+// run's usage read zero attributed samples (S8). Without the database there
+// is nothing to forward, which is logged once.
+func hostUsageStore(cfg config.Config, logger *slog.Logger) *sqlite.Store {
+	statePath, err := cfg.ResolveStatePath()
+	if err != nil {
+		logger.Warn("watchdog state path unavailable; this worker forwards no usage", "err", err)
+		return nil
+	}
+	store, err := sqlite.Open(statePath)
+	if err != nil {
+		logger.Warn("watchdog state unavailable; this worker forwards no usage", "path", statePath, "err", err)
+		return nil
+	}
+	return store
+}
+
+// workerUsageSource keeps a nil store a nil interface, so the exchange sees no
+// usage source rather than one that fails every call.
+func workerUsageSource(store *sqlite.Store) workerruntime.UsageDeliveryStore {
+	if store == nil {
+		return nil
+	}
+	return store
+}
+
 func hostQuotaGuard(cfg config.Config, logger *slog.Logger, threads workerruntime.ThreadLister) workerruntime.QuotaGuard {
 	statePath, err := cfg.ResolveStatePath()
 	if err != nil {
