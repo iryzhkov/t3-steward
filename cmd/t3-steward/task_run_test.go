@@ -350,6 +350,64 @@ func TestTaskRunDerivesProjectRefRouteAndKeyFromTheCheckout(t *testing.T) {
 // The key is what makes a repeat safe, so it must depend on the inputs and on
 // nothing else: the same command twice is the same run, a different prompt is
 // a different run.
+// TestTaskRunFreshNeedsNoCheckoutAndPicksTheFreshProject is the single-task
+// repository-free start: from a directory that is not a checkout, --fresh
+// takes the catalog's one fresh project and derives no ref.
+func TestTaskRunFreshNeedsNoCheckoutAndPicksTheFreshProject(t *testing.T) {
+	h := newTaskRunHarness()
+	h.checkout = gitCheckout{}
+	h.projects = append(h.projects, backlogadmin.Project{
+		Name: "scratch", Type: backlog.EnvironmentFresh,
+		Workers: h.projects[0].Workers,
+	})
+	if err := h.run("--fresh", "--model", "claude-haiku-4-5", "--json", "--", "research the question"); err != nil {
+		t.Fatal(err)
+	}
+	record := h.record(t)
+	if record.Project != "scratch" || record.Ref != "" || !record.Fresh {
+		t.Fatalf("record = %+v, want project scratch, no ref, fresh", record)
+	}
+	manifest, _ := h.manifest(t)
+	if manifest.Environment.Type != backlog.EnvironmentFresh || manifest.Environment.Ref != "" {
+		t.Fatalf("environment = %+v", manifest.Environment)
+	}
+}
+
+// TestTaskRunFreshRefusesWithTheFreshProjects pins the refusals a
+// repository-free start can meet: they name the fresh projects, or say there
+// is none and how one is declared.
+func TestTaskRunFreshRefusesWithTheFreshProjects(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fresh []string
+		args  []string
+		want  string
+	}{
+		{name: "no fresh project", args: []string{"--fresh"},
+			want: `this coordinator has no fresh project; an operator declares one with "upkeeper project add NAME --type fresh`},
+		{name: "two fresh projects", fresh: []string{"scratch", "spike"}, args: []string{"--fresh"},
+			want: "the fresh projects are scratch, spike; pass --project NAME"},
+		{name: "named Git project", fresh: []string{"scratch"}, args: []string{"--fresh", "--project", "steward"},
+			want: `--fresh needs a project of type fresh, and "steward" is a Git project; the fresh projects are scratch`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTaskRunHarness()
+			h.checkout = gitCheckout{}
+			for _, name := range tc.fresh {
+				h.projects = append(h.projects, backlogadmin.Project{Name: name, Type: backlog.EnvironmentFresh})
+			}
+			args := append(append([]string{}, tc.args...), "--model", "claude-haiku-4-5", "--", "work")
+			err := h.run(args...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want it to contain %q", err, tc.want)
+			}
+			if len(h.archives) != 0 {
+				t.Fatal("a refused start submitted an archive")
+			}
+		})
+	}
+}
+
 func TestTaskRunIdempotencyKeyIsStableAndPromptSensitive(t *testing.T) {
 	first := newTaskRunHarness()
 	if err := first.run("--model", "opus", "--json", "--", "one"); err != nil {

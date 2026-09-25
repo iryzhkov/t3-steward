@@ -55,7 +55,7 @@ plan is static and explain is dynamic; check is dynamic too, before there is a
 run. plan reports waves, edges and the digest submit will send, and can never
 promise a worker, a route or quota. Multi-task work is a static DAG: each task
 is its own Steward-scheduled T3 session, and a task prompt must not use native
-subagents in place of declared tasks. Help topics: authoring, readiness,
+subagents in place of declared tasks. Help topics: authoring, fresh, readiness,
 dag-semantics, static-versus-dynamic, plan, graph, commits, rerun, notify.
 
 check reports one outcome per task and per worker:
@@ -102,8 +102,8 @@ Required configuration: validate and plan need none; every other verb needs a
 coordinator, through its owner-only socket here or a backlog_v2.coordinator_client
 block or the UpKeeper-owned ~/.config/t3-steward/coordinator-client.json, whose
 credential is a secretref:f03-admin/<client> reference resolved at use.
-environment.project must exist in backlog_v2.projects with a repository, a
-default ref, a setup profile and credential references the worker can present.
+environment.project names a backlog_v2.projects entry: type git has a repository, ref,
+setup profile and credentials; type fresh has none (research): campaign help fresh.
 
 Worked examples: docs/examples/campaign/single-lead, docs/examples/campaign/three-node
 `

@@ -79,6 +79,24 @@ func (v ViabilitySettings) project(name string) (backlog.ProjectDefinition, bool
 	return backlog.ProjectDefinition{}, false
 }
 
+// freshProjectHint tells the author of a repository-free manifest which
+// projects can hold it. A fresh workspace needs a catalog project whose type
+// is fresh, and the refusal is only actionable when it names them, or says
+// that none exists and how an operator declares one.
+func (v ViabilitySettings) freshProjectHint() string {
+	var names []string
+	for _, project := range v.Projects {
+		if project.Type == backlog.EnvironmentFresh {
+			names = append(names, project.Name)
+		}
+	}
+	if len(names) == 0 {
+		return "this coordinator has no fresh project; an operator declares one with \"upkeeper project add NAME --type fresh --workers a,b\""
+	}
+	sort.Strings(names)
+	return "fresh projects in this catalog: " + strings.Join(names, ", ")
+}
+
 // profile returns one configured setup profile by name.
 func (v ViabilitySettings) profile(name string) (backlog.SetupProfile, bool) {
 	for _, profile := range v.SetupProfiles {
@@ -273,8 +291,11 @@ func (v view) viabilityTask(ctx context.Context, settings ViabilitySettings, tas
 	result := ViabilityTaskResult{Task: task.Name, Candidates: make([]ViabilityCandidate, 0, len(workers))}
 	project, known := settings.project(task.Project)
 	if !known {
-		result.Reasons = append(result.Reasons, newViabilityReason(ReasonUnknownProject,
-			fmt.Sprintf("this coordinator has no project %q", task.Project)))
+		detail := fmt.Sprintf("this coordinator has no project %q", task.Project)
+		if task.Type == backlog.EnvironmentFresh {
+			detail += "; " + settings.freshProjectHint()
+		}
+		result.Reasons = append(result.Reasons, newViabilityReason(ReasonUnknownProject, detail))
 		result.Outcome = ViabilityImpossible
 		return result
 	}
@@ -287,9 +308,12 @@ func (v view) viabilityTask(ctx context.Context, settings ViabilitySettings, tas
 		catalogType = backlog.EnvironmentGit
 	}
 	if requestedType != catalogType {
-		result.Reasons = append(result.Reasons, newViabilityReason(ReasonWorkspaceTypeMismatch,
-			fmt.Sprintf("project %q requests workspace type %q, but this coordinator's catalog declares %q; change the manifest environment.type or the catalog project type to match",
-				task.Project, requestedType, catalogType)))
+		detail := fmt.Sprintf("project %q requests workspace type %q, but this coordinator's catalog declares %q; change the manifest environment.type or the catalog project type to match",
+			task.Project, requestedType, catalogType)
+		if requestedType == backlog.EnvironmentFresh {
+			detail += "; " + settings.freshProjectHint()
+		}
+		result.Reasons = append(result.Reasons, newViabilityReason(ReasonWorkspaceTypeMismatch, detail))
 		result.Outcome = ViabilityImpossible
 		return result
 	}

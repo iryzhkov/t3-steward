@@ -31,7 +31,8 @@ coordinator never chooses a route.
 
 Derived, each printed in the record:
   project  --project, else this checkout's origin remote matched against the
-           coordinator's projects; exactly one match is required
+           coordinator's projects; exactly one match is required. With
+           --fresh, the catalog's one project of type fresh
   ref      --ref, else the current branch when it has an upstream and is not
            ahead of it; a detached HEAD or an unpushed branch is refused with
            "push first or pass --ref"; a dirty tree is a warning, because
@@ -60,6 +61,12 @@ Flags:
                         $XDG_CONFIG_HOME/t3-steward/config.yaml); the dispatcher
                         takes it out of the arguments before the task family is
                         entered, so every task verb accepts it
+
+--fresh runs the task in a new empty directory instead of a checkout, for
+research and spike work that produces findings rather than commits. It needs
+no Git checkout, derives no ref, and needs a catalog project of type fresh
+("t3-steward backlog projects" shows TYPE). Collect what it writes by naming
+the files with --outputs. Campaigns: t3-steward campaign help fresh.
 
 The prompt is exactly one of: an inline argument after --, --prompt-file FILE,
 --prompt-file - or stdin. --fan-out GLOB starts one run with one task per file,
@@ -381,7 +388,7 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 		if queryErr != nil {
 			return queryErr
 		}
-		if project, err = deriveTaskRunProject(parsed.project, checkout, projects); err != nil {
+		if project, err = deriveTaskRunProject(parsed.project, parsed.fresh, checkout, projects); err != nil {
 			return err
 		}
 	}
@@ -684,15 +691,36 @@ func fanOutPrompts(pattern string) ([]taskRunPrompt, error) {
 // catalog. Exactly one match is required: zero means the fleet does not know
 // this repository, several mean the catalog is ambiguous, and guessing either
 // way starts work in the wrong place.
-func deriveTaskRunProject(explicit string, checkout gitCheckout, projects []backlogadmin.Project) (backlogadmin.Project, error) {
+//
+// A fresh start has no repository to match. It takes the catalog's one fresh
+// project, and a named project must be fresh, because a Git project would only
+// be refused by the readiness check a round trip later with less to go on.
+func deriveTaskRunProject(explicit string, fresh bool, checkout gitCheckout, projects []backlogadmin.Project) (backlogadmin.Project, error) {
 	if explicit != "" {
 		for _, project := range projects {
 			if project.Name == explicit {
+				if fresh && project.Type != backlog.EnvironmentFresh {
+					return backlogadmin.Project{}, fmt.Errorf("--fresh needs a project of type fresh, and %q is a Git project; %s",
+						explicit, taskRunFreshProjectList(projects))
+				}
 				return project, nil
 			}
 		}
 		return backlogadmin.Project{}, fmt.Errorf("project %q is not in this coordinator's catalog; %s",
 			explicit, taskRunProjectList(projects))
+	}
+	if fresh {
+		var matched []backlogadmin.Project
+		for _, project := range projects {
+			if project.Type == backlog.EnvironmentFresh {
+				matched = append(matched, project)
+			}
+		}
+		if len(matched) == 1 {
+			return matched[0], nil
+		}
+		return backlogadmin.Project{}, fmt.Errorf("--fresh without --project needs exactly one fresh project; %s",
+			taskRunFreshProjectList(projects))
 	}
 	if checkout.Remote == "" {
 		return backlogadmin.Project{}, fmt.Errorf("this directory has no origin remote to match against a project; "+
@@ -731,6 +759,22 @@ func taskRunProjectList(projects []backlogadmin.Project) string {
 	}
 	sort.Strings(names)
 	return "the projects are " + strings.Join(names, ", ")
+}
+
+// taskRunFreshProjectList names the projects a repository-free start can use,
+// or says there are none and who adds one.
+func taskRunFreshProjectList(projects []backlogadmin.Project) string {
+	var names []string
+	for _, project := range projects {
+		if project.Type == backlog.EnvironmentFresh {
+			names = append(names, project.Name)
+		}
+	}
+	if len(names) == 0 {
+		return "this coordinator has no fresh project; an operator declares one with \"upkeeper project add NAME --type fresh --workers a,b\""
+	}
+	sort.Strings(names)
+	return "the fresh projects are " + strings.Join(names, ", ") + "; pass --project NAME"
 }
 
 // normalizeRepository reduces a remote URL to host and path so that the SSH
