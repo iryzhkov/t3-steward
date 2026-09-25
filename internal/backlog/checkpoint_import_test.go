@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,6 +149,26 @@ func TestCoordinatorCheckpointImporterAcceptsAnEarlierEpochAndRejectsASettledBin
 	_, err = importer.Import(ctx, workerproto.ArtifactUploadResponse{Manifest: stale, Custody: resultCustody(t, stale, "coordinator")}, resultUploadOpener{other.ID: []byte("stale\n")})
 	if !errors.Is(err, ErrCheckpointImportRejected) {
 		t.Fatalf("a checkpoint for a released assignment was not rejected: %v", err)
+	}
+	// The discard is recorded on the attempt's run, so `backlog events` shows
+	// it, and offering the same upload again does not add a second event.
+	if _, err := importer.Import(ctx, workerproto.ArtifactUploadResponse{Manifest: stale, Custody: resultCustody(t, stale, "coordinator")}, resultUploadOpener{other.ID: []byte("stale\n")}); !errors.Is(err, ErrCheckpointImportRejected) {
+		t.Fatalf("a replayed rejected checkpoint was not rejected: %v", err)
+	}
+	events, err := store.LoadAuditEvents(ctx, attempt.WorkflowRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rejections []domain.AuditEvent
+	for _, event := range events {
+		if event.Kind == "checkpoint-import-rejected" {
+			rejections = append(rejections, event)
+		}
+	}
+	if len(rejections) != 1 || rejections[0].ID != sqlite.CheckpointImportRejectionEventID(stale.ID) ||
+		rejections[0].AttemptID != attempt.ID || rejections[0].TaskID != task.ID || rejections[0].TargetID != other.ID ||
+		!strings.Contains(rejections[0].Reason, "assignment-1") {
+		t.Fatalf("checkpoint rejection events = %#v", rejections)
 	}
 
 	// A claimed assignment whose attempt is not marked paused yet may still
