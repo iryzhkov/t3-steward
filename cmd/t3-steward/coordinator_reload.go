@@ -494,6 +494,12 @@ func reloadUnblockAction(attempt domain.Attempt, found bool) string {
 	if !found || attempt.WorkflowRunID == "" || attempt.TaskID == "" {
 		return "drain the worker (accept_backlog: false) and let the assignment settle, or cancel its task with t3-steward backlog cancel <run>/<task> --reason TEXT"
 	}
+	if attempt.IsSupervisionActivation() {
+		// An overseer activation is not a task, so there is no task path to
+		// cancel; the hint used to name one the coordinator could not find.
+		return fmt.Sprintf("an overseer activation assignment of run %s; the coordinator releases an unclaimed offer once its activation ends, and an escalated or recovery-required activation ends when an operator runs t3-steward campaign supervision reassess %s (t3-steward campaign supervision show %s)",
+			attempt.WorkflowRunID, attempt.WorkflowRunID, attempt.WorkflowRunID)
+	}
 	cancel := fmt.Sprintf("t3-steward backlog cancel %s/%s --reason TEXT", attempt.WorkflowRunID, attempt.TaskID)
 	switch attempt.Control {
 	case domain.ControlPaused, domain.ControlPausedUncheckpointed, domain.ControlDraining, domain.ControlResuming:
