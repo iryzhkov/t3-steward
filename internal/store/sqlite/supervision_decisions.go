@@ -632,7 +632,7 @@ func (s *Store) RecordActivationTransition(ctx context.Context, request Activati
 					activation = candidate
 					continue
 				}
-				if candidate.State == domain.ActivationPendingDispatch || candidate.State == domain.ActivationActive {
+				if otherActivationValid(candidate, state.Record.ActivationEpoch) {
 					other = true
 				}
 			}
