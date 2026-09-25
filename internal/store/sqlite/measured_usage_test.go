@@ -39,8 +39,10 @@ func TestMeasuredUsageMigrationPreservesHistoryAndReopensIdempotently(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := schemaVersionOf(t, store); got != 29 {
-			t.Fatalf("schema version = %d, want 29", got)
+		// Schema 30 (the owner-notification outbox) is applied on the same
+		// forward path and leaves the usage history alone.
+		if got := schemaVersionOf(t, store); got != 30 {
+			t.Fatalf("schema version = %d, want 30", got)
 		}
 		samples, err := store.UsageSamples(ctx, at.Add(-time.Minute), at.Add(time.Minute))
 		if err != nil {

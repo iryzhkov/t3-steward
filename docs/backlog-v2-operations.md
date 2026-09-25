@@ -1262,6 +1262,48 @@ and exit 7 with a message about an unknown field, on a command that ought to hav
 reported something specific. Upgrade both together; UpKeeper already converges
 them as one unit.
 
+## Owner notifications
+
+The coordinator can report campaign events to its owner on a channel of their
+own, in addition to the thread wake a submission registers. Both channels are
+declared under `notifications` in the coordinator's `config.yaml` and are off
+until declared:
+
+```yaml
+notifications:
+  discord:
+    webhook_url_file: ~/.config/t3-steward/discord-webhook
+    events: [run-failed, run-cancelled, needs-input, supervision-escalated]
+  command:
+    argv: [/usr/local/bin/notify-owner]
+```
+
+To enable Discord, create a webhook in the channel's integration settings, write
+its URL alone into the file (`install -m 600 /dev/null FILE`, then paste it in)
+and restart or reload the coordinator. The file must be a regular file owned by
+the coordinator's user with mode 0600; the coordinator refuses to load a
+configuration whose file is missing, readable by anyone else or not an https URL,
+and the URL itself is never logged, printed or stored anywhere else.
+
+The events are `run-succeeded`, `run-failed`, `run-cancelled` and `run-skipped`
+(a run reached that outcome), `needs-input` (an attention request awaits an
+answer), `supervision-escalated` (an escalated incident or gate, or an overseer
+whose budget is spent or whose dispatch needs reconciling) and `gate-review` (a
+gate is ready for review). The default is every event except `gate-review`.
+
+Every event is recorded in the `coordinator_owner_notifications` table (schema
+30) before it is sent, keyed by channel, event and what happened, and delivered
+from a loop beside the scheduling boundaries rather than inside them. Delivery
+is at least once: a restart neither repeats a delivered event nor loses a
+recorded one, but a crash between a send and its record sends it again, so a
+command receiver should deduplicate on the payload's `id`. A failed send is
+retried on a doubling delay from 30 s up to 30 min; a Discord 429 waits for its
+`Retry-After`; after 8 attempts, or at once on a refusal such as a deleted
+webhook (4xx), the row is marked `abandoned` with its last error and one
+`owner notification abandoned` warning is logged. The first pass for a channel
+and event records everything that already exists as `baseline` and sends none of
+it, so enabling a webhook does not replay history.
+
 ## Recovery procedures
 
 ### Coordinator restart or lost response

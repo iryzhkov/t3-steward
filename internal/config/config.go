@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
+	"github.com/iryzhkov/t3-steward/internal/ownernotify"
+	"github.com/iryzhkov/t3-steward/internal/privatefile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -223,9 +226,113 @@ type Messages struct {
 	Drain string `yaml:"drain"`
 }
 
-// Notifications configures desktop notifications.
+// Notifications configures desktop notifications and, on a coordinator, the
+// owner channels that campaign events are delivered to.
 type Notifications struct {
 	Desktop bool `yaml:"desktop"`
+	// Discord posts campaign events to a Discord webhook. Nil means no
+	// Discord delivery. Only a coordinator delivers: the events are its own
+	// records, and a host that is not the coordinator has none to report.
+	Discord *DiscordNotifications `yaml:"discord"`
+	// Command runs a local program for every campaign event, with the event
+	// as JSON on standard input. Nil means none. Like Discord, only a
+	// coordinator delivers.
+	Command *CommandNotifications `yaml:"command"`
+}
+
+// DiscordNotifications is the Discord owner channel.
+//
+// The webhook URL is a credential -- anyone holding it can post to the
+// channel -- so it is never written in this file. WebhookURLFile names a
+// private file (mode 0600, owned by this user) that holds it, and the URL is
+// read from there only when it is needed and never logged or printed.
+type DiscordNotifications struct {
+	WebhookURLFile string `yaml:"webhook_url_file"`
+	// Events are the event names to deliver; empty means the default set.
+	// See ownernotify.Events for the accepted names.
+	Events []string `yaml:"events"`
+}
+
+// CommandNotifications is the generic owner channel: a program run from an
+// argv, with no shell, that receives each event as JSON on standard input.
+type CommandNotifications struct {
+	Argv []string `yaml:"argv"`
+	// Events are the event names to deliver; empty means the default set.
+	Events []string `yaml:"events"`
+}
+
+// maxWebhookURLFileBytes bounds the webhook file. A Discord webhook URL is
+// about 120 bytes; anything near this is not one.
+const maxWebhookURLFileBytes = 4096
+
+// WebhookURL reads and validates the webhook URL from its private file.
+//
+// Its errors name the file and never its content, so a malformed URL cannot
+// leak through a startup error into a log.
+func (d DiscordNotifications) WebhookURL() (string, error) {
+	path := strings.TrimSpace(d.WebhookURLFile)
+	if path == "" {
+		return "", errors.New("notifications.discord: webhook_url_file is required")
+	}
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("notifications.discord: webhook_url_file %s: %w", path, err)
+		}
+		path = filepath.Join(home, path[2:])
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("notifications.discord: webhook_url_file %s must be an absolute path or start with ~/", path)
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o077 != 0 {
+		// Said precisely, as t3.token_file does, because "private file mode"
+		// alone does not tell an operator which chmod to run.
+		return "", fmt.Errorf("notifications.discord: webhook_url_file %s has mode %04o, want 0600; refusing to read a webhook URL that is not private",
+			path, info.Mode().Perm())
+	}
+	raw, err := privatefile.Read(path, maxWebhookURLFileBytes)
+	if err != nil {
+		return "", fmt.Errorf("notifications.discord: webhook_url_file %s must be a regular 0600 file owned by this user holding one URL: %w", path, err)
+	}
+	webhook := strings.TrimSpace(string(raw))
+	if webhook == "" || strings.ContainsAny(webhook, " \t\r\n") {
+		return "", fmt.Errorf("notifications.discord: webhook_url_file %s must contain exactly one URL", path)
+	}
+	parsed, err := url.Parse(webhook)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+		// The parse error quotes the URL, so it is not wrapped.
+		return "", fmt.Errorf("notifications.discord: webhook_url_file %s does not hold an https URL", path)
+	}
+	return webhook, nil
+}
+
+// validate checks the owner channels. It reads the webhook file, so a
+// coordinator whose file is missing or readable by others refuses to start
+// rather than failing its first delivery hours later.
+func (n Notifications) validate() error {
+	if n.Discord != nil {
+		if _, err := ownernotify.ParseEvents(n.Discord.Events); err != nil {
+			return fmt.Errorf("notifications.discord: events: %w", err)
+		}
+		if _, err := n.Discord.WebhookURL(); err != nil {
+			return err
+		}
+	}
+	if n.Command != nil {
+		if len(n.Command.Argv) == 0 || strings.TrimSpace(n.Command.Argv[0]) == "" {
+			return errors.New("notifications.command: argv needs at least the program to run")
+		}
+		if !filepath.IsAbs(n.Command.Argv[0]) {
+			// The coordinator runs as a service whose PATH is not the
+			// operator's shell, so a bare name would resolve differently
+			// there than it did when the operator tried it.
+			return fmt.Errorf("notifications.command: argv[0] %q must be an absolute path", n.Command.Argv[0])
+		}
+		if _, err := ownernotify.ParseEvents(n.Command.Events); err != nil {
+			return fmt.Errorf("notifications.command: events: %w", err)
+		}
+	}
+	return nil
 }
 
 // Report configures the consumption report.
@@ -1049,6 +1156,9 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Messages.Warn) == "" || strings.TrimSpace(c.Messages.Drain) == "" {
 		return errors.New("messages: warn and drain must not be empty")
+	}
+	if err := c.Notifications.validate(); err != nil {
+		return err
 	}
 	return c.validateBacklogV2()
 }

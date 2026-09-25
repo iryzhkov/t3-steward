@@ -1077,6 +1077,10 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	if err := store.RecordCoordinatorConfiguration(ctx, epoch, configurationDigest, appliedAt); err != nil {
 		return err
 	}
+	// Owner notifications run for as long as this configuration does, so a
+	// reload that changes them restarts the loop with the new sinks.
+	stopOwnerNotifier := startOwnerNotifier(ctx, cfg.Notifications, store, logger)
+	defer stopOwnerNotifier()
 	ready()
 	return serveCoordinatorBoundaries(ctx, &server, cycle, cfg.BacklogV2.Scheduling.Interval.D())
 }
