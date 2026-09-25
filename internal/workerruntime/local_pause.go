@@ -261,7 +261,7 @@ func (r *Runtime) reconcileLocalPause(ctx context.Context, id string, record Att
 		r.log.Debug("paused attempt is not resumed", "assignment", id, "reason", why)
 		return nil
 	}
-	if r.collectionRegistered(record) {
+	if r.collectionRegistered(record) || record.Phase == PhaseCollecting {
 		r.log.Debug("paused attempt is not resumed; it is being collected", "assignment", id)
 		return nil
 	}

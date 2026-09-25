@@ -371,7 +371,7 @@ func TestTaskPromptSaysEndingTheTurnCompletesTheTask(t *testing.T) {
 // The first finished read is recorded and judged again for the same turn only.
 func TestRepeatedCollectionJudgesTheTurnItRecorded(t *testing.T) {
 	pkg := testPackage()
-	driver := &LocalDriver{Config: LocalDriverConfig{ArtifactRoot: t.TempDir()}}
+	driver := &LocalDriver{Config: LocalDriverConfig{RunsRoot: t.TempDir()}}
 	finished := []byte(`{"thread":{"id":"` + pkg.Identity.ThreadID + `","latestTurn":{"turnId":"turn-1","state":"completed","startedAt":"2026-09-13T05:00:00Z","completedAt":"2026-09-13T05:01:00Z"},"session":{"threadId":"` + pkg.Identity.ThreadID + `","status":"ready","activeTurnId":null,"lastError":null}}}`)
 	thread := domain.Thread{ID: pkg.Identity.ThreadID, TurnID: "turn-1"}
 	failure, err := backlog.ResultCompletionFailureWithPause(finished, pkg.Identity.ThreadID, "finished", "")
@@ -392,6 +392,17 @@ func TestRepeatedCollectionJudgesTheTurnItRecorded(t *testing.T) {
 	later.TurnID = "turn-2"
 	if _, _, got, err := driver.settleCollectedTurn(pkg, later, "", idled, "not finished", ""); err != nil || got != "not finished" {
 		t.Fatalf("a different turn reused the recorded one: %q %v", got, err)
+	}
+	// A later turn that finishes replaces the record of the earlier one.
+	second := []byte(strings.ReplaceAll(string(finished), "turn-1", "turn-2"))
+	if _, _, got, err := driver.settleCollectedTurn(pkg, later, "second", second, "", ""); err != nil || got != "" {
+		t.Fatalf("recording the later turn = %q %v", got, err)
+	}
+	if message, _, got, err := driver.settleCollectedTurn(pkg, later, "", idled, "not finished", ""); err != nil || got != "" || message != "second" {
+		t.Fatalf("the later turn's record was not the one judged: %q %q %v", message, got, err)
+	}
+	if _, err := os.Stat(filepath.Join(driver.workspacePath(pkg), "collected-turn.json")); err != nil {
+		t.Fatalf("the record is not in the attempt directory that Cleanup removes: %v", err)
 	}
 }
 

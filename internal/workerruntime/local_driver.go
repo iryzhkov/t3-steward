@@ -940,16 +940,31 @@ type collectedTurn struct {
 // only when the thread still reports that same turn: a turn that really did
 // not finish never had a snapshot to reuse.
 func (d *LocalDriver) settleCollectedTurn(pkg workerproto.ExecutionPackage, thread domain.Thread, message string, archive []byte, failure, pauseReason string) (string, []byte, string, error) {
-	if d.Config.ArtifactRoot == "" || thread.TurnID == "" {
+	if d.Config.RunsRoot == "" || thread.TurnID == "" {
 		return message, archive, failure, nil
 	}
-	directory := filepath.Join(d.Config.ArtifactRoot, "collected-turns")
-	path := filepath.Join(directory, pkg.Identity.AttemptID+".json")
+	// The attempt directory, beside the workspace: Cleanup removes it with the
+	// attempt, so the record has the attempt's retention and no other.
+	path := filepath.Join(d.workspacePath(pkg), "collected-turn.json")
+	var recorded collectedTurn
+	found := false
+	if raw, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(raw, &recorded); err != nil {
+			return "", nil, "", fmt.Errorf("decode collected turn: %w", err)
+		}
+		found = recorded.ThreadID == pkg.Identity.ThreadID && recorded.TurnID == thread.TurnID
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", nil, "", fmt.Errorf("read collected turn: %w", err)
+	}
 	if failure == "" {
-		if _, err := os.Stat(path); err == nil {
+		if found {
 			return message, archive, failure, nil
 		}
-		if err := os.MkdirAll(directory, 0o700); err != nil {
+		// A record of an earlier turn is superseded by this finished one.
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", nil, "", fmt.Errorf("replace collected turn: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return "", nil, "", fmt.Errorf("record collected turn: %w", err)
 		}
 		if err := privateJSON(path, collectedTurn{ThreadID: pkg.Identity.ThreadID, TurnID: thread.TurnID, Message: message, Archive: archive}); err != nil {
@@ -957,18 +972,7 @@ func (d *LocalDriver) settleCollectedTurn(pkg workerproto.ExecutionPackage, thre
 		}
 		return message, archive, failure, nil
 	}
-	raw, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return message, archive, failure, nil
-	}
-	if err != nil {
-		return "", nil, "", fmt.Errorf("read collected turn: %w", err)
-	}
-	var recorded collectedTurn
-	if err := json.Unmarshal(raw, &recorded); err != nil {
-		return "", nil, "", fmt.Errorf("decode collected turn: %w", err)
-	}
-	if recorded.ThreadID != pkg.Identity.ThreadID || recorded.TurnID != thread.TurnID {
+	if !found {
 		return message, archive, failure, nil
 	}
 	recordedFailure, err := backlog.ResultCompletionFailureWithPause(recorded.Archive, pkg.Identity.ThreadID, recorded.Message, pauseReason)
