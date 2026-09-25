@@ -122,8 +122,29 @@ func projectBindingDefaultedDetail(project string) string {
 
 // defaulted reports whether the coordinator loaded a project with a default
 // local binding.
+//
+// A fresh project is never reported as defaulted: it has no repository,
+// credentials or setup profile to bind, so the detail's "no credentials were
+// checked" describes nothing it needs and read as a warning about one.
 func (v ViabilitySettings) defaulted(name string) bool {
-	return slices.Contains(v.DefaultedProjects, name)
+	if !slices.Contains(v.DefaultedProjects, name) {
+		return false
+	}
+	project, ok := v.project(name)
+	return !ok || project.Type != backlog.EnvironmentFresh
+}
+
+// defaultedDetailProjects is DefaultedProjects less the fresh projects, the
+// list the explanation carries the defaulted-binding detail for, so that it
+// and the readiness matrix report the same projects.
+func (v ViabilitySettings) defaultedDetailProjects() []string {
+	var names []string
+	for _, name := range v.DefaultedProjects {
+		if v.defaulted(name) {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // configured reports whether this coordinator can answer a viability query at

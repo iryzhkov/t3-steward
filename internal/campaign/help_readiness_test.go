@@ -21,6 +21,11 @@ func TestFreshHelpIsDiscoverable(t *testing.T) {
 			t.Fatalf("fresh help topic does not say %q", want)
 		}
 	}
+	// The example names placeholders, not hosts: it named homelab, which cannot
+	// prepare a fresh workspace, and was copied as it stood.
+	if !strings.Contains(fresh, "--workers <worker>,<worker>") || strings.Contains(fresh, "homelab") {
+		t.Fatal("fresh help topic names real workers in its upkeeper example")
+	}
 	for _, want := range []string{"workspace-type-mismatch", "supervisor-client-missing", "campaign help fresh"} {
 		if !strings.Contains(ReadinessHelp, want) {
 			t.Fatalf("readiness help does not name %q", want)

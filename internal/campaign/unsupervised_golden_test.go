@@ -27,6 +27,12 @@ import (
 // content digest and nothing else. The digest in both goldens was re-recorded
 // from this branch's own plan output for that reason; every other byte is the
 // origin/main recording.
+//
+// A second change is to the text golden alone: each task's "effort" line was
+// relabelled "scheduling", with what the coordinator does with importance and
+// difficulty named beside each number, because "effort" is also a route option
+// and the old label read as a model setting. The three lines were edited to
+// match; the numbers, and every other byte, are unchanged.
 const (
 	unsupervisedPlanTextGolden = "testdata/origin-main-three-node-plan.txt"
 	unsupervisedPlanJSONGolden = "testdata/origin-main-three-node-plan.json"

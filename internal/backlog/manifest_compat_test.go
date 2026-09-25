@@ -109,14 +109,53 @@ func TestUnknownTopLevelManifestFieldIsRefusedByName(t *testing.T) {
 	for _, fragment := range []string{
 		"decode workflow manifest",
 		"field supervision_from_a_later_release (line 7) is not supported by this release 0.11.0-rc.99-test; a newer t3-steward release may be required",
-		"line 7: field supervision_from_a_later_release not found in type backlog.Manifest",
+		// The decoder's text follows, with the Go type it names rewritten as
+		// the manifest object an author knows: "in type backlog.Manifest" used
+		// to be printed verbatim.
+		"line 7: field supervision_from_a_later_release not found in the workflow",
 	} {
 		if !strings.Contains(err.Error(), fragment) {
 			t.Fatalf("refusal %q is missing %q", err, fragment)
 		}
 	}
-	if strings.Index(err.Error(), "is not supported by this release") > strings.Index(err.Error(), "not found in type") {
+	if strings.Index(err.Error(), "is not supported by this release") > strings.Index(err.Error(), "not found in the workflow") {
 		t.Fatalf("the version advice must come before the yaml text: %q", err)
+	}
+}
+
+// An unknown task field is refused naming the task object, not the Go type
+// backlog.ManifestTask, which no author wrote and which leaked into
+// "campaign validate" output.
+func TestUnknownTaskFieldNamesTheManifestObject(t *testing.T) {
+	raw := strings.Join([]string{
+		"version: 2",
+		"name: unknown-task-field",
+		"project: example-project",
+		"tasks:",
+		"  only:",
+		"    prompt_file: prompts/only.md",
+		"    bogus: 1",
+		"",
+	}, "\n")
+	_, err := ParseManifest([]byte(raw))
+	if err == nil {
+		t.Fatal("an unknown task field was accepted")
+	}
+	if strings.Contains(err.Error(), "ManifestTask") || !strings.Contains(err.Error(), "line 7: field bogus not found in a task") {
+		t.Fatalf("refusal = %q", err)
+	}
+}
+
+// A prompt file that does not exist is named as the author wrote it, relative
+// to the campaign directory, rather than as the raw lstat error on an absolute
+// path.
+func TestMissingPromptFileIsNamedAsWritten(t *testing.T) {
+	root := t.TempDir()
+	manifest := Manifest{Tasks: map[string]ManifestTask{"review": {PromptFile: "prompts/review.md"}}}
+	err := validateManifestFiles(root, manifest)
+	want := "task review: prompt_file prompts/review.md does not exist (paths are relative to the campaign directory)"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v\nwant    %s", err, want)
 	}
 }
 
@@ -155,8 +194,10 @@ func TestPreSupervisionShapedDecoderRefusesTheSupervisedExampleByVersion(t *test
 		"field supervision (line 69) is not supported by this release 0.11.0-rc.56; a newer t3-steward release may be required",
 		"field gates (line 82) is not supported by this release 0.11.0-rc.56; a newer t3-steward release may be required",
 		"yaml: unmarshal errors:",
-		"line 69: field supervision not found in type backlog.preSupervisionManifest",
-		"line 82: field gates not found in type backlog.preSupervisionManifest",
+		// A Go type that is not a manifest object, as this test-only shape is
+		// not, is named as "this object" rather than printed.
+		"line 69: field supervision not found in this object",
+		"line 82: field gates not found in this object",
 	} {
 		if !strings.Contains(err.Error(), fragment) {
 			t.Fatalf("refusal %q is missing %q", err, fragment)

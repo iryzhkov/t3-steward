@@ -288,7 +288,7 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 	view.includeSink = query.IncludeSink
 	// The explanation reports the same defaulted-binding detail the readiness
 	// matrix does, from the same configured list.
-	view.defaultedProjects = s.viabilitySettings.DefaultedProjects
+	view.defaultedProjects = s.viabilitySettings.defaultedDetailProjects()
 	response := Response{Version: Version, Kind: query.Kind, GeneratedAt: view.now}
 
 	switch query.Kind {
@@ -1060,12 +1060,23 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 	for _, dependency := range task.Needs {
 		dependencyTask, found := v.resolveTask(runID, dependency)
 		if !found {
-			explanation.Blockers = append(explanation.Blockers, Blocker{Code: "dependency", Detail: "dependency is not available", DependsOn: dependency})
+			explanation.Blockers = append(explanation.Blockers, Blocker{Code: "dependency", Detail: "dependency " + dependency + " is not available", DependsOn: dependency})
 			continue
 		}
 		dependencyAttempt := latestAttempt(v.attempts[runID+"\x00"+dependencyTask.ID])
 		if dependencyAttempt == nil || dependencyAttempt.Progress != domain.ProgressSucceeded {
-			explanation.Blockers = append(explanation.Blockers, Blocker{Code: "dependency", Detail: "dependency has not succeeded", DependsOn: dependencyTask.ID})
+			// The detail names the dependency by its manifest name and says where
+			// it is, because DependsOn carries only the task id, which the text
+			// form does not print and which no author wrote.
+			progress := domain.ProgressQueued
+			if dependencyAttempt != nil {
+				progress = dependencyAttempt.Progress
+			}
+			explanation.Blockers = append(explanation.Blockers, Blocker{
+				Code:      "dependency",
+				Detail:    fmt.Sprintf("dependency %s has not succeeded (%s)", dependencyTask.Name, progress),
+				DependsOn: dependencyTask.ID,
+			})
 		}
 	}
 	if task.NotBefore != nil && task.NotBefore.After(v.now) {

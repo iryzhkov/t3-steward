@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -166,8 +167,42 @@ func (e *UnknownManifestFieldError) Error() string {
 		fmt.Fprintf(&text, "field %s (line %d) is not supported by this release %s; a newer t3-steward release may be required\n",
 			field, e.Lines[index], e.Release)
 	}
-	text.WriteString(e.Cause.Error())
+	text.WriteString(manifestObjectNames(e.Cause.Error()))
 	return text.String()
+}
+
+// manifestGoTypePattern matches the Go type the yaml decoder names in an
+// unknown-field line, such as "in type backlog.ManifestTask".
+var manifestGoTypePattern = regexp.MustCompile(`in type (?:\*?[A-Za-z0-9_]+\.)?([A-Za-z0-9_]+)`)
+
+// manifestObjects names each manifest shape as an author knows it. The Go type
+// is an implementation detail the author never wrote and cannot look up.
+var manifestObjects = map[string]string{
+	"Manifest":                      "the workflow",
+	"ManifestTask":                  "a task",
+	"ManifestRoute":                 "a route",
+	"ManifestEnvironment":           "the environment",
+	"ManifestPlacement":             "a placement",
+	"ManifestResources":             "a resources block",
+	"ManifestPreflight":             "the preflight",
+	"ManifestPreflightStep":         "a preflight step",
+	"ManifestCommit":                "a commit",
+	"ManifestSupervision":           "the supervision block",
+	"ManifestRecovery":              "the recovery block",
+	"ManifestSupervisionEscalation": "an escalation",
+	"ManifestGate":                  "a gate",
+}
+
+// manifestObjectNames rewrites the decoder's "in type backlog.ManifestTask"
+// into "in a task", keeping every other byte of its text.
+func manifestObjectNames(text string) string {
+	return manifestGoTypePattern.ReplaceAllStringFunc(text, func(match string) string {
+		name := manifestGoTypePattern.FindStringSubmatch(match)[1]
+		if object, ok := manifestObjects[name]; ok {
+			return "in " + object
+		}
+		return "in this object"
+	})
 }
 
 func (e *UnknownManifestFieldError) Unwrap() error { return e.Cause }
@@ -830,6 +865,11 @@ func validateNonEmptyUnique(label string, values []string) error {
 func validateManifestFiles(root string, manifest Manifest) error {
 	for name, task := range manifest.Tasks {
 		if _, err := safeBundleFile(root, task.PromptFile); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				// The raw lstat error named an absolute path the author never
+				// wrote; the author wrote a path relative to the campaign.
+				return fmt.Errorf("task %s: prompt_file %s does not exist (paths are relative to the campaign directory)", name, task.PromptFile)
+			}
 			return fmt.Errorf("task %s prompt_file: %w", name, err)
 		}
 	}

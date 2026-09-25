@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -288,6 +289,13 @@ func dispatch(args []string) error {
 			version, commit, date, runtime.GOOS, runtime.GOARCH, compat.MinServerVersion, compat.MaxServerVersion)
 		return nil
 	}
+	// A word this dispatcher does not route is refused here, before the flag
+	// set parses the rest: a misspelt family such as "campagin submit dir
+	// --idempotency-key K" was otherwise refused for its first flag, which says
+	// nothing about the word that was wrong.
+	if !slices.Contains(dispatchedVerbs, cmd) {
+		return unknownCommand(cmd)
+	}
 	// Help is admitted before the flag set exists, so that a verb parsed here
 	// answers --help with its page instead of with "flag: help requested" on
 	// standard error. The family verbs above admit help at their own entry
@@ -407,8 +415,38 @@ func dispatch(args []string) error {
 		}
 		return cmdCoordinatorExchange(g, fs.Arg(0))
 	default:
-		return fmt.Errorf("%w %q (try --help)", errUnknownCommand, cmd)
+		return unknownCommand(cmd)
 	}
+}
+
+// dispatchedVerbs are the words the flag-parsed half of dispatch routes; the
+// command families above it are routed by their own case. A word in neither is
+// refused before any flag is parsed.
+var dispatchedVerbs = []string{
+	"init", "check", "run", "status", "replay", "export", "forecast", "report",
+	"install-service", "uninstall-service", "worker-exchange", "coordinator-exchange",
+}
+
+// topLevelFamilies are the command families dispatch routes by name, in the
+// order a did-you-mean suggestion prefers them.
+var topLevelFamilies = []string{
+	"campaign", "task", "wait", "backlog", "worker", "coordinator", "schedules", "models",
+	"diagnose", "thread", "bucket", "archive", "ui-archive", "version", "help",
+}
+
+// unknownCommand refuses a top-level word dispatch does not route, naming the
+// family or verb within two edits of it when there is one.
+func unknownCommand(cmd string) error {
+	best, bestDistance := "", 3
+	for _, candidate := range append(append([]string{}, topLevelFamilies...), dispatchedVerbs...) {
+		if distance := backlog.EditDistance(strings.ToLower(cmd), candidate); distance < bestDistance {
+			best, bestDistance = candidate, distance
+		}
+	}
+	if best != "" {
+		return fmt.Errorf("%w %q; did you mean %q? (try --help)", errUnknownCommand, cmd, best)
+	}
+	return fmt.Errorf("%w %q (try --help)", errUnknownCommand, cmd)
 }
 
 func loadConfig(g globalFlags) (config.Config, error) {
