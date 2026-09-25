@@ -140,7 +140,7 @@ func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
 	return &Runtime{config: config, desiredInventory: config.Inventory, journal: journal, driver: driver, log: logger.With("component", "worker-runtime")}, nil
 }
 
-// advertisedCapabilities merges the capabilities an operator configured for
+// AdvertisedCapabilities merges the capabilities an operator configured for
 // this host with the package capabilities this build actually implements.
 //
 // The two answer different questions and only the worker can answer the second.
@@ -155,15 +155,9 @@ func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
 // worker before assignment rather than discovering the gap mid-attempt. The
 // worker still refuses a package requiring an unsupported capability when it
 // validates one, so this is the explanation, not the only defence.
-func advertisedCapabilities(configured []string) []string {
-	return AdvertisedCapabilities(configured)
-}
-
-// AdvertisedCapabilities is advertisedCapabilities for the coordinator, which
-// runs the same build. Validation that reads only the operator's configured
-// list refuses a task requiring a capability every current worker supplies
-// itself, such as task-wait-collection-fence-v1, which readiness accepts
-// because it reads the advertised inventory.
+//
+// The coordinator, which runs the same build, uses it too, for graph-amendment
+// validation.
 func AdvertisedCapabilities(configured []string) []string {
 	merged := append([]string(nil), configured...)
 	if !slices.Contains(merged, workerproto.CapabilityTaskWaitCollectionFence) {
@@ -214,7 +208,7 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 			assignments = append(assignments, observation(record, now, r.reportQuota))
 		}
 		inventory := r.config.Inventory
-		inventory.Capabilities = advertisedCapabilities(inventory.Capabilities)
+		inventory.Capabilities = AdvertisedCapabilities(inventory.Capabilities)
 		snapshot = domain.WorkerSnapshot{
 			WorkerID: r.config.WorkerID, WorkerEpoch: r.config.WorkerEpoch,
 			CoordinatorEpoch: r.config.CoordinatorEpoch, Sequence: state.Sequence,
