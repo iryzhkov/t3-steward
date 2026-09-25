@@ -489,14 +489,23 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 		return r.finishThrottle(command, false, "", nil, "task timeout expired")
 	}
 	// A collection owns the attempt's outcome from the moment it starts: its
-	// turn is over and its verification may be running in the workspace. A
-	// resume would start a new turn in that same workspace, under the running
-	// checks. PR #21 kept a stop from overtaking a collection; a resume must
-	// not either.
+	// turn is over and its verification may be running in the workspace. PR #21
+	// kept a stop from overtaking a collection, and no throttle command may
+	// either. A resume, a warning or a drain notice would start a new turn in
+	// that workspace, under the running checks. An accepted drain or hard stop
+	// would also move the attempt to stopped, a phase from which a throttled
+	// attempt is never collected again, so the collection's result would never
+	// be taken and its registry entry would refuse every later resume.
+	//
+	// The refusal is final for the command. The coordinator records it as
+	// rejected and does not reissue a command for the same directive; a drain
+	// whose deadline passes is escalated once to a hard stop, which is refused
+	// the same way. The assignment itself keeps following the worker's
+	// observations, which report it collecting and then completed.
 	// The registry is this process's; after a restart it is empty until a
 	// reconcile reaches the attempt, and the journal phase says so durably.
-	if command.Kind == domain.ThrottleCommandResume && (r.collectionRegistered(record) || record.Phase == PhaseCollecting) {
-		return r.finishThrottle(command, false, "", nil, "the attempt is being collected; its turn is over and nothing is resumed")
+	if r.collectionRegistered(record) || record.Phase == PhaseCollecting {
+		return r.finishThrottle(command, false, "", nil, "the attempt is being collected; its turn is over and no throttle command applies")
 	}
 	var result domain.ThrottleAcknowledgementResult
 	var checkpoint *domain.CheckpointMetadata

@@ -317,15 +317,25 @@ func releaseCollection(key string, flight *collectionFlight) {
 // finishCollection records the outcome of a finished collection in the
 // journal and only then releases it from the registry, so that no pass can
 // read the attempt as collecting with no collection registered in between.
+// A journal write that fails leaves the finished collection registered: its
+// result is already published, and the next pass that reaches the attempt
+// records it from the same collection instead of collecting a second time.
 //
 // A successful outcome completes the attempt only when the journal still
 // names the same collection. An attempt superseded or finalized while its
-// collection ran keeps what the journal says; the result is discarded here
-// and the attempt is never reported completed from it.
+// collection ran keeps what the journal says, and this worker never reports
+// it completed from that collection. The discard is local to the journal: by
+// then the driver has published the result to the outbox, where it stays
+// discoverable through ArtifactPoll, and has settled the T3 thread. What
+// keeps a stale result from deciding the attempt is the coordinator, which
+// checks the assignment epoch and lease token when it imports a result.
 func (r *Runtime) finishCollection(id string, record AttemptRecord, flight *collectionFlight) error {
-	defer releaseCollection(r.collectionFlightKey(record), flight)
+	key := r.collectionFlightKey(record)
 	settleUnproven := errors.Is(flight.err, ErrSettleUnproven)
 	if flight.err != nil && !settleUnproven {
+		// Nothing was finalized, so a fresh collection may start on a later
+		// pass, as a deferred collection always has.
+		releaseCollection(key, flight)
 		return fmt.Errorf("collection deferred: %w", flight.err)
 	}
 	if settleUnproven {
@@ -334,7 +344,7 @@ func (r *Runtime) finishCollection(id string, record AttemptRecord, flight *coll
 		// instead of repeating collection.
 		r.log.Warn("result published; T3 settlement deferred", "assignment", id, "error", flight.err)
 	}
-	return r.journal.update(func(state *journalState) error {
+	err := r.journal.update(func(state *journalState) error {
 		current, ok := state.Attempts[id]
 		if !ok || !sameCollection(current, record) {
 			phase := Phase("")
@@ -360,4 +370,9 @@ func (r *Runtime) finishCollection(id string, record AttemptRecord, flight *coll
 		state.Sequence++
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	releaseCollection(key, flight)
+	return nil
 }

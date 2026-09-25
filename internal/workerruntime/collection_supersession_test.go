@@ -3,9 +3,12 @@ package workerruntime
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // startGatedCollection starts the collection of a collecting attempt in a pass
@@ -90,6 +93,43 @@ func TestSupersededCollectionResultIsDiscarded(t *testing.T) {
 			if record.Phase != tc.wantPhase || record.Assignment.Epoch != tc.wantEpoch || collects.Load() != 1 || runtime.collectionRegistered(stale) {
 				t.Fatalf("phase=%q epoch=%d collections=%d registered=%v; want the result discarded and the record untouched",
 					record.Phase, record.Assignment.Epoch, collects.Load(), runtime.collectionRegistered(stale))
+			}
+		})
+	}
+}
+
+// A throttle command that arrives while an attempt is being collected is
+// refused and leaves the collection alone. The field interleaving: a tick
+// starts a collection and releases the host lock, the watchdog still sees the
+// attempt running and sends a hard stop, and an accepted stop moved the
+// attempt to stopped, where a throttled attempt is never collected again, so
+// the finished collection stayed registered and refused every later resume.
+func TestThrottleDuringCollectionIsRefused(t *testing.T) {
+	for _, kind := range []domain.ThrottleCommandKind{
+		domain.ThrottleCommandWarn, domain.ThrottleCommandDrain, domain.ThrottleCommandHardStop,
+	} {
+		t.Run(string(kind), func(t *testing.T) {
+			runtime, driver, collects, finish := startGatedCollection(t)
+			acks, err := runtime.DeliverThrottle(context.Background(), []domain.ThrottleCommand{testThrottle(runtime, kind, "throttle-1")})
+			if err != nil || len(acks) != 1 {
+				t.Fatalf("acks = %+v, err = %v", acks, err)
+			}
+			if acks[0].Accepted || !strings.Contains(acks[0].Error, "being collected") {
+				t.Fatalf("acknowledgement = %+v; want the command refused because the attempt is being collected", acks[0])
+			}
+			if record := attemptRecord(t, runtime); record.Phase != PhaseCollecting || record.PendingThrottle != nil ||
+				driver.stopCalls != 0 || driver.checkpointCalls != 0 {
+				t.Fatalf("phase=%q pending=%v stops=%d checkpoints=%d; want the collection untouched",
+					record.Phase, record.PendingThrottle, driver.stopCalls, driver.checkpointCalls)
+			}
+			finish()
+			if err := runtime.Reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			record := attemptRecord(t, runtime)
+			if record.Phase != PhaseCompleted || collects.Load() != 1 || runtime.collectionRegistered(record) {
+				t.Fatalf("phase=%q collections=%d registered=%v; want the collection's result taken once and nothing left registered",
+					record.Phase, collects.Load(), runtime.collectionRegistered(record))
 			}
 		})
 	}
