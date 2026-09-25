@@ -69,6 +69,11 @@ func TestBacklogListIsBoundedClientSide(t *testing.T) {
 			t.Fatalf("%v was accepted", bad)
 		}
 	}
+	// --all with anything beside it is neither the legacy listing nor a
+	// coordinator filter, and is refused with the command meant.
+	if _, _, err := list("--all", "--limit", "5"); err == nil || !strings.Contains(err.Error(), "drop --all") {
+		t.Fatalf("list --all --limit 5 = %v", err)
+	}
 	// backlog usage keeps its own --limit, which means a page of raw samples.
 	if query, _, err := parseBacklogAdminQuery([]string{"usage", "run-1", "--raw", "--limit", "5"}); err != nil || query.UsageLimit != 5 {
 		t.Fatalf("usage --limit = %+v %v", query, err)

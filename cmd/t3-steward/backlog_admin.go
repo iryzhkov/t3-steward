@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -458,6 +459,9 @@ func parseBacklogAdminQuery(args []string) (backlogadmin.Query, commandDisplay, 
 	}
 	var window listWindow
 	if backlogQueryVerb(args) == "list" {
+		if err := refuseLegacyListAll(args); err != nil {
+			return backlogadmin.Query{}, commandDisplay{Verbose: verbose}, err
+		}
 		if args, window, err = takeListWindowFlags(args); err != nil {
 			return backlogadmin.Query{}, commandDisplay{Verbose: verbose}, err
 		}
@@ -487,6 +491,21 @@ func parseBacklogAdminQuery(args []string) (backlogadmin.Query, commandDisplay, 
 	}
 	query.IncludeSink = include
 	return query, display, nil
+}
+
+// refuseLegacyListAll explains "backlog list --all" given with other
+// arguments. "backlog list --all" alone is the offline legacy task-file
+// listing, which takes no options; with anything beside it the command is
+// routed to the coordinator, where --all used to be read as a filter missing
+// its value. Neither verb can honour the combination, so it is refused with
+// the two commands it could have meant. It is not a parser site of the list
+// page, because --all is not an option of the coordinator verb.
+func refuseLegacyListAll(args []string) error {
+	if slices.Contains(args, "--all") {
+		return errors.New("backlog list --all is the offline legacy task-file listing and takes no other argument; " +
+			"to bound the coordinator's runs, drop --all: backlog list --limit N [--since DURATION]")
+	}
+	return nil
 }
 
 // backlogQueryVerb is the verb of a backlog read: its first argument that is
