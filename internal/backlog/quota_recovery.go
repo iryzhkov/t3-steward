@@ -206,6 +206,18 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 				// Do not invent automatic-resume authority or quota remainder.
 				continue
 			}
+			if attempt.Control == domain.ControlResuming {
+				// Not every resume is a quota resume. Waking a parked attempt
+				// (a settled task-bound wait) moves it to resuming with no
+				// throttle directive behind it, and it stays resuming until the
+				// worker reports the thread running again, which after a turn
+				// that already ended is only once its outputs are collected:
+				// half an hour for a long verification. Its slot and cost are
+				// counted like a running attempt's; there is no quota resume to
+				// reserve. Calling it inconsistent logged a warning on every
+				// planning tick for the whole collection.
+				continue
+			}
 			skip(attempt, "paused without a durable throttle record")
 			continue
 		}
