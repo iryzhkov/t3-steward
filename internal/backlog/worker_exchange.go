@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -57,22 +58,25 @@ func validateObservationIdentity(transport WorkerControlTransport, snapshot doma
 }
 
 // receiveWorkerUsage stores a worker's delivered usage batch. Samples the
-// store rejected are logged in one line per batch; each is reported only the
-// first time it is refused, so a sample is logged once rather than on every
-// boundary until the worker has seen its acknowledgement.
+// store rejected are logged in one line per batch, each with its provider,
+// thread, model, event id and reason: the coordinator keeps nothing else of a
+// rejected sample, so the line is what finds it again in the worker's own
+// database. Each is reported only the first time it is refused, so a sample
+// is logged once rather than on every boundary until the worker has seen its
+// acknowledgement.
 func receiveWorkerUsage(ctx context.Context, store WorkerExchangeStore, workerID string, samples []domain.UsageSample) error {
 	receipt, err := store.ReceiveWorkerUsage(ctx, workerID, samples)
 	if err != nil {
 		return err
 	}
 	if len(receipt.Rejected) != 0 {
-		events := make([]string, 0, len(receipt.Rejected))
+		rejected := make([]string, 0, len(receipt.Rejected))
 		for _, rejection := range receipt.Rejected {
-			events = append(events, rejection.EventID)
+			rejected = append(rejected, fmt.Sprintf("event=%q provider=%q thread=%q model=%q reason=%q",
+				rejection.EventID, rejection.ProviderInstanceID, rejection.ThreadID, rejection.Model, rejection.Reason))
 		}
 		slog.Warn("worker usage samples rejected and acknowledged", "worker", workerID,
-			"rejected", len(receipt.Rejected), "stored", receipt.Stored,
-			"events", events, "reason", receipt.Rejected[0].Reason)
+			"rejected", len(receipt.Rejected), "stored", receipt.Stored, "samples", strings.Join(rejected, "; "))
 	}
 	return nil
 }

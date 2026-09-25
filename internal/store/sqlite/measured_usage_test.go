@@ -674,14 +674,26 @@ func TestReceiveWorkerUsageRejectsBadSamplesIndividually(t *testing.T) {
 	foreign.WorkerID = "other-worker"
 	notANumber := sample("nan-cost")
 	notANumber.CostUSD, notANumber.CostReported = math.NaN(), true
-	batch := []domain.UsageSample{sample("good-1"), foreign, notANumber, sample("good-2")}
+	negative := sample("negative")
+	negative.OutputTokens = -1
+	infinite := sample("inf-cost")
+	infinite.CostUSD, infinite.CostReported = math.Inf(1), true
+	anonymous := sample("")
+	batch := []domain.UsageSample{sample("good-1"), foreign, notANumber, negative, infinite, anonymous, sample("good-2")}
 
 	receipt, err := store.ReceiveWorkerUsage(ctx, "worker-a", batch)
 	if err != nil {
 		t.Fatalf("a batch with bad samples failed as a whole: %v", err)
 	}
-	if receipt.Stored != 2 || len(receipt.Rejected) != 2 ||
-		receipt.Rejected[0].EventID != "foreign" || receipt.Rejected[1].EventID != "nan-cost" {
+	var rejected []string
+	for _, rejection := range receipt.Rejected {
+		if rejection.ProviderInstanceID != "provider" || rejection.ThreadID != "thread" ||
+			rejection.Model != "model" || rejection.Reason == "" {
+			t.Fatalf("rejection lost the sample's identity: %#v", rejection)
+		}
+		rejected = append(rejected, rejection.EventID)
+	}
+	if receipt.Stored != 2 || !slices.Equal(rejected, []string{"foreign", "nan-cost", "negative", "inf-cost", ""}) {
 		t.Fatalf("receipt = %#v", receipt)
 	}
 	acks, err := store.WorkerUsageAcknowledgements(ctx, "worker-a")
@@ -689,7 +701,9 @@ func TestReceiveWorkerUsageRejectsBadSamplesIndividually(t *testing.T) {
 		t.Fatal(err)
 	}
 	slices.Sort(acks)
-	if !slices.Equal(acks, []string{"foreign", "good-1", "good-2", "nan-cost"}) {
+	// Every sample with an identity is settled; one without has nothing to
+	// acknowledge.
+	if !slices.Equal(acks, []string{"foreign", "good-1", "good-2", "inf-cost", "nan-cost", "negative"}) {
 		t.Fatalf("acknowledgements = %v; every settled sample must be acknowledged", acks)
 	}
 	var stored int
@@ -700,8 +714,11 @@ func TestReceiveWorkerUsageRejectsBadSamplesIndividually(t *testing.T) {
 		t.Fatalf("stored samples = %d, want only the two valid ones", stored)
 	}
 	// Offered again before the worker saw the acknowledgement, the same bad
-	// samples are not reported a second time.
-	if receipt, err = store.ReceiveWorkerUsage(ctx, "worker-a", batch); err != nil || len(receipt.Rejected) != 0 {
+	// samples are not reported a second time. Only the one without an
+	// identity is, since nothing about it could be recorded; a current worker
+	// never offers it (TestWorkerUsageBatchNeverOffersASampleWithoutAnEventID).
+	if receipt, err = store.ReceiveWorkerUsage(ctx, "worker-a", batch); err != nil ||
+		len(receipt.Rejected) != 1 || receipt.Rejected[0].EventID != "" {
 		t.Fatalf("replayed batch receipt = %#v, %v", receipt, err)
 	}
 
@@ -716,6 +733,34 @@ func TestReceiveWorkerUsageRejectsBadSamplesIndividually(t *testing.T) {
 	}
 	if acks, err := store.WorkerUsageAcknowledgements(ctx, "worker-b"); err != nil || len(acks) != 0 {
 		t.Fatalf("a failed batch left acknowledgements %v, %v", acks, err)
+	}
+}
+
+// The coordinator cannot acknowledge a reading without an event id, so a
+// worker that offered one would offer it on every exchange, where it would
+// take a place in every batch.
+func TestWorkerUsageBatchNeverOffersASampleWithoutAnEventID(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	for index, id := range []string{"", "identified"} {
+		if err := store.RecordUsage(ctx, domain.UsageSample{
+			ProviderInstanceID: "provider", ThreadID: "thread", Model: "model",
+			ObservedAt: now.Add(time.Duration(index) * time.Second), SourceEventID: id,
+			Kind: domain.UsageKindCall, FieldPresence: domain.UsageFieldsAll, InputTokens: 2,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		batch, err := store.WorkerUsageBatch(ctx, nil, 1)
+		if err != nil || len(batch) != 1 || batch[0].SourceEventID != "identified" {
+			t.Fatalf("worker usage batch = %#v, %v", batch, err)
+		}
 	}
 }
 

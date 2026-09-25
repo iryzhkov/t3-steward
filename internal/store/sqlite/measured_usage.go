@@ -578,9 +578,11 @@ func (s *Store) WorkerUsageBatch(ctx context.Context, acknowledged []string, lim
 	// Only this host's own readings are forwarded. On the coordinator's host the
 	// worker shares the coordinator's database, which also holds the samples
 	// other workers delivered; forwarding those would claim them for this
-	// worker.
+	// worker. A reading without an event id is never offered: the coordinator
+	// cannot acknowledge it, so it would be offered on every exchange and take
+	// a place in every batch. It stays in this database for local reports.
 	rows, err := tx.QueryContext(ctx, attributedUsageSelect+
-		` WHERE u.worker_id = '' AND NOT EXISTS (SELECT 1 FROM worker_usage_forwarded AS f
+		` WHERE u.worker_id = '' AND u.event_id <> '' AND NOT EXISTS (SELECT 1 FROM worker_usage_forwarded AS f
 			WHERE f.worker_id = u.worker_id AND f.event_id = u.event_id
 			AND f.revision >= CASE WHEN u.diagnostic_code = 'overflow' THEN u.cumulative_tokens ELSE 0 END)
 		ORDER BY u.observed_at, u.event_id LIMIT ?`, limit)
@@ -602,10 +604,14 @@ func (s *Store) WorkerUsageBatch(ctx context.Context, acknowledged []string, lim
 }
 
 // WorkerUsageRejection names one delivered usage sample the coordinator
-// refused to store, and why.
+// refused to store, and why. It carries enough of the sample to find it in
+// the worker's own database, because the coordinator keeps nothing else of it.
 type WorkerUsageRejection struct {
-	EventID string
-	Reason  string
+	EventID            string
+	ProviderInstanceID string
+	ThreadID           string
+	Model              string
+	Reason             string
 }
 
 // WorkerUsageReceipt reports what one delivered usage batch became. Rejected
@@ -656,10 +662,16 @@ func (s *Store) ReceiveWorkerUsage(ctx context.Context, workerID string, samples
 	var receipt WorkerUsageReceipt
 	for _, sample := range samples {
 		if reason := validateWorkerUsageSample(workerID, sample); reason != "" {
+			rejection := WorkerUsageRejection{
+				EventID: sample.SourceEventID, ProviderInstanceID: sample.ProviderInstanceID,
+				ThreadID: sample.ThreadID, Model: sample.Model, Reason: reason,
+			}
 			if sample.SourceEventID == "" {
 				// There is no identity to acknowledge, so there is nothing to
-				// record; the sample is only reported.
-				receipt.Rejected = append(receipt.Rejected, WorkerUsageRejection{Reason: reason})
+				// record; the sample is only reported. A current worker never
+				// offers one (WorkerUsageBatch), so only an older worker's
+				// would be reported again.
+				receipt.Rejected = append(receipt.Rejected, rejection)
 				continue
 			}
 			var known int
@@ -668,7 +680,7 @@ func (s *Store) ReceiveWorkerUsage(ctx context.Context, workerID string, samples
 				return WorkerUsageReceipt{}, err
 			}
 			if known == 0 {
-				receipt.Rejected = append(receipt.Rejected, WorkerUsageRejection{EventID: sample.SourceEventID, Reason: reason})
+				receipt.Rejected = append(receipt.Rejected, rejection)
 			}
 		} else {
 			sample.WorkerID = workerID
