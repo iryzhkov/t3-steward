@@ -56,7 +56,7 @@ run. plan reports waves, edges and the digest submit will send, and can never
 promise a worker, a route or quota. Multi-task work is a static DAG: each task
 is its own Steward-scheduled T3 session, and a task prompt must not use native
 subagents in place of declared tasks. Help topics: authoring, fresh, readiness,
-dag-semantics, static-versus-dynamic, plan, graph, commits, rerun, notify.
+dag-semantics, static-versus-dynamic, plan, graph, commits, rerun, notify, routes.
 
 check reports one outcome per task and per worker:
   ready             at least one worker can take every task now

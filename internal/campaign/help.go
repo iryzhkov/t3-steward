@@ -225,6 +225,16 @@ the namespace of outputs, so one task cannot declare a commit and an output of
 the same name. revision is resolved in the producing task's own workspace when
 that task finishes, and defaults to HEAD.
 
+revision must be a ref name or a full 40-character commit id: HEAD, a branch,
+a tag or refs/... Revision expressions are refused by validate ("not a safe Git
+ref"): HEAD~1, main^, @{u}, a..b, and anything with ~ ^ : ? * [ or a space. A
+task that hands over several commits commits each to its own branch and
+declares one entry per branch:
+
+      commits:
+        - {name: schema, revision: refs/heads/task-schema}
+        - {name: migration, revision: refs/heads/task-migration}
+
 What the producer promises is that the revision resolves in its workspace when
 it finishes. A task that declares a commit it did not produce fails with
 "declared commit <name>: <cause>", exactly as a missing declared output fails.
@@ -241,10 +251,13 @@ successor's own checkout under the same ref, so
 resolves there and nothing has to search a repository cache. The pin the
 workspace started from is recorded at .t3/base-commit.
 
-Why this exists: a commit pushed only into the shared repository cache survives
-until the next task refreshes that cache with --prune, which deletes any ref the
-origin does not have. The campaign ref is in a store beside the cache that is
-never pruned, and it is kept for the campaign's lifetime.
+Why this exists: a successor must receive the exact commit whether or not it
+was ever pushed anywhere, and the worker's repository cache is no place to keep
+one: each task's preparation refreshes it with --prune, which deletes any ref
+the project repository does not have. The campaign ref is in a store beside the
+cache that is never pruned, and it is kept for the campaign's lifetime. (Since 0.11.0-rc.91 a task's git push origin reaches the project
+repository rather than the cache; a declared commit is still how a successor
+receives a commit, and a push is how the owner does.)
 
 plan cannot print the ref. It contains the workflow run and task IDs, which are
 assigned at ingestion, so a static plan reports the declaration and the revision
@@ -498,6 +511,36 @@ A minimal two-task example:
       verify: ['test -s review.md']
 `
 
+// RoutesHelp documents the routes field. It was undocumented anywhere an
+// author reads, although validate accepts options and the worker passes them
+// to T3's model selection (S4).
+const RoutesHelp = `Provider routes: which instance and model run a task.
+
+  routes:
+    - instance: claudeAgent        # a T3 provider instance
+      model: claude-sonnet-5       # a model that instance offers
+      quota_pool: claude-main      # optional; the pool the instance is bound to
+      options: {effort: medium}    # optional; passed to T3's model selection
+
+routes may be declared for the whole workflow or per task; a task's own list
+replaces the inherited one. The coordinator never invents a route: a task with
+none is refused (no-route). "t3-steward models" lists every instance/model the
+fleet offers, with its pool and quota state.
+
+quota_pool may be left out: it is the pool the fleet catalog binds the instance
+to. Naming a different pool is refused by check (unknown-quota-pool).
+
+options is a map of T3 model-selection options, each sent to T3 as
+{id, value} exactly as written. The option T3 honours for Claude and Codex
+instances is effort (for example low, medium, high); an option T3 does not
+know for that model is ignored by T3, not refused here. Keys and values are
+non-empty strings without surrounding spaces.
+
+Task context (context:) is accepted by the schema for a pinned project-context
+index, but it has not been qualified in the field: do not rely on it. Pass the
+same material as input files (inputs, inputs_from) and name them in the prompt.
+`
+
 // HelpTopic is one named block of help the command tree can attach wherever it
 // wants it.
 type HelpTopic struct {
@@ -510,6 +553,7 @@ func HelpTopics() []HelpTopic {
 	return []HelpTopic{
 		{Name: "authoring", Body: AuthoringHelp},
 		{Name: "fresh", Body: FreshHelp},
+		{Name: "routes", Body: RoutesHelp},
 		{Name: "plan", Body: PlanHelp},
 		{Name: "graph", Body: GraphHelp},
 		{Name: "dag-semantics", Body: DAGSemanticsHelp},

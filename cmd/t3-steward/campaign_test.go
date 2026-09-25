@@ -587,7 +587,9 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 	// list names fresh, and the configuration
 	// paragraph no longer says every project has a repository, which sent
 	// authors of research campaigns looking for one.
-	const wantDigest = "7c892e0f631bf6334a905adb116a6491b59f6443dcb1e5ea2aaf2d6a06d109d7"
+	//
+	// Updated when the routes field got its own topic: the topic list names it.
+	const wantDigest = "1b0a484a0ba9e4b6c69c59af7315280aa7a23260a118c269c74376e1154cc06f"
 	digest := sha256.Sum256([]byte(campaignUsage))
 	if got := hex.EncodeToString(digest[:]); got != wantDigest {
 		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)
@@ -621,7 +623,7 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 		"rerun <run> --from TASK --idempotency-key KEY [--prompt TEXT] [--reason TEXT] [--json]",
 		"creates a second run and never changes the first",
 		"[--notify-thread <current|id>]",
-		"static-versus-dynamic, plan, graph, commits, rerun, notify.",
+		"static-versus-dynamic, plan, graph, commits, rerun, notify, routes.",
 		"commits (a Git commit a successor needs)",
 		"Multi-task work is a static DAG",
 		"is its own Steward-scheduled T3 session",
