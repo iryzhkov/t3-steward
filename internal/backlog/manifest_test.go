@@ -388,7 +388,7 @@ func TestLoadManifestRejectsMissingAndUnsafeFiles(t *testing.T) {
 		rewriteBundleManifest(t, root, strings.Replace(
 			readBundleManifest(t, root), "prompts/inspect.md", "prompts/missing.md", 1))
 		_, err := LoadManifest(root)
-		assertErrorContains(t, err, "no such file")
+		assertErrorContains(t, err, "prompt_file prompts/missing.md does not exist")
 	})
 
 	t.Run("prompt directory", func(t *testing.T) {

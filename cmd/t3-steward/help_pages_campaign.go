@@ -23,7 +23,7 @@ func campaignHelpPages() []helpPage {
 			Flags:    []helpFlag{jsonFlag("the validation summary")},
 			Exits:    []helpExit{{0, "the campaign is valid"}, {1, "no source, more than one source, an unknown option, or an invalid campaign"}},
 			JSONKeys: []string{"schemaVersion", "valid", "source", "name", "tasks", "edges", "roots", "leaves", "inputFiles", "files", "bytes", "digest"},
-			JSONNote: "Read schemaVersion first. No transport class applies: this verb has none.",
+			JSONNote: "Read schemaVersion first. No transport class applies: this verb has none. An invalid campaign under --json prints the error envelope with class \"error\" and this document's schemaVersion on standard output.",
 			Notes:    "Offline: it reads the directory and reaches no coordinator. It can never say whether a worker could run the campaign; that is \"campaign check\".\n\n" + campaignAuthoringNote,
 			Parsers:  []parserSite{{Func: "parseCampaignArgs"}},
 		},
@@ -70,7 +70,7 @@ func campaignHelpPages() []helpPage {
 			Exits:    coordinatorExits(),
 			JSONKeys: []string{"schemaVersion", "key", "digest", "workflowId", "runId", "state", "acceptedAt", "replay"},
 			JSONNote: "Read schemaVersion first. An impossible campaign is refused with class rejected, exit 8. " + jsonErrorNote,
-			Notes:    "Mutating. It runs check first unless --allow-unverified. accepted_waiting is a success: the run exists and stays queued, so end the turn. The calling thread is notified by default; --no-notify submits a campaign nobody is woken for.\n\n" + campaignAuthoringNote,
+			Notes:    "Mutating. It runs check first unless --allow-unverified. accepted_waiting is a success: the run exists and stays queued, so end the turn. The calling thread is notified by default; --no-notify submits a campaign nobody is woken for. The text record opens with run <id>, as \"task run\" does, and its next: lines name \"t3-steward task result <run>\", which collects the outcome. A caller with no thread polls \"campaign show <run>\"; \"task result\" exits 1 until the run is terminal.\n\n" + campaignAuthoringNote,
 			Parsers:  []parserSite{{Func: "parseCampaignArgs"}},
 		},
 		{
@@ -109,9 +109,15 @@ func campaignHelpPages() []helpPage {
 			Parsers:  []parserSite{{Func: "parseCampaignCancelRunArgs"}, {Func: "takeJSONFlag"}},
 		},
 		{Path: "campaign supervision", Body: campaignSupervisionUsage, Parsers: []parserSite{{Func: "parseCampaignSupervisionArgs"}}},
-		campaignAliasPage("campaign list", "the campaign runs the coordinator holds, filtered.",
-			"t3-steward campaign list [--project P] [--progress STATES] [--class CLASS] [--limit N] [--since DURATION] [--json]",
-			"backlog list"),
+		func() helpPage {
+			page := campaignAliasPage("campaign list", "the campaign runs the coordinator holds, filtered.",
+				"t3-steward campaign list [--project P] [--progress STATES] [--class CLASS] [--limit N] [--since DURATION] [--json]",
+				"backlog list")
+			// The window flags are the ones an agent misreads: 0 is not "none".
+			page.Notes += " --limit 0 prints every run; unset, the text form prints the newest 50 and --json every one. " +
+				"--since takes a Go duration or a whole number of days, such as 24h or 7d."
+			return page
+		}(),
 		campaignAliasPage("campaign show", "one campaign run with its tasks, plus its supervision projection.",
 			"t3-steward campaign show <run> [--json]",
 			"backlog show"),

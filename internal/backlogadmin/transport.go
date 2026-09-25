@@ -163,6 +163,11 @@ type TransportErrorEnvelope struct {
 	Class     TransportClass `json:"class"`
 	Operation string         `json:"operation"`
 	Message   string         `json:"message"`
+	// SchemaVersion is the schemaVersion of the document the failed verb
+	// prints on success, when that document has one, so that a reader that
+	// reads schemaVersion first finds it on either outcome. It is omitted for a
+	// verb whose document carries none.
+	SchemaVersion int `json:"schemaVersion,omitempty"`
 }
 
 // NewTransportErrorEnvelope builds the versioned error document for err, or

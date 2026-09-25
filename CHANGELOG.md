@@ -462,6 +462,50 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `wait add --github issue 5` is refused as `unknown --github kind "issue";
+  use run or pr`. The id left behind as a positional argument used to be
+  reported as a command after `--` that was never given.
+- A `--github` target with a `#` that is not `owner/name#<number>`, such as
+  `pr owner/name#abc`, is refused as malformed with the accepted forms instead
+  of being passed to gh as a branch name.
+- `campaign submit` text output starts with `run <id>`, as `task run` does,
+  and its `next:` lines include `t3-steward task result <run>`. The campaign
+  help says that `task result` collects the outcome, and that a caller with no
+  thread polls `campaign show <run>`, because `task result` exits 1 until the
+  run ends. It also lists `supervision` among the help topics and points at
+  `campaign recovery retry`.
+- `backlog usage` labels the run's progress as `backlog show` does
+  (`Run: <id> (progress: ready)`). Both read the same field. The run moves
+  from queued to ready between the two reads, so an unlabelled `(ready)` looked
+  like it contradicted `show`. When more than one model appears in `By model`,
+  a note explains that a model outside the task's route is the provider's own
+  auxiliary call in the same session. For Claude this is Haiku, which the
+  provider reports in the turn's per-model usage. Totals are unchanged.
+- `campaign plan` labels a task's importance, difficulty and max turns as
+  `scheduling`, noting that importance sets dispatch order and difficulty seeds
+  the admission estimate. The old label, `effort`, is also the name of a route
+  option.
+- The `campaign help fresh` UpKeeper example names placeholder workers rather
+  than homelab, which cannot prepare a fresh workspace.
+- `campaign list --since` and `backlog list --since` accept a whole number of
+  days (`1d`, `7d`) as well as a Go duration. The help says that `--limit 0`
+  lists every run.
+- `explain` names a dependency that has not succeeded by its manifest name and
+  gives its progress. `campaign explain <run>` without a task lists the run's
+  tasks and their states instead of failing with a bare format error.
+- `campaign validate --json` carries the validation document's `schemaVersion`
+  in its error envelope. The error message on stderr is kept, as for every
+  other `--json` failure. An unknown manifest field now names the manifest
+  object (`a task`, `the workflow`) instead of the Go type
+  `backlog.ManifestTask`.
+- A missing prompt file is reported as `prompt_file prompts/review.md does not
+  exist (paths are relative to the campaign directory)` instead of the raw
+  `lstat` error.
+- A misspelt top-level command such as `t3-steward campagin` suggests the
+  closest family and is refused before its flags are parsed.
+- `check` and `explain` no longer attach the `project-binding-defaulted`
+  detail to a fresh project, because a fresh project has no credentials or
+  setup profile to bind. Git projects still get the detail.
 - The coordinator releases the unclaimed offer of an overseer activation that
   has closed, spent or been revoked, or whose epoch the run's supervision has
   moved past. Such an offer was re-offered and withheld on every boundary, and

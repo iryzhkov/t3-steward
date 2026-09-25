@@ -312,7 +312,7 @@ func backlogHelpPages() []helpPage {
 				{Name: "--worker", Value: "W", Default: "every worker", Text: "Only work assigned to this worker."},
 				{Name: "--quota-pool", Value: "Q", Default: "every pool", Text: "Only work charged to this quota pool."},
 				{Name: "--limit", Value: "N", Default: "50 for the text form, every run for --json", Text: "Print at most the N newest matching runs; 0 prints every one. The text form says how many it left out."},
-				{Name: "--since", Value: "DURATION", Default: "every run", Text: "Only runs created within this long, such as 24h, of the coordinator's answer."},
+				{Name: "--since", Value: "DURATION", Default: "every run", Text: "Only runs created within this long, such as 24h or 7d, of the coordinator's answer. A Go duration or a whole number of days."},
 				includeSinkFlag,
 			},
 			[]string{"workflows"}, append(backlogSinkSites("list"), parserSite{Func: "parseWorkflowFilters"}, parserSite{Func: "takeListWindowFlags"}),

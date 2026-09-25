@@ -61,8 +61,32 @@ func reportJSONError(args []string, err error) error {
 			Operation: operation, Message: err.Error(),
 		}
 	}
+	var versioned versionedFailure
+	if errors.As(err, &versioned) {
+		envelope.SchemaVersion = versioned.schemaVersion
+	}
 	_ = json.NewEncoder(os.Stdout).Encode(envelope)
 	return err
+}
+
+// versionedFailure marks the failure of a verb whose success document carries
+// a schemaVersion, so that the --json error envelope carries the same one. A
+// reader told to read schemaVersion first then finds it whichever way the
+// command went.
+type versionedFailure struct {
+	error
+	schemaVersion int
+}
+
+func (e versionedFailure) Unwrap() error { return e.error }
+
+// withSchemaVersion marks err as the failure of a verb whose document is at
+// version. A nil error stays nil.
+func withSchemaVersion(err error, version int) error {
+	if err == nil {
+		return nil
+	}
+	return versionedFailure{error: err, schemaVersion: version}
 }
 
 func requestsJSON(args []string) bool {

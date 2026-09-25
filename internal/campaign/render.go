@@ -207,7 +207,7 @@ func writeTask(out *strings.Builder, task Task) {
 	if task.Timing.Declared() {
 		field(out, width, "timing", describeTiming(task.Timing))
 	}
-	field(out, width, "effort", describeEffort(task))
+	field(out, width, "scheduling", describeScheduling(task))
 }
 
 func header(out *strings.Builder, width int, label, value string) {
@@ -361,8 +361,14 @@ func describeTiming(timing Timing) string {
 	return strings.Join(parts, ", ")
 }
 
-func describeEffort(task Task) string {
-	value := fmt.Sprintf("importance %d, difficulty %d, max turns %d", task.Importance, task.Difficulty, task.MaxTurns)
+// describeScheduling names what the coordinator does with each number, so it
+// is not read as a model setting: "effort" is also a route option, and this
+// line used to be labelled with that word. importance orders ready tasks for
+// dispatch and difficulty seeds the admission estimate when no estimated cost
+// is declared.
+func describeScheduling(task Task) string {
+	value := fmt.Sprintf("importance %d (dispatch order), difficulty %d (admission estimate), max turns %d",
+		task.Importance, task.Difficulty, task.MaxTurns)
 	if task.EstimatedCost != nil {
 		value += ", estimated cost " + strconv.FormatFloat(*task.EstimatedCost, 'g', -1, 64)
 	}

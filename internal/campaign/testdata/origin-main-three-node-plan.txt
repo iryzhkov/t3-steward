@@ -20,7 +20,7 @@ wave 0 (2 tasks may start together)
     resources   preset light, min cpu low (inherited)
     routes      inherited, 1 candidate(s)
     preflight   inherited, 1 step(s)
-    effort      importance 3, difficulty 2, max turns 3
+    scheduling  importance 3 (dispatch order), difficulty 2 (admission estimate), max turns 3
   tests [root]
     prompt      prompts/tests.md
     class       surplus (inherited)
@@ -30,7 +30,7 @@ wave 0 (2 tasks may start together)
     resources   preset light, min cpu low (inherited)
     routes      inherited, 1 candidate(s)
     preflight   inherited, 1 step(s)
-    effort      importance 3, difficulty 2, max turns 3
+    scheduling  importance 3 (dispatch order), difficulty 2 (admission estimate), max turns 3
 
 wave 1 (1 task)
   join [leaf]
@@ -44,7 +44,7 @@ wave 1 (1 task)
     resources   preset build, min cpu medium, prefer cpu high (task)
     routes      inherited, 1 candidate(s)
     preflight   inherited, 1 step(s)
-    effort      importance 4, difficulty 3, max turns 8
+    scheduling  importance 4 (dispatch order), difficulty 3 (admission estimate), max turns 8
 
 static plan only: waves say what may start together once dependencies succeed,
 not when a worker, provider route or quota will be free. After submission,

@@ -80,9 +80,9 @@ func TestGitHubWaitTargetAcceptsQualifiedForms(t *testing.T) {
 			t.Fatalf("%v asks gh %q", c.args, got)
 		}
 	}
-	// A pr id in none of those forms is a branch name, which gh pr view has
-	// always accepted, and it reaches gh unchanged.
-	for _, branch := range []string{"feature-branch", "fix/rc96-ax-cli", "owner#45", "owner/repo#next"} {
+	// A pr id in none of those forms and without a # is a branch name, which gh
+	// pr view has always accepted, and it reaches gh unchanged.
+	for _, branch := range []string{"feature-branch", "fix/rc96-ax-cli"} {
 		spec, err := parseLocalWaitSpec([]string{"--github", "pr", branch}, now)
 		if err != nil {
 			t.Fatalf("pr %s: %v", branch, err)
@@ -95,7 +95,6 @@ func TestGitHubWaitTargetAcceptsQualifiedForms(t *testing.T) {
 	// refusals say GitHub Enterprise is not supported.
 	for _, args := range [][]string{
 		{"--github", "run", "feature-branch"},
-		{"--github", "run", "owner#45"},
 		{"--github", "pr", "https://github.example.com/owner/repo/pull/45"},
 	} {
 		_, err := parseLocalWaitSpec(args, now)
@@ -108,14 +107,41 @@ func TestGitHubWaitTargetAcceptsQualifiedForms(t *testing.T) {
 		{"--github", "pr", "https://github.com/owner/repo/actions/runs/987"},
 		{"--github", "pr", "owner/repo#45", "--repo", "other/repo"},
 		{"--github=issue:45"},
+		{"--github", "pr", "owner/repo#abc"},
+		{"--github", "pr", "owner/repo#next"},
+		{"--github", "pr", "owner#45"},
+		{"--github", "run", "owner#45"},
 	} {
 		_, err := parseLocalWaitSpec(args, now)
 		if err == nil {
 			t.Fatalf("%v was accepted", args)
 		}
-		if !strings.Contains(err.Error(), "owner/name#<n>") && !strings.Contains(err.Error(), "--repo names") {
+		if !strings.Contains(err.Error(), "owner/name#<n>") && !strings.Contains(err.Error(), "--repo names") &&
+			!strings.Contains(err.Error(), "unknown --github kind") {
 			t.Fatalf("%v was refused without the accepted forms: %v", args, err)
 		}
+	}
+}
+
+// A target with a # that is not owner/name#<number> is refused as malformed
+// rather than handed to gh as a branch name, which gh answered with "no pull
+// requests found for branch".
+func TestGitHubWaitRefusesMalformedQualifiedTarget(t *testing.T) {
+	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	_, err := parseLocalWaitSpec([]string{"--github", "pr", "owner/name#abc"}, now)
+	if err == nil || !strings.Contains(err.Error(), "malformed") || !strings.Contains(err.Error(), "pr owner/name#<n>") {
+		t.Fatalf("owner/name#abc: %v", err)
+	}
+}
+
+// An unknown --github kind is named as such. Its id is left behind as a
+// positional argument, which used to be reported as a command after -- that
+// was never given.
+func TestGitHubWaitNamesAnUnknownKind(t *testing.T) {
+	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	_, err := parseLocalWaitSpec([]string{"--github", "issue", "5"}, now)
+	if err == nil || err.Error() != `unknown --github kind "issue"; use run or pr` {
+		t.Fatalf("--github issue 5: %v", err)
 	}
 }
 
