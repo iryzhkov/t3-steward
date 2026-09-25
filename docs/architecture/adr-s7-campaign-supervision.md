@@ -137,6 +137,10 @@ same parse. The binary at `origin/main` 94a28a0 answers
 `t3-steward campaign validate docs/examples/campaign/supervised-three-node` with
 `field supervision not found in type backlog.Manifest` and exit 1, and that text
 is recorded as the contract in `internal/backlog/manifest_compat_test.go`.
+Since rc.97 the refusal names the release that refused the field first, and the
+decoder text that follows names the manifest object instead of the Go type: a
+binary of this release would print `field supervision not found in the workflow`.
+The refusal itself is unchanged.
 
 The second is the worker inventory capability `campaign-supervision-v1`,
 enforced at placement, at `campaign check` and again at the worker exchange.

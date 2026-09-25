@@ -64,6 +64,10 @@ func TestBacklogSubmissionStreamsRegularArchiveAndRendersResult(t *testing.T) {
 			t.Fatalf("output %q does not contain %q", output.String(), want)
 		}
 	}
+	// The record leads with the run, as every verb that starts one does.
+	if first, _, _ := strings.Cut(output.String(), "\n"); !strings.HasPrefix(first, "run ") || first == "run " {
+		t.Fatalf("first line = %q", first)
+	}
 }
 
 func TestBacklogSubmissionRejectsUnsafeInputAndArguments(t *testing.T) {

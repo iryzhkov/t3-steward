@@ -467,9 +467,11 @@ All notable changes to this project are documented here. The format follows
   reported as a command after `--` that was never given.
 - A `--github` target with a `#` that is not `owner/name#<number>`, such as
   `pr owner/name#abc`, is refused as malformed with the accepted forms instead
-  of being passed to gh as a branch name.
-- `campaign submit` text output starts with `run <id>`, as `task run` does,
-  and its `next:` lines include `t3-steward task result <run>`. The campaign
+  of being passed to gh as a branch name. `owner/name#<n>` with no kind is read
+  as a pull request.
+- `campaign submit`, `campaign rerun` and `backlog submit` text output starts
+  with `run <id>`, as `task run` does. The `next:` lines of `campaign submit`
+  include `t3-steward task result <run>`. The campaign
   help says that `task result` collects the outcome, and that a caller with no
   thread polls `campaign show <run>`, because `task result` exits 1 until the
   run ends. It also lists `supervision` among the help topics and points at
@@ -478,8 +480,8 @@ All notable changes to this project are documented here. The format follows
   (`Run: <id> (progress: ready)`). Both read the same field. The run moves
   from queued to ready between the two reads, so an unlabelled `(ready)` looked
   like it contradicted `show`. When more than one model appears in `By model`,
-  a note explains that a model outside the task's route is the provider's own
-  auxiliary call in the same session. For Claude this is Haiku, which the
+  a note says that a model the task was not routed to may be the provider's
+  own auxiliary call in the same session. For Claude this is Haiku, which the
   provider reports in the turn's per-model usage. Totals are unchanged.
 - `campaign plan` labels a task's importance, difficulty and max turns as
   `scheduling`, noting that importance sets dispatch order and difficulty seeds
@@ -491,7 +493,8 @@ All notable changes to this project are documented here. The format follows
   days (`1d`, `7d`) as well as a Go duration. The help says that `--limit 0`
   lists every run.
 - `explain` names a dependency that has not succeeded by its manifest name and
-  gives its progress. `campaign explain <run>` without a task lists the run's
+  gives its progress, and a cross-run blocker names its source node.
+  `campaign explain <run>` without a task lists the run's
   tasks and their states instead of failing with a bare format error.
 - `campaign validate --json` carries the validation document's `schemaVersion`
   in its error envelope. The error message on stderr is kept, as for every

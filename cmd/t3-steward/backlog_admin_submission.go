@@ -37,8 +37,9 @@ func (c backlogAdminCLI) runSubmission(ctx context.Context, args []string) error
 	}
 	_, err = fmt.Fprintf(
 		c.stdout,
-		"submission %s: workflow=%s run=%s state=%s replay=%t digest=%s\n",
-		response.Key, response.WorkflowID, response.RunID, response.State, response.Replay, response.Digest,
+		// The first line is the run, as on "task run" and "campaign submit".
+		"run %s\nsubmission %s: workflow=%s run=%s state=%s replay=%t digest=%s\n",
+		response.RunID, response.Key, response.WorkflowID, response.RunID, response.State, response.Replay, response.Digest,
 	)
 	return err
 }

@@ -143,6 +143,30 @@ func TestGitHubWaitNamesAnUnknownKind(t *testing.T) {
 	if err == nil || err.Error() != `unknown --github kind "issue"; use run or pr` {
 		t.Fatalf("--github issue 5: %v", err)
 	}
+	if _, err := parseLocalWaitSpec([]string{"--github=issue:5"}, now); err == nil || !strings.Contains(err.Error(), `unknown --github kind "issue"`) {
+		t.Fatalf("--github=issue:5: %v", err)
+	}
+	// A value with a / or # and no kind separator does not name a kind: its
+	// first segment is a repository owner, and the refusal lists the forms.
+	for _, value := range []string{"iryzhkov/t3-steward#abc", "iryzhkov/t3-steward"} {
+		_, err := parseLocalWaitSpec([]string{"--github", value}, now)
+		if err == nil || strings.Contains(err.Error(), "unknown --github kind") || !strings.Contains(err.Error(), "owner/name#<n>") {
+			t.Fatalf("--github %s: %v", value, err)
+		}
+	}
+}
+
+// owner/name#<n> with no kind is the form gh and GitHub print for a pull
+// request, and is read as one.
+func TestGitHubWaitReadsAQualifiedNumberWithoutAKindAsAPullRequest(t *testing.T) {
+	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	spec, err := parseLocalWaitSpec([]string{"--github", "iryzhkov/t3-steward#45"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.GitHub.Kind != "pr" || spec.GitHub.ID != "45" || spec.GitHub.Repo != "iryzhkov/t3-steward" {
+		t.Fatalf("parsed as %+v", spec.GitHub)
+	}
 }
 
 // --task current --github parks the attempt on a github record: gh is read once
