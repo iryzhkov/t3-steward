@@ -5,44 +5,43 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
-// S2: the admission record of a pool is rewritten only when its admission
-// changes, so its observation time froze at the last transition (twelve days
-// old on the fleet coordinator) while workers reported the pool's buckets on
-// every exchange, and check called every campaign snapshot-stale. Freshness
-// is judged by the newest reading, recorded or reported.
-func TestQuotaFreshnessUsesTheWorkersNewestReading(t *testing.T) {
+// S2: the fleet coordinator runs with quota_checks: false. It then neither
+// maintains nor enforces admission, and the view drops the retained admission
+// records, so a check fell back to the pool record with no observation time at
+// all and called every campaign snapshot-stale. A pool whose checks are
+// disabled contributes no quota reasons; an enforced pool is judged as before.
+func TestQuotaReasonsSkipAPoolWhoseChecksAreDisabled(t *testing.T) {
 	task := domain.Task{ID: "task-1", Routes: []domain.ProviderRoute{{ProviderInstanceID: "t3-primary", Model: "opus", QuotaPoolID: "pool-1"}}}
-	staleRecord := func(v *view) {
-		v.runtime.MaxQuotaObservationAge = time.Hour
-		v.admissions = []domain.QuotaAdmissionRecord{{
-			QuotaPoolID: "pool-1", Revision: 1, Admission: domain.AdmissionOpen,
-			ObservedAt: viabilityNow.Add(-48 * time.Hour),
-		}}
+	reasons := func(v view) []ViabilityReason {
+		return v.quotaReasons(task, v.viabilityWorkers()[0])
 	}
-	stale := func(v view) bool {
-		worker := v.viabilityWorkers()[0]
-		for _, reason := range v.quotaReasons(task, worker) {
-			if reason.Code == ReasonSnapshotStale {
+	has := func(list []ViabilityReason, code string) bool {
+		for _, reason := range list {
+			if reason.Code == code {
 				return true
 			}
 		}
 		return false
 	}
 
-	if !stale(viabilityView(t, staleRecord)) {
-		t.Fatal("a pool nobody has observed for two days was not reported stale")
-	}
-	reported := viabilityView(t, func(v *view) {
-		staleRecord(v)
-		v.workers[0].QuotaObservations = []domain.WorkerQuotaObservation{{
-			Key:   domain.BucketKey{ProviderInstanceID: "t3-primary", AccountID: "account", LimitID: "seven_day"},
-			Phase: domain.PhaseNormal, UsedPercent: 21, Healthy: true,
-			ObservedAt: viabilityNow.Add(-time.Minute),
+	enforced := viabilityView(t, func(v *view) {
+		v.runtime.MaxQuotaObservationAge = time.Hour
+		v.admissions = []domain.QuotaAdmissionRecord{{
+			QuotaPoolID: "pool-1", Revision: 1, Admission: domain.AdmissionOpen,
+			ObservedAt: viabilityNow.Add(-48 * time.Hour),
 		}}
 	})
-	if stale(reported) {
-		t.Fatal("a pool a worker reported a minute ago was called stale because its admission record was old")
+	if !has(reasons(enforced), ReasonSnapshotStale) {
+		t.Fatal("an enforced pool nobody has observed for two days was not reported stale")
+	}
+
+	disabled := viabilityViewWith(t, func(records *sqlite.CoordinatorRecords) {
+		records.QuotaPools[0].ChecksDisabled = true
+	}, func(v *view) { v.runtime.MaxQuotaObservationAge = time.Hour })
+	if got := reasons(disabled); len(got) != 0 {
+		t.Fatalf("a pool whose quota checks are disabled produced quota reasons: %+v", got)
 	}
 }

@@ -131,6 +131,25 @@ func TestModelsShowsQuotaReadingAgeAndStaleness(t *testing.T) {
 	}
 }
 
+// A fresh five-hour reading must not hide a seven-day reading taken before its
+// own window reset: the pool is judged bucket by bucket.
+func TestModelsJudgesStalenessPerBucket(t *testing.T) {
+	observed := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	reset := observed.Add(time.Minute)
+	now := observed.Add(30 * time.Minute)
+	seven := domain.BucketKey{ProviderInstanceID: "t3-primary", LimitID: "claude", Window: "seven_day"}
+	five := domain.BucketKey{ProviderInstanceID: "t3-primary", LimitID: "claude", Window: "five_hour"}
+	pool := domain.QuotaPool{ID: "pool-claude", ProviderInstanceIDs: []string{"t3-primary"}, Buckets: []domain.BucketKey{seven, five}}
+	states := []domain.BucketState{
+		{Key: seven, UsedPercent: 98, ObservedAt: observed, ResetsAt: &reset},
+		{Key: five, UsedPercent: 3, ObservedAt: now.Add(-time.Minute)},
+	}
+	oldest, stale := modelsPoolFreshness(pool, states, now)
+	if !stale || oldest == nil || !oldest.Equal(observed) {
+		t.Fatalf("stale=%v oldest=%v, want stale from the pre-reset seven-day reading", stale, oldest)
+	}
+}
+
 func modelsInstanceByName(t *testing.T, document modelsDocument, name string) modelsInstance {
 	t.Helper()
 	for _, instance := range document.Instances {

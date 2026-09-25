@@ -147,11 +147,12 @@ type modelsInstance struct {
 	// the pool has reached this coordinator.
 	Phase   string   `json:"phase,omitempty"`
 	Percent *float64 `json:"percent,omitempty"`
-	// ObservedAt is when the newest of those readings was taken and ResetsAt
-	// the earliest reset they report. Stale marks a reading older than
-	// modelsStaleAfter, or one taken before a reset that has since passed: its
-	// phase and percent describe a window that may be over (S2: a pool read
-	// 98% draining for hours after its seven-day window had reset).
+	// ObservedAt is when the oldest of those readings was taken and ResetsAt
+	// the earliest reset they report. Stale marks a pool one of whose buckets
+	// was read more than modelsStaleAfter ago, or before its own reset, which
+	// has since passed: its phase and percent may describe a window that is
+	// over (S2: a pool read 98% draining for hours after its seven-day window
+	// had reset).
 	ObservedAt *time.Time `json:"observedAt,omitempty"`
 	ResetsAt   *time.Time `json:"resetsAt,omitempty"`
 	Stale      bool       `json:"stale,omitempty"`
@@ -356,12 +357,8 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 				percent := observation.Percent
 				item.Phase = string(observation.Phase)
 				item.Percent = &percent
-				observedAt := observation.ObservedAt
-				item.ObservedAt = &observedAt
 				item.ResetsAt = observation.ResetsAt
-				now := modelsNow()
-				item.Stale = now.Sub(observedAt) > modelsStaleAfter ||
-					observation.ResetsAt != nil && observedAt.Before(*observation.ResetsAt) && !now.Before(*observation.ResetsAt)
+				item.ObservedAt, item.Stale = modelsPoolFreshness(quota.Pool, states, modelsNow())
 			}
 		}
 	}
@@ -670,6 +667,44 @@ func modelsReasonText(reason string) string {
 	default:
 		return reason
 	}
+}
+
+// modelsPoolFreshness judges each bucket of the pool on its own: a bucket is
+// stale when its reading is older than modelsStaleAfter or was taken before
+// its own reset, which has since passed. The pool is stale when any of its
+// buckets is, and its age is its oldest bucket's, because that is the reading
+// its phase and percent may still rest on. The buckets are the ones
+// ObserveQuotaPool counts: the pool's named buckets, or its instances' buckets
+// when it names none.
+func modelsPoolFreshness(pool domain.QuotaPool, states []domain.BucketState, now time.Time) (*time.Time, bool) {
+	named := make(map[domain.BucketKey]bool, len(pool.Buckets))
+	for _, key := range pool.Buckets {
+		named[key] = true
+	}
+	instances := make(map[string]bool, len(pool.ProviderInstanceIDs))
+	for _, instance := range pool.ProviderInstanceIDs {
+		instances[instance] = true
+	}
+	var oldest *time.Time
+	stale := false
+	for _, state := range states {
+		belongs := named[state.Key]
+		if len(named) == 0 {
+			belongs = instances[state.Key.ProviderInstanceID] && (pool.AccountID == "" || pool.AccountID == state.Key.AccountID)
+		}
+		if !belongs {
+			continue
+		}
+		observed := state.ObservedAt
+		if oldest == nil || observed.Before(*oldest) {
+			oldest = &observed
+		}
+		if now.Sub(observed) > modelsStaleAfter ||
+			state.ResetsAt != nil && observed.Before(*state.ResetsAt) && !now.Before(*state.ResetsAt) {
+			stale = true
+		}
+	}
+	return oldest, stale
 }
 
 // modelsAge prints a reading's age at the precision a person reads it at.
