@@ -25,15 +25,8 @@ var projectCleanupHome = os.UserHomeDir
 // adds for a host that moved its storage. A configuration that yields no usable
 // root disables the sweep rather than widening it.
 func newProjectSweeper(cfg config.Config, store *sqlite.Store, client *t3api.Client, logger *slog.Logger) *t3projects.Sweeper {
-	home, err := projectCleanupHome()
-	if err != nil {
-		// One of two sources of roots is missing, which is not fatal: a
-		// configuration that names the workspaces root still sweeps.
-		logger.Warn("project cleanup cannot derive the worker storage root from the home directory", "err", err)
-	}
-	roots := append([]string{cfg.BacklogV2.Storage.Workspaces, config.WorkerWorkspacesRoot(home)}, cfg.ProjectCleanup.Roots...)
 	options := t3projects.Options{
-		OwnedRoots: t3projects.OwnedRoots(roots...),
+		OwnedRoots: managedProjectRoots(cfg, logger),
 		After:      cfg.ProjectCleanup.After.D(),
 		Every:      cfg.ProjectCleanup.Every.D(),
 		MaxPerPass: cfg.ProjectCleanup.MaxPerPass,
@@ -55,4 +48,20 @@ func newProjectSweeper(cfg config.Config, store *sqlite.Store, client *t3api.Cli
 		Store:   store,
 		Logger:  logger,
 	}
+}
+
+// managedProjectRoots are the directories this host provisions steward
+// projects under: the worker workspaces root the configuration names, the one
+// a worker running from the private bootstrap derives from the home directory,
+// and project_cleanup.roots. The project cleanup and the archive's shorter
+// retention for steward threads both decide ownership from them.
+func managedProjectRoots(cfg config.Config, logger *slog.Logger) []string {
+	home, err := projectCleanupHome()
+	if err != nil {
+		// One of two sources of roots is missing, which is not fatal: a
+		// configuration that names the workspaces root still has one.
+		logger.Warn("cannot derive the worker storage root from the home directory", "err", err)
+	}
+	roots := append([]string{cfg.BacklogV2.Storage.Workspaces, config.WorkerWorkspacesRoot(home)}, cfg.ProjectCleanup.Roots...)
+	return t3projects.OwnedRoots(roots...)
 }

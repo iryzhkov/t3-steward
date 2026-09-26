@@ -620,6 +620,19 @@ func (c *Control) DeleteProject(ctx context.Context, projectID string) error {
 }
 
 // ProjectTitle resolves a project id to its title, or returns the id.
+// ProjectRoots maps each project to its workspace root.
+func (c *Control) ProjectRoots(ctx context.Context) (map[string]string, error) {
+	projects, err := c.ListProjects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(projects))
+	for _, p := range projects {
+		out[p.ID] = p.WorkspaceRoot
+	}
+	return out, nil
+}
+
 func (c *Control) ProjectTitle(ctx context.Context, projectID string) string {
 	projects, err := c.ListProjects(ctx)
 	if err != nil {

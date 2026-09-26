@@ -218,6 +218,10 @@ archive:
   # are left alone. "t3-steward archive candidates" shows what would go.
   enabled: false
   after: 48h
+  # A thread in a project the steward created (a finished backlog task or
+  # supervision activation) goes after this instead, checked every hour, so
+  # project_cleanup can remove its emptied project soon after. 0 disables.
+  managed_after: 6h
   destination: ""               # a directory, or host:/path over SSH
   at: "03:30"                   # local time of the daily run
   delete_from_t3: true
@@ -235,7 +239,7 @@ project_cleanup:
   # a project someone opened is never one; threads belong to archive: and
   # workspaces to the worker, and no directory is ever removed here.
   enabled: true
-  after: 24h
+  after: 1h
   every: 1h
   max_per_pass: 20
   dry_run: false                # log the candidates, delete nothing
