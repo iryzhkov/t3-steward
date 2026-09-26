@@ -451,6 +451,13 @@ type Archive struct {
 	Enabled bool `yaml:"enabled"`
 	// After is how long a thread must have gone without an update.
 	After Duration `yaml:"after"`
+	// ManagedAfter replaces After for a thread in a project the steward created
+	// (one under the worker workspaces root), and such threads are checked
+	// every hour instead of once a day. A steward project can only be removed
+	// by project_cleanup once it is empty, so this is what decides how long a
+	// finished task keeps its project in the T3 sidebar. Zero keeps them on
+	// After and the daily run.
+	ManagedAfter Duration `yaml:"managed_after"`
 	// Destination is a directory, or host:/path reached over SSH.
 	Destination string `yaml:"destination"`
 	// At is the local time of day the daily run starts.
@@ -825,8 +832,9 @@ func Default() Config {
 	// finished thread from T3 two days after its last update, so a day of an
 	// empty record is already well past the work it held. The pass is hourly
 	// because nothing about it is urgent and every pass reads the project list.
-	c.ProjectCleanup = ProjectCleanup{Enabled: true, After: Duration(24 * time.Hour), Every: Duration(time.Hour), MaxPerPass: 20}
+	c.ProjectCleanup = ProjectCleanup{Enabled: true, After: Duration(time.Hour), Every: Duration(time.Hour), MaxPerPass: 20}
 	c.Archive.After = Duration(48 * time.Hour)
+	c.Archive.ManagedAfter = Duration(6 * time.Hour)
 	c.Archive.At = "03:30"
 	c.Archive.DeleteFromT3 = true
 	c.Archive.RemoveLocal = true
@@ -1142,6 +1150,9 @@ func (c *Config) Validate() error {
 	if c.Archive.Enabled {
 		if strings.TrimSpace(c.Archive.Destination) == "" {
 			return errors.New("archive: destination is required when enabled")
+		}
+		if c.Archive.ManagedAfter.D() != 0 && c.Archive.ManagedAfter.D() < time.Hour {
+			return errors.New("archive: managed_after must be 0 or at least 1h")
 		}
 		if c.Archive.After.D() < time.Hour {
 			return errors.New("archive: after must be at least 1h")

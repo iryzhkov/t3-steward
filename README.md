@@ -886,6 +886,14 @@ that fails leaves it hidden exactly as it was. Hiding a session in the UI is rev
 it stops being reversible in T3, and `t3-steward archive restore <thread-id>`
 is how it comes back.
 
+A thread in a project the steward created (a finished backlog task or
+supervision activation, identified by the same workspace-root rule as
+`project_cleanup` below) takes `archive.managed_after` (6 hours) instead of
+`archive.after`, and those threads are also checked every hour rather than only
+at the daily run. Its project can only be removed once it is empty, so this is
+what decides how long a finished task keeps a `Steward: ...` project in the T3
+sidebar. `managed_after: 0` puts them back on `after` and the daily run.
+
 The export is JSON to read or hand to an agent; T3 has no import.
 
 ## Cleaning up managed T3 projects
@@ -898,7 +906,7 @@ identity a renamed project or a moved coordinator left behind.
 
 With `project_cleanup` enabled (the default) the steward removes such a project
 when it holds no thread at all and its own record has been untouched for
-`project_cleanup.after` (24 hours), at most `max_per_pass` projects per pass and
+`project_cleanup.after` (1 hour), at most `max_per_pass` projects per pass and
 at most one pass per `every`. Passes are logged, and each removal is one
 `project-cleanup` row in `t3-steward status`.
 
@@ -906,7 +914,9 @@ at most one pass per `every`. Passes are logged, and each removal is one
 the shell snapshot, because the shell leaves archived threads out and T3 counts
 one when it decides whether a project may be deleted. A project whose threads
 are merely archived in T3 is therefore never swept; it becomes a candidate once
-`archive` has bundled its threads to cold storage and deleted them from T3.
+`archive` has bundled its threads to cold storage and deleted them from T3,
+which for a steward project happens `archive.managed_after` after its last
+thread settled.
 
 The ownership rule is the whole of the safety: a project is a candidate only
 when its workspace root is *inside* this host's worker workspaces root (the one

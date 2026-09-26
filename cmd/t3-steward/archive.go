@@ -31,6 +31,8 @@ Commands:
 func newArchiver(cfg config.Config, store *sqlite.Store, control *t3control.Control, logger *slog.Logger, dataDir string) *archive.Archiver {
 	return archive.New(archive.Options{
 		After:           cfg.Archive.After.D(),
+		ManagedAfter:    cfg.Archive.ManagedAfter.D(),
+		ManagedRoots:    managedProjectRoots(cfg, logger),
 		Destination:     cfg.Archive.Destination,
 		HostName:        localHostName(cfg),
 		DataDir:         dataDir,

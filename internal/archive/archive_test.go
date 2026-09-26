@@ -36,6 +36,8 @@ func (m *memStore) SetKV(_ context.Context, k, v string) error { m.kv[k] = v; re
 type memControl struct {
 	threads []domain.Thread
 	deleted []string
+	// roots maps project IDs to workspace roots.
+	roots map[string]string
 	// archived is the state T3 holds: an archived thread cannot be exported.
 	archived   map[string]bool
 	unarchived []string
@@ -70,6 +72,56 @@ func (c *memControl) DeleteThread(_ context.Context, id string) error {
 	return nil
 }
 func (c *memControl) ProjectTitle(context.Context, string) string { return "proj" }
+func (c *memControl) ProjectRoots(context.Context) (map[string]string, error) {
+	return c.roots, nil
+}
+
+// A finished thread in a project the steward created leaves T3 after the
+// short managed retention and on the hourly pass, not after the full retention
+// at the daily run.
+//
+// The project it ran in can only be removed once it is empty, so the full
+// retention plus the wait for the next daily run kept every steward project in
+// the T3 sidebar for days after its task ended.
+func TestManagedThreadsLeaveOnTheHourlyPass(t *testing.T) {
+	now := time.Date(2030, 1, 10, 14, 0, 0, 0, time.Local)
+	settled := now.Add(-7 * time.Hour)
+	fresh := now.Add(-2 * time.Hour)
+	store := &memStore{recs: map[string]Record{}, busy: map[string]string{},
+		// The daily run already happened today, so only the hourly pass is due.
+		kv: map[string]string{"archive.last_run": now.Add(-time.Hour).UTC().Format(time.RFC3339)}}
+	control := &memControl{archived: map[string]bool{}, roots: map[string]string{
+		"steward": "/state/worker/workspaces/w/.projects/abc",
+		"person":  "/home/someone/code",
+	}, threads: []domain.Thread{
+		{ID: "task-done", ProjectID: "steward", UpdatedAt: settled, SettledAt: &settled},
+		{ID: "task-recent", ProjectID: "steward", UpdatedAt: fresh, SettledAt: &fresh},
+		{ID: "chat", ProjectID: "person", UpdatedAt: settled, SettledAt: &settled},
+	}}
+	a := New(Options{After: 48 * time.Hour, ManagedAfter: 6 * time.Hour, ManagedRoots: []string{"/state/worker/workspaces"},
+		At: "03:30", Destination: t.TempDir(), HostName: "h", DataDir: t.TempDir(), DeleteFromT3: true}, store, control)
+	a.SetClock(func() time.Time { return now })
+
+	a.Tick(context.Background(), nil, nil)
+	if len(control.deleted) != 1 || control.deleted[0] != "task-done" {
+		t.Fatalf("deleted = %v, want only the steward thread past the managed retention", control.deleted)
+	}
+	// The pass is hourly: a second tick in the same hour does nothing.
+	settledAgain := now.Add(-8 * time.Hour)
+	control.threads = append(control.threads, domain.Thread{ID: "task-late", ProjectID: "steward", UpdatedAt: settledAgain, SettledAt: &settledAgain})
+	a.Tick(context.Background(), nil, nil)
+	if len(control.deleted) != 1 {
+		t.Fatalf("the hourly pass ran twice in one hour: %v", control.deleted)
+	}
+
+	// Without managed roots every thread keeps the full retention.
+	plain := New(Options{After: 48 * time.Hour, ManagedAfter: 6 * time.Hour, Destination: t.TempDir(), DataDir: t.TempDir()}, store, control)
+	plain.SetClock(func() time.Time { return now })
+	cands, _, err := plain.Candidates(context.Background())
+	if err != nil || len(cands) != 0 {
+		t.Fatalf("candidates without managed roots = %+v err=%v", cands, err)
+	}
+}
 
 // A thread archived in T3 is what cold storage is for, and it reaches this pass
 // only because the pass reads the full thread index.

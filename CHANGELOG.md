@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Finished steward projects no longer stay in the T3 sidebar for days. A
+  project can only be removed once it holds no thread, and a finished task's
+  thread waited the full `archive.after` retention (48 hours) and then the next
+  03:30 daily run before leaving T3, after which the project sweep still waited
+  24 hours from the project's own creation. A new `archive.managed_after`
+  (default 6h, `0` disables) applies to threads in projects under the worker
+  workspaces root, and those threads are checked every hour. The default
+  `project_cleanup.after` drops from 24h to 1h: the worker provisions a project
+  immediately before opening its thread in it and recreates a removed one, so
+  the longer wait protected nothing. A finished task now leaves the sidebar
+  roughly seven to eight hours after its last thread settled.
+
 ### Added
 
 - Owner-channel notifications. A top-level `notifications` section sends

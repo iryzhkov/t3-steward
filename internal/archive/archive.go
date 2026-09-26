@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/t3projects"
 )
 
 // Record is what the store keeps about one archived thread.
@@ -70,12 +71,34 @@ type Control interface {
 	ExportThread(ctx context.Context, threadID string) ([]byte, error)
 	DeleteThread(ctx context.Context, threadID string) error
 	ProjectTitle(ctx context.Context, projectID string) string
+	// ProjectRoots maps every project T3 holds to its workspace root, which is
+	// how a thread in a project the steward created is told apart.
+	ProjectRoots(ctx context.Context) (map[string]string, error)
 }
+
+// managedEvery is the cadence of the pass that moves finished steward threads
+// out of T3 between daily runs.
+const managedEvery = time.Hour
+
+// managedLastRunKey records when that pass last ran, so a restart does not
+// repeat it.
+const managedLastRunKey = "archive.managed_last_run"
 
 // Options configure the archiver.
 type Options struct {
 	// After is how long a thread must have been idle.
 	After time.Duration
+	// ManagedAfter replaces After for a thread in a project the steward
+	// created, one whose workspace root is inside ManagedRoots. Such a thread
+	// is a finished task nobody opens again from the sidebar, and its project
+	// can only be removed once it is empty, so waiting the full retention and
+	// then the daily run kept every steward project in T3 for days after its
+	// work ended. These threads are also checked every hour rather than once a
+	// day. Zero, or no ManagedRoots, keeps them on After.
+	ManagedAfter time.Duration
+	// ManagedRoots are the directories this host provisions steward projects
+	// under, the same roots the project cleanup owns.
+	ManagedRoots []string
 	// Destination is a directory, or host:path for SSH.
 	Destination string
 	// HostName labels this machine's bundles.
@@ -133,21 +156,77 @@ func New(opts Options, store Store, control Control) *Archiver {
 // SetClock replaces the clock, for tests.
 func (a *Archiver) SetClock(now func() time.Time) { a.now = now }
 
-// Tick runs the daily archive when its time has come.
+// Tick runs the daily archive when its time has come, and otherwise the
+// hourly pass over the steward's own threads.
 func (a *Archiver) Tick(ctx context.Context, _ []domain.Thread, _ []domain.BucketState) {
 	now := a.now()
 	due, err := a.dueToday(ctx, now)
-	if err != nil || !due {
+	if err == nil && due {
+		a.log.Info("daily archive starting")
+		n, err := a.Run(ctx, false)
+		if err != nil {
+			a.log.Error("archive run failed", "err", err)
+			return
+		}
+		stamp := now.UTC().Format(time.RFC3339)
+		_ = a.store.SetKV(ctx, "archive.last_run", stamp)
+		// The daily run covered the managed threads too.
+		_ = a.store.SetKV(ctx, managedLastRunKey, stamp)
+		a.log.Info("daily archive finished", "archived", n)
 		return
 	}
-	a.log.Info("daily archive starting")
-	n, err := a.Run(ctx, false)
+	if !a.managed() || !a.managedDue(ctx, now) {
+		return
+	}
+	n, err := a.run(ctx, false, true)
+	// Recorded whatever the outcome, so an unreachable T3 or destination is
+	// retried on the next hour rather than on every poll.
+	_ = a.store.SetKV(ctx, managedLastRunKey, now.UTC().Format(time.RFC3339))
 	if err != nil {
-		a.log.Error("archive run failed", "err", err)
+		a.log.Error("managed archive run failed", "err", err)
 		return
 	}
-	_ = a.store.SetKV(ctx, "archive.last_run", now.UTC().Format(time.RFC3339))
-	a.log.Info("daily archive finished", "archived", n)
+	if n != 0 {
+		a.log.Info("managed archive finished", "archived", n)
+	}
+}
+
+func (a *Archiver) managed() bool {
+	return a.opts.ManagedAfter > 0 && len(a.opts.ManagedRoots) != 0
+}
+
+func (a *Archiver) managedDue(ctx context.Context, now time.Time) bool {
+	last, ok, err := a.store.GetKV(ctx, managedLastRunKey)
+	if err != nil {
+		return false
+	}
+	if !ok {
+		return true
+	}
+	at, err := time.Parse(time.RFC3339, last)
+	return err != nil || now.Sub(at) >= managedEvery
+}
+
+// managedProjects is the set of projects whose threads take ManagedAfter.
+//
+// A failure to read the projects is not fatal to a pass: every thread then
+// keeps the longer retention, which is the conservative reading.
+func (a *Archiver) managedProjects(ctx context.Context) map[string]bool {
+	if !a.managed() {
+		return nil
+	}
+	roots, err := a.control.ProjectRoots(ctx)
+	if err != nil {
+		a.log.Warn("archive cannot read the project roots; steward threads keep the full retention", "err", err)
+		return nil
+	}
+	out := map[string]bool{}
+	for id, root := range roots {
+		if t3projects.Owned(root, a.opts.ManagedRoots) {
+			out[id] = true
+		}
+	}
+	return out
 }
 
 func (a *Archiver) dueToday(ctx context.Context, now time.Time) (bool, error) {
@@ -174,6 +253,12 @@ func (a *Archiver) dueToday(ctx context.Context, now time.Time) (bool, error) {
 
 // Candidates lists threads eligible for archiving now.
 func (a *Archiver) Candidates(ctx context.Context) ([]domain.Thread, map[string]string, error) {
+	return a.candidates(ctx, false)
+}
+
+// candidates lists the threads eligible now; managedOnly leaves out every
+// thread outside a steward project, for the hourly pass.
+func (a *Archiver) candidates(ctx context.Context, managedOnly bool) ([]domain.Thread, map[string]string, error) {
 	threads, err := a.control.ListAllThreads(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -192,16 +277,23 @@ func (a *Archiver) Candidates(ctx context.Context) ([]domain.Thread, map[string]
 			archived[r.ThreadID] = true
 		}
 	}
+	managed := a.managedProjects(ctx)
 	now := a.now()
 	skipped := map[string]string{}
 	var out []domain.Thread
 	for _, t := range threads {
+		retention := a.opts.After
+		if managed[t.ProjectID] {
+			retention = a.opts.ManagedAfter
+		}
 		switch {
 		case archived[t.ID]:
 			continue
+		case managedOnly && !managed[t.ProjectID]:
+			continue
 		case t.Running:
 			skipped[t.ID] = "running"
-		case now.Sub(IdleSince(t)) < a.opts.After:
+		case now.Sub(IdleSince(t)) < retention:
 			skipped[t.ID] = fmt.Sprintf("idle for %s", now.Sub(IdleSince(t)).Round(time.Minute))
 		case t.HasPendingApprovals || t.HasPendingUserInput:
 			skipped[t.ID] = "waiting for user input"
@@ -248,7 +340,11 @@ func IdleSince(t domain.Thread) time.Time {
 
 // Run archives every candidate (up to MaxPerRun) and returns how many.
 func (a *Archiver) Run(ctx context.Context, dryRun bool) (int, error) {
-	candidates, _, err := a.Candidates(ctx)
+	return a.run(ctx, dryRun, false)
+}
+
+func (a *Archiver) run(ctx context.Context, dryRun, managedOnly bool) (int, error) {
+	candidates, _, err := a.candidates(ctx, managedOnly)
 	if err != nil {
 		return 0, err
 	}
