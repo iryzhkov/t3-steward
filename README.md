@@ -953,6 +953,7 @@ t3-steward task run [--project NAME] [--ref REF | --fresh] [--model [INSTANCE/]M
                     (-- PROMPT | --prompt-file FILE | --fan-out GLOB | stdin)
 t3-steward task result RUN[/TASK] [--output DIR] [--json]
 t3-steward models [--project NAME] [--instance ID] [--available] [--json]
+t3-steward triage [--stale-days N] [--json]
 t3-steward backlog projects [--project NAME] [--verbose] [--json]
 t3-steward backlog list [--all]|new ID|check FILE|show ID|retry ID|cancel ID|receive ID|path
 t3-steward campaign cancel RUN[/TASK] --reason TEXT [--command-id ID] [--json]
@@ -969,6 +970,17 @@ t3-steward install-service [--force] [--enable] [--credential-file REF=PATH ...]
 t3-steward uninstall-service
 t3-steward version
 ```
+
+`triage` lists everything on the fleet that is waiting for an operator, most
+urgent first, each item with commands that can be run as printed (ids,
+revisions and idempotency keys filled in): workers that are down or
+disconnected, overseer activations that ended without a decision, escalated
+review incidents and gates, active holds, unanswered attention requests, wakes
+that are overdue or cannot be delivered, closed quota pools, quarantined intake
+and runs whose record has not changed for `--stale-days` days (default 7). It
+is read-only. `check` fails for a worker the coordinator has not reached for
+`notifications.worker_down_after` (default 10m); see
+[Backlog-v2 operations](docs/backlog-v2-operations.md#worker-outages).
 
 `backlog projects` summarises: one row per project with the count of its
 eligible workers and of the routes they advertise, followed by the totals

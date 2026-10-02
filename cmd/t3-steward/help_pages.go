@@ -336,6 +336,12 @@ func familyHelpPages() []helpPage {
 			Parsers: []parserSite{{Func: "parseModelsArgs"}, {Func: "takeJSONFlag"}, familyDispatchSite("models")},
 		},
 		{
+			// triage is the same shape as models: one page, no children, its own
+			// arguments.
+			Path: "triage", Body: triageUsage,
+			Parsers: []parserSite{{Func: "parseTriageArgs"}, {Func: "takeJSONFlag"}, familyDispatchSite("triage")},
+		},
+		{
 			Path:     "ui-archive",
 			Purpose:  "read-only: the T3 UI's archive candidates and their classification, as JSON.",
 			Usage:    []string{"t3-steward ui-archive candidates [--config PATH]"},

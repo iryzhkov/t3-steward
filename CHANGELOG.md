@@ -35,6 +35,18 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `t3-steward triage`: one read-only list of everything waiting for an
+  operator, most urgent first, each item with commands that can be run as
+  printed (ids, revisions and idempotency keys filled in). It covers workers
+  down or disconnected, overseer activations that ended without a decision
+  (`supervision reassess`), escalated incidents (one `resolve` per permitted
+  outcome) and gates (`decide --accept` and `--reject`), active holds (a hold
+  left on a settled run is a note, since it cannot be released), unanswered
+  attention requests, overdue and undeliverable wakes, closed quota pools,
+  quarantined intake (one summary item) and runs unchanged for
+  `--stale-days` days (default 7). `--json` prints the versioned
+  `t3-steward.triage/v1` document; a source that cannot be read is named and
+  sets the exit status to its transport class.
 - Worker-down alerting. An enrolled worker the coordinator has not reached for
   longer than `notifications.worker_down_after` (default 10m, at least 1m,
   counted from the coordinator's own start at the earliest) now fails
