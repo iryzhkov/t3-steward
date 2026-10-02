@@ -153,7 +153,6 @@ func TestTriageListsWhatNeedsAnOperatorWithReadyCommands(t *testing.T) {
 		"t3-steward campaign supervision resolve run-sup --incident inc-1 --expected-revision 3 --outcome remediated --request-id triage-resolve-inc-1-r3",
 		"t3-steward campaign supervision resolve run-sup --incident inc-1 --expected-revision 3 --outcome cancelled",
 		"t3-steward campaign supervision decide run-sup --gate gate-1 --accept --evidence snap-1 --expected-revision 5 --graph-revision 7",
-		"supervision-hold run-settled-sup",
 		// Questions, wakes and pools.
 		"t3-steward wait inspect tw-attn",
 		"wake-overdue nw-pend",
@@ -193,6 +192,11 @@ func TestTriageListsWhatNeedsAnOperatorWithReadyCommands(t *testing.T) {
 	// is revoked once the run settles), so no release is offered for it.
 	if strings.Contains(text, "supervision release run-settled-sup") {
 		t.Fatalf("a release was offered on a settled run:\n%s", text)
+	}
+	// Nor is the hold listed at all: a settled run's supervision is closed, so
+	// a hold still recorded active on it holds nothing and needs nobody.
+	if strings.Contains(text, "supervision-hold run-settled-sup") {
+		t.Fatalf("the hold of a settled run was listed:\n%s", text)
 	}
 	for _, operation := range fixture.operations {
 		if operation != backlogadmin.SupervisionShow {
@@ -241,7 +245,7 @@ func TestTriageJSONIsVersioned(t *testing.T) {
 	}
 	for kind, want := range map[string]int{
 		"worker-down": 1, "worker-disconnected": 1, "supervision-reassess": 1, "supervision-incident": 1,
-		"supervision-gate": 1, "supervision-hold": 1, "needs-input": 1, "wake-overdue": 2,
+		"supervision-gate": 1, "supervision-hold": 0, "needs-input": 1, "wake-overdue": 2,
 		"wake-undeliverable": 3, "quota-held": 1, "intake-quarantined": 1, "run-stalled": 1,
 	} {
 		if kinds[kind] != want {

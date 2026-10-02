@@ -204,6 +204,31 @@ func settleCancelledRunSinkTx(ctx context.Context, tx *sql.Tx, runID string, now
 	return true, nil
 }
 
+// releaseSettledRunHoldsTx releases every hold still active when a run's sink
+// settles, through the hold machine's run-settled row. Settlement revokes every
+// supervision capability, release included, so a hold left active here could
+// never be released by anyone and was listed by triage forever as "still
+// recorded active on a settled run". Holds of runs that settled before this
+// existed are not rewritten; show and triage treat them as closed.
+func releaseSettledRunHoldsTx(ctx context.Context, tx *sql.Tx, runID string, now time.Time) error {
+	holds, err := loadSupervisionHoldsTx(ctx, tx, runID, domain.HoldActive)
+	if err != nil {
+		return err
+	}
+	for _, hold := range holds {
+		next, err := domain.HoldTransition(domain.HoldTransitionInput{Hold: hold, Event: domain.HoldEventRunSettled})
+		if err != nil {
+			return fmt.Errorf("release hold %s at settlement: %w", hold.ID, err)
+		}
+		released := now
+		hold.State, hold.ReleasedAt = next, &released
+		if err := saveSupervisionHoldTx(ctx, tx, hold); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // closeCancelledRunTx is steps 2 and 3 above plus the audit event that records
 // them, called once the cancel itself has been written.
 func closeCancelledRunTx(ctx context.Context, tx *sql.Tx, command domain.AdminCommand, runID string, now time.Time) error {

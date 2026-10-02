@@ -556,7 +556,9 @@ func renderCampaignSupervisionState(out io.Writer, runID string, state backlogad
 	// nothing else on this page says so: the activation reads as spent, the gate
 	// as ready for review and the incident as escalated, which is what a run
 	// waiting for its overseer looks like too.
-	if supervisionAwaitsOperator(state.Activation) {
+	// A settled run waits for nobody: every mutating verb is refused and no
+	// overseer is woken, so neither line below may be offered for it.
+	if supervisionAwaitsOperator(state.Activation) && !state.SinkSettled {
 		if _, err := fmt.Fprintf(out,
 			"  waiting      the overseer ended activation %s without a decision; this run waits for an operator to run "+
 				"\"t3-steward campaign supervision reassess %s --request-id KEY --reason TEXT\"\n",
@@ -574,7 +576,9 @@ func renderCampaignSupervisionState(out io.Writer, runID string, state backlogad
 	// Route availability is printed before the records, because a gate that is
 	// not moving is most often not moving for a reason no gate, hold or incident
 	// mentions, and the operator reading show is asking exactly that.
-	if state.RouteAvailable {
+	if state.SinkSettled {
+		// Said once, below; route availability is not a question for it.
+	} else if state.RouteAvailable {
 		if _, err := fmt.Fprint(out, "  supervisor   an overseer can be dispatched for this run\n"); err != nil {
 			return err
 		}
@@ -624,7 +628,7 @@ func renderCampaignSupervisionRecords(out io.Writer, state backlogadmin.Supervis
 	for _, hold := range state.Holds {
 		if _, err := fmt.Fprintf(out, "  hold %s %s  owner %s  %s  reason %q\n",
 			hold.ID, campaignSupervisionScopeLabel(hold.Scope),
-			campaignSupervisionActorLabel(hold.Owner), hold.State, hold.Reason); err != nil {
+			campaignSupervisionActorLabel(hold.Owner), campaignSupervisionHoldState(hold, state.SinkSettled), hold.Reason); err != nil {
 			return err
 		}
 	}
@@ -636,6 +640,18 @@ func renderCampaignSupervisionRecords(out io.Writer, state backlogadmin.Supervis
 		}
 	}
 	return nil
+}
+
+// campaignSupervisionHoldState is a hold's state as it bears on the run. A
+// hold recorded active on a settled run holds nothing -- there is nothing left
+// to start -- and nobody can release it, because settlement revokes every
+// supervision verb. Runs that settled before settlement released their holds
+// still carry such rows, so the page says what they mean instead of "active".
+func campaignSupervisionHoldState(hold domain.Hold, settled bool) string {
+	if settled && hold.State == domain.HoldActive {
+		return "closed with the run"
+	}
+	return string(hold.State)
 }
 
 // campaignSupervisionValue renders an absent value as a word rather than as an
@@ -691,6 +707,10 @@ func (c campaignCLI) supervisionAppendix(ctx context.Context, args []string) {
 	if _, err := fmt.Fprintf(c.stdout, "supervised: %s, epoch %d, %d of %d activations used\n",
 		campaignSupervisionValue(string(state.Activation.State)), state.Record.ActivationEpoch,
 		state.Record.ActivationsUsed, state.Record.BudgetGrantedActivations); err != nil {
+		return
+	}
+	if state.SinkSettled {
+		_, _ = fmt.Fprint(c.stdout, "  the run is settled; supervision is closed\n")
 		return
 	}
 	if supervisionAwaitsOperator(state.Activation) {
