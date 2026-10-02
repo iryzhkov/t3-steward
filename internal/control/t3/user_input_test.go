@@ -46,6 +46,39 @@ func TestUserInputEventsDecodesTheQuestionCardAndItsAnswer(t *testing.T) {
 	}
 }
 
+// A card and answer as T3 0.0.38 recorded them in the RC1 field test
+// (2026-09-24, homelab), with identifiers zeroed: answers keyed by the exact
+// question text, the option label as the value, nothing trimmed.
+const capturedRC1Card = `{"thread":{"id":"relay","messages":[],"activities":[
+ {"id":"00000000-0000-0000-0000-000000000001","tone":"info","kind":"user-input.requested","summary":"User input requested","turnId":"00000000-0000-0000-0000-000000000003","createdAt":"2026-09-24T06:20:14.337Z",
+  "payload":{"requestId":"00000000-0000-0000-0000-000000000004","questions":[{"id":"For this RC1 field test, choose amber or violet. Your choice determines the dependent rendered result.","header":"RC1 choice","question":"For this RC1 field test, choose amber or violet. Your choice determines the dependent rendered result.","options":[{"label":"amber","description":"Selects the amber-rendered result path."},{"label":"violet","description":"Selects the violet-rendered result path."}],"multiSelect":false}]}},
+ {"id":"00000000-0000-0000-0000-000000000002","tone":"info","kind":"user-input.resolved","summary":"User input submitted","turnId":"00000000-0000-0000-0000-000000000003","createdAt":"2026-09-24T06:25:45.963Z",
+  "payload":{"requestId":"00000000-0000-0000-0000-000000000004","answers":{"For this RC1 field test, choose amber or violet. Your choice determines the dependent rendered result.":"amber"}}}
+]}}`
+
+func TestTheCapturedRC1CardMatchesItsAskExactly(t *testing.T) {
+	var detail struct {
+		Thread t3api.ThreadDetail `json:"thread"`
+	}
+	if err := json.Unmarshal([]byte(capturedRC1Card), &detail); err != nil {
+		t.Fatal(err)
+	}
+	events, err := UserInputEventsOf(detail.Thread.Activities)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("events=%v err=%v", events, err)
+	}
+	ask := domain.AskRequest{
+		Question: "For this RC1 field test, choose amber or violet. Your choice determines the dependent rendered result.",
+		Options:  []string{"amber", "violet"}, OnDeadline: domain.AskDeadlineFail,
+	}
+	if !events[0].Questions[0].MatchesAsk(ask) {
+		t.Fatal("the captured card did not match the question it asked")
+	}
+	if options, free := ask.SplitAnswer(events[1].AnswerValues(events[0].Questions[0])); len(options) != 1 || options[0] != "amber" || free != "" {
+		t.Fatalf("answer = %v %q", options, free)
+	}
+}
+
 func TestStartAskRelayCreatesTheThreadAndItsTurnWithDerivedIdentity(t *testing.T) {
 	var commands []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,9 +95,15 @@ func TestStartAskRelayCreatesTheThreadAndItsTurnWithDerivedIdentity(t *testing.T
 	start := domain.AskRelayStart{AskID: "tw-ask-1", ThreadID: domain.AskRelayThreadID("tw-ask-1"), ProjectID: "p",
 		Title: "Ask run/task: Pick one", Instance: "claudeAgent", Model: "claude-haiku-4-5", Prompt: "ask it"}
 	for range 2 {
-		if err := control.StartAskRelay(context.Background(), start); err != nil {
+		if err := control.CreateAskRelayThread(context.Background(), start); err != nil {
 			t.Fatal(err)
 		}
+		if err := control.StartAskRelayTurn(context.Background(), start); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if commands[0]["runtimeMode"] != AskRelayRuntimeMode || commands[1]["runtimeMode"] != AskRelayRuntimeMode || AskRelayRuntimeMode != "approval-required" {
+		t.Fatalf("the relay is not on the most restricted runtime mode: %v %v", commands[0]["runtimeMode"], commands[1]["runtimeMode"])
 	}
 	if len(commands) != 4 || commands[0]["type"] != "thread.create" || commands[1]["type"] != "thread.turn.start" ||
 		commands[0]["threadId"] != start.ThreadID || commands[0]["projectId"] != "p" {

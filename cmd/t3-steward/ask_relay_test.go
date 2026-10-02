@@ -10,6 +10,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/wait"
 )
 
@@ -17,14 +18,39 @@ import (
 // steward opens, and a scripted question card per relay thread.
 type relayTestControl struct {
 	waitTestControl
-	started  []domain.AskRelayStart
-	events   map[string][]domain.UserInputEvent
-	archived []string
+	started    []domain.AskRelayStart
+	creates    int
+	turns      int
+	createErr  error
+	turnErr    error
+	archiveErr error
+	events     map[string][]domain.UserInputEvent
+	archived   []string
 }
 
-func (c *relayTestControl) StartAskRelay(_ context.Context, relay domain.AskRelayStart) error {
+func (c *relayTestControl) CreateAskRelayThread(_ context.Context, relay domain.AskRelayStart) error {
+	c.creates++
+	if c.createErr != nil {
+		return c.createErr
+	}
+	if c.threads[relay.ThreadID] == nil {
+		c.threads[relay.ThreadID] = &domain.Thread{ID: relay.ThreadID, ProjectID: relay.ProjectID}
+	}
+	return nil
+}
+
+func (c *relayTestControl) StartAskRelayTurn(_ context.Context, relay domain.AskRelayStart) error {
+	c.turns++
+	if c.turnErr != nil {
+		return c.turnErr
+	}
 	c.started = append(c.started, relay)
-	c.threads[relay.ThreadID] = &domain.Thread{ID: relay.ThreadID, ProjectID: relay.ProjectID, Running: true}
+	thread := c.threads[relay.ThreadID]
+	thread.TurnID, thread.Running = "turn-1", true
+	if relay.ProjectID == "" {
+		relay.ProjectID = thread.ProjectID
+		c.started[len(c.started)-1] = relay
+	}
 	return nil
 }
 
@@ -33,6 +59,9 @@ func (c *relayTestControl) UserInputEvents(_ context.Context, threadID string) (
 }
 
 func (c *relayTestControl) ArchiveThread(_ context.Context, threadID string) error {
+	if c.archiveErr != nil {
+		return c.archiveErr
+	}
 	c.archived = append(c.archived, threadID)
 	archived := time.Now()
 	c.threads[threadID].ArchivedAt = &archived
@@ -41,13 +70,23 @@ func (c *relayTestControl) ArchiveThread(_ context.Context, threadID string) err
 
 func relayFixture(t *testing.T, extra ...string) (*relayTestControl, *wait.Runner, func() []domain.TaskWait) {
 	t.Helper()
+	control, runner, list, _ := relayFixtureWithStore(t, extra...)
+	return control, runner, list
+}
+
+func relayFixtureWithStore(t *testing.T, extra ...string) (*relayTestControl, *wait.Runner, func() []domain.TaskWait, *sqlite.Store) {
+	t.Helper()
 	ctx := context.Background()
 	cfg, store := taskWaitCLIFixture(t)
 	identity, err := resolveTaskIdentity(os.Getenv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := parseAskArgs(append([]string{"M6b field test: pick one", "--option", "alpha", "--option", "beta", "--deadline", "2h", "--default", "alpha"}, extra...))
+	args := []string{"M6b field test: pick one", "--option", "alpha", "--option", "beta"}
+	if len(extra) == 0 {
+		args = append(args, "--deadline", "2h", "--default", "alpha")
+	}
+	spec, err := parseAskArgs(append(args, extra...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +111,7 @@ func relayFixture(t *testing.T, extra ...string) (*relayTestControl, *wait.Runne
 		}
 		return waits
 	}
-	return control, runner, list
+	return control, runner, list, store
 }
 
 // A new ask gets one relay thread, on a Claude route, in the task thread's

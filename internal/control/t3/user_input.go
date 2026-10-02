@@ -78,17 +78,58 @@ func (c *Control) ArchiveThread(ctx context.Context, threadID string) error {
 	return c.dispatchThreadArchiveState(ctx, "thread.archive", threadID)
 }
 
-// StartAskRelay creates an ask relay thread and starts its one turn. The
-// thread ID and every command ID are derived from the ask, so a retry after an
-// ambiguous response repeats the same commands rather than opening a second
-// thread.
-func (c *Control) StartAskRelay(ctx context.Context, relay domain.AskRelayStart) error {
-	_, err := c.CreateAndStartThread(ctx, NewThreadInput{
-		ThreadID: relay.ThreadID, DispatchToken: "ask-relay:" + relay.AskID,
-		ProjectID: relay.ProjectID, Title: relay.Title,
-		ModelSelection: map[string]any{"instanceId": relay.Instance, "model": relay.Model},
-		RuntimeMode:    "full-access", InteractionMode: "default",
-		Prompt: relay.Prompt,
-	})
-	return err
+// AskRelayRuntimeMode is the most restricted runtime mode T3 offers. In it
+// every tool call but AskUserQuestion needs an approval card, so a relay agent
+// that strays from its one instruction cannot act without the owner's click.
+// T3 can enforce only that; it cannot restrict which tools the model tries,
+// what it says, or how it phrases the question, which is why the steward checks
+// the card itself before accepting an answer to it.
+const AskRelayRuntimeMode = "approval-required"
+
+// CreateAskRelayThread creates an ask relay thread with no turn. The thread
+// ID and the command ID are derived from the ask, so a retry after an
+// ambiguous response repeats the same command.
+func (c *Control) CreateAskRelayThread(ctx context.Context, relay domain.AskRelayStart) error {
+	token := "ask-relay:" + relay.AskID
+	create := map[string]any{
+		"type": "thread.create", "commandId": deterministicID(token, "thread.create"),
+		"threadId": relay.ThreadID, "projectId": relay.ProjectID, "title": relay.Title,
+		"modelSelection":  map[string]any{"instanceId": relay.Instance, "model": relay.Model},
+		"runtimeMode":     AskRelayRuntimeMode,
+		"interactionMode": "default", "branch": nil, "worktreePath": nil, "createdAt": now(),
+	}
+	if c.DryRun {
+		c.log.Info("dry-run: would create ask relay thread", "thread", relay.ThreadID)
+		return nil
+	}
+	if _, err := c.client.Dispatch(ctx, create); err != nil {
+		return fmt.Errorf("create ask relay thread %s: %w", relay.ThreadID, err)
+	}
+	return nil
+}
+
+// StartAskRelayTurn starts the relay thread's one turn, with command and
+// message IDs derived from the ask.
+func (c *Control) StartAskRelayTurn(ctx context.Context, relay domain.AskRelayStart) error {
+	token := "ask-relay:" + relay.AskID
+	turn := map[string]any{
+		"type": "thread.turn.start", "commandId": deterministicID(token, "thread.turn.start"),
+		"threadId": relay.ThreadID,
+		"message": map[string]any{
+			"messageId": deterministicID(token, "message"), "role": "user",
+			"text": relay.Prompt, "attachments": []any{},
+		},
+		"modelSelection":  map[string]any{"instanceId": relay.Instance, "model": relay.Model},
+		"titleSeed":       relay.Title,
+		"runtimeMode":     AskRelayRuntimeMode,
+		"interactionMode": "default", "createdAt": now(),
+	}
+	if c.DryRun {
+		c.log.Info("dry-run: would start the ask relay turn", "thread", relay.ThreadID)
+		return nil
+	}
+	if _, err := c.client.Dispatch(ctx, turn); err != nil {
+		return fmt.Errorf("start the ask relay turn on %s: %w", relay.ThreadID, err)
+	}
+	return nil
 }

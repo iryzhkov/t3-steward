@@ -167,12 +167,13 @@ type Runner struct {
 	TaskWorkerID          string
 	// AskRelay is the route of ask relay threads; nil opens none. AskStore
 	// optionally routes the relay's coordinator records over a transport.
-	AskRelay *AskRelayRoute
-	AskStore AskRelayStore
-	store    Store
-	control  Control
-	log      *slog.Logger
-	now      func() time.Time
+	AskRelay       *AskRelayRoute
+	AskStore       AskRelayStore
+	askRelayStarts map[string]int
+	store          Store
+	control        Control
+	log            *slog.Logger
+	now            func() time.Time
 	// Exec runs a command and returns its combined output and exit code;
 	// replaceable in tests.
 	Exec func(ctx context.Context, w Wait) (string, int, error)
