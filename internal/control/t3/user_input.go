@@ -78,12 +78,14 @@ func (c *Control) ArchiveThread(ctx context.Context, threadID string) error {
 	return c.dispatchThreadArchiveState(ctx, "thread.archive", threadID)
 }
 
-// AskRelayRuntimeMode is the most restricted runtime mode T3 offers. In it
-// every tool call but AskUserQuestion needs an approval card, so a relay agent
-// that strays from its one instruction cannot act without the owner's click.
-// T3 can enforce only that; it cannot restrict which tools the model tries,
-// what it says, or how it phrases the question, which is why the steward checks
-// the card itself before accepting an answer to it.
+// AskRelayRuntimeMode is the most restricted runtime mode T3 offers. It maps
+// to the Claude SDK's default permission mode, in which Claude Code still
+// allows read-only tools (Read, Glob, Grep) without asking; only other tools,
+// such as edits and commands, need the owner's click. It limits what a relay
+// agent that strays from its one instruction can change, not what it can
+// read. T3 cannot restrict which tools the model tries, what it says, or how
+// it phrases the question, so the real guard is the steward's own check of
+// the card before it accepts an answer to it.
 const AskRelayRuntimeMode = "approval-required"
 
 // CreateAskRelayThread creates an ask relay thread with no turn. The thread
