@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +37,24 @@ func TestAnUnansweredAskWakeEndsWithItsOwnInstruction(t *testing.T) {
 		if prompt := wake.Prompt(); strings.Contains(prompt, "Write every declared output") {
 			t.Fatalf("%s wake also says to write the outputs:\n%s", outcome, prompt)
 		}
+	}
+}
+
+// Review finding 11 (its coordinator half): a refusal the coordinator will
+// repeat is recognisable, also as the bare message the admin transport
+// carries, and a transport failure is not one.
+func TestAskAnswerRefusalsAreRecognisable(t *testing.T) {
+	for _, err := range []error{
+		fmt.Errorf("%w: %q is not one of the options", ErrAskAnswerRefused, "gamma"),
+		errors.New("coordinator rejected: ask answer refused: a T3 answer must come from the ask's own relay thread"),
+		fmt.Errorf("%w: an answer given in T3 is refused", ErrAskApproverRequired),
+	} {
+		if !IsAskAnswerRefusal(err) {
+			t.Errorf("not recognised as a refusal: %v", err)
+		}
+	}
+	if IsAskAnswerRefusal(errors.New("coordinator-exchange: no coordinator answered")) {
+		t.Error("a transport failure was read as a refusal")
 	}
 }
 

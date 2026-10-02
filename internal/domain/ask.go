@@ -145,6 +145,25 @@ var ErrAskAlreadyAnswered = errors.New("this ask is already answered")
 // ErrAskSettled is the refusal of an answer to an ask whose deadline settled it.
 var ErrAskSettled = errors.New("this ask has already settled")
 
+// ErrAskAnswerRefused marks a refusal the coordinator will repeat for the same
+// answer: it is not an option, the thread is not the relay's, the task is no
+// longer waiting. A caller retries anything else.
+var ErrAskAnswerRefused = errors.New("ask answer refused")
+
+// IsAskAnswerRefusal reports whether err is a refusal that a retry of the
+// same answer cannot change. Over the admin transport only the message
+// survives, so the sentinels are matched by their text as well.
+func IsAskAnswerRefusal(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrAskAnswerRefused) || errors.Is(err, ErrAskApproverRequired) {
+		return true
+	}
+	text := err.Error()
+	return strings.Contains(text, ErrAskAnswerRefused.Error()) || strings.Contains(text, ErrAskApproverRequired.Error())
+}
+
 func askText(value string) bool {
 	return strings.TrimSpace(value) != "" && value == strings.TrimSpace(value)
 }

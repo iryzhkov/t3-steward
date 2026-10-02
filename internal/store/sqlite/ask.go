@@ -222,7 +222,7 @@ func (s *Store) AnswerAsk(ctx context.Context, answer domain.AskAnswer, principa
 	}
 	if answer.Source == domain.AskSourceT3 {
 		if wait.Ask.Relay == nil || wait.Ask.Relay.ThreadID == "" || wait.Ask.Relay.ThreadID != answer.ThreadID {
-			return wait, fmt.Errorf("a T3 answer must come from the ask's own relay thread; %q is not it", answer.ThreadID)
+			return wait, fmt.Errorf("%w: a T3 answer must come from the ask's own relay thread; %q is not it", domain.ErrAskAnswerRefused, answer.ThreadID)
 		}
 	}
 	answer.Options, answer.FreeText = domain.NormalizeAnswer(answer.Options, answer.FreeText)
@@ -256,14 +256,14 @@ func (s *Store) AnswerAsk(ctx context.Context, answer domain.AskAnswer, principa
 		return wait, fmt.Errorf("%w as %s", domain.ErrAskSettled, outcome)
 	}
 	if err := wait.Ask.CheckAnswer(answer.Options, answer.FreeText); err != nil {
-		return wait, err
+		return wait, fmt.Errorf("%w: %w", domain.ErrAskAnswerRefused, err)
 	}
 	attempt, err := loadAttemptTx(ctx, tx, wait.AttemptID)
 	if err != nil {
 		return wait, err
 	}
 	if attempt.Progress.Terminal() {
-		return wait, fmt.Errorf("the task that asked is no longer waiting: its attempt is %s", attempt.Progress)
+		return wait, fmt.Errorf("%w: the task that asked is no longer waiting: its attempt is %s", domain.ErrAskAnswerRefused, attempt.Progress)
 	}
 	answered := now.UTC()
 	record := domain.AskAnswer{
