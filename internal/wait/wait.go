@@ -194,6 +194,9 @@ type Runner struct {
 
 	buckets            []domain.BucketState
 	lastBoundReconcile time.Time
+	// threadAbsentSince is when T3 first answered without a node wake's
+	// thread; see threadGoneConfirm.
+	threadAbsentSince map[string]time.Time
 }
 
 // New builds a runner.

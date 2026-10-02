@@ -256,7 +256,7 @@ func (s *Store) SettleNodeWaits(ctx context.Context, now time.Time) error {
 		return err
 	}
 	for _, w := range waits {
-		if w.SettledAt != nil || w.Delivery == "cancelled" {
+		if w.SettledAt != nil || w.Delivery == "cancelled" || w.Delivery == "rejected" {
 			continue
 		}
 		var obs domain.NodeObservation
@@ -383,10 +383,12 @@ func (s *Store) TransitionNodeWake(ctx context.Context, id, from, to string, now
 	}
 	settled, allowed := w.SettledAt != nil, false
 	switch from {
+	// rejected is reachable before settlement: it is how the steward that
+	// deleted the wait's thread ends a wake that has nowhere to go.
 	case "pending":
-		allowed = settled && (to == "held" || to == "offline" || to == "busy" || to == "sending" || to == "rejected") || to == "cancelled"
+		allowed = settled && (to == "held" || to == "offline" || to == "busy" || to == "sending") || to == "rejected" || to == "cancelled"
 	case "held", "offline", "busy":
-		allowed = settled && (to == "offline" || to == "busy" || to == "sending" || to == "rejected") || to == "cancelled"
+		allowed = settled && (to == "offline" || to == "busy" || to == "sending") || to == "rejected" || to == "cancelled"
 	case "sending":
 		allowed = to == "delivered" || to == "recovery-required" || to == "offline" || to == "rejected"
 	case "recovery-required":
@@ -418,8 +420,8 @@ func (s *Store) TransitionNodeWake(ctx context.Context, id, from, to string, now
 		t := now.UTC()
 		w.DeliveredAt = &t
 	case "rejected":
-		w.DeliveryError = "delivery was rejected"
-		w.DeliveryNextAction = "operator action is required"
+		w.DeliveryError = "delivery was rejected: the thread is archived or deleted in T3, or T3 refused the wake"
+		w.DeliveryNextAction = "nothing will deliver this wake; from a live thread, run t3-steward wait add again for the same condition if it is still wanted"
 		w.DeliveryNextAttemptAt = nil
 	}
 	if err = saveNodeWaitTx(ctx, tx, w); err != nil {

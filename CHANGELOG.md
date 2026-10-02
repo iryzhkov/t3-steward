@@ -8,6 +8,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A node wake whose thread is gone is no longer retried forever. The delivery
+  loop treated a thread T3 does not hold like an unreachable T3 and kept the
+  wake `offline`; the other members of its `--wake all` group stayed `pending`
+  behind it (waits nw-f2bf0274 and nw-23326045 stayed pending for a week after
+  the archive deleted their thread). The archive now rejects the wakes still
+  owed to a thread it deletes, including unsettled ones; the delivery loop
+  rejects a wake, with its whole group, once T3 has answered for a minute
+  without its thread; and a send whose receipt is unknown is rejected when its
+  thread is gone instead of being reconciled forever. A T3 that does not answer
+  (transport, credential or server error) still leaves the wake retryable. A
+  coordinator older than this release refuses the rejection of an unsettled
+  wake; the delivery loop rejects it once it settles.
+
 - Finished steward projects no longer stay in the T3 sidebar for days. A
   project can only be removed once it holds no thread, and a finished task's
   thread waited the full `archive.after` retention (48 hours) and then the next

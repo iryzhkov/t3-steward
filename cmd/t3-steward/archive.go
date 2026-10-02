@@ -15,6 +15,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/wait"
 )
 
 const archiveUsage = `Usage: t3-steward archive <command>
@@ -29,7 +30,7 @@ Commands:
 `
 
 func newArchiver(cfg config.Config, store *sqlite.Store, control *t3control.Control, logger *slog.Logger, dataDir string) *archive.Archiver {
-	return archive.New(archive.Options{
+	a := archive.New(archive.Options{
 		After:           cfg.Archive.After.D(),
 		ManagedAfter:    cfg.Archive.ManagedAfter.D(),
 		ManagedRoots:    managedProjectRoots(cfg, logger),
@@ -45,6 +46,24 @@ func newArchiver(cfg config.Config, store *sqlite.Store, control *t3control.Cont
 		DryRun:          cfg.Policy.DryRun,
 		Logger:          logger,
 	}, store, control)
+	a.ThreadDeleted = threadWakeRejecter(cfg, store, control, logger)
+	return a
+}
+
+// threadWakeRejecter ends the node wakes this host still owes a thread the
+// archive has just deleted. It reads and moves them where the wait runner
+// does: in the local store on a coordinator, over the admin transport on every
+// other host.
+func threadWakeRejecter(cfg config.Config, store *sqlite.Store, control *t3control.Control, logger *slog.Logger) func(context.Context, string) error {
+	runner := wait.New(store, control, logger)
+	configureNodeWaitTransport(runner, cfg, logger)
+	return func(ctx context.Context, threadID string) error {
+		n, err := runner.RejectThreadWakes(ctx, threadID)
+		if n != 0 {
+			logger.Info("ended the node wakes owed to a deleted thread", "thread", threadID, "rejected", n)
+		}
+		return err
+	}
 }
 
 func cmdArchive(g globalFlags, args []string) error {

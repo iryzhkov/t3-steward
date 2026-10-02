@@ -815,7 +815,13 @@ locks, leases and effect-safety remain enforced. Existing quota-paused tasks are
 not automatically resumed while checks are disabled; operator recovery remains
 explicit. This setting is coordinator-owned fleet policy, not a worker-local toggle. Held outcomes settle once. A lost send response retains one
 wake identity and waits for positive T3 message evidence; `recovery-required`
-means delivery is uncertain and will not be blindly retried. See the
+means delivery is uncertain and will not be blindly retried. A wake whose thread
+is gone ends `rejected` instead of being retried: the archive rejects the wakes
+still owed to a thread it deletes, and the delivery loop rejects a wake once T3
+has answered for a minute without its thread (a thread archived in T3 at once).
+A T3 that does not answer at all (transport, credential or server error) leaves
+the wake `offline` and retried. The members of a `--wake all` group end with
+the member that carries their send. See the
 [node-wait ADR](docs/architecture/adr-s0-node-wait.md) for evidence limits.
 
 Bundles can use `needs: <source-run>/__sink` or a list mixing local task names and
