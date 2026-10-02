@@ -8,6 +8,43 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
+// A coordinator with quota checks disabled enforces nothing, but its pools
+// still name the buckets that govern them. A pool that named none was read
+// from every window of its providers, so models gave a pool the age and
+// staleness of an ignored window or of another model's window (09-25
+// checkpoint, M7).
+func TestDisabledQuotaStillNamesTheBucketsThatGovernEachPool(t *testing.T) {
+	observed := plannerTestTime.Add(-time.Minute)
+	key := func(window string) domain.BucketKey {
+		return domain.BucketKey{ProviderInstanceID: "claude", LimitID: "claude", Window: window}
+	}
+	bridge := QuotaBridge{Disabled: true, Now: func() time.Time { return plannerTestTime },
+		Pools: []QuotaPoolBinding{{
+			ID: "pool-claude", Provider: "claude", ProviderInstanceIDs: []string{"claude"}, MaxConcurrent: 2,
+			Models: []string{"claude-sonnet-5"}, IgnoredWindows: []string{"overage"},
+		}},
+	}
+	report, err := bridge.ReconcileState(context.Background(), QuotaPlanningStateInput{
+		WorkerSnapshots: []domain.WorkerSnapshot{{WorkerID: "homelab", QuotaObservations: []domain.WorkerQuotaObservation{
+			{Key: key("seven_day"), Phase: domain.PhaseNormal, UsedPercent: 10, Healthy: true, ObservedAt: observed},
+			{Key: key("five_hour"), Phase: domain.PhaseNormal, UsedPercent: 20, Healthy: true, ObservedAt: observed},
+			{Key: key("overage"), Phase: domain.PhaseNormal, Healthy: true, ObservedAt: observed.Add(-72 * time.Hour)},
+			{Key: key("seven_day_opus"), ModelSelector: "opus", Phase: domain.PhaseNormal, Healthy: true, ObservedAt: observed.Add(-72 * time.Hour)},
+			{Key: domain.BucketKey{ProviderInstanceID: "codex", LimitID: "codex", Window: "weekly"}, Healthy: true, ObservedAt: observed},
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Pools) != 1 || !report.Pools[0].ChecksDisabled || report.Pools[0].Admission != domain.AdmissionOpen {
+		t.Fatalf("disabled projection=%+v", report.Pools)
+	}
+	got := report.Pools[0].Buckets
+	if len(got) != 2 || got[0] != key("five_hour") || got[1] != key("seven_day") {
+		t.Fatalf("named buckets = %v, want five_hour and seven_day only", got)
+	}
+}
+
 func TestDisabledQuotaIsFleetWideAndRetainsConcurrency(t *testing.T) {
 	bridge := QuotaBridge{Disabled: true, Now: func() time.Time { return plannerTestTime },
 		Pools: []QuotaPoolBinding{{ID: "pool", Provider: "codex", ProviderInstanceIDs: []string{"codex"}, MaxConcurrent: 2}},

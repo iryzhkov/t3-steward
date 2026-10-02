@@ -577,6 +577,9 @@ type V2CoordinatorClient struct {
 // place a default route may come from: the coordinator never chooses one.
 type V2ClientDefaults struct {
 	Model string `yaml:"model"`
+	// QuotaStaleAfter is the age past which "t3-steward models" marks a
+	// pool's quota reading stale. Zero means one hour.
+	QuotaStaleAfter Duration `yaml:"quota_stale_after"`
 }
 
 // Configured reports whether an operator declared the block at all. A partly
@@ -1246,6 +1249,9 @@ func (c *Config) Validate() error {
 	}
 	if c.T3.DiscoveryTimeout.D() < 0 {
 		return errors.New("t3: discovery_timeout must not be negative")
+	}
+	if c.BacklogV2.CoordinatorClient.Defaults.QuotaStaleAfter.D() < 0 {
+		return errors.New("backlog_v2.coordinator_client.defaults: quota_stale_after must not be negative")
 	}
 	switch strings.ToLower(c.LogLevel) {
 	case "debug", "info", "warn", "warning", "error":

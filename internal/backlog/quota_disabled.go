@@ -1,7 +1,9 @@
 package backlog
 
 import (
+	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -62,4 +64,55 @@ func (b QuotaBridge) disabledReport(input QuotaPlanningStateInput) (QuotaBridgeR
 		})
 	}
 	return report, nil
+}
+
+// nameGoverningBuckets names in each pool the observed buckets that govern
+// it, as the enabled path does, although nothing is enforced from them while
+// checks are disabled. The names are what a pool's state is read from: quota
+// waits and models fold a pool from its named buckets, and a pool naming none
+// is read from every window of its providers. That gave a pool the age and
+// staleness of an ignored window (overage) or of a window scoped to a model
+// the pool does not serve, which are exactly the windows the enabled path
+// leaves out.
+//
+// The observations are informational here, so a store that cannot list them
+// leaves the pools unnamed rather than failing a report that does not depend
+// on them.
+func (b QuotaBridge) nameGoverningBuckets(ctx context.Context, pools []domain.QuotaPool, workers []domain.WorkerSnapshot) {
+	var local []domain.BucketState
+	if b.Store != nil {
+		listed, err := b.Store.ListBuckets(ctx)
+		if err != nil {
+			return
+		}
+		local = listed
+	}
+	states := MergeWorkerQuotaObservations(local, workers)
+	bindings := make(map[string]QuotaPoolBinding, len(b.Pools))
+	for _, binding := range b.Pools {
+		bindings[binding.ID] = binding
+	}
+	for index := range pools {
+		pool := &pools[index]
+		instances := make(map[string]bool, len(pool.ProviderInstanceIDs))
+		for _, id := range pool.ProviderInstanceIDs {
+			instances[id] = true
+		}
+		named := make(map[domain.BucketKey]bool, len(pool.Buckets))
+		for _, key := range pool.Buckets {
+			named[key] = true
+		}
+		for _, state := range states {
+			if !instances[state.Key.ProviderInstanceID] || named[state.Key] ||
+				(pool.AccountID != "" && state.Key.AccountID != pool.AccountID) ||
+				!bucketGovernsPool(bindings[pool.ID], state) {
+				continue
+			}
+			named[state.Key] = true
+			pool.Buckets = append(pool.Buckets, state.Key)
+		}
+		sort.Slice(pool.Buckets, func(i, j int) bool {
+			return pool.Buckets[i].String() < pool.Buckets[j].String()
+		})
+	}
 }
