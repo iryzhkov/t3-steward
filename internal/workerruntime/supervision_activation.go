@@ -339,8 +339,14 @@ func (d *LocalDriver) collectActivation(ctx context.Context, pkg workerproto.Exe
 		return fmt.Errorf("collect supervision activation thread state: %w", err)
 	}
 	message, archive := "", []byte("{}")
-	if thread != nil && !workerThreadTerminal(*thread) {
-		return errors.New("T3 turn is not yet terminal; activation collection deferred")
+	if thread != nil {
+		terminal, _, err := d.threadTerminal(ctx, *thread)
+		if err != nil {
+			return fmt.Errorf("collect supervision activation thread state: %w", err)
+		}
+		if !terminal {
+			return errors.New("T3 turn is not yet terminal; activation collection deferred")
+		}
 	}
 	if thread != nil {
 		if message, err = d.T3.LastAssistantMessage(ctx, pkg.Identity.ThreadID); err != nil {

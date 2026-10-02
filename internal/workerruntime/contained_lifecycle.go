@@ -264,7 +264,13 @@ func (p ContainedT3) Quiesce(ctx context.Context, pkg workerproto.ExecutionPacka
 			if e != nil {
 				return e
 			}
-			if thread != nil && !workerThreadTerminal(*thread) {
+			terminal := true
+			if thread != nil {
+				if terminal, _, e = threadTerminal(ctx, control.ExportThread, *thread); e != nil {
+					return e
+				}
+			}
+			if !terminal {
 				if !force {
 					return errors.New("contained provider turn still active")
 				}

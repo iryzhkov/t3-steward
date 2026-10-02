@@ -54,6 +54,22 @@ func TestResultCompletionRefusesATurnStartFailedAfterTheLatestTurn(t *testing.T)
 	}
 }
 
+// A refusal is evidence about the request it refused only. Once a later user
+// message asks for a turn again (a retried start, a wake), the old refusal is
+// history even before any turn adopts the new request.
+func TestARefusalIsSupersededByALaterRequest(t *testing.T) {
+	archive := `{"thread":{"id":"thread-1","latestTurn":null,` +
+		`"session":{"threadId":"thread-1","status":"error","activeTurnId":null,"lastError":"old"},` +
+		`"messages":[{"id":"m1","role":"user","createdAt":"2026-10-02T05:00:00.000Z"},{"id":"m2","role":"user","createdAt":"RETRY"}],` +
+		`"activities":[{"id":"a1","kind":"provider.turn.start.failed","payload":{"detail":"old"},"turnId":null,"createdAt":"2026-10-02T05:00:00.000Z"}]}}`
+	if _, ok, err := LatestTurnStartFailure([]byte(strings.Replace(archive, "RETRY", "2026-10-02T05:05:00.000Z", 1))); err != nil || ok {
+		t.Fatalf("a refusal of an earlier request is current: ok=%v err=%v", ok, err)
+	}
+	if failure, ok, err := LatestTurnStartFailure([]byte(strings.Replace(archive, "RETRY", "2026-10-02T04:59:00.000Z", 1))); err != nil || !ok || failure.ActivityID != "a1" {
+		t.Fatalf("the refusal of the latest request is not current: %+v ok=%v err=%v", failure, ok, err)
+	}
+}
+
 // A turn that ended in error says why when T3 recorded a reason, from the
 // turn's runtime error or, failing that, the session's last error.
 func TestResultCompletionNamesTheProviderErrorOfAFailedTurn(t *testing.T) {

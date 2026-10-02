@@ -159,9 +159,11 @@ func FromShell(t t3api.ThreadShell) domain.Thread {
 	if t.LatestTurn != nil {
 		d.TurnID = t.LatestTurn.TurnID
 		d.TurnState = t.LatestTurn.State
+		d.LatestTurnRequestedAt = t3api.ParseTime(&t.LatestTurn.RequestedAt)
 	}
 	if t.Session != nil {
 		d.SessionStatus = t.Session.Status
+		d.SessionUpdatedAt = t3api.ParseTime(&t.Session.UpdatedAt)
 		if t.Session.ProviderInstanceID != "" && d.ProviderInstanceID == "" {
 			d.ProviderInstanceID = t.Session.ProviderInstanceID
 		}

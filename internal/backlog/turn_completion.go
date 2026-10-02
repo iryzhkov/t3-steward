@@ -97,6 +97,10 @@ type threadArchive struct {
 			ActiveTurnID *string `json:"activeTurnId"`
 			LastError    *string `json:"lastError"`
 		} `json:"session"`
+		Messages []struct {
+			Role      string `json:"role"`
+			CreatedAt string `json:"createdAt"`
+		} `json:"messages"`
 		Activities []struct {
 			ID      string `json:"id"`
 			Kind    string `json:"kind"`
@@ -125,8 +129,27 @@ func providerDetail(text string) string {
 	return text
 }
 
-// latestTurnStartFailure finds the newest refused turn start, unless a turn
-// was requested after it: a refusal that a later turn superseded is history.
+// latestUserMessageAt is the time of the thread's latest user message, which
+// is the current turn start request: T3 gives a turn, and a refusal of its
+// start, the time of the message that requested it.
+func (a threadArchive) latestUserMessageAt() *time.Time {
+	var latest *time.Time
+	for _, message := range a.Thread.Messages {
+		if message.Role != "user" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, message.CreatedAt)
+		if err == nil && (latest == nil || at.After(*latest)) {
+			latest = &at
+		}
+	}
+	return latest
+}
+
+// latestTurnStartFailure finds the refusal of the current start request: the
+// newest refused turn start, unless a turn was requested after it or a later
+// user message asked for a new turn. A refusal a later request superseded is
+// history, whether or not that request has a turn yet.
 func (a threadArchive) latestTurnStartFailure() (TurnStartFailure, bool) {
 	var latest TurnStartFailure
 	found := false
@@ -154,6 +177,9 @@ func (a threadArchive) latestTurnStartFailure() (TurnStartFailure, bool) {
 		if since == nil || !latest.CreatedAt.After(*since) {
 			return TurnStartFailure{}, false
 		}
+	}
+	if request := a.latestUserMessageAt(); request != nil && latest.CreatedAt.Before(*request) {
+		return TurnStartFailure{}, false
 	}
 	if latest.Detail == "" {
 		latest.Detail = "T3 recorded no detail"
@@ -184,8 +210,9 @@ func (a threadArchive) failedTurnDetail() string {
 	return ""
 }
 
-// LatestTurnStartFailure reports the turn start T3 refused for the thread in
-// archive, when no later turn superseded it.
+// LatestTurnStartFailure reports the turn start T3 refused for the current
+// start request of the thread in archive: no later turn or user message
+// superseded it.
 func LatestTurnStartFailure(archive []byte) (TurnStartFailure, bool, error) {
 	var snapshot threadArchive
 	if err := json.Unmarshal(archive, &snapshot); err != nil {

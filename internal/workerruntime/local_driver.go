@@ -328,7 +328,11 @@ func (d *LocalDriver) ObserveThread(ctx context.Context, pkg workerproto.Executi
 	if thread == nil {
 		return backlog.DispatchThreadMissing, nil
 	}
-	if !workerThreadTerminal(*thread) {
+	terminal, _, err := d.threadTerminal(ctx, *thread)
+	if err != nil {
+		return "", err
+	}
+	if !terminal {
 		return backlog.DispatchThreadActive, nil
 	}
 	return backlog.DispatchThreadStopped, nil
@@ -360,70 +364,106 @@ func (d *LocalDriver) ObserveThreadTurn(ctx context.Context, pkg workerproto.Exe
 	if thread == nil {
 		return backlog.DispatchThreadMissing, "", nil
 	}
-	if !workerThreadTerminal(*thread) {
-		return backlog.DispatchThreadActive, thread.TurnID, nil
+	terminal, identity, err := d.threadTerminal(ctx, *thread)
+	if err != nil {
+		return "", "", err
 	}
-	if thread.TurnID == "" {
-		if refused, err := d.refusedTurnIdentity(ctx, *thread); err != nil || refused != "" {
-			return backlog.DispatchThreadStopped, refused, err
-		}
+	if !terminal {
+		return backlog.DispatchThreadActive, identity, nil
+	}
+	if identity == "" {
 		return "", "", errors.New("terminal T3 turn identity is unavailable; collection deferred")
 	}
-	return backlog.DispatchThreadStopped, thread.TurnID, nil
-}
-
-// refusedTurnIdentity names the turn T3 refused to start on a thread that has
-// no turn at all. T3 records the refusal as a provider.turn.start.failed
-// activity and leaves the session in error; the activity is the identity
-// collection binds to, and the archive collection reads carries its reason.
-// A session in error with no such activity is still terminal, and is named by
-// the session error alone. Empty means the thread is not a refused start.
-func (d *LocalDriver) refusedTurnIdentity(ctx context.Context, thread domain.Thread) (string, error) {
-	if thread.SessionStatus != t3SessionError {
-		return "", nil
-	}
-	archive, err := d.T3.ExportThread(ctx, thread.ID)
-	if err != nil {
-		return "", fmt.Errorf("read the refused turn start: %w", err)
-	}
-	refused, ok, err := backlog.LatestTurnStartFailure(archive)
-	if err != nil {
-		return "", err
-	}
-	if ok && refused.ActivityID != "" {
-		return "turn-start-failed:" + refused.ActivityID, nil
-	}
-	return "session-error-without-turn", nil
+	return backlog.DispatchThreadStopped, identity, nil
 }
 
 // t3SessionError is T3's provider session status after a provider failure.
-// A turn start T3 refuses leaves the session in it with no active turn.
+// A turn start T3 refuses leaves the session in it with no active turn,
+// unless the session was already stopped, which it then keeps.
 const t3SessionError = "error"
 
-// A newly accepted T3 start may be visible before its turn and session.
-// Only positive terminal evidence permits collection or skipping containment.
-func workerThreadTerminal(thread domain.Thread) bool {
+// turnRequestUnadopted reports a start request no turn has adopted: T3 gives
+// a turn the time of the user message that requested it, and T3's own rule
+// for a queued turn start is a latest user message newer than the latest
+// turn. It is the current request while it is unresolved: the first turn of
+// a slow start, a wake, a resume or a retried start.
+func turnRequestUnadopted(thread domain.Thread) bool {
+	return thread.LatestUserMessageAt != nil &&
+		(thread.LatestTurnRequestedAt == nil || thread.LatestTurnRequestedAt.Before(*thread.LatestUserMessageAt))
+}
+
+// sessionFailedCurrentRequest reports a session T3 moved to error (or kept
+// stopped) at or after the current request: the explicit terminal session
+// transition T3 makes when it refuses that request's turn start. An error
+// from an earlier request is not evidence about this one.
+func sessionFailedCurrentRequest(thread domain.Thread) bool {
+	return (thread.SessionStatus == t3SessionError || thread.SessionStatus == "stopped") &&
+		thread.SessionUpdatedAt != nil && thread.LatestUserMessageAt != nil &&
+		!thread.SessionUpdatedAt.Before(*thread.LatestUserMessageAt)
+}
+
+func sessionErrorIdentity(thread domain.Thread) string {
+	if thread.SessionUpdatedAt == nil {
+		return "session-error"
+	}
+	return "session-error:" + thread.SessionUpdatedAt.UTC().Format(time.RFC3339Nano)
+}
+
+// threadTerminal reports whether the thread has ended its current turn start
+// request, and the turn identity collection binds to.
+//
+// A newly accepted T3 start may be visible before its turn and session, and a
+// wake or resume leaves the previous turn as the latest one until a new turn
+// adopts the request. Only positive evidence about the current request
+// permits collection or skipping containment: a turn that adopted it, or a
+// refusal (provider.turn.start.failed) or session failure at or after it.
+// For a refused request the identity is the refusal activity, never the
+// earlier turn, so a refused wake is one failure however often it is
+// observed. While the request is unresolved the thread is live.
+func (d *LocalDriver) threadTerminal(ctx context.Context, thread domain.Thread) (bool, string, error) {
+	return threadTerminal(ctx, d.T3.ExportThread, thread)
+}
+
+// threadTerminal is LocalDriver.threadTerminal for any T3 connection; export
+// reads the thread's full detail, which only an unresolved request needs.
+func threadTerminal(ctx context.Context, export func(context.Context, string) ([]byte, error), thread domain.Thread) (bool, string, error) {
 	// A native T3 question may leave the latest turn completed while the
 	// provider waits for the user's answer. Keep this owned task thread live:
 	// collecting now would reject pending input and release its dependencies.
 	if thread.Running || thread.BackgroundWork == "working" || thread.HasPendingUserInput || thread.HasPendingApprovals {
-		return false
+		return false, thread.TurnID, nil
 	}
 	if thread.Settled() {
-		return true
+		return true, thread.TurnID, nil
 	}
-	// No turn ever started and the session is in error: T3 refused the first
-	// turn (provider.turn.start.failed) and will start nothing without a new
-	// message. Waiting for a turn here left a task running indefinitely.
-	if thread.TurnState == "" && thread.SessionStatus == t3SessionError {
-		return true
+	if turnRequestUnadopted(thread) {
+		archive, err := export(ctx, thread.ID)
+		if err != nil {
+			return false, "", fmt.Errorf("read the current turn start request: %w", err)
+		}
+		refused, ok, err := backlog.LatestTurnStartFailure(archive)
+		if err != nil {
+			return false, "", err
+		}
+		if ok && refused.ActivityID != "" {
+			return true, "turn-start-failed:" + refused.ActivityID, nil
+		}
+		if sessionFailedCurrentRequest(thread) {
+			return true, sessionErrorIdentity(thread), nil
+		}
+		return false, thread.TurnID, nil
 	}
 	switch thread.TurnState {
 	case "completed", "interrupted", "error":
-		return true
-	default:
-		return false
+		return true, thread.TurnID, nil
+	case "":
+		// No request is recorded and no turn ever ran, yet the session
+		// failed: nothing will start without a new message.
+		if thread.SessionStatus == t3SessionError {
+			return true, sessionErrorIdentity(thread), nil
+		}
 	}
+	return false, thread.TurnID, nil
 }
 
 // writeTaskIdentity records the attempt's identity inside the prepared
@@ -783,7 +823,11 @@ func (d *LocalDriver) StopThread(ctx context.Context, pkg workerproto.ExecutionP
 	if thread == nil {
 		return nil
 	}
-	if !workerThreadTerminal(*thread) {
+	terminal, _, err := d.threadTerminal(ctx, *thread)
+	if err != nil {
+		return err
+	}
+	if !terminal {
 		if err := d.T3.StopThread(ctx, *thread, t3control.StopSession); err != nil {
 			return err
 		}
@@ -839,7 +883,13 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		return fmt.Errorf("collect thread state: %w", err)
 	}
 	message, archive := "", []byte("{}")
-	if thread != nil && !workerThreadTerminal(*thread) {
+	terminal := true
+	if thread != nil {
+		if terminal, _, err = d.threadTerminal(ctx, *thread); err != nil {
+			return fmt.Errorf("collect thread state: %w", err)
+		}
+	}
+	if !terminal {
 		// The deferral is logged for the same reason the removal below is: the
 		// two together are the whole story of what happened to a workspace, and
 		// a deferral that says nothing is indistinguishable from a pass that
