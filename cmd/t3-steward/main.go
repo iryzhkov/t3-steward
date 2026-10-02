@@ -781,6 +781,9 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, 
 	waits.NodeDelivery = recordNodeWakeDelivery(cfg, version, logger)
 	waits.DryRun = waitDryRun
 	waits.NodeDryRun = waitDryRun
+	if instance, model, enabled := cfg.Wait.AskRelay.Route(); enabled {
+		waits.AskRelay = &wait.AskRelayRoute{Instance: instance, Model: model}
+	}
 	waits.DisableQuotaChecks = !cfg.QuotaChecksEnabled() || (cfg.Wait.QuotaChecks != nil && !*cfg.Wait.QuotaChecks)
 	d.Waits = waits
 	if cfg.UIArchive.Enabled {

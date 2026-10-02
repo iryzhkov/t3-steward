@@ -747,6 +747,9 @@ func triageAsk(report *triageReport, w domain.TaskWait, task string, showRun tri
 		if ask.Relay != nil && ask.Relay.ThreadID != "" && ask.Relay.State == domain.AskRelayOpen {
 			summary += "; it awaits input in T3 thread " + ask.Relay.ThreadID
 		}
+		if ask.Relay != nil && ask.Relay.State == domain.AskRelayFailed {
+			summary += "; its T3 relay failed (" + ask.Relay.Reason + "), so answer it with one of the commands below"
+		}
 		when := ""
 		if ask.Requires == domain.AskRequiresApprover {
 			summary += "; it requires the approver, so answer it with the approver client's configuration (--config) and not in T3"

@@ -132,6 +132,20 @@ type ThreadDetail struct {
 	UpdatedAt       string          `json:"updatedAt"`
 	Session         *Session        `json:"session"`
 	Messages        []Message       `json:"messages"`
+	Activities      []Activity      `json:"activities"`
+}
+
+// Activity mirrors OrchestrationThreadActivity. Only the user-input kinds are
+// decoded further; every payload is kept raw.
+type Activity struct {
+	ID        string          `json:"id"`
+	Tone      string          `json:"tone"`
+	Kind      string          `json:"kind"`
+	Summary   string          `json:"summary"`
+	Payload   json.RawMessage `json:"payload"`
+	TurnID    *string         `json:"turnId"`
+	Sequence  *int64          `json:"sequence"`
+	CreatedAt string          `json:"createdAt"`
 }
 
 // DispatchResult mirrors T3's DispatchResult.

@@ -98,8 +98,8 @@ func askAnswerWorkspaceTx(ctx context.Context, tx *sql.Tx, assignment domain.Ass
 // settlement, which is when it normally happens.
 func (s *Store) RecordAskRelay(ctx context.Context, waitID string, relay domain.AskRelay, now time.Time) (domain.TaskWait, error) {
 	var wait domain.TaskWait
-	if waitID == "" || relay.ThreadID == "" || relay.WorkerID == "" || now.IsZero() {
-		return wait, errors.New("an ask relay record needs the ask, the thread, the worker and a timestamp")
+	if waitID == "" || relay.ThreadID == "" || now.IsZero() {
+		return wait, errors.New("an ask relay record needs the ask, the thread and a timestamp")
 	}
 	switch relay.State {
 	case domain.AskRelayOpening, domain.AskRelayOpen, domain.AskRelayArchived, domain.AskRelayFailed:
@@ -135,6 +135,12 @@ func (s *Store) RecordAskRelay(ctx context.Context, waitID string, relay domain.
 	if err != nil {
 		return wait, err
 	}
+	if relay.WorkerID == "" {
+		// Only an in-process caller reaches here without a worker: a
+		// single-host steward, which is not a named worker. A remote steward
+		// always names its worker; the service refuses one that does not.
+		relay.WorkerID = assignment.WorkerID
+	}
 	if assignment.WorkerID != relay.WorkerID {
 		return wait, fmt.Errorf("worker %q does not run the asking attempt; %q does", relay.WorkerID, assignment.WorkerID)
 	}
@@ -167,6 +173,64 @@ func (s *Store) RecordAskRelay(ctx context.Context, waitID string, relay domain.
 		return wait, err
 	}
 	return wait, tx.Commit()
+}
+
+// AskRelayWork lists the asks whose relay thread the steward of workerID has
+// something to do for: an open ask with no relay yet or one still opening or
+// open, and a settled ask whose relay thread has not been archived. Approver
+// asks have no relay and are never listed. An empty workerID lists every
+// worker's, for a single-host deployment whose steward is not a worker.
+func (s *Store) AskRelayWork(ctx context.Context, workerID string) ([]domain.TaskWait, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT record FROM coordinator_task_waits
+		WHERE json_extract(record, '$.kind') = 'ask'
+		  AND COALESCE(json_extract(record, '$.ask.requires'), '') <> 'approver'
+		  AND (json_extract(record, '$.settledAt') IS NULL
+		       OR json_extract(record, '$.ask.relay.state') IN ('opening', 'open'))
+		  AND COALESCE(json_extract(record, '$.ask.relay.state'), '') NOT IN ('archived', 'failed')
+		ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	var candidates []domain.TaskWait
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		var wait domain.TaskWait
+		if err := json.Unmarshal(raw, &wait); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		candidates = append(candidates, wait)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var work []domain.TaskWait
+	for _, wait := range candidates {
+		if workerID != "" {
+			attempt, err := loadAttemptTx(ctx, tx, wait.AttemptID)
+			if err != nil {
+				return nil, err
+			}
+			assignment, err := loadAssignmentTx(ctx, tx, attempt.AssignmentID)
+			if err != nil || assignment.WorkerID != workerID {
+				continue
+			}
+		}
+		work = append(work, wait)
+	}
+	return work, tx.Commit()
 }
 
 // AnswerAsk records the answer to an ask and settles it, in one transaction.

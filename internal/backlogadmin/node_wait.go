@@ -23,6 +23,10 @@ type NodeWaitOperation struct {
 	// ask ID, options, free text, source and relay thread are read; the
 	// coordinator fills the rest of the ask-answer/v1 document itself.
 	Answer *domain.AskAnswer `json:"answer,omitempty"`
+	// Worker names the steward's worker for "ask-relay-work", and Relay is
+	// the relay record of "relay-ask", whose ask is ID.
+	Worker string           `json:"worker,omitempty"`
+	Relay  *domain.AskRelay `json:"relay,omitempty"`
 	// CoordinatorID is injected by the authenticated server boundary and is
 	// never accepted from request JSON.
 	CoordinatorID string `json:"-"`
@@ -102,6 +106,19 @@ const (
 	AskAnswerKind   = QueryKind("ask-answer")
 )
 
+// AskRelayWorkAction lists the asks a worker's steward has relay work for,
+// and AskRelayRecordAction records a relay thread's state. Both are ordinary
+// wait administration, used by the steward of the worker running the task.
+const (
+	AskRelayWorkAction   = "ask-relay-work"
+	AskRelayRecordAction = "relay-ask"
+)
+
+type askRelayStore interface {
+	AskRelayWork(context.Context, string) ([]domain.TaskWait, error)
+	RecordAskRelay(context.Context, string, domain.AskRelay, time.Time) (domain.TaskWait, error)
+}
+
 func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWaitOperation) (NodeWaitResponse, error) {
 	var result NodeWaitResponse
 	action := Action{Kind: QueryKind("node-wait"), WorkflowRunID: op.Request.Target.RunID, TaskID: op.Request.Target.TaskID}
@@ -122,7 +139,7 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 		return s.taskWaitRuntime(ctx, op)
 	}
 	if op.Action == "register-task" || op.Action == "list-task" || op.Action == "inspect-attention" || op.Action == "cancel-task" || op.Action == "decide-attention" ||
-		op.Action == AskAnswerAction {
+		op.Action == AskAnswerAction || op.Action == AskRelayWorkAction || op.Action == AskRelayRecordAction {
 		return s.taskWait(ctx, principal, op)
 	}
 	store, ok := s.reader.(nodeWaitStore)
@@ -256,6 +273,28 @@ func (s *Service) taskWait(ctx context.Context, principal Principal, op NodeWait
 		}
 		result.TaskWaits = []domain.TaskWait{wait}
 		result.AttentionReceipt = &receipt
+		return result, nil
+	case AskRelayWorkAction, AskRelayRecordAction:
+		relays, ok := s.reader.(askRelayStore)
+		if !ok {
+			return result, errors.New("ask relays unavailable")
+		}
+		if op.Action == AskRelayWorkAction {
+			if op.Worker == "" {
+				return result, errors.New("ask relay work is listed for a named worker")
+			}
+			waits, err := relays.AskRelayWork(ctx, op.Worker)
+			result.TaskWaits = waits
+			return result, err
+		}
+		if op.ID == "" || op.Relay == nil || op.Relay.WorkerID == "" {
+			return result, errors.New("an ask relay record needs the ask ID and a relay naming its worker")
+		}
+		wait, err := relays.RecordAskRelay(ctx, op.ID, *op.Relay, s.now())
+		if err != nil {
+			return result, err
+		}
+		result.TaskWaits = []domain.TaskWait{wait}
 		return result, nil
 	case AskAnswerAction:
 		if op.Answer == nil {
