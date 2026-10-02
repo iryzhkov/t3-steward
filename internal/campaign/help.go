@@ -91,6 +91,14 @@ campaign when:
 Size alone is not a reason. Work with separable parts belongs in a DAG, where
 the parts fail, retry and are explained independently.
 
+A task that needs a decision from the owner asks with t3-steward ask, the one
+way a task asks: the question appears in the owner's T3 as "Awaiting Input",
+the task ends its turn, and it resumes with the answer in its next message and
+in ask-answer.json. Give the ask --deadline with --default when the task can
+proceed without an answer. A native question tool (AskUserQuestion) in a task's
+own thread carries no deadline, no default and no machine-readable answer, and a
+Codex task cannot use one at all. Details: t3-steward ask --help.
+
 Templates:
   docs/examples/campaign/three-node   the recommended multi-task template
   docs/examples/campaign/single-lead  one task that owns a repository change

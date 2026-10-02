@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -97,13 +98,26 @@ type ownerNotificationCandidate struct {
 // registered at or after the watermark (?2) with no row for this sink yet.
 // The first parameter is the id prefix "sink|event|"; the NOT EXISTS against
 // the primary key keeps a pass from re-reading what it already recorded.
+//
+// An ask (kind ask) is selected twice: once when it is registered, and once
+// more, as subject "<wait>:reminder", when half of its deadline has passed
+// (?3 is now) and it is still unanswered. Each has its own outbox key, so a
+// restart sends neither twice.
 const ownerNotificationNeedsInputQuery = `
 SELECT w.id, json_extract(w.record, '$.workflowRunId'), w.record, 'wait'
 FROM coordinator_task_waits w
 WHERE json_extract(w.record, '$.settledAt') IS NULL
-  AND json_extract(w.record, '$.kind') = 'attention'
+  AND json_extract(w.record, '$.kind') IN ('attention', 'ask')
   AND julianday(json_extract(w.record, '$.registeredAt')) >= julianday(?2)
-  AND NOT EXISTS (SELECT 1 FROM coordinator_owner_notifications n WHERE n.id = ?1 || w.id)`
+  AND NOT EXISTS (SELECT 1 FROM coordinator_owner_notifications n WHERE n.id = ?1 || w.id)
+UNION ALL
+SELECT w.id || ':reminder', json_extract(w.record, '$.workflowRunId'), w.record, 'wait'
+FROM coordinator_task_waits w
+WHERE json_extract(w.record, '$.settledAt') IS NULL
+  AND json_extract(w.record, '$.kind') = 'ask'
+  AND julianday(json_extract(w.record, '$.registeredAt')) >= julianday(?2)
+  AND julianday(?3) >= (julianday(json_extract(w.record, '$.registeredAt')) + julianday(json_extract(w.record, '$.deadline'))) / 2
+  AND NOT EXISTS (SELECT 1 FROM coordinator_owner_notifications n WHERE n.id = ?1 || w.id || ':reminder')`
 
 // ownerNotificationSupervisionQueries select, per event, every supervision
 // record of a live run that is in the reported condition and has no row for
@@ -177,7 +191,7 @@ func (s *Store) DetectOwnerNotifications(ctx context.Context, sink string, selec
 		case !errors.Is(err, sql.ErrNoRows):
 			return detection, fmt.Errorf("read owner notification watermark: %w", err)
 		}
-		candidates, err := ownerNotificationCandidatesTx(ctx, tx, sink, scope, since)
+		candidates, err := ownerNotificationCandidatesTx(ctx, tx, sink, scope, since, at)
 		if err != nil {
 			return detection, err
 		}
@@ -234,7 +248,7 @@ func ownerNotificationID(sink string, event ownernotify.Event, subject string) s
 	return sink + "|" + string(event) + "|" + subject
 }
 
-func ownerNotificationCandidatesTx(ctx context.Context, tx *sql.Tx, sink string, scope ownernotify.Scope, since string) ([]ownerNotificationCandidate, error) {
+func ownerNotificationCandidatesTx(ctx context.Context, tx *sql.Tx, sink string, scope ownernotify.Scope, since, now string) ([]ownerNotificationCandidate, error) {
 	event := scope.Event
 	prefix := ownerNotificationID(sink, event, "")
 	var rows *sql.Rows
@@ -242,7 +256,7 @@ func ownerNotificationCandidatesTx(ctx context.Context, tx *sql.Tx, sink string,
 	if progress, ok := ownerNotificationRunProgress(event); ok {
 		rows, err = tx.QueryContext(ctx, ownerNotificationRunQuery, prefix, progress, string(scope.Runs), since)
 	} else if event == ownernotify.EventNeedsInput {
-		rows, err = tx.QueryContext(ctx, ownerNotificationNeedsInputQuery, prefix, since)
+		rows, err = tx.QueryContext(ctx, ownerNotificationNeedsInputQuery, prefix, since, now)
 	} else if query, known := ownerNotificationSupervisionQueries[event]; known {
 		rows, err = tx.QueryContext(ctx, query, prefix)
 	} else {
@@ -314,8 +328,17 @@ func (e ownerNotificationEnricher) describe(ctx context.Context, n *ownernotify.
 		if wait.Attention != nil {
 			n.Prompt = wait.Attention.Prompt
 		}
+		if wait.Ask != nil {
+			n.Prompt = wait.Ask.Question
+			n.AskOptions = append([]string(nil), wait.Ask.Options...)
+			n.AskRequiresApprover = wait.Ask.Requires == domain.AskRequiresApprover
+		}
 		if !wait.RegisteredAt.IsZero() {
 			n.OccurredAt = wait.RegisteredAt.UTC()
+		}
+		if strings.HasSuffix(candidate.subject, ":reminder") {
+			n.Reminder = true
+			n.OccurredAt = n.OccurredAt.Add(wait.Deadline.Sub(wait.RegisteredAt) / 2)
 		}
 	case "incident":
 		var incident domain.ReviewIncident

@@ -75,6 +75,9 @@ func remoteAdminOperations() map[backlogadmin.QueryKind]bool {
 	return map[backlogadmin.QueryKind]bool{
 		"node-wait":       true,
 		"graph-amendment": true,
+		// Answering an ask settles a wait the asking task registered, like any
+		// other task-bound wait settlement a remote steward performs.
+		backlogadmin.AskAnswerKind: true,
 		// Releasing a quarantine tells intake to read a file again. It creates
 		// nothing by itself, the coordinator still refuses content it cannot
 		// accept, and the operator who fixed the configuration is usually not
@@ -107,6 +110,12 @@ func (localAdminAuthorizer) Authorize(_ context.Context, principal backlogadmin.
 		}
 		return errors.New("attention decisions require the separately authenticated approver role")
 	}
+	// An ask answer is open to an administrator and to an approver. Whether
+	// this particular ask needs the approver is decided by the coordinator
+	// against the ask itself, which only it can read.
+	if action.Kind == backlogadmin.AskAnswerKind && len(principal.Roles) == 1 && principal.Roles[0] == backlogadmin.ApproverRole {
+		return nil
+	}
 	for _, role := range principal.Roles {
 		switch role {
 		case backlogadmin.LocalAdminRole:
@@ -114,7 +123,7 @@ func (localAdminAuthorizer) Authorize(_ context.Context, principal backlogadmin.
 		case backlogadmin.RemoteAdminRole:
 			return authorizeRemoteAdmin(action)
 		case backlogadmin.ApproverRole:
-			return errors.New("approver role is limited to attention decisions")
+			return errors.New("approver role is limited to attention decisions and ask answers")
 		}
 	}
 	return errors.New("local-admin or remote-admin role is required")

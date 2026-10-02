@@ -150,7 +150,8 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		if wait.AttemptID != request.AttemptID || wait.ThreadID != request.ThreadID ||
 			wait.Wake != request.Wake || wait.MaxDuration != request.MaxDuration ||
 			wait.WorkflowRunID != request.WorkflowRunID || wait.TaskID != request.TaskID ||
-			wait.Kind.OrShell() != request.Kind.OrShell() || !sameAttentionRegistration(wait.Attention, request.Attention) {
+			wait.Kind.OrShell() != request.Kind.OrShell() || !sameAttentionRegistration(wait.Attention, request.Attention) ||
+			!sameAskRegistration(wait.Ask, request.Ask) {
 			return domain.TaskWait{}, domain.ErrTaskWaitReplayChanged
 		}
 		// A replay may only report a park that is actually in force. The wait
@@ -239,7 +240,7 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		AttemptID: request.AttemptID, IssuedRevision: request.IssuedRevision,
 		ThreadID: request.ThreadID, Wake: request.Wake, MaxDuration: request.MaxDuration,
 		RequestID: request.RequestID, Name: request.Name, Condition: request.Condition,
-		Kind: request.Kind.OrShell(), OrTimeout: request.OrTimeout, Node: request.Node, Quota: request.Quota, Attention: request.Attention,
+		Kind: request.Kind.OrShell(), OrTimeout: request.OrTimeout, Node: request.Node, Quota: request.Quota, Attention: request.Attention, Ask: request.Ask,
 		RegisteredRevision: expected + 1,
 		RegisteredAt:       now.UTC(),
 		Deadline:           now.Add(request.MaxDuration).UTC(),
@@ -317,6 +318,8 @@ func validateStructuredRegistrationTx(ctx context.Context, tx *sql.Tx, request *
 		}
 	case request.Attention != nil:
 		request.Condition = "attention " + string(request.Attention.Kind) + ": " + request.Attention.Prompt
+	case request.Ask != nil:
+		request.Condition = domain.TruncateUTF8("ask: "+request.Ask.Question, 4000)
 	case request.Quota != nil:
 		if request.Quota.Reset && request.Quota.ResetAt == nil {
 			resetAt, err := quotaResetAt(*request.Quota, records)
@@ -542,6 +545,9 @@ func (s *Store) SettleTaskWait(ctx context.Context, id string, result domain.Tas
 	}
 	if wait.Kind == domain.WaitKindAttention {
 		return wait, errors.New("attention waits may only be settled by an authenticated attention decision")
+	}
+	if wait.Kind == domain.WaitKindAsk && result.Outcome != domain.TaskWaitCancelled {
+		return wait, errors.New("an ask is settled only by its answer, its deadline or a cancellation")
 	}
 	if wait, err = settleTaskWaitTx(ctx, tx, wait, result, now); err != nil {
 		return wait, err
@@ -855,38 +861,51 @@ func (s *Store) ExpireTaskWaits(ctx context.Context, now time.Time) ([]domain.Ta
 		if !wait.Live() || now.Before(wait.Deadline) {
 			continue
 		}
-		settled := now.UTC()
-		wait.Result = &domain.TaskWaitResult{
-			Outcome: domain.TaskWaitTimedOut, ExitCode: 2,
-			Reason:     fmt.Sprintf("the wait exceeded its maximum duration of %s", wait.MaxDuration),
-			RanFor:     settled.Sub(wait.RegisteredAt),
-			ObservedAt: settled,
-		}
-		if wait.OrTimeout {
-			// --or-timeout: the deadline is an expected end of the wait, not a
-			// contradiction to record. The outcome still says timed-out so the
-			// resumed turn can tell it from the condition being met.
-			wait.Result.ExitCode = 0
-			wait.Result.Reason = fmt.Sprintf("the deadline of %s passed, which this wait treats as a normal outcome (--or-timeout)", wait.MaxDuration)
-		}
-		wait.SettledAt = &settled
-		if err = saveTaskWaitTx(ctx, tx, wait); err != nil {
+		if wait, err = expireTaskWaitTx(ctx, tx, wait, now); err != nil {
 			return nil, err
 		}
 		expired = append(expired, wait)
-		if wait.OrTimeout {
-			continue
-		}
-		if err = recordTaskWaitEventTx(ctx, tx, domain.TaskWaitReconciliation{
-			ID: "expiry:" + wait.ID, Kind: domain.TaskWaitReconciliationExpired,
-			AttemptID: wait.AttemptID, WaitID: wait.ID, ThreadID: wait.ThreadID,
-			Detail:     wait.Result.Reason,
-			ObservedAt: settled,
-		}); err != nil {
-			return nil, err
-		}
 	}
 	return expired, tx.Commit()
+}
+
+// expireTaskWaitTx settles one live wait whose deadline has passed. It is the
+// one expiry policy, used by the expiry pass and by an answer that arrives
+// after an ask's deadline but before that pass ran.
+func expireTaskWaitTx(ctx context.Context, tx *sql.Tx, wait domain.TaskWait, now time.Time) (domain.TaskWait, error) {
+	settled := now.UTC()
+	wait.Result = &domain.TaskWaitResult{
+		Outcome: domain.TaskWaitTimedOut, ExitCode: 2,
+		Reason:     fmt.Sprintf("the wait exceeded its maximum duration of %s", wait.MaxDuration),
+		RanFor:     settled.Sub(wait.RegisteredAt),
+		ObservedAt: settled,
+	}
+	if wait.Ask != nil && applyAskDeadline(&wait, settled) {
+		// The declared default is an answer the task asked for, not a
+		// contradiction, so no expiry event is recorded.
+		wait.SettledAt = &settled
+		return wait, saveTaskWaitTx(ctx, tx, wait)
+	}
+	if wait.OrTimeout {
+		// --or-timeout: the deadline is an expected end of the wait, not a
+		// contradiction to record. The outcome still says timed-out so the
+		// resumed turn can tell it from the condition being met.
+		wait.Result.ExitCode = 0
+		wait.Result.Reason = fmt.Sprintf("the deadline of %s passed, which this wait treats as a normal outcome (--or-timeout)", wait.MaxDuration)
+	}
+	wait.SettledAt = &settled
+	if err := saveTaskWaitTx(ctx, tx, wait); err != nil {
+		return wait, err
+	}
+	if wait.OrTimeout {
+		return wait, nil
+	}
+	return wait, recordTaskWaitEventTx(ctx, tx, domain.TaskWaitReconciliation{
+		ID: "expiry:" + wait.ID, Kind: domain.TaskWaitReconciliationExpired,
+		AttemptID: wait.AttemptID, WaitID: wait.ID, ThreadID: wait.ThreadID,
+		Detail:     wait.Result.Reason,
+		ObservedAt: settled,
+	})
 }
 
 // CancelTaskWait settles a wait as cancelled so its attempt can resume. A wait
@@ -1461,8 +1480,12 @@ func (s *Store) TaskWakesAwaitingDelivery(ctx context.Context, now time.Time) ([
 		if err != nil {
 			return nil, err
 		}
+		workspace, err := askAnswerWorkspaceTx(ctx, tx, assignment, live)
+		if err != nil {
+			return nil, err
+		}
 		pending = append(pending, domain.TaskWaitWakeContext{
-			WorkerID:  assignment.WorkerID,
+			WorkerID: assignment.WorkerID, WorkspacePath: workspace,
 			AttemptID: attemptID, ThreadID: attempt.ThreadID,
 			AttemptRevision: attempt.Revision, Waits: live,
 		})

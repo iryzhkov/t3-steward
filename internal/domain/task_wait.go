@@ -196,6 +196,11 @@ type TaskWait struct {
 	// Attention is the immutable operator question and its authenticated receipt.
 	Attention         *AttentionRequest  `json:"attention,omitempty"`
 	AttentionReceipts []AttentionReceipt `json:"attentionReceipts,omitempty"`
+	// Ask is the structured question of an ask wait, and AskAnswer the
+	// ask-answer/v1 document that settled it, absent until it is answered or
+	// its deadline applied the declared default.
+	Ask       *AskRequest `json:"ask,omitempty"`
+	AskAnswer *AskAnswer  `json:"askAnswer,omitempty"`
 
 	// RegisteredRevision is the attempt revision this registration produced. It
 	// is the fence a later wake is checked against.
@@ -299,6 +304,8 @@ type TaskWaitRegistration struct {
 	Quota *QuotaWaitCondition `json:"quota,omitempty"`
 	// Attention is the typed operator decision request.
 	Attention *AttentionRequest `json:"attention,omitempty"`
+	// Ask is the structured question of an ask wait.
+	Ask *AskRequest `json:"ask,omitempty"`
 }
 
 // MaxTaskWaitDuration bounds any single task-bound wait. Directory writer
@@ -385,6 +392,19 @@ func (r TaskWaitRegistration) Validate() error {
 		return errors.New("an attention wait needs its typed request")
 	case r.Kind != WaitKindAttention && r.Attention != nil:
 		return fmt.Errorf("a %s wait carries no attention request", r.Kind.OrShell())
+	case r.Kind == WaitKindAsk && r.Ask == nil:
+		return errors.New("an ask wait needs its question")
+	case r.Kind != WaitKindAsk && r.Ask != nil:
+		return fmt.Errorf("a %s wait carries no question", r.Kind.OrShell())
+	case r.Kind == WaitKindAsk && r.Ask.Relay != nil:
+		return errors.New("an ask registration cannot name a relay thread; the steward records it")
+	case r.Kind == WaitKindAsk && r.OrTimeout:
+		return errors.New("an ask decides its deadline with --default or --on-deadline fail, not --or-timeout")
+	}
+	if r.Ask != nil {
+		if err := r.Ask.Validate(); err != nil {
+			return err
+		}
 	}
 	if r.Attention != nil {
 		if err := r.Attention.Validate(); err != nil {
@@ -442,9 +462,13 @@ type TaskWaitReconciliation struct {
 type TaskWaitWakeContext struct {
 	// WorkerID is derived from the durable assignment when listing pending wakes.
 	// It is transport metadata, never a new persisted wait field.
-	WorkerID  string `json:"workerId,omitempty"`
-	AttemptID string `json:"attemptId"`
-	ThreadID  string `json:"threadId"`
+	WorkerID string `json:"workerId,omitempty"`
+	// WorkspacePath is the attempt's workspace as its worker last reported it,
+	// for the steward that writes an ask answer into it before the wake. It is
+	// transport metadata like WorkerID.
+	WorkspacePath string `json:"workspacePath,omitempty"`
+	AttemptID     string `json:"attemptId"`
+	ThreadID      string `json:"threadId"`
 	// AttemptRevision is the revision this wake belongs to. Delivery is
 	// refused once the attempt has moved past it: the turn that would have
 	// received the message is gone.
@@ -495,6 +519,18 @@ func (c TaskWaitWakeContext) Prompt() string {
 		if output := strings.TrimSpace(w.Result.Output); output != "" {
 			fmt.Fprintf(&builder, "\n%s\n\n", output)
 		}
+		if w.Ask != nil {
+			builder.WriteString(askWakeText(w))
+		}
+	}
+	for _, w := range c.Waits {
+		if w.Ask == nil || w.AskAnswer != nil || w.Result == nil {
+			continue
+		}
+		// An ask that ended without an answer has given its own final
+		// instruction; telling the task to write every declared output as well
+		// would contradict "end failed, do not write the outputs".
+		return builder.String()
 	}
 	builder.WriteString("\nContinue the task. Write every declared output before ending the turn; ")
 	builder.WriteString("the outputs collected are the ones present when a turn ends with nothing parking this task.\n")

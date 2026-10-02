@@ -336,6 +336,16 @@ func familyHelpPages() []helpPage {
 			Parsers: []parserSite{{Func: "parseModelsArgs"}, {Func: "takeJSONFlag"}, familyDispatchSite("models")},
 		},
 		{
+			// ask parses its own arguments like models and triage, and has one
+			// verb below it, answer.
+			Path: "ask", Body: askUsage,
+			Parsers: []parserSite{{Func: "parseAskArgs"}, familyDispatchSite("ask")},
+		},
+		{
+			Path: "ask answer", Body: askUsage,
+			Parsers: []parserSite{{Func: "parseAskAnswerArgs"}},
+		},
+		{
 			// triage is the same shape as models: one page, no children, its own
 			// arguments.
 			Path: "triage", Body: triageUsage,

@@ -200,11 +200,23 @@ func (r *Runner) deliverTaskWake(ctx context.Context, store TaskWaitStore, contr
 			log.Debug("task wake held", "reason", why)
 			return
 		}
+		fileNote := ""
+		if wait.Ask != nil && wait.Resumption {
+			// The file is prepared before the wake is claimed, and redoing it
+			// on a retry is harmless. An earlier ask's file is removed first,
+			// so the task never reads a stale answer. A failure is logged and
+			// the wake still goes out, saying the file is not to be trusted:
+			// the answer travels in the message as well.
+			if err := prepareAskAnswerFile(wake.WorkspacePath, wait.AskAnswer); err != nil {
+				log.Warn("ask answer file not written; the answer is still in the wake message", "wait", wait.ID, "err", err)
+				fileNote = askAnswerFileNote(err)
+			}
+		}
 		claimed, err := store.TransitionTaskWake(ctx, wait.ID, wait.Delivery, "sending", now)
 		if err != nil || !claimed {
 			continue
 		}
-		if err := control.SendNodeWake(ctx, *thread, wait.DeliveryID, taskWakeMessage(wake, wait)); err != nil {
+		if err := control.SendNodeWake(ctx, *thread, wait.DeliveryID, taskWakeMessage(wake, wait)+fileNote); err != nil {
 			log.Error("deliver task wake", "wait", wait.ID, "err", err)
 			if _, err := store.TransitionTaskWake(ctx, wait.ID, "sending", "recovery-required", now); err != nil {
 				log.Error("record uncertain task wake", "wait", wait.ID, "err", err)

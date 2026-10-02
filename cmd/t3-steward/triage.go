@@ -38,7 +38,12 @@ What it lists, items needing action first:
                         released, and is listed so it is not mistaken for
                         live work)
   supervision-dispatch  an overseer dispatch that failed
-  needs-input           a task's attention request awaiting an answer
+  needs-input           a task's question awaiting an answer: an open ask,
+                        with one "t3-steward ask answer" command per option,
+                        or an attention request
+  ask-unanswered        an ask that reached its deadline with no answer and
+                        no default in the last 7 days; its task was told to
+                        end failed
   wake-overdue          a wake settled for more than 10 minutes that nothing
                         has claimed, or a wait past its deadline that the
                         coordinator has not settled
@@ -682,6 +687,9 @@ func triageNodeWait(report *triageReport, w domain.NodeWait, now time.Time) {
 func triageTaskWait(report *triageReport, w domain.TaskWait, now time.Time) {
 	task := w.WorkflowRunID + "/" + w.TaskID
 	showRun := triageCommand{Run: "t3-steward campaign show " + w.WorkflowRunID}
+	if w.Kind == domain.WaitKindAsk && w.Ask != nil && triageAsk(report, w, task, showRun, now) {
+		return
+	}
 	if w.SettledAt == nil {
 		if w.Kind == domain.WaitKindAttention {
 			registered := w.RegisteredAt
@@ -718,11 +726,64 @@ func triageTaskWait(report *triageReport, w domain.TaskWait, now time.Time) {
 	})
 }
 
+// triageAskUnansweredFor is how long an ask that expired with no answer stays
+// listed after its deadline.
+const triageAskUnansweredFor = 7 * 24 * time.Hour
+
+// triageAsk lists an open ask with one ready-to-run answer command per option,
+// and an ask that expired unanswered as a warning. It reports whether it dealt
+// with the wait; a settled ask that was answered falls through to the ordinary
+// wake checks.
+func triageAsk(report *triageReport, w domain.TaskWait, task string, showRun triageCommand, now time.Time) bool {
+	ask := w.Ask
+	if w.SettledAt == nil {
+		registered := w.RegisteredAt
+		summary := fmt.Sprintf("task %s asks: %s (options: %s; ", task, strconv.Quote(ask.Question), strings.Join(ask.Options, " | "))
+		if ask.OnDeadline == domain.AskDeadlineDefault {
+			summary += fmt.Sprintf("%s applies in %s)", strings.Join(ask.Default, ", "), humanDuration(w.Deadline.Sub(now)))
+		} else {
+			summary += fmt.Sprintf("the task fails unanswered in %s)", humanDuration(w.Deadline.Sub(now)))
+		}
+		if ask.Relay != nil && ask.Relay.ThreadID != "" && ask.Relay.State == domain.AskRelayOpen {
+			summary += "; it awaits input in T3 thread " + ask.Relay.ThreadID
+		}
+		when := ""
+		if ask.Requires == domain.AskRequiresApprover {
+			summary += "; it requires the approver, so answer it with the approver client's configuration (--config) and not in T3"
+			when = "; run it with the approver client's configuration"
+		}
+		commands := make([]triageCommand, 0, len(ask.Options)+1)
+		for _, option := range ask.Options {
+			commands = append(commands, triageCommand{
+				Run:  "t3-steward ask answer " + w.ID + " --option " + shellQuote(option),
+				When: "to answer " + strconv.Quote(option) + when,
+			})
+		}
+		report.add(triageItem{
+			Kind: "needs-input", Severity: "action", Subject: w.ID, Run: w.WorkflowRunID, Since: &registered,
+			Summary: summary, Commands: append(commands, showRun),
+		})
+		return true
+	}
+	if w.AskAnswer == nil && w.Result != nil && w.Result.Outcome == domain.TaskWaitTimedOut {
+		settled := *w.SettledAt
+		if now.Sub(settled) <= triageAskUnansweredFor {
+			report.add(triageItem{
+				Kind: "ask-unanswered", Severity: "warn", Subject: w.ID, Run: w.WorkflowRunID, Since: &settled,
+				Summary: fmt.Sprintf("task %s asked %s and got no answer before its deadline; it was told to end failed",
+					task, strconv.Quote(ask.Question)),
+				Commands: []triageCommand{showRun, {Run: "t3-steward task result " + task}},
+			})
+		}
+	}
+	return false
+}
+
 // triageKindOrder orders items of one severity: workers first, because a
 // worker that is down explains much of what follows it.
 var triageKindOrder = []string{
 	"worker-down", "supervision-reassess", "supervision-incident", "supervision-gate", "needs-input",
-	"wake-overdue", "wake-undeliverable", "supervision-hold", "supervision-dispatch", "quota-held",
+	"ask-unanswered", "wake-overdue", "wake-undeliverable", "supervision-hold", "supervision-dispatch", "quota-held",
 	"intake-quarantined", "run-stalled", "worker-disconnected", "worker-maintenance",
 }
 

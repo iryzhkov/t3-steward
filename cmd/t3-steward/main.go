@@ -62,6 +62,8 @@ Commands:
   diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
   schedules          Inspect and control schedules and trigger history.
   wait               Park a thread until a check succeeds; the steward wakes it (add, list, cancel).
+  ask                Inside a task: ask the owner a question in T3 and park until it is answered;
+                     answer <id>: answer an open ask from the CLI.
   task               run: start one task on the fleet from this checkout, with the project,
                      ref, route and wake derived; result <run>[/<task>]: collect its final
                      message and outputs; env [--get NAME]: this attempt's identity.
@@ -191,7 +193,7 @@ func dispatch(args []string) error {
 	switch cmd {
 	case "-h", "--help", "help":
 		return printTopLevelHelp(os.Stdout, rest)
-	case "task", "wait", "thread", "bucket":
+	case "task", "wait", "thread", "bucket", "ask":
 		paths, err := config.DefaultPaths()
 		if err != nil {
 			return err
@@ -211,6 +213,8 @@ func dispatch(args []string) error {
 			return cmdThread(g, sub)
 		case "bucket":
 			return cmdBucket(g, sub)
+		case "ask":
+			return cmdAsk(g, sub)
 		case "task":
 			// task env reads only the workspace identity record and loads no
 			// configuration; task run and task result reach the coordinator.
@@ -434,7 +438,7 @@ var dispatchedVerbs = []string{
 // topLevelFamilies are the command families dispatch routes by name, in the
 // order a did-you-mean suggestion prefers them.
 var topLevelFamilies = []string{
-	"campaign", "task", "wait", "backlog", "worker", "coordinator", "schedules", "models", "triage",
+	"campaign", "task", "wait", "ask", "backlog", "worker", "coordinator", "schedules", "models", "triage",
 	"diagnose", "thread", "bucket", "archive", "ui-archive", "version", "help",
 }
 
