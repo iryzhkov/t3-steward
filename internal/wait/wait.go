@@ -177,7 +177,7 @@ type Runner struct {
 	NativeStore    NativeInputStore
 	nativeWatched  map[string]bool
 	nativeReported map[string]map[string]bool
-	nativePending  map[string][]domain.UserInputEvent
+	nativePending  map[string]nativeReport
 	store          Store
 	control        Control
 	log            *slog.Logger

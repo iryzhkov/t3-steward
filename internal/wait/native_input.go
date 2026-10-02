@@ -57,13 +57,18 @@ func (r *Runner) tickNativeInput(ctx context.Context) {
 		r.nativeReported = map[string]map[string]bool{}
 	}
 	if r.nativePending == nil {
-		r.nativePending = map[string][]domain.UserInputEvent{}
+		r.nativePending = map[string]nativeReport{}
 	}
+	// A thread whose attempt ended is no longer read, but a batch already read
+	// from it stays pending, with the attempt it was read under, until the
+	// coordinator acknowledges it: the attempt ending within a tick of a
+	// failed report must not lose the answer.
 	for thread := range r.nativeWatched {
 		if _, live := threads[thread]; !live {
 			delete(r.nativeWatched, thread)
-			delete(r.nativeReported, thread)
-			delete(r.nativePending, thread)
+			if _, pending := r.nativePending[thread]; !pending {
+				delete(r.nativeReported, thread)
+			}
 		}
 	}
 	ids := make([]string, 0, len(threads))
@@ -112,7 +117,7 @@ func (r *Runner) tickNativeInput(ctx context.Context) {
 		// the thread shows next: an answer read once and lost to a failed
 		// report would otherwise never be read again, because the card is no
 		// longer pending.
-		r.nativePending[threadID] = events
+		r.nativePending[threadID] = nativeReport{attemptID: threads[threadID], events: events}
 	}
 	pending := make([]string, 0, len(r.nativePending))
 	for threadID := range r.nativePending {
@@ -120,8 +125,9 @@ func (r *Runner) tickNativeInput(ctx context.Context) {
 	}
 	sort.Strings(pending)
 	for _, threadID := range pending {
-		events := r.nativePending[threadID]
-		if _, err := store.RecordNativeUserInput(ctx, r.TaskWorkerID, threads[threadID], threadID, events, r.now()); err != nil {
+		batch := r.nativePending[threadID]
+		events := batch.events
+		if _, err := store.RecordNativeUserInput(ctx, r.TaskWorkerID, batch.attemptID, threadID, events, r.now()); err != nil {
 			r.log.Warn("record a task's native question; retrying next tick", "thread", threadID, "err", err)
 			continue
 		}
@@ -134,5 +140,15 @@ func (r *Runner) tickNativeInput(ctx context.Context) {
 			reported[event.ActivityID] = true
 		}
 		delete(r.nativePending, threadID)
+		if _, live := threads[threadID]; !live {
+			delete(r.nativeReported, threadID)
+		}
 	}
+}
+
+// nativeReport is a batch of a task thread's question activity, with the
+// attempt it was read under, waiting for the coordinator to acknowledge it.
+type nativeReport struct {
+	attemptID string
+	events    []domain.UserInputEvent
 }
