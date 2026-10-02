@@ -158,6 +158,11 @@ type Notification struct {
 	Task   string `json:"task,omitempty"`
 	WaitID string `json:"waitId,omitempty"`
 	Prompt string `json:"prompt,omitempty"`
+	// AskOptions are the choices of a question asked with t3-steward ask;
+	// empty for an attention request. Reminder marks the second notice of an
+	// ask, sent when half its deadline has passed unanswered.
+	AskOptions []string `json:"askOptions,omitempty"`
+	Reminder   bool     `json:"reminder,omitempty"`
 	// IncidentID, ActivationID and Gate identify the supervision record that
 	// is waiting, and Reason says why.
 	IncidentID   string `json:"incidentId,omitempty"`
@@ -188,7 +193,12 @@ func (n Notification) Commands() map[string]string {
 		commands["result"] = "t3-steward task result " + n.RunID
 		commands["show"] = "t3-steward campaign show " + n.RunID
 	case EventNeedsInput:
-		commands["inspect"] = "t3-steward wait inspect " + n.WaitID
+		if len(n.AskOptions) != 0 {
+			commands["answer"] = "t3-steward ask answer " + n.WaitID + " --option OPTION"
+			commands["triage"] = "t3-steward triage"
+		} else {
+			commands["inspect"] = "t3-steward wait inspect " + n.WaitID
+		}
 		commands["show"] = "t3-steward campaign show " + n.RunID
 	case EventSupervisionEscalated, EventGateReview:
 		commands["supervision"] = "t3-steward campaign supervision show " + n.RunID

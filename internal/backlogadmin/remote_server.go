@@ -394,8 +394,9 @@ func (s *RemoteServer) validate(pinned string, frame remoteFrame) (localRequest,
 	}
 	approver := s.config.Approvers[credentials.ClientPrincipal]
 	if approver && (request.Operation != localOperationNodeWait || request.NodeWait == nil ||
-		(request.NodeWait.Action != "inspect-attention" && request.NodeWait.Action != "decide-attention")) {
-		return signedRefusal(workerproto.ErrorAuthorization, "approver credential is restricted to attention inspection and decision")
+		(request.NodeWait.Action != "inspect-attention" && request.NodeWait.Action != "decide-attention" &&
+			request.NodeWait.Action != AskAnswerAction)) {
+		return signedRefusal(workerproto.ErrorAuthorization, "approver credential is restricted to attention inspection and decision and to ask answers")
 	}
 	assertion := &RemoteAdminAssertion{
 		Principal:   credentials.ClientPrincipal,

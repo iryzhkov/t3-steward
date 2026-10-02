@@ -189,10 +189,18 @@ func RenderDiscord(n Notification) string {
 			fmt.Fprintf(&b, " on task %s", code(n.Task))
 		}
 		b.WriteString(".")
+		if n.Reminder {
+			b.WriteString(" Reminder: half of its deadline has passed.")
+		}
 		if n.Prompt != "" {
 			b.WriteString("\n> " + escapeMarkdown(truncate(n.Prompt, 600)))
 		}
-		fmt.Fprintf(&b, "\nInspect: %s", code("t3-steward wait inspect "+n.WaitID))
+		if len(n.AskOptions) != 0 {
+			fmt.Fprintf(&b, "\nOptions: %s", escapeMarkdown(truncate(strings.Join(n.AskOptions, " | "), 600)))
+			fmt.Fprintf(&b, "\nAnswer in its T3 relay thread, or: %s", code("t3-steward ask answer "+n.WaitID+" --option OPTION"))
+		} else {
+			fmt.Fprintf(&b, "\nInspect: %s", code("t3-steward wait inspect "+n.WaitID))
+		}
 	case EventSupervisionEscalated:
 		fmt.Fprintf(&b, "t3-steward: %s is waiting for an operator", subject)
 		if n.Gate != "" {

@@ -426,10 +426,16 @@ func (s *LocalServer) verifyApprovalFrame(relayed localRequest) (Principal, loca
 		original.NodeWait.ID != "" && original.NodeWait.From == "" && original.NodeWait.To == "" &&
 		original.NodeWait.Host == "" && !original.NodeWait.Undelivered &&
 		reflect.DeepEqual(original.NodeWait.Request, domain.NodeWaitRequest{})
+	answer := original.NodeWait != nil && original.NodeWait.Action == AskAnswerAction &&
+		original.NodeWait.Answer != nil && original.NodeWait.Answer.Source == domain.AskSourceCLI &&
+		original.NodeWait.Decision == nil && original.NodeWait.Task == nil && original.NodeWait.Result == nil &&
+		original.NodeWait.ID == "" && original.NodeWait.From == "" && original.NodeWait.To == "" &&
+		original.NodeWait.Host == "" && !original.NodeWait.Undelivered &&
+		reflect.DeepEqual(original.NodeWait.Request, domain.NodeWaitRequest{})
 	if original.ApprovalFrame != nil || original.RemoteAdmin != nil ||
 		original.Version != LocalTransportVersion || original.Operation != localOperationNodeWait ||
-		(!decision && !inspection) {
-		return Principal{}, localRequest{}, errors.New("approval proof is not an attention inspection or decision")
+		(!decision && !inspection && !answer) {
+		return Principal{}, localRequest{}, errors.New("approval proof is not an attention inspection or decision or an ask answer")
 	}
 	if relayed.RemoteAdmin.Principal != credentials.ClientPrincipal ||
 		relayed.RemoteAdmin.Coordinator != s.CoordinatorID ||

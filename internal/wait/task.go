@@ -200,6 +200,14 @@ func (r *Runner) deliverTaskWake(ctx context.Context, store TaskWaitStore, contr
 			log.Debug("task wake held", "reason", why)
 			return
 		}
+		if wait.AskAnswer != nil && wait.Resumption {
+			// The file is written before the wake is claimed, and rewriting
+			// it on a retry is harmless. A failure is logged and the wake is
+			// still sent: the answer travels in the message as well.
+			if err := writeAskAnswerFile(wake.WorkspacePath, *wait.AskAnswer); err != nil {
+				log.Warn("ask answer file not written; the answer is still in the wake message", "wait", wait.ID, "err", err)
+			}
+		}
 		claimed, err := store.TransitionTaskWake(ctx, wait.ID, wait.Delivery, "sending", now)
 		if err != nil || !claimed {
 			continue

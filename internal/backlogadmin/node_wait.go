@@ -19,6 +19,10 @@ type NodeWaitOperation struct {
 	Task     *domain.TaskWaitRegistration `json:"task,omitempty"`
 	Result   *domain.TaskWaitResult       `json:"result,omitempty"`
 	Decision *domain.AttentionDecision    `json:"decision,omitempty"`
+	// Answer is the answer to an ask, for the "answer-ask" action. Only its
+	// ask ID, options, free text, source and relay thread are read; the
+	// coordinator fills the rest of the ask-answer/v1 document itself.
+	Answer *domain.AskAnswer `json:"answer,omitempty"`
 	// CoordinatorID is injected by the authenticated server boundary and is
 	// never accepted from request JSON.
 	CoordinatorID string `json:"-"`
@@ -86,7 +90,17 @@ type taskWaitStore interface {
 	ListTaskWaits(context.Context) ([]domain.TaskWait, error)
 	CancelTaskWait(context.Context, string, time.Time) (domain.TaskWait, error)
 	DecideAttentionForCoordinator(context.Context, domain.AttentionDecision, string, string, time.Time) (domain.TaskWait, domain.AttentionReceipt, error)
+	AnswerAsk(context.Context, domain.AskAnswer, string, bool, time.Time) (domain.TaskWait, error)
 }
+
+// AskAnswerAction is the node-wait action that answers an ask, and
+// AskAnswerKind the authorization kind it is checked as. An approver may use
+// it as well as an administrator: an ask registered with --requires approver
+// accepts nothing else.
+const (
+	AskAnswerAction = "answer-ask"
+	AskAnswerKind   = QueryKind("ask-answer")
+)
 
 func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWaitOperation) (NodeWaitResponse, error) {
 	var result NodeWaitResponse
@@ -98,6 +112,8 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 		action.Kind, action.WorkflowRunID, action.TaskID = QueryKind("attention-decision"), op.Decision.WorkflowRunID, op.Decision.TaskID
 	} else if op.Action == "inspect-attention" {
 		action.Kind = QueryKind("attention-decision")
+	} else if op.Action == AskAnswerAction {
+		action.Kind = AskAnswerKind
 	}
 	if err := s.authorizer.Authorize(ctx, principal, action); err != nil {
 		return result, err
@@ -105,7 +121,8 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 	if op.Action == "settle-task" || op.Action == "expire-task" || op.Action == "wake-task" || op.Action == "pending-task" || op.Action == "transition-task" {
 		return s.taskWaitRuntime(ctx, op)
 	}
-	if op.Action == "register-task" || op.Action == "list-task" || op.Action == "inspect-attention" || op.Action == "cancel-task" || op.Action == "decide-attention" {
+	if op.Action == "register-task" || op.Action == "list-task" || op.Action == "inspect-attention" || op.Action == "cancel-task" || op.Action == "decide-attention" ||
+		op.Action == AskAnswerAction {
 		return s.taskWait(ctx, principal, op)
 	}
 	store, ok := s.reader.(nodeWaitStore)
@@ -239,6 +256,22 @@ func (s *Service) taskWait(ctx context.Context, principal Principal, op NodeWait
 		}
 		result.TaskWaits = []domain.TaskWait{wait}
 		result.AttentionReceipt = &receipt
+		return result, nil
+	case AskAnswerAction:
+		if op.Answer == nil {
+			return result, errors.New("the answer is missing")
+		}
+		approver := false
+		for _, role := range principal.Roles {
+			if role == ApproverRole {
+				approver = true
+			}
+		}
+		wait, err := store.AnswerAsk(ctx, *op.Answer, principal.ID, approver, s.now())
+		if err != nil {
+			return result, err
+		}
+		result.TaskWaits = []domain.TaskWait{wait}
 		return result, nil
 	case "cancel-task":
 		if op.ID == "" {

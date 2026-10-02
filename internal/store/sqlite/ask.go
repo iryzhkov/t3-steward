@@ -1,0 +1,260 @@
+package sqlite
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
+)
+
+// An ask is a task-bound wait of kind ask. It lives in coordinator_task_waits
+// like every other task-bound wait, so it parks, wakes, expires and is listed
+// by the same code; what is particular to it is how it may be settled. It is
+// never settled by a check result: only by an answer (AnswerAsk), by its
+// deadline (ExpireTaskWaits, through applyAskDeadline) or by a cancellation.
+
+func sameAskRegistration(stored, requested *domain.AskRequest) bool {
+	if stored == nil || requested == nil {
+		return stored == nil && requested == nil
+	}
+	return stored.SameQuestion(*requested)
+}
+
+// applyAskDeadline settles an expiring ask. With a declared default it records
+// the default as the answer and reports true; with --on-deadline fail it leaves
+// the timed-out result, reworded to say there was no answer, and reports false
+// so the expiry is recorded as the contradiction it is.
+func applyAskDeadline(wait *domain.TaskWait, settled time.Time) bool {
+	if wait.Ask.OnDeadline != domain.AskDeadlineDefault || len(wait.Ask.Default) == 0 {
+		wait.Result.Reason = fmt.Sprintf("no answer before the deadline of %s; the ask was registered with --on-deadline fail", wait.MaxDuration)
+		wait.Result.Fields = map[string]string{"answer": "none"}
+		return false
+	}
+	answer := domain.AskAnswer{
+		Schema: domain.AskAnswerSchema, AskID: wait.ID, WorkflowRunID: wait.WorkflowRunID, TaskID: wait.TaskID,
+		Question: wait.Ask.Question, Options: append([]string(nil), wait.Ask.Default...),
+		Source: domain.AskSourceDeadlineDefault, AnsweredAt: settled,
+	}
+	wait.AskAnswer = &answer
+	wait.Result = &domain.TaskWaitResult{
+		Outcome: domain.TaskWaitMet, ExitCode: 0,
+		Reason:     fmt.Sprintf("no answer before the deadline of %s; the declared default applies", wait.MaxDuration),
+		Fields:     map[string]string{"answer": answer.Summary(), "source": string(answer.Source)},
+		RanFor:     settled.Sub(wait.RegisteredAt),
+		ObservedAt: settled,
+	}
+	return true
+}
+
+// askAnswerWorkspaceTx finds the workspace an answered ask's file is written
+// to: the one the attempt's worker last reported for its assignment. It is
+// looked up only for a wake that carries an answer, and an unknown workspace
+// is not an error: the answer still travels in the wake message.
+func askAnswerWorkspaceTx(ctx context.Context, tx *sql.Tx, assignment domain.Assignment, waits []domain.TaskWait) (string, error) {
+	answered := false
+	for _, wait := range waits {
+		if wait.AskAnswer != nil {
+			answered = true
+		}
+	}
+	if !answered || assignment.WorkerID == "" {
+		return "", nil
+	}
+	snapshot, found, err := loadWorkerSnapshotTx(ctx, tx, assignment.WorkerID)
+	if err != nil || !found {
+		return "", err
+	}
+	for _, observation := range snapshot.Assignments {
+		if observation.AssignmentID == assignment.ID {
+			return observation.WorkspacePath, nil
+		}
+	}
+	return "", nil
+}
+
+// RecordAskRelay records the relay thread of an ask as the steward of the
+// asking attempt's worker moves it through opening, open, archived or failed.
+//
+// The thread is fixed by the first record: the steward derives its ID before
+// creating it, records opening, and only then creates it, so a crash between
+// the two leaves the ID that may exist rather than a second thread. A record
+// naming another thread is refused, as is any relay for an approver ask, a
+// relay from a worker that does not hold the attempt's assignment, and opening
+// a relay for an ask that has already settled. Archiving is allowed after
+// settlement, which is when it normally happens.
+func (s *Store) RecordAskRelay(ctx context.Context, waitID string, relay domain.AskRelay, now time.Time) (domain.TaskWait, error) {
+	var wait domain.TaskWait
+	if waitID == "" || relay.ThreadID == "" || relay.WorkerID == "" || now.IsZero() {
+		return wait, errors.New("an ask relay record needs the ask, the thread, the worker and a timestamp")
+	}
+	switch relay.State {
+	case domain.AskRelayOpening, domain.AskRelayOpen, domain.AskRelayArchived, domain.AskRelayFailed:
+	default:
+		return wait, fmt.Errorf("ask relay state %q is not opening, open, archived or failed", relay.State)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wait, err
+	}
+	defer tx.Rollback()
+	var raw []byte
+	if err = tx.QueryRowContext(ctx, "SELECT record FROM coordinator_task_waits WHERE id=?", waitID).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return wait, fmt.Errorf("ask %q is unknown", waitID)
+		}
+		return wait, err
+	}
+	if err = json.Unmarshal(raw, &wait); err != nil {
+		return wait, err
+	}
+	if wait.Kind != domain.WaitKindAsk || wait.Ask == nil {
+		return wait, fmt.Errorf("wait %q is not an ask", waitID)
+	}
+	if wait.Ask.Requires == domain.AskRequiresApprover {
+		return wait, errors.New("an ask that requires the approver has no relay thread: it is answered only through the signed approver path")
+	}
+	attempt, err := loadAttemptTx(ctx, tx, wait.AttemptID)
+	if err != nil {
+		return wait, err
+	}
+	assignment, err := loadAssignmentTx(ctx, tx, attempt.AssignmentID)
+	if err != nil {
+		return wait, err
+	}
+	if assignment.WorkerID != relay.WorkerID {
+		return wait, fmt.Errorf("worker %q does not run the asking attempt; %q does", relay.WorkerID, assignment.WorkerID)
+	}
+	prior := wait.Ask.Relay
+	if prior != nil && prior.ThreadID != relay.ThreadID {
+		return wait, fmt.Errorf("ask %s already has relay thread %s", wait.ID, prior.ThreadID)
+	}
+	if prior != nil && prior.State == relay.State {
+		return wait, tx.Commit()
+	}
+	if prior != nil && (prior.State == domain.AskRelayArchived || prior.State == domain.AskRelayFailed) {
+		return wait, fmt.Errorf("relay thread %s is already %s", prior.ThreadID, prior.State)
+	}
+	if wait.Settled() && (relay.State == domain.AskRelayOpening || relay.State == domain.AskRelayOpen) {
+		return wait, fmt.Errorf("%w; no relay thread is opened for it", domain.ErrAskSettled)
+	}
+	record := relay
+	record.UpdatedAt = now.UTC()
+	if record.State == domain.AskRelayArchived {
+		archived := now.UTC()
+		record.ArchivedAt = &archived
+	}
+	wait.Ask.Relay = &record
+	if err := saveTaskWaitTx(ctx, tx, wait); err != nil {
+		return wait, err
+	}
+	return wait, tx.Commit()
+}
+
+// AnswerAsk records the answer to an ask and settles it, in one transaction.
+//
+// The answer names the ask by AskID and carries what was chosen, the free text,
+// where it came from and, for a T3 answer, the relay thread it was given in.
+// Everything else in the stored ask-answer/v1 document is filled in here from
+// the coordinator's own record, so a caller cannot restate the question.
+//
+// The same answer replayed returns the settled ask unchanged; a different one
+// is refused, as is any answer to an ask that already settled by its deadline
+// or by cancellation. An approver ask accepts only an answer from the CLI whose
+// frame was verified as a configured approver's; approver reports exactly that.
+func (s *Store) AnswerAsk(ctx context.Context, answer domain.AskAnswer, principal string, approver bool, now time.Time) (domain.TaskWait, error) {
+	var wait domain.TaskWait
+	if answer.AskID == "" || principal == "" || now.IsZero() {
+		return wait, errors.New("an ask answer needs the ask ID, an authenticated principal and a timestamp")
+	}
+	if answer.Source != domain.AskSourceT3 && answer.Source != domain.AskSourceCLI {
+		return wait, fmt.Errorf("an ask answer comes from t3 or cli, not %q", answer.Source)
+	}
+	if answer.Source == domain.AskSourceCLI && answer.ThreadID != "" {
+		return wait, errors.New("a CLI answer names no thread")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wait, err
+	}
+	defer tx.Rollback()
+	var raw []byte
+	if err = tx.QueryRowContext(ctx, "SELECT record FROM coordinator_task_waits WHERE id=?", answer.AskID).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return wait, fmt.Errorf("ask %q is unknown", answer.AskID)
+		}
+		return wait, err
+	}
+	if err = json.Unmarshal(raw, &wait); err != nil {
+		return wait, err
+	}
+	if wait.Kind != domain.WaitKindAsk || wait.Ask == nil {
+		return wait, fmt.Errorf("wait %q is a %s wait, not an ask", wait.ID, wait.Kind.OrShell())
+	}
+	if prior := wait.AskAnswer; prior != nil {
+		if prior.Source == answer.Source && prior.ThreadID == answer.ThreadID && prior.FreeText == answer.FreeText &&
+			reflect.DeepEqual(prior.Options, answer.Options) {
+			return wait, tx.Commit()
+		}
+		return wait, fmt.Errorf("%w (%s, from %s at %s)", domain.ErrAskAlreadyAnswered,
+			prior.Summary(), prior.Source, prior.AnsweredAt.UTC().Format(time.RFC3339))
+	}
+	if wait.Settled() {
+		outcome := domain.TaskWaitOutcome("settled")
+		if wait.Result != nil {
+			outcome = wait.Result.Outcome
+		}
+		return wait, fmt.Errorf("%w as %s", domain.ErrAskSettled, outcome)
+	}
+	if wait.Ask.Requires == domain.AskRequiresApprover {
+		if answer.Source == domain.AskSourceT3 {
+			return wait, fmt.Errorf("%w: an answer given in T3 is refused", domain.ErrAskApproverRequired)
+		}
+		if !approver {
+			return wait, fmt.Errorf("%w: answer it with a client configured as an approver (t3-steward --config <approver config> ask answer %s ...)",
+				domain.ErrAskApproverRequired, wait.ID)
+		}
+	}
+	if answer.Source == domain.AskSourceT3 {
+		if wait.Ask.Relay == nil || wait.Ask.Relay.ThreadID == "" || wait.Ask.Relay.ThreadID != answer.ThreadID {
+			return wait, fmt.Errorf("a T3 answer must come from the ask's own relay thread; %q is not it", answer.ThreadID)
+		}
+	}
+	if err := wait.Ask.CheckAnswer(answer.Options, answer.FreeText); err != nil {
+		return wait, err
+	}
+	attempt, err := loadAttemptTx(ctx, tx, wait.AttemptID)
+	if err != nil {
+		return wait, err
+	}
+	if attempt.Progress.Terminal() {
+		return wait, fmt.Errorf("the task that asked is no longer waiting: its attempt is %s", attempt.Progress)
+	}
+	answered := now.UTC()
+	record := domain.AskAnswer{
+		Schema: domain.AskAnswerSchema, AskID: wait.ID, WorkflowRunID: wait.WorkflowRunID, TaskID: wait.TaskID,
+		Question: wait.Ask.Question, Options: append([]string(nil), answer.Options...), FreeText: strings.TrimSpace(answer.FreeText),
+		Source: answer.Source, AnsweredBy: principal, ThreadID: answer.ThreadID, AnsweredAt: answered,
+	}
+	if len(record.Options) == 0 {
+		record.Options = []string{}
+	}
+	wait.AskAnswer = &record
+	reason := "answered from the CLI by " + principal
+	if answer.Source == domain.AskSourceT3 {
+		reason = "answered in T3 on relay thread " + answer.ThreadID
+	}
+	wait, err = settleTaskWaitTx(ctx, tx, wait, domain.TaskWaitResult{
+		Outcome: domain.TaskWaitMet, ExitCode: 0, Reason: reason,
+		Fields: map[string]string{"answer": record.Summary(), "source": string(record.Source)},
+	}, answered)
+	if err != nil {
+		return wait, err
+	}
+	return wait, tx.Commit()
+}
