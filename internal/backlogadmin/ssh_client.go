@@ -388,6 +388,9 @@ func (c *SSHClient) exchangeError(ctxErr error, operation string, exchange *remo
 		// ssh never reached the coordinator, so the empty stream is not a
 		// protocol mismatch: nothing answered, which is usually temporary.
 		class = ClassUnavailable
+		if strings.Contains(detail, "Connection refused") {
+			detail += "; " + sshRefusedHint
+		}
 	}
 	return classify(class, operation, c.config.CoordinatorID, fmt.Errorf("%w: %s", cause, detail))
 }
@@ -400,6 +403,14 @@ var sshConnectFailures = []string{
 	"Could not resolve hostname",
 	"kex_exchange_identification",
 }
+
+// sshRefusedHint follows a refused connection. ufw's LIMIT rule rejects a
+// source that opens six connections within 30 seconds with the same refusal a
+// stopped sshd produces, and a burst of admin commands is enough to trip it.
+const sshRefusedHint = "the coordinator host refused the SSH connection: " +
+	"sshd there may be down, or a firewall rate limit there may be refusing this source " +
+	"(ufw LIMIT refuses a source that opens six SSH connections within 30 seconds); " +
+	"wait 30 seconds and retry, and space out bursts of commands"
 
 func sshConnectFailure(stderr string) bool {
 	for _, marker := range sshConnectFailures {

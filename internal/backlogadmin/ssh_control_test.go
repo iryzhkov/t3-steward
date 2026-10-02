@@ -206,3 +206,43 @@ func TestSSHConnectFailureIsUnavailable(t *testing.T) {
 		}
 	}
 }
+
+// A refused connection names a firewall rate limit on the coordinator host as a
+// possible cause, because ufw's LIMIT rule rejects a burst of admin commands
+// with exactly the message a stopped sshd produces. Only a refusal says so.
+func TestSSHConnectionRefusedNamesFirewallRateLimit(t *testing.T) {
+	for _, tc := range []struct {
+		message  string
+		wantHint bool
+	}{
+		{"ssh: connect to host 192.168.70.234 port 22: Connection refused", true},
+		{"ssh: connect to host normandy port 22: Connection timed out", false},
+		{"kex_exchange_identification: Connection closed by remote host", false},
+	} {
+		config := controlTestConfig("")
+		config.Factory = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", `printf '%s\n' "$1" >&2; exit 255`, "sh", tc.message)
+		}
+		client, err := NewSSHClient(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = client.Query(context.Background(), Query{Version: Version, Kind: QueryStatus})
+		if ClassOf(err) != ClassUnavailable || ExitCodeFor(err) != 5 {
+			t.Fatalf("%q: class = %q, exit = %d (%v)", tc.message, ClassOf(err), ExitCodeFor(err), err)
+		}
+		if !strings.Contains(err.Error(), tc.message) {
+			t.Fatalf("%q: the ssh message is not in the error: %v", tc.message, err)
+		}
+		envelope, ok := NewTransportErrorEnvelope(err)
+		if !ok {
+			t.Fatalf("%q: no error envelope for %v", tc.message, err)
+		}
+		for _, text := range []string{err.Error(), envelope.Message} {
+			named := strings.Contains(text, "firewall rate limit") && strings.Contains(text, "sshd")
+			if named != tc.wantHint {
+				t.Fatalf("%q: firewall rate-limit hint present = %t, want %t: %s", tc.message, named, tc.wantHint, text)
+			}
+		}
+	}
+}
