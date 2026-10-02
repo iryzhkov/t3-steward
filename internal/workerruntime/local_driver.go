@@ -363,10 +363,41 @@ func (d *LocalDriver) ObserveThreadTurn(ctx context.Context, pkg workerproto.Exe
 		return backlog.DispatchThreadActive, thread.TurnID, nil
 	}
 	if thread.TurnID == "" {
+		if refused, err := d.refusedTurnIdentity(ctx, *thread); err != nil || refused != "" {
+			return backlog.DispatchThreadStopped, refused, err
+		}
 		return "", "", errors.New("terminal T3 turn identity is unavailable; collection deferred")
 	}
 	return backlog.DispatchThreadStopped, thread.TurnID, nil
 }
+
+// refusedTurnIdentity names the turn T3 refused to start on a thread that has
+// no turn at all. T3 records the refusal as a provider.turn.start.failed
+// activity and leaves the session in error; the activity is the identity
+// collection binds to, and the archive collection reads carries its reason.
+// A session in error with no such activity is still terminal, and is named by
+// the session error alone. Empty means the thread is not a refused start.
+func (d *LocalDriver) refusedTurnIdentity(ctx context.Context, thread domain.Thread) (string, error) {
+	if thread.SessionStatus != t3SessionError {
+		return "", nil
+	}
+	archive, err := d.T3.ExportThread(ctx, thread.ID)
+	if err != nil {
+		return "", fmt.Errorf("read the refused turn start: %w", err)
+	}
+	refused, ok, err := backlog.LatestTurnStartFailure(archive)
+	if err != nil {
+		return "", err
+	}
+	if ok && refused.ActivityID != "" {
+		return "turn-start-failed:" + refused.ActivityID, nil
+	}
+	return "session-error-without-turn", nil
+}
+
+// t3SessionError is T3's provider session status after a provider failure.
+// A turn start T3 refuses leaves the session in it with no active turn.
+const t3SessionError = "error"
 
 // A newly accepted T3 start may be visible before its turn and session.
 // Only positive terminal evidence permits collection or skipping containment.
@@ -378,6 +409,12 @@ func workerThreadTerminal(thread domain.Thread) bool {
 		return false
 	}
 	if thread.Settled() {
+		return true
+	}
+	// No turn ever started and the session is in error: T3 refused the first
+	// turn (provider.turn.start.failed) and will start nothing without a new
+	// message. Waiting for a turn here left a task running indefinitely.
+	if thread.TurnState == "" && thread.SessionStatus == t3SessionError {
 		return true
 	}
 	switch thread.TurnState {
@@ -854,12 +891,13 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if thread != nil {
 		// T3 marks the turn completed slightly before the final assistant
 		// message is projected. Briefly retry an empty summary; completion
-		// itself is established by the structured thread archive.
+		// itself is established by the structured thread archive. A thread
+		// with no turn (a refused start) has no message to wait for.
 		for reads := 0; ; reads++ {
 			if message, err = d.T3.LastAssistantMessage(ctx, pkg.Identity.ThreadID); err != nil {
 				return fmt.Errorf("collect final message: %w", err)
 			}
-			if strings.TrimSpace(message) != "" || reads >= 3 {
+			if strings.TrimSpace(message) != "" || reads >= 3 || thread.TurnID == "" {
 				break
 			}
 			select {

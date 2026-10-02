@@ -214,6 +214,35 @@ func TestTaskResultExitsWithTheTasksVerdict(t *testing.T) {
 	})
 }
 
+// A failed task says why. The field defect of 2026-10-02 (T3 refused the first
+// turn) left the reason only in the coordinator's attempt record, and task
+// result printed "failed" with nothing to act on.
+func TestTaskResultNamesTheFailureReason(t *testing.T) {
+	const reason = `T3 refused to start the provider turn: ProviderValidationError: Expected a value with a length of at most 120000 at ["input"]`
+	f := newTaskResultFixture(t)
+	f.detail.Tasks[0].Attempt.Progress = domain.ProgressFailed
+	f.detail.Tasks[0].Attempt.Failure = reason
+	f.detail.Summary.Run.Progress = domain.ProgressFailed
+	if code := exitCodeFor(f.run("run-1")); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(f.stdout.String(), "failure: "+reason) {
+		t.Fatalf("the text form does not name the failure:\n%s", f.stdout.String())
+	}
+	f = newTaskResultFixture(t)
+	f.detail.Tasks[0].Attempt.Progress = domain.ProgressFailed
+	f.detail.Tasks[0].Attempt.Failure = reason
+	_ = f.run("run-1", "--json")
+	if document := f.document(t); len(document.Tasks) != 1 || document.Tasks[0].Failure != reason {
+		t.Fatalf("--json does not carry the failure: %+v", document.Tasks)
+	}
+	// A success has no failure line.
+	f = newTaskResultFixture(t)
+	if err := f.run("run-1"); err != nil || strings.Contains(f.stdout.String(), "failure:") {
+		t.Fatalf("a succeeded task printed a failure: %v\n%s", err, f.stdout.String())
+	}
+}
+
 // The exit code is what a script branches on, so the help text has to be the
 // code and not a summary of it. A skipped task exits 0 beside a succeeded one,
 // which is deliberate -- a task the graph skipped is not a failure to collect

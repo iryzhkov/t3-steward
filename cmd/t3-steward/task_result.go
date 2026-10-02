@@ -68,6 +68,8 @@ type taskResultTask struct {
 	TaskID    string `json:"taskId,omitempty"`
 	AttemptID string `json:"attemptId,omitempty"`
 	Progress  string `json:"progress"`
+	// Failure is why the attempt failed, as the coordinator recorded it.
+	Failure   string `json:"failure,omitempty"`
 	Directory string `json:"directory"`
 	// FinalMessage is inlined with --json only, because the text form has
 	// already written it to a file the caller can read.
@@ -313,6 +315,7 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 	if task.Attempt != nil {
 		collected.Progress = string(task.Attempt.Progress)
 		collected.AttemptID = task.Attempt.ID
+		collected.Failure = task.Attempt.Failure
 	}
 	final := false
 	for _, artifact := range detail.Artifacts {
@@ -428,7 +431,11 @@ func renderTaskResult(out io.Writer, document taskResultDocument) error {
 	}
 	fmt.Fprintf(out, "written to %s\n", directory)
 	for _, task := range document.Tasks {
-		fmt.Fprintf(out, "\n%s (%s)\n  %s\n", task.Task, task.Progress, task.Directory)
+		fmt.Fprintf(out, "\n%s (%s)\n", task.Task, task.Progress)
+		if task.Failure != "" {
+			fmt.Fprintf(out, "  failure: %s\n", task.Failure)
+		}
+		fmt.Fprintf(out, "  %s\n", task.Directory)
 		for _, file := range task.Files {
 			fmt.Fprintf(out, "    %s\t%d bytes\n", file.Name, file.Size)
 		}
