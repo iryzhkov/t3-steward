@@ -58,9 +58,7 @@ plan is static and explain is dynamic; check is dynamic too, before there is a
 run. plan reports waves, edges and the digest submit will send, and can never
 promise a worker, a route or quota. Multi-task work is a static DAG: each task
 is its own Steward-scheduled T3 session, and a task prompt must not use native
-subagents in place of declared tasks. A task that needs the owner's decision runs
-t3-steward ask (see its --help) and ends its turn; it resumes with the answer.
-Help topics: authoring, fresh, readiness,
+subagents in place of declared tasks. Help topics: authoring, fresh, readiness,
 dag-semantics, static-versus-dynamic, plan, graph, commits, rerun, notify, routes,
 supervision.
 
