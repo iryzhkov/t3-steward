@@ -634,7 +634,18 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			}
 		}
 	case PhasePreparing:
-		workspace, exists, inspectErr := r.driver.InspectWorkspace(ctx, record.Package.Package)
+		answer, direct, ready, probeErr := r.probed(ctx, probeWorkspace, id)
+		if probeErr != nil {
+			err = probeErr
+			break
+		}
+		if !ready {
+			break
+		}
+		workspace, exists, inspectErr := answer.workspace, answer.exists, answer.inspected
+		if direct {
+			workspace, exists, inspectErr = r.driver.InspectWorkspace(ctx, record.Package.Package)
+		}
 		if inspectErr != nil {
 			r.log.Warn("workspace observation failed", "assignment", id, "error", inspectErr)
 			break
@@ -1037,12 +1048,20 @@ func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record At
 		// stale parked-assignment report.
 		return errors.New("collection deferred: attempt is paused by the quota watchdog")
 	}
+	// Under a lock other work needs, the turn observation and the task-wait
+	// probe are answered by the reconcile tick with that lock released; until
+	// then the decision waits, as it does when T3 cannot answer.
+	answer, direct, ready, err := r.probed(ctx, probeCollection, id)
+	if err != nil || !ready {
+		return err
+	}
 	// Stopped/stopped observations cannot distinguish a task that parked and
 	// resumed entirely between polls. Bind this decision to the provider turn.
-	if observer, ok := r.driver.(interface {
-		ObserveThreadTurn(context.Context, workerproto.ExecutionPackage) (backlog.DispatchThreadState, string, error)
-	}); ok {
-		observed, turnID, err := observer.ObserveThreadTurn(ctx, record.Package.Package)
+	if observer, ok := r.driver.(turnObserver); ok {
+		observed, turnID, err := answer.turnState, answer.turnID, answer.turnErr
+		if direct {
+			observed, turnID, err = observer.ObserveThreadTurn(ctx, record.Package.Package)
+		}
 		if err != nil {
 			r.log.Warn("provider turn identity is unavailable; collection deferred", "assignment", id, "error", err)
 			return nil
@@ -1084,7 +1103,12 @@ func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record At
 			return err
 		}
 	}
-	waiting, err := r.liveTaskWait(ctx, record)
+	waiting, err := answer.waiting, answer.waitErr
+	if direct || r.config.LiveTaskWait == nil {
+		// Without a configured probe the answer is the coordinator's last
+		// statement in the journal, which is read under the lock.
+		waiting, err = r.liveTaskWait(ctx, record)
+	}
 	if err != nil {
 		r.log.Warn("task-bound wait state is unavailable; collection deferred", "assignment", id, "error", err)
 		return nil
@@ -1176,7 +1200,18 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 		// A workspace that vanished (host cleanup, an older binary's eager
 		// cleanup, a rollback) can never be finalized; publish the failure
 		// instead of retrying collection forever.
-		if _, exists, err := r.driver.InspectWorkspace(ctx, record.Package.Package); err == nil && !exists {
+		answer, direct, ready, err := r.probed(ctx, probeWorkspace, id)
+		if err != nil {
+			return err
+		}
+		if !ready {
+			return nil
+		}
+		exists, inspectErr := answer.exists, answer.inspected
+		if direct {
+			_, exists, inspectErr = r.driver.InspectWorkspace(ctx, record.Package.Package)
+		}
+		if inspectErr == nil && !exists {
 			if err := r.markFailed(ctx, id, "workspace is missing; outputs cannot be collected"); err != nil {
 				return err
 			}
