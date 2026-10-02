@@ -92,6 +92,11 @@ type T3 struct {
 	SendThreadEnvironment bool `yaml:"send_thread_environment"`
 	// RequestTimeout bounds each HTTP request.
 	RequestTimeout Duration `yaml:"request_timeout"`
+	// DiscoveryTimeout is how long the run and worker daemons wait at start for
+	// the T3 server to write server-runtime.json when URL is empty. A daemon
+	// started at boot before T3 used to exit once and rely on its restart.
+	// Zero makes a single attempt.
+	DiscoveryTimeout Duration `yaml:"discovery_timeout"`
 }
 
 // WindowOverride relabels or rescopes one provider window.
@@ -829,6 +834,7 @@ func Default() Config {
 	var c Config
 	c.T3.TokenTTL = Duration(1 * time.Hour)
 	c.T3.RequestTimeout = Duration(30 * time.Second)
+	c.T3.DiscoveryTimeout = Duration(2 * time.Minute)
 	c.Policy.WarnPercent = 85
 	c.Policy.DrainPercent = 90
 	c.Policy.StopPercent = 95
@@ -1237,6 +1243,9 @@ func (c *Config) Validate() error {
 	}
 	if c.T3.RequestTimeout.D() <= 0 {
 		return errors.New("t3: request_timeout must be positive")
+	}
+	if c.T3.DiscoveryTimeout.D() < 0 {
+		return errors.New("t3: discovery_timeout must not be negative")
 	}
 	switch strings.ToLower(c.LogLevel) {
 	case "debug", "info", "warn", "warning", "error":

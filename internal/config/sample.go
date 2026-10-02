@@ -33,6 +33,9 @@ t3:
   # server version is outside the tested range unless this is true.
   allow_unsupported_version: false
   request_timeout: 30s
+  # How long run and the worker daemon wait at start for T3 to write
+  # server-runtime.json when url is empty (a boot that starts them first).
+  discovery_timeout: 2m
 
 policy:
   # Usage thresholds in percent. warn < drain < stop <= 100 is enforced.

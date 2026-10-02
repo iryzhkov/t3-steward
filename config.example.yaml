@@ -36,6 +36,10 @@ t3:
   # verifying the field against the deployed version; see docs/t3-protocol.md.
   send_thread_environment: false
   request_timeout: 30s
+  # How long run and the worker daemon wait at start for T3 to write
+  # server-runtime.json when url is empty (a boot that starts them first).
+  # 0 makes a single attempt.
+  discovery_timeout: 2m
 
 # Shell and node wait notifications are independent of policy.dry_run.
 # Delivery defaults to enabled; set true to hold wakes while checks still settle.

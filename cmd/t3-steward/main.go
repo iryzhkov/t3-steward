@@ -522,6 +522,26 @@ func connect(cfg config.Config, logger *slog.Logger) (*t3api.Client, string, err
 	return t3api.New(baseURL, tokens, cfg.T3.RequestTimeout.D()), dataDir, nil
 }
 
+// awaitT3Discovery waits, within t3.discovery_timeout, for the T3 server to
+// write the runtime state connect discovers it from. The daemons call it
+// before connect: at boot they can start before T3 has written the file, and
+// they used to exit once with "is the T3 server running?" and recover only
+// through the service manager's restart. It returns nil when ctx ends first,
+// so a daemon asked to stop while it waits stops quietly.
+func awaitT3Discovery(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+	dataDir, err := cfg.ResolveDataDir()
+	if err != nil {
+		return err
+	}
+	_, err = t3api.AwaitURL(ctx, cfg.T3.URL, dataDir, t3api.DiscoveryRetry{Timeout: cfg.T3.DiscoveryTimeout.D()}, func(err error, delay time.Duration) {
+		logger.Warn("T3 server not discovered yet; retrying", "err", err, "in", delay, "discovery_timeout", cfg.T3.DiscoveryTimeout.D())
+	})
+	if ctx.Err() != nil {
+		return nil
+	}
+	return err
+}
+
 func cmdInit(g globalFlags, paths config.Paths, force bool, t3URL, dataDir string) error {
 	if err := os.MkdirAll(paths.StateDir, 0o700); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
@@ -740,6 +760,9 @@ func cmdRun(g globalFlags) error {
 		return err
 	}
 	defer store.Close()
+	if err := awaitT3Discovery(ctx, cfg, logger); err != nil || ctx.Err() != nil {
+		return err
+	}
 	client, d, err := buildWatchdog(cfg, logger, store, true)
 	if err != nil {
 		return err

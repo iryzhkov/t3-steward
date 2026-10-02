@@ -167,6 +167,9 @@ func cmdWorker(g globalFlags, args []string) error {
 		return err
 	}
 	defer ownership.Close()
+	if err := awaitT3Discovery(ctx, cfg, logger); err != nil || ctx.Err() != nil {
+		return err
+	}
 	client, dataDir, err := connect(cfg, logger)
 	if err != nil {
 		return err

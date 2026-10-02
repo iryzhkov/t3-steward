@@ -19,6 +19,31 @@ func TestDefaultsValidate(t *testing.T) {
 	}
 }
 
+// P0.2: a daemon started before T3 waits for it, two minutes by default; the
+// sample says the same, and a negative bound is refused.
+func TestT3DiscoveryTimeoutDefaultsToTwoMinutes(t *testing.T) {
+	c := Default()
+	if c.T3.DiscoveryTimeout.D() != 2*time.Minute {
+		t.Fatalf("discovery_timeout default = %s", c.T3.DiscoveryTimeout.D())
+	}
+	sample := Default()
+	sample.T3.DiscoveryTimeout = 0
+	if err := yaml.Unmarshal([]byte(Sample()), &sample); err != nil {
+		t.Fatal(err)
+	}
+	if sample.T3.DiscoveryTimeout != c.T3.DiscoveryTimeout {
+		t.Fatalf("sample discovery_timeout = %s", sample.T3.DiscoveryTimeout.D())
+	}
+	c.T3.DiscoveryTimeout = Duration(-time.Second)
+	if err := c.Validate(); err == nil {
+		t.Fatal("a negative discovery_timeout was accepted")
+	}
+	c.T3.DiscoveryTimeout = 0
+	if err := c.Validate(); err != nil {
+		t.Fatalf("zero (one attempt) was refused: %v", err)
+	}
+}
+
 func TestSampleMatchesDefaults(t *testing.T) {
 	c := Default()
 	if err := yaml.Unmarshal([]byte(Sample()), &c); err != nil {
