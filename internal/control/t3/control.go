@@ -192,8 +192,10 @@ func IsRunning(t domain.Thread) bool {
 	return false
 }
 
-// GetThread fetches one thread's current shell state. It returns a nil
-// thread when T3 no longer lists it (deleted).
+// GetThread fetches one thread's current shell state. It returns a nil thread
+// when the shell snapshot does not list it as live: deleted, archived (the
+// shell leaves archived threads out) or simply absent. LookupThread tells
+// those apart.
 func (c *Control) GetThread(ctx context.Context, threadID string) (*domain.Thread, error) {
 	snap, err := c.client.ShellSnapshot(ctx)
 	if err != nil {
@@ -209,6 +211,66 @@ func (c *Control) GetThread(ctx context.Context, threadID string) (*domain.Threa
 		}
 	}
 	return nil, nil
+}
+
+// errEmptyThreadAnswer is an answer from T3 that holds no thread at all. A
+// server still loading its read model answers that way, so it is treated as no
+// answer rather than as evidence that any one thread is gone.
+var errEmptyThreadAnswer = errors.New("T3 answered with no threads at all, which is a server that is not ready rather than evidence about one thread")
+
+// LookupThread says what T3's answer means for one thread, which GetThread
+// cannot: it returns nil for a deleted thread, an archived one (the shell
+// snapshot leaves those out) and one that is simply not in the answer alike.
+//
+// The shell snapshot is read first. A thread it holds is live, or deleted when
+// it carries deletedAt. A thread it does not hold is looked up in the full
+// index, which includes archived threads: archived, deleted, or absent from
+// both. Either answer holding no thread at all is an error, never absence.
+func (c *Control) LookupThread(ctx context.Context, threadID string) (*domain.Thread, domain.ThreadPresence, error) {
+	snap, err := c.client.ShellSnapshot(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(snap.Threads) == 0 {
+		return nil, "", errEmptyThreadAnswer
+	}
+	for _, t := range snap.Threads {
+		if t.ID != threadID {
+			continue
+		}
+		if t.DeletedAt != nil {
+			return nil, domain.ThreadDeleted, nil
+		}
+		thread := FromShell(t)
+		if thread.ArchivedAt != nil {
+			return &thread, domain.ThreadArchived, nil
+		}
+		return &thread, domain.ThreadLive, nil
+	}
+	index, err := c.client.ThreadIndex(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(index) == 0 {
+		return nil, "", errEmptyThreadAnswer
+	}
+	for _, t := range index {
+		if t.ID != threadID {
+			continue
+		}
+		switch {
+		case t.DeletedAt != nil:
+			return nil, domain.ThreadDeleted, nil
+		case t.ArchivedAt != nil:
+			thread := FromShell(t)
+			return &thread, domain.ThreadArchived, nil
+		default:
+			// In the index and not archived, yet not in the shell a moment
+			// ago: the two reads raced a change. Say nothing this time.
+			return nil, "", fmt.Errorf("thread %s is in T3's index but was not in its shell snapshot; asking again on the next tick", threadID)
+		}
+	}
+	return nil, domain.ThreadAbsent, nil
 }
 
 // LastUserMessageAt returns the newest user message time in the thread's

@@ -815,7 +815,15 @@ locks, leases and effect-safety remain enforced. Existing quota-paused tasks are
 not automatically resumed while checks are disabled; operator recovery remains
 explicit. This setting is coordinator-owned fleet policy, not a worker-local toggle. Held outcomes settle once. A lost send response retains one
 wake identity and waits for positive T3 message evidence; `recovery-required`
-means delivery is uncertain and will not be blindly retried. See the
+means delivery is uncertain and will not be blindly retried. A wake whose thread
+is gone ends `rejected` instead of being retried: the archive rejects the wakes
+still owed to a thread it deletes, and the delivery loop rejects a wake whose
+thread T3 reports deleted or archived at once, and one whose thread is absent
+from T3's shell snapshot and full index after three consecutive answers
+spanning at least a minute. A T3 that does not answer (transport, credential or
+server error, or an answer holding no thread at all) leaves the wake `offline`,
+retried, and restarts that count. The members of a `--wake all` group end with
+the member that carries their send. See the
 [node-wait ADR](docs/architecture/adr-s0-node-wait.md) for evidence limits.
 
 Bundles can use `needs: <source-run>/__sink` or a list mixing local task names and
@@ -947,6 +955,7 @@ t3-steward task run [--project NAME] [--ref REF | --fresh] [--model [INSTANCE/]M
                     (-- PROMPT | --prompt-file FILE | --fan-out GLOB | stdin)
 t3-steward task result RUN[/TASK] [--output DIR] [--json]
 t3-steward models [--project NAME] [--instance ID] [--available] [--json]
+t3-steward triage [--stale-days N] [--json]
 t3-steward backlog projects [--project NAME] [--verbose] [--json]
 t3-steward backlog list [--all]|new ID|check FILE|show ID|retry ID|cancel ID|receive ID|path
 t3-steward campaign cancel RUN[/TASK] --reason TEXT [--command-id ID] [--json]
@@ -963,6 +972,17 @@ t3-steward install-service [--force] [--enable] [--credential-file REF=PATH ...]
 t3-steward uninstall-service
 t3-steward version
 ```
+
+`triage` lists everything on the fleet that is waiting for an operator, most
+urgent first, each item with commands that can be run as printed (ids,
+revisions and idempotency keys filled in): workers that are down or
+disconnected, overseer activations that ended without a decision, escalated
+review incidents and gates, active holds, unanswered attention requests, wakes
+that are overdue or cannot be delivered, closed quota pools, quarantined intake
+and runs whose record has not changed for `--stale-days` days (default 7). It
+is read-only. `check` fails for a worker the coordinator has not reached for
+`notifications.worker_down_after` (default 10m); see
+[Backlog-v2 operations](docs/backlog-v2-operations.md#worker-outages).
 
 `backlog projects` summarises: one row per project with the count of its
 eligible workers and of the routes they advertise, followed by the totals

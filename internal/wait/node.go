@@ -2,6 +2,7 @@ package wait
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -102,23 +103,16 @@ func nodeWakeObservation(w domain.NodeWait) string {
 // effect before sending, retries only outcomes known to have had no effect, and
 // never treats absence from a bounded observation window as non-delivery.
 func (r *Runner) tickNodes(ctx context.Context) {
-	store := r.NodeStore
+	store := r.nodeStore()
 	if store == nil {
-		local, ok := r.store.(NodeStore)
-		if !ok {
-			return
-		}
-		store = local
+		return
 	}
 	now := r.now()
 	if err := store.SettleNodeWaits(ctx, now); err != nil {
 		logFailure(ctx, r.log, "settle node waits", err, "error", err)
 		return
 	}
-	host := r.NodeHost
-	if host == "" {
-		host, _ = os.Hostname()
-	}
+	host := r.nodeHost()
 	waits, err := r.listNodeWaits(ctx, store, host)
 	if err != nil {
 		logFailure(ctx, r.log, "list node waits", err, "error", err)
@@ -143,6 +137,15 @@ func (r *Runner) tickNodes(ctx context.Context) {
 		}
 		if w.Delivery == "sending" || w.Delivery == "recovery-required" {
 			status, observeErr := reconcileNodeWake(ctx, control, w.Request.ThreadID, w.DeliveryID)
+			if observeErr != nil || status == WakeReceiptUnknown {
+				// No receipt either way. A thread that is gone has none to
+				// find and nothing to resend into, so reconciling it again is
+				// a loop with no exit; the wake is ended instead.
+				if _, presence := r.lookupThread(ctx, w.Request.ThreadID); presence == threadGone {
+					r.rejectGoneWakes(ctx, store, []domain.NodeWait{w}, host, now)
+					continue
+				}
+			}
 			if observeErr != nil {
 				continue
 			}
@@ -173,19 +176,24 @@ func (r *Runner) tickNodes(ctx context.Context) {
 		if w.DeliveryNextAttemptAt != nil && now.Before(*w.DeliveryNextAttemptAt) {
 			continue
 		}
-		thread, getErr := r.control.GetThread(ctx, w.Request.ThreadID)
-		if getErr != nil || thread == nil {
+		thread, presence := r.lookupThread(ctx, w.Request.ThreadID)
+		switch presence {
+		case threadUnanswered, threadMissing:
 			if w.Delivery != "offline" {
 				if _, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "offline", now); err != nil {
 					logNodeWakeTransition(ctx, r, w.Request.ID, w.Delivery, "offline", host, err)
 				}
 			}
 			continue
-		}
-		if thread.ArchivedAt != nil {
-			if _, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "rejected", now); err != nil {
-				logNodeWakeTransition(ctx, r, w.Request.ID, w.Delivery, "rejected", host, err)
+		case threadGone:
+			// The members of a --wake all group ride on this one send, so they
+			// end with it: left behind, each would wait for a leader that will
+			// never send, which is how two waits stayed pending for a week.
+			ended := []domain.NodeWait{w}
+			if grouped {
+				ended = members
 			}
+			r.rejectGoneWakes(ctx, store, ended, host, now)
 			continue
 		}
 		if healthy, _ := r.healthy(*thread); !healthy {
@@ -245,6 +253,219 @@ func (r *Runner) tickNodes(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// nodeStore is where this runner reads and moves node waits: the transport to
+// the coordinator when one is configured, and otherwise the local store when it
+// holds node waits itself (a coordinator host). Nil means this host has none.
+func (r *Runner) nodeStore() NodeStore {
+	if r.NodeStore != nil {
+		return r.NodeStore
+	}
+	if local, ok := r.store.(NodeStore); ok {
+		return local
+	}
+	return nil
+}
+
+// nodeHost is the host whose node wakes this runner delivers.
+func (r *Runner) nodeHost() string {
+	if r.NodeHost != "" {
+		return r.NodeHost
+	}
+	host, _ := os.Hostname()
+	return host
+}
+
+// threadGoneConfirm and threadGoneAnswers are what it takes for a thread that
+// T3 answers without -- in neither its shell snapshot nor its full index -- to
+// count as gone: at least threadGoneAnswers consecutive answers without it,
+// spanning at least threadGoneConfirm. Any lookup T3 does not answer, and any
+// answer that holds the thread, starts the count again.
+//
+// One answer is not enough, because ending a wake cannot be undone and absence
+// from one answer is evidence rather than proof. A thread T3 reports deleted,
+// or archived, is authoritative and needs no confirmation. Before this, a wake
+// for a deleted thread was retried every tick for as long as the steward ran.
+const (
+	threadGoneConfirm = time.Minute
+	threadGoneAnswers = 3
+)
+
+// ThreadLookupControl is a control that can say why a thread is not live:
+// deleted, archived, or absent from an answer that held other threads. The T3
+// control implements it; a control that does not is read through GetThread,
+// whose nil thread is taken as absent.
+type ThreadLookupControl interface {
+	LookupThread(ctx context.Context, threadID string) (*domain.Thread, domain.ThreadPresence, error)
+}
+
+// threadAbsence is the running confirmation that a thread is absent.
+type threadAbsence struct {
+	first, last time.Time
+	answers     int
+}
+
+// threadPresence is what T3's answer says about a wake's thread.
+type threadPresence int
+
+const (
+	// threadLive: T3 holds the thread and it is not archived.
+	threadLive threadPresence = iota
+	// threadUnanswered: T3 did not answer (transport, credential or server
+	// error), which says nothing about the thread. Always retryable.
+	threadUnanswered
+	// threadMissing: T3 answered without the thread, not yet confirmed (see
+	// threadGoneConfirm). Retryable.
+	threadMissing
+	// threadGone: T3 reports the thread deleted or archived, or the absence
+	// is confirmed. Terminal for every wake addressed to it.
+	threadGone
+)
+
+// lookupThread asks T3 for a wake's thread and classifies the answer. The
+// confirmation of an absence is kept in memory: a restart only restarts it,
+// which errs towards retrying.
+func (r *Runner) lookupThread(ctx context.Context, id string) (*domain.Thread, threadPresence) {
+	thread, presence, err := r.lookupPresence(ctx, id)
+	if err != nil {
+		// No answer says nothing about the thread, and breaks the run of
+		// consecutive answers an absence needs.
+		delete(r.threadAbsentSince, id)
+		return nil, threadUnanswered
+	}
+	switch presence {
+	case domain.ThreadLive:
+		delete(r.threadAbsentSince, id)
+		return thread, threadLive
+	case domain.ThreadDeleted, domain.ThreadArchived:
+		delete(r.threadAbsentSince, id)
+		return thread, threadGone
+	}
+	now := r.now()
+	if r.threadAbsentSince == nil {
+		r.threadAbsentSince = map[string]threadAbsence{}
+	}
+	absence := r.threadAbsentSince[id]
+	switch {
+	case absence.answers == 0:
+		absence = threadAbsence{first: now, last: now, answers: 1}
+	case now.After(absence.last):
+		// Several wakes of one thread looked up at one instant are one answer.
+		absence.last = now
+		absence.answers++
+	}
+	r.threadAbsentSince[id] = absence
+	if absence.answers >= threadGoneAnswers && now.Sub(absence.first) >= threadGoneConfirm {
+		return nil, threadGone
+	}
+	return nil, threadMissing
+}
+
+// lookupPresence reads the thread through LookupThread when the control has
+// it, and through GetThread otherwise.
+func (r *Runner) lookupPresence(ctx context.Context, id string) (*domain.Thread, domain.ThreadPresence, error) {
+	if lookup, ok := r.control.(ThreadLookupControl); ok {
+		return lookup.LookupThread(ctx, id)
+	}
+	thread, err := r.control.GetThread(ctx, id)
+	switch {
+	case err != nil:
+		return nil, "", err
+	case thread == nil:
+		return nil, domain.ThreadAbsent, nil
+	case thread.ArchivedAt != nil:
+		return thread, domain.ThreadArchived, nil
+	default:
+		return thread, domain.ThreadLive, nil
+	}
+}
+
+// rejectGoneWakes ends the given wakes, whose thread is gone, and logs once
+// that it did so with the reason, so "delivery=rejected" has a cause in the
+// journal of the host that decided it.
+func (r *Runner) rejectGoneWakes(ctx context.Context, store NodeStore, wakes []domain.NodeWait, host string, now time.Time) {
+	var ended []string
+	for _, w := range wakes {
+		if nodeWakeEnded(w.Delivery) {
+			continue
+		}
+		changed, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "rejected", now)
+		if err != nil {
+			logNodeWakeTransition(ctx, r, w.Request.ID, w.Delivery, "rejected", host, err)
+			continue
+		}
+		if changed {
+			ended = append(ended, w.Request.ID)
+		}
+	}
+	if len(ended) != 0 {
+		r.log.Warn("node wakes rejected: their thread is archived or deleted in T3, so nothing can deliver them",
+			"waits", strings.Join(ended, ","), "thread", wakes[0].Request.ThreadID, "host", host)
+	}
+}
+
+// nodeWakeEnded reports a delivery state nothing moves out of.
+func nodeWakeEnded(delivery string) bool {
+	return delivery == "delivered" || delivery == "rejected" || delivery == "cancelled"
+}
+
+// RejectThreadWakes ends every node wake this host still owes a thread it has
+// just deleted from T3, and returns how many it ended.
+//
+// The archive calls it after a delete. Without it the wakes of a deleted
+// thread waited for the delivery tick to notice, and before the tick could
+// notice they were retried forever: waits nw-f2bf0274 and nw-23326045 stayed
+// pending for a week for a thread the steward's own archive had deleted.
+//
+// A wake still unsettled is ended too: its thread is gone, so its outcome has
+// nowhere to go. A delivery tick may claim a wake between this read and its
+// transition, so a transition that finds the state moved is retried against a
+// fresh read, a bounded number of times.
+func (r *Runner) RejectThreadWakes(ctx context.Context, threadID string) (int, error) {
+	store := r.nodeStore()
+	if store == nil || threadID == "" {
+		return 0, nil
+	}
+	host := r.nodeHost()
+	var rejected int
+	var failures []error
+	var moved []string
+	for round := 0; round < 3; round++ {
+		waits, err := r.listNodeWaits(ctx, store, host)
+		if err != nil {
+			return rejected, fmt.Errorf("read the node wakes of thread %s: %w", threadID, err)
+		}
+		moved = moved[:0]
+		failures = failures[:0]
+		for _, w := range waits {
+			if w.Host != host || w.Request.ThreadID != threadID || nodeWakeEnded(w.Delivery) {
+				continue
+			}
+			changed, err := store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "rejected", r.now())
+			switch {
+			case err != nil:
+				failures = append(failures, fmt.Errorf("reject node wake %s (%s): %w", w.Request.ID, w.Delivery, err))
+			case changed:
+				rejected++
+			default:
+				moved = append(moved, w.Request.ID)
+			}
+		}
+		if len(moved) == 0 {
+			break
+		}
+	}
+	delete(r.threadAbsentSince, threadID)
+	if len(moved) != 0 {
+		// The bound stays: a wake that keeps moving is being worked on by a
+		// delivery tick, which ends it itself once T3 confirms the thread is
+		// gone. The caller is told the cleanup is incomplete and which wakes.
+		failures = append(failures, fmt.Errorf(
+			"cleanup of thread %s is incomplete: node wakes %s changed state on each of 3 reads; the delivery loop ends them once T3 confirms the thread is gone, and t3-steward triage lists any it does not",
+			threadID, strings.Join(moved, ", ")))
+	}
+	return rejected, errors.Join(failures...)
 }
 
 // listNodeWaits reads the waits this runner could act on, asking the store to

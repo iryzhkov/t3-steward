@@ -252,9 +252,17 @@ notifications:
   # Owner channels for campaign events, delivered by the coordinator only and
   # in addition to the thread wake a submission registers. Each is off until
   # declared. Events default to run-succeeded, run-failed, run-cancelled,
-  # run-skipped, needs-input and supervision-escalated; gate-review is opt-in.
-  # Events that already exist when an event kind is first enabled are not
-  # sent. See "t3-steward campaign help notify".
+  # run-skipped, needs-input, supervision-escalated, worker-down and
+  # worker-recovered; gate-review is opt-in. Run events that already exist
+  # when an event kind is first enabled are not sent. See "t3-steward
+  # campaign help notify".
+  #
+  # An enrolled worker not connected to the coordinator for this long is
+  # down: "t3-steward check" fails naming it, "t3-steward triage" lists it,
+  # and worker-down is sent once per outage, then worker-recovered. A worker
+  # whose coordinator entry sets accept_backlog: false is in maintenance and
+  # is never down. At least 1m.
+  worker_down_after: 10m
   # discord:
   #   # A private file (chmod 600) holding the webhook URL and nothing else.
   #   # The URL is a credential and is never written in this file. Only a

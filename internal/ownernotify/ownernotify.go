@@ -53,6 +53,13 @@ const (
 	// EventGateReview is a supervision gate whose evidence is ready for review.
 	// An overseer normally takes these itself, which is why it is not a default.
 	EventGateReview Event = "gate-review"
+	// EventWorkerDown is an enrolled worker the coordinator has not reached for
+	// longer than notifications.worker_down_after, outside maintenance. One
+	// outage is reported once, however long it lasts.
+	EventWorkerDown Event = "worker-down"
+	// EventWorkerRecovered is the end of an outage that EventWorkerDown
+	// reported: the worker is connected again, or no longer enrolled.
+	EventWorkerRecovered Event = "worker-recovered"
 )
 
 // Events lists every event in the order help and validation describe them.
@@ -60,6 +67,7 @@ func Events() []Event {
 	return []Event{
 		EventRunSucceeded, EventRunFailed, EventRunCancelled, EventRunSkipped,
 		EventNeedsInput, EventSupervisionEscalated, EventGateReview,
+		EventWorkerDown, EventWorkerRecovered,
 	}
 }
 
@@ -72,7 +80,16 @@ func DefaultEvents() []Event {
 	return []Event{
 		EventRunSucceeded, EventRunFailed, EventRunCancelled, EventRunSkipped,
 		EventNeedsInput, EventSupervisionEscalated,
+		EventWorkerDown, EventWorkerRecovered,
 	}
+}
+
+// WorkerEvent reports whether an event is about a worker rather than a run.
+// Worker events are detected from the coordinator's live view of its workers
+// and have no watermark: an outage is a condition of now, not history, so a
+// sink enabled while a worker is down is told about it.
+func WorkerEvent(event Event) bool {
+	return event == EventWorkerDown || event == EventWorkerRecovered
 }
 
 // ParseEvents validates configured event names. An empty list is the default
@@ -143,12 +160,18 @@ type Notification struct {
 	Prompt string `json:"prompt,omitempty"`
 	// IncidentID, ActivationID and Gate identify the supervision record that
 	// is waiting, and Reason says why.
-	IncidentID   string    `json:"incidentId,omitempty"`
-	ActivationID string    `json:"activationId,omitempty"`
-	GateID       string    `json:"gateId,omitempty"`
-	Gate         string    `json:"gate,omitempty"`
-	Reason       string    `json:"reason,omitempty"`
-	OccurredAt   time.Time `json:"occurredAt"`
+	IncidentID   string `json:"incidentId,omitempty"`
+	ActivationID string `json:"activationId,omitempty"`
+	GateID       string `json:"gateId,omitempty"`
+	Gate         string `json:"gate,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	// Worker, Since and LastSeen describe a worker outage: the worker, the
+	// start of the outage (its identity), and when the coordinator last saw
+	// the worker, absent when it never has.
+	Worker     string     `json:"worker,omitempty"`
+	Since      *time.Time `json:"since,omitempty"`
+	LastSeen   *time.Time `json:"lastSeen,omitempty"`
+	OccurredAt time.Time  `json:"occurredAt"`
 
 	// Attempts is how many sends have already failed. It is bookkeeping and
 	// not part of the event.
@@ -169,6 +192,9 @@ func (n Notification) Commands() map[string]string {
 		commands["show"] = "t3-steward campaign show " + n.RunID
 	case EventSupervisionEscalated, EventGateReview:
 		commands["supervision"] = "t3-steward campaign supervision show " + n.RunID
+	case EventWorkerDown, EventWorkerRecovered:
+		commands["workers"] = "t3-steward worker list"
+		commands["triage"] = "t3-steward triage"
 	}
 	return commands
 }
@@ -261,6 +287,10 @@ type Scope struct {
 func (s Selection) Scopes() []Scope {
 	var scopes []Scope
 	for _, event := range s.Events {
+		if WorkerEvent(event) {
+			// Detected from the live worker view, with no watermark.
+			continue
+		}
 		if !ScheduledSuccessEvent(event) {
 			scopes = append(scopes, Scope{Event: event, Key: string(event), Runs: RunsAll})
 			continue
@@ -303,6 +333,36 @@ type Store interface {
 	// OwnerNotificationHolds reports whether the condition a question,
 	// escalation or gate-review row describes still holds.
 	OwnerNotificationHolds(ctx context.Context, notification Notification) (bool, error)
+}
+
+// WorkerState is one enrolled worker the coordinator cannot reach right now.
+// A worker that is connected, or no longer enrolled, is simply absent.
+type WorkerState struct {
+	WorkerID string
+	// Since identifies the outage; see backlogadmin.WorkerOutage.
+	Since time.Time
+	// LastSeen is zero for a worker never observed.
+	LastSeen time.Time
+	// Down is an outage past the threshold and outside maintenance. An
+	// outage that is not Down is reported to nobody, but it is not a recovery
+	// either: the worker is still not connected.
+	Down    bool
+	DownFor time.Duration
+}
+
+// WorkerSource reads the workers the coordinator cannot reach.
+type WorkerSource func(ctx context.Context) ([]WorkerState, error)
+
+// WorkerNotificationStore is the part of the outbox that records worker
+// outages. It is separate from Store because its input is the live worker
+// view rather than the coordinator's records.
+type WorkerNotificationStore interface {
+	// DetectWorkerNotifications records one worker-down row per outage that
+	// is Down, and one worker-recovered row per reported outage whose worker
+	// is no longer in the list. An outage that ends before its worker-down
+	// row was delivered resolves that row instead: nobody was told, so there
+	// is nothing to take back.
+	DetectWorkerNotifications(ctx context.Context, sink string, selection Selection, workers []WorkerState, now time.Time) (Detection, error)
 }
 
 // Sink is one owner channel.
@@ -375,6 +435,9 @@ type Notifier struct {
 	// DefaultRetention.
 	Retention time.Duration
 	Now       func() time.Time
+	// Workers, when set, reports the workers the coordinator cannot reach, for
+	// the worker-down and worker-recovered events. Nil sends neither.
+	Workers WorkerSource
 
 	lastPrune time.Time
 }
@@ -404,13 +467,56 @@ func (n *Notifier) Tick(ctx context.Context) {
 	if err := SyncScopes(ctx, n.Store, n.Sinks); err != nil {
 		n.logger().Error("owner notification scopes could not be synchronized", "error", err)
 	}
+	workers, workersRead := n.readWorkers(ctx)
 	for _, sink := range n.Sinks {
 		if ctx.Err() != nil {
 			return
 		}
+		if workersRead {
+			n.detectWorkers(ctx, sink, workers)
+		}
 		n.tickSink(ctx, sink)
 	}
 	n.prune(ctx)
+}
+
+// readWorkers reads the worker view once per pass, for every sink. A view that
+// cannot be read is skipped for this pass: an unreadable view is not evidence
+// that every worker recovered.
+func (n *Notifier) readWorkers(ctx context.Context) ([]WorkerState, bool) {
+	if n.Workers == nil {
+		return nil, false
+	}
+	if _, ok := n.Store.(WorkerNotificationStore); !ok {
+		return nil, false
+	}
+	workers, err := n.Workers(ctx)
+	if err != nil {
+		n.logger().Error("owner notifications could not read the workers; worker outages are not reported this pass", "error", err)
+		return nil, false
+	}
+	return workers, true
+}
+
+// detectWorkers records the worker events of one sink.
+func (n *Notifier) detectWorkers(ctx context.Context, sink Sink, workers []WorkerState) {
+	selection := sink.Selection()
+	wanted := false
+	for _, event := range selection.Events {
+		wanted = wanted || WorkerEvent(event)
+	}
+	if !wanted {
+		return
+	}
+	store := n.Store.(WorkerNotificationStore)
+	detection, err := store.DetectWorkerNotifications(ctx, sink.Name(), selection, workers, n.now())
+	if err != nil {
+		n.logger().Error("worker outage detection failed", "sink", sink.Name(), "error", err)
+		return
+	}
+	if detection.Enqueued != 0 {
+		n.logger().Info("worker outage notifications recorded", "sink", sink.Name(), "events", detection.Enqueued)
+	}
 }
 
 // SyncScopes drops the watermark of every scope the given sinks do not

@@ -42,6 +42,8 @@ type memControl struct {
 	archived   map[string]bool
 	unarchived []string
 	rearchived []string
+	// deleteErr is what a delete answers; nil deletes.
+	deleteErr error
 }
 
 // ListAllThreads is what the archiver reads: every thread T3 holds, archived
@@ -68,6 +70,9 @@ func (c *memControl) RearchiveThread(_ context.Context, id string) error {
 	return nil
 }
 func (c *memControl) DeleteThread(_ context.Context, id string) error {
+	if c.deleteErr != nil {
+		return c.deleteErr
+	}
 	c.deleted = append(c.deleted, id)
 	return nil
 }
@@ -293,6 +298,44 @@ func TestCandidatesAndBundle(t *testing.T) {
 	due, _ = a.dueToday(context.Background(), now.Add(time.Hour))
 	if due {
 		t.Fatal("should not be due twice in a day")
+	}
+}
+
+// A thread the archive deletes can no longer receive a wake, so the archive
+// ends the wakes still owed to it at the moment of the delete rather than
+// leaving them for a delivery loop to retry. A delete that failed leaves the
+// thread, and its wakes, as they were.
+func TestDeletingAThreadEndsTheWakesItWasOwed(t *testing.T) {
+	now := time.Date(2030, 1, 10, 4, 0, 0, 0, time.UTC)
+	newArchiver := func(control *memControl) (*Archiver, *[]string) {
+		store := &memStore{recs: map[string]Record{}, busy: map[string]string{}, kv: map[string]string{}}
+		a := New(Options{After: 48 * time.Hour, Destination: t.TempDir(), HostName: "h", DataDir: t.TempDir(), DeleteFromT3: true}, store, control)
+		a.SetClock(func() time.Time { return now })
+		var ended []string
+		a.ThreadDeleted = func(_ context.Context, id string) error {
+			ended = append(ended, id)
+			return errors.New("one wake could not be ended")
+		}
+		return a, &ended
+	}
+	threads := func() []domain.Thread {
+		return []domain.Thread{{ID: "old", Title: "old", UpdatedAt: now.Add(-72 * time.Hour), SettledAt: ptr(now.Add(-60 * time.Hour))}}
+	}
+
+	a, ended := newArchiver(&memControl{archived: map[string]bool{}, threads: threads()})
+	if n, err := a.Run(context.Background(), false); err != nil || n != 1 {
+		t.Fatalf("run n=%d err=%v", n, err)
+	}
+	if len(*ended) != 1 || (*ended)[0] != "old" {
+		t.Fatalf("the wakes of the deleted thread were not ended: %v", *ended)
+	}
+
+	failing, ended := newArchiver(&memControl{archived: map[string]bool{}, threads: threads(), deleteErr: errors.New("T3 API 500")})
+	if _, err := failing.Run(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	if len(*ended) != 0 {
+		t.Fatalf("wakes were ended for a thread that was not deleted: %v", *ended)
 	}
 }
 

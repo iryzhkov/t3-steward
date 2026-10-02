@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"log/slog"
+	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/ownernotify"
 )
@@ -39,11 +41,44 @@ func ownerNotificationSinks(notifications config.Notifications, logger *slog.Log
 	return sinks
 }
 
+// workerViewSource is the coordinator's own workers view; *backlogadmin.Service
+// is one.
+type workerViewSource interface {
+	Workers(ctx context.Context) ([]backlogadmin.Worker, time.Time, error)
+}
+
+// ownerNotificationWorkers reports the enrolled workers the coordinator cannot
+// reach, for the worker-down and worker-recovered events. started is when this
+// coordinator started: an outage is never measured from before it, so a
+// coordinator that was itself down does not report every worker at once the
+// moment it comes back.
+func ownerNotificationWorkers(view workerViewSource, after time.Duration, started time.Time) ownernotify.WorkerSource {
+	return func(ctx context.Context) ([]ownernotify.WorkerState, error) {
+		workers, now, err := view.Workers(ctx)
+		if err != nil {
+			return nil, err
+		}
+		outages := backlogadmin.WorkerOutages(workers, now, started)
+		down := map[string]bool{}
+		for _, outage := range backlogadmin.WorkersDown(outages, after) {
+			down[outage.WorkerID] = true
+		}
+		states := make([]ownernotify.WorkerState, 0, len(outages))
+		for _, outage := range outages {
+			states = append(states, ownernotify.WorkerState{
+				WorkerID: outage.WorkerID, Since: outage.Since, LastSeen: outage.LastSeen,
+				Down: down[outage.WorkerID], DownFor: outage.DownFor,
+			})
+		}
+		return states, nil
+	}
+}
+
 // startOwnerNotifier runs the owner-notification loop beside the coordinator's
 // boundaries, on its own goroutine and its own ticker, so a webhook that is
 // slow or down never delays scheduling. The returned function stops the loop
 // and waits for it, and is safe to call when nothing was started.
-func startOwnerNotifier(ctx context.Context, notifications config.Notifications, store ownernotify.Store, logger *slog.Logger) func() {
+func startOwnerNotifier(ctx context.Context, notifications config.Notifications, store ownernotify.Store, workers ownernotify.WorkerSource, logger *slog.Logger) func() {
 	sinks := ownerNotificationSinks(notifications, logger)
 	if len(sinks) == 0 {
 		// With no channel configured nothing runs, but every watermark is
@@ -61,7 +96,7 @@ func startOwnerNotifier(ctx context.Context, notifications config.Notifications,
 		names = append(names, sink.Name())
 	}
 	logger.Info("owner notifications enabled", "sinks", names)
-	notifier := &ownernotify.Notifier{Store: store, Sinks: sinks, Logger: logger.With("component", "owner-notify")}
+	notifier := &ownernotify.Notifier{Store: store, Sinks: sinks, Workers: workers, Logger: logger.With("component", "owner-notify")}
 	loopCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {

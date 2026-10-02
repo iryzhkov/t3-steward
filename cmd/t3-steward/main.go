@@ -48,7 +48,7 @@ Usage:
 
 Commands:
   init               Write a commented configuration file and create the state directory.
-  check              Verify the T3 connection, token, version and provider logs.
+  check              Verify the T3 connection, token, version and provider logs, and the fleet's workers.
   run                Run the watchdog in the foreground.
   status             Show bucket states, resume intents and recent actions.
   replay <file>      Feed recorded quota events through the policy engine (no T3 needed).
@@ -56,6 +56,7 @@ Commands:
   forecast           Interactive-demand map by weekday and hour, and current backlog headroom.
   campaign           Author, inspect and submit a workflow from a campaign directory.
   models             Every provider route the fleet can run now, with its quota state.
+  triage             Everything waiting for an operator, each with a ready-to-run command.
   coordinator        Show which coordinator this host administers (identity); reload it (reload).
   backlog            Inspect and control coordinator workflows; includes legacy file helpers.
   diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
@@ -235,7 +236,7 @@ func dispatch(args []string) error {
 			return cmdUIArchive(g, sub)
 		}
 		return cmdArchive(g, sub)
-	case "backlog", "diagnose", "worker", "campaign", "coordinator", "models":
+	case "backlog", "diagnose", "worker", "campaign", "coordinator", "models", "triage":
 		// Sub-commands parse their own arguments; only --config and
 		// --dry-run style globals are shared, taken from the environment here.
 		paths, err := config.DefaultPaths()
@@ -263,6 +264,9 @@ func dispatch(args []string) error {
 		}
 		if cmd == "models" {
 			return cmdModels(g, sub)
+		}
+		if cmd == "triage" {
+			return cmdTriage(g, sub)
 		}
 		if cmd == "diagnose" {
 			sub = append([]string{"diagnose"}, sub...)
@@ -430,7 +434,7 @@ var dispatchedVerbs = []string{
 // topLevelFamilies are the command families dispatch routes by name, in the
 // order a did-you-mean suggestion prefers them.
 var topLevelFamilies = []string{
-	"campaign", "task", "wait", "backlog", "worker", "coordinator", "schedules", "models",
+	"campaign", "task", "wait", "backlog", "worker", "coordinator", "schedules", "models", "triage",
 	"diagnose", "thread", "bucket", "archive", "ui-archive", "version", "help",
 }
 
@@ -591,6 +595,22 @@ func cmdCheck(g globalFlags) error {
 	}
 	pass("policy: warn %.0f%% / drain %.0f%% / stop %.0f%%, grace %s, dry_run=%v, resume=%v",
 		cfg.Policy.WarnPercent, cfg.Policy.DrainPercent, cfg.Policy.StopPercent, cfg.Policy.GracePeriod.D(), cfg.Policy.DryRun, cfg.Resume.Enabled)
+	// The fleet first: a worker that is down is the reason to run check at
+	// all, and it must be reported even when this host's own T3 is not up.
+	if query, ok := coordinatorFleetQuery(cfg); ok {
+		fleetCtx, cancelFleet := context.WithTimeout(context.Background(), 30*time.Second)
+		for _, line := range checkFleetWorkers(fleetCtx, query, cfg.Notifications.WorkerDownAfter.D()) {
+			switch line.level {
+			case "FAIL":
+				fail("%s", line.text)
+			case "warn":
+				warn("%s", line.text)
+			default:
+				pass("%s", line.text)
+			}
+		}
+		cancelFleet()
+	}
 
 	client, dataDir, err := connect(cfg, logger)
 	if err != nil {

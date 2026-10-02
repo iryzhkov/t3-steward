@@ -1082,7 +1082,8 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	// validateCoordinatorReload) and restarts the loop with the new sinks,
 	// re-reading the webhook file; a reload that changes nothing leaves it
 	// running, so a replaced webhook file alone needs a change or a restart.
-	stopOwnerNotifier := startOwnerNotifier(ctx, cfg.Notifications, store, logger)
+	stopOwnerNotifier := startOwnerNotifier(ctx, cfg.Notifications, store,
+		ownerNotificationWorkers(service, cfg.Notifications.WorkerDownAfter.D(), appliedAt), logger)
 	defer stopOwnerNotifier()
 	ready()
 	return serveCoordinatorBoundaries(ctx, &server, cycle, cfg.BacklogV2.Scheduling.Interval.D())

@@ -101,7 +101,14 @@ persisted delivery token. The adapter reads the most recent 100 turns and accept
 only a matching user message ID as positive delivery evidence. A committed sending
 state survives a process death before or after dispatch; it never authorizes another
 send. Missing evidence becomes recovery-required, even after a successful HTTP
-response, until observation proves delivery. A message outside that bounded window
+response, until observation proves delivery. Unknown evidence for a thread that is
+gone ends the wake rejected, since there is no receipt to find and nothing to resend
+into; so does a pending wake whose thread the archive deletes. A thread is gone when
+T3 reports it deleted or archived (the archived state is read from the full index,
+which the shell snapshot omits), or when it is absent from both for three consecutive
+answers spanning at least a minute. A lookup T3 does not answer, including an answer
+with no thread at all, never counts as absence and restarts the count. An unsettled
+wait whose wake is rejected is settled gave-up at that moment. A message outside that bounded window
 can remain unresolved. This intentionally sacrifices automatic retry liveness under
 ambiguity; S5 must qualify the deployed server's behavior. No claim of universal
 exactly-once external effects or live provider-backed wake success is made.

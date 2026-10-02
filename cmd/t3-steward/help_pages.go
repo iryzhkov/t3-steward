@@ -156,13 +156,17 @@ func topLevelHelpPages() []helpPage {
 		},
 		{
 			Path:     "check",
-			Purpose:  "verify the T3 connection, token, version and provider logs.",
+			Purpose:  "verify the T3 connection, token, version and provider logs, and that every enrolled worker is connected.",
 			Usage:    []string{"t3-steward check [--config PATH]"},
 			Flags:    globalHelpFlags(false),
-			Exits:    []helpExit{{0, "every check passed"}, {1, "at least one check failed; each line is marked ok, warn or FAIL"}},
+			Exits:    []helpExit{{0, "every check passed"}, {1, "at least one check failed (a worker down counts); each line is marked ok, warn or FAIL"}},
 			JSONNote: "This verb prints no JSON document; it prints one line per check.",
-			Notes:    "It reads the configuration, the T3 data directory, the provider log directory and this host's state database, and it queries the T3 server. It reaches no coordinator.",
-			Parsers:  []parserSite{globalFlagSite},
+			Notes: "It reads the configuration, the T3 data directory, the provider log directory and this host's state database, and it queries the T3 server. " +
+				"On a coordinator, or a host with a coordinator client, it also reads the coordinator's workers: an enrolled worker not connected for longer than " +
+				"notifications.worker_down_after (default 10m, counted from the coordinator's last start at the earliest) fails the check with the commands that restart it; " +
+				"a shorter outage, or a worker in maintenance (accept_backlog: false in the coordinator's worker entry), is a warning. " +
+				"A coordinator that cannot be reached is a warning, not a failure.",
+			Parsers: []parserSite{globalFlagSite},
 		},
 		{
 			Path:     "run",
@@ -330,6 +334,12 @@ func familyHelpPages() []helpPage {
 			// shape and carries its site for the same reason.
 			Path: "models", Body: modelsUsage,
 			Parsers: []parserSite{{Func: "parseModelsArgs"}, {Func: "takeJSONFlag"}, familyDispatchSite("models")},
+		},
+		{
+			// triage is the same shape as models: one page, no children, its own
+			// arguments.
+			Path: "triage", Body: triageUsage,
+			Parsers: []parserSite{{Func: "parseTriageArgs"}, {Func: "takeJSONFlag"}, familyDispatchSite("triage")},
 		},
 		{
 			Path:     "ui-archive",

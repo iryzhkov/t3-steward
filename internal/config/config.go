@@ -238,7 +238,19 @@ type Notifications struct {
 	// as JSON on standard input. Nil means none. Like Discord, only a
 	// coordinator delivers.
 	Command *CommandNotifications `yaml:"command"`
+	// WorkerDownAfter is how long an enrolled worker may stay disconnected
+	// from the coordinator before it counts as down: "t3-steward check" fails
+	// naming it, "t3-steward triage" lists it, and a coordinator sends the
+	// worker-down event to its owner channels. Default 10m, at least 1m. A
+	// worker in maintenance (accept_backlog: false in the coordinator's
+	// worker entry) is never down.
+	WorkerDownAfter Duration `yaml:"worker_down_after"`
 }
+
+// minWorkerDownAfter is the shortest worker-down threshold accepted: a worker
+// restart onto a new release takes tens of seconds, and a threshold below it
+// would report every upgrade as an outage.
+const minWorkerDownAfter = time.Minute
 
 // DiscordNotifications is the Discord owner channel.
 //
@@ -333,6 +345,10 @@ func (d DiscordNotifications) WebhookURL() (string, error) {
 // never delivers and so never reads the file: a configuration shared with a
 // worker does not need a copy of the credential there.
 func (n Notifications) validate(coordinator bool) error {
+	if n.WorkerDownAfter.D() < minWorkerDownAfter {
+		return fmt.Errorf("notifications.worker_down_after is %s; it must be at least 1m (default 10m), or a worker restart reads as an outage",
+			n.WorkerDownAfter.D())
+	}
 	if n.Discord != nil {
 		if _, err := ownernotify.ParseEvents(n.Discord.Events); err != nil {
 			return fmt.Errorf("notifications.discord: events: %w", err)
@@ -826,6 +842,7 @@ func Default() Config {
 	c.Messages.Warn = DefaultWarnMessage
 	c.Messages.Drain = DefaultDrainMessage
 	c.Notifications.Desktop = true
+	c.Notifications.WorkerDownAfter = Duration(10 * time.Minute)
 	c.Report.Peak = "Mon-Fri 09:00-17:00"
 	c.UIArchive = UIArchive{Enabled: true, BackgroundAfter: Duration(2 * time.Hour), UserAfter: Duration(24 * time.Hour), MaxPerPass: 10}
 	// A managed project outlives the threads in it, and the archive deletes a

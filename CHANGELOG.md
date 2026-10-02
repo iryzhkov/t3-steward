@@ -8,6 +8,27 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A node wake whose thread is gone is no longer retried forever. The delivery
+  loop treated a thread T3 does not hold like an unreachable T3 and kept the
+  wake `offline`; the other members of its `--wake all` group stayed `pending`
+  behind it (waits nw-f2bf0274 and nw-23326045 stayed pending for a week after
+  the archive deleted their thread). The delivery loop now asks T3 which of
+  four things is true: the thread is live, deleted (authoritative: the wake is
+  rejected at once), archived (likewise; the shell snapshot leaves archived
+  threads out, so the full index is read to tell), or absent from both. An
+  absent thread is gone only after three consecutive answers without it
+  spanning at least a minute; a lookup T3 does not answer (transport,
+  credential or server error, or an answer holding no thread at all) or an
+  answer with the thread starts the count again and leaves the wake
+  retryable. A gone thread ends its wake, with its whole `--wake all` group,
+  and ends a send whose receipt is unknown instead of reconciling it forever.
+  The archive rejects the wakes still owed to a thread it deletes (never in a
+  dry run), and reports cleanup it could not finish. An unsettled wait whose
+  wake is rejected is settled as gave-up, and `wait list` shows a rejected
+  wake as over. A coordinator older than this release refuses the rejection
+  of an unsettled wake and logs it; the delivery loop rejects the wake once it
+  settles, so upgrade the coordinator first.
+
 - Finished steward projects no longer stay in the T3 sidebar for days. A
   project can only be removed once it holds no thread, and a finished task's
   thread waited the full `archive.after` retention (48 hours) and then the next
@@ -22,6 +43,38 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `t3-steward triage`: one read-only list of everything waiting for an
+  operator, most urgent first, each item with commands that can be run as
+  printed (ids, revisions and idempotency keys filled in). It covers workers
+  down or disconnected, overseer activations that ended without a decision
+  (`supervision reassess`), escalated incidents (one `resolve` per permitted
+  outcome) and gates (`decide --accept` and `--reject`), active holds (a hold
+  left on a settled run is a note, since it cannot be released), unanswered
+  attention requests, overdue and undeliverable wakes, closed quota pools,
+  quarantined intake (one summary item) and runs unchanged for
+  `--stale-days` days (default 7). `--json` prints the versioned
+  `t3-steward.triage/v1` document; a source that cannot be read (the
+  coordinator status included) is named and sets the exit status to its
+  transport class. Every live supervised run is read; settled ones are read
+  newest first up to 100, and a view that left some out says so and never
+  claims that nothing needs an operator.
+- Worker-down alerting. An enrolled worker the coordinator has not reached for
+  longer than `notifications.worker_down_after` (default 10m, at least 1m,
+  counted from the coordinator's own start at the earliest) now fails
+  `t3-steward check` with a line that names it, says when it was last seen and
+  gives the `systemctl --user` commands that restart it; a shorter outage is a
+  warning. `check` reads the coordinator's workers on the coordinator and on
+  any host with a coordinator client, and an unreachable coordinator is a
+  warning. The owner-notification outbox gains `worker-down` (once per
+  outage, keyed by the worker and the time it was last seen, so restarts and
+  reloads do not repeat it) and `worker-recovered` (once, when the worker is
+  connected again); both are in the default event set and have no watermark.
+  A worker drained with `accept_backlog: false` is in maintenance and never
+  alerted on. The operations guide shows a command channel that posts each
+  event to the fleet feed. A configuration that lists `worker-down` or
+  `worker-recovered` explicitly, or sets `notifications.worker_down_after`, is
+  refused by an older release, which decodes the configuration with unknown
+  keys disallowed.
 - Owner-channel notifications. A top-level `notifications` section sends
   campaign events to Discord (`discord.webhook_url_file`, a 0600 file owned by
   the coordinator's user that holds the webhook URL and is never logged) or to

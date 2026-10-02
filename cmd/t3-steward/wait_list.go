@@ -222,9 +222,10 @@ func nodeWaitRow(w domain.NodeWait) waitListRow {
 	if subject == "" {
 		subject = w.Request.Target.String()
 	}
-	// A wake that has been delivered or cancelled is over, whatever the wait's
-	// own settlement says: nothing more will reach the thread through it.
-	settled := w.SettledAt != nil || w.Delivery == "delivered" || w.Delivery == "cancelled"
+	// A wake that has been delivered, cancelled or rejected is over, whatever
+	// the wait's own settlement says: nothing more will reach the thread
+	// through it.
+	settled := w.SettledAt != nil || w.Delivery == "delivered" || w.Delivery == "cancelled" || w.Delivery == "rejected"
 	return waitListRow{
 		ID: w.Request.ID, Kind: string(w.Request.Kind()), Thread: w.Request.ThreadID, Subject: subject,
 		State: state, Delivery: w.Delivery, Host: w.Host, Registered: w.CreatedAt, Deadline: w.Deadline,

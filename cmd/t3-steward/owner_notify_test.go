@@ -52,5 +52,5 @@ func TestOwnerNotificationSinksSkipAChannelThatCannotStart(t *testing.T) {
 		t.Fatalf("log = %s", logs.String())
 	}
 	// No channel at all starts nothing and stops cleanly.
-	startOwnerNotifier(t.Context(), config.Notifications{}, nil, slog.New(slog.NewTextHandler(&logs, nil)))()
+	startOwnerNotifier(t.Context(), config.Notifications{}, nil, nil, slog.New(slog.NewTextHandler(&logs, nil)))()
 }
