@@ -43,6 +43,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `schedules list` has a STATE column after ACTIVE RUN, and `schedules show`
+  an `active run state:` line: the progress of the run the schedule last
+  started, or `unknown` when the coordinator holds no record of it. Both
+  print `-` when the schedule has never triggered. The JSON carries the same
+  value as `activeRunState` beside `schedule`. ACTIVE RUN reads like history,
+  but while that run is non-terminal it is the schedule's overlap lock: cron
+  triggers are suppressed as `overlap-forbidden` and `schedules run` is
+  refused. The help of `schedules list`, `show` and `run` now says so.
 - `t3-steward triage`: one read-only list of everything waiting for an
   operator, most urgent first, each item with commands that can be run as
   printed (ids, revisions and idempotency keys filled in). It covers workers

@@ -1369,6 +1369,12 @@ func (v view) schedules() []Schedule {
 	result := make([]Schedule, 0, len(v.records.Schedules))
 	for _, item := range v.records.Schedules {
 		dto := Schedule{Schedule: item}
+		if item.ActiveRunID != "" {
+			dto.ActiveRunState = ScheduleActiveRunUnknown
+			if run, ok := v.runs[item.ActiveRunID]; ok {
+				dto.ActiveRunState = string(run.Progress)
+			}
+		}
 		for _, trigger := range v.records.Triggers {
 			if trigger.ScheduleID == item.ID {
 				dto.Triggers = append(dto.Triggers, trigger)
