@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -57,7 +58,10 @@ func TestSystemdScopeRunnerCancellationKillsWholeScope(t *testing.T) {
 	killArgs := filepath.Join(root, "kill.args")
 	parentPath := filepath.Join(root, "parent.pid")
 	childPath := filepath.Join(root, "child.pid")
-	systemdRun := writeExecutable(t, root, "systemd-run", fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nprintf '%%s' \"$$\" > %q\nsleep 30 &\nchild=$!\nprintf '%%s' \"$child\" > %q\nwait \"$child\"\n", runArgs, parentPath, childPath))
+	// Each PID file is written whole and renamed into place. A redirection
+	// creates the file empty before printf fills it, and on a slow runner
+	// (macOS CI, run 36988459562) the test read it in between: parse PID "".
+	systemdRun := writeExecutable(t, root, "systemd-run", fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nprintf '%%s' \"$$\" > %q.tmp && mv %q.tmp %q\nsleep 30 &\nchild=$!\nprintf '%%s' \"$child\" > %q.tmp && mv %q.tmp %q\nwait \"$child\"\n", runArgs, parentPath, parentPath, parentPath, childPath, childPath, childPath))
 	systemctl := writeExecutable(t, root, "systemctl", fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nchild=$(cat %q)\nparent=$(cat %q)\nkill -KILL \"$child\" 2>/dev/null || true\nkill -KILL \"$parent\" 2>/dev/null || true\n", killArgs, childPath, parentPath))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -68,8 +72,7 @@ func TestSystemdScopeRunnerCancellationKillsWholeScope(t *testing.T) {
 		)
 		result <- err
 	}()
-	waitForFile(t, childPath)
-	childPID := readPID(t, childPath)
+	childPID := waitForPID(t, childPath)
 	cancel()
 	if err := <-result; !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled process error = %v, want context canceled", err)
@@ -127,44 +130,48 @@ func writeExecutable(t *testing.T, root, name, content string) string {
 	return path
 }
 
-func waitForFile(t *testing.T, path string) {
+// waitForPID waits until path holds a whole PID. A file that exists but does
+// not parse yet is still being written.
+func waitForPID(t *testing.T, path string) int {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if _, err := os.Stat(path); err == nil {
-			return
+		if raw, err := os.ReadFile(path); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && pid > 0 {
+				return pid
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", path)
+			t.Fatalf("timed out waiting for a PID in %s", path)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 }
 
-func readPID(t *testing.T, path string) int {
-	t.Helper()
-	value := strings.TrimSpace(readAbsoluteTestFile(t, path))
-	pid, err := strconv.Atoi(value)
-	if err != nil {
-		t.Fatalf("parse PID %q: %v", value, err)
-	}
-	return pid
-}
-
+// waitForProcessExit waits until pid has exited. Linux reads /proc so that a
+// zombie counts as exited; elsewhere (macOS has no /proc) signal 0 is the
+// probe, which used to be skipped there because the missing /proc file read
+// as "exited" on the first poll.
 func waitForProcessExit(t *testing.T, pid int) {
 	t.Helper()
+	_, procErr := os.Stat("/proc/self/stat")
+	hasProc := procErr == nil
 	path := filepath.Join("/proc", strconv.Itoa(pid), "stat")
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
-		raw, err := os.ReadFile(path)
-		if errors.Is(err, os.ErrNotExist) {
-			return
-		}
-		if err == nil {
-			fields := strings.Fields(string(raw))
-			if len(fields) >= 3 && fields[2] == "Z" {
+		if hasProc {
+			raw, err := os.ReadFile(path)
+			if errors.Is(err, os.ErrNotExist) {
 				return
 			}
+			if err == nil {
+				fields := strings.Fields(string(raw))
+				if len(fields) >= 3 && fields[2] == "Z" {
+					return
+				}
+			}
+		} else if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("process %d remained after scope kill", pid)
