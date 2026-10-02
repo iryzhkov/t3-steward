@@ -333,6 +333,71 @@ func TestAttributedUsageSeparatesTheRunsAmbiguityFromTheFleets(t *testing.T) {
 	}
 }
 
+// The coordinator host's own readings are stored unowned by its watchdog and
+// again under its worker's id when the worker forwards them, through the real
+// forwarding path. Each reading is counted once in the unscoped count, bound or
+// not, before forwarding, after it, and after a repeated delivery (09-25
+// checkpoint follow-up: unowned rows counted twice).
+func TestUnscopedUsageCountsAForwardedUnownedReadingOnce(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{{ID: "run-1", Progress: domain.ProgressActive}},
+		Attempts:     []domain.Attempt{{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: "task-1", Number: 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.SetClock(func() time.Time { return now })
+	if _, err := store.PrepareAssignmentDispatch(ctx, measuredAssignment("assignment-1", "attempt-1", "thread-run", "claude", 1, now)); err != nil {
+		t.Fatal(err)
+	}
+	for _, sample := range []domain.UsageSample{
+		{ProviderInstanceID: "claude", ThreadID: "thread-run", SourceEventID: "bound", ObservedAt: now.Add(time.Minute)},
+		{ProviderInstanceID: "claude", ThreadID: "thread-interactive", SourceEventID: "unbound", ObservedAt: now.Add(2 * time.Minute)},
+	} {
+		sample.Model, sample.Kind, sample.OutputTokens = "model", domain.UsageKindTurn, 1
+		if err := store.RecordUsage(ctx, sample); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unscoped := func(label string, want int64) {
+		t.Helper()
+		for _, run := range []string{"", "run-1"} {
+			report, err := store.AttributedUsage(ctx, run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := report.Coverage.UnscopedUnattributedCount; got != want {
+				t.Fatalf("%s, run %q: unscoped unattributed = %d, want %d", label, run, got, want)
+			}
+		}
+	}
+	// Not forwarded yet, an unowned row is the only record of its reading and
+	// joins no binding, so both readings are unbound.
+	unscoped("before forwarding", 2)
+	forward := func() {
+		t.Helper()
+		batch, err := store.WorkerUsageBatch(ctx, nil, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.ReceiveWorkerUsage(ctx, "worker", batch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	forward()
+	unscoped("after forwarding", 1)
+	// An unacknowledged batch is offered again; the second delivery is the
+	// same readings.
+	forward()
+	unscoped("after a repeated delivery", 1)
+}
+
 // An assignment dispatched without a thread writes no usage binding, so every
 // sample of its session is unbound. The run was still dispatched to that
 // worker, and those samples keep its coverage partial rather than letting a
