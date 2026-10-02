@@ -126,6 +126,66 @@ func TestSlowPauseCompletionCheckDoesNotBlockAnExchange(t *testing.T) {
 	}
 }
 
+// failingPauseDriver's completion check times out the first time it is
+// asked, as a probe cut off by its timeout or the tick's budget does, and
+// reports the drained turn completed afterwards.
+type failingPauseDriver struct {
+	*gatedCollectDriver
+	checks atomic.Int32
+}
+
+func (d *failingPauseDriver) ObserveThread(context.Context, workerproto.ExecutionPackage) (backlog.DispatchThreadState, error) {
+	return backlog.DispatchThreadStopped, nil
+}
+
+func (d *failingPauseDriver) ObserveThreadTurn(context.Context, workerproto.ExecutionPackage) (backlog.DispatchThreadState, string, error) {
+	return backlog.DispatchThreadStopped, "turn-1", nil
+}
+
+func (d *failingPauseDriver) QuotaPauseCompleted(context.Context, workerproto.ExecutionPackage, string) (bool, error) {
+	if d.checks.Add(1) == 1 {
+		return false, context.DeadlineExceeded
+	}
+	return true, nil
+}
+
+// A completion check that did not answer is not "not completed": the
+// drained turn may have finished the task, so the attempt is not resumed on
+// that tick even though its quota has recovered. Once the check answers, the
+// finished turn is collected and never resumed.
+func TestUnansweredPauseCompletionCheckDoesNotResume(t *testing.T) {
+	var collects atomic.Int32
+	inner := newGatedCollectDriver(filepath.Join(t.TempDir(), "workspace"), &collects)
+	close(inner.release)
+	driver := &failingPauseDriver{gatedCollectDriver: inner}
+	host, runtime := hostWithDriver(t, driver)
+	guard := &fakeQuotaGuard{resumeOK: true, resumeWhy: "bucket recovered"}
+	runtime.config.Quota = guard
+	record := stoppedRecord(t, inner.workspace)
+	record.Assignment.LeaseExpiresAt = time.Now().Add(time.Hour)
+	record.Package.Package.Timeout = 0
+	record.LocalThrottle = &LocalThrottleRequest{Kind: domain.ThrottleCommandDrain, StoppedTurnID: "turn-1", Reason: "quota", RequestedAt: runtimeTestNow}
+	seedAttempt(t, runtime, record)
+
+	if err := host.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if driver.checks.Load() != 1 || inner.resumeCalls != 0 || guard.resumeAsked != 0 {
+		t.Fatalf("checks=%d resumes=%d resume-asked=%d; want the unanswered check to hold the resume",
+			driver.checks.Load(), inner.resumeCalls, guard.resumeAsked)
+	}
+	for tick := 0; tick < 2; tick++ {
+		if err := host.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := attemptRecord(t, runtime)
+	if got.Phase != PhaseCompleted || collects.Load() != 1 || inner.resumeCalls != 0 {
+		t.Fatalf("phase=%q collections=%d resumes=%d; want the finished turn collected once and never resumed",
+			got.Phase, collects.Load(), inner.resumeCalls)
+	}
+}
+
 // The turn identity that fences a quota pause is observed without the host
 // lock too, and still lands on the pause once it answers.
 func TestSlowPauseTurnObservationDoesNotBlockAnExchange(t *testing.T) {

@@ -24,9 +24,11 @@ var t3ProbeBudget = 90 * time.Second
 var t3ProbeConcurrency = 4
 
 // maxProbeRounds bounds how many times one reconcile tick runs probes with
-// the lock released and takes the lock again to act on their answers. Two
-// is what the longest chain needs today: the collection decision's turn
-// observation, then the workspace inspection collection itself makes.
+// the lock released and takes the lock again to act on their answers. The
+// longest chain today is three: a quota pause's completion check, then the
+// collection decision's turn observation, then the workspace inspection
+// collection itself makes. Two rounds finish the common chain (turn, then
+// workspace) in one tick; a completed quota pause finishes on the next.
 const maxProbeRounds = 2
 
 // turnObserver is the optional driver method that binds a stopped observation

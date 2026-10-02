@@ -331,8 +331,8 @@ func (r *Runtime) reconcileLocalPause(ctx context.Context, id string, record Att
 // collectCompletedLocalPause accepts only an explicit completion from the
 // exact turn stopped by the quota drain. It clears the pause before the normal
 // task-wait fence and result collector run; neither step spends provider quota.
-// pending reports that the check waits for a probe made without the worker
-// lock.
+// pending reports that the check has not answered, either because it waits
+// for a probe made without the worker lock or because it failed.
 func (r *Runtime) collectCompletedLocalPause(ctx context.Context, id string, record AttemptRecord) (completed, pending bool, err error) {
 	if record.LocalThrottle == nil || record.LocalThrottle.StoppedTurnID == "" {
 		return false, false, nil
@@ -353,8 +353,12 @@ func (r *Runtime) collectCompletedLocalPause(ctx context.Context, id string, rec
 		completed, err = probe.QuotaPauseCompleted(ctx, record.Package.Package, record.LocalThrottle.StoppedTurnID)
 	}
 	if err != nil {
+		// An unanswered check, such as a probe cut off by its timeout or the
+		// tick's budget, is not "not completed": the drained turn may have
+		// finished the task. It is pending, so nothing resumes the attempt
+		// until the check answers.
 		r.log.Warn("quota-pause completion evidence unavailable; attempt remains paused", "assignment", id, "error", err)
-		return false, false, nil
+		return false, true, nil
 	}
 	if !completed {
 		return false, false, nil
