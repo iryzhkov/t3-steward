@@ -75,17 +75,36 @@ const supersededActivationOfferReason = "operator reassessment superseded a fail
 // and the offered-to-released transition share the claim transaction boundary,
 // so either a worker claim wins or this release wins; neither side can
 // overwrite the other.
+//
+// The coordinator does not call it on its own: it commits the release in the
+// same transaction as the epoch raise that replaces the activation, through
+// SupervisionActivationRowCommit.SupersedeOffer. This entry point commits
+// the release alone and remains for callers that have no plan to commit.
 func (s *Store) SupersedeFailedActivationOffer(ctx context.Context, request FailedActivationOfferSupersession) error {
-	if request.CoordinatorEpoch < 1 || request.RunID == "" || request.ActivationID == "" ||
-		request.ActivationEpoch < 1 || request.ExpectedRecordRevision < 1 || request.AssignmentID == "" ||
-		request.AssignmentEpoch < 1 || request.ReassessmentEventID == "" || request.SupersededAt.IsZero() {
-		return fmt.Errorf("%w: incomplete failed-offer supersession fence", ErrActivationDispatch)
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin activation offer supersession: %w", err)
 	}
 	defer tx.Rollback()
+	if err := supersedeFailedActivationOfferTx(ctx, tx, request); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit activation offer supersession %q: %w", request.AssignmentID, err)
+	}
+	return nil
+}
+
+// supersedeFailedActivationOfferTx qualifies and releases the failed offer
+// inside tx. It reads the supervision record and activation as tx sees them,
+// so a caller that writes the replacement plan afterwards in the same
+// transaction must do so only after this returns.
+func supersedeFailedActivationOfferTx(ctx context.Context, tx *sql.Tx, request FailedActivationOfferSupersession) error {
+	if request.CoordinatorEpoch < 1 || request.RunID == "" || request.ActivationID == "" ||
+		request.ActivationEpoch < 1 || request.ExpectedRecordRevision < 1 || request.AssignmentID == "" ||
+		request.AssignmentEpoch < 1 || request.ReassessmentEventID == "" || request.SupersededAt.IsZero() {
+		return fmt.Errorf("%w: incomplete failed-offer supersession fence", ErrActivationDispatch)
+	}
 	if err := requireCoordinatorEpoch(ctx, tx, request.CoordinatorEpoch); err != nil {
 		return err
 	}
@@ -169,11 +188,8 @@ func (s *Store) SupersedeFailedActivationOffer(ctx context.Context, request Fail
 		// A supersession committed by an earlier binary released the offer and
 		// left its attempt ready; the replay ends it, which is a no-op when the
 		// attempt already ended with the release.
-		if err := endUnstartedActivationAttemptTx(ctx, tx, attempt, assignment, request.CoordinatorEpoch,
-			supersededActivationOfferReason, request.SupersededAt); err != nil {
-			return err
-		}
-		return tx.Commit()
+		return endUnstartedActivationAttemptTx(ctx, tx, attempt, assignment, request.CoordinatorEpoch,
+			supersededActivationOfferReason, request.SupersededAt)
 	}
 	if assignment.State != domain.AssignmentOffered {
 		return fmt.Errorf("%w: activation assignment %q is %s, not offered", ErrActivationDispatch, assignment.ID, assignment.State)
@@ -211,14 +227,8 @@ func (s *Store) SupersedeFailedActivationOffer(ctx context.Context, request Fail
 	// wakes a replacement at a new epoch, which is a new attempt. Ending it with
 	// the release keeps planning from finding a ready attempt on a released
 	// assignment, which it reports as an inconsistency on every boundary.
-	if err := endUnstartedActivationAttemptTx(ctx, tx, attempt, next, request.CoordinatorEpoch,
-		supersededActivationOfferReason, request.SupersededAt); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit activation offer supersession %q: %w", assignment.ID, err)
-	}
-	return nil
+	return endUnstartedActivationAttemptTx(ctx, tx, attempt, next, request.CoordinatorEpoch,
+		supersededActivationOfferReason, request.SupersededAt)
 }
 
 // CommitActivationAssignment offers one activation to its placed worker.

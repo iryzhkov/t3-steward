@@ -426,6 +426,19 @@ type ActivationSignal struct {
 	// replacing a failed pending dispatch. The sqlite release fence verifies it
 	// before giving up the old offer's executor reservation.
 	ReassessmentEventID string
+	// SupersedeOffer names the failed, never-delivered offer of the current
+	// pending dispatch that this signal replaces. Advance releases it in the
+	// same transaction as the plan that raises the activation epoch.
+	SupersedeOffer *ActivationOfferSupersession
+}
+
+// ActivationOfferSupersession identifies the failed offer an operator
+// reassessment releases. The activation, its epoch and the record revision
+// are the ones the plan reads, so they are not named here.
+type ActivationOfferSupersession struct {
+	CoordinatorEpoch int64
+	AssignmentID     string
+	AssignmentEpoch  int64
 }
 
 // ContinuationReceipt records an operator-authorized continuation. Counters are
@@ -822,6 +835,19 @@ type SupervisionActivationCommit struct {
 	Receipt                *ContinuationReceipt
 	RequestID              string
 	CommittedAt            time.Time
+	// SupersedeOffer releases the failed offer of the activation this plan
+	// replaces, in the same transaction; see ActivationSignal.SupersedeOffer.
+	SupersedeOffer *SupersededActivationOffer
+}
+
+// SupersededActivationOffer is a failed offer release fenced on the plan's
+// own read: the activation and epoch it replaces and the event that
+// authorized it.
+type SupersededActivationOffer struct {
+	ActivationOfferSupersession
+	ActivationID        string
+	ActivationEpoch     int64
+	ReassessmentEventID string
 }
 
 // SupervisionActivationStore is the durable surface this package needs. Lane B3
@@ -912,6 +938,17 @@ func (s SupervisionActivationService) Advance(ctx context.Context, runID string,
 		Receipt:                plan.Receipt,
 		RequestID:              signal.RequestID,
 		CommittedAt:            now,
+	}
+	if signal.SupersedeOffer != nil {
+		if signal.ReassessmentEventID == "" {
+			return ActivationPlan{}, errors.New("an offer supersession requires the operator reassessment that authorizes it")
+		}
+		commit.SupersedeOffer = &SupersededActivationOffer{
+			ActivationOfferSupersession: *signal.SupersedeOffer,
+			ActivationID:                state.Activation.ID,
+			ActivationEpoch:             state.Activation.Epoch,
+			ReassessmentEventID:         signal.ReassessmentEventID,
+		}
 	}
 	if err := s.Store.CommitSupervisionActivation(ctx, commit); err != nil {
 		return ActivationPlan{}, err

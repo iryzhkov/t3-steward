@@ -242,6 +242,8 @@ func (c coordinatorSupervision) dispatchRun(
 			return err
 		}
 	}
+	var plan backlog.ActivationPlan
+	advanced := false
 	if signal.ReassessmentEventID != "" {
 		assignment, found := activationAssignmentOf(records, state.Activation)
 		if !found {
@@ -266,18 +268,24 @@ func (c coordinatorSupervision) dispatchRun(
 				return nil
 			}
 		}
-		if err := c.store.SupersedeFailedActivationOffer(ctx, sqlite.FailedActivationOfferSupersession{
-			CoordinatorEpoch:       c.settings.CoordinatorEpoch,
-			RunID:                  run.ID,
-			ActivationID:           state.Activation.ID,
-			ActivationEpoch:        state.Activation.Epoch,
-			ExpectedRecordRevision: state.Record.Revision,
-			AssignmentID:           assignment.ID,
-			AssignmentEpoch:        assignment.Epoch,
-			ReassessmentEventID:    signal.ReassessmentEventID,
-			SupersededAt:           now,
-		}); err != nil {
+		// The release of the failed offer and the epoch raise that replaces it
+		// are one transaction: Advance commits both or neither. They are
+		// committed before placement, because the failed offer still holds its
+		// worker's executor reservation and placement must see it given back.
+		// A placement below that then fails or yields leaves the new epoch's
+		// dispatch pending with no assignment, which a later boundary retries
+		// as an undelivered dispatch without spending budget.
+		signal.SupersedeOffer = &backlog.ActivationOfferSupersession{
+			CoordinatorEpoch: c.settings.CoordinatorEpoch,
+			AssignmentID:     assignment.ID,
+			AssignmentEpoch:  assignment.Epoch,
+		}
+		if plan, err = c.advance(ctx, run, signal, now); err != nil {
 			return fmt.Errorf("reassess activation dispatch: %w", err)
+		}
+		advanced = true
+		if plan.Dispatch == nil {
+			return nil
 		}
 	}
 	// Placement gates only transitions that can create or retry a dispatch.
@@ -329,18 +337,10 @@ func (c coordinatorSupervision) dispatchRun(
 			}
 		}
 	}
-	plan, err := c.activations.Advance(ctx, run.ID, signal)
-	if err != nil {
-		return err
-	}
-	c.logger.Info("supervision activation advanced",
-		"run", run.ID, "event", signal.Event, "state", plan.Activation.State,
-		"outcome", plan.Activation.Outcome, "reason", signal.Reason)
-	if err := c.escalateNoDecision(ctx, run, plan, now); err != nil {
-		return err
-	}
-	if plan.Dispatch == nil {
-		return nil
+	if !advanced {
+		if plan, err = c.advance(ctx, run, signal, now); err != nil || plan.Dispatch == nil {
+			return err
+		}
 	}
 	attempt, assignment, err := backlog.ActivationAssignment(plan.Activation, *plan.Dispatch, placement,
 		run.Supervision.Config.MaxTurnsPerActivation, now)
@@ -366,6 +366,23 @@ func (c coordinatorSupervision) dispatchRun(
 		"worker", committed.WorkerID, "assignment", committed.ID, "thread", committed.ThreadID,
 		"retry", plan.Dispatch.Retry)
 	return nil
+}
+
+// advance commits one lifecycle transition and escalates an activation that
+// ended without a decision.
+func (c coordinatorSupervision) advance(ctx context.Context, run domain.WorkflowRun, signal backlog.ActivationSignal, now time.Time) (backlog.ActivationPlan, error) {
+	plan, err := c.activations.Advance(ctx, run.ID, signal)
+	if err != nil {
+		return backlog.ActivationPlan{}, err
+	}
+	c.logger.Info("supervision activation advanced",
+		"run", run.ID, "event", signal.Event, "state", plan.Activation.State,
+		"outcome", plan.Activation.Outcome, "reason", signal.Reason,
+		"superseded_offer", signal.SupersedeOffer != nil)
+	if err := c.escalateNoDecision(ctx, run, plan, now); err != nil {
+		return backlog.ActivationPlan{}, err
+	}
+	return plan, nil
 }
 
 // activationDispatchAge returns the durable age and stable identity of the

@@ -199,6 +199,85 @@ func TestFailedActivationOfferSupersessionEndsItsAttemptOnceAcrossReplays(t *tes
 	}
 }
 
+// epochRaise is the plan commit that replaces the failed activation: the
+// record and activation move to the next epoch under the revision the plan
+// read, and the failed offer's release rides along.
+func epochRaise(t *testing.T, store *Store, request FailedActivationOfferSupersession) SupervisionActivationRowCommit {
+	t.Helper()
+	state, err := store.LoadSupervisionActivationRows(context.Background(), request.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := state.Record
+	record.ActivationEpoch++
+	activation := state.Activation
+	activation.Epoch = record.ActivationEpoch
+	activation.ID += "-next"
+	supersede := request
+	return SupervisionActivationRowCommit{
+		RunID: request.RunID, ExpectedRecordRevision: state.Record.Revision,
+		Record: record, Activation: activation, SupersedeOffer: &supersede,
+		CommittedAt: request.SupersededAt,
+	}
+}
+
+func supersessionOutcome(t *testing.T, store *Store, runID string) (domain.AssignmentState, int64, int64) {
+	t.Helper()
+	records, err := store.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.LoadSupervisionActivationRows(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return records.Assignments[0].State, state.Record.ActivationEpoch, state.Record.Revision
+}
+
+// The release of a failed overseer offer and the epoch raise that replaces
+// it commit together, and a failure anywhere in that commit leaves neither:
+// the offer is still offered and the record is at the epoch and revision it
+// had. Before, they were two transactions, and a coordinator that failed
+// between them left a released offer under an unraised epoch.
+func TestFailedOfferSupersessionAndEpochRaiseAreOneTransaction(t *testing.T) {
+	ctx := context.Background()
+	store, request, _ := failedOfferSupersessionFixture(t)
+	_, epoch, revision := supersessionOutcome(t, store, request.RunID)
+
+	// A failure after the release inside the same commit: acknowledging an
+	// event that is not the run's is refused once the record is written.
+	broken := epochRaise(t, store, request)
+	broken.CursorAdvanced = true
+	broken.AcknowledgedEventIDs = []string{"no-such-event"}
+	if err := store.CommitSupervisionActivationRows(ctx, broken); err == nil {
+		t.Fatal("the broken commit succeeded")
+	}
+	if state, gotEpoch, gotRevision := supersessionOutcome(t, store, request.RunID); state != domain.AssignmentOffered || gotEpoch != epoch || gotRevision != revision {
+		t.Fatalf("after a failed commit: offer %s, epoch %d (was %d), revision %d (was %d); want nothing changed",
+			state, gotEpoch, epoch, gotRevision, revision)
+	}
+
+	if err := store.CommitSupervisionActivationRows(ctx, epochRaise(t, store, request)); err != nil {
+		t.Fatal(err)
+	}
+	if state, gotEpoch, gotRevision := supersessionOutcome(t, store, request.RunID); state != domain.AssignmentReleased || gotEpoch != epoch+1 || gotRevision != revision+1 {
+		t.Fatalf("after the commit: offer %s, epoch %d, revision %d; want released at epoch %d, revision %d",
+			state, gotEpoch, gotRevision, epoch+1, revision+1)
+	}
+
+	// A supersession that does not describe the plan's own read is refused
+	// before anything is written.
+	store, request, _ = failedOfferSupersessionFixture(t)
+	mismatched := epochRaise(t, store, request)
+	mismatched.SupersedeOffer.ExpectedRecordRevision++
+	if err := store.CommitSupervisionActivationRows(ctx, mismatched); !errors.Is(err, ErrActivationDispatch) {
+		t.Fatalf("mismatched supersession error = %v, want %v", err, ErrActivationDispatch)
+	}
+	if state, gotEpoch, _ := supersessionOutcome(t, store, request.RunID); state != domain.AssignmentOffered || gotEpoch != epoch {
+		t.Fatalf("after a refused commit: offer %s, epoch %d; want neither changed", state, gotEpoch)
+	}
+}
+
 func TestFailedActivationOfferSupersessionRefusesUnsafeOrUnqualifiedWork(t *testing.T) {
 	tests := []struct {
 		name   string

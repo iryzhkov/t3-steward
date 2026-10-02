@@ -8,6 +8,33 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A slow T3 no longer stalls a persistent worker's exchanges through the
+  collection and quota-pause decisions. The provider-turn observation, the
+  configured task-wait probe, the workspace inspection, and the quota pause's
+  turn fence and completion check ran under the lock every coordinator
+  exchange needs, bounded only by the exchange timeout, so one slow T3 call
+  held the worker's snapshots, offers, lease renewals and results behind it.
+  The reconcile tick now makes those calls with the lock released, a few at
+  a time within a 90-second budget that starts from a different attempt each
+  tick, and acts on an answer only while the attempt's journal record still
+  matches the state it was asked for; a stale answer is discarded and asked
+  for again. Exchanges leave these decisions to the tick, so a stopped
+  attempt is collected, and a paused one resumed, by the next reconcile pass
+  rather than by whichever exchange reached it first. The worker's T3 thread
+  cache no longer holds its lock while listing threads. Other T3 calls
+  (thread observation, stop, prepare, create, checkpoint, resume) still run
+  under the lock.
+- An operator reassessment of a failed overseer offer releases the offer and
+  raises the activation epoch in one transaction. They were two, with
+  placement between them, so a coordinator that failed or died in between
+  left a released offer under an activation still pending dispatch at the
+  old epoch until a later boundary replayed it.
+- An escalation is reported to the owner channel even when its run settles
+  before the next notification tick (15 s). Detection used to look only at
+  live runs, so the owner heard that such a run failed and not that
+  supervision had escalated it. A retried escalation is no longer dropped
+  because its run settled while the retry waited.
+
 - `campaign cancel <run>` closes a supervised run in one command. A run whose
   tasks were all terminal but whose escalated review incident kept the sink
   open was refused with "every task of it is already terminal", and the

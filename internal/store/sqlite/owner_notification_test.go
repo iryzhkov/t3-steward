@@ -301,6 +301,139 @@ func TestOwnerNotificationsDetectOperatorAttention(t *testing.T) {
 	}
 }
 
+// failingOnceSink refuses the first escalation it is handed and accepts
+// everything else.
+type failingOnceSink struct {
+	recordingSink
+	failed bool
+}
+
+func (s *failingOnceSink) Deliver(ctx context.Context, n ownernotify.Notification) error {
+	s.mu.Lock()
+	if !s.failed && n.Event == ownernotify.EventSupervisionEscalated {
+		s.failed = true
+		s.mu.Unlock()
+		return io.ErrUnexpectedEOF
+	}
+	s.mu.Unlock()
+	return s.recordingSink.Deliver(ctx, n)
+}
+
+// escalateRun records an escalated review incident on run r and the overseer
+// activation spent on it, as the coordinator does when supervision gives up.
+func escalateRun(t *testing.T, store *Store, runID string, at time.Time) {
+	t.Helper()
+	incident := domain.ReviewIncident{ID: "inc-" + runID, RunID: runID, State: domain.IncidentEscalated, Reason: "producer failed twice", OpenedAt: at}
+	rawIncident, _ := json.Marshal(incident)
+	if _, err := store.db.Exec(`INSERT INTO coordinator_supervision_incidents(id, run_id, state, revision, gate_id, record) VALUES (?, ?, ?, 1, '', ?)`,
+		incident.ID, runID, string(incident.State), string(rawIncident)); err != nil {
+		t.Fatal(err)
+	}
+	activation := domain.Activation{ID: "act-" + runID, RunID: runID, Epoch: 1, State: domain.ActivationEscalated, IncidentID: incident.ID}
+	rawActivation, _ := json.Marshal(activation)
+	if _, err := store.db.Exec(`INSERT INTO coordinator_supervision_activations(id, run_id, epoch, state, record) VALUES (?, ?, 1, ?, ?)`,
+		activation.ID, runID, string(activation.State), string(rawActivation)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func liveRun(t *testing.T, store *Store, id string, at time.Time) {
+	t.Helper()
+	if err := store.SaveCoordinatorRecords(context.Background(), CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{{ID: id, WorkflowID: "w", Revision: 1, Progress: domain.ProgressActive, CreatedAt: at, UpdatedAt: at}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func deliveredEvents(sink *recordingSink, event ownernotify.Event) []ownernotify.Notification {
+	var got []ownernotify.Notification
+	for _, n := range sink.delivered() {
+		if n.Event == event {
+			got = append(got, n)
+		}
+	}
+	return got
+}
+
+// A run that escalates and settles between two notification ticks still has
+// its escalation reported. Detection reads current state every 15 seconds and
+// used to report supervision conditions only of runs that were still live, so
+// an escalation followed within one tick by the run's settlement was never
+// recorded, and the owner heard only that the run had failed.
+func TestEscalationOfARunThatSettlesWithinOneTickIsNotified(t *testing.T) {
+	ctx := context.Background()
+	store := openOwnerNotificationStore(t)
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Workflows: []domain.Workflow{{ID: "w", Name: "release", CreatedAt: now}}}); err != nil {
+		t.Fatal(err)
+	}
+	// History: a run that escalated and settled before the channel existed
+	// is not reported when it is enabled.
+	terminalRun(t, store, "history", domain.ProgressFailed, now.Add(-time.Hour))
+	escalateRun(t, store, "history", now.Add(-2*time.Hour))
+	liveRun(t, store, "r", now)
+	sink := &failingOnceSink{recordingSink: recordingSink{selection: ownernotify.Selection{Events: []ownernotify.Event{
+		ownernotify.EventRunFailed, ownernotify.EventSupervisionEscalated,
+	}}}}
+	notifier := clockedNotifier(store, &now, sink)
+	notifier.Tick(ctx)
+
+	// Within one tick: supervision escalates and the run fails.
+	escalateRun(t, store, "r", now.Add(2*time.Second))
+	terminalRun(t, store, "r", domain.ProgressFailed, now.Add(5*time.Second))
+	now = now.Add(ownernotify.DefaultInterval)
+	notifier.Tick(ctx)
+	// The first send failed. Its retry comes due later, after the run has
+	// settled, and the escalation it reports still holds.
+	now = now.Add(time.Hour)
+	notifier.Tick(ctx)
+	notifier.Tick(ctx)
+
+	escalations := deliveredEvents(&sink.recordingSink, ownernotify.EventSupervisionEscalated)
+	if len(escalations) != 1 || escalations[0].RunID != "r" || escalations[0].IncidentID != "inc-r" ||
+		!strings.Contains(escalations[0].Reason, "producer failed twice") {
+		t.Fatalf("escalations delivered = %+v; want the one of run r", escalations)
+	}
+	if failures := deliveredEvents(&sink.recordingSink, ownernotify.EventRunFailed); len(failures) != 1 || failures[0].RunID != "r" {
+		t.Fatalf("run failures delivered = %+v; want run r", failures)
+	}
+}
+
+// An escalation reported while its run was live is not reported again after
+// the run settles, even once its row has been pruned: a supervision row is
+// pruned only when its run settled before the prune bound, and the watermark
+// moves to that bound, so detection cannot reach the run again.
+func TestEscalationIsNotReportedAgainAfterItsRunSettlesAndIsPruned(t *testing.T) {
+	ctx := context.Background()
+	store := openOwnerNotificationStore(t)
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Workflows: []domain.Workflow{{ID: "w", Name: "release", CreatedAt: now}}}); err != nil {
+		t.Fatal(err)
+	}
+	liveRun(t, store, "r", now)
+	sink := &recordingSink{selection: ownernotify.Selection{Events: []ownernotify.Event{ownernotify.EventSupervisionEscalated}}}
+	notifier := clockedNotifier(store, &now, sink)
+	notifier.Tick(ctx)
+	escalateRun(t, store, "r", now)
+	now = now.Add(time.Minute)
+	notifier.Tick(ctx)
+	if got := len(sink.delivered()); got != 1 {
+		t.Fatalf("delivered %d escalations while the run was live, want 1", got)
+	}
+
+	now = now.Add(2 * time.Hour)
+	terminalRun(t, store, "r", domain.ProgressFailed, now)
+	if _, err := store.PruneOwnerNotifications(ctx, now.Add(-time.Hour), 100); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	notifier.Tick(ctx)
+	if got := len(sink.delivered()); got != 1 {
+		t.Fatalf("delivered %d escalations after the run settled and the outbox was pruned, want still 1", got)
+	}
+}
+
 // clockedNotifier is a notifier over the store with a clock the test moves.
 func clockedNotifier(store *Store, now *time.Time, sinks ...ownernotify.Sink) *ownernotify.Notifier {
 	return &ownernotify.Notifier{Store: store, Sinks: sinks,

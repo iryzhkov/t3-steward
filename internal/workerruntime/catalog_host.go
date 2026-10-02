@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/config"
@@ -38,6 +39,7 @@ type CatalogHost struct {
 	Bootstrap         WorkerBootstrap
 	Options           WorkerServiceOptions
 	mu                sync.Mutex
+	probeTick         atomic.Uint64
 	retained          *retainedCatalog
 	service           *WorkerService
 	activeCredentials ProtocolCredentials
@@ -135,15 +137,35 @@ func (h *CatalogHost) activate(ctx context.Context, c retainedCatalog) error {
 // for the ones it started happens here with the lock released, and a
 // collection that finished within it has its result taken by a second pass
 // at once instead of on the next tick.
+//
+// The same holds for the T3 turn observation, the task-wait probe and the
+// workspace inspection the pass needs to decide on collection and
+// preparation: the first pass only records them, they run here with the lock
+// released, and a second pass acts on the answers whose attempts have not
+// moved in the meantime (see t3Probes).
 func (h *CatalogHost) Reconcile(ctx context.Context) error {
 	pass := &collectionPass{}
-	if err := h.reconcileOnce(withCollectionPass(ctx, pass)); err != nil {
+	probes := &t3Probes{}
+	if err := h.reconcileOnce(withT3Probes(withCollectionPass(ctx, pass), probes)); err != nil {
 		return err
+	}
+	// An answer can lead to a step that needs another observation, as a
+	// stopped turn leads to collection and collection to the workspace
+	// inspection, so a bounded number of rounds runs in one tick.
+	// All the tick's probes share one budget, and every tick starts them from
+	// a different attempt (see t3Probes.run).
+	probeCtx, cancelProbes := context.WithTimeout(ctx, t3ProbeBudget)
+	defer cancelProbes()
+	offset := int(h.probeTick.Add(1))
+	for round := 0; round < maxProbeRounds && probes.run(probeCtx, offset); round++ {
+		if err := h.reconcileOnce(withT3Probes(withCollectionPass(ctx, pass), probes)); err != nil {
+			return err
+		}
 	}
 	if !pass.wait(ctx, collectionWaitGrace) {
 		return nil
 	}
-	return h.reconcileOnce(withCollectionPass(ctx, nil))
+	return h.reconcileOnce(withT3Probes(withCollectionPass(ctx, nil), probes))
 }
 
 func (h *CatalogHost) reconcileOnce(ctx context.Context) error {
@@ -158,11 +180,13 @@ func (h *CatalogHost) reconcileOnce(ctx context.Context) error {
 // HandleFrame serves one coordinator exchange. It holds h.mu for the whole
 // exchange, so nothing under it waits for a collection: an attempt being
 // collected is reported as collecting, and its result is taken by a later
-// pass once the collection has finished.
+// pass once the collection has finished. Nor does it wait for T3 to answer a
+// turn observation, a task-wait probe or a workspace inspection: decisions
+// that need one are left to the reconcile tick, which asks without the lock.
 func (h *CatalogHost) HandleFrame(ctx context.Context, raw []byte) ([]byte, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	ctx = withCollectionPass(ctx, nil)
+	ctx = withT3Probes(withCollectionPass(ctx, nil), nil)
 	codec := workerproto.Codec{MaxBytes: 8 << 20}
 	envelope, buffered, err := ReadStreamEnvelope(bytes.NewReader(raw), codec)
 	if err != nil {
