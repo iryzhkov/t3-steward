@@ -23,6 +23,24 @@ const (
 	AuditTargetThrottle      AdminTargetType = "throttle"
 )
 
+// AdminCommandScopeRun is the payload scope of a cancel that means the whole
+// run rather than one task.
+const AdminCommandScopeRun = "run"
+
+// AdminCommandRunScoped reports whether a command is a whole-run cancel. It
+// reads the payload leniently, because it is asked by the store, which applies
+// commands the admin service already validated: a payload that is not a scope
+// is simply not one.
+func AdminCommandRunScoped(kind AdminCommandKind, payload json.RawMessage) bool {
+	if kind != AdminCommandCancel || len(payload) == 0 {
+		return false
+	}
+	var scope struct {
+		Scope string `json:"scope"`
+	}
+	return json.Unmarshal(payload, &scope) == nil && scope.Scope == AdminCommandScopeRun
+}
+
 type UnknownRecoveryOutcome string
 
 const (

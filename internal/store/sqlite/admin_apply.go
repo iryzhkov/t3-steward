@@ -96,7 +96,9 @@ func (s *Store) ApplyAdminCommand(ctx context.Context, application domain.AdminC
 	if err != nil {
 		return domain.AdminCommandDecision{}, err
 	}
-	if application.State == domain.AdminCommandApplied && command.TargetType == domain.AdminTargetAttempt {
+	wholeRunCancel := domain.AdminCommandRunScoped(command.Kind, command.Payload)
+	if application.State == domain.AdminCommandApplied &&
+		(command.TargetType == domain.AdminTargetAttempt || wholeRunCancel && command.TargetType == domain.AdminTargetWorkflowRun) {
 		snapshot, loadErr := loadWorkflowProjectionTx(ctx, tx, contextFields.WorkflowRunID)
 		if loadErr != nil {
 			return domain.AdminCommandDecision{}, loadErr
@@ -104,6 +106,20 @@ func (s *Store) ApplyAdminCommand(ctx context.Context, application domain.AdminC
 		if snapshot.Run.Sink != nil && snapshot.Run.Sink.Progress.Terminal() {
 			application.State = domain.AdminCommandRejected
 			application.Failure = "run sink is final; submit a new workflow"
+			application.Attempt, application.RelatedAttempts, application.NewAttempt, application.WorkflowRun = nil, nil, nil, nil
+		}
+	}
+	// A whole-run cancel closes the run's supervision as it applies, so it is
+	// refused, durably and with the commands to recover, while an overseer is
+	// live and could be deciding what the cancel would resolve.
+	if application.State == domain.AdminCommandApplied && wholeRunCancel {
+		activation, live, liveErr := liveRunActivationTx(ctx, tx, contextFields.WorkflowRunID)
+		if liveErr != nil {
+			return domain.AdminCommandDecision{}, liveErr
+		}
+		if live {
+			application.State = domain.AdminCommandRejected
+			application.Failure = RunCancelActivationRefusal(contextFields.WorkflowRunID, activation)
 			application.Attempt, application.RelatedAttempts, application.NewAttempt, application.WorkflowRun = nil, nil, nil, nil
 		}
 	}
@@ -164,6 +180,17 @@ func (s *Store) ApplyAdminCommand(ctx context.Context, application domain.AdminC
 					return domain.AdminCommandDecision{}, err
 				}
 			}
+		case domain.AdminTargetWorkflowRun:
+			// Only a whole-run cancel of a run with no live task targets the run
+			// itself: there is no attempt left to fence on, so the run's own
+			// revision is the fence.
+			if !wholeRunCancel || application.WorkflowRun == nil || application.WorkflowRun.ID != command.TargetID ||
+				application.WorkflowRun.Revision != expectedTarget+1 {
+				return domain.AdminCommandDecision{}, errors.New("applied workflow run command has an invalid target transition")
+			}
+			if err := updateAdminWorkflowRunTx(ctx, tx, *application.WorkflowRun); err != nil {
+				return domain.AdminCommandDecision{}, err
+			}
 		case domain.AdminTargetSchedule:
 			if command.Kind == domain.AdminCommandScheduleRun {
 				if application.ScheduleTrigger == nil || application.ScheduleTrigger.ScheduleID != command.TargetID {
@@ -189,6 +216,11 @@ func (s *Store) ApplyAdminCommand(ctx context.Context, application domain.AdminC
 			}
 		default:
 			return domain.AdminCommandDecision{}, errors.New("unsupported admin target transition")
+		}
+		if wholeRunCancel {
+			if err := closeCancelledRunTx(ctx, tx, command, contextFields.WorkflowRunID, application.AppliedAt.UTC()); err != nil {
+				return domain.AdminCommandDecision{}, err
+			}
 		}
 	}
 

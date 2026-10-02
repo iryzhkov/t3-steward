@@ -14,7 +14,7 @@ import (
 // the command payload, beside the payloads pause and delay already carry, so a
 // scoped cancel is one ordinary revision-fenced admin command and not a second
 // kind of command with a second execution path.
-const MutationScopeRun = "run"
+const MutationScopeRun = domain.AdminCommandScopeRun
 
 // commandScope is the payload shape a scoped command carries.
 type commandScope struct {
@@ -78,11 +78,62 @@ func resolveRunCancelTarget(records sqlite.CoordinatorRecords, runID string) (do
 		return "", "", notFound("workflow run", runID)
 	}
 	anchor, ok := RunCancelAnchorID(records.Attempts, runID)
-	if !ok {
-		return "", "", fmt.Errorf("%w: run %s has no task to cancel; every task of it is already terminal",
-			ErrInvalidQuery, runID)
+	if ok {
+		return domain.AdminTargetAttempt, anchor, nil
 	}
-	return domain.AdminTargetAttempt, anchor, nil
+	// Every task is terminal, but the run is not settled: its sink is waiting,
+	// most often for a supervision incident nobody resolved. Cancelling it is
+	// closing that supervision, so the command targets the run itself and is
+	// fenced on the run's revision.
+	for _, run := range records.WorkflowRuns {
+		if run.ID == runID && !runCancelSettled(run) {
+			return domain.AdminTargetWorkflowRun, runID, nil
+		}
+		if run.ID == runID {
+			return "", "", fmt.Errorf("%w: run %s is already settled as %s; every task is terminal and there is nothing to cancel (t3-steward campaign show %s)",
+				ErrInvalidQuery, runID, run.Progress, runID)
+		}
+	}
+	return "", "", notFound("workflow run", runID)
+}
+
+// runCancelSettled is settlement as supervision reads it: the sink is final,
+// or the run itself is.
+func runCancelSettled(run domain.WorkflowRun) bool {
+	return run.Progress.Terminal() || run.Sink != nil && run.Sink.Progress.Terminal()
+}
+
+// RunsClosedByCancel names every run an applied whole-run cancel has closed.
+//
+// The coordinator's supervision boundaries consult it so that no overseer is
+// woken and no gate advanced on such a run while it waits for a cancelled
+// worker to stop: the cancel resolved the run's incidents and cancelled its
+// gates in one transaction, and a fresh activation in that window would reopen
+// what the operator just closed. Once the sink settles, the run is terminal and
+// the ordinary settled-run rules take over.
+func RunsClosedByCancel(records sqlite.CoordinatorRecords) map[string]bool {
+	closed := map[string]bool{}
+	var attemptRuns map[string]string
+	for _, command := range records.AdminCommands {
+		if command.State != domain.AdminCommandApplied || !domain.AdminCommandRunScoped(command.Kind, command.Payload) {
+			continue
+		}
+		switch command.TargetType {
+		case domain.AdminTargetWorkflowRun:
+			closed[command.TargetID] = true
+		case domain.AdminTargetAttempt:
+			if attemptRuns == nil {
+				attemptRuns = make(map[string]string, len(records.Attempts))
+				for _, attempt := range records.Attempts {
+					attemptRuns[attempt.ID] = attempt.WorkflowRunID
+				}
+			}
+			if run := attemptRuns[command.TargetID]; run != "" {
+				closed[run] = true
+			}
+		}
+	}
+	return closed
 }
 
 // runCancelReplayMatches accepts the replay of a run-scoped cancel: the
