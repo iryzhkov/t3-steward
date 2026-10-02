@@ -3,8 +3,8 @@ package domain
 import "testing"
 
 func TestAskRelayHelpers(t *testing.T) {
-	if AskRelayThreadID("tw-a") != AskRelayThreadID("tw-a") || AskRelayThreadID("tw-a") == AskRelayThreadID("tw-b") ||
-		len(AskRelayThreadID("tw-a")) != 36 {
+	first, again := AskRelayThreadID("tw-a"), AskRelayThreadID("tw-"+"a")
+	if first != again || first == AskRelayThreadID("tw-b") || len(first) != 36 {
 		t.Fatal("relay thread IDs are not stable per ask")
 	}
 	ask := AskRequest{Question: "Pick", Options: []string{"alpha", "beta", "gamma, delta"}, Multi: true}
