@@ -1292,7 +1292,8 @@ The events are `run-succeeded`, `run-failed`, `run-cancelled` and `run-skipped`
 (a run reached that outcome), `needs-input` (an attention request awaits an
 answer), `supervision-escalated` (an escalated incident or gate, or an overseer
 whose budget is spent or whose dispatch needs reconciling) and `gate-review` (a
-gate is ready for review). The default is every event except `gate-review`.
+gate is ready for review), `worker-down` and `worker-recovered` (see below). The
+default is every event except `gate-review`.
 A run created by a schedule reports `run-succeeded` and `run-skipped` only to a
 channel with `scheduled_success: true`; its failures, cancellations and
 questions are reported either way, and campaign and `task run` runs report
@@ -1325,6 +1326,60 @@ replay history. Removing a channel, an event or `scheduled_success` drops its
 watermark, so adding it back later starts from that moment and does not replay
 what finished in between. Settled rows are pruned after 30 days, at most 500 per
 hourly pass, and the watermark moves up with every prune.
+
+### Worker outages
+
+An enrolled worker that the coordinator has not reached for longer than
+`notifications.worker_down_after` (default `10m`, at least `1m`) is down. The
+outage is measured from when the coordinator last observed the worker, or from
+the coordinator's own start if that is later, so a coordinator that was itself
+down does not report its whole fleet the moment it comes back. Three things
+follow from the same rule:
+
+- `t3-steward check`, on the coordinator or on any host with a coordinator
+  client, fails with one `FAIL` line per down worker that names it, when it was
+  last seen, and the `systemctl --user` commands that restart it. A shorter
+  outage is a `warn` line.
+- `t3-steward triage` lists it with the same commands.
+- The coordinator records one `worker-down` event per outage for every channel
+  that selects it, keyed by the worker and the time it was last seen, so it is
+  sent once however long the outage lasts and across coordinator restarts and
+  reloads. When the worker is connected again (or is no longer enrolled), one
+  `worker-recovered` event follows. An outage that ends before its
+  `worker-down` was delivered is marked `resolved` and no recovery is sent.
+  Worker events have no watermark: a channel enabled while a worker is down is
+  told about it.
+
+Maintenance uses the existing drain: a worker whose entry in the coordinator's
+`backlog_v2.workers` sets `accept_backlog: false`, or whose connection is
+`removed`, is reported as in maintenance by `check` and `triage` and never
+sends `worker-down`. Set it, reload the coordinator, do the work, then set it
+back and reload again.
+
+The fleet feed is reached through the command channel; nothing in the steward
+knows about it. A small receiver turns each event into a feed entry:
+
+```sh
+#!/bin/sh
+# ~/.local/bin/steward-feed: post a steward owner notification to the feed.
+payload=$(cat)
+field() { printf '%s' "$payload" | jq -r "$1"; }
+event=$(field .event)
+severity=info
+case $event in worker-down|run-failed|supervision-escalated) severity=warn ;; esac
+field .message | feed post "$(field '.message | split("\n")[0]')" \
+  --source t3-steward --tag "steward $event" --severity "$severity" --body-file -
+```
+
+```yaml
+notifications:
+  command:
+    argv: [/home/USER/.local/bin/steward-feed]   # absolute; the coordinator's PATH is not yours
+    events: [worker-down, worker-recovered, run-failed, supervision-escalated, needs-input]
+```
+
+The receiver runs with only `PATH`, `HOME` and `LANG`; `feed` reads its token
+from `~/.config/feed/key`, so nothing else has to be passed through.
 
 The `notifications` section is reloadable: a reload (SIGHUP) that changes it
 restarts the notifier with the new channels and re-reads the webhook file. A

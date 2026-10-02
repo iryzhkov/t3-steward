@@ -35,6 +35,21 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Worker-down alerting. An enrolled worker the coordinator has not reached for
+  longer than `notifications.worker_down_after` (default 10m, at least 1m,
+  counted from the coordinator's own start at the earliest) now fails
+  `t3-steward check` with a line that names it, says when it was last seen and
+  gives the `systemctl --user` commands that restart it; a shorter outage is a
+  warning. `check` reads the coordinator's workers on the coordinator and on
+  any host with a coordinator client, and an unreachable coordinator is a
+  warning. The owner-notification outbox gains `worker-down` (once per
+  outage, keyed by the worker and the time it was last seen, so restarts and
+  reloads do not repeat it) and `worker-recovered` (once, when the worker is
+  connected again); both are in the default event set and have no watermark.
+  A worker drained with `accept_backlog: false` is in maintenance and never
+  alerted on. The operations guide shows a command channel that posts each
+  event to the fleet feed. A configuration that lists `worker-down` or
+  `worker-recovered` explicitly is refused by an older release.
 - Owner-channel notifications. A top-level `notifications` section sends
   campaign events to Discord (`discord.webhook_url_file`, a 0600 file owned by
   the coordinator's user that holds the webhook URL and is never logged) or to

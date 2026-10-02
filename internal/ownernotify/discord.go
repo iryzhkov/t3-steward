@@ -206,6 +206,22 @@ func RenderDiscord(n Notification) string {
 	case EventGateReview:
 		fmt.Fprintf(&b, "t3-steward: %s gate %s is ready for review.", subject, code(n.Gate))
 		fmt.Fprintf(&b, "\nSupervision: %s", code("t3-steward campaign supervision show "+n.RunID))
+	case EventWorkerDown:
+		fmt.Fprintf(&b, "t3-steward: worker %s is down: the coordinator has not reached it", code(n.Worker))
+		if n.LastSeen != nil {
+			fmt.Fprintf(&b, " since %s (%s)", n.LastSeen.UTC().Format(time.RFC3339), n.OccurredAt.Sub(*n.LastSeen).Round(time.Minute))
+		} else {
+			b.WriteString(" since it was enrolled")
+		}
+		fmt.Fprintf(&b, ". On %s: %s, then %s.", code(n.Worker),
+			code("systemctl --user status t3-steward-worker"), code("systemctl --user restart t3-steward-worker"))
+		fmt.Fprintf(&b, "\nWorkers: %s", code("t3-steward worker list"))
+	case EventWorkerRecovered:
+		fmt.Fprintf(&b, "t3-steward: worker %s is back: the coordinator reaches it again", code(n.Worker))
+		if n.Since != nil {
+			fmt.Fprintf(&b, " after an outage since %s", n.Since.UTC().Format(time.RFC3339))
+		}
+		b.WriteString(".")
 	default:
 		fmt.Fprintf(&b, "t3-steward: %s: %s", subject, n.Event)
 	}

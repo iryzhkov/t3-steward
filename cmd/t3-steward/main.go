@@ -591,6 +591,22 @@ func cmdCheck(g globalFlags) error {
 	}
 	pass("policy: warn %.0f%% / drain %.0f%% / stop %.0f%%, grace %s, dry_run=%v, resume=%v",
 		cfg.Policy.WarnPercent, cfg.Policy.DrainPercent, cfg.Policy.StopPercent, cfg.Policy.GracePeriod.D(), cfg.Policy.DryRun, cfg.Resume.Enabled)
+	// The fleet first: a worker that is down is the reason to run check at
+	// all, and it must be reported even when this host's own T3 is not up.
+	if query, ok := coordinatorFleetQuery(cfg); ok {
+		fleetCtx, cancelFleet := context.WithTimeout(context.Background(), 30*time.Second)
+		for _, line := range checkFleetWorkers(fleetCtx, query, cfg.Notifications.WorkerDownAfter.D()) {
+			switch line.level {
+			case "FAIL":
+				fail("%s", line.text)
+			case "warn":
+				warn("%s", line.text)
+			default:
+				pass("%s", line.text)
+			}
+		}
+		cancelFleet()
+	}
 
 	client, dataDir, err := connect(cfg, logger)
 	if err != nil {

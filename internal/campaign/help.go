@@ -486,8 +486,11 @@ or readable by anyone else. A host that is not the coordinator never reads it.
 Events: run-succeeded, run-failed, run-cancelled, run-skipped (a run reached
 that outcome), needs-input (a task's attention request awaits an answer),
 supervision-escalated (an escalated incident or gate, or an overseer whose
-budget is spent or whose dispatch needs reconciling) and gate-review (a gate is
-ready for review). The default is every event except gate-review. Each covers
+budget is spent or whose dispatch needs reconciling), gate-review (a gate is
+ready for review), worker-down (an enrolled worker the coordinator has not
+reached for notifications.worker_down_after, default 10m, outside maintenance;
+once per outage) and worker-recovered (the end of an outage worker-down
+reported). The default is every event except gate-review. Each run event covers
 every run on the coordinator, submitted with or without --notify-thread, except
 that a run a schedule created reports run-succeeded and run-skipped only to a
 channel with scheduled_success: true. An escalated incident and the overseer
