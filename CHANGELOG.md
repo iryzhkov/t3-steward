@@ -8,16 +8,22 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- A slow T3 no longer stalls a persistent worker's exchanges. The collection
-  decision's provider-turn observation, the configured task-wait probe and
-  the workspace inspection ran under the lock every coordinator exchange
-  needs, bounded only by the exchange timeout, so one slow T3 call held the
-  worker's snapshots, offers, lease renewals and results behind it. The
-  reconcile tick now makes those calls with the lock released and acts on an
-  answer only while the attempt's journal record still matches the state it
-  was asked for; a stale answer is discarded and asked for again. Exchanges
-  leave these decisions to the tick, so a stopped attempt is collected by the
-  next reconcile pass rather than by whichever exchange reached it first.
+- A slow T3 no longer stalls a persistent worker's exchanges through the
+  collection and quota-pause decisions. The provider-turn observation, the
+  configured task-wait probe, the workspace inspection, and the quota pause's
+  turn fence and completion check ran under the lock every coordinator
+  exchange needs, bounded only by the exchange timeout, so one slow T3 call
+  held the worker's snapshots, offers, lease renewals and results behind it.
+  The reconcile tick now makes those calls with the lock released, a few at
+  a time within a 90-second budget that starts from a different attempt each
+  tick, and acts on an answer only while the attempt's journal record still
+  matches the state it was asked for; a stale answer is discarded and asked
+  for again. Exchanges leave these decisions to the tick, so a stopped
+  attempt is collected, and a paused one resumed, by the next reconcile pass
+  rather than by whichever exchange reached it first. The worker's T3 thread
+  cache no longer holds its lock while listing threads. Other T3 calls
+  (thread observation, stop, prepare, create, checkpoint, resume) still run
+  under the lock.
 - An operator reassessment of a failed overseer offer releases the offer and
   raises the activation epoch in one transaction. They were two, with
   placement between them, so a coordinator that failed or died in between

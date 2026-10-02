@@ -3,6 +3,7 @@ package workerruntime
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
@@ -12,7 +13,15 @@ import (
 // t3ProbeTimeout bounds one probe made with the host lock released. A probe
 // that does not answer within it is an unavailable observation, which every
 // caller already treats as "decide on a later pass".
-const t3ProbeTimeout = time.Minute
+var t3ProbeTimeout = time.Minute
+
+// t3ProbeBudget bounds all the probes of one reconcile tick together, every
+// round included. Requests not started within it wait for a later tick.
+var t3ProbeBudget = 90 * time.Second
+
+// t3ProbeConcurrency is how many probes of one tick run at once, so that one
+// hung T3 call does not hold every other attempt's observation behind it.
+var t3ProbeConcurrency = 4
 
 // maxProbeRounds bounds how many times one reconcile tick runs probes with
 // the lock released and takes the lock again to act on their answers. Two
@@ -34,8 +43,26 @@ const (
 	// task-wait probe. Both are gathered in the order the decision reads them.
 	probeCollection probeKind = "collection"
 	// probeWorkspace is the inspection of the attempt's prepared workspace.
+	//
+	// It can run while an exchange prepares or dispatches the same package
+	// under the lock, so it may read a workspace that is half written. Such an
+	// answer is never used: preparing moves the phase or the preparation count
+	// and therefore the key, and the answer is discarded.
 	probeWorkspace probeKind = "workspace"
+	// probePauseTurn is the provider turn that fences a quota pause when its
+	// thread is seen stopped.
+	probePauseTurn probeKind = "pause-turn"
+	// probePauseCompletion is the check that the exact turn a quota drain
+	// stopped explicitly completed the task, which reads the turn, its last
+	// message and its export from T3.
+	probePauseCompletion probeKind = "pause-completion"
 )
+
+// quotaPauseCompleter is the optional driver method behind
+// probePauseCompletion.
+type quotaPauseCompleter interface {
+	QuotaPauseCompleted(context.Context, workerproto.ExecutionPackage, string) (bool, error)
+}
 
 // probeKey names the journal state a probe was requested for. An answer is
 // used only while the attempt's record still matches it; otherwise the
@@ -59,16 +86,23 @@ type probeKey struct {
 	commands        int
 	stopConfirmed   bool
 	paused          bool
+	// stoppedTurnID is the turn a quota pause is fenced on, which the
+	// completion check asks about.
+	stoppedTurnID string
 }
 
 func probeKeyFor(kind probeKind, record AttemptRecord) probeKey {
-	return probeKey{
+	key := probeKey{
 		kind: kind, assignmentID: record.Assignment.ID, assignmentEpoch: record.Assignment.Epoch,
 		attemptID: record.Assignment.AttemptID, threadID: record.Package.Package.Identity.ThreadID,
 		phase: record.Phase, workspacePath: record.WorkspacePath, prepareAttempts: record.PrepareAttempts,
 		commands: len(record.CommandRequests), stopConfirmed: record.StopConfirmed,
 		paused: record.LocalThrottle != nil || record.PendingThrottle != nil,
 	}
+	if record.LocalThrottle != nil {
+		key.stoppedTurnID = record.LocalThrottle.StoppedTurnID
+	}
+	return key
 }
 
 // probeAnswer is what one probe observed.
@@ -84,6 +118,9 @@ type probeAnswer struct {
 	workspace string
 	exists    bool
 	inspected error
+	// completion evidence, for probePauseCompletion.
+	completed     bool
+	completionErr error
 }
 
 type probeRequest struct {
@@ -99,7 +136,9 @@ type probeRequest struct {
 // A persistent worker serializes every exchange and reconcile tick behind
 // CatalogHost.mu. The collection decision asks T3 for the provider turn,
 // may ask the configured task-wait probe whether the attempt is parked, and
-// inspects the prepared workspace. Each of those used to run under that lock,
+// inspects the prepared workspace; the quota pause asks for the turn that
+// fences it and whether that turn completed the task. Each of those used to
+// run under that lock,
 // bounded only by the exchange timeout, so one slow T3 call held every
 // snapshot, offer, lease renewal and result exchange of the worker behind it.
 //
@@ -151,6 +190,7 @@ func (p *t3Probes) take(r *Runtime, kind probeKind, record AttemptRecord) (probe
 	if p.requests == nil {
 		p.requests = make(map[string]*probeRequest)
 	}
+	queued := false
 	if existing, ok := p.requests[slot]; ok {
 		if existing.answer != nil {
 			delete(p.requests, slot)
@@ -161,16 +201,31 @@ func (p *t3Probes) take(r *Runtime, kind probeKind, record AttemptRecord) (probe
 				"assignment", record.Assignment.ID, "probe", string(kind))
 		} else if existing.key == key && existing.runtime == r {
 			return probeAnswer{}, false
+		} else {
+			// Not yet run: the request is replaced in place, so the slot is
+			// still queued once and one driver call answers the latest key.
+			queued = true
 		}
 	}
 	p.requests[slot] = &probeRequest{key: key, runtime: r, pkg: record.Package.Package}
-	p.order = append(p.order, slot)
+	if !queued {
+		p.order = append(p.order, slot)
+	}
 	return probeAnswer{}, false
 }
 
-// run answers every outstanding request, in the order they were made, and
-// reports whether any was answered. It must be called without the host lock.
-func (p *t3Probes) run(ctx context.Context) bool {
+// run answers the outstanding requests and reports whether any was
+// answered. It must be called without the host lock.
+//
+// At most t3ProbeConcurrency probes run at once, so one hung T3 call does
+// not hold the others behind it, and none starts once ctx, which carries the
+// tick's t3ProbeBudget, has ended. The requests are taken in the order they
+// were made, rotated by offset: a caller that moves offset on every tick
+// starts from a different attempt each time, so attempts at the front of the
+// journal cannot keep the ones behind them from ever being asked about. A
+// request not started stays unanswered and its decision waits for a later
+// tick.
+func (p *t3Probes) run(ctx context.Context, offset int) bool {
 	p.mu.Lock()
 	var pending []*probeRequest
 	for _, slot := range p.order {
@@ -180,33 +235,67 @@ func (p *t3Probes) run(ctx context.Context) bool {
 	}
 	p.order = nil
 	p.mu.Unlock()
+	if len(pending) == 0 {
+		return false
+	}
+	if offset %= len(pending); offset > 0 {
+		pending = append(pending[offset:], pending[:offset]...)
+	}
+	limit := max(t3ProbeConcurrency, 1)
+	slots := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	var answered atomic.Bool
 	for _, request := range pending {
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+		}
 		if ctx.Err() != nil {
 			break
 		}
-		answer := request.runtime.probe(ctx, request.key.kind, request.pkg)
-		p.mu.Lock()
-		request.answer = &answer
-		p.mu.Unlock()
+		wg.Add(1)
+		go func(request *probeRequest) {
+			defer wg.Done()
+			defer func() { <-slots }()
+			answer := request.runtime.probe(ctx, request.key, request.pkg)
+			p.mu.Lock()
+			request.answer = &answer
+			p.mu.Unlock()
+			answered.Store(true)
+		}(request)
 	}
-	return len(pending) != 0
+	wg.Wait()
+	return answered.Load()
 }
 
 // probe makes the driver calls behind one request.
-func (r *Runtime) probe(ctx context.Context, kind probeKind, pkg workerproto.ExecutionPackage) probeAnswer {
+func (r *Runtime) probe(ctx context.Context, key probeKey, pkg workerproto.ExecutionPackage) probeAnswer {
 	ctx, cancel := context.WithTimeout(ctx, t3ProbeTimeout)
 	defer cancel()
 	var answer probeAnswer
-	switch kind {
+	switch key.kind {
 	case probeCollection:
 		if observer, ok := r.driver.(turnObserver); ok {
 			answer.turnState, answer.turnID, answer.turnErr = observer.ObserveThreadTurn(ctx, pkg)
+			if answer.turnErr != nil || answer.turnState != backlog.DispatchThreadStopped || answer.turnID == "" {
+				// The decision stops at the turn and never reads the task-wait
+				// answer, so it is not asked for.
+				return answer
+			}
 		}
 		if r.config.LiveTaskWait != nil {
 			answer.waiting, answer.waitErr = r.config.LiveTaskWait(ctx, pkg)
 		}
 	case probeWorkspace:
 		answer.workspace, answer.exists, answer.inspected = r.driver.InspectWorkspace(ctx, pkg)
+	case probePauseTurn:
+		if observer, ok := r.driver.(turnObserver); ok {
+			answer.turnState, answer.turnID, answer.turnErr = observer.ObserveThreadTurn(ctx, pkg)
+		}
+	case probePauseCompletion:
+		if completer, ok := r.driver.(quotaPauseCompleter); ok {
+			answer.completed, answer.completionErr = completer.QuotaPauseCompleted(ctx, pkg, key.stoppedTurnID)
+		}
 	}
 	return answer
 }

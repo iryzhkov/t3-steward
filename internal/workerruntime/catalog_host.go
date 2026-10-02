@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/config"
@@ -38,6 +39,7 @@ type CatalogHost struct {
 	Bootstrap         WorkerBootstrap
 	Options           WorkerServiceOptions
 	mu                sync.Mutex
+	probeTick         atomic.Uint64
 	retained          *retainedCatalog
 	service           *WorkerService
 	activeCredentials ProtocolCredentials
@@ -150,7 +152,12 @@ func (h *CatalogHost) Reconcile(ctx context.Context) error {
 	// An answer can lead to a step that needs another observation, as a
 	// stopped turn leads to collection and collection to the workspace
 	// inspection, so a bounded number of rounds runs in one tick.
-	for round := 0; round < maxProbeRounds && probes.run(ctx); round++ {
+	// All the tick's probes share one budget, and every tick starts them from
+	// a different attempt (see t3Probes.run).
+	probeCtx, cancelProbes := context.WithTimeout(ctx, t3ProbeBudget)
+	defer cancelProbes()
+	offset := int(h.probeTick.Add(1))
+	for round := 0; round < maxProbeRounds && probes.run(probeCtx, offset); round++ {
 		if err := h.reconcileOnce(withT3Probes(withCollectionPass(ctx, pass), probes)); err != nil {
 			return err
 		}

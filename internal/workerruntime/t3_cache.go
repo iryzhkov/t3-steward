@@ -13,12 +13,19 @@ import (
 // LocalDriver.BeginObservationPass invalidates it at every pass boundary;
 // mutations also invalidate it. Its lifetime may span a persistent worker's
 // process, but observations must never span reconciliation passes.
+//
+// The listing itself runs without the cache's lock. A mutation invalidates
+// the cache by moving its generation, and a listing that was in flight across
+// that move answers the call that started it but is not kept: it may predate
+// the mutation. Holding the lock across the listing would make every
+// mutation of the worker wait for a slow T3 to answer a listing.
 type CachedT3 struct {
 	Inner T3Control
 
-	mu      sync.Mutex
-	threads map[string]domain.Thread
-	loaded  bool
+	mu         sync.Mutex
+	threads    map[string]domain.Thread
+	loaded     bool
+	generation uint64
 }
 
 func NewCachedT3(inner T3Control) *CachedT3 {
@@ -29,47 +36,55 @@ func (c *CachedT3) invalidate() {
 	c.mu.Lock()
 	c.loaded = false
 	c.threads = nil
+	c.generation++
 	c.mu.Unlock()
 }
 
-func (c *CachedT3) load(ctx context.Context) error {
+// load returns the pass's thread snapshot, listing T3 without the lock when
+// none is cached. The returned map is never modified afterwards.
+func (c *CachedT3) load(ctx context.Context) (map[string]domain.Thread, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.loaded {
-		return nil
+		threads := c.threads
+		c.mu.Unlock()
+		return threads, nil
 	}
-	threads, err := c.Inner.ListThreads(ctx)
+	generation := c.generation
+	c.mu.Unlock()
+	listed, err := c.Inner.ListThreads(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	c.threads = make(map[string]domain.Thread, len(threads))
-	for _, thread := range threads {
-		c.threads[thread.ID] = thread
+	threads := make(map[string]domain.Thread, len(listed))
+	for _, thread := range listed {
+		threads[thread.ID] = thread
 	}
-	c.loaded = true
-	return nil
+	c.mu.Lock()
+	if c.generation == generation && !c.loaded {
+		c.threads, c.loaded = threads, true
+	}
+	c.mu.Unlock()
+	return threads, nil
 }
 
 func (c *CachedT3) ListThreads(ctx context.Context) ([]domain.Thread, error) {
-	if err := c.load(ctx); err != nil {
+	threads, err := c.load(ctx)
+	if err != nil {
 		return nil, err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	result := make([]domain.Thread, 0, len(c.threads))
-	for _, thread := range c.threads {
+	result := make([]domain.Thread, 0, len(threads))
+	for _, thread := range threads {
 		result = append(result, thread)
 	}
 	return result, nil
 }
 
 func (c *CachedT3) GetThread(ctx context.Context, threadID string) (*domain.Thread, error) {
-	if err := c.load(ctx); err != nil {
+	threads, err := c.load(ctx)
+	if err != nil {
 		return nil, err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	thread, ok := c.threads[threadID]
+	thread, ok := threads[threadID]
 	if !ok {
 		return nil, nil
 	}
