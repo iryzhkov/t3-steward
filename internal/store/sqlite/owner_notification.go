@@ -39,9 +39,10 @@ import (
 // which are never sent.
 //
 // Settled rows are pruned after a retention bound, and the watermark moves up
-// with every prune. A supervision row is pruned only once its run is
-// terminal, and detection reports supervision conditions only of runs that
-// are not, so a pruned row cannot be detected again.
+// with every prune. A supervision row is pruned only once its run settled
+// before the prune bound, and detection reports supervision conditions only
+// of runs that are live or settled at or after the watermark, which the prune
+// moves to that bound, so a pruned row cannot be detected again.
 //
 // The two indexes on existing tables serve the per-pass scans: terminal runs
 // by outcome and completion time, and settled outbox rows by age.
@@ -119,9 +120,20 @@ WHERE json_extract(w.record, '$.settledAt') IS NULL
   AND julianday(?3) >= (julianday(json_extract(w.record, '$.registeredAt')) + julianday(json_extract(w.record, '$.deadline'))) / 2
   AND NOT EXISTS (SELECT 1 FROM coordinator_owner_notifications n WHERE n.id = ?1 || w.id || ':reminder')`
 
+// ownerNotificationCompletion is the indexed completion time of run r.
+const ownerNotificationCompletion = `julianday(COALESCE(json_extract(r.record, '$.completedAt'), json_extract(r.record, '$.updatedAt')))`
+
 // ownerNotificationSupervisionQueries select, per event, every supervision
-// record of a live run that is in the reported condition and has no row for
-// this sink yet. The first parameter is the id prefix.
+// record in the reported condition that has no row for this sink yet. The
+// first parameter is the id prefix.
+//
+// A gate review is reported only for a live run: once the run settles there
+// is nothing left to review. An escalation is reported for a live run and
+// also for a run that settled at or after the watermark (?2). Detection reads
+// current state once per tick, so a run that escalated and settled between
+// two ticks would otherwise never have its escalation recorded, and the owner
+// would hear only the run's outcome. The watermark keeps history out, as it
+// does for run outcomes.
 var ownerNotificationSupervisionQueries = map[ownernotify.Event]string{
 	ownernotify.EventSupervisionEscalated: `
 SELECT subject, run_id, record, kind FROM (
@@ -141,7 +153,8 @@ SELECT subject, run_id, record, kind FROM (
 ) c
 WHERE NOT EXISTS (SELECT 1 FROM coordinator_owner_notifications n WHERE n.id = ?1 || c.subject)
   AND EXISTS (SELECT 1 FROM coordinator_workflow_runs r
-    WHERE r.id = c.run_id AND r.progress NOT IN ` + ownerNotificationTerminal + `)`,
+    WHERE r.id = c.run_id AND (r.progress NOT IN ` + ownerNotificationTerminal + `
+      OR ` + ownerNotificationCompletion + ` >= julianday(?2)))`,
 	ownernotify.EventGateReview: `
 SELECT 'gate:' || g.id || ':' || g.evidence_snapshot_id, g.run_id, g.record, 'gate'
 FROM coordinator_supervision_gates g
@@ -257,7 +270,9 @@ func ownerNotificationCandidatesTx(ctx context.Context, tx *sql.Tx, sink string,
 		rows, err = tx.QueryContext(ctx, ownerNotificationRunQuery, prefix, progress, string(scope.Runs), since)
 	} else if event == ownernotify.EventNeedsInput {
 		rows, err = tx.QueryContext(ctx, ownerNotificationNeedsInputQuery, prefix, since, now)
-	} else if query, known := ownerNotificationSupervisionQueries[event]; known {
+	} else if query, known := ownerNotificationSupervisionQueries[event]; known && event == ownernotify.EventSupervisionEscalated {
+		rows, err = tx.QueryContext(ctx, query, prefix, since)
+	} else if known {
 		rows, err = tx.QueryContext(ctx, query, prefix)
 	} else {
 		return nil, fmt.Errorf("owner notification event %q has no detection", event)
@@ -487,7 +502,10 @@ func (s *Store) SyncOwnerNotificationScopes(ctx context.Context, active map[stri
 
 // PruneOwnerNotifications implements ownernotify.Store. The watermarks move up
 // to the bound in the same transaction as the delete, so nothing the delete
-// removes can be detected again.
+// removes can be detected again. A supervision row is removed only once its
+// run settled before the bound: an escalation is detected on a run that
+// settled at or after the watermark, so a row whose run settled later than
+// the bound must stay to keep its escalation from being reported twice.
 func (s *Store) PruneOwnerNotifications(ctx context.Context, before time.Time, limit int) (int, error) {
 	cutoff := ownerNotificationTime(before)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -504,7 +522,8 @@ func (s *Store) PruneOwnerNotifications(ctx context.Context, before time.Time, l
 		WHERE n.state IN ('delivered', 'abandoned', 'baseline', 'resolved') AND n.created_at < ?1
 		  AND (n.event NOT IN ('supervision-escalated', 'gate-review')
 		    OR NOT EXISTS (SELECT 1 FROM coordinator_workflow_runs r
-		      WHERE r.id = n.run_id AND r.progress NOT IN `+ownerNotificationTerminal+`))
+		      WHERE r.id = n.run_id AND (r.progress NOT IN `+ownerNotificationTerminal+`
+		        OR `+ownerNotificationCompletion+` >= julianday(?1))))
 		LIMIT ?2)`, cutoff, limit)
 	if err != nil {
 		return 0, fmt.Errorf("prune owner notifications: %w", err)
@@ -516,8 +535,11 @@ func (s *Store) PruneOwnerNotifications(ctx context.Context, before time.Time, l
 	return int(removed), nil
 }
 
-// OwnerNotificationHolds implements ownernotify.Store. A condition of a run
-// that has since become terminal no longer holds.
+// OwnerNotificationHolds implements ownernotify.Store. A question or a gate
+// review of a run that has since become terminal no longer holds: nobody can
+// act on it. An escalation still holds while its record is escalated, run
+// settled or not, because what it reports is that supervision gave up, and
+// the run settling does not undo that.
 func (s *Store) OwnerNotificationHolds(ctx context.Context, n ownernotify.Notification) (bool, error) {
 	exists := func(query string, args ...any) (bool, error) {
 		err := s.db.QueryRowContext(ctx, query, args...).Scan(new(int))
@@ -526,9 +548,11 @@ func (s *Store) OwnerNotificationHolds(ctx context.Context, n ownernotify.Notifi
 		}
 		return err == nil, err
 	}
-	live, err := exists(`SELECT 1 FROM coordinator_workflow_runs WHERE id = ? AND progress NOT IN `+ownerNotificationTerminal, n.RunID)
-	if err != nil || !live {
-		return false, err
+	if n.Event != ownernotify.EventSupervisionEscalated {
+		live, err := exists(`SELECT 1 FROM coordinator_workflow_runs WHERE id = ? AND progress NOT IN `+ownerNotificationTerminal, n.RunID)
+		if err != nil || !live {
+			return false, err
+		}
 	}
 	incidentEscalated := func() (bool, error) {
 		return exists(`SELECT 1 FROM coordinator_supervision_incidents WHERE id = ? AND state = 'escalated'`, n.IncidentID)
