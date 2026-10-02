@@ -3,6 +3,8 @@ package workerruntime
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"os"
 	"os/exec"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/compat"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
@@ -362,6 +365,55 @@ func TestTaskPromptSaysEndingTheTurnCompletesTheTask(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt does not say %q:\n%s", want, prompt)
 		}
+	}
+}
+
+// The worker composes more than the author wrote (the task-ending section, a
+// recovery supplement, a preflight envelope), so the authoring check cannot
+// be the only one. A composed first turn over T3's input limit is refused
+// before the thread is created, naming the size and the limit; one at the
+// limit is sent.
+func TestCreateThreadRefusesAFirstTurnOverT3sInputLimit(t *testing.T) {
+	supplement := compat.TurnInputLength(backlog.FirstTurnPrompt("", nil))
+	for _, test := range []struct {
+		name    string
+		length  int
+		refused bool
+	}{
+		{name: "at the limit", length: compat.MaxTurnInputLength},
+		{name: "above the limit", length: compat.MaxTurnInputLength + 1, refused: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pkg := testPackage()
+			pkg.Outputs = nil
+			body := []byte(strings.Repeat("x", test.length-supplement))
+			sum := sha256.Sum256(body)
+			pkg.Prompt.Size, pkg.Prompt.SHA256 = int64(len(body)), hex.EncodeToString(sum[:])
+			pkg.Limits.MaxArtifactBytes = int64(len(body))
+			root := t.TempDir()
+			control := &recordingT3{projectID: "project-uuid"}
+			driver := &LocalDriver{Config: LocalDriverConfig{ArtifactRoot: root}, T3: control}
+			cachePath := filepath.Join(root, "objects", pkg.Prompt.SHA256)
+			if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cachePath, body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := driver.CreateThread(context.Background(), pkg, t.TempDir())
+			if !test.refused {
+				if err != nil || len(control.created) != 1 || compat.TurnInputLength(control.created[0].Prompt) != test.length {
+					t.Fatalf("a first turn at the limit was not sent: err=%v created=%d", err, len(control.created))
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "120001 characters") || !strings.Contains(err.Error(), "limit of 120000") {
+				t.Fatalf("error = %v", err)
+			}
+			if len(control.created) != 0 || len(control.managedProjects) != 0 || control.resolveProject != "" {
+				t.Fatalf("a first turn over the limit reached T3: created=%d", len(control.created))
+			}
+		})
 	}
 }
 

@@ -158,6 +158,9 @@ func Load(reference string, limits Limits) (*Campaign, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := checkFirstTurnPrompts(root, manifest); err != nil {
+		return nil, err
+	}
 	return &Campaign{
 		Root:          root,
 		ManifestPath:  manifestPath,
@@ -308,6 +311,30 @@ func inventory(root string, manifest backlog.Manifest, manifestBytes []byte, lim
 		files = append(files, File{Path: relative, Role: roles[relative], Size: size, SHA256: sum})
 	}
 	return files, nil
+}
+
+// checkFirstTurnPrompts refuses a task whose first turn T3 would refuse for
+// its length. T3 checks the limit only when the turn starts, after the thread
+// exists, so a submitted task over it was counted running while nothing ran.
+// The prompt files are already inside the campaign's byte limit, so reading
+// them whole is bounded.
+func checkFirstTurnPrompts(root string, manifest backlog.Manifest) error {
+	names := make([]string, 0, len(manifest.Tasks))
+	for name := range manifest.Tasks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		task := manifest.Tasks[name]
+		prompt, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(task.PromptFile)))
+		if err != nil {
+			return fmt.Errorf("campaign: task %s: read prompt: %w", name, err)
+		}
+		if err := backlog.CheckFirstTurnPrompt(string(prompt), task.OutputDeclarations()); err != nil {
+			return fmt.Errorf("campaign: task %s (%s): %w", name, task.PromptFile, err)
+		}
+	}
+	return nil
 }
 
 // measure records the size and checksum packing will later have to reproduce.

@@ -60,6 +60,25 @@ All notable changes to this project are documented here. The format follows
   the M5 upgrade qualification read the previous reload's receipt, and the
   systemd scope cancellation test could read a PID file before it was
   written.
+- A task whose turn T3 refused to start no longer sits "running". On
+  2026-10-02 a review task stayed running for over an hour after T3 refused
+  its first turn (`provider.turn.start.failed`, "Expected a value with a
+  length of at most 120000 at ["input"]"), because a thread with no turn and
+  an errored session read as a turn that had not started yet. The worker now
+  collects such an attempt, and it fails with "T3 refused to start the
+  provider turn: <T3's detail>". A refused later turn (a wake or a resume) is
+  caught the same way. A turn that ended in error names the turn's runtime
+  error or the session's last error. `campaign show` prints a failed task's
+  reason under it, and `task result` prints it in text and as `failure` in
+  `--json`.
+- `campaign validate`, `check` and `submit` and `task run` refuse a task
+  whose first turn is over T3's turn input limit (120000 characters, counted
+  as T3 counts them, for T3 0.0.38), naming the size, what the Steward adds
+  and the limit, and pointing at `inputs:` files for large material. The
+  worker repeats the check on the turn it composes (task-ending section,
+  preflight envelope, recovery supplement) before creating the thread, so a
+  composed turn over the limit fails the dispatch with that reason instead of
+  reaching T3.
 
 - `campaign cancel <run>` closes a supervised run in one command. A run whose
   tasks were all terminal but whose escalated review incident kept the sink

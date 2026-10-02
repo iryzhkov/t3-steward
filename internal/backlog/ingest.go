@@ -316,19 +316,7 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 		promptArtifact := i.artifact(runID, taskID, files[filepath.Clean(taskManifest.PromptFile)], now)
 		records.Artifacts = append(records.Artifacts, promptArtifact)
 		taskIDsByName[name] = taskID
-		var outputs []domain.ArtifactDeclaration
-		if len(taskManifest.Outputs) != 0 {
-			outputs = make([]domain.ArtifactDeclaration, 0, len(taskManifest.Outputs))
-		}
-		for _, output := range taskManifest.Outputs {
-			outputs = append(outputs, domain.ArtifactDeclaration{Name: output, MediaType: mediaType(output)})
-		}
-		for _, commit := range taskManifest.Commits {
-			outputs = append(outputs, domain.ArtifactDeclaration{
-				Name: commit.Name, MediaType: "application/json",
-				Commit: &domain.CommitOutput{Revision: commit.Revision},
-			})
-		}
+		outputs := taskManifest.OutputDeclarations()
 		resolvedContext, err := resolveAuthoredProjectContext(taskManifest.Context, contextInputs, now)
 		if err != nil {
 			return sqlite.CoordinatorRecords{}, nil, fmt.Errorf("task %q project context: %w", name, err)
