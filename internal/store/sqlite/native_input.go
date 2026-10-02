@@ -74,9 +74,7 @@ func (s *Store) RecordNativeUserInput(ctx context.Context, workerID, attemptID, 
 			kind = "native-answer"
 			reason, outcome = nativeAnswerText(requests[event.RequestID].Questions, event)
 		}
-		if len(reason) > nativeInputReasonBytes {
-			reason = reason[:nativeInputReasonBytes]
-		}
+		reason = domain.TruncateUTF8(reason, nativeInputReasonBytes)
 		if strings.TrimSpace(reason) == "" {
 			reason = "(empty)"
 		}

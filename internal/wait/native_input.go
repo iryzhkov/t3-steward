@@ -56,10 +56,14 @@ func (r *Runner) tickNativeInput(ctx context.Context) {
 		r.nativeWatched = map[string]bool{}
 		r.nativeReported = map[string]map[string]bool{}
 	}
+	if r.nativePending == nil {
+		r.nativePending = map[string][]domain.UserInputEvent{}
+	}
 	for thread := range r.nativeWatched {
 		if _, live := threads[thread]; !live {
 			delete(r.nativeWatched, thread)
 			delete(r.nativeReported, thread)
+			delete(r.nativePending, thread)
 		}
 	}
 	ids := make([]string, 0, len(threads))
@@ -104,12 +108,31 @@ func (r *Runner) tickNativeInput(ctx context.Context) {
 		if len(events) > maxNativeInputReport {
 			events = events[len(events)-maxNativeInputReport:]
 		}
+		// The batch is kept until the coordinator acknowledges it, whatever
+		// the thread shows next: an answer read once and lost to a failed
+		// report would otherwise never be read again, because the card is no
+		// longer pending.
+		r.nativePending[threadID] = events
+	}
+	pending := make([]string, 0, len(r.nativePending))
+	for threadID := range r.nativePending {
+		pending = append(pending, threadID)
+	}
+	sort.Strings(pending)
+	for _, threadID := range pending {
+		events := r.nativePending[threadID]
 		if _, err := store.RecordNativeUserInput(ctx, r.TaskWorkerID, threads[threadID], threadID, events, r.now()); err != nil {
-			r.log.Warn("record a task's native question", "thread", threadID, "err", err)
+			r.log.Warn("record a task's native question; retrying next tick", "thread", threadID, "err", err)
 			continue
+		}
+		reported := r.nativeReported[threadID]
+		if reported == nil {
+			reported = map[string]bool{}
+			r.nativeReported[threadID] = reported
 		}
 		for _, event := range events {
 			reported[event.ActivityID] = true
 		}
+		delete(r.nativePending, threadID)
 	}
 }
