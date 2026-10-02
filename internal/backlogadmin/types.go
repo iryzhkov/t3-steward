@@ -580,9 +580,19 @@ type ArtifactMetadata struct {
 	CreatedAt     time.Time           `json:"createdAt"`
 }
 
+// ScheduleActiveRunUnknown is the active run state reported when a schedule
+// names an active run the coordinator holds no record of.
+const ScheduleActiveRunUnknown = "unknown"
+
 type Schedule struct {
-	Schedule domain.Schedule  `json:"schedule"`
-	Triggers []domain.Trigger `json:"triggers,omitempty"`
+	Schedule domain.Schedule `json:"schedule"`
+	// ActiveRunState is the progress of the run named by Schedule.ActiveRunID,
+	// or ScheduleActiveRunUnknown when the coordinator holds no record of it,
+	// and empty when the schedule has never triggered. While it is not
+	// terminal the run blocks the schedule: cron triggers are suppressed as
+	// overlap-forbidden and schedules run starts nothing.
+	ActiveRunState string           `json:"activeRunState,omitempty"`
+	Triggers       []domain.Trigger `json:"triggers,omitempty"`
 }
 
 // WorkerProviderAuthorization is one provider instance the coordinator's

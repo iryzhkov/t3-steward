@@ -362,6 +362,47 @@ func TestExplanationBlocksSurplusDuringConstrainedAdmission(t *testing.T) {
 	}
 }
 
+// TestSchedulesReportActiveRunState pins the state the schedules view reports
+// beside the active run pointer: the run's own progress, so an operator can
+// see whether the pointer is a lock (a non-terminal run suppresses cron
+// triggers as overlap-forbidden and refuses schedules run) or only history.
+func TestSchedulesReportActiveRunState(t *testing.T) {
+	records := sqlite.CoordinatorRecords{
+		WorkflowRuns: []domain.WorkflowRun{
+			{ID: "run-running", WorkflowID: "workflow-1", Progress: domain.ProgressActive},
+			{ID: "run-done", WorkflowID: "workflow-1", Progress: domain.ProgressSucceeded},
+		},
+		Schedules: []domain.Schedule{
+			{ID: "a-running", WorkflowID: "workflow-1", ActiveRunID: "run-running"},
+			{ID: "b-done", WorkflowID: "workflow-1", ActiveRunID: "run-done"},
+			{ID: "c-never", WorkflowID: "workflow-1"},
+			{ID: "d-missing", WorkflowID: "workflow-1", ActiveRunID: "run-gone"},
+		},
+	}
+	schedules := newView(records, nil, nil, RuntimeInfo{}, adminTestNow).schedules()
+	want := map[string]string{
+		"a-running": string(domain.ProgressActive),
+		"b-done":    string(domain.ProgressSucceeded),
+		"c-never":   "",
+		"d-missing": ScheduleActiveRunUnknown,
+	}
+	if len(schedules) != len(want) {
+		t.Fatalf("schedules = %#v", schedules)
+	}
+	for _, schedule := range schedules {
+		if got := schedule.ActiveRunState; got != want[schedule.Schedule.ID] {
+			t.Errorf("schedule %s: active run state = %q, want %q", schedule.Schedule.ID, got, want[schedule.Schedule.ID])
+		}
+	}
+	encoded, err := json.Marshal(schedules[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"activeRunState":"active"`) {
+		t.Fatalf("schedule JSON does not carry activeRunState: %s", encoded)
+	}
+}
+
 func TestAdminMutationAuthorizationStaleReplayAndAsyncOutcome(t *testing.T) {
 	store := openAdminTestStore(t)
 	seedAdminTestStore(t, store)

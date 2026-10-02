@@ -26,7 +26,9 @@ Definition administration:
       [--expected-revision N] [--request-id ID] [--json]
 
 Read commands:
-  list [--json]                List schedules.
+  list [--json]                List schedules, with the state of each one's active run;
+                               a non-terminal active run blocks cron triggers
+                               (overlap-forbidden) and schedules run.
   show <schedule> [--json]     Show a schedule definition.
   history <schedule> [--json]  Show its trigger history.
 
@@ -1675,16 +1677,21 @@ func renderSchedules(out io.Writer, schedules []backlogadmin.Schedule, selector 
 	}
 	if mode == "show" && len(schedules) > 0 {
 		item := schedules[0].Schedule
-		fmt.Fprintf(out, "schedule: %s (%s)\nworkflow: %s\nexpression: %s\ntimezone: %s\nenabled: %t\nactive run: %s\nrevision: %d\n",
-			item.Name, item.ID, item.WorkflowID, item.Expression, item.Timezone, item.Enabled, item.ActiveRunID, item.Revision)
+		fmt.Fprintf(out, "schedule: %s (%s)\nworkflow: %s\nexpression: %s\ntimezone: %s\nenabled: %t\nactive run: %s\nactive run state: %s\nrevision: %d\n",
+			item.Name, item.ID, item.WorkflowID, item.Expression, item.Timezone, item.Enabled,
+			orDash(item.ActiveRunID), orDash(schedules[0].ActiveRunState), item.Revision)
 		return
 	}
+	// STATE is the progress of the run in ACTIVE RUN. While it is not
+	// terminal that run is a lock, not history: cron triggers are suppressed
+	// as overlap-forbidden and schedules run starts nothing.
 	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(table, "ID\tNAME\tEXPRESSION\tTIMEZONE\tENABLED\tACTIVE RUN")
+	fmt.Fprintln(table, "ID\tNAME\tEXPRESSION\tTIMEZONE\tENABLED\tACTIVE RUN\tSTATE")
 	for _, item := range schedules {
 		schedule := item.Schedule
-		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%t\t%s\n", schedule.ID, schedule.Name,
-			schedule.Expression, schedule.Timezone, schedule.Enabled, schedule.ActiveRunID)
+		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%t\t%s\t%s\n", schedule.ID, schedule.Name,
+			schedule.Expression, schedule.Timezone, schedule.Enabled,
+			orDash(schedule.ActiveRunID), orDash(item.ActiveRunState))
 	}
 	_ = table.Flush()
 }

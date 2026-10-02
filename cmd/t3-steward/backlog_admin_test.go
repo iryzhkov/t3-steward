@@ -258,6 +258,74 @@ func TestSchedulesCLIListShowHistory(t *testing.T) {
 	}
 }
 
+func TestSchedulesCLIShowsActiveRunState(t *testing.T) {
+	response := backlogadmin.Response{
+		Version: backlogadmin.Version,
+		Kind:    backlogadmin.QuerySchedules,
+		Schedules: []backlogadmin.Schedule{
+			{
+				Schedule:       domain.Schedule{ID: "busy", Name: "Busy", Expression: "0 2 * * *", Timezone: "UTC", Enabled: true, ActiveRunID: "run-busy"},
+				ActiveRunState: "active",
+			},
+			{Schedule: domain.Schedule{ID: "fresh", Name: "Fresh", Expression: "0 3 * * *", Timezone: "UTC"}},
+		},
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		cli := backlogAdminCLI{
+			service:   &fakeAdminQueryService{response: response},
+			principal: backlogadmin.Principal{ID: "operator", Roles: []string{"local-admin"}}, stdout: &out,
+		}
+		if err := cli.runSchedules(context.Background(), args); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+
+	lines := strings.Split(strings.TrimSpace(run("list")), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("list = %q", lines)
+	}
+	if fields := strings.Fields(lines[0]); fields[len(fields)-1] != "STATE" {
+		t.Fatalf("list header = %q, want STATE after ACTIVE RUN", lines[0])
+	}
+	if fields := strings.Fields(lines[1]); fields[0] != "busy" || fields[len(fields)-2] != "run-busy" || fields[len(fields)-1] != "active" {
+		t.Fatalf("busy row = %q", lines[1])
+	}
+	if fields := strings.Fields(lines[2]); fields[0] != "fresh" || fields[len(fields)-2] != "-" || fields[len(fields)-1] != "-" {
+		t.Fatalf("fresh row = %q, want - for both the active run and its state", lines[2])
+	}
+
+	if show := run("show", "busy"); !strings.Contains(show, "active run: run-busy\nactive run state: active\n") {
+		t.Fatalf("show = %q", show)
+	}
+
+	var decoded backlogadmin.Response
+	if err := json.Unmarshal([]byte(run("list", "--json")), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Schedules) != 2 || decoded.Schedules[0].ActiveRunState != "active" || decoded.Schedules[1].ActiveRunState != "" {
+		t.Fatalf("JSON schedules = %+v", decoded.Schedules)
+	}
+}
+
+func TestSchedulesHelpExplainsActiveRunLock(t *testing.T) {
+	for _, path := range []string{"schedules list", "schedules run"} {
+		page, ok := helpPageFor(path)
+		if !ok {
+			t.Fatalf("no help page %q", path)
+		}
+		rendered := page.render()
+		text := strings.Join(strings.Fields(rendered), " ")
+		for _, want := range []string{"overlap-forbidden", "schedules run", "non-terminal"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s help does not mention %q:\n%s", path, want, rendered)
+			}
+		}
+	}
+}
+
 func TestSchedulesCLISelectsBeforeJSONRendering(t *testing.T) {
 	fake := &fakeAdminQueryService{response: backlogadmin.Response{
 		Version: backlogadmin.Version,

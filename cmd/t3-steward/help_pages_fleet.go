@@ -365,8 +365,8 @@ func fleetHelpPages() []helpPage {
 			Notes:    "Mutating. Exactly one schedule id, before the flags.",
 			Parsers:  []parserSite{{Func: "parseScheduleDefinition"}},
 		},
-		scheduleReadPage("schedules list", "every schedule the coordinator holds.", "t3-steward schedules list [--json]", "It takes no positional argument."),
-		scheduleReadPage("schedules show", "one schedule definition, without its trigger history.", "t3-steward schedules show <schedule> [--json]", "Exactly one schedule id."),
+		scheduleReadPage("schedules list", "every schedule the coordinator holds.", "t3-steward schedules list [--json]", "It takes no positional argument. "+scheduleActiveRunNote),
+		scheduleReadPage("schedules show", "one schedule definition, without its trigger history.", "t3-steward schedules show <schedule> [--json]", "Exactly one schedule id. "+scheduleActiveRunNote),
 		scheduleReadPage("schedules history", "one schedule's trigger history.", "t3-steward schedules history <schedule> [--json]", "Exactly one schedule id."),
 	}
 
@@ -391,11 +391,12 @@ func fleetHelpPages() []helpPage {
 		})
 	}
 
-	for _, control := range []struct{ verb, purpose, usage string }{
-		{"run", "trigger one schedule now, out of cycle.", "t3-steward schedules run <schedule> --reason TEXT [--command-id ID] [--json]"},
-		{"enable", "enable one schedule.", "t3-steward schedules enable <schedule> --reason TEXT [--command-id ID] [--json]"},
-		{"disable", "disable one schedule.", "t3-steward schedules disable <schedule> --reason TEXT [--command-id ID] [--json]"},
-		{"delay-next", "hold one schedule's next trigger until a stated instant.", "t3-steward schedules delay-next <schedule> --until RFC3339 --reason TEXT [--command-id ID] [--json]"},
+	for _, control := range []struct{ verb, purpose, usage, note string }{
+		{"run", "trigger one schedule now, out of cycle.", "t3-steward schedules run <schedule> --reason TEXT [--command-id ID] [--json]",
+			"It is refused while the schedule's active run is non-terminal: the STATE column of schedules list shows that run's state, and cron triggers are suppressed as overlap-forbidden for the same reason. Wait for the run to end, or cancel it, before running the schedule again. "},
+		{"enable", "enable one schedule.", "t3-steward schedules enable <schedule> --reason TEXT [--command-id ID] [--json]", ""},
+		{"disable", "disable one schedule.", "t3-steward schedules disable <schedule> --reason TEXT [--command-id ID] [--json]", ""},
+		{"delay-next", "hold one schedule's next trigger until a stated instant.", "t3-steward schedules delay-next <schedule> --until RFC3339 --reason TEXT [--command-id ID] [--json]", ""},
 	} {
 		pages = append(pages, helpPage{
 			Path:     "schedules " + control.verb,
@@ -405,7 +406,7 @@ func fleetHelpPages() []helpPage {
 			Exits:    coordinatorExits(),
 			JSONKeys: []string{"version", "command", "event", "currentTarget"},
 			JSONNote: jsonErrorNote,
-			Notes:    "Mutating and revision-fenced. One parser serves all four controls, so all four accept the whole flag set above; --until belongs to delay-next, and --now is a backlog pause option the schedule controls refuse.",
+			Notes:    control.note + "Mutating and revision-fenced. One parser serves all four controls, so all four accept the whole flag set above; --until belongs to delay-next, and --now is a backlog pause option the schedule controls refuse.",
 			Parsers:  []parserSite{{Func: "parseScheduleMutation"}, {Func: "parseMutationOptions"}, {Func: "takeJSONFlag"}},
 		})
 	}
@@ -440,6 +441,14 @@ func schedulePutFlags() []helpFlag {
 		jsonFlag("the written definition"),
 	}
 }
+
+// scheduleActiveRunNote explains the active run pointer and its state, which
+// read like history but are the schedule's overlap lock.
+const scheduleActiveRunNote = "ACTIVE RUN (activeRunId) is the run the schedule last started, and STATE " +
+	"(activeRunState) is that run's progress, or unknown when the coordinator holds no record of it. " +
+	"While that run is non-terminal it blocks the schedule: every cron trigger is suppressed as " +
+	"overlap-forbidden (see schedules history) and schedules run is refused. After a failed run, a " +
+	"schedule written with --after-failure hold suppresses its triggers as failure-hold until it is enabled again."
 
 // scheduleReadPage is one of the three schedule reads. They share a parser:
 // the schedules dispatcher takes --json and nothing else.
