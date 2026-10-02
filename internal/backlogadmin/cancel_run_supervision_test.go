@@ -14,7 +14,7 @@ import (
 // review incident and one active operator hold, the shape run-3ae2f87b was in
 // when "campaign cancel" refused it. attempts decides which tasks are still
 // live, and activation, when set, is written as the run's overseer activation.
-func supervisedCancelFixture(t *testing.T, attempts []domain.Attempt, incidentState domain.IncidentState, activation *domain.Activation) (*sqlite.Store, *Service) {
+func supervisedCancelFixture(t *testing.T, attempts []domain.Attempt, incidentState domain.IncidentState, activation *domain.Activation, gates ...domain.Gate) (*sqlite.Store, *Service) {
 	t.Helper()
 	ctx := context.Background()
 	now := adminTestNow
@@ -56,6 +56,7 @@ func supervisedCancelFixture(t *testing.T, attempts []domain.Attempt, incidentSt
 			PromptArtifactID: "artifact-overseer", MaxActivations: 5, MaxTurnsPerActivation: 4,
 			ActivationDeadline: time.Hour,
 		}},
+		Gates: gates,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -196,6 +197,94 @@ func TestCancelRunResolvesOpenIncidentsAndReleasesHoldsWithTheTasks(t *testing.T
 	requireSupervisionClosedByCancel(t, store, "cancel-open-1")
 }
 
+// The whole-run cancel is an operator's decision to stop the run, so the
+// outcome the run reports is cancelled even when every task succeeded and only
+// an undecided final gate held the sink open. Settling it as succeeded would
+// report a review that never happened as passed.
+func TestCancelRunOfAnAllSucceededRunWithAnOpenFinalGateReportsCancelled(t *testing.T) {
+	store, service := supervisedCancelFixture(t, []domain.Attempt{
+		terminalAttempt("attempt-alpha", "task-alpha", domain.ProgressSucceeded),
+		terminalAttempt("attempt-beta", "task-beta", domain.ProgressSucceeded),
+	}, domain.IncidentEscalated, nil, domain.Gate{
+		RunID: "run-1", State: domain.GateReadyForReview, GraphRevision: 1, Revision: 3,
+		Definition: domain.GateDefinition{ID: "gate-final", Name: "final review", ObservedTaskIDs: []string{"task-alpha", "task-beta"}, Final: true},
+	})
+	mutation := cancelRunMutation("cancel-final-1")
+	mutation.ExpectedRevision = loadedRun(t, store).Revision
+	if _, err := service.Mutate(context.Background(), mutation); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := service.ExecutePendingCommands(context.Background()); err != nil ||
+		len(report.Decisions) != 1 || report.Decisions[0].Command.State != domain.AdminCommandApplied {
+		t.Fatalf("report = %#v, err = %v", report, err)
+	}
+	response, err := service.Query(context.Background(), Query{
+		Version: Version, Kind: QueryWorkflow, Principal: Principal{ID: "operator"}, WorkflowRunID: "run-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := response.Workflow.Summary.Run
+	if run.Progress != domain.ProgressCancelled || run.Sink == nil || !run.Sink.Progress.Terminal() {
+		t.Fatalf("reported run = %s with sink %#v, want cancelled and settled", run.Progress, run.Sink)
+	}
+	state, err := store.LoadSupervisionAdminState(context.Background(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := state.Gates[0]
+	if gate.Gate.State != domain.GateCancelled || gate.LastDecision == nil ||
+		gate.LastDecision.Outcome != domain.GateDecisionCancel || gate.LastDecision.RequestID != "cancel-final-1" {
+		t.Fatalf("gate = %#v, decision = %#v, want cancelled with a decision row naming the command", gate.Gate, gate.LastDecision)
+	}
+	if closure := state.Record.ClosedByCancel; closure == nil || closure.CommandID != "cancel-final-1" {
+		t.Fatalf("record = %#v, want the closure recorded on it", state.Record)
+	}
+}
+
+// A run closed by a whole-run cancel whose worker is still stopping has no
+// settled sink yet. A retry in that window would start work under supervision
+// the cancel closed, so it is refused with what to do instead.
+func TestRetryOnARunClosedByCancelIsRefusedUntilANewRun(t *testing.T) {
+	running := domain.Attempt{
+		ID: "attempt-beta", WorkflowRunID: "run-1", TaskID: "task-beta", Number: 1,
+		Progress: domain.ProgressActive, Control: domain.ControlRunning, AssignmentID: "assignment-beta",
+		Revision: 2, UpdatedAt: adminTestNow,
+	}
+	store, service := supervisedCancelFixture(t, []domain.Attempt{
+		terminalAttempt("attempt-alpha", "task-alpha", domain.ProgressFailed), running,
+	}, domain.IncidentOpen, nil)
+	if _, err := service.Mutate(context.Background(), cancelRunMutation("cancel-retry-1")); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := service.ExecutePendingCommands(context.Background()); err != nil ||
+		len(report.Decisions) != 1 || report.Decisions[0].Command.State != domain.AdminCommandApplied {
+		t.Fatalf("report = %#v, err = %v", report, err)
+	}
+	if run := loadedRun(t, store); run.Sink.Progress.Terminal() {
+		t.Fatalf("the sink settled while a worker was still stopping: %#v", run.Sink)
+	}
+	if _, err := service.Mutate(context.Background(), Mutation{
+		Version: Version, Principal: Principal{ID: "operator"}, ID: "retry-1", Kind: domain.AdminCommandRetry,
+		WorkflowRunID: "run-1", TaskID: "alpha", ExpectedRevision: 3, Reason: "try again",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.ExecutePendingCommands(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Decisions) != 1 || report.Decisions[0].Command.State != domain.AdminCommandRejected {
+		t.Fatalf("decisions = %#v, want the retry refused", report.Decisions)
+	}
+	failure := report.Decisions[0].Command.Failure
+	for _, want := range []string{"closed by whole-run cancel cancel-retry-1", "t3-steward campaign show run-1", "t3-steward campaign rerun run-1 --from alpha"} {
+		if !strings.Contains(failure, want) {
+			t.Fatalf("failure %q does not name %q", failure, want)
+		}
+	}
+}
+
 // A live overseer may be deciding a gate or placing a hold at this moment, and
 // a cancel that resolved its incidents underneath it would race those
 // decisions. The whole-run cancel is refused, durably, naming the activation
@@ -246,27 +335,5 @@ func TestCancelRunIsRefusedWhileAnOverseerActivationIsLive(t *testing.T) {
 	}
 	if read.Incidents[0].State != domain.IncidentOpen || read.Holds[0].State != domain.HoldActive {
 		t.Fatalf("a refused cancel changed supervision: %#v", read)
-	}
-}
-
-// After a whole-run cancel the run may wait a few boundaries for a running
-// worker to stop before its sink settles. No overseer is woken in that window:
-// the run's supervision was closed by the operator, and a fresh activation
-// would reopen what the cancel just resolved.
-func TestRunsClosedByCancelNamesTheRunOfAnAppliedWholeRunCancel(t *testing.T) {
-	records := cancelRunRecords(adminTestNow)
-	records.AdminCommands = []domain.AdminCommand{
-		{ID: "c-1", Kind: domain.AdminCommandCancel, TargetType: domain.AdminTargetAttempt, TargetID: "attempt-alpha",
-			Payload: []byte(`{"scope":"run"}`), State: domain.AdminCommandApplied},
-		{ID: "c-2", Kind: domain.AdminCommandCancel, TargetType: domain.AdminTargetWorkflowRun, TargetID: "run-2",
-			Payload: []byte(`{"scope":"run"}`), State: domain.AdminCommandApplied},
-		{ID: "c-3", Kind: domain.AdminCommandCancel, TargetType: domain.AdminTargetWorkflowRun, TargetID: "run-3",
-			Payload: []byte(`{"scope":"run"}`), State: domain.AdminCommandRejected},
-		{ID: "c-4", Kind: domain.AdminCommandCancel, TargetType: domain.AdminTargetAttempt, TargetID: "attempt-beta",
-			State: domain.AdminCommandApplied},
-	}
-	closed := RunsClosedByCancel(records)
-	if !closed["run-1"] || !closed["run-2"] || closed["run-3"] || len(closed) != 2 {
-		t.Fatalf("closed = %v, want run-1 and run-2 only", closed)
 	}
 }

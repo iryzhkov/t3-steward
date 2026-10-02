@@ -73,8 +73,11 @@ type runSupervisionClosure struct {
 	SinkSettled       bool     `json:"sinkSettled"`
 }
 
+// changed reports whether the closure wrote anything. A supervised run always
+// has its record written -- the closure itself is recorded on it and its
+// revision bumped -- so every closure of a supervised run is audited.
 func (c runSupervisionClosure) changed() bool {
-	return len(c.ResolvedIncidents) != 0 || len(c.CancelledGates) != 0 || len(c.ReleasedHolds) != 0 || c.SinkSettled
+	return c.SupervisionRev != 0 || c.SinkSettled
 }
 
 // closeRunSupervisionTx resolves, cancels and releases everything open in the
@@ -130,6 +133,15 @@ func closeRunSupervisionTx(ctx context.Context, tx *sql.Tx, runID string, actor 
 		if err := saveSupervisionGateTx(ctx, tx, gate); err != nil {
 			return closure, err
 		}
+		// The decision log is where "who closed this gate" is answered, for an
+		// acceptance and now for a cancellation alike.
+		if err := appendGateDecisionTx(ctx, tx, domain.GateDecision{
+			ID: "cancel-gate:" + commandID + ":" + gate.Definition.ID, RunID: runID, GateID: gate.Definition.ID,
+			Actor: actor, ActivationEpoch: state.Record.ActivationEpoch, GraphRevision: gate.GraphRevision,
+			Outcome: domain.GateDecisionCancel, RequestID: commandID, Reason: reason, DecidedAt: now,
+		}); err != nil {
+			return closure, err
+		}
 		closure.CancelledGates = append(closure.CancelledGates, gate.Definition.ID)
 	}
 	for _, hold := range state.Snapshot.Holds {
@@ -151,6 +163,7 @@ func closeRunSupervisionTx(ctx context.Context, tx *sql.Tx, runID string, actor 
 		record.CreatedAt = now
 	}
 	record.UpdatedAt = now
+	record.ClosedByCancel = &domain.SupervisionClosure{CommandID: commandID, Actor: actor, ClosedAt: now}
 	if err := saveSupervisionRecordTx(ctx, tx, record); err != nil {
 		return closure, err
 	}
@@ -184,6 +197,11 @@ func settleCancelledRunSinkTx(ctx context.Context, tx *sql.Tx, runID string, now
 	if settled.Sink == nil || !settled.Sink.Progress.Terminal() {
 		return false, nil
 	}
+	// The operator stopped the run, so the run reports cancelled whatever its
+	// tasks did. The sink keeps the task-level result; without this, a run
+	// whose tasks all succeeded and whose final review was never held would
+	// report succeeded, as if that review had passed.
+	settled.Progress = domain.ProgressCancelled
 	settled.Revision = snapshot.Run.Revision + 1
 	settled.UpdatedAt = now
 	if err := updateAdminWorkflowRunTx(ctx, tx, settled); err != nil {
@@ -227,6 +245,30 @@ func releaseSettledRunHoldsTx(ctx context.Context, tx *sql.Tx, runID string, now
 		}
 	}
 	return nil
+}
+
+// refuseCommandOnClosedRunTx is the failure for any task command but cancel on
+// a run a whole-run cancel closed, or "" when the run was not closed that way.
+// Between the cancel and its sink settling a retry or start would put work
+// under supervision that no longer watches it; the work belongs in a new run.
+func refuseCommandOnClosedRunTx(ctx context.Context, tx *sql.Tx, runID, taskID string) (string, error) {
+	record, found, err := loadSupervisionRecordTx(ctx, tx, runID)
+	if err != nil || !found || record.ClosedByCancel == nil {
+		return "", err
+	}
+	name := taskID
+	var raw []byte
+	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_tasks WHERE id = ?", taskID).Scan(&raw); err == nil {
+		var task domain.Task
+		if json.Unmarshal(raw, &task) == nil && task.Name != "" {
+			name = task.Name
+		}
+	}
+	return fmt.Sprintf("run %s was closed by whole-run cancel %s at %s: its supervision is closed and it takes no new work. "+
+		"Watch it settle: t3-steward campaign show %s; then start the task again in a new run: "+
+		"t3-steward campaign rerun %s --from %s --idempotency-key KEY --reason TEXT",
+		runID, record.ClosedByCancel.CommandID, record.ClosedByCancel.ClosedAt.UTC().Format(time.RFC3339),
+		runID, runID, name), nil
 }
 
 // closeCancelledRunTx is steps 2 and 3 above plus the audit event that records

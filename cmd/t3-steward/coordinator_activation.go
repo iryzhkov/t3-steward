@@ -137,16 +137,12 @@ func (c coordinatorSupervision) DispatchActivations(ctx context.Context, admissi
 		id string
 	}
 	orders := make(map[string]runOrder, len(records.WorkflowRuns))
-	// A run cancelled whole wakes no overseer while its sink waits for a worker
-	// to stop: the cancel was refused while one was live and closed the run's
-	// supervision, so a new activation could only reopen it.
-	closed := backlogadmin.RunsClosedByCancel(records)
 	for _, run := range records.WorkflowRuns {
-		if run.Supervision == nil || run.Progress.Terminal() || closed[run.ID] {
+		if run.Supervision == nil || run.Progress.Terminal() {
 			continue
 		}
 		state, stateErr := c.activations.Store.LoadSupervisionActivationState(ctx, run.ID)
-		if stateErr != nil {
+		if stateErr != nil || state.Record.ClosedByCancel != nil {
 			continue
 		}
 		signal, wanted, signalErr := c.activationLifecycleSignal(ctx, records, state)
@@ -190,9 +186,6 @@ func (c coordinatorSupervision) DispatchActivations(ctx context.Context, admissi
 			}
 			continue
 		}
-		if closed[run.ID] {
-			continue
-		}
 		if err := c.dispatchRun(ctx, records, run, workers, admission, now); err != nil {
 			if errors.Is(err, backlog.ErrActivationUnplaceable) {
 				// No worker can run this overseer right now. The gate stays
@@ -228,6 +221,12 @@ func (c coordinatorSupervision) dispatchRun(
 	}
 	if err != nil {
 		return err
+	}
+	// A run cancelled whole wakes no overseer while its sink waits for a worker
+	// to stop: the cancel was refused while one was live and closed the run's
+	// supervision, so a new activation could only reopen it.
+	if state.Record.ClosedByCancel != nil {
+		return nil
 	}
 	// A dispatched activation's own durable records come first. Reading what
 	// already happened to it before asking whether to wake another one is what

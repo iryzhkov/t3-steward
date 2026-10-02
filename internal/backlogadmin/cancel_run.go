@@ -103,39 +103,6 @@ func runCancelSettled(run domain.WorkflowRun) bool {
 	return run.Progress.Terminal() || run.Sink != nil && run.Sink.Progress.Terminal()
 }
 
-// RunsClosedByCancel names every run an applied whole-run cancel has closed.
-//
-// The coordinator's supervision boundaries consult it so that no overseer is
-// woken and no gate advanced on such a run while it waits for a cancelled
-// worker to stop: the cancel resolved the run's incidents and cancelled its
-// gates in one transaction, and a fresh activation in that window would reopen
-// what the operator just closed. Once the sink settles, the run is terminal and
-// the ordinary settled-run rules take over.
-func RunsClosedByCancel(records sqlite.CoordinatorRecords) map[string]bool {
-	closed := map[string]bool{}
-	var attemptRuns map[string]string
-	for _, command := range records.AdminCommands {
-		if command.State != domain.AdminCommandApplied || !domain.AdminCommandRunScoped(command.Kind, command.Payload) {
-			continue
-		}
-		switch command.TargetType {
-		case domain.AdminTargetWorkflowRun:
-			closed[command.TargetID] = true
-		case domain.AdminTargetAttempt:
-			if attemptRuns == nil {
-				attemptRuns = make(map[string]string, len(records.Attempts))
-				for _, attempt := range records.Attempts {
-					attemptRuns[attempt.ID] = attempt.WorkflowRunID
-				}
-			}
-			if run := attemptRuns[command.TargetID]; run != "" {
-				closed[run] = true
-			}
-		}
-	}
-	return closed
-}
-
 // runCancelReplayMatches accepts the replay of a run-scoped cancel: the
 // command's target must be an attempt of the named run. The task-scoped rule
 // cannot be used because the request names no task.

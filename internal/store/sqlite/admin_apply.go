@@ -123,6 +123,21 @@ func (s *Store) ApplyAdminCommand(ctx context.Context, application domain.AdminC
 			application.Attempt, application.RelatedAttempts, application.NewAttempt, application.WorkflowRun = nil, nil, nil, nil
 		}
 	}
+	// A run a whole-run cancel closed takes no task command but cancel until it
+	// settles; afterwards the sink-final refusal above applies.
+	if application.State == domain.AdminCommandApplied && !wholeRunCancel &&
+		command.TargetType == domain.AdminTargetAttempt && command.Kind != domain.AdminCommandCancel {
+		failure, closedErr := refuseCommandOnClosedRunTx(ctx, tx, contextFields.WorkflowRunID, contextFields.TaskID)
+		if closedErr != nil {
+			return domain.AdminCommandDecision{}, closedErr
+		}
+		if failure != "" {
+			application.State = domain.AdminCommandRejected
+			application.Failure = failure
+			application.Attempt, application.RelatedAttempts, application.NewAttempt, application.WorkflowRun = nil, nil, nil, nil
+			application.PauseIntent = nil
+		}
+	}
 	// A manual start carries a user-authorized quota waiver by design. It must
 	// not thereby become a gate or hold waiver, so the same predicate the offer
 	// and claim paths use is evaluated here, in the transaction that applies
