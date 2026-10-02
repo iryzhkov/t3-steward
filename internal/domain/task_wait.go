@@ -523,6 +523,15 @@ func (c TaskWaitWakeContext) Prompt() string {
 			builder.WriteString(askWakeText(w))
 		}
 	}
+	for _, w := range c.Waits {
+		if w.Ask == nil || w.AskAnswer != nil || w.Result == nil {
+			continue
+		}
+		// An ask that ended without an answer has given its own final
+		// instruction; telling the task to write every declared output as well
+		// would contradict "end failed, do not write the outputs".
+		return builder.String()
+	}
 	builder.WriteString("\nContinue the task. Write every declared output before ending the turn; ")
 	builder.WriteString("the outputs collected are the ones present when a turn ends with nothing parking this task.\n")
 	return builder.String()

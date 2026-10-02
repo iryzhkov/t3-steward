@@ -197,7 +197,12 @@ func RenderDiscord(n Notification) string {
 		}
 		if len(n.AskOptions) != 0 {
 			fmt.Fprintf(&b, "\nOptions: %s", escapeMarkdown(truncate(strings.Join(n.AskOptions, " | "), 600)))
-			fmt.Fprintf(&b, "\nAnswer in its T3 relay thread, or: %s", code("t3-steward ask answer "+n.WaitID+" --option OPTION"))
+			if n.AskRequiresApprover {
+				fmt.Fprintf(&b, "\nIt requires the approver; answer with the approver's client: %s",
+					code("t3-steward --config <approver config> ask answer "+n.WaitID+" --option OPTION"))
+			} else {
+				fmt.Fprintf(&b, "\nAnswer in its T3 relay thread, or: %s", code("t3-steward ask answer "+n.WaitID+" --option OPTION"))
+			}
 		} else {
 			fmt.Fprintf(&b, "\nInspect: %s", code("t3-steward wait inspect "+n.WaitID))
 		}

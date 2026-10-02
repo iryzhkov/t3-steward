@@ -331,6 +331,7 @@ func (e ownerNotificationEnricher) describe(ctx context.Context, n *ownernotify.
 		if wait.Ask != nil {
 			n.Prompt = wait.Ask.Question
 			n.AskOptions = append([]string(nil), wait.Ask.Options...)
+			n.AskRequiresApprover = wait.Ask.Requires == domain.AskRequiresApprover
 		}
 		if !wait.RegisteredAt.IsZero() {
 			n.OccurredAt = wait.RegisteredAt.UTC()

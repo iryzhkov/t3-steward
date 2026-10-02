@@ -46,7 +46,8 @@ Flags:
   --on-deadline fail   at the deadline, resume the task with "no answer"; it
                        must then end failed. Needs --deadline.
   --requires approver  only a signed approver answer is accepted, from the
-                       CLI; an answer given in T3 is refused
+                       CLI; an answer given in T3 is refused. It takes no
+                       --default: unanswered, it times out and fails
   --request-id ID      stable registration id (default derived from the
                        attempt and the question, so a retry is safe)
   --json               print the registered ask as JSON

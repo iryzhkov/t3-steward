@@ -319,10 +319,7 @@ func validateStructuredRegistrationTx(ctx context.Context, tx *sql.Tx, request *
 	case request.Attention != nil:
 		request.Condition = "attention " + string(request.Attention.Kind) + ": " + request.Attention.Prompt
 	case request.Ask != nil:
-		request.Condition = "ask: " + request.Ask.Question
-		if len(request.Condition) > 4000 {
-			request.Condition = request.Condition[:4000]
-		}
+		request.Condition = domain.TruncateUTF8("ask: "+request.Ask.Question, 4000)
 	case request.Quota != nil:
 		if request.Quota.Reset && request.Quota.ResetAt == nil {
 			resetAt, err := quotaResetAt(*request.Quota, records)
@@ -864,50 +861,51 @@ func (s *Store) ExpireTaskWaits(ctx context.Context, now time.Time) ([]domain.Ta
 		if !wait.Live() || now.Before(wait.Deadline) {
 			continue
 		}
-		settled := now.UTC()
-		wait.Result = &domain.TaskWaitResult{
-			Outcome: domain.TaskWaitTimedOut, ExitCode: 2,
-			Reason:     fmt.Sprintf("the wait exceeded its maximum duration of %s", wait.MaxDuration),
-			RanFor:     settled.Sub(wait.RegisteredAt),
-			ObservedAt: settled,
-		}
-		if wait.Ask != nil {
-			if applyAskDeadline(&wait, settled) {
-				// The declared default is an answer the task asked for, not a
-				// contradiction, so no expiry event is recorded.
-				wait.SettledAt = &settled
-				if err = saveTaskWaitTx(ctx, tx, wait); err != nil {
-					return nil, err
-				}
-				expired = append(expired, wait)
-				continue
-			}
-		}
-		if wait.OrTimeout {
-			// --or-timeout: the deadline is an expected end of the wait, not a
-			// contradiction to record. The outcome still says timed-out so the
-			// resumed turn can tell it from the condition being met.
-			wait.Result.ExitCode = 0
-			wait.Result.Reason = fmt.Sprintf("the deadline of %s passed, which this wait treats as a normal outcome (--or-timeout)", wait.MaxDuration)
-		}
-		wait.SettledAt = &settled
-		if err = saveTaskWaitTx(ctx, tx, wait); err != nil {
+		if wait, err = expireTaskWaitTx(ctx, tx, wait, now); err != nil {
 			return nil, err
 		}
 		expired = append(expired, wait)
-		if wait.OrTimeout {
-			continue
-		}
-		if err = recordTaskWaitEventTx(ctx, tx, domain.TaskWaitReconciliation{
-			ID: "expiry:" + wait.ID, Kind: domain.TaskWaitReconciliationExpired,
-			AttemptID: wait.AttemptID, WaitID: wait.ID, ThreadID: wait.ThreadID,
-			Detail:     wait.Result.Reason,
-			ObservedAt: settled,
-		}); err != nil {
-			return nil, err
-		}
 	}
 	return expired, tx.Commit()
+}
+
+// expireTaskWaitTx settles one live wait whose deadline has passed. It is the
+// one expiry policy, used by the expiry pass and by an answer that arrives
+// after an ask's deadline but before that pass ran.
+func expireTaskWaitTx(ctx context.Context, tx *sql.Tx, wait domain.TaskWait, now time.Time) (domain.TaskWait, error) {
+	settled := now.UTC()
+	wait.Result = &domain.TaskWaitResult{
+		Outcome: domain.TaskWaitTimedOut, ExitCode: 2,
+		Reason:     fmt.Sprintf("the wait exceeded its maximum duration of %s", wait.MaxDuration),
+		RanFor:     settled.Sub(wait.RegisteredAt),
+		ObservedAt: settled,
+	}
+	if wait.Ask != nil && applyAskDeadline(&wait, settled) {
+		// The declared default is an answer the task asked for, not a
+		// contradiction, so no expiry event is recorded.
+		wait.SettledAt = &settled
+		return wait, saveTaskWaitTx(ctx, tx, wait)
+	}
+	if wait.OrTimeout {
+		// --or-timeout: the deadline is an expected end of the wait, not a
+		// contradiction to record. The outcome still says timed-out so the
+		// resumed turn can tell it from the condition being met.
+		wait.Result.ExitCode = 0
+		wait.Result.Reason = fmt.Sprintf("the deadline of %s passed, which this wait treats as a normal outcome (--or-timeout)", wait.MaxDuration)
+	}
+	wait.SettledAt = &settled
+	if err := saveTaskWaitTx(ctx, tx, wait); err != nil {
+		return wait, err
+	}
+	if wait.OrTimeout {
+		return wait, nil
+	}
+	return wait, recordTaskWaitEventTx(ctx, tx, domain.TaskWaitReconciliation{
+		ID: "expiry:" + wait.ID, Kind: domain.TaskWaitReconciliationExpired,
+		AttemptID: wait.AttemptID, WaitID: wait.ID, ThreadID: wait.ThreadID,
+		Detail:     wait.Result.Reason,
+		ObservedAt: settled,
+	})
 }
 
 // CancelTaskWait settles a wait as cancelled so its attempt can resume. A wait

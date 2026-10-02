@@ -11,6 +11,37 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
+// prepareAskAnswerFile makes the workspace's ask-answer.json say exactly what
+// this wake says: it removes the file a previous ask may have left, and writes
+// the new answer when there is one. An unanswered ask leaves no file.
+func prepareAskAnswerFile(workspace string, answer *domain.AskAnswer) error {
+	if workspace == "" || !filepath.IsAbs(workspace) {
+		return fmt.Errorf("workspace %q is not an absolute path", workspace)
+	}
+	target := filepath.Join(workspace, domain.AskAnswerFile)
+	if existing, err := os.Lstat(target); err == nil {
+		if !existing.Mode().IsRegular() {
+			return fmt.Errorf("%s exists and is not a regular file; refusing to replace it", target)
+		}
+		if err := os.Remove(target); err != nil {
+			return fmt.Errorf("remove the previous %s: %w", domain.AskAnswerFile, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if answer == nil {
+		return nil
+	}
+	return writeAskAnswerFile(workspace, *answer)
+}
+
+// askAnswerFileNote is appended to a wake whose answer file could not be
+// prepared, so the task does not read a missing or stale file as the answer.
+func askAnswerFileNote(err error) string {
+	return fmt.Sprintf("\nNote: %s could not be prepared in the workspace (%v). Do not read that file; "+
+		"use only the document in this message.\n", domain.AskAnswerFile, err)
+}
+
 // writeAskAnswerFile puts the ask-answer/v1 document at the root of the task's
 // workspace before the wake that resumes the task is sent, so the resumed turn
 // can read the answer as a file as well as in its message.

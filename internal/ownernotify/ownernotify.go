@@ -163,6 +163,9 @@ type Notification struct {
 	// ask, sent when half its deadline has passed unanswered.
 	AskOptions []string `json:"askOptions,omitempty"`
 	Reminder   bool     `json:"reminder,omitempty"`
+	// AskRequiresApprover marks an ask only the approver's signed client can
+	// answer; it has no relay thread.
+	AskRequiresApprover bool `json:"askRequiresApprover,omitempty"`
 	// IncidentID, ActivationID and Gate identify the supervision record that
 	// is waiting, and Reason says why.
 	IncidentID   string `json:"incidentId,omitempty"`
@@ -195,6 +198,9 @@ func (n Notification) Commands() map[string]string {
 	case EventNeedsInput:
 		if len(n.AskOptions) != 0 {
 			commands["answer"] = "t3-steward ask answer " + n.WaitID + " --option OPTION"
+			if n.AskRequiresApprover {
+				commands["answer"] = "t3-steward --config <approver config> ask answer " + n.WaitID + " --option OPTION"
+			}
 			commands["triage"] = "t3-steward triage"
 		} else {
 			commands["inspect"] = "t3-steward wait inspect " + n.WaitID

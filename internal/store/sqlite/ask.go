@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -31,6 +30,14 @@ func sameAskRegistration(stored, requested *domain.AskRequest) bool {
 // the timed-out result, reworded to say there was no answer, and reports false
 // so the expiry is recorded as the contradiction it is.
 func applyAskDeadline(wait *domain.TaskWait, settled time.Time) bool {
+	if wait.Ask.Requires == domain.AskRequiresApprover {
+		// Registration refuses a default on an approver ask; a record that
+		// carries one anyway is never default-settled, because a default is an
+		// answer the approver did not give.
+		wait.Result.Reason = fmt.Sprintf("no approver answer before the deadline of %s; an approver ask times out unanswered", wait.MaxDuration)
+		wait.Result.Fields = map[string]string{"answer": "none"}
+		return false
+	}
 	if wait.Ask.OnDeadline != domain.AskDeadlineDefault || len(wait.Ask.Default) == 0 {
 		wait.Result.Reason = fmt.Sprintf("no answer before the deadline of %s; the ask was registered with --on-deadline fail", wait.MaxDuration)
 		wait.Result.Fields = map[string]string{"answer": "none"}
@@ -52,18 +59,19 @@ func applyAskDeadline(wait *domain.TaskWait, settled time.Time) bool {
 	return true
 }
 
-// askAnswerWorkspaceTx finds the workspace an answered ask's file is written
-// to: the one the attempt's worker last reported for its assignment. It is
-// looked up only for a wake that carries an answer, and an unknown workspace
-// is not an error: the answer still travels in the wake message.
+// askAnswerWorkspaceTx finds the workspace whose ask-answer.json an ask's
+// wake prepares: the one the attempt's worker last reported for its
+// assignment. It is looked up for every wake that carries an ask, answered or
+// not, because an unanswered one must remove an earlier ask's file. An unknown
+// workspace is not an error: the wake says the file could not be prepared.
 func askAnswerWorkspaceTx(ctx context.Context, tx *sql.Tx, assignment domain.Assignment, waits []domain.TaskWait) (string, error) {
-	answered := false
+	asked := false
 	for _, wait := range waits {
-		if wait.AskAnswer != nil {
-			answered = true
+		if wait.Ask != nil {
+			asked = true
 		}
 	}
-	if !answered || assignment.WorkerID == "" {
+	if !asked || assignment.WorkerID == "" {
 		return "", nil
 	}
 	snapshot, found, err := loadWorkerSnapshotTx(ctx, tx, assignment.WorkerID)
@@ -140,6 +148,11 @@ func (s *Store) RecordAskRelay(ctx context.Context, waitID string, relay domain.
 	if prior != nil && (prior.State == domain.AskRelayArchived || prior.State == domain.AskRelayFailed) {
 		return wait, fmt.Errorf("relay thread %s is already %s", prior.ThreadID, prior.State)
 	}
+	if prior != nil && prior.State == domain.AskRelayOpen && relay.State == domain.AskRelayOpening {
+		// A relay never moves back: an open thread whose start is reported
+		// again, late, stays open.
+		return wait, tx.Commit()
+	}
 	if wait.Settled() && (relay.State == domain.AskRelayOpening || relay.State == domain.AskRelayOpen) {
 		return wait, fmt.Errorf("%w; no relay thread is opened for it", domain.ErrAskSettled)
 	}
@@ -196,21 +209,8 @@ func (s *Store) AnswerAsk(ctx context.Context, answer domain.AskAnswer, principa
 	if wait.Kind != domain.WaitKindAsk || wait.Ask == nil {
 		return wait, fmt.Errorf("wait %q is a %s wait, not an ask", wait.ID, wait.Kind.OrShell())
 	}
-	if prior := wait.AskAnswer; prior != nil {
-		if prior.Source == answer.Source && prior.ThreadID == answer.ThreadID && prior.FreeText == answer.FreeText &&
-			reflect.DeepEqual(prior.Options, answer.Options) {
-			return wait, tx.Commit()
-		}
-		return wait, fmt.Errorf("%w (%s, from %s at %s)", domain.ErrAskAlreadyAnswered,
-			prior.Summary(), prior.Source, prior.AnsweredAt.UTC().Format(time.RFC3339))
-	}
-	if wait.Settled() {
-		outcome := domain.TaskWaitOutcome("settled")
-		if wait.Result != nil {
-			outcome = wait.Result.Outcome
-		}
-		return wait, fmt.Errorf("%w as %s", domain.ErrAskSettled, outcome)
-	}
+	// Authority is checked before anything else, a replay included: a caller
+	// that could not have given the answer learns nothing by repeating it.
 	if wait.Ask.Requires == domain.AskRequiresApprover {
 		if answer.Source == domain.AskSourceT3 {
 			return wait, fmt.Errorf("%w: an answer given in T3 is refused", domain.ErrAskApproverRequired)
@@ -225,6 +225,36 @@ func (s *Store) AnswerAsk(ctx context.Context, answer domain.AskAnswer, principa
 			return wait, fmt.Errorf("a T3 answer must come from the ask's own relay thread; %q is not it", answer.ThreadID)
 		}
 	}
+	answer.Options, answer.FreeText = domain.NormalizeAnswer(answer.Options, answer.FreeText)
+	if prior := wait.AskAnswer; prior != nil {
+		priorOptions, priorText := domain.NormalizeAnswer(prior.Options, prior.FreeText)
+		if prior.Source == answer.Source && prior.ThreadID == answer.ThreadID && priorText == answer.FreeText &&
+			reflect.DeepEqual(priorOptions, answer.Options) {
+			return wait, tx.Commit()
+		}
+		return wait, fmt.Errorf("%w (%s, from %s at %s)", domain.ErrAskAlreadyAnswered,
+			prior.Summary(), prior.Source, prior.AnsweredAt.UTC().Format(time.RFC3339))
+	}
+	if wait.Live() && !now.Before(wait.Deadline) {
+		// The deadline passed before the expiry pass reached this ask. The
+		// expiry policy is applied here, in the same transaction, so a late
+		// answer can never win over the default or the failure the task was
+		// promised; the refusal below then reports what it became.
+		if wait, err = expireTaskWaitTx(ctx, tx, wait, now); err != nil {
+			return wait, err
+		}
+		if err = tx.Commit(); err != nil {
+			return wait, err
+		}
+		return wait, fmt.Errorf("%w as %s: the answer arrived after the deadline", domain.ErrAskSettled, wait.Result.Outcome)
+	}
+	if wait.Settled() {
+		outcome := domain.TaskWaitOutcome("settled")
+		if wait.Result != nil {
+			outcome = wait.Result.Outcome
+		}
+		return wait, fmt.Errorf("%w as %s", domain.ErrAskSettled, outcome)
+	}
 	if err := wait.Ask.CheckAnswer(answer.Options, answer.FreeText); err != nil {
 		return wait, err
 	}
@@ -238,11 +268,8 @@ func (s *Store) AnswerAsk(ctx context.Context, answer domain.AskAnswer, principa
 	answered := now.UTC()
 	record := domain.AskAnswer{
 		Schema: domain.AskAnswerSchema, AskID: wait.ID, WorkflowRunID: wait.WorkflowRunID, TaskID: wait.TaskID,
-		Question: wait.Ask.Question, Options: append([]string(nil), answer.Options...), FreeText: strings.TrimSpace(answer.FreeText),
+		Question: wait.Ask.Question, Options: answer.Options, FreeText: answer.FreeText,
 		Source: answer.Source, AnsweredBy: principal, ThreadID: answer.ThreadID, AnsweredAt: answered,
-	}
-	if len(record.Options) == 0 {
-		record.Options = []string{}
 	}
 	wait.AskAnswer = &record
 	reason := "answered from the CLI by " + principal

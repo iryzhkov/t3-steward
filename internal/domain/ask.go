@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // An ask is the one documented way for a steward task to put a question to its
@@ -187,15 +188,39 @@ func (r AskRequest) Validate() error {
 	default:
 		return fmt.Errorf("the deadline outcome %q must be default or fail", r.OnDeadline)
 	}
-	if len(r.Default) > 1 && !r.Multi {
-		return errors.New("more than one --default needs --multi")
+	if r.Requires == AskRequiresApprover && len(r.Default) != 0 {
+		// A default is an answer nobody gave. An approver ask accepts only the
+		// approver's signed answer, so a default would be a way around it.
+		return errors.New("--requires approver excludes --default: an approver ask is answered by the approver or times out unanswered")
 	}
-	for _, option := range r.Default {
-		if !seen[option] {
-			return fmt.Errorf("--default %q is not one of the --option values", option)
+	if len(r.Default) != 0 {
+		if err := r.CheckAnswer(r.Default, ""); err != nil {
+			return fmt.Errorf("--default: %w", err)
 		}
 	}
 	return nil
+}
+
+// TruncateUTF8 cuts text to at most limit bytes without splitting a
+// character.
+func TruncateUTF8(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut]
+}
+
+// NormalizeAnswer is the one form an answer is stored and compared in: a
+// non-nil option list and trimmed free text. A replay that differs only by a
+// nil list or surrounding spaces is the same answer.
+func NormalizeAnswer(options []string, freeText string) ([]string, string) {
+	normalized := make([]string, 0, len(options))
+	normalized = append(normalized, options...)
+	return normalized, strings.TrimSpace(freeText)
 }
 
 // SameQuestion reports whether two requests ask the same thing, for a replayed

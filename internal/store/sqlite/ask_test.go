@@ -116,7 +116,7 @@ func TestAnApproverAskAcceptsOnlyTheSignedApprover(t *testing.T) {
 	ctx := context.Background()
 	store, attempt, now := taskWaitFixture(t)
 	ask := pickAsk()
-	ask.Requires = domain.AskRequiresApprover
+	ask.Requires, ask.OnDeadline, ask.Default = domain.AskRequiresApprover, domain.AskDeadlineFail, nil
 	wait, err := store.RegisterTaskWait(ctx, askRegistration(attempt, "ask-1", ask, time.Hour), now)
 	if err != nil {
 		t.Fatal(err)
