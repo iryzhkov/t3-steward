@@ -784,6 +784,12 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, 
 	if instance, model, enabled := cfg.Wait.AskRelay.Route(); enabled {
 		waits.AskRelay = &wait.AskRelayRoute{Instance: instance, Model: model}
 	}
+	if ownership, ok := d.Ownership.(*workerruntime.JournalThreadOwnership); ok {
+		waits.TaskThreads = func(ctx context.Context) (map[string]string, error) {
+			owners, err := ownership.Threads(ctx)
+			return owners.Live, err
+		}
+	}
 	waits.DisableQuotaChecks = !cfg.QuotaChecksEnabled() || (cfg.Wait.QuotaChecks != nil && !*cfg.Wait.QuotaChecks)
 	d.Waits = waits
 	if cfg.UIArchive.Enabled {
