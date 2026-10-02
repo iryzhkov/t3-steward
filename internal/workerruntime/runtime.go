@@ -622,7 +622,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			err = r.reconcileLocalPause(ctx, id, record, now)
 			break
 		}
-		if len(record.ThrottleRequests) == 0 {
+		if !throttlePaused(record) {
 			threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
 			switch {
 			case observeErr != nil:
@@ -1397,6 +1397,47 @@ func claim(assignment domain.Assignment, config Config, now time.Time) domain.As
 	}
 }
 
+// throttlePaused reports whether the coordinator's throttle commands leave
+// the attempt paused now: the latest accepted drain, hard stop or resume is a
+// drain or a hard stop. A warning pauses nothing.
+//
+// ThrottleRequests is the attempt's whole throttle history and is never
+// cleared, so its being non-empty says only that a command once arrived. It
+// used to be read as "paused", which made an attempt that was drained,
+// resumed, and then finished its resumed turn report paused forever: the
+// first stopped observation only arms the collection fence, and from the
+// stopped phase the history stopped every later observation, so nothing was
+// collected (RC1 field test, an answered task left "control: paused").
+func throttlePaused(record AttemptRecord) bool {
+	var latest domain.ThrottleCommand
+	var latestAt time.Time
+	found := false
+	for id, command := range record.ThrottleRequests {
+		switch command.Kind {
+		case domain.ThrottleCommandDrain, domain.ThrottleCommandHardStop, domain.ThrottleCommandResume:
+		default:
+			continue
+		}
+		acknowledgement, ok := record.ThrottleResults[id]
+		if !ok || !acknowledgement.Accepted {
+			continue
+		}
+		at := acknowledgement.AcknowledgedAt
+		switch {
+		case !found, at.After(latestAt):
+		case at.Equal(latestAt) && command.CreatedAt.After(latest.CreatedAt):
+		case at.Equal(latestAt) && command.CreatedAt.Equal(latest.CreatedAt) &&
+			latest.Kind == domain.ThrottleCommandResume && command.Kind != domain.ThrottleCommandResume:
+			// Two commands the clock cannot order: the pause is kept, which
+			// is what the history meant before it was ordered at all.
+		default:
+			continue
+		}
+		latest, latestAt, found = command, at, true
+	}
+	return found && latest.Kind != domain.ThrottleCommandResume
+}
+
 func hasAcceptedAttentionStop(record AttemptRecord) bool {
 	if record.Phase != PhaseStopped || !record.StopConfirmed {
 		return false
@@ -1457,7 +1498,7 @@ func observation(record AttemptRecord, now time.Time, detailed bool) domain.Work
 		if record.StopConfirmed && (hasCommandRequest(record, domain.WorkerCommandStop) || hasAcceptedAttentionStop(record)) {
 			state = domain.AssignmentReleased
 			control = domain.ControlStopped
-		} else if len(record.ThrottleRequests) != 0 || record.LocalThrottle != nil {
+		} else if throttlePaused(record) || record.LocalThrottle != nil {
 			control = domain.ControlPaused
 		}
 	case PhaseCompleted, PhaseFailed:

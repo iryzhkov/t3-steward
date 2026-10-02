@@ -170,6 +170,14 @@ type Runner struct {
 	AskRelay       *AskRelayRoute
 	AskStore       AskRelayStore
 	askRelayStarts map[string]int
+	// TaskThreads lists the threads live attempts own on this host, by
+	// attempt; nil records no native questions. NativeStore optionally routes
+	// the records over a transport.
+	TaskThreads    func(context.Context) (map[string]string, error)
+	NativeStore    NativeInputStore
+	nativeWatched  map[string]bool
+	nativeReported map[string]map[string]bool
+	nativePending  map[string]nativeReport
 	store          Store
 	control        Control
 	log            *slog.Logger
@@ -277,6 +285,7 @@ func (r *Runner) Tick(ctx context.Context, _ []domain.Thread, buckets []domain.B
 	}
 	r.tickTaskWaits(ctx, waits)
 	r.tickAskRelays(ctx)
+	r.tickNativeInput(ctx)
 	r.wake(ctx, waits, now)
 }
 

@@ -95,6 +95,15 @@ var _ wait.TaskWaitLister = remoteTaskWaitStore{}
 
 var _ wait.AskRelayStore = remoteTaskWaitStore{}
 
+var _ wait.NativeInputStore = remoteTaskWaitStore{}
+
+// RecordNativeUserInput reports a task thread's native question activity.
+func (s remoteTaskWaitStore) RecordNativeUserInput(ctx context.Context, workerID, attemptID, threadID string, events []domain.UserInputEvent, _ time.Time) (int, error) {
+	_, err := s.call(ctx, backlogadmin.NodeWaitOperation{Action: backlogadmin.NativeInputAction,
+		Worker: workerID, ID: attemptID, ThreadID: threadID, Events: events})
+	return len(events), err
+}
+
 // AskRelayWork lists the asks this worker's steward relays.
 func (s remoteTaskWaitStore) AskRelayWork(ctx context.Context, workerID string) ([]domain.TaskWait, error) {
 	response, err := s.call(ctx, backlogadmin.NodeWaitOperation{Action: backlogadmin.AskRelayWorkAction, Worker: workerID})

@@ -3,6 +3,7 @@ package backlogadmin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
@@ -27,6 +28,10 @@ type NodeWaitOperation struct {
 	// the relay record of "relay-ask", whose ask is ID.
 	Worker string           `json:"worker,omitempty"`
 	Relay  *domain.AskRelay `json:"relay,omitempty"`
+	// ThreadID and Events are the report of "record-native-input": the
+	// native question activities seen in attempt ID's own thread.
+	ThreadID string                  `json:"threadId,omitempty"`
+	Events   []domain.UserInputEvent `json:"events,omitempty"`
 	// CoordinatorID is injected by the authenticated server boundary and is
 	// never accepted from request JSON.
 	CoordinatorID string `json:"-"`
@@ -114,6 +119,17 @@ const (
 	AskRelayRecordAction = "relay-ask"
 )
 
+// NativeInputAction records the native question activities a worker's
+// steward saw in a task's own thread into the run's events.
+const NativeInputAction = "record-native-input"
+
+// MaxNativeInputEvents bounds one report.
+const MaxNativeInputEvents = 64
+
+type nativeInputStore interface {
+	RecordNativeUserInput(context.Context, string, string, string, []domain.UserInputEvent, time.Time) (int, error)
+}
+
 type askRelayStore interface {
 	AskRelayWork(context.Context, string) ([]domain.TaskWait, error)
 	RecordAskRelay(context.Context, string, domain.AskRelay, time.Time) (domain.TaskWait, error)
@@ -139,7 +155,8 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 		return s.taskWaitRuntime(ctx, op)
 	}
 	if op.Action == "register-task" || op.Action == "list-task" || op.Action == "inspect-attention" || op.Action == "cancel-task" || op.Action == "decide-attention" ||
-		op.Action == AskAnswerAction || op.Action == AskRelayWorkAction || op.Action == AskRelayRecordAction {
+		op.Action == AskAnswerAction || op.Action == AskRelayWorkAction || op.Action == AskRelayRecordAction ||
+		op.Action == NativeInputAction {
 		return s.taskWait(ctx, principal, op)
 	}
 	store, ok := s.reader.(nodeWaitStore)
@@ -274,6 +291,16 @@ func (s *Service) taskWait(ctx context.Context, principal Principal, op NodeWait
 		result.TaskWaits = []domain.TaskWait{wait}
 		result.AttentionReceipt = &receipt
 		return result, nil
+	case NativeInputAction:
+		native, ok := s.reader.(nativeInputStore)
+		if !ok {
+			return result, errors.New("native user-input recording unavailable")
+		}
+		if op.Worker == "" || op.ID == "" || op.ThreadID == "" || len(op.Events) == 0 || len(op.Events) > MaxNativeInputEvents {
+			return result, fmt.Errorf("a native user-input report needs the worker, the attempt, its thread and 1 to %d events", MaxNativeInputEvents)
+		}
+		_, err := native.RecordNativeUserInput(ctx, op.Worker, op.ID, op.ThreadID, op.Events, s.now())
+		return result, err
 	case AskRelayWorkAction, AskRelayRecordAction:
 		relays, ok := s.reader.(askRelayStore)
 		if !ok {
