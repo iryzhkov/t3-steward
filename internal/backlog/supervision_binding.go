@@ -132,7 +132,18 @@ func (c CoordinatorSupervisionStore) CommitSupervisionActivation(ctx context.Con
 		}
 		receipt = raw
 	}
+	var supersede *sqlite.FailedActivationOfferSupersession
+	if offer := commit.SupersedeOffer; offer != nil {
+		supersede = &sqlite.FailedActivationOfferSupersession{
+			CoordinatorEpoch: offer.CoordinatorEpoch, RunID: commit.RunID,
+			ActivationID: offer.ActivationID, ActivationEpoch: offer.ActivationEpoch,
+			ExpectedRecordRevision: commit.ExpectedRecordRevision,
+			AssignmentID:           offer.AssignmentID, AssignmentEpoch: offer.AssignmentEpoch,
+			ReassessmentEventID: offer.ReassessmentEventID, SupersededAt: commit.CommittedAt,
+		}
+	}
 	return c.Store.CommitSupervisionActivationRows(ctx, sqlite.SupervisionActivationRowCommit{
+		SupersedeOffer:         supersede,
 		RunID:                  commit.RunID,
 		ExpectedRecordRevision: commit.ExpectedRecordRevision,
 		Record:                 commit.Record,

@@ -69,6 +69,13 @@ type SupervisionActivationRowCommit struct {
 	Receipt     json.RawMessage
 	RequestID   string
 	CommittedAt time.Time
+	// SupersedeOffer, when set, releases the failed, never-delivered offer of
+	// the activation this plan replaces, in the same transaction as the plan.
+	// The release and the epoch raise therefore land together or not at all:
+	// a failure between them can no longer leave a released offer under an
+	// activation still pending dispatch at the old epoch. It must name the run
+	// and the record revision this commit is fenced on.
+	SupersedeOffer *FailedActivationOfferSupersession
 }
 
 // AppendSupervisionInbox appends observed supervision events and assigns their
@@ -512,6 +519,16 @@ func (s *Store) CommitSupervisionActivationRows(ctx context.Context, commit Supe
 	if current.Revision != commit.ExpectedRecordRevision {
 		return fmt.Errorf("%w: plan read record revision %d, the record is at %d",
 			domain.ErrSupervisionStaleRevision, commit.ExpectedRecordRevision, current.Revision)
+	}
+	if supersede := commit.SupersedeOffer; supersede != nil {
+		if supersede.RunID != commit.RunID || supersede.ExpectedRecordRevision != commit.ExpectedRecordRevision {
+			return fmt.Errorf("%w: the offer supersession does not belong to this plan", ErrActivationDispatch)
+		}
+		// Before the record is written: the supersession qualifies against the
+		// record and activation the plan read.
+		if err := supersedeFailedActivationOfferTx(ctx, tx, *supersede); err != nil {
+			return err
+		}
 	}
 	now := commit.CommittedAt.UTC()
 	if now.IsZero() {
