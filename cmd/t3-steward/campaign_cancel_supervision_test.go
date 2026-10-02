@@ -48,6 +48,27 @@ func TestCampaignCancelOfAnAllTerminalRunClosesItFencedOnTheRun(t *testing.T) {
 	}
 }
 
+// The note that the cancel also closes the run's supervision is a claim about
+// what the coordinator will do, so it is printed only for a coordinator that
+// does it.
+func TestCampaignCancelSaysItClosesSupervisionOnlyOnACoordinatorThatDoes(t *testing.T) {
+	state := supervisionTestState()
+	state.Activation.State = domain.ActivationSpent
+	for release, want := range map[string]bool{"v0.11.0-rc.99": false, campaignRunCloseRelease: true} {
+		var out bytes.Buffer
+		var sent []backlogadmin.Mutation
+		cli := cancelRunCLI(&out, cancelRunDetail(), &sent)
+		cli.release = func(context.Context) (string, error) { return release, nil }
+		cli.superviseAs = supervisionShowing(state).supervise
+		if err := cli.run(context.Background(), []string{"cancel", "run-1", "--reason", "obsolete"}); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(out.String(), "resolves the run's open supervision incidents"); got != want {
+			t.Fatalf("release %s: note printed = %v, want %v:\n%s", release, got, want, out.String())
+		}
+	}
+}
+
 // A settled run is refused locally and says where to look.
 func TestCampaignCancelOfASettledRunIsRefused(t *testing.T) {
 	detail := terminalRunDetail()

@@ -167,7 +167,7 @@ func (c campaignCLI) runCampaignCancelRun(ctx context.Context, args []string) er
 			response.Command.ID, runID)
 		fmt.Fprintf(c.stdout, "state %s, fenced on run %s at revision %d\n", response.Command.State, runID, expectedRevision)
 	}
-	if response.Command.TargetType == domain.AdminTargetAttempt && supervised {
+	if response.Command.TargetType == domain.AdminTargetAttempt && supervised && c.coordinatorAtLeast(ctx, campaignRunCloseRelease) {
 		fmt.Fprint(c.stdout, "the same application resolves the run's open supervision incidents as cancelled and releases its holds\n")
 	}
 	if response.Command.Failure != "" {
@@ -234,6 +234,26 @@ func campaignCancelByHand(runID string, state backlogadmin.SupervisionState) str
 // would get a queued command id and a silent failure some ticks later, so this
 // client refuses to send it.
 const campaignRunCancelRelease = "v0.11.0-rc.70"
+
+// campaignRunCloseRelease is the first release whose coordinator closes a
+// supervised run's supervision with its whole-run cancel, the release after
+// v0.11.0-rc.99. An older one cancels the tasks and leaves the incidents open.
+const campaignRunCloseRelease = "v0.11.0-rc.100"
+
+// coordinatorAtLeast reports whether the coordinator says it runs at least
+// the given release. A release it cannot read is not at least anything: this
+// decides only what the client claims, never what it sends.
+func (c campaignCLI) coordinatorAtLeast(ctx context.Context, minimum string) bool {
+	if c.release == nil {
+		return false
+	}
+	release, err := c.release(ctx)
+	if err != nil {
+		return false
+	}
+	newEnough, known := releaseAtLeast(release, minimum)
+	return known && newEnough
+}
 
 // refuseRunCancelOnAnOlderCoordinator refuses the run form against a
 // coordinator that cannot apply it, naming the per-task form instead. A

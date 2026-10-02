@@ -560,8 +560,14 @@ transaction that cancels its tasks: every open or escalated review incident is
 resolved with outcome `cancelled` under the command's id, every gate that is
 not accepted is cancelled, every active hold is released, and the sink settles
 if no worker is still stopping (otherwise the next projection settles it, and
-no overseer is woken for the run meanwhile). A `run-supervision-closed` audit
-event lists what changed. While an overseer activation is pending dispatch or
+no overseer is woken for the run meanwhile). The run then reports `cancelled`
+whatever its tasks did; the sink keeps the task-level result. The closure is
+recorded on the supervision record as `closedByCancel`, each cancelled gate
+gets a decision row with outcome `cancel`, and a `run-supervision-closed`
+audit event lists what changed. Until the sink settles, every task command but
+cancel on the run (retry, start, resume and the rest) is rejected, naming
+`t3-steward campaign show <run>` and `t3-steward campaign rerun <run> --from
+TASK`: the work belongs in a new run, and supervision is not reopened. While an overseer activation is pending dispatch or
 active, the client refuses before sending and the coordinator rejects the
 command, naming the activation, `t3-steward campaign supervision show <run>`
 to watch it end, and the cancel to send again. A run whose tasks are all

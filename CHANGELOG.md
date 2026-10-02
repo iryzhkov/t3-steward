@@ -17,7 +17,13 @@ All notable changes to this project are documented here. The format follows
   releases holds and settles the sink in the transaction that applies it, and
   is fenced on the run's revision when no task is live. It is refused, with
   the activation named and the commands to wait and retry, while an overseer
-  activation is live. `supervision show` on a settled run no longer offers
+  activation is live. A run closed this way reports `cancelled`, even when
+  every task succeeded and only an undecided final gate held it open; the
+  closure is recorded on the supervision record (`closedByCancel`), cancelled
+  gates get a gate-decision row with outcome `cancel`, and until the sink
+  settles every task command but cancel on the run is refused with the
+  `campaign show` and `campaign rerun --from` commands to use instead.
+  `supervision show` on a settled run no longer offers
   `reassess` or an overseer dispatch, and shows a hold left active as "closed
   with the run"; sink settlement releases holds from now on, and `triage` no
   longer lists holds on settled runs. Mixed versions: a new client against an
