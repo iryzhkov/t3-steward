@@ -132,16 +132,20 @@ func TestCampaignCancelRunRefusals(t *testing.T) {
 			t.Fatalf("error = %v", err)
 		}
 	})
-	t.Run("a terminal run has nothing to cancel", func(t *testing.T) {
+	// A run whose tasks are all terminal but whose sink is still open is
+	// closed by the cancel (campaign_cancel_supervision_test.go); only a
+	// settled run has nothing left to cancel.
+	t.Run("a settled run has nothing to cancel", func(t *testing.T) {
 		var out bytes.Buffer
 		var sent []backlogadmin.Mutation
 		detail := cancelRunDetail()
 		for i := range detail.Tasks {
 			detail.Tasks[i].Attempt.Progress = domain.ProgressSucceeded
 		}
+		detail.Summary.Run.Progress = domain.ProgressSucceeded
 		cli := cancelRunCLI(&out, detail, &sent)
 		err := cli.run(context.Background(), []string{"cancel", "run-1", "--reason", "too late"})
-		if err == nil || !strings.Contains(err.Error(), "terminal") {
+		if err == nil || !strings.Contains(err.Error(), "already settled") {
 			t.Fatalf("error = %v", err)
 		}
 		if len(sent) != 0 {
