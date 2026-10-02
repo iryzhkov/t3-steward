@@ -23,6 +23,11 @@ All notable changes to this project are documented here. The format follows
   gates get a gate-decision row with outcome `cancel`, and until the sink
   settles every task command but cancel on the run is refused with the
   `campaign show` and `campaign rerun --from` commands to use instead.
+  Upgrade order: `closedByCancel` travels in supervision responses, and an
+  older client decodes those frames strictly, so an older `campaign show` or
+  `supervision show` fails with `unknown field "closedByCancel"` on a run
+  cancelled whole under this release. Upgrade every client host before
+  cancelling supervised runs on an upgraded coordinator.
   `supervision show` on a settled run no longer offers
   `reassess` or an overseer dispatch, and shows a hold left active as "closed
   with the run"; sink settlement releases holds from now on, and `triage` no
