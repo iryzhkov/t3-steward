@@ -142,7 +142,7 @@ func (c coordinatorSupervision) DispatchActivations(ctx context.Context, admissi
 			continue
 		}
 		state, stateErr := c.activations.Store.LoadSupervisionActivationState(ctx, run.ID)
-		if stateErr != nil {
+		if stateErr != nil || state.Record.ClosedByCancel != nil {
 			continue
 		}
 		signal, wanted, signalErr := c.activationLifecycleSignal(ctx, records, state)
@@ -221,6 +221,12 @@ func (c coordinatorSupervision) dispatchRun(
 	}
 	if err != nil {
 		return err
+	}
+	// A run cancelled whole wakes no overseer while its sink waits for a worker
+	// to stop: the cancel was refused while one was live and closed the run's
+	// supervision, so a new activation could only reopen it.
+	if state.Record.ClosedByCancel != nil {
+		return nil
 	}
 	// A dispatched activation's own durable records come first. Reading what
 	// already happened to it before asking whether to wake another one is what

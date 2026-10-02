@@ -499,30 +499,28 @@ func triageSupervision(ctx context.Context, report *triageReport, sources triage
 func triageSupervisionState(report *triageReport, runID string, state backlogadmin.SupervisionState) {
 	show := triageCommand{Run: "t3-steward campaign supervision show " + runID}
 	reason := func(text string) string { return " --reason " + shellQuote(text) }
+	// A settled run's supervision is closed: a hold still recorded active on it
+	// holds nothing, cannot be released and needs nobody, so nothing of it is
+	// listed. Settlement now releases such holds itself; the rows that remain
+	// are from runs that settled before it did.
+	if state.SinkSettled {
+		return
+	}
 	for _, hold := range state.Holds {
 		if hold.State != domain.HoldActive {
 			continue
 		}
 		since := hold.CreatedAt
-		item := triageItem{Kind: "supervision-hold", Severity: "warn", Subject: runID, Run: runID, Since: &since}
-		if state.SinkSettled {
-			item.Severity = "info"
-			item.Summary = fmt.Sprintf("hold %s over %s is still recorded active on a settled run; supervision is closed, so it holds nothing and cannot be released",
-				hold.ID, campaignSupervisionScopeLabel(hold.Scope))
-			item.Commands = []triageCommand{show}
-		} else {
-			item.Summary = fmt.Sprintf("hold %s over %s by %s keeps its tasks from starting: %s",
-				hold.ID, campaignSupervisionScopeLabel(hold.Scope), campaignSupervisionActorLabel(hold.Owner), hold.Reason)
-			item.Commands = []triageCommand{show, {
+		report.add(triageItem{
+			Kind: "supervision-hold", Severity: "warn", Subject: runID, Run: runID, Since: &since,
+			Summary: fmt.Sprintf("hold %s over %s by %s keeps its tasks from starting: %s",
+				hold.ID, campaignSupervisionScopeLabel(hold.Scope), campaignSupervisionActorLabel(hold.Owner), hold.Reason),
+			Commands: []triageCommand{show, {
 				Run: fmt.Sprintf("t3-steward campaign supervision release %s --hold %s --expected-revision %d --request-id triage-release-%s-r%d",
 					runID, hold.ID, state.Record.Revision, hold.ID, state.Record.Revision) + reason("released from triage"),
 				When: "once what it was holding for is done",
-			}}
-		}
-		report.add(item)
-	}
-	if state.SinkSettled {
-		return
+			}},
+		})
 	}
 	if supervisionAwaitsOperator(state.Activation) {
 		item := triageItem{Kind: "supervision-reassess", Severity: "action", Subject: runID, Run: runID,

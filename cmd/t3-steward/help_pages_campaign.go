@@ -105,7 +105,7 @@ func campaignHelpPages() []helpPage {
 			Exits:    coordinatorExits(),
 			JSONKeys: []string{"willCancel", "tasks"},
 			JSONNote: "--json prints willCancel and the tasks the cancellation covers, which is the plan and not the outcome it applied. " + jsonErrorNote,
-			Notes:    "Mutating and revision-fenced. The run form is one command of its own: one revision-fenced cancellation of every non-terminal task, refused on a coordinator too old to apply it. The <run>/<task> form is the forwarded alias of \"t3-steward backlog cancel\".",
+			Notes:    "Mutating and revision-fenced. The run form is one command of its own: one revision-fenced cancellation of every non-terminal task, refused on a coordinator too old to apply it. On a supervised run the same application resolves every open incident as cancelled, cancels undecided gates, releases holds and settles the sink when nothing is still running; it is refused while an overseer activation is live. A run whose tasks are all terminal but whose sink is open is closed the same way, fenced on the run's revision; a settled run is refused. The <run>/<task> form is the forwarded alias of \"t3-steward backlog cancel\".",
 			Parsers:  []parserSite{{Func: "parseCampaignCancelRunArgs"}, {Func: "takeJSONFlag"}},
 		},
 		{Path: "campaign supervision", Body: campaignSupervisionUsage, Parsers: []parserSite{{Func: "parseCampaignSupervisionArgs"}}},

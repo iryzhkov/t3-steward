@@ -117,6 +117,12 @@ func (c coordinatorSupervision) Tick(ctx context.Context) {
 		if run.Supervision == nil || run.Progress.Terminal() {
 			continue
 		}
+		// A run an operator cancelled whole has had its incidents resolved and
+		// its gates cancelled; advancing it would only raise what the cancel
+		// closed. The closure is on the supervision record, not on the run.
+		if state, err := c.store.LoadSupervisionActivationState(ctx, run.ID); err == nil && state.Record.ClosedByCancel != nil {
+			continue
+		}
 		if err := c.advanceRun(ctx, run, snapshots, now); err != nil {
 			c.logger.Error("supervision boundary failed", "run", run.ID, "error", err)
 		}

@@ -278,6 +278,19 @@ type SupervisionRecord struct {
 	Revision  int64     `json:"revision"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// ClosedByCancel is set, in the transaction that applies it, when an
+	// operator's whole-run cancel closed this run's supervision. From then on no
+	// overseer is woken, no gate is advanced and no task command other than
+	// cancel is applied, even while the sink still waits for a worker to stop.
+	ClosedByCancel *SupervisionClosure `json:"closedByCancel,omitempty"`
+}
+
+// SupervisionClosure records the whole-run cancel that closed a run's
+// supervision.
+type SupervisionClosure struct {
+	CommandID string    `json:"commandId"`
+	Actor     Actor     `json:"actor"`
+	ClosedAt  time.Time `json:"closedAt"`
 }
 
 // ActivationBudgetRemaining reports whether another activation may start.
@@ -409,6 +422,10 @@ type GateDecisionOutcome string
 const (
 	GateDecisionAccept GateDecisionOutcome = "accept"
 	GateDecisionReject GateDecisionOutcome = "reject"
+	// GateDecisionCancel records a gate cancelled with its run by an
+	// operator's whole-run cancel. It is never a request outcome: the decide
+	// verb takes accept or reject only.
+	GateDecisionCancel GateDecisionOutcome = "cancel"
 )
 
 // GateDecision is one append-only decision record. History survives

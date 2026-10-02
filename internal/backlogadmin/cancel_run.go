@@ -14,7 +14,7 @@ import (
 // the command payload, beside the payloads pause and delay already carry, so a
 // scoped cancel is one ordinary revision-fenced admin command and not a second
 // kind of command with a second execution path.
-const MutationScopeRun = "run"
+const MutationScopeRun = domain.AdminCommandScopeRun
 
 // commandScope is the payload shape a scoped command carries.
 type commandScope struct {
@@ -78,11 +78,29 @@ func resolveRunCancelTarget(records sqlite.CoordinatorRecords, runID string) (do
 		return "", "", notFound("workflow run", runID)
 	}
 	anchor, ok := RunCancelAnchorID(records.Attempts, runID)
-	if !ok {
-		return "", "", fmt.Errorf("%w: run %s has no task to cancel; every task of it is already terminal",
-			ErrInvalidQuery, runID)
+	if ok {
+		return domain.AdminTargetAttempt, anchor, nil
 	}
-	return domain.AdminTargetAttempt, anchor, nil
+	// Every task is terminal, but the run is not settled: its sink is waiting,
+	// most often for a supervision incident nobody resolved. Cancelling it is
+	// closing that supervision, so the command targets the run itself and is
+	// fenced on the run's revision.
+	for _, run := range records.WorkflowRuns {
+		if run.ID == runID && !runCancelSettled(run) {
+			return domain.AdminTargetWorkflowRun, runID, nil
+		}
+		if run.ID == runID {
+			return "", "", fmt.Errorf("%w: run %s is already settled as %s; every task is terminal and there is nothing to cancel (t3-steward campaign show %s)",
+				ErrInvalidQuery, runID, run.Progress, runID)
+		}
+	}
+	return "", "", notFound("workflow run", runID)
+}
+
+// runCancelSettled is settlement as supervision reads it: the sink is final,
+// or the run itself is.
+func runCancelSettled(run domain.WorkflowRun) bool {
+	return run.Progress.Terminal() || run.Sink != nil && run.Sink.Progress.Terminal()
 }
 
 // runCancelReplayMatches accepts the replay of a run-scoped cancel: the

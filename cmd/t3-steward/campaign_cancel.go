@@ -12,6 +12,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
 // campaignCancelRunDocument is what the run form of cancel prints. It names
@@ -96,12 +97,29 @@ func (c campaignCLI) runCampaignCancelRun(ctx context.Context, args []string) er
 		attempts = append(attempts, attempt)
 		names[attempt.ID] = task.Task.Name
 	}
-	anchor, ok := backlogadmin.RunCancelAnchorID(attempts, runID)
-	if !ok {
-		return fmt.Errorf("run %s has no task to cancel; every task of it is already terminal", runID)
+	run := detail.Summary.Run
+	if run.Progress.Terminal() || run.Sink != nil && run.Sink.Progress.Terminal() {
+		return fmt.Errorf("run %s is already settled as %s; there is nothing to cancel (t3-steward campaign show %s)",
+			runID, run.Progress, runID)
 	}
+	// The supervision read is advisory: an unsupervised run, an older
+	// coordinator or a refused read leave the cancel exactly as it was, and the
+	// coordinator refuses a live overseer again in the transaction that applies
+	// the command.
+	supervision, supervised := c.cancelSupervisionState(ctx, runID)
+	if supervised && (supervision.Activation.State == domain.ActivationPendingDispatch ||
+		supervision.Activation.State == domain.ActivationActive) {
+		return errors.New(sqlite.RunCancelActivationRefusal(runID, supervision.Activation))
+	}
+	anchor, ok := backlogadmin.RunCancelAnchorID(attempts, runID)
 	var cancelled []string
 	var expectedRevision int64
+	if !ok {
+		// Every task is terminal but the sink is not settled, most often
+		// because a supervision incident holds it open. The command closes the
+		// run and is fenced on the run's own revision.
+		expectedRevision = run.Revision
+	}
 	for _, attempt := range attempts {
 		if attempt.Progress.Terminal() {
 			continue
@@ -124,6 +142,11 @@ func (c campaignCLI) runCampaignCancelRun(ctx context.Context, args []string) er
 		Payload: json.RawMessage(`{"scope":"` + backlogadmin.MutationScopeRun + `"}`),
 	})
 	if err != nil {
+		if !ok && supervised && strings.Contains(err.Error(), "every task of it is already terminal") {
+			// A coordinator older than the run-closing cancel. Name the
+			// commands that close the run by hand, ids and revisions filled in.
+			return fmt.Errorf("%w\n%s", err, campaignCancelByHand(runID, supervision))
+		}
 		return err
 	}
 	document := campaignCancelRunDocument{
@@ -133,10 +156,20 @@ func (c campaignCLI) runCampaignCancelRun(ctx context.Context, args []string) er
 	if asJSON {
 		return encodeCampaignJSON(c.stdout, document)
 	}
-	fmt.Fprintf(c.stdout, "command %s will cancel %d task(s) of run %s: %s\n",
-		response.Command.ID, len(cancelled), runID, campaignList(cancelled))
-	fmt.Fprintf(c.stdout, "state %s, fenced on attempt %s at revision %d\n",
-		response.Command.State, anchor, expectedRevision)
+	if ok {
+		fmt.Fprintf(c.stdout, "command %s will cancel %d task(s) of run %s: %s\n",
+			response.Command.ID, len(cancelled), runID, campaignList(cancelled))
+		fmt.Fprintf(c.stdout, "state %s, fenced on attempt %s at revision %d\n",
+			response.Command.State, anchor, expectedRevision)
+	} else {
+		fmt.Fprintf(c.stdout, "command %s will close run %s: every task is already terminal, so it resolves the run's "+
+			"open supervision incidents as cancelled, cancels its undecided gates, releases its holds and settles its sink\n",
+			response.Command.ID, runID)
+		fmt.Fprintf(c.stdout, "state %s, fenced on run %s at revision %d\n", response.Command.State, runID, expectedRevision)
+	}
+	if response.Command.TargetType == domain.AdminTargetAttempt && supervised && c.coordinatorAtLeast(ctx, campaignRunCloseRelease) {
+		fmt.Fprint(c.stdout, "the same application resolves the run's open supervision incidents as cancelled and releases its holds\n")
+	}
 	if response.Command.Failure != "" {
 		fmt.Fprintf(c.stdout, "failure: %s\n", response.Command.Failure)
 	}
@@ -148,6 +181,52 @@ func (c campaignCLI) runCampaignCancelRun(ctx context.Context, args []string) er
 	return err
 }
 
+// cancelSupervisionState reads the run's supervision for the cancel, and
+// reports false for an unsupervised run and for any read that fails.
+func (c campaignCLI) cancelSupervisionState(ctx context.Context, runID string) (backlogadmin.SupervisionState, bool) {
+	if c.superviseAs == nil {
+		return backlogadmin.SupervisionState{}, false
+	}
+	identity, err := resolveSupervisorIdentity("")
+	if err != nil {
+		return backlogadmin.SupervisionState{}, false
+	}
+	response, err := c.superviseAs(ctx, identity, backlogadmin.SupervisionRequest{
+		Version: backlogadmin.SupervisionVersion, Operation: backlogadmin.SupervisionShow, RunID: runID,
+	})
+	if err != nil || response.State == nil {
+		return backlogadmin.SupervisionState{}, false
+	}
+	return *response.State, true
+}
+
+// campaignCancelByHand is what an operator runs to close a run whose tasks are
+// all terminal when the coordinator cannot do it with one cancel: every open
+// incident escalated, then every escalated one resolved as cancelled, each
+// with the revision it will be at.
+func campaignCancelByHand(runID string, state backlogadmin.SupervisionState) string {
+	var lines []string
+	for _, view := range state.Incidents {
+		incident := view.Incident
+		revision := incident.Revision
+		switch incident.State {
+		case domain.IncidentOpen:
+			lines = append(lines, fmt.Sprintf("  t3-steward campaign supervision escalate %s --incident %s --expected-revision %d --request-id cancel-escalate-%s-r%d --reason TEXT",
+				runID, incident.ID, revision, incident.ID, revision))
+			revision++
+		case domain.IncidentEscalated:
+		default:
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("  t3-steward campaign supervision resolve %s --incident %s --expected-revision %d --outcome cancelled --request-id cancel-%s-r%d --reason TEXT",
+			runID, incident.ID, revision, incident.ID, revision))
+	}
+	if len(lines) == 0 {
+		return fmt.Sprintf("this coordinator cannot close the run with one cancel; inspect what holds its sink open: t3-steward campaign supervision show %s", runID)
+	}
+	return "this coordinator cannot close the run with one cancel; close its supervision by hand, in this order:\n" + strings.Join(lines, "\n")
+}
+
 // campaignRunCancelRelease is the first release whose coordinator can apply a
 // run-scoped cancel. An older one decodes the request, ignores the scope,
 // resolves the empty task to the run itself and then fails at application,
@@ -155,6 +234,26 @@ func (c campaignCLI) runCampaignCancelRun(ctx context.Context, args []string) er
 // would get a queued command id and a silent failure some ticks later, so this
 // client refuses to send it.
 const campaignRunCancelRelease = "v0.11.0-rc.70"
+
+// campaignRunCloseRelease is the first release whose coordinator closes a
+// supervised run's supervision with its whole-run cancel, the release after
+// v0.11.0-rc.99. An older one cancels the tasks and leaves the incidents open.
+const campaignRunCloseRelease = "v0.11.0-rc.100"
+
+// coordinatorAtLeast reports whether the coordinator says it runs at least
+// the given release. A release it cannot read is not at least anything: this
+// decides only what the client claims, never what it sends.
+func (c campaignCLI) coordinatorAtLeast(ctx context.Context, minimum string) bool {
+	if c.release == nil {
+		return false
+	}
+	release, err := c.release(ctx)
+	if err != nil {
+		return false
+	}
+	newEnough, known := releaseAtLeast(release, minimum)
+	return known && newEnough
+}
 
 // refuseRunCancelOnAnOlderCoordinator refuses the run form against a
 // coordinator that cannot apply it, naming the per-task form instead. A

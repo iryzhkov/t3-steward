@@ -1,4 +1,5 @@
 /bin/
+/t3-steward
 /dist/
 __pycache__/
 *.db

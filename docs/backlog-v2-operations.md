@@ -555,6 +555,35 @@ application, so the client reads the release the coordinator reports and
 refuses the run form rather than queueing a command that will never be applied.
 The per-task form works against every release.
 
+On a supervised run the run form also closes the run's supervision, in the
+transaction that cancels its tasks: every open or escalated review incident is
+resolved with outcome `cancelled` under the command's id, every gate that is
+not accepted is cancelled, every active hold is released, and the sink settles
+if no worker is still stopping (otherwise the next projection settles it, and
+no overseer is woken for the run meanwhile). The run then reports `cancelled`
+whatever its tasks did; the sink keeps the task-level result. The closure is
+recorded on the supervision record as `closedByCancel`, each cancelled gate
+gets a decision row with outcome `cancel`, and a `run-supervision-closed`
+audit event lists what changed. Until the sink settles, every task command but
+cancel on the run (retry, start, resume and the rest) is rejected, naming
+`t3-steward campaign show <run>` and `t3-steward campaign rerun <run> --from
+TASK`: the work belongs in a new run, and supervision is not reopened. While an overseer activation is pending dispatch or
+active, the client refuses before sending and the coordinator rejects the
+command, naming the activation, `t3-steward campaign supervision show <run>`
+to watch it end, and the cancel to send again. A run whose tasks are all
+terminal but whose sink is still open, most often because an escalated
+incident holds it, is closed the same way by `campaign cancel <run>`, fenced on
+the run's own revision; only a settled run is refused. Against a coordinator
+older than this, that refusal lists the `supervision escalate` and `resolve
+--outcome cancelled` commands that close the run by hand, with the incident ids
+and revisions filled in.
+
+When a sink settles, the settlement releases every hold still active on the
+run. Holds of runs that settled before that are left as recorded: `campaign
+supervision show` prints them as "closed with the run", and `triage` lists
+nothing for a settled run. `supervision show` on a settled run no longer offers
+`reassess` or says an overseer can be dispatched.
+
 Both forms queue a command: the coordinator applies it on its next tick, so the
 answer is the submit decision and not the outcome. The run form's `--json`
 document names the tasks the one command covers under `willCancel`, an

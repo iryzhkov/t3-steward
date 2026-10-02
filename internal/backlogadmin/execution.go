@@ -232,6 +232,15 @@ func planAdminCommandWithWaits(records sqlite.CoordinatorRecords, workers []doma
 				application.SafetyValidUntil = &validUntil
 			}
 		}
+	case domain.AdminTargetWorkflowRun:
+		if !domain.AdminCommandRunScoped(command.Kind, command.Payload) {
+			return rejectApplication(application, "unsupported admin target"), nil, nil
+		}
+		nextRun, closeErr := planRunClose(records, command.TargetID, now)
+		if closeErr != nil {
+			return rejectApplication(application, closeErr.Error()), nil, nil
+		}
+		application.WorkflowRun = nextRun
 	case domain.AdminTargetSchedule:
 		schedule, err := commandSchedule(records, command.TargetID)
 		if err != nil {
@@ -504,6 +513,31 @@ func planRunCancellation(records sqlite.CoordinatorRecords, attempt domain.Attem
 	// the one it was read at, whatever the DAG counted along the way.
 	nextRun.Revision = run.Revision + 1
 	return target, related, &nextRun, nil
+}
+
+// planRunClose is the whole-run cancel of a run that has no live task left:
+// the run moves one revision, and the store closes its supervision and settles
+// its sink in the same transaction. A task that came back to life since the
+// command was accepted makes the command stale rather than silently skipped,
+// because the run form fences on that task's attempt.
+func planRunClose(records sqlite.CoordinatorRecords, runID string, now time.Time) (*domain.WorkflowRun, error) {
+	for _, run := range records.WorkflowRuns {
+		if run.ID != runID {
+			continue
+		}
+		if runCancelSettled(run) {
+			return nil, fmt.Errorf("run %s is already settled as %s; there is nothing to cancel", runID, run.Progress)
+		}
+		if anchor, live := RunCancelAnchorID(records.Attempts, runID); live {
+			return nil, fmt.Errorf("run %s has a live task again (attempt %s); send the cancel again so it fences on that task: "+
+				"t3-steward campaign cancel %s --reason TEXT", runID, anchor, runID)
+		}
+		next := run
+		next.Revision++
+		next.UpdatedAt = now
+		return &next, nil
+	}
+	return nil, fmt.Errorf("workflow run %s does not exist", runID)
 }
 
 // cancelledInSnapshot reports whether the attempt is already terminal in the

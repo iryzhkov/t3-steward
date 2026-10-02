@@ -263,6 +263,9 @@ func (s *Store) CommitWorkflowProjection(ctx context.Context, before WorkflowPro
 		if err != nil {
 			return fmt.Errorf("record sink settlement: %w", err)
 		}
+		if err := releaseSettledRunHoldsTx(ctx, tx, run.ID, now.UTC()); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

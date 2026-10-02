@@ -8,6 +8,35 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `campaign cancel <run>` closes a supervised run in one command. A run whose
+  tasks were all terminal but whose escalated review incident kept the sink
+  open was refused with "every task of it is already terminal", and the
+  operator had to find the incident and its revision in `supervision show
+  --json` and resolve it by hand (run-3ae2f87b). The whole-run cancel now
+  resolves every open incident as `cancelled`, cancels undecided gates,
+  releases holds and settles the sink in the transaction that applies it, and
+  is fenced on the run's revision when no task is live. It is refused, with
+  the activation named and the commands to wait and retry, while an overseer
+  activation is live. A run closed this way reports `cancelled`, even when
+  every task succeeded and only an undecided final gate held it open; the
+  closure is recorded on the supervision record (`closedByCancel`), cancelled
+  gates get a gate-decision row with outcome `cancel`, and until the sink
+  settles every task command but cancel on the run is refused with the
+  `campaign show` and `campaign rerun --from` commands to use instead.
+  Upgrade order: `closedByCancel` travels in supervision responses, and an
+  older client decodes those frames strictly, so an older `campaign show` or
+  `supervision show` fails with `unknown field "closedByCancel"` on a run
+  cancelled whole under this release. Upgrade every client host before
+  cancelling supervised runs on an upgraded coordinator.
+  `supervision show` on a settled run no longer offers
+  `reassess` or an overseer dispatch, and shows a hold left active as "closed
+  with the run"; sink settlement releases holds from now on, and `triage` no
+  longer lists holds on settled runs. Mixed versions: a new client against an
+  older coordinator gets the older refusal plus the hand-closing commands; an
+  older client against a new coordinator keeps its local refusal of an
+  all-terminal run, and its whole-run cancel of a run with live tasks closes
+  the supervision too.
+
 - A node wake whose thread is gone is no longer retried forever. The delivery
   loop treated a thread T3 does not hold like an unreachable T3 and kept the
   wake `offline`; the other members of its `--wake all` group stayed `pending`
