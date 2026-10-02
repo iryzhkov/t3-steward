@@ -116,13 +116,11 @@ func resolveNodeState(condition domain.NodeWaitCondition, r nodeStateRecords) (d
 // exit code; a pool that is no longer configured gives up.
 func observeQuota(condition domain.QuotaWaitCondition, r nodeStateRecords, now time.Time) (domain.NodeObservation, error) {
 	observation := domain.NodeObservation{ExitCode: 1, Reason: "pending"}
-	pool, err := domain.FindQuotaPool(r.QuotaPools, condition.Pool)
+	reading, outcome, reason, err := domain.EvaluateQuotaWait(condition, r.QuotaPools, r.Buckets, now)
 	if err != nil {
 		return observation, err
 	}
-	reading := domain.ObserveQuotaPool(pool, r.Buckets)
 	observation.Fields = domain.QuotaTrailerFields(reading)
-	outcome, reason := condition.Evaluate(reading, now)
 	observation.Reason = reason
 	if outcome != "" {
 		observation.Outcome = outcome

@@ -79,24 +79,12 @@ type QuotaPoolObservation struct {
 }
 
 // ObserveQuotaPool folds the bucket states that belong to a pool into one
-// observation. A pool that has been reconciled names its buckets; one that
-// has not is matched by its provider instances.
+// observation; PoolBucketMatcher says which belong.
 func ObserveQuotaPool(pool QuotaPool, states []BucketState) QuotaPoolObservation {
 	observation := QuotaPoolObservation{Pool: pool.ID, Phase: PhaseNormal}
-	named := make(map[BucketKey]bool, len(pool.Buckets))
-	for _, key := range pool.Buckets {
-		named[key] = true
-	}
-	instances := make(map[string]bool, len(pool.ProviderInstanceIDs))
-	for _, instance := range pool.ProviderInstanceIDs {
-		instances[instance] = true
-	}
+	belongs := PoolBucketMatcher(pool)
 	for _, state := range states {
-		belongs := named[state.Key]
-		if len(named) == 0 {
-			belongs = instances[state.Key.ProviderInstanceID] && (pool.AccountID == "" || pool.AccountID == state.Key.AccountID)
-		}
-		if !belongs {
+		if !belongs(state) {
 			continue
 		}
 		observation.Buckets++
@@ -115,6 +103,23 @@ func ObserveQuotaPool(pool QuotaPool, states []BucketState) QuotaPoolObservation
 		}
 	}
 	return observation
+}
+
+// EvaluateQuotaWait is the quota wait evaluator: it finds the condition's
+// pool, reads it from the observations that govern it and evaluates the
+// condition. A pool whose governing buckets are unknown stays pending with
+// that reason instead of being read from every window.
+func EvaluateQuotaWait(condition QuotaWaitCondition, pools []QuotaPool, states []BucketState, now time.Time) (QuotaPoolObservation, TaskWaitOutcome, string, error) {
+	pool, err := FindQuotaPool(pools, condition.Pool)
+	if err != nil {
+		return QuotaPoolObservation{}, "", "", err
+	}
+	observation := ObserveQuotaPool(pool, states)
+	if pool.BucketSelection == BucketSelectionUnknown {
+		return observation, "", fmt.Sprintf("pending: the buckets that govern pool %s are unknown (the coordinator could not read its quota observations)", condition.Pool), nil
+	}
+	outcome, reason := condition.Evaluate(observation, now)
+	return observation, outcome, reason, nil
 }
 
 // Evaluate reports whether the condition holds against an observation: met,

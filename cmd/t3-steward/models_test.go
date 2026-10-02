@@ -169,6 +169,8 @@ func TestModelsStaleThresholdIsConfigurable(t *testing.T) {
 		{name: "default, over an hour", age: 61 * time.Minute, wantStale: true},
 		{name: "longer threshold", staleAfter: 3 * time.Hour, age: 2 * time.Hour},
 		{name: "shorter threshold", staleAfter: 10 * time.Minute, age: 11 * time.Minute, wantStale: true},
+		{name: "exactly at the threshold", staleAfter: 10 * time.Minute, age: 10 * time.Minute},
+		{name: "just past the threshold", staleAfter: 10 * time.Minute, age: 10*time.Minute + time.Nanosecond, wantStale: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, stale := modelsPoolFreshness(pool, states, observed.Add(tc.age), tc.staleAfter); stale != tc.wantStale {
@@ -183,6 +185,45 @@ func TestModelsStaleThresholdIsConfigurable(t *testing.T) {
 	cfg.BacklogV2.CoordinatorClient.Defaults.QuotaStaleAfter = config.Duration(2 * time.Hour)
 	if got := modelsStaleAfter(cfg); got != 2*time.Hour {
 		t.Fatalf("configured threshold = %s, want 2h", got)
+	}
+}
+
+// A pool whose governing buckets the coordinator resolved to none has no
+// reading: its providers' other windows (overage here, three days old) are
+// not its age. A pool whose buckets are unknown says so rather than being
+// read from every window. An older coordinator's pool naming none is still
+// read from its instance's windows.
+func TestModelsReadsAPoolOnlyFromItsGoverningBuckets(t *testing.T) {
+	observed := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	overage := domain.BucketKey{ProviderInstanceID: "t3-primary", LimitID: "claude", Window: "overage"}
+	states := []domain.BucketState{{Key: overage, UsedPercent: 1, ObservedAt: observed.Add(-72 * time.Hour)}}
+	pool := domain.QuotaPool{ID: "pool-claude", ProviderInstanceIDs: []string{"t3-primary"}}
+	for _, tc := range []struct {
+		selection string
+		wantAge   bool
+	}{
+		{selection: domain.BucketSelectionResolved},
+		{selection: domain.BucketSelectionUnknown},
+		{selection: "", wantAge: true},
+	} {
+		pool.BucketSelection = tc.selection
+		oldest, stale := modelsPoolFreshness(pool, states, observed, 0)
+		if (oldest != nil) != tc.wantAge || stale != tc.wantAge {
+			t.Fatalf("selection %q: oldest=%v stale=%v, want an age: %v", tc.selection, oldest, stale, tc.wantAge)
+		}
+	}
+	fixture := modelsFixture()
+	fixture.quotas[0].Pool.BucketSelection = domain.BucketSelectionUnknown
+	document := buildModelsDocument("", fixture.workers, fixture.quotas, nil, 0)
+	if instance := modelsInstanceByName(t, document, "t3-primary"); !instance.QuotaUnknown || instance.ObservedAt != nil {
+		t.Fatalf("an unknown pool: %+v", instance)
+	}
+	var out bytes.Buffer
+	if err := renderModels(&out, document); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "quota unknown") {
+		t.Fatalf("the table does not say the pool's quota is unknown:\n%s", out.String())
 	}
 }
 

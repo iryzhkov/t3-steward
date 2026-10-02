@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,6 +42,60 @@ func TestT3DiscoveryTimeoutDefaultsToTwoMinutes(t *testing.T) {
 	c.T3.DiscoveryTimeout = 0
 	if err := c.Validate(); err != nil {
 		t.Fatalf("zero (one attempt) was refused: %v", err)
+	}
+}
+
+// The two new durations as an operator writes them: omitted, zero, a value and
+// a negative value, through the loader, on a host without and with the
+// UpKeeper coordinator client file. The file fills the client block when
+// config.yaml declares no coordinator, and it used to replace the block's
+// defaults (quota_stale_after, and model too) with nothing.
+func TestDiscoveryTimeoutAndQuotaStaleAfterLoad(t *testing.T) {
+	for _, home := range []struct{ name, path string }{
+		{name: "no client file", path: t.TempDir()},
+		{name: "client file", path: bootstrapHome(t, validBootstrapDocument, 0o600)},
+	} {
+		t.Run(home.name, func(t *testing.T) {
+			original := coordinatorClientHome
+			coordinatorClientHome = func() string { return home.path }
+			t.Cleanup(func() { coordinatorClientHome = original })
+			testDiscoveryTimeoutAndQuotaStaleAfterLoad(t)
+		})
+	}
+}
+
+func testDiscoveryTimeoutAndQuotaStaleAfterLoad(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml string
+		discovery  time.Duration
+		staleAfter time.Duration
+		wantErr    string
+	}{
+		{name: "omitted", yaml: "log_level: info\n", discovery: 2 * time.Minute},
+		{name: "zero is a single attempt and the default threshold", yaml: "t3:\n  discovery_timeout: 0s\nbacklog_v2:\n  coordinator_client:\n    defaults:\n      quota_stale_after: 0s\n"},
+		{name: "set", yaml: "t3:\n  discovery_timeout: 30s\nbacklog_v2:\n  coordinator_client:\n    defaults:\n      quota_stale_after: 90m\n", discovery: 30 * time.Second, staleAfter: 90 * time.Minute},
+		{name: "negative discovery", yaml: "t3:\n  discovery_timeout: -1s\n", wantErr: "discovery_timeout must not be negative"},
+		{name: "negative staleness", yaml: "backlog_v2:\n  coordinator_client:\n    defaults:\n      quota_stale_after: -1m\n", wantErr: "quota_stale_after must not be negative"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			c, err := Load(path)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.T3.DiscoveryTimeout.D() != tc.discovery || c.BacklogV2.CoordinatorClient.Defaults.QuotaStaleAfter.D() != tc.staleAfter {
+				t.Fatalf("discovery_timeout=%s quota_stale_after=%s", c.T3.DiscoveryTimeout.D(), c.BacklogV2.CoordinatorClient.Defaults.QuotaStaleAfter.D())
+			}
+		})
 	}
 }
 

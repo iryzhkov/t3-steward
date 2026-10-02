@@ -132,6 +132,9 @@ func (b QuotaBridge) ReconcileObservations(ctx context.Context, reservations []Q
 		sort.Slice(pools[index].Buckets, func(i, j int) bool {
 			return pools[index].Buckets[i].String() < pools[index].Buckets[j].String()
 		})
+		// The names are the complete governing set, even when it is empty:
+		// a pool no observation governs is not read from every window.
+		pools[index].BucketSelection = domain.BucketSelectionResolved
 	}
 	derived, err := DeriveQuotaPoolAdmissions(QuotaAdmissionDerivationInput{
 		Now: now, MaxObservationAge: b.MaxObservationAge, Pools: pools,

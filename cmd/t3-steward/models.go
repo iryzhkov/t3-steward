@@ -158,6 +158,9 @@ type modelsInstance struct {
 	ObservedAt *time.Time `json:"observedAt,omitempty"`
 	ResetsAt   *time.Time `json:"resetsAt,omitempty"`
 	Stale      bool       `json:"stale,omitempty"`
+	// QuotaUnknown marks a pool whose governing buckets the coordinator could
+	// not resolve: its state is unknown, not read from every window.
+	QuotaUnknown bool `json:"quotaUnknown,omitempty"`
 	// Models is every model the eligible workers advertise for the instance,
 	// deduplicated and sorted.
 	Models  []string       `json:"models,omitempty"`
@@ -366,6 +369,7 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 			if quota.Admission != nil {
 				item.Admission = string(quota.Admission.Admission)
 			}
+			item.QuotaUnknown = quota.Pool.BucketSelection == domain.BucketSelectionUnknown
 			if observation.Buckets > 0 {
 				percent := observation.Percent
 				item.Phase = string(observation.Phase)
@@ -599,6 +603,9 @@ func renderModels(out io.Writer, document modelsDocument) error {
 			used = fmt.Sprintf("%.0f%%", *instance.Percent)
 		}
 		age := "-"
+		if instance.QuotaUnknown {
+			age = "quota unknown"
+		}
 		if instance.ObservedAt != nil {
 			age = modelsAge(modelsNow().Sub(*instance.ObservedAt))
 			if instance.Stale {
@@ -694,22 +701,11 @@ func modelsPoolFreshness(pool domain.QuotaPool, states []domain.BucketState, now
 	if staleAfter <= 0 {
 		staleAfter = defaultModelsStaleAfter
 	}
-	named := make(map[domain.BucketKey]bool, len(pool.Buckets))
-	for _, key := range pool.Buckets {
-		named[key] = true
-	}
-	instances := make(map[string]bool, len(pool.ProviderInstanceIDs))
-	for _, instance := range pool.ProviderInstanceIDs {
-		instances[instance] = true
-	}
+	belongs := domain.PoolBucketMatcher(pool)
 	var oldest *time.Time
 	stale := false
 	for _, state := range states {
-		belongs := named[state.Key]
-		if len(named) == 0 {
-			belongs = instances[state.Key.ProviderInstanceID] && (pool.AccountID == "" || pool.AccountID == state.Key.AccountID)
-		}
-		if !belongs {
+		if !belongs(state) {
 			continue
 		}
 		observed := state.ObservedAt

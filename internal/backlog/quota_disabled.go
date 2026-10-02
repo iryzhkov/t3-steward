@@ -75,17 +75,22 @@ func (b QuotaBridge) disabledReport(input QuotaPlanningStateInput) (QuotaBridgeR
 // the pool does not serve, which are exactly the windows the enabled path
 // leaves out.
 //
-// The observations are informational here, so a store that cannot list them
-// leaves the pools unnamed rather than failing a report that does not depend
-// on them.
+// Each pool is marked BucketSelectionResolved, so that a pool none of whose
+// observed buckets governs it reads as no observation rather than as every
+// window. The observations are informational here, so a coordinator store
+// that cannot list its own does not fail the report: the workers'
+// observations are used alone, and a pool none of whose provider instances
+// a worker observed is marked BucketSelectionUnknown rather than widened.
 func (b QuotaBridge) nameGoverningBuckets(ctx context.Context, pools []domain.QuotaPool, workers []domain.WorkerSnapshot) {
 	var local []domain.BucketState
+	localFailed := false
 	if b.Store != nil {
 		listed, err := b.Store.ListBuckets(ctx)
 		if err != nil {
-			return
+			localFailed = true
+		} else {
+			local = listed
 		}
-		local = listed
 	}
 	states := MergeWorkerQuotaObservations(local, workers)
 	bindings := make(map[string]QuotaPoolBinding, len(b.Pools))
@@ -102,6 +107,11 @@ func (b QuotaBridge) nameGoverningBuckets(ctx context.Context, pools []domain.Qu
 		for _, key := range pool.Buckets {
 			named[key] = true
 		}
+		if localFailed && !workersObserve(workers, instances) {
+			pool.BucketSelection = domain.BucketSelectionUnknown
+			continue
+		}
+		pool.BucketSelection = domain.BucketSelectionResolved
 		for _, state := range states {
 			if !instances[state.Key.ProviderInstanceID] || named[state.Key] ||
 				(pool.AccountID != "" && state.Key.AccountID != pool.AccountID) ||
@@ -115,4 +125,17 @@ func (b QuotaBridge) nameGoverningBuckets(ctx context.Context, pools []domain.Qu
 			return pool.Buckets[i].String() < pool.Buckets[j].String()
 		})
 	}
+}
+
+// workersObserve reports whether any worker reported an observation of one of
+// the instances.
+func workersObserve(workers []domain.WorkerSnapshot, instances map[string]bool) bool {
+	for _, worker := range workers {
+		for _, observation := range worker.QuotaObservations {
+			if instances[observation.Key.ProviderInstanceID] {
+				return true
+			}
+		}
+	}
+	return false
 }
