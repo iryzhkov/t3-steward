@@ -50,6 +50,26 @@ func newArchiver(cfg config.Config, store *sqlite.Store, control *t3control.Cont
 	return a
 }
 
+// threadWakeRejector is the wait runner's half of the archive hook.
+type threadWakeRejector interface {
+	RejectThreadWakes(ctx context.Context, threadID string) (int, error)
+}
+
+// rejectDeletedThreadWakes ends the wakes owed to a thread the archive deleted.
+// In a dry run nothing was deleted -- the dry-run control answers a delete
+// without sending it -- so nothing is ended either, whatever the archive
+// believes it did.
+func rejectDeletedThreadWakes(ctx context.Context, dryRun bool, rejector threadWakeRejector, logger *slog.Logger, threadID string) error {
+	if dryRun {
+		return nil
+	}
+	n, err := rejector.RejectThreadWakes(ctx, threadID)
+	if n != 0 && logger != nil {
+		logger.Info("ended the node wakes owed to a deleted thread", "thread", threadID, "rejected", n)
+	}
+	return err
+}
+
 // threadWakeRejecter ends the node wakes this host still owes a thread the
 // archive has just deleted. It reads and moves them where the wait runner
 // does: in the local store on a coordinator, over the admin transport on every
@@ -57,12 +77,9 @@ func newArchiver(cfg config.Config, store *sqlite.Store, control *t3control.Cont
 func threadWakeRejecter(cfg config.Config, store *sqlite.Store, control *t3control.Control, logger *slog.Logger) func(context.Context, string) error {
 	runner := wait.New(store, control, logger)
 	configureNodeWaitTransport(runner, cfg, logger)
+	dryRun := cfg.Policy.DryRun || control.DryRun
 	return func(ctx context.Context, threadID string) error {
-		n, err := runner.RejectThreadWakes(ctx, threadID)
-		if n != 0 {
-			logger.Info("ended the node wakes owed to a deleted thread", "thread", threadID, "rejected", n)
-		}
-		return err
+		return rejectDeletedThreadWakes(ctx, dryRun, runner, logger, threadID)
 	}
 }
 

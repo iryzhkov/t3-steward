@@ -50,6 +50,11 @@ What it lists, items needing action first:
   run-stalled           a run that is not finished and whose record has not
                         changed for --stale-days days
 
+Every run that is not settled has its supervision read; settled runs are read
+newest first up to 100, and any left out are named on an INCOMPLETE line. An
+incomplete view, or one with a source NOT READ, never says that nothing needs
+an operator.
+
 A command that has to run on another host is printed as "on HOST: COMMAND".
 Where an item offers several commands that change state, the comment after
 each says when to choose it; nothing else is left to fill in. Supervision
@@ -83,9 +88,11 @@ const triageVersion = "t3-steward.triage/v1"
 // off to a minute, so ten minutes is a wake nothing is delivering.
 const triageWakeOverdueAfter = 10 * time.Minute
 
-// triageSupervisionLimit bounds the supervised runs read, most recently
-// changed first: one supervision read per run, and a coordinator that has
-// supervised hundreds of runs keeps its history in the store.
+// triageSupervisionLimit bounds the settled supervised runs read, most
+// recently changed first: one supervision read per run, and a coordinator that
+// has supervised hundreds of runs keeps its history in the store. Every run
+// that is not settled is read, whatever its age; a settled run left out makes
+// the view incomplete, and triage says so.
 const triageSupervisionLimit = 100
 
 // triageSources are the coordinator answers triage reads, as seams: the
@@ -138,7 +145,11 @@ type triageReport struct {
 	// is waiting" unless its source is in Sources.
 	Sources     []string `json:"sources"`
 	Unavailable []string `json:"unavailable,omitempty"`
-	causes      []error
+	// Incomplete names what a source that answered did not cover, because
+	// triage bounds how much of it it reads. An incomplete view never says
+	// that nothing needs an operator.
+	Incomplete []string `json:"incomplete,omitempty"`
+	causes     []error
 }
 
 func cmdTriage(g globalFlags, args []string) error {
@@ -252,7 +263,13 @@ func collectTriage(ctx context.Context, sources triageSources, options triageOpt
 		StaleAfterDays: int(options.staleAfter / (24 * time.Hour)), WorkerDownAfter: options.workerDownAfter.String(),
 	}
 	var notBefore time.Time
-	if status, err := sources.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryStatus}); err == nil && status.Status != nil {
+	if status, err := sources.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryStatus}); err != nil {
+		// Without it an outage is measured from the worker's last sighting
+		// alone, which can call a worker down right after a coordinator
+		// restart; the reader has to know that.
+		report.unavailable("coordinator status", err)
+	} else if status.Status != nil {
+		report.Sources = append(report.Sources, "coordinator status")
 		notBefore = status.Status.Runtime.LastReload
 		report.Coordinator = status.Status.Runtime.Owner
 		report.GeneratedAt = status.GeneratedAt
@@ -434,9 +451,27 @@ func triageSupervision(ctx context.Context, report *triageReport, sources triage
 		return
 	}
 	sort.SliceStable(supervised, func(i, j int) bool { return supervised[i].UpdatedAt.After(supervised[j].UpdatedAt) })
-	if len(supervised) > triageSupervisionLimit {
-		supervised = supervised[:triageSupervisionLimit]
+	// Every live run, then the newest settled ones up to the bound.
+	var read []domain.WorkflowRun
+	settled, skipped := 0, 0
+	for _, run := range supervised {
+		if !run.Progress.Terminal() {
+			read = append(read, run)
+			continue
+		}
+		if settled < triageSupervisionLimit {
+			settled++
+			read = append(read, run)
+			continue
+		}
+		skipped++
 	}
+	if skipped != 0 {
+		report.Incomplete = append(report.Incomplete, fmt.Sprintf(
+			"supervision of %d settled runs was not read (the newest %d were, and every live one); a hold left on one of them is not listed. "+
+				"t3-steward campaign supervision show <run> reads one", skipped, triageSupervisionLimit))
+	}
+	supervised = read
 	var failed error
 	failures := 0
 	for _, run := range supervised {
@@ -722,7 +757,7 @@ func renderTriage(out io.Writer, report triageReport) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Triage of coordinator %s at %s: %d need action, %d warnings, %d notes.\n",
 		coordinator, report.GeneratedAt.UTC().Format(time.RFC3339), counts["action"], counts["warn"], counts["info"])
-	if len(report.Items) == 0 && len(report.Unavailable) == 0 {
+	if len(report.Items) == 0 && len(report.Unavailable) == 0 && len(report.Incomplete) == 0 {
 		fmt.Fprintf(&b, "Nothing needs an operator: %d enrolled workers connected, no held quota pool, no undeliverable or overdue wake, "+
 			"no unanswered question, no escalated supervision and no run idle for %d days.\n", report.EnrolledWorkers, report.StaleAfterDays)
 	}
@@ -736,12 +771,15 @@ func renderTriage(out io.Writer, report triageReport) error {
 			if command.When != "" {
 				line += "    # " + command.When
 			}
-			b.WriteString(line + "\n")
+			fmt.Fprintln(&b, line)
 		}
 	}
 	b.WriteString("\n")
 	if len(report.Sources) != 0 {
 		fmt.Fprintf(&b, "sources read: %s\n", strings.Join(report.Sources, ", "))
+	}
+	for _, incomplete := range report.Incomplete {
+		fmt.Fprintf(&b, "INCOMPLETE: %s\n", incomplete)
 	}
 	for _, unavailable := range report.Unavailable {
 		fmt.Fprintf(&b, "NOT READ: %s\n", unavailable)

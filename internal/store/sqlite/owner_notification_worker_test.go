@@ -90,6 +90,40 @@ func TestAWorkerOutageIsReportedOnceAndItsRecoveryOnce(t *testing.T) {
 	}
 }
 
+// Two outages of one worker with no connected pass between them -- the worker
+// came back and dropped again between two reads of the view -- are two
+// outages: the first is closed with a recovery, the second is reported.
+func TestASecondOutageWithoutAConnectedPassClosesTheFirst(t *testing.T) {
+	store := openOwnerNotificationStore(t)
+	now := time.Date(2026, 10, 2, 3, 38, 0, 0, time.UTC)
+	first := now.Add(-20 * time.Minute)
+	workers := []ownernotify.WorkerState{{WorkerID: "normandy", Since: first, LastSeen: first, Down: true, DownFor: 20 * time.Minute}}
+	sink := &recordingSink{name: "command", selection: ownernotify.Selection{Events: ownernotify.DefaultEvents()}}
+	notifier := clockedNotifier(store, &now, sink)
+	notifier.Workers = func(context.Context) ([]ownernotify.WorkerState, error) { return workers, nil }
+	notifier.Tick(context.Background())
+	second := now.Add(5 * time.Minute)
+	now = now.Add(30 * time.Minute)
+	workers = []ownernotify.WorkerState{{WorkerID: "normandy", Since: second, LastSeen: second, Down: true, DownFor: 25 * time.Minute}}
+	notifier.Tick(context.Background())
+	notifier.Tick(context.Background())
+	var downs, recoveries int
+	for _, n := range sink.delivered() {
+		switch {
+		case n.Event == ownernotify.EventWorkerDown:
+			downs++
+		case n.Event == ownernotify.EventWorkerRecovered && n.Since != nil && n.Since.Equal(first):
+			recoveries++
+		default:
+			t.Fatalf("unexpected notification %+v", n)
+		}
+	}
+	if downs != 2 || recoveries != 1 {
+		t.Fatalf("two outages without a connected pass gave %d worker-down and %d recoveries of the first, want 2 and 1 (%s)",
+			downs, recoveries, workerEvents(sink))
+	}
+}
+
 // failingSink refuses every send, so a row stays pending.
 type failingSink struct{ recordingSink }
 

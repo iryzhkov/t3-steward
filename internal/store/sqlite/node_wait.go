@@ -420,6 +420,16 @@ func (s *Store) TransitionNodeWake(ctx context.Context, id, from, to string, now
 		t := now.UTC()
 		w.DeliveredAt = &t
 	case "rejected":
+		if w.SettledAt == nil {
+			// Rejected before it settled: its thread is gone, so no outcome
+			// will ever reach it. It is settled now, as gave-up, so that no
+			// listing reads it as still waiting and no settlement pass
+			// evaluates it again.
+			t := now.UTC()
+			w.SettledAt = &t
+			w.Observation = &domain.NodeObservation{Target: w.Request.Target, ExitCode: 2, Outcome: domain.TaskWaitGaveUp,
+				Reason: "the wake was rejected before the wait settled: its thread is archived or deleted in T3, so no outcome can reach it"}
+		}
 		w.DeliveryError = "delivery was rejected: the thread is archived or deleted in T3, or T3 refused the wake"
 		w.DeliveryNextAction = "nothing will deliver this wake; from a live thread, run t3-steward wait add again for the same condition if it is still wanted"
 		w.DeliveryNextAttemptAt = nil

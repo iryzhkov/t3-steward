@@ -277,16 +277,34 @@ func (r *Runner) nodeHost() string {
 	return host
 }
 
-// threadGoneConfirm is how long T3 has to keep answering without a thread
-// before that thread's wakes are ended.
+// threadGoneConfirm and threadGoneAnswers are what it takes for a thread that
+// T3 answers without -- in neither its shell snapshot nor its full index -- to
+// count as gone: at least threadGoneAnswers consecutive answers without it,
+// spanning at least threadGoneConfirm. Any lookup T3 does not answer, and any
+// answer that holds the thread, starts the count again.
 //
-// One answer is not enough. A T3 server that is still loading its read model
-// answers its shell endpoint with fewer threads than it holds, and ending a
-// wake cannot be undone. An answer that does not hold the thread for a minute
-// of ticks is a thread that was deleted or archived, which is the case this
-// exists for: before it, a wake for a deleted thread was retried every tick
-// for as long as the steward ran.
-const threadGoneConfirm = time.Minute
+// One answer is not enough, because ending a wake cannot be undone and absence
+// from one answer is evidence rather than proof. A thread T3 reports deleted,
+// or archived, is authoritative and needs no confirmation. Before this, a wake
+// for a deleted thread was retried every tick for as long as the steward ran.
+const (
+	threadGoneConfirm = time.Minute
+	threadGoneAnswers = 3
+)
+
+// ThreadLookupControl is a control that can say why a thread is not live:
+// deleted, archived, or absent from an answer that held other threads. The T3
+// control implements it; a control that does not is read through GetThread,
+// whose nil thread is taken as absent.
+type ThreadLookupControl interface {
+	LookupThread(ctx context.Context, threadID string) (*domain.Thread, domain.ThreadPresence, error)
+}
+
+// threadAbsence is the running confirmation that a thread is absent.
+type threadAbsence struct {
+	first, last time.Time
+	answers     int
+}
 
 // threadPresence is what T3's answer says about a wake's thread.
 type threadPresence int
@@ -297,42 +315,70 @@ const (
 	// threadUnanswered: T3 did not answer (transport, credential or server
 	// error), which says nothing about the thread. Always retryable.
 	threadUnanswered
-	// threadMissing: T3 answered without the thread, for less than
-	// threadGoneConfirm so far. Retryable.
+	// threadMissing: T3 answered without the thread, not yet confirmed (see
+	// threadGoneConfirm). Retryable.
 	threadMissing
-	// threadGone: the thread is archived, or T3 has answered without it for
-	// threadGoneConfirm. Terminal for every wake addressed to it.
+	// threadGone: T3 reports the thread deleted or archived, or the absence
+	// is confirmed. Terminal for every wake addressed to it.
 	threadGone
 )
 
-// lookupThread asks T3 for a wake's thread and classifies the answer. It
-// remembers when an answer first lacked the thread, in memory: a restart only
-// restarts the confirmation, which errs towards retrying.
+// lookupThread asks T3 for a wake's thread and classifies the answer. The
+// confirmation of an absence is kept in memory: a restart only restarts it,
+// which errs towards retrying.
 func (r *Runner) lookupThread(ctx context.Context, id string) (*domain.Thread, threadPresence) {
-	thread, err := r.control.GetThread(ctx, id)
+	thread, presence, err := r.lookupPresence(ctx, id)
 	if err != nil {
+		// No answer says nothing about the thread, and breaks the run of
+		// consecutive answers an absence needs.
+		delete(r.threadAbsentSince, id)
 		return nil, threadUnanswered
 	}
-	if thread != nil {
+	switch presence {
+	case domain.ThreadLive:
 		delete(r.threadAbsentSince, id)
-		if thread.ArchivedAt != nil {
-			return thread, threadGone
-		}
 		return thread, threadLive
+	case domain.ThreadDeleted, domain.ThreadArchived:
+		delete(r.threadAbsentSince, id)
+		return thread, threadGone
 	}
 	now := r.now()
-	first, seen := r.threadAbsentSince[id]
-	if !seen {
-		if r.threadAbsentSince == nil {
-			r.threadAbsentSince = map[string]time.Time{}
-		}
-		r.threadAbsentSince[id] = now
-		return nil, threadMissing
+	if r.threadAbsentSince == nil {
+		r.threadAbsentSince = map[string]threadAbsence{}
 	}
-	if now.Sub(first) < threadGoneConfirm {
-		return nil, threadMissing
+	absence := r.threadAbsentSince[id]
+	switch {
+	case absence.answers == 0:
+		absence = threadAbsence{first: now, last: now, answers: 1}
+	case now.After(absence.last):
+		// Several wakes of one thread looked up at one instant are one answer.
+		absence.last = now
+		absence.answers++
 	}
-	return nil, threadGone
+	r.threadAbsentSince[id] = absence
+	if absence.answers >= threadGoneAnswers && now.Sub(absence.first) >= threadGoneConfirm {
+		return nil, threadGone
+	}
+	return nil, threadMissing
+}
+
+// lookupPresence reads the thread through LookupThread when the control has
+// it, and through GetThread otherwise.
+func (r *Runner) lookupPresence(ctx context.Context, id string) (*domain.Thread, domain.ThreadPresence, error) {
+	if lookup, ok := r.control.(ThreadLookupControl); ok {
+		return lookup.LookupThread(ctx, id)
+	}
+	thread, err := r.control.GetThread(ctx, id)
+	switch {
+	case err != nil:
+		return nil, "", err
+	case thread == nil:
+		return nil, domain.ThreadAbsent, nil
+	case thread.ArchivedAt != nil:
+		return thread, domain.ThreadArchived, nil
+	default:
+		return thread, domain.ThreadLive, nil
+	}
 }
 
 // rejectGoneWakes ends the given wakes, whose thread is gone, and logs once
@@ -384,12 +430,13 @@ func (r *Runner) RejectThreadWakes(ctx context.Context, threadID string) (int, e
 	host := r.nodeHost()
 	var rejected int
 	var failures []error
+	var moved []string
 	for round := 0; round < 3; round++ {
 		waits, err := r.listNodeWaits(ctx, store, host)
 		if err != nil {
 			return rejected, fmt.Errorf("read the node wakes of thread %s: %w", threadID, err)
 		}
-		moved := false
+		moved = moved[:0]
 		failures = failures[:0]
 		for _, w := range waits {
 			if w.Host != host || w.Request.ThreadID != threadID || nodeWakeEnded(w.Delivery) {
@@ -402,14 +449,22 @@ func (r *Runner) RejectThreadWakes(ctx context.Context, threadID string) (int, e
 			case changed:
 				rejected++
 			default:
-				moved = true
+				moved = append(moved, w.Request.ID)
 			}
 		}
-		if !moved {
+		if len(moved) == 0 {
 			break
 		}
 	}
 	delete(r.threadAbsentSince, threadID)
+	if len(moved) != 0 {
+		// The bound stays: a wake that keeps moving is being worked on by a
+		// delivery tick, which ends it itself once T3 confirms the thread is
+		// gone. The caller is told the cleanup is incomplete and which wakes.
+		failures = append(failures, fmt.Errorf(
+			"cleanup of thread %s is incomplete: node wakes %s changed state on each of 3 reads; the delivery loop ends them once T3 confirms the thread is gone, and t3-steward triage lists any it does not",
+			threadID, strings.Join(moved, ", ")))
+	}
 	return rejected, errors.Join(failures...)
 }
 

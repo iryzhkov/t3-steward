@@ -12,14 +12,22 @@ All notable changes to this project are documented here. The format follows
   loop treated a thread T3 does not hold like an unreachable T3 and kept the
   wake `offline`; the other members of its `--wake all` group stayed `pending`
   behind it (waits nw-f2bf0274 and nw-23326045 stayed pending for a week after
-  the archive deleted their thread). The archive now rejects the wakes still
-  owed to a thread it deletes, including unsettled ones; the delivery loop
-  rejects a wake, with its whole group, once T3 has answered for a minute
-  without its thread; and a send whose receipt is unknown is rejected when its
-  thread is gone instead of being reconciled forever. A T3 that does not answer
-  (transport, credential or server error) still leaves the wake retryable. A
-  coordinator older than this release refuses the rejection of an unsettled
-  wake; the delivery loop rejects it once it settles.
+  the archive deleted their thread). The delivery loop now asks T3 which of
+  four things is true: the thread is live, deleted (authoritative: the wake is
+  rejected at once), archived (likewise; the shell snapshot leaves archived
+  threads out, so the full index is read to tell), or absent from both. An
+  absent thread is gone only after three consecutive answers without it
+  spanning at least a minute; a lookup T3 does not answer (transport,
+  credential or server error, or an answer holding no thread at all) or an
+  answer with the thread starts the count again and leaves the wake
+  retryable. A gone thread ends its wake, with its whole `--wake all` group,
+  and ends a send whose receipt is unknown instead of reconciling it forever.
+  The archive rejects the wakes still owed to a thread it deletes (never in a
+  dry run), and reports cleanup it could not finish. An unsettled wait whose
+  wake is rejected is settled as gave-up, and `wait list` shows a rejected
+  wake as over. A coordinator older than this release refuses the rejection
+  of an unsettled wake and logs it; the delivery loop rejects the wake once it
+  settles, so upgrade the coordinator first.
 
 - Finished steward projects no longer stay in the T3 sidebar for days. A
   project can only be removed once it holds no thread, and a finished task's
@@ -45,8 +53,11 @@ All notable changes to this project are documented here. The format follows
   attention requests, overdue and undeliverable wakes, closed quota pools,
   quarantined intake (one summary item) and runs unchanged for
   `--stale-days` days (default 7). `--json` prints the versioned
-  `t3-steward.triage/v1` document; a source that cannot be read is named and
-  sets the exit status to its transport class.
+  `t3-steward.triage/v1` document; a source that cannot be read (the
+  coordinator status included) is named and sets the exit status to its
+  transport class. Every live supervised run is read; settled ones are read
+  newest first up to 100, and a view that left some out says so and never
+  claims that nothing needs an operator.
 - Worker-down alerting. An enrolled worker the coordinator has not reached for
   longer than `notifications.worker_down_after` (default 10m, at least 1m,
   counted from the coordinator's own start at the earliest) now fails
@@ -61,7 +72,9 @@ All notable changes to this project are documented here. The format follows
   A worker drained with `accept_backlog: false` is in maintenance and never
   alerted on. The operations guide shows a command channel that posts each
   event to the fleet feed. A configuration that lists `worker-down` or
-  `worker-recovered` explicitly is refused by an older release.
+  `worker-recovered` explicitly, or sets `notifications.worker_down_after`, is
+  refused by an older release, which decodes the configuration with unknown
+  keys disallowed.
 - Owner-channel notifications. A top-level `notifications` section sends
   campaign events to Discord (`discord.webhook_url_file`, a 0600 file owned by
   the coordinator's user that holds the webhook URL and is never logged) or to

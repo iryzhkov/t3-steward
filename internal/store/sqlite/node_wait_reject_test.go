@@ -11,8 +11,10 @@ import (
 
 // A wake whose thread the archive deleted is ended whether or not its wait has
 // settled: a thread that no longer exists has nowhere to receive an outcome.
-// The ended wait is then left alone by settlement, releases its retention pin,
-// and says why it ended and what to do instead.
+// An unsettled wait ended this way is settled at the same moment as gave-up,
+// so no listing reads it as still waiting; it is then left alone by
+// settlement, releases its retention pin, and says why it ended and what to do
+// instead.
 func TestAnUnsettledWakeCanBeRejectedAndStaysEnded(t *testing.T) {
 	ctx := context.Background()
 	store, before, now := sinkStoreFixture(t)
@@ -39,8 +41,9 @@ func TestAnUnsettledWakeCanBeRejectedAndStaysEnded(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := waits[0]
-	if w.Delivery != "rejected" || w.SettledAt != nil {
-		t.Fatalf("the ended wake is delivery=%s settled=%v", w.Delivery, w.SettledAt)
+	if w.Delivery != "rejected" || w.SettledAt == nil || !w.SettledAt.Equal(now.UTC()) ||
+		w.Observation == nil || w.Observation.Outcome != domain.TaskWaitGaveUp || !strings.Contains(w.Observation.Reason, "rejected") {
+		t.Fatalf("the ended wake is delivery=%s settled=%v observation=%+v", w.Delivery, w.SettledAt, w.Observation)
 	}
 	if !strings.Contains(w.DeliveryNextAction, "t3-steward wait add") {
 		t.Fatalf("the next action does not say how to replace the wake: %q", w.DeliveryNextAction)

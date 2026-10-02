@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -293,6 +294,87 @@ func TestTriageWithNothingWaitingSaysSo(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Nothing needs an operator") {
 		t.Fatalf("empty triage:\n%s", out.String())
+	}
+}
+
+// More supervised runs than the read bound: every live one is still read, and
+// a settled one left out makes the view incomplete, so it never says nothing
+// needs an operator.
+func TestTriageReadsEveryLiveSupervisedRunAndSaysWhenItStopped(t *testing.T) {
+	now := time.Date(2026, 10, 2, 4, 40, 0, 0, time.UTC)
+	var runs []backlogadmin.WorkflowSummary
+	for i := 0; i < triageSupervisionLimit+5; i++ {
+		id := fmt.Sprintf("run-settled-%03d", i)
+		runs = append(runs, backlogadmin.WorkflowSummary{Run: domain.WorkflowRun{ID: id, Progress: domain.ProgressSucceeded,
+			UpdatedAt: now.Add(-time.Duration(i) * time.Minute), Supervision: &domain.SupervisionRecord{RunID: id}}})
+	}
+	// The oldest run of all is live and waiting for a reassessment.
+	runs = append(runs, backlogadmin.WorkflowSummary{Run: domain.WorkflowRun{ID: "run-old-live", Progress: domain.ProgressActive,
+		UpdatedAt: now.Add(-48 * time.Hour), Supervision: &domain.SupervisionRecord{RunID: "run-old-live"}}})
+	sources := triageSources{
+		query: func(_ context.Context, q backlogadmin.Query) (backlogadmin.Response, error) {
+			response := backlogadmin.Response{GeneratedAt: now}
+			if q.Kind == backlogadmin.QueryWorkflows {
+				response.Workflows = runs
+			}
+			return response, nil
+		},
+		nodeWait: func(context.Context, backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error) {
+			return backlogadmin.NodeWaitResponse{}, nil
+		},
+		supervise: func(_ context.Context, r backlogadmin.SupervisionRequest) (backlogadmin.SupervisionResponse, error) {
+			response := backlogadmin.SupervisionResponse{RunID: r.RunID, State: &backlogadmin.SupervisionState{SinkSettled: r.RunID != "run-old-live"}}
+			if r.RunID == "run-old-live" {
+				response.State.Record = domain.SupervisionRecord{RunID: r.RunID, Revision: 4, BudgetGrantedActivations: 2}
+				response.State.Activation = domain.Activation{ID: "act", State: domain.ActivationSpent, Outcome: domain.ActivationOutcomeNoDecision}
+			}
+			return response, nil
+		},
+	}
+	var out bytes.Buffer
+	if err := runTriage(context.Background(), sources, triageOptions{staleAfter: 7 * 24 * time.Hour}, &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "supervision reassess run-old-live") {
+		t.Fatalf("the bound hid an older live run:\n%s", text)
+	}
+	if !strings.Contains(text, "INCOMPLETE: supervision of 5 settled runs was not read") {
+		t.Fatalf("the bounded view was not reported incomplete:\n%s", text)
+	}
+
+	// With nothing to report, an incomplete view still never says so.
+	runs = runs[:len(runs)-1]
+	out.Reset()
+	if err := runTriage(context.Background(), sources, triageOptions{staleAfter: 7 * 24 * time.Hour}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "Nothing needs an operator") {
+		t.Fatalf("an incomplete view claimed nothing needs an operator:\n%s", out.String())
+	}
+}
+
+// A status query that fails is named, not swallowed.
+func TestTriageNamesAFailedStatusQuery(t *testing.T) {
+	now := time.Date(2026, 10, 2, 4, 40, 0, 0, time.UTC)
+	sources := triageSources{
+		query: func(_ context.Context, q backlogadmin.Query) (backlogadmin.Response, error) {
+			if q.Kind == backlogadmin.QueryStatus {
+				return backlogadmin.Response{}, &backlogadmin.TransportError{Class: backlogadmin.ClassTimeout, Err: errors.New("deadline exceeded")}
+			}
+			return backlogadmin.Response{GeneratedAt: now}, nil
+		},
+		nodeWait: func(context.Context, backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error) {
+			return backlogadmin.NodeWaitResponse{}, nil
+		},
+		supervise: func(context.Context, backlogadmin.SupervisionRequest) (backlogadmin.SupervisionResponse, error) {
+			return backlogadmin.SupervisionResponse{}, nil
+		},
+	}
+	var out bytes.Buffer
+	err := runTriage(context.Background(), sources, triageOptions{staleAfter: 7 * 24 * time.Hour}, &out)
+	if err == nil || !strings.Contains(out.String(), "NOT READ: coordinator status:") || strings.Contains(out.String(), "Nothing needs an operator") {
+		t.Fatalf("a failed status query: err=%v\n%s", err, out.String())
 	}
 }
 

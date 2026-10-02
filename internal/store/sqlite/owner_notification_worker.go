@@ -62,9 +62,12 @@ func (s *Store) DetectWorkerNotifications(ctx context.Context, sink string, sele
 		return nil
 	}
 
-	disconnected := make(map[string]bool, len(workers))
+	// An outage is its worker and its start. A worker that came back and
+	// dropped again between two reads has a new outage, and the old one is
+	// over: it is closed below with a recovery like any other.
+	current := make(map[string]bool, len(workers))
 	for _, worker := range workers {
-		disconnected[worker.WorkerID] = true
+		current[workerOutageSubject(worker.WorkerID, worker.Since.UTC())] = true
 		if !worker.Down || !wantDown {
 			continue
 		}
@@ -111,11 +114,15 @@ func (s *Store) DetectWorkerNotifications(ctx context.Context, sink string, sele
 		}
 		open = append(open, outage)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return detection, fmt.Errorf("read open worker outages: %w", err)
+	}
 	if err := rows.Close(); err != nil {
 		return detection, err
 	}
 	for _, outage := range open {
-		if disconnected[outage.down.Worker] {
+		if current[workerOutageSubject(outage.down.Worker, derefTime(outage.down.Since))] {
 			continue
 		}
 		if outage.state == string(ownernotify.StatePending) {
@@ -135,7 +142,8 @@ func (s *Store) DetectWorkerNotifications(ctx context.Context, sink string, sele
 				workerOutageSubject(outage.down.Worker, derefTime(outage.down.Since))),
 			Sink: sink, Event: ownernotify.EventWorkerRecovered, Worker: outage.down.Worker,
 			Since: outage.down.Since, LastSeen: outage.down.LastSeen, OccurredAt: now.UTC(),
-			Reason: fmt.Sprintf("Worker %s is reached by the coordinator again, or is no longer enrolled.", outage.down.Worker),
+			Reason: fmt.Sprintf("The outage of worker %s that began %s is over: the coordinator reaches it again, it is no longer enrolled, or it dropped again with a new outage.",
+				outage.down.Worker, derefTime(outage.down.Since).Format(time.RFC3339)),
 		}
 		if err := insert(recovered, ownernotify.StatePending); err != nil {
 			return detection, err

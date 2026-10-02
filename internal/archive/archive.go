@@ -517,7 +517,10 @@ func (a *Archiver) ArchiveThread(ctx context.Context, t domain.Thread) (Record, 
 			rec.DeletedFromT3 = true
 			// There is no archived state left to restore.
 			restore = false
-			if a.ThreadDeleted != nil {
+			// A dry run never reaches here (run returns before archiving), and
+			// the hook is guarded again so that a dry-run control's answer to
+			// a delete it did not send cannot end a wake.
+			if a.ThreadDeleted != nil && !a.opts.DryRun {
 				if err := a.ThreadDeleted(ctx, t.ID); err != nil {
 					a.log.Warn("the wakes owed to a deleted thread were not all ended; the delivery loop ends them once T3 confirms the thread is gone",
 						"thread", t.ID, "err", err)

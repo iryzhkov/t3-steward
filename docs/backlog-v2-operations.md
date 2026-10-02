@@ -1327,6 +1327,29 @@ watermark, so adding it back later starts from that moment and does not replay
 what finished in between. Settled rows are pruned after 30 days, at most 500 per
 hourly pass, and the watermark moves up with every prune.
 
+### Wakes whose thread is gone
+
+A node wake is delivered by the steward of the host whose T3 holds the thread.
+When that thread is deleted or archived, nothing can receive the wake, and the
+wake ends `rejected` (with its whole `--wake all` group):
+
+- The archive rejects the wakes still owed to a thread it deletes, through the
+  same store the delivery loop uses. It never does so in a dry run. A wake that
+  keeps changing state under its three bounded reads is reported as incomplete
+  cleanup in the archive's log; the delivery loop ends it later.
+- The delivery loop asks T3 about the thread. Deleted or archived is
+  authoritative and ends the wake at once. A thread in neither the shell
+  snapshot nor the full index is gone only after three consecutive such answers
+  spanning at least a minute. A transport, credential or server error, an
+  answer that holds no thread at all, or an answer that holds the thread
+  restarts that count and leaves the wake `offline` and retried.
+- A wake rejected before its wait settled is settled as gave-up at the same
+  moment, and `wait list` shows it as over.
+
+A coordinator older than this release refuses to reject an unsettled wake; the
+archive logs the refusal and the loop rejects the wake once it settles. Upgrade
+the coordinator first.
+
 ### Worker outages
 
 An enrolled worker that the coordinator has not reached for longer than

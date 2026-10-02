@@ -817,10 +817,12 @@ explicit. This setting is coordinator-owned fleet policy, not a worker-local tog
 wake identity and waits for positive T3 message evidence; `recovery-required`
 means delivery is uncertain and will not be blindly retried. A wake whose thread
 is gone ends `rejected` instead of being retried: the archive rejects the wakes
-still owed to a thread it deletes, and the delivery loop rejects a wake once T3
-has answered for a minute without its thread (a thread archived in T3 at once).
-A T3 that does not answer at all (transport, credential or server error) leaves
-the wake `offline` and retried. The members of a `--wake all` group end with
+still owed to a thread it deletes, and the delivery loop rejects a wake whose
+thread T3 reports deleted or archived at once, and one whose thread is absent
+from T3's shell snapshot and full index after three consecutive answers
+spanning at least a minute. A T3 that does not answer (transport, credential or
+server error, or an answer holding no thread at all) leaves the wake `offline`,
+retried, and restarts that count. The members of a `--wake all` group end with
 the member that carries their send. See the
 [node-wait ADR](docs/architecture/adr-s0-node-wait.md) for evidence limits.
 
