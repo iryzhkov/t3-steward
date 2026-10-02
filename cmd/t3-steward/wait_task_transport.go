@@ -18,32 +18,87 @@ import (
 // resolution errors are retried without disabling ordinary interactive waits.
 var taskWaitWorkerHome = os.UserHomeDir
 
+// errNoTaskWorkerIdentity is the configuration that names no worker on this
+// host: no worker bootstrap and no backlog_v2.local_worker.id. Task wakes and
+// ask relays are delivered only by the steward of the worker that runs the
+// task, so a task running on such a host is never woken.
+var errNoTaskWorkerIdentity = errors.New("no worker identity on this host (no ~/.config/t3-steward/worker-bootstrap.json and no backlog_v2.local_worker.id): " +
+	"task wakes and ask relays for tasks running on this host are not delivered")
+
+// resolveTaskWaitWorker establishes which worker this host's steward speaks
+// for: the worker bootstrap, checked against the configured local worker and
+// against the coordinator, which is the coordinator client's on a worker and
+// this host's own on the coordinator host.
+func resolveTaskWaitWorker(cfg config.Config) (string, error) {
+	configured := cfg.BacklogV2.LocalWorker.ID
+	home, err := taskWaitWorkerHome()
+	if err != nil {
+		return "", err
+	}
+	bootstrap, _, err := workerruntime.LoadWorkerBootstrap(home)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		if configured == "" {
+			return "", errNoTaskWorkerIdentity
+		}
+		return configured, nil
+	}
+	coordinator := cfg.BacklogV2.Coordinator.ID
+	if cfg.BacklogV2.CoordinatorClient.Configured() {
+		coordinator = cfg.BacklogV2.CoordinatorClient.CoordinatorID
+	}
+	if (coordinator != "" && bootstrap.CoordinatorID != coordinator) || (configured != "" && configured != bootstrap.WorkerID) {
+		return "", errors.New("task wait worker bootstrap disagrees with configured worker or coordinator")
+	}
+	return bootstrap.WorkerID, nil
+}
+
+// configureTaskWaitTransport binds this host's wait runner to its worker. A
+// worker host reaches the coordinator's records over its coordinator client;
+// the coordinator host, which configures no client, keeps its own store.
+//
+// A worker host without an identity fences the task-wait runtime, because it
+// holds none of the coordinator's records and could only act for the wrong
+// worker. The coordinator host keeps it running without one: settling,
+// expiring and committing wakes are the coordinator's own duties, and only
+// delivery into this host's threads needs the identity. Either way the error
+// is returned for the caller to report.
 func configureTaskWaitTransport(runner *wait.Runner, cfg config.Config) error {
 	runner.DisableTaskWaitRuntime = true
 	runner.AssignedTaskWakesOnly = true
-	runner.TaskWorkerID = cfg.BacklogV2.LocalWorker.ID
+	workerID, err := resolveTaskWaitWorker(cfg)
+	runner.TaskWorkerID = workerID
 	if cfg.BacklogV2.CoordinatorClient.Configured() {
 		runner.TaskStore = remoteTaskWaitStore{cfg: cfg}
-		home, err := taskWaitWorkerHome()
 		if err != nil {
+			runner.TaskWorkerID = ""
 			return err
-		}
-		bootstrap, _, err := workerruntime.LoadWorkerBootstrap(home)
-		if err != nil {
-			if runner.TaskWorkerID == "" || !errors.Is(err, os.ErrNotExist) {
-				runner.TaskWorkerID = ""
-				return err
-			}
-		} else {
-			if bootstrap.CoordinatorID != cfg.BacklogV2.CoordinatorClient.CoordinatorID || (runner.TaskWorkerID != "" && runner.TaskWorkerID != bootstrap.WorkerID) {
-				runner.TaskWorkerID = ""
-				return errors.New("task wait worker bootstrap disagrees with configured worker or coordinator")
-			}
-			runner.TaskWorkerID = bootstrap.WorkerID
 		}
 	}
 	runner.DisableTaskWaitRuntime = false
+	if err != nil {
+		runner.TaskWorkerID = ""
+		return err
+	}
 	return nil
+}
+
+// checkTaskWaitIdentity is the check line for the same question: whether the
+// tasks this host runs can be woken and their asks relayed. A host that is
+// neither a coordinator nor a worker client and has no bootstrap runs no
+// tasks, so the absence is not a failure there.
+func checkTaskWaitIdentity(cfg config.Config) (string, string) {
+	workerID, err := resolveTaskWaitWorker(cfg)
+	switch {
+	case err == nil:
+		return "ok", "task wakes and ask relays for tasks on this host: delivered here as worker " + workerID
+	case errors.Is(err, errNoTaskWorkerIdentity) && cfg.BacklogV2.Coordinator.ID == "" && !cfg.BacklogV2.CoordinatorClient.Configured():
+		return "ok", "task wakes and ask relays: this host is no worker, so it has none to deliver"
+	default:
+		return "FAIL", "task wakes and ask relays: " + err.Error()
+	}
 }
 
 type remoteTaskWaitStore struct{ cfg config.Config }

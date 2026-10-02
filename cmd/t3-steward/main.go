@@ -599,6 +599,12 @@ func cmdCheck(g globalFlags) error {
 	}
 	pass("policy: warn %.0f%% / drain %.0f%% / stop %.0f%%, grace %s, dry_run=%v, resume=%v",
 		cfg.Policy.WarnPercent, cfg.Policy.DrainPercent, cfg.Policy.StopPercent, cfg.Policy.GracePeriod.D(), cfg.Policy.DryRun, cfg.Resume.Enabled)
+	switch level, text := checkTaskWaitIdentity(cfg); level {
+	case "FAIL":
+		fail("%s", text)
+	default:
+		pass("%s", text)
+	}
 	// The fleet first: a worker that is down is the reason to run check at
 	// all, and it must be reported even when this host's own T3 is not up.
 	if query, ok := coordinatorFleetQuery(cfg); ok {
@@ -772,7 +778,11 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, 
 	waitControl := t3control.New(client, logger, waitDryRun)
 	waits := wait.New(store, waitControl, logger)
 	if err := configureTaskWaitTransport(waits, cfg); err != nil {
-		logger.Error("task wait worker identity unavailable; task wake delivery is fenced", "err", err)
+		if level, _ := checkTaskWaitIdentity(cfg); level == "ok" {
+			logger.Info("this host is no worker; task wakes and ask relays are delivered by the workers that run the tasks")
+		} else {
+			logger.Error("task wakes and ask relays for tasks on this host will not be delivered", "err", err)
+		}
 	}
 	configureNodeWaitTransport(waits, cfg, logger)
 	// What this daemon is doing about node wakes, written where a command that
