@@ -738,6 +738,32 @@ type V2Scheduling struct {
 	CatchUpMax int      `yaml:"catch_up_max"`
 }
 
+// AskRelayConfig is wait.ask_relay. The relay asks through Claude's
+// AskUserQuestion, so the instance must be a Claude provider instance.
+type AskRelayConfig struct {
+	// Enabled opens relay threads; nil defaults to true.
+	Enabled *bool `yaml:"enabled"`
+	// Instance and Model default to claudeAgent and claude-haiku-4-5.
+	Instance string `yaml:"instance"`
+	Model    string `yaml:"model"`
+}
+
+// Route returns the relay route with defaults applied, or false when relay
+// threads are disabled.
+func (c AskRelayConfig) Route() (instance, model string, enabled bool) {
+	if c.Enabled != nil && !*c.Enabled {
+		return "", "", false
+	}
+	instance, model = c.Instance, c.Model
+	if instance == "" {
+		instance = "claudeAgent"
+	}
+	if model == "" {
+		model = "claude-haiku-4-5"
+	}
+	return instance, model, true
+}
+
 // Config is the full configuration.
 type Config struct {
 	coordinatorFleetApplied bool
@@ -759,6 +785,9 @@ type Config struct {
 		DryRun *bool `yaml:"dry_run"`
 		// QuotaChecks gates wake delivery on quota health; nil defaults to true.
 		QuotaChecks *bool `yaml:"quota_checks"`
+		// AskRelay is the route of the relay threads that put a task's
+		// t3-steward ask to the owner in T3.
+		AskRelay AskRelayConfig `yaml:"ask_relay"`
 	} `yaml:"wait"`
 	T3            T3            `yaml:"t3"`
 	Policy        Policy        `yaml:"policy"`

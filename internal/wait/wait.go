@@ -165,10 +165,14 @@ type Runner struct {
 	// AssignedTaskWakesOnly confines delivery to the durable assignment owner.
 	AssignedTaskWakesOnly bool
 	TaskWorkerID          string
-	store                 Store
-	control               Control
-	log                   *slog.Logger
-	now                   func() time.Time
+	// AskRelay is the route of ask relay threads; nil opens none. AskStore
+	// optionally routes the relay's coordinator records over a transport.
+	AskRelay *AskRelayRoute
+	AskStore AskRelayStore
+	store    Store
+	control  Control
+	log      *slog.Logger
+	now      func() time.Time
 	// Exec runs a command and returns its combined output and exit code;
 	// replaceable in tests.
 	Exec func(ctx context.Context, w Wait) (string, int, error)
@@ -271,6 +275,7 @@ func (r *Runner) Tick(ctx context.Context, _ []domain.Thread, buckets []domain.B
 		r.runOnce(ctx, w, now)
 	}
 	r.tickTaskWaits(ctx, waits)
+	r.tickAskRelays(ctx)
 	r.wake(ctx, waits, now)
 }
 

@@ -288,7 +288,7 @@ func mutatingRequest(operation string, request localRequest) bool {
 	}
 	if operation == localOperationNodeWait && request.NodeWait != nil {
 		switch request.NodeWait.Action {
-		case "list", "list-task":
+		case "list", "list-task", AskRelayWorkAction:
 			return false
 		}
 	}

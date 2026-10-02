@@ -53,6 +53,13 @@ quota_checks: true
 wait:
   dry_run: false
   quota_checks: true
+  # The relay thread that shows a task's "t3-steward ask" in T3 as Awaiting
+  # Input, opened by the steward of the worker running the task. It asks
+  # through Claude's AskUserQuestion, so the instance must be a Claude one.
+  ask_relay:
+    enabled: true
+    instance: claudeAgent
+    model: claude-haiku-4-5
 
 policy:
   # Usage thresholds in percent. warn < drain < stop <= 100 is enforced.

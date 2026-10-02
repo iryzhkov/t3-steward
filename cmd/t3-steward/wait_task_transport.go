@@ -92,3 +92,36 @@ func (s remoteTaskWaitStore) ListTaskWaits(ctx context.Context) ([]domain.TaskWa
 }
 
 var _ wait.TaskWaitLister = remoteTaskWaitStore{}
+
+var _ wait.AskRelayStore = remoteTaskWaitStore{}
+
+// AskRelayWork lists the asks this worker's steward relays.
+func (s remoteTaskWaitStore) AskRelayWork(ctx context.Context, workerID string) ([]domain.TaskWait, error) {
+	response, err := s.call(ctx, backlogadmin.NodeWaitOperation{Action: backlogadmin.AskRelayWorkAction, Worker: workerID})
+	return response.TaskWaits, err
+}
+
+// RecordAskRelay records a relay thread's state on the coordinator.
+func (s remoteTaskWaitStore) RecordAskRelay(ctx context.Context, waitID string, relay domain.AskRelay, _ time.Time) (domain.TaskWait, error) {
+	response, err := s.call(ctx, backlogadmin.NodeWaitOperation{Action: backlogadmin.AskRelayRecordAction, ID: waitID, Relay: &relay})
+	if err != nil {
+		return domain.TaskWait{}, err
+	}
+	if len(response.TaskWaits) != 1 {
+		return domain.TaskWait{}, errors.New("coordinator did not return exactly one ask")
+	}
+	return response.TaskWaits[0], nil
+}
+
+// AnswerAsk records an answer read from the relay thread. The coordinator
+// takes the principal from the authenticated frame, never from here.
+func (s remoteTaskWaitStore) AnswerAsk(ctx context.Context, answer domain.AskAnswer, _ string, _ bool, _ time.Time) (domain.TaskWait, error) {
+	response, err := s.call(ctx, backlogadmin.NodeWaitOperation{Action: backlogadmin.AskAnswerAction, Answer: &answer})
+	if err != nil {
+		return domain.TaskWait{}, err
+	}
+	if len(response.TaskWaits) != 1 {
+		return domain.TaskWait{}, errors.New("coordinator did not return exactly one ask")
+	}
+	return response.TaskWaits[0], nil
+}
