@@ -137,8 +137,12 @@ func (c coordinatorSupervision) DispatchActivations(ctx context.Context, admissi
 		id string
 	}
 	orders := make(map[string]runOrder, len(records.WorkflowRuns))
+	// A run cancelled whole wakes no overseer while its sink waits for a worker
+	// to stop: the cancel was refused while one was live and closed the run's
+	// supervision, so a new activation could only reopen it.
+	closed := backlogadmin.RunsClosedByCancel(records)
 	for _, run := range records.WorkflowRuns {
-		if run.Supervision == nil || run.Progress.Terminal() {
+		if run.Supervision == nil || run.Progress.Terminal() || closed[run.ID] {
 			continue
 		}
 		state, stateErr := c.activations.Store.LoadSupervisionActivationState(ctx, run.ID)
@@ -184,6 +188,9 @@ func (c coordinatorSupervision) DispatchActivations(ctx context.Context, admissi
 			if err := c.closeSettledActivation(ctx, run); err != nil {
 				c.logger.Error("closing the activation of a settled run failed", "run", run.ID, "error", err)
 			}
+			continue
+		}
+		if closed[run.ID] {
 			continue
 		}
 		if err := c.dispatchRun(ctx, records, run, workers, admission, now); err != nil {

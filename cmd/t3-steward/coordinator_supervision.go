@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
@@ -113,8 +114,11 @@ func (c coordinatorSupervision) Tick(ctx context.Context) {
 		}
 	}
 	now := c.at()
+	// A run an operator cancelled whole has had its incidents resolved and its
+	// gates cancelled; advancing it would only raise what the cancel closed.
+	closed := backlogadmin.RunsClosedByCancel(records)
 	for _, run := range records.WorkflowRuns {
-		if run.Supervision == nil || run.Progress.Terminal() {
+		if run.Supervision == nil || run.Progress.Terminal() || closed[run.ID] {
 			continue
 		}
 		if err := c.advanceRun(ctx, run, snapshots, now); err != nil {
