@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -32,5 +33,14 @@ func TestCampaignShowNamesAFailedTasksReason(t *testing.T) {
 	}
 	if strings.Count(text, "failure:") != 1 {
 		t.Fatalf("a task without a failure printed one:\n%s", text)
+	}
+	// campaign show --json prints the coordinator's response, whose attempt
+	// record carries the same reason.
+	encoded, err := json.Marshal(backlogadmin.Response{Version: backlogadmin.Version, Kind: backlogadmin.QueryWorkflow, Workflow: &detail})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"failure":"`+reason+`"`) {
+		t.Fatalf("the JSON answer does not carry the failure: %s", encoded)
 	}
 }

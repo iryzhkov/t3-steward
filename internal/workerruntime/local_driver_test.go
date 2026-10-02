@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -373,45 +374,78 @@ func TestTaskPromptSaysEndingTheTurnCompletesTheTask(t *testing.T) {
 // be the only one. A composed first turn over T3's input limit is refused
 // before the thread is created, naming the size and the limit; one at the
 // limit is sent.
+//
+// The boundary is checked one unit either side of the limit, as T3 counts
+// units (UTF-16; the prompt carries a character outside the BMP), for a plain
+// task and a recovery retry, whose addition the authoring check cannot see.
+// A task with preflight wraps its prompt in an envelope capped far below the
+// limit, so a prompt near the limit is refused there, also before T3.
 func TestCreateThreadRefusesAFirstTurnOverT3sInputLimit(t *testing.T) {
-	supplement := compat.TurnInputLength(backlog.FirstTurnPrompt("", nil))
-	for _, test := range []struct {
-		name    string
-		length  int
-		refused bool
-	}{
-		{name: "at the limit", length: compat.MaxTurnInputLength},
-		{name: "above the limit", length: compat.MaxTurnInputLength + 1, refused: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			pkg := testPackage()
+	compose := func(t *testing.T, variant string, body []byte) (*recordingT3, error) {
+		t.Helper()
+		pkg := testPackage()
+		pkg.Outputs = nil
+		var runner backlog.PreflightRunner
+		switch variant {
+		case "recovery":
+			pkg.Recovery = &workerproto.RecoveryExecutionContext{IncidentID: "incident", InstructionPath: "inputs/recovery/instructions.md",
+				CheckpointPaths: []string{"inputs/recovery/checkpoint-01"}}
+		case "preflight":
+			pkg = preflightTestPackage(preflightCheckStep("record"))
 			pkg.Outputs = nil
-			body := []byte(strings.Repeat("x", test.length-supplement))
-			sum := sha256.Sum256(body)
-			pkg.Prompt.Size, pkg.Prompt.SHA256 = int64(len(body)), hex.EncodeToString(sum[:])
-			pkg.Limits.MaxArtifactBytes = int64(len(body))
-			root := t.TempDir()
-			control := &recordingT3{projectID: "project-uuid"}
-			driver := &LocalDriver{Config: LocalDriverConfig{ArtifactRoot: root}, T3: control}
-			cachePath := filepath.Join(root, "objects", pkg.Prompt.SHA256)
-			if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
-				t.Fatal(err)
+			runner = &preflightStubRunner{output: "ok internal/backlog\n"}
+		}
+		sum := sha256.Sum256(body)
+		pkg.Prompt.Size, pkg.Prompt.SHA256 = int64(len(body)), hex.EncodeToString(sum[:])
+		pkg.Limits.MaxArtifactBytes = int64(len(body))
+		root := t.TempDir()
+		control := &recordingT3{projectID: "project-uuid"}
+		driver := &LocalDriver{
+			Config: LocalDriverConfig{ArtifactRoot: filepath.Join(root, "artifacts"), RunsRoot: filepath.Join(root, "runs"), StopTimeout: time.Second},
+			T3:     control, Source: mapArtifactSource{pkg.Prompt.ID: body}, Publisher: &recordingPublisher{},
+			Preflight: runner, Now: func() time.Time { return runtimeTestNow },
+		}
+		if _, err := driver.cacheArtifact(context.Background(), pkg.Prompt, pkg.Limits.MaxArtifactBytes); err != nil {
+			t.Fatalf("cache prompt: %v", err)
+		}
+		workspace := filepath.Join(root, "workspace")
+		if err := os.MkdirAll(workspace, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return control, driver.CreateThread(context.Background(), pkg, workspace)
+	}
+	for _, variant := range []string{"plain", "recovery", "preflight"} {
+		t.Run(variant, func(t *testing.T) {
+			// What the worker adds to a prompt of this variant, measured on a
+			// short one.
+			control, err := compose(t, variant, []byte("p"))
+			if err != nil || len(control.created) != 1 {
+				t.Fatalf("measuring the additions: err=%v", err)
 			}
-			if err := os.WriteFile(cachePath, body, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			err := driver.CreateThread(context.Background(), pkg, t.TempDir())
-			if !test.refused {
-				if err != nil || len(control.created) != 1 || compat.TurnInputLength(control.created[0].Prompt) != test.length {
-					t.Fatalf("a first turn at the limit was not sent: err=%v created=%d", err, len(control.created))
+			added := compat.TurnInputLength(control.created[0].Prompt) - 1
+			if variant == "preflight" {
+				control, err := compose(t, variant, []byte("\U0001F600"+strings.Repeat("x", compat.MaxTurnInputLength-added-1)))
+				if err == nil || len(control.created) != 0 || len(control.managedProjects) != 0 {
+					t.Fatalf("a preflight first turn over the limit reached T3: err=%v created=%d", err, len(control.created))
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), "120001 characters") || !strings.Contains(err.Error(), "limit of 120000") {
-				t.Fatalf("error = %v", err)
-			}
-			if len(control.created) != 0 || len(control.managedProjects) != 0 || control.resolveProject != "" {
-				t.Fatalf("a first turn over the limit reached T3: created=%d", len(control.created))
+			for _, length := range []int{compat.MaxTurnInputLength - 1, compat.MaxTurnInputLength, compat.MaxTurnInputLength + 1} {
+				body := []byte("\U0001F600" + strings.Repeat("x", length-added-2))
+				control, err := compose(t, variant, body)
+				if length <= compat.MaxTurnInputLength {
+					if err != nil || len(control.created) != 1 || compat.TurnInputLength(control.created[0].Prompt) != length {
+						t.Fatalf("a first turn of %d units was not sent as composed: err=%v created=%d", length, err, len(control.created))
+					}
+					continue
+				}
+				if err == nil || !strings.Contains(err.Error(), "120001 characters") || !strings.Contains(err.Error(), "limit of 120000") ||
+					!strings.Contains(err.Error(), fmt.Sprintf("plus %d the Steward adds", added)) {
+					t.Fatalf("error = %v", err)
+				}
+				if len(control.created) != 0 || len(control.managedProjects) != 0 || control.resolveProject != "" {
+					t.Fatalf("a first turn over the limit reached T3: created=%d", len(control.created))
+				}
 			}
 		})
 	}
