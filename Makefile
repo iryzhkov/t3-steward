@@ -36,16 +36,16 @@ test:
 
 # The fast local gate for iterating: build, vet, the short test suite (tests
 # that write thousands of rows to cross a bound cross a lowered one), lint, and
-# the race detector on the packages changed against FAST_BASE plus uncommitted
-# changes. It is not a substitute for `make test`, which CI runs in full.
+# the race detector on the packages changed against FAST_BASE, including
+# uncommitted and untracked Go files. It fails if FAST_BASE is missing or git
+# cannot list the changes. It is not a substitute for `make test`, which CI
+# runs in full.
 check-fast:
 	go build ./...
 	go vet ./...
 	go test -short -timeout $(TEST_TIMEOUT) ./...
 	$(MAKE) lint
-	@pkgs=$$({ git diff --name-only $(FAST_BASE)...HEAD; git diff --name-only HEAD; } 2>/dev/null \
-		| grep '\.go$$' | xargs -r -n1 dirname | sort -u \
-		| while read -r dir; do [ -d "$$dir" ] && echo "./$$dir"; done); \
+	@pkgs=$$(sh scripts/changed-go-packages.sh '$(FAST_BASE)') || exit 1; \
 	if [ -n "$$pkgs" ]; then \
 		echo "go test -race -short" $$pkgs; \
 		go test -race -short -timeout $(RACE_TIMEOUT) $$pkgs; \

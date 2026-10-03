@@ -59,7 +59,7 @@ func TestBacklogV2ProductionQualification(t *testing.T) {
 				"TestReconcileAssignmentDispatchRetriesSameIdentityAfterRestart",
 				"TestExecutePendingCommandsSurvivesRestartAndReplaysRetry",
 				"TestCoordinatorRestartFencesOldClaimsAndRetainsPlan",
-				"TestAssignmentPlanRollsBackWhenAnyAttemptIsStale",
+				"TestAssignmentPlanSkipsStaleAttemptsAndCommitsTheRest",
 				"TestRuntimeRestartReconcilesEveryInFlightBoundary",
 				"TestProtocolServerUsesReplayStoreAcrossRestart",
 			},
@@ -80,10 +80,10 @@ func TestBacklogV2ProductionQualification(t *testing.T) {
 			tests: []string{
 				"TestImportCoordinatorWorkerResultDoesNotAcknowledgeCorruptFetch",
 				"TestCoordinatorArtifactsTransferAcrossWorkerRestartAndVerifyChecksum",
-				"TestSnapshotBackupRestoreRoundTrip",
+				"TestSnapshotBackupRestoreDrill",
 				"TestSnapshotVerifyRefusesCorruptIncompleteAndMismatched",
 				"TestUnknownRecoveryIsEvidenceRevisionAndReplayFenced",
-				"TestStaleEpochAndCorruptArtifactFailClosed",
+				"TestChangedWorkerEpochAndCorruptArtifactFailClosed",
 			},
 		},
 	}
@@ -92,6 +92,7 @@ func TestBacklogV2ProductionQualification(t *testing.T) {
 		t.Run(group.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
+			requireQualificationTests(t, ctx, repositoryRoot, group.packages, group.tests)
 			expression := "^(?:" + strings.Join(group.tests, "|") + ")$"
 			arguments := append([]string{"test"}, group.packages...)
 			// The nested runs carry the qualification tag, so the

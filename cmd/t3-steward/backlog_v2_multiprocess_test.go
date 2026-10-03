@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,7 +32,7 @@ func TestCoordinatorLocalMultiProcessWorkflow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	tests := strings.Join([]string{
+	names := []string{
 		"TestBacklogV2EndToEndLocalWorkflowHardening",
 		"TestFleetCoordinatorWithholdsNewWorkAtFinalQuotaBoundary",
 		"TestFleetCoordinatorCommitsPlanAndReplaysLostCommandResponse",
@@ -45,16 +46,66 @@ func TestCoordinatorLocalMultiProcessWorkflow(t *testing.T) {
 		"TestRuntimeRestartAtDurableCommandBoundaries",
 		"TestRuntimeRestartReconcilesEveryInFlightBoundary",
 		"TestLocalCoordinatorStubWorkerMultiProcess",
-	}, "|")
-	command := exec.CommandContext(
-		ctx, "go", "test",
-		"./internal/backlog", "./internal/store/sqlite", "./internal/workerruntime",
-		"-run", "^("+tests+")$", "-count=1",
-	)
+	}
+	packages := []string{"./internal/backlog", "./internal/store/sqlite", "./internal/workerruntime"}
+	requireQualificationTests(t, ctx, repositoryRoot, packages, names)
+	arguments := append([]string{"test"}, packages...)
+	arguments = append(arguments, "-run", "^("+strings.Join(names, "|")+")$", "-count=1")
+	command := exec.CommandContext(ctx, "go", arguments...)
 	command.Dir = repositoryRoot
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("disposable coordinator workflow subprocess failed: %v\n%s", err, output)
+	}
+}
+
+// missingQualificationTests lists the named tests that no package in packages
+// defines, using go test -list with the qualification tag. A wrapper that runs
+// a name matching nothing would otherwise pass while running nothing.
+func missingQualificationTests(ctx context.Context, root string, packages, tests []string) ([]string, error) {
+	arguments := append([]string{"test", "-tags", "qualification", "-list", "^(?:" + strings.Join(tests, "|") + ")$"}, packages...)
+	command := exec.CommandContext(ctx, "go", arguments...)
+	command.Dir = root
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("list qualification tests: %v\n%s", err, output)
+	}
+	listed := make(map[string]bool)
+	for _, line := range strings.Split(string(output), "\n") {
+		listed[strings.TrimSpace(line)] = true
+	}
+	var missing []string
+	for _, test := range tests {
+		if !listed[test] {
+			missing = append(missing, test)
+		}
+	}
+	return missing, nil
+}
+
+// requireQualificationTests fails the test if any named test is missing.
+func requireQualificationTests(t *testing.T, ctx context.Context, root string, packages, tests []string) {
+	t.Helper()
+	missing, err := missingQualificationTests(ctx, root, packages, tests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("qualification names tests that %v do not define: %v", packages, missing)
+	}
+}
+
+// The wrappers' guard reports a name that matches no test.
+func TestMissingQualificationTestsReportsUnknownNames(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	missing, err := missingQualificationTests(ctx, coordinatorTestRepositoryRoot(t), []string{"./internal/workerproto"},
+		[]string{"TestExchangeValidationAndIdempotency", "TestNoSuchQualificationTest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 1 || missing[0] != "TestNoSuchQualificationTest" {
+		t.Fatalf("missing = %v, want only the unknown name", missing)
 	}
 }
 
