@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
+	"github.com/iryzhkov/t3-steward/internal/pinnedinput"
 )
 
 // TaskClass controls whether work consumes reserved capacity or only forecast
@@ -105,15 +106,16 @@ type ExecutionEnvironment struct {
 
 // Workflow is an immutable workflow definition after submission.
 type Workflow struct {
-	ID               string               `json:"id"`
-	Version          int                  `json:"version"`
-	Name             string               `json:"name"`
-	Project          string               `json:"project,omitempty"`
-	Environment      ExecutionEnvironment `json:"environment"`
-	Class            TaskClass            `json:"class"`
-	TaskIDs          []string             `json:"taskIds"`
-	InputArtifactIDs []string             `json:"inputArtifactIds,omitempty"`
-	CreatedAt        time.Time            `json:"createdAt"`
+	ID               string                `json:"id"`
+	Version          int                   `json:"version"`
+	Name             string                `json:"name"`
+	Project          string                `json:"project,omitempty"`
+	Environment      ExecutionEnvironment  `json:"environment"`
+	Class            TaskClass             `json:"class"`
+	TaskIDs          []string              `json:"taskIds"`
+	InputArtifactIDs []string              `json:"inputArtifactIds,omitempty"`
+	InputManifest    *pinnedinput.Manifest `json:"inputManifest,omitempty"`
+	CreatedAt        time.Time             `json:"createdAt"`
 }
 
 // WorkflowRun is one execution of a workflow definition.

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/review"
 )
 
 const Version = "backlog.admin/v1"
@@ -12,24 +13,26 @@ const Version = "backlog.admin/v1"
 type QueryKind string
 
 const (
-	QueryStatus       QueryKind = "status"
-	QueryWorkflows    QueryKind = "workflows"
-	QueryWorkflow     QueryKind = "workflow"
-	QueryGraph        QueryKind = "graph"
-	QueryDiagnose     QueryKind = "diagnose"
-	QueryTask         QueryKind = "task"
-	QueryExplanation  QueryKind = "explanation"
-	QueryEvents       QueryKind = "events"
-	QueryArtifacts    QueryKind = "artifacts"
-	QueryArtifact     QueryKind = "artifact"
-	QuerySchedules    QueryKind = "schedules"
-	QueryWorkers      QueryKind = "workers"
-	QueryQuota        QueryKind = "quota"
-	QueryReservations QueryKind = "reservations"
-	QueryLocks        QueryKind = "locks"
-	QueryCommands     QueryKind = "commands"
-	QueryUsage        QueryKind = "usage"
-	QueryRecovery     QueryKind = "recovery"
+	QueryReviewRound    QueryKind = "review-round"
+	QueryReviewDocument QueryKind = "review-document"
+	QueryStatus         QueryKind = "status"
+	QueryWorkflows      QueryKind = "workflows"
+	QueryWorkflow       QueryKind = "workflow"
+	QueryGraph          QueryKind = "graph"
+	QueryDiagnose       QueryKind = "diagnose"
+	QueryTask           QueryKind = "task"
+	QueryExplanation    QueryKind = "explanation"
+	QueryEvents         QueryKind = "events"
+	QueryArtifacts      QueryKind = "artifacts"
+	QueryArtifact       QueryKind = "artifact"
+	QuerySchedules      QueryKind = "schedules"
+	QueryWorkers        QueryKind = "workers"
+	QueryQuota          QueryKind = "quota"
+	QueryReservations   QueryKind = "reservations"
+	QueryLocks          QueryKind = "locks"
+	QueryCommands       QueryKind = "commands"
+	QueryUsage          QueryKind = "usage"
+	QueryRecovery       QueryKind = "recovery"
 	// QueryViability asks whether a projected campaign could run. It is
 	// read-only and live: it consults the fleet as it is now and creates
 	// nothing.
@@ -61,7 +64,7 @@ func QueryKinds() []QueryKind {
 		QueryStatus, QueryWorkflows, QueryWorkflow, QueryGraph, QueryDiagnose,
 		QueryTask, QueryExplanation, QueryEvents, QueryArtifacts, QueryArtifact,
 		QuerySchedules, QueryWorkers, QueryQuota, QueryReservations, QueryLocks,
-		QueryCommands, QueryUsage, QueryRecovery, QueryViability, QueryQuarantine, QueryProjects,
+		QueryCommands, QueryUsage, QueryRecovery, QueryViability, QueryQuarantine, QueryProjects, QueryReviewRound, QueryReviewDocument,
 	}
 }
 
@@ -114,18 +117,21 @@ type Filter struct {
 }
 
 type Query struct {
-	IncludeSink   bool      `json:"includeSink,omitempty"`
-	Version       string    `json:"version"`
-	Kind          QueryKind `json:"kind"`
-	Principal     Principal `json:"principal"`
-	WorkflowRunID string    `json:"workflowRunId,omitempty"`
-	TaskID        string    `json:"taskId,omitempty"`
-	ArtifactID    string    `json:"artifactId,omitempty"`
-	CommandID     string    `json:"commandId,omitempty"`
-	Filter        Filter    `json:"filter,omitempty"`
-	UsageRaw      bool      `json:"usageRaw,omitempty"`
-	UsageLimit    int       `json:"usageLimit,omitempty"`
-	UsageCursor   string    `json:"usageCursor,omitempty"`
+	RoundID        string    `json:"roundId,omitempty"`
+	ReviewerID     string    `json:"reviewerId,omitempty"`
+	ReviewDocument string    `json:"reviewDocument,omitempty"`
+	IncludeSink    bool      `json:"includeSink,omitempty"`
+	Version        string    `json:"version"`
+	Kind           QueryKind `json:"kind"`
+	Principal      Principal `json:"principal"`
+	WorkflowRunID  string    `json:"workflowRunId,omitempty"`
+	TaskID         string    `json:"taskId,omitempty"`
+	ArtifactID     string    `json:"artifactId,omitempty"`
+	CommandID      string    `json:"commandId,omitempty"`
+	Filter         Filter    `json:"filter,omitempty"`
+	UsageRaw       bool      `json:"usageRaw,omitempty"`
+	UsageLimit     int       `json:"usageLimit,omitempty"`
+	UsageCursor    string    `json:"usageCursor,omitempty"`
 	// Viability carries the projected requirements of a campaign that has not
 	// been submitted. It is present only on a QueryViability query, and it
 	// never carries the bundle.
@@ -178,6 +184,8 @@ type UnknownRecoveryRequest struct {
 }
 
 type Response struct {
+	ReviewRound    *review.Round         `json:"reviewRound,omitempty"`
+	ReviewDocument *ReviewDocument       `json:"reviewDocument,omitempty"`
 	Diagnosis      *Diagnosis            `json:"diagnosis,omitempty"`
 	Version        string                `json:"version"`
 	Kind           QueryKind             `json:"kind"`

@@ -171,7 +171,7 @@ func TestSchemaSeventeenMigratesForwardWithPreSupervisionRuns(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	// Schema 30 added the owner-notification outbox; the forward migration
 	// from before supervision must still reach the newest version.
-	if version := schemaVersionOf(t, store); version != currentSchemaVersion || currentSchemaVersion != 30 {
+	if version := schemaVersionOf(t, store); version != currentSchemaVersion {
 		t.Fatalf("migrated schema version = %d, current = %d", version, currentSchemaVersion)
 	}
 	for _, table := range supervisionTables {

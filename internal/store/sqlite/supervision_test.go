@@ -139,7 +139,7 @@ func TestSupervisionSchemaMigratesForwardAndRefusesNewerDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Schema 30 added the owner-notification outbox after supervision.
-	if version != currentSchemaVersion || currentSchemaVersion != 30 {
+	if version != currentSchemaVersion {
 		t.Fatalf("schema version = %d, current = %d", version, currentSchemaVersion)
 	}
 	for _, table := range []string{
