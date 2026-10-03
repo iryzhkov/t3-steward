@@ -6,10 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"os/signal"
 	"strings"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 )
 
 // Options defaults to waiting indefinitely. An explicit timeout must be positive.
@@ -60,11 +63,12 @@ func Parse(args []string) ([]string, Options, error) {
 
 const (
 	initialDelay = 100 * time.Millisecond
-	maximumDelay = 2 * time.Second
+	maximumDelay = 10 * time.Second
 )
 
-// Run probes immediately, then backs off from 100ms to 2s. A query error ends
-// the wait, allowing a later invocation to reattach by querying the same ID.
+// Run probes immediately, then backs off from 100ms to 10s with jitter.
+// Open-ended waits retry unavailable and transport timeout errors; other query
+// errors end the wait, allowing read-only reattachment to the same ID.
 // The timeout covers queries as well as delays. SIGINT and caller cancellation
 // stop only this waiter. The last successful query remains owned by the caller.
 func Run(ctx context.Context, timeout time.Duration, probe func(context.Context) (bool, error)) error {
@@ -78,7 +82,28 @@ func Run(ctx context.Context, timeout time.Duration, probe func(context.Context)
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
+	if timeout == 0 {
+		query := probe
+		probe = func(ctx context.Context) (bool, error) {
+			done, err := query(ctx)
+			switch backlogadmin.ClassOf(err) {
+			case backlogadmin.ClassUnavailable, backlogadmin.ClassTimeout:
+				return false, nil
+			default:
+				return done, err
+			}
+		}
+	}
 	return poll(ctx, initialDelay, maximumDelay, probe)
+}
+
+// Keep the early probes fast and spread long waits over 80–100% of the
+// capped delay, including at the cap so concurrent clients do not synchronize.
+func jitteredDelay(delay time.Duration) time.Duration {
+	if delay < time.Second {
+		return delay
+	}
+	return delay - time.Duration(rand.Int64N(int64(delay/5)+1))
 }
 
 func poll(ctx context.Context, delay, maximum time.Duration, probe func(context.Context) (bool, error)) error {
@@ -96,7 +121,7 @@ func poll(ctx context.Context, delay, maximum time.Duration, probe func(context.
 		if done {
 			return nil
 		}
-		timer := time.NewTimer(delay)
+		timer := time.NewTimer(jitteredDelay(delay))
 		select {
 		case <-ctx.Done():
 			timer.Stop()

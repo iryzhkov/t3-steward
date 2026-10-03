@@ -27,7 +27,8 @@ const taskRunUsage = `Usage: t3-steward task run [flags] -- "<prompt>"
 
 --dry-run derives and validates the campaign locally, then prints project, ref,
 route, idempotency key, resolved notify thread (empty with --no-notify), and
-composed prompt size in bytes, including the completion contract. Fan-out reports
+composed prompt size in UTF-16 characters, including the completion contract,
+with the 120000-character limit per task. JSON names it promptCharacters. Fan-out reports
 the total across tasks. It uses read-only catalog queries when derivation needs
 them; it sends no submission, readiness check or wake. --json prints a dry-run
 projection rather than a run receipt. Worker-added context can vary by version.
@@ -458,7 +459,7 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 		return err
 	}
 	if parsed.dryRun {
-		return c.renderDryRun(parsed, project.Name, ref, route, key, thread, prompts)
+		return c.renderDryRun(parsed, project.Name, ref, route, key, thread, prompts, bundle)
 	}
 	matrix, err := c.campaign.checkViability(ctx, plan, bundle, "")
 	if err != nil {

@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 )
 
 func TestParse(t *testing.T) {
@@ -73,6 +75,68 @@ func TestPollBackoffAndError(t *testing.T) {
 	err = Run(context.Background(), 0, func(context.Context) (bool, error) { calls++; return false, sentinel })
 	if !errors.Is(err, sentinel) || calls != 1 {
 		t.Fatalf("err=%v calls=%d", err, calls)
+	}
+}
+
+func TestRunOpenEndedRetriesTransientTransport(t *testing.T) {
+	for _, class := range []backlogadmin.TransportClass{backlogadmin.ClassUnavailable, backlogadmin.ClassTimeout} {
+		t.Run(string(class), func(t *testing.T) {
+			calls := 0
+			err := Run(context.Background(), 0, func(context.Context) (bool, error) {
+				calls++
+				if calls == 1 {
+					return false, fmt.Errorf("wrapped: %w", &backlogadmin.TransportError{Class: class, Err: context.DeadlineExceeded})
+				}
+				return true, nil
+			})
+			if err != nil || calls != 2 {
+				t.Fatalf("calls=%d err=%v", calls, err)
+			}
+		})
+	}
+}
+
+func TestRunOpenEndedRetriesUntilInterrupted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	err := Run(ctx, 0, func(context.Context) (bool, error) {
+		calls++
+		if calls == 2 {
+			cancel()
+		}
+		return false, &backlogadmin.TransportError{Class: backlogadmin.ClassUnavailable}
+	})
+	if calls != 2 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+}
+
+func TestRunOpenEndedRefusesPermanentTransportErrors(t *testing.T) {
+	for _, class := range []backlogadmin.TransportClass{backlogadmin.ClassAuthentication, backlogadmin.ClassClientConfiguration, backlogadmin.ClassProtocol, backlogadmin.ClassRejected} {
+		calls := 0
+		failure := &backlogadmin.TransportError{Class: class}
+		err := Run(context.Background(), 0, func(context.Context) (bool, error) { calls++; return false, failure })
+		if calls != 1 || !errors.Is(err, failure) {
+			t.Fatalf("class=%s calls=%d err=%v", class, calls, err)
+		}
+	}
+}
+
+func TestLongWaitDelayIsCappedAndJittered(t *testing.T) {
+	if maximumDelay != 10*time.Second {
+		t.Fatalf("cap=%s", maximumDelay)
+	}
+	seen := map[time.Duration]bool{}
+	for i := 0; i < 100; i++ {
+		delay := jitteredDelay(maximumDelay)
+		if delay < 8*time.Second || delay > maximumDelay {
+			t.Fatalf("delay=%s", delay)
+		}
+		seen[delay] = true
+	}
+	if len(seen) < 2 {
+		t.Fatal("long waits have no jitter")
 	}
 }
 

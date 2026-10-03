@@ -36,11 +36,12 @@ Exit codes are the task's own verdict, so a script branches on them:
 
 --wait blocks until the selected task is terminal, or (without /<task>) the
 run and all its tasks are terminal, then prints the same result as without
---wait. It polls immediately, backing off from 100ms to 2s. No timeout is the
-default; --timeout D sets a positive Go duration (for example 30m), including
-query time, and requires --wait. On timeout the last progress is printed and
-exit 1 is returned. SIGINT exits 130. A query error stops the wait with the
-existing transport code. Disconnecting or interrupting never cancels work.
+--wait. It polls immediately, backing off from 100ms to 10s with jitter.
+No timeout is the default; --timeout D sets a positive Go duration (for example
+30m), including query time, and requires --wait. On timeout the last progress
+is printed and exit 1 is returned. SIGINT exits 130. Open-ended waits retry
+unavailable (5) and transport timeout (6). Other query errors stop the wait with
+the existing transport code. Disconnecting or interrupting never cancels work.
 Reattach by running task result with the same selector and --wait again.
 
 --json prints one document with the final message inlined, so reading the
@@ -214,7 +215,7 @@ func (c taskResultCLI) run(ctx context.Context, args []string) error {
 	var waitErr error
 	if wait.Enabled {
 		waitErr = blockingwait.Run(ctx, wait.Timeout, probe)
-		if waitErr != nil && (waitErr != context.DeadlineExceeded || response.Workflow == nil) {
+		if waitErr != nil && (!errors.Is(waitErr, context.DeadlineExceeded) || response.Workflow == nil) {
 			return blockingWaitError(waitErr, "t3-steward task result "+selector+" --wait")
 		}
 	} else if _, err := probe(ctx); err != nil {

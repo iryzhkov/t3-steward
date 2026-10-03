@@ -136,7 +136,7 @@ func TestTaskRunDryRunDerivesWithoutSubmitting(t *testing.T) {
 	if err := json.Unmarshal(h.stdout.Bytes(), &doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"project", "ref", "route", "idempotencyKey", "notifyThread", "promptBytes"} {
+	for _, key := range []string{"project", "ref", "route", "idempotencyKey", "notifyThread", "promptCharacters"} {
 		if doc[key] == nil {
 			t.Errorf("missing %s: %s", key, h.stdout.String())
 		}

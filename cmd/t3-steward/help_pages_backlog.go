@@ -62,7 +62,7 @@ func amendmentPage(path, purpose, usage string) helpPage {
 }
 
 // mutationFlags is the option set of every revision-fenced control.
-const blockingWaitHelp = " --wait polls immediately, backing off from 100ms to 2s; default indefinite. --timeout D requires --wait and a positive Go duration (for example 30m), and covers queries and delays. Timeout exits 1; SIGINT exits 130; query errors retain transport codes. Disconnecting or interrupting never cancels work. Reattach a control read-only with t3-steward backlog command show <command> --wait."
+const blockingWaitHelp = " --wait polls immediately, backing off from 100ms to 10s with jitter; default indefinite. --timeout D requires --wait and a positive Go duration (for example 30m), and covers queries and delays. Timeout exits 1; SIGINT exits 130. Open-ended waits retry unavailable (5) and transport timeout (6); other query errors retain transport codes. Disconnecting or interrupting never cancels work. Reattach a control read-only with t3-steward backlog command show <command> --wait."
 
 func blockingWaitFlags() []helpFlag {
 	return []helpFlag{
@@ -88,7 +88,7 @@ func mutationPage(path, purpose, usage string) helpPage {
 		Purpose:  purpose,
 		Usage:    []string{usage},
 		Flags:    append(mutationFlags(), blockingWaitFlags()...),
-		Exits:    coordinatorExits(),
+		Exits:    append(coordinatorExits(), helpExit{1, "local wait timeout"}, helpExit{130, "wait interrupted"}),
 		JSONKeys: []string{"version", "command", "event", "currentTarget"},
 		JSONNote: jsonErrorNote,
 		Notes:    "Mutating and revision-fenced. One parser serves all eight controls, so all eight accept the whole flag set above; --until belongs to delay and --now to pause, and the others refuse them. With --wait the printed command is the observed application or rejection, not the pending intake receipt." + blockingWaitHelp,
@@ -416,5 +416,10 @@ func backlogHelpPages() []helpPage {
 		[]helpFlag{familyConfigFlag("backlog")}, []string{"diagnosis"},
 		append(backlogReadSites("diagnose"), familyDispatchSite("diagnose")),
 		"Read-only. Exactly one workflow-run id. The dispatcher routes it into the backlog family, so it is the same verb as \"t3-steward backlog diagnose\".")
+	for i := range pages {
+		if pages[i].Path == "backlog command show" {
+			pages[i].Exits = append(pages[i].Exits, helpExit{1, "local wait timeout"}, helpExit{130, "wait interrupted"})
+		}
+	}
 	return append(pages, top)
 }
