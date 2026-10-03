@@ -222,6 +222,18 @@ func LatestTurnStartFailure(archive []byte) (TurnStartFailure, bool, error) {
 	return failure, ok, nil
 }
 
+// ArchiveCurrentRequest reports the thread id of the archive and its latest
+// user message time, the current start request as the archive projects it.
+// The worker compares it with the shell's current request, because T3
+// projects the two separately and the detail can lag.
+func ArchiveCurrentRequest(archive []byte) (string, *time.Time, error) {
+	var snapshot threadArchive
+	if err := json.Unmarshal(archive, &snapshot); err != nil {
+		return "", nil, fmt.Errorf("thread archive is invalid: %w", err)
+	}
+	return snapshot.Thread.ID, snapshot.latestUserMessageAt(), nil
+}
+
 // TurnStartRefusedFailure is the prefix of the reason an attempt fails with
 // when T3 refused to start its turn.
 const TurnStartRefusedFailure = "T3 refused to start the provider turn"

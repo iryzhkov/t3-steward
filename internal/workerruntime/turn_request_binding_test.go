@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -56,17 +57,44 @@ type fakeTurnT3 struct {
 	mu       sync.Mutex
 	threadID string
 	thread   fakeTurnThread
-	exports  int
+	// lagging, when set, is what the thread detail still shows while the
+	// shell already shows thread: T3 projects the two separately.
+	lagging *fakeTurnThread
+	// settled is set by a settlement dispatch and shown by the shell.
+	settled bool
+	exports int
+	// commands are the dispatched command types, in order.
+	commands []string
 }
 
 func (f *fakeTurnT3) set(thread fakeTurnThread) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.thread = thread
+	f.lagging = nil
+}
+
+func (f *fakeTurnT3) setLagging(shell, detail fakeTurnThread) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.thread = shell
+	f.lagging = &detail
 }
 
 func (f *fakeTurnT3) json() (shell, detail map[string]any) {
-	thread := f.thread
+	shell, _ = f.project(f.thread)
+	if f.lagging != nil {
+		_, detail = f.project(*f.lagging)
+	} else {
+		_, detail = f.project(f.thread)
+	}
+	if f.settled {
+		shell["settledAt"], shell["settledOverride"] = fakeTurnTime(20), "settled"
+	}
+	return shell, detail
+}
+
+func (f *fakeTurnT3) project(thread fakeTurnThread) (shell, detail map[string]any) {
 	var latestTurn, session any
 	if thread.turn != nil {
 		turn := map[string]any{"turnId": thread.turn.id, "state": thread.turn.state, "requestedAt": fakeTurnTime(thread.turn.requested),
@@ -124,6 +152,16 @@ func newFakeTurnT3(t *testing.T, threadID string) (*fakeTurnT3, *t3control.Contr
 		case req.Method == http.MethodGet && req.URL.Path == "/api/orchestration/threads/"+threadID:
 			fake.exports++
 			_ = json.NewEncoder(w).Encode(map[string]any{"thread": detail})
+		case req.Method == http.MethodPost && req.URL.Path == "/api/orchestration/dispatch":
+			var command struct {
+				Type string `json:"type"`
+			}
+			_ = json.NewDecoder(req.Body).Decode(&command)
+			fake.commands = append(fake.commands, command.Type)
+			if command.Type == "thread.settle" {
+				fake.settled = true
+			}
+			_, _ = io.WriteString(w, `{"sequence":2}`)
 		default:
 			http.Error(w, "unexpected request "+req.Method+" "+req.URL.Path, http.StatusNotFound)
 		}
@@ -188,7 +226,7 @@ func TestTerminalEvidenceIsBoundToTheCurrentStartRequest(t *testing.T) {
 		session:    &fakeSession{status: "error", updated: 5, lastError: "refused second"},
 		activities: []fakeActivity{refusal("refused-first", 0), refusal("refused-second", 5)}})
 	thread, turn, identity, reason := observeTurn(t, driver, control)
-	if thread != backlog.DispatchThreadStopped || turn != backlog.DispatchThreadStopped || identity != "turn-start-failed:refused-second" ||
+	if thread != backlog.DispatchThreadStopped || turn != backlog.DispatchThreadStopped || identity != requestIdentity(5) ||
 		reason != "T3 refused to start the provider turn: refused refused-second" {
 		t.Fatalf("current refusal: thread=%q turn=%q identity=%q reason=%q", thread, turn, identity, reason)
 	}
@@ -196,7 +234,7 @@ func TestTerminalEvidenceIsBoundToTheCurrentStartRequest(t *testing.T) {
 	// (T3 recorded only the session error): terminal, named by that error.
 	fake.set(fakeTurnThread{messages: []int{0, 5}, session: &fakeSession{status: "error", updated: 5, lastError: "provider gone"}})
 	if thread, turn, identity, reason := observeTurn(t, driver, control); thread != backlog.DispatchThreadStopped || turn != backlog.DispatchThreadStopped ||
-		!strings.HasPrefix(identity, "session-error:") || reason != "provider turn did not complete successfully: provider gone" {
+		identity != requestIdentity(5) || reason != "provider turn did not complete successfully: provider gone" {
 		t.Fatalf("current session error: thread=%q turn=%q identity=%q reason=%q", thread, turn, identity, reason)
 	}
 }
@@ -227,7 +265,7 @@ func TestARefusedLaterRequestIsCollectedOnTheRefusal(t *testing.T) {
 			observer = &LocalDriver{T3: control} // a restarted worker
 		}
 		thread, turn, identity, reason := observeTurn(t, observer, control)
-		if thread != backlog.DispatchThreadStopped || turn != backlog.DispatchThreadStopped || identity != "turn-start-failed:wake" ||
+		if thread != backlog.DispatchThreadStopped || turn != backlog.DispatchThreadStopped || identity != requestIdentity(5) ||
 			reason != "T3 refused to start the provider turn: refused wake" {
 			t.Fatalf("observation %d: thread=%q turn=%q identity=%q reason=%q", observation, thread, turn, identity, reason)
 		}
@@ -238,5 +276,173 @@ func TestARefusedLaterRequestIsCollectedOnTheRefusal(t *testing.T) {
 	if thread, turn, identity, reason := observeTurn(t, driver, control); thread != backlog.DispatchThreadStopped || turn != backlog.DispatchThreadStopped ||
 		identity != "turn-2" || reason != "" {
 		t.Fatalf("superseded refusal: thread=%q turn=%q identity=%q reason=%q", thread, turn, identity, reason)
+	}
+}
+
+// requestIdentity is the collection identity of the start request sent at
+// minute: one identity per request, whatever evidence ends it.
+func requestIdentity(minute int) string {
+	return "turn-request:" + fakeTurnBase.Add(time.Duration(minute)*time.Minute).UTC().Format(time.RFC3339Nano)
+}
+
+// Review round 2 of #41: the shell and the thread detail are projected
+// separately. When the shell already shows a retried request (R2) and the
+// detail still shows only the first (R1) with its refusal, that refusal is
+// not evidence about R2 and nothing is collected; once the detail shows R2
+// refused, the attempt fails once, on R2.
+func TestARefusalCountsOnlyOnceTheDetailShowsTheShellsRequest(t *testing.T) {
+	pkg := testPackage()
+	fake, control := newFakeTurnT3(t, pkg.Identity.ThreadID)
+	driver := &LocalDriver{T3: control}
+	first := fakeTurnThread{messages: []int{0}, session: &fakeSession{status: "error", updated: 0, lastError: "refused R1"},
+		activities: []fakeActivity{refusal("r1", 0)}}
+	fake.setLagging(fakeTurnThread{messages: []int{0, 5}, session: first.session}, first)
+	if thread, turn, _, _ := observeTurn(t, driver, control); thread != backlog.DispatchThreadActive || turn != backlog.DispatchThreadActive {
+		t.Fatalf("the detail's R1 refusal ended the shell's R2: thread=%q turn=%q", thread, turn)
+	}
+	// The detail is behind even for a session the shell already shows failed
+	// for R2: T3's refusal of R2 may yet be projected with its reason.
+	fake.setLagging(fakeTurnThread{messages: []int{0, 5}, session: &fakeSession{status: "error", updated: 5, lastError: "refused R2"}}, first)
+	if thread, turn, _, _ := observeTurn(t, driver, control); thread != backlog.DispatchThreadActive || turn != backlog.DispatchThreadActive {
+		t.Fatalf("collected before the detail showed R2: thread=%q turn=%q", thread, turn)
+	}
+	caughtUp := fakeTurnThread{messages: []int{0, 5}, session: &fakeSession{status: "error", updated: 5, lastError: "refused R2"},
+		activities: []fakeActivity{refusal("r1", 0), refusal("r2", 5)}}
+	fake.set(caughtUp)
+	thread, turn, identity, reason := observeTurn(t, driver, control)
+	if thread != backlog.DispatchThreadStopped || turn != backlog.DispatchThreadStopped || identity != requestIdentity(5) ||
+		reason != "T3 refused to start the provider turn: refused r2" {
+		t.Fatalf("R2 refused: thread=%q turn=%q identity=%q reason=%q", thread, turn, identity, reason)
+	}
+}
+
+// One durable identity per request: a session-only failure keeps its identity
+// when T3's refusal activity is projected later, and a refused first or later
+// request keeps it after the thread is settled, instead of falling back to the
+// earlier turn's.
+func TestARefusedRequestKeepsOneIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		turn *fakeTurn
+	}{
+		{name: "first request"},
+		{name: "later request", turn: &fakeTurn{id: "turn-1", state: "completed", requested: 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pkg := testPackage()
+			fake, control := newFakeTurnT3(t, pkg.Identity.ThreadID)
+			driver := &LocalDriver{T3: control}
+			sessionOnly := fakeTurnThread{messages: []int{0, 5}, turn: tc.turn, session: &fakeSession{status: "error", updated: 5, lastError: "refused"}}
+			fake.set(sessionOnly)
+			_, turn, before, _ := observeTurn(t, driver, control)
+			if turn != backlog.DispatchThreadStopped || before != requestIdentity(5) {
+				t.Fatalf("session-only failure: turn=%q identity=%q", turn, before)
+			}
+			withActivity := sessionOnly
+			withActivity.activities = []fakeActivity{refusal("late", 5)}
+			fake.set(withActivity)
+			if _, turn, after, _ := observeTurn(t, driver, control); turn != backlog.DispatchThreadStopped || after != before {
+				t.Fatalf("the delayed refusal changed the identity: %q then %q", before, after)
+			}
+			fake.mu.Lock()
+			fake.settled = true
+			fake.mu.Unlock()
+			if _, turn, settled, _ := observeTurn(t, driver, control); turn != backlog.DispatchThreadStopped || settled != before {
+				t.Fatalf("settlement changed the identity: %q then %q", before, settled)
+			}
+		})
+	}
+}
+
+// A settled thread whose retried start request is unresolved may still start
+// that turn. A stop does not take the settlement shortcut: it stops the
+// session first, and only then settles.
+func TestStopStopsASettledThreadWithAnUnresolvedRequest(t *testing.T) {
+	pkg := testPackage()
+	fake, control := newFakeTurnT3(t, pkg.Identity.ThreadID)
+	driver := &LocalDriver{T3: control, Config: LocalDriverConfig{StopTimeout: time.Second}}
+	fake.set(fakeTurnThread{messages: []int{0, 5}, turn: &fakeTurn{id: "turn-1", state: "completed", requested: 0},
+		session: &fakeSession{status: "ready", updated: 1}})
+	fake.mu.Lock()
+	fake.settled = true
+	fake.mu.Unlock()
+	if err := driver.StopThread(context.Background(), pkg); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.commands) < 2 || fake.commands[0] != "thread.session.stop" || fake.commands[len(fake.commands)-1] != "thread.settle" {
+		t.Fatalf("commands = %v, want the session stopped before the settlement", fake.commands)
+	}
+}
+
+// Through collection: a task whose turn-1 was collected cleanly, then woken,
+// and whose wake T3 refused. Collection binds to the wake, not to turn-1's
+// recorded clean read, so the attempt fails on the refusal; a restarted
+// worker collecting again (journal replay) reaches the same failure, and the
+// coordinator's judgement of each published archive agrees.
+func TestCollectingARefusedWakeNeverReusesTheEarlierTurn(t *testing.T) {
+	repository, commit := makeGitRepository(t)
+	pkg := testPackage()
+	pkg.Environment.Repository = "https://example.com/steward.git"
+	pkg.Environment.Ref = commit
+	catalog, err := backlog.NewProjectCatalog(
+		[]backlog.ProjectDefinition{{Name: "steward", Repository: "https://example.com/steward.git", DefaultRef: commit, T3ProjectTemplate: "development", SetupProfile: "go"}},
+		[]backlog.SetupProfile{{Name: "go", Commands: []string{"true"}, Timeout: time.Minute}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake, control := newFakeTurnT3(t, pkg.Identity.ThreadID)
+	root := t.TempDir()
+	publisher := &recordingPublisher{}
+	newDriver := func() *LocalDriver {
+		driver, err := NewLocalDriver(LocalDriver{
+			Config:  LocalDriverConfig{CatalogRevision: "catalog-1", ArtifactRoot: filepath.Join(root, "artifacts"), RunsRoot: filepath.Join(root, "runs")},
+			Catalog: catalog,
+			Workspace: backlog.WorkspacePreparer{
+				Cache:     staticRepositoryCache{path: repository},
+				Processes: successfulProcessRunner{},
+			},
+			Finalizer: backlog.AttemptFinalizer{Processes: successfulProcessRunner{}, Now: func() time.Time { return runtimeTestNow }, NewID: func(string) string { return "verification-1" }},
+			Source:    mapArtifactSource{pkg.Prompt.ID: []byte("prompt")},
+			Publisher: publisher, T3: control, Now: func() time.Time { return runtimeTestNow },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return driver
+	}
+	driver := newDriver()
+	workspace, err := driver.Prepare(context.Background(), pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Cleanup unseals the captured trees so the temporary directory can go.
+	t.Cleanup(func() { _ = driver.Cleanup(context.Background(), pkg, workspace) })
+	// Turn-1 finished and was collected cleanly; its read is recorded.
+	fake.set(fakeTurnThread{messages: []int{0}, turn: &fakeTurn{id: "turn-1", state: "completed", requested: 0}, session: &fakeSession{status: "ready", updated: 1}})
+	if err := driver.Collect(context.Background(), pkg, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if len(publisher.results) != 1 || !publisher.results[0].Finalized.Completion.ExplicitSuccess {
+		t.Fatalf("turn-1 collection = %+v", publisher.results)
+	}
+	// The task is woken and T3 refuses the wake; the session idles out, so
+	// a fresh read of turn-1 alone would look unfinished.
+	fake.set(fakeTurnThread{messages: []int{0, 5}, turn: &fakeTurn{id: "turn-1", state: "completed", requested: 0},
+		session: &fakeSession{status: "error", updated: 5, lastError: "refused wake"}, activities: []fakeActivity{refusal("wake", 5)}})
+	for collection, collector := range []*LocalDriver{driver, newDriver()} {
+		if err := collector.Collect(context.Background(), pkg, workspace); err != nil {
+			t.Fatal(err)
+		}
+		result := publisher.results[len(publisher.results)-1]
+		if result.Finalized.Completion.ExplicitSuccess {
+			t.Fatalf("collection %d reused turn-1's clean read for a refused wake", collection)
+		}
+		reason, err := backlog.ResultCompletionFailure(result.ThreadArchive, pkg.Identity.ThreadID, result.FinalMessage)
+		if err != nil || reason != "T3 refused to start the provider turn: refused wake" {
+			t.Fatalf("collection %d: coordinator reason=%q err=%v", collection, reason, err)
+		}
 	}
 }

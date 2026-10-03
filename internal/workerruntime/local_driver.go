@@ -402,6 +402,15 @@ func sessionFailedCurrentRequest(thread domain.Thread) bool {
 		!thread.SessionUpdatedAt.Before(*thread.LatestUserMessageAt)
 }
 
+const turnRequestIdentityPrefix = "turn-request:"
+
+// turnRequestIdentity is the one collection identity of the current start
+// request, whatever evidence ends it: a session failure seen first, a refusal
+// activity projected later, and a settlement after collection all keep it.
+func turnRequestIdentity(thread domain.Thread) string {
+	return turnRequestIdentityPrefix + thread.LatestUserMessageAt.UTC().Format(time.RFC3339Nano)
+}
+
 func sessionErrorIdentity(thread domain.Thread) string {
 	if thread.SessionUpdatedAt == nil {
 		return "session-error"
@@ -417,9 +426,12 @@ func sessionErrorIdentity(thread domain.Thread) string {
 // adopts the request. Only positive evidence about the current request
 // permits collection or skipping containment: a turn that adopted it, or a
 // refusal (provider.turn.start.failed) or session failure at or after it.
-// For a refused request the identity is the refusal activity, never the
-// earlier turn, so a refused wake is one failure however often it is
-// observed. While the request is unresolved the thread is live.
+// The refusal must be at or after the shell's current request, in a detail
+// that already shows that request. For a refused request the identity is
+// the request (turnRequestIdentity), never the earlier turn, so a refused
+// wake is one failure however often it is observed, settled or not. While
+// the request is unresolved the thread is live, settled or not, so a stop
+// stops it rather than taking the settlement shortcut.
 func (d *LocalDriver) threadTerminal(ctx context.Context, thread domain.Thread) (bool, string, error) {
 	return threadTerminal(ctx, d.T3.ExportThread, thread)
 }
@@ -433,25 +445,38 @@ func threadTerminal(ctx context.Context, export func(context.Context, string) ([
 	if thread.Running || thread.BackgroundWork == "working" || thread.HasPendingUserInput || thread.HasPendingApprovals {
 		return false, thread.TurnID, nil
 	}
-	if thread.Settled() {
-		return true, thread.TurnID, nil
-	}
+	// The request is resolved before settlement is consulted: a settled
+	// thread with an unresolved retry may still start that turn, and a
+	// refused request settled by its collection keeps its identity.
 	if turnRequestUnadopted(thread) {
+		identity := turnRequestIdentity(thread)
 		archive, err := export(ctx, thread.ID)
 		if err != nil {
 			return false, "", fmt.Errorf("read the current turn start request: %w", err)
+		}
+		// The detail is projected apart from the shell. Until it shows the
+		// shell's request, its refusals and session are about an earlier one.
+		archiveThread, archiveRequest, err := backlog.ArchiveCurrentRequest(archive)
+		if err != nil {
+			return false, "", err
+		}
+		if archiveThread != thread.ID || archiveRequest == nil || archiveRequest.Before(*thread.LatestUserMessageAt) {
+			return false, identity, nil
 		}
 		refused, ok, err := backlog.LatestTurnStartFailure(archive)
 		if err != nil {
 			return false, "", err
 		}
-		if ok && refused.ActivityID != "" {
-			return true, "turn-start-failed:" + refused.ActivityID, nil
+		if ok && !refused.CreatedAt.Before(*thread.LatestUserMessageAt) {
+			return true, identity, nil
 		}
 		if sessionFailedCurrentRequest(thread) {
-			return true, sessionErrorIdentity(thread), nil
+			return true, identity, nil
 		}
-		return false, thread.TurnID, nil
+		return false, identity, nil
+	}
+	if thread.Settled() {
+		return true, thread.TurnID, nil
 	}
 	switch thread.TurnState {
 	case "completed", "interrupted", "error":
@@ -883,9 +908,9 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		return fmt.Errorf("collect thread state: %w", err)
 	}
 	message, archive := "", []byte("{}")
-	terminal := true
+	terminal, identity := true, ""
 	if thread != nil {
-		if terminal, _, err = d.threadTerminal(ctx, *thread); err != nil {
+		if terminal, identity, err = d.threadTerminal(ctx, *thread); err != nil {
 			return fmt.Errorf("collect thread state: %w", err)
 		}
 	}
@@ -910,12 +935,16 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if err := d.removeTaskIdentity(pkg, workspace); err != nil {
 		return err
 	}
+	// A refused start request has no turn of its own and so no final
+	// message; the latest one belongs to an earlier turn and is not this
+	// request's answer.
+	refusedRequest := strings.HasPrefix(identity, turnRequestIdentityPrefix)
 	if thread != nil {
 		// T3 marks the turn completed slightly before the final assistant
 		// message is projected. Briefly retry an empty summary; completion
 		// itself is established by the structured thread archive. A thread
 		// with no turn (a refused start) has no message to wait for.
-		for reads := 0; ; reads++ {
+		for reads := 0; !refusedRequest; reads++ {
 			if message, err = d.T3.LastAssistantMessage(ctx, pkg.Identity.ThreadID); err != nil {
 				return fmt.Errorf("collect final message: %w", err)
 			}
@@ -937,7 +966,11 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		return err
 	}
 	if thread != nil {
-		if message, archive, failure, err = d.settleCollectedTurn(pkg, *thread, message, archive, failure, pauseReason); err != nil {
+		// The recorded read is keyed by the collection identity, so a refused
+		// later request never reuses the earlier turn's clean read.
+		collected := *thread
+		collected.TurnID = identity
+		if message, archive, failure, err = d.settleCollectedTurn(pkg, collected, message, archive, failure, pauseReason); err != nil {
 			return err
 		}
 	}
