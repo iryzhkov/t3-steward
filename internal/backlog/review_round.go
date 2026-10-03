@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -120,6 +121,9 @@ func ValidateReviewManifest(m Manifest) error {
 	if m.Review == nil {
 		return nil
 	}
+	if m.Environment.Scope != EnvironmentScopeTask {
+		return errors.New("review environment.scope must be task to isolate reviewer outputs")
+	}
 	r := *m.Review
 	if r.TemplateVersion != review.TemplateVersion || r.Deadline.IsZero() || m.Supervision != nil || len(m.Gates) > 0 {
 		return errors.New("review requires versioned instructions and a deadline; supervision gates are not review rounds")
@@ -157,7 +161,12 @@ func ValidateReviewManifest(m Manifest) error {
 			if len(task.Needs) != len(swarm) || len(task.InputsFrom) != len(swarm) {
 				return errors.New("judge must depend on every swarm lens only")
 			}
+			seen := map[string]bool{}
 			for _, id := range task.Needs {
+				if seen[id] {
+					return errors.New("judge must depend on every swarm lens exactly once")
+				}
+				seen[id] = true
 				if !swarm[id] {
 					return errors.New("judge cannot see independent output")
 				}
@@ -175,4 +184,48 @@ func ValidateReviewManifest(m Manifest) error {
 		return errors.New("diff review requires checkout at the pinned head and a pinned base")
 	}
 	return review.ValidateSelection(r, 0)
+}
+
+// reviewJudgeInputs adds coordinator observations to the existing context input.
+// It uses the established context transport, so older workers need no new wire fields.
+func reviewJudgeInputs(task domain.Task, tasks []domain.Task, artifacts map[string]domain.Artifact, runID string, observed time.Time) *domain.ProjectContext {
+	if !task.ReviewJudge {
+		return task.Context
+	}
+	available := map[string]bool{}
+	for _, a := range artifacts {
+		if a.WorkflowRunID == runID && a.Kind == domain.ArtifactOutput && a.Name == "verdict.json" {
+			available[a.TaskID] = true
+		}
+	}
+	var missing []string
+	for _, name := range task.Needs {
+		for _, producer := range tasks {
+			if producer.Name == name && !available[producer.ID] {
+				missing = append(missing, name)
+			}
+		}
+	}
+	sort.Strings(missing)
+	var index domain.ProjectContext
+	if task.Context != nil {
+		index = *task.Context
+		index.CheckpointDelta = append([]string(nil), index.CheckpointDelta...)
+	} else {
+		index = domain.ProjectContext{
+			Version: domain.ProjectContextVersion, Revision: "review-availability", Status: domain.ProjectContextPinned,
+			Objective: "Judge the available swarm verdicts against the original evidence",
+			Authority: []string{"Coordinator observations of swarm artifact availability; no approval authority"},
+			Budget:    "Round deadline", Outputs: []string{"review.md", "verdict.json"},
+			Setup:     []string{"Read original pinned inputs and available swarm verdicts"},
+			Checks:    []string{"Verify every finding against the original evidence"},
+			Freshness: domain.ProjectContextFreshness{ObservedAt: observed},
+		}
+	}
+	observation := "Missing swarm lenses: none"
+	if len(missing) > 0 {
+		observation = "Missing swarm lenses: " + strings.Join(missing, ", ")
+	}
+	index.CheckpointDelta = append(index.CheckpointDelta, observation)
+	return &index
 }

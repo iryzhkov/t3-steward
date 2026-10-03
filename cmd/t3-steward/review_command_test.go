@@ -74,8 +74,30 @@ func TestReviewRoundCompositionAndIsolation(t *testing.T) {
 		if strings.HasPrefix(name, "independent") && (len(task.Needs) > 0 || len(task.InputsFrom) > 0) {
 			t.Fatal("anchored independent reviewer")
 		}
-		if name == "judge" && (len(task.Needs) != 3 || len(task.InputsFrom) != 3) {
-			t.Fatal("judge must see only swarm")
+		if name == "judge" {
+			expected := map[string]bool{"swarm-security": true, "swarm-errors": true, "swarm-tests": true}
+			if len(task.Needs) != 3 || len(task.InputsFrom) != 3 {
+				t.Fatal("judge must see only swarm")
+			}
+			for _, id := range task.Needs {
+				if !expected[id] {
+					t.Fatalf("unexpected judge need %s", id)
+				}
+				delete(expected, id)
+			}
+			if len(expected) != 0 {
+				t.Fatal("judge omitted a swarm need")
+			}
+			for id, paths := range task.InputsFrom {
+				if !strings.HasPrefix(id, "swarm-") || len(paths) != 1 || paths[0] != "verdict.json" {
+					t.Fatalf("judge inputs: %s %v", id, paths)
+				}
+			}
+		}
+		for _, text := range []string{"file:line", "1500 changed lines", "10 files", "reader subagents", "retain the verdict"} {
+			if !strings.Contains(string(prompt), text) {
+				t.Fatalf("template missing %s", text)
+			}
 		}
 	}
 	if bundle.Manifest.Review == nil || len(bundle.Manifest.Review.Reviewers) != 6 {
@@ -84,7 +106,8 @@ func TestReviewRoundCompositionAndIsolation(t *testing.T) {
 }
 
 func TestReviewConstraintsRefuseInsteadOfWeakening(t *testing.T) {
-	for _, args := range [][]string{
+	rules := []string{"provider diversity", "executor tier", "--swarm-model", "unknown swarm lens", "catalog review metadata", "--project", "--deadline"}
+	for i, args := range [][]string{
 		{"--project", "scratch", "--reviewer", "a/full", "--reviewer", "alias/full", "--no-notify"},
 		{"--project", "scratch", "--reviewer", "a/full", "--judge", "b/cheap", "--no-notify"},
 		{"--project", "scratch", "--reviewer", "a/full", "--reviewer", "b/full", "--swarm", "security", "--no-notify"},
@@ -104,13 +127,16 @@ func TestReviewConstraintsRefuseInsteadOfWeakening(t *testing.T) {
 		if err == nil {
 			t.Fatalf("accepted %v", args)
 		}
+		if !strings.Contains(err.Error(), rules[i]) {
+			t.Fatalf("refusal does not name %s: %v", rules[i], err)
+		}
 	}
 }
 
 // The command submits a real ingested campaign and the fake fleet completes
 // its six tasks. Evidence then crosses the durable collection/result boundary.
 func TestReviewCommandFullRound(t *testing.T) {
-	for _, failure := range []string{"", "malformed", "timeout"} {
+	for _, failure := range []string{"", "malformed", "timeout", "optional-lens"} {
 		t.Run(failure, func(t *testing.T) {
 			ctx := context.Background()
 			store, err := sqlite.OpenMigrated(":memory:")
@@ -124,6 +150,7 @@ func TestReviewCommandFullRound(t *testing.T) {
 			}
 			h := newTaskRunHarness()
 			h.projects = reviewCatalog()
+			h.release = "0.11.0-rc.104"
 			task := h.cli()
 			storage := t.TempDir()
 			t.Cleanup(func() {
@@ -165,6 +192,11 @@ func TestReviewCommandFullRound(t *testing.T) {
 								member = r
 							}
 						}
+						if failure == "optional-lens" && member.ID == "swarm-security" {
+							attempt.Progress = domain.ProgressFailed
+							attempt.Failure = "lens crashed"
+							continue
+						}
 						if failure == "timeout" && member.ID == "independent-2" {
 							attempt.Progress = domain.ProgressActive
 							attempt.CompletedAt = nil
@@ -203,6 +235,9 @@ func TestReviewCommandFullRound(t *testing.T) {
 			}
 			var out bytes.Buffer
 			cli := reviewCLI{task: task, result: reviewResultCLI{results: resultRoot, stdout: &out, query: func(ctx context.Context, q backlogadmin.Query) (backlogadmin.Response, error) {
+				if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= 4*time.Hour {
+					t.Fatal("client timeout lacks collection margin")
+				}
 				r, err := store.GetReviewRound(ctx, q.RoundID)
 				return backlogadmin.Response{ReviewRound: &r}, err
 			}}}
@@ -211,10 +246,10 @@ func TestReviewCommandFullRound(t *testing.T) {
 				t.Fatal(err)
 			}
 			err = cli.run(ctx, a)
-			if failure == "" && err != nil {
+			if (failure == "" || failure == "optional-lens") && err != nil {
 				t.Fatal(err)
 			}
-			if failure != "" {
+			if failure != "" && failure != "optional-lens" {
 				code, ok := err.(exitCodeError)
 				if !ok || code.code != 2 {
 					t.Fatalf("collection failure exit: %v", err)
@@ -224,10 +259,14 @@ func TestReviewCommandFullRound(t *testing.T) {
 			if err := json.Unmarshal(out.Bytes(), &reply); err != nil {
 				t.Fatal(err)
 			}
+			if failure == "optional-lens" && reply.CombinedVerdict != "accept" {
+				t.Fatal("optional failure decided combined verdict")
+			}
 			if len(reply.Reviewers) != 6 || reply.SummaryPath == "" {
 				t.Fatal("incomplete short reply")
 			}
-			if failure != "" && reply.CombinedVerdict != "reject" {
+			if failure != "" && failure != "optional-lens" && reply.CombinedVerdict != "reject" {
+
 				t.Fatal("failure became acceptance")
 			}
 		})
@@ -237,6 +276,7 @@ func TestReviewCommandFullRound(t *testing.T) {
 func TestReviewNotificationAndOutsideT3Refusal(t *testing.T) {
 	h := newTaskRunHarness()
 	h.projects = reviewCatalog()
+	h.release = "0.11.0-rc.104"
 	a, err := parseReviewArgs([]string{"--project", "scratch", "--reviewer", "a/full", "--reviewer", "b/full"})
 	if err != nil {
 		t.Fatal(err)
@@ -253,6 +293,7 @@ func TestReviewNotificationAndOutsideT3Refusal(t *testing.T) {
 	}
 	h = newTaskRunHarness()
 	h.projects = reviewCatalog()
+	h.release = "0.11.0-rc.104"
 	h.thread = ""
 	h.threadErr = fmt.Errorf("no current T3 thread")
 	c = reviewCLI{task: h.cli()}

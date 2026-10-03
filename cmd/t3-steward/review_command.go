@@ -41,9 +41,10 @@ two provider families when the project offers two. Every reviewer is a new task,
 never the caller's session. Swarm requires economy routes and an executor judge.
 --swarm default uses lenses for the risk (default routine). Deadline defaults to 4h.
 Inside T3, the current thread is notified by default. Outside T3, specify --wait,
---no-notify or --notify-thread ID. --wait collects via review result --wait.
+--no-notify or --notify-thread ID. --wait collects via review result --wait,
+with a client timeout of the round deadline plus a two-minute collection margin.
 --gate requires --wait on submission and rejects anything other than accept.
-Exit 0: all results valid, whatever verdict; 2: collection failed; 3: gate rejected;
+Exit 0: all required results valid, whatever verdict; 2: collection failed; 3: gate rejected;
 1: pending, timeout of the client wait, invalid flags or submission failure.
 See docs/review.md. Role policy and in-task review are not implemented.
 `
@@ -297,9 +298,13 @@ func buildReviewCampaign(a reviewArgs, projects []backlogadmin.Project, now time
 		}
 		// Limit the process output before snapshotting, not after allocating it.
 		cmd := exec.Command("git", "diff", "--no-ext-diff", "--no-textconv", round.BaseCommit, round.HeadCommit, "--")
-		cmd.Stdout = &reviewBoundedWriter{writer: f, remaining: pinnedinput.MaxFileBytes}
+		bounded := &reviewBoundedWriter{writer: f, remaining: pinnedinput.MaxFileBytes}
+		cmd.Stdout = bounded
 		runErr := cmd.Run()
 		closeErr := f.Close()
+		if bounded.exceeded {
+			return "", errors.New("diff exceeds 1 MiB input limit; split the review")
+		}
 		if runErr != nil {
 			return "", fmt.Errorf("generate bounded diff: %w", runErr)
 		}
@@ -313,7 +318,7 @@ func buildReviewCampaign(a reviewArgs, projects []backlogadmin.Project, now time
 		return "", err
 	}
 	round.InputManifestDigest = snapshot.Manifest.Digest
-	manifest := backlog.Manifest{Version: backlog.ManifestVersion, Name: "review-round", Class: domain.TaskClassRequired,
+	manifest := backlog.Manifest{Version: backlog.ManifestVersion, PinnedInputs: true, Name: "review-round", Class: domain.TaskClassRequired,
 		Environment: backlog.ManifestEnvironment{Project: project.Name, Type: backlog.EnvironmentFresh, Scope: backlog.EnvironmentScopeTask},
 		Tasks:       map[string]backlog.ManifestTask{}, Review: &round}
 	if project.Type != "fresh" {
@@ -386,12 +391,14 @@ func buildReviewCampaign(a reviewArgs, projects []backlogadmin.Project, now time
 }
 
 type reviewBoundedWriter struct {
+	exceeded  bool
 	writer    io.Writer
 	remaining int64
 }
 
 func (w *reviewBoundedWriter) Write(p []byte) (int, error) {
 	if int64(len(p)) > w.remaining {
+		w.exceeded = true
 		return 0, errors.New("diff exceeds 1 MiB input limit; split the review")
 	}
 	n, err := w.writer.Write(p)
@@ -429,6 +436,16 @@ func newReviewCLI(cfg config.Config) (reviewCLI, error) {
 	return reviewCLI{task: task, result: reviewResultCLI{results: results, stdout: os.Stdout, query: task.query}}, nil
 }
 func (c reviewCLI) run(ctx context.Context, a reviewArgs) error {
+	if c.task.campaign.release == nil {
+		return errors.New("coordinator does not support review rounds (needs 0.11.0-rc.104 or later)")
+	}
+	release, err := c.task.campaign.release(ctx)
+	if err != nil {
+		return err
+	}
+	if supported, known := releaseAtLeast(release, "0.11.0-rc.104"); !known || !supported {
+		return errors.New("coordinator does not support review rounds (needs 0.11.0-rc.104 or later)")
+	}
 	thread := ""
 	if !a.wait && !a.noNotify {
 		requested := a.notifyThread
@@ -475,7 +492,7 @@ func (c reviewCLI) run(ctx context.Context, a reviewArgs) error {
 		return err
 	}
 	if a.wait {
-		resultArgs := []string{response.RunID, "--wait", "--timeout", a.deadline.String()}
+		resultArgs := []string{response.RunID, "--wait", "--timeout", (a.deadline + 2*time.Minute).String()}
 		if a.asJSON {
 			resultArgs = append(resultArgs, "--json")
 		}

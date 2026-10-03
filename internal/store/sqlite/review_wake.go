@@ -35,11 +35,16 @@ func reviewNodeObservationTx(ctx context.Context, tx *sql.Tx, target domain.Node
 	obs.ExitCode = 0
 	obs.Outcome = domain.TaskWaitMet
 	for _, v := range r.Reviewers {
-		if v.State != "succeeded" {
+		if v.Required && v.State != "succeeded" {
 			obs.ExitCode = 2
 			obs.Outcome = domain.TaskWaitGaveUp
 			break
 		}
+	}
+	if obs.ExitCode == 0 {
+		obs.Reason = "review collected\n" + obs.Reason
+	} else {
+		obs.Reason = "review collection failed\n" + obs.Reason
 	}
 	return nil
 }

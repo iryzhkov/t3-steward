@@ -95,7 +95,10 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 		return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: %w", err)
 	}
 	defer sourceRoot.Close()
-	if i.RegisterOnly && (manifest.Review != nil || manifest.Supervision != nil || len(manifest.Gates) != 0) {
+	if i.RegisterOnly && manifest.Review != nil {
+		return IngestedBundle{}, errors.New("register-only refuses review rounds: scheduled reviews are not implemented; next: t3-steward review --help")
+	}
+	if i.RegisterOnly && (manifest.Supervision != nil || len(manifest.Gates) != 0) {
 		return IngestedBundle{}, errors.New("register-only refuses supervised campaigns: scheduled supervision is not implemented; next: t3-steward campaign help supervision")
 	}
 	// The permanent checks are repeated here, transactionally, before anything
@@ -280,7 +283,7 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 		inputEntries = append(inputEntries, pinnedinput.Entry{Name: filepath.ToSlash(name), Size: file.size, SHA256: file.sha256})
 	}
 	var inputManifest *pinnedinput.Manifest
-	if manifest.PinnedInputs {
+	if manifest.PinnedInputs || manifest.Review != nil {
 		bounded, err := pinnedinput.NewManifest(inputEntries)
 		if err != nil {
 			return records, nil, err
@@ -426,6 +429,13 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 		for n := range round.Reviewers {
 			member := &round.Reviewers[n]
 			member.TaskID = taskIDsByName[member.ID]
+			if member.Role == "judge" {
+				for n := range records.Tasks {
+					if records.Tasks[n].ID == member.TaskID {
+						records.Tasks[n].ReviewJudge = true
+					}
+				}
+			}
 			if member.TaskID == "" {
 				return records, nil, fmt.Errorf("reviewer %s has no declared task", member.ID)
 			}

@@ -31,7 +31,7 @@ func Prompt(member Reviewer, manifest pinnedinput.Manifest) (string, error) {
 	if strings.HasPrefix(member.Role, "swarm:") {
 		task = "Review only the adversarial lens: " + strings.TrimPrefix(member.Role, "swarm:") + ".\n"
 	} else if member.Role == "judge" {
-		task = "Read only the swarm verdict.json files under .t3/dependencies/<swarm-task>/verdict.json, and the original inputs. Never read independent reviews. Verify every swarm finding against the code, deduplicate it, and record each false positive discarded with its reason in review.md. Write your own review-verdict/v1; the steward computes the combined verdict.\n"
+		task = "Read .t3/context/index.json for the coordinator list of missing swarm lenses; missing optional lenses do not block your verdict. Read only the swarm verdict.json files under .t3/dependencies/<swarm-task>/verdict.json, and the original inputs. Never read independent reviews. Verify every swarm finding against the code, deduplicate it, and record each false positive discarded with its reason in review.md. Write your own review-verdict/v1; the steward computes the combined verdict.\n"
 	}
 	return TemplateVersion + "\n" + instructions + task + "reviewerRoute: " + member.Route + "\ninputManifestDigest: " + manifest.Digest + "\nInput manifest (metadata only): " + string(raw) + "\n", nil
 }

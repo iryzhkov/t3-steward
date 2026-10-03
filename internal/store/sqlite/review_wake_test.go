@@ -14,7 +14,7 @@ func TestReviewWakeWaitsForCollectionAndCarriesShortReply(t *testing.T) {
 	ctx := context.Background()
 	store, _, now := sinkStoreFixture(t)
 	defer store.Close()
-	r, err := store.CreateReviewRound(ctx, review.Round{ID: "r", WorkflowRunID: "r", InputManifestDigest: strings.Repeat("a", 64), Reviewers: []review.Reviewer{{ID: "independent", TaskID: "t", Role: "independent", Route: "a/full", Required: true}}})
+	r, err := store.CreateReviewRound(ctx, review.Round{ID: "r", WorkflowRunID: "r", InputManifestDigest: strings.Repeat("a", 64), Reviewers: []review.Reviewer{{ID: "independent", TaskID: "t", Role: "independent", Route: "a/full", Required: true}, {ID: "swarm-tests", TaskID: "optional", Role: "swarm:tests", Route: "a/cheap"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,6 +32,10 @@ func TestReviewWakeWaitsForCollectionAndCarriesShortReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r, err = store.RecordReviewResult(ctx, r.ID, "swarm-tests", r.Revision, review.Result{State: "failed", Failure: "lens crashed"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	text := "round r: accept\nsummary.json"
 	if err := store.PublishReviewReply(ctx, r.ID, r.Revision, text); err != nil {
 		t.Fatal(err)
@@ -43,7 +47,7 @@ func TestReviewWakeWaitsForCollectionAndCarriesShortReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(waits) != 1 || waits[0].SettledAt == nil || waits[0].Observation.Reason != text || waits[0].Observation.ExitCode != 0 {
+	if len(waits) != 1 || waits[0].SettledAt == nil || waits[0].Observation.Reason != "review collected\n"+text || waits[0].Observation.ExitCode != 0 {
 		t.Fatalf("wake: %+v", waits)
 	}
 	req.ID = "late-review-wake"
@@ -51,7 +55,7 @@ func TestReviewWakeWaitsForCollectionAndCarriesShortReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w.SettledAt == nil || w.Observation.Reason != text {
+	if w.SettledAt == nil || w.Observation.Reason != "review collected\n"+text {
 		t.Fatal("late registration lost review reply")
 	}
 }

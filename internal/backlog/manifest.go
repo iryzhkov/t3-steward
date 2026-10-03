@@ -36,7 +36,7 @@ var manifestNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$
 // Manifest is the version 2 workflow.yaml submission format. ParseManifest
 // applies defaults so callers receive a complete, validated definition.
 type Manifest struct {
-	Review *review.Round `yaml:"review,omitempty"`
+	Review       *review.Round           `yaml:"review,omitempty"`
 	Version      int                     `yaml:"version"`
 	Name         string                  `yaml:"name"`
 	Class        domain.TaskClass        `yaml:"class"`

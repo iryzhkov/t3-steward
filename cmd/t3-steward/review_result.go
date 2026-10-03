@@ -21,8 +21,9 @@ summary.json contains all validated findings sorted by severity.
 --gate exits 3 unless the combined verdict is accept; collection failure exits 2. Failed or
 invalid reviewers never count as acceptance.
 
-Exit 0 means every review was collected and valid, including a reject verdict.
-Exit 2 means a reviewer failed, timed out or produced invalid evidence.
+Exit 0 means every required review was collected and valid, including a reject verdict.
+Exit 2 means a required reviewer failed, timed out or produced invalid evidence.
+Optional swarm failures are reported but do not fail collection.
 Exit 1 means the round is pending or the wait timed out; SIGINT exits 130.
 Transport errors keep their existing codes. --wait uses the shared blocking
 wait with immediate queries, bounded backoff and optional positive --timeout.
@@ -219,7 +220,7 @@ func (c reviewResultCLI) run(ctx context.Context, args []string) error {
 		return exitCodeError{code: 1, error: errors.New("review round is pending; reattach with t3-steward review result " + id + " --wait")}
 	}
 	for _, v := range round.Reviewers {
-		if v.State != "succeeded" || v.Verdict == nil {
+		if v.Required && (v.State != "succeeded" || v.Verdict == nil) {
 			return exitCodeError{code: 2, error: errors.New("review collection failed; inspect the reviewer states and paths")}
 		}
 	}

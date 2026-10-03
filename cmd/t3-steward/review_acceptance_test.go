@@ -47,6 +47,12 @@ func TestReviewAcceptanceRefusesForgedClassification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bundle.Manifest.Review.Reviewers[0].Tier = "critical"
+	err = (coordinatorPermanentValidator{admin: service}).ValidatePermanent(ctx, bundle.Manifest)
+	if err == nil || !strings.Contains(err.Error(), "authoritative catalog metadata") {
+		t.Fatalf("forged tier accepted: %v", err)
+	}
+	bundle.Manifest.Review.Reviewers[0].Tier = "executor"
 	bundle.Manifest.Review.Reviewers[0].ProviderFamily = "forged"
 	err = (coordinatorPermanentValidator{admin: service}).ValidatePermanent(ctx, bundle.Manifest)
 	if err == nil || !strings.Contains(err.Error(), "authoritative catalog metadata") {

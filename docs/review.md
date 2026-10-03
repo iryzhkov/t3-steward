@@ -55,7 +55,12 @@ tasks and receives their verdict.json files under
 `.t3/dependencies/<swarm-task>/verdict.json`. It checks findings against code,
 deduplicates them and explains discarded false positives in review.md.
 Only independent reviewers and the judge determine the combined verdict.
-Every task must still produce valid evidence for collection to succeed.
+Every required reviewer must produce valid evidence for collection to succeed.
+All review manifests require environment.scope: task. The judge becomes ready
+once every swarm task is terminal, including failed or cancelled lenses. It reads
+the available verdicts and the coordinator list of missing lenses from
+`.t3/context/index.json`. Optional failures remain visible but do not decide the
+combined verdict or fail collection.
 
 Local files use the shared pinned-input ingestion: bounded, snapshotted, hashed,
 read-only files under `.t3/inputs/`. Inputs are never pasted into prompts.
@@ -72,7 +77,8 @@ Inside T3, the caller's current thread is notified by default using the existing
 node-wake mechanism, with the short review reply. Outside T3, explicitly pass
 `--wait`, `--no-notify` or `--notify-thread ID`. Notification registration
 failure is reported after submission with the round ID so it can be collected.
-`--wait` uses `review result --wait`; interrupting the client does not cancel
+`--wait` uses `review result --wait` with the round deadline plus a two-minute
+collection margin; interrupting the client does not cancel
 the round. Reattach with:
 
 ```sh
@@ -85,7 +91,8 @@ A late completed review does not become acceptance. A client wait timeout is
 separate from the durable reviewer states. Failed, missing, malformed or oversized
 evidence is never acceptance. Collection runs on coordinator ticks, survives
 restarts, and uses retained artifacts from each reviewer's latest attempt.
-Invalid swarm evidence remains a collection failure even if the judge accepts.
+Invalid swarm evidence remains visible as an optional lens failure even if the
+judge accepts. Scheduled registration refuses review rounds explicitly.
 
 Results live under the steward state directory, outside checkouts:
 `results/reviews/ROUND/<reviewer>/review.md`, `verdict.json`, and
@@ -97,9 +104,9 @@ Exit codes:
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Every review was collected and valid, including reject or accept-with-changes. Async submission also exits 0 when accepted. |
+| 0 | Every required review was collected and valid, including reject or accept-with-changes. Async submission also exits 0 when accepted. |
 | 1 | Pending result, client wait timeout, argument or submission failure. |
-| 2 | A reviewer failed, timed out or produced invalid evidence. |
+| 2 | A required reviewer failed, timed out or produced invalid evidence. |
 | 3 | `--gate` and the combined verdict is not accept. Collection failure takes precedence. |
 | 130 | Interrupted blocking wait. |
 
@@ -107,8 +114,13 @@ Transport failures retain the existing transport codes. Submission `--gate`
 requires `--wait`. `review result --gate` checks an already retained round.
 
 Mixed versions: ordinary task callers need no new metadata. Old coordinators
-refuse the new review manifest field; review has no fallback that weakens the
-round. Upgrade the coordinator and configure review_routes before use. Workers
-use existing campaign tasks, pinned inputs and dependency artifacts. A receiving
+are refused before catalog lookup or submission with "coordinator does not support
+review rounds (needs 0.11.0-rc.104 or later)". Unknown coordinator releases also
+refuse; review has no fallback that weakens the round. Upgrade the coordinator
+and configure review_routes before use. Workers use existing campaign tasks,
+pinned inputs and dependency artifacts. Judge packages use the existing
+project-context-v1 capability to carry missing-lens observations, with no new
+worker protocol fields. A worker without that capability is refused by the
+existing package capability gate. A receiving
 host's existing node-wake runner prints the short reply carried in the observation.
 No new execution or approval authority is granted.

@@ -84,4 +84,13 @@ func TestReviewDiffPinsBothCommitsAndOmitsDirtyFiles(t *testing.T) {
 	if !strings.Contains(string(diff), "+committed") || strings.Contains(string(diff), "dirty secret") {
 		t.Fatalf("diff used working tree: %s", diff)
 	}
+	if err := os.WriteFile(file, []byte(strings.Repeat("oversized line\n", 100000)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-qm", "oversized")
+	_, err = buildReviewCampaign(a, catalog, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "1 MiB") {
+		t.Fatalf("oversized diff refusal: %v", err)
+	}
 }

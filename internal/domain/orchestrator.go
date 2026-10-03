@@ -174,6 +174,9 @@ type ProviderRoute struct {
 
 // Task is an immutable node in a workflow definition.
 type Task struct {
+	// ReviewJudge is derived only from a validated review manifest by ingestion.
+	// Its swarm dependencies require terminal attempts rather than success.
+	ReviewJudge bool `json:"reviewJudge,omitempty"`
 	// DirectoryBindings are resolved operator identities, never raw capsule paths.
 	DirectoryBindings  []directoryresource.Binding `json:"directoryBindings,omitempty"`
 	RunID              string                      `json:"runId,omitempty"`
