@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/compat"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
@@ -327,7 +328,11 @@ func (d *LocalDriver) ObserveThread(ctx context.Context, pkg workerproto.Executi
 	if thread == nil {
 		return backlog.DispatchThreadMissing, nil
 	}
-	if !workerThreadTerminal(*thread) {
+	terminal, _, err := d.threadTerminal(ctx, *thread)
+	if err != nil {
+		return "", err
+	}
+	if !terminal {
 		return backlog.DispatchThreadActive, nil
 	}
 	return backlog.DispatchThreadStopped, nil
@@ -359,33 +364,131 @@ func (d *LocalDriver) ObserveThreadTurn(ctx context.Context, pkg workerproto.Exe
 	if thread == nil {
 		return backlog.DispatchThreadMissing, "", nil
 	}
-	if !workerThreadTerminal(*thread) {
-		return backlog.DispatchThreadActive, thread.TurnID, nil
+	terminal, identity, err := d.threadTerminal(ctx, *thread)
+	if err != nil {
+		return "", "", err
 	}
-	if thread.TurnID == "" {
+	if !terminal {
+		return backlog.DispatchThreadActive, identity, nil
+	}
+	if identity == "" {
 		return "", "", errors.New("terminal T3 turn identity is unavailable; collection deferred")
 	}
-	return backlog.DispatchThreadStopped, thread.TurnID, nil
+	return backlog.DispatchThreadStopped, identity, nil
 }
 
-// A newly accepted T3 start may be visible before its turn and session.
-// Only positive terminal evidence permits collection or skipping containment.
-func workerThreadTerminal(thread domain.Thread) bool {
+// t3SessionError is T3's provider session status after a provider failure.
+// A turn start T3 refuses leaves the session in it with no active turn,
+// unless the session was already stopped, which it then keeps.
+const t3SessionError = "error"
+
+// turnRequestUnadopted reports a start request no turn has adopted: T3 gives
+// a turn the time of the user message that requested it, and T3's own rule
+// for a queued turn start is a latest user message newer than the latest
+// turn. It is the current request while it is unresolved: the first turn of
+// a slow start, a wake, a resume or a retried start.
+func turnRequestUnadopted(thread domain.Thread) bool {
+	return thread.LatestUserMessageAt != nil &&
+		(thread.LatestTurnRequestedAt == nil || thread.LatestTurnRequestedAt.Before(*thread.LatestUserMessageAt))
+}
+
+// sessionFailedCurrentRequest reports a session T3 moved to error (or kept
+// stopped) at or after the current request: the explicit terminal session
+// transition T3 makes when it refuses that request's turn start. An error
+// from an earlier request is not evidence about this one.
+func sessionFailedCurrentRequest(thread domain.Thread) bool {
+	return (thread.SessionStatus == t3SessionError || thread.SessionStatus == "stopped") &&
+		thread.SessionUpdatedAt != nil && thread.LatestUserMessageAt != nil &&
+		!thread.SessionUpdatedAt.Before(*thread.LatestUserMessageAt)
+}
+
+const turnRequestIdentityPrefix = "turn-request:"
+
+// turnRequestIdentity is the one collection identity of the current start
+// request, whatever evidence ends it: a session failure seen first, a refusal
+// activity projected later, and a settlement after collection all keep it.
+func turnRequestIdentity(thread domain.Thread) string {
+	return turnRequestIdentityPrefix + thread.LatestUserMessageAt.UTC().Format(time.RFC3339Nano)
+}
+
+func sessionErrorIdentity(thread domain.Thread) string {
+	if thread.SessionUpdatedAt == nil {
+		return "session-error"
+	}
+	return "session-error:" + thread.SessionUpdatedAt.UTC().Format(time.RFC3339Nano)
+}
+
+// threadTerminal reports whether the thread has ended its current turn start
+// request, and the turn identity collection binds to.
+//
+// A newly accepted T3 start may be visible before its turn and session, and a
+// wake or resume leaves the previous turn as the latest one until a new turn
+// adopts the request. Only positive evidence about the current request
+// permits collection or skipping containment: a turn that adopted it, or a
+// refusal (provider.turn.start.failed) or session failure at or after it.
+// The refusal must be at or after the shell's current request, in a detail
+// that already shows that request. For a refused request the identity is
+// the request (turnRequestIdentity), never the earlier turn, so a refused
+// wake is one failure however often it is observed, settled or not. While
+// the request is unresolved the thread is live, settled or not, so a stop
+// stops it rather than taking the settlement shortcut.
+func (d *LocalDriver) threadTerminal(ctx context.Context, thread domain.Thread) (bool, string, error) {
+	return threadTerminal(ctx, d.T3.ExportThread, thread)
+}
+
+// threadTerminal is LocalDriver.threadTerminal for any T3 connection; export
+// reads the thread's full detail, which only an unresolved request needs.
+func threadTerminal(ctx context.Context, export func(context.Context, string) ([]byte, error), thread domain.Thread) (bool, string, error) {
 	// A native T3 question may leave the latest turn completed while the
 	// provider waits for the user's answer. Keep this owned task thread live:
 	// collecting now would reject pending input and release its dependencies.
 	if thread.Running || thread.BackgroundWork == "working" || thread.HasPendingUserInput || thread.HasPendingApprovals {
-		return false
+		return false, thread.TurnID, nil
+	}
+	// The request is resolved before settlement is consulted: a settled
+	// thread with an unresolved retry may still start that turn, and a
+	// refused request settled by its collection keeps its identity.
+	if turnRequestUnadopted(thread) {
+		identity := turnRequestIdentity(thread)
+		archive, err := export(ctx, thread.ID)
+		if err != nil {
+			return false, "", fmt.Errorf("read the current turn start request: %w", err)
+		}
+		// The detail is projected apart from the shell. Until it shows the
+		// shell's request, its refusals and session are about an earlier one.
+		archiveThread, archiveRequest, err := backlog.ArchiveCurrentRequest(archive)
+		if err != nil {
+			return false, "", err
+		}
+		if archiveThread != thread.ID || archiveRequest == nil || archiveRequest.Before(*thread.LatestUserMessageAt) {
+			return false, identity, nil
+		}
+		refused, ok, err := backlog.LatestTurnStartFailure(archive)
+		if err != nil {
+			return false, "", err
+		}
+		if ok && !refused.CreatedAt.Before(*thread.LatestUserMessageAt) {
+			return true, identity, nil
+		}
+		if sessionFailedCurrentRequest(thread) {
+			return true, identity, nil
+		}
+		return false, identity, nil
 	}
 	if thread.Settled() {
-		return true
+		return true, thread.TurnID, nil
 	}
 	switch thread.TurnState {
 	case "completed", "interrupted", "error":
-		return true
-	default:
-		return false
+		return true, thread.TurnID, nil
+	case "":
+		// No request is recorded and no turn ever ran, yet the session
+		// failed: nothing will start without a new message.
+		if thread.SessionStatus == t3SessionError {
+			return true, sessionErrorIdentity(thread), nil
+		}
 	}
+	return false, thread.TurnID, nil
 }
 
 // writeTaskIdentity records the attempt's identity inside the prepared
@@ -622,41 +725,6 @@ func (d *LocalDriver) removeTaskIdentity(pkg workerproto.ExecutionPackage, works
 	return nil
 }
 
-// taskCompletionSupplement tells the agent the one rule its own harness does not:
-// ending the turn completes the task. A task that started its long checks in the
-// background and ended its turn to wait for them was collected at once, with no
-// outputs, and failed (S12); nothing it could read said that the turn was the
-// task. The supplement names the declared outputs, because they are what is
-// collected, and the task-bound wait, which is the supported way to wait.
-func taskCompletionSupplement(pkg workerproto.ExecutionPackage) string {
-	var b strings.Builder
-	b.WriteString("\n\n## How this task ends\n")
-	b.WriteString("This task runs unattended and gets one turn: when your turn ends with no task-bound wait registered, the task is complete. ")
-	b.WriteString("There is no next turn, so do not end with BACKLOG STATUS: continue. ")
-	b.WriteString("When the turn ends, the Steward collects the declared outputs from the workspace and runs verification; ")
-	b.WriteString("processes you started in the background (shell jobs, background commands) are not waited for.")
-	var files, commits []string
-	for _, output := range pkg.Outputs {
-		if output.Commit == nil {
-			files = append(files, "`"+output.Name+"`")
-		} else {
-			commits = append(commits, "`"+output.Name+"`")
-		}
-	}
-	if len(files) != 0 {
-		b.WriteString(" Declared outputs, which must exist when the turn ends: " + strings.Join(files, ", ") + ".")
-	}
-	if len(commits) != 0 {
-		b.WriteString(" Declared commits, which must be committed when the turn ends: " + strings.Join(commits, ", ") + ".")
-	}
-	b.WriteString("\nRun long checks in the foreground and wait for them. To wait for something outside this session ")
-	b.WriteString("(CI, another run, a time), register a task-bound wait and then end the turn; ")
-	b.WriteString("the Steward resumes this same session with the outcome, for example ")
-	b.WriteString("`t3-steward wait add --task current --for 30m --or-timeout` ")
-	b.WriteString("(`t3-steward wait --help` lists every kind).")
-	return b.String()
-}
-
 func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
 	if pkg.IsActivation() {
 		return d.createActivationThread(ctx, pkg, workspace)
@@ -697,12 +765,18 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 	if err != nil {
 		return err
 	}
-	prompt += taskCompletionSupplement(pkg)
+	prompt = backlog.FirstTurnPrompt(prompt, pkg.Outputs)
 	if pkg.Recovery != nil {
 		prompt += "\n\n## Recovery supplement\nThis is a retry of the original task. Keep the original task contract, outputs, and verification authoritative. Read and apply the retained repair instructions at `" + pkg.Recovery.InstructionPath + "`."
 		for _, checkpoint := range pkg.Recovery.CheckpointPaths {
 			prompt += "\nReview retained checkpoint `" + checkpoint + "`."
 		}
+	}
+	// T3 refuses an over-long input only when the turn starts, after the
+	// thread exists. Refused here, the dispatch fails before any provider
+	// effect and the attempt's failure names the size and the limit.
+	if err := backlog.CheckTurnInput(prompt, compat.TurnInputLength(prompt)-compat.TurnInputLength(string(promptArtifact))); err != nil {
+		return err
 	}
 	var projectID string
 	if d.scoped {
@@ -774,7 +848,11 @@ func (d *LocalDriver) StopThread(ctx context.Context, pkg workerproto.ExecutionP
 	if thread == nil {
 		return nil
 	}
-	if !workerThreadTerminal(*thread) {
+	terminal, _, err := d.threadTerminal(ctx, *thread)
+	if err != nil {
+		return err
+	}
+	if !terminal {
 		if err := d.T3.StopThread(ctx, *thread, t3control.StopSession); err != nil {
 			return err
 		}
@@ -830,7 +908,13 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		return fmt.Errorf("collect thread state: %w", err)
 	}
 	message, archive := "", []byte("{}")
-	if thread != nil && !workerThreadTerminal(*thread) {
+	terminal, identity := true, ""
+	if thread != nil {
+		if terminal, identity, err = d.threadTerminal(ctx, *thread); err != nil {
+			return fmt.Errorf("collect thread state: %w", err)
+		}
+	}
+	if !terminal {
 		// The deferral is logged for the same reason the removal below is: the
 		// two together are the whole story of what happened to a workspace, and
 		// a deferral that says nothing is indistinguishable from a pass that
@@ -851,15 +935,20 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if err := d.removeTaskIdentity(pkg, workspace); err != nil {
 		return err
 	}
+	// A refused start request has no turn of its own and so no final
+	// message; the latest one belongs to an earlier turn and is not this
+	// request's answer.
+	refusedRequest := strings.HasPrefix(identity, turnRequestIdentityPrefix)
 	if thread != nil {
 		// T3 marks the turn completed slightly before the final assistant
 		// message is projected. Briefly retry an empty summary; completion
-		// itself is established by the structured thread archive.
-		for reads := 0; ; reads++ {
+		// itself is established by the structured thread archive. A thread
+		// with no turn (a refused start) has no message to wait for.
+		for reads := 0; !refusedRequest; reads++ {
 			if message, err = d.T3.LastAssistantMessage(ctx, pkg.Identity.ThreadID); err != nil {
 				return fmt.Errorf("collect final message: %w", err)
 			}
-			if strings.TrimSpace(message) != "" || reads >= 3 {
+			if strings.TrimSpace(message) != "" || reads >= 3 || thread.TurnID == "" {
 				break
 			}
 			select {
@@ -877,7 +966,11 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		return err
 	}
 	if thread != nil {
-		if message, archive, failure, err = d.settleCollectedTurn(pkg, *thread, message, archive, failure, pauseReason); err != nil {
+		// The recorded read is keyed by the collection identity, so a refused
+		// later request never reuses the earlier turn's clean read.
+		collected := *thread
+		collected.TurnID = identity
+		if message, archive, failure, err = d.settleCollectedTurn(pkg, collected, message, archive, failure, pauseReason); err != nil {
 			return err
 		}
 	}

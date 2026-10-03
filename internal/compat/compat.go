@@ -15,6 +15,28 @@ const (
 	MaxServerVersion = "0.0.38"
 )
 
+// MaxTurnInputLength is the longest turn input T3 accepts across the tested
+// range (MinServerVersion to MaxServerVersion). A longer one is refused when
+// the turn starts, with "ProviderValidationError: ... Expected a value with a
+// length of at most 120000 at ["input"]", after the thread already exists.
+// Revisit it with the range: it is T3's schema limit, not a Steward policy.
+const MaxTurnInputLength = 120000
+
+// TurnInputLength measures text the way T3 measures a turn input: as a
+// JavaScript string length, which counts UTF-16 code units. A character
+// outside the Basic Multilingual Plane (most emoji) counts twice.
+func TurnInputLength(text string) int {
+	length := 0
+	for _, r := range text {
+		if r >= 0x10000 {
+			length += 2
+		} else {
+			length++
+		}
+	}
+	return length
+}
+
 // Status is the compatibility verdict for one server version.
 type Status int
 

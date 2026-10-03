@@ -1295,6 +1295,11 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 		}
 		state, control, attempt := taskState(task)
 		fmt.Fprintf(out, "  %s (%s): %s %s attempt=%s%s\n", task.Task.Name, task.Task.ID, state, control, attempt, evidenceMarker(task.Evidence))
+		// A failed task says why, so the run's answer is readable without a
+		// "task show" per task.
+		if task.Attempt != nil && task.Attempt.Failure != "" {
+			fmt.Fprintf(out, "    failure: %s\n", task.Attempt.Failure)
+		}
 		// A parked task says what it is parked on. The wait is the reason the
 		// task is not moving, and its condition is what an operator can go and
 		// satisfy or cancel.

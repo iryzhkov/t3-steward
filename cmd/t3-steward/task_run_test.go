@@ -18,6 +18,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/campaign"
+	"github.com/iryzhkov/t3-steward/internal/compat"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"gopkg.in/yaml.v3"
 )
@@ -750,6 +751,19 @@ func TestTaskRunRefusesAnImpossibleTaskBeforeSubmitting(t *testing.T) {
 	}
 	if len(h.archives) != 0 {
 		t.Fatal("an impossible task was submitted anyway")
+	}
+}
+
+// A prompt T3 would refuse for its length is refused before submission, with
+// the size, the limit and where large material goes instead.
+func TestTaskRunRefusesAPromptOverT3sTurnInputLimit(t *testing.T) {
+	h := newTaskRunHarness()
+	err := h.run("--model", "opus", "--", strings.Repeat("x", compat.MaxTurnInputLength))
+	if err == nil || !strings.Contains(err.Error(), "turn input limit of 120000 characters") || !strings.Contains(err.Error(), "inputs:") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(h.archives) != 0 {
+		t.Fatal("a prompt over the limit was submitted anyway")
 	}
 }
 

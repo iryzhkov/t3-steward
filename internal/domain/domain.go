@@ -256,7 +256,14 @@ type Thread struct {
 	// error, or empty.
 	TurnState string
 	// SessionStatus is T3's provider session status when a session exists.
-	SessionStatus             string
+	SessionStatus string
+	// SessionUpdatedAt is when T3 last changed the session. A turn start T3
+	// refuses sets it to the refused request's time.
+	SessionUpdatedAt *time.Time
+	// LatestTurnRequestedAt is when the latest turn was requested. T3 gives a
+	// turn the time of the user message that requested it, so a latest user
+	// message newer than this is a request no turn has adopted yet.
+	LatestTurnRequestedAt     *time.Time
 	LatestUserMessageAt       *time.Time
 	HasPendingApprovals       bool
 	HasPendingUserInput       bool

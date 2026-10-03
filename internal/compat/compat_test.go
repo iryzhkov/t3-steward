@@ -2,6 +2,23 @@ package compat
 
 import "testing"
 
+// T3 counts a turn input as a JavaScript string: UTF-16 code units, not bytes
+// and not runes.
+func TestTurnInputLengthCountsUTF16CodeUnits(t *testing.T) {
+	for text, want := range map[string]int{
+		"":     0,
+		"abc":  3,
+		"é":    1,
+		"日本":   2,
+		"a😀b":  4,
+		"\x00": 1,
+	} {
+		if got := TurnInputLength(text); got != want {
+			t.Errorf("TurnInputLength(%q) = %d, want %d", text, got, want)
+		}
+	}
+}
+
 func TestCheck(t *testing.T) {
 	cases := map[string]Status{
 		MinServerVersion:       Supported,
