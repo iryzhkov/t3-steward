@@ -188,7 +188,7 @@ func TestCoordinatorReloadFlagsAreParsed(t *testing.T) {
 		t.Fatalf("extra argument error = %v", err)
 	}
 	output := captureStdout(t, func() {
-		if err := cmdCoordinator(globalFlags{}, []string{"reload", "--help"}); err != nil {
+		if err := cmdCoordinator(globalFlags{}, []string{"reload", "--help", "full"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -200,7 +200,7 @@ func TestCoordinatorReloadFlagsAreParsed(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if !strings.Contains(output, "reload [--json] [--wait DURATION]") {
+	if !strings.Contains(output, "identity, reload") {
 		t.Fatalf("coordinator help does not list reload: %q", output)
 	}
 }

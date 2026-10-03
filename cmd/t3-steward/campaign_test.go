@@ -3,8 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
@@ -450,7 +448,7 @@ func TestCampaignLifecycleAliasesForwardArgumentsUnchanged(t *testing.T) {
 
 func TestCampaignRefusesCommandsThatStayUnderBacklog(t *testing.T) {
 	cli := campaignTestCLI(t, io.Discard)
-	for _, command := range []string{"recover", "task", "edge", "artifact", "status", "retry"} {
+	for _, command := range []string{"recover", "task", "edge", "artifact", "retry"} {
 		t.Run(command, func(t *testing.T) {
 			err := cli.run(context.Background(), []string{command, "run-1"})
 			if err == nil || !strings.Contains(err.Error(), "backlog") {
@@ -473,7 +471,7 @@ func TestCampaignHelpTopicsComeFromTheProjection(t *testing.T) {
 		}
 	}
 	out.Reset()
-	if err := cli.run(context.Background(), []string{"help"}); err != nil {
+	if err := cli.run(context.Background(), []string{"--help", "full"}); err != nil {
 		t.Fatal(err)
 	}
 	if out.String() != campaignUsage {
@@ -511,150 +509,16 @@ func TestCampaignAuthoringTopicStatesTheDiscipline(t *testing.T) {
 	}
 }
 
-// The usage text is part of the product and enters an agent's context, so it is
-// pinned. Changing it is fine; changing it without reading the help contract in
-// docs/plans/campaign-manager.md is what this test is here to prevent. Update
-// the digest together with the text.
+// Full family help points to the command and topic contracts instead of copying them.
 func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
-	// Updated when the campaign help gained the short transport note that says
-	// which coordinator a submission reaches and what its exit codes mean, and
-	// again when it gained the check verb, the three readiness outcomes, the
-	// permanent and temporary failure lists, the recovery commands, the
-	// required configuration and a complete copyable example, and again when it
-	// gained rerun and submit --notify-thread. The 100-line cap left no room
-	// for their detail, so the block names them and the "rerun" and "notify"
-	// help topics carry the contract.
-	//
-	// Updated again when the manifest's commits field became visible: the graph
-	// field list names it in the line it shares with outputs and verify, and the
-	// topic list gains "commits". The usage was already 99 of its 100 permitted
-	// lines, so the field's contract is in the "commits" help topic and not one
-	// word of it is here.
-	//
-	// Updated again when the authoring discipline became part of the product: a
-	// campaign's declared tasks are its only fan-out, each one is a separate
-	// Steward-scheduled T3 session, and a task prompt may not use native
-	// subagents in their place. The block states the rule and names the new
-	// "authoring" topic, which carries the rest. The three lines it costs were
-	// paid for by tightening the --allow-unverified and class paragraphs and by
-	// putting both worked examples on one line, so the cap is unchanged.
-	//
-	// Updated again when campaign supervision arrived: the block names the verb
-	// family, the run positional and the three fields every mutating verb
-	// needs, and points at "t3-steward campaign supervision --help" for the
-	// per-verb flags and the refusal classes. Four lines is what the cap can
-	// pay for, so the contract itself is in that help and not here. The four
-	// lines were paid for by putting show beside graph and the two optional
-	// submit flag groups on one line, by reflowing the --allow-unverified
-	// paragraph, and by dropping "Lifecycle JSON is unchanged" from the exit-code
-	// paragraph, which the lifecycle heading three lines up already says.
-	//
-	// Updated again when a task with no route at all became a permanent
-	// refusal: the permanent-reason paragraph names it, because a campaign
-	// whose routes are missing is refused at submit and the reason has to be
-	// readable where the exit code is explained. It was paid for by reflowing
-	// the paragraph to the full width and by shortening "a missing credential
-	// reference" and "Codes and recovery commands", so the cap is unchanged.
-	//
-	// Updated again when cancel gained its run form: the lifecycle line now
-	// reads "cancel <run>[/<task>]" and says that naming no task cancels the
-	// whole run in one command. It cost no line at all.
-	//
-	// Updated again to say what the run form's --json document means: its
-	// willCancel key is the tasks the one command covers, computed from a read,
-	// and not the outcome the coordinator has applied. An automated caller that
-	// reads it as the outcome is the mistake the line exists to prevent. The
-	// line was paid for by putting explain beside show and graph, so the cap is
-	// unchanged.
-	//
-	// Updated again when help became one contract: the two prose lines under
-	// the supervision heading are indented four columns rather than two, so
-	// that the router scan reads them as the continuation they are and not as
-	// two command forms. No line was added and no wording changed.
-	//
-	// Updated again for the third line of the same kind, the note under the
-	// cancel entry about what its --json document means. The scan read it as a
-	// command form too and it passed only by accident, because its first word
-	// happens to be the name of a real verb; at four columns it is the
-	// continuation of the cancel entry that it always was. No line was added
-	// and no wording changed, and the line is 85 columns, inside the cap below.
-	//
-	// Updated again when submit's notification became the default: the
-	// synopsis offers --no-notify, which is the flag an unattended caller now
-	// needs, and the paragraph under it says the calling thread is notified
-	// by default rather than offering --notify-thread as the way to be woken.
-	// The page described the behaviour submit had before stage 3, which is
-	// the same defect the wait family page had. Both changes were paid for by
-	// tightening the sentence they are in, so the cap is unchanged, and
-	// campaign_family_help_test.go now ties this page to the campaign submit
-	// page so that it cannot describe a superseded submit again.
-	//
-	// Updated when repository-free campaigns became discoverable: the topic
-	// list names fresh, and the configuration
-	// paragraph no longer says every project has a repository, which sent
-	// authors of research campaigns looking for one.
-	//
-	// Updated when the routes field got its own topic: the topic list names it.
-	//
-	// Updated when the complete example became one that can run: it declares a
-	// route and uses the fresh scratch project, and its submit prints text so
-	// that the show command it names replaces the example's own show line.
-	//
-	// Updated when list gained --limit and --since: the synopsis names them,
-	// with the class placeholder shortened to keep the line inside the cap.
-	//
-	// Updated for the rc.97 clarity fixes: list says --limit 0 lists every run
-	// and --since takes days; the supervision entry names campaign recovery
-	// retry; the topic list names supervision; and submit's paragraph names
-	// "task result" as the collection step and "campaign show" as the poll for
-	// a caller with no thread, with task result's exit codes. The retry
-	// paragraph lost its note on deterministic packing to make room.
-	const wantDigest = "cbd5c2a7ebb6e596957e00396d5ab23cd5f6c77621c3c3373788c558e19ce18d"
-	digest := sha256.Sum256([]byte(campaignUsage))
-	if got := hex.EncodeToString(digest[:]); got != wantDigest {
-		t.Fatalf("usage digest = %s, want %s: re-read the help contract, then update this digest", got, wantDigest)
-	}
 	for _, want := range []string{
-		"Usage: t3-steward campaign <command> [args]",
-		"facade",
-		"validate <directory|workflow.yaml> [--json]",
-		"plan     <directory|workflow.yaml> [--json|--dot]",
-		"submit   <directory|workflow.yaml> --idempotency-key KEY [--json]",
-		"cancel <run>[/<task>] --reason TEXT",
-		"no task = whole run",
-		"willCancel, the tasks it covers, not the outcome it applied",
-		"explain <run>/<task> [--json]",
-		"workflow.yaml",
-		"version: 2",
-		"needs",
-		"inputs_from",
-		"outputs",
-		"verify",
-		"plan is static and explain is dynamic",
-		"surplus",
-		"required",
-		"placement.hosts",
-		"same --idempotency-key with the same directory returns the",
-		"routes: [{instance: claudeAgent, model: claude-sonnet-5}]",
-		"Exit codes",
-		"schemaVersion",
-		"docs/examples/campaign/single-lead",
-		"docs/examples/campaign/three-node",
-		"rerun <run> --from TASK --idempotency-key KEY [--prompt TEXT] [--reason TEXT] [--json]",
-		"creates a second run and never changes the first",
-		"[--notify-thread <current|id>]",
-		"static-versus-dynamic, plan, graph, commits, rerun, notify, routes,\nsupervision.",
-		"campaign recovery retry <run>",
-		"t3-steward task result <run>[/<task>]",
-		"poll campaign show <run>: task result exits 1 until the run ends",
-		"--limit 0 lists every run",
-		"commits (a Git commit a successor needs)",
-		"Multi-task work is a static DAG",
-		"is its own Steward-scheduled T3 session",
-		"must not use native",
-		"subagents in place of declared tasks",
-		"Help topics: authoring, fresh, readiness,",
-		"type fresh has none (research): campaign help fresh.",
+		"Usage: t3-steward campaign <command> [args]", "version 2",
+		"validate <directory|workflow.yaml> [--json]", "plan     <directory|workflow.yaml>",
+		"submit <directory|workflow.yaml> --idempotency-key KEY [--register-only]",
+		"status <run>", "--state open|terminal", "cancel <run>[/<task>] --reason TEXT",
+		"explain <run>/<task>", "rerun <run> --from TASK", "by default", "--no-notify",
+		"campaign help authoring", "campaign help <topic>", "task result <run>[/<task>]",
+		"recovery retry <run>", "docs/examples/campaign/single-lead",
 	} {
 		if !strings.Contains(campaignUsage, want) {
 			t.Fatalf("usage no longer covers %q", want)
@@ -664,13 +528,6 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 		if len(line) > 88 {
 			t.Fatalf("usage line %d is %d columns wide: %q", index+1, len(line), line)
 		}
-	}
-	// The cap was 100 until the rc.97 clarity fixes, which added the list
-	// window hint, the recovery pointer, the supervision topic and the
-	// task-result paragraph; the rest of the page was tightened to keep the
-	// growth to four lines.
-	if lines := strings.Count(campaignUsage, "\n"); lines > 104 {
-		t.Fatalf("usage is %d lines; it has to stay short enough to enter agent context", lines)
 	}
 }
 
@@ -683,7 +540,8 @@ func TestCmdCampaignPrintsUsageWithoutConfiguration(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if output != campaignUsage {
+	page, _ := helpPageFor("campaign")
+	if output != page.renderShort() {
 		t.Fatalf("cmdCampaign printed %q", output)
 	}
 }

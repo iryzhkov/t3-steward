@@ -90,6 +90,7 @@ type LocalService interface {
 }
 
 type LocalSubmissionRequest struct {
+	RegisterOnly   bool   `json:"registerOnly,omitempty"`
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`
 	// ArchiveSHA256 is the digest of the archive bytes that follow the
 	// request. The remote carrier fills it and folds it into the frame digest,

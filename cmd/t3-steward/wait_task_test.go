@@ -168,6 +168,8 @@ func TestTaskIdentityResolvesFromTheInjectedEnvironment(t *testing.T) {
 // --task current outside a task is an error that says so, rather than quietly
 // registering an interactive wait that parks nothing.
 func TestTaskCurrentOutsideATaskSaysSo(t *testing.T) {
+	// Isolate this outside-task fixture from a worker checkout's .t3/task.env.
+	t.Chdir(t.TempDir())
 	_, err := resolveTaskIdentity(func(string) string { return "" })
 	if !errors.Is(err, errNotInsideTask) {
 		t.Fatalf("err = %v", err)

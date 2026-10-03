@@ -24,93 +24,43 @@ const campaignUsage = campaignCommandUsage + coordinatorTransportSummary
 
 const campaignCommandUsage = `Usage: t3-steward campaign <command> [args]
 
-A campaign is a version 2 workflow authored as a directory. The namespace is a
-facade: submit creates exactly one workflow and one run, every lifecycle command
-below is an existing backlog operation, and there is no campaign record of its own.
+A campaign is a version 2 workflow directory. These commands use the existing
+backlog workflow and run records; there is no separate campaign record.
 
-Offline, reaches no coordinator:
+Offline (no configuration or coordinator):
   validate <directory|workflow.yaml> [--json]
   plan     <directory|workflow.yaml> [--json|--dot]
-Read-only and live, asks the coordinator and creates nothing:
-  check    <directory|workflow.yaml> [--json] [--task NAME]
-Mutating, checks first and creates one workflow and one run:
-  submit   <directory|workflow.yaml> --idempotency-key KEY [--json] [--no-notify]
-           [--allow-unverified --reason TEXT] [--notify-thread <current|id>]
-Mutating recovery, creates a second run and never changes the first:
-  rerun <run> --from TASK --idempotency-key KEY [--prompt TEXT] [--reason TEXT] [--json]
+Read-only (coordinator):
+  check <directory|workflow.yaml> [--json] [--task NAME]
+  list [--state open|terminal] [--project P] [--class C] [--json]
+    --limit N and --since DURATION select the list window; --limit 0 lists all.
+  show <run> [--json]
+  status <run> [--json]                 alias of show
+  graph <run> [--json|--dot]
+  explain <run>/<task> [--json]
+Mutating (coordinator):
+  submit <directory|workflow.yaml> --idempotency-key KEY [--register-only]
+    [--json] [--no-notify] [--notify-thread <current|id>]
+    [--allow-unverified --reason TEXT]
+    Checks readiness first. Creates one run; this thread is notified by default.
+    --register-only retains a definition without starting a run.
+    Registration refuses supervision/gates and needs an upgraded coordinator.
+  rerun <run> --from TASK --idempotency-key KEY
+    [--prompt TEXT] [--reason TEXT] [--json]
+  cancel <run>[/<task>] --reason TEXT [--command-id ID] [--json]
+  supervision <show|decide|hold|release|escalate|resolve> <run> [flags]
+  recovery retry <run> [flags]
 
-Lifecycle (delegated to backlog, unchanged; explain is read-only and live):
-  list [--project P] [--progress STATES] [--class C] [--limit N] [--since DUR] [--json]
-    --limit 0 lists every run; --since takes a duration such as 24h or 7d.
-  show <run> [--json]   graph <run> [--json|--dot]   explain <run>/<task> [--json]
-  cancel <run>[/<task>] --reason TEXT [--command-id ID] [--json]   no task = whole run
-    cancel --json prints willCancel, the tasks it covers, not the outcome it applied.
-Supervised runs, structured decisions only and never prose:
-  supervision <show|decide|hold|release|escalate|resolve> <run> [flags] [--json]
-    Mutating verbs need --request-id KEY, --reason TEXT and --expected-revision N.
-    Flags and refusal classes: t3-steward campaign supervision --help
-    Recovery: campaign recovery retry <run> [flags]; see campaign recovery --help
-Graph amendment and artifact commands stay under "t3-steward backlog".
-Graph fields: needs (run only after these succeed; acyclic), inputs_from (named
-artifacts from a direct dependency, read-only), outputs (the files a task
-promises), commits (a Git commit a successor needs), verify (must exit zero).
-plan is static and explain is dynamic; check is dynamic too, before there is a
-run. plan reports waves, edges and the digest submit will send, and can never
-promise a worker, a route or quota. Multi-task work is a static DAG: each task
-is its own Steward-scheduled T3 session, and a task prompt must not use native
-subagents in place of declared tasks. Help topics: authoring, fresh, readiness,
-dag-semantics, static-versus-dynamic, plan, graph, commits, rerun, notify, routes,
-supervision.
+Use t3-steward campaign <command> --help full for each command's flags,
+JSON keys and exit-code contract. Collect with:
+  t3-steward task result <run>[/<task>]
 
-check reports one outcome per task and per worker:
-  ready             at least one worker can take every task now
-  accepted_waiting  nobody can now, and waiting fixes it; submit proceeds
-  impossible        no worker can ever run it as written; submit is refused
-Permanent, so submit refuses: an unknown project, setup profile, provider instance,
-model or quota pool; no route at all (declare instance and model, the coordinator
-never chooses) or no configured route; invalid repository syntax, repository-not-found,
-ref-not-found or authentication-failed; impossible cpu, resource, directory or
-capability requirements; a missing credential; a closed timing window. Everything
-else is temporary and submit proceeds, including catalog-digest-mismatch, which
-means re-enrolling a worker. Codes and recovery: t3-steward campaign help readiness.
-
-submit runs check first. --allow-unverified skips only the client-side check; the
-coordinator still refuses an impossible campaign and records the principal and --reason.
-Agents should not use it. accepted_waiting is a success: the run exists and stays
-queued, so end the turn: this thread is notified by default, and --no-notify opts out.
-Collect with t3-steward task result <run>[/<task>]; with no thread (--no-notify)
-poll campaign show <run>: task result exits 1 until the run ends, 2 if one failed.
-
-class: surplus is the default and runs on spare quota, required is admitted first;
-placement.hosts and placement.requires narrow eligible workers, never choose one.
-Retrying is safe: the same --idempotency-key with the same directory returns the
-same run; different content under it is refused. rerun is the same; check needs no key.
-
-A complete example, from an empty directory to a running campaign:
-mkdir -p demo/prompts && echo 'do the work' > demo/prompts/implement.md
-cat > demo/workflow.yaml <<'YAML'
-version: 2
-name: demo
-environment: {project: scratch, type: fresh}
-routes: [{instance: claudeAgent, model: claude-sonnet-5}]
-tasks: {implement: {prompt_file: prompts/implement.md}}
-YAML
-t3-steward campaign check demo --json
-t3-steward campaign submit demo --idempotency-key demo-1
-
-Exit codes: 0 on success and 1 on any error, plus the transport classes below for
-check, submit, rerun and the lifecycle verbs; an impossible campaign is refused with
-class rejected, exit 8. validate and plan use no transport class. --json is on every
-verb; read schemaVersion first in validate, plan, check, submit and rerun output.
-
-Required configuration: validate and plan need none; every other verb needs a
-coordinator, through its owner-only socket here or a backlog_v2.coordinator_client
-block or the UpKeeper-owned ~/.config/t3-steward/coordinator-client.json, whose
-credential is a secretref:f03-admin/<client> reference resolved at use.
-environment.project names a backlog_v2.projects entry: type git has a repository, ref,
-setup profile and credentials; type fresh has none (research): campaign help fresh.
-
-Worked examples: docs/examples/campaign/single-lead, docs/examples/campaign/three-node
+Authoring and lifecycle topics are documented once:
+  t3-steward campaign help authoring
+  t3-steward campaign help <topic>
+  Topics: fresh, readiness, dag-semantics, static-versus-dynamic, plan, graph,
+  commits, rerun, notify, routes, supervision.
+Examples: docs/examples/campaign/single-lead, docs/examples/campaign/three-node
 `
 
 // campaignValidationSchemaVersion versions the validate document. The agent
@@ -367,6 +317,9 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 		_, err := admitCampaignHelp(c.stdout, nil)
 		return err
 	}
+	if args[0] == "status" {
+		args = append([]string{"show"}, args[1:]...)
+	}
 	switch args[0] {
 	case "help", "--help", "-h":
 		_, err := admitCampaignHelp(c.stdout, args)
@@ -464,7 +417,7 @@ func (c campaignCLI) explainNamesATask(ctx context.Context, args []string) error
 
 // campaignCommands are the subcommands run dispatches, in the order a
 // did-you-mean suggestion prefers them.
-var campaignCommands = []string{"validate", "plan", "check", "submit", "list", "show", "explain", "graph", "cancel", "rerun", "supervision", "recovery", "help"}
+var campaignCommands = []string{"validate", "plan", "check", "submit", "list", "show", "status", "explain", "graph", "cancel", "rerun", "supervision", "recovery", "help"}
 
 // nearestCampaignCommand returns the campaign subcommand within two edits of
 // name, or "" when none is that close.
@@ -490,6 +443,9 @@ func admitCampaignHelp(out io.Writer, args []string) (bool, error) {
 	}
 	if len(args) > 1 && isHelp(args[0]) {
 		word := args[1]
+		if word == "full" {
+			return admitHelp(out, []string{"campaign"}, args)
+		}
 		// The explicit "campaign help <word>" form names a topic first. Several
 		// topics share a name with a verb -- plan, graph, rerun -- and the essay
 		// is what that form has always answered with; the verb's reference is
@@ -590,6 +546,9 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if parsed.registerOnly && (bundle.Campaign.Manifest.Supervision != nil || len(bundle.Campaign.Manifest.Gates) != 0) {
+		return fmt.Errorf("register-only refuses supervised campaigns: scheduled supervision is not implemented; next: t3-steward campaign submit %q --idempotency-key %q", parsed.source, parsed.key)
+	}
 	// The thread to notify is resolved before submission. An unresolvable
 	// --notify-thread must not leave a run behind that nobody is listening for.
 	notifyThread, err := c.campaignNotifyThread("campaign submit", parsed.notify)
@@ -628,12 +587,23 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 	response, err := client.SubmitArchive(ctx,
 		backlogadmin.LocalSubmissionRequest{
 			IdempotencyKey:   parsed.key,
+			RegisterOnly:     parsed.registerOnly,
 			Unverified:       parsed.unverified,
 			UnverifiedReason: parsed.reason,
 			Principal:        c.submissionPrincipal(),
 		},
 		bytes.NewReader(bundle.Archive), int64(len(bundle.Archive)))
 	if err != nil {
+		return err
+	}
+	if parsed.registerOnly {
+		if response.RunID != "" {
+			return fmt.Errorf("coordinator created run %s for register-only; next: t3-steward campaign show %s", response.RunID, response.RunID)
+		}
+		if parsed.asJSON {
+			return encodeCampaignJSON(c.stdout, response)
+		}
+		_, err := fmt.Fprintf(c.stdout, "registered workflow %s (replay=%t); no run started.\nnext: t3-steward schedules put %q --name %q --workflow %s --cron \"0 2 * * *\" --timezone UTC --reason \"schedule registered campaign\"\n", response.WorkflowID, response.Replay, plan.Name, plan.Name, response.WorkflowID)
 		return err
 	}
 	// What this submission may promise about a wake is decided by the same
@@ -738,13 +708,19 @@ type campaignArgs struct {
 	notify string
 	// noNotify is the explicit opt-out, the only way to submit a campaign
 	// nobody will be woken for.
-	noNotify bool
+	noNotify     bool
+	registerOnly bool
 }
 
 func parseCampaignArgs(command string, args []string, allowDOT, requireKey bool) (campaignArgs, error) {
 	var parsed campaignArgs
 	for index := 0; index < len(args); index++ {
 		switch argument := args[index]; argument {
+		case "--register-only":
+			if command != "submit" || parsed.registerOnly {
+				return campaignArgs{}, errors.New("--register-only is accepted once by submit only; next: t3-steward campaign submit --help full")
+			}
+			parsed.registerOnly = true
 		case "--json":
 			if parsed.asJSON {
 				return campaignArgs{}, errors.New("--json may be supplied only once")
@@ -840,7 +816,10 @@ func parseCampaignArgs(command string, args []string, allowDOT, requireKey bool)
 	if parsed.noNotify && parsed.notify != "" {
 		return campaignArgs{}, errors.New("--no-notify and --notify-thread contradict each other: one says nobody is woken, the other names who is")
 	}
-	if command == "submit" && !parsed.noNotify && parsed.notify == "" {
+	if parsed.registerOnly && parsed.notify != "" {
+		return campaignArgs{}, errors.New("--register-only creates no run to notify for; next: t3-steward campaign submit --help full")
+	}
+	if command == "submit" && !parsed.registerOnly && !parsed.noNotify && parsed.notify == "" {
 		// The calling thread is notified by default, as it is on "task run". A
 		// campaign nobody will hear about is started only when the caller says
 		// so with --no-notify.

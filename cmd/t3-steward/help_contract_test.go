@@ -301,7 +301,7 @@ func TestEveryVerbAnswersHelpWithItsOwnFlags(t *testing.T) {
 	for _, verb := range sortedKeys(verbs) {
 		t.Run(verb, func(t *testing.T) {
 			for _, spelling := range []string{"--help", "-h", "help"} {
-				stdout, stderr := probeHelp(t, append(strings.Fields(verb), spelling))
+				stdout, stderr := probeHelp(t, append(strings.Fields(verb), spelling, "full"))
 				if strings.TrimSpace(stdout) == "" {
 					t.Fatalf("t3-steward %s %s printed nothing on stdout", verb, spelling)
 				}
@@ -591,12 +591,13 @@ var pagesWithoutAParserSite = map[string]pageWithoutAParserSite{
 
 	// A hub page is a family page one level down: it summarises the verbs
 	// below it, and each of those carries the sites.
-	"backlog artifact": {excuseBreadth, "hub page; the sites are on artifact show and artifact get"},
-	"backlog backup":   {excuseBreadth, "hub page; the sites are on backup create, verify and restore"},
-	"backlog command":  {excuseBreadth, "hub page; the site is on command show"},
-	"backlog edge":     {excuseBreadth, "hub page; the sites are on edge add and edge remove"},
-	"backlog run":      {excuseBreadth, "hub page; the site is on run clone"},
-	"backlog task":     {excuseBreadth, "hub page; the sites are on task show, task add and task set"},
+	"campaign recovery": {excuseBreadth, "hub page; the site is on recovery retry"},
+	"backlog artifact":  {excuseBreadth, "hub page; the sites are on artifact show and artifact get"},
+	"backlog backup":    {excuseBreadth, "hub page; the sites are on backup create, verify and restore"},
+	"backlog command":   {excuseBreadth, "hub page; the site is on command show"},
+	"backlog edge":      {excuseBreadth, "hub page; the sites are on edge add and edge remove"},
+	"backlog run":       {excuseBreadth, "hub page; the site is on run clone"},
+	"backlog task":      {excuseBreadth, "hub page; the sites are on task show, task add and task set"},
 }
 
 // Test 4. The floor under the derivation. A page that declares no parser site

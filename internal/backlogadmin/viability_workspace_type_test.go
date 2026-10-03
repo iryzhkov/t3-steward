@@ -97,14 +97,13 @@ func TestViabilityNamesFreshProjects(t *testing.T) {
 		})
 	}
 
-	// A Git manifest refused for an unknown project gets no fresh hint: it
-	// would send its author towards a workspace type they did not ask for.
+	// Unknown projects list the catalog types and point to workspace authoring.
 	task := viabilityTaskRequest()
 	task.Project = "missing"
 	matrix := viabilityView(t, nil).viability(context.Background(), viabilityCatalog(t),
 		ViabilityRequest{Tasks: []ViabilityTask{task}})
-	if reason, _ := candidateReason(t, matrix, ReasonUnknownProject); strings.Contains(reason.Detail, "fresh") {
-		t.Fatalf("Git manifest got a fresh hint: %q", reason.Detail)
+	if reason, _ := candidateReason(t, matrix, ReasonUnknownProject); !strings.Contains(reason.Detail, "t3-steward campaign help fresh") {
+		t.Fatalf("Git manifest lacks workspace help: %q", reason.Detail)
 	}
 }
 

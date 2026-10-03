@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -218,7 +219,19 @@ func unknownHelpVerb(parent []string, verb string) error {
 // is what makes a help page that returns a transport failure impossible by
 // construction rather than by review.
 func admitHelp(out io.Writer, family []string, args []string) (bool, error) {
-	resolution := resolveHelp(family, args)
+	full := false
+	clean := append([]string(nil), args...)
+	for i := 0; i+1 < len(clean); i++ {
+		if clean[i] == "--" {
+			break
+		}
+		if isHelp(clean[i]) && clean[i+1] == "full" {
+			full = true
+			clean = append(clean[:i+1], clean[i+2:]...)
+			break
+		}
+	}
+	resolution := resolveHelp(family, clean)
 	if resolution.Unknown != "" {
 		return false, unknownHelpVerb(resolution.Parent, resolution.Unknown)
 	}
@@ -229,7 +242,11 @@ func admitHelp(out io.Writer, family []string, args []string) (bool, error) {
 	if !found {
 		return false, nil
 	}
-	_, err := fmt.Fprint(out, page.render())
+	body := page.renderShort()
+	if full {
+		body = page.render()
+	}
+	_, err := fmt.Fprint(out, body)
 	return true, err
 }
 
@@ -278,6 +295,98 @@ func (p helpPage) renderedFlags() []helpFlag {
 	}
 	return p.Flags
 }
+
+// renderShort presents the command contract without repeating transport details.
+func (p helpPage) renderShort() string {
+	var b strings.Builder
+	name := strings.TrimSpace("t3-steward " + p.Path)
+	purpose, usage := p.Purpose, p.Usage
+	if p.Body != "" {
+		paragraphs := strings.Split(strings.TrimSpace(p.Body), "\n\n")
+		for _, paragraph := range paragraphs {
+			if strings.HasPrefix(paragraph, "Usage:") {
+				usage = []string{strings.TrimSpace(strings.TrimPrefix(strings.ReplaceAll(paragraph, "\n", " "), "Usage:"))}
+				continue
+			}
+			if purpose == "" {
+				first, _, _ := strings.Cut(paragraph, "\n")
+				if strings.HasSuffix(first, ":") {
+					purpose = name + " commands; choose a verb below."
+				} else {
+					purpose = strings.ReplaceAll(paragraph, "\n", " ")
+					if at := strings.Index(purpose, ". "); at >= 0 {
+						purpose = purpose[:at+1]
+					}
+				}
+			}
+		}
+	}
+	if strings.HasPrefix(purpose, "Commands:") || strings.HasPrefix(purpose, "Worker daemon") {
+		purpose = name + " commands; choose a verb below."
+	}
+	if purpose != "" {
+		for _, line := range wrapHelpText(purpose, 78) {
+			fmt.Fprintln(&b, line)
+		}
+	}
+	fmt.Fprintln(&b, "\nUsage:")
+	for _, line := range usage {
+		for _, wrapped := range wrapHelpText(line, 76) {
+			fmt.Fprintln(&b, "  "+wrapped)
+		}
+	}
+	children := helpPageChildren(strings.Fields(p.Path))
+	if p.Path == "" {
+		for _, path := range helpPagePaths() {
+			if path != "" && !strings.Contains(path, " ") {
+				children = append(children, path)
+			}
+		}
+	}
+	if len(children) > 0 {
+		fmt.Fprintln(&b, "\nCommands:")
+		for _, line := range wrapHelpText(strings.Join(children, ", "), 76) {
+			fmt.Fprintln(&b, "  "+line)
+		}
+	} else {
+		var flags []string
+		if p.Body != "" {
+			seen := map[string]bool{}
+			for _, flag := range shortHelpOptions.FindAllString(strings.TrimSuffix(strings.TrimSuffix(p.Body, coordinatorTransportHelp), coordinatorTransportSummary), -1) {
+				if !seen[flag] {
+					flags = append(flags, flag)
+					seen[flag] = true
+				}
+			}
+		} else {
+			for _, flag := range p.renderedFlags() {
+				label := strings.TrimSpace(flag.Name + " " + flag.Value)
+				if flag.Required {
+					label += " (required)"
+				} else if flag.Default != "" {
+					label += " [" + flag.Default + "]"
+				}
+				flags = append(flags, label)
+			}
+		}
+		if len(flags) > 0 {
+			fmt.Fprintln(&b, "Options:")
+			for _, line := range wrapHelpText(strings.Join(flags, "; "), 76) {
+				fmt.Fprintln(&b, "  "+line)
+			}
+		}
+	}
+	if p.Path == "task result" {
+		fmt.Fprintln(&b, "\nCollect files under <state>/results; --output DIR overrides it.")
+		fmt.Fprintln(&b, "Exit: 0 succeeded/skipped; 1 still running; 2 failed/cancelled.")
+	} else {
+		fmt.Fprintln(&b, "Exit: 0 accepted/done; nonzero refused or failed.")
+	}
+	fmt.Fprintf(&b, "Full reference: %s --help full\n", name)
+	return b.String()
+}
+
+var shortHelpOptions = regexp.MustCompile("--[a-z][a-z0-9-]*")
 
 // render writes the page. A page with a Body carries a reference this package
 // already holds in full and is printed as it stands.

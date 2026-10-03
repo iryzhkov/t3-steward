@@ -515,28 +515,16 @@ func TestCampaignAllowUnverifiedRequiresAReason(t *testing.T) {
 // than aspirational.
 func TestCampaignHelpDocumentsEveryVerb(t *testing.T) {
 	var out bytes.Buffer
-	if handled, err := admitCampaignHelp(&out, nil); !handled || err != nil {
+	if handled, err := admitCampaignHelp(&out, []string{"--help", "full"}); !handled || err != nil {
 		t.Fatalf("campaign help: handled=%v err=%v", handled, err)
 	}
 	help := out.String()
 	for _, want := range []string{
-		// Every verb, with its class: offline, read-only and live, or mutating.
-		"Offline, reaches no coordinator",
-		"Read-only and live, asks the coordinator and creates nothing",
-		"Mutating, checks first and creates one workflow and one run",
-		"explain is read-only and live",
-		// Outcomes and what they mean for submission.
-		"ready", "accepted_waiting", "impossible",
-		// The escape hatch, stated plainly.
-		"--allow-unverified", "Agents should not use it",
-		// Exit codes, JSON availability and idempotency.
-		"Exit codes", "schemaVersion", "--idempotency-key",
-		// Configuration and credential references.
-		"backlog_v2.coordinator_client", "secretref:f03-admin/",
-		// A complete copyable example, and where the recovery commands are.
-		"t3-steward campaign check demo --json",
-		"t3-steward campaign help readiness",
-		// The transport note another subagent added must survive.
+		"Offline (no configuration or coordinator)", "Read-only (coordinator)",
+		"Mutating (coordinator)", "validate", "plan", "check", "submit",
+		"list", "show", "status", "graph", "explain", "cancel", "rerun",
+		"--allow-unverified", "--register-only", "--idempotency-key",
+		"campaign <command> --help full", "campaign help <topic>", "readiness",
 		"Talking to the coordinator",
 	} {
 		if !strings.Contains(help, want) {

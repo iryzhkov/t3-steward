@@ -22,7 +22,8 @@ func TestCmdWorkerPrintsUsage(t *testing.T) {
 				t.Fatalf("worker %v: %v", args, err)
 			}
 		})
-		if output != workerUsage {
+		page, _ := helpPageFor("worker")
+		if output != page.renderShort() {
 			t.Fatalf("worker %v printed %q", args, output)
 		}
 	}

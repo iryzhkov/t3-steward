@@ -71,8 +71,8 @@ type taskResultTask struct {
 	// Failure is why the attempt failed, as the coordinator recorded it.
 	Failure   string `json:"failure,omitempty"`
 	Directory string `json:"directory"`
-	// FinalMessage is inlined with --json only, because the text form has
-	// already written it to a file the caller can read.
+	// FinalMessage is inlined in JSON and, up to 4096 bytes, in text.
+	// The full content is also written to the printed file path.
 	FinalMessage string           `json:"finalMessage,omitempty"`
 	Files        []taskResultFile `json:"files"`
 	// Missing names what was expected and is not there, such as a final
@@ -202,7 +202,7 @@ func (c taskResultCLI) run(ctx context.Context, args []string) error {
 	}
 	worst := domain.ProgressSucceeded
 	for _, detail := range selected {
-		collected, err := c.collect(ctx, *response.Workflow, detail, filepath.Join(base, runID), asJSON)
+		collected, err := c.collect(ctx, *response.Workflow, detail, filepath.Join(base, runID), true)
 		if err != nil {
 			return err
 		}
@@ -436,6 +436,9 @@ func renderTaskResult(out io.Writer, document taskResultDocument) error {
 			fmt.Fprintf(out, "  failure: %s\n", task.Failure)
 		}
 		fmt.Fprintf(out, "  %s\n", task.Directory)
+		if len(task.FinalMessage) > 0 && len(task.FinalMessage) <= 4096 {
+			fmt.Fprintln(out, strings.TrimSpace(string(safeTerminalText([]byte(task.FinalMessage)))))
+		}
 		for _, file := range task.Files {
 			fmt.Fprintf(out, "    %s\t%d bytes\n", file.Name, file.Size)
 		}

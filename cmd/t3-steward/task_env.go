@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"io"
 	"os"
 	"strings"
@@ -18,7 +19,7 @@ Commands:
                      be notified in this thread when it ends.
                      t3-steward task run --help is the whole contract.
   result             Collect a finished task: its final message and every output
-                     it declared, written under ./.t3/results/<run>/<task>/.
+                     it declared, written under <state>/results/<run>/<task>/.
                      Exits 0 succeeded, 2 failed or cancelled, 1 not terminal.
   env                Print the identity of the task this shell runs inside, as
                      "export NAME=value" lines for the six T3_STEWARD_* variables,
@@ -59,7 +60,18 @@ func cmdTask(g globalFlags, args []string) error {
 	case "result":
 		return taskFamilyResultRoute(g, args[1:])
 	}
-	return fmt.Errorf("%w %q; the commands are run, result and env (try task --help)", errUnknownTaskCommand, args[0])
+	near := "t3-steward task --help"
+	best := 3
+	for _, candidate := range []struct{ verb, command string }{
+		{"run", "task run"}, {"result", "task result"}, {"env", "task env"},
+		{"list", "campaign list"}, {"status", "campaign show"}, {"show", "campaign show"},
+		{"submit", "campaign submit"}, {"explain", "campaign explain"}, {"events", "backlog events"},
+	} {
+		if distance := backlog.EditDistance(strings.ToLower(args[0]), candidate.verb); distance < best {
+			near, best = "t3-steward "+candidate.command, distance
+		}
+	}
+	return fmt.Errorf("%w %q; try %q; to list runs use \"t3-steward campaign list\" or \"t3-steward backlog list\"", errUnknownTaskCommand, args[0], near)
 }
 
 // The three dispatchers behind the single name "task", held in variables for

@@ -10,7 +10,7 @@ package main
 // that belong to a sibling verb. Naming them here is what makes this page a
 // complete account of what that parser will do with this command line.
 const campaignAuthoringNote = "validate, plan, check and submit share one option parser. It also recognises " +
-	"--dot, --idempotency-key, --task, --allow-unverified, --reason, --notify-thread and --no-notify, and refuses the ones " +
+	"--dot, --register-only, --idempotency-key, --task, --allow-unverified, --reason, --notify-thread and --no-notify, and refuses the ones " +
 	"that belong to a sibling verb with \"campaign <verb> does not accept <option>\". Any other option is refused " +
 	"as unknown."
 
@@ -57,9 +57,10 @@ func campaignHelpPages() []helpPage {
 		},
 		{
 			Path:    "campaign submit",
-			Purpose: "create exactly one workflow and one run from a campaign directory.",
-			Usage:   []string{"t3-steward campaign submit <directory|workflow.yaml> --idempotency-key KEY [--allow-unverified --reason TEXT] [--notify-thread current|<id>|--no-notify] [--json]"},
+			Purpose: "submit one campaign run, or register a definition for schedules with --register-only.",
+			Usage:   []string{"t3-steward campaign submit <directory|workflow.yaml> --idempotency-key KEY [--register-only] [--allow-unverified --reason TEXT] [--notify-thread current|<id>|--no-notify] [--json]"},
 			Flags: []helpFlag{
+				{Name: "--register-only", Default: "off", Text: "Retain the workflow definition for schedules without starting a run or registering a wake. Refuses supervised manifests until scheduled supervision is implemented. Changing this mode under an existing key is refused."},
 				{Name: "--idempotency-key", Value: "KEY", Required: true, Text: "The key this submission is recorded under. The same key with the same directory returns the same run, the archive being packed deterministically; the same key with different content is refused. It is required rather than generated, because a generated key turns a retry into a second run."},
 				{Name: "--allow-unverified", Default: "off", Text: "Skip the client-side readiness check. The coordinator still refuses an impossible campaign. Requires --reason. Agents should not use it."},
 				{Name: "--reason", Value: "TEXT", Default: "none", Text: "Why the check was skipped; recorded with the principal in the submission audit record. Only meaningful with --allow-unverified, and required by it."},
@@ -108,16 +109,28 @@ func campaignHelpPages() []helpPage {
 			Notes:    "Mutating and revision-fenced. The run form is one command of its own: one revision-fenced cancellation of every non-terminal task, refused on a coordinator too old to apply it. On a supervised run the same application resolves every open incident as cancelled, cancels undecided gates, releases holds and settles the sink when nothing is still running; it is refused while an overseer activation is live. A run whose tasks are all terminal but whose sink is open is closed the same way, fenced on the run's revision; a settled run is refused. The <run>/<task> form is the forwarded alias of \"t3-steward backlog cancel\".",
 			Parsers:  []parserSite{{Func: "parseCampaignCancelRunArgs"}, {Func: "takeJSONFlag"}},
 		},
+		{Path: "campaign recovery", Purpose: "retry a failed supervised operation using fenced evidence.", Usage: []string{"t3-steward campaign recovery <command> [flags]"}, Exits: coordinatorExits(), JSONNote: "The retry command always prints a JSON recovery receipt.", Notes: "See t3-steward campaign recovery retry --help full for its evidence contract."},
+		{Path: "campaign recovery retry", Body: campaignRecoveryUsage + "\nRetry one supervised operation using incident, graph and attempt revisions.\n\nAll flags in the synopsis are required except --checkpoint-artifact, which may\nbe repeated. Optional " + supervisorCredentialFlag + " NAME chooses a supervisor\ncredential. --config PATH selects configuration.\nThe result is always a JSON recovery receipt; no --json flag is needed.\nExit: 0 accepted; 1 invalid evidence/options; coordinator transport exits apply.\n" + coordinatorTransportSummary, Parsers: []parserSite{{Func: "runRecovery"}}},
 		{Path: "campaign supervision", Body: campaignSupervisionUsage, Parsers: []parserSite{{Func: "parseCampaignSupervisionArgs"}}},
 		func() helpPage {
 			page := campaignAliasPage("campaign list", "the campaign runs the coordinator holds, filtered.",
-				"t3-steward campaign list [--project P] [--progress STATES] [--class CLASS] [--limit N] [--since DURATION] [--json]",
+				"t3-steward campaign list [--project P] [--state open|terminal|--progress STATES] [--class CLASS] [--limit N] [--since DURATION] [--json]",
 				"backlog list")
 			// The window flags are the ones an agent misreads: 0 is not "none".
+			for _, reference := range backlogHelpPages() {
+				if reference.Path == "backlog list" {
+					page.Flags, page.Parsers = reference.Flags, reference.Parsers
+					break
+				}
+			}
+			page.JSONKeys = []string{"schemaVersion", "version", "kind", "generatedAt", "workflows"}
+			page.JSONNote = "schemaVersion 1; workflows is always an array, including when empty. See docs/cli-output.md."
 			page.Notes += " --limit 0 prints every run; unset, the text form prints the newest 50 and --json every one. " +
 				"--since takes a Go duration or a whole number of days, such as 24h or 7d."
 			return page
 		}(),
+		campaignAliasPage("campaign status", "alias of campaign show: one run with its tasks and supervision.",
+			"t3-steward campaign status <run> [--json]", "backlog show"),
 		campaignAliasPage("campaign show", "one campaign run with its tasks, plus its supervision projection.",
 			"t3-steward campaign show <run> [--json]",
 			"backlog show"),

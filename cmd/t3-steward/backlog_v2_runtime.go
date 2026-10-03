@@ -144,6 +144,7 @@ func (s coordinatorLocalService) SubmitArchive(
 	archive io.Reader,
 ) (backlogadmin.LocalSubmissionResponse, error) {
 	result, err := s.submissions.SubmitArchive(ctx, backlog.ArchiveSubmission{
+		RegisterOnly:   request.RegisterOnly,
 		IdempotencyKey: request.IdempotencyKey,
 		Archive:        archive,
 		// The principal is the one this carrier authenticated, never the one

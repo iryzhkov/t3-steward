@@ -281,6 +281,29 @@ func (c backlogAdminCLI) queryAndRender(ctx context.Context, query backlogadmin.
 			return err
 		}
 	}
+	if query.Kind == backlogadmin.QueryEvents && query.TaskID != "" {
+		task, err := c.ask(ctx, backlogadmin.Query{Kind: backlogadmin.QueryTask, WorkflowRunID: query.WorkflowRunID, TaskID: query.TaskID})
+		if err != nil {
+			return fmt.Errorf("%w; next: t3-steward campaign show %s", err, query.WorkflowRunID)
+		}
+		if task.Task == nil {
+			return fmt.Errorf("task %q could not be resolved; next: t3-steward campaign show %s", query.TaskID, query.WorkflowRunID)
+		}
+		id := task.Task.Task.ID
+		attempts := map[string]bool{}
+		for _, event := range response.Events {
+			if event.TaskID == id && event.AttemptID != "" {
+				attempts[event.AttemptID] = true
+			}
+		}
+		events := make([]backlogadmin.Event, 0)
+		for _, event := range response.Events {
+			if event.TaskID == id || attempts[event.AttemptID] || attempts[event.TaskID] {
+				events = append(events, event)
+			}
+		}
+		response.Events = events
+	}
 	response = adoptDeprecatedWaitKeys(response)
 	response, matched := display.List.apply(response, display.JSON)
 	if display.JSON {
@@ -289,10 +312,26 @@ func (c backlogAdminCLI) queryAndRender(ctx context.Context, query backlogadmin.
 		if document, summarised := summariseProjects(response, display.Verbose); summarised {
 			return encoder.Encode(document)
 		}
+		if response.Kind == backlogadmin.QueryWorkflows {
+			workflows := response.Workflows
+			if workflows == nil {
+				workflows = []backlogadmin.WorkflowSummary{}
+			}
+			return encoder.Encode(struct {
+				SchemaVersion int                            `json:"schemaVersion"`
+				Version       string                         `json:"version"`
+				Kind          backlogadmin.QueryKind         `json:"kind"`
+				GeneratedAt   time.Time                      `json:"generatedAt"`
+				Workflows     []backlogadmin.WorkflowSummary `json:"workflows"`
+			}{1, response.Version, response.Kind, response.GeneratedAt, workflows})
+		}
 		return encoder.Encode(response)
 	}
 	if err := renderAdminResponse(c.stdout, response, selector, display); err != nil {
 		return err
+	}
+	if response.Kind == backlogadmin.QueryWorkflow && response.Workflow != nil {
+		c.renderVerification(ctx, response.Workflow)
 	}
 	if response.Kind == backlogadmin.QueryWorkflows && matched > len(response.Workflows) {
 		fmt.Fprintf(c.stdout, "showing the newest %d of %d runs; --limit N shows more, --limit 0 every one, --since DURATION only recent ones\n",
@@ -582,7 +621,16 @@ func parseBacklogAdminQueryWithoutSink(args []string) (backlogadmin.Query, bool,
 	case "list":
 		filter, err := parseWorkflowFilters(clean[1:])
 		return backlogadmin.Query{Kind: backlogadmin.QueryWorkflows, Filter: filter}, asJSON, err
-	case "show", "graph", "events", "diagnose":
+	case "events":
+		if len(clean) != 2 {
+			return backlogadmin.Query{}, false, errors.New("events needs <run>[/<task>]; next: t3-steward backlog events --help")
+		}
+		run, task := splitOptionalTaskTarget(clean[1])
+		if run == "" || strings.HasSuffix(clean[1], "/") || strings.Contains(task, "/") {
+			return backlogadmin.Query{}, false, errors.New("events needs <run>[/<task>]; next: t3-steward backlog events --help")
+		}
+		return backlogadmin.Query{Kind: backlogadmin.QueryEvents, WorkflowRunID: run, TaskID: task}, asJSON, nil
+	case "show", "graph", "diagnose":
 		if len(clean) != 2 {
 			return backlogadmin.Query{}, false, fmt.Errorf("%s needs a workflow-run id", clean[0])
 		}
@@ -708,13 +756,22 @@ func takeJSONFlag(args []string) ([]string, bool, error) {
 
 func parseWorkflowFilters(args []string) (backlogadmin.Filter, error) {
 	var filter backlogadmin.Filter
+	state := ""
 	for len(args) > 0 {
 		if len(args) < 2 {
+			if args[0] == "--state" {
+				return filter, errors.New("--state needs open or terminal; next: t3-steward campaign list --state open")
+			}
 			return filter, fmt.Errorf("%s needs a value", args[0])
 		}
 		flag, value := args[0], args[1]
 		args = args[2:]
 		switch flag {
+		case "--state":
+			if state != "" || (value != "open" && value != "terminal") {
+				return filter, errors.New("--state takes open or terminal once; next: t3-steward campaign list --state open")
+			}
+			state = value
 		case "--project":
 			filter.Project = value
 		case "--schedule":
@@ -737,6 +794,17 @@ func parseWorkflowFilters(args []string) (backlogadmin.Filter, error) {
 			filter.QuotaPoolID = value
 		default:
 			return filter, fmt.Errorf("unknown backlog list flag %q", flag)
+		}
+	}
+	if state != "" {
+		if len(filter.Progress) > 0 {
+			return filter, errors.New("--state and --progress are mutually exclusive; next: t3-steward campaign list --state " + state)
+		}
+		for _, value := range progressFilterValues() {
+			terminal := domain.ProgressState(value).Terminal()
+			if terminal == (state == "terminal") {
+				filter.Progress = append(filter.Progress, domain.ProgressState(value))
+			}
 		}
 	}
 	return filter, nil
@@ -1249,13 +1317,20 @@ func renderCounts[K ~string](out io.Writer, counts map[K]int) {
 	}
 }
 
+func quoteTableCell(value string) string {
+	if strings.ContainsAny(value, " \t\r\n\"") {
+		return strconv.Quote(value)
+	}
+	return value
+}
+
 func renderWorkflows(out io.Writer, workflows []backlogadmin.WorkflowSummary) {
 	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(table, "RUN\tWORKFLOW\tPROJECT\tCLASS\tSTATE\tTASKS")
 	for _, item := range workflows {
 		progress := item.Progress
 		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%d/%d\n", item.Run.ID, item.Workflow.Name,
-			item.Workflow.Project, item.Workflow.Class, item.Run.Progress, progress.Succeeded, progress.Total)
+			quoteTableCell(item.Workflow.Project), item.Workflow.Class, item.Run.Progress, progress.Succeeded, progress.Total)
 	}
 	_ = table.Flush()
 }

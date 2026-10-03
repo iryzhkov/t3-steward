@@ -472,7 +472,11 @@ func requiredDefinitionArtifact(state executionPackageState, id string) (domain.
 	if !exists || id == "" {
 		return domain.Artifact{}, fmt.Errorf("missing artifact %q", id)
 	}
-	if _, ours := state.definitionRuns[artifact.WorkflowRunID]; !ours {
+	// Definition-only registration has no original run. Its retained input must
+	// still be owned by this workflow, using the coordinator storage namespace.
+	unboundDefinition := artifact.WorkflowRunID == "" && artifact.Kind == domain.ArtifactInput &&
+		strings.HasPrefix(filepath.ToSlash(filepath.Clean(artifact.StoragePath)), "workflows/"+state.workflow.ID+"/")
+	if _, ours := state.definitionRuns[artifact.WorkflowRunID]; !ours && !unboundDefinition {
 		return domain.Artifact{}, fmt.Errorf("artifact %q belongs to run %q, which is not a run of workflow %q",
 			id, artifact.WorkflowRunID, state.workflow.ID)
 	}

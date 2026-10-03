@@ -102,6 +102,19 @@ func (v ViabilitySettings) freshProjectHint() string {
 	return "fresh projects in this catalog: " + strings.Join(names, ", ")
 }
 
+func (v ViabilitySettings) projectTypeHint() string {
+	var projects []string
+	for _, project := range v.Projects {
+		kind := project.Type
+		if kind == "" {
+			kind = backlog.EnvironmentGit
+		}
+		projects = append(projects, fmt.Sprintf("%q (%s)", project.Name, kind))
+	}
+	sort.Strings(projects)
+	return "valid projects and workspace types: " + strings.Join(projects, ", ") + "; next: t3-steward backlog projects; workspace authoring: t3-steward campaign help fresh"
+}
+
 // profile returns one configured setup profile by name.
 func (v ViabilitySettings) profile(name string) (backlog.SetupProfile, bool) {
 	for _, profile := range v.SetupProfiles {
@@ -317,7 +330,7 @@ func (v view) viabilityTask(ctx context.Context, settings ViabilitySettings, tas
 	result := ViabilityTaskResult{Task: task.Name, Candidates: make([]ViabilityCandidate, 0, len(workers))}
 	project, known := settings.project(task.Project)
 	if !known {
-		detail := fmt.Sprintf("this coordinator has no project %q", task.Project)
+		detail := fmt.Sprintf("this coordinator has no project %q; %s", task.Project, settings.projectTypeHint())
 		if task.Type == backlog.EnvironmentFresh {
 			detail += "; " + settings.freshProjectHint()
 		}
@@ -335,7 +348,7 @@ func (v view) viabilityTask(ctx context.Context, settings ViabilitySettings, tas
 	}
 	if requestedType != catalogType {
 		detail := fmt.Sprintf("project %q requests workspace type %q, but this coordinator's catalog declares %q; change the manifest environment.type or the catalog project type to match",
-			task.Project, requestedType, catalogType)
+			task.Project, requestedType, catalogType) + "; " + settings.projectTypeHint()
 		if requestedType == backlog.EnvironmentFresh {
 			detail += "; " + settings.freshProjectHint()
 		}

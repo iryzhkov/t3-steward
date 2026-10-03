@@ -602,7 +602,7 @@ thread resolves unless `--no-notify` says that is intended. On wake:
 t3-steward task result <run>          # final message and declared outputs
 ```
 
-It writes `./.t3/results/<run>/<task>/` and exits 0 for a succeeded or skipped
+It prints final messages of at most 4096 bytes inline and writes `<state>/results/<run>/<task>/` and exits 0 for a succeeded or skipped
 task, 2 for a failed or cancelled one, 1 while it is not terminal. To stop a run,
 `t3-steward campaign cancel <run> --reason TEXT` cancels every non-terminal task
 of it with one command; it needs a coordinator at rc.70 or newer and is refused

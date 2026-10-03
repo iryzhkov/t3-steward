@@ -222,7 +222,7 @@ func validateSubmissionRecord(record domain.SubmissionRecord, accepted bool) err
 		return errors.New("only a quarantined submission carries a reason")
 	}
 	if strings.TrimSpace(record.WorkflowID) != record.WorkflowID || record.WorkflowID == "" ||
-		strings.TrimSpace(record.RunID) != record.RunID || record.RunID == "" ||
+		strings.TrimSpace(record.RunID) != record.RunID || (record.RunID == "" && !record.RegisterOnly) || (record.RunID != "" && record.RegisterOnly) ||
 		record.CreatedAt.IsZero() {
 		return errors.New("submission result identities and creation time are required")
 	}
@@ -238,5 +238,5 @@ func validateSubmissionRecord(record domain.SubmissionRecord, accepted bool) err
 
 func sameSubmissionRequest(left, right domain.SubmissionRecord) bool {
 	return left.Key == right.Key && left.Digest == right.Digest &&
-		left.WorkflowID == right.WorkflowID && left.RunID == right.RunID
+		left.WorkflowID == right.WorkflowID && left.RunID == right.RunID && left.RegisterOnly == right.RegisterOnly
 }

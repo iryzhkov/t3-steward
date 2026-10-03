@@ -124,16 +124,16 @@ func familyRouterCases(t *testing.T, files map[string]*ast.File) []familyRouterC
 			name:  "campaign",
 			usage: campaignCommandUsage,
 			sections: map[string]dispatchRoute{
-				"Offline, reaches no coordinator":                                     routeAnyDispatcher,
-				"Read-only and live, asks the coordinator and creates nothing":        routeAnyDispatcher,
-				"Mutating, checks first and creates one workflow and one run":         routeAnyDispatcher,
+				"Offline":   routeAnyDispatcher,
+				"Read-only": routeAnyDispatcher,
+				"Mutating":  routeAnyDispatcher,
 				"Mutating recovery, creates a second run and never changes the first": routeAnyDispatcher,
 				"Lifecycle": routeAnyDispatcher,
 				"Supervised runs, structured decisions only and never prose": routeAnyDispatcher,
 				// Prose that happens to end in a colon in the first column. It
 				// documents no command word of its own.
-				"check reports one outcome per task and per worker":                 routeNotACommand,
-				"A complete example, from an empty directory to a running campaign": routeNotACommand,
+				"JSON keys and exit-code contract. Collect with":     routeNotACommand,
+				"Authoring and lifecycle topics are documented once": routeNotACommand,
 			},
 			drive: func(_ *testing.T, flags globalFlags, words []string) error {
 				return cmdCampaign(flags, words)
