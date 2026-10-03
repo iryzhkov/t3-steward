@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"io"
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/config"
 )
@@ -48,9 +46,7 @@ func defaultedProjectCoordinator(t *testing.T) config.Config {
 func TestCoordinatorStartupWarnsOncePerDefaultedProject(t *testing.T) {
 	cfg := defaultedProjectCoordinator(t)
 	logs := &strings.Builder{}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	handled, err := runBacklogV2(ctx, cfg, slog.New(slog.NewTextHandler(logs, nil)))
+	handled, err := runCoordinatorUntilStarted(t, cfg, slog.New(slog.NewTextHandler(logs, nil)))
 	if err != nil {
 		t.Fatalf("an unbound project stopped the coordinator from starting: %v", err)
 	}
@@ -78,9 +74,7 @@ func TestCoordinatorStartupWarnsOncePerDefaultedProject(t *testing.T) {
 func TestCoordinatorStartupIsSilentWhenEveryProjectIsBound(t *testing.T) {
 	cfg := malformedProjectCoordinator(t)
 	logs := &strings.Builder{}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if _, err := runBacklogV2(ctx, cfg, slog.New(slog.NewTextHandler(logs, nil))); err != nil {
+	if _, err := runCoordinatorUntilStarted(t, cfg, slog.New(slog.NewTextHandler(logs, nil))); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(logs.String(), "default local bindings") {

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -80,6 +81,42 @@ func setCoordinatorTestRoots(t *testing.T, cfg *config.Config) string {
 	return root
 }
 
+// coordinatorStartupLimit bounds how long runCoordinatorUntilStarted waits.
+// It is a failure bound, not a duration a passing test waits out.
+const coordinatorStartupLimit = 2 * time.Minute
+
+// runCoordinatorUntilStarted runs runBacklogV2 until the coordinator has
+// completed its startup boundary pass, then cancels it and returns what
+// runBacklogV2 returned, which a clean shutdown makes (true, nil). A startup
+// that fails returns its error as before. These tests used to run the
+// coordinator under a fixed two-second deadline, which cost two seconds each
+// and failed when a loaded host had not finished starting by then.
+func runCoordinatorUntilStarted(t *testing.T, cfg config.Config, logger *slog.Logger) (bool, error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var once sync.Once
+	ctx = withCoordinatorStarted(ctx, func() { once.Do(cancel) })
+	type result struct {
+		handled bool
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		handled, err := runBacklogV2(ctx, cfg, logger)
+		done <- result{handled: handled, err: err}
+	}()
+	select {
+	case r := <-done:
+		return r.handled, r.err
+	case <-time.After(coordinatorStartupLimit):
+		cancel()
+		<-done
+		t.Fatalf("coordinator neither started nor returned within %s", coordinatorStartupLimit)
+		return false, nil
+	}
+}
+
 func TestRunBacklogV2DisabledHasNoStartupEffects(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	cfg := config.Default()
@@ -140,9 +177,7 @@ func TestRunBacklogV2CoordinatorStartsClosedAndAdvancesEpoch(t *testing.T) {
 	cfg.BacklogV2.Coordinator.ID = "normandy"
 	cfg.BacklogV2.StartupAdmission = "closed"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	handled, err := runBacklogV2(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handled, err := runCoordinatorUntilStarted(t, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil || !handled {
 		t.Fatalf("handled=%v err=%v", handled, err)
 	}

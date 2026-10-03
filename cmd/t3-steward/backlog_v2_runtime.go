@@ -1089,6 +1089,20 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	return serveCoordinatorBoundaries(ctx, &server, cycle, cfg.BacklogV2.Scheduling.Interval.D())
 }
 
+// coordinatorStartedKey is the context key for an optional callback that
+// serveCoordinatorBoundaries calls once the admin socket is listening and the
+// startup boundary pass has completed. Tests use it to stop a coordinator as
+// soon as it is up, instead of letting it run until a fixed deadline expires;
+// production never sets it. A reload starts the services again and calls it
+// again, so the callback must tolerate repeated calls.
+type coordinatorStartedKey struct{}
+
+// withCoordinatorStarted returns a context under which a coordinator calls
+// started after each completed startup boundary pass.
+func withCoordinatorStarted(ctx context.Context, started func()) context.Context {
+	return context.WithValue(ctx, coordinatorStartedKey{}, started)
+}
+
 func serveCoordinatorBoundaries(
 	ctx context.Context,
 	server *backlogadmin.LocalServer,
@@ -1103,6 +1117,9 @@ func serveCoordinatorBoundaries(
 		serverDone <- server.Serve(ctx)
 	}()
 	cycle.Tick(ctx)
+	if started, ok := ctx.Value(coordinatorStartedKey{}).(func()); ok && started != nil {
+		started()
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
