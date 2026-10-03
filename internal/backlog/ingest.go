@@ -278,9 +278,13 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 		file := files[name]
 		inputEntries = append(inputEntries, pinnedinput.Entry{Name: filepath.ToSlash(name), Size: file.size, SHA256: file.sha256})
 	}
-	inputManifest, err := pinnedinput.NewManifest(inputEntries)
-	if err != nil {
-		return records, nil, err
+	var inputManifest *pinnedinput.Manifest
+	if manifest.PinnedInputs {
+		bounded, err := pinnedinput.NewManifest(inputEntries)
+		if err != nil {
+			return records, nil, err
+		}
+		inputManifest = &bounded
 	}
 	artifactIDByPath := make(map[string]string, len(files))
 	manifestArtifact := i.artifact(runID, "", files["workflow.yaml"], now)
@@ -330,7 +334,7 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 		Class:            manifest.Class,
 		TaskIDs:          append([]string(nil), taskIDs...),
 		InputArtifactIDs: append([]string(nil), workflowInputIDs...),
-		InputManifest:    &inputManifest,
+		InputManifest:    inputManifest,
 		CreatedAt:        now,
 	}}
 	records.WorkflowRuns = []domain.WorkflowRun{{

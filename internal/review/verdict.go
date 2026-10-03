@@ -10,12 +10,27 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/iryzhkov/t3-steward/internal/pinnedinput"
 )
 
 const Schema = "review-verdict/v1"
 const MaxDocumentBytes = 1 << 20
+const MaxTitleRunes = 256
+
+func safeFindingText(value string) bool {
+	if !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return false
+		}
+	}
+	return true
+}
 
 type Finding struct {
 	ID             string   `json:"id"`
@@ -102,12 +117,15 @@ func ValidateVerdict(raw []byte, digest, route string) (Verdict, error) {
 				return verdict, fmt.Errorf("finding %d requires %s", i, key)
 			}
 		}
-		if !IDPattern.MatchString(f.ID) || seen[f.ID] {
+		if !safeFindingText(f.ID) || !IDPattern.MatchString(f.ID) || seen[f.ID] {
 			return verdict, fmt.Errorf("finding %d has an invalid or duplicate id", i)
 		}
 		seen[f.ID] = true
 		if f.Severity != "high" && f.Severity != "medium" && f.Severity != "low" {
 			return verdict, fmt.Errorf("finding %s has invalid severity", f.ID)
+		}
+		if !safeFindingText(f.Title) || !safeFindingText(f.Recommendation) || utf8.RuneCountInString(f.Title) > MaxTitleRunes {
+			return verdict, fmt.Errorf("finding %s has unsafe text or title exceeds %d characters", f.ID, MaxTitleRunes)
 		}
 		if strings.TrimSpace(f.Title) == "" || strings.TrimSpace(f.Recommendation) == "" || len(f.Evidence) == 0 {
 			return verdict, fmt.Errorf("finding %s needs title, evidence and recommendation", f.ID)

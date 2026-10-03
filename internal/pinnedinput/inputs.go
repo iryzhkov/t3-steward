@@ -16,6 +16,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 const MaxFileBytes int64 = 1 << 20
@@ -74,8 +76,8 @@ type Snapshot struct {
 	files    map[string][]byte
 }
 
-// SnapshotFiles uses basenames as workspace names, rejects collisions and every
-// symlink component, and reads bounded regular files once. Mutating the originals
+// SnapshotFiles uses basenames as workspace names, resolves parent directories,
+// rejects final symlinks and collisions, and reads bounded regular files once. Mutating the originals
 // after this call cannot change a submission or its idempotency key.
 func SnapshotFiles(files []string) (Snapshot, error) {
 	if len(files) > MaxFiles {
@@ -94,6 +96,11 @@ func SnapshotFiles(files []string) (Snapshot, error) {
 		if err != nil {
 			return Snapshot{}, err
 		}
+		parent, err := filepath.EvalSymlinks(filepath.Dir(absolute))
+		if err != nil {
+			return Snapshot{}, err
+		}
+		absolute = filepath.Join(parent, filepath.Base(absolute))
 		name := filepath.Base(absolute)
 		if !ValidName(name) {
 			return Snapshot{}, fmt.Errorf("input %q: unsafe name", file)
@@ -111,12 +118,13 @@ func SnapshotFiles(files []string) (Snapshot, error) {
 		if info.Size() > MaxFileBytes {
 			return Snapshot{}, fmt.Errorf("input %q exceeds %d bytes", file, MaxFileBytes)
 		}
-		f, err := os.Open(absolute)
+		fd, err := unix.Open(absolute, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 		if err != nil {
 			return Snapshot{}, err
 		}
+		f := os.NewFile(uintptr(fd), absolute)
 		opened, statErr := f.Stat()
-		if statErr != nil || !os.SameFile(info, opened) {
+		if statErr != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
 			f.Close()
 			return Snapshot{}, fmt.Errorf("input %q changed while opening", file)
 		}

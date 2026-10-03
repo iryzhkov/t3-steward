@@ -64,7 +64,7 @@ Flags:
   --name TEXT           --idempotency-key KEY
   --outputs a.md,b.md   --verify "CMD" (repeatable)
   --input FILE         repeatable; pinned files under .t3/inputs/<basename>
-                       1 MiB/file, 3 MiB total, 100 files; symlinks and .. refused
+                       1 MiB/file, 3 MiB total, 100 files; final symlinks and .. refused
   --class surplus|required (default surplus)   --max-turns N (default 3)
   --prompt-file FILE    --fan-out GLOB         --json
   --notify-thread current|THREAD-ID (default current)        --no-notify
@@ -1095,9 +1095,10 @@ func writeTaskRunCampaign(spec taskRunCampaign) (string, error) {
 		route.Host = spec.route.Worker
 	}
 	manifest := backlog.Manifest{
-		Version: backlog.ManifestVersion,
-		Name:    name,
-		Class:   spec.class,
+		Version:      backlog.ManifestVersion,
+		PinnedInputs: len(spec.inputs.Manifest.Entries) > 0,
+		Name:         name,
+		Class:        spec.class,
 		Environment: backlog.ManifestEnvironment{
 			Project: spec.project, Type: environmentType,
 			Scope: backlog.EnvironmentScopeTask, Ref: ref,

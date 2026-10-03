@@ -35,16 +35,17 @@ var manifestNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$
 // Manifest is the version 2 workflow.yaml submission format. ParseManifest
 // applies defaults so callers receive a complete, validated definition.
 type Manifest struct {
-	Version     int                     `yaml:"version"`
-	Name        string                  `yaml:"name"`
-	Class       domain.TaskClass        `yaml:"class"`
-	Placement   ManifestPlacement       `yaml:"placement"`
-	Resources   ManifestResources       `yaml:"resources"`
-	Preflight   ManifestPreflight       `yaml:"preflight"`
-	Environment ManifestEnvironment     `yaml:"environment"`
-	Inputs      []string                `yaml:"inputs"`
-	Routes      []ManifestRoute         `yaml:"routes"`
-	Tasks       map[string]ManifestTask `yaml:"tasks"`
+	Version      int                     `yaml:"version"`
+	Name         string                  `yaml:"name"`
+	Class        domain.TaskClass        `yaml:"class"`
+	Placement    ManifestPlacement       `yaml:"placement"`
+	Resources    ManifestResources       `yaml:"resources"`
+	Preflight    ManifestPreflight       `yaml:"preflight"`
+	Environment  ManifestEnvironment     `yaml:"environment"`
+	Inputs       []string                `yaml:"inputs"`
+	PinnedInputs bool                    `yaml:"pinned_inputs,omitempty"` // Opt into bounded, digest-bound evidence.
+	Routes       []ManifestRoute         `yaml:"routes"`
+	Tasks        map[string]ManifestTask `yaml:"tasks"`
 	// Supervision declares the optional campaign overseer. A nil pointer is the
 	// unsupervised case and is exactly today's behaviour; no empty record is
 	// ever created for it.

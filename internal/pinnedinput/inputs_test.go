@@ -59,11 +59,14 @@ func TestSnapshotRefusesUnsafeAndOversizedSources(t *testing.T) {
 	if err := os.Symlink(root, parent); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := SnapshotFiles([]string{filepath.Join(parent, "plan.md")}); err != nil {
+		t.Fatalf("symlinked parent refused: %v", err)
+	}
 	big := filepath.Join(root, "big")
 	if err := os.WriteFile(big, make([]byte, MaxFileBytes+1), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, files := range [][]string{{link}, {filepath.Join(parent, "plan.md")}, {root}, {big}, {file, file}, {filepath.Join(root, "..", "missing")}} {
+	for _, files := range [][]string{{link}, {root}, {big}, {file, file}, {filepath.Join(root, "..", "missing")}} {
 		if _, err := SnapshotFiles(files); err == nil {
 			t.Fatalf("accepted %v", files)
 		}

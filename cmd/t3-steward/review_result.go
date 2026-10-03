@@ -77,6 +77,11 @@ func (c reviewResultCLI) document(ctx context.Context, round, reviewer, name str
 	return d.Content, nil
 }
 
+// Keep each reviewer-controlled value on its own terminal line.
+func reviewTerminalLine(value string) string {
+	value = strings.NewReplacer("\n", "\\n", "\t", "\\t").Replace(value)
+	return string(safeTerminalText([]byte(value)))
+}
 func parseReviewResultArgs(args []string) (string, bool, error) {
 	id := ""
 	asJSON := false
@@ -177,10 +182,10 @@ func (c reviewResultCLI) run(ctx context.Context, args []string) error {
 			}
 			fmt.Fprintf(c.stdout, "%s: %s (%s); blocking: %d; non-blocking: %d\n", v.ID, verdict, v.Route, v.Blocking, v.NonBlocking)
 			for _, title := range v.BlockingTitles {
-				fmt.Fprintln(c.stdout, "  "+title)
+				fmt.Fprintln(c.stdout, "  "+reviewTerminalLine(title))
 			}
 			if v.Failure != "" {
-				fmt.Fprintln(c.stdout, "  "+v.Failure)
+				fmt.Fprintln(c.stdout, "  "+reviewTerminalLine(v.Failure))
 			}
 			if v.ReviewPath != "" {
 				fmt.Fprintln(c.stdout, "  "+v.ReviewPath)

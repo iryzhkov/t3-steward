@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/iryzhkov/t3-steward/internal/pinnedinput"
 )
@@ -209,7 +210,11 @@ func (r *Round) ApplyResult(id string, result Result, now time.Time) error {
 			}
 		}
 		if len(v.Failure) > 4096 {
-			v.Failure = v.Failure[:4096]
+			end := 4096
+			for end > 0 && !utf8.RuneStart(v.Failure[end]) {
+				end--
+			}
+			v.Failure = v.Failure[:end]
 		}
 		r.Revision++
 		r.UpdatedAt = now.UTC()

@@ -12,7 +12,9 @@ its campaign `inputs:` name and its workspace path
 `.t3/inputs/<basename>`, in Git and fresh environments. Basename collisions
 are refused rather than silently renamed. Absolute source paths are allowed;
 absolute workspace paths, any `..` component, glob metacharacters and
-symlinks in any source component are refused. Only regular files are accepted.
+symlinks in the final source component are refused. Parent directories are resolved,
+including macOS `/tmp` and `/var` aliases. Only regular files are accepted; opens
+use `O_NOFOLLOW|O_NONBLOCK` and check file identity and type again.
 
 Limits are **1 MiB per file, 3 MiB in total, 100 files**. The campaign's existing
 archive limits also apply (normally 4 MiB including prompts and manifest).
@@ -28,14 +30,19 @@ of entries sorted by name, with fields in `name,size,sha256` order, UTF-8
 encoding and Go encoding/json string escaping. Empty inputs use `[]`.
 Source locations do not enter the digest. Changed bytes change the default
 task-run idempotency key; explicit keys still refuse different content.
-Ordinary campaign input paths keep their relative names and are recorded by
-the same manifest builder on coordinator ingestion.
+Generated bundles with inputs set `pinned_inputs: true`; explicitly pinned
+campaigns can opt into the same limits and digest projection. Ordinary campaigns
+keep their existing input rules and omit the pinned manifest. Generated bundles
+without inputs omit the marker and manifest.
 
 ## review-verdict/v1
 
 Each reviewer produces `review.md` and `verdict.json`. The latter contains
 one JSON object, at most 1 MiB, with no duplicate or unknown keys. Markdown is
-also limited to 1 MiB. All fields below are required.
+also limited to 1 MiB. All fields below are required. Finding id, title and
+recommendation reject control characters and Unicode format characters (Cf).
+Titles are limited to 256 Unicode code points. The short terminal reply escapes
+reviewer-controlled text, including line breaks in failures.
 
 ```json
 {
@@ -78,7 +85,7 @@ The JSON Schema (draft 2020-12) is:
           "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
           "severity": {"enum": ["high", "medium", "low"]},
           "blocking": {"type": "boolean"},
-          "title": {"type": "string", "minLength": 1},
+          "title": {"type": "string", "minLength": 1, "maxLength": 256},
           "evidence": {
             "type": "array",
             "minItems": 1,
@@ -189,12 +196,13 @@ including its retry/backoff and reattachment rules; it never cancels a round.
 
 ## Mixed-version behavior
 
-New task clients send ordinary version-2 campaigns with `inputs:`, already
-understood by existing coordinators and workers. Their receipts show the
-manifest; older coordinators retain input artifacts but omit the new explicit
-workflow manifest projection. Existing workspace input mounting needs no
-protocol change. New coordinators impose the documented input limits, including
-on ordinary campaigns. Old clients ignore the extra workflow JSON field.
+New task clients send version-2 campaigns with `inputs:` and, when nonempty,
+`pinned_inputs: true`. Older coordinators with strict manifest parsing refuse the
+new marker; upgrade the coordinator before using a new client's --input.
+Ordinary campaigns omit the marker and keep their existing limits. Old task
+clients that omit the marker retain artifacts but receive no pinned manifest
+projection from a new coordinator. Existing workspace input mounting needs no
+protocol change. Old clients ignore the extra workflow JSON field.
 
 Review result requires a coordinator supporting the new read query and round
 table. An old coordinator refuses the unknown query; it cannot supply an
