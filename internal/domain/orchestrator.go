@@ -427,16 +427,53 @@ type Trigger struct {
 
 // QuotaPool groups provider instances that consume the same provider limit.
 type QuotaPool struct {
-	ChecksDisabled      bool           `json:"checksDisabled,omitempty"`
-	ID                  string         `json:"id"`
-	Provider            string         `json:"provider"`
-	AccountID           string         `json:"accountId,omitempty"`
-	ProviderInstanceIDs []string       `json:"providerInstanceIds"`
-	Buckets             []BucketKey    `json:"buckets,omitempty"`
-	Admission           AdmissionState `json:"admission"`
-	MaxConcurrent       int            `json:"maxConcurrent"`
-	ActiveAssignments   int            `json:"activeAssignments"`
-	UpdatedAt           time.Time      `json:"updatedAt"`
+	ChecksDisabled      bool        `json:"checksDisabled,omitempty"`
+	ID                  string      `json:"id"`
+	Provider            string      `json:"provider"`
+	AccountID           string      `json:"accountId,omitempty"`
+	ProviderInstanceIDs []string    `json:"providerInstanceIds"`
+	Buckets             []BucketKey `json:"buckets,omitempty"`
+	// BucketSelection says how far Buckets can be trusted. Empty is an
+	// older coordinator's record: a pool naming no buckets is then read from
+	// every window of its providers. BucketSelectionResolved means Buckets is
+	// the complete set of governing buckets, possibly none.
+	// BucketSelectionUnknown means the coordinator could not tell which
+	// buckets govern the pool, and the pool's state is unknown.
+	BucketSelection   string         `json:"bucketSelection,omitempty"`
+	Admission         AdmissionState `json:"admission"`
+	MaxConcurrent     int            `json:"maxConcurrent"`
+	ActiveAssignments int            `json:"activeAssignments"`
+	UpdatedAt         time.Time      `json:"updatedAt"`
+}
+
+// The values of QuotaPool.BucketSelection.
+const (
+	BucketSelectionResolved = "resolved"
+	BucketSelectionUnknown  = "unknown"
+)
+
+// PoolBucketMatcher reports which bucket states a pool is read from: its
+// named buckets when the pool says they were resolved or names any; nothing
+// when its buckets are unknown; and, only for an older coordinator's pool
+// naming none, every bucket of its provider instances (and account).
+func PoolBucketMatcher(pool QuotaPool) func(BucketState) bool {
+	named := make(map[BucketKey]bool, len(pool.Buckets))
+	for _, key := range pool.Buckets {
+		named[key] = true
+	}
+	switch {
+	case pool.BucketSelection == BucketSelectionUnknown:
+		return func(BucketState) bool { return false }
+	case pool.BucketSelection == BucketSelectionResolved || len(named) != 0:
+		return func(state BucketState) bool { return named[state.Key] }
+	}
+	instances := make(map[string]bool, len(pool.ProviderInstanceIDs))
+	for _, instance := range pool.ProviderInstanceIDs {
+		instances[instance] = true
+	}
+	return func(state BucketState) bool {
+		return instances[state.Key.ProviderInstanceID] && (pool.AccountID == "" || pool.AccountID == state.Key.AccountID)
+	}
 }
 
 // ArtifactKind identifies how an immutable artifact participates in a run.

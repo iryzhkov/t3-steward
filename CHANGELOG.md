@@ -34,6 +34,32 @@ All notable changes to this project are documented here. The format follows
   live runs, so the owner heard that such a run failed and not that
   supervision had escalated it. A retried escalation is no longer dropped
   because its run settled while the retry waited.
+- `t3-steward run` and the worker daemon wait for T3 at start instead of
+  exiting. Started at boot before T3 had written `server-runtime.json`, they
+  exited once with "is the T3 server running?" and recovered only through
+  the service restart. They now read the runtime state again with backoff for
+  up to `t3.discovery_timeout` (default 2m; 0 keeps the single attempt).
+- `models` takes its stale threshold from
+  `backlog_v2.coordinator_client.defaults.quota_stale_after` (one hour when
+  unset). A coordinator with quota checks disabled now names the buckets that
+  govern each pool, as the enabled path does, so a pool's AGE and stale flag
+  no longer come from an ignored window (overage) or a window of a model the
+  pool does not serve. Pools now carry `bucketSelection`: `resolved` means
+  the named buckets are the whole governing set, possibly empty, and
+  `unknown` means the coordinator could not read its own observations and no
+  worker observed the pool; quota waits and `models` read neither as every
+  window (a quota wait stays pending, and `models` prints "quota unknown").
+  Upgrade order: admin responses are decoded strictly, so an older client's
+  `models`, `campaign check` or quota query fails with `unknown field
+  "bucketSelection"` against an upgraded coordinator. Upgrade every client
+  host before the coordinator.
+- `backlog_v2.coordinator_client.defaults` (`model`, `quota_stale_after`) in
+  config.yaml survives the UpKeeper coordinator client file, which used to
+  replace the whole client block when config.yaml named no coordinator.
+- Two tests that failed intermittently on macOS CI are fixed at their races:
+  the M5 upgrade qualification read the previous reload's receipt, and the
+  systemd scope cancellation test could read a PID file before it was
+  written.
 
 - `campaign cancel <run>` closes a supervised run in one command. A run whose
   tasks were all terminal but whose escalated review incident kept the sink

@@ -28,8 +28,10 @@ fail separately:
                there is somewhere to run it
   quota        the pool's admission state and the worst of its buckets, phase
                and used percent, from the observations workers report; AGE
-               is how old the newest reading is, and "stale" marks one older
-               than an hour or taken before its window reset, whose phase and
+               is how old the oldest reading of the pool's buckets is, and
+               "stale" marks one older than an hour (set
+               backlog_v2.coordinator_client.defaults.quota_stale_after to
+               change it) or taken before its window reset, whose phase and
                percent describe a window that may be over
 
 Each row is one instance/model pair, in the form "t3-steward task run --model
@@ -149,13 +151,16 @@ type modelsInstance struct {
 	Percent *float64 `json:"percent,omitempty"`
 	// ObservedAt is when the oldest of those readings was taken and ResetsAt
 	// the earliest reset they report. Stale marks a pool one of whose buckets
-	// was read more than modelsStaleAfter ago, or before its own reset, which
+	// was read longer ago than the stale threshold, or before its own reset, which
 	// has since passed: its phase and percent may describe a window that is
 	// over (S2: a pool read 98% draining for hours after its seven-day window
 	// had reset).
 	ObservedAt *time.Time `json:"observedAt,omitempty"`
 	ResetsAt   *time.Time `json:"resetsAt,omitempty"`
 	Stale      bool       `json:"stale,omitempty"`
+	// QuotaUnknown marks a pool whose governing buckets the coordinator could
+	// not resolve: its state is unknown, not read from every window.
+	QuotaUnknown bool `json:"quotaUnknown,omitempty"`
 	// Models is every model the eligible workers advertise for the instance,
 	// deduplicated and sorted.
 	Models  []string       `json:"models,omitempty"`
@@ -214,6 +219,8 @@ type modelsCLI struct {
 	service   adminQueryService
 	principal backlogadmin.Principal
 	stdout    io.Writer
+	// staleAfter is the stale threshold; zero means defaultModelsStaleAfter.
+	staleAfter time.Duration
 }
 
 func cmdModels(g globalFlags, args []string) error {
@@ -232,7 +239,7 @@ func cmdModels(g globalFlags, args []string) error {
 	if err != nil {
 		return err
 	}
-	cli := modelsCLI{service: transport.client, principal: transport.principal, stdout: os.Stdout}
+	cli := modelsCLI{service: transport.client, principal: transport.principal, stdout: os.Stdout, staleAfter: modelsStaleAfter(cfg)}
 	return cli.run(context.Background(), scope, asJSON)
 }
 
@@ -301,7 +308,7 @@ func (c modelsCLI) run(ctx context.Context, scope modelsScope, asJSON bool) erro
 			eligible[worker.Worker] = true
 		}
 	}
-	document := scopeModelsDocument(buildModelsDocument(scope.Project, workers.Workers, quotas.Quotas, eligible), scope)
+	document := scopeModelsDocument(buildModelsDocument(scope.Project, workers.Workers, quotas.Quotas, eligible, c.staleAfter), scope)
 	if asJSON {
 		encoder := json.NewEncoder(c.stdout)
 		encoder.SetIndent("", "  ")
@@ -323,11 +330,20 @@ func (c modelsCLI) query(ctx context.Context, query backlogadmin.Query) (backlog
 // modelsNow is the clock the quota age is read against; a seam for tests.
 var modelsNow = time.Now
 
-// modelsStaleAfter is the age past which a pool reading is marked stale. It
-// matches the coordinator's default freshness.quota_max_age.
-const modelsStaleAfter = time.Hour
+// defaultModelsStaleAfter is the age past which a pool reading is marked
+// stale when backlog_v2.coordinator_client.defaults.quota_stale_after is not
+// set.
+const defaultModelsStaleAfter = time.Hour
 
-func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas []backlogadmin.Quota, eligible map[string]bool) modelsDocument {
+// modelsStaleAfter is the configured stale threshold.
+func modelsStaleAfter(cfg config.Config) time.Duration {
+	if configured := cfg.BacklogV2.CoordinatorClient.Defaults.QuotaStaleAfter.D(); configured > 0 {
+		return configured
+	}
+	return defaultModelsStaleAfter
+}
+
+func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas []backlogadmin.Quota, eligible map[string]bool, staleAfter time.Duration) modelsDocument {
 	snapshots := make([]domain.WorkerSnapshot, 0, len(workers))
 	for _, worker := range workers {
 		snapshots = append(snapshots, worker.Snapshot)
@@ -353,12 +369,13 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 			if quota.Admission != nil {
 				item.Admission = string(quota.Admission.Admission)
 			}
+			item.QuotaUnknown = quota.Pool.BucketSelection == domain.BucketSelectionUnknown
 			if observation.Buckets > 0 {
 				percent := observation.Percent
 				item.Phase = string(observation.Phase)
 				item.Percent = &percent
 				item.ResetsAt = observation.ResetsAt
-				item.ObservedAt, item.Stale = modelsPoolFreshness(quota.Pool, states, modelsNow())
+				item.ObservedAt, item.Stale = modelsPoolFreshness(quota.Pool, states, modelsNow(), staleAfter)
 			}
 		}
 	}
@@ -586,6 +603,9 @@ func renderModels(out io.Writer, document modelsDocument) error {
 			used = fmt.Sprintf("%.0f%%", *instance.Percent)
 		}
 		age := "-"
+		if instance.QuotaUnknown {
+			age = "quota unknown"
+		}
 		if instance.ObservedAt != nil {
 			age = modelsAge(modelsNow().Sub(*instance.ObservedAt))
 			if instance.Stale {
@@ -670,36 +690,29 @@ func modelsReasonText(reason string) string {
 }
 
 // modelsPoolFreshness judges each bucket of the pool on its own: a bucket is
-// stale when its reading is older than modelsStaleAfter or was taken before
+// stale when its reading is older than staleAfter (zero means
+// defaultModelsStaleAfter) or was taken before
 // its own reset, which has since passed. The pool is stale when any of its
 // buckets is, and its age is its oldest bucket's, because that is the reading
 // its phase and percent may still rest on. The buckets are the ones
 // ObserveQuotaPool counts: the pool's named buckets, or its instances' buckets
 // when it names none.
-func modelsPoolFreshness(pool domain.QuotaPool, states []domain.BucketState, now time.Time) (*time.Time, bool) {
-	named := make(map[domain.BucketKey]bool, len(pool.Buckets))
-	for _, key := range pool.Buckets {
-		named[key] = true
+func modelsPoolFreshness(pool domain.QuotaPool, states []domain.BucketState, now time.Time, staleAfter time.Duration) (*time.Time, bool) {
+	if staleAfter <= 0 {
+		staleAfter = defaultModelsStaleAfter
 	}
-	instances := make(map[string]bool, len(pool.ProviderInstanceIDs))
-	for _, instance := range pool.ProviderInstanceIDs {
-		instances[instance] = true
-	}
+	belongs := domain.PoolBucketMatcher(pool)
 	var oldest *time.Time
 	stale := false
 	for _, state := range states {
-		belongs := named[state.Key]
-		if len(named) == 0 {
-			belongs = instances[state.Key.ProviderInstanceID] && (pool.AccountID == "" || pool.AccountID == state.Key.AccountID)
-		}
-		if !belongs {
+		if !belongs(state) {
 			continue
 		}
 		observed := state.ObservedAt
 		if oldest == nil || observed.Before(*oldest) {
 			oldest = &observed
 		}
-		if now.Sub(observed) > modelsStaleAfter ||
+		if now.Sub(observed) > staleAfter ||
 			state.ResetsAt != nil && observed.Before(*state.ResetsAt) && !now.Before(*state.ResetsAt) {
 			stale = true
 		}

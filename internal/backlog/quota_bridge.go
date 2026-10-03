@@ -132,6 +132,9 @@ func (b QuotaBridge) ReconcileObservations(ctx context.Context, reservations []Q
 		sort.Slice(pools[index].Buckets, func(i, j int) bool {
 			return pools[index].Buckets[i].String() < pools[index].Buckets[j].String()
 		})
+		// The names are the complete governing set, even when it is empty:
+		// a pool no observation governs is not read from every window.
+		pools[index].BucketSelection = domain.BucketSelectionResolved
 	}
 	derived, err := DeriveQuotaPoolAdmissions(QuotaAdmissionDerivationInput{
 		Now: now, MaxObservationAge: b.MaxObservationAge, Pools: pools,
@@ -166,7 +169,11 @@ func (b QuotaBridge) ReconcileObservations(ctx context.Context, reservations []Q
 // from one durable coordinator snapshot before changing admission.
 func (b QuotaBridge) ReconcileState(ctx context.Context, input QuotaPlanningStateInput) (QuotaBridgeReport, error) {
 	if b.Disabled {
-		return b.disabledReport(input)
+		report, err := b.disabledReport(input)
+		if err == nil {
+			b.nameGoverningBuckets(ctx, report.Pools, input.WorkerSnapshots)
+		}
+		return report, err
 	}
 	pools, _, err := quotaBridgePools(b.Pools)
 	if err != nil {

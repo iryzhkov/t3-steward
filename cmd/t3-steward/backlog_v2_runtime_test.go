@@ -186,7 +186,9 @@ func TestRunBacklogV2CoordinatorServesAuthenticatedLocalAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	// Generous: coordinator start-up under -race on a loaded macOS runner
+	// took longer than the two seconds this used to allow.
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		if _, err := os.Stat(socketPath); err == nil {
 			break
@@ -268,7 +270,9 @@ func TestRunBacklogV2CoordinatorIngestsLegacyDropWithoutDispatch(t *testing.T) {
 		MaxArtifactBytes: int64(cfg.BacklogV2.MessageLimits.MaxArtifactBytes),
 		RequestTimeout:   cfg.BacklogV2.Transport.RequestTimeout.D(),
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	// Generous: coordinator start-up under -race on a loaded macOS runner
+	// took longer than the two seconds this used to allow.
+	deadline := time.Now().Add(15 * time.Second)
 	var response backlogadmin.Response
 	for {
 		response, err = client.Query(context.Background(), backlogadmin.Query{
@@ -322,7 +326,9 @@ func TestRunBacklogV2CoordinatorAcceptsNativeArchiveSubmissionAndReplay(t *testi
 		cancel()
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	// Generous: coordinator start-up under -race on a loaded macOS runner
+	// took longer than the two seconds this used to allow.
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		if _, err := os.Stat(socketPath); err == nil {
 			break
@@ -497,7 +503,9 @@ func TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands(t *testing.T
 		cancel()
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	// Generous: coordinator start-up under -race on a loaded macOS runner
+	// took longer than the two seconds this used to allow.
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		if _, err := os.Stat(socketPath); err == nil {
 			break

@@ -147,7 +147,11 @@ func (c *Config) applyCoordinatorClientBootstrap(home string) error {
 	if err != nil || !found {
 		return err
 	}
+	// The file says where the coordinator is; what this host chooses when a
+	// command names nothing (defaults) is config.yaml's and is kept.
+	defaults := c.BacklogV2.CoordinatorClient.Defaults
 	c.BacklogV2.CoordinatorClient = bootstrap.Settings()
+	c.BacklogV2.CoordinatorClient.Defaults = defaults
 	return nil
 }
 

@@ -90,6 +90,11 @@ func TestM5SupportedIsolatedUpgradeDrainsSettlesAndResumes(t *testing.T) {
 		starts = append(starts, active)
 		mu.Unlock()
 		activated <- active
+		// The loop writes an accepted receipt only after ready. The pause
+		// holds open the window a slow runner opens by chance (macOS CI), so
+		// a check that reads the previous reload's receipt fails every time
+		// instead of now and then.
+		time.Sleep(50 * time.Millisecond)
 		ready()
 		<-runCtx.Done()
 		return nil
@@ -122,7 +127,7 @@ func TestM5SupportedIsolatedUpgradeDrainsSettlesAndResumes(t *testing.T) {
 	upgradedConfig.BacklogV2.Projects["steward"] = project
 	writeReloadConfig(t, fixture.cfg.Path, upgradedConfig)
 	reloads <- syscallSIGHUP()
-	blocked := waitM5Receipt(t, fixture, backlogadmin.ReloadRejected)
+	blocked := waitM5Receipt(t, fixture, backlogadmin.ReloadRejected, "")
 	if len(blocked.Blockers) != 1 || blocked.Blockers[0].AssignmentID != assignment.ID {
 		t.Fatalf("catalog upgrade did not remain blocked by retained custody: %+v", blocked)
 	}
@@ -182,10 +187,10 @@ func TestM5SupportedIsolatedUpgradeDrainsSettlesAndResumes(t *testing.T) {
 	if upgraded.Inventory.AcceptBacklog || upgraded.CatalogRevision == drained.CatalogRevision {
 		t.Fatalf("upgrade did not retain drain and replace catalog: drained=%+v upgraded=%+v", drained, upgraded)
 	}
-	acceptedUpgrade := waitM5Receipt(t, fixture, backlogadmin.ReloadAccepted)
-	upgradeDigest, err := coordinatorConfigurationDigest(upgradedActive.BacklogV2)
-	if err != nil || acceptedUpgrade.ConfigurationDigest != upgradeDigest {
-		t.Fatalf("accepted upgrade receipt=%+v digest=%q err=%v", acceptedUpgrade, upgradeDigest, err)
+	upgradeDigest := mustM5Digest(t, upgradedActive)
+	acceptedUpgrade := waitM5Receipt(t, fixture, backlogadmin.ReloadAccepted, upgradeDigest)
+	if acceptedUpgrade.ConfigurationDigest != upgradeDigest {
+		t.Fatalf("accepted upgrade receipt=%+v digest=%q", acceptedUpgrade, upgradeDigest)
 	}
 
 	resumedConfig := cloneReloadConfig(t, upgradedActive)
@@ -199,7 +204,10 @@ func TestM5SupportedIsolatedUpgradeDrainsSettlesAndResumes(t *testing.T) {
 	if !resumed.Inventory.AcceptBacklog || resumed.CatalogRevision != upgraded.CatalogRevision {
 		t.Fatalf("resume replaced catalog/execution epoch or left admission closed: upgraded=%+v resumed=%+v", upgraded, resumed)
 	}
-	waitM5Receipt(t, fixture, backlogadmin.ReloadAccepted)
+	// The upgrade's accepted receipt is still on disk until the loop writes
+	// this reload's, so the wait is for this configuration's digest; an
+	// outcome alone matched the previous receipt.
+	waitM5Receipt(t, fixture, backlogadmin.ReloadAccepted, mustM5Digest(t, resumedActive))
 
 	restarted, err := config.LoadFile(fixture.cfg.Path)
 	if err != nil {
@@ -231,23 +239,26 @@ func receiveM5Activation(t *testing.T, active <-chan config.Config) config.Confi
 	select {
 	case cfg := <-active:
 		return cfg
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for configuration activation")
 		return config.Config{}
 	}
 }
 
-func waitM5Receipt(t *testing.T, fixture *reloadFixture, outcome string) backlogadmin.ReloadReceipt {
+// waitM5Receipt waits for the receipt of one reload: the outcome and, when
+// digest is not empty, the configuration digest. Each reload overwrites the
+// one receipt file, so an outcome alone can match the previous reload's.
+func waitM5Receipt(t *testing.T, fixture *reloadFixture, outcome, digest string) backlogadmin.ReloadReceipt {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		receipt, err := readReloadReceipt(fixture.receipts.path)
-		if err == nil && receipt.Outcome == outcome {
+		if err == nil && receipt.Outcome == outcome && (digest == "" || receipt.ConfigurationDigest == digest) {
 			return receipt
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for %s reload receipt", outcome)
+	t.Fatalf("timed out waiting for %s reload receipt with digest %q", outcome, digest)
 	return backlogadmin.ReloadReceipt{}
 }
 
