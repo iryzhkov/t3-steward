@@ -209,6 +209,24 @@ func TestMeasuredUsageBindingIsAuthoritativeIsolatedAndReplaySafe(t *testing.T) 
 	}
 }
 
+// reducedIterations reports whether tests that write thousands of rows to
+// cross a bound should cross a lowered one instead: under the race detector,
+// where each pure-Go SQLite write is far slower, and under -short. The plain
+// run keeps the production bounds.
+func reducedIterations() bool {
+	return raceEnabled || testing.Short()
+}
+
+// testUsageDiagnosticRetention is the per-worker diagnostic retention bound
+// the usage tests cross: the production bound in the plain run, a lowered one
+// when reducedIterations says so.
+func testUsageDiagnosticRetention() int {
+	if reducedIterations() {
+		return 20
+	}
+	return MaxUsageDiagnostics
+}
+
 func TestAttributedUsageAppliesDeterministicSafetyBound(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
@@ -216,6 +234,11 @@ func TestAttributedUsageAppliesDeterministicSafetyBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	limit := MaxRunUsageAggregation
+	if reducedIterations() {
+		limit = 200
+		store.runUsageAggregation = limit
+	}
 
 	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
 	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{
@@ -227,7 +250,7 @@ func TestAttributedUsageAppliesDeterministicSafetyBound(t *testing.T) {
 	if _, err := store.PrepareAssignmentDispatch(ctx, measuredAssignment("assignment-bound", "attempt-bound", "thread-bound", "codex", 1, now)); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i <= MaxRunUsageAggregation; i++ {
+	for i := 0; i <= limit; i++ {
 		if err := store.RecordUsage(ctx, domain.UsageSample{
 			WorkerID: "worker", ProviderInstanceID: "codex", ThreadID: "thread-bound", Model: "gpt",
 			ObservedAt: now.Add(time.Duration(i) * time.Second), SourceEventID: fmt.Sprintf("event-%05d", i),
@@ -240,8 +263,9 @@ func TestAttributedUsageAppliesDeterministicSafetyBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Samples) != MaxRunUsageAggregation || !report.Coverage.Truncated ||
-		report.Samples[0].SourceEventID != "event-00000" || report.Samples[len(report.Samples)-1].SourceEventID != "event-09999" {
+	if len(report.Samples) != limit || !report.Coverage.Truncated ||
+		report.Samples[0].SourceEventID != "event-00000" ||
+		report.Samples[len(report.Samples)-1].SourceEventID != fmt.Sprintf("event-%05d", limit-1) {
 		t.Fatalf("bounded report: samples=%d coverage=%#v first=%q last=%q", len(report.Samples), report.Coverage,
 			report.Samples[0].SourceEventID, report.Samples[len(report.Samples)-1].SourceEventID)
 	}
@@ -493,8 +517,10 @@ func TestRecordUsageRollsBackDiagnosticOverflowAtEveryCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	retention := testUsageDiagnosticRetention()
+	store.SetUsageDiagnosticRetention(retention)
 	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
-	for i := 0; i < 1001; i++ {
+	for i := 0; i < retention+1; i++ {
 		if err := store.RecordUsage(ctx, domain.UsageSample{
 			WorkerID: "worker-atomic", ProviderInstanceID: "provider", ThreadID: "thread",
 			ObservedAt: now.Add(time.Duration(i) * time.Second), SourceEventID: fmt.Sprintf("baseline-%04d", i),
@@ -529,7 +555,7 @@ func TestRecordUsageRollsBackDiagnosticOverflowAtEveryCheckpoint(t *testing.T) {
 			WHERE worker_id = 'worker-atomic' AND event_id = 'candidate'`).Scan(&candidate); err != nil {
 			t.Fatal(err)
 		}
-		if ordinary != 1000 || dropped != 1 || marker != 1 || forwarded != 1 || candidate != 0 {
+		if ordinary != int64(retention) || dropped != 1 || marker != 1 || forwarded != 1 || candidate != 0 {
 			t.Fatalf("rollback state ordinary=%d dropped=%d marker=%d forwarded=%d candidate=%d",
 				ordinary, dropped, marker, forwarded, candidate)
 		}
@@ -563,6 +589,7 @@ func TestRecordUsageRollsBackDiagnosticOverflowAtEveryCheckpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	store.SetUsageDiagnosticRetention(retention)
 	if err := store.RecordUsage(ctx, candidate); err != nil {
 		t.Fatal(err)
 	}
@@ -623,9 +650,11 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	retention := testUsageDiagnosticRetention()
+	store.SetUsageDiagnosticRetention(retention)
 
 	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
-	for i := 0; i < 1001; i++ {
+	for i := 0; i < retention+1; i++ {
 		if err := store.RecordUsage(ctx, domain.UsageSample{
 			// The worker's own watchdog records its host's samples unowned,
 			// exactly as production does; only those are forwarded.
@@ -640,7 +669,7 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(samples) != 1001 {
+	if len(samples) != retention+1 {
 		t.Fatalf("retained diagnostics = %d", len(samples))
 	}
 	var ordinary, overflow int
@@ -654,7 +683,7 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 			ordinary++
 		}
 	}
-	if ordinary != 1000 || overflow != 1 {
+	if ordinary != retention || overflow != 1 {
 		t.Fatalf("ordinary=%d overflow=%d", ordinary, overflow)
 	}
 	report, err := store.AttributedUsage(ctx, "")
@@ -701,7 +730,7 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 	// Advance the same overflow state through another cycle. A late acknowledgement
 	// for revision 1 must not suppress revision 6, and neither database may retain
 	// more than one overflow marker for this worker.
-	for i := 1001; i < 1006; i++ {
+	for i := retention + 1; i < retention+6; i++ {
 		if err := store.RecordUsage(ctx, domain.UsageSample{
 			// The worker's own watchdog records its host's samples unowned,
 			// exactly as production does; only those are forwarded.

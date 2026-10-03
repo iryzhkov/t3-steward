@@ -31,6 +31,11 @@ type Store struct {
 	ownerLock        *os.File
 	usageRecordHook  usageMutationHook
 	pruneHistoryHook usageMutationHook
+	// diagnosticRetention and runUsageAggregation override
+	// MaxUsageDiagnostics and MaxRunUsageAggregation when positive. Only
+	// tests set them, to cross those bounds with fewer rows.
+	diagnosticRetention int
+	runUsageAggregation int
 }
 
 var migrations = []string{
@@ -834,7 +839,7 @@ func (s *Store) RecordUsage(ctx context.Context, u domain.UsageSample) error {
 		return err
 	}
 	defer tx.Rollback()
-	if err := recordUsageWithHook(ctx, tx, u, s.usageRecordHook); err != nil {
+	if err := recordUsageWithHook(ctx, tx, u, s.usageRecordHook, s.usageDiagnosticRetention()); err != nil {
 		return err
 	}
 	return tx.Commit()

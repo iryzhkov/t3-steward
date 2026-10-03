@@ -17,6 +17,36 @@ import (
 const MaxWorkerUsageDelivery = 128
 const MaxRunUsageAggregation = 10000
 
+// MaxUsageDiagnostics is how many ordinary diagnostic samples a store retains
+// per worker. Older ones are pruned and counted in the worker's overflow marker.
+const MaxUsageDiagnostics = 1000
+
+// SetUsageDiagnosticRetention lowers the per-worker diagnostic retention bound
+// of this store from MaxUsageDiagnostics to limit; a limit below one restores
+// the default. It exists so that tests can cross the bound without writing a
+// thousand samples, which under the race detector costs minutes. Production
+// stores never call it.
+func (s *Store) SetUsageDiagnosticRetention(limit int) {
+	if limit < 1 {
+		limit = 0
+	}
+	s.diagnosticRetention = limit
+}
+
+func (s *Store) usageDiagnosticRetention() int {
+	if s.diagnosticRetention > 0 {
+		return s.diagnosticRetention
+	}
+	return MaxUsageDiagnostics
+}
+
+func (s *Store) runUsageAggregationLimit() int {
+	if s.runUsageAggregation > 0 {
+		return s.runUsageAggregation
+	}
+	return MaxRunUsageAggregation
+}
+
 const coordinatorMigrationV29 = ""
 
 func applyCoordinatorMigrationV29(tx *sql.Tx) error {
@@ -499,7 +529,7 @@ func (s *Store) AttributedUsage(ctx context.Context, runID string) (domain.Usage
 		activation_id, gate_id, execution_role
 		FROM coordinator_usage_bindings WHERE workflow_run_id = ?
 		ORDER BY worker_id, provider, thread_id, assignment_id LIMIT ?`,
-		runID, MaxRunUsageAggregation+1)
+		runID, s.runUsageAggregationLimit()+1)
 	if err != nil {
 		return domain.UsageReport{}, err
 	}
@@ -526,13 +556,13 @@ func (s *Store) AttributedUsage(ctx context.Context, runID string) (domain.Usage
 	if err := sessionRows.Close(); err != nil {
 		return domain.UsageReport{}, err
 	}
-	if len(report.ExpectedSessions) > MaxRunUsageAggregation {
-		report.ExpectedSessions = report.ExpectedSessions[:MaxRunUsageAggregation]
+	if limit := s.runUsageAggregationLimit(); len(report.ExpectedSessions) > limit {
+		report.ExpectedSessions = report.ExpectedSessions[:limit]
 		report.Coverage.Truncated = true
 	}
 	rows, err := s.db.QueryContext(ctx, attributedUsageSelect+
 		` WHERE b.workflow_run_id = ? ORDER BY u.observed_at, u.worker_id, u.event_id LIMIT ?`,
-		runID, MaxRunUsageAggregation+1)
+		runID, s.runUsageAggregationLimit()+1)
 	if err != nil {
 		return domain.UsageReport{}, err
 	}
@@ -540,8 +570,8 @@ func (s *Store) AttributedUsage(ctx context.Context, runID string) (domain.Usage
 	if err != nil {
 		return domain.UsageReport{}, err
 	}
-	if len(report.Samples) > MaxRunUsageAggregation {
-		report.Samples = report.Samples[:MaxRunUsageAggregation]
+	if limit := s.runUsageAggregationLimit(); len(report.Samples) > limit {
+		report.Samples = report.Samples[:limit]
 		report.Coverage.Truncated = true
 	}
 	return report, nil
@@ -560,11 +590,13 @@ func usageMutationCheckpoint(hook usageMutationHook, stage string) error {
 	return hook(stage)
 }
 
-func recordUsage(ctx context.Context, execer usageExecer, u domain.UsageSample) error {
-	return recordUsageWithHook(ctx, execer, u, nil)
+func recordUsage(ctx context.Context, execer usageExecer, u domain.UsageSample, retention int) error {
+	return recordUsageWithHook(ctx, execer, u, nil, retention)
 }
 
-func recordUsageWithHook(ctx context.Context, execer usageExecer, u domain.UsageSample, hook usageMutationHook) error {
+// recordUsageWithHook stores one sample; retention is the per-worker bound on
+// ordinary diagnostic samples (MaxUsageDiagnostics outside tests).
+func recordUsageWithHook(ctx context.Context, execer usageExecer, u domain.UsageSample, hook usageMutationHook, retention int) error {
 	_, err := execer.ExecContext(ctx,
 		`INSERT OR IGNORE INTO usage_samples(worker_id, event_id, provider, thread_id, model, observed_at, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens, cost_usd, cost_reported, kind, cumulative_tokens, field_presence, boundary_id, incarnation, causal_sequence, diagnostic_code)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -599,7 +631,7 @@ func recordUsageWithHook(ctx context.Context, execer usageExecer, u domain.Usage
 	}
 	result, err := execer.ExecContext(ctx, `DELETE FROM usage_samples WHERE rowid IN (
 		SELECT rowid FROM usage_samples WHERE worker_id = ? AND kind = ? AND diagnostic_code <> 'overflow'
-		ORDER BY observed_at DESC, event_id DESC LIMIT -1 OFFSET 1000)`, u.WorkerID, domain.UsageKindDiagnostic)
+		ORDER BY observed_at DESC, event_id DESC LIMIT -1 OFFSET ?)`, u.WorkerID, domain.UsageKindDiagnostic, retention)
 	if err != nil {
 		return err
 	}
@@ -794,7 +826,7 @@ func (s *Store) ReceiveWorkerUsage(ctx context.Context, workerID string, samples
 			}
 		} else {
 			sample.WorkerID = workerID
-			if err := recordUsage(ctx, tx, sample); err != nil {
+			if err := recordUsage(ctx, tx, sample, s.usageDiagnosticRetention()); err != nil {
 				return WorkerUsageReceipt{}, err
 			}
 			receipt.Stored++

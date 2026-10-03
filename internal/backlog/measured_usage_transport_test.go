@@ -443,7 +443,15 @@ func TestMeasuredUsageSignedOverflowRevisionsSurviveRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for i := 0; i < 1001; i++ {
+	// The plain run crosses the production diagnostic bound; under the race
+	// detector, where each pure-Go SQLite write is far slower, and under
+	// -short, the worker crosses a lowered bound through the same code path.
+	retention := sqlite.MaxUsageDiagnostics
+	if raceEnabled || testing.Short() {
+		retention = 20
+	}
+	workerStore.SetUsageDiagnosticRetention(retention)
+	for i := 0; i < retention+1; i++ {
 		if err := workerStore.RecordUsage(ctx, domain.UsageSample{
 			ProviderInstanceID: "claude-agent", ThreadID: "thread-diagnostic",
 			ObservedAt:    causalUsageNow.Add(time.Duration(i) * time.Millisecond),
@@ -474,6 +482,7 @@ func TestMeasuredUsageSignedOverflowRevisionsSurviveRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer workerStore.Close()
+	workerStore.SetUsageDiagnosticRetention(retention)
 	coordinatorStore, err = sqlite.OpenMigrated(coordinatorPath)
 	if err != nil {
 		t.Fatal(err)
@@ -482,7 +491,7 @@ func TestMeasuredUsageSignedOverflowRevisionsSurviveRestart(t *testing.T) {
 	worker.store = workerStore
 	coordinator.Store = coordinatorStore
 
-	for i := 1001; i < 1006; i++ {
+	for i := retention + 1; i < retention+6; i++ {
 		if err := workerStore.RecordUsage(ctx, domain.UsageSample{
 			ProviderInstanceID: "claude-agent", ThreadID: "thread-diagnostic",
 			ObservedAt:    causalUsageNow.Add(time.Duration(i) * time.Millisecond),
