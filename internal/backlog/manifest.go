@@ -159,6 +159,10 @@ type UnknownManifestFieldError struct {
 func (e *UnknownManifestFieldError) Error() string {
 	var text strings.Builder
 	for index, field := range e.Fields {
+		if field == "prompt" {
+			fmt.Fprintf(&text, "field prompt (line %d): inline prompt: is not supported; put the prompt in a file and name it with prompt_file:; next: t3-steward campaign help authoring\n", e.Lines[index])
+			continue
+		}
 		if index < len(e.Suggestions) && e.Suggestions[index] != "" {
 			fmt.Fprintf(&text, "field %s (line %d) is not a field of this object in release %s; did you mean %s? If not, a newer t3-steward release may be required\n",
 				field, e.Lines[index], e.Release, e.Suggestions[index])

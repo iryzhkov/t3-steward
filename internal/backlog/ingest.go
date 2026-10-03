@@ -53,6 +53,7 @@ type PermanentValidator interface {
 // BundleIngester copies a validated version 2 submission into coordinator-owned
 // storage and persists the corresponding immutable domain records.
 type BundleIngester struct {
+	RegisterOnly      bool
 	DirectoryCatalogs map[string][]directoryresource.Binding
 	StorageRoot       string
 	Store             CoordinatorRecordStore
@@ -92,6 +93,9 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 		return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: %w", err)
 	}
 	defer sourceRoot.Close()
+	if i.RegisterOnly && (manifest.Supervision != nil || len(manifest.Gates) != 0) {
+		return IngestedBundle{}, errors.New("register-only refuses supervised campaigns: scheduled supervision is not implemented; next: t3-steward campaign help supervision")
+	}
 	// The permanent checks are repeated here, transactionally, before anything
 	// exists. A campaign that can never run must consume no run ID and occupy
 	// no place in the graph, whether or not the client checked first.
@@ -171,6 +175,20 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 	}
 	if err = i.retainExternalInputs(ctx, manifest, &records, runID); err != nil {
 		return IngestedBundle{}, fmt.Errorf("ingest external inputs: %w", err)
+	}
+	if i.RegisterOnly {
+		// Build and resolve the definition through the normal acceptance path, then
+		// discard execution records before the first durable write. No planner can
+		// observe a run or attempt, even between metadata publication and replay.
+		records.WorkflowRuns = nil
+		records.Attempts = nil
+		for n := range records.Tasks {
+			records.Tasks[n].RunID = ""
+		}
+		for n := range records.Artifacts {
+			records.Artifacts[n].WorkflowRunID = ""
+		}
+		runID = ""
 	}
 	finalDir := filepath.Join(workflowsRoot, workflowID)
 	if err := os.Rename(stageDir, finalDir); err != nil {

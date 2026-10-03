@@ -59,6 +59,10 @@ with needs, and the files that cross them with outputs and inputs_from. The
 graph is fixed at submission. The Steward never invents a task, and neither may
 a running one.
 
+Each prompt lives in a file named by prompt_file; inline prompt: is not supported.
+class defaults to surplus (spare quota); required is admitted first. A task may
+inherit the workflow class or declare its own.
+
 A task prompt must not use native subagents as a substitute for declared
 campaign tasks. Most harnesses can spawn helper agents inside one session, and
 work delegated that way is invisible here: no task record, no dependency edge,

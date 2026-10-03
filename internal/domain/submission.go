@@ -43,13 +43,15 @@ type QuarantineRelease struct {
 // SubmissionRecord is the durable idempotency decision for one accepted client
 // request. The request digest and result identities are immutable.
 type SubmissionRecord struct {
-	Key        string          `json:"key"`
-	Digest     string          `json:"digest"`
-	WorkflowID string          `json:"workflowId"`
-	RunID      string          `json:"runId"`
-	State      SubmissionState `json:"state"`
-	CreatedAt  time.Time       `json:"createdAt"`
-	AcceptedAt *time.Time      `json:"acceptedAt,omitempty"`
+	// RegisterOnly fixes the mode of a definition-only submission; RunID is empty.
+	RegisterOnly bool            `json:"registerOnly,omitempty"`
+	Key          string          `json:"key"`
+	Digest       string          `json:"digest"`
+	WorkflowID   string          `json:"workflowId"`
+	RunID        string          `json:"runId"`
+	State        SubmissionState `json:"state"`
+	CreatedAt    time.Time       `json:"createdAt"`
+	AcceptedAt   *time.Time      `json:"acceptedAt,omitempty"`
 	// Reason explains a quarantine. It is empty for a pending or accepted
 	// record, whose content is its own explanation.
 	Reason string `json:"reason,omitempty"`

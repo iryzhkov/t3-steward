@@ -277,7 +277,7 @@ func TestUsageNamesTheBucketVerb(t *testing.T) {
 		t.Fatal("top-level usage does not name the bucket verb")
 	}
 	output := captureStdout(t, func() {
-		if err := run([]string{"bucket", "--help"}); err != nil {
+		if err := run([]string{"bucket", "--help", "full"}); err != nil {
 			t.Fatalf("bucket --help: %v", err)
 		}
 	})

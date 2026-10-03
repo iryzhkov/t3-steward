@@ -533,7 +533,7 @@ t3-steward task result <run>[/<task>] [--output DIR] [--json]
 ```
 
 It writes `final-message.md` and every declared output under
-`./.t3/results/<run>/<task>/`, each under the name the task declared, and
+`<state>/results/<run>/<task>/`, each under the name the task declared, and
 collects nothing else; the thread archive and the verification records stay
 behind `backlog artifacts`. The exit code is the task's own verdict: 0
 succeeded or skipped, 2 failed or cancelled with whatever exists still written,

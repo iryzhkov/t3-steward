@@ -30,6 +30,8 @@ type SubmissionStore interface {
 // DirectorySubmission is a bounded request whose content is copied before the
 // accepted result is returned.
 type DirectorySubmission struct {
+	// RegisterOnly retains an immutable schedule definition without starting a run.
+	RegisterOnly   bool
 	IdempotencyKey string
 	BundleDir      string
 	// Principal, Unverified and UnverifiedReason record who submitted and
@@ -44,6 +46,7 @@ type DirectorySubmission struct {
 // of the client-side escape hatch is loud rather than invisible once the run
 // exists.
 type SubmissionAudit struct {
+	RegisterOnly     bool
 	Key              string
 	Digest           string
 	Principal        string
@@ -113,17 +116,35 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 			key = uuid.NewString()
 		}
 	}
+	if request.RegisterOnly {
+		_, source, manifest, _, err := openIngestionBundleBounded(request.BundleDir, s.MaxBytes)
+		if err != nil {
+			return SubmissionResult{}, err
+		}
+		_ = source.Close()
+		if manifest.Supervision != nil || len(manifest.Gates) != 0 {
+			return SubmissionResult{}, errors.New("register-only refuses supervised campaigns: scheduled supervision is not implemented; next: t3-steward campaign help supervision")
+		}
+	}
 	digest, err := directorySubmissionDigest(ctx, request.BundleDir, s.MaxBytes, s.MaxFiles)
 	if err != nil {
 		return SubmissionResult{}, err
 	}
+	contentDigest := digest
+	if request.RegisterOnly {
+		sum := sha256.Sum256([]byte("register-only\x00" + digest))
+		digest = hex.EncodeToString(sum[:])
+	}
 	workflowID, runID := submissionResultIDs(key)
+	if request.RegisterOnly {
+		runID = ""
+	}
 	createdAt := time.Now().UTC()
 	if s.Now != nil {
 		createdAt = s.Now().UTC()
 	}
 	proposed := domain.SubmissionRecord{
-		Key: key, Digest: digest, WorkflowID: workflowID, RunID: runID,
+		Key: key, Digest: digest, WorkflowID: workflowID, RunID: runID, RegisterOnly: request.RegisterOnly,
 		State: domain.SubmissionPending, CreatedAt: createdAt,
 	}
 
@@ -156,17 +177,18 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 	// then refused, which put an escape hatch nobody used into the record.
 	if s.Audit != nil {
 		s.Audit(ctx, SubmissionAudit{
-			Key: key, Digest: digest, Principal: request.Principal,
+			Key: key, Digest: digest, Principal: request.Principal, RegisterOnly: request.RegisterOnly,
 			Unverified: request.Unverified, UnverifiedReason: request.UnverifiedReason,
 			At: createdAt,
 		})
 	}
 	if replay {
-		if err := recoverPendingSubmission(ctx, request.BundleDir, finalDir, digest, s.MaxBytes, s.MaxFiles); err != nil {
+		if err := recoverPendingSubmission(ctx, request.BundleDir, finalDir, contentDigest, s.MaxBytes, s.MaxFiles); err != nil {
 			return SubmissionResult{}, err
 		}
 	}
 	ingester := BundleIngester{
+		RegisterOnly:      request.RegisterOnly,
 		DirectoryCatalogs: s.DirectoryCatalogs,
 		StorageRoot:       s.StorageRoot,
 		Store:             s.Store,

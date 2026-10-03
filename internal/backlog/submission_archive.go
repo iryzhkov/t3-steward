@@ -14,6 +14,7 @@ import (
 )
 
 type ArchiveSubmission struct {
+	RegisterOnly   bool
 	IdempotencyKey string
 	Archive        io.Reader
 	// Principal, Unverified and UnverifiedReason are the audit facts the
@@ -52,6 +53,7 @@ func (s *SubmissionService) SubmitArchive(ctx context.Context, request ArchiveSu
 		return SubmissionResult{}, err
 	}
 	return s.SubmitDirectory(ctx, DirectorySubmission{
+		RegisterOnly:     request.RegisterOnly,
 		IdempotencyKey:   request.IdempotencyKey,
 		BundleDir:        root,
 		Principal:        request.Principal,

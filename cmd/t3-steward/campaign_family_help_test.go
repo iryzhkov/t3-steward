@@ -60,7 +60,7 @@ func TestTheCampaignFamilyPageOffersTheFlagsItsVerbPagesDo(t *testing.T) {
 // supervision is a help topic, answered by a special case rather than from the
 // topic set, and the family page and the unknown-topic refusal both list it.
 func TestTheCampaignHelpTopicsListSupervision(t *testing.T) {
-	if !strings.Contains(campaignCommandUsage, "routes,\nsupervision.") {
+	if !strings.Contains(campaignCommandUsage, "routes, supervision.") {
 		t.Error("the family page's topic line does not list supervision")
 	}
 	_, err := admitCampaignHelp(&strings.Builder{}, []string{"help", "no-such-topic"})
