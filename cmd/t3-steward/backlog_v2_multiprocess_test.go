@@ -1,3 +1,5 @@
+//go:build qualification
+
 package main
 
 import (
@@ -21,6 +23,9 @@ import (
 // complete dependency/artifact/verification/pause/resume/retry/schedule path
 // together with the persistence/effect replay fences which prevent duplicate
 // dispatch after coordinator or worker restart.
+//
+// It builds only with the qualification tag, which the nightly workflow sets:
+// every test it names also runs in the ordinary pass of its own package.
 func TestCoordinatorLocalMultiProcessWorkflow(t *testing.T) {
 	repositoryRoot := coordinatorTestRepositoryRoot(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
