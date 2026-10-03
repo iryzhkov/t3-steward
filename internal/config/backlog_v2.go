@@ -22,8 +22,14 @@ const (
 func (c *Config) validateBacklogV2() error {
 	v := &c.BacklogV2
 	for route, metadata := range v.ReviewRoutes {
-		if !review.ValidRoute(route) || !review.IDPattern.MatchString(metadata.ProviderFamily) || (metadata.Tier != "economy" && metadata.Tier != "executor" && metadata.Tier != "critical") {
-			return fmt.Errorf("backlog_v2.review_routes.%s requires INSTANCE/MODEL, provider_family and tier economy|executor|critical", route)
+		if !review.ValidRoute(route) {
+			return fmt.Errorf("backlog_v2.review_routes.%s: route must be nonempty INSTANCE/MODEL, with no whitespace and at most 256 bytes; MODEL may contain slashes and colons", route)
+		}
+		if !review.IDPattern.MatchString(metadata.ProviderFamily) {
+			return fmt.Errorf("backlog_v2.review_routes.%s.provider_family must be a nonempty safe id (letters, digits, dot, underscore or hyphen; start with a letter or digit; at most 128 bytes)", route)
+		}
+		if metadata.Tier != "economy" && metadata.Tier != "executor" && metadata.Tier != "critical" {
+			return fmt.Errorf("backlog_v2.review_routes.%s.tier must be economy|executor|critical", route)
 		}
 	}
 	v.Mode = strings.ToLower(strings.TrimSpace(v.Mode))

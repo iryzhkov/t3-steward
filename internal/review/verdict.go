@@ -51,9 +51,11 @@ type Verdict struct {
 var IDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 var lineEvidence = regexp.MustCompile(`^(.+):([1-9][0-9]*)$`)
 
+// ValidRoute uses the same first-slash split as task routing. Model IDs are
+// opaque provider names and may contain further slashes or colons.
 func ValidRoute(route string) bool {
 	instance, model, ok := strings.Cut(route, "/")
-	return len(route) <= 256 && ok && instance != "" && model != "" && !strings.ContainsAny(route, " \t\r\n") && !strings.Contains(model, "/")
+	return len(route) <= 256 && ok && instance != "" && model != "" && !strings.ContainsAny(route, " \t\r\n")
 }
 func validEvidence(value string) bool {
 	if id, ok := strings.CutPrefix(value, "artifact:"); ok {

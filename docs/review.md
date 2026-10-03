@@ -38,6 +38,10 @@ backlog_v2:
     codex/gpt-6-luna: {provider_family: openai, tier: economy}
 ```
 
+Route keys split at the first `/`: the instance comes first and the remaining
+text is the model ID. Model IDs may contain more slashes or colons, such as
+`opencode/deepseek/deepseek-flash` or `opencode/ollama/qwen3-coder:30b`.
+
 These are metadata, not route authorization or role policy. The existing worker
 catalog still authorizes routes. The projects query attaches metadata to its
 advertised routes. Classify every advertised route's provider family so diversity
@@ -117,7 +121,12 @@ Mixed versions: ordinary task callers need no new metadata. Old coordinators
 are refused before catalog lookup or submission with "coordinator does not support
 review rounds (needs 0.11.0-rc.104 or later)". Unknown coordinator releases also
 refuse; review has no fallback that weakens the round. Upgrade the coordinator
-and configure review_routes before use. Workers use existing campaign tasks,
+and configure review_routes before use. For slash-containing model IDs, upgrade
+the coordinator to a build with the first-slash validation fix before adding
+those route keys to its configuration: older binaries reject the configuration
+at startup. Upgrade review clients too, including clients collecting results;
+older clients reject these routes in campaigns and verdicts even though the
+rc.104 capability check passes. Workers use existing campaign tasks,
 pinned inputs and dependency artifacts. Judge packages use the existing
 project-context-v1 capability to carry missing-lens observations, with no new
 worker protocol fields. A worker without that capability is refused by the
