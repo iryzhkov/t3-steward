@@ -340,7 +340,8 @@ func (e *DAGExecution) refresh(now time.Time, touch bool) {
 		blockers := make([]string, 0, len(task.Needs))
 		for _, dependency := range task.Needs {
 			dependencyTask := e.state.Tasks[e.taskByName[dependency]]
-			if !e.taskSucceeded(dependencyTask.ID) {
+			terminalLens := task.ReviewJudge && e.state.Attempts[e.currentAttemptIndex(dependencyTask.ID)].Progress.Terminal()
+			if !e.taskSucceeded(dependencyTask.ID) && !terminalLens {
 				blockers = append(blockers, dependency)
 			}
 		}

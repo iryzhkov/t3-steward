@@ -495,6 +495,9 @@ func MaterializeDependencies(workspaceDir, storageRoot, workflowRunID string, ta
 			}
 			artifact, exists := artifactByKey[artifactKey{taskID: producerTask.ID, name: filepath.ToSlash(name)}]
 			if !exists {
+				if task.ReviewJudge {
+					continue
+				}
 				return nil, fmt.Errorf("materialize dependencies: missing output %q from %q", name, producer)
 			}
 			if artifact.WorkflowRunID != workflowRunID {

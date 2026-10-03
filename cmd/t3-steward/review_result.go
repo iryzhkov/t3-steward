@@ -17,26 +17,34 @@ const reviewResultUsage = `Usage: t3-steward review result <round> [--json] [--w
 Read a durable review round and collect its evidence under
 <state>/results/reviews/<round>/. Prints the combined verdict, reviewer states,
 routes, finding counts, blocking titles and paths; full reviews remain in files.
-summary.json contains all validated findings sorted by severity. Failed or
+summary.json contains all validated findings sorted by severity.
+--gate exits 3 unless the combined verdict is accept; collection failure exits 2. Failed or
 invalid reviewers never count as acceptance.
 
-Exit 0 means every review was collected and valid, including a reject verdict.
-Exit 2 means a reviewer failed, timed out or produced invalid evidence.
+Exit 0 means every required review was collected and valid, including a reject verdict.
+Exit 2 means a required reviewer failed, timed out or produced invalid evidence.
+Optional swarm failures are reported but do not fail collection.
 Exit 1 means the round is pending or the wait timed out; SIGINT exits 130.
 Transport errors keep their existing codes. --wait uses the shared blocking
 wait with immediate queries, bounded backoff and optional positive --timeout.
 Interrupting or disconnecting never cancels work. Reattach with the same round.
 --config PATH selects client configuration (the dispatcher consumes it).
-The review submit command is not available in this foundation release.
+--gate exits 3 unless the combined verdict is accept (collection failure remains 2).
 `
 
 func cmdReview(g globalFlags, args []string) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
-		fmt.Print(reviewResultUsage)
+		fmt.Print(reviewUsage)
 		return nil
 	}
 	if args[0] != "result" {
-		return errors.New("review currently supports result only; try t3-steward review result --help")
+		for _, arg := range args {
+			if arg == "--help" || arg == "-h" {
+				fmt.Print(reviewUsage)
+				return nil
+			}
+		}
+		return cmdReviewSubmit(g, args)
 	}
 	for _, arg := range args[1:] {
 		if arg == "--help" || arg == "-h" {
@@ -109,7 +117,16 @@ type reviewResultCLI struct {
 }
 
 func (c reviewResultCLI) run(ctx context.Context, args []string) error {
-	clean, wait, err := blockingwait.Parse(args)
+	gate := false
+	filtered := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "--gate" {
+			gate = true
+		} else {
+			filtered = append(filtered, arg)
+		}
+	}
+	clean, wait, err := blockingwait.Parse(filtered)
 	if err != nil {
 		return err
 	}
@@ -203,9 +220,12 @@ func (c reviewResultCLI) run(ctx context.Context, args []string) error {
 		return exitCodeError{code: 1, error: errors.New("review round is pending; reattach with t3-steward review result " + id + " --wait")}
 	}
 	for _, v := range round.Reviewers {
-		if v.State != "succeeded" || v.Verdict == nil {
+		if v.Required && (v.State != "succeeded" || v.Verdict == nil) {
 			return exitCodeError{code: 2, error: errors.New("review collection failed; inspect the reviewer states and paths")}
 		}
+	}
+	if gate && round.CombinedVerdict() != "accept" {
+		return exitCodeError{code: 3, error: errors.New("review gate did not accept")}
 	}
 	return nil
 }

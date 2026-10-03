@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
+	"github.com/iryzhkov/t3-steward/internal/review"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,6 +21,11 @@ const (
 
 func (c *Config) validateBacklogV2() error {
 	v := &c.BacklogV2
+	for route, metadata := range v.ReviewRoutes {
+		if !review.ValidRoute(route) || !review.IDPattern.MatchString(metadata.ProviderFamily) || (metadata.Tier != "economy" && metadata.Tier != "executor" && metadata.Tier != "critical") {
+			return fmt.Errorf("backlog_v2.review_routes.%s requires INSTANCE/MODEL, provider_family and tier economy|executor|critical", route)
+		}
+	}
 	v.Mode = strings.ToLower(strings.TrimSpace(v.Mode))
 	// The client block is validated in every mode: the host that needs it is
 	// usually not running a coordinator or a worker at all.

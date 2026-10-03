@@ -206,6 +206,11 @@ func (s *Store) RegisterNodeWait(ctx context.Context, request domain.NodeWaitReq
 		}
 		request.Target = observation.Target
 	}
+	if request.Quota == nil {
+		if err := reviewNodeObservationTx(ctx, tx, request.Target, &observation); err != nil {
+			return w, err
+		}
+	}
 	w = domain.NodeWait{Registration: original, Request: request, Actor: actor, Host: host, RegisteredRevision: observation.RunRevision, CreatedAt: now.UTC(), Deadline: now.Add(request.Timeout).UTC(), DeliveryID: "node-wake:" + request.ID, Delivery: "pending"}
 	if observation.ExitCode != 1 {
 		w.Observation = &observation
@@ -263,6 +268,9 @@ func (s *Store) SettleNodeWaits(ctx context.Context, now time.Time) error {
 			obs, e = observeQuota(*w.Request.Quota, records, now)
 		} else {
 			obs, e = resolveNodeState(domain.NodeWaitCondition{Target: w.Request.Target, State: w.Request.State}, records)
+		}
+		if e == nil && w.Request.Quota == nil {
+			e = reviewNodeObservationTx(ctx, tx, w.Request.Target, &obs)
 		}
 		if e != nil {
 			obs = domain.NodeObservation{Target: w.Request.Target, ExitCode: 2, Reason: e.Error(), Outcome: domain.TaskWaitGaveUp}

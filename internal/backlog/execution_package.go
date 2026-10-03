@@ -168,7 +168,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		StaticInputs: staticInputs,
 		Recovery:     recovery,
 		Dependencies: dependencies,
-		Context:      state.task.Context,
+		Context:      reviewJudgeInputs(state.task, state.tasks, state.artifacts, state.run.ID, assignment.CreatedAt),
 		Route:        cloneProviderRoute(assignment.Route),
 		Environment: workerproto.EnvironmentReference{
 			DirectoryBindings: directoryresource.CloneBindings(state.task.DirectoryBindings),
@@ -542,6 +542,9 @@ func packageDependencies(
 		for _, name := range names {
 			artifact, exists := outputs[producerTask.ID+"\x00"+filepath.ToSlash(name)]
 			if !exists {
+				if task.ReviewJudge {
+					continue
+				}
 				return nil, fmt.Errorf("missing output %q from %q", name, producer)
 			}
 			object, err := packageArtifact(

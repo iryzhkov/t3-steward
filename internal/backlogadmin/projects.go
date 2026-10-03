@@ -28,6 +28,15 @@ func (v view) projects(settings ViabilitySettings, filter Filter) []Project {
 			Workers:      projectWorkers(definition, settings.ProjectWorkers[definition.Name], workers),
 		})
 	}
+	for i := range result {
+		for j := range result[i].Workers {
+			for k := range result[i].Workers[j].Routes {
+				route := &result[i].Workers[j].Routes[k]
+				metadata := settings.ReviewRoutes[route.Instance+"/"+route.Model]
+				route.ProviderFamily, route.Tier = metadata.ProviderFamily, metadata.Tier
+			}
+		}
+	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result
 }

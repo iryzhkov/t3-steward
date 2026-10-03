@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/review"
 )
 
 const currentSchemaVersion = 31
@@ -140,6 +141,7 @@ CREATE INDEX coordinator_admin_commands_target ON coordinator_admin_commands(tar
 // CoordinatorRecords is a durable coordinator snapshot. SaveCoordinatorRecords
 // writes every supplied record in one transaction; omitted records are left intact.
 type CoordinatorRecords struct {
+	ReviewRounds      []review.Round
 	Workflows         []domain.Workflow
 	WorkflowRuns      []domain.WorkflowRun
 	Tasks             []domain.Task
@@ -172,6 +174,20 @@ func (s *Store) SaveCoordinatorRecords(ctx context.Context, records CoordinatorR
 	}
 	defer tx.Rollback()
 
+	for _, round := range records.ReviewRounds {
+		at := round.CreatedAt
+		if at.IsZero() {
+			at = s.now()
+		}
+		if err := round.Initialize(at); err != nil {
+			return err
+		}
+		if err := insertImmutableJSON(ctx, tx, "review round", round.ID,
+			"INSERT INTO coordinator_review_rounds(id,revision,record) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING",
+			[]any{round.ID, round.Revision}, "SELECT record FROM coordinator_review_rounds WHERE id=?", []any{round.ID}, round); err != nil {
+			return err
+		}
+	}
 	for _, record := range records.Workflows {
 		if err := upsertJSON(ctx, tx, "workflow", record.ID,
 			`INSERT INTO coordinator_workflows(id, record) VALUES (?, ?)

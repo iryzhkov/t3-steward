@@ -158,7 +158,7 @@ func fleetHelpPages() []helpPage {
 			Notes:    "Exactly one wait id. It does not change the outcome, only when the check is next evaluated.",
 			Parsers:  []parserSite{{Func: "cmdNodeWait", Case: "run-now"}},
 		},
-		{Path: "review", Body: reviewResultUsage, Parsers: []parserSite{{Func: "parseReviewResultArgs"}, {Func: "Parse"}}},
+		{Path: "review", Body: reviewUsage, Parsers: []parserSite{{Func: "parseReviewArgs"}}},
 		{Path: "review result", Body: reviewResultUsage, Parsers: []parserSite{{Func: "parseReviewResultArgs"}, {Func: "Parse"}}},
 		{Path: "task run", Body: taskRunUsage, Parsers: []parserSite{{Func: "parseTaskRunArgs"}}},
 		{Path: "task result", Body: taskResultUsage, Parsers: []parserSite{{Func: "parseTaskResultArgs"}, {Func: "Parse"}}},
