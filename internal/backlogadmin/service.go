@@ -281,6 +281,9 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		return Response{}, fmt.Errorf("authorize %s: %w", query.Kind, err)
 	}
 
+	if query.Kind == QueryReviewRound || query.Kind == QueryReviewDocument {
+		return s.queryReviewRound(ctx, query)
+	}
 	view, err := s.loadView(ctx)
 	if err != nil {
 		return Response{}, err
@@ -524,6 +527,10 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 
 func validQuery(query Query) bool {
 	switch query.Kind {
+	case QueryReviewDocument:
+		return query.RoundID != "" && query.ReviewerID != "" && (query.ReviewDocument == "review.md" || query.ReviewDocument == "verdict.json")
+	case QueryReviewRound:
+		return query.RoundID != ""
 	case QueryStatus, QueryWorkflows, QuerySchedules, QueryWorkers, QueryQuota,
 		QueryReservations, QueryLocks, QueryQuarantine, QueryProjects:
 		return true

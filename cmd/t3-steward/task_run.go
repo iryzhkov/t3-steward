@@ -20,6 +20,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/campaign"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/pinnedinput"
 	"gopkg.in/yaml.v3"
 )
 
@@ -62,6 +63,8 @@ Flags:
   --model [INSTANCE/]MODEL                     --worker WORKER
   --name TEXT           --idempotency-key KEY
   --outputs a.md,b.md   --verify "CMD" (repeatable)
+  --input FILE         repeatable; pinned files under .t3/inputs/<basename>
+                       1 MiB/file, 3 MiB total, 100 files; symlinks and .. refused
   --class surplus|required (default surplus)   --max-turns N (default 3)
   --prompt-file FILE    --fan-out GLOB         --json
   --notify-thread current|THREAD-ID (default current)        --no-notify
@@ -131,8 +134,9 @@ type taskRunRecord struct {
 	// A record that carries it promises no wake and names diagnose instead.
 	ProgressUnavailable string `json:"progressUnavailable,omitempty"`
 	// Result is the command that collects the outcome on wake.
-	Result   string   `json:"result"`
-	Warnings []string `json:"warnings,omitempty"`
+	Result        string                `json:"result"`
+	Warnings      []string              `json:"warnings,omitempty"`
+	InputManifest *pinnedinput.Manifest `json:"inputManifest,omitempty"`
 }
 
 // taskRunRoute is the route the run was started on. Worker is the worker the
@@ -246,21 +250,23 @@ func cmdTaskRun(g globalFlags, args []string) error {
 // taskRunArgs is one parsed command line. Nothing is derived here; parsing
 // only reports what the caller said.
 type taskRunArgs struct {
-	project    string
-	ref        string
-	fresh      bool
-	model      string
-	worker     string
-	name       string
-	key        string
-	outputs    []string
-	verify     []string
-	class      string
-	maxTurns   int
-	promptFile string
-	fanOut     string
-	inline     string
-	hasInline  bool
+	project             string
+	ref                 string
+	fresh               bool
+	model               string
+	worker              string
+	name                string
+	key                 string
+	inputs              []string
+	inputManifestDigest string
+	outputs             []string
+	verify              []string
+	class               string
+	maxTurns            int
+	promptFile          string
+	fanOut              string
+	inline              string
+	hasInline           bool
 	// notifyThread is "current", a T3 thread id, or empty when --no-notify
 	// said nobody is woken. It is the same spelling "campaign submit" takes,
 	// because one spelling that means one thing is the whole of the fix.
@@ -326,6 +332,11 @@ func parseTaskRunArgs(args []string) (taskRunArgs, error) {
 			} else {
 				parsed.promptFile = flags[i+1]
 			}
+		case "--input":
+			var raw string
+			if raw, err = value(i, "--input"); err == nil {
+				parsed.inputs = append(parsed.inputs, raw)
+			}
 		case "--outputs":
 			var raw string
 			if raw, err = value(i, "--outputs"); err == nil {
@@ -385,6 +396,13 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	prompts, err := c.prompts(parsed)
 	if err != nil {
 		return err
+	}
+	inputs, err := pinnedinput.SnapshotFiles(parsed.inputs)
+	if err != nil {
+		return err
+	}
+	if len(parsed.inputs) > 0 {
+		parsed.inputManifestDigest = inputs.Manifest.Digest
 	}
 	checkout, err := c.checkout()
 	if err != nil {
@@ -446,7 +464,7 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	directory, err := writeTaskRunCampaign(taskRunCampaign{
 		name: name, project: project.Name, ref: ref, fresh: parsed.fresh,
 		route: route, pinned: parsed.worker != "", prompts: prompts,
-		outputs: parsed.outputs, verify: parsed.verify,
+		outputs: parsed.outputs, verify: parsed.verify, inputs: inputs,
 		class: domain.TaskClass(parsed.class), maxTurns: parsed.maxTurns,
 	})
 	if err != nil {
@@ -493,6 +511,9 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 		Check:          string(matrix.Outcome),
 		Result:         "t3-steward task result " + response.RunID,
 		Warnings:       warnings,
+	}
+	if len(parsed.inputs) > 0 {
+		record.InputManifest = &inputs.Manifest
 	}
 	for _, prompt := range prompts {
 		record.Tasks = append(record.Tasks, prompt.name)
@@ -951,6 +972,9 @@ func taskRunIdempotencyKey(project, ref string, route taskRunRoute, prompts []ta
 	write(parsed.outputs...)
 	write(parsed.verify...)
 	write(parsed.class, strconv.Itoa(parsed.maxTurns))
+	if parsed.inputManifestDigest != "" {
+		write(parsed.inputManifestDigest)
+	}
 	return "run-" + hex.EncodeToString(digest.Sum(nil))[:16]
 }
 
@@ -1047,6 +1071,7 @@ type taskRunCampaign struct {
 	verify   []string
 	class    domain.TaskClass
 	maxTurns int
+	inputs   pinnedinput.Snapshot
 }
 
 // writeTaskRunCampaign writes the version 2 directory the campaign path
@@ -1088,6 +1113,9 @@ func writeTaskRunCampaign(spec taskRunCampaign) (string, error) {
 			MaxTurns:   spec.maxTurns,
 		}
 	}
+	for _, entry := range spec.inputs.Manifest.Entries {
+		manifest.Inputs = append(manifest.Inputs, entry.Name)
+	}
 	raw, err := yaml.Marshal(manifest)
 	if err != nil {
 		return "", err
@@ -1114,6 +1142,10 @@ func writeTaskRunCampaign(spec taskRunCampaign) (string, error) {
 			return "", err
 		}
 	}
+	if err := spec.inputs.Write(root); err != nil {
+		os.RemoveAll(root)
+		return "", err
+	}
 	return root, nil
 }
 
@@ -1135,6 +1167,12 @@ func renderTaskRunRecord(out io.Writer, record taskRunRecord) error {
 	fmt.Fprintf(out, "ref %s\n", ref)
 	fmt.Fprintf(out, "route %s\n", route)
 	fmt.Fprintf(out, "idempotency-key %s (replayed: %t)\n", record.IdempotencyKey, record.Replayed)
+	if record.InputManifest != nil {
+		fmt.Fprintf(out, "input-manifest %s\n", record.InputManifest.Digest)
+		for _, entry := range record.InputManifest.Entries {
+			fmt.Fprintf(out, "input %s: %d bytes sha256 %s\n", entry.Name, entry.Size, entry.SHA256)
+		}
+	}
 	renderTaskRunState(out, record)
 	renderWake(out, record.wake())
 	_, err := fmt.Fprintf(out, "next:\n  %s\n", record.Result)

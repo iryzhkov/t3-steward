@@ -55,6 +55,7 @@ Commands:
   report             Consumption by peak/off-peak hours, hour of day, model and thread.
   forecast           Interactive-demand map by weekday and hour, and current backlog headroom.
   campaign           Author, inspect and submit a workflow from a campaign directory.
+  review             result <round>: collect a durable review round and its evidence.
   models             Every provider route the fleet can run now, with its quota state.
   triage             Everything waiting for an operator, each with a ready-to-run command.
   coordinator        Show which coordinator this host administers (identity); reload it (reload).
@@ -193,7 +194,7 @@ func dispatch(args []string) error {
 	switch cmd {
 	case "-h", "--help", "help":
 		return printTopLevelHelp(os.Stdout, rest)
-	case "task", "wait", "thread", "bucket", "ask":
+	case "task", "review", "wait", "thread", "bucket", "ask":
 		paths, err := config.DefaultPaths()
 		if err != nil {
 			return err
@@ -215,6 +216,8 @@ func dispatch(args []string) error {
 			return cmdBucket(g, sub)
 		case "ask":
 			return cmdAsk(g, sub)
+		case "review":
+			return cmdReview(g, sub)
 		case "task":
 			// task env reads only the workspace identity record and loads no
 			// configuration; task run and task result reach the coordinator.
@@ -438,7 +441,7 @@ var dispatchedVerbs = []string{
 // topLevelFamilies are the command families dispatch routes by name, in the
 // order a did-you-mean suggestion prefers them.
 var topLevelFamilies = []string{
-	"campaign", "task", "wait", "ask", "backlog", "worker", "coordinator", "schedules", "models", "triage",
+	"campaign", "task", "review", "wait", "ask", "backlog", "worker", "coordinator", "schedules", "models", "triage",
 	"diagnose", "thread", "bucket", "archive", "ui-archive", "version", "help",
 }
 
