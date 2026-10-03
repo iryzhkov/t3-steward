@@ -30,8 +30,17 @@ func reviewCatalog() []backlogadmin.Project {
 	}}}}}
 }
 
+func reviewInputTempDir(t *testing.T) string {
+	t.Helper()
+	path, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestReviewRoundCompositionAndIsolation(t *testing.T) {
-	plan := filepath.Join(t.TempDir(), "plan.md")
+	plan := filepath.Join(reviewInputTempDir(t), "plan.md")
 	if err := os.WriteFile(plan, []byte("UNTRUSTED PLAN SECRET"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +118,7 @@ func TestReviewCommandFullRound(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer store.Close()
-			plan := filepath.Join(t.TempDir(), "plan.md")
+			plan := filepath.Join(reviewInputTempDir(t), "plan.md")
 			if err := os.WriteFile(plan, []byte("plan evidence"), 0600); err != nil {
 				t.Fatal(err)
 			}

@@ -13,6 +13,18 @@ import (
 
 func TestReviewDiffPinsBothCommitsAndOmitsDirtyFiles(t *testing.T) {
 	root := t.TempDir()
+	// macOS exposes its temporary directory through /var -> /private/var.
+	// Reproduce that layout on Linux without weakening input symlink refusal.
+	tempRoot := t.TempDir()
+	canonical, err := filepath.EvalSymlinks(tempRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "temp-alias")
+	if err := os.Symlink(canonical, alias); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", alias)
 	t.Chdir(root)
 	git := func(args ...string) string {
 		t.Helper()

@@ -284,6 +284,12 @@ func buildReviewCampaign(a reviewArgs, projects []backlogadmin.Project, now time
 			return "", err
 		}
 		defer os.RemoveAll(generated)
+		// Resolve only the temporary directory we created. Caller inputs still
+		// pass unchanged through ingestion's strict symlink refusal.
+		generated, err = filepath.EvalSymlinks(generated)
+		if err != nil {
+			return "", fmt.Errorf("resolve generated diff directory: %w", err)
+		}
 		path := filepath.Join(generated, "review.diff")
 		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
