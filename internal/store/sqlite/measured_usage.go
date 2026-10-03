@@ -23,14 +23,22 @@ const MaxUsageDiagnostics = 1000
 
 // SetUsageDiagnosticRetention lowers the per-worker diagnostic retention bound
 // of this store from MaxUsageDiagnostics to limit; a limit below one restores
-// the default. It exists so that tests can cross the bound without writing a
-// thousand samples, which under the race detector costs minutes. Production
-// stores never call it.
-func (s *Store) SetUsageDiagnosticRetention(limit int) {
+// the default, and a limit above MaxUsageDiagnostics is refused, so the bound
+// can never be raised. It exists so that tests can cross the bound without
+// writing a thousand samples, which under the race detector costs minutes.
+// Production stores never call it.
+//
+// It is configuration, not a runtime control: call it right after opening the
+// store and before any use. It is not synchronised with concurrent writes.
+func (s *Store) SetUsageDiagnosticRetention(limit int) error {
+	if limit > MaxUsageDiagnostics {
+		return fmt.Errorf("usage diagnostic retention %d exceeds MaxUsageDiagnostics (%d)", limit, MaxUsageDiagnostics)
+	}
 	if limit < 1 {
 		limit = 0
 	}
 	s.diagnosticRetention = limit
+	return nil
 }
 
 func (s *Store) usageDiagnosticRetention() int {

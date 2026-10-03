@@ -446,11 +446,21 @@ func TestMeasuredUsageSignedOverflowRevisionsSurviveRestart(t *testing.T) {
 	// The plain run crosses the production diagnostic bound; under the race
 	// detector, where each pure-Go SQLite write is far slower, and under
 	// -short, the worker crosses a lowered bound through the same code path.
+	// The plain run never calls the setter, so it proves the default bound.
 	retention := sqlite.MaxUsageDiagnostics
 	if raceEnabled || testing.Short() {
 		retention = 20
 	}
-	workerStore.SetUsageDiagnosticRetention(retention)
+	lowerRetention := func(store *sqlite.Store) {
+		t.Helper()
+		if retention == sqlite.MaxUsageDiagnostics {
+			return
+		}
+		if err := store.SetUsageDiagnosticRetention(retention); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lowerRetention(workerStore)
 	for i := 0; i < retention+1; i++ {
 		if err := workerStore.RecordUsage(ctx, domain.UsageSample{
 			ProviderInstanceID: "claude-agent", ThreadID: "thread-diagnostic",
@@ -482,7 +492,7 @@ func TestMeasuredUsageSignedOverflowRevisionsSurviveRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer workerStore.Close()
-	workerStore.SetUsageDiagnosticRetention(retention)
+	lowerRetention(workerStore)
 	coordinatorStore, err = sqlite.OpenMigrated(coordinatorPath)
 	if err != nil {
 		t.Fatal(err)

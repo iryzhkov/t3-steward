@@ -227,6 +227,46 @@ func testUsageDiagnosticRetention() int {
 	return MaxUsageDiagnostics
 }
 
+// applyTestUsageDiagnosticRetention configures store with
+// testUsageDiagnosticRetention and returns it. The plain run never calls the
+// setter, so it proves the default bound a production store has.
+func applyTestUsageDiagnosticRetention(t *testing.T, store *Store) int {
+	t.Helper()
+	retention := testUsageDiagnosticRetention()
+	if retention != MaxUsageDiagnostics {
+		if err := store.SetUsageDiagnosticRetention(retention); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return retention
+}
+
+// The retention bound can only be lowered: raising it above
+// MaxUsageDiagnostics would let a test or caller keep more diagnostics than
+// a production store does.
+func TestSetUsageDiagnosticRetentionOnlyLowersTheBound(t *testing.T) {
+	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if store.usageDiagnosticRetention() != MaxUsageDiagnostics {
+		t.Fatalf("default retention = %d", store.usageDiagnosticRetention())
+	}
+	if err := store.SetUsageDiagnosticRetention(MaxUsageDiagnostics + 1); err == nil {
+		t.Fatal("a retention above MaxUsageDiagnostics was accepted")
+	}
+	if store.usageDiagnosticRetention() != MaxUsageDiagnostics {
+		t.Fatalf("a refused retention changed the bound to %d", store.usageDiagnosticRetention())
+	}
+	if err := store.SetUsageDiagnosticRetention(5); err != nil || store.usageDiagnosticRetention() != 5 {
+		t.Fatalf("lowering the retention: err=%v retention=%d", err, store.usageDiagnosticRetention())
+	}
+	if err := store.SetUsageDiagnosticRetention(0); err != nil || store.usageDiagnosticRetention() != MaxUsageDiagnostics {
+		t.Fatalf("restoring the default: err=%v retention=%d", err, store.usageDiagnosticRetention())
+	}
+}
+
 func TestAttributedUsageAppliesDeterministicSafetyBound(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
@@ -517,8 +557,7 @@ func TestRecordUsageRollsBackDiagnosticOverflowAtEveryCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	retention := testUsageDiagnosticRetention()
-	store.SetUsageDiagnosticRetention(retention)
+	retention := applyTestUsageDiagnosticRetention(t, store)
 	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
 	for i := 0; i < retention+1; i++ {
 		if err := store.RecordUsage(ctx, domain.UsageSample{
@@ -589,7 +628,7 @@ func TestRecordUsageRollsBackDiagnosticOverflowAtEveryCheckpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	store.SetUsageDiagnosticRetention(retention)
+	applyTestUsageDiagnosticRetention(t, store)
 	if err := store.RecordUsage(ctx, candidate); err != nil {
 		t.Fatal(err)
 	}
@@ -650,8 +689,7 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	retention := testUsageDiagnosticRetention()
-	store.SetUsageDiagnosticRetention(retention)
+	retention := applyTestUsageDiagnosticRetention(t, store)
 
 	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
 	for i := 0; i < retention+1; i++ {
