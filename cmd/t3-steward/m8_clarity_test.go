@@ -24,24 +24,29 @@ func TestM8CampaignStatusAlias(t *testing.T) {
 }
 
 func TestM8GuessedTaskVerbs(t *testing.T) {
-	for _, verb := range []string{"list", "statuz", "reslt", "submit"} {
-		err := cmdTask(globalFlags{}, []string{verb})
-		if err == nil {
-			t.Fatalf("%s was accepted", verb)
-		}
-		for _, want := range []string{"t3-steward campaign list", "t3-steward backlog list"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("%s: %v lacks %q", verb, err, want)
+	for _, verb := range []string{"list", "statuz", "reslt", "submit", "cancel"} {
+		for _, args := range [][]string{{verb}, {verb, "--help"}} {
+			err := cmdTask(globalFlags{}, args)
+			if err == nil {
+				t.Fatalf("%s was accepted", verb)
 			}
-		}
-		if verb == "statuz" && !strings.Contains(err.Error(), "t3-steward campaign show") {
-			t.Errorf("no status alternative: %v", err)
-		}
-		if verb == "submit" && !strings.Contains(err.Error(), "t3-steward campaign submit") {
-			t.Errorf("no submit alternative: %v", err)
-		}
-		if verb == "reslt" && !strings.Contains(err.Error(), "t3-steward task result") {
-			t.Errorf("no closest command: %v", err)
+			for _, want := range []string{"t3-steward campaign list", "t3-steward backlog list"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("%s: %v lacks %q", verb, err, want)
+				}
+			}
+			if verb == "statuz" && !strings.Contains(err.Error(), "t3-steward campaign show") {
+				t.Errorf("no status alternative: %v", err)
+			}
+			if verb == "cancel" && !strings.Contains(err.Error(), "t3-steward campaign cancel") {
+				t.Errorf("no cancellation alternative: %v", err)
+			}
+			if verb == "submit" && !strings.Contains(err.Error(), "t3-steward campaign submit") {
+				t.Errorf("no submit alternative: %v", err)
+			}
+			if verb == "reslt" && !strings.Contains(err.Error(), "t3-steward task result") {
+				t.Errorf("no closest command: %v", err)
+			}
 		}
 	}
 }

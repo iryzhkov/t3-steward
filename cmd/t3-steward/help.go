@@ -206,6 +206,9 @@ func helpPageChildren(path []string) []string {
 // documented.
 func unknownHelpVerb(parent []string, verb string) error {
 	name := strings.Join(parent, " ")
+	if name == "task" {
+		return unknownTaskVerb(verb)
+	}
 	return fmt.Errorf("unknown %s command %q; the %s commands are %s (try \"t3-steward %s --help\")",
 		name, verb, name, strings.Join(helpPageChildren(parent), ", "), name)
 }

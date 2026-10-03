@@ -60,18 +60,28 @@ func cmdTask(g globalFlags, args []string) error {
 	case "result":
 		return taskFamilyResultRoute(g, args[1:])
 	}
+	return unknownTaskVerb(args[0])
+}
+
+func unknownTaskVerb(verb string) error {
 	near := "t3-steward task --help"
 	best := 3
-	for _, candidate := range []struct{ verb, command string }{
-		{"run", "task run"}, {"result", "task result"}, {"env", "task env"},
-		{"list", "campaign list"}, {"status", "campaign show"}, {"show", "campaign show"},
-		{"submit", "campaign submit"}, {"explain", "campaign explain"}, {"events", "backlog events"},
-	} {
-		if distance := backlog.EditDistance(strings.ToLower(args[0]), candidate.verb); distance < best {
+	candidates := []struct{ verb, command string }{
+		{"run", "task run"}, {"result", "task result"}, {"env", "task env"}, {"events", "backlog events"},
+	}
+	for _, verb := range campaignCommands {
+		command := verb
+		if verb == "status" {
+			command = "show"
+		}
+		candidates = append(candidates, struct{ verb, command string }{verb, "campaign " + command})
+	}
+	for _, candidate := range candidates {
+		if distance := backlog.EditDistance(strings.ToLower(verb), candidate.verb); distance < best {
 			near, best = "t3-steward "+candidate.command, distance
 		}
 	}
-	return fmt.Errorf("%w %q; try %q; to list runs use \"t3-steward campaign list\" or \"t3-steward backlog list\"", errUnknownTaskCommand, args[0], near)
+	return fmt.Errorf("%w %q; try %q; to list runs use \"t3-steward campaign list\" or \"t3-steward backlog list\"", errUnknownTaskCommand, verb, near)
 }
 
 // The three dispatchers behind the single name "task", held in variables for
