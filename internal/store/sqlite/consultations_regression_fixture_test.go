@@ -181,7 +181,12 @@ func TestConsultationsRegressionBaseline(t *testing.T) {
 // in-process baseline over real SQLite park, settlement, and wake operations.
 // Fixture creation and migration are deliberately outside every timed sample.
 func TestConsultationsPrefeatureParkWakeMeasurements(t *testing.T) {
-	const samples = 40
+	// Timings under the race detector are not meaningful, so it and -short
+	// take only enough samples to exercise the path and the receipt.
+	samples := 40
+	if reducedIterations() {
+		samples = 5
+	}
 	type fixture struct {
 		store   *Store
 		attempt domain.Attempt

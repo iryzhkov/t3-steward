@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 	"io"
@@ -79,9 +78,7 @@ func TestFleetRevocationCatalogAndCoordinatorStartup(t *testing.T) {
 					t.Fatal("revoked project advertised usable")
 				}
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			handled, err := runBacklogV2(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			handled, err := runCoordinatorUntilStarted(t, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			if err != nil || !handled {
 				t.Fatalf("idle coordinator startup handled=%t error=%v", handled, err)
 			}

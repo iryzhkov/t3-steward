@@ -8,6 +8,13 @@ on:
 permissions:
   contents: read
 
+# Go caching: setup-go's built-in cache keys only on the OS, the Go version and
+# go.sum, so every job here would share one entry and the first job to finish
+# would save a build cache that lacks the others' artifacts (the race job's
+# instrumented packages in particular). Each job therefore restores and saves
+# its own build and module cache. Only pushes to main save, so pull requests
+# restore what main last built instead of each writing a new entry.
+
 jobs:
   test:
     strategy:
@@ -15,37 +22,133 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          check-latest: true
+          cache: false
+      - id: go-cache-paths
+        run: |
+          echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "mod=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ steps.go-cache-paths.outputs.build }}
+            ${{ steps.go-cache-paths.outputs.mod }}
+          key: go-test-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            go-test-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-test-${{ runner.os }}-
       - run: go build ./...
       - run: go vet ./...
-      - run: go test ./...
-      - run: go test -race ./...
-  staticcheck:
+      - run: go test -timeout 10m ./...
+      - if: github.event_name == 'push'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ steps.go-cache-paths.outputs.build }}
+            ${{ steps.go-cache-paths.outputs.mod }}
+          key: go-test-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}
+  # On pull requests the race detector runs on Linux only, as its own job, so
+  # that it no longer sits behind the plain tests on both operating systems.
+  # The nightly workflow runs it on Linux and macOS, together with the
+  # nested-process qualification gates.
+  race:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          check-latest: true
+          cache: false
+      - id: go-cache-paths
+        run: |
+          echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "mod=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ steps.go-cache-paths.outputs.build }}
+            ${{ steps.go-cache-paths.outputs.mod }}
+          key: go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-race-${{ runner.os }}-
+      - run: go test -race -timeout 25m ./...
+      - if: github.event_name == 'push'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ steps.go-cache-paths.outputs.build }}
+            ${{ steps.go-cache-paths.outputs.mod }}
+          key: go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}
+  staticcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - id: go-cache-paths
+        run: |
+          echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "mod=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ steps.go-cache-paths.outputs.build }}
+            ${{ steps.go-cache-paths.outputs.mod }}
+          key: go-lint-${{ runner.os }}-${{ hashFiles('go.sum', 'Makefile') }}-${{ github.run_id }}
+          restore-keys: |
+            go-lint-${{ runner.os }}-${{ hashFiles('go.sum', 'Makefile') }}-
+            go-lint-${{ runner.os }}-
       # Run the same pinned lint gate the Makefile defines, so that a local `make
       # lint` and this job cannot disagree because of a floating analyzer release
       # or a floating Go toolchain.
       - run: make lint
+      - if: github.event_name == 'push'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ steps.go-cache-paths.outputs.build }}
+            ${{ steps.go-cache-paths.outputs.mod }}
+          key: go-lint-${{ runner.os }}-${{ hashFiles('go.sum', 'Makefile') }}-${{ github.run_id }}
   cross-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          check-latest: true
+          cache: false
+      - id: go-cache-paths
+        run: |
+          echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "mod=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ steps.go-cache-paths.outputs.build }}
+            ${{ steps.go-cache-paths.outputs.mod }}
+          key: go-cross-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            go-cross-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-cross-${{ runner.os }}-
       - run: |
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
             GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 go build -o /dev/null ./cmd/t3-steward
           done
+      - if: github.event_name == 'push'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ steps.go-cache-paths.outputs.build }}
+            ${{ steps.go-cache-paths.outputs.mod }}
+          key: go-cross-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}

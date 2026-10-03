@@ -7,10 +7,25 @@ Thanks for helping. This project is small and the rules are short.
 ```sh
 git clone https://github.com/iryzhkov/t3-steward
 cd t3-steward
-make test      # go test, go test -race, go vet
-make lint      # staticcheck and gofmt
-make build     # bin/t3-steward
+make check-fast  # build, vet, go test -short, lint, race on changed packages
+make test        # go test, go test -race, go vet: the complete gate
+make lint        # staticcheck and gofmt
+make build       # bin/t3-steward
 ```
+
+Use `make check-fast` while iterating. It takes a few minutes rather than the
+full suite's quarter of an hour, because `-short` makes the tests that write
+thousands of SQLite rows cross their bounds with fewer rows, and the race
+detector runs only on the packages changed against `origin/main` (set
+`FAST_BASE` to compare against another ref). Run `make test` before asking
+for review: it runs every test at full size, under the race detector too.
+
+`make qualification` runs the nested-process qualification gates
+(`TestBacklogV2ProductionQualification`, `TestCoordinatorLocalMultiProcessWorkflow`),
+which build only with the `qualification` tag. They repeat in fresh `go test`
+processes tests the ordinary pass already runs, so CI runs them nightly
+(`.github/workflows/nightly.yml`, which also runs the race detector on macOS)
+rather than on every pull request.
 
 Go 1.24 or newer is required. There is no CGO: the SQLite driver is pure Go
 so cross-compiling works with `GOOS`/`GOARCH` alone.
@@ -53,6 +68,8 @@ range in `internal/compat/compat.go` and the README table in one commit.
 ## Pull requests
 
 - One change per pull request, with tests for policy or parser changes.
-- `make test lint` must pass; CI runs the same on Linux, macOS and Windows.
+- `make test lint` must pass. CI runs the plain tests on Linux and macOS, the
+  race detector on Linux, lint and a cross-build; the nightly workflow adds the
+  race detector on macOS and the qualification gates.
 - Use conventional commit prefixes (`feat:`, `fix:`, `docs:`, `test:`,
   `chore:`); the release changelog is generated from them.

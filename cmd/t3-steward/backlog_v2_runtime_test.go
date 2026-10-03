@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -80,6 +81,126 @@ func setCoordinatorTestRoots(t *testing.T, cfg *config.Config) string {
 	return root
 }
 
+// coordinatorStartupLimit and coordinatorShutdownLimit bound how long
+// runCoordinatorUntilStarted waits for readiness and, once it has cancelled
+// the coordinator, for it to return. They are failure bounds, not durations a
+// passing test waits out.
+const (
+	coordinatorStartupLimit  = 2 * time.Minute
+	coordinatorShutdownLimit = 30 * time.Second
+)
+
+// runCoordinatorUntilStarted runs runBacklogV2 until the coordinator reports
+// readiness (admin socket serving, startup boundary pass complete), then
+// cancels it and returns what runBacklogV2 returned, which a clean shutdown
+// makes (true, nil). A startup that fails returns its error as before. The
+// test fails if the coordinator returns successfully without having reported
+// readiness, never starts, or does not shut down after cancellation. These
+// tests used to run the coordinator under a fixed two-second deadline, which
+// cost two seconds each and failed when a loaded host had not finished
+// starting by then.
+func runCoordinatorUntilStarted(t *testing.T, cfg config.Config, logger *slog.Logger) (bool, error) {
+	t.Helper()
+	handled, err, failure := awaitCoordinatorStart(func(ctx context.Context) (bool, error) {
+		return runBacklogV2(ctx, cfg, logger)
+	}, coordinatorStartupLimit, coordinatorShutdownLimit)
+	if failure != nil {
+		t.Fatal(failure)
+	}
+	return handled, err
+}
+
+// awaitCoordinatorStart is runCoordinatorUntilStarted without the testing.T,
+// so that its refusals can be tested. failure is a harness verdict; handled
+// and err are what run returned.
+func awaitCoordinatorStart(
+	run func(context.Context) (bool, error), startupLimit, shutdownLimit time.Duration,
+) (handled bool, err error, failure error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	var once sync.Once
+	ctx = withCoordinatorStarted(ctx, func() { once.Do(func() { close(started) }) })
+	type result struct {
+		handled bool
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		h, e := run(ctx)
+		done <- result{handled: h, err: e}
+	}()
+	select {
+	case r := <-done:
+		select {
+		case <-started:
+		default:
+			if r.err == nil {
+				return r.handled, nil, errors.New("coordinator returned successfully without reporting readiness")
+			}
+		}
+		return r.handled, r.err, nil
+	case <-started:
+	case <-time.After(startupLimit):
+		cancel()
+		return false, nil, fmt.Errorf("coordinator neither started nor returned within %s", startupLimit)
+	}
+	cancel()
+	select {
+	case r := <-done:
+		return r.handled, r.err, nil
+	case <-time.After(shutdownLimit):
+		return false, nil, fmt.Errorf("coordinator did not shut down within %s of cancellation after it started", shutdownLimit)
+	}
+}
+
+// The startup harness the coordinator startup tests rely on must not pass a
+// coordinator that never reported readiness, and must not hang on one that
+// ignores cancellation.
+func TestAwaitCoordinatorStartRefusesWhatTheStartupTestsMustNotPass(t *testing.T) {
+	const limit = 200 * time.Millisecond
+	ready := func(ctx context.Context) (bool, error) {
+		started, _ := ctx.Value(coordinatorStartedKey{}).(func())
+		started()
+		<-ctx.Done()
+		return true, nil
+	}
+	if handled, err, failure := awaitCoordinatorStart(ready, limit, limit); failure != nil || err != nil || !handled {
+		t.Fatalf("a clean start and shutdown: handled=%t err=%v failure=%v", handled, err, failure)
+	}
+
+	silent := func(context.Context) (bool, error) { return true, nil }
+	if _, _, failure := awaitCoordinatorStart(silent, limit, limit); failure == nil ||
+		!strings.Contains(failure.Error(), "without reporting readiness") {
+		t.Fatalf("a successful return without readiness passed: %v", failure)
+	}
+
+	refused := errors.New("startup refused")
+	failing := func(context.Context) (bool, error) { return true, refused }
+	if _, err, failure := awaitCoordinatorStart(failing, limit, limit); failure != nil || !errors.Is(err, refused) {
+		t.Fatalf("a startup error was not returned as the result: err=%v failure=%v", err, failure)
+	}
+
+	release := make(chan struct{})
+	defer close(release)
+	stuck := func(ctx context.Context) (bool, error) {
+		started, _ := ctx.Value(coordinatorStartedKey{}).(func())
+		started()
+		<-release
+		return true, nil
+	}
+	if _, _, failure := awaitCoordinatorStart(stuck, limit, limit); failure == nil ||
+		!strings.Contains(failure.Error(), "did not shut down") {
+		t.Fatalf("a coordinator ignoring cancellation was not reported: %v", failure)
+	}
+
+	never := func(context.Context) (bool, error) { <-release; return true, nil }
+	if _, _, failure := awaitCoordinatorStart(never, limit, limit); failure == nil ||
+		!strings.Contains(failure.Error(), "neither started nor returned") {
+		t.Fatalf("a coordinator that never started was not reported: %v", failure)
+	}
+}
+
 func TestRunBacklogV2DisabledHasNoStartupEffects(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	cfg := config.Default()
@@ -140,9 +261,7 @@ func TestRunBacklogV2CoordinatorStartsClosedAndAdvancesEpoch(t *testing.T) {
 	cfg.BacklogV2.Coordinator.ID = "normandy"
 	cfg.BacklogV2.StartupAdmission = "closed"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	handled, err := runBacklogV2(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handled, err := runCoordinatorUntilStarted(t, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil || !handled {
 		t.Fatalf("handled=%v err=%v", handled, err)
 	}

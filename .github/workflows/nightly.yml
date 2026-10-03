@@ -1,0 +1,68 @@
+name: nightly
+
+# The coverage that pull requests no longer pay for on every push: the race
+# detector on macOS as well as Linux, and the nested-process qualification
+# gates (TestBacklogV2ProductionQualification and
+# TestCoordinatorLocalMultiProcessWorkflow), which build only with the
+# qualification tag. It runs every night against main and can be started by
+# hand on any branch.
+
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  race:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - id: go-cache-paths
+        run: |
+          echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "mod=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ steps.go-cache-paths.outputs.build }}
+            ${{ steps.go-cache-paths.outputs.mod }}
+          key: go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-race-${{ runner.os }}-
+      - run: go test -race -count=1 -timeout 40m ./...
+  qualification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - id: go-cache-paths
+        run: |
+          echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "mod=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ steps.go-cache-paths.outputs.build }}
+            ${{ steps.go-cache-paths.outputs.mod }}
+          key: go-test-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            go-test-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-test-${{ runner.os }}-
+      - run: make qualification

@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 )
 
 // cancelledCoordinatorQuotaTicker fails the way every tick does once the
@@ -78,6 +81,35 @@ func TestCoordinatorBoundaryCycleLogsCancelledTicksAsShutdown(t *testing.T) {
 	}
 	if infoLines < 3 {
 		t.Fatalf("expected quota, schedule and legacy shutdown lines, got %d:\n%s", infoLines, logs.String())
+	}
+}
+
+// An admin server that cannot serve fails the coordinator before it reports
+// itself started: readiness means the listener is serving and the startup
+// boundary pass has completed, so neither the readiness callback nor a tick may
+// run, and the server's error is what the coordinator returns.
+func TestCoordinatorBoundariesReportServerFailureBeforeReadiness(t *testing.T) {
+	var quotaCalls, scheduleCalls, planningCalls, adminCalls, legacyCalls int
+	cycle := coordinatorBoundaryCycle{
+		quota:     failingCoordinatorQuotaTicker{calls: &quotaCalls},
+		schedules: recordingCoordinatorScheduleTicker{calls: &scheduleCalls},
+		planning:  recordingCoordinatorPlanningTicker{calls: &planningCalls},
+		admin:     recordingCoordinatorAdminExecutor{calls: &adminCalls},
+		legacy:    recordingCoordinatorLegacyTicker{calls: &legacyCalls},
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	started := false
+	ctx := withCoordinatorStarted(context.Background(), func() { started = true })
+	// No listener and no service: the server cannot serve at all.
+	err := serveCoordinatorBoundaries(ctx, &backlogadmin.LocalServer{}, cycle, time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "requires listener") {
+		t.Fatalf("err = %v, want the admin server's failure", err)
+	}
+	if started {
+		t.Fatal("the coordinator reported itself started with no admin server")
+	}
+	if quotaCalls+scheduleCalls+planningCalls+adminCalls+legacyCalls != 0 {
+		t.Fatal("a boundary pass ran before the admin server was known to serve")
 	}
 }
 

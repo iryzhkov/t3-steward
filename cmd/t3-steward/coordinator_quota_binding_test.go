@@ -1,11 +1,9 @@
 package main
 
 import (
-	"context"
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/config"
 )
@@ -63,9 +61,7 @@ func TestCoordinatorStartupWarnsOncePerDroppedProviderInstance(t *testing.T) {
 		t.Fatal("fixture: the unbound instance was authorized")
 	}
 	logs := &strings.Builder{}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	handled, err := runBacklogV2(ctx, cfg, slog.New(slog.NewTextHandler(logs, nil)))
+	handled, err := runCoordinatorUntilStarted(t, cfg, slog.New(slog.NewTextHandler(logs, nil)))
 	if err != nil {
 		t.Fatalf("an unbound provider instance stopped the coordinator from starting: %v", err)
 	}
@@ -102,9 +98,7 @@ func TestCoordinatorStartupIsSilentWhenEveryInstanceIsBound(t *testing.T) {
 		t.Fatalf("fixture: opencode pool = %q, want the projected binding", pool)
 	}
 	logs := &strings.Builder{}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if _, err := runBacklogV2(ctx, cfg, slog.New(slog.NewTextHandler(logs, nil))); err != nil {
+	if _, err := runCoordinatorUntilStarted(t, cfg, slog.New(slog.NewTextHandler(logs, nil))); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(logs.String(), "no authorized quota binding") {

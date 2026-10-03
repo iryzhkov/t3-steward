@@ -28,7 +28,12 @@ import (
 // owns a migrated, instrumented SQLite fixture; migration and fixture
 // construction are outside the timed and counted region.
 func TestConsultationsPrefeatureCoordinatorMeasurements(t *testing.T) {
-	const samples = 30
+	// Timings under the race detector are not meaningful, so it and -short
+	// take only enough samples to exercise the path and the receipt.
+	samples := 30
+	if raceEnabled || testing.Short() {
+		samples = 4
+	}
 	type sample struct {
 		fixture *activationLeaseFixture
 		cycle   coordinatorBoundaryCycle

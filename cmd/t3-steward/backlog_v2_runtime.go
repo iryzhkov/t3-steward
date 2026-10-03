@@ -1089,6 +1089,20 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	return serveCoordinatorBoundaries(ctx, &server, cycle, cfg.BacklogV2.Scheduling.Interval.D())
 }
 
+// coordinatorStartedKey is the context key for an optional callback that
+// serveCoordinatorBoundaries calls once the admin socket is listening and the
+// startup boundary pass has completed. Tests use it to stop a coordinator as
+// soon as it is up, instead of letting it run until a fixed deadline expires;
+// production never sets it. A reload starts the services again and calls it
+// again, so the callback must tolerate repeated calls.
+type coordinatorStartedKey struct{}
+
+// withCoordinatorStarted returns a context under which a coordinator calls
+// started after each completed startup boundary pass.
+func withCoordinatorStarted(ctx context.Context, started func()) context.Context {
+	return context.WithValue(ctx, coordinatorStartedKey{}, started)
+}
+
 func serveCoordinatorBoundaries(
 	ctx context.Context,
 	server *backlogadmin.LocalServer,
@@ -1098,11 +1112,29 @@ func serveCoordinatorBoundaries(
 	if interval <= 0 {
 		return errors.New("coordinator boundary interval must be positive")
 	}
+	// A server that cannot serve fails startup before any boundary pass and
+	// before readiness is reported.
+	if err := server.Validate(); err != nil {
+		return err
+	}
 	serverDone := make(chan error, 1)
 	go func() {
 		serverDone <- server.Serve(ctx)
 	}()
 	cycle.Tick(ctx)
+	// Readiness is reported only while the server is still serving: a server
+	// that stopped during the startup pass returns its error instead.
+	select {
+	case err := <-serverDone:
+		if err == nil && ctx.Err() == nil {
+			err = errors.New("coordinator admin server stopped during startup")
+		}
+		return err
+	default:
+	}
+	if started, ok := ctx.Value(coordinatorStartedKey{}).(func()); ok && started != nil && ctx.Err() == nil {
+		started()
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
