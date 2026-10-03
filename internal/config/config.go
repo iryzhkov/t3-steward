@@ -499,22 +499,24 @@ type Archive struct {
 
 // BacklogV2 configures the disabled-by-default coordinator runtime.
 type BacklogV2 struct {
-	Mode              string                    `yaml:"mode"`
-	Coordinator       V2Coordinator             `yaml:"coordinator"`
-	LocalWorker       V2LocalWorker             `yaml:"local_worker"`
-	Workers           map[string]V2Worker       `yaml:"workers"`
-	Projects          map[string]V2Project      `yaml:"projects"`
-	SetupProfiles     map[string]V2SetupProfile `yaml:"setup_profiles"`
-	QuotaPools        map[string]V2QuotaPool    `yaml:"quota_pools"`
-	CoordinatorClient V2CoordinatorClient       `yaml:"coordinator_client"`
-	Storage           V2Storage                 `yaml:"storage"`
-	Transport         V2Transport               `yaml:"transport"`
-	MessageLimits     V2MessageLimits           `yaml:"message_limits"`
-	Freshness         V2Freshness               `yaml:"freshness"`
-	Leases            V2Leases                  `yaml:"leases"`
-	Scheduling        V2Scheduling              `yaml:"scheduling"`
-	StartupAdmission  string                    `yaml:"startup_admission"`
-	Verification      V2Verification            `yaml:"verification"`
+	// ReviewRoutes classifies explicit routes without choosing routes or applying role policy.
+	ReviewRoutes      map[string]ReviewRouteMetadata `yaml:"review_routes"`
+	Mode              string                         `yaml:"mode"`
+	Coordinator       V2Coordinator                  `yaml:"coordinator"`
+	LocalWorker       V2LocalWorker                  `yaml:"local_worker"`
+	Workers           map[string]V2Worker            `yaml:"workers"`
+	Projects          map[string]V2Project           `yaml:"projects"`
+	SetupProfiles     map[string]V2SetupProfile      `yaml:"setup_profiles"`
+	QuotaPools        map[string]V2QuotaPool         `yaml:"quota_pools"`
+	CoordinatorClient V2CoordinatorClient            `yaml:"coordinator_client"`
+	Storage           V2Storage                      `yaml:"storage"`
+	Transport         V2Transport                    `yaml:"transport"`
+	MessageLimits     V2MessageLimits                `yaml:"message_limits"`
+	Freshness         V2Freshness                    `yaml:"freshness"`
+	Leases            V2Leases                       `yaml:"leases"`
+	Scheduling        V2Scheduling                   `yaml:"scheduling"`
+	StartupAdmission  string                         `yaml:"startup_admission"`
+	Verification      V2Verification                 `yaml:"verification"`
 }
 
 // V2Verification bounds the runner verification commands a task declares.
@@ -682,6 +684,11 @@ func ValidCPUClass(class string) bool {
 	default:
 		return false
 	}
+}
+
+type ReviewRouteMetadata struct {
+	ProviderFamily string `yaml:"provider_family" json:"providerFamily"`
+	Tier           string `yaml:"tier" json:"tier"`
 }
 
 type V2Provider struct {

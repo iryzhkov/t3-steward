@@ -52,6 +52,58 @@ func (s *Store) GetReviewRound(ctx context.Context, id string) (review.Round, er
 	return round, nil
 }
 
+// ListUncollectedReviewRounds is bounded by pending work, not history.
+func (s *Store) ListUncollectedReviewRounds(ctx context.Context) ([]review.Round, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT record FROM coordinator_review_rounds WHERE COALESCE(json_extract(record,'$.replyText'),'')='' ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []review.Round
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var r review.Round
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+func (s *Store) PublishReviewReply(ctx context.Context, id string, revision int64, text string) error {
+	if len(text) > 16<<10 {
+		return errors.New("review reply exceeds 16 KiB")
+	}
+	r, err := s.GetReviewRound(ctx, id)
+	if err != nil {
+		return err
+	}
+	if r.Revision != revision || !r.Terminal() {
+		return ErrReviewRoundConflict
+	}
+	r.ReplyText = text
+	r.Revision++
+	raw, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, "UPDATE coordinator_review_rounds SET revision=?,record=? WHERE id=? AND revision=?", r.Revision, raw, id, revision)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrReviewRoundConflict
+	}
+	return nil
+}
+
 // RecordReviewResult validates evidence inside a revision-fenced transaction.
 // Concurrent completions cannot lose another reviewer's result.
 func (s *Store) RecordReviewResult(ctx context.Context, id, reviewer string, expected int64, result review.Result) (review.Round, error) {

@@ -11,6 +11,11 @@ import (
 )
 
 type Round struct {
+	ReplyText       string    `json:"replyText,omitempty"`
+	Deadline        time.Time `json:"deadline,omitempty"`
+	Risk            string    `json:"risk,omitempty"`
+	TemplateVersion string    `json:"templateVersion,omitempty"`
+
 	ID                  string     `json:"id"`
 	WorkflowRunID       string     `json:"workflowRunId,omitempty"`
 	InputManifestDigest string     `json:"inputManifestDigest"`
@@ -23,6 +28,8 @@ type Round struct {
 	UpdatedAt           time.Time  `json:"updatedAt"`
 }
 type Reviewer struct {
+	ProviderFamily   string   `json:"providerFamily,omitempty"`
+	Tier             string   `json:"tier,omitempty"`
 	ID               string   `json:"id"`
 	TaskID           string   `json:"taskId,omitempty"`
 	Role             string   `json:"role"`

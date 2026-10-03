@@ -17,6 +17,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/review"
 	"gopkg.in/yaml.v3"
 )
 
@@ -35,6 +36,7 @@ var manifestNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$
 // Manifest is the version 2 workflow.yaml submission format. ParseManifest
 // applies defaults so callers receive a complete, validated definition.
 type Manifest struct {
+	Review *review.Round `yaml:"review,omitempty"`
 	Version      int                     `yaml:"version"`
 	Name         string                  `yaml:"name"`
 	Class        domain.TaskClass        `yaml:"class"`
@@ -421,6 +423,9 @@ func uniqueSorted(values []string) []string {
 }
 
 func validateManifest(manifest Manifest) error {
+	if err := ValidateReviewManifest(manifest); err != nil {
+		return err
+	}
 	if manifest.Version != ManifestVersion {
 		return fmt.Errorf("version must be %d", ManifestVersion)
 	}

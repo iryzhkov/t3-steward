@@ -635,6 +635,7 @@ type coordinatorCampaignRefTicker interface {
 }
 
 type coordinatorBoundaryCycle struct {
+	reviews      *backlog.ReviewCollector
 	projection   backlog.ProjectionStore
 	quota        coordinatorQuotaTicker
 	schedules    coordinatorScheduleTicker
@@ -680,6 +681,11 @@ func logTickFailure(ctx context.Context, logger *slog.Logger, msg string, err er
 }
 
 func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool) {
+	if c.reviews != nil {
+		if err := c.reviews.Tick(ctx, time.Now().UTC()); err != nil {
+			logTickFailure(ctx, c.logger, "review collection failed", err)
+		}
+	}
 	if c.projection != nil {
 		if _, err := backlog.ProjectWorkflowRuns(ctx, c.projection, time.Now().UTC()); err != nil {
 			logTickFailure(ctx, c.logger, "workflow run projection failed", err)
@@ -939,6 +945,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	}
 	service.SetWorkerAuthorization(coordinatorWorkerAuthorization(cfg))
 	service.SetViability(backlogadmin.ViabilitySettings{
+		ReviewRoutes:      cfg.BacklogV2.ReviewRoutes,
 		Projects:          fleetProjects,
 		SetupProfiles:     fleetProfiles,
 		DefaultedProjects: cfg.DefaultedFleetProjects(),
@@ -1018,7 +1025,16 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	defer workers.close()
 	supervisionStore := backlog.CoordinatorSupervisionStore{Store: store}
 	service.SetSupervisionStore(backlogadmin.CoordinatorSupervisionStore{Store: store})
+	resultsDir, err := cfg.ResolveResultsDir()
+	if err != nil {
+		return err
+	}
+	reviewArtifacts := backlog.CoordinatorArtifactStore{Root: cfg.BacklogV2.Storage.Artifacts, SubmissionRoot: cfg.BacklogV2.Storage.Bundles, Catalog: store}
 	cycle := coordinatorBoundaryCycle{
+		reviews: &backlog.ReviewCollector{Store: store, Results: resultsDir, Open: func(ctx context.Context, id string) (domain.Artifact, io.ReadCloser, error) {
+			a, f, err := reviewArtifacts.Open(ctx, id)
+			return a, f, err
+		}},
 		projection: supervisionStore,
 		supervision: &coordinatorSupervision{
 			store: supervisionStore, logger: logger,

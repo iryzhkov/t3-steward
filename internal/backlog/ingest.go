@@ -19,6 +19,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/pinnedinput"
+	"github.com/iryzhkov/t3-steward/internal/review"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
@@ -94,7 +95,7 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 		return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: %w", err)
 	}
 	defer sourceRoot.Close()
-	if i.RegisterOnly && (manifest.Supervision != nil || len(manifest.Gates) != 0) {
+	if i.RegisterOnly && (manifest.Review != nil || manifest.Supervision != nil || len(manifest.Gates) != 0) {
 		return IngestedBundle{}, errors.New("register-only refuses supervised campaigns: scheduled supervision is not implemented; next: t3-steward campaign help supervision")
 	}
 	// The permanent checks are repeated here, transactionally, before anything
@@ -414,6 +415,23 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 		run.Supervision = &declared
 	}
 	records.WorkflowRuns[0] = run
+	if manifest.Review != nil {
+		round := *manifest.Review
+		round.ID, round.WorkflowRunID = runID, runID
+		round.CreatedAt = now
+		if round.InputManifestDigest != inputManifest.Digest {
+			return records, nil, errors.New("review input manifest digest does not match ingested inputs")
+		}
+		round.Reviewers = append([]review.Reviewer(nil), round.Reviewers...)
+		for n := range round.Reviewers {
+			member := &round.Reviewers[n]
+			member.TaskID = taskIDsByName[member.ID]
+			if member.TaskID == "" {
+				return records, nil, fmt.Errorf("reviewer %s has no declared task", member.ID)
+			}
+		}
+		records.ReviewRounds = []review.Round{round}
+	}
 	return records, supervision, nil
 }
 

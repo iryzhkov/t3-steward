@@ -9,6 +9,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/campaign"
+	"github.com/iryzhkov/t3-steward/internal/review"
 )
 
 // coordinatorPermanentValidator repeats the permanent part of the readiness
@@ -34,6 +35,29 @@ func (v coordinatorPermanentValidator) ValidatePermanent(ctx context.Context, ma
 	if v.admin == nil {
 		return fmt.Errorf("%w: this coordinator has no readiness service to validate against",
 			backlog.ErrValidationUnavailable)
+	}
+	if manifest.Review != nil {
+		response, err := v.admin.Query(ctx, backlogadmin.Query{Version: backlogadmin.Version, Kind: backlogadmin.QueryProjects, Principal: backlogadmin.Principal{ID: "coordinator", Roles: []string{backlogadmin.LocalAdminRole}}})
+		if err != nil {
+			return fmt.Errorf("%w: review catalog unavailable: %v", backlog.ErrValidationUnavailable, err)
+		}
+		project, err := reviewProject(manifest.Environment.Project, response.Projects)
+		if err != nil {
+			return err
+		}
+		routes, families, err := reviewRoutes(project)
+		if err != nil {
+			return err
+		}
+		for _, member := range manifest.Review.Reviewers {
+			route, ok := routes[member.Route]
+			if !ok || route.ProviderFamily != member.ProviderFamily || route.Tier != member.Tier {
+				return fmt.Errorf("review route %s does not match authoritative catalog metadata; refresh catalog and resubmit", member.Route)
+			}
+		}
+		if err := review.ValidateSelection(*manifest.Review, families); err != nil {
+			return err
+		}
 	}
 	plan, err := campaign.Project(manifest, campaign.Options{})
 	if err != nil {

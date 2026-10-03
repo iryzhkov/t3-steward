@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
@@ -36,6 +37,7 @@ type CredentialResolver interface {
 // ViabilitySettings is what a viability answer needs beyond the coordinator's
 // own records.
 type ViabilitySettings struct {
+	ReviewRoutes map[string]config.ReviewRouteMetadata
 	// Projects and SetupProfiles are the catalog entries this coordinator is
 	// configured with. They are the definitions rather than a constructed
 	// ProjectCatalog on purpose: the catalog constructor refuses to hold a

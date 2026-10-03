@@ -257,9 +257,11 @@ type ProjectWorker struct {
 // ProjectRoute is one advertised provider route. QuotaPool is the pool the
 // worker's inventory binds the instance to, and is empty when it binds none.
 type ProjectRoute struct {
-	Instance  string `json:"instance"`
-	Model     string `json:"model"`
-	QuotaPool string `json:"quotaPool,omitempty"`
+	ProviderFamily string `json:"providerFamily,omitempty"`
+	Tier           string `json:"tier,omitempty"`
+	Instance       string `json:"instance"`
+	Model          string `json:"model"`
+	QuotaPool      string `json:"quotaPool,omitempty"`
 }
 
 type Status struct {
