@@ -29,6 +29,14 @@ Start one task on the fleet from this checkout and be woken when it ends. It
 composes the campaign path: the CLI derives, the coordinator validates, and the
 coordinator never chooses a route.
 
+--dry-run derives and validates the campaign locally, then prints project, ref,
+route, idempotency key, resolved notify thread (empty with --no-notify), and
+composed prompt size in UTF-16 characters, including the completion contract,
+with the 120000-character limit per task. JSON names it promptCharacters. Fan-out reports
+the total across tasks. It uses read-only catalog queries when derivation needs
+them; it sends no submission, readiness check or wake. --json prints a dry-run
+projection rather than a run receipt. Worker-added context can vary by version.
+
 Derived, each printed in the record:
   project  --project, else this checkout's origin remote matched against the
            coordinator's projects; exactly one match is required. With
@@ -259,6 +267,7 @@ type taskRunArgs struct {
 	notifyThread string
 	noNotify     bool
 	asJSON       bool
+	dryRun       bool
 }
 
 func parseTaskRunArgs(args []string) (taskRunArgs, error) {
@@ -283,6 +292,9 @@ func parseTaskRunArgs(args []string) (taskRunArgs, error) {
 		switch flags[i] {
 		case "--json":
 			parsed.asJSON = true
+			continue
+		case "--dry-run":
+			parsed.dryRun = true
 			continue
 		case "--fresh":
 			parsed.fresh = true
@@ -445,6 +457,9 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	bundle, plan, err := c.campaign.prepare(directory)
 	if err != nil {
 		return err
+	}
+	if parsed.dryRun {
+		return c.renderDryRun(parsed, project.Name, ref, route, key, thread, prompts, bundle)
 	}
 	matrix, err := c.campaign.checkViability(ctx, plan, bundle, "")
 	if err != nil {

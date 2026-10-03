@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -28,6 +29,17 @@ import (
 // directory, the worker is in no-external-effects mode, and no SSH or T3
 // endpoint is contacted.
 func TestBacklogV2ProductionProcessTopology(t *testing.T) {
+	runQualificationTopology(t, 0)
+}
+
+// Startup scheduling under the race detector must not consume the fixture's
+// entire serving lifetime before the client can issue its first query.
+func TestBacklogV2ProductionProcessTopologyDelayedClient(t *testing.T) {
+	runQualificationTopology(t, 3*time.Second)
+}
+
+func runQualificationTopology(t *testing.T, clientDelay time.Duration) {
+	t.Helper()
 	root := os.Getenv("T3_QUALIFICATION_ROOT")
 	switch os.Getenv("T3_QUALIFICATION_ROLE") {
 	case "coordinator":
@@ -68,6 +80,7 @@ func TestBacklogV2ProductionProcessTopology(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	time.Sleep(clientDelay)
 	clientOutput, err := qualificationProcess(t, root, "client").CombinedOutput()
 	if err != nil {
 		_ = coordinator.Process.Kill()
@@ -123,6 +136,11 @@ func TestBacklogV2ProductionProcessTopology(t *testing.T) {
 		t.Fatalf("worker response = %+v", response)
 	}
 	if err := workerproto.VerifyEnvelopeSignature(response, []byte("qualification-worker-secret")); err != nil {
+		t.Fatal(err)
+	}
+	// Shut down only after both clients finish. The child has a safety deadline,
+	// but its serving lifetime is controlled by the parent, not startup timing.
+	if err := coordinator.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}
 	if err := coordinator.Wait(); err != nil {
@@ -221,7 +239,9 @@ func qualificationConfig(root string) config.Config {
 
 func runQualificationCoordinator(t *testing.T, root string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := runBacklogV2Coordinator(ctx, qualificationConfig(root), slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
 		t.Fatal(err)

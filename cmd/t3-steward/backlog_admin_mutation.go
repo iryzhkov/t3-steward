@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
+	"github.com/iryzhkov/t3-steward/internal/blockingwait"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -29,6 +30,7 @@ type adminMutationInvocation struct {
 	commandID     string
 	payload       json.RawMessage
 	asJSON        bool
+	wait          blockingwait.Options
 	// expectedRevision is the operator's explicit fence; nil means the CLI
 	// reads the current revision itself and may re-read it once after a
 	// stale-revision rejection.
@@ -64,7 +66,12 @@ func parseBacklogMutation(args []string) (adminMutationInvocation, error) {
 	invocation := adminMutationInvocation{
 		kind: domain.AdminCommandKind(args[0]), workflowRunID: runID, taskID: taskID,
 	}
-	if err := parseMutationOptions(args[2:], &invocation); err != nil {
+	clean, wait, err := blockingwait.Parse(args[2:])
+	if err != nil {
+		return adminMutationInvocation{}, err
+	}
+	invocation.wait = wait
+	if err := parseMutationOptions(clean, &invocation); err != nil {
 		return adminMutationInvocation{}, err
 	}
 	if err := validateMutationOptions(invocation); err != nil {
@@ -223,7 +230,7 @@ func (c backlogAdminCLI) runBacklogMutation(ctx context.Context, args []string) 
 			note = fmt.Sprintf(note, response.Command.ID)
 		}
 	}
-	return c.renderMutation(invocation, response, note)
+	return c.finishMutation(ctx, invocation, response, note)
 }
 
 // staleRevisionRejection reports a submission the coordinator refused because
@@ -271,7 +278,7 @@ func (c backlogAdminCLI) submitMutation(ctx context.Context, invocation adminMut
 	if err != nil {
 		return err
 	}
-	return c.renderMutation(invocation, response, "")
+	return c.finishMutation(ctx, invocation, response, "")
 }
 
 // mutate submits one command under the given revision, with the operator's

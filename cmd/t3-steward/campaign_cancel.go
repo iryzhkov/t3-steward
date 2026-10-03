@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
+	"github.com/iryzhkov/t3-steward/internal/blockingwait"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
@@ -72,7 +73,11 @@ func isCampaignRunCancel(args []string) bool {
 // forwards to the backlog path.
 func (c campaignCLI) runCampaignCancelRun(ctx context.Context, args []string) error {
 	runID := args[1]
-	reason, commandID, asJSON, err := parseCampaignCancelRunArgs(args[2:])
+	clean, wait, err := blockingwait.Parse(args[2:])
+	if err != nil {
+		return err
+	}
+	reason, commandID, asJSON, err := parseCampaignCancelRunArgs(clean)
 	if err != nil {
 		return err
 	}
@@ -149,12 +154,29 @@ func (c campaignCLI) runCampaignCancelRun(ctx context.Context, args []string) er
 		}
 		return err
 	}
+	response, waitErr := waitForCommand(ctx, wait, response, c.query)
+	if wait.Enabled && response.Command.State != domain.AdminCommandPending {
+		if asJSON {
+			if err := encodeCampaignJSON(c.stdout, struct {
+				Run     string               `json:"run"`
+				Outcome backlogadmin.Command `json:"outcome"`
+			}{runID, response.Command}); err != nil {
+				return err
+			}
+		} else {
+			renderMutationResponse(c.stdout, response)
+		}
+		return afterDocument(waitErr)
+	}
 	document := campaignCancelRunDocument{
 		Run: runID, Tasks: cancelled, Anchor: anchor,
 		Command: response.Command, Event: response.Event,
 	}
 	if asJSON {
-		return encodeCampaignJSON(c.stdout, document)
+		if err := encodeCampaignJSON(c.stdout, document); err != nil {
+			return err
+		}
+		return afterDocument(waitErr)
 	}
 	if ok {
 		fmt.Fprintf(c.stdout, "command %s will cancel %d task(s) of run %s: %s\n",
@@ -178,7 +200,10 @@ func (c campaignCLI) runCampaignCancelRun(ctx context.Context, args []string) er
 	// coordinator's next tick.
 	_, err = fmt.Fprintf(c.stdout, "the applied outcome, once the coordinator has applied it:\n"+
 		"  t3-steward campaign show %s\n  t3-steward backlog commands %s\n", runID, runID)
-	return err
+	if err != nil {
+		return err
+	}
+	return afterDocument(waitErr)
 }
 
 // cancelSupervisionState reads the run's supervision for the cancel, and

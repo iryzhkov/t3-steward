@@ -117,6 +117,7 @@ type campaignCLI struct {
 	// one command rather than forwarding a command line.
 	detail func(context.Context, string) (backlogadmin.WorkflowDetail, error)
 	mutate func(context.Context, backlogadmin.Mutation) (backlogadmin.MutationResponse, error)
+	query  func(context.Context, backlogadmin.Query) (backlogadmin.Response, error)
 	// release is the release the coordinator reports for itself, from the same
 	// identity every client already reads. The run form of cancel needs it
 	// because an older coordinator accepts that command and cannot apply it,
@@ -211,6 +212,14 @@ func campaignCLIFor(cfg config.Config) campaignCLI {
 			}
 			mutation.Principal = transport.principal
 			return transport.client.Mutate(ctx, mutation)
+		},
+		query: func(ctx context.Context, query backlogadmin.Query) (backlogadmin.Response, error) {
+			transport, err := newCoordinatorTransport(cfg)
+			if err != nil {
+				return backlogadmin.Response{}, err
+			}
+			query.Version, query.Principal = backlogadmin.Version, transport.principal
+			return transport.client.Query(ctx, query)
 		},
 		release: func(ctx context.Context) (string, error) {
 			transport, err := newCoordinatorTransport(cfg)
@@ -353,6 +362,13 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 		}
 		return c.admin(args)
 	case "show", "explain":
+		if args[0] == "show" {
+			var err error
+			args, err = c.waitForShow(ctx, args)
+			if err != nil {
+				return err
+			}
+		}
 		// These two forward exactly as the aliases above do, and then add the
 		// supervision projection underneath the answer. The addition is an
 		// appendix rather than a rewrite: the forwarded command's own output and

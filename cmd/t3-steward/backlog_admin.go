@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
+	"github.com/iryzhkov/t3-steward/internal/blockingwait"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -213,6 +214,16 @@ func (c backlogAdminCLI) runBacklog(ctx context.Context, args []string) error {
 			if arg == "--dot" {
 				return c.runGraphDOT(ctx, args)
 			}
+		}
+	}
+	// Command reattachment is read-only; it never replays the control.
+	if len(args) >= 2 && args[0] == "command" && args[1] == "show" {
+		clean, opts, err := blockingwait.Parse(args)
+		if err != nil {
+			return err
+		}
+		if opts.Enabled {
+			return c.runCommandWait(ctx, clean, opts)
 		}
 	}
 	query, display, err := parseBacklogAdminQuery(args)
