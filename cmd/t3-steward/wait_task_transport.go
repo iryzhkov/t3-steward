@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
@@ -87,18 +88,30 @@ func configureTaskWaitTransport(runner *wait.Runner, cfg config.Config) error {
 
 // checkTaskWaitIdentity is the check line for the same question: whether the
 // tasks this host runs can be woken and their asks relayed. A host that is
-// neither a coordinator nor a worker client and has no bootstrap runs no
-// tasks, so the absence is not a failure there.
+// neither a coordinator nor a configured worker runs no tasks. A coordinator
+// client selects an admin transport, not a worker role.
 func checkTaskWaitIdentity(cfg config.Config) (string, string) {
 	workerID, err := resolveTaskWaitWorker(cfg)
 	switch {
 	case err == nil:
 		return "ok", "task wakes and ask relays for tasks on this host: delivered here as worker " + workerID
-	case errors.Is(err, errNoTaskWorkerIdentity) && cfg.BacklogV2.Coordinator.ID == "" && !cfg.BacklogV2.CoordinatorClient.Configured():
-		return "ok", "task wakes and ask relays: this host is no worker, so it has none to deliver"
-	default:
-		return "FAIL", "task wakes and ask relays: " + err.Error()
+	case errors.Is(err, errNoTaskWorkerIdentity) && cfg.BacklogV2.Coordinator.ID == "":
+		// The resolver already checked the bootstrap and local worker ID.
+		// A persistent worker configuration still declares a worker host even
+		// when its identity is missing. Only confirmed absence is harmless.
+		home, homeErr := taskWaitWorkerHome()
+		if homeErr != nil {
+			return "FAIL", "task wakes and ask relays: " + homeErr.Error()
+		}
+		_, statErr := os.Stat(filepath.Join(home, ".config/t3-steward/persistent-worker.yaml"))
+		if errors.Is(statErr, os.ErrNotExist) {
+			return "ok", "task wakes and ask relays: nothing to deliver on this host (not a worker)"
+		}
+		if statErr != nil {
+			return "FAIL", "task wakes and ask relays: " + statErr.Error()
+		}
 	}
+	return "FAIL", "task wakes and ask relays: " + err.Error()
 }
 
 type remoteTaskWaitStore struct{ cfg config.Config }
