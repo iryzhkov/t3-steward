@@ -25,6 +25,10 @@ import (
 
 const taskRunUsage = `Usage: t3-steward task run [flags] -- "<prompt>"
 
+Start one task on the fleet from this checkout and be woken when it ends. It
+composes the campaign path: the CLI derives, the coordinator validates, and the
+coordinator never chooses a route.
+
 --dry-run derives and validates the campaign locally, then prints project, ref,
 route, idempotency key, resolved notify thread (empty with --no-notify), and
 composed prompt size in UTF-16 characters, including the completion contract,
@@ -32,10 +36,6 @@ with the 120000-character limit per task. JSON names it promptCharacters. Fan-ou
 the total across tasks. It uses read-only catalog queries when derivation needs
 them; it sends no submission, readiness check or wake. --json prints a dry-run
 projection rather than a run receipt. Worker-added context can vary by version.
-
-Start one task on the fleet from this checkout and be woken when it ends. It
-composes the campaign path: the CLI derives, the coordinator validates, and the
-coordinator never chooses a route.
 
 Derived, each printed in the record:
   project  --project, else this checkout's origin remote matched against the
