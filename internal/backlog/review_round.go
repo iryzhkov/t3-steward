@@ -148,7 +148,8 @@ func ValidateReviewManifest(m Manifest) error {
 		if !ok {
 			return fmt.Errorf("reviewer %s has no task", v.ID)
 		}
-		if v.TaskID != "" || len(task.Routes) != 1 || task.Routes[0].Instance+"/"+task.Routes[0].Model != v.Route {
+		instance, model, _ := strings.Cut(v.Route, "/")
+		if v.TaskID != "" || len(task.Routes) != 1 || task.Routes[0].Instance != instance || task.Routes[0].Model != model {
 			return errors.New("review task route must match the round")
 		}
 		if task.Deadline == nil || !task.Deadline.Equal(r.Deadline) {

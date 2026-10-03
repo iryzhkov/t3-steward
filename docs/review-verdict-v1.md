@@ -74,7 +74,7 @@ The JSON Schema (draft 2020-12) is:
     "schema": {"const": "review-verdict/v1"},
     "verdict": {"enum": ["accept", "accept-with-changes", "reject"]},
     "inputManifestDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "reviewerRoute": {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
+    "reviewerRoute": {"type": "string", "pattern": "^[^/\\s]+/\\S+$", "maxLength": 256},
     "findings": {
       "type": "array",
       "items": {
