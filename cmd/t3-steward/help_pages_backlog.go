@@ -62,6 +62,15 @@ func amendmentPage(path, purpose, usage string) helpPage {
 }
 
 // mutationFlags is the option set of every revision-fenced control.
+const blockingWaitHelp = " --wait polls immediately, backing off from 100ms to 2s; default indefinite. --timeout D requires --wait and a positive Go duration (for example 30m), and covers queries and delays. Timeout exits 1; SIGINT exits 130; query errors retain transport codes. Disconnecting or interrupting never cancels work. Reattach a control read-only with t3-steward backlog command show <command> --wait."
+
+func blockingWaitFlags() []helpFlag {
+	return []helpFlag{
+		{Name: "--wait", Default: "off", Text: "Block until terminal state or control application, including rejection."},
+		{Name: "--timeout", Value: "D", Default: "indefinite", Text: "Positive Go duration for --wait, including query time."},
+	}
+}
+
 func mutationFlags() []helpFlag {
 	return []helpFlag{
 		{Name: "--reason", Value: "TEXT", Required: true, Text: "Why the control is being issued. It is recorded with the command."},
@@ -78,12 +87,12 @@ func mutationPage(path, purpose, usage string) helpPage {
 		Path:     path,
 		Purpose:  purpose,
 		Usage:    []string{usage},
-		Flags:    mutationFlags(),
+		Flags:    append(mutationFlags(), blockingWaitFlags()...),
 		Exits:    coordinatorExits(),
 		JSONKeys: []string{"version", "command", "event", "currentTarget"},
 		JSONNote: jsonErrorNote,
-		Notes:    "Mutating and revision-fenced. One parser serves all eight controls, so all eight accept the whole flag set above; --until belongs to delay and --now to pause, and the others refuse them.",
-		Parsers:  []parserSite{{Func: "parseBacklogMutation"}, {Func: "parseMutationOptions"}, {Func: "takeJSONFlag"}},
+		Notes:    "Mutating and revision-fenced. One parser serves all eight controls, so all eight accept the whole flag set above; --until belongs to delay and --now to pause, and the others refuse them. With --wait the printed command is the observed application or rejection, not the pending intake receipt." + blockingWaitHelp,
+		Parsers:  []parserSite{{Func: "parseBacklogMutation"}, {Func: "parseMutationOptions"}, {Func: "takeJSONFlag"}, {Func: "Parse"}},
 	}
 }
 
@@ -360,9 +369,9 @@ func backlogHelpPages() []helpPage {
 			nil, []string{"commands"}, backlogReadSites("commands"),
 			"Read-only. With no target it lists every command the coordinator holds."),
 		backlogReadPage("backlog command show", "one admin command by id, with its state and failure.",
-			"t3-steward backlog command show <command> [--json]",
-			nil, []string{"commands"}, backlogReadSites("command"),
-			"Read-only. The show word is required."),
+			"t3-steward backlog command show <command> [--json] [--wait [--timeout D]]",
+			blockingWaitFlags(), []string{"commands"}, append(backlogReadSites("command"), parserSite{Func: "Parse"}),
+			"Read-only. The show word is required. --wait reattaches to the original command without resubmitting."+blockingWaitHelp),
 		backlogReadPage("backlog quarantine", "intake the coordinator refused permanently and is now silent about.",
 			"t3-steward backlog quarantine [--json]",
 			nil, []string{"quarantine"}, backlogReadSites("quarantine"),

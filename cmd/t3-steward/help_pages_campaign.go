@@ -102,12 +102,13 @@ func campaignHelpPages() []helpPage {
 				{Name: "--reason", Value: "TEXT", Required: true, Text: "Why the run or the task is being cancelled; recorded with the command."},
 				{Name: "--command-id", Value: "ID", Default: "one generated per invocation", Text: "Stable command id, so that a retried cancellation is the same command."},
 				jsonFlag("what the cancellation covers"),
+				blockingWaitFlags()[0], blockingWaitFlags()[1],
 			},
-			Exits:    coordinatorExits(),
-			JSONKeys: []string{"willCancel", "tasks"},
-			JSONNote: "--json prints willCancel and the tasks the cancellation covers, which is the plan and not the outcome it applied. " + jsonErrorNote,
-			Notes:    "Mutating and revision-fenced. The run form is one command of its own: one revision-fenced cancellation of every non-terminal task, refused on a coordinator too old to apply it. On a supervised run the same application resolves every open incident as cancelled, cancels undecided gates, releases holds and settles the sink when nothing is still running; it is refused while an overseer activation is live. A run whose tasks are all terminal but whose sink is open is closed the same way, fenced on the run's revision; a settled run is refused. The <run>/<task> form is the forwarded alias of \"t3-steward backlog cancel\".",
-			Parsers:  []parserSite{{Func: "parseCampaignCancelRunArgs"}, {Func: "takeJSONFlag"}},
+			Exits:    append(coordinatorExits(), helpExit{1, "local wait timeout"}, helpExit{130, "wait interrupted"}),
+			JSONKeys: []string{"willCancel", "tasks", "run", "outcome"},
+			JSONNote: "--json prints willCancel and the tasks the cancellation covers, which is the plan and not the outcome it applied. With --wait, the run form prints run and outcome, the observed command including its state and failure. " + jsonErrorNote,
+			Notes:    "Mutating and revision-fenced. The run form is one command of its own: one revision-fenced cancellation of every non-terminal task, refused on a coordinator too old to apply it. On a supervised run the same application resolves every open incident as cancelled, cancels undecided gates, releases holds and settles the sink when nothing is still running; it is refused while an overseer activation is live. A run whose tasks are all terminal but whose sink is open is closed the same way, fenced on the run's revision; a settled run is refused. The <run>/<task> form is the forwarded alias of \"t3-steward backlog cancel\"." + blockingWaitHelp,
+			Parsers:  []parserSite{{Func: "parseCampaignCancelRunArgs"}, {Func: "takeJSONFlag"}, {Func: "Parse"}},
 		},
 		{Path: "campaign recovery", Purpose: "retry a failed supervised operation using fenced evidence.", Usage: []string{"t3-steward campaign recovery <command> [flags]"}, Exits: coordinatorExits(), JSONNote: "The retry command always prints a JSON recovery receipt.", Notes: "See t3-steward campaign recovery retry --help full for its evidence contract."},
 		{Path: "campaign recovery retry", Body: campaignRecoveryUsage + "\nRetry one supervised operation using incident, graph and attempt revisions.\n\nAll flags in the synopsis are required except --checkpoint-artifact, which may\nbe repeated. Optional " + supervisorCredentialFlag + " NAME chooses a supervisor\ncredential. --config PATH selects configuration.\nThe result is always a JSON recovery receipt; no --json flag is needed.\nExit: 0 accepted; 1 invalid evidence/options; coordinator transport exits apply.\n" + coordinatorTransportSummary, Parsers: []parserSite{{Func: "runRecovery"}}},
@@ -131,9 +132,15 @@ func campaignHelpPages() []helpPage {
 		}(),
 		campaignAliasPage("campaign status", "alias of campaign show: one run with its tasks and supervision.",
 			"t3-steward campaign status <run> [--json]", "backlog show"),
-		campaignAliasPage("campaign show", "one campaign run with its tasks, plus its supervision projection.",
-			"t3-steward campaign show <run> [--json]",
-			"backlog show"),
+		func() helpPage {
+			page := campaignAliasPage("campaign show", "one campaign run with its tasks, plus its supervision projection.",
+				"t3-steward campaign show <run> [--json] [--wait [--timeout D]]", "backlog show")
+			page.Flags = append(page.Flags, blockingWaitFlags()...)
+			page.Parsers = append(page.Parsers, parserSite{Func: "Parse"})
+			page.Notes = "Read-only and live. --wait waits for a terminal run before printing the ordinary show output and supervision projection. On timeout or interrupt it prints no completed result; run campaign show <run> --wait again to reattach." + blockingWaitHelp
+			page.Exits = append(page.Exits, helpExit{1, "local wait timeout"}, helpExit{130, "wait interrupted"})
+			return page
+		}(),
 		campaignAliasPage("campaign graph", "one campaign run's task graph, as text, JSON or DOT.",
 			"t3-steward campaign graph <run> [--json|--dot]",
 			"backlog graph"),

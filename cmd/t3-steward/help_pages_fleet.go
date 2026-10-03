@@ -159,7 +159,7 @@ func fleetHelpPages() []helpPage {
 			Parsers:  []parserSite{{Func: "cmdNodeWait", Case: "run-now"}},
 		},
 		{Path: "task run", Body: taskRunUsage, Parsers: []parserSite{{Func: "parseTaskRunArgs"}}},
-		{Path: "task result", Body: taskResultUsage, Parsers: []parserSite{{Func: "parseTaskResultArgs"}}},
+		{Path: "task result", Body: taskResultUsage, Parsers: []parserSite{{Func: "parseTaskResultArgs"}, {Func: "Parse"}}},
 		{
 			Path:    "task env",
 			Purpose: "print the identity of the task this shell is running inside.",

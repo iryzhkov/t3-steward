@@ -10,11 +10,12 @@ import (
 	"strings"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
+	"github.com/iryzhkov/t3-steward/internal/blockingwait"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-const taskResultUsage = `Usage: t3-steward task result <run>[/<task>] [--output DIR] [--json]
+const taskResultUsage = `Usage: t3-steward task result <run>[/<task>] [--output DIR] [--json] [--wait [--timeout D]]
 
 Collect a finished task: its final message and every output it declared, in one
 call. Without a task, every task of the run is collected.
@@ -32,6 +33,15 @@ Exit codes are the task's own verdict, so a script branches on them:
      ran nothing and has nothing to collect, which is not a failure
   2  one failed or was cancelled; whatever exists is still written
   1  one is not terminal yet; its progress is printed and nothing is waited for
+
+--wait blocks until the selected task is terminal, or (without /<task>) the
+run and all its tasks are terminal, then prints the same result as without
+--wait. It polls immediately, backing off from 100ms to 2s. No timeout is the
+default; --timeout D sets a positive Go duration (for example 30m), including
+query time, and requires --wait. On timeout the last progress is printed and
+exit 1 is returned. SIGINT exits 130. A query error stops the wait with the
+existing transport code. Disconnecting or interrupting never cancels work.
+Reattach by running task result with the same selector and --wait again.
 
 --json prints one document with the final message inlined, so reading the
 answer needs no second file read.
@@ -164,7 +174,11 @@ func openTaskResultArtifact(ctx context.Context, cfg config.Config, id string) (
 }
 
 func (c taskResultCLI) run(ctx context.Context, args []string) error {
-	selector, output, asJSON, err := parseTaskResultArgs(args)
+	clean, wait, err := blockingwait.Parse(args)
+	if err != nil {
+		return err
+	}
+	selector, output, asJSON, err := parseTaskResultArgs(clean)
 	if err != nil {
 		return err
 	}
@@ -172,17 +186,38 @@ func (c taskResultCLI) run(ctx context.Context, args []string) error {
 	if c.query == nil {
 		return errors.New("coordinator query transport is unavailable")
 	}
-	response, err := c.query(ctx, backlogadmin.Query{
-		Kind: backlogadmin.QueryWorkflow, WorkflowRunID: runID,
-	})
-	if err != nil {
-		return err
+	var response backlogadmin.Response
+	var selected []backlogadmin.TaskDetail
+	probe := func(queryCtx context.Context) (bool, error) {
+		latest, queryErr := c.query(queryCtx, backlogadmin.Query{Kind: backlogadmin.QueryWorkflow, WorkflowRunID: runID})
+		if queryErr != nil {
+			return false, queryErr
+		}
+		if latest.Workflow == nil {
+			return false, fmt.Errorf("run %q has no workflow detail", runID)
+		}
+		response = latest
+		selected, queryErr = selectResultTasks(*response.Workflow, taskName)
+		if queryErr != nil {
+			return false, queryErr
+		}
+		if taskName == "" && !response.Workflow.Summary.Run.Progress.Terminal() {
+			return false, nil
+		}
+		for _, task := range selected {
+			if task.Attempt == nil || !task.Attempt.Progress.Terminal() {
+				return false, nil
+			}
+		}
+		return true, nil
 	}
-	if response.Workflow == nil {
-		return fmt.Errorf("run %q has no workflow detail", runID)
-	}
-	selected, err := selectResultTasks(*response.Workflow, taskName)
-	if err != nil {
+	var waitErr error
+	if wait.Enabled {
+		waitErr = blockingwait.Run(ctx, wait.Timeout, probe)
+		if waitErr != nil && (waitErr != context.DeadlineExceeded || response.Workflow == nil) {
+			return blockingWaitError(waitErr, "t3-steward task result "+selector+" --wait")
+		}
+	} else if _, err := probe(ctx); err != nil {
 		return err
 	}
 	base, degraded, err := c.outputBase(output)
@@ -216,6 +251,9 @@ func (c taskResultCLI) run(ctx context.Context, args []string) error {
 		}
 	} else if err := renderTaskResult(c.stdout, document); err != nil {
 		return err
+	}
+	if waitErr != nil {
+		return afterDocument(blockingWaitError(waitErr, "t3-steward task result "+selector+" --wait"))
 	}
 	return afterDocument(taskResultVerdict(document))
 }

@@ -62,6 +62,13 @@ func packageSource(t *testing.T) map[string]*ast.File {
 		}
 		files[name] = file
 	}
+	// The blocking flags live in the shared parser package rather than the CLI.
+	waitParser := filepath.Join("..", "..", "internal", "blockingwait", "wait.go")
+	waitFile, err := parser.ParseFile(fset, waitParser, nil, 0)
+	if err != nil {
+		t.Fatalf("parse shared wait flags: %v", err)
+	}
+	files[waitParser] = waitFile
 	if len(files) == 0 {
 		t.Fatal("parsed no source files; the derivations below would prove nothing")
 	}
