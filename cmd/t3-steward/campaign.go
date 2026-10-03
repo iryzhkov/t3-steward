@@ -594,6 +594,9 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 		},
 		bytes.NewReader(bundle.Archive), int64(len(bundle.Archive)))
 	if err != nil {
+		if parsed.registerOnly && strings.Contains(err.Error(), `invalid operation envelope: json: unknown field "registerOnly"`) {
+			return errors.New("coordinator too old for --register-only (needs 0.11.0-rc.103 or later)")
+		}
 		return err
 	}
 	if parsed.registerOnly {

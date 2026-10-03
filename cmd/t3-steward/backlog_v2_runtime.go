@@ -975,7 +975,8 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			}
 			logger.Warn("campaign submitted without a client-side readiness check",
 				"key", audit.Key, "digest", audit.Digest,
-				"principal", audit.Principal, "reason", audit.UnverifiedReason)
+				"principal", audit.Principal, "reason", audit.UnverifiedReason,
+				"registerOnly", audit.RegisterOnly)
 		},
 	}
 	service.SetWorkerEnrollmentHandler(coordinatorEnrollmentHandler(cfg.BacklogV2, store, epoch, artifactStore))

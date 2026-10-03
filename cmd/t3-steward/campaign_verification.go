@@ -26,14 +26,14 @@ func (c backlogAdminCLI) renderVerification(ctx context.Context, detail *backlog
 			found = true
 			report, err := c.verificationReport(ctx, artifact.Metadata.ID)
 			if err != nil {
-				fmt.Fprintf(c.stdout, "  %s: unavailable (%v); next: t3-steward backlog artifact get %s\n", task.Task.Name, err, artifact.Metadata.ID)
+				fmt.Fprintf(c.stdout, "  %s: unavailable (%s); next: t3-steward backlog artifact get %s\n", task.Task.Name, string(safeTerminalText([]byte(err.Error()))), artifact.Metadata.ID)
 				continue
 			}
 			verdict := "passed"
 			if report.ExitCode != 0 {
 				verdict = "failed"
 			}
-			fmt.Fprintf(c.stdout, "  %s: %s: %s (exit %d)\n", task.Task.Name, report.Command, verdict, report.ExitCode)
+			fmt.Fprintf(c.stdout, "  %s: %s: %s (exit %d)\n", task.Task.Name, safeTerminalText([]byte(report.Command)), verdict, report.ExitCode)
 		}
 		if !found {
 			fmt.Fprintf(c.stdout, "  %s: not reported\n", task.Task.Name)

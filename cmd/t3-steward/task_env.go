@@ -17,7 +17,7 @@ Commands:
   run                Start one task on the fleet from this checkout, with the
                      project, ref, route, idempotency key and wake derived, and
                      be notified in this thread when it ends.
-                     t3-steward task run --help is the whole contract.
+                     t3-steward task run --help full is the whole contract.
   result             Collect a finished task: its final message and every output
                      it declared, written under <state>/results/<run>/<task>/.
                      Exits 0 succeeded, 2 failed or cancelled, 1 not terminal.

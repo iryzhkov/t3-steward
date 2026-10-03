@@ -46,6 +46,7 @@ type DirectorySubmission struct {
 // of the client-side escape hatch is loud rather than invisible once the run
 // exists.
 type SubmissionAudit struct {
+	RegisterOnly     bool
 	Key              string
 	Digest           string
 	Principal        string
@@ -176,7 +177,7 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 	// then refused, which put an escape hatch nobody used into the record.
 	if s.Audit != nil {
 		s.Audit(ctx, SubmissionAudit{
-			Key: key, Digest: digest, Principal: request.Principal,
+			Key: key, Digest: digest, Principal: request.Principal, RegisterOnly: request.RegisterOnly,
 			Unverified: request.Unverified, UnverifiedReason: request.UnverifiedReason,
 			At: createdAt,
 		})

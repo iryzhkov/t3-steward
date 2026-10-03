@@ -85,7 +85,7 @@ func safeTerminalText(raw []byte) []byte {
 			continue
 		}
 		raw = raw[size:]
-		if value == '\n' || value == '\r' || value == '\t' || !unicode.IsControl(value) {
+		if value == '\n' || value == '\t' || (!unicode.IsControl(value) && !unicode.Is(unicode.Cf, value)) {
 			safe.WriteRune(value)
 			continue
 		}
