@@ -1112,12 +1112,27 @@ func serveCoordinatorBoundaries(
 	if interval <= 0 {
 		return errors.New("coordinator boundary interval must be positive")
 	}
+	// A server that cannot serve fails startup before any boundary pass and
+	// before readiness is reported.
+	if err := server.Validate(); err != nil {
+		return err
+	}
 	serverDone := make(chan error, 1)
 	go func() {
 		serverDone <- server.Serve(ctx)
 	}()
 	cycle.Tick(ctx)
-	if started, ok := ctx.Value(coordinatorStartedKey{}).(func()); ok && started != nil {
+	// Readiness is reported only while the server is still serving: a server
+	// that stopped during the startup pass returns its error instead.
+	select {
+	case err := <-serverDone:
+		if err == nil && ctx.Err() == nil {
+			err = errors.New("coordinator admin server stopped during startup")
+		}
+		return err
+	default:
+	}
+	if started, ok := ctx.Value(coordinatorStartedKey{}).(func()); ok && started != nil && ctx.Err() == nil {
 		started()
 	}
 	ticker := time.NewTicker(interval)

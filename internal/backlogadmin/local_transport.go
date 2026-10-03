@@ -278,13 +278,22 @@ func ListenLocal(path string) (*net.UnixListener, error) {
 	return listener, nil
 }
 
-func (s *LocalServer) Serve(ctx context.Context) error {
+// Validate reports the configuration error Serve would return at once, so a
+// caller can fail before it announces the server as serving.
+func (s *LocalServer) Validate() error {
 	if s == nil || s.Listener == nil || s.Service == nil {
 		return errors.New("local admin server requires listener and service")
 	}
 	if s.MaxRequestBytes <= 0 || s.MaxArtifactBytes <= 0 || s.MaxSubmissionBytes <= 0 ||
 		s.RequestTimeout <= 0 || s.MaxConcurrent <= 0 {
 		return errors.New("local admin server byte, timeout, and concurrency limits must be positive")
+	}
+	return nil
+}
+
+func (s *LocalServer) Serve(ctx context.Context) error {
+	if err := s.Validate(); err != nil {
+		return err
 	}
 	var workers sync.WaitGroup
 	active := make(chan struct{}, s.MaxConcurrent)
