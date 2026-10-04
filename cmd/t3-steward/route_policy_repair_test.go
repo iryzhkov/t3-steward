@@ -17,7 +17,10 @@ func installM13RepairPolicy(t *testing.T, raw string) {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	path := filepath.Join(dir, "t3-steward")
+	// Darwin uses HOME/Library/Application Support rather than XDG_CONFIG_HOME.
+	// Isolate both platform defaults and install exactly where the CLI reads.
+	t.Setenv("HOME", dir)
+	path := filepath.Dir(defaultRoutePolicyPath())
 	if err := os.MkdirAll(path, 0700); err != nil {
 		t.Fatal(err)
 	}
