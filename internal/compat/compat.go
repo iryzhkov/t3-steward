@@ -12,7 +12,7 @@ import (
 // with the end-to-end checklist in docs/t3-protocol.md.
 const (
 	MinServerVersion = "0.0.38"
-	MaxServerVersion = "0.0.38"
+	MaxServerVersion = "0.0.45"
 )
 
 // MaxTurnInputLength is the longest turn input T3 accepts across the tested

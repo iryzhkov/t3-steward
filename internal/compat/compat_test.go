@@ -26,6 +26,8 @@ func TestCheck(t *testing.T) {
 		"0.0.1":                TooOld,
 		"9.9.9":                Untested,
 		"garbage":              Unknown,
+		"0.0.45":               Supported,
+		"0.0.46":               Untested,
 		"0.0.38-beta.1":        Supported,
 	}
 	for v, want := range cases {
