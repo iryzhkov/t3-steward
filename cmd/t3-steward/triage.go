@@ -278,6 +278,12 @@ func collectTriage(ctx context.Context, sources triageSources, options triageOpt
 		notBefore = status.Status.Runtime.LastReload
 		report.Coordinator = status.Status.Runtime.Owner
 		report.GeneratedAt = status.GeneratedAt
+		if status.Status.Runtime.LegacyFileIntake == "disabled" {
+			report.add(triageItem{Kind: "legacy-intake-disabled", Severity: "info", Subject: "Markdown files",
+				Summary:  "deprecated coordinator file intake is disabled; files are not submitted and quarantine is retained. Use t3-steward task run or campaign run",
+				Commands: []triageCommand{{Run: "t3-steward task run --help"}, {Run: "t3-steward campaign run --help"}},
+			})
+		}
 	}
 	if workers, err := sources.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryWorkers}); err != nil {
 		report.unavailable("workers", err)
@@ -787,7 +793,7 @@ func triageAsk(report *triageReport, w domain.TaskWait, task string, showRun tri
 var triageKindOrder = []string{
 	"worker-down", "supervision-reassess", "supervision-incident", "supervision-gate", "needs-input",
 	"ask-unanswered", "wake-overdue", "wake-undeliverable", "supervision-hold", "supervision-dispatch", "quota-held",
-	"intake-quarantined", "run-stalled", "worker-disconnected", "worker-maintenance",
+	"intake-quarantined", "run-stalled", "worker-disconnected", "worker-maintenance", "legacy-intake-disabled",
 }
 
 func sortTriage(items []triageItem) {

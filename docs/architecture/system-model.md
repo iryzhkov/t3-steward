@@ -59,7 +59,7 @@ that isolation is not yet a current production guarantee.
 | Admin command/audit | Authenticated coordinator admin service | Immutable request ID, expected revision, actor/reason and durable result |
 | Schedule/template/trigger | Coordinator SQLite | Versioned templates, nominal occurrence key, one-open-run policy |
 | Wait/check/wake | Coordinator native node rows and legacy shell wait subsystem | S2 native settlement/intent is atomic; observed message identity proves delivery, ambiguous sends retain recovery state |
-| Legacy Markdown intake | Existing legacy adapter/runner | Still present; S8 deletes it and its migration/forwarding paths |
+| Legacy Markdown intake | Deprecated adapter/runner, default off | M15 phase 1 retains gated rollback; phase 2 removal needs lead rollout proof |
 | Release/configuration identity | Running process and validated configuration | S4 exposes digests; UpKeeper owns deployment comparison and convergence |
 
 ## Boundaries and intentional seams
@@ -221,7 +221,9 @@ multi-worker production dispatch, accurate quota forecasts or enforced safety.
 S0 adds replay migration/retention/crash evidence. S5 owns the reliability campaign;
 S6 must rerun quota expectations that S5 cannot certify before rework exists.
 S7 owns enforcement and release qualification, including the no-quota-failure log
-window. S8 deletes the legacy intake outright; there is no compatibility obligation.
+window. M15 stages legacy retirement: phase 1 disables intake by default and retains
+compatibility for the lead-owned observation/rollback window; phase 2 removes it
+only after reviewed rollout proof that no active consumers remain.
 
 ## Operator-facing shape and review rule
 
@@ -229,8 +231,22 @@ Keep workflow administration under `backlog`; add focused top-level `quota`,
 `worker`, `wait`, `schedule` and `diagnose` commands. S3 owns DAG inspection
 and a joined diagnostic view of workers, quotas, waits, schedules, assignments,
 leases and journal excerpts. Redact credentials and bound exported evidence.
-Existing `schedules` can be an alias during the CLI change. S8 removes legacy
-file helpers; it does not prolong their compatibility.
+Existing `schedules` can be an alias during the CLI change. Deprecated file helpers
+remain during M15 phase 1. Submit new work with `task run` or `campaign run` and
+manage recurring work with schedules under existing mutation authority.
+
+`backlog.enabled` remains default false and controls only the old local runner.
+Coordinator Markdown intake separately requires
+`backlog_v2.coordinator.legacy_file_intake_enabled: true` (default false).
+Changing that gate requires a coordinator restart; SIGHUP rejects the whole change
+with a receipt and preserves the effective configuration. With intake disabled,
+the coordinator does not resolve/read the drop directory or change intake quarantine.
+Persisted legacy data, quarantine inspection/release and other operator controls
+remain available. Enabling compatibility restores the guarded, read-only,
+idempotent adapter; it does not change explicit route pins or quota admission.
+Phase 2 requires lead-owned exact source reviews/CI, reviewed release deployment,
+observed absence of file consumers across hosts, and a retained prior-release rollback.
+No automatic removal date or recurring schedule is created.
 
 For each later change state its owner, commit point, retry identity, uncertainty
 behavior, resource bound, evidence scope and affected ADR. Keep implemented

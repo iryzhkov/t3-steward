@@ -81,7 +81,7 @@ func IsQueryKind(kind QueryKind) bool {
 // QuarantineRetryAdvice is the one sentence a quarantine view has to say, in
 // the same words everywhere: the marker is bound to the exact content that was
 // refused, so changing the file is both the recovery and the retry.
-const QuarantineRetryAdvice = "change the file: a different content digest releases this marker and the submission is tried again."
+const QuarantineRetryAdvice = "change the file: a different content digest releases this marker only when deprecated legacy file intake is explicitly enabled; intake defaults off. Prefer t3-steward task run or campaign run."
 
 // QuarantinedIntake is one permanently refused intake submission. It names no
 // workflow or run because nothing was accepted, which is exactly why it is
@@ -275,6 +275,9 @@ type Status struct {
 }
 
 type RuntimeStatus struct {
+	// LegacyFileIntake is enabled/disabled for the effective coordinator;
+	// absent from older coordinators, whose intake state is unknown.
+	LegacyFileIntake    string `json:"legacyFileIntake,omitempty"`
 	Release             string `json:"release,omitempty"`
 	ConfigurationDigest string `json:"configurationDigest,omitempty"`
 	// LastReload is when the effective configuration was activated: at

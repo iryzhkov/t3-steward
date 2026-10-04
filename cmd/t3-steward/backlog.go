@@ -71,21 +71,25 @@ Revision-fenced controls:
       or settled without reaching it; refused while a wait is still live.
   quarantine release <key> --reason TEXT [--json]
       Clear one intake quarantine after fixing what caused it. Editing the file
-      clears it by itself; this is for a refusal the file cannot fix, such as a
+      clears it only when legacy intake is explicitly enabled; this is for a
+      refusal the file cannot fix, such as a
       project no alias mapped.
   recover <assignment> --outcome stopped|failed --coordinator-epoch N
       --assignment-epoch N --attempt-revision N --evidence-id ID
       --evidence-sha256 HEX --reason TEXT [--recovery-id ID] [--json]
 
-Legacy task-file helpers:
+Deprecated legacy task-file helpers (phase-1 rollback only):
   new <id>           Create a task file from a template and print its path.
   path               Print the task directory.
   check <file|->     Validate a task: project, provider instance, model, options, host.
   receive <id>       Store a task sent by another host (used by forwarding).
   list --all         Show the legacy local task files and configured remote lists.
 
-The runner is part of "run"; enable it with backlog.enabled: true.
-The legacy task-file helpers above are offline: they touch no coordinator.
+Both legacy intake paths default off. backlog.enabled opts into the deprecated
+local runner only. Coordinator Markdown intake requires the separate
+backlog_v2.coordinator.legacy_file_intake_enabled: true and a restart.
+These offline helpers do not submit to the coordinator. Prefer "task run" or
+"campaign run"; creating a file does not mean it was accepted.
 
 Example:
   t3-steward backlog submit ./bundle.tar --idempotency-key 2026-09-14-upkeeper --json
@@ -285,7 +289,7 @@ func runBacklogLegacy(cfg config.Config, args []string) error {
 		}
 		fmt.Println(path)
 		if !cfg.Backlog.Enabled {
-			fmt.Fprintln(os.Stderr, "note: backlog.enabled is false; the runner will not pick tasks up until it is true")
+			fmt.Fprintln(os.Stderr, "deprecated file helper: file created, not submitted; local runner disabled. Coordinator Markdown intake also defaults off; use t3-steward task run or campaign run")
 		}
 		return nil
 	case "list":

@@ -10,7 +10,7 @@ import (
 
 func TestBacklogV2DefaultsDisabledAndLegacyCompatible(t *testing.T) {
 	cfg := Default()
-	if cfg.BacklogV2.Mode != "disabled" || cfg.BacklogV2.StartupAdmission != "closed" {
+	if cfg.Backlog.Enabled || cfg.BacklogV2.Coordinator.LegacyFileIntakeEnabled || cfg.BacklogV2.Mode != "disabled" || cfg.BacklogV2.StartupAdmission != "closed" {
 		t.Fatalf("backlog v2 defaults = %+v", cfg.BacklogV2)
 	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -23,6 +23,36 @@ func TestBacklogV2DefaultsDisabledAndLegacyCompatible(t *testing.T) {
 	}
 	if !loaded.Backlog.Enabled || loaded.BacklogV2.Mode != "disabled" {
 		t.Fatalf("legacy config = %+v", loaded)
+	}
+}
+
+func TestLegacyFileIntakeOptInIsCoordinatorOnly(t *testing.T) {
+	for _, mode := range []string{"disabled", "worker", "coordinator"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := validBacklogV2Config(t)
+			cfg.BacklogV2.Mode = mode
+			cfg.BacklogV2.Coordinator.LegacyFileIntakeEnabled = true
+			err := cfg.Validate()
+			if mode == "coordinator" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "legacy_file_intake_enabled requires mode: coordinator") {
+				t.Fatalf("invalid mode gate: %v", err)
+			}
+		})
+	}
+}
+
+func TestLegacyFileIntakeRejectsMalformedAndStaleFields(t *testing.T) {
+	for _, field := range []string{"legacy_file_intake_enabled: definitely", "legacy_intake_enabled: true"} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("backlog_v2:\n  coordinator:\n    "+field+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadFile(path); err == nil || (!strings.Contains(err.Error(), "bool") && !strings.Contains(err.Error(), "field legacy_intake_enabled not found")) {
+			t.Fatalf("invalid/stale gate %q lacks actionable refusal: %v", field, err)
+		}
 	}
 }
 

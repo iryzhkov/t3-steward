@@ -399,7 +399,8 @@ type Report struct {
 
 // Backlog configures the quota-gated task runner and its forecast.
 type Backlog struct {
-	// Enabled turns the runner on. Tasks are markdown files in Dir.
+	// Enabled opts into the deprecated local Markdown runner (default false).
+	// It is separate from coordinator legacy_file_intake_enabled; prefer task/campaign APIs.
 	Enabled bool `yaml:"enabled"`
 	// Dir holds the task files; empty means <config dir>/backlog.
 	Dir string `yaml:"dir"`
@@ -534,6 +535,9 @@ type V2Verification struct {
 
 type V2Coordinator struct {
 	ID string `yaml:"id"`
+	// LegacyFileIntakeEnabled opts into deprecated Markdown intake for phase-1 rollback.
+	// Default false; changing it requires a coordinator restart.
+	LegacyFileIntakeEnabled bool `yaml:"legacy_file_intake_enabled"`
 	// AdminClients are the remote admin clients this coordinator will accept
 	// through the restricted coordinator-exchange command, by client
 	// principal. A client that is not listed here cannot be authenticated,

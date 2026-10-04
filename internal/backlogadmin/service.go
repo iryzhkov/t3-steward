@@ -113,6 +113,7 @@ func (s *Service) SetUsageCursorKey(key []byte) error {
 }
 
 type RuntimeInfo struct {
+	LegacyFileIntake    string
 	Release             string
 	ConfigurationDigest string
 	// LastReload is when the effective configuration was activated, reported
@@ -666,7 +667,8 @@ func (v view) status() Status {
 
 func (v view) runtimeStatus() RuntimeStatus {
 	status := RuntimeStatus{
-		Mode: v.runtime.Mode, Owner: v.runtime.Owner, Epoch: v.runtime.Epoch,
+		LegacyFileIntake: v.runtime.LegacyFileIntake,
+		Mode:             v.runtime.Mode, Owner: v.runtime.Owner, Epoch: v.runtime.Epoch,
 		Release: v.runtime.Release, ConfigurationDigest: v.runtime.ConfigurationDigest, LastReload: v.runtime.LastReload,
 		Transport: v.runtime.Transport, Health: "healthy",
 	}

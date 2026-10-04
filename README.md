@@ -507,14 +507,17 @@ occurrences, `.` slots never observed.
 
 ### Backlog
 
-The shipped daemon runs the host-local Markdown backlog described below. The
-backlog-v2 fleet orchestrator is a tested release candidate but is not wired for
-production deployment; its configuration, manifest, recovery, and deployment
-boundary are documented in
-[Backlog-v2 operations](docs/backlog-v2-operations.md) and the
-[deployment-readiness report](docs/plans/backlog-v2-deployment-readiness.md).
+The following Markdown runner examples are deprecated phase-1 rollback
+compatibility. Both the local runner and coordinator Markdown intake default off.
+Use `t3-steward task run` or `t3-steward campaign run` for new submissions;
+creating or receiving a file does not mean the coordinator accepted it.
+`backlog.enabled` controls only the old local runner. Coordinator compatibility
+separately requires `backlog_v2.coordinator.legacy_file_intake_enabled: true` and
+a restart; SIGHUP rejects gate changes without partially loading configuration.
+Files and persisted quarantine remain untouched while coordinator intake is off.
+See [Backlog-v2 operations](docs/backlog-v2-operations.md).
 
-Enable the runner and drop markdown tasks into the backlog directory:
+For phase-1 rollback only, explicitly enable the local runner:
 
 ```yaml
 backlog:
@@ -724,7 +727,11 @@ Cloning creates fresh task, input and attempt identities from verified retained
 inputs. See the [amendment contract](docs/architecture/adr-s0-amendment.md) for
 timeout semantics, input custody and diagnostic evidence limits.
 
-### Running a task on another machine
+### Deprecated Markdown forwarding compatibility
+
+New task/campaign submissions use coordinator worker planning. The following
+file forwarding path is retained only for phase-1 rollback, with explicit opt-in
+on the receiving runner; it performs no default coordinator intake.
 
 A task may name the machine whose T3 server should run it (`host:`, an SSH
 alias), and `backlog.default_host` sets the host for tasks that name none.
