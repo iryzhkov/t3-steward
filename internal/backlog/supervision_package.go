@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -158,7 +159,8 @@ func (b CoordinatorOfferBuilder) buildActivationOffer(
 		dispatch.Deadline = state.Activation.Deadline.UTC()
 	}
 	input := ActivationPackageInput{
-		Workflow: workflow, Run: run, Record: state.Record, Activation: state.Activation,
+		WorkerCapabilities: advertised,
+		Workflow:           workflow, Run: run, Record: state.Record, Activation: state.Activation,
 		Dispatch: dispatch, Attempt: attempt, Assignment: assignment,
 		Triggers: inbox.Triggers,
 		Tasks:    domain.TasksForRun(run, records.Tasks),
@@ -226,13 +228,15 @@ func (b CoordinatorOfferBuilder) buildActivationOffer(
 // inputs always produce the same package, which is what lets an undelivered
 // dispatch be retried byte for byte.
 type ActivationPackageInput struct {
-	Workflow   domain.Workflow
-	Run        domain.WorkflowRun
-	Record     domain.SupervisionRecord
-	Activation domain.Activation
-	Dispatch   ActivationDispatch
-	Attempt    domain.Attempt
-	Assignment domain.Assignment
+	// WorkerCapabilities is the selected worker inventory, not manifest authority.
+	WorkerCapabilities []string
+	Workflow           domain.Workflow
+	Run                domain.WorkflowRun
+	Record             domain.SupervisionRecord
+	Activation         domain.Activation
+	Dispatch           ActivationDispatch
+	Attempt            domain.Attempt
+	Assignment         domain.Assignment
 	// Triggers are the coalesced events this activation was woken for. An
 	// activation with none of them would be a wake with nothing to review.
 	Triggers  []CoalescedTrigger
@@ -506,6 +510,10 @@ func BuildActivationPackage(input ActivationPackageInput) (workerproto.Execution
 			MaxArtifactBytes:    input.MaxArtifactBytes, MaxTotalBytes: input.MaxTotalBytes,
 		},
 		CreatedAt: input.Now.UTC(),
+	}
+	if slices.Contains(input.WorkerCapabilities, workerproto.PackageCapabilitySessionDisplay) {
+		pkg.Display = &workerproto.SessionDisplay{WorkflowName: workerproto.SanitizeDisplayName(input.Workflow.Name)}
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilitySessionDisplay)
 	}
 	if !deadline.IsZero() {
 		bounded := deadline.UTC()

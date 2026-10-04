@@ -108,7 +108,7 @@ const (
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext}
+	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay}
 }
 
 // PreflightStep is one declared step the worker runs after the workspace is
@@ -127,6 +127,7 @@ type RecoveryExecutionContext struct {
 }
 
 type ExecutionPackage struct {
+	Display          *SessionDisplay        `json:"display,omitempty"`
 	Timeout          time.Duration          `json:"timeout,omitempty"`
 	GraphRevision    int64                  `json:"graphRevision,omitempty"`
 	TaskRevision     int64                  `json:"taskRevision,omitempty"`
@@ -362,6 +363,9 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 	if err := validateSupervisionActivation(pkg); err != nil {
 		return err
 	}
+	if err := validateSessionDisplay(pkg); err != nil {
+		return err
+	}
 	return validatePackagePreflight(pkg.Preflight)
 }
 
@@ -402,6 +406,12 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 	}
 	if _, ok := declared[PackageCapabilityProjectContext]; pkg.Context != nil && !ok {
 		return errors.New("execution package: project context requires the project context capability")
+	}
+	if _, ok := declared[PackageCapabilitySessionDisplay]; pkg.Display != nil && !ok {
+		return errors.New("execution package: display requires session display capability")
+	}
+	if _, ok := declared[PackageCapabilitySessionDisplay]; ok && pkg.Display == nil {
+		return errors.New("execution package: session display capability requires display metadata")
 	}
 	if pkg.Recovery != nil {
 		if pkg.Supervision != nil || pkg.Recovery.IncidentID == "" || pkg.Recovery.InstructionPath != "inputs/recovery/instructions.md" {

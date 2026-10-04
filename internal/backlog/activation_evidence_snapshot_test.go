@@ -2,6 +2,7 @@ package backlog
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -192,6 +193,30 @@ func TestActivationPackageCarriesRetrievableFrozenEvidence(t *testing.T) {
 	if len(pkg.RequiredCapabilities) != 2 ||
 		pkg.RequiredCapabilities[1] != workerproto.PackageCapabilitySupervisionEvidence {
 		t.Fatalf("required capabilities = %v, want versioned evidence materialization", pkg.RequiredCapabilities)
+	}
+	input.Workflow.Name = "Campaign café"
+	input.WorkerCapabilities = []string{workerproto.PackageCapabilitySessionDisplay}
+	named, err := BuildActivationPackage(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if named.Display == nil || named.Display.WorkflowName != input.Workflow.Name || named.Display.TaskName != "" || named.Display.ReviewJudge {
+		t.Fatalf("activation display = %+v", named.Display)
+	}
+	if len(named.RequiredCapabilities) != len(pkg.RequiredCapabilities)+1 {
+		t.Fatal("display replaced mandatory activation capabilities")
+	}
+	if !reflect.DeepEqual(named.Identity, pkg.Identity) || !reflect.DeepEqual(named.Supervision, pkg.Supervision) {
+		t.Fatal("display changed activation authority")
+	}
+	replay, err := BuildActivationPackage(input)
+	if err != nil || !reflect.DeepEqual(named, replay) {
+		t.Fatal("activation display replay changed")
+	}
+	input.WorkerCapabilities = []string{"unknown"}
+	omitted, err := BuildActivationPackage(input)
+	if err != nil || omitted.Display != nil || !reflect.DeepEqual(omitted, pkg) {
+		t.Fatalf("legacy activation changed: %v", err)
 	}
 	got := pkg.StaticInputs[0]
 	if got.ID != object.ID || got.SHA256 != object.SHA256 ||

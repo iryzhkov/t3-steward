@@ -814,7 +814,7 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 	}
 	threadID, err := d.T3.CreateAndStartThread(ctx, t3control.NewThreadInput{
 		ThreadID: pkg.Identity.ThreadID, DispatchToken: pkg.Identity.DispatchToken,
-		ProjectID: projectID, Title: pkg.Identity.TaskID,
+		ProjectID: projectID, Title: workerproto.InitialSessionTitle(pkg),
 		ModelSelection: selection, RuntimeMode: "full-access", InteractionMode: "default",
 		WorktreePath: workspace, Prompt: prompt,
 		Environment: pkg.Identity.TaskEnvironment(),
