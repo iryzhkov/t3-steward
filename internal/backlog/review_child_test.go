@@ -204,6 +204,75 @@ func TestReviewChildRetainedSQLiteCollectorReplay(t *testing.T) {
 	}
 }
 
+func TestReviewChildRetainedOrphanOutputsRefused(t *testing.T) {
+	ctx := context.Background()
+	f := newRetainedChild(t, false)
+	p, err := f.prepare(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := p.Build(f.frozen, f.checkpoint, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := g.Attempts[0]
+	a.ID = "orphan-retry"
+	a.Number = 2
+	a.Progress = domain.ProgressSucceeded
+	a.Control = domain.ControlStopped
+	member := f.frozen.Requirements.Members[0]
+	verdict := `{"schema":"review-verdict/v1","verdict":"accept","findings":[],"inputManifestDigest":"` + f.checkpoint.Checkpoint.InputDigest + `","reviewerRoute":"` + member.Route + `"}`
+	var artifacts []domain.Artifact
+	for _, out := range []struct{ name, raw string }{{"review.md", "orphan retained evidence"}, {"verdict.json", verdict}} {
+		path := "orphan/" + out.name
+		if err = os.MkdirAll(filepath.Dir(filepath.Join(f.retained.Root, path)), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.WriteFile(filepath.Join(f.retained.Root, path), []byte(out.raw), 0400); err != nil {
+			t.Fatal(err)
+		}
+		artifacts = append(artifacts, domain.Artifact{ID: a.ID + "-" + out.name, WorkflowRunID: a.WorkflowRunID, TaskID: a.TaskID, AttemptID: a.ID, Kind: domain.ArtifactOutput, Name: out.name, StoragePath: path, Size: int64(len(out.raw)), SHA256: admissionDigestBytes([]byte(out.raw)), Producer: "worker", CreatedAt: time.Now().UTC()})
+	}
+	if err = f.parent.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Attempts: []domain.Attempt{a}, Artifacts: artifacts}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := f.parent.store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	round, err := f.parent.store.GetReviewRound(ctx, f.checkpoint.RoundID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.parent.store.MaterializeReviewChild(ctx, f.frozen, f.checkpoint, p); err == nil {
+		t.Fatal("orphan collector evidence adopted")
+	}
+	after, err := f.parent.store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterRound, err := f.parent.store.GetReviewRound(ctx, f.checkpoint.RoundID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(round, afterRound) || !afterRound.Deadline.IsZero() {
+		t.Fatal("orphan refusal changed execution or round")
+	}
+	persisted := f.retained
+	persisted.Catalog = f.parent.store.Store
+	for _, artifact := range artifacts {
+		_, reader, err := persisted.Open(ctx, artifact.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := io.ReadAll(reader)
+		reader.Close()
+		if err != nil || admissionDigestBytes(raw) != artifact.SHA256 {
+			t.Fatal("orphan output altered")
+		}
+	}
+}
+
 func TestReviewChildRetainedPreparationRefusals(t *testing.T) {
 	for _, kind := range []string{"missing file", "altered bytes", "metadata", "foreign ownership", "prompt bytes", "criteria substitution", "zero deadline", "manifest conflict"} {
 		t.Run(kind, func(t *testing.T) {

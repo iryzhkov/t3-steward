@@ -90,13 +90,8 @@ func (s *Store) MaterializeReviewChild(ctx context.Context, expected review.Froz
 	if !prepared.Deadline().After(s.now()) {
 		return zero, ErrReviewMaterialization
 	}
-	// Reject orphan/colliding initial graphs rather than adopting them.
-	var count int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM coordinator_graph_revisions WHERE run_id=?", cp.RoundID).Scan(&count); err != nil {
+	if err := refuseReviewChildOrphansTx(ctx, tx, graph); err != nil {
 		return zero, err
-	}
-	if count != 0 {
-		return zero, ErrReviewMaterialization
 	}
 	if err := insertReviewChildTx(ctx, tx, graph); err != nil {
 		return zero, err
@@ -193,6 +188,152 @@ func reviewChildReplayTx(ctx context.Context, tx *sql.Tx, expected review.Frozen
 	return receipt, true, nil
 }
 
+// Both representations can claim ownership. A corrupt foreign index must not
+// hide a retained child identity from creation or replay. Malformed JSON causes
+// the query to fail closed; it is never repaired here.
+const reviewChildAttemptOwnership = `workflow_run_id=?1 OR json_extract(record,'$.workflowRunId')=?1
+ OR task_id IN (SELECT value FROM json_each(?2)) OR json_extract(record,'$.taskId') IN (SELECT value FROM json_each(?2))
+ OR id IN (SELECT value FROM json_each(?3)) OR json_extract(record,'$.id') IN (SELECT value FROM json_each(?3))`
+
+func reviewChildIdentityLists(g review.ChildGraph) (string, string) {
+	tasks := make([]string, len(g.Tasks))
+	attempts := make([]string, len(g.Attempts))
+	for i, t := range g.Tasks {
+		tasks[i] = t.ID
+	}
+	for i, a := range g.Attempts {
+		attempts[i] = a.ID
+	}
+	taskJSON, _ := json.Marshal(tasks)
+	attemptJSON, _ := json.Marshal(attempts)
+	return string(taskJSON), string(attemptJSON)
+}
+
+// Allocation-only preparation has no SQL execution or artifact rows. This runs
+// only after the no-marker writer recheck, before inserting or freezing anything.
+func refuseReviewChildOrphansTx(ctx context.Context, tx *sql.Tx, g review.ChildGraph) error {
+	tasks, attempts := reviewChildIdentityLists(g)
+	for _, query := range []string{
+		"SELECT count(*) FROM coordinator_attempts WHERE " + reviewChildAttemptOwnership,
+		`SELECT count(*) FROM coordinator_artifacts WHERE workflow_run_id=?1 OR json_extract(record,'$.workflowRunId')=?1
+   OR task_id IN (SELECT value FROM json_each(?2)) OR json_extract(record,'$.taskId') IN (SELECT value FROM json_each(?2))
+   OR attempt_id IN (SELECT value FROM json_each(?3)) OR json_extract(record,'$.attemptId') IN (SELECT value FROM json_each(?3))`,
+		`SELECT count(*) FROM coordinator_assignments WHERE attempt_id IN (SELECT value FROM json_each(?3))
+   OR json_extract(record,'$.attemptId') IN (SELECT value FROM json_each(?3))
+   OR json_extract(record,'$.workflowRunId')=?1 OR json_extract(record,'$.taskId') IN (SELECT value FROM json_each(?2))`,
+		`SELECT count(*) FROM coordinator_task_waits WHERE attempt_id IN (SELECT value FROM json_each(?3))
+   OR json_extract(record,'$.attemptId') IN (SELECT value FROM json_each(?3))
+   OR json_extract(record,'$.workflowRunId')=?1 OR json_extract(record,'$.taskId') IN (SELECT value FROM json_each(?2))`,
+		`SELECT count(*) FROM coordinator_task_wait_events WHERE attempt_id IN (SELECT value FROM json_each(?3))
+   OR json_extract(record,'$.attemptId') IN (SELECT value FROM json_each(?3))
+   OR json_extract(record,'$.workflowRunId')=?1 OR json_extract(record,'$.taskId') IN (SELECT value FROM json_each(?2))`,
+	} {
+		var count int
+		if err := tx.QueryRowContext(ctx, query, g.Run.ID, tasks, attempts).Scan(&count); err != nil {
+			return err
+		}
+		if count != 0 {
+			return ErrReviewMaterialization
+		}
+	}
+	for _, query := range []string{
+		"SELECT count(*) FROM coordinator_workflows WHERE id=?1 OR json_extract(record,'$.id')=?1",
+		"SELECT count(*) FROM coordinator_workflow_runs WHERE workflow_id=?1 OR json_extract(record,'$.workflowId')=?1",
+		"SELECT count(*) FROM coordinator_tasks WHERE workflow_id=?1 OR json_extract(record,'$.workflowId')=?1",
+	} {
+		var count int
+		if err := tx.QueryRowContext(ctx, query, g.Workflow.ID).Scan(&count); err != nil {
+			return err
+		}
+		if count != 0 {
+			return ErrReviewMaterialization
+		}
+	}
+
+	artifactIDs := make([]string, len(g.Artifacts))
+	for i, a := range g.Artifacts {
+		artifactIDs[i] = a.ID
+	}
+	artifacts, _ := json.Marshal(artifactIDs)
+	// Strict inserts still enforce indexed primary-key collisions. Retained JSON
+	// identities must not masquerade as those same reserved records either.
+	var reserved int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM (
+	 SELECT 1 FROM coordinator_workflow_runs WHERE id=?1 OR json_extract(record,'$.id')=?1
+	 UNION ALL SELECT 1 FROM coordinator_tasks WHERE id IN (SELECT value FROM json_each(?2)) OR json_extract(record,'$.id') IN (SELECT value FROM json_each(?2))
+	 UNION ALL SELECT 1 FROM coordinator_artifacts WHERE id IN (SELECT value FROM json_each(?3)) OR json_extract(record,'$.id') IN (SELECT value FROM json_each(?3))
+	)`, g.Run.ID, tasks, string(artifacts)).Scan(&reserved); err != nil {
+		return err
+	}
+	if reserved != 0 {
+		return ErrReviewMaterialization
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM coordinator_graph_revisions WHERE run_id=? OR json_extract(record,'$.runId')=?", g.Run.ID, g.Run.ID).Scan(&count); err != nil {
+		return err
+	}
+	if count != 0 {
+		return ErrReviewMaterialization
+	}
+	return nil
+}
+
+// Revision and mutable execution values may advance; only the two stored
+// identities, positive counters and declared-task membership must agree.
+func validateReviewChildAttemptsTx(ctx context.Context, tx *sql.Tx, g review.ChildGraph) error {
+	tasks, attempts := reviewChildIdentityLists(g)
+	rows, err := tx.QueryContext(ctx, "SELECT id,workflow_run_id,task_id,number,revision,record FROM coordinator_attempts WHERE "+reviewChildAttemptOwnership, g.Run.ID, tasks, attempts)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	members := make(map[string]bool, len(g.Tasks))
+	initial := make(map[string]string, len(g.Attempts))
+	seen := make(map[string]map[int]bool, len(g.Tasks))
+	for _, t := range g.Tasks {
+		members[t.ID] = true
+	}
+	for _, a := range g.Attempts {
+		initial[a.TaskID] = a.ID
+	}
+	for rows.Next() {
+		var id, run, task string
+		var number int
+		var revision int64
+		var raw []byte
+		if err := rows.Scan(&id, &run, &task, &number, &revision, &raw); err != nil {
+			return err
+		}
+		var a domain.Attempt
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return err
+		}
+		if id == "" || a.ID != id || a.WorkflowRunID != run || a.TaskID != task || a.Number != number || a.Revision != revision ||
+			run != g.Run.ID || !members[task] || number < 1 || revision < 1 || a.SupervisionActivationID != "" || a.SupervisionActivationEpoch != 0 {
+			return ErrReviewMaterialization
+		}
+		if number == 1 && id != initial[task] {
+			return ErrReviewMaterialization
+		}
+		if seen[task] == nil {
+			seen[task] = make(map[int]bool)
+		}
+		if seen[task][number] {
+			return ErrReviewMaterialization
+		}
+		seen[task][number] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for task := range members {
+		if !seen[task][1] {
+			return ErrReviewMaterialization
+		}
+	}
+	return nil
+}
+
 func insertReviewChildTx(ctx context.Context, tx *sql.Tx, g review.ChildGraph) error {
 	if err := upsertJSON(ctx, tx, "child workflow", g.Workflow.ID, "INSERT INTO coordinator_workflows(id,record) VALUES(?,?)", []any{g.Workflow.ID}, g.Workflow); err != nil {
 		return err
@@ -263,11 +404,8 @@ func validateReviewChildTx(ctx context.Context, tx *sql.Tx, receipt ReviewMateri
 	if count != 1 {
 		return ErrReviewMaterialization
 	}
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM coordinator_attempts WHERE workflow_run_id=? AND (number<1 OR task_id NOT IN (SELECT id FROM coordinator_tasks WHERE workflow_id=?))", r.ID, w.ID).Scan(&count); err != nil {
+	if err := validateReviewChildAttemptsTx(ctx, tx, g); err != nil {
 		return err
-	}
-	if count != 0 {
-		return ErrReviewMaterialization
 	}
 	for _, check := range []struct {
 		query    string

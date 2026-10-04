@@ -148,6 +148,14 @@ func TestReviewChildAllocationReopenProgressReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A progressed later retry also survives read-only replay after parent exit.
+	retry := a
+	retry.ID += "-retry"
+	retry.Number = 2
+	retry.ThreadID = "retained-retry-thread"
+	if err := s.SaveCoordinatorRecords(ctx, CoordinatorRecords{Attempts: []domain.Attempt{retry}}); err != nil {
+		t.Fatal(err)
+	}
 	// End the parent; bound replay must still be read-only.
 	if _, err := s.db.Exec("UPDATE coordinator_attempts SET record=json_set(record,'$.progress','succeeded','$.control','stopped') WHERE id=?", f.Parent.AttemptID); err != nil {
 		t.Fatal(err)
