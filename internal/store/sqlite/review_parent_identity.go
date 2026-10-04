@@ -13,14 +13,28 @@ import (
 // must not disappear. Corrupt unrelated JSON fails closed; memory grows only
 // with distinct parent attempt numbers, not the entire attempts table.
 func reviewParentAttemptTx(ctx context.Context, tx *sql.Tx, p review.ParentBinding) (domain.Attempt, error) {
-	var bound domain.Attempt
-	rows, err := tx.QueryContext(ctx, "SELECT id,workflow_run_id,task_id,number,revision,record FROM coordinator_attempts")
+	bound, latest, err := reviewParentAttemptSnapshotTx(ctx, tx, p)
 	if err != nil {
 		return bound, err
 	}
+	if bound.Number != latest {
+		return bound, ErrReviewAuthorityIdentity
+	}
+	return bound, nil
+}
+
+// reviewParentAttemptSnapshotTx validates history without authorizing the
+// original attempt: coherent supersession is observable only after this scan.
+func reviewParentAttemptSnapshotTx(ctx context.Context, tx *sql.Tx, p review.ParentBinding) (domain.Attempt, int, error) {
+	var bound domain.Attempt
+	latest := 0
+	rows, err := tx.QueryContext(ctx, "SELECT id,workflow_run_id,task_id,number,revision,record FROM coordinator_attempts")
+	if err != nil {
+		return bound, latest, err
+	}
 	defer rows.Close()
 	seen := map[int]bool{}
-	latest, boundCount := 0, 0
+	boundCount := 0
 	owns := func(id, run, task string) bool {
 		return id == p.AttemptID || run == p.RunID && task == p.TaskID
 	}
@@ -30,11 +44,11 @@ func reviewParentAttemptTx(ctx context.Context, tx *sql.Tx, p review.ParentBindi
 		var revision int64
 		var raw []byte
 		if err := rows.Scan(&id, &run, &task, &number, &revision, &raw); err != nil {
-			return bound, err
+			return bound, latest, err
 		}
 		a, err := decodeReviewChildRecord[domain.Attempt](raw, reviewChildAttemptKeys)
 		if err != nil {
-			return bound, ErrReviewAuthorityIdentity
+			return bound, latest, ErrReviewAuthorityIdentity
 		}
 		if !owns(id, run, task) && !owns(a.ID, a.WorkflowRunID, a.TaskID) {
 			continue
@@ -42,7 +56,7 @@ func reviewParentAttemptTx(ctx context.Context, tx *sql.Tx, p review.ParentBindi
 		if id == "" || a.ID != id || a.WorkflowRunID != run || a.TaskID != task ||
 			a.Number != number || a.Revision != revision || run != p.RunID || task != p.TaskID ||
 			number < 1 || revision < 1 || seen[number] {
-			return bound, ErrReviewAuthorityIdentity
+			return bound, latest, ErrReviewAuthorityIdentity
 		}
 		seen[number] = true
 		if number > latest {
@@ -54,13 +68,13 @@ func reviewParentAttemptTx(ctx context.Context, tx *sql.Tx, p review.ParentBindi
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return bound, err
+		return bound, latest, err
 	}
 	if err := rows.Close(); err != nil {
-		return bound, err
+		return bound, latest, err
 	}
-	if boundCount != 1 || bound.Number != latest {
-		return bound, ErrReviewAuthorityIdentity
+	if boundCount != 1 {
+		return bound, latest, ErrReviewAuthorityIdentity
 	}
-	return bound, nil
+	return bound, latest, nil
 }
