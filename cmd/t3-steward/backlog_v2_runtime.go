@@ -780,12 +780,14 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 	} else {
 		c.logger.Warn("backlog-v2 planning and admin command execution deferred until quota reconciliation succeeds")
 	}
-	report := c.legacy.Tick(ctx)
-	for _, err := range report.Errors {
-		logTickFailure(ctx, c.logger, "legacy backlog-v2 submission failed", err)
-	}
-	if len(report.Accepted) != 0 {
-		c.logger.Info("legacy backlog-v2 submissions reconciled", "accepted", len(report.Accepted))
+	if c.legacy != nil {
+		report := c.legacy.Tick(ctx)
+		for _, err := range report.Errors {
+			logTickFailure(ctx, c.logger, "legacy backlog-v2 submission failed", err)
+		}
+		if len(report.Accepted) != 0 {
+			c.logger.Info("legacy backlog-v2 submissions reconciled", "accepted", len(report.Accepted))
+		}
 	}
 	if exchangeWorkers && c.workers != nil {
 		workerReport := c.workers.Tick(ctx, quotaReport)
@@ -857,8 +859,13 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			"issue", issue,
 			"effect", "this project cannot be scheduled; every other project is unaffected")
 	}
+	legacyFileIntake := "disabled"
+	if cfg.BacklogV2.Coordinator.LegacyFileIntakeEnabled {
+		legacyFileIntake = "enabled"
+	}
 	service.SetRuntimeInfo(backlogadmin.RuntimeInfo{
-		Release: version, ConfigurationDigest: configurationDigest, LastReload: appliedAt, LastReloadReceipt: receipts.Last,
+		LegacyFileIntake: legacyFileIntake,
+		Release:          version, ConfigurationDigest: configurationDigest, LastReload: appliedAt, LastReloadReceipt: receipts.Last,
 		Mode: "coordinator", Owner: cfg.BacklogV2.Coordinator.ID, Epoch: epoch,
 		Transport:              cfg.BacklogV2.Transport.Kind,
 		MaxWorkerSnapshotAge:   cfg.BacklogV2.Freshness.WorkerMaxAge.D(),
@@ -880,18 +887,6 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	}
 	defer listener.Close()
 	defer os.Remove(socketPath)
-	projectTargets := make(map[string]string, len(cfg.BacklogV2.Projects))
-	for name, project := range cfg.BacklogV2.Projects {
-		projectTargets[name] = project.T3Project
-	}
-	aliases, err := backlog.LegacyProjectAliases(projectTargets)
-	if err != nil {
-		return err
-	}
-	backlogDir, err := cfg.ResolveBacklogDir()
-	if err != nil {
-		return err
-	}
 	directoryCatalogs := make(map[string][]directoryresource.Binding)
 	for name, project := range cfg.BacklogV2.Projects {
 		directoryCatalogs[name] = directoryresource.CloneBindings(project.DirectoryResources)
@@ -1066,13 +1061,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			checkpointMargin:           cfg.BacklogV2.Leases.RenewInterval.D(),
 			supervisorClientConfigured: supervisorPrincipal != "",
 		},
-		admin: service,
-		legacy: backlog.LegacySubmissionSource{
-			Dir: backlogDir, Submitter: submissions, ProjectAliases: aliases,
-			MaxBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
-			MaxFiles: cfg.BacklogV2.MessageLimits.MaxFiles, AllowedUID: uint32(os.Getuid()),
-			Quarantine: store,
-		},
+		admin:   service,
 		workers: workers,
 		// The campaign ref store is the one this host's worker publishes into,
 		// a sibling of the repository cache under the same configured
@@ -1085,6 +1074,12 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		},
 		logger: logger,
 	}
+	cycle.legacy, err = coordinatorLegacyIntake(cfg, submissions, store)
+	if err != nil {
+		return err
+	}
+	logger.Info("deprecated coordinator Markdown intake", "enabled", cycle.legacy != nil,
+		"replacement", "t3-steward task run / campaign submit", "changes", "require coordinator restart")
 	logger.Info("backlog-v2 coordinator authority acquired",
 		"coordinator", cfg.BacklogV2.Coordinator.ID,
 		"epoch", epoch,

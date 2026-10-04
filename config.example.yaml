@@ -158,6 +158,10 @@ backlog_v2:
   mode: disabled
   coordinator:
     id: ""
+    # Deprecated Markdown adapter, retained for phase-1 rollback only.
+    # Separate from backlog.enabled (local runner). Changes require restart.
+    # Prefer t3-steward task run / campaign submit; files are ignored by default.
+    legacy_file_intake_enabled: false
     # Remote admin clients this coordinator accepts through the restricted
     # coordinator-exchange command, keyed by client principal. Each credential
     # is a reference; the value is resolved at use and never stored here.

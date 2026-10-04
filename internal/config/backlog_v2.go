@@ -33,6 +33,9 @@ func (c *Config) validateBacklogV2() error {
 		}
 	}
 	v.Mode = strings.ToLower(strings.TrimSpace(v.Mode))
+	if v.Coordinator.LegacyFileIntakeEnabled && v.Mode != "coordinator" {
+		return errors.New("backlog_v2.coordinator.legacy_file_intake_enabled requires mode: coordinator; use task run or campaign submit for submissions")
+	}
 	// The client block is validated in every mode: the host that needs it is
 	// usually not running a coordinator or a worker at all.
 	if err := c.validateCoordinatorClient(); err != nil {

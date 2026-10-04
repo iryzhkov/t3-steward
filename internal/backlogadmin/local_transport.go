@@ -526,6 +526,10 @@ func (c LocalClient) Describe() TransportDescription {
 }
 
 func (c LocalClient) Query(ctx context.Context, query Query) (Response, error) {
+	return queryIntakeStatus(ctx, query, c.queryOnce)
+}
+
+func (c LocalClient) queryOnce(ctx context.Context, query Query) (Response, error) {
 	request := localRequest{Version: LocalTransportVersion, Operation: localOperationQuery, Query: &query}
 	var response localResponse
 	if err := c.call(ctx, request, &response); err != nil {

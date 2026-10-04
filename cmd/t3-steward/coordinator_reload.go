@@ -541,6 +541,9 @@ func reloadBlockersMessage(blockers []backlogadmin.ReloadBlocker) string {
 }
 
 func validateCoordinatorReload(current, next config.Config) error {
+	if current.BacklogV2.Coordinator.LegacyFileIntakeEnabled != next.BacklogV2.Coordinator.LegacyFileIntakeEnabled {
+		return errors.New("backlog_v2.coordinator.legacy_file_intake_enabled changes require coordinator restart; reload keeps the current intake gate")
+	}
 	oldOuter, newOuter := current.LifecycleView(), next.LifecycleView()
 	oldOuter.BacklogV2 = config.BacklogV2{}
 	newOuter.BacklogV2 = config.BacklogV2{}
@@ -565,8 +568,10 @@ func validateCoordinatorReload(current, next config.Config) error {
 	for name, project := range b.Projects {
 		targets[name] = project.T3Project
 	}
-	if _, err := backlog.LegacyProjectAliases(targets); err != nil {
-		return err
+	if b.Coordinator.LegacyFileIntakeEnabled {
+		if _, err := backlog.LegacyProjectAliases(targets); err != nil {
+			return fmt.Errorf("backlog_v2.coordinator.legacy_file_intake_enabled: %w", err)
+		}
 	}
 	for id := range b.Workers {
 		if _, err := workerruntime.BuildWorkerBinding(b, id, time.Now()); err != nil {

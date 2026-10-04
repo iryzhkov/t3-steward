@@ -358,6 +358,7 @@ func TestRunBacklogV2CoordinatorServesAuthenticatedLocalAdmin(t *testing.T) {
 
 func TestRunBacklogV2CoordinatorIngestsLegacyDropWithoutDispatch(t *testing.T) {
 	cfg := config.Default()
+	cfg.BacklogV2.Coordinator.LegacyFileIntakeEnabled = true
 	setCoordinatorTestRoots(t, &cfg)
 	cfg.BacklogV2.Mode = "coordinator"
 	cfg.BacklogV2.Coordinator.ID = "normandy"

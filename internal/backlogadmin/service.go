@@ -113,6 +113,7 @@ func (s *Service) SetUsageCursorKey(key []byte) error {
 }
 
 type RuntimeInfo struct {
+	LegacyFileIntake    string
 	Release             string
 	ConfigurationDigest string
 	// LastReload is when the effective configuration was activated, reported
@@ -266,7 +267,8 @@ func (s *Service) RecoverUnknown(ctx context.Context, principal Principal, reque
 }
 
 func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
-	if query.Version != Version {
+	intakeStatus := query.Version == StatusIntakeVersion && query.Kind == QueryStatus
+	if query.Version != Version && !intakeStatus {
 		return Response{}, fmt.Errorf("%w: got %q, want %q", ErrUnsupportedVersion, query.Version, Version)
 	}
 	if !validQuery(query) {
@@ -303,6 +305,9 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		response.Diagnosis = &diagnosis
 	case QueryStatus:
 		status := view.status()
+		if !intakeStatus {
+			status.Runtime.LegacyFileIntake = ""
+		}
 		response.Status = &status
 	case QueryWorkflows:
 		response.Workflows = view.workflowSummaries(query.Filter)
@@ -666,7 +671,8 @@ func (v view) status() Status {
 
 func (v view) runtimeStatus() RuntimeStatus {
 	status := RuntimeStatus{
-		Mode: v.runtime.Mode, Owner: v.runtime.Owner, Epoch: v.runtime.Epoch,
+		LegacyFileIntake: v.runtime.LegacyFileIntake,
+		Mode:             v.runtime.Mode, Owner: v.runtime.Owner, Epoch: v.runtime.Epoch,
 		Release: v.runtime.Release, ConfigurationDigest: v.runtime.ConfigurationDigest, LastReload: v.runtime.LastReload,
 		Transport: v.runtime.Transport, Health: "healthy",
 	}

@@ -60,7 +60,7 @@ Commands:
   models             Every provider route the fleet can run now, with its quota state.
   triage             Everything waiting for an operator, each with a ready-to-run command.
   coordinator        Show which coordinator this host administers (identity); reload it (reload).
-  backlog            Inspect and control coordinator workflows; includes legacy file helpers.
+  backlog            Inspect and control coordinator workflows; deprecated offline file helpers.
   diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
   schedules          Inspect and control schedules and trigger history.
   wait               Park a thread until a check succeeds; the steward wakes it (add, list, cancel).
@@ -847,6 +847,7 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, 
 		}
 	}
 	if allowLegacyBacklog && cfg.Backlog.Enabled {
+		logger.Warn("deprecated local Markdown runner explicitly enabled; use t3-steward task run or campaign submit")
 		runner, err := newBacklogRunner(cfg, store, control, logger, dataDir)
 		if err != nil {
 			return nil, nil, err

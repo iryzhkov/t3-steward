@@ -222,7 +222,7 @@ func backlogHelpPages() []helpPage {
 			Exits:    coordinatorExits(),
 			JSONKeys: []string{"key", "released", "digest", "reason", "releasedAt"},
 			JSONNote: jsonErrorNote,
-			Notes:    "Mutating. Editing the refused file clears its quarantine by itself, because the automatic release is bound to the content digest; this verb is for a refusal the file cannot fix, such as a project no alias mapped.",
+			Notes:    "Mutating. Editing the refused file clears its quarantine only when legacy intake is explicitly enabled, because the automatic release is bound to the content digest; intake defaults off and new work should use task run or campaign submit; this verb is for a refusal the file cannot fix, such as a project no alias mapped.",
 			Parsers:  []parserSite{{Func: "runQuarantineRelease"}, {Func: "takeJSONFlag"}},
 		},
 		{
@@ -252,7 +252,7 @@ func backlogHelpPages() []helpPage {
 			Usage:    []string{"t3-steward backlog new <id>"},
 			Exits:    []helpExit{{0, "written"}, {1, "no id, the file already exists, or the directory could not be created"}},
 			JSONNote: "This verb prints no JSON document; it prints the path it wrote.",
-			Notes:    "Offline: it writes one file under the local backlog directory and reaches no coordinator. The legacy task-file runner is part of \"run\" and is enabled with backlog.enabled. For fleet work the verb is \"t3-steward task run\".",
+			Notes:    "Offline: it writes one file under the local backlog directory and reaches no coordinator. Deprecated phase-1 compatibility only: both intake paths default off. backlog.enabled controls the local runner; coordinator intake separately requires backlog_v2.coordinator.legacy_file_intake_enabled and a restart. A written file is not an accepted submission; use \"t3-steward task run\" or \"campaign submit\".",
 			Parsers:  []parserSite{{Func: "runBacklogLegacy", Case: "new"}},
 		},
 		{
@@ -261,7 +261,7 @@ func backlogHelpPages() []helpPage {
 			Usage:    []string{"t3-steward backlog path"},
 			Exits:    localExits(),
 			JSONNote: "This verb prints no JSON document; it prints one path.",
-			Notes:    "Offline: it resolves a path from the configuration and reads nothing. The path it prints is the one the configuration names, so --config moves it.",
+			Notes:    "Deprecated phase-1 compatibility only. Offline: it resolves a path from the configuration and reads nothing. The path it prints is the one the configuration names, so --config moves it.",
 			Parsers:  []parserSite{{Func: "runBacklogLegacy", Case: "path"}},
 		},
 		{
@@ -270,7 +270,7 @@ func backlogHelpPages() []helpPage {
 			Usage:    []string{"t3-steward backlog check <file|->"},
 			Exits:    []helpExit{{0, "the task is valid"}, {1, "no path given, the file is unreadable, or the task is invalid"}},
 			JSONNote: "This verb prints no JSON document; it prints what it resolved and what it refused.",
-			Notes:    "Offline: it reads one file, or standard input when the path is -, and reaches no coordinator. This is the legacy task-file checker; the campaign equivalent is \"t3-steward campaign validate\".",
+			Notes:    "Deprecated phase-1 compatibility only. Offline: it reads one file, or standard input when the path is -, and reaches no coordinator; validation does not submit it. This is the legacy task-file checker; the campaign equivalent is \"t3-steward campaign validate\".",
 			Parsers:  []parserSite{{Func: "runBacklogLegacy", Case: "check"}},
 		},
 		{
@@ -279,7 +279,7 @@ func backlogHelpPages() []helpPage {
 			Usage:    []string{"t3-steward backlog receive <id>"},
 			Exits:    []helpExit{{0, "stored"}, {1, "no id, or the task on standard input does not parse"}},
 			JSONNote: "This verb prints no JSON document.",
-			Notes:    "Offline, and not an operator verb: forwarding invokes it over SSH with the task on standard input.",
+			Notes:    "Deprecated phase-1 forwarding compatibility: it stores a file, not a coordinator submission. Intake defaults off; use task run or campaign submit.",
 			Parsers:  []parserSite{{Func: "runBacklogLegacy", Case: "receive"}},
 		},
 	}
