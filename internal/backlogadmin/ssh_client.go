@@ -510,6 +510,10 @@ func (c *SSHClient) validate(operation string, response localResponse) error {
 }
 
 func (c *SSHClient) Query(ctx context.Context, query Query) (Response, error) {
+	return queryIntakeStatus(ctx, query, c.queryOnce)
+}
+
+func (c *SSHClient) queryOnce(ctx context.Context, query Query) (Response, error) {
 	response, _, err := c.roundTrip(ctx, localRequest{
 		Version: LocalTransportVersion, Operation: localOperationQuery, Query: &query,
 	}, nil, false)

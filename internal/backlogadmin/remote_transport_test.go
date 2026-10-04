@@ -50,6 +50,7 @@ func teachesRemoteShell(message string) bool {
 // the submissions it accepted, which is how the replay tests prove that a
 // repeated request produced exactly one run.
 type remoteFakeService struct {
+	query             func(context.Context, Query) (Response, error)
 	mu                sync.Mutex
 	principals        []Principal
 	submissions       int
@@ -81,7 +82,13 @@ func (s *remoteFakeService) RetryRecovery(_ context.Context, principal Principal
 	return domain.RecoveryRetryReceipt{OperationID: request.OperationID, IncidentID: request.IncidentID, AttemptID: "attempt-retry", AttemptNumber: 2}, nil
 }
 
-func (s *remoteFakeService) Query(_ context.Context, query Query) (Response, error) {
+func (s *remoteFakeService) Query(ctx context.Context, query Query) (Response, error) {
+	s.mu.Lock()
+	ask := s.query
+	s.mu.Unlock()
+	if ask != nil {
+		return ask(ctx, query)
+	}
 	s.record(query.Principal)
 	return Response{Version: Version, Kind: query.Kind, Status: &Status{
 		Runtime: RuntimeStatus{Owner: "igor", Epoch: 7, Health: "ready", Release: "0.11.0"},

@@ -222,7 +222,7 @@ func backlogHelpPages() []helpPage {
 			Exits:    coordinatorExits(),
 			JSONKeys: []string{"key", "released", "digest", "reason", "releasedAt"},
 			JSONNote: jsonErrorNote,
-			Notes:    "Mutating. Editing the refused file clears its quarantine only when legacy intake is explicitly enabled, because the automatic release is bound to the content digest; intake defaults off and new work should use task run or campaign run; this verb is for a refusal the file cannot fix, such as a project no alias mapped.",
+			Notes:    "Mutating. Editing the refused file clears its quarantine only when legacy intake is explicitly enabled, because the automatic release is bound to the content digest; intake defaults off and new work should use task run or campaign submit; this verb is for a refusal the file cannot fix, such as a project no alias mapped.",
 			Parsers:  []parserSite{{Func: "runQuarantineRelease"}, {Func: "takeJSONFlag"}},
 		},
 		{
@@ -252,7 +252,7 @@ func backlogHelpPages() []helpPage {
 			Usage:    []string{"t3-steward backlog new <id>"},
 			Exits:    []helpExit{{0, "written"}, {1, "no id, the file already exists, or the directory could not be created"}},
 			JSONNote: "This verb prints no JSON document; it prints the path it wrote.",
-			Notes:    "Offline: it writes one file under the local backlog directory and reaches no coordinator. Deprecated phase-1 compatibility only: both intake paths default off. backlog.enabled controls the local runner; coordinator intake separately requires backlog_v2.coordinator.legacy_file_intake_enabled and a restart. A written file is not an accepted submission; use \"t3-steward task run\" or \"campaign run\".",
+			Notes:    "Offline: it writes one file under the local backlog directory and reaches no coordinator. Deprecated phase-1 compatibility only: both intake paths default off. backlog.enabled controls the local runner; coordinator intake separately requires backlog_v2.coordinator.legacy_file_intake_enabled and a restart. A written file is not an accepted submission; use \"t3-steward task run\" or \"campaign submit\".",
 			Parsers:  []parserSite{{Func: "runBacklogLegacy", Case: "new"}},
 		},
 		{
@@ -279,7 +279,7 @@ func backlogHelpPages() []helpPage {
 			Usage:    []string{"t3-steward backlog receive <id>"},
 			Exits:    []helpExit{{0, "stored"}, {1, "no id, or the task on standard input does not parse"}},
 			JSONNote: "This verb prints no JSON document.",
-			Notes:    "Deprecated phase-1 forwarding compatibility: it stores a file, not a coordinator submission. Intake defaults off; use task run or campaign run.",
+			Notes:    "Deprecated phase-1 forwarding compatibility: it stores a file, not a coordinator submission. Intake defaults off; use task run or campaign submit.",
 			Parsers:  []parserSite{{Func: "runBacklogLegacy", Case: "receive"}},
 		},
 	}

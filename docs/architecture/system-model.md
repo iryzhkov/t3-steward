@@ -232,7 +232,7 @@ Keep workflow administration under `backlog`; add focused top-level `quota`,
 and a joined diagnostic view of workers, quotas, waits, schedules, assignments,
 leases and journal excerpts. Redact credentials and bound exported evidence.
 Existing `schedules` can be an alias during the CLI change. Deprecated file helpers
-remain during M15 phase 1. Submit new work with `task run` or `campaign run` and
+remain during M15 phase 1. Submit new work with `task run` or `campaign submit` and
 manage recurring work with schedules under existing mutation authority.
 
 `backlog.enabled` remains default false and controls only the old local runner.

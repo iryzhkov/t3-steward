@@ -847,7 +847,7 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, 
 		}
 	}
 	if allowLegacyBacklog && cfg.Backlog.Enabled {
-		logger.Warn("deprecated local Markdown runner explicitly enabled; use t3-steward task run or campaign run")
+		logger.Warn("deprecated local Markdown runner explicitly enabled; use t3-steward task run or campaign submit")
 		runner, err := newBacklogRunner(cfg, store, control, logger, dataDir)
 		if err != nil {
 			return nil, nil, err

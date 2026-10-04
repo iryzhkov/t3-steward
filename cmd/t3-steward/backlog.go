@@ -89,7 +89,7 @@ Both legacy intake paths default off. backlog.enabled opts into the deprecated
 local runner only. Coordinator Markdown intake requires the separate
 backlog_v2.coordinator.legacy_file_intake_enabled: true and a restart.
 These offline helpers do not submit to the coordinator. Prefer "task run" or
-"campaign run"; creating a file does not mean it was accepted.
+"campaign submit"; creating a file does not mean it was accepted.
 
 Example:
   t3-steward backlog submit ./bundle.tar --idempotency-key 2026-09-14-upkeeper --json
@@ -289,7 +289,7 @@ func runBacklogLegacy(cfg config.Config, args []string) error {
 		}
 		fmt.Println(path)
 		if !cfg.Backlog.Enabled {
-			fmt.Fprintln(os.Stderr, "deprecated file helper: file created, not submitted; local runner disabled. Coordinator Markdown intake also defaults off; use t3-steward task run or campaign run")
+			fmt.Fprintln(os.Stderr, "deprecated file helper: file created, not submitted; local runner disabled. Coordinator Markdown intake also defaults off; use t3-steward task run or campaign submit")
 		}
 		return nil
 	case "list":

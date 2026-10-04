@@ -1079,7 +1079,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		return err
 	}
 	logger.Info("deprecated coordinator Markdown intake", "enabled", cycle.legacy != nil,
-		"replacement", "t3-steward task run / campaign run", "changes", "require coordinator restart")
+		"replacement", "t3-steward task run / campaign submit", "changes", "require coordinator restart")
 	logger.Info("backlog-v2 coordinator authority acquired",
 		"coordinator", cfg.BacklogV2.Coordinator.ID,
 		"epoch", epoch,

@@ -1307,7 +1307,7 @@ func renderStatus(out io.Writer, status *backlogadmin.Status) {
 		return
 	}
 	if status.Runtime.LegacyFileIntake != "" {
-		fmt.Fprintf(out, "deprecated legacy file intake: %s; use t3-steward task run or campaign run\n", status.Runtime.LegacyFileIntake)
+		fmt.Fprintf(out, "deprecated legacy file intake: %s; use t3-steward task run or campaign submit\n", status.Runtime.LegacyFileIntake)
 	}
 	fmt.Fprintln(out, "WORKFLOW RUNS")
 	renderCounts(out, status.WorkflowRuns)

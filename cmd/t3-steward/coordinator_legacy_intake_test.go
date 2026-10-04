@@ -73,7 +73,7 @@ func TestRunBacklogV2CoordinatorDefaultIntakeLeavesFilesAndQuarantine(t *testing
 			t.Fatalf("file %s changed: %q %v", name, got, err)
 		}
 	}
-	if !strings.Contains(logs.String(), "enabled=false") || !strings.Contains(logs.String(), "task run / campaign run") {
+	if !strings.Contains(logs.String(), "enabled=false") || !strings.Contains(logs.String(), "task run / campaign submit") {
 		t.Fatalf("missing effective intake diagnostic: %s", logs.String())
 	}
 }
@@ -133,7 +133,18 @@ func TestLegacyIntakeDiagnosticsUseEffectiveRemoteStatus(t *testing.T) {
 			for _, item := range report.Items {
 				if item.Kind == "legacy-intake-disabled" {
 					found = true
-					if !strings.Contains(item.Summary, "files are not submitted") || !strings.Contains(item.Summary, "task run or campaign run") {
+					for _, command := range item.Commands {
+						args := strings.Fields(command.Run)
+						if len(args) < 3 || args[0] != "t3-steward" {
+							t.Fatalf("invalid help command: %q", command.Run)
+						}
+						stdout, stderr := probeHelp(t, args[1:])
+						path := strings.Join(args[1:len(args)-1], " ")
+						if _, ok := helpPageFor(path); !ok || stderr != "" || !strings.Contains(stdout, "Usage:") {
+							t.Fatalf("emitted help %q did not resolve: stdout=%q stderr=%q", command.Run, stdout, stderr)
+						}
+					}
+					if !strings.Contains(item.Summary, "files are not submitted") || !strings.Contains(item.Summary, "task run or campaign submit") {
 						t.Fatalf("triage=%+v", item)
 					}
 				}

@@ -509,7 +509,7 @@ occurrences, `.` slots never observed.
 
 The following Markdown runner examples are deprecated phase-1 rollback
 compatibility. Both the local runner and coordinator Markdown intake default off.
-Use `t3-steward task run` or `t3-steward campaign run` for new submissions;
+Use `t3-steward task run` or `t3-steward campaign submit` for new submissions;
 creating or receiving a file does not mean the coordinator accepted it.
 `backlog.enabled` controls only the old local runner. Coordinator compatibility
 separately requires `backlog_v2.coordinator.legacy_file_intake_enabled: true` and

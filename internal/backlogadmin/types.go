@@ -10,6 +10,10 @@ import (
 
 const Version = "backlog.admin/v1"
 
+// StatusIntakeVersion opts a status read into the effective intake field.
+// v1 status keeps its frozen shape for strict older local clients.
+const StatusIntakeVersion = "backlog.admin/v1-status-intake"
+
 type QueryKind string
 
 const (
@@ -81,7 +85,7 @@ func IsQueryKind(kind QueryKind) bool {
 // QuarantineRetryAdvice is the one sentence a quarantine view has to say, in
 // the same words everywhere: the marker is bound to the exact content that was
 // refused, so changing the file is both the recovery and the retry.
-const QuarantineRetryAdvice = "change the file: a different content digest releases this marker only when deprecated legacy file intake is explicitly enabled; intake defaults off. Prefer t3-steward task run or campaign run."
+const QuarantineRetryAdvice = "change the file: a different content digest releases this marker only when deprecated legacy file intake is explicitly enabled; intake defaults off. Prefer t3-steward task run or campaign submit."
 
 // QuarantinedIntake is one permanently refused intake submission. It names no
 // workflow or run because nothing was accepted, which is exactly why it is
@@ -289,8 +293,8 @@ type RuntimeStatus struct {
 	// LastReloadReceipt is the receipt of the last SIGHUP the coordinator
 	// handled, absent until the first one. It is the same record the
 	// coordinator writes to its state directory, so a remote admin host reads
-	// the verdict without a shell on the coordinator host. A new key, so an
-	// older client ignores it rather than failing on it.
+	// the verdict without a shell on the coordinator host. Permissive SSH
+	// clients ignore new keys; strict local clients require a compatible shape.
 	LastReloadReceipt    *ReloadReceipt `json:"lastReloadReceipt,omitempty"`
 	Mode                 string         `json:"mode"`
 	Owner                string         `json:"owner"`
