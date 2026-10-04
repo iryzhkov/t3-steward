@@ -46,10 +46,18 @@ with a client timeout of the round deadline plus a two-minute collection margin.
 --gate requires --wait on submission and rejects anything other than accept.
 Exit 0: all required results valid, whatever verdict; 2: collection failed; 3: gate rejected;
 1: pending, timeout of the client wait, invalid flags or submission failure.
-See docs/review.md. Role policy and in-task review are not implemented.
+--role ROLE chooses one independent candidate; explicit --reviewer/--independent/
+--model override that choice. --effort low|medium|high overrides policy effort;
+--policy-file PATH selects a file (default beside coordinator-client.json).
+The role never chooses a judge or swarm route and never bypasses diversity or tiers.
+Single-candidate roles do not fan out. See docs/route-policy.md and docs/review.md.
 `
 
 type reviewArgs struct {
+	role, policyFile, effort                                            string
+	policy                                                              *routePolicy
+	selections                                                          []policySelection
+	efforts                                                             map[string]string
 	plans, reviewers, swarmModels                                       []string
 	diff, diffFile, criteria, project, judge, swarm, risk, notifyThread string
 	deadline                                                            time.Duration
@@ -64,6 +72,9 @@ func parseReviewArgs(args []string) (reviewArgs, error) {
 	var a reviewArgs
 	f := flag.NewFlagSet("review", flag.ContinueOnError)
 	f.SetOutput(io.Discard)
+	f.StringVar(&a.role, "role", "", "")
+	f.StringVar(&a.policyFile, "policy-file", "", "")
+	f.StringVar(&a.effort, "effort", "", "")
 	f.Var((*reviewStrings)(&a.plans), "plan", "")
 	f.Var((*reviewStrings)(&a.reviewers), "reviewer", "")
 	f.Var((*reviewStrings)(&a.reviewers), "model", "")
@@ -115,6 +126,9 @@ func parseReviewArgs(args []string) (reviewArgs, error) {
 	}
 	if a.gate && !a.wait {
 		return a, errors.New("--gate requires --wait on review submission")
+	}
+	if err := validPolicyEffort(a.effort); err != nil {
+		return a, err
 	}
 	return a, nil
 }
@@ -317,6 +331,12 @@ func buildReviewCampaign(a reviewArgs, projects []backlogadmin.Project, now time
 	if err != nil {
 		return "", err
 	}
+	if a.policy != nil {
+		snapshot, err = policySnapshotInputs(snapshot, a.policy, a.selections)
+		if err != nil {
+			return "", err
+		}
+	}
 	round.InputManifestDigest = snapshot.Manifest.Digest
 	manifest := backlog.Manifest{Version: backlog.ManifestVersion, PinnedInputs: true, Name: "review-round", Class: domain.TaskClassRequired,
 		Environment: backlog.ManifestEnvironment{Project: project.Name, Type: backlog.EnvironmentFresh, Scope: backlog.EnvironmentScopeTask},
@@ -339,6 +359,9 @@ func buildReviewCampaign(a reviewArgs, projects []backlogadmin.Project, now time
 		instance, model, _ := strings.Cut(member.Route, "/")
 		t := backlog.ManifestTask{PromptFile: "prompts/" + member.ID + ".md", Outputs: []string{"review.md", "verdict.json"}, MaxTurns: 1, Deadline: &round.Deadline,
 			Routes: []backlog.ManifestRoute{{Instance: instance, Model: model, QuotaPool: routes[member.Route].QuotaPool}}}
+		if effort := a.efforts[member.Route]; effort != "" {
+			t.Routes[0].Options = map[string]string{"effort": effort}
+		}
 		if member.Role == "judge" {
 			t.InputsFrom = map[string][]string{}
 			for _, lens := range lenses {
@@ -462,6 +485,19 @@ func (c reviewCLI) run(ctx context.Context, a reviewArgs) error {
 	if err != nil {
 		return err
 	}
+	p, err := c.task.loadPolicy(ctx, a.policyFile, a.role)
+	if err != nil {
+		return err
+	}
+	a.policy = p
+	project, err := reviewProject(a.project, projects)
+	if err != nil {
+		return err
+	}
+	a, err = resolveReviewPolicy(a, project)
+	if err != nil {
+		return err
+	}
 	dir, err := buildReviewCampaign(a, projects, time.Now())
 	if err != nil {
 		return err
@@ -507,10 +543,14 @@ func (c reviewCLI) run(ctx context.Context, a reviewArgs) error {
 	}
 	if a.asJSON {
 		return encodeCampaignJSON(c.task.stdout, struct {
-			Schema string                `json:"schema"`
-			Round  string                `json:"round"`
-			Notify *campaignNotification `json:"notify,omitempty"`
-		}{Schema: "review-submit/v1", Round: response.RunID, Notify: notification})
+			Schema     string                `json:"schema"`
+			Round      string                `json:"round"`
+			Notify     *campaignNotification `json:"notify,omitempty"`
+			Selections []policySelection     `json:"selections,omitempty"`
+		}{Schema: "review-submit/v1", Round: response.RunID, Notify: notification, Selections: a.selections})
+	}
+	for _, s := range a.selections {
+		fmt.Fprintf(c.task.stdout, "role %s\nroute %s\npolicy %s\nreason %s\neffort %s\n", s.Role, s.Route, s.PolicyDigest, s.Reason, s.Effort)
 	}
 	fmt.Fprintf(c.task.stdout, "round %s\nresult: t3-steward review result %s --wait\n", response.RunID, response.RunID)
 	return nil

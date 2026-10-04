@@ -24,7 +24,8 @@ Repeat `--plan`, `--reviewer` (alias `--model`) or `--swarm-model`.
 concurrency, rollout, resources and docs. Lenses alternate provider families
 when the supplied economy routes offer more than one family. Swarm requires a
 judge, and a judge requires a swarm. At least one independent reviewer is
-required. Role policy, quota-aware selection and `--task current` are deferred.
+required. CLI Phase A role selection is described in [route-policy.md](route-policy.md).
+Quota-aware selection and `--task current` remain deferred.
 
 The coordinator catalog must classify routes explicitly; instance aliases are
 not evidence of different providers. Configure the following on the coordinator:

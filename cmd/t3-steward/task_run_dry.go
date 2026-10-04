@@ -11,15 +11,16 @@ import (
 
 // A dry run is a projection, not a submission receipt or a readiness promise.
 type taskRunDryDocument struct {
-	SchemaVersion    int          `json:"schemaVersion"`
-	DryRun           bool         `json:"dryRun"`
-	Project          string       `json:"project"`
-	Ref              string       `json:"ref"`
-	Fresh            bool         `json:"fresh"`
-	Route            taskRunRoute `json:"route"`
-	IdempotencyKey   string       `json:"idempotencyKey"`
-	NotifyThread     string       `json:"notifyThread"`
-	PromptCharacters int          `json:"promptCharacters"`
+	Selection        *policySelection `json:"selection,omitempty"`
+	SchemaVersion    int              `json:"schemaVersion"`
+	DryRun           bool             `json:"dryRun"`
+	Project          string           `json:"project"`
+	Ref              string           `json:"ref"`
+	Fresh            bool             `json:"fresh"`
+	Route            taskRunRoute     `json:"route"`
+	IdempotencyKey   string           `json:"idempotencyKey"`
+	NotifyThread     string           `json:"notifyThread"`
+	PromptCharacters int              `json:"promptCharacters"`
 }
 
 func (c taskRunCLI) renderDryRun(parsed taskRunArgs, project, ref string, route taskRunRoute, key, thread string, prompts []taskRunPrompt, bundle campaign.Bundle) error {
@@ -32,7 +33,10 @@ func (c taskRunCLI) renderDryRun(parsed taskRunArgs, project, ref string, route 
 		task := bundle.Campaign.Manifest.Tasks[prompt.name]
 		size += compat.TurnInputLength(backlog.FirstTurnPrompt(body, task.OutputDeclarations()))
 	}
-	doc := taskRunDryDocument{SchemaVersion: 1, DryRun: true, Project: project, Ref: ref, Fresh: parsed.fresh, Route: printedRoute(route), IdempotencyKey: key, NotifyThread: thread, PromptCharacters: size}
+	doc := taskRunDryDocument{Selection: parsed.selection, SchemaVersion: 1, DryRun: true, Project: project, Ref: ref, Fresh: parsed.fresh, Route: printedRoute(route), IdempotencyKey: key, NotifyThread: thread, PromptCharacters: size}
+	if !parsed.asJSON && parsed.selection != nil {
+		fmt.Fprintf(c.stdout, "role %s\npolicy %s\nreason %s\neffort %s\n", parsed.selection.Role, parsed.selection.PolicyDigest, parsed.selection.Reason, parsed.selection.Effort)
+	}
 	if parsed.asJSON {
 		return encodeCampaignJSON(c.stdout, doc)
 	}
