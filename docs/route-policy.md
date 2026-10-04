@@ -7,7 +7,12 @@ candidate file and `policy validate --file PATH` to check it against the
 coordinator's configured worker model authorizations. Both accept `--json`.
 Validation is read-only and does not depend on workers being online. A coordinator
 that cannot report configured model authorizations refuses validation; inventory
-alone cannot establish validity.
+alone cannot establish validity. A sole configured models list `["*"]` authorizes
+any concrete model on that provider instance, using the same authorization rule
+as worker routing. Explicit lists authorize only their named models; mixed lists
+and partial patterns do not grant wildcard authorization. Dropped providers do
+not authorize candidates. Catalog validity does not grant runtime readiness,
+project advertisement or model observation, and `*` is never a runnable model.
 
 ```yaml
 schema: route-policy/v1

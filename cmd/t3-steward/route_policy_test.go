@@ -29,6 +29,65 @@ func TestM13PolicyStrictAndOrdered(t *testing.T) {
 		}
 	}
 }
+func TestM14CatalogModelAuthorization(t *testing.T) {
+	tests := []struct {
+		name      string
+		route     string
+		providers []backlogadmin.WorkerProviderAuthorization
+		wantError string
+	}{
+		{"sole wildcard", "codex/sol", []backlogadmin.WorkerProviderAuthorization{{Instance: "codex", Models: []string{"*"}}}, ""},
+		{"model with slash", "codex/vendor/sol", []backlogadmin.WorkerProviderAuthorization{{Instance: "codex", Models: []string{"*"}}}, ""},
+		{"explicit allowed", "codex/sol", []backlogadmin.WorkerProviderAuthorization{{Instance: "codex", Models: []string{"sol"}}}, ""},
+		{"explicit unauthorized", "codex/astra", []backlogadmin.WorkerProviderAuthorization{{Instance: "codex", Models: []string{"sol"}}}, "not catalog-authorized"},
+		{"instance isolation", "other/sol", []backlogadmin.WorkerProviderAuthorization{{Instance: "codex", Models: []string{"*"}}}, "not catalog-authorized"},
+		{"dropped wildcard", "codex/sol", []backlogadmin.WorkerProviderAuthorization{{Instance: "codex", Models: []string{"*"}, Dropped: "missing-binding"}}, "not catalog-authorized"},
+		{"empty allowlist", "codex/sol", []backlogadmin.WorkerProviderAuthorization{{Instance: "codex"}}, "not catalog-authorized"},
+		{"mixed wildcard", "codex/astra", []backlogadmin.WorkerProviderAuthorization{{Instance: "codex", Models: []string{"*", "sol"}}}, "not catalog-authorized"},
+		{"mixed exact allowed", "codex/sol", []backlogadmin.WorkerProviderAuthorization{{Instance: "codex", Models: []string{"*", "sol"}}}, ""},
+		{"no glob expansion", "codex/sol", []backlogadmin.WorkerProviderAuthorization{{Instance: "codex", Models: []string{"s*"}}}, "not catalog-authorized"},
+		{"literal wildcard refused", "codex/*", []backlogadmin.WorkerProviderAuthorization{{Instance: "codex", Models: []string{"*"}}}, "not catalog-authorized"},
+		{"empty model refused", "codex/", []backlogadmin.WorkerProviderAuthorization{{Instance: "codex", Models: []string{"*"}}}, "not catalog-authorized"},
+		{"unreported catalog", "codex/sol", nil, "configured route catalog unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &routePolicy{Roles: []policyRole{{Name: "execute", Candidates: []policyCandidate{{Route: tt.route}}}}}
+			// Catalog validity must not depend on enrollment, freshness or readiness.
+			workers := []backlogadmin.Worker{{Providers: tt.providers, State: "offline", Stale: true}}
+			err := validatePolicyCatalog(p, workers)
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("error = %v, want %q", err, tt.wantError)
+			}
+		})
+	}
+	p := &routePolicy{Roles: []policyRole{{Name: "execute", Candidates: []policyCandidate{{Route: "codex/sol", Effort: "medium", Tier: "standard"}}}}}
+	workers := []backlogadmin.Worker{
+		{Providers: []backlogadmin.WorkerProviderAuthorization{{Instance: "codex", Models: []string{"astra"}}}},
+		{Providers: []backlogadmin.WorkerProviderAuthorization{{Instance: "codex", Models: []string{"*"}}}},
+	}
+	if err := validatePolicyCatalog(p, workers); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePolicyCatalog(p, nil); err == nil || !strings.Contains(err.Error(), "catalog unavailable") {
+		t.Fatalf("empty catalog: %v", err)
+	}
+	for _, worker := range []backlogadmin.ProjectWorker{
+		{Ready: true, Advertises: true},
+		{Ready: true, Routes: []backlogadmin.ProjectRoute{{Instance: "codex", Model: "sol"}}},
+		{Advertises: true, Routes: []backlogadmin.ProjectRoute{{Instance: "codex", Model: "sol"}}},
+	} {
+		project := backlogadmin.Project{Name: "p", Workers: []backlogadmin.ProjectWorker{worker}}
+		if _, err := selectPolicyRoute(p, "execute", "", "", "", project, nil); err == nil {
+			t.Fatalf("catalog authorization bypassed runtime availability: %+v", worker)
+		}
+	}
+}
+
 func TestM13ValidityIsNotAvailability(t *testing.T) {
 	p, _ := parseRoutePolicy([]byte(m13Policy))
 	workers := []backlogadmin.Worker{{Providers: []backlogadmin.WorkerProviderAuthorization{{Instance: "claude", Models: []string{"opus"}}, {Instance: "codex", Models: []string{"sol"}}}}}

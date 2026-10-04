@@ -13,8 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/pinnedinput"
 	"github.com/iryzhkov/t3-steward/internal/review"
 	"gopkg.in/yaml.v3"
@@ -139,7 +141,7 @@ func contains(list []string, s string) bool {
 	return false
 }
 func validatePolicyCatalog(p *routePolicy, workers []backlogadmin.Worker) error {
-	routes := map[string]bool{}
+	models := map[string][][]string{}
 	reported := false
 	for _, w := range workers {
 		if len(w.Providers) > 0 {
@@ -149,9 +151,7 @@ func validatePolicyCatalog(p *routePolicy, workers []backlogadmin.Worker) error 
 			if a.Dropped != "" {
 				continue
 			}
-			for _, m := range a.Models {
-				routes[a.Instance+"/"+m] = true
-			}
+			models[a.Instance] = append(models[a.Instance], a.Models)
 		}
 	}
 	if !reported {
@@ -159,7 +159,15 @@ func validatePolicyCatalog(p *routePolicy, workers []backlogadmin.Worker) error 
 	}
 	for _, r := range p.Roles {
 		for _, c := range r.Candidates {
-			if !routes[c.Route] {
+			instance, model, _ := strings.Cut(c.Route, "/")
+			authorized := false
+			for _, allowed := range models[instance] {
+				if domain.ModelAuthorized(allowed, model) {
+					authorized = true
+					break
+				}
+			}
+			if !authorized {
 				return fmt.Errorf("policy candidate %s is not catalog-authorized; correct the policy or configure its model authorization (t3-steward worker list)", c.Route)
 			}
 		}
