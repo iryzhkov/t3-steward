@@ -14,7 +14,7 @@ import (
 // A quarantined submission is reported once and then silent, and its audit
 // event names no workflow run, so before this view an operator who missed the
 // one log line had nowhere to look. The view must name the key, the digest, the
-// time and the reason, and it must say that changed content is tried again.
+// time and the reason, and explain deliberate historical marker cleanup.
 func TestQuarantineQueryShowsWhatIntakeRefused(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
@@ -54,7 +54,9 @@ func TestQuarantineQueryShowsWhatIntakeRefused(t *testing.T) {
 		entry.Digest != first || !entry.QuarantinedAt.Equal(at) || entry.Reason != reason {
 		t.Fatalf("entry = %+v", entry)
 	}
-	if entry.Retry != QuarantineRetryAdvice || !strings.Contains(entry.Retry, "digest") {
+	if !strings.Contains(entry.Retry, "no longer scanned or retried") ||
+		!strings.Contains(entry.Retry, "authenticated t3-steward backlog quarantine release") ||
+		strings.Contains(entry.Retry, "explicitly enabled") || strings.Contains(entry.Retry, "change the file") {
 		t.Fatalf("retry advice = %q", entry.Retry)
 	}
 
@@ -67,8 +69,7 @@ func TestQuarantineQueryShowsWhatIntakeRefused(t *testing.T) {
 		t.Fatalf("quarantine after a digest change = %+v, %v", changed.Quarantine, err)
 	}
 
-	// When the content changes to something acceptable, the submission source
-	// releases the marker and the entry disappears from the view.
+	// The retained storage helper clears a marker without retrying content.
 	if err := store.ReleaseSubmissionQuarantine(ctx, "legacy-abc"); err != nil {
 		t.Fatal(err)
 	}
@@ -78,11 +79,8 @@ func TestQuarantineQueryShowsWhatIntakeRefused(t *testing.T) {
 	}
 }
 
-// A quarantine caused by configuration cannot be cleared by editing the file:
-// adding the missing project alias changes no byte of it, so the digest is
-// unchanged and intake stays silent forever. The deliberate release is the way
-// out, and it is audited with the operator's reason because the operator, not
-// the content, is what changed.
+// Retained historical markers require deliberate, authenticated cleanup.
+// The release is audited with the operator's reason and is safe to repeat.
 func TestQuarantineReleaseClearsAMarkerAndIsSafeToRepeat(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))

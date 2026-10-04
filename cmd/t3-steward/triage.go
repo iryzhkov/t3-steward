@@ -325,7 +325,7 @@ func collectTriage(ctx context.Context, sources triageSources, options triageOpt
 // triageQuarantine reports the refused intake as one item. A coordinator that
 // ran the legacy file queue can hold hundreds of these, all with the same
 // cause, and one line per file buried everything else; "backlog quarantine"
-// lists them, each with its own release command.
+// lists their retained markers and authenticated release guidance.
 func triageQuarantine(report *triageReport, intake []backlogadmin.QuarantinedIntake) {
 	if len(intake) == 0 {
 		return

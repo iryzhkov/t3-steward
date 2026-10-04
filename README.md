@@ -563,10 +563,9 @@ so a retry after an ambiguous failure never starts a second one.
 
 ### Campaigns
 
-A campaign is a multi-task job authored as a directory rather than as a single
-Markdown task. It belongs to the backlog-v2 fleet orchestrator, so it needs a
-configured coordinator; the shipped host-local backlog above is unaffected by
-everything in this section.
+A campaign is a multi-task workflow authored as a directory and submitted to a
+configured coordinator with `t3-steward campaign submit`. For one independent
+outcome, use native `t3-steward task run` instead.
 
 The directory holds a `workflow.yaml` naming the tasks, the `needs` edges between
 them, the artifacts each task promises and the artifacts its successors read.

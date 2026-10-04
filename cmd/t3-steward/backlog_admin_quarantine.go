@@ -11,11 +11,8 @@ import (
 
 // runQuarantineRelease clears one intake quarantine deliberately.
 //
-// The automatic release is bound to the file's content digest, so a submission
-// refused for a reason outside the file — a project no alias mapped is the
-// ordinary one — stays quarantined after the configuration is fixed, because
-// the bytes did not change. This is the way out, and it asks for a reason
-// because the operator, not the file, is what changed.
+// This authenticated, reason-bound operation clears a retained historical
+// marker. It does not retry a file or reenable retired intake.
 func (c backlogAdminCLI) runQuarantineRelease(ctx context.Context, args []string) error {
 	clean, asJSON, err := takeJSONFlag(args)
 	if err != nil {
@@ -62,7 +59,8 @@ func (c backlogAdminCLI) runQuarantineRelease(ctx context.Context, args []string
 		return nil
 	}
 	fmt.Fprintf(c.stdout, "released %s (digest %s)\nit was refused because: %s\n"+
-		"intake reads the file again on the next cycle and reports what it does now.\n",
+		"the historical marker is cleared; this never retries a file or reenables intake.\n"+
+		"Submit new work with t3-steward task run or campaign submit.\n",
 		release.Key, release.Digest, release.Reason)
 	return nil
 }

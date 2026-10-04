@@ -61,8 +61,8 @@ Revision-fenced controls:
       Wake an attempt left waiting-external after its task wait was cancelled
       or settled without reaching it; refused while a wait is still live.
   quarantine release <key> --reason TEXT [--json]
-      Clear one retained quarantine record after fixing its cause.
-      Historical Markdown files are never retried or submitted.
+      Authenticated, reason-bound cleanup of one retained quarantine marker.
+      Clearing it never retries a historical file or reenables intake.
   recover <assignment> --outcome stopped|failed --coordinator-epoch N
       --assignment-epoch N --attempt-revision N --evidence-id ID
       --evidence-sha256 HEX --reason TEXT [--recovery-id ID] [--json]

@@ -12,17 +12,15 @@ import (
 
 // QuarantineReleaseKind is the operation name a quarantine release is
 // authorized under. It is deliberately not one of the read kinds: reading what
-// intake refused and telling intake to try again are different authorities.
+// intake refused and clearing a retained marker are different authorities.
 const QuarantineReleaseKind QueryKind = "quarantine-release"
 
 // ReleaseQuarantine clears one intake quarantine on an operator's instruction.
 //
-// The automatic release is bound to the file's content digest, which is right
-// for a file that was wrong and has been fixed, and useless for a submission
-// that was refused for a reason outside the file: adding the missing project
-// alias changes no byte of it, so intake stays silent forever. This is the
-// deliberate way out, and it is audited with the operator's reason because
-// nothing about the refused content itself has changed.
+// Historical files are no longer scanned, so neither file nor configuration
+// changes automatically release a marker. This authenticated operation clears
+// only the retained marker and audits the operator's reason. It never retries
+// a file or reenables intake.
 func (s *Service) ReleaseQuarantine(
 	ctx context.Context,
 	principal Principal,
@@ -52,8 +50,8 @@ func (s *Service) ReleaseQuarantine(
 // its audit event names no workflow run, so before this view the only record an
 // operator could reach was a log line that had already scrolled away and a row
 // in coordinator_submissions. The view is read-only: it releases nothing and
-// resubmits nothing, because the only honest way to retry impossible content is
-// to change it.
+// resubmits nothing. Only an authenticated operator release clears a retained
+// marker; new work must use native task or campaign submission.
 func (s *Service) quarantinedIntake(ctx context.Context) ([]QuarantinedIntake, error) {
 	if s.quarantine == nil {
 		return nil, errors.New("this coordinator does not record quarantined intake")
