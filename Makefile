@@ -22,7 +22,7 @@ RACE_TIMEOUT ?= 25m
 # check-fast runs the race detector only on packages changed against this ref.
 FAST_BASE ?= origin/main
 
-.PHONY: build test check-fast qualification lint install clean
+.PHONY: build test check-fast check-review qualification lint install clean
 
 build:
 	CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o bin/$(BINARY) ./cmd/$(BINARY)
@@ -39,16 +39,19 @@ test:
 # the race detector on the packages changed against FAST_BASE, including
 # uncommitted and untracked Go files. It fails if FAST_BASE is missing or git
 # cannot list the changes. It is not a substitute for `make test`, which CI
-# runs in full.
-check-fast:
+# runs in full. check-review uses the same checks with a full-size changed-package
+# race pass, replacing check-fast followed by a second full-size race invocation.
+check-fast check-review:
 	go build ./...
 	go vet ./...
 	go test -short -timeout $(TEST_TIMEOUT) ./...
 	$(MAKE) lint
 	@pkgs=$$(sh scripts/changed-go-packages.sh '$(FAST_BASE)') || exit 1; \
 	if [ -n "$$pkgs" ]; then \
-		echo "go test -race -short" $$pkgs; \
-		go test -race -short -timeout $(RACE_TIMEOUT) $$pkgs; \
+		race_short=; \
+		if [ "$@" = check-fast ]; then race_short=-short; fi; \
+		echo "go test -race" $$race_short $$pkgs; \
+		go test -race $$race_short -timeout $(RACE_TIMEOUT) $$pkgs; \
 	else \
 		echo "no Go packages changed against $(FAST_BASE); skipping the race pass"; \
 	fi
