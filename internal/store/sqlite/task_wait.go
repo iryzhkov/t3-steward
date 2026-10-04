@@ -233,9 +233,19 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		request.Attention.DecisionDeadline = now.Add(request.MaxDuration).UTC()
 	}
 
+	wait, err = parkTaskWaitTx(ctx, tx, request, attempt, now)
+	if err != nil {
+		return domain.TaskWait{}, err
+	}
+	return wait, tx.Commit()
+}
+
+// parkTaskWaitTx persists a validated registration and its parent CAS together.
+// Validation and transaction ownership stay with the caller.
+func parkTaskWaitTx(ctx context.Context, tx *sql.Tx, request domain.TaskWaitRegistration, attempt domain.Attempt, now time.Time) (domain.TaskWait, error) {
 	expected := attempt.Revision
 	id := taskWaitID(request.RequestID)
-	wait = domain.TaskWait{
+	wait := domain.TaskWait{
 		ID: id, WorkflowRunID: request.WorkflowRunID, TaskID: request.TaskID,
 		AttemptID: request.AttemptID, IssuedRevision: request.IssuedRevision,
 		ThreadID: request.ThreadID, Wake: request.Wake, MaxDuration: request.MaxDuration,
@@ -252,13 +262,13 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 	attempt.LastTurnOutcomeMarker = domain.TurnOutcomeWaiting
 	attempt.CompletedAt = nil
 	attempt.UpdatedAt = now.UTC()
-	if err = saveAttemptFencedTx(ctx, tx, attempt, expected); err != nil {
+	if err := saveAttemptFencedTx(ctx, tx, attempt, expected); err != nil {
 		return domain.TaskWait{}, err
 	}
-	if err = saveTaskWaitTx(ctx, tx, wait); err != nil {
+	if err := saveTaskWaitTx(ctx, tx, wait); err != nil {
 		return domain.TaskWait{}, err
 	}
-	return wait, tx.Commit()
+	return wait, nil
 }
 
 // refuseMixedTaskWaitSetTx refuses a --wake all registration whose kind is
