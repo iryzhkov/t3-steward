@@ -490,6 +490,11 @@ func (c reviewCLI) run(ctx context.Context, a reviewArgs) error {
 		return err
 	}
 	a.policy = p
+	if a.role != "" && len(a.reviewers) == 0 {
+		if err := c.task.validateLoadedPolicy(ctx, p); err != nil {
+			return err
+		}
+	}
 	project, err := reviewProject(a.project, projects)
 	if err != nil {
 		return err

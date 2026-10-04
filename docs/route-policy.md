@@ -50,8 +50,19 @@ constraints still apply. Without explicit effort, the model receives its
 unambiguous policy effort, across roles. Conflicting effort definitions require
 `--effort` or a corrected policy. Explicit effort always wins. A missing default
 policy preserves existing explicit callers; `--role` or a missing explicit
-file refuses. Installed invalid policies and unavailable catalogs refuse before
-submission. No readiness is inferred from validity.
+file refuses. Installed malformed policies refuse before submission, including for explicit callers.
+Without a role, explicit models and defaults.model keep the existing resolution
+path: fully qualified routes with a named project do not require a successful
+projects query or configured authorization response. The optional projects query
+still supplies the quota pool when available. Policy effort and frozen provenance
+are added without requiring worker readiness.
+With a role and explicit model, project route metadata resolves the pin and checks
+role constraints without requiring readiness or project advertisement. Missing
+family/tier metadata cannot satisfy the corresponding constraints. No pin widens
+to a fallback. Automatic role choice additionally requires configured catalog
+validity and a ready worker advertising project availability; Configured alone
+does not mean the worker can prepare the project. No readiness is inferred from
+validity.
 
 For standalone `review --role R`, the role chooses exactly one independent
 reviewer if no `--independent`, `--reviewer` or `--model` is supplied.
@@ -60,14 +71,21 @@ choice; each must satisfy role constraints. Judge and swarm models remain
 explicit and inherit only their unambiguous policy effort. The role never
 fills a judge or expands a swarm. Candidate selection checks the complete
 independent/judge provider-diversity and tier requirements. A single candidate
-unable to satisfy a two-family round refuses; pass explicit independent routes
-or an explicit judge plus swarm. Every reviewer remains a new isolated task;
+unable to satisfy a two-family round refuses. The refusal offers a complete
+explicit provider-diverse example when the catalog has suitable routes:
+`t3-steward review --independent claudeAgent/claude-opus-5-5 --independent codex/gpt-6-astra --project P --input DIFF --no-notify`.
+Use catalog-authorized executor/critical routes from distinct families and omit
+`--role` for this explicit round. Alternatively specify a provider-diverse judge
+of executor tier together with an economy swarm where supported. Roles select
+one first-eligible candidate, including specialty and single-candidate roles;
+they never automatically fan out reviewers or select judges. Every reviewer remains a new isolated task;
 independent reviewers have no dependencies on other reviewers. Roles do not
 authorize in-task review or self-use of the caller's session. Existing signed
 verdict validation and gate authority remain unchanged.
 
 Provenance is `route-selection/v1`: role, actual route, raw-policy SHA-256 digest,
-reason and effective effort. Task receipts/dry-run add optional `selection`;
+reason and effective effort. The reason distinguishes an explicit model override
+from a configured default model and from the first eligible policy candidate. Task receipts/dry-run add optional `selection`;
 review-submit/v1 adds optional `selections`. Existing fields and versions
 remain compatible. Exact policy bytes and selection records are also retained
 as bounded pinned inputs named `route-policy.yaml` and `route-selection.json`.
@@ -81,10 +99,13 @@ be inspected in retained pinned evidence rather than recomputed from disk.
 
 No wire protocol extension is required: existing workers/projects queries,
 v2 pinned input archives and route options carry the information. Old clients
-continue to use explicit routes. New explicit callers without a default policy
-keep the old mixed-coordinator path. Policy callers need configured worker
-authorizations and project readiness responses; incomplete older catalogs
-refuse before submission, with an upgrade/configuration remedy.
+continue to use explicit routes. New explicit callers keep the old mixed-coordinator
+path even with an installed policy. Explicit reviews retain their existing
+projects/review-metadata requirements for tier and provider diversity, without
+adding readiness or configured worker-authorization requirements.
+Automatic policy choices need configured worker authorizations and ready project
+advertisement responses; incomplete older catalogs refuse before submission,
+with an upgrade/configuration remedy.
 
 `models` text groups routes by quota pool and displays each governing bucket's
 used percentage, headroom, window, reset and freshness from coordinator-merged

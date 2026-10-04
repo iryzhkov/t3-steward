@@ -743,8 +743,7 @@ func modelsPoolFreshness(pool domain.QuotaPool, states []domain.BucketState, now
 		if oldest == nil || observed.Before(*oldest) {
 			oldest = &observed
 		}
-		if now.Sub(observed) > staleAfter ||
-			state.ResetsAt != nil && observed.Before(*state.ResetsAt) && !now.Before(*state.ResetsAt) {
+		if modelsBucketStale(state, now, staleAfter) {
 			stale = true
 		}
 	}

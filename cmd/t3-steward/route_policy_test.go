@@ -35,7 +35,7 @@ func TestM13ValidityIsNotAvailability(t *testing.T) {
 	if err := validatePolicyCatalog(p, workers); err != nil {
 		t.Fatal(err)
 	}
-	project := backlogadmin.Project{Name: "p", Workers: []backlogadmin.ProjectWorker{{Worker: "w", Ready: true, Routes: []backlogadmin.ProjectRoute{{Instance: "codex", Model: "sol"}}}}}
+	project := backlogadmin.Project{Name: "p", Workers: []backlogadmin.ProjectWorker{{Worker: "w", Ready: true, Advertises: true, Routes: []backlogadmin.ProjectRoute{{Instance: "codex", Model: "sol"}}}}}
 	sel, err := selectPolicyRoute(p, "execute", "", "", "", project, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -126,6 +126,7 @@ func TestM13ReviewRoleDoesNotWeakenRound(t *testing.T) {
 	}
 	project := reviewCatalog()[0]
 	project.Workers[0].Ready = true
+	project.Workers[0].Advertises = true
 	a := reviewArgs{role: "review", policy: p, risk: "routine", deadline: time.Hour, noNotify: true, project: "scratch"}
 	if _, err := resolveReviewPolicy(a, project); err == nil {
 		t.Fatal("single role fanned out or bypassed diversity")

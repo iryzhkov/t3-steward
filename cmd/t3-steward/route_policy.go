@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/pinnedinput"
@@ -192,17 +193,19 @@ func (c taskRunCLI) loadPolicy(ctx context.Context, path, role string) (*routePo
 	if err != nil {
 		return nil, err
 	}
+	// Explicit routes use policy bytes only for effort and provenance. Catalog
+	// authorization is required when the policy chooses a route automatically.
+	return p, nil
+}
+func (c taskRunCLI) validateLoadedPolicy(ctx context.Context, p *routePolicy) error {
 	if c.query == nil {
-		return nil, errors.New("configured route catalog unavailable; configure coordinator-client.json")
+		return errors.New("configured route catalog unavailable; configure coordinator-client.json")
 	}
 	response, err := c.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryWorkers})
 	if err != nil {
-		return nil, fmt.Errorf("configured route catalog unavailable: %w; check t3-steward coordinator identity", err)
+		return fmt.Errorf("configured route catalog unavailable: %w; check t3-steward coordinator identity", err)
 	}
-	if err := validatePolicyCatalog(p, response.Workers); err != nil {
-		return nil, err
-	}
-	return p, nil
+	return validatePolicyCatalog(p, response.Workers)
 }
 func policyEffort(p *routePolicy, route string) (string, error) {
 	effort := ""
@@ -231,6 +234,14 @@ func selectPolicyRoute(p *routePolicy, role, model, effort, worker string, proje
 	if role != "" && rr == nil {
 		return policySelection{}, fmt.Errorf("unknown role %q; inspect t3-steward policy show", role)
 	}
+	// A fully resolved explicit route with no role has no eligibility decision
+	// to make. Keep the caller's pin even on older catalogs and sleeping workers.
+	if model != "" && rr == nil {
+		if !review.ValidRoute(model) {
+			return policySelection{}, fmt.Errorf("explicit route %q must be INSTANCE/MODEL", model)
+		}
+		return explicitPolicySelection(p, role, model, effort)
+	}
 	candidates := []policyCandidate{}
 	if model != "" {
 		candidates = append(candidates, policyCandidate{Route: model})
@@ -241,7 +252,7 @@ func selectPolicyRoute(p *routePolicy, role, model, effort, worker string, proje
 		eligible := project
 		eligible.Workers = nil
 		for _, w := range project.Workers {
-			if w.Ready && (worker == "" || w.Worker == worker) {
+			if (model != "" || w.Ready && w.Advertises) && (worker == "" || w.Worker == worker) {
 				eligible.Workers = append(eligible.Workers, w)
 			}
 		}
@@ -273,9 +284,10 @@ func selectPolicyRoute(p *routePolicy, role, model, effort, worker string, proje
 		case "economy":
 			tier = "economy"
 		}
-		if tier == "" {
-			tier = candidate.Tier
-		} else if model == "" && tier != candidate.Tier {
+		if tier == "" && rr != nil && len(rr.Constraints.Tiers) > 0 {
+			continue
+		}
+		if model == "" && tier != "" && tier != candidate.Tier {
 			continue
 		}
 		if rr != nil {
@@ -308,6 +320,18 @@ func selectPolicyRoute(p *routePolicy, role, model, effort, worker string, proje
 		return policySelection{Schema: "route-selection/v1", Role: role, Route: pair, PolicyDigest: p.Digest, Reason: reason, Effort: effective}, nil
 	}
 	return policySelection{}, fmt.Errorf("no eligible candidate for role %q and model %q; check t3-steward models --project %s and policy show; explicit models remain pinned", role, model, project.Name)
+}
+
+// explicitPolicySelection adds effort and provenance without route resolution.
+func explicitPolicySelection(p *routePolicy, role, pair, effort string) (policySelection, error) {
+	if effort == "" {
+		var err error
+		effort, err = policyEffort(p, pair)
+		if err != nil {
+			return policySelection{}, err
+		}
+	}
+	return policySelection{Schema: "route-selection/v1", Role: role, Route: pair, PolicyDigest: p.Digest, Reason: "explicit model override", Effort: effort}, nil
 }
 
 // Merge only immutable snapshots; never re-read the source policy after resolution.
@@ -417,7 +441,7 @@ func resolveReviewPolicy(a reviewArgs, project backlogadmin.Project) (reviewArgs
 		}
 		s, err := selectPolicyRoute(a.policy, a.role, "", a.effort, "", project, accept)
 		if err != nil {
-			return a, err
+			return a, fmt.Errorf("%w; Phase A selects one reviewer and never fills a judge or fans out a role. %s", err, reviewPolicyRemedy(routes, families, a.risk))
 		}
 		a.reviewers = []string{s.Route}
 		a.selections = append(a.selections, s)
@@ -445,6 +469,29 @@ func resolveReviewPolicy(a reviewArgs, project backlogadmin.Project) (reviewArgs
 		a.efforts[s.Route] = s.Effort
 	}
 	return a, nil
+}
+
+// Offer a complete explicit round, without implying that one extra flag
+// extends an automatic role. Use declared families and existing tier authority.
+func reviewPolicyRemedy(routes map[string]backlogadmin.ProjectRoute, families int, risk string) string {
+	keys := make([]string, 0, len(routes))
+	for pair := range routes {
+		keys = append(keys, pair)
+	}
+	sort.Strings(keys)
+	for i, first := range keys {
+		for _, second := range keys[i+1:] {
+			members := []review.Reviewer{}
+			for j, pair := range []string{first, second} {
+				m := routes[pair]
+				members = append(members, review.Reviewer{ID: fmt.Sprintf("independent-%d", j+1), Role: "independent", Route: pair, ProviderFamily: m.ProviderFamily, Tier: m.Tier, Required: true})
+			}
+			if routes[first].ProviderFamily != routes[second].ProviderFamily && review.ValidateSelection(review.Round{Risk: risk, Reviewers: members}, families) == nil {
+				return fmt.Sprintf("Use explicit independent routes from two catalog families, without --role: t3-steward review --independent %s --independent %s (retain your project/input/notify flags)", first, second)
+			}
+		}
+	}
+	return "Use two explicit --independent INSTANCE/MODEL routes from distinct catalog provider families with executor or critical tier, without --role; configure backlog_v2.review_routes if needed (t3-steward models --project P)"
 }
 
 func cmdPolicy(g globalFlags, args []string) error {

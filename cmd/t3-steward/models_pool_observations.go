@@ -17,6 +17,15 @@ type modelsWindow struct {
 	Stale       bool             `json:"stale"`
 }
 
+// modelsBucketStale is shared by aggregate and window freshness.
+func modelsBucketStale(s domain.BucketState, now time.Time, staleAfter time.Duration) bool {
+	if staleAfter <= 0 {
+		staleAfter = defaultModelsStaleAfter
+	}
+	return s.ObservedAt.IsZero() || now.Sub(s.ObservedAt) > staleAfter ||
+		s.ResetsAt != nil && s.ObservedAt.Before(*s.ResetsAt) && !now.Before(*s.ResetsAt)
+}
+
 func modelsPoolWindows(pool domain.QuotaPool, states []domain.BucketState, now time.Time, staleAfter time.Duration) []modelsWindow {
 	matches := domain.PoolBucketMatcher(pool)
 	result := []modelsWindow{}
@@ -24,7 +33,7 @@ func modelsPoolWindows(pool domain.QuotaPool, states []domain.BucketState, now t
 		if !matches(s) {
 			continue
 		}
-		stale := s.ObservedAt.IsZero() || now.Sub(s.ObservedAt) > staleAfter || s.ResetsAt != nil && !now.Before(*s.ResetsAt)
+		stale := modelsBucketStale(s, now, staleAfter)
 		result = append(result, modelsWindow{Key: s.Key, UsedPercent: s.UsedPercent, Headroom: math.Max(0, 100-s.UsedPercent), ResetsAt: s.ResetsAt, ObservedAt: s.ObservedAt, Stale: stale})
 	}
 	for _, key := range pool.Buckets {

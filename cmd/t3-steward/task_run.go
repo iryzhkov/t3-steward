@@ -435,8 +435,13 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if p != nil || parsed.role != "" {
+	if parsed.role != "" {
 		explicit = false
+		if parsed.model == "" {
+			if err := c.validateLoadedPolicy(ctx, p); err != nil {
+				return err
+			}
+		}
 	}
 	if !explicit {
 		projects, queryErr := c.projects(ctx)
@@ -455,32 +460,49 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	if p != nil && (parsed.role != "" || parsed.model != "" || c.defaultModel != "") {
-		model := parsed.model
-		if model == "" && parsed.role == "" {
-			model = c.defaultModel
-		}
-		selection, selectErr := selectPolicyRoute(p, parsed.role, model, parsed.effort, parsed.worker, project, nil)
+	if parsed.role != "" {
+		selection, selectErr := selectPolicyRoute(p, parsed.role, parsed.model, parsed.effort, parsed.worker, project, nil)
 		if selectErr != nil {
 			return selectErr
 		}
 		parsed.selection = &selection
-		route, err = deriveTaskRunRoute(selection.Route, parsed.worker, "", project)
+		eligible := project
+		if parsed.model == "" {
+			eligible.Workers = nil
+			for _, w := range project.Workers {
+				if w.Ready && w.Advertises {
+					eligible.Workers = append(eligible.Workers, w)
+				}
+			}
+		}
+		route, err = deriveTaskRunRoute(selection.Route, parsed.worker, "", eligible)
 		if err != nil {
 			return err
 		}
-		route.Effort = selection.Effort
-		inputs, err = policySnapshotInputs(inputs, p, []policySelection{selection})
-		if err != nil {
-			return err
-		}
-		parsed.inputManifestDigest = inputs.Manifest.Digest
 	} else if !explicit {
 		if route, err = deriveTaskRunRoute(parsed.model, parsed.worker, c.defaultModel, project); err != nil {
 			return err
 		}
 	} else {
 		route = c.advertisedTaskRunRoute(ctx, parsed, route)
+	}
+	if p != nil {
+		if parsed.selection == nil {
+			selection, selectErr := selectPolicyRoute(p, "", route.Instance+"/"+route.Model, parsed.effort, parsed.worker, project, nil)
+			if selectErr != nil {
+				return selectErr
+			}
+			if parsed.model == "" {
+				selection.Reason = "configured default model"
+			}
+			parsed.selection = &selection
+		}
+		route.Effort = parsed.selection.Effort
+		inputs, err = policySnapshotInputs(inputs, p, []policySelection{*parsed.selection})
+		if err != nil {
+			return err
+		}
+		parsed.inputManifestDigest = inputs.Manifest.Digest
 	}
 	if parsed.effort != "" {
 		route.Effort = parsed.effort
