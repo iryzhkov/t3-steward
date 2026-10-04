@@ -7,7 +7,8 @@ Thanks for helping. This project is small and the rules are short.
 ```sh
 git clone https://github.com/iryzhkov/t3-steward
 cd t3-steward
-make check-fast  # build, vet, go test -short, lint, race on changed packages
+make check-fast  # build, vet, go test -short, lint, short race on changed packages
+make check-review # same checks, full-size race on changed packages once
 make test        # go test, go test -race, go vet: the complete gate
 make lint        # staticcheck and gofmt
 make build       # bin/t3-steward
@@ -17,8 +18,17 @@ Use `make check-fast` while iterating. It takes a few minutes rather than the
 full suite's quarter of an hour, because `-short` makes the tests that write
 thousands of SQLite rows cross their bounds with fewer rows, and the race
 detector runs only on the packages changed against `origin/main` (set
-`FAST_BASE` to compare against another ref). Run `make test` before asking
-for review: it runs every test at full size, under the race detector too.
+`FAST_BASE` to compare against another ref).
+
+If a task's accepted local gate is `check-fast` plus full-size race tests on
+changed packages, use `make check-review` instead. It keeps build, vet, the
+complete short plain suite and lint, then runs changed-package race tests
+once without `-short`. This avoids running essentially the same race suite
+twice. Both targets use the same changed-package detection and refuse an
+invalid `FAST_BASE`; a missing change list never counts as a passing race run.
+It does not replace `make test` when the task requires the complete gate.
+Run `make test` before asking for review under the repository's default
+policy: it runs every test at full size, under the race detector too.
 
 `make qualification` runs the nested-process qualification gates
 (`TestBacklogV2ProductionQualification`, `TestCoordinatorLocalMultiProcessWorkflow`),

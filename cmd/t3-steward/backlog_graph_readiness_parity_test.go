@@ -27,13 +27,9 @@ type parityTask struct {
 // readinessRefuses answers the task through the same viability query that
 // "campaign check" and submit use, against snapshots carrying exactly the
 // inventory each configured worker would report for itself.
-func readinessRefuses(t *testing.T, settings config.BacklogV2, task parityTask) bool {
+func readinessRefuses(t *testing.T, store *sqlite.Store, sequence int64, settings config.BacklogV2, task parityTask) bool {
 	t.Helper()
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	now := probeNow.Add(time.Duration(sequence-1) * time.Second)
 	if err := store.SaveCoordinatorRecords(context.Background(), sqlite.CoordinatorRecords{QuotaPools: []domain.QuotaPool{{
 		ID: "pool", Provider: "test", ProviderInstanceIDs: []string{"test"},
 		MaxConcurrent: 1, Admission: domain.AdmissionOpen,
@@ -46,7 +42,7 @@ func readinessRefuses(t *testing.T, settings config.BacklogV2, task parityTask) 
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		binding, err := workerruntime.BuildWorkerBinding(settings, id, probeNow)
+		binding, err := workerruntime.BuildWorkerBinding(settings, id, now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -54,8 +50,8 @@ func readinessRefuses(t *testing.T, settings config.BacklogV2, task parityTask) 
 		inventory.Epoch = settings.Workers[id].Epoch
 		inventory.Capabilities = workerruntime.AdvertisedCapabilities(inventory.Capabilities)
 		if err := store.SaveWorkerSnapshot(context.Background(), domain.WorkerSnapshot{
-			WorkerID: id, WorkerEpoch: inventory.Epoch, CoordinatorEpoch: 1, Connected: true, Sequence: 1,
-			ObservedAt: probeNow, ValidUntil: probeNow.Add(time.Minute), Inventory: inventory,
+			WorkerID: id, WorkerEpoch: inventory.Epoch, CoordinatorEpoch: 1, Connected: true, Sequence: sequence,
+			ObservedAt: now, ValidUntil: now.Add(time.Minute), Inventory: inventory,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -64,7 +60,7 @@ func readinessRefuses(t *testing.T, settings config.BacklogV2, task parityTask) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	service.SetClock(func() time.Time { return probeNow })
+	service.SetClock(func() time.Time { return now })
 	service.SetRuntimeInfo(backlogadmin.RuntimeInfo{
 		Epoch: 1, Mode: "coordinator", Owner: "coordinator", MaxWorkerSnapshotAge: time.Minute,
 	})
@@ -99,6 +95,15 @@ func readinessRefuses(t *testing.T, settings config.BacklogV2, task parityTask) 
 // match. The cases marked as former disagreements were judged differently by
 // the copy of the matching rules amendment validation used to keep.
 func TestGraphTaskValidatorAgreesWithReadiness(t *testing.T) {
+	// These sequential cases overwrite the quota pool and every configured
+	// worker snapshot before their read-only viability query. Migrate one
+	// store for this logical test; no task records or live store are shared
+	// with other tests.
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
 	pinned := []string{qualificationWorkerID()}
 	route := domain.ProviderRoute{ProviderInstanceID: "test", Model: "test", QuotaPoolID: "pool"}
 	cases := []struct {
@@ -136,7 +141,7 @@ func TestGraphTaskValidatorAgreesWithReadiness(t *testing.T) {
 		{name: "wildcard model", config: wildcardModels, task: parityTask{
 			routes: []domain.ProviderRoute{{ProviderInstanceID: "test", Model: "anything"}}}},
 	}
-	for _, test := range cases {
+	for index, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
 			cfg := qualificationConfig(root)
@@ -156,7 +161,7 @@ func TestGraphTaskValidatorAgreesWithReadiness(t *testing.T) {
 				Placement:      domain.Placement{Hosts: test.task.hosts, Capabilities: test.task.capabilities},
 				ResourceDemand: test.task.resources, Routes: test.task.routes}
 			amendmentRefuses := graphTaskValidator(settings)(workflow, task) != nil
-			if readiness := readinessRefuses(t, wildcardObserved(settings, test.task), test.task); readiness != test.refuse {
+			if readiness := readinessRefuses(t, store, int64(index+1), wildcardObserved(settings, test.task), test.task); readiness != test.refuse {
 				t.Fatalf("readiness refuses = %v, want %v", readiness, test.refuse)
 			}
 			if amendmentRefuses != test.refuse {
