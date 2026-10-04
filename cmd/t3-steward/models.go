@@ -133,7 +133,8 @@ func (s modelsScope) Words() string {
 
 // modelsInstance is one provider instance as the three views see it.
 type modelsInstance struct {
-	Instance string `json:"instance"`
+	Windows  []modelsWindow `json:"windows,omitempty"`
+	Instance string         `json:"instance"`
 	// Authorized reports that the fleet catalog the coordinator loaded binds
 	// this instance to a quota pool. The coordinator will not route to an
 	// instance it has not authorized, whoever advertises it.
@@ -365,6 +366,7 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 			item := entry(id)
 			item.Authorized = true
 			item.QuotaPool = quota.Pool.ID
+			item.Windows = modelsPoolWindows(quota.Pool, states, modelsNow(), staleAfter)
 			item.Admission = string(quota.Pool.Admission)
 			if quota.Admission != nil {
 				item.Admission = string(quota.Admission.Admission)
@@ -578,9 +580,38 @@ func renderModels(out io.Writer, document modelsDocument) error {
 	if document.Project != "" {
 		fmt.Fprintf(out, "project %s\n\n", document.Project)
 	}
+	instances := append([]modelsInstance(nil), document.Instances...)
+	sort.SliceStable(instances, func(i, j int) bool { return instances[i].QuotaPool < instances[j].QuotaPool })
+	currentPool := "\x00"
 	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(table, "ROUTE\tPOOL\tPHASE\tUSED\tAGE\tADMISSION\tWORKERS\tSTATUS")
-	for _, instance := range document.Instances {
+	for _, instance := range instances {
+		if instance.QuotaPool != currentPool {
+			if err := table.Flush(); err != nil {
+				return err
+			}
+			currentPool = instance.QuotaPool
+			fmt.Fprintf(out, "\npool %s\n", firstNonEmptyText(currentPool, "(none)"))
+			if len(instance.Windows) == 0 {
+				fmt.Fprintln(out, "  governing windows: unknown")
+			} else {
+				for _, w := range instance.Windows {
+					if w.Unknown {
+						fmt.Fprintf(out, "  %s (%s): unknown (no governing observation)\n", w.Key.Window, w.Key.LimitID)
+						continue
+					}
+					reset := "unknown"
+					if w.ResetsAt != nil {
+						reset = w.ResetsAt.UTC().Format(time.RFC3339)
+					}
+					freshness := "fresh"
+					if w.Stale {
+						freshness = "stale"
+					}
+					fmt.Fprintf(out, "  %s (%s): used %.1f%%; headroom %.1f%%; reset %s; %s\n", w.Key.Window, w.Key.LimitID, w.UsedPercent, w.Headroom, reset, freshness)
+				}
+			}
+		}
 		// The column counts the workers that are offering the route now, not
 		// the ones it is authorized for: a worker that does not advertise it
 		// cannot run it however ready it is, and the reason is below the table.
@@ -712,8 +743,7 @@ func modelsPoolFreshness(pool domain.QuotaPool, states []domain.BucketState, now
 		if oldest == nil || observed.Before(*oldest) {
 			oldest = &observed
 		}
-		if now.Sub(observed) > staleAfter ||
-			state.ResetsAt != nil && observed.Before(*state.ResetsAt) && !now.Before(*state.ResetsAt) {
+		if modelsBucketStale(state, now, staleAfter) {
 			stale = true
 		}
 	}

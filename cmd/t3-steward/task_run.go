@@ -60,6 +60,7 @@ Derived, each printed in the record:
 
 Flags:
   --project NAME        --ref REF              --fresh
+  --role ROLE          --effort low|medium|high       --policy-file PATH
   --model [INSTANCE/]MODEL                     --worker WORKER
   --name TEXT           --idempotency-key KEY
   --outputs a.md,b.md   --verify "CMD" (repeatable)
@@ -113,6 +114,7 @@ const taskRunSchemaVersion = 1
 // otherwise. Every derived value is in it, because the caller did not choose
 // them and has to be able to see what was chosen for it.
 type taskRunRecord struct {
+	Selection      *policySelection      `json:"selection,omitempty"`
 	SchemaVersion  int                   `json:"schemaVersion"`
 	Run            string                `json:"run"`
 	Tasks          []string              `json:"tasks"`
@@ -148,6 +150,7 @@ type taskRunRecord struct {
 // guess whether the run is unpinned or the field was never implemented. The
 // printed record names it either way; see printedRoute.
 type taskRunRoute struct {
+	Effort    string `json:"effort,omitempty"`
 	Worker    string `json:"worker"`
 	Instance  string `json:"instance"`
 	Model     string `json:"model"`
@@ -191,6 +194,7 @@ type gitCheckout struct {
 // seams carry the check, the submission and the notification, query answers
 // the projects view, and checkout answers for the working directory.
 type taskRunCLI struct {
+	policyPath   string
 	campaign     campaignCLI
 	query        func(context.Context, backlogadmin.Query) (backlogadmin.Response, error)
 	checkout     func() (gitCheckout, error)
@@ -250,23 +254,25 @@ func cmdTaskRun(g globalFlags, args []string) error {
 // taskRunArgs is one parsed command line. Nothing is derived here; parsing
 // only reports what the caller said.
 type taskRunArgs struct {
-	project             string
-	ref                 string
-	fresh               bool
-	model               string
-	worker              string
-	name                string
-	key                 string
-	inputs              []string
-	inputManifestDigest string
-	outputs             []string
-	verify              []string
-	class               string
-	maxTurns            int
-	promptFile          string
-	fanOut              string
-	inline              string
-	hasInline           bool
+	role, effort, policyFile string
+	selection                *policySelection
+	project                  string
+	ref                      string
+	fresh                    bool
+	model                    string
+	worker                   string
+	name                     string
+	key                      string
+	inputs                   []string
+	inputManifestDigest      string
+	outputs                  []string
+	verify                   []string
+	class                    string
+	maxTurns                 int
+	promptFile               string
+	fanOut                   string
+	inline                   string
+	hasInline                bool
 	// notifyThread is "current", a T3 thread id, or empty when --no-notify
 	// said nobody is woken. It is the same spelling "campaign submit" takes,
 	// because one spelling that means one thing is the whole of the fix.
@@ -312,6 +318,12 @@ func parseTaskRunArgs(args []string) (taskRunArgs, error) {
 			parsed.project, err = value(i, "--project")
 		case "--ref":
 			parsed.ref, err = value(i, "--ref")
+		case "--role":
+			parsed.role, err = value(i, "--role")
+		case "--effort":
+			parsed.effort, err = value(i, "--effort")
+		case "--policy-file":
+			parsed.policyFile, err = value(i, "--policy-file")
 		case "--model":
 			parsed.model, err = value(i, "--model")
 		case "--worker":
@@ -379,6 +391,9 @@ func parseTaskRunArgs(args []string) (taskRunArgs, error) {
 	if !parsed.noNotify && parsed.notifyThread == "" {
 		parsed.notifyThread = "current"
 	}
+	if err := validPolicyEffort(parsed.effort); err != nil {
+		return taskRunArgs{}, err
+	}
 	return parsed, nil
 }
 
@@ -416,6 +431,18 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	// window. The query is still sent, a few lines below, for the route's
 	// quota pool alone, and its refusal is swallowed there.
 	project, route, explicit := explicitTaskRunRoute(parsed, c.defaultModel)
+	p, err := c.loadPolicy(ctx, parsed.policyFile, parsed.role)
+	if err != nil {
+		return err
+	}
+	if parsed.role != "" {
+		explicit = false
+		if parsed.model == "" {
+			if err := c.validateLoadedPolicy(ctx, p); err != nil {
+				return err
+			}
+		}
+	}
 	if !explicit {
 		projects, queryErr := c.projects(ctx)
 		if queryErr != nil {
@@ -433,12 +460,52 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	if !explicit {
+	if parsed.role != "" {
+		selection, selectErr := selectPolicyRoute(p, parsed.role, parsed.model, parsed.effort, parsed.worker, project, nil)
+		if selectErr != nil {
+			return selectErr
+		}
+		parsed.selection = &selection
+		eligible := project
+		if parsed.model == "" {
+			eligible.Workers = nil
+			for _, w := range project.Workers {
+				if w.Ready && w.Advertises {
+					eligible.Workers = append(eligible.Workers, w)
+				}
+			}
+		}
+		route, err = deriveTaskRunRoute(selection.Route, parsed.worker, "", eligible)
+		if err != nil {
+			return err
+		}
+	} else if !explicit {
 		if route, err = deriveTaskRunRoute(parsed.model, parsed.worker, c.defaultModel, project); err != nil {
 			return err
 		}
 	} else {
 		route = c.advertisedTaskRunRoute(ctx, parsed, route)
+	}
+	if p != nil {
+		if parsed.selection == nil {
+			selection, selectErr := selectPolicyRoute(p, "", route.Instance+"/"+route.Model, parsed.effort, parsed.worker, project, nil)
+			if selectErr != nil {
+				return selectErr
+			}
+			if parsed.model == "" {
+				selection.Reason = "configured default model"
+			}
+			parsed.selection = &selection
+		}
+		route.Effort = parsed.selection.Effort
+		inputs, err = policySnapshotInputs(inputs, p, []policySelection{*parsed.selection})
+		if err != nil {
+			return err
+		}
+		parsed.inputManifestDigest = inputs.Manifest.Digest
+	}
+	if parsed.effort != "" {
+		route.Effort = parsed.effort
 	}
 	key := parsed.key
 	if key == "" {
@@ -500,6 +567,7 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 		return explainSubmissionConflict(err)
 	}
 	record := taskRunRecord{
+		Selection:      parsed.selection,
 		SchemaVersion:  taskRunSchemaVersion,
 		Run:            response.RunID,
 		Project:        project.Name,
@@ -512,7 +580,7 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 		Result:         "t3-steward task result " + response.RunID,
 		Warnings:       warnings,
 	}
-	if len(parsed.inputs) > 0 {
+	if len(inputs.Manifest.Entries) > 0 {
 		record.InputManifest = &inputs.Manifest
 	}
 	for _, prompt := range prompts {
@@ -540,6 +608,9 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	record.Notify = notification
 	if parsed.asJSON {
 		return encodeCampaignJSON(c.stdout, record)
+	}
+	if record.Selection != nil {
+		fmt.Fprintf(c.stdout, "role %s\npolicy %s\nreason %s\neffort %s\n", record.Selection.Role, record.Selection.PolicyDigest, record.Selection.Reason, record.Selection.Effort)
 	}
 	return renderTaskRunRecord(c.stdout, record)
 }
@@ -966,6 +1037,9 @@ func taskRunIdempotencyKey(project, ref string, route taskRunRoute, prompts []ta
 		}
 	}
 	write(project, ref, route.Instance, route.Model)
+	if route.Effort != "" {
+		write("effort", route.Effort)
+	}
 	for _, prompt := range prompts {
 		write(prompt.name, prompt.body)
 	}
@@ -1090,6 +1164,9 @@ func writeTaskRunCampaign(spec taskRunCampaign) (string, error) {
 	}
 	route := backlog.ManifestRoute{
 		Instance: spec.route.Instance, Model: spec.route.Model, QuotaPool: spec.route.QuotaPool,
+	}
+	if spec.route.Effort != "" {
+		route.Options = map[string]string{"effort": spec.route.Effort}
 	}
 	if spec.pinned {
 		route.Host = spec.route.Worker
