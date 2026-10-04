@@ -326,54 +326,48 @@ thing referring to it is gone. Note also that a rerun's carried inputs keep the
 creation time of the artifacts they reference, so a window chosen by age alone
 will treat them as old on the new run's first pass.
 
-### Legacy intake quarantine
+### Historical intake quarantine
 
-The drop directory is read-only to the coordinator: the coordinator re-reads it
-on every cycle and never drains it. A file that can never be accepted, such as
-one naming a project no alias maps or one whose content changed after its key
-was accepted, is therefore recorded as quarantined in the submission journal,
-reported once with its reason, and skipped silently on every later cycle.
+Markdown file intake has been retired. The coordinator no longer scans the
+drop directory, retries changed files, or submits files after a marker is
+cleared. Editing or removing a historical file, changing a digest, or repairing
+an alias does not retry work.
 
-The quarantine marker is a `quarantined` submission record under the key
-`quarantine:<idempotency key>`. It carries the digest of the exact file bytes it
-was recorded for and the reason it was refused; it never carries workflow or run
-identities, because nothing was accepted. The single report is the coordinator
-log line carrying the reason, and it is durable as one `submission-quarantined`
-audit event per key and digest.
+Retained quarantine markers record refusals from the former scanner. Each is a
+`quarantined` submission record under `quarantine:<idempotency key>`, with
+the original file digest, reason and quarantine time. Refused submissions have
+no workflow or run identity. The historical `submission-quarantined` audit
+event remains durable; file contents, records and other historical evidence
+are preserved unless an operator deliberately clears a marker.
 
-That audit event has no workflow run, so the run-scoped `backlog events
-<workflow-run>` view cannot list it. The quarantine is read instead with
+The audit event has no workflow run, so the run-scoped `backlog events
+<workflow-run>` view cannot list it. Inspect retained markers with
 
 ```
 t3-steward backlog quarantine [--json]
 ```
 
-which reports every marker with its intake key, the namespaced key its record is
-stored under in `coordinator_submissions`, the content digest it was recorded
-for, when it was quarantined, the reason, and the fact that changed content is
-tried again. It is a read of the durable record: it releases nothing and
-resubmits nothing, and it is an ordinary admin query, so it works from a
-non-coordinator host over the same transport as every other read.
+The view reports the intake key, namespaced record key in
+`coordinator_submissions`, original digest, time, reason and retirement-aware
+guidance. It releases and resubmits nothing. This ordinary authenticated admin
+query works over the configured transport from non-coordinator hosts.
 
-Recovery is to change the file. When the content of a quarantined file changes,
-its digest changes, the marker is released, and the submission is attempted
-again and reported again. Removing the file also ends the reports, and the
-marker then stays in the journal as the record of why the intake refused it.
-
-A quarantine the file cannot fix is cleared deliberately:
+To deliberately clear a retained marker, use the intake key and give a reason:
 
 ```
 t3-steward backlog quarantine release <key> --reason TEXT [--json]
 ```
 
-This is the way out of a refusal that was never about the content — a project
-no alias mapped is the ordinary one — because adding the alias changes no byte
-of the file, so its digest is unchanged and intake stays silent. The release is
-audited with the operator and the reason as `submission-quarantine-released`,
-and releasing a key that holds no marker reports exactly that instead of
-failing, so an ambiguous response is safe to retry. It creates nothing: the next
-cycle reads the file again and the coordinator refuses it again if it is still
-impossible.
+Release requires the authorized operator and is audited with that operator and
+reason as `submission-quarantine-released`. Releasing a key with no marker
+reports that fact, allowing a retry after an ambiguous response. It clears only
+the marker: it does not create work, reread files, retry a submission or enable
+intake. Preserve historical files and audit evidence independently of marker
+cleanup.
+
+Submit new work with `t3-steward task run` or
+`t3-steward campaign submit`. Legacy intake enable flags accept false/default
+for configuration compatibility; true is rejected with retirement guidance.
 
 Dependency artifacts appear in the successor workspace at
 `.t3/dependencies/<task>/<output>`. Declared verification commands, output
