@@ -54,8 +54,8 @@ func TestCoordinatorSettlesNodeWaitDespiteQuotaFailure(t *testing.T) {
 	if _, err := store.RegisterNodeWait(context.Background(), domain.NodeWaitRequest{ID: "nw-test", ThreadID: "thread", Target: domain.NodeRef{RunID: "r", TaskID: domain.SinkTaskName}, Timeout: time.Hour}, "test", "host", now); err != nil {
 		t.Fatal(err)
 	}
-	quota, schedules, planning, admin, legacy := 0, 0, 0, 0, 0
-	cycle := coordinatorBoundaryCycle{projection: store, quota: failingCoordinatorQuotaTicker{calls: &quota}, schedules: recordingCoordinatorScheduleTicker{calls: &schedules}, planning: recordingCoordinatorPlanningTicker{calls: &planning}, admin: recordingCoordinatorAdminExecutor{calls: &admin}, legacy: recordingCoordinatorLegacyTicker{calls: &legacy}, logger: newLogger("error")}
+	quota, schedules, planning, admin := 0, 0, 0, 0
+	cycle := coordinatorBoundaryCycle{projection: store, quota: failingCoordinatorQuotaTicker{calls: &quota}, schedules: recordingCoordinatorScheduleTicker{calls: &schedules}, planning: recordingCoordinatorPlanningTicker{calls: &planning}, admin: recordingCoordinatorAdminExecutor{calls: &admin}, logger: newLogger("error")}
 	cycle.Tick(context.Background())
 	waits, err := store.ListNodeWaits(context.Background())
 	if err != nil {

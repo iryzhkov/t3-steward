@@ -29,13 +29,12 @@ func TestSinkSettlesWhileQuotaReconciliationFails(t *testing.T) {
 	if err := store.SaveCoordinatorRecords(context.Background(), sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{run}}); err != nil {
 		t.Fatal(err)
 	}
-	quota, schedules, planning, admin, legacy := 0, 0, 0, 0, 0
+	quota, schedules, planning, admin := 0, 0, 0, 0
 	cycle := coordinatorBoundaryCycle{
 		projection: store, quota: failingCoordinatorQuotaTicker{calls: &quota},
 		schedules: recordingCoordinatorScheduleTicker{calls: &schedules},
 		planning:  recordingCoordinatorPlanningTicker{calls: &planning},
 		admin:     recordingCoordinatorAdminExecutor{calls: &admin},
-		legacy:    recordingCoordinatorLegacyTicker{calls: &legacy},
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	cycle.Tick(context.Background())

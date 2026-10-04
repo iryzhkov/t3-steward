@@ -221,9 +221,9 @@ multi-worker production dispatch, accurate quota forecasts or enforced safety.
 S0 adds replay migration/retention/crash evidence. S5 owns the reliability campaign;
 S6 must rerun quota expectations that S5 cannot certify before rework exists.
 S7 owns enforcement and release qualification, including the no-quota-failure log
-window. M15 stages legacy retirement: phase 1 disables intake by default and retains
-compatibility for the lead-owned observation/rollback window; phase 2 removes it
-only after reviewed rollout proof that no active consumers remain.
+window. M15 source retirement removes executable Markdown intake after reviewed
+rollout proof of no active consumers. Source checkpoints still require lead-owned
+independent exact-commit reviews and publication/deployment gates.
 
 ## Operator-facing shape and review rule
 
@@ -231,21 +231,21 @@ Keep workflow administration under `backlog`; add focused top-level `quota`,
 `worker`, `wait`, `schedule` and `diagnose` commands. S3 owns DAG inspection
 and a joined diagnostic view of workers, quotas, waits, schedules, assignments,
 leases and journal excerpts. Redact credentials and bound exported evidence.
-Existing `schedules` can be an alias during the CLI change. Deprecated file helpers
-remain during M15 phase 1. Submit new work with `task run` or `campaign submit` and
-manage recurring work with schedules under existing mutation authority.
+Existing `schedules` can be an alias during the CLI change. Submit new work with
+`task run` or `campaign submit` and manage recurring work with schedules under
+existing mutation authority.
 
-`backlog.enabled` remains default false and controls only the old local runner.
-Coordinator Markdown intake separately requires
-`backlog_v2.coordinator.legacy_file_intake_enabled: true` (default false).
-Changing that gate requires a coordinator restart; SIGHUP rejects the whole change
-with a receipt and preserves the effective configuration. With intake disabled,
-the coordinator does not resolve/read the drop directory or change intake quarantine.
-Persisted legacy data, quarantine inspection/release and other operator controls
-remain available. Enabling compatibility restores the guarded, read-only,
-idempotent adapter; it does not change explicit route pins or quota admission.
-Phase 2 requires lead-owned exact source reviews/CI, reviewed release deployment,
-observed absence of file consumers across hosts, and a retained prior-release rollback.
+`backlog.enabled` and
+`backlog_v2.coordinator.legacy_file_intake_enabled` are compatibility booleans:
+false/default is accepted, true is rejected with actionable retirement guidance.
+Current status permanently reports file intake disabled; historical strict status
+decoding and authenticated version fallback remain supported.
+The local file runner, coordinator drop adapter and tick hook, offline file verbs
+and SSH submission helpers are removed. Retired commands refuse without effects.
+Persisted historical data, quarantine inspection/release, recovery and backup
+remain available. Release of a quarantine record does not resubmit a file.
+Final acceptance requires lead-owned exact source reviews/CI and reviewed release
+deployment. The prior immutable release remains the rollback authority.
 No automatic removal date or recurring schedule is created.
 
 For each later change state its owner, commit point, retry identity, uncertainty

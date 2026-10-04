@@ -29,12 +29,6 @@ func (fairnessAdmin) ExecutePendingCommands(context.Context) (backlogadmin.Comma
 	return backlogadmin.CommandExecutionReport{}, nil
 }
 
-type fairnessLegacy struct{}
-
-func (fairnessLegacy) Tick(context.Context) backlog.LegacySubmissionReport {
-	return backlog.LegacySubmissionReport{}
-}
-
 // This is a desired fairness contract and deliberately fails before shared
 // arbitration: every real coordinator boundary commits ordinary work before a
 // separately scheduled task wake can reacquire the worker's only slot.
@@ -124,7 +118,7 @@ func TestSettledParkedWakeGetsServiceUnderContinuousOrdinaryLoad(t *testing.T) {
 	}
 	cycle := coordinatorBoundaryCycle{
 		quota: fairnessQuota{quota}, schedules: fairnessSchedules{}, planning: planner,
-		admin: fairnessAdmin{}, legacy: fairnessLegacy{},
+		admin:  fairnessAdmin{},
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 

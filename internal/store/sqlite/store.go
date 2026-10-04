@@ -912,16 +912,6 @@ func (s *Store) PruneHistory(ctx context.Context, before time.Time) error {
 	return tx.Commit()
 }
 
-// RegisterDispatchedThread records that a thread was started by the
-// watchdog (backlog runner or scheduled job), so that it is not counted as
-// interactive use.
-func (s *Store) RegisterDispatchedThread(ctx context.Context, threadID, taskID, project string, at time.Time) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO dispatched_threads(thread_id, task_id, project, dispatched_at) VALUES (?, ?, ?, ?)`,
-		threadID, taskID, project, at.UTC().Format(time.RFC3339Nano))
-	return err
-}
-
 // DispatchedThreads returns the ids of every thread the watchdog started.
 func (s *Store) DispatchedThreads(ctx context.Context) (map[string]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT thread_id, task_id FROM dispatched_threads`)
@@ -938,20 +928,6 @@ func (s *Store) DispatchedThreads(ctx context.Context) (map[string]string, error
 		out[id] = task
 	}
 	return out, rows.Err()
-}
-
-// SaveTaskState upserts a backlog task's state, stored as JSON with the
-// status duplicated in a column for listing.
-func (s *Store) SaveTaskState(ctx context.Context, id, status string, state any) error {
-	raw, err := json.Marshal(state)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO backlog_tasks(id, state, status, updated_at) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET state = excluded.state, status = excluded.status, updated_at = excluded.updated_at`,
-		id, string(raw), status, time.Now().UTC().Format(time.RFC3339Nano))
-	return err
 }
 
 // LoadTaskStates returns every stored task state as raw JSON keyed by id.

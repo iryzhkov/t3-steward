@@ -1,5 +1,9 @@
 # Backlog-v2 deployment-readiness report
 
+> Historical design/evidence: current M15 source removes Markdown file intake and
+> forwarding. Use task run or campaign submit; this record does not authorize
+> reenabling intake. See the current backlog-v2 operations guide.
+
 Date: 2026-09-10  
 Candidate branch: `feature/backlog-orchestrator`  
 Candidate baseline: `57f0b3269d8341e52170675863fe663566e8bfd3`

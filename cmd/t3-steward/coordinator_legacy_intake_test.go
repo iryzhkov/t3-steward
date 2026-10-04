@@ -78,40 +78,37 @@ func TestRunBacklogV2CoordinatorDefaultIntakeLeavesFilesAndQuarantine(t *testing
 	}
 }
 
-func TestCoordinatorLegacyIntakeSkipsDisabledAliasAndPathValidation(t *testing.T) {
-	cfg := config.Default()
-	cfg.Backlog.Dir = "~someone-else/drop"
-	cfg.BacklogV2.Projects = map[string]config.V2Project{
-		"one": {T3Project: "shared"}, "two": {T3Project: "shared"},
-	}
-	source, err := coordinatorLegacyIntake(cfg, nil, nil)
-	if err != nil || source != nil {
-		t.Fatalf("disabled source=%v err=%v", source, err)
-	}
-	cfg.BacklogV2.Coordinator.LegacyFileIntakeEnabled = true
-	if _, err := coordinatorLegacyIntake(cfg, nil, nil); err == nil || !strings.Contains(err.Error(), "legacy_file_intake_enabled") {
-		t.Fatalf("opt-in invalid aliases: %v", err)
+func TestCoordinatorReloadRejectsRetiredIntakeWithoutPartialLoad(t *testing.T) {
+	f := newReloadFixture(t)
+	next := cloneReloadConfig(t, f.cfg)
+	next.BacklogV2.Coordinator.LegacyFileIntakeEnabled = true
+	next.BacklogV2.Leases.Duration += config.Duration(time.Second)
+	writeReloadConfig(t, f.cfg.Path, next)
+	before, _ := coordinatorConfigurationDigest(f.cfg.BacklogV2)
+	decision := evaluateCoordinatorReload(context.Background(), f.cfg, f.logger, f.store, f.receipts)
+	receipt := f.readReceipt(t)
+	if decision.proceed || receipt.Outcome != backlogadmin.ReloadRejected ||
+		receipt.ConfigurationDigest != before || receipt.PreviousDigest != before ||
+		!strings.Contains(receipt.Error, "Markdown intake is retired") {
+		t.Fatalf("partial/rejected gate reload: %+v", receipt)
 	}
 }
 
-func TestCoordinatorReloadLegacyIntakeGateRequiresRestartWithoutPartialLoad(t *testing.T) {
-	for _, enabled := range []bool{false, true} {
-		t.Run(map[bool]string{false: "enable", true: "disable"}[enabled], func(t *testing.T) {
-			f := newReloadFixture(t)
-			f.cfg.BacklogV2.Coordinator.LegacyFileIntakeEnabled = enabled
-			next := cloneReloadConfig(t, f.cfg)
-			next.BacklogV2.Coordinator.LegacyFileIntakeEnabled = !enabled
-			next.BacklogV2.Leases.Duration += config.Duration(time.Second)
-			writeReloadConfig(t, f.cfg.Path, next)
-			before, _ := coordinatorConfigurationDigest(f.cfg.BacklogV2)
-			decision := evaluateCoordinatorReload(context.Background(), f.cfg, f.logger, f.store, f.receipts)
-			receipt := f.readReceipt(t)
-			if decision.proceed || receipt.Outcome != backlogadmin.ReloadRejected ||
-				receipt.ConfigurationDigest != before || receipt.PreviousDigest != before ||
-				!strings.Contains(receipt.Error, "legacy_file_intake_enabled changes require coordinator restart") {
-				t.Fatalf("partial/rejected gate reload: %+v", receipt)
-			}
-		})
+func TestCoordinatorRetirementDoesNotResolveMissingMarkdownDirectory(t *testing.T) {
+	cfg := config.Default()
+	setCoordinatorTestRoots(t, &cfg)
+	cfg.BacklogV2.Mode = "coordinator"
+	cfg.BacklogV2.Coordinator.ID = "normandy"
+	cfg.Backlog.Dir = filepath.Join(t.TempDir(), "missing", "drop")
+	cfg.BacklogV2.Projects = map[string]config.V2Project{
+		"one": {T3Project: "shared"}, "two": {T3Project: "shared"},
+	}
+	handled, err := runCoordinatorUntilStarted(t, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil || !handled {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	if _, err := os.Stat(cfg.Backlog.Dir); !os.IsNotExist(err) {
+		t.Fatalf("Markdown directory created: %v", err)
 	}
 }
 
@@ -161,8 +158,7 @@ func TestLegacyIntakeDiagnosticsUseEffectiveRemoteStatus(t *testing.T) {
 	}
 }
 
-// Disabled construction can be used directly by boundary-cycle tests: nil is
-// intentional, and other reconciliations must continue through the same cycle.
+// Modern reconciliations continue after the file intake hook has been removed.
 func TestCoordinatorBoundaryCycleWithoutLegacyIntake(t *testing.T) {
 	var quotaCalls, scheduleCalls, planningCalls, adminCalls int
 	cycle := coordinatorBoundaryCycle{

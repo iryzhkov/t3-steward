@@ -15,7 +15,8 @@ CLI, the versioned authenticated exchange, and the S16 restart-safe worker
 runtime.
 
 Completed S17 code adds a schema-11 submission journal and bounded
-idempotent directory, tar, and legacy single-task submission services. It also
+idempotent directory and tar submission services. Markdown intake and the
+legacy single-task submission adapter have been retired. It also
 adds revision-fenced audited schedule-definition administration and a
 persistent five-field-cron timer whose occurrence cursor and identities survive
 restart. It also adds a quota bridge that deduplicates stored provider-bucket
@@ -55,15 +56,12 @@ durable mutation submission, artifact retrieval, revision-fenced schedule-
 definition administration, and evidence-bound unknown-assignment recovery. It
 authenticates the Unix
 peer UID and does not trust client-supplied identity; coordinator-mode CLI
-commands no longer open SQLite. While closed, the coordinator also ingests the
-unchanged owner-controlled `t3-backlog`/`t3-job` Markdown drop through
-aggregate byte/file bounds, project alias mapping, and the immutable submission
-journal; this does not dispatch work. The same authenticated socket accepts
+commands no longer open SQLite. Historical Markdown files are never scanned or
+submitted. The same authenticated socket accepts
 bounded native tar-bundle streams and returns immutable submission, workflow,
 and run identities; exact idempotency-key replay returns the original result.
 The bounded local cycle immediately and periodically fires restart-derived
-schedule occurrences, executes durable revision-fenced admin commands, and
-reconciles legacy submissions. Component errors are logged without preventing
+schedule occurrences and executes durable revision-fenced admin commands. Component errors are logged without preventing
 other local boundaries from making progress. The cycle first reconstructs
 active slots, paused fixed-route remainder, offered-work reservations, and
 numeric per-bucket capacity/forecast windows, then derives and persists quota
@@ -86,8 +84,8 @@ sessions compose bounded worker transport, lease expiry/renewal, lifecycle
 delivery, durable throttle replay/delivery, one-at-a-time result outbox
 discovery, bounded raw fetch, import, and post-import acknowledgement for both
 results and checkpoints. Checkpoint publication additionally requires an exact
-acknowledged throttle projection. The existing Markdown
-`t3-backlog` runner remains the deployed production path. The disposable S19
+acknowledged throttle projection. Markdown intake has been removed from current
+source. The historical disposable S19
 process-topology, fault, full, and race gates pass. An explicitly authorized
 Normandy-to-homelab SSH qualification also passed using an ephemeral no-effects
 worker: an authenticated snapshot and empty-offer canary were repeated across
@@ -101,17 +99,22 @@ the wire and worker contract is in
 
 The shipped YAML schema is documented in
 [config.example.yaml](../config.example.yaml). Decoding is strict at every
-level: unknown keys are startup errors. Existing valid legacy configurations
-remain compatible, and backlog-v2 is disabled by default.
+level: unknown keys are startup errors. Backlog-v2 is disabled by default.
 
-- `backlog.enabled`, `dir`, `quiet_for`, and forecast fields control the
-  legacy Markdown runner.
-- `backlog.host_name` and `default_host` control legacy SSH forwarding; they
-  are not backlog-v2 worker registration.
-- `backlog_v2.mode` is `disabled`, `coordinator`, or `worker`.
-  Coordinator mode and `backlog.enabled` are mutually exclusive. Worker mode
-  exposes only the fixed exchange endpoint and never acquires coordinator
-  authority.
+- `backlog.enabled` and
+  `backlog_v2.coordinator.legacy_file_intake_enabled` accept only false/default;
+  true fails validation with task run/campaign submit guidance.
+- Markdown runner, directory scans, offline new/path/check/receive/list-all and
+  SSH submission forwarding are removed. Retired verbs refuse without file,
+  stdin, state or SSH effects. Forecast fields still feed modern quota planning;
+  `backlog.host_name` remains archive identity metadata.
+- Current coordinator status permanently reports file intake disabled. Frozen
+  historical status projection and authenticated old-peer fallback remain supported.
+- Historical files, quarantine records and immutable rollback bundles are retained.
+  Quarantine inspection/release, recovery, backup and modern administration remain
+  available; releasing quarantine never resubmits a Markdown file.
+- `backlog_v2.mode` is `disabled`, `coordinator`, or `worker`. Worker mode
+  exposes only the fixed exchange endpoint and never acquires coordinator authority.
 - `backlog_v2.coordinator.id` is the durable coordinator identity.
 - Worker mode requires `backlog_v2.local_worker.id`, `epoch`, and a positive
   `coordinator_epoch`. The ID must name an entry in `workers`. Rotate these
@@ -130,7 +133,7 @@ remain compatible, and backlog-v2 is disabled by default.
   beneath the configured worker-scoped roots and must be restored coherently.
 - `transport`, `message_limits`, `freshness`, `leases`, and `scheduling`
   set bounded exchange and lifecycle controls. `message_limits.max_files`
-  bounds one legacy-drop scan and bundle/archive expansion. The worker caps
+  bounds bundle/archive expansion. The worker caps
   accepted lease extension at its configured duration. The configured transport
   request timeout also bounds every local-admin connection; the coordinator
   rejects connections above its fixed handler limit with a backpressure error.
@@ -594,9 +597,7 @@ in `t3-steward backlog commands <run>`, in the audit event and in
 
 A task that declares no route at all is refused as permanent `no-route`, at
 `check` and at intake, with the instance/model pairs its project's eligible
-workers advertise. The legacy single-task adapter refuses a submission with no
-instance and model the same way, which quarantines the file once instead of
-reporting it on every cycle.
+workers advertise. Historical files are not retried; submit a new native task or campaign.
 
 ### Registering a provider
 

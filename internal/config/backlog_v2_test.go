@@ -14,31 +14,27 @@ func TestBacklogV2DefaultsDisabledAndLegacyCompatible(t *testing.T) {
 		t.Fatalf("backlog v2 defaults = %+v", cfg.BacklogV2)
 	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("backlog:\n  enabled: true\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("backlog:\n  enabled: false\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !loaded.Backlog.Enabled || loaded.BacklogV2.Mode != "disabled" {
+	if loaded.Backlog.Enabled || loaded.BacklogV2.Mode != "disabled" {
 		t.Fatalf("legacy config = %+v", loaded)
 	}
 }
 
-func TestLegacyFileIntakeOptInIsCoordinatorOnly(t *testing.T) {
+func TestLegacyFileIntakeTrueIsRetiredInEveryMode(t *testing.T) {
 	for _, mode := range []string{"disabled", "worker", "coordinator"} {
 		t.Run(mode, func(t *testing.T) {
 			cfg := validBacklogV2Config(t)
 			cfg.BacklogV2.Mode = mode
 			cfg.BacklogV2.Coordinator.LegacyFileIntakeEnabled = true
 			err := cfg.Validate()
-			if mode == "coordinator" {
-				if err != nil {
-					t.Fatal(err)
-				}
-			} else if err == nil || !strings.Contains(err.Error(), "legacy_file_intake_enabled requires mode: coordinator") {
-				t.Fatalf("invalid mode gate: %v", err)
+			if err == nil || !strings.Contains(err.Error(), "Markdown intake is retired") || !strings.Contains(err.Error(), "task run or campaign submit") {
+				t.Fatalf("retired flag accepted or unclear refusal: %v", err)
 			}
 		})
 	}
@@ -191,7 +187,7 @@ func TestBacklogV2WorkerModeRequiresFixedLocalAuthority(t *testing.T) {
 	cfg := validBacklogV2Config(t)
 	cfg.BacklogV2.Mode = "worker"
 	cfg.BacklogV2.LocalWorker = V2LocalWorker{ID: "normandy", Epoch: "worker-1", CoordinatorEpoch: 9}
-	cfg.Backlog.Enabled = true
+	cfg.Backlog.Enabled = false
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid worker mode: %v", err)
 	}

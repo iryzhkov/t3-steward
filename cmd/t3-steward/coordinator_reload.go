@@ -19,7 +19,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -541,8 +540,8 @@ func reloadBlockersMessage(blockers []backlogadmin.ReloadBlocker) string {
 }
 
 func validateCoordinatorReload(current, next config.Config) error {
-	if current.BacklogV2.Coordinator.LegacyFileIntakeEnabled != next.BacklogV2.Coordinator.LegacyFileIntakeEnabled {
-		return errors.New("backlog_v2.coordinator.legacy_file_intake_enabled changes require coordinator restart; reload keeps the current intake gate")
+	if next.Backlog.Enabled || next.BacklogV2.Coordinator.LegacyFileIntakeEnabled {
+		return errors.New("legacy Markdown intake is retired; set backlog.enabled and backlog_v2.coordinator.legacy_file_intake_enabled to false; use task run or campaign submit")
 	}
 	oldOuter, newOuter := current.LifecycleView(), next.LifecycleView()
 	oldOuter.BacklogV2 = config.BacklogV2{}
@@ -562,15 +561,6 @@ func validateCoordinatorReload(current, next config.Config) error {
 	for id, old := range a.Workers {
 		if newer, ok := b.Workers[id]; ok && old.Epoch != newer.Epoch {
 			return errors.New("worker epoch changes require explicit custody recovery")
-		}
-	}
-	targets := map[string]string{}
-	for name, project := range b.Projects {
-		targets[name] = project.T3Project
-	}
-	if b.Coordinator.LegacyFileIntakeEnabled {
-		if _, err := backlog.LegacyProjectAliases(targets); err != nil {
-			return fmt.Errorf("backlog_v2.coordinator.legacy_file_intake_enabled: %w", err)
 		}
 	}
 	for id := range b.Workers {

@@ -229,7 +229,7 @@ func recoveryBoundaryCycle(t *testing.T, fixture *recoveryLivenessFixture, slots
 	}
 	return coordinatorBoundaryCycle{
 		quota: fairnessQuota{quota}, schedules: fairnessSchedules{}, planning: planner,
-		admin: fairnessAdmin{}, legacy: fairnessLegacy{}, supervision: &fixture.coordinator,
+		admin: fairnessAdmin{}, supervision: &fixture.coordinator,
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }

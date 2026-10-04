@@ -69,14 +69,13 @@ func TestBoundaryTickReconcilesCompletedActivationWhenQuotaFailsAndBlocksNextDis
 	fixture.now = activationLeaseTime.Add(3 * time.Minute)
 	fixture.finishActivationTurn(t)
 
-	var quotaCalls, scheduleCalls, planningCalls, adminCalls, legacyCalls int
+	var quotaCalls, scheduleCalls, planningCalls, adminCalls int
 	cycle := coordinatorBoundaryCycle{
 		projection:  fixture.supervision,
 		quota:       failingCoordinatorQuotaTicker{calls: &quotaCalls},
 		schedules:   recordingCoordinatorScheduleTicker{calls: &scheduleCalls},
 		planning:    recordingCoordinatorPlanningTicker{calls: &planningCalls},
 		admin:       recordingCoordinatorAdminExecutor{calls: &adminCalls},
-		legacy:      recordingCoordinatorLegacyTicker{calls: &legacyCalls},
 		supervision: &fixture.coordinator,
 		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}

@@ -30,12 +30,6 @@ func (wrappedCancelCoordinatorScheduleTicker) Tick(ctx context.Context) (backlog
 	return backlog.ScheduleTickReport{}, errors.New("load coordinator epoch: " + ctx.Err().Error())
 }
 
-type cancelledCoordinatorLegacyTicker struct{}
-
-func (cancelledCoordinatorLegacyTicker) Tick(ctx context.Context) backlog.LegacySubmissionReport {
-	return backlog.LegacySubmissionReport{Errors: []error{ctx.Err()}}
-}
-
 // A tick that fails because the coordinator is shutting down is not an
 // operational error. Restarting an idle coordinator used to log a burst of
 // ERROR lines, every one of them "context canceled", which is noise that hides
@@ -49,7 +43,6 @@ func TestCoordinatorBoundaryCycleLogsCancelledTicksAsShutdown(t *testing.T) {
 		schedules: wrappedCancelCoordinatorScheduleTicker{},
 		planning:  recordingCoordinatorPlanningTicker{calls: &planningCalls},
 		admin:     recordingCoordinatorAdminExecutor{calls: &adminCalls},
-		legacy:    cancelledCoordinatorLegacyTicker{},
 		workers:   recordingCoordinatorWorkerTicker{calls: &workerCalls, reports: &workerReports},
 		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
 	}
@@ -64,7 +57,6 @@ func TestCoordinatorBoundaryCycleLogsCancelledTicksAsShutdown(t *testing.T) {
 		"shutting down",
 		"quota reconciliation",
 		"schedule reconciliation",
-		"legacy backlog-v2 submission",
 	} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("logs do not mention %q:\n%s", want, logs.String())
@@ -79,8 +71,8 @@ func TestCoordinatorBoundaryCycleLogsCancelledTicksAsShutdown(t *testing.T) {
 			infoLines++
 		}
 	}
-	if infoLines < 3 {
-		t.Fatalf("expected quota, schedule and legacy shutdown lines, got %d:\n%s", infoLines, logs.String())
+	if infoLines < 2 {
+		t.Fatalf("expected quota and schedule shutdown lines, got %d:\n%s", infoLines, logs.String())
 	}
 }
 
@@ -89,13 +81,12 @@ func TestCoordinatorBoundaryCycleLogsCancelledTicksAsShutdown(t *testing.T) {
 // boundary pass has completed, so neither the readiness callback nor a tick may
 // run, and the server's error is what the coordinator returns.
 func TestCoordinatorBoundariesReportServerFailureBeforeReadiness(t *testing.T) {
-	var quotaCalls, scheduleCalls, planningCalls, adminCalls, legacyCalls int
+	var quotaCalls, scheduleCalls, planningCalls, adminCalls int
 	cycle := coordinatorBoundaryCycle{
 		quota:     failingCoordinatorQuotaTicker{calls: &quotaCalls},
 		schedules: recordingCoordinatorScheduleTicker{calls: &scheduleCalls},
 		planning:  recordingCoordinatorPlanningTicker{calls: &planningCalls},
 		admin:     recordingCoordinatorAdminExecutor{calls: &adminCalls},
-		legacy:    recordingCoordinatorLegacyTicker{calls: &legacyCalls},
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	started := false
@@ -108,7 +99,7 @@ func TestCoordinatorBoundariesReportServerFailureBeforeReadiness(t *testing.T) {
 	if started {
 		t.Fatal("the coordinator reported itself started with no admin server")
 	}
-	if quotaCalls+scheduleCalls+planningCalls+adminCalls+legacyCalls != 0 {
+	if quotaCalls+scheduleCalls+planningCalls+adminCalls != 0 {
 		t.Fatal("a boundary pass ran before the admin server was known to serve")
 	}
 }
@@ -117,13 +108,12 @@ func TestCoordinatorBoundariesReportServerFailureBeforeReadiness(t *testing.T) {
 // is read as shutdown, so a real failure keeps its severity.
 func TestCoordinatorBoundaryCycleKeepsRealTickFailuresAsErrors(t *testing.T) {
 	var logs bytes.Buffer
-	var quotaCalls, scheduleCalls, planningCalls, adminCalls, legacyCalls int
+	var quotaCalls, scheduleCalls, planningCalls, adminCalls int
 	cycle := coordinatorBoundaryCycle{
 		quota:     failingCoordinatorQuotaTicker{calls: &quotaCalls},
 		schedules: recordingCoordinatorScheduleTicker{calls: &scheduleCalls},
 		planning:  recordingCoordinatorPlanningTicker{calls: &planningCalls},
 		admin:     recordingCoordinatorAdminExecutor{calls: &adminCalls},
-		legacy:    recordingCoordinatorLegacyTicker{calls: &legacyCalls},
 		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
 	}
 	cycle.Tick(context.Background())

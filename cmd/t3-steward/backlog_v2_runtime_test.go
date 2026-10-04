@@ -228,7 +228,7 @@ func TestRunBacklogV2WorkerModeDoesNotAcquireCoordinatorAuthority(t *testing.T) 
 	}
 }
 
-func TestRunBacklogV2RefusesLegacyCoordinatorOverlapBeforeStateOpen(t *testing.T) {
+func TestRunBacklogV2RefusesRetiredRunnerBeforeStateOpen(t *testing.T) {
 	cfg := config.Default()
 	root := setCoordinatorTestRoots(t, &cfg)
 	cfg.BacklogV2.Mode = "coordinator"
@@ -236,7 +236,7 @@ func TestRunBacklogV2RefusesLegacyCoordinatorOverlapBeforeStateOpen(t *testing.T
 	cfg.Backlog.Enabled = true
 
 	handled, err := runBacklogV2(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if !handled || err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+	if !handled || err == nil || !strings.Contains(err.Error(), "retired") {
 		t.Fatalf("handled=%v err=%v", handled, err)
 	}
 	if _, err := os.Stat(cfg.StatePath); !os.IsNotExist(err) {
@@ -353,78 +353,6 @@ func TestRunBacklogV2CoordinatorServesAuthenticatedLocalAdmin(t *testing.T) {
 	}
 	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
 		t.Fatalf("admin socket was not removed: %v", err)
-	}
-}
-
-func TestRunBacklogV2CoordinatorIngestsLegacyDropWithoutDispatch(t *testing.T) {
-	cfg := config.Default()
-	cfg.BacklogV2.Coordinator.LegacyFileIntakeEnabled = true
-	setCoordinatorTestRoots(t, &cfg)
-	cfg.BacklogV2.Mode = "coordinator"
-	cfg.BacklogV2.Coordinator.ID = "normandy"
-	cfg.BacklogV2.StartupAdmission = "closed"
-	cfg.BacklogV2.Projects = map[string]config.V2Project{
-		"steward": {
-			Repository: "https://example.invalid/steward.git", DefaultRef: "main",
-			SetupProfile: "go", T3Project: "t3-steward development",
-		},
-	}
-	raw := "---\nproject: t3-steward development\ntitle: compatibility\nimportance: 5\ndifficulty: 5\ninstance: t3-primary\nmodel: opus\nmax_turns: 3\ngate: false\n---\nlegacy prompt\n"
-	if err := os.WriteFile(filepath.Join(cfg.Backlog.Dir, "legacy.md"), []byte(raw), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		_, err := runBacklogV2(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
-		done <- err
-	}()
-	socketPath, err := resolveBacklogV2AdminSocketPath(cfg)
-	if err != nil {
-		cancel()
-		t.Fatal(err)
-	}
-	client := backlogadmin.LocalClient{
-		Path: socketPath, MaxResponseBytes: int64(cfg.BacklogV2.MessageLimits.MaxBytes),
-		MaxArtifactBytes: int64(cfg.BacklogV2.MessageLimits.MaxArtifactBytes),
-		RequestTimeout:   cfg.BacklogV2.Transport.RequestTimeout.D(),
-	}
-	// Generous: coordinator start-up under -race on a loaded macOS runner
-	// took longer than the two seconds this used to allow.
-	deadline := time.Now().Add(15 * time.Second)
-	var response backlogadmin.Response
-	for {
-		response, err = client.Query(context.Background(), backlogadmin.Query{
-			Version: backlogadmin.Version, Kind: backlogadmin.QueryWorkflows,
-		})
-		if err == nil && len(response.Workflows) == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatalf("legacy submission was not ingested: response=%+v err=%v", response, err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	task := response.Workflows[0].Workflow
-	if task.Project != "steward" {
-		cancel()
-		t.Fatalf("workflow project = %q", task.Project)
-	}
-	if response.Workflows[0].Run.Progress != "queued" {
-		cancel()
-		t.Fatalf("run progress = %q", response.Workflows[0].Run.Progress)
-	}
-
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("coordinator did not stop")
 	}
 }
 
@@ -788,15 +716,6 @@ func (e recordingCoordinatorAdminExecutor) ExecutePendingCommands(context.Contex
 	return backlogadmin.CommandExecutionReport{}, nil
 }
 
-type recordingCoordinatorLegacyTicker struct {
-	calls *int
-}
-
-func (t recordingCoordinatorLegacyTicker) Tick(context.Context) backlog.LegacySubmissionReport {
-	*t.calls++
-	return backlog.LegacySubmissionReport{}
-}
-
 type recordingCoordinatorWorkerTicker struct {
 	calls   *int
 	reports *[]backlog.QuotaBridgeReport
@@ -948,7 +867,7 @@ func TestCoordinatorPlannerCommitsOneOfferedAssignmentWithoutDispatch(t *testing
 }
 
 func TestCoordinatorBoundaryCycleDefersAdminWhenQuotaReconciliationFails(t *testing.T) {
-	var quotaCalls, scheduleCalls, planningCalls, adminCalls, legacyCalls, workerCalls int
+	var quotaCalls, scheduleCalls, planningCalls, adminCalls, workerCalls int
 	var workerReports []backlog.QuotaBridgeReport
 	var logs bytes.Buffer
 	cycle := coordinatorBoundaryCycle{
@@ -956,14 +875,13 @@ func TestCoordinatorBoundaryCycleDefersAdminWhenQuotaReconciliationFails(t *test
 		schedules: recordingCoordinatorScheduleTicker{calls: &scheduleCalls},
 		planning:  recordingCoordinatorPlanningTicker{calls: &planningCalls},
 		admin:     recordingCoordinatorAdminExecutor{calls: &adminCalls},
-		legacy:    recordingCoordinatorLegacyTicker{calls: &legacyCalls},
 		workers:   recordingCoordinatorWorkerTicker{calls: &workerCalls, reports: &workerReports},
 		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
 	}
 	cycle.Tick(context.Background())
-	if quotaCalls != 1 || scheduleCalls != 1 || planningCalls != 0 || adminCalls != 0 || legacyCalls != 1 || workerCalls != 0 {
-		t.Fatalf("startup calls quota=%d schedule=%d planning=%d admin=%d legacy=%d workers=%d",
-			quotaCalls, scheduleCalls, planningCalls, adminCalls, legacyCalls, workerCalls)
+	if quotaCalls != 1 || scheduleCalls != 1 || planningCalls != 0 || adminCalls != 0 || workerCalls != 0 {
+		t.Fatalf("startup calls quota=%d schedule=%d planning=%d admin=%d workers=%d",
+			quotaCalls, scheduleCalls, planningCalls, adminCalls, workerCalls)
 	}
 	cycle.TickWithWorkers(context.Background())
 	if workerCalls != 1 || len(workerReports) != 1 || len(workerReports[0].Derived) != 0 {

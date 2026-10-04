@@ -2,19 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"log/slog"
 	"os"
-	"path/filepath"
-	"sort"
-	"strings"
-	"time"
 
-	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/config"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
 const backlogUsage = `Usage: t3-steward backlog <command> [args]
@@ -70,72 +61,25 @@ Revision-fenced controls:
       Wake an attempt left waiting-external after its task wait was cancelled
       or settled without reaching it; refused while a wait is still live.
   quarantine release <key> --reason TEXT [--json]
-      Clear one intake quarantine after fixing what caused it. Editing the file
-      clears it only when legacy intake is explicitly enabled; this is for a
-      refusal the file cannot fix, such as a
-      project no alias mapped.
+      Clear one retained quarantine record after fixing its cause.
+      Historical Markdown files are never retried or submitted.
   recover <assignment> --outcome stopped|failed --coordinator-epoch N
       --assignment-epoch N --attempt-revision N --evidence-id ID
       --evidence-sha256 HEX --reason TEXT [--recovery-id ID] [--json]
 
-Deprecated legacy task-file helpers (phase-1 rollback only):
-  new <id>           Create a task file from a template and print its path.
-  path               Print the task directory.
-  check <file|->     Validate a task: project, provider instance, model, options, host.
-  receive <id>       Store a task sent by another host (used by forwarding).
-  list --all         Show the legacy local task files and configured remote lists.
+Retired legacy task-file commands (always refuse without file or SSH effects):
+  new <id>
+  path
+  check <file|->
+  receive <id>
+  list --all
 
-Both legacy intake paths default off. backlog.enabled opts into the deprecated
-local runner only. Coordinator Markdown intake requires the separate
-backlog_v2.coordinator.legacy_file_intake_enabled: true and a restart.
-These offline helpers do not submit to the coordinator. Prefer "task run" or
-"campaign submit"; creating a file does not mean it was accepted.
+Markdown intake has been removed. Use "task run" or "campaign submit".
+Both legacy enable flags accept only false/default; true is a configuration error.
 
 Example:
   t3-steward backlog submit ./bundle.tar --idempotency-key 2026-09-14-upkeeper --json
 ` + coordinatorTransportHelp
-
-const taskTemplate = `---
-project: %s
-importance: 3
-difficulty: 3
-# model: claude-opus-5
-# instance: claudeAgent
-# not_before: %s
-# deadline:
-max_turns: 3
----
-Describe the task for an agent that will get no input from you. Say what
-"done" looks like, where the code or files are, and what to leave behind
-(a branch, a summary file, a PR).
-`
-
-// newBacklogRunner builds the runner from the configuration.
-func newBacklogRunner(cfg config.Config, store *sqlite.Store, control backlog.Control, logger *slog.Logger, dataDir string) (*backlog.Runner, error) {
-	dir, err := cfg.ResolveBacklogDir()
-	if err != nil {
-		return nil, err
-	}
-	return backlog.New(backlog.Options{
-		DisableQuotaChecks:       !cfg.QuotaChecksEnabled(),
-		Dir:                      dir,
-		Preamble:                 cfg.Backlog.Preamble,
-		QuietFor:                 cfg.Backlog.QuietFor.D(),
-		SafetyMargin:             cfg.Backlog.SafetyMargin,
-		FallbackPerHour:          cfg.Backlog.FallbackPerHour,
-		Quantile:                 cfg.Backlog.Quantile,
-		MinSamples:               cfg.Backlog.MinSamples,
-		LongWindowCap:            cfg.Backlog.LongWindowCap,
-		HistoryDays:              cfg.Backlog.HistoryDays,
-		DryRun:                   cfg.Policy.DryRun,
-		MaxConcurrentPerProvider: cfg.Resume.MaxConcurrentPerProvider,
-		Logger:                   logger,
-		LocalHost:                localHostName(cfg),
-		DefaultHost:              cfg.Backlog.DefaultHost,
-		Forward:                  forwardTask,
-		DataDir:                  dataDir,
-	}, store, control), nil
-}
 
 // isCoordinatorAdmin decides which of cmdBacklog's dispatchers a command word
 // belongs to. It has to agree with two other places -- the verbs backlogUsage
@@ -157,7 +101,7 @@ func isCoordinatorAdmin(args []string) bool {
 	case "submit", "status", "projects", "workers", "edge", "run", "diagnose", "graph", "task", "events", "usage", "explain", "artifacts", "artifact", "commands", "command", "show", "quarantine", "recover":
 		return true
 	case "list":
-		return len(args) != 2 || args[1] != "--all"
+		return !retiredBacklogCommand(args)
 	default:
 		return false
 	}
@@ -202,6 +146,9 @@ func cmdBacklog(g globalFlags, args []string) error {
 	if answered, err := admitFamilyHelp(os.Stdout, []string{"backlog"}, args); answered || err != nil {
 		return err
 	}
+	if retiredBacklogCommand(args) {
+		return backlogLegacyRoute(config.Config{}, args)
+	}
 	cfg, err := loadConfig(g)
 	if err != nil {
 		return err
@@ -226,136 +173,33 @@ var (
 	backlogLegacyRoute = runBacklogLegacy
 )
 
-// runBacklogLegacy serves the offline task-file helpers: they read and write
-// this host's backlog directory and its state database and reach no
-// coordinator. A verb that is not one of them is refused here, which is where
-// a coordinator verb missing from isCoordinatorAdmin ends up.
-func runBacklogLegacy(cfg config.Config, args []string) error {
-	dir, err := cfg.ResolveBacklogDir()
-	if err != nil {
-		return err
-	}
-	ctx := context.Background()
-	openStore := func() (*sqlite.Store, error) {
-		statePath, err := cfg.ResolveStatePath()
-		if err != nil {
-			return nil, err
-		}
-		return sqlite.Open(statePath)
-	}
-	loadStates := func(store *sqlite.Store) (map[string]*backlog.State, error) {
-		raw, err := store.LoadTaskStates(ctx)
-		if err != nil {
-			return nil, err
-		}
-		out := map[string]*backlog.State{}
-		for id, js := range raw {
-			var st backlog.State
-			if json.Unmarshal(js, &st) == nil {
-				out[id] = &st
-			}
-		}
-		return out, nil
+// retiredBacklogCommand refuses file verbs before configuration or transport access.
+func retiredBacklogCommand(args []string) bool {
+	if len(args) == 0 {
+		return false
 	}
 	switch args[0] {
-	case "path":
-		fmt.Println(dir)
-		return nil
-	case "check":
-		if len(args) != 2 {
-			return errors.New("check needs a task file path, or - for stdin")
-		}
-		return cmdBacklogCheck(cfg, args[1])
-	case "receive":
-		if len(args) != 2 {
-			return errors.New("receive needs a task id")
-		}
-		return cmdBacklogReceive(cfg, dir, args[1])
-	case "new":
-		if len(args) != 2 {
-			return errors.New("new needs a task id")
-		}
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-		path := filepath.Join(dir, args[1]+".md")
-		if _, err := os.Stat(path); err == nil {
-			return fmt.Errorf("%s already exists", path)
-		}
-		project := "<project title>"
-		content := fmt.Sprintf(taskTemplate, project, time.Now().Add(time.Hour).Format(time.RFC3339))
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-			return err
-		}
-		fmt.Println(path)
-		if !cfg.Backlog.Enabled {
-			fmt.Fprintln(os.Stderr, "deprecated file helper: file created, not submitted; local runner disabled. Coordinator Markdown intake also defaults off; use t3-steward task run or campaign submit")
-		}
-		return nil
+	case "new", "path", "check", "receive":
+		return true
 	case "list":
-		tasks, errs := backlog.LoadDir(dir)
-		all := len(args) > 1 && args[1] == "--all"
-		if all {
-			fmt.Printf("== %s (local)\n", localHostName(cfg))
-		}
-		for _, e := range errs {
-			fmt.Fprintln(os.Stderr, "warning:", e)
-		}
-		store, err := openStore()
-		if err != nil {
-			return err
-		}
-		defer store.Close()
-		states, err := loadStates(store)
-		if err != nil {
-			return err
-		}
-		if len(tasks) == 0 && len(states) == 0 {
-			fmt.Printf("No tasks in %s. Create one with: t3-steward backlog new <id>\n", dir)
-			if !all {
-				return nil
-			}
-			tasks = nil
-		}
-		backlog.Order(tasks, states, time.Now())
-		fmt.Printf("%-24s %-12s %3s %3s %6s %6s  %s\n", "id", "status", "imp", "dif", "est%", "meas%", "detail")
-		for _, t := range tasks {
-			st := states[t.ID]
-			status, est, meas, detail := "new", backlog.SeedCost(t.Difficulty), 0.0, "not seen by the runner yet"
-			if st != nil {
-				status, est, meas, detail = string(st.Status), st.EstimatedCost, st.MeasuredCost, st.Reason
-				if st.ThreadID != "" {
-					detail = strings.TrimSpace(detail + "  thread " + st.ThreadID)
-				}
-			}
-			fmt.Printf("%-24s %-12s %3d %3d %6.0f %6.0f  %s\n", t.ID, status, t.Importance, t.Difficulty, est, meas, detail)
-		}
-		var gone []string
-		for id, st := range states {
-			found := false
-			for _, t := range tasks {
-				if t.ID == id {
-					found = true
-					break
-				}
-			}
-			if !found && st.Status != backlog.StatusCancelled {
-				gone = append(gone, id)
+		for _, arg := range args[1:] {
+			if arg == "--all" {
+				return true
 			}
 		}
-		sort.Strings(gone)
-		for _, id := range gone {
-			fmt.Printf("%-24s %-12s %3s %3s %6s %6s  %s\n", id, states[id].Status, "-", "-", "-", "-", "file removed")
-		}
-		if all {
-			for _, host := range cfg.Report.Remotes {
-				fmt.Println()
-				if err := remoteBacklogList(ctx, host); err != nil {
-					fmt.Fprintln(os.Stderr, "warning:", err)
-				}
-			}
-		}
-		return nil
+	}
+	return false
+}
+
+// runBacklogLegacy retains actionable refusals for old command lines.
+// It never resolves directories, reads stdin, opens state, or contacts a host.
+func runBacklogLegacy(_ config.Config, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("backlog command required")
+	}
+	switch args[0] {
+	case "new", "path", "check", "receive", "list":
+		return fmt.Errorf("legacy Markdown file intake is retired (backlog %s); use t3-steward task run or campaign submit", args[0])
 	default:
 		return fmt.Errorf("unknown backlog command %q", args[0])
 	}

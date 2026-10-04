@@ -36,7 +36,7 @@ type Controller interface {
 }
 
 // BacklogRunner is ticked with the current threads and bucket states after
-// every poll; the backlog package implements it.
+// every poll by wait, archive and project cleanup runners.
 type BacklogRunner interface {
 	Tick(ctx context.Context, threads []domain.Thread, buckets []domain.BucketState)
 }
@@ -59,8 +59,6 @@ type Daemon struct {
 	// Usage optionally receives token samples from the source; they are
 	// stored for reports.
 	Usage <-chan domain.UsageSample
-	// Backlog, when set, is ticked after every thread poll.
-	Backlog BacklogRunner
 	// Waits, when set, is ticked after every thread poll.
 	Waits BacklogRunner
 	// Archive, when set, is ticked after every thread poll and runs once a
@@ -514,9 +512,6 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 	}
 	if d.cfg.QuotaChecksEnabled() {
 		d.advanceResumes(ctx, threads, states, owned)
-	}
-	if d.Backlog != nil {
-		d.Backlog.Tick(ctx, threads, states)
 	}
 	if d.Waits != nil {
 		d.Waits.Tick(ctx, threads, states)
