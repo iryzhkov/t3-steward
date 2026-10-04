@@ -45,7 +45,7 @@ func TestAssignmentDisplayV33MigrationReplayAndBinding(t *testing.T) {
 	if _, err := s.FreezeAssignmentDisplay(ctx, 1, "coordinator", a, i, nil); err == nil {
 		t.Fatal("V32 unexpectedly has display allocation")
 	}
-	if err := s.Migrate(); err != nil {
+	if err := s.migrateThrough(33); err != nil {
 		t.Fatal(err)
 	}
 	if got := schemaVersionOf(t, s); got != 33 {
