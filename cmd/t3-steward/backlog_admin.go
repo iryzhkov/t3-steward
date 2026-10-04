@@ -574,17 +574,12 @@ func parseBacklogAdminQuery(args []string) (backlogadmin.Query, commandDisplay, 
 	return query, display, nil
 }
 
-// refuseLegacyListAll explains "backlog list --all" given with other
-// arguments. "backlog list --all" alone is the offline legacy task-file
-// listing, which takes no options; with anything beside it the command is
-// routed to the coordinator, where --all used to be read as a filter missing
-// its value. Neither verb can honour the combination, so it is refused with
-// the two commands it could have meant. It is not a parser site of the list
-// page, because --all is not an option of the coordinator verb.
+// refuseLegacyListAll protects direct admin-parser callers as well as the
+// public dispatcher. --all never reaches a legacy listing or SSH transport.
 func refuseLegacyListAll(args []string) error {
 	if slices.Contains(args, "--all") {
-		return errors.New("backlog list --all is the offline legacy task-file listing and takes no other argument; " +
-			"to bound the coordinator's runs, drop --all: backlog list --limit N [--since DURATION]")
+		return errors.New("backlog list --all is retired; use task run or campaign submit for new work; " +
+			"to inspect coordinator runs, drop --all: backlog list --limit N [--since DURATION]")
 	}
 	return nil
 }
@@ -1281,12 +1276,11 @@ func firstNonEmptyText(value, fallback string) string {
 
 // renderQuarantine prints the intake the coordinator refuses and is silent
 // about. The reason is printed in full on its own line rather than squeezed
-// into a column, because it is the whole point of the view, and the retry rule
-// is stated every time so that an operator never has to guess whether editing
-// the file is enough.
+// into a column, because it is the whole point of the view. Historical marker
+// guidance is stated every time; file edits do not retry retired intake.
 func renderQuarantine(out io.Writer, quarantined []backlogadmin.QuarantinedIntake) {
 	if len(quarantined) == 0 {
-		fmt.Fprintln(out, "no quarantined intake: every submission source is being read.")
+		fmt.Fprintln(out, "no retained quarantine markers; historical Markdown files are not scanned or retried.")
 		return
 	}
 	for index, entry := range quarantined {

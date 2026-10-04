@@ -22,10 +22,9 @@ const QuarantineKeyPrefix = "quarantine:"
 func QuarantineKey(key string) string { return QuarantineKeyPrefix + key }
 
 // QuarantineSubmission records a deterministic intake conflict durably. It
-// reports whether this exact content was already quarantined, so that a source
-// which re-reads the same content on every cycle can report the reason once and
-// stay silent afterwards. A different digest for the same key replaces the
-// marker, because new content deserves a new attempt and a new report.
+// reports whether this exact content was already quarantined. A different
+// digest for the same key replaces the marker. This retained storage operation
+// does not scan files or retry content.
 func (s *Store) QuarantineSubmission(
 	ctx context.Context,
 	key, digest, reason string,
@@ -108,8 +107,8 @@ func (s *Store) LoadSubmissionQuarantine(ctx context.Context, key string) (domai
 	return record, true, nil
 }
 
-// ReleaseSubmissionQuarantine drops the marker of one intake key so that its
-// content is tried again. The audit event that reported the quarantine stays.
+// ReleaseSubmissionQuarantine drops the retained marker of one intake key.
+// It does not retry content; the audit event that reported the quarantine stays.
 func (s *Store) ReleaseSubmissionQuarantine(ctx context.Context, key string) error {
 	_, err := s.db.ExecContext(ctx, `
 		DELETE FROM coordinator_submissions WHERE key = ? AND state = ?
@@ -120,13 +119,9 @@ func (s *Store) ReleaseSubmissionQuarantine(ctx context.Context, key string) err
 	return nil
 }
 
-// ReleaseQuarantinedSubmission clears one marker on an operator's instruction
-// and records why, so that the next cycle reads the file again.
-//
-// It exists because the automatic release is bound to the content digest: a
-// submission quarantined for a reason outside the file, such as a project no
-// alias mapped, stays quarantined after the configuration is fixed, because the
-// bytes did not change. Releasing a key that holds no marker is not an error;
+// ReleaseQuarantinedSubmission clears one retained historical marker on an
+// operator's instruction and records the reason. It never retries a file or
+// reenables intake. Releasing a key that holds no marker is not an error;
 // it reports that there was nothing to release, which is what makes repeating
 // the operation safe.
 func (s *Store) ReleaseQuarantinedSubmission(

@@ -113,7 +113,7 @@ func TestOlderOrdinaryAttemptPrecedesNewerActivationAtSharedCapacity(t *testing.
 	}
 	cycle := coordinatorBoundaryCycle{
 		quota: fairnessQuota{quota}, schedules: fairnessSchedules{}, planning: planner,
-		admin: fairnessAdmin{}, legacy: fairnessLegacy{}, supervision: &fixture.coordinator,
+		admin: fairnessAdmin{}, supervision: &fixture.coordinator,
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	cycle.Tick(ctx)
@@ -566,7 +566,7 @@ func activationFairnessCycle(t *testing.T, fixture *activationLeaseFixture, quot
 	}
 	return coordinatorBoundaryCycle{
 		quota: fairnessQuota{quota}, schedules: fairnessSchedules{}, planning: planner,
-		admin: fairnessAdmin{}, legacy: fairnessLegacy{}, supervision: &fixture.coordinator,
+		admin: fairnessAdmin{}, supervision: &fixture.coordinator,
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }

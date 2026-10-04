@@ -1,7 +1,7 @@
 package main
 
 // The backlog family's second-level pages. Every verb here reaches the
-// coordinator except the backup and legacy task-file helpers, which say so.
+// coordinator except stopped backups and the retired file-verb refusals.
 
 // backlogReadSites are the parser regions a coordinator read verb's arguments
 // pass through: the verb's own case in the query parser, and the two wrappers
@@ -222,7 +222,7 @@ func backlogHelpPages() []helpPage {
 			Exits:    coordinatorExits(),
 			JSONKeys: []string{"key", "released", "digest", "reason", "releasedAt"},
 			JSONNote: jsonErrorNote,
-			Notes:    "Mutating. Editing the refused file clears its quarantine only when legacy intake is explicitly enabled, because the automatic release is bound to the content digest; intake defaults off and new work should use task run or campaign submit; this verb is for a refusal the file cannot fix, such as a project no alias mapped.",
+			Notes:    "Mutating and audited. Clears a retained quarantine record after an operator fixes its cause. Historical Markdown files are never retried or submitted; use task run or campaign submit for new work.",
 			Parsers:  []parserSite{{Func: "runQuarantineRelease"}, {Func: "takeJSONFlag"}},
 		},
 		{
@@ -248,38 +248,38 @@ func backlogHelpPages() []helpPage {
 		},
 		{
 			Path:     "backlog new",
-			Purpose:  "create a legacy task file from a template and print its path.",
-			Usage:    []string{"t3-steward backlog new <id>"},
-			Exits:    []helpExit{{0, "written"}, {1, "no id, the file already exists, or the directory could not be created"}},
-			JSONNote: "This verb prints no JSON document; it prints the path it wrote.",
-			Notes:    "Offline: it writes one file under the local backlog directory and reaches no coordinator. Deprecated phase-1 compatibility only: both intake paths default off. backlog.enabled controls the local runner; coordinator intake separately requires backlog_v2.coordinator.legacy_file_intake_enabled and a restart. A written file is not an accepted submission; use \"t3-steward task run\" or \"campaign submit\".",
+			Purpose:  "explain the retirement of Markdown file intake.",
+			Usage:    []string{"t3-steward backlog new"},
+			Exits:    []helpExit{{1, "retired; use task run or campaign submit"}},
+			JSONNote: "This verb prints no JSON document.",
+			Notes:    "Always refuses. It never reads stdin or task files, creates directories, opens state or forwards over SSH. Use t3-steward task run or campaign submit.",
 			Parsers:  []parserSite{{Func: "runBacklogLegacy", Case: "new"}},
 		},
 		{
 			Path:     "backlog path",
-			Purpose:  "print the local legacy task directory.",
+			Purpose:  "explain the retirement of Markdown file intake.",
 			Usage:    []string{"t3-steward backlog path"},
-			Exits:    localExits(),
-			JSONNote: "This verb prints no JSON document; it prints one path.",
-			Notes:    "Deprecated phase-1 compatibility only. Offline: it resolves a path from the configuration and reads nothing. The path it prints is the one the configuration names, so --config moves it.",
+			Exits:    []helpExit{{1, "retired; use task run or campaign submit"}},
+			JSONNote: "This verb prints no JSON document.",
+			Notes:    "Always refuses. It never reads stdin or task files, creates directories, opens state or forwards over SSH. Use t3-steward task run or campaign submit.",
 			Parsers:  []parserSite{{Func: "runBacklogLegacy", Case: "path"}},
 		},
 		{
 			Path:     "backlog check",
-			Purpose:  "validate a legacy task file: project, provider instance, model, options and host.",
-			Usage:    []string{"t3-steward backlog check <file|->"},
-			Exits:    []helpExit{{0, "the task is valid"}, {1, "no path given, the file is unreadable, or the task is invalid"}},
-			JSONNote: "This verb prints no JSON document; it prints what it resolved and what it refused.",
-			Notes:    "Deprecated phase-1 compatibility only. Offline: it reads one file, or standard input when the path is -, and reaches no coordinator; validation does not submit it. This is the legacy task-file checker; the campaign equivalent is \"t3-steward campaign validate\".",
+			Purpose:  "explain the retirement of Markdown file intake.",
+			Usage:    []string{"t3-steward backlog check"},
+			Exits:    []helpExit{{1, "retired; use task run or campaign submit"}},
+			JSONNote: "This verb prints no JSON document.",
+			Notes:    "Always refuses. It never reads stdin or task files, creates directories, opens state or forwards over SSH. Use t3-steward task run or campaign submit.",
 			Parsers:  []parserSite{{Func: "runBacklogLegacy", Case: "check"}},
 		},
 		{
 			Path:     "backlog receive",
-			Purpose:  "store a legacy task another host forwarded to this one.",
-			Usage:    []string{"t3-steward backlog receive <id>"},
-			Exits:    []helpExit{{0, "stored"}, {1, "no id, or the task on standard input does not parse"}},
+			Purpose:  "explain the retirement of Markdown file intake.",
+			Usage:    []string{"t3-steward backlog receive"},
+			Exits:    []helpExit{{1, "retired; use task run or campaign submit"}},
 			JSONNote: "This verb prints no JSON document.",
-			Notes:    "Deprecated phase-1 forwarding compatibility: it stores a file, not a coordinator submission. Intake defaults off; use task run or campaign submit.",
+			Notes:    "Always refuses. It never reads stdin or task files, creates directories, opens state or forwards over SSH. Use t3-steward task run or campaign submit.",
 			Parsers:  []parserSite{{Func: "runBacklogLegacy", Case: "receive"}},
 		},
 	}
@@ -326,7 +326,7 @@ func backlogHelpPages() []helpPage {
 				includeSinkFlag,
 			},
 			[]string{"workflows"}, append(backlogSinkSites("list"), parserSite{Func: "parseWorkflowFilters"}, parserSite{Func: "takeListWindowFlags"}),
-			"Read-only. Runs are listed newest first. --limit and --since trim the coordinator's answer here, so they work against a coordinator of any release. \"backlog list --all\", with no other argument, is a different verb: the offline legacy task-file listing."),
+			"Read-only. Runs are listed newest first. --limit and --since trim the coordinator's answer here, so they work against a coordinator of any release. \"backlog list --all\", with no other argument, always refuses because Markdown file intake is retired."),
 		backlogReadPage("backlog show", "one workflow run with its tasks, attempts and waits.",
 			"t3-steward backlog show <workflow-run> [--include-sink] [--json]",
 			[]helpFlag{includeSinkFlag}, []string{"workflow"}, backlogSinkSites("show"),

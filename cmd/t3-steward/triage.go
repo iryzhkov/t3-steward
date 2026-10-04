@@ -280,7 +280,7 @@ func collectTriage(ctx context.Context, sources triageSources, options triageOpt
 		report.GeneratedAt = status.GeneratedAt
 		if status.Status.Runtime.LegacyFileIntake == "disabled" {
 			report.add(triageItem{Kind: "legacy-intake-disabled", Severity: "info", Subject: "Markdown files",
-				Summary:  "deprecated coordinator file intake is disabled; files are not submitted and quarantine is retained. Use t3-steward task run or campaign submit",
+				Summary:  "coordinator file intake is disabled; files are not submitted and quarantine is retained. Current source has retired Markdown intake. Use t3-steward task run or campaign submit",
 				Commands: []triageCommand{{Run: "t3-steward task run --help"}, {Run: "t3-steward campaign submit --help"}},
 			})
 		}
@@ -325,7 +325,7 @@ func collectTriage(ctx context.Context, sources triageSources, options triageOpt
 // triageQuarantine reports the refused intake as one item. A coordinator that
 // ran the legacy file queue can hold hundreds of these, all with the same
 // cause, and one line per file buried everything else; "backlog quarantine"
-// lists them, each with its own release command.
+// lists their retained markers and authenticated release guidance.
 func triageQuarantine(report *triageReport, intake []backlogadmin.QuarantinedIntake) {
 	if len(intake) == 0 {
 		return

@@ -15,7 +15,8 @@ CLI, the versioned authenticated exchange, and the S16 restart-safe worker
 runtime.
 
 Completed S17 code adds a schema-11 submission journal and bounded
-idempotent directory, tar, and legacy single-task submission services. It also
+idempotent directory and tar submission services. Markdown intake and the
+legacy single-task submission adapter have been retired. It also
 adds revision-fenced audited schedule-definition administration and a
 persistent five-field-cron timer whose occurrence cursor and identities survive
 restart. It also adds a quota bridge that deduplicates stored provider-bucket
@@ -55,15 +56,12 @@ durable mutation submission, artifact retrieval, revision-fenced schedule-
 definition administration, and evidence-bound unknown-assignment recovery. It
 authenticates the Unix
 peer UID and does not trust client-supplied identity; coordinator-mode CLI
-commands no longer open SQLite. While closed, the coordinator also ingests the
-unchanged owner-controlled `t3-backlog`/`t3-job` Markdown drop through
-aggregate byte/file bounds, project alias mapping, and the immutable submission
-journal; this does not dispatch work. The same authenticated socket accepts
+commands no longer open SQLite. Historical Markdown files are never scanned or
+submitted. The same authenticated socket accepts
 bounded native tar-bundle streams and returns immutable submission, workflow,
 and run identities; exact idempotency-key replay returns the original result.
 The bounded local cycle immediately and periodically fires restart-derived
-schedule occurrences, executes durable revision-fenced admin commands, and
-reconciles legacy submissions. Component errors are logged without preventing
+schedule occurrences and executes durable revision-fenced admin commands. Component errors are logged without preventing
 other local boundaries from making progress. The cycle first reconstructs
 active slots, paused fixed-route remainder, offered-work reservations, and
 numeric per-bucket capacity/forecast windows, then derives and persists quota
@@ -86,8 +84,8 @@ sessions compose bounded worker transport, lease expiry/renewal, lifecycle
 delivery, durable throttle replay/delivery, one-at-a-time result outbox
 discovery, bounded raw fetch, import, and post-import acknowledgement for both
 results and checkpoints. Checkpoint publication additionally requires an exact
-acknowledged throttle projection. The existing Markdown
-`t3-backlog` runner remains the deployed production path. The disposable S19
+acknowledged throttle projection. Markdown intake has been removed from current
+source. The historical disposable S19
 process-topology, fault, full, and race gates pass. An explicitly authorized
 Normandy-to-homelab SSH qualification also passed using an ephemeral no-effects
 worker: an authenticated snapshot and empty-offer canary were repeated across
@@ -101,17 +99,22 @@ the wire and worker contract is in
 
 The shipped YAML schema is documented in
 [config.example.yaml](../config.example.yaml). Decoding is strict at every
-level: unknown keys are startup errors. Existing valid legacy configurations
-remain compatible, and backlog-v2 is disabled by default.
+level: unknown keys are startup errors. Backlog-v2 is disabled by default.
 
-- `backlog.enabled`, `dir`, `quiet_for`, and forecast fields control the
-  legacy Markdown runner.
-- `backlog.host_name` and `default_host` control legacy SSH forwarding; they
-  are not backlog-v2 worker registration.
-- `backlog_v2.mode` is `disabled`, `coordinator`, or `worker`.
-  Coordinator mode and `backlog.enabled` are mutually exclusive. Worker mode
-  exposes only the fixed exchange endpoint and never acquires coordinator
-  authority.
+- `backlog.enabled` and
+  `backlog_v2.coordinator.legacy_file_intake_enabled` accept only false/default;
+  true fails validation with task run/campaign submit guidance.
+- Markdown runner, directory scans, offline new/path/check/receive/list-all and
+  SSH submission forwarding are removed. Retired verbs refuse without file,
+  stdin, state or SSH effects. Forecast fields still feed modern quota planning;
+  `backlog.host_name` remains archive identity metadata.
+- Current coordinator status permanently reports file intake disabled. Frozen
+  historical status projection and authenticated old-peer fallback remain supported.
+- Historical files, quarantine records and immutable rollback bundles are retained.
+  Quarantine inspection/release, recovery, backup and modern administration remain
+  available; releasing quarantine never resubmits a Markdown file.
+- `backlog_v2.mode` is `disabled`, `coordinator`, or `worker`. Worker mode
+  exposes only the fixed exchange endpoint and never acquires coordinator authority.
 - `backlog_v2.coordinator.id` is the durable coordinator identity.
 - Worker mode requires `backlog_v2.local_worker.id`, `epoch`, and a positive
   `coordinator_epoch`. The ID must name an entry in `workers`. Rotate these
@@ -130,7 +133,7 @@ remain compatible, and backlog-v2 is disabled by default.
   beneath the configured worker-scoped roots and must be restored coherently.
 - `transport`, `message_limits`, `freshness`, `leases`, and `scheduling`
   set bounded exchange and lifecycle controls. `message_limits.max_files`
-  bounds one legacy-drop scan and bundle/archive expansion. The worker caps
+  bounds bundle/archive expansion. The worker caps
   accepted lease extension at its configured duration. The configured transport
   request timeout also bounds every local-admin connection; the coordinator
   rejects connections above its fixed handler limit with a backpressure error.
@@ -323,54 +326,48 @@ thing referring to it is gone. Note also that a rerun's carried inputs keep the
 creation time of the artifacts they reference, so a window chosen by age alone
 will treat them as old on the new run's first pass.
 
-### Legacy intake quarantine
+### Historical intake quarantine
 
-The drop directory is read-only to the coordinator: the coordinator re-reads it
-on every cycle and never drains it. A file that can never be accepted, such as
-one naming a project no alias maps or one whose content changed after its key
-was accepted, is therefore recorded as quarantined in the submission journal,
-reported once with its reason, and skipped silently on every later cycle.
+Markdown file intake has been retired. The coordinator no longer scans the
+drop directory, retries changed files, or submits files after a marker is
+cleared. Editing or removing a historical file, changing a digest, or repairing
+an alias does not retry work.
 
-The quarantine marker is a `quarantined` submission record under the key
-`quarantine:<idempotency key>`. It carries the digest of the exact file bytes it
-was recorded for and the reason it was refused; it never carries workflow or run
-identities, because nothing was accepted. The single report is the coordinator
-log line carrying the reason, and it is durable as one `submission-quarantined`
-audit event per key and digest.
+Retained quarantine markers record refusals from the former scanner. Each is a
+`quarantined` submission record under `quarantine:<idempotency key>`, with
+the original file digest, reason and quarantine time. Refused submissions have
+no workflow or run identity. The historical `submission-quarantined` audit
+event remains durable; file contents, records and other historical evidence
+are preserved unless an operator deliberately clears a marker.
 
-That audit event has no workflow run, so the run-scoped `backlog events
-<workflow-run>` view cannot list it. The quarantine is read instead with
+The audit event has no workflow run, so the run-scoped `backlog events
+<workflow-run>` view cannot list it. Inspect retained markers with
 
 ```
 t3-steward backlog quarantine [--json]
 ```
 
-which reports every marker with its intake key, the namespaced key its record is
-stored under in `coordinator_submissions`, the content digest it was recorded
-for, when it was quarantined, the reason, and the fact that changed content is
-tried again. It is a read of the durable record: it releases nothing and
-resubmits nothing, and it is an ordinary admin query, so it works from a
-non-coordinator host over the same transport as every other read.
+The view reports the intake key, namespaced record key in
+`coordinator_submissions`, original digest, time, reason and retirement-aware
+guidance. It releases and resubmits nothing. This ordinary authenticated admin
+query works over the configured transport from non-coordinator hosts.
 
-Recovery is to change the file. When the content of a quarantined file changes,
-its digest changes, the marker is released, and the submission is attempted
-again and reported again. Removing the file also ends the reports, and the
-marker then stays in the journal as the record of why the intake refused it.
-
-A quarantine the file cannot fix is cleared deliberately:
+To deliberately clear a retained marker, use the intake key and give a reason:
 
 ```
 t3-steward backlog quarantine release <key> --reason TEXT [--json]
 ```
 
-This is the way out of a refusal that was never about the content — a project
-no alias mapped is the ordinary one — because adding the alias changes no byte
-of the file, so its digest is unchanged and intake stays silent. The release is
-audited with the operator and the reason as `submission-quarantine-released`,
-and releasing a key that holds no marker reports exactly that instead of
-failing, so an ambiguous response is safe to retry. It creates nothing: the next
-cycle reads the file again and the coordinator refuses it again if it is still
-impossible.
+Release requires the authorized operator and is audited with that operator and
+reason as `submission-quarantine-released`. Releasing a key with no marker
+reports that fact, allowing a retry after an ambiguous response. It clears only
+the marker: it does not create work, reread files, retry a submission or enable
+intake. Preserve historical files and audit evidence independently of marker
+cleanup.
+
+Submit new work with `t3-steward task run` or
+`t3-steward campaign submit`. Legacy intake enable flags accept false/default
+for configuration compatibility; true is rejected with retirement guidance.
 
 Dependency artifacts appear in the successor workspace at
 `.t3/dependencies/<task>/<output>`. Declared verification commands, output
@@ -594,9 +591,7 @@ in `t3-steward backlog commands <run>`, in the audit event and in
 
 A task that declares no route at all is refused as permanent `no-route`, at
 `check` and at intake, with the instance/model pairs its project's eligible
-workers advertise. The legacy single-task adapter refuses a submission with no
-instance and model the same way, which quarantines the file once instead of
-reporting it on every cycle.
+workers advertise. Historical files are not retried; submit a new native task or campaign.
 
 ### Registering a provider
 

@@ -15,7 +15,7 @@ import (
 // The quarantine view is the only place an operator can see intake the
 // coordinator refused: the audit event has no workflow run, so "backlog events"
 // cannot reach it. It has to name the key, the digest, the time and the reason,
-// and say that changed content is tried again.
+// and explain deliberate historical marker cleanup.
 func TestBacklogQuarantineRendersTheReasonAndTheRetryRule(t *testing.T) {
 	at := time.Date(2026, 9, 14, 8, 30, 0, 0, time.UTC)
 	fake := &fakeAdminQueryService{response: backlogadmin.Response{
@@ -60,7 +60,7 @@ func TestBacklogQuarantineSaysWhenNothingIsRefused(t *testing.T) {
 	if err := cli.runBacklog(context.Background(), []string{"quarantine"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "no quarantined intake") {
+	if !strings.Contains(out.String(), "no retained quarantine markers") {
 		t.Fatalf("output = %q", out.String())
 	}
 }
@@ -82,9 +82,8 @@ func (f *fakeQuarantineService) ReleaseQuarantine(
 	return f.release, nil
 }
 
-// Editing the file is what clears a quarantine the file caused. A quarantine
-// the configuration caused needs this instead, because fixing the configuration
-// changes no byte of the file and therefore no digest.
+// Retained markers are cleared by authenticated, reason-bound release.
+// File edits no longer trigger scanning, release or retry.
 func TestBacklogQuarantineReleaseSendsTheKeyAndTheReason(t *testing.T) {
 	fake := &fakeQuarantineService{release: domain.QuarantineRelease{
 		Key: "legacy-abc", Released: true, Digest: "digest",
@@ -105,7 +104,10 @@ func TestBacklogQuarantineReleaseSendsTheKeyAndTheReason(t *testing.T) {
 		fake.principal.ID != "operator" {
 		t.Fatalf("calls %d, request %+v, principal %+v", fake.calls, fake.request, fake.principal)
 	}
-	for _, want := range []string{"released legacy-abc", "references unmapped project", "reads the file again"} {
+	if strings.Contains(out.String(), "reads the file again") || strings.Contains(out.String(), "next cycle") {
+		t.Fatalf("release recommends retired intake: %q", out.String())
+	}
+	for _, want := range []string{"released legacy-abc", "references unmapped project", "never retries a file or reenables intake", "task run or campaign submit"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output %q does not report %q", out.String(), want)
 		}

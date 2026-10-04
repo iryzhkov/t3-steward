@@ -21,13 +21,13 @@ import (
 )
 
 func runBacklogV2(ctx context.Context, cfg config.Config, logger *slog.Logger) (bool, error) {
+	if cfg.Backlog.Enabled || cfg.BacklogV2.Coordinator.LegacyFileIntakeEnabled {
+		return true, errors.New("legacy Markdown intake is retired; set backlog.enabled and backlog_v2.coordinator.legacy_file_intake_enabled to false; use task run or campaign submit")
+	}
 	switch cfg.BacklogV2.Mode {
 	case "disabled", "worker":
 		return false, nil
 	case "coordinator":
-		if cfg.Backlog.Enabled {
-			return true, errors.New("backlog-v2 coordinator and legacy backlog runner are mutually exclusive")
-		}
 		return true, runBacklogV2Coordinator(ctx, cfg, logger)
 	default:
 		return true, fmt.Errorf("unsupported backlog-v2 mode %q", cfg.BacklogV2.Mode)
@@ -622,10 +622,6 @@ type coordinatorAdminExecutor interface {
 	ExecutePendingCommands(context.Context) (backlogadmin.CommandExecutionReport, error)
 }
 
-type coordinatorLegacyTicker interface {
-	Tick(context.Context) backlog.LegacySubmissionReport
-}
-
 type coordinatorWorkerTicker interface {
 	Tick(context.Context, backlog.QuotaBridgeReport) coordinatorWorkerTickReport
 }
@@ -641,7 +637,6 @@ type coordinatorBoundaryCycle struct {
 	schedules    coordinatorScheduleTicker
 	planning     coordinatorPlanningTicker
 	admin        coordinatorAdminExecutor
-	legacy       coordinatorLegacyTicker
 	workers      coordinatorWorkerTicker
 	campaignRefs coordinatorCampaignRefTicker
 	// supervision advances gates, raises review incidents and escalates a
@@ -780,15 +775,6 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 	} else {
 		c.logger.Warn("backlog-v2 planning and admin command execution deferred until quota reconciliation succeeds")
 	}
-	if c.legacy != nil {
-		report := c.legacy.Tick(ctx)
-		for _, err := range report.Errors {
-			logTickFailure(ctx, c.logger, "legacy backlog-v2 submission failed", err)
-		}
-		if len(report.Accepted) != 0 {
-			c.logger.Info("legacy backlog-v2 submissions reconciled", "accepted", len(report.Accepted))
-		}
-	}
 	if exchangeWorkers && c.workers != nil {
 		workerReport := c.workers.Tick(ctx, quotaReport)
 		for _, result := range workerReport.Results {
@@ -859,12 +845,8 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			"issue", issue,
 			"effect", "this project cannot be scheduled; every other project is unaffected")
 	}
-	legacyFileIntake := "disabled"
-	if cfg.BacklogV2.Coordinator.LegacyFileIntakeEnabled {
-		legacyFileIntake = "enabled"
-	}
 	service.SetRuntimeInfo(backlogadmin.RuntimeInfo{
-		LegacyFileIntake: legacyFileIntake,
+		LegacyFileIntake: "disabled",
 		Release:          version, ConfigurationDigest: configurationDigest, LastReload: appliedAt, LastReloadReceipt: receipts.Last,
 		Mode: "coordinator", Owner: cfg.BacklogV2.Coordinator.ID, Epoch: epoch,
 		Transport:              cfg.BacklogV2.Transport.Kind,
@@ -1074,12 +1056,8 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		},
 		logger: logger,
 	}
-	cycle.legacy, err = coordinatorLegacyIntake(cfg, submissions, store)
-	if err != nil {
-		return err
-	}
-	logger.Info("deprecated coordinator Markdown intake", "enabled", cycle.legacy != nil,
-		"replacement", "t3-steward task run / campaign submit", "changes", "require coordinator restart")
+	logger.Info("retired coordinator Markdown intake", "enabled", false,
+		"replacement", "t3-steward task run / campaign submit")
 	logger.Info("backlog-v2 coordinator authority acquired",
 		"coordinator", cfg.BacklogV2.Coordinator.ID,
 		"epoch", epoch,

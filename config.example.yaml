@@ -152,15 +152,15 @@ messages:
   drain: |
     T3 steward quota drain: checkpoint and pause. "{{.LimitName}}" is at {{.UsedPercent}}% and resets at {{.ResetsAt}}. Do not start new work or subagents. Ask active subagents to checkpoint and return partial results promptly. Preserve completed work and write a brief checkpoint covering current state, partial results, and remaining work. Then end your turn. T3 steward will interrupt any still-running turn in {{.GracePeriod}}.
 
+# The old backlog.enabled key also accepts only false/default.
 backlog_v2:
-# Disabled by default. "coordinator" is mutually exclusive with backlog.enabled;
+# Disabled by default; Markdown file intake has been removed.
   # "worker" enables only the fixed SSH worker-exchange command boundary.
   mode: disabled
   coordinator:
     id: ""
-    # Deprecated Markdown adapter, retained for phase-1 rollback only.
-    # Separate from backlog.enabled (local runner). Changes require restart.
-    # Prefer t3-steward task run / campaign submit; files are ignored by default.
+    # Compatibility boolean: false/default accepted; true is a startup error.
+    # Use t3-steward task run / campaign submit; historical files remain untouched.
     legacy_file_intake_enabled: false
     # Remote admin clients this coordinator accepts through the restricted
     # coordinator-exchange command, keyed by client principal. Each credential

@@ -82,10 +82,9 @@ func IsQueryKind(kind QueryKind) bool {
 	return false
 }
 
-// QuarantineRetryAdvice is the one sentence a quarantine view has to say, in
-// the same words everywhere: the marker is bound to the exact content that was
-// refused, so changing the file is both the recovery and the retry.
-const QuarantineRetryAdvice = "change the file: a different content digest releases this marker only when deprecated legacy file intake is explicitly enabled; intake defaults off. Prefer t3-steward task run or campaign submit."
+// QuarantineRetryAdvice describes retained historical markers in text and JSON.
+// The name and JSON key remain for compatibility; clearing a marker is not a retry.
+const QuarantineRetryAdvice = "Historical Markdown files are no longer scanned or retried. An authenticated t3-steward backlog quarantine release <key> --reason TEXT deliberately clears the marker; clearing it never retries a file or reenables intake. Submit new work with t3-steward task run or campaign submit."
 
 // QuarantinedIntake is one permanently refused intake submission. It names no
 // workflow or run because nothing was accepted, which is exactly why it is
@@ -96,8 +95,8 @@ type QuarantinedIntake struct {
 	// RecordKey is the namespaced key the durable record is stored under in
 	// coordinator_submissions, for an operator reading the database directly.
 	RecordKey string `json:"recordKey"`
-	// Digest is the content the marker was recorded for. A different digest is
-	// different content, and different content is tried again.
+	// Digest is the historical content the marker was recorded for.
+	// Editing a file does not clear this marker or retry intake.
 	Digest        string    `json:"digest"`
 	QuarantinedAt time.Time `json:"quarantinedAt"`
 	Reason        string    `json:"reason"`

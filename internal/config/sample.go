@@ -157,18 +157,17 @@ report:
   remotes: []
 
 backlog:
-  # Quota-gated task runner: markdown tasks in "dir" run as T3 threads
-  # when no interactive session has run for quiet_for and the forecast
-  # of your own usage leaves room before the next reset.
-  # See "t3-steward backlog --help".
+  # Markdown intake is retired. enabled accepts only false/default; true fails.
+  # Use t3-steward task run or campaign submit. Existing files are untouched.
+  # Legacy path/timing/preamble/forwarding fields remain parseable metadata;
+  # forecast fields below still feed modern quota planning.
   enabled: false
-  dir: ""                       # default: <config dir>/backlog
+  dir: ""                       # retained metadata; never scanned or created
   quiet_for: 30m
   long_window_cap_percent: 80   # weekly windows are never pushed past this
   history_days: 56
-  # Tasks name the host that runs them (an SSH alias); default_host runs
-  # the ones that name none. Empty means this machine. host_name is what
-  # tasks call this machine (default: the OS host name).
+  # default_host is ignored compatibility metadata; forwarding is retired.
+  # host_name remains the archive identity (default: the OS host name).
   default_host: ""
   host_name: ""
   # Forecast of your own (interactive) usage, used to decide how much of a
@@ -179,10 +178,12 @@ backlog:
   min_samples: 3                # past occurrences before a slot's history counts
 
 backlog_v2:
-  # Disabled by default. "coordinator" is mutually exclusive with backlog.enabled.
+  # Disabled by default. Both Markdown intake enable flags accept only false.
   mode: disabled
   coordinator:
     id: ""
+    # Compatibility only: true fails validation; historical files stay untouched.
+    legacy_file_intake_enabled: false
   workers: {}
   projects: {}
   setup_profiles: {}

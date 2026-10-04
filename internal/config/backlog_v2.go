@@ -33,8 +33,8 @@ func (c *Config) validateBacklogV2() error {
 		}
 	}
 	v.Mode = strings.ToLower(strings.TrimSpace(v.Mode))
-	if v.Coordinator.LegacyFileIntakeEnabled && v.Mode != "coordinator" {
-		return errors.New("backlog_v2.coordinator.legacy_file_intake_enabled requires mode: coordinator; use task run or campaign submit for submissions")
+	if v.Coordinator.LegacyFileIntakeEnabled {
+		return errors.New("backlog_v2.coordinator.legacy_file_intake_enabled: Markdown intake is retired; set false and use t3-steward task run or campaign submit")
 	}
 	// The client block is validated in every mode: the host that needs it is
 	// usually not running a coordinator or a worker at all.
@@ -71,9 +71,6 @@ func (c *Config) validateBacklogV2() error {
 			return fmt.Errorf("backlog_v2: credential %q is reused across %s and %s roles", client.Credential, prior, role)
 		}
 		credentialRoles[client.Credential] = role
-	}
-	if v.Mode == "coordinator" && c.Backlog.Enabled {
-		return errors.New("backlog_v2: coordinator mode and legacy backlog.enabled are mutually exclusive")
 	}
 	if strings.TrimSpace(v.Coordinator.ID) == "" {
 		return errors.New("backlog_v2: coordinator.id is required")

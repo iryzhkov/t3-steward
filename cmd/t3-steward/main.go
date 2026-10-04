@@ -769,7 +769,7 @@ func cmdRun(g globalFlags) error {
 	if err := awaitT3Discovery(ctx, cfg, logger); err != nil || ctx.Err() != nil {
 		return err
 	}
-	client, d, err := buildWatchdog(cfg, logger, store, true)
+	client, d, err := buildWatchdog(cfg, logger, store)
 	if err != nil {
 		return err
 	}
@@ -779,9 +779,8 @@ func cmdRun(g globalFlags) error {
 	return d.Run(ctx)
 }
 
-// buildWatchdog assembles the quota watchdog with its wait, archive, and
-// (optionally) legacy backlog runners around a shared store.
-func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, allowLegacyBacklog bool) (*t3api.Client, *daemon.Daemon, error) {
+// buildWatchdog assembles the quota watchdog with wait and archive runners.
+func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store) (*t3api.Client, *daemon.Daemon, error) {
 	client, dataDir, err := connect(cfg, logger)
 	if err != nil {
 		return nil, nil, err
@@ -846,16 +845,6 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store, 
 				"after", sweeper.Options.After, "every", sweeper.Options.Every, "dry_run", sweeper.Options.DryRun)
 		}
 	}
-	if allowLegacyBacklog && cfg.Backlog.Enabled {
-		logger.Warn("deprecated local Markdown runner explicitly enabled; use t3-steward task run or campaign submit")
-		runner, err := newBacklogRunner(cfg, store, control, logger, dataDir)
-		if err != nil {
-			return nil, nil, err
-		}
-		d.Backlog = runner
-		dir, _ := cfg.ResolveBacklogDir()
-		logger.Info("backlog runner enabled", "dir", dir, "quiet_for", cfg.Backlog.QuietFor.D())
-	}
 	return client, d, nil
 }
 
@@ -896,7 +885,7 @@ func gateWatchdogVersion(ctx context.Context, cfg config.Config, logger *slog.Lo
 func runWatchdogAlongside(ctx context.Context, cfg config.Config, logger *slog.Logger, store *sqlite.Store) {
 	backoff := 5 * time.Second
 	for ctx.Err() == nil {
-		client, d, err := buildWatchdog(cfg, logger, store, false)
+		client, d, err := buildWatchdog(cfg, logger, store)
 		if err == nil {
 			if err = gateWatchdogVersion(ctx, cfg, logger, client, d); err == nil && ctx.Err() == nil {
 				err = d.Run(ctx)

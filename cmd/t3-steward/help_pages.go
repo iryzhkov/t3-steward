@@ -115,7 +115,7 @@ func familyDispatchSite(family string) parserSite {
 //
 // The value is a separate word because the dispatcher compares the whole
 // argument: "--config=PATH" is not recognised there and travels on to the
-// verb, which ignores it (backlog path) or refuses it (worker serve). Saying
+// verb, which refuses it (worker serve). Retired file verbs always refuse. Saying
 // so is the difference between a page that documents the flag and a page a
 // caller can act on.
 func familyConfigFlag(family string) helpFlag {

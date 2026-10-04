@@ -80,7 +80,7 @@ func TestWatchdogSweepsItsOwnEmptyProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	_, daemon, err := buildWatchdog(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), store, false)
+	_, daemon, err := buildWatchdog(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestProjectCleanupFollowsBothDryRunSwitches(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer store.Close()
-			_, daemon, err := buildWatchdog(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), store, false)
+			_, daemon, err := buildWatchdog(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), store)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -162,7 +162,7 @@ func TestWatchdogWithoutProjectCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	_, daemon, err := buildWatchdog(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), store, false)
+	_, daemon, err := buildWatchdog(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), store)
 	if err != nil {
 		t.Fatal(err)
 	}

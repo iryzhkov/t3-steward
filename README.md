@@ -507,81 +507,19 @@ occurrences, `.` slots never observed.
 
 ### Backlog
 
-The following Markdown runner examples are deprecated phase-1 rollback
-compatibility. Both the local runner and coordinator Markdown intake default off.
-Use `t3-steward task run` or `t3-steward campaign submit` for new submissions;
-creating or receiving a file does not mean the coordinator accepted it.
-`backlog.enabled` controls only the old local runner. Coordinator compatibility
-separately requires `backlog_v2.coordinator.legacy_file_intake_enabled: true` and
-a restart; SIGHUP rejects gate changes without partially loading configuration.
-Files and persisted quarantine remain untouched while coordinator intake is off.
-See [Backlog-v2 operations](docs/backlog-v2-operations.md).
+Submit new work with `t3-steward task run` or
+`t3-steward campaign submit`. Markdown file intake and SSH forwarding have
+been retired. `backlog new`, `path`, `check`, `receive`, and
+`list --all` refuse with replacement guidance and have no file or SSH effects.
+Both `backlog.enabled` and
+`backlog_v2.coordinator.legacy_file_intake_enabled` remain parseable for
+compatibility: false/default is accepted, true fails configuration validation.
 
-For phase-1 rollback only, explicitly enable the local runner:
-
-```yaml
-backlog:
-  enabled: true
-  quiet_for: 30m              # no interactive thread for this long
-  safety_margin_percent: 10   # always left unused
-  long_window_cap_percent: 80 # weekly windows are never pushed past this
-```
-
-```sh
-t3-steward backlog new refactor-auth     # writes <config>/backlog/refactor-auth.md
-t3-steward backlog list
-```
-
-```markdown
----
-project: laptop home     # T3 project: the workspace the agent works in
-importance: 4            # 1-5, higher runs first
-difficulty: 3            # 1-5, seeds the cost (5/10/20/35/50% of the window) and duration
-model: claude-opus-5     # optional with instance; else the project's default model
-instance: claudeAgent
-not_before: 2026-09-09T00:00:00-07:00   # optional
-deadline: 2026-09-12T00:00:00-07:00     # optional; within 24 h the gate is bypassed
-max_turns: 3
-gate: true               # false: run at not_before whenever quota is healthy
-host: normandy           # optional: run on that machine's T3 (see below)
----
-The prompt, written for an agent that gets no input from you.
-```
-
-A task starts when all of these hold:
-
-- no interactive thread has run for `quiet_for`;
-- every bucket of the task's provider is healthy;
-- for windows that reset within a day: `usage + task cost landing before the
-  reset + forecast interactive demand until the reset ≤ 100 − safety margin`;
-- for longer windows: `usage + task cost ≤ long_window_cap_percent`;
-- no other backlog task is running on that provider.
-
-Order: tasks with a deadline inside 24 hours first, then importance, then
-the cheaper estimate. The estimate is seeded by difficulty and replaced by
-the measured consumption after the first turn, so it converges per task.
-
-Each task runs as a new T3 thread in the project, `full-access` runtime
-mode, with a preamble that tells the agent to work without asking, do
-everything that does not depend on a decision, leave a handoff, and end
-with one line: `BACKLOG STATUS: done`, `continue`, or `needs-input`.
-`continue` re-dispatches the same thread up to `max_turns`; `needs-input`,
-or the agent asking a question through T3, parks the task with the thread
-link so you can answer it in the app. Edit the file to re-queue a finished
-task, or use `backlog retry`; `backlog cancel` stops a pending one. A
-running task is an ordinary thread to the watchdog: the warn, drain and
-stop ladder applies, and a task interrupted for quota resumes with the
-others.
-
-### Checking a task
-
-`t3-steward backlog check <file>` validates a task against the host
-that would run it (over SSH when the task names another host): the project
-exists, the provider instance is enabled and signed in, the model is one it
-offers, the options are ones the model knows. It reads T3's provider caches
-(`<data_dir>/caches/<instance>.json`), so it works for every provider T3
-knows, Codex, Claude and OpenCode alike. The runner runs the same check
-before a dispatch and parks an invalid task as `failed: invalid: ...`.
+Current status always reports file intake disabled. Historical task files,
+quarantine records and immutable rollback bundles remain untouched.
+Modern workflow submission, graph administration, workers, artifacts, schedules,
+quarantine inspection/release, recovery and stopped-coordinator backup remain
+available. See [Backlog-v2 operations](docs/backlog-v2-operations.md).
 
 ### Starting one task on the fleet
 
@@ -625,10 +563,9 @@ so a retry after an ambiguous failure never starts a second one.
 
 ### Campaigns
 
-A campaign is a multi-task job authored as a directory rather than as a single
-Markdown task. It belongs to the backlog-v2 fleet orchestrator, so it needs a
-configured coordinator; the shipped host-local backlog above is unaffected by
-everything in this section.
+A campaign is a multi-task workflow authored as a directory and submitted to a
+configured coordinator with `t3-steward campaign submit`. For one independent
+outcome, use native `t3-steward task run` instead.
 
 The directory holds a `workflow.yaml` naming the tasks, the `needs` edges between
 them, the artifacts each task promises and the artifacts its successors read.
@@ -726,28 +663,6 @@ retains an immutable revision and rebinds the sink without changing sibling runs
 Cloning creates fresh task, input and attempt identities from verified retained
 inputs. See the [amendment contract](docs/architecture/adr-s0-amendment.md) for
 timeout semantics, input custody and diagnostic evidence limits.
-
-### Deprecated Markdown forwarding compatibility
-
-New task/campaign submissions use coordinator worker planning. The following
-file forwarding path is retained only for phase-1 rollback, with explicit opt-in
-on the receiving runner; it performs no default coordinator intake.
-
-A task may name the machine whose T3 server should run it (`host:`, an SSH
-alias), and `backlog.default_host` sets the host for tasks that name none.
-A task for another host is forwarded: the local runner copies the file into
-that host's backlog directory over SSH (`t3-steward backlog receive`
-on the remote side, so the binary must be on the login shell's PATH there)
-and marks its own copy `forwarded`. The remote runner owns it from then on,
-with its projects, its quota view and its quiet-hours gate.
-`backlog list --all` shows every host's queue (the hosts in
-`report.remotes`). `local` and `localhost` always mean this machine;
-`backlog.host_name` sets what tasks call it (default: the OS host name).
-
-The gate cannot see the phone or a bare CLI session start; it sees them
-as rises without T3 tokens after the fact. A backlog task may therefore
-occasionally start just before you do, and the ladder drains it at 90%
-like anything else.
 
 ### Repository-free workspaces
 

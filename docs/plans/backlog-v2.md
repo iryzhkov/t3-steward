@@ -1,5 +1,9 @@
 # Backlog orchestrator development plan
 
+> Historical design/evidence: current M15 source removes Markdown file intake and
+> forwarding. Use task run or campaign submit; this record does not authorize
+> reenabling intake. See the current backlog-v2 operations guide.
+
 Status: approved for implementation and testing on Normandy. Fleet deployment requires separate user approval.
 
 ## Goal

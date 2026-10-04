@@ -397,12 +397,11 @@ type Report struct {
 	Remotes []string `yaml:"remotes"`
 }
 
-// Backlog configures the quota-gated task runner and its forecast.
+// Backlog retains compatibility settings and the modern quota forecast.
 type Backlog struct {
-	// Enabled opts into the deprecated local Markdown runner (default false).
-	// It is separate from coordinator legacy_file_intake_enabled; prefer task/campaign APIs.
+	// Enabled is parseable for compatibility; true is rejected because file intake is retired.
 	Enabled bool `yaml:"enabled"`
-	// Dir holds the task files; empty means <config dir>/backlog.
+	// Dir is retained configuration metadata; no runner reads or creates it.
 	Dir string `yaml:"dir"`
 	// QuietFor is how long no interactive thread must have run before a
 	// gated task starts.
@@ -417,8 +416,7 @@ type Backlog struct {
 	// HostName is how tasks refer to this machine (default: the OS host
 	// name). "local" and "localhost" always mean this machine.
 	HostName string `yaml:"host_name"`
-	// DefaultHost runs tasks that name no host. Empty means this machine;
-	// another host's SSH alias forwards them there.
+	// DefaultHost is retained configuration metadata; SSH file forwarding is retired.
 	DefaultHost string `yaml:"default_host"`
 	// SafetyMargin is the percent of a window always left unused.
 	SafetyMargin float64 `yaml:"safety_margin_percent"`
@@ -535,8 +533,8 @@ type V2Verification struct {
 
 type V2Coordinator struct {
 	ID string `yaml:"id"`
-	// LegacyFileIntakeEnabled opts into deprecated Markdown intake for phase-1 rollback.
-	// Default false; changing it requires a coordinator restart.
+	// LegacyFileIntakeEnabled is a compatibility boolean. False/default is accepted;
+	// true is rejected because Markdown intake has been retired.
 	LegacyFileIntakeEnabled bool `yaml:"legacy_file_intake_enabled"`
 	// AdminClients are the remote admin clients this coordinator will accept
 	// through the restricted coordinator-exchange command, by client
@@ -1125,6 +1123,9 @@ func (c *Config) applyEnv() error {
 
 // Validate rejects configurations the daemon must not run with.
 func (c *Config) Validate() error {
+	if c.Backlog.Enabled {
+		return errors.New("backlog.enabled: legacy Markdown runner is retired; set false and use t3-steward task run or campaign submit")
+	}
 	p := c.Policy
 	if !(p.WarnPercent < p.DrainPercent && p.DrainPercent < p.StopPercent && p.StopPercent <= 100) {
 		return fmt.Errorf("policy: warn_percent < drain_percent < stop_percent <= 100 is required (got %v, %v, %v)",
@@ -1374,18 +1375,6 @@ func (c *Config) ResolveDataDir() (string, error) {
 		return "", fmt.Errorf("resolve home dir: %w", err)
 	}
 	return filepath.Join(home, ".t3"), nil
-}
-
-// ResolveBacklogDir returns the task directory.
-func (c *Config) ResolveBacklogDir() (string, error) {
-	if c.Backlog.Dir != "" {
-		return expandHome(c.Backlog.Dir)
-	}
-	p, err := DefaultPaths()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(p.ConfigDir, "backlog"), nil
 }
 
 func expandHome(p string) (string, error) {

@@ -1,5 +1,9 @@
 # Backlog-v2 production-binding handoff
 
+> Historical design/evidence: current M15 source removes Markdown file intake and
+> forwarding. Use task run or campaign submit; this record does not authorize
+> reenabling intake. See the current backlog-v2 operations guide.
+
 Updated: 2026-09-10
 
 ## Authority

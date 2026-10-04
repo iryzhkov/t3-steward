@@ -59,7 +59,7 @@ var backlogHelpSections = map[string]dispatchRoute{
 	"Graph amendments":                    routeCoordinatorAdmin,
 	"Revision-fenced controls":            routeCoordinatorAdmin,
 	"Stopped coordinator backup commands": routeBackup,
-	"Deprecated legacy task-file helpers": routeLegacyTaskFiles,
+	"Retired legacy task-file commands":   routeLegacyTaskFiles,
 	"Example":                             routeNotACommand,
 }
 

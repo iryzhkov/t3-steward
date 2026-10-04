@@ -70,7 +70,7 @@ func TestWaitDeliveryIndependentOfWatchdogDryRun(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer store.Close()
-			_, daemon, err := buildWatchdog(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), store, false)
+			_, daemon, err := buildWatchdog(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), store)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -116,7 +116,7 @@ func TestGlobalQuotaDisableAppliesToWaits(t *testing.T) {
 	cfg.QuotaChecks, cfg.Wait.QuotaChecks = &disabled, &enabled
 	cfg.T3.URL, cfg.T3.Token, cfg.T3.DataDir = "http://127.0.0.1:1", "test", t.TempDir()
 	cfg.Archive.Enabled = false
-	_, daemon, err := buildWatchdog(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, false)
+	_, daemon, err := buildWatchdog(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
