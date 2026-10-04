@@ -140,6 +140,11 @@ func shortTempRoot(t *testing.T) string {
 
 func startLocalTransport(t *testing.T, allowedUID uint32, service LocalService) (LocalClient, context.CancelFunc, <-chan error) {
 	t.Helper()
+	return startLocalTransportWithTimeout(t, allowedUID, service, time.Second)
+}
+
+func startLocalTransportWithTimeout(t *testing.T, allowedUID uint32, service LocalService, requestTimeout time.Duration) (LocalClient, context.CancelFunc, <-chan error) {
+	t.Helper()
 	path := filepath.Join(shortTempRoot(t), "admin.sock")
 	listener, err := ListenLocal(path)
 	if err != nil {
@@ -150,13 +155,13 @@ func startLocalTransport(t *testing.T, allowedUID uint32, service LocalService) 
 	server := &LocalServer{
 		Listener: listener, Service: service, AllowedUID: allowedUID,
 		MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
-		RequestTimeout: time.Second, MaxConcurrent: 8,
+		RequestTimeout: requestTimeout, MaxConcurrent: 8,
 	}
 	go func() { done <- server.Serve(ctx) }()
 	client := LocalClient{
 		Path: path, MaxResponseBytes: 1 << 20,
 		MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
-		RequestTimeout: time.Second,
+		RequestTimeout: requestTimeout,
 	}
 	return client, cancel, done
 }

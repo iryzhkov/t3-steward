@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 type reviewTransportService struct {
@@ -40,7 +41,9 @@ func TestLargeReviewRoundUsesBoundedDocumentQueries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, cancel, done := startLocalTransport(t, uint32(os.Getuid()), reviewTransportService{localTransportService: &localTransportService{}, reader: service})
+	// Allow race instrumentation and CPU contention while checking the full-size
+	// payload and byte caps; this test does not assert request latency.
+	client, cancel, done := startLocalTransportWithTimeout(t, uint32(os.Getuid()), reviewTransportService{localTransportService: &localTransportService{}, reader: service}, 15*time.Second)
 	defer func() { cancel(); <-done }()
 	client.MaxResponseBytes = 4 << 20
 	response, err := client.Query(ctx, Query{Version: Version, Kind: QueryReviewRound, RoundID: r.ID})
