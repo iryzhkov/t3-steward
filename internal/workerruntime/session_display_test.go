@@ -64,3 +64,37 @@ func TestInitialSupervisionTitleDispatch(t *testing.T) {
 		}
 	}
 }
+
+func TestDisplayCapabilityAndIdentityTamperReplayRefuses(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*workerproto.ExecutionPackage)
+	}{
+		{"display", func(p *workerproto.ExecutionPackage) {
+			p.Display = &workerproto.SessionDisplay{WorkflowName: "Campaign", TaskName: "Build"}
+			p.RequiredCapabilities = append(p.RequiredCapabilities, workerproto.PackageCapabilitySessionDisplay)
+		}},
+		{"capability", func(p *workerproto.ExecutionPackage) {
+			p.RequiredCapabilities = append(p.RequiredCapabilities, workerproto.PackageCapabilityPreflight)
+		}},
+		{"identity", func(p *workerproto.ExecutionPackage) { p.Identity.WorkflowID = "other-workflow" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := newTestRuntime(t, t.TempDir(), &fakeDriver{})
+			offer := testOffer(t)
+			claims, err := runtime.AcceptOffers(context.Background(), workerproto.AssignmentOffers{Offers: []workerproto.AssignmentOffer{offer}})
+			if err != nil || len(claims.Claims) != 1 {
+				t.Fatalf("first claim: %+v %v", claims, err)
+			}
+			test.mutate(&offer.Package.Package)
+			offer.Package, err = workerproto.BuildExecutionPackageManifest(offer.Package.Package)
+			if err != nil {
+				t.Fatal(err)
+			}
+			claims, err = runtime.AcceptOffers(context.Background(), workerproto.AssignmentOffers{Offers: []workerproto.AssignmentOffer{offer}})
+			if err != nil || len(claims.Claims) != 0 {
+				t.Fatalf("arbitrary mutation accepted: %+v %v", claims, err)
+			}
+		})
+	}
+}

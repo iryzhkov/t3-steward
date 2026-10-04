@@ -2,6 +2,7 @@ package backlog
 
 import (
 	"context"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,8 +14,10 @@ import (
 )
 
 type packageRecordStore struct {
-	records   sqlite.CoordinatorRecords
-	snapshots []domain.WorkerSnapshot
+	records       sqlite.CoordinatorRecords
+	snapshots     []domain.WorkerSnapshot
+	decisions     *sqlite.Store
+	decisionsPath string
 }
 
 func (s packageRecordStore) LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRecords, error) {
@@ -23,6 +26,10 @@ func (s packageRecordStore) LoadCoordinatorRecords(context.Context) (sqlite.Coor
 
 func (s packageRecordStore) LoadWorkerSnapshots(context.Context) ([]domain.WorkerSnapshot, error) {
 	return s.snapshots, nil
+}
+
+func (s packageRecordStore) FreezeAssignmentDisplay(ctx context.Context, epoch int64, coordinator string, assignment domain.Assignment, identity workerproto.ExecutionIdentity, display *workerproto.SessionDisplay) (*workerproto.SessionDisplay, error) {
+	return s.decisions.FreezeAssignmentDisplay(ctx, epoch, coordinator, assignment, identity, display)
 }
 
 func TestCoordinatorOfferBuilderAssemblesReplayStablePackage(t *testing.T) {
@@ -162,9 +169,18 @@ func packageBuilder(t *testing.T, records sqlite.CoordinatorRecords) Coordinator
 	if err != nil {
 		t.Fatal(err)
 	}
+	decisionsPath := filepath.Join(t.TempDir(), "display.db")
+	decisions, err := sqlite.OpenMigrated(decisionsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { decisions.Close() })
+	if err := decisions.SaveCoordinatorRecords(context.Background(), records); err != nil {
+		t.Fatal(err)
+	}
 	return CoordinatorOfferBuilder{
-		Store: packageRecordStore{records: records}, Catalog: catalog,
-		CatalogRevision: "catalog-1", CoordinatorID: "coordinator", CoordinatorEpoch: 7,
+		Store: packageRecordStore{records: records, decisions: decisions, decisionsPath: decisionsPath}, Catalog: catalog,
+		CatalogRevision: "catalog-1", CoordinatorID: "coordinator", CoordinatorEpoch: 1,
 		VerificationTimeout: 2 * time.Minute, MaxArtifactBytes: 1 << 20, MaxTotalBytes: 2 << 20,
 	}
 }

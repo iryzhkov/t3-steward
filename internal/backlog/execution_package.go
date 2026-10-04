@@ -194,7 +194,9 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 	if err := b.declarePackageCapabilities(ctx, &pkg); err != nil {
 		return workerproto.AssignmentOffer{}, err
 	}
-	b.addSessionDisplay(ctx, &pkg, state.workflow.Name, state.task.Name, state.task.ReviewJudge)
+	if err := b.freezeSessionDisplay(ctx, assignment, &pkg, state.workflow.Name, state.task.Name, state.task.ReviewJudge); err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
 	manifest, err := workerproto.BuildExecutionPackageManifest(pkg)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, err

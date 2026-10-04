@@ -11,7 +11,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/review"
 )
 
-const currentSchemaVersion = 32
+const currentSchemaVersion = 33
 
 // CurrentSchemaVersion is the newest coordinator schema this binary can open.
 // Snapshot verification uses it without migrating the inspected database.

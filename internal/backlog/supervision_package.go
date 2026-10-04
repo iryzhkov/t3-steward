@@ -220,7 +220,15 @@ func (b CoordinatorOfferBuilder) buildActivationOffer(
 		}
 		input.EvidenceArtifact = retained
 	}
-	return BuildActivationOffer(input, expiresAt)
+	offer, err := BuildActivationOffer(input, expiresAt)
+	if err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
+	if err := b.freezeSessionDisplay(ctx, assignment, &offer.Package.Package, workflow.Name, "", false); err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
+	offer.Package, err = workerproto.BuildExecutionPackageManifest(offer.Package.Package)
+	return offer, err
 }
 
 // ActivationPackageInput is everything the package builder reads. It is plain
