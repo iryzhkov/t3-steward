@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 type reviewTransportService struct {
@@ -40,7 +41,10 @@ func TestLargeReviewRoundUsesBoundedDocumentQueries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, cancel, done := startLocalTransport(t, uint32(os.Getuid()), reviewTransportService{localTransportService: &localTransportService{}, reader: service})
+	// This tests bounded framing, not latency. Race instrumentation and the full
+	// parallel CI suite can take over one second to serialize a legal 1 MiB
+	// document. Bound both ends generously while retaining the full payload.
+	client, cancel, done := startLocalTransportWithTimeout(t, uint32(os.Getuid()), reviewTransportService{localTransportService: &localTransportService{}, reader: service}, 10*time.Second)
 	defer func() { cancel(); <-done }()
 	client.MaxResponseBytes = 4 << 20
 	response, err := client.Query(ctx, Query{Version: Version, Kind: QueryReviewRound, RoundID: r.ID})
