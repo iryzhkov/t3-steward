@@ -404,16 +404,29 @@ func scanReviewChildDefinitionsTx(ctx context.Context, tx *sql.Tx, g review.Chil
 	return nil
 }
 
-func validateReviewChildArtifactsTx(ctx context.Context, tx *sql.Tx, g review.ChildGraph) error {
+// Transaction-local ownership derived from fully validated attempt rows.
+type reviewChildAttemptOwner struct {
+	run, task string
+}
+
+func validateReviewChildArtifactsTx(ctx context.Context, tx *sql.Tx, g review.ChildGraph, attempts map[string]reviewChildAttemptOwner) error {
 	k := newReviewChildKeys(g)
 	inputs := 0
 	returnErr := scanReviewChildRows[domain.Artifact](ctx, tx, "SELECT id,workflow_run_id,task_id,attempt_id,sha256,record FROM coordinator_artifacts", 5, reviewChildArtifactKeys,
 		func(i []string, a domain.Artifact) error {
-			if !k.artifact(i[0], i[1], i[2], i[3]) && !k.artifact(a.ID, a.WorkflowRunID, a.TaskID, a.AttemptID) {
+			_, indexedAttempt := attempts[i[3]]
+			_, decodedAttempt := attempts[a.AttemptID]
+			if !k.artifact(i[0], i[1], i[2], i[3]) && !k.artifact(a.ID, a.WorkflowRunID, a.TaskID, a.AttemptID) && !indexedAttempt && !decodedAttempt {
 				return nil
 			}
 			if a.ID != i[0] || a.WorkflowRunID != i[1] || a.TaskID != i[2] || a.AttemptID != i[3] || a.SHA256 != i[4] || i[1] != k.run || (i[2] != "" && !k.tasks[i[2]]) {
 				return ErrReviewMaterialization
+			}
+			if a.AttemptID != "" {
+				owner, ok := attempts[a.AttemptID]
+				if !ok || owner.run != a.WorkflowRunID || owner.task != a.TaskID {
+					return ErrReviewMaterialization
+				}
 			}
 			if a.Kind == domain.ArtifactInput {
 				if !k.artifacts[a.ID] || a.AttemptID != "" {
@@ -434,16 +447,18 @@ func validateReviewChildArtifactsTx(ctx context.Context, tx *sql.Tx, g review.Ch
 
 // Revision and mutable execution values may advance; only the two stored
 // identities, positive counters and declared-task membership must agree.
-func validateReviewChildAttemptsTx(ctx context.Context, tx *sql.Tx, g review.ChildGraph) error {
+// Return only validated child ownership, including every legitimate retry.
+func validateReviewChildAttemptsTx(ctx context.Context, tx *sql.Tx, g review.ChildGraph) (map[string]reviewChildAttemptOwner, error) {
 	k := newReviewChildKeys(g)
 	rows, err := tx.QueryContext(ctx, "SELECT id,workflow_run_id,task_id,number,revision,record FROM coordinator_attempts")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
 	members := make(map[string]bool, len(g.Tasks))
 	initial := make(map[string]string, len(g.Attempts))
 	seen := make(map[string]map[int]bool, len(g.Tasks))
+	owners := make(map[string]reviewChildAttemptOwner, len(g.Attempts))
 	for _, t := range g.Tasks {
 		members[t.ID] = true
 	}
@@ -456,40 +471,41 @@ func validateReviewChildAttemptsTx(ctx context.Context, tx *sql.Tx, g review.Chi
 		var revision int64
 		var raw []byte
 		if err := rows.Scan(&id, &run, &task, &number, &revision, &raw); err != nil {
-			return err
+			return nil, err
 		}
 		var a domain.Attempt
 		a, err = decodeReviewChildRecord[domain.Attempt](raw, reviewChildAttemptKeys)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !k.attempt(id, run, task) && !k.attempt(a.ID, a.WorkflowRunID, a.TaskID) {
 			continue
 		}
 		if id == "" || a.ID != id || a.WorkflowRunID != run || a.TaskID != task || a.Number != number || a.Revision != revision ||
 			run != g.Run.ID || !members[task] || number < 1 || revision < 1 || a.SupervisionActivationID != "" || a.SupervisionActivationEpoch != 0 {
-			return ErrReviewMaterialization
+			return nil, ErrReviewMaterialization
 		}
 		if number == 1 && id != initial[task] {
-			return ErrReviewMaterialization
+			return nil, ErrReviewMaterialization
 		}
 		if seen[task] == nil {
 			seen[task] = make(map[int]bool)
 		}
 		if seen[task][number] {
-			return ErrReviewMaterialization
+			return nil, ErrReviewMaterialization
 		}
 		seen[task][number] = true
+		owners[id] = reviewChildAttemptOwner{run: run, task: task}
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	for task := range members {
 		if !seen[task][1] {
-			return ErrReviewMaterialization
+			return nil, ErrReviewMaterialization
 		}
 	}
-	return nil
+	return owners, nil
 }
 
 func insertReviewChildTx(ctx context.Context, tx *sql.Tx, g review.ChildGraph) error {
@@ -520,10 +536,14 @@ func insertReviewChildTx(ctx context.Context, tx *sql.Tx, g review.ChildGraph) e
 
 func validateReviewChildTx(ctx context.Context, tx *sql.Tx, receipt ReviewMaterialization) error {
 	g := receipt.Graph
+	attempts, err := validateReviewChildAttemptsTx(ctx, tx, g)
+	if err != nil {
+		return err
+	}
 	if err := scanReviewChildDefinitionsTx(ctx, tx, g, true); err != nil {
 		return err
 	}
-	if err := validateReviewChildArtifactsTx(ctx, tx, g); err != nil {
+	if err := validateReviewChildArtifactsTx(ctx, tx, g, attempts); err != nil {
 		return err
 	}
 	w, err := loadReviewJSONTx[domain.Workflow](ctx, tx, "SELECT record FROM coordinator_workflows WHERE id=?", g.Workflow.ID)
@@ -567,9 +587,6 @@ func validateReviewChildTx(ctx context.Context, tx *sql.Tx, receipt ReviewMateri
 	}
 	if count != 1 {
 		return ErrReviewMaterialization
-	}
-	if err := validateReviewChildAttemptsTx(ctx, tx, g); err != nil {
-		return err
 	}
 	for _, check := range []struct {
 		query    string
