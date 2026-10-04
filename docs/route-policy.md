@@ -73,7 +73,7 @@ fills a judge or expands a swarm. Candidate selection checks the complete
 independent/judge provider-diversity and tier requirements. A single candidate
 unable to satisfy a two-family round refuses. The refusal offers a complete
 explicit provider-diverse example when the catalog has suitable routes:
-`t3-steward review --independent claudeAgent/claude-opus-5-5 --independent codex/gpt-6-astra --project P --input DIFF --no-notify`.
+`t3-steward review --independent claudeAgent/claude-opus-5-5 --independent codex/gpt-6-astra --project P --diff-file DIFF --no-notify`.
 Use catalog-authorized executor/critical routes from distinct families and omit
 `--role` for this explicit round. Alternatively specify a provider-diverse judge
 of executor tier together with an economy swarm where supported. Roles select
