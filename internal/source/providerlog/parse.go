@@ -44,6 +44,7 @@ type record struct {
 
 type payload struct {
 	RateLimits json.RawMessage `json:"rateLimits"`
+	Limits     json.RawMessage `json:"limits"`
 }
 
 // ParseLine parses one log line. It returns ErrNotRateLimit for lines of
@@ -100,6 +101,11 @@ func ParseJSON(body []byte, fallbackObservedAt time.Time) ([]domain.QuotaSnapsho
 	var snaps []domain.QuotaSnapshot
 	var err error
 	switch {
+	case len(p.Limits) > 0:
+		if len(p.RateLimits) > 0 && strings.TrimSpace(string(p.RateLimits)) != "null" {
+			return nil, errors.New("ambiguous normalized and legacy rate-limit payload")
+		}
+		snaps, err = normalizeWindows(p.Limits, rec.Provider, base)
 	case looksLikeClaude(p.RateLimits):
 		snaps, err = normalizeClaude(p.RateLimits, base)
 	case looksLikeCodex(p.RateLimits):

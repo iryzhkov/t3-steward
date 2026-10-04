@@ -6,8 +6,9 @@ and undocumented; every item here can change in a future T3 release, which
 is why the watchdog gates control actions on a tested version range
 (`internal/compat`).
 
-Tested T3 versions: **0.0.38** (server package `t3` on npm, repository
-`pingdotgg/t3code`).
+Qualified T3 versions: **0.0.38** and **0.0.45** (server package `t3` on npm,
+repository `pingdotgg/t3code`). Intermediate versions in the supported range
+are inferred compatible, not separately qualified.
 
 ## What the watchdog uses
 
@@ -84,7 +85,50 @@ but a record is never split across two writes, so complete lines can be
 relied upon. The tailer keys its position on inode plus offset and drains
 the renamed file before starting on the new one.
 
-### Codex payload
+### Normalized payload in 0.0.45
+
+Both adapters now emit `payload.limits.windows`, verified against upstream tag
+`v0.0.45`, commit `6c8fed35dded9ff71c5b46807125457acbb76be6`:
+`packages/contracts/src/providerUsageLimits.ts` and
+`apps/server/src/provider/Layers/{codex,claude}UsageLimits.ts`.
+
+```json
+{"limits":{"windows":[{"id":"primary","kind":"weekly","label":"Weekly",
+ "usedPercent":5,"windowDurationMins":10080,
+ "resetsAt":"2026-10-09T21:30:00.000Z"}]}}
+```
+
+The normalized contract requires an array and each window's id, kind, label
+and percentage (0..100). Reset times are optional ISO timestamps; duration is
+optional nonnegative integer minutes. An empty array changes no buckets.
+Omitted windows preserve prior readings. Missing/null/malformed fields,
+duplicate ids, unknown populated fields and mixed normalized/legacy payloads
+are errors; a malformed event never supplies partial updates or a healthy zero.
+Legacy 0.0.38 decoding below remains supported, including Unix reset times.
+
+The bucket keeps the event's provider instance and the exact window id.
+Codex's normalized limit identity is `codex`; Claude's is `claude`.
+Kind supplies display classification, not identity or a fallback duration:
+`primary` can be weekly or monthly. Percentages are already scaled, so 0.5
+means 0.5%, including on Claude. Claude model selectors still derive from the
+window suffix, including `seven_day_fable`, while account-wide and overage
+windows remain account-wide. Configured overrides and ignored windows keep
+their existing behavior.
+
+**Upstream visibility limit:** 0.0.45's Codex mapper suppresses model-specific
+snapshots (`limitId != codex`) and no longer includes spending/reached flags
+in the normalized event. The Steward cannot reconstruct missing limits.
+It preserves legacy distinct limit ids and spending/reached handling; it does
+not fabricate equivalent normalized readings. Claude's mapper can rename an
+overage-included window to the model name learned by its probe, and suppresses
+the event before that name is known. These upstream omissions are not evidence
+that a quota is healthy.
+
+Sanitized real-server examples are retained as
+`testdata/samples/codex-0045-live.log` and `claude-0045.log`.
+The supplied failure reproduction is `codex-0045.log`.
+
+### Codex legacy payload
 
 `payload.rateLimits` is the app-server notification envelope, which is
 itself `{rateLimits: snapshot}`, so the snapshot sits at
@@ -105,7 +149,7 @@ maps `primary` and `secondary` to buckets of the same name and
 bucket. `limitId` is the bucket's limit identity, falling back to
 `limitName`, then `codex`.
 
-### Claude payload
+### Claude legacy payload
 
 `payload.rateLimits` is the whole Claude Agent SDK `rate_limit_event`
 message; the data is under `rate_limit_info`:
@@ -202,7 +246,7 @@ verification checklist.
 control adapter can send an `environment` object carrying the six
 `T3_STEWARD_*` execution identity variables a backlog task needs in order to
 register a task-bound wait against itself. That field is not part of the
-contract verified against T3 0.0.38, the only version in the tested range, and
+contract verified against T3 0.0.38; T3 0.0.45 also omits it from the contract, and
 `DispatchResult` carries a sequence number only, so a caller cannot tell from
 the response whether the field was honoured, ignored or would have been
 rejected. Two outcomes matter and they are not equally bad. If the server
@@ -266,6 +310,52 @@ watchdog detects manual interaction after its own stop.
    then may `t3.send_thread_environment` be turned on.
 5. Update `MinServerVersion` / `MaxServerVersion` in `internal/compat` and
    the README table.
+
+### 0.0.45 qualification (2026-10-04 UTC)
+
+Real isolated servers passed the checklist for both Codex (`gpt-6.1-sol`)
+and Claude (`claude-sonnet-4-6`). The opt-in test
+`internal/daemon/t3_real_qualification_test.go` creates separate temporary
+T3 data, project and Steward databases on a loopback ephemeral port. It mints
+short-lived tokens in memory, discards server logs and removes runtime state.
+It checks authenticated descriptor/session/shell access and the actual
+`t3-steward check` command, observes managed project metadata and real running
+turns, parses actual provider quota events, then injects normalized 86/91/96
+percent readings through the unchanged daemon/policy and real control adapter.
+It asserts projected user warning/drain messages, interrupted turn state, a
+new completed turn after two fresh reset readings below 50%, and orchestration
+session status `stopped` after session stop. Policy time is advanced in the
+test to avoid burn-rate interference; quota readings for the action ladder are
+synthetic. Provider processes, T3 storage and HTTP control are real.
+
+Both providers wrote ABSENT for a non-secret environment sentinel supplied on
+`thread.create`. The server accepted the request but did not propagate it.
+Keep `t3.send_thread_environment: false`; the workspace identity-file fallback
+continues to be required. No live fleet service was changed.
+
+Reproduce from a checkout, after installing the npm CLI in a separate prefix:
+
+```sh
+npm install --prefix /tmp/t3-0045-qualification t3@0.0.45 --no-audit --no-fund
+go build -o /tmp/t3-steward-0045 ./cmd/t3-steward
+T3_QUALIFICATION_BINARY=/tmp/t3-0045-qualification/node_modules/.bin/t3 \
+T3_QUALIFICATION_STEWARD_BINARY=/tmp/t3-steward-0045 \
+T3_QUALIFICATION_PROVIDER=codex T3_QUALIFICATION_MODEL=gpt-6.1-sol \
+go test ./internal/daemon -run '^TestRealT3Qualification$' -count=1 -v -timeout 9m
+T3_QUALIFICATION_BINARY=/tmp/t3-0045-qualification/node_modules/.bin/t3 \
+T3_QUALIFICATION_STEWARD_BINARY=/tmp/t3-steward-0045 \
+T3_QUALIFICATION_PROVIDER=claudeAgent T3_QUALIFICATION_MODEL=claude-sonnet-4-6 \
+go test ./internal/daemon -run '^TestRealT3Qualification$' -count=1 -v -timeout 9m
+/tmp/t3-steward-0045 replay testdata/samples/codex-0045-live.log
+/tmp/t3-steward-0045 replay testdata/samples/claude-0045.log
+```
+
+This opt-in test spends real provider quota and needs the selected provider CLI
+already authenticated. Select an available model explicitly on another host.
+Ordinary `make test` skips this external qualification and runs all local tests,
+race tests and vet. The supported bounds were extended only after these real
+flows passed. Qualification of 0.0.38 remains the prior baseline; intermediate
+versions were not separately exercised.
 
 Injecting events for a test: point `t3.data_dir` at a scratch directory
 with `userdata/logs/provider/`, set `t3.url` explicitly, and append lines in

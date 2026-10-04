@@ -84,6 +84,13 @@ Cannot:
 | Watchdog | Tested T3 Code versions |
 | --- | --- |
 | 0.1.x to 0.10.x | 0.0.38 |
+| 0.11.x | 0.0.38 to 0.0.45 |
+
+The endpoints 0.0.38 and 0.0.45 were qualified; compatibility of intermediate
+versions is inferred, not separately exercised. The 0.0.45 qualification uses
+real isolated Codex and Claude sessions; see [protocol notes](docs/t3-protocol.md).
+`send_thread_environment` remains off: the 0.0.45 server accepts the extra field
+but the sentinel did not reach either provider process.
 
 `t3-steward version` prints the range the binary was built with.
 Newer T3 versions run in monitoring-only mode until either a release adds
