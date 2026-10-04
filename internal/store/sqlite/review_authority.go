@@ -69,20 +69,13 @@ func loadReviewJSONTx[T any](ctx context.Context, tx *sql.Tx, query string, args
 	return value, err
 }
 func reviewParentCurrentTx(ctx context.Context, tx *sql.Tx, p review.ParentBinding, initial bool) error {
-	attempt, err := loadAttemptTx(ctx, tx, p.AttemptID)
+	attempt, err := reviewParentAttemptTx(ctx, tx, p)
 	if err != nil {
 		return err
 	}
 	if attempt.ID != p.AttemptID || attempt.WorkflowRunID != p.RunID || attempt.TaskID != p.TaskID || !attempt.TurnLive() ||
 		attempt.ThreadID != p.ThreadID || attempt.AssignmentID != p.AssignmentID || attempt.SupervisionActivationID != "" ||
 		attempt.Revision < p.IssuedRevision || initial && attempt.Revision != p.IssuedRevision {
-		return ErrReviewAuthorityIdentity
-	}
-	var latest int
-	if err := tx.QueryRowContext(ctx, "SELECT MAX(number) FROM coordinator_attempts WHERE workflow_run_id=? AND task_id=?", p.RunID, p.TaskID).Scan(&latest); err != nil {
-		return err
-	}
-	if latest != attempt.Number {
 		return ErrReviewAuthorityIdentity
 	}
 	assignment, err := loadAssignmentTx(ctx, tx, p.AssignmentID)
