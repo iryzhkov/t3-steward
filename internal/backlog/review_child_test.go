@@ -2,6 +2,7 @@ package backlog
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"os"
@@ -205,6 +206,14 @@ func TestReviewChildRetainedSQLiteCollectorReplay(t *testing.T) {
 }
 
 func TestReviewChildRetainedOrphanOutputsRefused(t *testing.T) {
+	testRetainedOrphanOutputs(t, "canonical")
+}
+func TestReviewChildRetainedAmbiguousOutputsRefused(t *testing.T) {
+	for _, shape := range []string{"duplicate", "case", "artifact-duplicate", "artifact-case"} {
+		t.Run(shape, func(t *testing.T) { testRetainedOrphanOutputs(t, shape) })
+	}
+}
+func testRetainedOrphanOutputs(t *testing.T, shape string) {
 	ctx := context.Background()
 	f := newRetainedChild(t, false)
 	p, err := f.prepare(ctx)
@@ -236,9 +245,68 @@ func TestReviewChildRetainedOrphanOutputsRefused(t *testing.T) {
 	if err = f.parent.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Attempts: []domain.Attempt{a}, Artifacts: artifacts}); err != nil {
 		t.Fatal(err)
 	}
+
+	if shape != "canonical" {
+		raw, e := json.Marshal(a)
+		if e != nil {
+			t.Fatal(e)
+		}
+		record := string(raw)
+		if strings.HasSuffix(shape, "duplicate") {
+			record = `{"workflowRunId":"foreign-run","taskId":"foreign-task",` + record[1:]
+		} else {
+			record = strings.ReplaceAll(strings.ReplaceAll(record, `"workflowRunId":`, `"WORKFLOWRUNID":`), `"taskId":`, `"TASKID":`)
+		}
+		rawDB, e := sql.Open("sqlite", f.parent.store.dbPath)
+		if e != nil {
+			t.Fatal(e)
+		}
+		defer rawDB.Close()
+		if strings.HasPrefix(shape, "artifact-") {
+			// Isolate output-only ownership: the attempt is canonical and unrelated.
+			if _, e = rawDB.Exec("UPDATE coordinator_attempts SET workflow_run_id='foreign-run',task_id='foreign-task',record=json_set(record,'$.workflowRunId','foreign-run','$.taskId','foreign-task') WHERE id=?", a.ID); e != nil {
+				t.Fatal(e)
+			}
+			for _, artifact := range artifacts {
+				raw, e = json.Marshal(artifact)
+				if e != nil {
+					t.Fatal(e)
+				}
+				record = string(raw)
+				if strings.HasSuffix(shape, "duplicate") {
+					record = `{"workflowRunId":"foreign-run","taskId":"foreign-task",` + record[1:]
+				} else {
+					record = strings.ReplaceAll(strings.ReplaceAll(record, `"workflowRunId":`, `"WORKFLOWRUNID":`), `"taskId":`, `"TASKID":`)
+				}
+				if _, e = rawDB.Exec("UPDATE coordinator_artifacts SET workflow_run_id='foreign-run',task_id='foreign-task',record=? WHERE id=?", record, artifact.ID); e != nil {
+					t.Fatal(e)
+				}
+			}
+		} else if _, e = rawDB.Exec("UPDATE coordinator_attempts SET workflow_run_id='foreign-run',task_id='foreign-task',record=? WHERE id=?", record, a.ID); e != nil {
+			t.Fatal(e)
+		}
+	}
 	before, err := f.parent.store.LoadCoordinatorRecords(ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	seen := false
+	for _, got := range before.Attempts {
+		if got.ID == a.ID && got.WorkflowRunID == g.Run.ID && got.TaskID == a.TaskID {
+			seen = true
+		}
+	}
+	if strings.HasPrefix(shape, "artifact-") {
+		seen = false
+		for _, got := range before.Artifacts {
+			if got.ID == artifacts[0].ID && got.WorkflowRunID == g.Run.ID && got.TaskID == a.TaskID {
+				seen = true
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("runtime loader missed orphan")
 	}
 	round, err := f.parent.store.GetReviewRound(ctx, f.checkpoint.RoundID)
 	if err != nil {

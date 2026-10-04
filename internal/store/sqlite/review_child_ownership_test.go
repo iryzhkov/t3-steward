@@ -13,7 +13,7 @@ import (
 func childOwnershipSnapshot(t *testing.T, s *Store) string {
 	t.Helper()
 	var all []any
-	for _, table := range []string{"coordinator_workflows", "coordinator_workflow_runs", "coordinator_tasks", "coordinator_attempts", "coordinator_artifacts", "coordinator_assignments", "coordinator_graph_revisions", "coordinator_review_rounds", "coordinator_review_materializations"} {
+	for _, table := range []string{"coordinator_workflows", "coordinator_workflow_runs", "coordinator_tasks", "coordinator_attempts", "coordinator_artifacts", "coordinator_assignments", "coordinator_task_waits", "coordinator_task_wait_events", "coordinator_graph_revisions", "coordinator_review_rounds", "coordinator_review_materializations"} {
 		rows, err := s.db.Query("SELECT * FROM " + table + " ORDER BY 1,2")
 		if err != nil {
 			t.Fatal(err)

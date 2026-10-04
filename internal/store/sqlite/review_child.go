@@ -1,12 +1,14 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/review"
@@ -188,91 +190,243 @@ func reviewChildReplayTx(ctx context.Context, tx *sql.Tx, expected review.Frozen
 	return receipt, true, nil
 }
 
-// Both representations can claim ownership. A corrupt foreign index must not
-// hide a retained child identity from creation or replay. Malformed JSON causes
-// the query to fail closed; it is never repaired here.
-const reviewChildAttemptOwnership = `workflow_run_id=?1 OR json_extract(record,'$.workflowRunId')=?1
- OR task_id IN (SELECT value FROM json_each(?2)) OR json_extract(record,'$.taskId') IN (SELECT value FROM json_each(?2))
- OR id IN (SELECT value FROM json_each(?3)) OR json_extract(record,'$.id') IN (SELECT value FROM json_each(?3))`
-
-func reviewChildIdentityLists(g review.ChildGraph) (string, string) {
-	tasks := make([]string, len(g.Tasks))
-	attempts := make([]string, len(g.Attempts))
-	for i, t := range g.Tasks {
-		tasks[i] = t.ID
-	}
-	for i, a := range g.Attempts {
-		attempts[i] = a.ID
-	}
-	taskJSON, _ := json.Marshal(tasks)
-	attemptJSON, _ := json.Marshal(attempts)
-	return string(taskJSON), string(attemptJSON)
+// reviewChildKeys contains only reserved identities at this private boundary.
+type reviewChildKeys struct {
+	run, workflow              string
+	tasks, attempts, artifacts map[string]bool
 }
 
-// Allocation-only preparation has no SQL execution or artifact rows. This runs
-// only after the no-marker writer recheck, before inserting or freezing anything.
-func refuseReviewChildOrphansTx(ctx context.Context, tx *sql.Tx, g review.ChildGraph) error {
-	tasks, attempts := reviewChildIdentityLists(g)
-	for _, query := range []string{
-		"SELECT count(*) FROM coordinator_attempts WHERE " + reviewChildAttemptOwnership,
-		`SELECT count(*) FROM coordinator_artifacts WHERE workflow_run_id=?1 OR json_extract(record,'$.workflowRunId')=?1
-   OR task_id IN (SELECT value FROM json_each(?2)) OR json_extract(record,'$.taskId') IN (SELECT value FROM json_each(?2))
-   OR attempt_id IN (SELECT value FROM json_each(?3)) OR json_extract(record,'$.attemptId') IN (SELECT value FROM json_each(?3))`,
-		`SELECT count(*) FROM coordinator_assignments WHERE attempt_id IN (SELECT value FROM json_each(?3))
-   OR json_extract(record,'$.attemptId') IN (SELECT value FROM json_each(?3))
-   OR json_extract(record,'$.workflowRunId')=?1 OR json_extract(record,'$.taskId') IN (SELECT value FROM json_each(?2))`,
-		`SELECT count(*) FROM coordinator_task_waits WHERE attempt_id IN (SELECT value FROM json_each(?3))
-   OR json_extract(record,'$.attemptId') IN (SELECT value FROM json_each(?3))
-   OR json_extract(record,'$.workflowRunId')=?1 OR json_extract(record,'$.taskId') IN (SELECT value FROM json_each(?2))`,
-		`SELECT count(*) FROM coordinator_task_wait_events WHERE attempt_id IN (SELECT value FROM json_each(?3))
-   OR json_extract(record,'$.attemptId') IN (SELECT value FROM json_each(?3))
-   OR json_extract(record,'$.workflowRunId')=?1 OR json_extract(record,'$.taskId') IN (SELECT value FROM json_each(?2))`,
-	} {
-		var count int
-		if err := tx.QueryRowContext(ctx, query, g.Run.ID, tasks, attempts).Scan(&count); err != nil {
-			return err
-		}
-		if count != 0 {
-			return ErrReviewMaterialization
-		}
+func newReviewChildKeys(g review.ChildGraph) reviewChildKeys {
+	k := reviewChildKeys{run: g.Run.ID, workflow: g.Workflow.ID, tasks: map[string]bool{}, attempts: map[string]bool{}, artifacts: map[string]bool{}}
+	for _, t := range g.Tasks {
+		k.tasks[t.ID] = true
 	}
-	for _, query := range []string{
-		"SELECT count(*) FROM coordinator_workflows WHERE id=?1 OR json_extract(record,'$.id')=?1",
-		"SELECT count(*) FROM coordinator_workflow_runs WHERE workflow_id=?1 OR json_extract(record,'$.workflowId')=?1",
-		"SELECT count(*) FROM coordinator_tasks WHERE workflow_id=?1 OR json_extract(record,'$.workflowId')=?1",
-	} {
-		var count int
-		if err := tx.QueryRowContext(ctx, query, g.Workflow.ID).Scan(&count); err != nil {
-			return err
-		}
-		if count != 0 {
-			return ErrReviewMaterialization
-		}
+	for _, a := range g.Attempts {
+		k.attempts[a.ID] = true
 	}
+	for _, a := range g.Artifacts {
+		k.artifacts[a.ID] = true
+	}
+	return k
+}
+func (k reviewChildKeys) attempt(id, run, task string) bool {
+	return k.attempts[id] || run == k.run || k.tasks[task]
+}
+func (k reviewChildKeys) artifact(id, run, task, attempt string) bool {
+	return k.artifacts[id] || run == k.run || k.tasks[task] || k.attempts[attempt]
+}
 
-	artifactIDs := make([]string, len(g.Artifacts))
-	for i, a := range g.Artifacts {
-		artifactIDs[i] = a.ID
+// Decode with the runtime domain type first. Token checking only refuses
+// ambiguous identity representations; it never substitutes for Go ownership.
+// Token strings unescape keys, so escaped duplicates are caught as well.
+func decodeReviewChildRecord[T any](raw []byte, keys []string) (T, error) {
+	var record T
+	if err := json.Unmarshal(raw, &record); err != nil {
+		return record, err
 	}
-	artifacts, _ := json.Marshal(artifactIDs)
-	// Strict inserts still enforce indexed primary-key collisions. Retained JSON
-	// identities must not masquerade as those same reserved records either.
-	var reserved int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM (
-	 SELECT 1 FROM coordinator_workflow_runs WHERE id=?1 OR json_extract(record,'$.id')=?1
-	 UNION ALL SELECT 1 FROM coordinator_tasks WHERE id IN (SELECT value FROM json_each(?2)) OR json_extract(record,'$.id') IN (SELECT value FROM json_each(?2))
-	 UNION ALL SELECT 1 FROM coordinator_artifacts WHERE id IN (SELECT value FROM json_each(?3)) OR json_extract(record,'$.id') IN (SELECT value FROM json_each(?3))
-	)`, g.Run.ID, tasks, string(artifacts)).Scan(&reserved); err != nil {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	token, err := d.Token()
+	if err != nil {
+		return record, err
+	}
+	if token != json.Delim('{') {
+		return record, ErrReviewMaterialization
+	}
+	seen := map[string]bool{}
+	for d.More() {
+		token, err = d.Token()
+		if err != nil {
+			return record, err
+		}
+		name, ok := token.(string)
+		if !ok {
+			return record, ErrReviewMaterialization
+		}
+		for _, key := range keys {
+			if strings.EqualFold(name, key) {
+				if name != key || seen[key] {
+					return record, ErrReviewMaterialization
+				}
+				seen[key] = true
+			}
+		}
+		var value json.RawMessage
+		if err = d.Decode(&value); err != nil {
+			return record, err
+		}
+	}
+	if _, err = d.Token(); err != nil {
+		return record, err
+	}
+	return record, nil
+}
+
+// Stream one indexed row and one domain record at a time, inside the caller's
+// coherent transaction. No SQL JSON predicate can discard a runtime-owned row.
+// Queries and identity fields are fixed private constants, never caller input.
+func scanReviewChildRows[T any](ctx context.Context, tx *sql.Tx, query string, columns int, keys []string, visit func([]string, T) error) error {
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
 		return err
 	}
-	if reserved != 0 {
+	defer rows.Close()
+	for rows.Next() {
+		indexed := make([]string, columns)
+		args := make([]any, columns+1)
+		for i := range indexed {
+			args[i] = &indexed[i]
+		}
+		var raw []byte
+		args[columns] = &raw
+		if err = rows.Scan(args...); err != nil {
+			return err
+		}
+		record, err := decodeReviewChildRecord[T](raw, keys)
+		if err != nil {
+			return err
+		}
+		if err = visit(indexed, record); err != nil {
+			return err
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	return rows.Close()
+}
+
+// Allocation-only preparation has no SQL child execution or artifact rows.
+// All analogous tables use indexed UNION runtime-decoded ownership.
+func refuseReviewChildOrphansTx(ctx context.Context, tx *sql.Tx, g review.ChildGraph) error {
+	k := newReviewChildKeys(g)
+	refuse := func(owned bool) error {
+		if owned {
+			return ErrReviewMaterialization
+		}
+		return nil
+	}
+	if err := scanReviewChildRows[domain.Attempt](ctx, tx, "SELECT id,workflow_run_id,task_id,record FROM coordinator_attempts", 3, reviewChildAttemptKeys,
+		func(i []string, a domain.Attempt) error {
+			return refuse(k.attempt(i[0], i[1], i[2]) || k.attempt(a.ID, a.WorkflowRunID, a.TaskID))
+		}); err != nil {
+		return err
+	}
+	if err := scanReviewChildRows[domain.Artifact](ctx, tx, "SELECT id,workflow_run_id,task_id,attempt_id,record FROM coordinator_artifacts", 4, reviewChildArtifactKeys,
+		func(i []string, a domain.Artifact) error {
+			return refuse(k.artifact(i[0], i[1], i[2], i[3]) || k.artifact(a.ID, a.WorkflowRunID, a.TaskID, a.AttemptID))
+		}); err != nil {
+		return err
+	}
+	if err := scanReviewChildRows[domain.Assignment](ctx, tx, "SELECT attempt_id,record FROM coordinator_assignments", 1, []string{"id", "attemptId"},
+		func(i []string, a domain.Assignment) error {
+			return refuse(k.attempts[i[0]] || k.attempts[a.AttemptID])
+		}); err != nil {
+		return err
+	}
+	if err := scanReviewChildRows[domain.TaskWait](ctx, tx, "SELECT attempt_id,record FROM coordinator_task_waits", 1, []string{"id", "workflowRunId", "taskId", "attemptId", "issuedRevision"},
+		func(i []string, w domain.TaskWait) error {
+			return refuse(k.attempts[i[0]] || k.attempts[w.AttemptID] || w.WorkflowRunID == k.run || k.tasks[w.TaskID])
+		}); err != nil {
+		return err
+	}
+	if err := scanReviewChildRows[domain.TaskWaitReconciliation](ctx, tx, "SELECT attempt_id,record FROM coordinator_task_wait_events", 1, []string{"id", "attemptId"},
+		func(i []string, e domain.TaskWaitReconciliation) error {
+			return refuse(k.attempts[i[0]] || k.attempts[e.AttemptID])
+		}); err != nil {
+		return err
+	}
+	return scanReviewChildDefinitionsTx(ctx, tx, g, false)
+}
+
+var reviewChildAttemptKeys = []string{"id", "workflowRunId", "taskId", "number", "revision", "supervisionActivationId", "supervisionActivationEpoch"}
+var reviewChildArtifactKeys = []string{"id", "workflowRunId", "taskId", "attemptId", "kind", "sha256"}
+
+// Replay also checks definitions/history through both identities. It may retain
+// legitimate execution progress, but cannot accept extra or hidden definitions.
+func scanReviewChildDefinitionsTx(ctx context.Context, tx *sql.Tx, g review.ChildGraph, bound bool) error {
+	k := newReviewChildKeys(g)
+	workflows, runs, tasks, history := 0, 0, 0, 0
+	if err := scanReviewChildRows[domain.Workflow](ctx, tx, "SELECT id,record FROM coordinator_workflows", 1, []string{"id"},
+		func(i []string, w domain.Workflow) error {
+			if i[0] != k.workflow && w.ID != k.workflow {
+				return nil
+			}
+			if !bound || i[0] != w.ID || !reflect.DeepEqual(w, g.Workflow) {
+				return ErrReviewMaterialization
+			}
+			workflows++
+			return nil
+		}); err != nil {
+		return err
+	}
+	if err := scanReviewChildRows[domain.WorkflowRun](ctx, tx, "SELECT id,workflow_id,record FROM coordinator_workflow_runs", 2, []string{"id", "workflowId", "revision", "graphRevision"},
+		func(i []string, r domain.WorkflowRun) error {
+			if i[0] != k.run && r.ID != k.run && i[1] != k.workflow && r.WorkflowID != k.workflow {
+				return nil
+			}
+			if !bound || i[0] != k.run || r.ID != i[0] || i[1] != k.workflow || r.WorkflowID != i[1] {
+				return ErrReviewMaterialization
+			}
+			runs++
+			return nil
+		}); err != nil {
+		return err
+	}
+	if err := scanReviewChildRows[domain.Task](ctx, tx, "SELECT id,workflow_id,record FROM coordinator_tasks", 2, []string{"id", "workflowId", "runId", "definitionRevision"},
+		func(i []string, t domain.Task) error {
+			if !k.tasks[i[0]] && !k.tasks[t.ID] && i[1] != k.workflow && t.WorkflowID != k.workflow && t.RunID != k.run {
+				return nil
+			}
+			if !bound || !k.tasks[i[0]] || t.ID != i[0] || i[1] != k.workflow || t.WorkflowID != i[1] {
+				return ErrReviewMaterialization
+			}
+			tasks++
+			return nil
+		}); err != nil {
+		return err
+	}
+	if err := scanReviewChildRows[domain.GraphDefinition](ctx, tx, "SELECT run_id,revision,record FROM coordinator_graph_revisions", 2, []string{"runId", "revision"},
+		func(i []string, d domain.GraphDefinition) error {
+			if i[0] != k.run && d.RunID != k.run {
+				return nil
+			}
+			if !bound || i[0] != k.run || d.RunID != i[0] || i[1] != "1" || d.Revision != 1 {
+				return ErrReviewMaterialization
+			}
+			history++
+			return nil
+		}); err != nil {
+		return err
+	}
+	if bound && (workflows != 1 || runs != 1 || tasks != len(g.Tasks) || history != 1) {
 		return ErrReviewMaterialization
 	}
-	var count int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM coordinator_graph_revisions WHERE run_id=? OR json_extract(record,'$.runId')=?", g.Run.ID, g.Run.ID).Scan(&count); err != nil {
-		return err
+	return nil
+}
+
+func validateReviewChildArtifactsTx(ctx context.Context, tx *sql.Tx, g review.ChildGraph) error {
+	k := newReviewChildKeys(g)
+	inputs := 0
+	returnErr := scanReviewChildRows[domain.Artifact](ctx, tx, "SELECT id,workflow_run_id,task_id,attempt_id,sha256,record FROM coordinator_artifacts", 5, reviewChildArtifactKeys,
+		func(i []string, a domain.Artifact) error {
+			if !k.artifact(i[0], i[1], i[2], i[3]) && !k.artifact(a.ID, a.WorkflowRunID, a.TaskID, a.AttemptID) {
+				return nil
+			}
+			if a.ID != i[0] || a.WorkflowRunID != i[1] || a.TaskID != i[2] || a.AttemptID != i[3] || a.SHA256 != i[4] || i[1] != k.run || (i[2] != "" && !k.tasks[i[2]]) {
+				return ErrReviewMaterialization
+			}
+			if a.Kind == domain.ArtifactInput {
+				if !k.artifacts[a.ID] || a.AttemptID != "" {
+					return ErrReviewMaterialization
+				}
+				inputs++
+			}
+			return nil
+		})
+	if returnErr != nil {
+		return returnErr
 	}
-	if count != 0 {
+	if inputs != len(g.Artifacts) {
 		return ErrReviewMaterialization
 	}
 	return nil
@@ -281,8 +435,8 @@ func refuseReviewChildOrphansTx(ctx context.Context, tx *sql.Tx, g review.ChildG
 // Revision and mutable execution values may advance; only the two stored
 // identities, positive counters and declared-task membership must agree.
 func validateReviewChildAttemptsTx(ctx context.Context, tx *sql.Tx, g review.ChildGraph) error {
-	tasks, attempts := reviewChildIdentityLists(g)
-	rows, err := tx.QueryContext(ctx, "SELECT id,workflow_run_id,task_id,number,revision,record FROM coordinator_attempts WHERE "+reviewChildAttemptOwnership, g.Run.ID, tasks, attempts)
+	k := newReviewChildKeys(g)
+	rows, err := tx.QueryContext(ctx, "SELECT id,workflow_run_id,task_id,number,revision,record FROM coordinator_attempts")
 	if err != nil {
 		return err
 	}
@@ -305,8 +459,12 @@ func validateReviewChildAttemptsTx(ctx context.Context, tx *sql.Tx, g review.Chi
 			return err
 		}
 		var a domain.Attempt
-		if err := json.Unmarshal(raw, &a); err != nil {
+		a, err = decodeReviewChildRecord[domain.Attempt](raw, reviewChildAttemptKeys)
+		if err != nil {
 			return err
+		}
+		if !k.attempt(id, run, task) && !k.attempt(a.ID, a.WorkflowRunID, a.TaskID) {
+			continue
 		}
 		if id == "" || a.ID != id || a.WorkflowRunID != run || a.TaskID != task || a.Number != number || a.Revision != revision ||
 			run != g.Run.ID || !members[task] || number < 1 || revision < 1 || a.SupervisionActivationID != "" || a.SupervisionActivationEpoch != 0 {
@@ -362,6 +520,12 @@ func insertReviewChildTx(ctx context.Context, tx *sql.Tx, g review.ChildGraph) e
 
 func validateReviewChildTx(ctx context.Context, tx *sql.Tx, receipt ReviewMaterialization) error {
 	g := receipt.Graph
+	if err := scanReviewChildDefinitionsTx(ctx, tx, g, true); err != nil {
+		return err
+	}
+	if err := validateReviewChildArtifactsTx(ctx, tx, g); err != nil {
+		return err
+	}
 	w, err := loadReviewJSONTx[domain.Workflow](ctx, tx, "SELECT record FROM coordinator_workflows WHERE id=?", g.Workflow.ID)
 	if err != nil {
 		return err
@@ -413,7 +577,6 @@ func validateReviewChildTx(ctx context.Context, tx *sql.Tx, receipt ReviewMateri
 	}{
 		{"SELECT count(*) FROM coordinator_graph_revisions WHERE run_id=?", 1},
 		{"SELECT count(*) FROM coordinator_attempts WHERE workflow_run_id=? AND number=1", len(g.Attempts)},
-		{"SELECT count(*) FROM coordinator_artifacts WHERE workflow_run_id=? AND json_extract(record,'$.kind')='input'", len(g.Artifacts)},
 	} {
 		if err := tx.QueryRowContext(ctx, check.query, r.ID).Scan(&count); err != nil {
 			return err

@@ -27,6 +27,7 @@ func (c *admissionFixtureCatalog) ReviewAdmissionCatalog(context.Context, string
 type admissionCountingStore struct {
 	*sqlite.Store
 	freezes int
+	dbPath  string // Disposable fixture path for narrow retained child corruption tests.
 }
 
 func (s *admissionCountingStore) FreezeReviewAuthority(ctx context.Context, a review.FrozenAuthority) (review.FrozenAuthority, error) {
@@ -50,7 +51,8 @@ func newAdmissionFixture(t *testing.T) admissionFixture {
 	writeBundleFile(t, bundle, "inputs/criteria.md", "retained criteria")
 	writeBundleFile(t, bundle, "inputs/context.md", "context")
 	rewriteBundleManifest(t, bundle, "version: 2\nname: admission\npinned_inputs: true\nenvironment: {project: t3-steward, ref: "+strings.Repeat("c", 40)+"}\ninputs: [inputs/*.md]\ntasks:\n  inspect: {prompt_file: prompts/inspect.md}\n")
-	db, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := sqlite.OpenMigrated(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +85,7 @@ func newAdmissionFixture(t *testing.T) admissionFixture {
 			criteria = artifact.ID
 		}
 	}
-	store := &admissionCountingStore{Store: db}
+	store := &admissionCountingStore{Store: db, dbPath: dbPath}
 	service := ReviewAdmissionService{Store: store, Artifacts: CoordinatorArtifactStore{Catalog: db, SubmissionRoot: root}, Projects: projects, Catalog: catalog}
 	request := AdmissionRequest{RunID: ingested.RunID, TaskID: records.Tasks[0].ID, AttemptID: a.ID, Policy: AdmissionPolicy{Risk: "routine", CriteriaArtifactID: criteria, RequiredReviewers: 2, MinProviderFamilies: 2, Members: []AdmissionMember{{"one", "independent", "codex/org/sol", true}, {"two", "independent", "other/model", true}}}}
 	return admissionFixture{service, request, records, store, catalog, bundle}
