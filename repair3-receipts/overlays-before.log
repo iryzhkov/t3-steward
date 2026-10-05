@@ -1,0 +1,135 @@
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/omitted
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/canonical-null
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/duplicate-confirmed
+    review_child_cancel_repair3_astra_test.go:89: ambiguous/dispatched offer accepted: status=stop-requested reason="parent attempt ended" cancelled=2 pending=true changed=true tokenRevoked=true custodyRetained=true parentBytesPreserved=true
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/case-confirmed
+    review_child_cancel_repair3_astra_test.go:89: ambiguous/dispatched offer accepted: status=stop-requested reason="parent attempt ended" cancelled=2 pending=true changed=true tokenRevoked=true custodyRetained=true parentBytesPreserved=true
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/escaped-confirmed
+    review_child_cancel_repair3_astra_test.go:89: ambiguous/dispatched offer accepted: status=stop-requested reason="parent attempt ended" cancelled=2 pending=true changed=true tokenRevoked=true custodyRetained=true parentBytesPreserved=true
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/duplicate-state
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/duplicate-revision
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/omitted
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/canonical-null
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/duplicate-confirmed
+    review_child_cancel_repair3_astra_test.go:89: ambiguous/dispatched offer accepted: status=stop-requested reason="parent attempt superseded" cancelled=2 pending=true changed=true tokenRevoked=true custodyRetained=true parentBytesPreserved=true
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/case-confirmed
+    review_child_cancel_repair3_astra_test.go:89: ambiguous/dispatched offer accepted: status=stop-requested reason="parent attempt superseded" cancelled=2 pending=true changed=true tokenRevoked=true custodyRetained=true parentBytesPreserved=true
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/escaped-confirmed
+    review_child_cancel_repair3_astra_test.go:89: ambiguous/dispatched offer accepted: status=stop-requested reason="parent attempt superseded" cancelled=2 pending=true changed=true tokenRevoked=true custodyRetained=true parentBytesPreserved=true
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/duplicate-state
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/duplicate-revision
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/omitted
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/canonical-null
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/duplicate-confirmed
+    review_child_cancel_repair3_astra_test.go:89: ambiguous/dispatched offer accepted: status=stop-requested reason="parent run ended" cancelled=2 pending=true changed=true tokenRevoked=true custodyRetained=true parentBytesPreserved=true
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/case-confirmed
+    review_child_cancel_repair3_astra_test.go:89: ambiguous/dispatched offer accepted: status=stop-requested reason="parent run ended" cancelled=2 pending=true changed=true tokenRevoked=true custodyRetained=true parentBytesPreserved=true
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/escaped-confirmed
+    review_child_cancel_repair3_astra_test.go:89: ambiguous/dispatched offer accepted: status=stop-requested reason="parent run ended" cancelled=2 pending=true changed=true tokenRevoked=true custodyRetained=true parentBytesPreserved=true
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/duplicate-state
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/duplicate-revision
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/omitted
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/canonical-null
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/duplicate-confirmed
+    review_child_cancel_repair3_astra_test.go:89: ambiguous/dispatched offer accepted: status=stop-requested reason="parent attempt superseded" cancelled=2 pending=true changed=true tokenRevoked=true custodyRetained=true parentBytesPreserved=true
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/case-confirmed
+    review_child_cancel_repair3_astra_test.go:89: ambiguous/dispatched offer accepted: status=stop-requested reason="parent attempt superseded" cancelled=2 pending=true changed=true tokenRevoked=true custodyRetained=true parentBytesPreserved=true
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/escaped-confirmed
+    review_child_cancel_repair3_astra_test.go:89: ambiguous/dispatched offer accepted: status=stop-requested reason="parent attempt superseded" cancelled=2 pending=true changed=true tokenRevoked=true custodyRetained=true parentBytesPreserved=true
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/duplicate-state
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/duplicate-revision
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/omitted
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/canonical-null
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/duplicate-confirmed
+    review_child_cancel_repair3_astra_test.go:89: ambiguous/dispatched offer accepted: status=stop-requested reason="review deadline reached" cancelled=2 pending=true changed=true tokenRevoked=true custodyRetained=true parentBytesPreserved=true
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/case-confirmed
+    review_child_cancel_repair3_astra_test.go:89: ambiguous/dispatched offer accepted: status=stop-requested reason="review deadline reached" cancelled=2 pending=true changed=true tokenRevoked=true custodyRetained=true parentBytesPreserved=true
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/escaped-confirmed
+    review_child_cancel_repair3_astra_test.go:89: ambiguous/dispatched offer accepted: status=stop-requested reason="review deadline reached" cancelled=2 pending=true changed=true tokenRevoked=true custodyRetained=true parentBytesPreserved=true
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/duplicate-state
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/duplicate-revision
+--- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity (1.16s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/omitted (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/canonical-null (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/confirmed (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/duplicate-confirmed (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/case-confirmed (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/escaped-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/duplicate-state (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/duplicate-revision (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/omitted (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/canonical-null (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/confirmed (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/duplicate-confirmed (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/case-confirmed (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/escaped-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/duplicate-state (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/duplicate-revision (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/omitted (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/canonical-null (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/confirmed (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/duplicate-confirmed (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/case-confirmed (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/escaped-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/duplicate-state (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/duplicate-revision (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/omitted (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/canonical-null (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/confirmed (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/duplicate-confirmed (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/case-confirmed (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/escaped-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/duplicate-state (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/duplicate-revision (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/omitted (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/canonical-null (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/confirmed (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/duplicate-confirmed (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/case-confirmed (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/escaped-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/duplicate-state (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/duplicate-revision (0.03s)
+=== RUN   TestIndependentCancellationRepair2AtomicReplay
+=== RUN   TestIndependentCancellationRepair2AtomicReplay/claimed
+=== RUN   TestIndependentCancellationRepair2AtomicReplay/unknown
+--- PASS: TestIndependentCancellationRepair2AtomicReplay (0.08s)
+    --- PASS: TestIndependentCancellationRepair2AtomicReplay/claimed (0.04s)
+    --- PASS: TestIndependentCancellationRepair2AtomicReplay/unknown (0.04s)
+=== RUN   TestIndependentCancellationRepair2Custody
+=== RUN   TestIndependentCancellationRepair2Custody/claimed/middle-offer
+=== RUN   TestIndependentCancellationRepair2Custody/claimed/settled-retry
+=== RUN   TestIndependentCancellationRepair2Custody/claimed/empty-reservation-token
+=== RUN   TestIndependentCancellationRepair2Custody/unknown/middle-offer
+=== RUN   TestIndependentCancellationRepair2Custody/unknown/settled-retry
+=== RUN   TestIndependentCancellationRepair2Custody/unknown/empty-reservation-token
+--- PASS: TestIndependentCancellationRepair2Custody (0.17s)
+    --- PASS: TestIndependentCancellationRepair2Custody/claimed/middle-offer (0.03s)
+    --- PASS: TestIndependentCancellationRepair2Custody/claimed/settled-retry (0.03s)
+    --- PASS: TestIndependentCancellationRepair2Custody/claimed/empty-reservation-token (0.03s)
+    --- PASS: TestIndependentCancellationRepair2Custody/unknown/middle-offer (0.03s)
+    --- PASS: TestIndependentCancellationRepair2Custody/unknown/settled-retry (0.03s)
+    --- PASS: TestIndependentCancellationRepair2Custody/unknown/empty-reservation-token (0.03s)
+=== RUN   TestIndependentCancellationRepair2ConfirmedAmbiguity
+=== RUN   TestIndependentCancellationRepair2ConfirmedAmbiguity/single-null
+=== RUN   TestIndependentCancellationRepair2ConfirmedAmbiguity/single-time
+=== RUN   TestIndependentCancellationRepair2ConfirmedAmbiguity/dispatchConfirmedAt
+    review_child_cancel_repair3_sol_test.go:87: ambiguous dispatch confirmation accepted: {Status:stop-requested Reason:review deadline reached CancelledAttempts:[rt-2c76addaab5b49866af204a28f9893955bd9a9c235b298b7ef358f9f7a67cfcf rt-5c1ae25fa10d42c13203c8a05148b35a35367faacbe23bad065658116eeb0740] WorkerStopPending:true} changed=true
+=== RUN   TestIndependentCancellationRepair2ConfirmedAmbiguity/DispatchConfirmedAt
+    review_child_cancel_repair3_sol_test.go:87: ambiguous dispatch confirmation accepted: {Status:stop-requested Reason:review deadline reached CancelledAttempts:[rt-2c76addaab5b49866af204a28f9893955bd9a9c235b298b7ef358f9f7a67cfcf rt-5c1ae25fa10d42c13203c8a05148b35a35367faacbe23bad065658116eeb0740] WorkerStopPending:true} changed=true
+=== RUN   TestIndependentCancellationRepair2ConfirmedAmbiguity/dispatchConfirmed\u0041t
+    review_child_cancel_repair3_sol_test.go:87: ambiguous dispatch confirmation accepted: {Status:stop-requested Reason:review deadline reached CancelledAttempts:[rt-2c76addaab5b49866af204a28f9893955bd9a9c235b298b7ef358f9f7a67cfcf rt-5c1ae25fa10d42c13203c8a05148b35a35367faacbe23bad065658116eeb0740] WorkerStopPending:true} changed=true
+--- FAIL: TestIndependentCancellationRepair2ConfirmedAmbiguity (0.14s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmedAmbiguity/single-null (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmedAmbiguity/single-time (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmedAmbiguity/dispatchConfirmedAt (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmedAmbiguity/DispatchConfirmedAt (0.03s)
+    --- FAIL: TestIndependentCancellationRepair2ConfirmedAmbiguity/dispatchConfirmed\u0041t (0.03s)
+FAIL
+FAIL	github.com/iryzhkov/t3-steward/internal/store/sqlite	1.562s
+FAIL

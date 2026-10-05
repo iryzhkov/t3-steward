@@ -287,7 +287,7 @@ func reviewCancellationAssignmentsTx(ctx context.Context, tx *sql.Tx, children m
 	seen := map[string]bool{}
 	err := scanReviewChildRows[reviewCancellationAssignmentRecord](ctx, tx,
 		"SELECT id,attempt_id,worker_id,worker_epoch,assignment_epoch,assignment_state,dispatch_revision,dispatch_state,lease_expires_at,dispatch_token,record FROM coordinator_assignments", 10,
-		[]string{"id", "attemptId", "workerId", "workerEpoch", "epoch", "state", "threadId", "route", "dispatchToken", "dispatchState", "dispatchRevision", "leaseExpiresAt", "project", "executionRole", "activationId", "gateId"},
+		[]string{"id", "attemptId", "workerId", "workerEpoch", "epoch", "state", "threadId", "route", "dispatchToken", "dispatchState", "dispatchRevision", "dispatchConfirmedAt", "leaseExpiresAt", "project", "executionRole", "activationId", "gateId"},
 		func(i []string, record reviewCancellationAssignmentRecord) error {
 			a := record.Assignment
 			_, ic := children[i[1]]

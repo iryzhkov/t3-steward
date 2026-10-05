@@ -1,0 +1,176 @@
+// Retained complete actual sol repair2 review overlay; assertions unchanged.
+package sqlite
+
+import (
+	"context"
+	"encoding/json"
+	"github.com/iryzhkov/t3-steward/internal/domain"
+	"reflect"
+	"testing"
+	"time"
+)
+
+// Isolated repair2 reviewer controls; fixture persistence only.
+func TestIndependentCancellationRepair2Custody(t *testing.T) {
+	for _, state := range []domain.AssignmentState{domain.AssignmentClaimed, domain.AssignmentUnknown} {
+		for _, mode := range []string{"middle-offer", "settled-retry", "empty-reservation-token"} {
+			t.Run(string(state)+"/"+mode, func(t *testing.T) {
+				ctx := context.Background()
+				s, f, cp, receipt := parentWaitFixture(t)
+				if _, err := s.WaitReviewParent(ctx, f, cp); err != nil {
+					t.Fatal(err)
+				}
+				child := cancellationAssign(t, s, receipt.Graph.Attempts[0], state, f.Requirements.Members[0].Route)
+				retry := cancellationParentRow(t, s, f.Parent.AttemptID)
+				retry.ID = "reviewer-retry"
+				retry.Number++
+				retry.Revision = 1
+				retry.Progress = domain.ProgressReady
+				retry.Control = domain.ControlUnassigned
+				retry.AssignmentID = ""
+				retry.ThreadID = ""
+				retry.CompletedAt = nil
+				cancellationSave(t, s, CoordinatorRecords{Attempts: []domain.Attempt{retry}})
+				offer := cancellationAssign(t, s, retry, domain.AssignmentOffered, f.Parent.ExecutorRoute)
+				retry = cancellationParentRow(t, s, retry.ID)
+				if mode == "middle-offer" {
+					latest := retry
+					latest.ID = "reviewer-latest"
+					latest.Number++
+					latest.Revision = 1
+					latest.AssignmentID = ""
+					latest.ThreadID = ""
+					cancellationSave(t, s, CoordinatorRecords{Attempts: []domain.Attempt{latest}})
+				}
+				if mode == "settled-retry" {
+					offer.State = domain.AssignmentReleased
+					retry.AssignmentID = ""
+					retry.ThreadID = ""
+					cancellationSave(t, s, CoordinatorRecords{Attempts: []domain.Attempt{retry}, Assignments: []domain.Assignment{offer}})
+				}
+				if mode == "empty-reservation-token" {
+					offer.DispatchToken = ""
+					cancellationSave(t, s, CoordinatorRecords{Assignments: []domain.Assignment{offer}})
+				}
+				path := s.path
+				if err := s.Close(); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				s, err = Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer s.Close()
+				s.now = func() time.Time { return *receipt.Graph.Tasks[0].Deadline }
+				parentBefore := parentWaitSnapshot(t, s, f)
+				retryRaw := func() string {
+					var raw string
+					if err := s.db.QueryRow("SELECT record FROM coordinator_attempts WHERE id=?", retry.ID).Scan(&raw); err != nil {
+						t.Fatal(err)
+					}
+					return raw
+				}
+				offerRaw := func() string {
+					var raw string
+					if err := s.db.QueryRow("SELECT record FROM coordinator_assignments WHERE id=?", offer.ID).Scan(&raw); err != nil {
+						t.Fatal(err)
+					}
+					return raw
+				}
+				rb, ob := retryRaw(), offerRaw()
+				got, err := s.ReconcileReviewChildCancellation(ctx, f, cp)
+				if err != nil || got.Status != "stop-requested" || !got.WorkerStopPending || got.Reason != "review deadline reached" {
+					t.Fatalf("cleanup %+v %v", got, err)
+				}
+				if parentBefore != parentWaitSnapshot(t, s, f) || rb != retryRaw() || ob != offerRaw() {
+					t.Fatal("parent/wait/retry/offer bytes changed")
+				}
+				after := cancellationParentAssignment(t, s, child.ID)
+				expected := child
+				expected.DispatchToken = ""
+				expected.DispatchError = after.DispatchError
+				expected.UpdatedAt = after.UpdatedAt
+				if !reflect.DeepEqual(expected, after) {
+					t.Fatalf("custody changed: before %+v after %+v", child, after)
+				}
+				snap := cancellationSnapshot(t, s)
+				again, err := s.ReconcileReviewChildCancellation(ctx, f, cp)
+				if err != nil || !again.WorkerStopPending || len(again.CancelledAttempts) != 0 || snap != cancellationSnapshot(t, s) {
+					t.Fatalf("replay %+v %v", again, err)
+				}
+			})
+		}
+	}
+}
+
+func TestIndependentCancellationRepair2ConfirmedAmbiguity(t *testing.T) {
+	for _, key := range []string{"single-null", "single-time", "dispatchConfirmedAt", "DispatchConfirmedAt", `dispatchConfirmed\u0041t`} {
+		t.Run(key, func(t *testing.T) {
+			ctx := context.Background()
+			s, f, cp, receipt := parentWaitFixture(t)
+			if _, err := s.WaitReviewParent(ctx, f, cp); err != nil {
+				t.Fatal(err)
+			}
+			cancellationAssign(t, s, receipt.Graph.Attempts[0], domain.AssignmentClaimed, f.Requirements.Members[0].Route)
+			retry := cancellationParentRow(t, s, f.Parent.AttemptID)
+			retry.ID = "ambiguous-offer"
+			retry.Number++
+			retry.Revision = 1
+			retry.Progress = domain.ProgressReady
+			retry.Control = domain.ControlUnassigned
+			retry.AssignmentID = ""
+			retry.ThreadID = ""
+			retry.CompletedAt = nil
+			cancellationSave(t, s, CoordinatorRecords{Attempts: []domain.Attempt{retry}})
+			offer := cancellationAssign(t, s, retry, domain.AssignmentOffered, f.Parent.ExecutorRoute)
+			raw, err := json.Marshal(offer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw = append(raw[:len(raw)-1], []byte(",\"dispatchConfirmedAt\":\"2026-01-01T00:00:00Z\",\""+key+"\":null}")...)
+			if key == "single-null" {
+				raw, err = json.Marshal(offer)
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw = append(raw[:len(raw)-1], []byte(",\"dispatchConfirmedAt\":null}")...)
+			}
+			if key == "single-time" {
+				now := time.Now().UTC()
+				offer.DispatchConfirmedAt = &now
+				raw, err = json.Marshal(offer)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err = s.db.Exec("UPDATE coordinator_assignments SET record=? WHERE id=?", raw, offer.ID); err != nil {
+				t.Fatal(err)
+			}
+			path := s.path
+			if err = s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			s, err = Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			s.now = func() time.Time { return *receipt.Graph.Tasks[0].Deadline }
+			before := cancellationSnapshot(t, s)
+			got, err := s.ReconcileReviewChildCancellation(ctx, f, cp)
+			if key == "single-null" {
+				if err != nil || got.Status != "stop-requested" || !got.WorkerStopPending {
+					t.Fatalf("single null compatibility %+v %v", got, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ambiguous dispatch confirmation accepted: %+v changed=%v", got, before != cancellationSnapshot(t, s))
+			}
+			if before != cancellationSnapshot(t, s) {
+				t.Fatal("refusal changed full tables")
+			}
+		})
+	}
+}

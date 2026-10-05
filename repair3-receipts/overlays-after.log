@@ -1,0 +1,134 @@
+=== RUN   TestReviewChildCancellationConfirmationTerminalReplay
+=== RUN   TestReviewChildCancellationConfirmationTerminalReplay/claimed/dispatchConfirmedAt
+=== RUN   TestReviewChildCancellationConfirmationTerminalReplay/claimed/DispatchConfirmedAt
+=== RUN   TestReviewChildCancellationConfirmationTerminalReplay/claimed/dispatchConf\u0069rmedAt
+=== RUN   TestReviewChildCancellationConfirmationTerminalReplay/claimed/single-time
+=== RUN   TestReviewChildCancellationConfirmationTerminalReplay/unknown/dispatchConfirmedAt
+=== RUN   TestReviewChildCancellationConfirmationTerminalReplay/unknown/DispatchConfirmedAt
+=== RUN   TestReviewChildCancellationConfirmationTerminalReplay/unknown/dispatchConf\u0069rmedAt
+=== RUN   TestReviewChildCancellationConfirmationTerminalReplay/unknown/single-time
+--- PASS: TestReviewChildCancellationConfirmationTerminalReplay (0.28s)
+    --- PASS: TestReviewChildCancellationConfirmationTerminalReplay/claimed/dispatchConfirmedAt (0.04s)
+    --- PASS: TestReviewChildCancellationConfirmationTerminalReplay/claimed/DispatchConfirmedAt (0.03s)
+    --- PASS: TestReviewChildCancellationConfirmationTerminalReplay/claimed/dispatchConf\u0069rmedAt (0.03s)
+    --- PASS: TestReviewChildCancellationConfirmationTerminalReplay/claimed/single-time (0.04s)
+    --- PASS: TestReviewChildCancellationConfirmationTerminalReplay/unknown/dispatchConfirmedAt (0.03s)
+    --- PASS: TestReviewChildCancellationConfirmationTerminalReplay/unknown/DispatchConfirmedAt (0.03s)
+    --- PASS: TestReviewChildCancellationConfirmationTerminalReplay/unknown/dispatchConf\u0069rmedAt (0.03s)
+    --- PASS: TestReviewChildCancellationConfirmationTerminalReplay/unknown/single-time (0.04s)
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/omitted
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/canonical-null
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/duplicate-confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/case-confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/escaped-confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/duplicate-state
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/duplicate-revision
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/omitted
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/canonical-null
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/duplicate-confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/case-confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/escaped-confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/duplicate-state
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/duplicate-revision
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/omitted
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/canonical-null
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/duplicate-confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/case-confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/escaped-confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/duplicate-state
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/duplicate-revision
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/omitted
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/canonical-null
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/duplicate-confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/case-confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/escaped-confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/duplicate-state
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/duplicate-revision
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/omitted
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/canonical-null
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/duplicate-confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/case-confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/escaped-confirmed
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/duplicate-state
+=== RUN   TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/duplicate-revision
+--- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity (1.14s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/omitted (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/canonical-null (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/duplicate-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/case-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/escaped-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/duplicate-state (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ended/duplicate-revision (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/omitted (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/canonical-null (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/duplicate-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/case-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/escaped-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/duplicate-state (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/superseded/duplicate-revision (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/omitted (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/canonical-null (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/duplicate-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/case-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/escaped-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/duplicate-state (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/run-ended/duplicate-revision (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/omitted (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/canonical-null (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/duplicate-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/case-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/escaped-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/duplicate-state (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/ownership-lost/duplicate-revision (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/omitted (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/canonical-null (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/duplicate-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/case-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/escaped-confirmed (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/duplicate-state (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmationAmbiguity/deadline/duplicate-revision (0.03s)
+=== RUN   TestIndependentCancellationRepair2AtomicReplay
+=== RUN   TestIndependentCancellationRepair2AtomicReplay/claimed
+=== RUN   TestIndependentCancellationRepair2AtomicReplay/unknown
+--- PASS: TestIndependentCancellationRepair2AtomicReplay (0.08s)
+    --- PASS: TestIndependentCancellationRepair2AtomicReplay/claimed (0.04s)
+    --- PASS: TestIndependentCancellationRepair2AtomicReplay/unknown (0.04s)
+=== RUN   TestIndependentCancellationRepair2Custody
+=== RUN   TestIndependentCancellationRepair2Custody/claimed/middle-offer
+=== RUN   TestIndependentCancellationRepair2Custody/claimed/settled-retry
+=== RUN   TestIndependentCancellationRepair2Custody/claimed/empty-reservation-token
+=== RUN   TestIndependentCancellationRepair2Custody/unknown/middle-offer
+=== RUN   TestIndependentCancellationRepair2Custody/unknown/settled-retry
+=== RUN   TestIndependentCancellationRepair2Custody/unknown/empty-reservation-token
+--- PASS: TestIndependentCancellationRepair2Custody (0.17s)
+    --- PASS: TestIndependentCancellationRepair2Custody/claimed/middle-offer (0.03s)
+    --- PASS: TestIndependentCancellationRepair2Custody/claimed/settled-retry (0.03s)
+    --- PASS: TestIndependentCancellationRepair2Custody/claimed/empty-reservation-token (0.03s)
+    --- PASS: TestIndependentCancellationRepair2Custody/unknown/middle-offer (0.03s)
+    --- PASS: TestIndependentCancellationRepair2Custody/unknown/settled-retry (0.03s)
+    --- PASS: TestIndependentCancellationRepair2Custody/unknown/empty-reservation-token (0.03s)
+=== RUN   TestIndependentCancellationRepair2ConfirmedAmbiguity
+=== RUN   TestIndependentCancellationRepair2ConfirmedAmbiguity/single-null
+=== RUN   TestIndependentCancellationRepair2ConfirmedAmbiguity/single-time
+=== RUN   TestIndependentCancellationRepair2ConfirmedAmbiguity/dispatchConfirmedAt
+=== RUN   TestIndependentCancellationRepair2ConfirmedAmbiguity/DispatchConfirmedAt
+=== RUN   TestIndependentCancellationRepair2ConfirmedAmbiguity/dispatchConfirmed\u0041t
+--- PASS: TestIndependentCancellationRepair2ConfirmedAmbiguity (0.14s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmedAmbiguity/single-null (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmedAmbiguity/single-time (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmedAmbiguity/dispatchConfirmedAt (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmedAmbiguity/DispatchConfirmedAt (0.03s)
+    --- PASS: TestIndependentCancellationRepair2ConfirmedAmbiguity/dispatchConfirmed\u0041t (0.03s)
+PASS
+ok  	github.com/iryzhkov/t3-steward/internal/store/sqlite	1.820s

@@ -1,0 +1,27 @@
+diff --git i/internal/store/sqlite/review_child_cancel.go w/internal/store/sqlite/review_child_cancel.go
+index 6de3088..6fb2e95 100644
+--- i/internal/store/sqlite/review_child_cancel.go
++++ w/internal/store/sqlite/review_child_cancel.go
+@@ -287,7 +287,7 @@ func reviewCancellationAssignmentsTx(ctx context.Context, tx *sql.Tx, children m
+ 	seen := map[string]bool{}
+ 	err := scanReviewChildRows[reviewCancellationAssignmentRecord](ctx, tx,
+ 		"SELECT id,attempt_id,worker_id,worker_epoch,assignment_epoch,assignment_state,dispatch_revision,dispatch_state,lease_expires_at,dispatch_token,record FROM coordinator_assignments", 10,
+-		[]string{"id", "attemptId", "workerId", "workerEpoch", "epoch", "state", "threadId", "route", "dispatchToken", "dispatchState", "dispatchRevision", "leaseExpiresAt", "project", "executionRole", "activationId", "gateId"},
++		[]string{"id", "attemptId", "workerId", "workerEpoch", "epoch", "state", "threadId", "route", "dispatchToken", "dispatchState", "dispatchRevision", "dispatchConfirmedAt", "leaseExpiresAt", "project", "executionRole", "activationId", "gateId"},
+ 		func(i []string, record reviewCancellationAssignmentRecord) error {
+ 			a := record.Assignment
+ 			_, ic := children[i[1]]
+ M internal/store/sqlite/review_child_cancel.go
+ M repair-contract.md
+?? .t3/
+?? continuation.md
+?? internal/store/sqlite/review_child_cancel_confirmation_replay_test.go
+?? internal/store/sqlite/review_child_cancel_repair3_astra_test.go
+?? internal/store/sqlite/review_child_cancel_repair3_sol_test.go
+?? repair3-receipts/
+ee48901bb0f016e84bbdd410d22042691ddd44f5aad586cfa596830e4804fe4f  repair3-receipts/astra-actual-overlay.go.txt
+71c491567628fbe6cd60cb7f10de500ebb7d76aa7988a7cc4337c4c8a72766b3  repair3-receipts/final-audit.log
+908253e5d2fd37bbaf7e4e8ddc7b5275b50e7053290dc3aa2631a7488d39bb24  repair3-receipts/focused-final.log
+021a333da3b0e7dbbb38ae54f57d09077fbcdca79f5f6823e5bd1b9cfb4ba469  repair3-receipts/overlays-after.log
+62dcaa3e65ff05a4b7b32d8f87ef4996b0dab329b344b4d4d1721c3ce2b31f59  repair3-receipts/overlays-before.log
+f9a069e81dbb7bcd899f9afc33e9893c76f57bfd7f5b00c292216232adf112f4  repair3-receipts/sol-actual-overlay.go.txt

@@ -1,0 +1,40 @@
+go build ./...
+go vet ./...
+go test -short -timeout 10m ./...
+ok  	github.com/iryzhkov/t3-steward/cmd/t3-steward	12.893s
+ok  	github.com/iryzhkov/t3-steward/internal/archive	0.007s
+ok  	github.com/iryzhkov/t3-steward/internal/backlog	6.363s
+ok  	github.com/iryzhkov/t3-steward/internal/backlogadmin	2.092s
+ok  	github.com/iryzhkov/t3-steward/internal/backupsnapshot	0.888s
+ok  	github.com/iryzhkov/t3-steward/internal/blockingwait	0.315s
+ok  	github.com/iryzhkov/t3-steward/internal/campaign	0.662s
+ok  	github.com/iryzhkov/t3-steward/internal/compat	0.001s
+ok  	github.com/iryzhkov/t3-steward/internal/config	0.024s
+ok  	github.com/iryzhkov/t3-steward/internal/control/t3	0.970s
+ok  	github.com/iryzhkov/t3-steward/internal/daemon	0.752s
+ok  	github.com/iryzhkov/t3-steward/internal/directoryresource	0.002s
+ok  	github.com/iryzhkov/t3-steward/internal/domain	0.006s
+?   	github.com/iryzhkov/t3-steward/internal/notify	[no test files]
+ok  	github.com/iryzhkov/t3-steward/internal/ownernotify	0.331s
+ok  	github.com/iryzhkov/t3-steward/internal/pinnedinput	0.003s
+ok  	github.com/iryzhkov/t3-steward/internal/platform	0.002s
+ok  	github.com/iryzhkov/t3-steward/internal/policy	0.002s
+?   	github.com/iryzhkov/t3-steward/internal/privatefile	[no test files]
+ok  	github.com/iryzhkov/t3-steward/internal/providercontainment	0.010s
+ok  	github.com/iryzhkov/t3-steward/internal/report	0.002s
+ok  	github.com/iryzhkov/t3-steward/internal/review	0.005s
+ok  	github.com/iryzhkov/t3-steward/internal/sessionarchive	0.002s
+ok  	github.com/iryzhkov/t3-steward/internal/source/providerlog	0.864s
+ok  	github.com/iryzhkov/t3-steward/internal/store/sqlite	25.999s
+ok  	github.com/iryzhkov/t3-steward/internal/t3api	0.270s
+ok  	github.com/iryzhkov/t3-steward/internal/t3projects	0.003s
+ok  	github.com/iryzhkov/t3-steward/internal/wait	0.004s
+ok  	github.com/iryzhkov/t3-steward/internal/workerproto	0.089s
+ok  	github.com/iryzhkov/t3-steward/internal/workerruntime	5.382s
+make lint
+make[1]: Entering directory '/home/igor/.local/state/t3-steward/worker/workspaces/workers/a7fcb9e3a08e3874/run-7ddeb0ff388985516cc333889e4eb1e3/task-03493afc9a8ae145cca192b4de2858e0/attempt-8a366bef0a4676e504007d1c80af8025/workspace'
+GOTOOLCHAIN=go1.25.0 go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+test -z "$(/home/igor/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64/bin/gofmt -l .)"
+make[1]: Leaving directory '/home/igor/.local/state/t3-steward/worker/workspaces/workers/a7fcb9e3a08e3874/run-7ddeb0ff388985516cc333889e4eb1e3/task-03493afc9a8ae145cca192b4de2858e0/attempt-8a366bef0a4676e504007d1c80af8025/workspace'
+go test -race ./internal/store/sqlite
+ok  	github.com/iryzhkov/t3-steward/internal/store/sqlite	791.464s
