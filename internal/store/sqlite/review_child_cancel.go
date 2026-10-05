@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -87,7 +88,7 @@ func (s *Store) ReconcileReviewChildCancellation(ctx context.Context, expected r
 	}
 	attempts := map[string]domain.Attempt{}
 	parentIDs := map[string]domain.Attempt{}
-	err = scanReviewChildRows[domain.Attempt](ctx, tx, "SELECT id,workflow_run_id,task_id,record FROM coordinator_attempts", 3, append(append([]string{}, reviewChildAttemptKeys...), "assignmentId", "threadId", "progress", "control"), func(i []string, a domain.Attempt) error {
+	err = scanReviewChildRows[domain.Attempt](ctx, tx, "SELECT id,workflow_run_id,task_id,record FROM coordinator_attempts", 3, append(append([]string{}, reviewChildAttemptKeys...), "assignmentId", "threadId", "progress", "control", "completedAt"), func(i []string, a domain.Attempt) error {
 		if _, ok := owners[a.ID]; ok {
 			if !reviewCancellationExecutionCoherent(a) {
 				return ErrReviewMaterialization
@@ -95,6 +96,9 @@ func (s *Store) ReconcileReviewChildCancellation(ctx context.Context, expected r
 			attempts[a.ID] = a
 		}
 		if a.WorkflowRunID == f.Parent.RunID && a.TaskID == f.Parent.TaskID {
+			if !reviewCancellationExecutionCoherent(a) || a.SupervisionActivationID != "" || a.SupervisionActivationEpoch != 0 {
+				return ErrReviewAuthorityIdentity
+			}
 			parentIDs[a.ID] = a
 		}
 		return nil
@@ -104,6 +108,9 @@ func (s *Store) ReconcileReviewChildCancellation(ctx context.Context, expected r
 	}
 	assignments, err := reviewCancellationAssignmentsTx(ctx, tx, attempts, parentIDs, f.Parent.AssignmentID)
 	if err != nil {
+		return zero, err
+	}
+	if err = reviewCancellationParentBindings(f.Parent, parentIDs, assignments); err != nil {
 		return zero, err
 	}
 	for _, assignment := range assignments {
@@ -278,10 +285,11 @@ func (s *Store) ReconcileReviewChildCancellation(ctx context.Context, expected r
 func reviewCancellationAssignmentsTx(ctx context.Context, tx *sql.Tx, children map[string]domain.Attempt, parents map[string]domain.Attempt, original string) (map[string]domain.Assignment, error) {
 	found := map[string]domain.Assignment{}
 	seen := map[string]bool{}
-	err := scanReviewChildRows[domain.Assignment](ctx, tx,
+	err := scanReviewChildRows[reviewCancellationAssignmentRecord](ctx, tx,
 		"SELECT id,attempt_id,worker_id,worker_epoch,assignment_epoch,assignment_state,dispatch_revision,dispatch_state,lease_expires_at,dispatch_token,record FROM coordinator_assignments", 10,
 		[]string{"id", "attemptId", "workerId", "workerEpoch", "epoch", "state", "threadId", "route", "dispatchToken", "dispatchState", "dispatchRevision", "leaseExpiresAt", "project", "executionRole", "activationId", "gateId"},
-		func(i []string, a domain.Assignment) error {
+		func(i []string, record reviewCancellationAssignmentRecord) error {
+			a := record.Assignment
 			_, ic := children[i[1]]
 			_, rc := children[a.AttemptID]
 			referenced := i[0] == original || a.ID == original
@@ -398,11 +406,14 @@ func reviewCancellationParentTx(ctx context.Context, tx *sql.Tx, p review.Parent
 	var task domain.Task
 	var workflow domain.Workflow
 	nr, nt, nw := 0, 0, 0
-	err := scanReviewChildRows[domain.WorkflowRun](ctx, tx, "SELECT id,workflow_id,revision,record FROM coordinator_workflow_runs", 3, []string{"id", "workflowId", "revision"}, func(i []string, r domain.WorkflowRun) error {
+	err := scanReviewChildRows[domain.WorkflowRun](ctx, tx, "SELECT id,workflow_id,revision,record FROM coordinator_workflow_runs", 3, []string{"id", "workflowId", "revision", "progress"}, func(i []string, r domain.WorkflowRun) error {
 		if i[0] != p.RunID && r.ID != p.RunID {
 			return nil
 		}
 		if i[0] != r.ID || i[1] != r.WorkflowID || i[2] != strconv.FormatInt(r.Revision, 10) || r.Revision < 1 {
+			return ErrReviewAuthorityIdentity
+		}
+		if !reviewCancellationExecutionCoherent(domain.Attempt{Progress: r.Progress}) {
 			return ErrReviewAuthorityIdentity
 		}
 		run = r
@@ -450,7 +461,7 @@ func reviewCancellationParentTx(ctx context.Context, tx *sql.Tx, p review.Parent
 		return "", ErrReviewAuthorityIdentity
 	}
 	assignment := assignments[p.AssignmentID]
-	if assignment.AttemptID != p.AttemptID || assignment.Epoch < p.AssignmentEpoch || (assignment.Project != "" && assignment.Project != p.Repository) {
+	if assignment.State == domain.AssignmentOffered || assignment.AttemptID != p.AttemptID || assignment.Epoch < p.AssignmentEpoch || (assignment.Project != "" && assignment.Project != p.Repository) {
 		return "", ErrReviewAuthorityIdentity
 	}
 	if assignment.Epoch == p.AssignmentEpoch &&
@@ -475,6 +486,78 @@ func reviewCancellationParentTx(ctx context.Context, tx *sql.Tx, p review.Parent
 		return "", ErrReviewAuthorityIdentity
 	}
 	return "", nil
+}
+
+// Validate parent history and custody before any disposition shortcut. This observes
+// ended/replaced authority; it does not require or grant a live original turn.
+func reviewCancellationParentBindings(p review.ParentBinding, parents map[string]domain.Attempt, assignments map[string]domain.Assignment) error {
+	for _, a := range parents {
+		var owned domain.Assignment
+		found := false
+		for _, assignment := range assignments {
+			if assignment.AttemptID == a.ID {
+				owned, found = assignment, true
+				break
+			}
+		}
+		if !found {
+			if a.ID == p.AttemptID || a.AssignmentID != "" || a.ThreadID != "" {
+				return ErrReviewAuthorityIdentity
+			}
+			continue // A coherent unassigned retry has no custody yet.
+		}
+		settled := owned.State == domain.AssignmentReleased || owned.State == domain.AssignmentCompleted
+		if a.AssignmentID != owned.ID && !(a.AssignmentID == "" && settled) {
+			return ErrReviewAuthorityIdentity
+		}
+		// Unknown-recovery stopped clears both refs only on unstarted released work.
+		clearedThread := owned.State == domain.AssignmentReleased && a.AssignmentID == "" && a.ThreadID == "" && reviewCancellationUnstarted(a)
+		if a.ID == p.AttemptID {
+			if owned.ID != p.AssignmentID || owned.State == domain.AssignmentOffered {
+				return ErrReviewAuthorityIdentity
+			}
+			replacementThread := owned.Epoch > p.AssignmentEpoch && a.ThreadID != "" && a.ThreadID == owned.ThreadID
+			if a.ThreadID != p.ThreadID && !clearedThread && !replacementThread {
+				return ErrReviewAuthorityIdentity
+			}
+		} else if owned.ThreadID != a.ThreadID && !clearedThread {
+			return ErrReviewAuthorityIdentity
+		}
+		if owned.Route.ProviderInstanceID == "" || owned.Route.Model == "" ||
+			(owned.Project != "" && owned.Project != p.Repository) ||
+			(owned.ExecutionRole != "" && owned.ExecutionRole != domain.ExecutionRoleExecutor) ||
+			owned.ActivationID != "" || owned.GateID != "" {
+			return ErrReviewAuthorityIdentity
+		}
+		if owned.State == domain.AssignmentOffered && (!reviewCancellationUnstarted(a) || owned.DispatchState != "" || owned.DispatchRevision != 0 || owned.DispatchConfirmedAt != nil) {
+			return ErrReviewAuthorityIdentity
+		}
+	}
+	return nil
+}
+
+// The cancellation scan extends the existing key ambiguity convention to the
+// nested route binding, without changing the global loader or domain decoder.
+type reviewCancellationAssignmentRecord struct{ domain.Assignment }
+
+func (r *reviewCancellationAssignmentRecord) UnmarshalJSON(raw []byte) error {
+	a, err := decodeReviewChildRecord[domain.Assignment](raw, []string{"route"})
+	if err != nil {
+		return err
+	}
+	var fields struct {
+		Route json.RawMessage `json:"route"`
+	}
+	if err = json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	if len(fields.Route) != 0 && !bytes.Equal(bytes.TrimSpace(fields.Route), []byte("null")) {
+		if _, err = decodeReviewChildRecord[domain.ProviderRoute](fields.Route, []string{"workerId", "providerInstanceId", "model", "options", "quotaPoolId"}); err != nil {
+			return err
+		}
+	}
+	r.Assignment = a
+	return nil
 }
 
 // Only recognized runtime states can be cancelled; malformed state is never

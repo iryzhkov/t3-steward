@@ -125,8 +125,29 @@ func TestReviewChildCancellationWorkerCustodyIntegration(t *testing.T) {
 				if _, err = f.parent.store.CommitWorkerCommands(ctx, commands); err != nil {
 					t.Fatal(err)
 				}
-				// Command persistence alone is not worker acknowledgement.
 				pending, err := f.parent.store.LoadWorkerCommandRecords(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Before acknowledgement, both Stop and Collect retain custody.
+				preAck, err := PlanWorkerStateTransitions(records, snapshot, pending, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, tr := range preAck {
+					if tr.Assignment.State == domain.AssignmentReleased || tr.Assignment.State == domain.AssignmentCompleted {
+						t.Fatal("pre-ack transition relinquished custody")
+					}
+				}
+				if domain.RunExecutionsQuiescent(f.checkpoint.RoundID, records.Attempts, records.Assignments) {
+					t.Fatal("pre-ack custody became quiescent")
+				}
+				again, err := f.parent.store.ReconcileReviewChildCancellation(ctx, f.frozen, f.checkpoint)
+				if err != nil || again.Status != "stop-requested" || !again.WorkerStopPending || len(again.CancelledAttempts) != 0 {
+					t.Fatalf("pre-ack replay %+v %v", again, err)
+				}
+				// Command persistence alone is not worker acknowledgement.
+				pending, err = f.parent.store.LoadWorkerCommandRecords(ctx)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -204,6 +225,13 @@ func TestReviewChildCancellationWorkerCustodyIntegration(t *testing.T) {
 }
 
 func TestReviewChildCancellationCollectorPreservesCompletedEvidence(t *testing.T) {
+	for _, retry := range []bool{false, true} {
+		t.Run(map[bool]string{false: "initial", true: "latest-retry"}[retry], func(t *testing.T) {
+			reviewChildCancellationCollectorPreservesCompletedEvidence(t, retry)
+		})
+	}
+}
+func reviewChildCancellationCollectorPreservesCompletedEvidence(t *testing.T, retry bool) {
 	ctx := context.Background()
 	f := newRetainedChild(t, true)
 	prepared, err := f.prepare(ctx)
@@ -226,6 +254,11 @@ func TestReviewChildCancellationCollectorPreservesCompletedEvidence(t *testing.T
 		}
 	}
 	complete := receipt.Graph.Attempts[0]
+	if retry {
+		complete.ID = "completed-review-retry"
+		complete.Number++
+		complete.Revision = 1
+	}
 	complete.Progress = domain.ProgressSucceeded
 	complete.Control = domain.ControlStopped
 	complete.Revision++
@@ -249,12 +282,41 @@ func TestReviewChildCancellationCollectorPreservesCompletedEvidence(t *testing.T
 		t.Fatal(err)
 	}
 	got, err := f.parent.store.ReconcileReviewChildCancellation(ctx, f.frozen, f.checkpoint)
-	if err != nil || len(got.CancelledAttempts) != len(receipt.Graph.Attempts)-1 {
+	wantCancelled := len(receipt.Graph.Attempts) - 1
+	if retry {
+		wantCancelled++
+	}
+	if err != nil || len(got.CancelledAttempts) != wantCancelled {
 		t.Fatalf("cancel %+v %v", got, err)
 	}
 	round, err := f.parent.store.GetReviewRound(ctx, f.checkpoint.RoundID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if retry {
+		stored, err := f.parent.store.LoadCoordinatorRecords(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range stored.Attempts {
+			if a.ID == receipt.Graph.Attempts[0].ID && a.Progress != domain.ProgressCancelled {
+				t.Fatal("stranded original not cancelled")
+			}
+			if a.ID == complete.ID && !reflect.DeepEqual(a, complete) {
+				t.Fatal("completed retry changed")
+			}
+		}
+		for _, artifact := range outputs {
+			found := false
+			for _, retained := range stored.Artifacts {
+				if retained.ID == artifact.ID {
+					found = reflect.DeepEqual(artifact, retained)
+				}
+			}
+			if !found {
+				t.Fatal("retry-owned artifact changed")
+			}
+		}
 	}
 	if round.Reviewers[0].State != "pending" {
 		t.Fatal("collector lost completed member")

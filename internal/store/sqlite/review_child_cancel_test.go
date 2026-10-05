@@ -42,7 +42,23 @@ func cancellationEndParent(t *testing.T, s *Store, f review.FrozenAuthority, pro
 func cancellationSnapshot(t *testing.T, s *Store) string {
 	t.Helper()
 	var out []string
-	for _, table := range []string{"coordinator_attempts", "coordinator_assignments", "coordinator_workflow_runs", "coordinator_tasks", "coordinator_artifacts", "coordinator_review_rounds", "coordinator_review_authorities", "coordinator_review_checkpoints", "coordinator_review_materializations", "coordinator_audit_events", "coordinator_task_waits", "coordinator_task_wait_events"} {
+	tables, err := s.db.Query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for tables.Next() {
+		var name string
+		if err = tables.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, name)
+	}
+	if err = tables.Err(); err != nil {
+		t.Fatal(err)
+	}
+	tables.Close()
+	for _, table := range names {
 		rows, err := s.db.Query("SELECT * FROM " + table + " ORDER BY 1")
 		if err != nil {
 			t.Fatal(err)
