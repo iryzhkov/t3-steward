@@ -454,6 +454,9 @@ func nearestCampaignCommand(name string) string {
 // answered from the topic set, and a word that is neither is refused by name
 // rather than answered with the family page.
 func admitCampaignHelp(out io.Writer, args []string) (bool, error) {
+	if handled, err := admitHelpExport(out, []string{"campaign"}, args); handled || err != nil {
+		return handled, err
+	}
 	if len(args) == 0 {
 		args = []string{"--help"}
 	}

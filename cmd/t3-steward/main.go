@@ -120,7 +120,12 @@ func invoke(args []string, stderr io.Writer) int {
 		// keeps exit 1.
 		code = exitCodeFor(err)
 	}
-	spoolInvocation(args, code, err, time.Since(started))
+	// New help exports have a special instrumentation exemption, including
+	// export refusals. This pure argv guard is not an execution bypass;
+	// ordinary help and runtime commands retain their existing instrumentation.
+	if !isHelpExportInvocation(args) {
+		spoolInvocation(args, code, err, time.Since(started))
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 	}
