@@ -161,71 +161,31 @@ func (s *DeclaredReviewStaging) StageDeclared(ctx context.Context, request Decla
 	if err != nil || len(raw) > childStageMetadataLimit {
 		return result, errors.New("stage receipt exceeds bound")
 	}
-	// The first retained intent binds the deadline even at a partial crash.
-	// A conflicting replay cannot change any byte and never owns cleanup.
-	phase = "retain-request"
-	if err = childStageRetain(dir, stageDir, "request.json", raw); err != nil {
-		return result, err
-	}
-	if err = s.boundary("request-retained"); err != nil {
-		return result, err
-	}
-	allowed := map[string]bool{"request.json": true, "receipt.json": true}
-	for _, f := range files {
-		allowed[f.Artifact.ID+".blob"] = true
-	}
-	var pendingNames []string
-	for name := range allowed {
-		pendingNames = append(pendingNames, ".pending-"+name)
-	}
-	for _, name := range pendingNames {
-		allowed[name] = true
-	}
-	listing, err := dir.Open(".")
-	if err != nil {
-		return result, err
-	}
-	entries, err := listing.ReadDir(len(allowed) + 1)
-	if errors.Is(err, io.EOF) {
-		err = nil
-	}
-	closeErr := listing.Close()
-	if closeErr != nil {
-		return result, closeErr
-	}
-	if err != nil {
-		return result, err
-	}
-	if len(entries) > len(allowed) {
-		return result, errors.New("stage file count exceeds bound")
-	}
-	for _, entry := range entries {
-		if !allowed[entry.Name()] || !entry.Type().IsRegular() {
-			return result, errors.New("unexpected stage entry")
-		}
-	}
-	// Pending atomic publications remain evidence too: do not ignore damaged
-	// bytes just because a corresponding final file survived a crash.
-	for name, expected := range map[string][]byte{"request.json": raw, "receipt.json": raw} {
-		if err = childStageCheckPending(dir, name, expected); err != nil {
-			return result, err
-		}
-	}
-	for _, file := range files {
-		if err = childStageCheckPending(dir, file.Artifact.ID+".blob", file.Bytes); err != nil {
-			return result, err
-		}
-	}
-	// A pre-existing completed receipt is verified BEFORE filling any missing
-	// file: complete-but-corrupt stages must never be silently repaired.
+	// Classify completed state under the owner lock BEFORE retaining anything.
+	// A receipt of any type is completed evidence, never a partial-stage repair.
+	phase = "inspect-stage"
 	complete := false
 	if _, e := dir.Lstat("receipt.json"); e == nil {
 		complete = true
-		if err = childStageVerify(dir, "receipt.json", raw); err != nil {
-			return result, err
-		}
 	} else if !errors.Is(e, os.ErrNotExist) {
 		return result, e
+	}
+	if err = childStageInspect(dir, raw, files, complete); err != nil {
+		return result, err
+	}
+	if err = childStageCustody(dir, stageDir, lock); err != nil {
+		return result, err
+	}
+	// Only genuinely partial stages may retain the first immutable intent.
+	// It binds the original deadline, including pending publication recovery.
+	phase = "retain-request"
+	if !complete {
+		if err = childStageRetain(dir, stageDir, "request.json", raw); err != nil {
+			return result, err
+		}
+	}
+	if err = s.boundary("request-retained"); err != nil {
+		return result, err
 	}
 	phase = "retain-files"
 	for _, f := range files {
@@ -253,8 +213,10 @@ func (s *DeclaredReviewStaging) StageDeclared(ctx context.Context, request Decla
 		return result, err
 	}
 	phase = "retain-receipt"
-	if err = childStageRetain(dir, stageDir, "receipt.json", raw); err != nil {
-		return result, err
+	if !complete {
+		if err = childStageRetain(dir, stageDir, "receipt.json", raw); err != nil {
+			return result, err
+		}
 	}
 	if err = s.boundary("receipt-retained"); err != nil {
 		return result, err
@@ -282,7 +244,101 @@ func (s *DeclaredReviewStaging) StageDeclared(ctx context.Context, request Decla
 	if !deadline.After(s.now()) {
 		return result, errors.New("deadline expired during staging")
 	}
+	// Last filesystem operation is read-only, after all preparation and callbacks.
+	phase = "final-custody"
+	if err = childStageInspect(dir, raw, files, true); err != nil {
+		return result, err
+	}
+	if err = childStageCustody(dir, stageDir, lock); err != nil {
+		return result, err
+	}
 	return DeclaredChildStageResult{snapshot, checkpoint, receipt, preparation}, nil
+}
+
+// childStageInspect never creates, publishes, removes or repairs evidence.
+// Existing partial data and every pending publication must also match exactly.
+func childStageInspect(root *os.Root, raw []byte, files []review.RetainedFile, complete bool) error {
+	expected := map[string][]byte{"request.json": raw, "receipt.json": raw}
+	for _, f := range files {
+		expected[f.Artifact.ID+".blob"] = f.Bytes
+	}
+	listing, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	entries, readErr := listing.ReadDir(2*len(expected) + 1)
+	closeErr := listing.Close()
+	if errors.Is(readErr, io.EOF) {
+		readErr = nil
+	}
+	if err = errors.Join(readErr, closeErr); err != nil {
+		return err
+	}
+	if len(entries) > 2*len(expected) {
+		return errors.New("stage file count exceeds bound")
+	}
+	for _, entry := range entries {
+		name := strings.TrimPrefix(entry.Name(), ".pending-")
+		if _, ok := expected[name]; !ok || !entry.Type().IsRegular() {
+			return errors.New("unexpected stage entry")
+		}
+	}
+	for name, data := range expected {
+		if _, err = root.Lstat(name); complete || !errors.Is(err, os.ErrNotExist) {
+			if err = childStageVerify(root, name, data); err != nil {
+				return fmt.Errorf("stage %s: %w", name, err)
+			}
+		}
+		if err = childStageCheckPending(root, name, data); err != nil {
+			return fmt.Errorf("stage pending %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// childStageCustody is a read-only check of the original opened owner/lock
+// against real private paths. It must not call the creating directory helper.
+func childStageCustody(root *os.Root, stageDir string, lock *fileLock) error {
+	if err := childStageRootFence(stageDir); err != nil {
+		return err
+	}
+	namespace := filepath.Dir(stageDir)
+	for _, path := range []string{namespace, filepath.Join(namespace, ".locks"), stageDir} {
+		info, err := os.Lstat(path)
+		if err != nil || info.Mode() != os.ModeDir|0700 {
+			return errors.New("private stage directory type/mode refused")
+		}
+		fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+		if err != nil {
+			return errors.New("private stage directory descriptor refused")
+		}
+		f := os.NewFile(uintptr(fd), path)
+		opened, statErr := f.Stat()
+		closeErr := f.Close()
+		if statErr != nil || closeErr != nil || opened.Mode() != os.ModeDir|0700 || !os.SameFile(info, opened) {
+			return errors.New("private stage directory descriptor changed")
+		}
+	}
+	owner, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	opened, statErr := owner.Stat()
+	closeErr := owner.Close()
+	info, pathErr := os.Lstat(stageDir)
+	if statErr != nil || closeErr != nil || pathErr != nil || opened.Mode() != os.ModeDir|0700 || !os.SameFile(info, opened) {
+		return errors.New("opened stage owner changed")
+	}
+	name := filepath.Join(namespace, ".locks", filepath.Base(stageDir)+".lock")
+	info, err = os.Lstat(name)
+	if err != nil || info.Mode() != 0600 || info.Size() != 0 {
+		return errors.New("owner lock path type/mode/size refused")
+	}
+	opened, err = lock.file.Stat()
+	if err != nil || opened.Mode() != 0600 || opened.Size() != 0 || !os.SameFile(info, opened) {
+		return errors.New("opened owner lock changed")
+	}
+	return nil
 }
 
 // childStageFiles selects the entire admitted manifest from current retained
@@ -463,12 +519,17 @@ func childStageVerify(root *os.Root, name string, raw []byte) error {
 	if err != nil {
 		return errors.New("retained stage file missing")
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0400 || info.Size() != int64(len(raw)) {
+	if info.Mode() != 0400 || info.Size() != int64(len(raw)) {
 		return errors.New("retained stage file type/mode/size mismatch")
 	}
 	f, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return errors.New("retained stage descriptor refused")
+	}
+	opened, statErr := f.Stat()
+	if statErr != nil || opened.Mode() != 0400 || opened.Size() != int64(len(raw)) || !os.SameFile(info, opened) {
+		f.Close()
+		return errors.New("retained stage descriptor type/mode/size/identity mismatch")
 	}
 	got, readErr := io.ReadAll(io.LimitReader(f, int64(len(raw))+1))
 	closeErr := f.Close()
