@@ -151,6 +151,12 @@ func (p ChildPreparation) Build(f FrozenAuthority, c CheckpointAuthority, create
 		}
 		task := domain.Task{ID: taskID, RunID: c.RoundID, WorkflowID: ChildWorkflowID(c), Name: m.ID, Class: class, MaxTurns: 12, PromptArtifactID: ChildPromptID(c, m.ID), InputArtifactIDs: append([]string(nil), inputs...), Deadline: &deadline,
 			Routes: []domain.ProviderRoute{{ProviderInstanceID: instance, Model: model}}, Outputs: []domain.ArtifactDeclaration{{Name: "review.md"}, {Name: "verdict.json"}}}
+		if m.Execution != nil {
+			task.MaxTurns = m.Execution.MaxTurns
+			task.ResourceDemand = m.Execution.Resources
+			task.Routes[0].QuotaPoolID = m.Execution.QuotaPoolID
+			task.Routes[0].Options = map[string]string{"effort": m.Execution.Effort}
+		}
 		progress := domain.ProgressReady
 		if m.Role == "judge" {
 			task.ReviewJudge = true

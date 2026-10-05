@@ -9,6 +9,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/pinnedinput"
 	"github.com/iryzhkov/t3-steward/internal/review"
+	"reflect"
 	"slices"
 )
 
@@ -71,7 +72,7 @@ func validateDeclaredAuthorityTx(ctx context.Context, tx *sql.Tx, f review.Froze
 		return fmt.Errorf("declared review authority: workflow task membership or identity mismatch")
 	}
 	d := task.ReviewRequirements
-	if d == nil || d.Version != 1 || f.DeclarationDigest == "" || f.DeclarationDigest != domain.TaskDigest(task) || workflow.Environment.Type != "git" || workflow.Environment.Ref != f.Parent.BaseCommit {
+	if domain.ValidateTaskReviewExecution(d) != nil || f.DeclarationDigest == "" || f.DeclarationDigest != domain.TaskDigest(task) || workflow.Environment.Type != "git" || workflow.Environment.Ref != f.Parent.BaseCommit {
 		return fail()
 	}
 	if d.Risk != f.Requirements.Risk || d.RequiredReviewers != f.Requirements.RequiredReviewers || d.MinProviderFamilies != f.Requirements.MinProviderFamilies || d.RoundLimit != f.Requirements.RoundLimit || len(d.Members) != len(f.Requirements.Members) {
@@ -80,7 +81,7 @@ func validateDeclaredAuthorityTx(ctx context.Context, tx *sql.Tx, f review.Froze
 	for _, m := range d.Members {
 		found := false
 		for _, frozen := range f.Requirements.Members {
-			if m.ID == frozen.ID && m.Role == frozen.Role && m.Route == frozen.Route && m.Required == frozen.Required {
+			if m.ID == frozen.ID && m.Role == frozen.Role && m.Route == frozen.Route && m.Required == frozen.Required && reflect.DeepEqual(m.Execution, frozen.Execution) {
 				found = true
 			}
 		}

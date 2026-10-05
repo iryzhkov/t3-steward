@@ -32,6 +32,7 @@ type AdmissionPolicy struct {
 type AdmissionMember struct {
 	ID, Role, Route string
 	Required        bool
+	Execution       *domain.ReviewExecutionProfile `json:",omitempty"`
 }
 
 // AdmissionCatalogSource must return coordinator-authored configuration, never
@@ -163,6 +164,9 @@ func (s ReviewAdmissionService) Resolve(ctx context.Context, request AdmissionRe
 	}
 	policy := request.Policy
 	policy.Members = append([]AdmissionMember(nil), policy.Members...)
+	for i := range policy.Members {
+		policy.Members[i].Execution = domain.CloneReviewExecution(policy.Members[i].Execution)
+	}
 	sort.Slice(policy.Members, func(i, j int) bool { return policy.Members[i].ID < policy.Members[j].ID })
 	if policy.RoundLimit == 0 {
 		policy.RoundLimit = 2
@@ -173,11 +177,11 @@ func (s ReviewAdmissionService) Resolve(ctx context.Context, request AdmissionRe
 	spec := review.RequirementsSpec{Risk: policy.Risk, CriteriaDigest: criteria.SHA256, RequiredReviewers: policy.RequiredReviewers, MinProviderFamilies: policy.MinProviderFamilies, RoundLimit: policy.RoundLimit}
 	var selected []admissionRoute
 	for _, member := range policy.Members {
-		metadata, grants, err := admissionRouteMetadata(catalog, workflow.Project, member.Route)
+		metadata, grants, err := admissionMemberMetadata(catalog, workflow.Project, member)
 		if err != nil {
 			return AdmissionSnapshot{}, err
 		}
-		spec.Members = append(spec.Members, review.MemberRequirement{ID: member.ID, Role: member.Role, Route: member.Route, Required: member.Required, ProviderFamily: metadata.ProviderFamily, Tier: metadata.Tier})
+		spec.Members = append(spec.Members, review.MemberRequirement{ID: member.ID, Role: member.Role, Route: member.Route, Required: member.Required, ProviderFamily: metadata.ProviderFamily, Tier: metadata.Tier, Execution: domain.CloneReviewExecution(member.Execution)})
 		selected = append(selected, admissionRoute{metadata, grants})
 	}
 	// Project collections are sets. Preserve command order, which is meaningful.

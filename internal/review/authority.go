@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/pinnedinput"
 )
 
@@ -24,6 +25,7 @@ type RequirementsSpec struct {
 	Members             []MemberRequirement
 }
 type MemberRequirement struct {
+	Execution      *domain.ReviewExecutionProfile `json:",omitempty"`
 	ID             string
 	Role           string
 	Route          string
@@ -37,7 +39,19 @@ type Requirements struct {
 }
 
 func NewRequirements(spec RequirementsSpec) (Requirements, error) {
-	spec.Members = append([]MemberRequirement(nil), spec.Members...)
+	spec.Members = cloneMembers(spec.Members)
+	profiled := 0
+	for _, m := range spec.Members {
+		if m.Execution != nil {
+			profiled++
+			if err := m.Execution.Validate(); err != nil {
+				return Requirements{}, err
+			}
+		}
+	}
+	if profiled != 0 && profiled != len(spec.Members) {
+		return Requirements{}, errors.New("mixed review execution profiles")
+	}
 	ceiling := 2
 	switch spec.Risk {
 	case "routine":
@@ -85,8 +99,15 @@ func NewRequirements(spec RequirementsSpec) (Requirements, error) {
 }
 func (r Requirements) Snapshot() RequirementsSpec {
 	s := r.spec
-	s.Members = append([]MemberRequirement(nil), s.Members...)
+	s.Members = cloneMembers(s.Members)
 	return s
+}
+func cloneMembers(members []MemberRequirement) []MemberRequirement {
+	copied := append([]MemberRequirement(nil), members...)
+	for i := range copied {
+		copied[i].Execution = domain.CloneReviewExecution(members[i].Execution)
+	}
+	return copied
 }
 func (r Requirements) Digest() string { return r.digest }
 func (m MemberRequirement) Reviewer(taskID string) Reviewer {

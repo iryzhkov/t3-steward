@@ -12,10 +12,11 @@ type TaskReviewRequirements struct {
 	Criteria            ReviewCriteria     `json:"criteria"`
 }
 type TaskReviewMember struct {
-	ID       string `json:"id"`
-	Role     string `json:"role"`
-	Route    string `json:"route"`
-	Required bool   `json:"required"`
+	Execution *ReviewExecutionProfile `json:"execution,omitempty"`
+	ID        string                  `json:"id"`
+	Role      string                  `json:"role"`
+	Route     string                  `json:"route"`
+	Required  bool                    `json:"required"`
 }
 type ReviewCriteria struct {
 	ArtifactID string `json:"artifactId"`
@@ -33,5 +34,8 @@ func CloneTaskReview(r *TaskReviewRequirements) *TaskReviewRequirements {
 	}
 	copied := *r
 	copied.Members = append([]TaskReviewMember(nil), r.Members...)
+	for i := range copied.Members {
+		copied.Members[i].Execution = CloneReviewExecution(r.Members[i].Execution)
+	}
 	return &copied
 }

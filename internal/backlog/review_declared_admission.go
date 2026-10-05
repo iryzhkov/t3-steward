@@ -19,7 +19,7 @@ type declaredAdmissionStore interface {
 func declaredPolicy(r *domain.TaskReviewRequirements) AdmissionPolicy {
 	p := AdmissionPolicy{Risk: r.Risk, CriteriaArtifactID: r.Criteria.ArtifactID, RequiredReviewers: r.RequiredReviewers, MinProviderFamilies: r.MinProviderFamilies, RoundLimit: r.RoundLimit}
 	for _, m := range r.Members {
-		p.Members = append(p.Members, AdmissionMember{m.ID, m.Role, m.Route, m.Required})
+		p.Members = append(p.Members, AdmissionMember{ID: m.ID, Role: m.Role, Route: m.Route, Required: m.Required, Execution: domain.CloneReviewExecution(m.Execution)})
 	}
 	return p
 }
@@ -37,8 +37,8 @@ func (s ReviewAdmissionService) ResolveDeclared(ctx context.Context, request Dec
 		return AdmissionSnapshot{}, err
 	}
 	task, err := admissionOne(domain.TasksForRun(run, records.Tasks), func(t domain.Task) bool { return t.ID == request.TaskID })
-	if err != nil || task.ReviewRequirements == nil || task.ReviewRequirements.Version != 1 {
-		return AdmissionSnapshot{}, fmt.Errorf("review admission: saved version 1 review_requirements required")
+	if err != nil || domain.ValidateTaskReviewExecution(task.ReviewRequirements) != nil {
+		return AdmissionSnapshot{}, fmt.Errorf("review admission: saved valid version 1 or 2 review_requirements required")
 	}
 	workflow, err := admissionOne(records.Workflows, func(w domain.Workflow) bool { return w.ID == run.WorkflowID })
 	if err != nil {

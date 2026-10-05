@@ -87,7 +87,7 @@ func newAdmissionFixture(t *testing.T) admissionFixture {
 	}
 	store := &admissionCountingStore{Store: db, dbPath: dbPath}
 	service := ReviewAdmissionService{Store: store, Artifacts: CoordinatorArtifactStore{Catalog: db, SubmissionRoot: root}, Projects: projects, Catalog: catalog}
-	request := AdmissionRequest{RunID: ingested.RunID, TaskID: records.Tasks[0].ID, AttemptID: a.ID, Policy: AdmissionPolicy{Risk: "routine", CriteriaArtifactID: criteria, RequiredReviewers: 2, MinProviderFamilies: 2, Members: []AdmissionMember{{"one", "independent", "codex/org/sol", true}, {"two", "independent", "other/model", true}}}}
+	request := AdmissionRequest{RunID: ingested.RunID, TaskID: records.Tasks[0].ID, AttemptID: a.ID, Policy: AdmissionPolicy{Risk: "routine", CriteriaArtifactID: criteria, RequiredReviewers: 2, MinProviderFamilies: 2, Members: []AdmissionMember{{ID: "one", Role: "independent", Route: "codex/org/sol", Required: true}, {ID: "two", Role: "independent", Route: "other/model", Required: true}}}}
 	return admissionFixture{service, request, records, store, catalog, bundle}
 }
 

@@ -333,6 +333,7 @@ func applyManifestDefaults(manifest *Manifest) {
 	applyPreflightDefaults(&manifest.Preflight)
 	applyManifestSupervisionDefaults(manifest)
 	for name, task := range manifest.Tasks {
+		task.ReviewRequirements = cloneManifestReview(task.ReviewRequirements)
 		if task.Class == "" {
 			task.Class = manifest.Class
 		}

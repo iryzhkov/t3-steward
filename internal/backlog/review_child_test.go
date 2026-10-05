@@ -52,7 +52,7 @@ func newRetainedChild(t *testing.T, swarm bool) retainedChildFixture {
 	if swarm {
 		f.request.Policy.Members[1].Role = "judge"
 		f.catalog.catalog.Classifications[1].Tier = "executor"
-		f.request.Policy.Members = append(f.request.Policy.Members, AdmissionMember{"lens", "swarm:correctness", "codex/economy", false})
+		f.request.Policy.Members = append(f.request.Policy.Members, AdmissionMember{ID: "lens", Role: "swarm:correctness", Route: "codex/economy", Required: false})
 		f.catalog.catalog.Classifications = append(f.catalog.catalog.Classifications, AdmissionClassification{"codex/economy", "openai", "economy"})
 		f.catalog.catalog.AuthoredWorkers[0].Providers[0].Models = append(f.catalog.catalog.AuthoredWorkers[0].Providers[0].Models, "economy")
 	}
