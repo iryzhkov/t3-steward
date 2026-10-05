@@ -42,11 +42,33 @@ func validateDeclaredAuthorityTx(ctx context.Context, tx *sql.Tx, f review.Froze
 	if err != nil {
 		return err
 	}
+	// Match the resolver's current template or immutable run-graph membership.
+	// This runs under the owning writer before both allocation and replay.
+	membership := workflow.TaskIDs
+	if projection.Run.Graph != nil {
+		membership = nil
+		for _, t := range projection.Run.Graph.Tasks {
+			membership = append(membership, t.ID)
+		}
+	}
+	seen := make(map[string]bool, len(membership))
+	for _, id := range membership {
+		if id == "" || seen[id] {
+			return fmt.Errorf("declared review authority: workflow task membership mismatch")
+		}
+		seen[id] = true
+	}
 	var task domain.Task
+	matches := 0
 	for _, t := range projection.Tasks {
 		if t.ID == f.Parent.TaskID {
 			task = t
+			matches++
 		}
+	}
+	if projection.Run.ID != f.Parent.RunID || workflow.ID != projection.Run.WorkflowID ||
+		matches != 1 || !seen[f.Parent.TaskID] || task.WorkflowID != workflow.ID || task.RunID != projection.Run.ID {
+		return fmt.Errorf("declared review authority: workflow task membership or identity mismatch")
 	}
 	d := task.ReviewRequirements
 	if d == nil || d.Version != 1 || f.DeclarationDigest == "" || f.DeclarationDigest != domain.TaskDigest(task) || workflow.Environment.Type != "git" || workflow.Environment.Ref != f.Parent.BaseCommit {
@@ -124,6 +146,9 @@ func validateDeclaredAuthorityTx(ctx context.Context, tx *sql.Tx, f review.Froze
 	assignment, err := loadAssignmentTx(ctx, tx, f.Parent.AssignmentID)
 	if err != nil {
 		return err
+	}
+	if assignment.Project != workflow.Project || assignment.ActivationID != "" {
+		return fmt.Errorf("declared review authority: claimed assignment project or activation changed")
 	}
 	if assignment.TaskDigest != domain.TaskDigest(task) || assignment.TaskRevision != task.DefinitionRevision || assignment.GraphRevision != projection.Run.GraphRevision {
 		return fail()

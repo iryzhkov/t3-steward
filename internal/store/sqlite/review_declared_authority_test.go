@@ -20,6 +20,10 @@ func declaredAuthorityFixture(t *testing.T) (*Store, review.FrozenAuthority) {
 	task := records.Tasks[0]
 	run := records.WorkflowRuns[0]
 	workflow := records.Workflows[0]
+	// This declared fixture needs current run membership and project custody;
+	// the trusted legacy fixture deliberately leaves those fields unspecified.
+	workflow.TaskIDs = []string{task.ID}
+	task.RunID = run.ID
 	a := domain.Artifact{ID: "declared-criteria", WorkflowRunID: run.ID, Kind: domain.ArtifactInput, Producer: "submission", Name: "criteria.md", Size: 5, SHA256: f.Requirements.CriteriaDigest}
 	m, err := pinnedinput.NewManifest([]pinnedinput.Entry{{Name: a.Name, Size: a.Size, SHA256: a.SHA256}})
 	if err != nil {
@@ -41,6 +45,7 @@ func declaredAuthorityFixture(t *testing.T) (*Store, review.FrozenAuthority) {
 		PolicyDigest  string
 	}{m, f.Requirements.PolicyDigest})
 	as := records.Assignments[0]
+	as.Project = workflow.Project
 	as.TaskDigest = domain.TaskDigest(task)
 	as.TaskRevision = task.DefinitionRevision
 	as.GraphRevision = run.GraphRevision
