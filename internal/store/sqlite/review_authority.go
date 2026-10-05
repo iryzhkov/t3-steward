@@ -202,6 +202,12 @@ func (s *Store) AllocateReviewCheckpoint(ctx context.Context, expected review.Fr
 	if err := reviewParentCurrentTx(ctx, tx, frozen.Parent, false); err != nil {
 		return review.CheckpointAuthority{}, err
 	}
+	// Current declared custody belongs to this owning writer, including replay.
+	if frozen.DeclarationDigest != "" {
+		if err := validateDeclaredAuthorityTx(ctx, tx, frozen); err != nil {
+			return review.CheckpointAuthority{}, err
+		}
+	}
 	a := review.CheckpointAuthority{AuthorityKey: frozen.Key(), Checkpoint: checkpoint}
 	stored, err := loadReviewJSONTx[review.CheckpointAuthority](ctx, tx, "SELECT record FROM coordinator_review_checkpoints WHERE id=?", a.Key())
 	if err == nil {

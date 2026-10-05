@@ -178,7 +178,7 @@ func (s CoordinatorArtifactStore) Open(ctx context.Context, artifactID string) (
 		return domain.Artifact{}, nil, errors.New("open artifact: retained object is not a regular file")
 	}
 	digest := sha256.New()
-	size, err := io.Copy(digest, file)
+	size, err := io.Copy(digest, io.LimitReader(file, artifact.Size+1))
 	if err != nil {
 		return domain.Artifact{}, nil, fmt.Errorf("open artifact: verify content: %w", err)
 	}
@@ -241,6 +241,10 @@ func (s CoordinatorArtifactStore) Prune(
 		return nil, skipped, fmt.Errorf("prune artifacts: %w", err)
 	}
 	for _, artifact := range expired {
+		// Private retained review stages have an explicit future GC owner.
+		if strings.HasPrefix(artifact.StoragePath, childStageNamespace+"/") {
+			continue
+		}
 		artifactRoot := s.Root
 		if artifact.Producer == "submission" && s.SubmissionRoot != "" {
 			artifactRoot = s.SubmissionRoot
@@ -255,6 +259,14 @@ func (s CoordinatorArtifactStore) Prune(
 		}
 		if err != nil {
 			return expired, skipped, fmt.Errorf("prune artifacts: resolve blob %q: %w", artifact.StoragePath, err)
+		}
+		// Fence resolved aliases as well as authored metadata paths.
+		inside, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return expired, skipped, relErr
+		}
+		if strings.HasPrefix(filepath.ToSlash(inside), childStageNamespace+"/") {
+			continue
 		}
 		lifecycleLock, err := acquireFileLock(ctx, root, "artifact-object:"+filepath.ToSlash(artifact.StoragePath))
 		if err != nil {
