@@ -175,6 +175,15 @@ func TestAgentGuidanceExportClassification(t *testing.T) {
 		{[]string{"--help", "full", "prompt", "json"}, false},
 		{[]string{"--help", "--config=agent-md"}, false},
 		{[]string{"campaign", "help", "plan", "--config", "json"}, false},
+		{[]string{"campaign", "plan", "--help", "--config", "bad", "json"}, false},
+		{[]string{"campaign", "help", "plan", "--config", "bad", "json"}, false},
+		{[]string{"campaign", "help", "plan", "--config", "bad", "agent-md"}, false},
+		{[]string{"campaign", "help", "plan", "--log-level", "bad", "json"}, false},
+		{[]string{"campaign", "plan", "--help", "json", "--config", "bad", "agent-md"}, true},
+		{[]string{"campaign", "--config", "json", "plan", "--help", "agent-md"}, true},
+		{[]string{"campaign", "plan", "--", "--help", "json"}, false},
+		{[]string{"campaign", "--config", "--", "--help", "json"}, false},
+		{[]string{"campaign", "plan", "--config", "--", "--help", "json"}, false},
 		{[]string{"campaign", "plan", "--help", "--log-level", "agent-md"}, false},
 		{[]string{"task", "run", "--help", "json", "--config", "agent-md"}, true},
 		{[]string{"help", "json", "task", "run"}, true},
@@ -207,6 +216,43 @@ func TestAgentGuidanceExportClassification(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+func TestAgentGuidanceCampaignRawBarrier(t *testing.T) {
+	for _, prefix := range [][]string{{"plan", "--help"}, {"help", "plan"}, {"--help"}, {"--help", "full"}} {
+		for _, value := range []string{"json", "agent-md", "full"} {
+			for _, tail := range [][]string{{"--config", "bad", value}, {"--config=bad", value}, {"--log-level", "bad", value}, {"--", value}} {
+				args := append(append([]string(nil), prefix...), tail...)
+				r, _, help := campaignHelpArguments(args)
+				if !help || r.active || r.export {
+					t.Fatalf("raw barrier lost: %v: %+v", args, r)
+				}
+				var out bytes.Buffer
+				handled, err := admitCampaignHelp(&out, args)
+				if err == nil && (!handled || out.Len() == 0) {
+					t.Fatalf("ordinary campaign help: %v: %v", args, err)
+				}
+			}
+		}
+	}
+	// Legacy config stripping may expose "full", but never a new export.
+	var out bytes.Buffer
+	handled, err := admitCampaignHelp(&out, []string{"plan", "--help", "--config", "bad", "full"})
+	if !handled || err != nil || out.String() != helpPages["campaign plan"].renderReference() {
+		t.Fatal("legacy full reference changed", err)
+	}
+	for _, args := range [][]string{
+		{"--config", "bad", "plan", "--help", "json"},
+		{"plan", "--config", "bad", "--help", "json"},
+		{"plan", "--help", "json", "--config", "bad", "agent-md"},
+	} {
+		out.Reset()
+		handled, err := admitCampaignHelp(&out, args)
+		var doc guidanceDocument
+		if !handled || err != nil || json.Unmarshal(out.Bytes(), &doc) != nil || doc.SelectedPath != "campaign plan" {
+			t.Fatalf("genuine campaign export: %v: %v", args, err)
 		}
 	}
 }
@@ -321,6 +367,12 @@ func TestAgentGuidanceActualBinary(t *testing.T) {
 		[]string{"task", "run", "--help", "--config", "agent-md"},
 		[]string{"task", "run", "--help", "--log-level", "json"},
 		[]string{"help", "task", "run", "prompt", "json"},
+		[]string{"campaign", "plan", "--help", "--config", "bad", "json"},
+		[]string{"campaign", "help", "plan", "--config", "bad", "json"},
+		[]string{"campaign", "help", "plan", "--config", "bad", "agent-md"},
+		[]string{"campaign", "help", "plan", "--log-level", "bad", "json"},
+		[]string{"campaign", "--config", "--", "--help", "json"},
+		[]string{"campaign", "plan", "--config", "--", "--help", "json"},
 	)
 	for _, value := range []string{"full", "json", "agent-md"} {
 		controls = append(controls,

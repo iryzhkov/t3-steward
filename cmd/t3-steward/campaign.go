@@ -454,8 +454,43 @@ func nearestCampaignCommand(name string) string {
 // answered from the topic set, and a word that is neither is refused by name
 // rather than answered with the family page.
 func admitCampaignHelp(out io.Writer, args []string) (bool, error) {
-	if handled, err := admitHelpExport(out, []string{"campaign"}, args); handled || err != nil {
+	request, legacy, help := campaignHelpArguments(args)
+	if !help {
+		return false, nil
+	}
+	if handled, err := admitHelpExportRequest(out, []string{"campaign"}, request); handled || err != nil {
 		return handled, err
+	}
+	// Classification is final before legacy config normalization. Render the
+	// old reference directly, so exposed operands cannot become exports.
+	args = legacy
+	reference := func() (bool, error) {
+		full := false
+		clean := append([]string(nil), args...)
+		for i := 0; i+1 < len(clean); i++ {
+			if clean[i] == "--" {
+				break
+			}
+			if isHelp(clean[i]) && clean[i+1] == "full" {
+				full = true
+				clean = append(clean[:i+1], clean[i+2:]...)
+				break
+			}
+		}
+		resolution := resolveHelp([]string{"campaign"}, clean)
+		if resolution.Unknown != "" {
+			return false, unknownHelpVerb(resolution.Parent, resolution.Unknown)
+		}
+		if !resolution.Answered {
+			return false, nil
+		}
+		page := helpPages[strings.Join(resolution.Path, " ")]
+		body := page.renderShort()
+		if full {
+			body = page.render()
+		}
+		_, err := fmt.Fprint(out, body)
+		return true, err
 	}
 	if len(args) == 0 {
 		args = []string{"--help"}
@@ -463,7 +498,7 @@ func admitCampaignHelp(out io.Writer, args []string) (bool, error) {
 	if len(args) > 1 && isHelp(args[0]) {
 		word := args[1]
 		if word == "full" {
-			return admitHelp(out, []string{"campaign"}, args)
+			return reference()
 		}
 		// The explicit "campaign help <word>" form names a topic first. Several
 		// topics share a name with a verb -- plan, graph, rerun -- and the essay
@@ -489,7 +524,7 @@ func admitCampaignHelp(out io.Writer, args []string) (bool, error) {
 			return true, fmt.Errorf("unknown campaign help topic %q; try one of %s", word, strings.Join(names, ", "))
 		}
 	}
-	return admitHelp(out, []string{"campaign"}, args)
+	return reference()
 }
 
 func (c campaignCLI) runValidate(args []string) error {

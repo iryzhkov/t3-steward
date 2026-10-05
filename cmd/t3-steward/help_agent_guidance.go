@@ -177,23 +177,51 @@ func parseHelpExport(family, args []string) helpExportRequest {
 	return r
 }
 
-// isHelpExportInvocation models campaign's existing --config removal exactly,
+// campaignHelpArguments retains raw post-help boundaries for classification.
+// Only pre-help config pairs are normalized in that view. The separate legacy
+// view mirrors dispatch's old config removal, but is never classified again.
+func campaignHelpArguments(args []string) (helpExportRequest, []string, bool) {
+	var raw, legacy []string
+	help, ended := false, false
+	for i := 0; i < len(args); i++ {
+		word := args[i]
+		if word == "--config" && i+1 < len(args) {
+			if help || ended || args[i+1] == "--" {
+				raw = append(raw, word, args[i+1])
+			}
+			// A bare terminator remains a boundary even when legacy dispatch
+			// would consume it as the config value.
+			ended = ended || args[i+1] == "--"
+			i++
+			continue
+		}
+		legacy = append(legacy, word)
+		raw = append(raw, word)
+		if word == "--" {
+			ended = true
+		}
+		if !ended && isHelp(word) {
+			help = true
+		}
+	}
+	// If old config stripping exposed a help token, answer that legacy route
+	// here too; it must not reach a second export classifier downstream.
+	legacyHelp := false
+	for _, word := range legacy {
+		if word == "--" {
+			break
+		}
+		legacyHelp = legacyHelp || isHelp(word)
+	}
+	return parseHelpExport([]string{"campaign"}, raw), legacy, help || legacyHelp || len(legacy) == 0
+}
+
+// Instrumentation uses the same raw campaign classification as admission,
 // without consulting configuration, environment, storage or transports.
 func isHelpExportInvocation(args []string) bool {
 	if len(args) > 0 && args[0] == "campaign" {
-		var sub []string
-		for i := 1; i < len(args); i++ {
-			if args[i] == "--" {
-				sub = append(sub, args[i:]...)
-				break
-			}
-			if args[i] == "--config" && i+1 < len(args) {
-				i++
-				continue
-			}
-			sub = append(sub, args[i])
-		}
-		return parseHelpExport([]string{"campaign"}, sub).export
+		r, _, _ := campaignHelpArguments(args[1:])
+		return r.export
 	}
 	return parseHelpExport(nil, args).export
 }
@@ -270,7 +298,10 @@ func renderHelpExport(out io.Writer, page helpPage, format string) error {
 }
 
 func admitHelpExport(out io.Writer, family, args []string) (bool, error) {
-	r := parseHelpExport(family, args)
+	return admitHelpExportRequest(out, family, parseHelpExport(family, args))
+}
+
+func admitHelpExportRequest(out io.Writer, family []string, r helpExportRequest) (bool, error) {
 	if !r.active {
 		return false, nil
 	}
