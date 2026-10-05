@@ -164,6 +164,21 @@ func TestAgentGuidanceExportClassification(t *testing.T) {
 		{[]string{"task", "run", "--help", "json", "full"}, true},
 		{[]string{"campaign", "help", "plan", "json"}, true},
 		{[]string{"--help", "bogusformat"}, true},
+		{[]string{"--help", "full", "--config", "json"}, false},
+		{[]string{"--help", "--config", "json"}, false},
+		{[]string{"help", "task", "run", "--config", "agent-md"}, false},
+		{[]string{"task", "run", "--help", "full", "--config", "json"}, false},
+		{[]string{"task", "run", "--help", "--config", "agent-md"}, false},
+		{[]string{"task", "run", "--help", "--log-level", "json"}, false},
+		{[]string{"help", "task", "run", "prompt", "json"}, false},
+		{[]string{"help", "task", "run", "prompt", "agent-md"}, false},
+		{[]string{"--help", "full", "prompt", "json"}, false},
+		{[]string{"--help", "--config=agent-md"}, false},
+		{[]string{"campaign", "help", "plan", "--config", "json"}, false},
+		{[]string{"campaign", "plan", "--help", "--log-level", "agent-md"}, false},
+		{[]string{"task", "run", "--help", "json", "--config", "agent-md"}, true},
+		{[]string{"help", "json", "task", "run"}, true},
+		{[]string{"help", "task", "run", "json"}, true},
 		{[]string{"--help"}, false},
 		{[]string{"--help", "full"}, false},
 		{[]string{"campaign", "help", "bogus"}, false},
@@ -176,6 +191,22 @@ func TestAgentGuidanceExportClassification(t *testing.T) {
 	for _, c := range cases {
 		if got := isHelpExportInvocation(c.args); got != c.export {
 			t.Fatalf("%v: %v", c.args, got)
+		}
+	}
+	// Every format-looking flag value stays outside the modifier segment,
+	// including assignments, later operands and all three help spellings.
+	for _, help := range []string{"help", "--help", "-h"} {
+		for _, value := range []string{"full", "json", "agent-md"} {
+			for _, flag := range []string{"--config", "--log-level"} {
+				for _, suffix := range [][]string{{flag, value}, {flag + "=" + value}, {flag, "bad", value}, {"--", value}} {
+					for _, prefix := range [][]string{{help}, {"task", "run", help}, {"task", "run", help, "full"}} {
+						args := append(append([]string(nil), prefix...), suffix...)
+						if r := parseHelpExport(nil, args); r.active || r.export {
+							t.Fatalf("legacy arguments intercepted: %v: %+v", args, r)
+						}
+					}
+				}
+			}
 		}
 	}
 }
@@ -282,6 +313,22 @@ func TestAgentGuidanceActualBinary(t *testing.T) {
 	// Positive instrumentation controls use actual binary invocations. They
 	// cannot contact a service: help or unknown root command is the only route.
 	controls := [][]string{{"--help"}, {"--help", "full"}, {"campaign", "help", "plan"}, {"campaign", "help", "bogus"}, {"--", "--help", "json"}, {"missing", "json"}, {"missing", "agent-md"}, {"missing", "--", "--help", "json"}}
+	controls = append(controls,
+		[]string{"--help", "full", "--config", "json"},
+		[]string{"--help", "--config", "json"},
+		[]string{"help", "task", "run", "--config", "agent-md"},
+		[]string{"task", "run", "--help", "full", "--config", "json"},
+		[]string{"task", "run", "--help", "--config", "agent-md"},
+		[]string{"task", "run", "--help", "--log-level", "json"},
+		[]string{"help", "task", "run", "prompt", "json"},
+	)
+	for _, value := range []string{"full", "json", "agent-md"} {
+		controls = append(controls,
+			[]string{"--help", "--config=" + value},
+			[]string{"task", "run", "--help", "--log-level", value},
+			[]string{"help", "task", "run", "--", value},
+		)
+	}
 	for _, args := range controls {
 		before := guidanceTree(t, fixture)
 		_, _, _ = call(args)

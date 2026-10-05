@@ -89,7 +89,16 @@ func parseHelpExport(family, args []string) helpExportRequest {
 	}
 	modifiers := 0
 	var tail []string
-	for _, word := range args[at+1 : end] {
+	stop := end
+	for i := at + 1; i < end; i++ {
+		word := args[i]
+		// The first flag ends the modifier/path segment, including assignment
+		// spellings. Its values and all following operands are legacy arguments,
+		// not formats. No runtime flag parser is needed for this boundary.
+		if strings.HasPrefix(word, "-") {
+			stop = i
+			break
+		}
 		switch word {
 		case "json", "agent-md":
 			r.export, r.active, r.format = true, true, word
@@ -97,8 +106,34 @@ func parseHelpExport(family, args []string) helpExportRequest {
 		case "full":
 			modifiers++
 		default:
+			path := append(append([]string(nil), family...), tail...)
+			_, page := helpPageFor(strings.Join(path, " "))
+			_, nextPage := helpPageFor(strings.Join(append(path, word), " "))
+			// A legacy full request can still name a help-first path, but an
+			// ordinary non-path word ends that path before later format words.
+			if !r.export && modifiers > 0 && !nextPage {
+				stop = i
+				break
+			}
+			// Help-first paths may precede the format. Once a registered leaf
+			// is reached, an ordinary word starts operands instead. A word
+			// after verb --help cannot extend that verb's path either.
+			if at > 0 || (len(tail) > 0 && page && len(helpPageChildren(path)) == 0) {
+				stop = i
+				if r.export || (at > 0 && modifiers == 0) {
+					r.active, r.export = true, true
+					r.err = fmt.Errorf("unknown help format %q; use full, json or agent-md", word)
+				}
+				break
+			}
 			tail = append(tail, word)
 		}
+		if stop != end {
+			break
+		}
+	}
+	if r.err != nil && modifiers == 0 {
+		return r
 	}
 	// A word after verb --help is a format, while help <path> preserves the
 	// existing help-first path grammar. Unknown campaign topics retain their
@@ -122,7 +157,7 @@ func parseHelpExport(family, args []string) helpExportRequest {
 		}
 		return r
 	}
-	r.clean = append(append(append([]string(nil), args[:at+1]...), tail...), args[end:]...)
+	r.clean = append(append(append([]string(nil), args[:at+1]...), tail...), args[stop:]...)
 	if modifiers != 1 {
 		r.err = fmt.Errorf("repeated or conflicting help formats; use one of full, json or agent-md")
 	} else if at > 0 && len(tail) > 0 {
