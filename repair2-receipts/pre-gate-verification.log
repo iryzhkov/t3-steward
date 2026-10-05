@@ -1,0 +1,14 @@
+Repair2 initial validation: initial HEAD, bundle SHA256, git bundle verify, local fetch/detach, candidate tree and sole parent all matched supplied pins.
+Huyang repository ws_0302a825e27bb84fb16a3a991daa96b3; external documents ws_1c3a341090ec16c2b3505d3a2da92871. Untrusted, unchanged trust.
+BEFORE on ca165e4ca4e14787ea1021c0f2ff50d1974463dd plus byte-exact actual Astra/Sol overlays:
+GOMAXPROCS=2 GOFLAGS=-p=2 go test ./internal/store/sqlite -run '^TestIndependentCancellationRepair' -count=1 -v
+exit 1; sqlite 0.630s.
+FAIL Additional/offered-retry; FAIL OfferedRetryDispositions/{superseded,run-ended,ownership-lost,deadline}: zero result, review parent identity is not current and live, unchanged=true.
+PASS remaining 10 Additional controls, all 6 HistoryAndWait refusals, both UnrelatedRouteCompatibility controls.
+Actual complete source extracted from supplied fenced Go blocks without alteration before this check; retained permanently below candidate source. Source map: coordinator.go107-118 reserves thread/dispatch token; fleet.go535-538 attaches assignment/revision without attempt thread. No live planner claim.
+AFTER same complete actual Astra/Sol overlays exit 0; sqlite 0.621s; full output repair2-receipts/astra-sol-after.log.
+Initial new lifecycle/boundary run: exit 1; all 20 lifecycle and 26 boundary cases pass; foreign-owner fixture hit UNIQUE coordinator_assignments.attempt_id before reconciliation. Corrected fixture to a foreign unowned attempt, no production change; retained initial output.
+Final-source focused command: GOMAXPROCS=2 GOFLAGS=-p=2 go test ./internal/store/sqlite ./internal/backlog -run 'TestReview(Child|Parent|Authority|Collector)|TestIndependentCancellation' -count=1 -v
+exit 0; sqlite 16.753s; backlog 0.676s. Retained output repair2-receipts/focused-final.log is tool-capped (some verbose middle output omitted); package exit/result and retained source assertions are available. No unexecuted/omitted output invented.
+Final correctness audit before gate: git diff --check passed. Only production delta is 9 additions/2 removals in private non-original thread validation. Original offered, foreign nonempty thread, all started/dispatch guards, runtime/index union ownership and route/project/role/activation/gate/epoch checks still precede disposition/deadline. Mutation loop, public/schema/runtime admission, latest authorizer and all prior tests untouched. Read all new test files completely, checked retained actual overlays contain original assertions with only gofmt/provenance changes. 20 lifecycle and 27 refusal cases exercised on final source; actual CommitAssignmentPlan offers use existing fixture snapshot/catalog only. Source/tests frozen before single gate.
+Gate command: GOMAXPROCS=2 GOFLAGS=-p=2 make check-review FAST_BASE=ca165e4ca4e14787ea1021c0f2ff50d1974463dd

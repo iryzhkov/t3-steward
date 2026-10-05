@@ -520,8 +520,15 @@ func reviewCancellationParentBindings(p review.ParentBinding, parents map[string
 			if a.ThreadID != p.ThreadID && !clearedThread && !replacementThread {
 				return ErrReviewAuthorityIdentity
 			}
-		} else if owned.ThreadID != a.ThreadID && !clearedThread {
-			return ErrReviewAuthorityIdentity
+		} else {
+			// Offers reserve a thread and token before dispatch reaches the attempt.
+			// The reserved token alone is not evidence that execution started.
+			reservedThread := owned.State == domain.AssignmentOffered && a.AssignmentID == owned.ID &&
+				a.ThreadID == "" && owned.ThreadID != "" && reviewCancellationUnstarted(a) &&
+				owned.DispatchState == "" && owned.DispatchRevision == 0 && owned.DispatchConfirmedAt == nil
+			if owned.ThreadID != a.ThreadID && !clearedThread && !reservedThread {
+				return ErrReviewAuthorityIdentity
+			}
 		}
 		if owned.Route.ProviderInstanceID == "" || owned.Route.Model == "" ||
 			(owned.Project != "" && owned.Project != p.Repository) ||

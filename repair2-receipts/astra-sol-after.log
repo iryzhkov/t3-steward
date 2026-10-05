@@ -1,0 +1,59 @@
+COMMAND: GOMAXPROCS=2 GOFLAGS=-p=2 go test ./internal/store/sqlite -run '^TestIndependentCancellationRepair' -count=1 -v
+=== RUN   TestIndependentCancellationRepairAdditional
+=== RUN   TestIndependentCancellationRepairAdditional/unrelated-route-omitted
+=== RUN   TestIndependentCancellationRepairAdditional/unrelated-route-null
+=== RUN   TestIndependentCancellationRepairAdditional/duplicate-route-model
+=== RUN   TestIndependentCancellationRepairAdditional/escaped-route-model
+=== RUN   TestIndependentCancellationRepairAdditional/duplicate-control
+=== RUN   TestIndependentCancellationRepairAdditional/escaped-control
+=== RUN   TestIndependentCancellationRepairAdditional/middle-history-control
+=== RUN   TestIndependentCancellationRepairAdditional/middle-history-thread
+=== RUN   TestIndependentCancellationRepairAdditional/offered-retry
+=== RUN   TestIndependentCancellationRepairAdditional/unassigned-retry
+=== RUN   TestIndependentCancellationRepairAdditional/claimed-retry
+--- PASS: TestIndependentCancellationRepairAdditional (0.30s)
+    --- PASS: TestIndependentCancellationRepairAdditional/unrelated-route-omitted (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/unrelated-route-null (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/duplicate-route-model (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/escaped-route-model (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/duplicate-control (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/escaped-control (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/middle-history-control (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/middle-history-thread (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/offered-retry (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/unassigned-retry (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/claimed-retry (0.03s)
+=== RUN   TestIndependentCancellationRepairOfferedRetryDispositions
+=== RUN   TestIndependentCancellationRepairOfferedRetryDispositions/superseded
+=== RUN   TestIndependentCancellationRepairOfferedRetryDispositions/run-ended
+=== RUN   TestIndependentCancellationRepairOfferedRetryDispositions/ownership-lost
+=== RUN   TestIndependentCancellationRepairOfferedRetryDispositions/deadline
+--- PASS: TestIndependentCancellationRepairOfferedRetryDispositions (0.10s)
+    --- PASS: TestIndependentCancellationRepairOfferedRetryDispositions/superseded (0.02s)
+    --- PASS: TestIndependentCancellationRepairOfferedRetryDispositions/run-ended (0.03s)
+    --- PASS: TestIndependentCancellationRepairOfferedRetryDispositions/ownership-lost (0.02s)
+    --- PASS: TestIndependentCancellationRepairOfferedRetryDispositions/deadline (0.03s)
+=== RUN   TestIndependentCancellationRepairHistoryAndWait
+=== RUN   TestIndependentCancellationRepairHistoryAndWait/newest-progress
+=== RUN   TestIndependentCancellationRepairHistoryAndWait/older-control
+=== RUN   TestIndependentCancellationRepairHistoryAndWait/older-completed
+=== RUN   TestIndependentCancellationRepairHistoryAndWait/older-thread
+=== RUN   TestIndependentCancellationRepairHistoryAndWait/run-progress
+=== RUN   TestIndependentCancellationRepairHistoryAndWait/offered-deadline
+--- PASS: TestIndependentCancellationRepairHistoryAndWait (0.16s)
+    --- PASS: TestIndependentCancellationRepairHistoryAndWait/newest-progress (0.03s)
+    --- PASS: TestIndependentCancellationRepairHistoryAndWait/older-control (0.03s)
+    --- PASS: TestIndependentCancellationRepairHistoryAndWait/older-completed (0.03s)
+    --- PASS: TestIndependentCancellationRepairHistoryAndWait/older-thread (0.03s)
+    --- PASS: TestIndependentCancellationRepairHistoryAndWait/run-progress (0.03s)
+    --- PASS: TestIndependentCancellationRepairHistoryAndWait/offered-deadline (0.03s)
+=== RUN   TestIndependentCancellationRepairUnrelatedRouteCompatibility
+=== RUN   TestIndependentCancellationRepairUnrelatedRouteCompatibility/omitted
+=== RUN   TestIndependentCancellationRepairUnrelatedRouteCompatibility/null
+--- PASS: TestIndependentCancellationRepairUnrelatedRouteCompatibility (0.05s)
+    --- PASS: TestIndependentCancellationRepairUnrelatedRouteCompatibility/omitted (0.02s)
+    --- PASS: TestIndependentCancellationRepairUnrelatedRouteCompatibility/null (0.03s)
+PASS
+ok  	github.com/iryzhkov/t3-steward/internal/store/sqlite	0.621s
+
+exit 0

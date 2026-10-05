@@ -1,0 +1,934 @@
+COMMAND: GOMAXPROCS=2 GOFLAGS=-p=2 go test ./internal/store/sqlite ./internal/backlog -run 'TestReview(Child|Parent|Authority|Collector)|TestIndependentCancellation' -count=1 -v
+Warning: truncated output (original token count: 29172)
+Total output lines: 1464
+
+=== RUN   TestIndependentCancellationParentRefusal
+=== RUN   TestIndependentCancellationParentRefusal/healthy-control
+=== RUN   TestIndependentCancellationParentRefusal/terminal-control
+=== RUN   TestIndependentCancellationParentRefusal/offered-live
+=== RUN   TestIndependentCancellationParentRefusal/offered-terminal
+=== RUN   TestIndependentCancellationParentRefusal/bad-progress-superseded
+=== RUN   TestIndependentCancellationParentRefusal/bad-control-terminal
+=== RUN   TestIndependentCancellationParentRefusal/changed-thread-terminal
+--- PASS: TestIndependentCancellationParentRefusal (0.19s)
+    --- PASS: TestIndependentCancellationParentRefusal/healthy-control (0.03s)
+    --- PASS: TestIndependentCancellationParentRefusal/terminal-control (0.02s)
+    --- PASS: TestIndependentCancellationParentRefusal/offered-live (0.03s)
+    --- PASS: TestIndependentCancellationParentRefusal/offered-terminal (0.03s)
+    --- PASS: TestIndependentCancellationParentRefusal/bad-progress-superseded (0.03s)
+    --- PASS: TestIndependentCancellationParentRefusal/bad-control-terminal (0.03s)
+    --- PASS: TestIndependentCancellationParentRefusal/changed-thread-terminal (0.02s)
+=== RUN   TestIndependentCancellationMalformedNewestRetry
+--- PASS: TestIndependentCancellationMalformedNewestRetry (0.02s)
+=== RUN   TestIndependentCancellationRepairAdditional
+=== RUN   TestIndependentCancellationRepairAdditional/unrelated-route-omitted
+=== RUN   TestIndependentCancellationRepairAdditional/unrelated-route-null
+=== RUN   TestIndependentCancellationRepairAdditional/duplicate-route-model
+=== RUN   TestIndependentCancellationRepairAdditional/escaped-route-model
+=== RUN   TestIndependentCancellationRepairAdditional/duplicate-control
+=== RUN   TestIndependentCancellationRepairAdditional/escaped-control
+=== RUN   TestIndependentCancellationRepairAdditional/middle-history-control
+=== RUN   TestIndependentCancellationRepairAdditional/middle-history-thread
+=== RUN   TestIndependentCancellationRepairAdditional/offered-retry
+=== RUN   TestIndependentCancellationRepairAdditional/unassigned-retry
+=== RUN   TestIndependentCancellationRepairAdditional/claimed-retry
+--- PASS: TestIndependentCancellationRepairAdditional (0.32s)
+    --- PASS: TestIndependentCancellationRepairAdditional/unrelated-route-omitted (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/unrelated-route-null (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/duplicate-route-model (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/escaped-route-model (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/duplicate-control (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/escaped-control (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/middle-history-control (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/middle-history-thread (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/offered-retry (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/unassigned-retry (0.03s)
+    --- PASS: TestIndependentCancellationRepairAdditional/claimed-retry (0.03s)
+=== RUN   TestIndependentCancellationRepairOfferedRetryDispositions
+=== RUN   TestIndependentCancellationRepairOfferedRetryDispositions/superseded
+=== RUN   TestIndependentCancellationRepairOfferedRetryDispositions/run-ended
+=== RUN   TestIndependentCancellationRepairOfferedRetryDispositions/ownership-lost
+=== RUN   TestIndependentCancellationRepairOfferedRetryDispositions/deadline
+--- PASS: TestIndependentCancellationRepairOfferedRetryDispositions (0.11s)
+    --- PASS: TestIndependentCancellationRepairOfferedRetryDispositions/superseded (0.03s)
+    --- PASS: TestIndependentCancellationRepairOfferedRetryDispositions/run-ended (0.03s)
+    --- PASS: TestIndependentCancellationRepairOfferedRetryDispositions/ownership-lost (0.03s)
+    --- PASS: TestIndependentCancellationRepairOfferedRetryDispositions/deadline (0.03s)
+=== RUN   TestIndependentCancellationRepairHistoryAndWait
+=== RUN   TestIndependentCancellationRepairHistoryAndWait/newest-progress
+=== RUN   TestIndependentCancellationRepairHistoryAndWait/older-control
+=== RUN   TestIndependentCancellationRepairHistoryAndWait/older-completed
+=== RUN   TestIndependentCancellationRepairHistoryAndWait/older-thread
+=== RUN   TestIndependentCancellationRepairHistoryAndWait/run-progress
+=== RUN   TestIndependentCancellationRepairHistoryAndWait/offered-deadline
+--- PASS: TestIndependentCancellationRepairHistoryAndWait (0.17s)
+    --- PASS: TestIndependentCancellationRepairHistoryAndWait/newest-progress (0.03s)
+    --- PASS: TestIndependentCancellationRepairHistoryAndWait/older-control (0.03s)
+    --- PASS: TestIndependentCancellationRepairHistoryAndWait/older-completed (0.03s)
+    --- PASS: TestIndependentCancellationRepairHistoryAndWait/older-thread (0.03s)
+    --- PASS: TestIndependentCancellationRepairHistoryAndWait/run-progress (0.03s)
+    --- PASS: TestIndependentCancellationRepairHistoryAndWait/offered-deadline (0.03s)
+=== RUN   TestIndependentCancellationRepairUnrelatedRouteCompatibility
+=== RUN   TestIndependentCancellationRepairUnrelatedRouteCompatibility/omitted
+=== RUN   TestIndependentCancellationRepairUnrelatedRouteCompatibility/null
+--- PASS: TestIndependentCancellationRepairUnrelatedRouteCompatibility (0.05s)
+    --- PASS: TestIndependentCancellationRepairUnrelatedRouteCompatibility/omitted (0.03s)
+    --- PASS: TestIndependentCancellationRepairUnrelatedRouteCompatibility/null (0.03s)
+=== RUN   TestReviewAuthorityInitialFreezeAndAtomicRollback
+=== RUN   TestReviewAuthorityInitialFreezeAndAtomicRollback/issued_revision
+=== RUN   TestReviewAuthorityInitialFreezeAndAtomicRollback/unbound_collision
+--- PASS: TestReviewAuthorityInitialFreezeAndAtomicRollback (0.04s)
+    --- PASS: TestReviewAuthorityInitialFreezeAndAtomicRollback/issued_revision (0.02s)
+    --- PASS: TestReviewAuthorityInitialFreezeAndAtomicRollback/unbound_collision (0.02s)
+=== RUN   TestReviewAuthorityEvidenceSurvivesReopen
+--- PASS: TestReviewAuthorityEvidenceSurvivesReopen (0.02s)
+=== RUN   TestReviewAuthorityFreezeReplayAndConflicts
+=== RUN   TestReviewAuthorityFreezeReplayAndConflicts/head
+=== RUN   TestReviewAuthorityFreezeReplayAndConflicts/input
+=== RUN   TestReviewAuthorityFreezeReplayAndConflicts/criteria
+=== RUN   TestReviewAuthorityFreezeReplayAndConflicts/policy
+=== RUN   TestReviewAuthorityFreezeReplayAndConflicts/repo
+=== RUN   TestReviewAuthorityFreezeReplayAndConflicts/attempt
+=== RUN   TestReviewAuthorityFreezeReplayAndConflicts/thread
+=== RUN   TestReviewAuthorityFreezeReplayAndConflicts/epoch
+=== RUN   TestReviewAuthorityFreezeReplayAndConflicts/base
+=== RUN   TestReviewAuthorityFreezeReplayAndConflicts/route
+=== RUN   TestReviewAuthorityFreezeReplayAndConflicts/limit
+--- PASS: TestReviewAuthorityFreezeReplayAndConflicts (0.03s)
+    --- PASS: TestReviewAuthorityFreezeReplayAndConflicts/head (0.00s)
+    --- PASS: TestReviewAuthorityFreezeReplayAndConflicts/input (0.00s)
+    --- PASS: TestReviewAuthorityFreezeReplayAndConflicts/criteria (0.00s)
+    --- PASS: TestReviewAuthorityFreezeReplayAndConflicts/policy (0.00s)
+    --- PASS: TestReviewAuthorityFreezeReplayAndConflicts/repo (0.00s)
+    --- PASS: TestReviewAuthorityFreezeReplayAndConflicts/attempt (0.00s)
+    --- PASS: TestReviewAuthorityFreezeReplayAndConflicts/thread (0.00s)
+    --- PASS: TestReviewAuthorityFreezeReplayAndConflicts/epoch (0.00s)
+    --- PASS: TestReviewAuthorityFreezeReplayAndConflicts/base (0.00s)
+    --- PASS: TestReviewAuthorityFreezeReplayAndConflicts/route (0.00s)
+    --- PASS: TestReviewAuthorityFreezeReplayAndConflicts/limit (0.00s)
+=== RUN   TestReviewAuthorityRiskDowngradeRefused
+--- PASS: TestReviewAuthorityRiskDowngradeRefused (0.02s)
+=== RUN   TestReviewAuthorityCurrentIdentityRefused
+=== RUN   TestReviewAuthorityCurrentIdentityRefused/thread
+=== RUN   TestReviewAuthorityCurrentIdentityRefused/terminal
+=== RUN   TestReviewAuthorityCurrentIdentityRefused/retry
+=== RUN   TestReviewAuthorityCurrentIdentityRefused/assignment
+=== RUN   TestReviewAuthorityCurrentIdentityRefused/revision
+=== RUN   TestReviewAuthorityCurrentIdentityRefused/run
+=== RUN   TestReviewAuthorityCurrentIdentityRefused/task
+=== RUN   TestReviewAuthorityCurrentIdentityRefused/repository
+=== RUN   TestReviewAuthorityCurrentIdentityRefused/executor
+--- PASS: TestReviewAuthorityCurrentIdentityRefused (0.20s)
+    --- PASS: TestReviewAuthorityCurrentIdentityRefused/thread (0.02s)
+    --- PASS: TestReviewAuthorityCurrentIdentityRefused/terminal (0.02s)
+    --- PASS: TestReviewAuthorityCurrentIdentityRefused/retry (0.02s)
+    --- PASS: TestReviewAuthorityCurrentIdentityRefused/assignment (0.02s)
+    --- PASS: TestReviewAuthorityCurrentIdentityRefused/revision (0.02s)
+    --- PASS: TestReviewAuthorityCurrentIdentityRefused/run (0.02s)
+    --- PASS: TestReviewAuthorityCurrentIdentityRefused/task (0.02s)
+    --- PASS: TestReviewAuthorityCurrentIdentityRefused/repository (0.02s)
+    --- PASS: TestReviewAuthorityCurrentIdentityRefused/executor (0.02s)
+=== RUN   TestReviewAuthorityConcurrentAllocationBounded
+--- PASS: TestReviewAuthorityConcurrentAllocationBounded (0.02s)
+=== RUN   TestReviewAuthorityDurableEvidenceOnly
+=== RUN   TestReviewAuthorityDurableEvidenceOnly/valid
+=== RUN   TestReviewAuthorityDurableEvidenceOnly/pending
+=== RUN   TestReviewAuthorityDurableEvidenceOnly/missing
+=== RUN   TestReviewAuthorityDurableEvidenceOnly/forged
+=== RUN   TestReviewAuthorityDurableEvidenceOnly/malformed
+=== RUN   TestReviewAuthorityDurableEvidenceOnly/failed
+=== RUN   TestReviewAuthorityDurableEvidenceOnly/timed-out
+=== RUN   TestReviewAuthorityDurableEvidenceOnly/cancelled
+=== RUN   TestReviewAuthorityDurableEvidenceOnly/head
+=== RUN   TestReviewAuthorityDurableEvidenceOnly/criteria
+=== RUN   TestReviewAuthorityDurableEvidenceOnly/member
+--- PASS: TestReviewAuthorityDurableEvidenceOnly (0.25s)
+    --- PASS: TestReviewAuthorityDurableEvidenceOnly/valid (0.02s)
+    --- PASS: TestReviewAuthorityDurableEvidenceOnly/pending (0.02s)
+    --- PASS: TestReviewAuthorityDurableEvidenceOnly/missing (0.02s)
+    --- PASS: TestReviewAuthorityDurableEvidenceOnly/forged (0.02s)
+    --- PASS: TestReviewAuthorityDurableEvidenceOnly/malformed (0.03s)
+    --- PASS: TestReviewAuthorityDurableEvidenceOnly/failed (0.02s)
+    --- PASS: TestReviewAuthorityDurableEvidenceOnly/timed-out (0.02s)
+    --- PASS: TestReviewAuthorityDurableEvidenceOnly/cancelled (0.02s)
+    --- PASS: TestReviewAuthorityDurableEvidenceOnly/head (0.02s)
+    --- PASS: TestReviewAuthorityDurableEvidenceOnly/criteria (0.02s)
+    --- PASS: TestReviewAuthorityDurableEvidenceOnly/member (0.02s)
+=== RUN   TestReviewChildArtifactAttemptBoundaries
+=== RUN   TestReviewChildArtifactAttemptBoundaries/initial_to_other_initial
+=== RUN   TestReviewChildArtifactAttemptBoundaries/initial_to_other_retry
+=== RUN   TestReviewChildArtifactAttemptBoundaries/retry_to_other_initial
+=== RUN   TestReviewChildArtifactAttemptBoundaries/retry_to_other_retry
+=== RUN   TestReviewChildArtifactAttemptBoundaries/parent_attempt
+=== RUN   TestReviewChildArtifactAttemptBoundaries/foreign_attempt
+=== RUN   TestReviewChildArtifactAttemptBoundaries/dangling_attempt
+=== RUN   TestReviewChildArtifactAttemptBoundaries/retry-only_foreign
+=== RUN   TestReviewChildArtifactAttemptBoundaries/retry-only_indexed
+=== RUN   TestReviewChildArtifactAttemptBoundaries/retry-only_JSON
+=== RUN   TestReviewChildArtifactAttemptBoundaries/later-only_foreign
+=== RUN   TestReviewChildArtifactAttemptBoundaries/indexed_attempt
+=== RUN   TestReviewChildArtifactAttemptBoundaries/JSON_attempt
+=== RUN   TestReviewChildArtifactAttemptBoundaries/indexed_id
+=== RUN   TestReviewChildArtifactAttemptBoundaries/JSON_id
+=== RUN   TestReviewChildArtifactAttemptBoundaries/indexed_run
+=== RUN   TestReviewChildArtifactAttemptBoundaries/JSON_run
+=== RUN   TestReviewChildArtifactAttemptBoundaries/indexed_task
+=== RUN   TestReviewChildArtifactAttemptBoundaries/JSON_task
+=== RUN   TestReviewChildArtifactAttemptBoundaries/indexed_hash
+=== RUN   TestReviewChildArtifactAttemptBoundaries/JSON_hash
+--- PASS: TestReviewChildArtifactAttemptBoundaries (0.51s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/initial_to_other_initial (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/initial_to_other_retry (0.03s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/retry_to_other_initial (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/retry_to_other_retry (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/parent_attempt (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/foreign_attempt (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/dangling_attempt (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/retry-only_foreign (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/retry-only_indexed (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/retry-only_JSON (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/later-only_foreign (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/indexed_attempt (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/JSON_attempt (0.03s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/indexed_id (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/JSON_id (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/indexed_run (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/JSON_run (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/indexed_task (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/JSON_task (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/indexed_hash (0.02s)
+    --- PASS: TestReviewChildArtifactAttemptBoundaries/JSON_hash (0.02s)
+=== RUN   TestReviewChildArtifactCoherentControls
+--- PASS: TestReviewChildArtifactCoherentControls (0.02s)
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ended/queued
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ended/ready
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ended/blocked
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ended/commit
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/queued
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/ready
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/blocked
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/commit
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/queued
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/ready
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/blocked
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/commit
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/queued
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/ready
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/blocked
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/commit
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/queued
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/ready
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/blocked
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/commit
+--- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle (0.62s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ended/queued (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ended/ready (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ended/blocked (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ended/commit (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/queued (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/ready (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/blocked (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/commit (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/queued (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/ready (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/blocked (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/commit (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/queued (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/ready (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/blocked (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/commit (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/queued (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/ready (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/blocked (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/commit (0.03s)
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/foreign-thread
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/running
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/preparing
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/active
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/completed-at
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/dispatch-revision
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/dispatch-state
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/dispatch-confirmed
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/original-offered
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/foreign-ref
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/missing-ref
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/foreign-owner
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/indexed-owner
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/runtime-owner
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/indexed-token
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/indexed-state
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/indexed-epoch
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/foreign-project
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/foreign-role
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/missing-route
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/activation
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/gate
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/zero-epoch
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/claimed-empty-thread
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/unknown-empty-thread
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/completed-empty-thread
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/released-empty-thread
+--- PASS: TestReviewChildCancellationOfferedParentRetryRefusals (0.75s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/foreign-thread (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/running (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/preparing (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/active (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/completed-at (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/dispatch-revision (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/dispatch-state (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/dispatch-confirmed (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/original-offered (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/foreign-ref (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/missing-ref (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/foreign-owner (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/indexed-owner (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/runtime-owner (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/indexed-token (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/indexed-state (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/indexed-epoch (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/foreign-project (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/foreign-role (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/missing-route (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/activation (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/gate (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/zero-epoch (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/claimed-empty-thread (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/unknown-empty-thread (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/completed-empty-thread (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/released-empty-thread (0.03s)
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/original-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/original-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/original-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/latest-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/latest-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/latest-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/latest-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/latest-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/latest-ambiguous-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/offered-original
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/foreign-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/foreign-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/foreign-assignment-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/foreign-route
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/run-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/ambiguous-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/ambiguous-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/ambiguous-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/ambiguous-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/ambiguous-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/ambiguous-run-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/healthy/ambiguous-route
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/original-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/original-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/original-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/latest-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/latest-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/latest-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/latest-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/latest-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/latest-ambiguous-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/offered-original
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/foreign-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/foreign-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/foreign-assignment-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/foreign-route
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/run-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/ambiguous-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/ambiguous-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/ambiguous-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/ambiguous-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/ambiguous-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/ambiguous-run-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/run-ended/ambiguous-route
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/original-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/original-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/original-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/latest-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/latest-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/latest-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/latest-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/latest-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/latest-ambiguous-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/offered-original
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/foreign-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/foreign-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/foreign-assignment-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/foreign-route
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/run-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/ambiguous-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/ambiguous-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/ambiguous-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/ambiguous-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/ambiguous-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/ambiguous-run-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/attempt-ended/ambiguous-route
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/original-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/original-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/original-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/latest-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/latest-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/latest-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/latest-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/latest-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/latest-ambiguous-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/offered-original
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/foreign-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/foreign-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/foreign-assignment-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/foreign-route
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/run-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/ambiguous-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/ambiguous-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/ambiguous-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/ambiguous-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/ambiguous-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/ambiguous-run-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/superseded/ambiguous-route
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/original-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/original-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/original-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/latest-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/latest-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/latest-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/latest-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/latest-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/latest-ambiguous-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/offered-original
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/foreign-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/foreign-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/foreign-assignment-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/foreign-route
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/run-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/ambiguous-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/ambiguous-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/ambiguous-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/ambiguous-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/ambiguous-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/ambiguous-run-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/ownership-lost/ambiguous-route
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/original-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/original-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/original-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/latest-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/latest-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/latest-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/latest-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/latest-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/latest-ambiguous-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/offered-original
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/foreign-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/foreign-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/foreign-assignment-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/foreign-route
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/run-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/ambiguous-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/ambiguous-control
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/ambiguous-thread
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/ambiguous-ref
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/ambiguous-completed
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/ambiguous-run-progress
+=== RUN   TestReviewChildCancellationParentCoherenceCrossProduct/deadline/ambiguous-route
+--- PASS: TestReviewChildCancellationParentCoherenceCrossProduct (3.59s)
+    --- PASS: TestReviewChildCancellationParentCoherenceCrossProduct/healthy/original-progress (0.03s)
+    --- PASS: TestReviewChildCancellationParentCoherenceCrossProduct/healthy/original-control (0.03s)
+    --- PASS: TestReviewChildCancellationParentCoherenceCrossProduct/healthy/original-completed (0.03s)
+    --- PASS: TestReviewChildCancellationParentCoherenceCrossProduct/healthy/latest-progress (0.03s)
+    --- PASS: TestReviewChildCancellationParentCoherenceCrossProduct/healthy/latest-control (0.03s)
+    --- PASS: TestReviewChildCancellationParentCoherenceCrossProduct/healthy/latest-completed (0.03s)
+    --- PASS: TestReviewChildCancellationParentCoherenceCrossProduct/healthy/latest-thread (0.03s)
+    --- PASS: TestReviewChildCancellationParentCoherenceCrossProduct/healthy/latest-ref (0.03s)
+    --- PASS: TestReviewChildCancellationParentCoherenceCrossProduct/healthy/latest-ambiguous-control (0.03s)
+    --- PASS: TestReviewChildCancellationParentCoherenceCrossProduct/healthy/offered-original (0.03s)
+    --- PASS: TestReviewChildCancellationParentCoherenceCrossProduct/healthy/foreign-thread (0.03s)
+    --- PASS: TestReviewChildCancellationParentCoherenceCrossProduct/healthy/foreign-ref (0.03s)
+    --- PASS…11172 tokens truncated…  --- PASS: TestReviewChildAllRetryIdentities/indexed_id (0.02s)
+    --- PASS: TestReviewChildAllRetryIdentities/zero_number (0.03s)
+    --- PASS: TestReviewChildAllRetryIdentities/JSON_run_only (0.03s)
+    --- PASS: TestReviewChildAllRetryIdentities/JSON_number (0.02s)
+    --- PASS: TestReviewChildAllRetryIdentities/zero_revision (0.02s)
+    --- PASS: TestReviewChildAllRetryIdentities/activation_ID (0.02s)
+    --- PASS: TestReviewChildAllRetryIdentities/JSON_task_only (0.03s)
+    --- PASS: TestReviewChildAllRetryIdentities/duplicate_JSON_number (0.02s)
+=== RUN   TestReviewChildIndependentOrphanRetry
+--- PASS: TestReviewChildIndependentOrphanRetry (0.02s)
+=== RUN   TestReviewChildAllocationReopenProgressReplay
+--- PASS: TestReviewChildAllocationReopenProgressReplay (0.03s)
+=== RUN   TestReviewChildConcurrentWriters
+--- PASS: TestReviewChildConcurrentWriters (0.03s)
+=== RUN   TestReviewChildCreationRollbackAndFences
+=== RUN   TestReviewChildCreationRollbackAndFences/late_failure
+=== RUN   TestReviewChildCreationRollbackAndFences/workflow_collision
+=== RUN   TestReviewChildCreationRollbackAndFences/run_collision
+=== RUN   TestReviewChildCreationRollbackAndFences/attempt_collision
+=== RUN   TestReviewChildCreationRollbackAndFences/task_collision
+=== RUN   TestReviewChildCreationRollbackAndFences/artifact_collision
+=== RUN   TestReviewChildCreationRollbackAndFences/graph_collision
+=== RUN   TestReviewChildCreationRollbackAndFences/ended_parent
+=== RUN   TestReviewChildCreationRollbackAndFences/ended_run
+=== RUN   TestReviewChildCreationRollbackAndFences/superseded
+=== RUN   TestReviewChildCreationRollbackAndFences/epoch
+=== RUN   TestReviewChildCreationRollbackAndFences/stale_revision
+=== RUN   TestReviewChildCreationRollbackAndFences/unbound_result
+=== RUN   TestReviewChildCreationRollbackAndFences/unbound_deadline
+=== RUN   TestReviewChildCreationRollbackAndFences/authority_forgery
+=== RUN   TestReviewChildCreationRollbackAndFences/checkpoint_forgery
+--- PASS: TestReviewChildCreationRollbackAndFences (0.35s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/late_failure (0.02s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/workflow_collision (0.02s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/run_collision (0.02s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/attempt_collision (0.02s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/task_collision (0.02s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/artifact_collision (0.02s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/graph_collision (0.02s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/ended_parent (0.02s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/ended_run (0.02s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/superseded (0.02s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/epoch (0.02s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/stale_revision (0.02s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/unbound_result (0.02s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/unbound_deadline (0.02s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/authority_forgery (0.02s)
+    --- PASS: TestReviewChildCreationRollbackAndFences/checkpoint_forgery (0.02s)
+=== RUN   TestReviewChildBoundCorruptionAndConflicts
+=== RUN   TestReviewChildBoundCorruptionAndConflicts/workflow
+=== RUN   TestReviewChildBoundCorruptionAndConflicts/run
+=== RUN   TestReviewChildBoundCorruptionAndConflicts/task
+=== RUN   TestReviewChildBoundCorruptionAndConflicts/attempt
+=== RUN   TestReviewChildBoundCorruptionAndConflicts/artifact
+=== RUN   TestReviewChildBoundCorruptionAndConflicts/graph
+=== RUN   TestReviewChildBoundCorruptionAndConflicts/sink
+=== RUN   TestReviewChildBoundCorruptionAndConflicts/round_route
+=== RUN   TestReviewChildBoundCorruptionAndConflicts/round_deadline
+=== RUN   TestReviewChildBoundCorruptionAndConflicts/deadline_conflict
+=== RUN   TestReviewChildBoundCorruptionAndConflicts/input_bytes
+=== RUN   TestReviewChildBoundCorruptionAndConflicts/criteria
+=== RUN   TestReviewChildBoundCorruptionAndConflicts/prompt
+=== RUN   TestReviewChildBoundCorruptionAndConflicts/foreign_metadata
+--- PASS: TestReviewChildBoundCorruptionAndConflicts (0.32s)
+    --- PASS: TestReviewChildBoundCorruptionAndConflicts/workflow (0.02s)
+    --- PASS: TestReviewChildBoundCorruptionAndConflicts/run (0.02s)
+    --- PASS: TestReviewChildBoundCorruptionAndConflicts/task (0.02s)
+    --- PASS: TestReviewChildBoundCorruptionAndConflicts/attempt (0.02s)
+    --- PASS: TestReviewChildBoundCorruptionAndConflicts/artifact (0.02s)
+    --- PASS: TestReviewChildBoundCorruptionAndConflicts/graph (0.02s)
+    --- PASS: TestReviewChildBoundCorruptionAndConflicts/sink (0.02s)
+    --- PASS: TestReviewChildBoundCorruptionAndConflicts/round_route (0.02s)
+    --- PASS: TestReviewChildBoundCorruptionAndConflicts/round_deadline (0.02s)
+    --- PASS: TestReviewChildBoundCorruptionAndConflicts/deadline_conflict (0.02s)
+    --- PASS: TestReviewChildBoundCorruptionAndConflicts/input_bytes (0.02s)
+    --- PASS: TestReviewChildBoundCorruptionAndConflicts/criteria (0.02s)
+    --- PASS: TestReviewChildBoundCorruptionAndConflicts/prompt (0.02s)
+    --- PASS: TestReviewChildBoundCorruptionAndConflicts/foreign_metadata (0.02s)
+=== RUN   TestReviewChildV34Migration
+--- PASS: TestReviewChildV34Migration (0.02s)
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/hidden-run
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/hidden-task
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/decoded-only
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/indexed-only
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/retry-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/retry-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/retry-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/decoded-duplicate-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/bound-index-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/bound-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/bound-run
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/bound-task
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/bound-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/bound-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/zero-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/pending/zero-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/hidden-run
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/hidden-task
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/decoded-only
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/indexed-only
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/retry-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/retry-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/retry-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/decoded-duplicate-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/bound-index-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/bound-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/bound-run
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/bound-task
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/bound-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/bound-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/zero-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/sink-finished/zero-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/hidden-run
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/hidden-task
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/decoded-only
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/indexed-only
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/retry-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/retry-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/retry-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/decoded-duplicate-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/bound-index-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/bound-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/bound-run
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/bound-task
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/bound-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/bound-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/zero-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/collected/zero-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/hidden-run
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/hidden-task
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/decoded-only
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/indexed-only
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/retry-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/retry-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/retry-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/decoded-duplicate-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/bound-index-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/bound-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/bound-run
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/bound-task
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/bound-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/bound-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/zero-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/live/zero-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/hidden-run
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/hidden-task
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/decoded-only
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/indexed-only
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/retry-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/retry-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/retry-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/decoded-duplicate-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/bound-index-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/bound-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/bound-run
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/bound-task
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/bound-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/bound-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/zero-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/settled/zero-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/hidden-run
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/hidden-task
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/decoded-only
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/indexed-only
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/retry-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/retry-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/retry-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/decoded-duplicate-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/bound-index-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/bound-id
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/bound-run
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/bound-task
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/bound-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/bound-revision
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/zero-number
+=== RUN   TestReviewParentWaitCoherentOwnershipBranches/resumed/zero-revision
+--- PASS: TestReviewParentWaitCoherentOwnershipBranches (2.47s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/hidden-run (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/hidden-task (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/decoded-only (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/indexed-only (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/retry-id (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/retry-number (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/retry-revision (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/decoded-duplicate-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/bound-index-id (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/bound-id (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/bound-run (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/bound-task (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/bound-number (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/bound-revision (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/zero-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/pending/zero-revision (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/hidden-run (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/hidden-task (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/decoded-only (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/indexed-only (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/retry-id (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/retry-number (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/retry-revision (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/decoded-duplicate-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/bound-index-id (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/bound-id (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/bound-run (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/bound-task (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/bound-number (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/bound-revision (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/zero-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/sink-finished/zero-revision (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/hidden-run (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/hidden-task (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/decoded-only (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/indexed-only (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/retry-id (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/retry-number (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/retry-revision (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/decoded-duplicate-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/bound-index-id (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/bound-id (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/bound-run (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/bound-task (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/bound-number (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/bound-revision (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/zero-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/collected/zero-revision (0.02s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/hidden-run (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/hidden-task (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/decoded-only (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/indexed-only (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/retry-id (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/retry-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/retry-revision (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/decoded-duplicate-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/bound-index-id (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/bound-id (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/bound-run (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/bound-task (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/bound-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/bound-revision (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/zero-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/live/zero-revision (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/hidden-run (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/hidden-task (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/decoded-only (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/indexed-only (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/retry-id (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/retry-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/retry-revision (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/decoded-duplicate-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/bound-index-id (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/bound-id (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/bound-run (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/bound-task (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/bound-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/bound-revision (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/zero-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/settled/zero-revision (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/hidden-run (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/hidden-task (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/decoded-only (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/indexed-only (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/retry-id (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/retry-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/retry-revision (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/decoded-duplicate-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/bound-index-id (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/bound-id (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/bound-run (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/bound-task (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/bound-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/bound-revision (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/zero-number (0.03s)
+    --- PASS: TestReviewParentWaitCoherentOwnershipBranches/resumed/zero-revision (0.03s)
+=== RUN   TestReviewParentWaitProtectedIdentityKeys
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/id/duplicate
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/id/case
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/id/escaped
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/id/unicode
+    review_parent_coherence_test.go:174: Unicode fold alias applies to taskId
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/workflowRunId/duplicate
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/workflowRunId/case
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/workflowRunId/escaped
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/workflowRunId/unicode
+    review_parent_coherence_test.go:174: Unicode fold alias applies to taskId
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/taskId/duplicate
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/taskId/case
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/taskId/escaped
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/taskId/unicode
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/number/duplicate
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/number/case
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/number/escaped
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/number/unicode
+    review_parent_coherence_test.go:174: Unicode fold alias applies to taskId
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/revision/duplicate
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/revision/case
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/revision/escaped
+=== RUN   TestReviewParentWaitProtectedIdentityKeys/revision/unicode
+    review_parent_coherence_test.go:174: Unicode fold alias applies to taskId
+--- PASS: TestReviewParentWaitProtectedIdentityKeys (0.48s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/id/duplicate (0.02s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/id/case (0.02s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/id/escaped (0.02s)
+    --- SKIP: TestReviewParentWaitProtectedIdentityKeys/id/unicode (0.03s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/workflowRunId/duplicate (0.02s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/workflowRunId/case (0.02s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/workflowRunId/escaped (0.02s)
+    --- SKIP: TestReviewParentWaitProtectedIdentityKeys/workflowRunId/unicode (0.02s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/taskId/duplicate (0.02s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/taskId/case (0.02s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/taskId/escaped (0.02s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/taskId/unicode (0.02s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/number/duplicate (0.03s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/number/case (0.02s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/number/escaped (0.02s)
+    --- SKIP: TestReviewParentWaitProtectedIdentityKeys/number/unicode (0.02s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/revision/duplicate (0.02s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/revision/case (0.02s)
+    --- PASS: TestReviewParentWaitProtectedIdentityKeys/revision/escaped (0.02s)
+    --- SKIP: TestReviewParentWaitProtectedIdentityKeys/revision/unicode (0.02s)
+=== RUN   TestReviewParentWaitCanonicalUnrelatedAndJSONLayout
+--- PASS: TestReviewParentWaitCanonicalUnrelatedAndJSONLayout (0.02s)
+=== RUN   TestReviewParentWaitIndependentDeadlineConsumption
+--- PASS: TestReviewParentWaitIndependentDeadlineConsumption (0.03s)
+=== RUN   TestReviewParentWaitIndependentSecondWriteFullRollback
+--- PASS: TestReviewParentWaitIndependentSecondWriteFullRollback (0.03s)
+=== RUN   TestReviewParentWaitUnrelatedCorruptJSONFailsClosed
+--- PASS: TestReviewParentWaitUnrelatedCorruptJSONFailsClosed (0.02s)
+=== RUN   TestReviewAuthorityHiddenRetryCallers
+=== RUN   TestReviewAuthorityHiddenRetryCallers/freeze
+=== RUN   TestReviewAuthorityHiddenRetryCallers/allocate
+=== RUN   TestReviewAuthorityHiddenRetryCallers/materialize
+--- PASS: TestReviewAuthorityHiddenRetryCallers (0.07s)
+    --- PASS: TestReviewAuthorityHiddenRetryCallers/freeze (0.02s)
+    --- PASS: TestReviewAuthorityHiddenRetryCallers/allocate (0.02s)
+    --- PASS: TestReviewAuthorityHiddenRetryCallers/materialize (0.02s)
+=== RUN   TestReviewParentWaitCoherentHistoryAndPartialUnrelatedOwnership
+=== RUN   TestReviewParentWaitCoherentHistoryAndPartialUnrelatedOwnership/run
+=== RUN   TestReviewParentWaitCoherentHistoryAndPartialUnrelatedOwnership/task
+--- PASS: TestReviewParentWaitCoherentHistoryAndPartialUnrelatedOwnership (0.05s)
+    --- PASS: TestReviewParentWaitCoherentHistoryAndPartialUnrelatedOwnership/run (0.03s)
+    --- PASS: TestReviewParentWaitCoherentHistoryAndPartialUnrelatedOwnership/task (0.02s)
+=== RUN   TestReviewParentWaitMissingBoundAttempt
+--- PASS: TestReviewParentWaitMissingBoundAttempt (0.02s)
+=== RUN   TestReviewParentWaitReviewerHiddenRetry
+=== RUN   TestReviewParentWaitReviewerHiddenRetry/coherent-retry
+=== RUN   TestReviewParentWaitReviewerHiddenRetry/index-hidden-retry
+--- PASS: TestReviewParentWaitReviewerHiddenRetry (0.05s)
+    --- PASS: TestReviewParentWaitReviewerHiddenRetry/coherent-retry (0.02s)
+    --- PASS: TestReviewParentWaitReviewerHiddenRetry/index-hidden-retry (0.02s)
+=== RUN   TestReviewParentWaitLifecycleReopen
+--- PASS: TestReviewParentWaitLifecycleReopen (0.03s)
+=== RUN   TestReviewParentWaitEarlyFinished
+=== RUN   TestReviewParentWaitEarlyFinished/sink_before_collector
+=== RUN   TestReviewParentWaitEarlyFinished/collected_before_park
+--- PASS: TestReviewParentWaitEarlyFinished (0.05s)
+    --- PASS: TestReviewParentWaitEarlyFinished/sink_before_collector (0.02s)
+    --- PASS: TestReviewParentWaitEarlyFinished/collected_before_park (0.02s)
+=== RUN   TestReviewParentWaitCompletionRace
+--- PASS: TestReviewParentWaitCompletionRace (0.21s)
+=== RUN   TestReviewParentWaitRefusalsRollback
+=== RUN   TestReviewParentWaitRefusalsRollback/foreign_run
+=== RUN   TestReviewParentWaitRefusalsRollback/assignment_thread
+=== RUN   TestReviewParentWaitRefusalsRollback/assignment_owner
+=== RUN   TestReviewParentWaitRefusalsRollback/assignment_route
+=== RUN   TestReviewParentWaitRefusalsRollback/run_ended
+=== RUN   TestReviewParentWaitRefusalsRollback/thread
+=== RUN   TestReviewParentWaitRefusalsRollback/assignment
+=== RUN   TestReviewParentWaitRefusalsRollback/ended
+=== RUN   TestReviewParentWaitRefusalsRollback/epoch
+=== RUN   TestReviewParentWaitRefusalsRollback/reassigned
+=== RUN   TestReviewParentWaitRefusalsRollback/project
+=== RUN   TestReviewParentWaitRefusalsRollback/retry
+=== RUN   TestReviewParentWaitRefusalsRollback/expired
+=== RUN   TestReviewParentWaitRefusalsRollback/graph
+=== RUN   TestReviewParentWaitRefusalsRollback/checkpoint
+=== RUN   TestReviewParentWaitRefusalsRollback/authority
+=== RUN   TestReviewParentWaitRefusalsRollback/deadline
+--- PASS: TestReviewParentWaitRefusalsRollback (0.39s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/foreign_run (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/assignment_thread (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/assignment_owner (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/assignment_route (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/run_ended (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/thread (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/assignment (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/ended (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/epoch (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/reassigned (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/project (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/retry (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/expired (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/graph (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/checkpoint (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/authority (0.02s)
+    --- PASS: TestReviewParentWaitRefusalsRollback/deadline (0.02s)
+=== RUN   TestReviewParentWaitReplayRefusals
+=== RUN   TestReviewParentWaitReplayRefusals/node
+=== RUN   TestReviewParentWaitReplayRefusals/deadline
+=== RUN   TestReviewParentWaitReplayRefusals/request
+=== RUN   TestReviewParentWaitReplayRefusals/not_parked
+=== RUN   TestReviewParentWaitReplayRefusals/ownership
+=== RUN   TestReviewParentWaitReplayRefusals/indexed_owner
+=== RUN   TestReviewParentWaitReplayRefusals/revision
+=== RUN   TestReviewParentWaitReplayRefusals/expired
+--- PASS: TestReviewParentWaitReplayRefusals (0.20s)
+    --- PASS: TestReviewParentWaitReplayRefusals/node (0.02s)
+    --- PASS: TestReviewParentWaitReplayRefusals/deadline (0.02s)
+    --- PASS: TestReviewParentWaitReplayRefusals/request (0.03s)
+    --- PASS: TestReviewParentWaitReplayRefusals/not_parked (0.02s)
+    --- PASS: TestReviewParentWaitReplayRefusals/ownership (0.02s)
+    --- PASS: TestReviewParentWaitReplayRefusals/indexed_owner (0.03s)
+    --- PASS: TestReviewParentWaitReplayRefusals/revision (0.03s)
+    --- PASS: TestReviewParentWaitReplayRefusals/expired (0.03s)
+=== RUN   TestReviewParentWaitAtomicPersistenceFailure
+--- PASS: TestReviewParentWaitAtomicPersistenceFailure (0.03s)
+=== RUN   TestReviewParentWaitConcurrentRegistration
+--- PASS: TestReviewParentWaitConcurrentRegistration (0.03s)
+PASS
+ok  	github.com/iryzhkov/t3-steward/internal/store/sqlite	16.753s
+=== RUN   TestReviewChildCancellationWorkerCustodyIntegration
+=== RUN   TestReviewChildCancellationWorkerCustodyIntegration/claimed/stop
+=== RUN   TestReviewChildCancellationWorkerCustodyIntegration/unknown/stop
+=== RUN   TestReviewChildCancellationWorkerCustodyIntegration/claimed/collect
+=== RUN   TestReviewChildCancellationWorkerCustodyIntegration/unknown/collect
+--- PASS: TestReviewChildCancellationWorkerCustodyIntegration (0.13s)
+    --- PASS: TestReviewChildCancellationWorkerCustodyIntegration/claimed/stop (0.04s)
+    --- PASS: TestReviewChildCancellationWorkerCustodyIntegration/unknown/stop (0.03s)
+    --- PASS: TestReviewChildCancellationWorkerCustodyIntegration/claimed/collect (0.03s)
+    --- PASS: TestReviewChildCancellationWorkerCustodyIntegration/unknown/collect (0.03s)
+=== RUN   TestReviewChildCancellationCollectorPreservesCompletedEvidence
+=== RUN   TestReviewChildCancellationCollectorPreservesCompletedEvidence/initial
+=== RUN   TestReviewChildCancellationCollectorPreservesCompletedEvidence/latest-retry
+--- PASS: TestReviewChildCancellationCollectorPreservesCompletedEvidence (0.06s)
+    --- PASS: TestReviewChildCancellationCollectorPreservesCompletedEvidence/initial (0.03s)
+    --- PASS: TestReviewChildCancellationCollectorPreservesCompletedEvidence/latest-retry (0.03s)
+=== RUN   TestReviewChildRetainedSQLiteCollectorReplay
+--- PASS: TestReviewChildRetainedSQLiteCollectorReplay (0.03s)
+=== RUN   TestReviewChildRetainedOrphanOutputsRefused
+--- PASS: TestReviewChildRetainedOrphanOutputsRefused (0.02s)
+=== RUN   TestReviewChildRetainedAmbiguousOutputsRefused
+=== RUN   TestReviewChildRetainedAmbiguousOutputsRefused/duplicate
+=== RUN   TestReviewChildRetainedAmbiguousOutputsRefused/case
+=== RUN   TestReviewChildRetainedAmbiguousOutputsRefused/artifact-duplicate
+=== RUN   TestReviewChildRetainedAmbiguousOutputsRefused/artifact-case
+--- PASS: TestReviewChildRetainedAmbiguousOutputsRefused (0.10s)
+    --- PASS: TestReviewChildRetainedAmbiguousOutputsRefused/duplicate (0.02s)
+    --- PASS: TestReviewChildRetainedAmbiguousOutputsRefused/case (0.02s)
+    --- PASS: TestReviewChildRetainedAmbiguousOutputsRefused/artifact-duplicate (0.02s)
+    --- PASS: TestReviewChildRetainedAmbiguousOutputsRefused/artifact-case (0.03s)
+=== RUN   TestReviewChildRetainedPreparationRefusals
+=== RUN   TestReviewChildRetainedPreparationRefusals/missing_file
+=== RUN   TestReviewChildRetainedPreparationRefusals/altered_bytes
+=== RUN   TestReviewChildRetainedPreparationRefusals/metadata
+=== RUN   TestReviewChildRetainedPreparationRefusals/foreign_ownership
+=== RUN   TestReviewChildRetainedPreparationRefusals/prompt_bytes
+=== RUN   TestReviewChildRetainedPreparationRefusals/criteria_substitution
+=== RUN   TestReviewChildRetainedPreparationRefusals/zero_deadline
+=== RUN   TestReviewChildRetainedPreparationRefusals/manifest_conflict
+--- PASS: TestReviewChildRetainedPreparationRefusals (0.18s)
+    --- PASS: TestReviewChildRetainedPreparationRefusals/missing_file (0.02s)
+    --- PASS: TestReviewChildRetainedPreparationRefusals/altered_bytes (0.02s)
+    --- PASS: TestReviewChildRetainedPreparationRefusals/metadata (0.02s)
+    --- PASS: TestReviewChildRetainedPreparationRefusals/foreign_ownership (0.02s)
+    --- PASS: TestReviewChildRetainedPreparationRefusals/prompt_bytes (0.02s)
+    --- PASS: TestReviewChildRetainedPreparationRefusals/criteria_substitution (0.02s)
+    --- PASS: TestReviewChildRetainedPreparationRefusals/zero_deadline (0.02s)
+    --- PASS: TestReviewChildRetainedPreparationRefusals/manifest_conflict (0.02s)
+=== RUN   TestReviewChildSwarmAndLosingCallerRetention
+--- PASS: TestReviewChildSwarmAndLosingCallerRetention (0.03s)
+=== RUN   TestReviewParentWaitRetainedDAGCollector
+=== RUN   TestReviewParentWaitRetainedDAGCollector/execution_before_collection
+=== RUN   TestReviewParentWaitRetainedDAGCollector/park_then_execution
+--- PASS: TestReviewParentWaitRetainedDAGCollector (0.06s)
+    --- PASS: TestReviewParentWaitRetainedDAGCollector/execution_before_collection (0.03s)
+    --- PASS: TestReviewParentWaitRetainedDAGCollector/park_then_execution (0.03s)
+=== RUN   TestReviewCollectorFullRoundWithMalformedAndTimeout
+=== RUN   TestReviewCollectorFullRoundWithMalformedAndTimeout/#00
+=== RUN   TestReviewCollectorFullRoundWithMalformedAndTimeout/malformed
+=== RUN   TestReviewCollectorFullRoundWithMalformedAndTimeout/timeout
+--- PASS: TestReviewCollectorFullRoundWithMalformedAndTimeout (0.06s)
+    --- PASS: TestReviewCollectorFullRoundWithMalformedAndTimeout/#00 (0.02s)
+    --- PASS: TestReviewCollectorFullRoundWithMalformedAndTimeout/malformed (0.02s)
+    --- PASS: TestReviewCollectorFullRoundWithMalformedAndTimeout/timeout (0.02s)
+PASS
+ok  	github.com/iryzhkov/t3-steward/internal/backlog	0.676s
+
+exit 0

@@ -1,0 +1,105 @@
+COMMAND: GOMAXPROCS=2 GOFLAGS=-p=2 go test ./internal/store/sqlite -run '^TestReviewChildCancellationOfferedParent' -count=1 -v
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ended/queued
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ended/ready
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ended/blocked
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ended/commit
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/queued
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/ready
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/blocked
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/commit
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/queued
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/ready
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/blocked
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/commit
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/queued
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/ready
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/blocked
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/commit
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/queued
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/ready
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/blocked
+=== RUN   TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/commit
+--- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle (0.61s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ended/queued (0.04s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ended/ready (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ended/blocked (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ended/commit (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/queued (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/ready (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/blocked (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/superseded/commit (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/queued (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/ready (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/blocked (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/run-ended/commit (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/queued (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/ready (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/blocked (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/ownership-lost/commit (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/queued (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/ready (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/blocked (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryLifecycle/deadline/commit (0.03s)
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/foreign-thread
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/running
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/preparing
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/active
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/completed-at
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/dispatch-revision
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/dispatch-state
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/dispatch-confirmed
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/original-offered
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/foreign-ref
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/missing-ref
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/foreign-owner
+    review_child_cancel_offered_parent_test.go:237: save assignment "assignment-offered-boundary": constraint failed: UNIQUE constraint failed: coordinator_assignments.attempt_id (2067)
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/indexed-owner
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/runtime-owner
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/indexed-token
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/indexed-state
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/indexed-epoch
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/foreign-project
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/foreign-role
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/missing-route
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/activation
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/gate
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/zero-epoch
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/claimed-empty-thread
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/unknown-empty-thread
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/completed-empty-thread
+=== RUN   TestReviewChildCancellationOfferedParentRetryRefusals/released-empty-thread
+--- FAIL: TestReviewChildCancellationOfferedParentRetryRefusals (0.76s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/foreign-thread (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/running (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/preparing (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/active (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/completed-at (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/dispatch-revision (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/dispatch-state (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/dispatch-confirmed (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/original-offered (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/foreign-ref (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/missing-ref (0.03s)
+    --- FAIL: TestReviewChildCancellationOfferedParentRetryRefusals/foreign-owner (0.02s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/indexed-owner (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/runtime-owner (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/indexed-token (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/indexed-state (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/indexed-epoch (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/foreign-project (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/foreign-role (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/missing-route (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/activation (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/gate (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/zero-epoch (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/claimed-empty-thread (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/unknown-empty-thread (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/completed-empty-thread (0.03s)
+    --- PASS: TestReviewChildCancellationOfferedParentRetryRefusals/released-empty-thread (0.03s)
+FAIL
+FAIL	github.com/iryzhkov/t3-steward/internal/store/sqlite	1.377s
+FAIL
+
+exit 1
