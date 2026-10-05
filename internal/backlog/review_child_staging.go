@@ -139,8 +139,11 @@ func (s *DeclaredReviewStaging) StageDeclared(ctx context.Context, request Decla
 		return result, err
 	}
 	defer lock.Close()
+	if err = s.boundary("owner-locked"); err != nil {
+		return result, err
+	}
 	stageDir := filepath.Join(namespace, checkpoint.Key())
-	if err = childStageDirectory(stageDir); err != nil {
+	if err = childStagePrivateDirectory(stageDir); err != nil {
 		return result, err
 	}
 	dir, err := os.OpenRoot(stageDir)
@@ -467,11 +470,16 @@ func childStageRootFence(path string) error {
 	return nil
 }
 func childStageDirectory(path string) error {
+	if _, err := os.Lstat(path); err == nil {
+		return childStagePrivateDirectory(path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	if err := ensureRealDirectory(path, 0700); err != nil {
 		return errors.New("private stage directory refused")
 	}
 	info, err := os.Lstat(path)
-	if err != nil || info.Mode().Perm() != 0700 {
+	if err != nil || info.Mode() != os.ModeDir|0700 {
 		return errors.New("private stage directory mode refused")
 	}
 	if err = childStageRootFence(path); err != nil {
@@ -479,40 +487,124 @@ func childStageDirectory(path string) error {
 	}
 	return childStageSync(filepath.Dir(path))
 }
+
+// childStagePrivateDirectory discovers custody without creating or syncing it.
+func childStagePrivateDirectory(path string) error {
+	if err := childStageRootFence(path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode() != os.ModeDir|0700 {
+		return errors.New("private stage directory type/mode refused")
+	}
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return errors.New("private stage directory descriptor refused")
+	}
+	f := os.NewFile(uintptr(fd), path)
+	opened, statErr := f.Stat()
+	closeErr := f.Close()
+	current, pathErr := os.Lstat(path)
+	if statErr != nil || closeErr != nil || pathErr != nil || opened.Mode() != os.ModeDir|0700 ||
+		!os.SameFile(info, opened) || !os.SameFile(current, opened) {
+		return errors.New("private stage directory descriptor changed")
+	}
+	return nil
+}
+
 func childStageLock(ctx context.Context, namespace, key string) (*fileLock, error) {
+	// Discovery is not ownership. Any owner evidence requires existing private
+	// custody; no receipt is trusted or repaired by this preflight.
+	owner := filepath.Join(namespace, key)
+	_, ownerErr := os.Lstat(owner)
+	existing := ownerErr == nil
+	if ownerErr != nil && !errors.Is(ownerErr, os.ErrNotExist) {
+		return nil, ownerErr
+	}
+	if existing {
+		if err := childStagePrivateDirectory(owner); err != nil {
+			return nil, err
+		}
+	}
 	locks := filepath.Join(namespace, ".locks")
-	if err := childStageDirectory(locks); err != nil {
+	if existing {
+		if err := childStagePrivateDirectory(locks); err != nil {
+			return nil, err
+		}
+	} else if err := childStageDirectory(locks); err != nil {
 		return nil, err
 	}
 	name := filepath.Join(locks, key+".lock")
-	fd, err := syscall.Open(name, syscall.O_RDWR|syscall.O_CREAT|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
+	created := false
+	var fd int
+	var err error
+	if existing {
+		fd, err = syscall.Open(name, syscall.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	} else {
+		// O_EXCL prevents a second first caller from replacing the winner inode.
+		fd, err = syscall.Open(name, syscall.O_RDWR|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
+		created = err == nil
+		if errors.Is(err, syscall.EEXIST) {
+			fd, err = syscall.Open(name, syscall.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+		}
+	}
 	if err != nil {
 		return nil, errors.New("owner lock refused")
 	}
 	f := os.NewFile(uintptr(fd), name)
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+	refuse := func(err error) (*fileLock, error) {
 		f.Close()
-		return nil, errors.New("owner lock type/mode refused")
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil || info.Mode() != 0600 || info.Size() != 0 {
+		return refuse(errors.New("owner lock type/mode/size refused"))
 	}
 	for {
 		err = syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
-			return &fileLock{file: f}, nil
+			break
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
-			f.Close()
-			return nil, err
+			return refuse(err)
 		}
 		timer := time.NewTimer(fileLockRetryInterval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			f.Close()
-			return nil, ctx.Err()
+			return refuse(ctx.Err())
 		case <-timer.C:
 		}
 	}
+	// Recheck after waiting: another cooperating first caller may have
+	// published the owner. Never adopt a replaced lock inode.
+	current, err := os.Lstat(name)
+	opened, statErr := f.Stat()
+	if err != nil || statErr != nil || current.Mode() != 0600 || current.Size() != 0 ||
+		opened.Mode() != 0600 || opened.Size() != 0 || !os.SameFile(current, opened) || !os.SameFile(info, opened) {
+		return refuse(errors.New("opened owner lock changed"))
+	}
+	if err = childStagePrivateDirectory(namespace); err != nil {
+		return refuse(err)
+	}
+	if err = childStagePrivateDirectory(locks); err != nil {
+		return refuse(err)
+	}
+	if _, err = os.Lstat(owner); err == nil {
+		if err = childStagePrivateDirectory(owner); err != nil {
+			return refuse(err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return refuse(err)
+	} else if existing || !created {
+		// A released lock without an owner is ambiguous: pre-owner crash and
+		// removed completed owner have identical evidence. Fail closed, retain
+		// the lock, and require explicit future recovery rather than recreate.
+		return refuse(errors.New("existing owner missing"))
+	} else if err = childStageDirectory(owner); err != nil {
+		return refuse(err)
+	}
+	return &fileLock{file: f}, nil
 }
 func childStageVerify(root *os.Root, name string, raw []byte) error {
 	info, err := root.Lstat(name)
