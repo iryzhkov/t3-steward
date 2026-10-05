@@ -121,7 +121,7 @@ func TestQuotaWarningIsAdvisoryAndDrainStops(t *testing.T) {
 			t.Fatal(warn)
 		}
 		drain, err := renderMessage(cfg.Messages.Drain, snap, time.Minute, time.Now())
-		if err != nil || !strings.Contains(drain, "Then end your turn.") || !strings.Contains(drain, "interrupt any still-running turn in 1m0s") {
+		if err != nil || !strings.Contains(drain, "Then end your turn.") || !strings.Contains(drain, "After 1m0s") || !strings.Contains(drain, "may interrupt") || !strings.Contains(drain, "reset/runway exemptions") || strings.Contains(drain, "will interrupt any") {
 			t.Fatalf("%s: %v", drain, err)
 		}
 	}

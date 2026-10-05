@@ -73,11 +73,29 @@ type NodeGroupClaimer interface {
 // nodeWakeProse is the human part of a node or quota wake, after the trailer.
 func nodeWakeProse(w domain.NodeWait) string {
 	if w.Request.Quota != nil {
-		return fmt.Sprintf("Wait finished (T3 steward): %q. Quota pool %s: %s.\nContinue the work that was waiting on this.",
+		return fmt.Sprintf("Wait finished (T3 steward): %q. Quota pool %s: %s.\nFirst inspect current instructions, every wait outcome, and the actual result or review verdict. A met condition or exit 0 does not establish task success or review ACCEPT. Handle failures, cancellations, gave-up outcomes and deadlines by repairing, replanning or reporting as appropriate; an expected deadline is not proof of success. Continue only unfinished work that is still authorized. Cancellation and pause instructions take precedence. Recheck authentic fresh quota eligibility before provider work; a reset deadline alone does not confirm recovery.",
 			w.Request.Name, w.Request.Quota.Pool, w.Observation.Reason)
 	}
-	return fmt.Sprintf("Wait finished (T3 steward): %q. Node %s: %s (exit %d).%s\nContinue the work that was waiting on this.",
-		w.Request.Name, w.Request.Target.String(), w.Observation.Reason, w.Observation.ExitCode, nodeWakeObservation(w))
+	return fmt.Sprintf("Wait finished (T3 steward): %q. Node %s: %s (exit %d).%s%s\nFirst inspect current instructions, every wait outcome, and the actual result or review verdict. A met condition or exit 0 does not establish task success or review ACCEPT. Handle failures, cancellations, gave-up outcomes and deadlines by repairing, replanning or reporting as appropriate; an expected deadline is not proof of success. Continue only unfinished work that is still authorized. Cancellation and pause instructions take precedence.",
+		w.Request.Name, w.Request.Target.String(), w.Observation.Reason, w.Observation.ExitCode, nodeWakeObservation(w), nodeWakeResult(w))
+}
+
+// nodeWakeResult renders only a bounded, command-safe terminal run identity.
+// It changes prose only; machine trailer fields keep their original bytes.
+func nodeWakeResult(w domain.NodeWait) string {
+	if w.Observation == nil || !w.Observation.Progress.Terminal() {
+		return ""
+	}
+	run := w.Observation.Target.RunID
+	if run == "" || len(run) > 128 || !(run[0] >= 'a' && run[0] <= 'z' || run[0] >= 'A' && run[0] <= 'Z' || run[0] >= '0' && run[0] <= '9') {
+		return ""
+	}
+	for _, c := range run {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.') {
+			return ""
+		}
+	}
+	return "\nCollect and inspect the actual run result with `t3-steward task result " + run + "` before deciding what to do next."
 }
 
 // nodeWakeObservation is the evidence clause, and is empty when there is no

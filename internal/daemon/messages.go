@@ -43,9 +43,8 @@ func renderMessage(tmpl string, snap domain.QuotaSnapshot, grace time.Duration, 
 	return strings.TrimSpace(buf.String()), nil
 }
 
-// exhaustionNote tells a drained session how long it has at the current burn
-// rate and that the provider, not the steward, ends the session at 100%. It
-// is empty when no burn rate is known.
+// exhaustionNote reports projected exhaustion at the measured burn rate.
+// It is empty when no burn rate is known; projections are not provider guarantees.
 func exhaustionNote(state domain.BucketState) string {
 	if state.ExhaustsIn == nil || state.RatePerMinute <= 0 {
 		return ""
@@ -54,7 +53,7 @@ func exhaustionNote(state domain.BucketState) string {
 	if eta < time.Minute {
 		eta = time.Minute
 	}
-	return fmt.Sprintf(" At the current rate of %.1f%%/min the quota is exhausted in about %s; the provider ends the session at 100%%.", state.RatePerMinute, humanDuration(eta))
+	return fmt.Sprintf(" At the measured rate of %.1f%%/min, quota exhaustion is projected in about %s; usage and provider behavior may change.", state.RatePerMinute, humanDuration(eta))
 }
 
 // describeReset renders a reset time with a relative hint, or a neutral

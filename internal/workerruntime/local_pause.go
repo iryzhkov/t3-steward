@@ -319,12 +319,12 @@ func (r *Runtime) reconcileLocalPause(ctx context.Context, id string, record Att
 	resume.Kind = domain.ThrottleCommandResume
 	resume.RequestedAt = now
 	command := r.localThrottleCommand(record, resume)
-	command.Reason = "quota recovered: " + why
+	command.Reason = "quota resume permitted: " + why
 	if err := r.driver.Resume(ctx, pkg, command); err != nil {
 		r.log.Warn("resume after quota pause failed; retrying next reconcile", "assignment", id, "error", err)
 		return nil
 	}
-	r.log.Info("quota recovered; owned attempt resumed", "assignment", id, "thread", pkg.Identity.ThreadID, "reason", why)
+	r.log.Info("quota resume permitted; owned attempt resumed", "assignment", id, "thread", pkg.Identity.ThreadID, "reason", why)
 	return r.endLocalPause(id, why)
 }
 
