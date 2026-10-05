@@ -56,6 +56,10 @@ type ManifestReviewMember struct {
 // Decode through an alias with strict nested fields, retaining explicit null
 // presence so version 1 cannot silently discard an execution declaration.
 func (m *ManifestReviewMember) UnmarshalYAML(node *yaml.Node) error {
+	declared, err := reviewExecutionNodePresence(node)
+	if err != nil {
+		return err
+	}
 	type plain ManifestReviewMember
 	raw, err := yaml.Marshal(node)
 	if err != nil {
@@ -68,11 +72,7 @@ func (m *ManifestReviewMember) UnmarshalYAML(node *yaml.Node) error {
 		return err
 	}
 	*m = ManifestReviewMember(value)
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == "execution" {
-			m.executionDeclared = true
-		}
-	}
+	m.executionDeclared = declared
 	return nil
 }
 
