@@ -60,11 +60,11 @@ func TestGitHubMappingRows(t *testing.T) {
 // gh runs with fixed arguments: the target decides them, nothing else.
 func TestGitHubTargetArgumentsAreFixed(t *testing.T) {
 	run := GitHubTarget{Kind: "run", ID: "123", State: "completed"}
-	if got := strings.Join(run.Args(), " "); got != "run view 123 --json status,conclusion,url" {
+	if got := strings.Join(run.Args(), " "); got != "run view 123 --json status,conclusion,url,databaseId,attempt,headSha" {
 		t.Fatalf("run args = %q", got)
 	}
 	pr := GitHubTarget{Kind: "pr", ID: "45", State: "merged", Repo: "o/r"}
-	if got := strings.Join(pr.Args(), " "); got != "pr view 45 --json state,mergedAt,reviewDecision,statusCheckRollup,url --repo o/r" {
+	if got := strings.Join(pr.Args(), " "); got != "pr view 45 --json state,mergedAt,reviewDecision,statusCheckRollup,url,headRefOid --repo o/r" {
 		t.Fatalf("pr args = %q", got)
 	}
 	for _, bad := range []GitHubTarget{
@@ -164,7 +164,7 @@ func TestGitHubGivesUpAfterThreeConsecutiveErrorsAndWakesWithTheTrailer(t *testi
 func TestGitHubRunSuccessWakesMetWithTheFields(t *testing.T) {
 	answer := `{"status":"in_progress","conclusion":"","url":"https://github.com/o/r/actions/runs/123"}`
 	runner, store, control, now := gitHubRunner(t, func(_ context.Context, _ string, args []string) (string, error) {
-		if strings.Join(args, " ") != "run view 123 --json status,conclusion,url" {
+		if strings.Join(args, " ") != "run view 123 --json status,conclusion,url,databaseId,attempt,headSha" {
 			t.Fatalf("gh args = %v", args)
 		}
 		return answer, nil

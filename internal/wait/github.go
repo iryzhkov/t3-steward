@@ -1,7 +1,6 @@
 package wait
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -79,9 +78,9 @@ func (t GitHubTarget) Args() []string {
 	var args []string
 	switch t.Kind {
 	case "run":
-		args = []string{"run", "view", t.ID, "--json", "status,conclusion,url"}
+		args = []string{"run", "view", t.ID, "--json", "status,conclusion,url,databaseId,attempt,headSha"}
 	case "pr":
-		args = []string{"pr", "view", t.ID, "--json", "state,mergedAt,reviewDecision,statusCheckRollup,url"}
+		args = []string{"pr", "view", t.ID, "--json", "state,mergedAt,reviewDecision,statusCheckRollup,url,headRefOid"}
 	}
 	if t.Repo != "" {
 		args = append(args, "--repo", t.Repo)
@@ -106,7 +105,12 @@ type GitHubRunner func(ctx context.Context, dir string, args []string) (string, 
 func ExecGitHub(ctx context.Context, dir string, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	cmd.Dir = dir
-	var stdout, stderr bytes.Buffer
+	limit := gitHubResponseBytes
+	if remaining, ok := ctx.Value(gitHubLimitKey{}).(int); ok && remaining < limit {
+		limit = remaining
+	}
+	stdout := gitHubBuffer{limit: limit}
+	stderr := gitHubBuffer{limit: 4096}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -115,6 +119,9 @@ func ExecGitHub(ctx context.Context, dir string, args []string) (string, error) 
 			message = err.Error()
 		}
 		return "", fmt.Errorf("gh %s: %s", strings.Join(args[:2], " "), message)
+	}
+	if stdout.capped {
+		return "", errGitHubResponseCap
 	}
 	return stdout.String(), nil
 }
@@ -126,6 +133,8 @@ type GitHubReading struct {
 	Reason string
 	// Fields are the trailer pairs: target, state, conclusion, url.
 	Fields map[string]string
+	// observation belongs to this status verdict, never a later branch head.
+	observation []byte
 }
 
 // gitHubGiveUpAfter is how many consecutive gh errors end the wait.
@@ -261,7 +270,12 @@ func (r *Runner) ReadGitHub(ctx context.Context, target GitHubTarget, dir string
 	if err != nil {
 		return GitHubReading{}, err
 	}
-	return EvaluateGitHub(target, []byte(output))
+	if len(output) > gitHubResponseBytes {
+		return GitHubReading{}, errGitHubResponseCap
+	}
+	reading, err := EvaluateGitHub(target, []byte(output))
+	reading.observation = []byte(output)
+	return reading, err
 }
 
 // runGitHubOnce is one poll of a github wait. Three consecutive gh errors give
@@ -296,6 +310,9 @@ func (r *Runner) runGitHubOnce(ctx context.Context, w *Wait, now time.Time) {
 	}
 	w.Errors = 0
 	w.LastOutput = reading.Reason
+	if (reading.Status == StatusMet || reading.Status == StatusFailed) && (w.GitHub.Kind == "run" || w.GitHub.State == "checks-passed") {
+		w.LastOutput = r.gitHubAnnotations(ctx, *w.GitHub, w.Dir, reading)
+	}
 	switch reading.Status {
 	case StatusMet:
 		w.LastExit = 0

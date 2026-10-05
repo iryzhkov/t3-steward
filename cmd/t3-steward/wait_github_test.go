@@ -206,7 +206,7 @@ func TestTaskBoundGitHubWaitProbesAndRegisters(t *testing.T) {
 	}
 	// A registration that names the repository asks gh for nothing else; the
 	// two before it, which named none, each resolved one first.
-	if len(seen) != 5 || strings.Join(seen[4], " ") != "run view 123 --json status,conclusion,url --repo o/r" {
+	if len(seen) != 5 || strings.Join(seen[4], " ") != "run view 123 --json status,conclusion,url,databaseId,attempt,headSha --repo o/r" {
 		t.Fatalf("gh was called with %v", seen)
 	}
 	if strings.Join(seen[0], " ") != "repo view --json nameWithOwner" {
