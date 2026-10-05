@@ -212,7 +212,10 @@ func planWorkerStateTransition(
 		rejectedWorkerCommand(commands, assignment, domain.WorkerCommandDispatch) {
 		return releasedWorkerState(assignment, attempt, now, workerStateCommandRejected)
 	}
-	if attemptFinished && attempt.Control != domain.ControlStopped {
+	if attemptFinished {
+		if attempt.Control == domain.ControlStopped {
+			return assignment, attempt, "", false, nil
+		}
 		nextAttempt := attempt
 		nextAttempt.Control = domain.ControlStopped
 		nextAttempt.UpdatedAt = now
@@ -220,7 +223,7 @@ func planWorkerStateTransition(
 		nextAssignment.UpdatedAt = now
 		return finishWorkerStateTransition(assignment, attempt, nextAssignment, nextAttempt, "terminal-attempt-stop-required")
 	}
-	if acceptedWorkerCommand(commands, assignment, domain.WorkerCommandDispatch) &&
+	if !waitingExternal(attempt) && acceptedWorkerCommand(commands, assignment, domain.WorkerCommandDispatch) &&
 		assignment.State == domain.AssignmentClaimed {
 		nextAttempt := attempt
 		nextAttempt.Progress = domain.ProgressActive
@@ -257,7 +260,9 @@ func releasedWorkerState(
 		nextAttempt.UpdatedAt = now
 		return finishWorkerStateTransition(assignment, attempt, nextAssignment, nextAttempt, reason)
 	}
-	if nextAttempt.Control != domain.ControlStopped {
+	if nextAttempt.Progress.Terminal() || nextAttempt.CompletedAt != nil {
+		nextAttempt.Control = domain.ControlStopped
+	} else if nextAttempt.Control != domain.ControlStopped {
 		nextAttempt.Control = domain.ControlUnassigned
 		if !nextAttempt.Progress.Terminal() {
 			nextAttempt.Progress = domain.ProgressReady

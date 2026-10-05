@@ -86,6 +86,20 @@ func (s *Store) CommitWorkerStateTransitions(
 				transition.ExpectedAttemptRevision, currentAttempt.Revision)
 		}
 
+		// Worker evidence may settle custody, but cannot rewrite a finished
+		// attempt or discard completion and artifact evidence.
+		if currentAttempt.Progress.Terminal() || currentAttempt.CompletedAt != nil {
+			next := transition.Attempt
+			if next.Progress != currentAttempt.Progress || next.Control != domain.ControlStopped ||
+				!reflect.DeepEqual(next.CompletedAt, currentAttempt.CompletedAt) ||
+				next.Failure != currentAttempt.Failure ||
+				next.CheckpointArtifactID != currentAttempt.CheckpointArtifactID ||
+				next.FinalSummaryArtifactID != currentAttempt.FinalSummaryArtifactID {
+				return nil, fmt.Errorf("%w: finished attempt %q cannot be projected live or lose evidence",
+					ErrStaleWorkerStateTransition, currentAttempt.ID)
+			}
+		}
+
 		nextRaw, err := json.Marshal(transition.Assignment)
 		if err != nil {
 			return nil, fmt.Errorf("encode assignment transition %q: %w", transition.Assignment.ID, err)

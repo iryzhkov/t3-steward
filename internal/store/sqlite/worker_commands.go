@@ -110,6 +110,13 @@ func (s *Store) CommitWorkerCommands(ctx context.Context, commands []domain.Work
 		if err := validateCommandAssignment(command, assignment); err != nil {
 			return nil, err
 		}
+		eligible, err := workerCommandAttemptEligibleTx(ctx, tx, command, assignment)
+		if err != nil {
+			return nil, err
+		}
+		if !eligible {
+			continue
+		}
 		raw, err := json.Marshal(command)
 		if err != nil {
 			return nil, fmt.Errorf("encode worker command %q: %w", command.ID, err)
@@ -213,7 +220,14 @@ func (s *Store) LoadPendingWorkerCommands(
 		if err != nil {
 			return nil, err
 		}
-		if workerCommandCurrentlyDeliverable(command, assignment) {
+		if !workerCommandCurrentlyDeliverable(command, assignment) {
+			continue
+		}
+		eligible, err := workerCommandAttemptEligibleTx(ctx, tx, command, assignment)
+		if err != nil {
+			return nil, err
+		}
+		if eligible {
 			commands = append(commands, command)
 		}
 	}
@@ -585,6 +599,24 @@ func workerCommandCurrentlyDeliverable(command domain.WorkerCommand, assignment 
 	default:
 		return false
 	}
+}
+
+// Receipt replay and acknowledgements retain their historical meaning. Only
+// new start effects and current pending delivery require live attempt authority.
+func workerCommandAttemptEligibleTx(ctx context.Context, tx *sql.Tx, command domain.WorkerCommand, assignment domain.Assignment) (bool, error) {
+	if command.Kind != domain.WorkerCommandPrepare && command.Kind != domain.WorkerCommandDispatch {
+		return true, nil
+	}
+	attempt, err := loadAttemptTx(ctx, tx, assignment.AttemptID)
+	if err != nil {
+		return false, err
+	}
+	if attempt.ID != assignment.AttemptID || attempt.AssignmentID != assignment.ID {
+		return false, nil
+	}
+	return !attempt.Progress.Terminal() && attempt.CompletedAt == nil &&
+		attempt.Progress != domain.ProgressWaitingExternal && attempt.Control != domain.ControlWaitingExternal &&
+		attempt.Control != domain.ControlStopped, nil
 }
 
 func validateWorkerAcknowledgement(acknowledgement domain.WorkerAcknowledgement) error {

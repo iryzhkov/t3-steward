@@ -356,13 +356,13 @@ func nextWorkerCommand(
 		}
 		return "", false
 	}
-	if attempt.Control == domain.ControlStopped {
+	if attempt.Progress.Terminal() || attempt.CompletedAt != nil || attempt.Control == domain.ControlStopped {
 		if _, ok := has(domain.WorkerCommandStop); !ok {
 			return domain.WorkerCommandStop, true
 		}
 		return "", false
 	}
-	if assignment.State != domain.AssignmentClaimed {
+	if assignment.State != domain.AssignmentClaimed || waitingExternal(attempt) {
 		return "", false
 	}
 	prepare, prepared := has(domain.WorkerCommandPrepare)

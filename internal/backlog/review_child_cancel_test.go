@@ -55,6 +55,27 @@ func TestReviewChildCancellationWorkerCustodyIntegration(t *testing.T) {
 				if err = f.parent.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Attempts: append(records.Attempts, a), Assignments: []domain.Assignment{assignment}}); err != nil {
 					t.Fatal(err)
 				}
+				// Persist and accept Dispatch while the actual child is live. Its
+				// historical receipt must survive cancellation without authorizing it.
+				initialSnapshot := domain.WorkerSnapshot{WorkerID: assignment.WorkerID, WorkerEpoch: assignment.WorkerEpoch, CoordinatorEpoch: 1, Sequence: 1, Connected: true, ObservedAt: now, ValidUntil: now.Add(time.Hour), Inventory: domain.WorkerInventory{ID: assignment.WorkerID, AcceptBacklog: true, Health: domain.WorkerHealthReady}}
+				if err = f.parent.store.SaveWorkerSnapshot(ctx, initialSnapshot); err != nil {
+					t.Fatal(err)
+				}
+				claimed := assignment
+				claimed.State = domain.AssignmentClaimed
+				if err = f.parent.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Assignments: []domain.Assignment{claimed}}); err != nil {
+					t.Fatal(err)
+				}
+				dispatch := domain.WorkerCommand{ID: "old-child-dispatch", Kind: domain.WorkerCommandDispatch, WorkerID: assignment.WorkerID, WorkerEpoch: assignment.WorkerEpoch, CoordinatorEpoch: 1, AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch, ExpectedWorkerSequence: 1, CreatedAt: now}
+				if _, err = f.parent.store.CommitWorkerCommands(ctx, []domain.WorkerCommand{dispatch}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err = f.parent.store.AcknowledgeWorkerCommand(ctx, domain.WorkerAcknowledgement{CommandID: dispatch.ID, WorkerID: dispatch.WorkerID, WorkerEpoch: dispatch.WorkerEpoch, CoordinatorEpoch: 1, AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch, WorkerSequence: 1, Accepted: true, AcknowledgedAt: now}); err != nil {
+					t.Fatal(err)
+				}
+				if err = f.parent.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Assignments: []domain.Assignment{assignment}}); err != nil {
+					t.Fatal(err)
+				}
 				parentBefore, err := f.parent.store.LoadCoordinatorRecords(ctx)
 				if err != nil {
 					t.Fatal(err)
@@ -84,6 +105,47 @@ func TestReviewChildCancellationWorkerCustodyIntegration(t *testing.T) {
 				if err != nil || projected.Sink.Progress.Terminal() {
 					t.Fatalf("premature sink %+v %v", projected, err)
 				}
+
+				// Exercise the real coordinator after internal cancellation. The
+				// transport records delivery but deliberately withholds acknowledgements.
+				initialSnapshot.Sequence = 2
+				initialSnapshot.ObservedAt = now.Add(time.Millisecond)
+				if err = f.parent.store.SaveWorkerSnapshot(ctx, initialSnapshot); err != nil {
+					t.Fatal(err)
+				}
+				transport := &terminalFenceTransport{}
+				coordinator := FleetCoordinator{Store: f.parent.store, Now: func() time.Time { return now }}
+				for tick := 0; tick < 3; tick++ {
+					report, err := coordinator.ReconcileWorkerCommands(ctx, initialSnapshot, transport)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, cmd := range report.Pending {
+						if cmd.Kind != domain.WorkerCommandStop {
+							t.Fatalf("cancelled child delivered %s", cmd.Kind)
+						}
+					}
+					current, err := f.parent.store.LoadCoordinatorRecords(ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, x := range current.Attempts {
+						if x.ID == a.ID && (x.Progress != domain.ProgressCancelled || x.Control != domain.ControlStopped || x.CompletedAt == nil) {
+							t.Fatalf("resurrected child: %+v", x)
+						}
+					}
+					for _, x := range current.Assignments {
+						if x.ID == assignment.ID && x.State != state {
+							t.Fatal("cancellation alone released custody")
+						}
+					}
+					if domain.RunExecutionsQuiescent(f.checkpoint.RoundID, current.Attempts, current.Assignments) {
+						t.Fatal("cancellation alone became quiescent")
+					}
+				}
+				if len(transport.commands) != 3 {
+					t.Fatalf("cleanup deliveries %d", len(transport.commands))
+				}
 				// A stale completion projection built before cancellation cannot overwrite it.
 				nextAssignment := assignment
 				nextAssignment.State = domain.AssignmentCompleted
@@ -91,7 +153,7 @@ func TestReviewChildCancellationWorkerCustodyIntegration(t *testing.T) {
 				lateAttempt.Progress = domain.ProgressVerifying
 				lateAttempt.Control = domain.ControlStopped
 				lateAttempt.Revision++
-				snapshot := domain.WorkerSnapshot{WorkerID: assignment.WorkerID, WorkerEpoch: assignment.WorkerEpoch, CoordinatorEpoch: 1, Sequence: 2, Connected: true, ObservedAt: now, ValidUntil: now.Add(time.Hour), Inventory: domain.WorkerInventory{ID: assignment.WorkerID, AcceptBacklog: true, Health: domain.WorkerHealthReady}}
+				snapshot := domain.WorkerSnapshot{WorkerID: assignment.WorkerID, WorkerEpoch: assignment.WorkerEpoch, CoordinatorEpoch: 1, Sequence: 2, Connected: true, ObservedAt: now.Add(time.Millisecond), ValidUntil: now.Add(time.Hour), Inventory: domain.WorkerInventory{ID: assignment.WorkerID, AcceptBacklog: true, Health: domain.WorkerHealthReady}}
 				if err = f.parent.store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
 					t.Fatal(err)
 				}
@@ -152,7 +214,7 @@ func TestReviewChildCancellationWorkerCustodyIntegration(t *testing.T) {
 					t.Fatal(err)
 				}
 				snapshot.Sequence = 3
-				snapshot.ObservedAt = now.Add(time.Millisecond)
+				snapshot.ObservedAt = now.Add(2 * time.Millisecond)
 				if completion {
 					// Completed observation remains uncollected until the collect ack.
 				} else {
