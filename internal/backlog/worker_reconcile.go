@@ -161,6 +161,12 @@ func planWorkerStateTransition(
 				nextAttempt.Progress = domain.ProgressWaitingExternal
 				nextAttempt.Control = domain.ControlWaitingExternal
 				reason = workerStateObservedWaiting
+			case attempt.Control == domain.ControlWaitingExternal:
+				// A coordinator control-only park owns the current progress too.
+				// Running worker evidence cannot synthesize a wake.
+				nextAttempt.Progress = attempt.Progress
+				nextAttempt.Control = attempt.Control
+				reason = workerStateObservedWaiting
 			case control == domain.ControlWaitingExternal:
 				// Only coordinator registration starts a park. The worker can
 				// still report the old parked phase in the exchange carrying a
@@ -213,7 +219,10 @@ func planWorkerStateTransition(
 		return releasedWorkerState(assignment, attempt, now, workerStateCommandRejected)
 	}
 	if attemptFinished {
-		if attempt.Control == domain.ControlStopped {
+		if attempt.Control == domain.ControlStopped || assignment.WorkerEpoch != snapshot.WorkerEpoch {
+			// Without positive observation, a new session cannot repair control
+			// while retaining old-session custody. Keep the exact evidence and
+			// omit this projection so valid siblings can still commit.
 			return assignment, attempt, "", false, nil
 		}
 		nextAttempt := attempt
@@ -249,7 +258,7 @@ func releasedWorkerState(
 	nextAssignment.LeaseExpiresAt = time.Time{}
 	nextAssignment.UpdatedAt = now
 	nextAttempt := attempt
-	if waitingExternal(attempt) {
+	if !attempt.Progress.Terminal() && attempt.CompletedAt == nil && waitingExternal(attempt) {
 		// A parked attempt keeps its assignment reference even though the
 		// assignment itself has been released. Clearing it would drop the
 		// directory writer binding the park is supposed to hold, and would
@@ -289,7 +298,7 @@ func observedCompletedWorkerState(
 	}
 	nextAssignment.UpdatedAt = now
 	nextAttempt := attempt
-	if waitingExternal(attempt) {
+	if !attempt.Progress.Terminal() && attempt.CompletedAt == nil && waitingExternal(attempt) {
 		// The worker finished an attempt the coordinator has parked. The
 		// attempt's own state is left alone, but the assignment transition is
 		// applied: that settled assignment is what the wake reads to see the
@@ -324,7 +333,7 @@ func completedWorkerState(
 	}
 	nextAssignment.UpdatedAt = now
 	nextAttempt := attempt
-	if waitingExternal(attempt) {
+	if !attempt.Progress.Terminal() && attempt.CompletedAt == nil && waitingExternal(attempt) {
 		// A worker that completed a parked attempt raced the registration and
 		// lost. Moving the attempt to verifying here is exactly the step that
 		// verified a task against outputs it had not written yet, so the

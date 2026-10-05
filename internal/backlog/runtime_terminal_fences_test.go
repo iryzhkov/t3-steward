@@ -55,6 +55,16 @@ func TestRuntimeTerminalFencesEvidenceAndCleanup(t *testing.T) {
 				}
 				records := sqlite.CoordinatorRecords{Assignments: []domain.Assignment{assignment}, Attempts: []domain.Attempt{attempt}}
 				trs, err := PlanWorkerStateTransitions(records, snapshot, commands, now)
+				if evidence == "restart" {
+					if err != nil || len(trs) != 0 {
+						t.Fatalf("old-epoch repair must be omitted: %+v %v", trs, err)
+					}
+					planned, err := PlanWorkerCommands(records, snapshot, commands, now)
+					if err != nil || len(planned) != 0 {
+						t.Fatalf("old custody gained command authority: %+v %v", planned, err)
+					}
+					return
+				}
 				if err != nil || len(trs) != 1 {
 					t.Fatalf("transition %+v %v", trs, err)
 				}
