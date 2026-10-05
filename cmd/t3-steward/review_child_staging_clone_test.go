@@ -76,7 +76,7 @@ func TestReviewChildStagingConfiguredCloneRerunCustody(t *testing.T) {
 				t.Fatal("custody/content lost")
 			}
 			cfg := declaredCoordinatorSettings(entry.service.Artifacts.SubmissionRoot)
-			cfg.Storage.Artifacts = t.TempDir()
+			cfg.Storage.Artifacts = reviewInputTempDir(t)
 			owner, e := newCoordinatorDeclaredReviewStaging(cfg, db)
 			if e != nil {
 				t.Fatal(e)

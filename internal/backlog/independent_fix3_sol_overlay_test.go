@@ -12,7 +12,7 @@ import (
 func TestIndependentFix3PrivateIdentity(t *testing.T) {
 	for _, kind := range []string{"private-replaced", "directory-substituted"} {
 		t.Run(kind, func(t *testing.T) {
-			ns := filepath.Join(t.TempDir(), "stages")
+			ns := filepath.Join(stageOwnedTempDir(t), "stages")
 			if err := os.Mkdir(ns, 0700); err != nil {
 				t.Fatal(err)
 			}

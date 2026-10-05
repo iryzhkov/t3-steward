@@ -12,7 +12,7 @@ import (
 )
 
 func TestIndependentFix3LoserCancelPreservesHeldWinner(t *testing.T) {
-	ns := filepath.Join(t.TempDir(), "stages")
+	ns := filepath.Join(stageOwnedTempDir(t), "stages")
 	if e := os.Mkdir(ns, 0700); e != nil {
 		t.Fatal(e)
 	}
@@ -90,7 +90,7 @@ func TestIndependentFix3LoserCancelPreservesHeldWinner(t *testing.T) {
 func TestIndependentFix3PrivateReplacementPreserved(t *testing.T) {
 	for _, kind := range []string{"candidate", "directory"} {
 		t.Run(kind, func(t *testing.T) {
-			ns := filepath.Join(t.TempDir(), "stages")
+			ns := filepath.Join(stageOwnedTempDir(t), "stages")
 			if e := os.Mkdir(ns, 0700); e != nil {
 				t.Fatal(e)
 			}
@@ -159,7 +159,7 @@ func TestIndependentFix3PrivateReplacementPreserved(t *testing.T) {
 }
 
 func TestIndependentFix3PublishedCancellationRemainsOwnerless(t *testing.T) {
-	ns := filepath.Join(t.TempDir(), "stages")
+	ns := filepath.Join(stageOwnedTempDir(t), "stages")
 	if e := os.Mkdir(ns, 0700); e != nil {
 		t.Fatal(e)
 	}

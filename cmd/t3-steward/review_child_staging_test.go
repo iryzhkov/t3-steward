@@ -42,7 +42,7 @@ func TestReviewChildStagingConfiguredMissingBoundary(t *testing.T) {
 	// Actual SQLite reload precedes the configured owner; separate backlog
 	// attachment tests cover closing and reopening database ownership.
 	cfg := declaredCoordinatorSettings(entry.service.Artifacts.SubmissionRoot)
-	cfg.Storage.Artifacts = t.TempDir()
+	cfg.Storage.Artifacts = reviewInputTempDir(t)
 	owner, err := newCoordinatorDeclaredReviewStaging(cfg, db)
 	if err != nil {
 		t.Fatal(err)

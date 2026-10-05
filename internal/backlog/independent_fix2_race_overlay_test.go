@@ -9,7 +9,7 @@ import (
 )
 
 func TestIndependentFix2FirstPublicationRace(t *testing.T) {
-	base := t.TempDir()
+	base := stageOwnedTempDir(t)
 	for n := 0; n < 2000; n++ {
 		ns, err := os.MkdirTemp(base, "race-")
 		if err != nil {

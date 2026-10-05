@@ -46,7 +46,7 @@ func newStageOwner(t *testing.T) (admissionFixture, *DeclaredReviewStaging, Decl
 	t.Helper()
 	f := newStageAdmissionFixture(t)
 	f.service.Store = f.store.Store
-	f.service.Artifacts.Root = t.TempDir()
+	f.service.Artifacts.Root = stageOwnedTempDir(t)
 	owner, err := NewDeclaredReviewStaging(f.service, f.store.Store, time.Now)
 	if err != nil {
 		t.Fatal(err)

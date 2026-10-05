@@ -9,7 +9,7 @@ import (
 )
 
 func TestIndependentFix2SimultaneousFirstLock(t *testing.T) {
-	namespace := filepath.Join(t.TempDir(), "stages")
+	namespace := filepath.Join(stageOwnedTempDir(t), "stages")
 	if err := os.Mkdir(namespace, 0700); err != nil {
 		t.Fatal(err)
 	}

@@ -141,25 +141,14 @@ func TestReviewChildStagingFix3PublishedBeforeOwner(t *testing.T) {
 
 func TestReviewChildStagingFix3PrivatePublication(t *testing.T) {
 	t.Run("private-contenders", func(t *testing.T) {
-		ns := filepath.Join(t.TempDir(), "stages")
+		ns := filepath.Join(stageOwnedTempDir(t), "stages")
 		if e := os.Mkdir(ns, 0700); e != nil {
 			t.Fatal(e)
 		}
-		ready, release := make(chan struct{}), make(chan struct{})
-		firstCh := make(chan *fileLock, 1)
-		errCh := make(chan error, 1)
-		go func() {
-			l, e := childStageLockWithBoundary(context.Background(), ns, "same", func(p string) error {
-				if p == "lock-private-held" {
-					close(ready)
-					<-release
-				}
-				return nil
-			})
-			firstCh <- l
-			errCh <- e
-		}()
-		<-ready
+		worker := startStageLockTestWorker(t, ns, "same", "lock-private-held")
+		if e := worker.waitBoundary(); e != nil {
+			t.Fatal(e)
+		}
 		locks := filepath.Join(ns, ".locks")
 		entries, e := os.ReadDir(locks)
 		if e != nil || len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), ".private-lock-") {
@@ -177,6 +166,7 @@ func TestReviewChildStagingFix3PrivatePublication(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
+		t.Cleanup(func() { _ = winner.Close() })
 		winningInfo, e := winner.file.Stat()
 		if e != nil {
 			t.Fatal(e)
@@ -184,9 +174,8 @@ func TestReviewChildStagingFix3PrivatePublication(t *testing.T) {
 		if e = winner.Close(); e != nil {
 			t.Fatal(e)
 		}
-		close(release)
-		loser := <-firstCh
-		e = <-errCh
+		worker.unblock()
+		loser, e := worker.result()
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -202,7 +191,7 @@ func TestReviewChildStagingFix3PrivatePublication(t *testing.T) {
 	})
 	for _, kind := range []string{"cancel", "fault", "link-failure"} {
 		t.Run(kind, func(t *testing.T) {
-			ns := filepath.Join(t.TempDir(), "stages")
+			ns := filepath.Join(stageOwnedTempDir(t), "stages")
 			if e := os.Mkdir(ns, 0700); e != nil {
 				t.Fatal(e)
 			}
@@ -272,7 +261,7 @@ func TestReviewChildStagingFix3PublishedCrash(t *testing.T) {
 }
 
 func TestReviewChildStagingFix3PostWaitIdentity(t *testing.T) {
-	ns := filepath.Join(t.TempDir(), "stages")
+	ns := filepath.Join(stageOwnedTempDir(t), "stages")
 	if e := os.Mkdir(ns, 0700); e != nil {
 		t.Fatal(e)
 	}
