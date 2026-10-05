@@ -156,6 +156,9 @@ func (c *annotationCollection) fetch(args []string, final bool) (string, error) 
 		return "", errors.New(annotationError(c.ctx, err))
 	}
 	if len(s) > gitHubResponseBytes {
+		// Injected runners may return more than the real transport retains.
+		// Charge a ceiling, never the unbounded returned string length.
+		c.bytes += min(remaining, gitHubResponseBytes)
 		return "", errors.New("response-cap")
 	}
 	if len(s) > remaining {
@@ -474,10 +477,22 @@ func annotationQuote(s string, n int) string {
 	s = strings.NewReplacer("`", "\\u0060", "<", "\\u003c", ">", "\\u003e", "t3-steward-wait", "t3\\u002dsteward-wait").Replace(s)
 	return s
 }
-func (r *Runner) gitHubAnnotations(ctx context.Context, t GitHubTarget, dir string, reading GitHubReading) string {
+func annotationOutput(s string) string {
+	s = strings.ToValidUTF8(s, "�")
+	if len(s) <= gitHubAnnotationOutput {
+		return s
+	}
+	const caveat = "\nAdditional/capped display; see check/target links. Missing data is not zero warnings/errors."
+	return annotationClip(s, gitHubAnnotationOutput-len(caveat)) + caveat
+}
+
+func (r *Runner) gitHubAnnotations(ctx context.Context, t GitHubTarget, dir string, reading GitHubReading) (output string) {
+	// All complete, partial and unavailable exits share the final ceiling.
+	// Remote fields are quoted before this UTF8-safe display cap.
+	defer func() { output = annotationOutput(output) }()
 	provenance := ""
 	unavailable := func(category string) string {
-		return annotationClip(reading.Reason, 400) + "\nAnnotations unavailable (" + category + "); " + provenance + "; no clean result inferred."
+		return annotationQuote(reading.Reason, 400) + "\nAnnotations unavailable (" + annotationQuote(category, 240) + "); " + provenance + "; no clean result inferred."
 	}
 	var snapshot annotationSnapshot
 	if len(reading.observation) > gitHubResponseBytes || json.Unmarshal(reading.observation, &snapshot) != nil {
@@ -487,18 +502,26 @@ func (r *Runner) gitHubAnnotations(ctx context.Context, t GitHubTarget, dir stri
 	if err != nil {
 		return unavailable(err.Error())
 	}
-	head := snapshot.PRHead
-	provenance = fmt.Sprintf("PR %s head=%s", t.ID, head)
-	if t.Kind == "run" {
-		head = snapshot.Head
+	switch t.Kind {
+	case "run":
 		if snapshot.ID <= 0 || strconv.FormatInt(snapshot.ID, 10) != t.ID || snapshot.Attempt < 1 {
 			return unavailable("missing-run-provenance")
 		}
-		provenance = fmt.Sprintf("run=%d attempt=%d head=%s", snapshot.ID, snapshot.Attempt, head)
-	}
-	if !annotationSHA.MatchString(head) {
-		provenance = ""
-		return unavailable("missing-head-provenance")
+		if !annotationSHA.MatchString(snapshot.Head) {
+			return unavailable("missing-head-provenance")
+		}
+		provenance = fmt.Sprintf("run=%d attempt=%d head=%s", snapshot.ID, snapshot.Attempt, snapshot.Head)
+	case "pr":
+		id, err := strconv.ParseInt(t.ID, 10, 64)
+		if err != nil || id <= 0 || strconv.FormatInt(id, 10) != t.ID {
+			return unavailable("missing-pr-provenance")
+		}
+		if !annotationSHA.MatchString(snapshot.PRHead) {
+			return unavailable("missing-head-provenance")
+		}
+		provenance = fmt.Sprintf("PR %d head=%s", id, snapshot.PRHead)
+	default:
+		return unavailable("unsupported-target")
 	}
 	provenance += " in " + repo
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -552,9 +575,9 @@ func (r *Runner) gitHubAnnotations(ctx context.Context, t GitHubTarget, dir stri
 		return strconv.Itoa(c.counts[level])
 	}
 	header := fmt.Sprintf("%s\nAnnotations %s; %s. Observed warning=%s failure=%s notice=%s unknown=%s; checks=%d records=%d.",
-		annotationClip(reading.Reason, 400), state, provenance, count("warning"), count("failure"), count("notice"), count("unknown"), c.checks, c.records)
+		annotationQuote(reading.Reason, 400), state, provenance, count("warning"), count("failure"), count("notice"), count("unknown"), c.checks, c.records)
 	if state != "complete" {
-		header += " Missing data is not zero warnings/errors: " + strings.Join(c.problems, ", ") + "."
+		header += " Missing data is not zero warnings/errors: " + annotationQuote(strings.Join(c.problems, ", "), 240) + "."
 	} else if c.records == 0 {
 		header += " No annotations."
 	}
