@@ -1,0 +1,79 @@
+package sqlite
+
+import (
+	"context"
+	"errors"
+	"github.com/iryzhkov/t3-steward/internal/domain"
+	"testing"
+	"time"
+)
+
+func TestIndependentRuntimeTerminalFencesTerminalOnlyCASReplay(t *testing.T) {
+	for _, progress := range []domain.ProgressState{domain.ProgressCancelled, domain.ProgressFailed, domain.ProgressSucceeded, domain.ProgressSkipped} {
+		t.Run(string(progress), func(t *testing.T) {
+			ctx := context.Background()
+			s := openFleetTestStore(t)
+			claimFleetAssignment(t, s)
+			r, err := s.LoadCoordinatorRecords(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := r.Attempts[0]
+			as := r.Assignments[0]
+			a.Progress = progress
+			a.Control = domain.ControlStopped
+			a.CompletedAt = nil
+			a.Failure = "failure"
+			a.CheckpointArtifactID = "cp"
+			a.FinalSummaryArtifactID = "final"
+			a.Revision++
+			saveFleetAttempt(t, s, a)
+			now := fleetTestTime.Add(3 * time.Second)
+			next := a
+			next.Revision++
+			next.UpdatedAt = now
+			na := as
+			na.State = domain.AssignmentCompleted
+			na.LeaseExpiresAt = time.Time{}
+			na.UpdatedAt = now
+			valid := domain.WorkerStateTransition{CoordinatorEpoch: 1, WorkerID: as.WorkerID, WorkerEpoch: as.WorkerEpoch, WorkerSequence: 1, TransitionedAt: now, ExpectedAssignment: as, ExpectedAttemptRevision: a.Revision, Assignment: na, Attempt: next, Reason: "collect-accepted"}
+			for _, mutation := range []string{"ready", "running", "waiting", "failure", "checkpoint", "summary", "invent-completion"} {
+				forged := valid
+				switch mutation {
+				case "ready":
+					forged.Attempt.Progress = domain.ProgressReady
+				case "running":
+					forged.Attempt.Control = domain.ControlRunning
+				case "waiting":
+					forged.Attempt.Control = domain.ControlWaitingExternal
+				case "failure":
+					forged.Attempt.Failure = ""
+				case "checkpoint":
+					forged.Attempt.CheckpointArtifactID = ""
+				case "summary":
+					forged.Attempt.FinalSummaryArtifactID = ""
+				case "invent-completion":
+					forged.Attempt.CompletedAt = &now
+				}
+				before := cancellationSnapshot(t, s)
+				if _, err = s.CommitWorkerStateTransitions(ctx, []domain.WorkerStateTransition{forged}); !errors.Is(err, ErrStaleWorkerStateTransition) || before != cancellationSnapshot(t, s) {
+					t.Fatalf("%s: %v", mutation, err)
+				}
+			}
+			if _, err = s.CommitWorkerStateTransitions(ctx, []domain.WorkerStateTransition{valid}); err != nil {
+				t.Fatal(err)
+			}
+			before := cancellationSnapshot(t, s)
+			if _, err = s.CommitWorkerStateTransitions(ctx, []domain.WorkerStateTransition{valid}); err != nil || before != cancellationSnapshot(t, s) {
+				t.Fatalf("native replay %v", err)
+			}
+			if _, err = s.db.ExecContext(ctx, "DELETE FROM coordinator_audit_events WHERE id = ?", workerStateAuditID(valid)); err != nil {
+				t.Fatal(err)
+			}
+			before = cancellationSnapshot(t, s)
+			if _, err = s.CommitWorkerStateTransitions(ctx, []domain.WorkerStateTransition{valid}); err == nil || before != cancellationSnapshot(t, s) {
+				t.Fatalf("unaudited replay %v", err)
+			}
+		})
+	}
+}

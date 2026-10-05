@@ -86,6 +86,13 @@ func (s *Store) CommitWorkerStateTransitions(
 				transition.ExpectedAttemptRevision, currentAttempt.Revision)
 		}
 
+		if transition.Assignment.State == domain.AssignmentReleased &&
+			(transition.Attempt.AssignmentID != "" || unfinishedWorkerPark(currentAttempt)) {
+			if !durableParkReleaseHandoff(currentAttempt, currentAssignment, transition) {
+				return nil, fmt.Errorf("%w: released assignment does not preserve current parked custody", ErrStaleWorkerStateTransition)
+			}
+		}
+
 		// Worker evidence may settle custody, but cannot rewrite a finished
 		// attempt or discard completion and artifact evidence.
 		if currentAttempt.Progress.Terminal() || currentAttempt.CompletedAt != nil {
@@ -140,6 +147,35 @@ func (s *Store) CommitWorkerStateTransitions(
 	return applied, nil
 }
 
+// unfinishedWorkerPark identifies a candidate shape only. Permission to retain
+// a Released binding requires durableParkReleaseHandoff against CURRENT rows.
+func unfinishedWorkerPark(attempt domain.Attempt) bool {
+	return !attempt.Progress.Terminal() && attempt.CompletedAt == nil &&
+		(attempt.Progress == domain.ProgressWaitingExternal || attempt.Control == domain.ControlWaitingExternal)
+}
+
+// durableParkReleaseHandoff runs after exact assignment/revision fences in the
+// same transaction. The wait owner needs this binding to detect abandonment and
+// revoke authority. Release may change only custody state/lease/time and advance
+// the attempt revision/time; every other field remains durable evidence.
+// No worker epoch transfer is required for a historical release receipt.
+func durableParkReleaseHandoff(current domain.Attempt, custody domain.Assignment, transition domain.WorkerStateTransition) bool {
+	if !unfinishedWorkerPark(current) || current.AssignmentID != custody.ID ||
+		transition.Attempt.AssignmentID != custody.ID || !transition.Assignment.LeaseExpiresAt.IsZero() ||
+		!transition.Attempt.UpdatedAt.Equal(transition.TransitionedAt) ||
+		!transition.Assignment.UpdatedAt.Equal(transition.TransitionedAt) {
+		return false
+	}
+	nextAttempt := transition.Attempt
+	nextAttempt.Revision = current.Revision
+	nextAttempt.UpdatedAt = current.UpdatedAt
+	nextCustody := transition.Assignment
+	nextCustody.State = custody.State
+	nextCustody.LeaseExpiresAt = custody.LeaseExpiresAt
+	nextCustody.UpdatedAt = custody.UpdatedAt
+	return reflect.DeepEqual(nextAttempt, current) && reflect.DeepEqual(nextCustody, custody)
+}
+
 func workerStateAuditID(transition domain.WorkerStateTransition) string {
 	return fmt.Sprintf("worker-state:%s:%d", transition.Assignment.ID, transition.Attempt.Revision)
 }
@@ -191,7 +227,8 @@ func validateWorkerStateTransition(transition domain.WorkerStateTransition) erro
 		attempt.Revision != transition.ExpectedAttemptRevision+1 {
 		return fmt.Errorf("%w: invalid attempt projection", ErrStaleWorkerStateTransition)
 	}
-	if next.State == domain.AssignmentReleased && attempt.AssignmentID != "" {
+	if next.State == domain.AssignmentReleased && attempt.AssignmentID != "" &&
+		(attempt.AssignmentID != next.ID || !unfinishedWorkerPark(attempt)) {
 		return fmt.Errorf("%w: released assignment remains attached to attempt", ErrStaleWorkerStateTransition)
 	}
 	return nil

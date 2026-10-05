@@ -1,0 +1,111 @@
+package backlog
+
+import (
+ "context"
+ "path/filepath"
+ "reflect"
+ "testing"
+ "time"
+ "github.com/iryzhkov/t3-steward/internal/domain"
+ "github.com/iryzhkov/t3-steward/internal/store/sqlite"
+)
+
+// Extend the repository's real park/release compatibility fixture through SQLite
+// and FleetCoordinator, with a valid earlier sibling in the same transition batch.
+func TestIndependentRuntimeTerminalFencesParkCleanupBoundary(t *testing.T) {
+ for _, evidence := range []string{"released", "stop-accepted", "dispatch-rejected", "old-epoch-absent", "completed", "collect-accepted"} {
+  t.Run(evidence, func(t *testing.T) {
+   ctx := context.Background()
+   path := filepath.Join(t.TempDir(), "state.db")
+   s, err := sqlite.OpenMigrated(path); if err != nil { t.Fatal(err) }; defer s.Close()
+   records, snapshot := parkedReleaseRecords()
+   now := parkedReleaseTime
+   snapshot.Inventory = domain.WorkerInventory{ID:snapshot.WorkerID, Health:domain.WorkerHealthReady, AcceptBacklog:true}
+   original := records.Attempts[0]
+   a := records.Assignments[0]
+   if evidence == "old-epoch-absent" { snapshot.WorkerEpoch = "new-session" }
+   if evidence == "released" || evidence == "completed" {
+    state := domain.AssignmentReleased; if evidence == "completed" { state = domain.AssignmentCompleted }
+    snapshot.Assignments = []domain.WorkerAssignmentObservation{{AssignmentID:a.ID, AssignmentEpoch:a.Epoch, State:state, ObservedAt:now}}
+   }
+   sibling := original
+   sibling.ID = "sibling"; sibling.TaskID = "sibling-task"; sibling.AssignmentID = "0-live"
+   sibling.Progress = domain.ProgressActive; sibling.Control = domain.ControlPreparing
+   la := a; la.ID = sibling.AssignmentID; la.AttemptID = sibling.ID
+   la.WorkerEpoch = snapshot.WorkerEpoch; la.LeaseToken = "sibling-lease"; la.DispatchToken = "sibling-dispatch"
+   snapshot.Assignments = append(snapshot.Assignments, domain.WorkerAssignmentObservation{AssignmentID:la.ID, AssignmentEpoch:la.Epoch, State:domain.AssignmentClaimed, Control:domain.ControlRunning, ObservedAt:now})
+   records.Attempts = append(records.Attempts, sibling); records.Assignments = append(records.Assignments, la)
+   if err = s.SaveCoordinatorRecords(ctx,records); err != nil { t.Fatal(err) }
+   if err = s.SaveWorkerSnapshot(ctx,snapshot); err != nil { t.Fatal(err) }
+   if evidence == "stop-accepted" || evidence == "dispatch-rejected" || evidence == "collect-accepted" {
+    kind := domain.WorkerCommandStop; accepted := true
+    if evidence == "collect-accepted" { kind = domain.WorkerCommandCollect }
+    if evidence == "dispatch-rejected" {
+     kind = domain.WorkerCommandDispatch; accepted = false
+     // Persist the start while live; park afterward, then retain its actual rejected receipt.
+     live := original; live.Progress = domain.ProgressActive; live.Control = domain.ControlPreparing
+     if err = s.SaveCoordinatorRecords(ctx,sqlite.CoordinatorRecords{Attempts:[]domain.Attempt{live}}); err != nil { t.Fatal(err) }
+    }
+    cmd := domain.WorkerCommand{ID:"actual-boundary", Kind:kind, WorkerID:snapshot.WorkerID, WorkerEpoch:snapshot.WorkerEpoch, CoordinatorEpoch:1, AssignmentID:a.ID, AssignmentEpoch:a.Epoch, ExpectedWorkerSequence:snapshot.Sequence, CreatedAt:now}
+    got, e := s.CommitWorkerCommands(ctx,[]domain.WorkerCommand{cmd}); if e != nil || len(got)!=1 { t.Fatalf("receipt %+v %v",got,e) }
+    if evidence == "dispatch-rejected" { if err = s.SaveCoordinatorRecords(ctx,sqlite.CoordinatorRecords{Attempts:[]domain.Attempt{original}}); err != nil { t.Fatal(err) } }
+    if _,err = s.AcknowledgeWorkerCommand(ctx,domain.WorkerAcknowledgement{CommandID:cmd.ID,WorkerID:cmd.WorkerID,WorkerEpoch:cmd.WorkerEpoch,CoordinatorEpoch:1,AssignmentID:a.ID,AssignmentEpoch:a.Epoch,WorkerSequence:snapshot.Sequence,Accepted:accepted,AcknowledgedAt:now}); err != nil { t.Fatal(err) }
+   }
+   before := repair1Records(t,s)
+   commands,err := s.LoadWorkerCommandRecords(ctx); if err != nil { t.Fatal(err) }
+   trs,err := PlanWorkerStateTransitions(before,snapshot,commands,now)
+   if err != nil || len(trs)!=2 || trs[0].Assignment.ID!=la.ID { t.Fatalf("mixed plan %+v %v",trs,err) }
+   transport := &terminalFenceTransport{}
+   c := FleetCoordinator{Store:s, Now:func()time.Time{return now}}
+   _,err = c.ReconcileWorkerCommands(ctx,snapshot,transport)
+   if err != nil {
+    if !reflect.DeepEqual(before,repair1Records(t,s)) || len(transport.commands)!=0 { t.Fatal("failed batch partially committed/delivered") }
+    // Repeat and reopen prove this is persistent incompatibility, not one stale snapshot.
+    _,again := c.ReconcileWorkerCommands(ctx,snapshot,transport); if again == nil { t.Fatal("refusal unexpectedly transient") }
+    if e:=s.Close();e!=nil {t.Fatal(e)}
+    s,e := sqlite.OpenMigrated(path); if e!=nil {t.Fatal(e)}; defer s.Close()
+    if !reflect.DeepEqual(before,repair1Records(t,s)) {t.Fatal("rollback not durable")}
+    t.Fatalf("real park cleanup rejects mixed batch, preventing abandonment evidence and sibling delivery: %v",err)
+   }
+   got := repair1Records(t,s); at := repair1Attempt(t,got,original.ID); as := repair1Assignment(t,got,a.ID)
+   if at.Progress!=original.Progress || at.Control!=original.Control || at.AssignmentID!=a.ID || at.CompletedAt!=nil { t.Fatalf("park evidence lost %+v",at) }
+   want := domain.AssignmentReleased
+   if evidence=="completed" {want=domain.AssignmentClaimed}
+   if evidence=="collect-accepted" {want=domain.AssignmentCompleted}
+   if as.State!=want || repair1Attempt(t,got,sibling.ID).Control!=domain.ControlRunning || len(transport.commands)==0 {t.Fatalf("boundary/sibling missing %+v",got)}
+  })
+ }
+}
+
+func TestIndependentRuntimeTerminalFencesMissingOldEvidenceMixed(t *testing.T) {
+ for _, evidence := range []string{"absent", "wrong-assignment-epoch", "missing-attempt"} {
+  t.Run(evidence,func(t *testing.T){
+   ctx:=context.Background(); path:=filepath.Join(t.TempDir(),"state.db")
+   s,err:=sqlite.OpenMigrated(path); if err!=nil {t.Fatal(err)}; defer s.Close()
+   now:=coordinatorTestTime.Add(time.Minute)
+   snapshot,a,attempt:=repair1Fixture(now)
+   attempt.Progress=domain.ProgressReady; attempt.Control=domain.ControlWaitingExternal
+   completed:=now.Add(-time.Second); attempt.CompletedAt=&completed
+   snapshot.WorkerEpoch="replacement"
+   if evidence=="wrong-assignment-epoch" {snapshot.Assignments=[]domain.WorkerAssignmentObservation{{AssignmentID:a.ID,AssignmentEpoch:a.Epoch+1,State:domain.AssignmentCompleted,ObservedAt:now}}}
+   live:=attempt;live.ID="sibling";live.TaskID="sibling-task";live.AssignmentID="0-live";live.Progress=domain.ProgressActive;live.Control=domain.ControlResuming;live.CompletedAt=nil
+   la:=a;la.ID=live.AssignmentID;la.AttemptID=live.ID;la.WorkerEpoch=snapshot.WorkerEpoch;la.LeaseToken="sibling-lease";la.DispatchToken="sibling-dispatch"
+   snapshot.Assignments=append(snapshot.Assignments,domain.WorkerAssignmentObservation{AssignmentID:la.ID,AssignmentEpoch:la.Epoch,State:domain.AssignmentClaimed,Control:domain.ControlRunning,ObservedAt:now})
+   records:=sqlite.CoordinatorRecords{Attempts:[]domain.Attempt{live},Assignments:[]domain.Assignment{a,la}}
+   if evidence!="missing-attempt" {records.Attempts=append(records.Attempts,attempt)}
+   if err=s.SaveCoordinatorRecords(ctx,records);err!=nil {t.Fatal(err)}
+   if err=s.SaveWorkerSnapshot(ctx,snapshot);err!=nil {t.Fatal(err)}
+   transport:=&terminalFenceTransport{};c:=FleetCoordinator{Store:s,Now:func()time.Time{return now}}
+   for tick:=0;tick<3;tick++ {
+    if _,err=c.ReconcileWorkerCommands(ctx,snapshot,transport);err!=nil {t.Fatal(err)}
+    got:=repair1Records(t,s)
+    if !reflect.DeepEqual(repair1Assignment(t,got,a.ID),a) {t.Fatal("invented epoch/release")}
+    if evidence!="missing-attempt" && !reflect.DeepEqual(repair1Attempt(t,got,attempt.ID),attempt) {t.Fatal("old evidence altered")}
+    if repair1Attempt(t,got,live.ID).Control!=domain.ControlRunning {t.Fatal("valid sibling blocked")}
+   }
+   if len(transport.commands)!=3 {t.Fatalf("expected pending sibling replay, got %+v",transport.commands)}
+   for _,cmd:=range transport.commands {if cmd.AssignmentID!=la.ID || cmd.Kind!=domain.WorkerCommandPrepare {t.Fatalf("unsafe cleanup/start %+v",cmd)}}
+  })
+ }
+}
+
