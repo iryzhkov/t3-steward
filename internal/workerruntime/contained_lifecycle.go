@@ -61,12 +61,7 @@ func privateJSON(path string, value any) error {
 
 // privateBytes retains exact bytes, including JSON formatting and unknown fields.
 func privateBytes(path string, data []byte) error {
-	if old, err := readBoundedRegularFile(path, 16<<20); err == nil {
-		if !bytes.Equal(old, data) {
-			return errors.New("contained receipt identity changed")
-		}
-		return syncPrivateFile(path, data)
-	} else if !errors.Is(err, os.ErrNotExist) {
+	if err := syncPrivateFile(path, data); !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".receipt-")
@@ -105,12 +100,25 @@ func syncPrivateFile(path string, expected []byte) error {
 	if !info.Mode().IsRegular() || !current.Mode().IsRegular() || !os.SameFile(info, current) {
 		return errors.New("private receipt file identity changed")
 	}
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(data, expected) {
+	// Reject foreign sizes before reading. Compare in fixed-size chunks bounded
+	// by the supplied record, never by an unrelated publication size limit.
+	if info.Size() != int64(len(expected)) {
 		return errors.New("contained receipt identity changed")
+	}
+	var buffer [32 << 10]byte
+	for offset := 0; offset < len(expected); {
+		n := min(len(buffer), len(expected)-offset)
+		if _, err = io.ReadFull(file, buffer[:n]); err != nil {
+			return err
+		}
+		if !bytes.Equal(buffer[:n], expected[offset:offset+n]) {
+			return errors.New("contained receipt identity changed")
+		}
+		offset += n
+	}
+	// A concurrent append must not be adopted as an equal replay.
+	if n, err := file.Read(buffer[:1]); n != 0 || err != io.EOF {
+		return errors.Join(errors.New("contained receipt identity changed"), err)
 	}
 	if err = file.Sync(); err != nil {
 		return err
@@ -122,7 +130,7 @@ func syncPrivateFile(path string, expected []byte) error {
 	if err != nil {
 		return err
 	}
-	if !current.Mode().IsRegular() || !os.SameFile(info, current) {
+	if !current.Mode().IsRegular() || !os.SameFile(info, current) || current.Size() != int64(len(expected)) {
 		return errors.New("private receipt file identity changed")
 	}
 	return nil
