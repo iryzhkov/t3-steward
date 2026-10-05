@@ -57,7 +57,7 @@ func newAdmissionFixture(t *testing.T) admissionFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	root := filepath.Join(t.TempDir(), "retained")
+	root := filepath.Join(stageOwnedTempDir(t), "retained")
 	t.Cleanup(func() { _ = removeIngestedTree(root) })
 	ingested, err := (BundleIngester{Store: db, StorageRoot: root}).Ingest(ctx, bundle)
 	if err != nil {

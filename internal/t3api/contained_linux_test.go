@@ -15,9 +15,56 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 )
 
+func TestContainedFixtureOwnedAliasScratch(t *testing.T) {
+	physical, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "scratch-alias")
+	if err := os.Symlink(physical, alias); err != nil {
+		t.Fatal(err)
+	}
+	var owned string
+	t.Run("owned", func(t *testing.T) {
+		t.Setenv("TMPDIR", alias)
+		t.Setenv("GOTMPDIR", alias)
+		owned = containedOwnedTempDir(t)
+		if filepath.Dir(owned) != physical || len(filepath.Base(owned)) > 20 {
+			t.Fatalf("scratch or basename: owned=%q parent=%q", owned, physical)
+		}
+		info, err := os.Lstat(owned)
+		if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
+			t.Fatalf("private physical directory: info=%v err=%v", info, err)
+		}
+	})
+	if _, err := os.Lstat(owned); !os.IsNotExist(err) {
+		t.Fatalf("owned fixture not cleaned: %v", err)
+	}
+}
+
+// containedOwnedTempDir honors test-supplied scratch while keeping the fixture
+// basename short enough for Unix sockets. Only this owned directory is resolved.
+func containedOwnedTempDir(t *testing.T) string {
+	t.Helper()
+	raw, err := os.MkdirTemp("", "ctl-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(raw); err != nil {
+			t.Error(err)
+		}
+	})
+	physical, err := filepath.EvalSymlinks(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return physical
+}
+
 func containedFixture(t *testing.T) (directoryresource.Identity, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "control")
+	path := filepath.Join(containedOwnedTempDir(t), "control")
 	if err := os.Mkdir(path, 0700); err != nil {
 		t.Fatal(err)
 	}

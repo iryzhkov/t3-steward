@@ -18,12 +18,55 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/providercontainment"
 )
 
-func TestContainedAttachmentRecoveryAndFences(t *testing.T) {
-	root, err := os.MkdirTemp("/tmp", "t3-attach-")
+func TestContainedAttachmentOwnedAliasScratch(t *testing.T) {
+	physical, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(root)
+	alias := filepath.Join(t.TempDir(), "scratch-alias")
+	if err := os.Symlink(physical, alias); err != nil {
+		t.Fatal(err)
+	}
+	var owned string
+	t.Run("owned", func(t *testing.T) {
+		t.Setenv("TMPDIR", alias)
+		t.Setenv("GOTMPDIR", alias)
+		owned = attachmentOwnedTempDir(t)
+		if filepath.Dir(owned) != physical || len(filepath.Base(owned)) > 20 {
+			t.Fatalf("scratch or basename: owned=%q parent=%q", owned, physical)
+		}
+		info, err := os.Lstat(owned)
+		if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
+			t.Fatalf("private physical directory: info=%v err=%v", info, err)
+		}
+	})
+	if _, err := os.Lstat(owned); !os.IsNotExist(err) {
+		t.Fatalf("owned fixture not cleaned: %v", err)
+	}
+}
+
+// attachmentOwnedTempDir uses configured scratch, never a fixed host /tmp,
+// and resolves only its owned directory before the strict resource registration.
+func attachmentOwnedTempDir(t *testing.T) string {
+	t.Helper()
+	raw, err := os.MkdirTemp("", "att-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(raw); err != nil {
+			t.Error(err)
+		}
+	})
+	physical, err := filepath.EvalSymlinks(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return physical
+}
+
+func TestContainedAttachmentRecoveryAndFences(t *testing.T) {
+	root := attachmentOwnedTempDir(t)
 	journal := filepath.Join(root, "journal")
 	control := filepath.Join(root, "control")
 	for _, p := range []string{journal, control} {

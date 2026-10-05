@@ -52,7 +52,7 @@ func probeCampaignFixture(t *testing.T) string {
 // gate wired to the same readiness composer the client asks.
 func probeSubmissions(t *testing.T, service *backlogadmin.Service, store *sqlite.Store) *backlog.SubmissionService {
 	t.Helper()
-	storage := filepath.Join(t.TempDir(), "bundles")
+	storage := filepath.Join(reviewInputTempDir(t), "bundles")
 	// An ingested tree is made immutable on purpose, so the test has to restore
 	// write permission before the temporary directory can be removed.
 	t.Cleanup(func() {
