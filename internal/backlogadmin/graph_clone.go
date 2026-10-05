@@ -88,6 +88,11 @@ func (s *Service) cloneGraph(ctx context.Context, p Principal, r domain.GraphAme
 				return result, err
 			}
 		}
+		if t.ReviewRequirements != nil {
+			t.ReviewRequirements.Criteria.ArtifactID = artifactMap[t.ReviewRequirements.Criteria.ArtifactID]
+			t.ReviewRequirements.Criteria.RunID = runID
+			t.ReviewRequirements.Criteria.TaskID = t.ID
+		}
 		if err = s.graphValidator(workflow, *t); err != nil {
 			return result, err
 		}

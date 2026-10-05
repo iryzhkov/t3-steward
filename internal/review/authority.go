@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -123,8 +124,16 @@ type ParentBinding struct {
 	ExecutorRoute   string
 }
 
+// Durable clone/rerun record identities contain colons; this does not classify or grant authority.
+var parentRecordIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
+
 func (p ParentBinding) Validate() error {
-	for _, id := range []string{p.RunID, p.TaskID, p.AttemptID, p.ThreadID, p.AssignmentID, p.Repository} {
+	for _, id := range []string{p.RunID, p.TaskID, p.AttemptID} {
+		if !parentRecordIDPattern.MatchString(id) {
+			return errors.New("invalid parent record identity")
+		}
+	}
+	for _, id := range []string{p.ThreadID, p.AssignmentID, p.Repository} {
 		if !IDPattern.MatchString(id) {
 			return errors.New("invalid parent identity")
 		}
@@ -150,9 +159,11 @@ func (c Checkpoint) Validate() error {
 }
 
 type FrozenAuthority struct {
-	Parent             ParentBinding
-	Requirements       RequirementsSpec
-	RequirementsDigest string
+	AdmissionProvenance json.RawMessage `json:",omitempty"`
+	DeclarationDigest   string          `json:",omitempty"`
+	Parent              ParentBinding
+	Requirements        RequirementsSpec
+	RequirementsDigest  string
 }
 
 func NewFrozenAuthority(parent ParentBinding, r Requirements) (FrozenAuthority, error) {
@@ -173,7 +184,16 @@ func (a FrozenAuthority) Canonical() (FrozenAuthority, error) {
 	if r.Digest() != a.RequirementsDigest {
 		return FrozenAuthority{}, errors.New("frozen requirements digest mismatch")
 	}
-	return NewFrozenAuthority(a.Parent, r)
+	canonical, err := NewFrozenAuthority(a.Parent, r)
+	if a.DeclarationDigest != "" && !pinnedinput.ValidDigest(a.DeclarationDigest) {
+		return FrozenAuthority{}, errors.New("invalid declaration digest")
+	}
+	canonical.DeclarationDigest = a.DeclarationDigest
+	if len(a.AdmissionProvenance) != 0 && !json.Valid(a.AdmissionProvenance) {
+		return FrozenAuthority{}, errors.New("invalid retained admission provenance")
+	}
+	canonical.AdmissionProvenance = append(json.RawMessage(nil), a.AdmissionProvenance...)
+	return canonical, err
 }
 func (a FrozenAuthority) Key() string {
 	return "ra-" + authorityDigest([]string{a.Parent.RunID, a.Parent.TaskID})

@@ -762,6 +762,7 @@ func planningTimeKey(value *time.Time) string {
 }
 
 func clonePlanningTask(task domain.Task) domain.Task {
+	task.ReviewRequirements = domain.CloneTaskReview(task.ReviewRequirements)
 	task.Needs = append([]string(nil), task.Needs...)
 	task.InputArtifactIDs = append([]string(nil), task.InputArtifactIDs...)
 	task.Outputs = append([]domain.ArtifactDeclaration(nil), task.Outputs...)

@@ -21,7 +21,8 @@ import (
 // precisely what asynchronous execution exists for, and refusing on one would
 // turn a queue into a busy wait.
 type coordinatorPermanentValidator struct {
-	admin *backlogadmin.Service
+	admin   *backlogadmin.Service
+	reviews backlog.AdmissionCatalogSource
 }
 
 // ValidatePermanent refuses a campaign that can never run, and refuses a
@@ -32,6 +33,9 @@ type coordinatorPermanentValidator struct {
 // open is not a gate: it is quiet on exactly the occasions it matters, and with
 // --allow-unverified it was the only remaining check.
 func (v coordinatorPermanentValidator) ValidatePermanent(ctx context.Context, manifest backlog.Manifest) error {
+	if err := backlog.ValidateTaskReviewAdmission(ctx, manifest, v.reviews); err != nil {
+		return err
+	}
 	if v.admin == nil {
 		return fmt.Errorf("%w: this coordinator has no readiness service to validate against",
 			backlog.ErrValidationUnavailable)

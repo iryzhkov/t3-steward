@@ -84,18 +84,24 @@ type SubmissionService struct {
 // manifest without holding the publication lock. It parses the manifest a
 // second time on purpose: parsing is cheap next to dialling a fleet, and the
 // alternative was to keep the lock for the duration of the dialling.
-func (s *SubmissionService) validatePermanent(ctx context.Context, bundleDir string) error {
-	if s.Permanent == nil {
-		return nil
-	}
+func (s *SubmissionService) validatePermanent(ctx context.Context, bundleDir string) (PermanentValidator, error) {
 	_, root, manifest, _, err := openIngestionBundle(bundleDir)
 	if err != nil {
 		// The bundle is unreadable. Ingestion reports that with its own wording
 		// and its own guards, so this path stays silent and lets it.
-		return nil
+		return nil, nil
 	}
 	_ = root.Close()
-	return s.Permanent.ValidatePermanent(ctx, manifest)
+	if s.Permanent == nil {
+		if HasTaskReviewRequirements(manifest) {
+			return nil, fmt.Errorf("%w: configured admission validation required for review_requirements", ErrValidationUnavailable)
+		}
+		return nil, nil
+	}
+	if err := s.Permanent.ValidatePermanent(ctx, manifest); err != nil {
+		return nil, err
+	}
+	return validatedManifestAdmission{digest: admissionDigest(manifest)}, nil
 }
 
 func (s *SubmissionService) SubmitDirectory(ctx context.Context, request DirectorySubmission) (SubmissionResult, error) {
@@ -157,7 +163,7 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 	// idempotency key whose run already exists still returns that run. Refusing
 	// a replay of an accepted submission would break the guarantee that makes
 	// retrying safe.
-	validationErr := s.validatePermanent(ctx, request.BundleDir)
+	validated, validationErr := s.validatePermanent(ctx, request.BundleDir)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -192,10 +198,9 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 		DirectoryCatalogs: s.DirectoryCatalogs,
 		StorageRoot:       s.StorageRoot,
 		Store:             s.Store,
-		// Permanent is deliberately not passed on: this service has already
-		// applied it above, outside the lock, and applying it again here would
-		// dial every worker a second time. The ingester keeps the field for a
-		// caller that uses it directly.
+		// Reuse the exact successful permanent verdict without dialing again.
+		// A changed manifest cannot use this private validation receipt.
+		Permanent:  validated,
 		Now:        func() time.Time { return record.CreatedAt },
 		NewTypedID: submissionTypedIDGenerator(key),
 	}

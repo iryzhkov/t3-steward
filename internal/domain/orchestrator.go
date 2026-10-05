@@ -174,6 +174,7 @@ type ProviderRoute struct {
 
 // Task is an immutable node in a workflow definition.
 type Task struct {
+	ReviewRequirements *TaskReviewRequirements `json:"reviewRequirements,omitempty"`
 	// ReviewJudge is derived only from a validated review manifest by ingestion.
 	// Its swarm dependencies require terminal attempts rather than success.
 	ReviewJudge bool `json:"reviewJudge,omitempty"`

@@ -84,27 +84,28 @@ type ManifestRoute struct {
 
 // ManifestTask is one node in a workflow manifest.
 type ManifestTask struct {
-	Directories   []directoryresource.Request `yaml:"directories"`
-	Class         domain.TaskClass            `yaml:"class"`
-	PromptFile    string                      `yaml:"prompt_file"`
-	Needs         ManifestNeeds               `yaml:"needs"`
-	InputsFrom    map[string][]string         `yaml:"inputs_from"`
-	Context       *domain.ProjectContext      `yaml:"context"`
-	Outputs       []string                    `yaml:"outputs"`
-	Commits       []ManifestCommit            `yaml:"commits"`
-	Verify        []string                    `yaml:"verify"`
-	Placement     ManifestPlacement           `yaml:"placement"`
-	Resources     ManifestResources           `yaml:"resources"`
-	Preflight     ManifestPreflight           `yaml:"preflight"`
-	Routes        []ManifestRoute             `yaml:"routes"`
-	ResourceLocks []string                    `yaml:"resource_locks"`
-	Importance    int                         `yaml:"importance"`
-	Difficulty    int                         `yaml:"difficulty"`
-	EstimatedCost *float64                    `yaml:"estimated_cost"`
-	MaxTurns      int                         `yaml:"max_turns"`
-	NotBefore     *time.Time                  `yaml:"not_before"`
-	Deadline      *time.Time                  `yaml:"deadline"`
-	ExpiresAt     *time.Time                  `yaml:"expires_at"`
+	ReviewRequirements *ManifestReviewRequirements `yaml:"review_requirements"`
+	Directories        []directoryresource.Request `yaml:"directories"`
+	Class              domain.TaskClass            `yaml:"class"`
+	PromptFile         string                      `yaml:"prompt_file"`
+	Needs              ManifestNeeds               `yaml:"needs"`
+	InputsFrom         map[string][]string         `yaml:"inputs_from"`
+	Context            *domain.ProjectContext      `yaml:"context"`
+	Outputs            []string                    `yaml:"outputs"`
+	Commits            []ManifestCommit            `yaml:"commits"`
+	Verify             []string                    `yaml:"verify"`
+	Placement          ManifestPlacement           `yaml:"placement"`
+	Resources          ManifestResources           `yaml:"resources"`
+	Preflight          ManifestPreflight           `yaml:"preflight"`
+	Routes             []ManifestRoute             `yaml:"routes"`
+	ResourceLocks      []string                    `yaml:"resource_locks"`
+	Importance         int                         `yaml:"importance"`
+	Difficulty         int                         `yaml:"difficulty"`
+	EstimatedCost      *float64                    `yaml:"estimated_cost"`
+	MaxTurns           int                         `yaml:"max_turns"`
+	NotBefore          *time.Time                  `yaml:"not_before"`
+	Deadline           *time.Time                  `yaml:"deadline"`
+	ExpiresAt          *time.Time                  `yaml:"expires_at"`
 
 	placementImpossible bool
 }
@@ -483,6 +484,9 @@ func validateManifest(manifest Manifest) error {
 		// quota was spent.
 		if len(manifest.Tasks[name].Commits) > 0 && manifest.Environment.Type == EnvironmentFresh {
 			return fmt.Errorf("task %s: commits need a Git workspace, and environment.type is fresh; declare the files as outputs instead", name)
+		}
+		if err := validateTaskReviewDeclaration(manifest, name, manifest.Tasks[name].ReviewRequirements); err != nil {
+			return err
 		}
 		if err := validateManifestTask(name, manifest.Tasks[name], manifest.Tasks); err != nil {
 			return err
@@ -874,6 +878,11 @@ func validateNonEmptyUnique(label string, values []string) error {
 
 func validateManifestFiles(root string, manifest Manifest) error {
 	for name, task := range manifest.Tasks {
+		if task.ReviewRequirements != nil {
+			if _, err := safeBundleFile(root, task.ReviewRequirements.CriteriaFile); err != nil {
+				return fmt.Errorf("task %s review criteria_file: %w", name, err)
+			}
+		}
 		if _, err := safeBundleFile(root, task.PromptFile); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				// The raw lstat error named an absolute path the author never

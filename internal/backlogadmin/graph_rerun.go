@@ -82,6 +82,14 @@ func (s *Service) rerunGraph(
 				return result, err
 			}
 		}
+		if task.ReviewRequirements != nil {
+			task.ReviewRequirements.Criteria.ArtifactID, err = builder.reference(ctx, task.ReviewRequirements.Criteria.ArtifactID, task.ID)
+			if err != nil {
+				return result, err
+			}
+			task.ReviewRequirements.Criteria.RunID = runID
+			task.ReviewRequirements.Criteria.TaskID = task.ID
+		}
 		// Inputs the source run itself carried travel on. A rerun's graph holds
 		// only its own subtree, so the subtree root always carries what its
 		// reused ancestors produced; rerunning a rerun from the task that failed

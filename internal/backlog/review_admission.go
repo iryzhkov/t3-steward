@@ -111,11 +111,17 @@ func (s ReviewAdmissionService) Resolve(ctx context.Context, request AdmissionRe
 	if err != nil || run.Progress.Terminal() {
 		return fail("run missing, duplicate or terminal")
 	}
-	task, err := admissionOne(records.Tasks, func(v domain.Task) bool { return v.ID == request.TaskID })
+	task, err := admissionOne(domain.TasksForRun(run, records.Tasks), func(v domain.Task) bool { return v.ID == request.TaskID })
 	if err != nil || task.WorkflowID != run.WorkflowID || task.RunID != run.ID {
 		return fail("task is not an immutable declaration in this run")
 	}
 	workflow, err := admissionOne(records.Workflows, func(v domain.Workflow) bool { return v.ID == run.WorkflowID })
+	if run.Graph != nil {
+		workflow.TaskIDs = nil
+		for _, t := range run.Graph.Tasks {
+			workflow.TaskIDs = append(workflow.TaskIDs, t.ID)
+		}
+	}
 	if err != nil || !admissionUnique(workflow.TaskIDs) || !slices.Contains(workflow.TaskIDs, task.ID) {
 		return fail("workflow task membership mismatch")
 	}
@@ -239,6 +245,12 @@ func admissionCriteria(ctx context.Context, store CoordinatorArtifactStore, reco
 	fail := func(msg string) (pinnedinput.Manifest, CriteriaProvenance, error) {
 		return pinnedinput.Manifest{}, CriteriaProvenance{}, fmt.Errorf("review criteria: %s", msg)
 	}
+	// Clone/rerun inputs are verified reference artifacts owned by the new graph.
+	referenced := run.Graph != nil && run.Graph.ClonedFrom != nil
+	if referenced {
+		workflow.InputArtifactIDs = append([]string(nil), task.InputArtifactIDs...)
+		run.InputArtifactIDs = append([]string(nil), task.InputArtifactIDs...)
+	}
 	if workflow.InputManifest == nil || !admissionUnique(workflow.InputArtifactIDs) || !admissionUnique(task.InputArtifactIDs) || !admissionUnique(run.InputArtifactIDs) || !reflect.DeepEqual(admissionSorted(workflow.InputArtifactIDs), admissionSorted(run.InputArtifactIDs)) {
 		return fail("missing manifest or invalid input membership")
 	}
@@ -266,7 +278,7 @@ func admissionCriteria(ctx context.Context, store CoordinatorArtifactStore, reco
 			return fail("pin name missing or ambiguous")
 		}
 		artifact := matches[0]
-		if artifact.WorkflowRunID != run.ID || artifact.TaskID != "" || artifact.AttemptID != "" || artifact.Kind != domain.ArtifactInput || artifact.Producer != "submission" || artifact.Name == "workflow.yaml" || artifact.Size != entry.Size || artifact.SHA256 != entry.SHA256 {
+		if artifact.WorkflowRunID != run.ID || (artifact.TaskID != "" && (!referenced || artifact.TaskID != task.ID)) || artifact.AttemptID != "" || artifact.Kind != domain.ArtifactInput || artifact.Producer != "submission" || artifact.Name == "workflow.yaml" || artifact.Size != entry.Size || artifact.SHA256 != entry.SHA256 {
 			return fail("retained input lineage/size/hash mismatch")
 		}
 		if artifact.ID == id {
@@ -343,6 +355,9 @@ func admissionRouteMetadata(catalog AdmissionCatalog, project, route string) (Ad
 		}
 		providers := map[string]bool{}
 		for _, provider := range worker.Providers {
+			if provider.InstanceID != instance {
+				continue
+			}
 			key := provider.InstanceID + "\x00" + provider.QuotaPoolID
 			if providers[key] {
 				return fail("duplicate authored provider")
@@ -358,7 +373,7 @@ func admissionRouteMetadata(catalog AdmissionCatalog, project, route string) (Ad
 		}
 	}
 	if len(grants) == 0 {
-		return fail("no authored eligible worker authorizes model")
+		return fail("no authored eligible worker authorizes model; configure an eligible project binding, exact model authorization and quota pool binding")
 	}
 	sort.Slice(grants, func(i, j int) bool { return admissionDigest(grants[i]) < admissionDigest(grants[j]) })
 	return metadata, grants, nil

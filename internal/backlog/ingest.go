@@ -11,6 +11,7 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -104,6 +105,9 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 	// The permanent checks are repeated here, transactionally, before anything
 	// exists. A campaign that can never run must consume no run ID and occupy
 	// no place in the graph, whether or not the client checked first.
+	if HasTaskReviewRequirements(manifest) && i.Permanent == nil {
+		return IngestedBundle{}, fmt.Errorf("%w: review_requirements needs configured permanent admission validation", ErrValidationUnavailable)
+	}
 	if i.Permanent != nil {
 		if err := i.Permanent.ValidatePermanent(ctx, manifest); err != nil {
 			return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: %w", err)
@@ -283,7 +287,7 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 		inputEntries = append(inputEntries, pinnedinput.Entry{Name: filepath.ToSlash(name), Size: file.size, SHA256: file.sha256})
 	}
 	var inputManifest *pinnedinput.Manifest
-	if manifest.PinnedInputs || manifest.Review != nil {
+	if manifest.PinnedInputs || manifest.Review != nil || HasTaskReviewRequirements(manifest) {
 		bounded, err := pinnedinput.NewManifest(inputEntries)
 		if err != nil {
 			return records, nil, err
@@ -375,9 +379,22 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 				localNeeds = append(localNeeds, need)
 			}
 		}
+		var compiledReview *domain.TaskReviewRequirements
+		if taskManifest.ReviewRequirements != nil {
+			id := artifactIDByPath[taskManifest.ReviewRequirements.CriteriaFile]
+			if id == "" || !slices.Contains(taskInputIDs, id) {
+				return records, nil, fmt.Errorf("task %s criteria_file is not a retained submitted input", name)
+			}
+			for _, artifact := range records.Artifacts {
+				if artifact.ID == id {
+					compiledReview = compileTaskReview(taskManifest.ReviewRequirements, workflowID, runID, taskID, artifact)
+				}
+			}
+		}
 		records.Tasks = append(records.Tasks, domain.Task{
-			DirectoryBindings: directoryresource.CloneBindings(directoryBindings[name]),
-			ID:                taskID, RunID: runID, WorkflowID: workflowID, Name: name, Class: taskManifest.Class,
+			ReviewRequirements: compiledReview,
+			DirectoryBindings:  directoryresource.CloneBindings(directoryBindings[name]),
+			ID:                 taskID, RunID: runID, WorkflowID: workflowID, Name: name, Class: taskManifest.Class,
 			Needs: localNeeds, ExternalNeeds: externalNeeds, PromptArtifactID: promptArtifact.ID,
 			InputArtifactIDs: append([]string(nil), taskInputIDs...), DependencyInputs: cloneStringSlices(taskManifest.InputsFrom),
 			Context: resolvedContext, Outputs: outputs, Verification: append([]string(nil), taskManifest.Verify...),

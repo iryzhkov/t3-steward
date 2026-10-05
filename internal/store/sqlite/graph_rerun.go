@@ -114,6 +114,9 @@ func (s *Store) CommitGraphRerun(ctx context.Context, c GraphCommit) (domain.Gra
 		inputByID[input.ID] = input
 	}
 	for _, task := range c.Tasks {
+		if err = validateReferencedTaskReviewTx(ctx, tx, source.Tasks, task, c.TaskIDRemap, inputByID, run.ID); err != nil {
+			return result, err
+		}
 		for _, id := range append([]string{task.PromptArtifactID}, task.InputArtifactIDs...) {
 			if artifact, ok := inputByID[id]; !ok || (artifact.TaskID != "" && artifact.TaskID != task.ID) {
 				return result, errors.New("rerun input ownership mismatch")

@@ -952,6 +952,10 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	// know whether an overseer could be dispatched at all, and none of them can
 	// discover it from a record.
 	service.SetSupervisorClientConfigured(supervisorPrincipal != "")
+	reviewCatalog, err := workerruntime.NewConfiguredAdmissionCatalog(cfg.BacklogV2)
+	if err != nil {
+		return fmt.Errorf("configured review admission: %w", err)
+	}
 	submissions := &backlog.SubmissionService{
 		DirectoryCatalogs: directoryCatalogs,
 		StorageRoot:       cfg.BacklogV2.Storage.Bundles,
@@ -961,7 +965,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		// The permanent part of the readiness check is repeated here, so a
 		// client that skipped it, or a fleet that changed after the client
 		// checked, still cannot create an impossible run.
-		Permanent: coordinatorPermanentValidator{admin: service},
+		Permanent: coordinatorPermanentValidator{admin: service, reviews: reviewCatalog},
 		Audit: func(_ context.Context, audit backlog.SubmissionAudit) {
 			if !audit.Unverified {
 				return

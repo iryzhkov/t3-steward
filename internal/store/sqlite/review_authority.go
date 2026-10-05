@@ -93,7 +93,15 @@ func reviewParentCurrentTx(ctx context.Context, tx *sql.Tx, p review.ParentBindi
 	if run.ID != p.RunID || run.Progress.Terminal() {
 		return ErrReviewAuthorityIdentity
 	}
-	task, err := loadReviewJSONTx[domain.Task](ctx, tx, "SELECT record FROM coordinator_tasks WHERE id=?", p.TaskID)
+	projection, err := loadWorkflowProjectionTx(ctx, tx, p.RunID)
+	var task domain.Task
+	if err == nil {
+		for _, candidate := range projection.Tasks {
+			if candidate.ID == p.TaskID {
+				task = candidate
+			}
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -128,6 +136,12 @@ func expectedReviewAuthorityTx(ctx context.Context, tx *sql.Tx, expected review.
 // No executor/manifest/CLI path calls it. Replay cannot replace risk or identity,
 // including with a rehashed weaker policy or a new parent attempt.
 func (s *Store) FreezeReviewAuthority(ctx context.Context, expected review.FrozenAuthority) (review.FrozenAuthority, error) {
+	return s.freezeReviewAuthority(ctx, expected, false)
+}
+func (s *Store) FreezeDeclaredReviewAuthority(ctx context.Context, expected review.FrozenAuthority) (review.FrozenAuthority, error) {
+	return s.freezeReviewAuthority(ctx, expected, true)
+}
+func (s *Store) freezeReviewAuthority(ctx context.Context, expected review.FrozenAuthority, declared bool) (review.FrozenAuthority, error) {
 	expected, err := expected.Canonical()
 	if err != nil {
 		return review.FrozenAuthority{}, err
@@ -137,6 +151,11 @@ func (s *Store) FreezeReviewAuthority(ctx context.Context, expected review.Froze
 		return review.FrozenAuthority{}, err
 	}
 	defer tx.Rollback()
+	if declared {
+		if err := validateDeclaredAuthorityTx(ctx, tx, expected); err != nil {
+			return review.FrozenAuthority{}, err
+		}
+	}
 	stored, err := expectedReviewAuthorityTx(ctx, tx, expected)
 	initial := errors.Is(err, sql.ErrNoRows)
 	if err != nil && !initial {

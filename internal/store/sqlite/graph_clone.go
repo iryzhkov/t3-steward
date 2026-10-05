@@ -80,6 +80,9 @@ func (s *Store) CommitGraphClone(ctx context.Context, c GraphCommit) (domain.Gra
 		inputByID[a.ID] = a
 	}
 	for _, task := range c.Tasks {
+		if err = validateReferencedTaskReviewTx(ctx, tx, source.Tasks, task, c.TaskIDRemap, inputByID, run.ID); err != nil {
+			return result, err
+		}
 		for _, id := range append([]string{task.PromptArtifactID}, task.InputArtifactIDs...) {
 			a, ok := inputByID[id]
 			if !ok || (a.TaskID != "" && a.TaskID != task.ID) {

@@ -41,6 +41,9 @@ func ValidateGraphAmendment(r GraphAmendment) error {
 	}
 	switch r.Operation {
 	case "task-add":
+		if r.Task != nil && r.Task.ReviewRequirements != nil {
+			return errors.New("review_requirements must be declared through configured campaign submission; task-add cannot supply compiled review authority")
+		}
 		if r.Task == nil || !graphName.MatchString(r.Task.Name) || r.Task.Name == SinkTaskName ||
 			r.Prompt == "" || len(r.Prompt) > 256<<10 {
 			return errors.New("task add requires a named task and prompt of at most 256 KiB")

@@ -32,11 +32,16 @@ type GraphReference struct {
 
 func TasksForRun(run WorkflowRun, templates []Task) []Task {
 	if run.Graph != nil {
-		return run.Graph.Tasks
+		tasks := append([]Task(nil), run.Graph.Tasks...)
+		for i := range tasks {
+			tasks[i].ReviewRequirements = CloneTaskReview(tasks[i].ReviewRequirements)
+		}
+		return tasks
 	}
 	result := []Task{}
 	for _, task := range templates {
 		if task.WorkflowID == run.WorkflowID && (task.RunID == "" || task.RunID == run.ID) {
+			task.ReviewRequirements = CloneTaskReview(task.ReviewRequirements)
 			result = append(result, task)
 		}
 	}
@@ -61,6 +66,9 @@ func TaskForAttempt(attempt Attempt, runs []WorkflowRun, templates []Task) (Task
 // selection must still use TasksForRun or TaskForAttempt.
 func TasksWithGraphAdditions(runs []WorkflowRun, templates []Task) []Task {
 	result := append([]Task(nil), templates...)
+	for i := range result {
+		result[i].ReviewRequirements = CloneTaskReview(result[i].ReviewRequirements)
+	}
 	seen := map[string]bool{}
 	for _, task := range result {
 		seen[task.ID] = true
@@ -69,6 +77,7 @@ func TasksWithGraphAdditions(runs []WorkflowRun, templates []Task) []Task {
 		if run.Graph != nil {
 			for _, task := range run.Graph.Tasks {
 				if !seen[task.ID] {
+					task.ReviewRequirements = CloneTaskReview(task.ReviewRequirements)
 					result = append(result, task)
 					seen[task.ID] = true
 				}
