@@ -147,11 +147,19 @@ func (g HostQuotaGuard) ResumeAllowed(ctx context.Context, pause LocalThrottleRe
 		byKey[st.Key] = st
 	}
 	now := g.now()
+	// Record the successful callback, rather than infer permission from prose.
+	elapsedResetProbe := false
 	ok, why := daemon.BucketsRecovered(g.Config, []domain.BucketKey{pause.Bucket}, pause.RequestedAt, routeThread(route), byKey, now, func(st domain.BucketState) bool {
-		return daemon.ProbeWindowOpen(g.Config, st, now)
+		allowed := daemon.ProbeWindowOpen(g.Config, st, now)
+		elapsedResetProbe = elapsedResetProbe || allowed
+		return allowed
 	})
 	if ok && why == "" {
-		why = fmt.Sprintf("%s recovered", pause.Bucket)
+		if elapsedResetProbe {
+			why = fmt.Sprintf("probe: %s reset deadline elapsed without a confirming reading; resume permitted to obtain telemetry, recovery unconfirmed", pause.Bucket)
+		} else {
+			why = fmt.Sprintf("%s recovered", pause.Bucket)
+		}
 	}
 	if ok {
 		return true, why, nil
