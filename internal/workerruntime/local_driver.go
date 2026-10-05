@@ -1070,6 +1070,7 @@ func (d *LocalDriver) settleCollectedTurn(pkg workerproto.ExecutionPackage, thre
 	// attempt, so the record has the attempt's retention and no other.
 	path := filepath.Join(d.workspacePath(pkg), "collected-turn.json")
 	var recorded collectedTurn
+	var original []byte
 	found := false
 	if file, err := openRegular(path); err == nil {
 		raw, readErr := io.ReadAll(file)
@@ -1082,19 +1083,22 @@ func (d *LocalDriver) settleCollectedTurn(pkg workerproto.ExecutionPackage, thre
 		if recorded.Identity != nil && *recorded.Identity != pkg.Identity {
 			return "", nil, "", errors.New("collected turn: immutable attempt binding mismatch")
 		}
-		found = recorded.ThreadID == pkg.Identity.ThreadID && recorded.TurnID == thread.TurnID
+		if recorded.ThreadID != pkg.Identity.ThreadID || (recorded.RecoveryOnly && recorded.Identity == nil) {
+			return "", nil, "", errors.New("collected turn: immutable thread binding mismatch")
+		}
+		if err := syncPrivateFile(path, raw); err != nil {
+			return "", nil, "", fmt.Errorf("prove collected turn durability: %w", err)
+		}
+		original = raw
+		found = recorded.TurnID == thread.TurnID
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", nil, "", fmt.Errorf("read collected turn: %w", err)
 	}
-	if found && recorded.RecoveryOnly && failure == "" {
-		// A genuinely successful later observation may become a witness, but
-		// the earlier failed evidence must survive that replacement. Never
-		// reinterpret its bytes as success or discard its recovery copy.
-		raw, err := json.Marshal(recorded)
-		if err != nil {
-			return "", nil, "", fmt.Errorf("retain failed collected turn: %w", err)
-		}
-		if err := privateJSON(filepath.Join(filepath.Dir(path), "collected-turn-recovery-"+shortDigest(raw)+".json"), recorded); err != nil {
+	if recorded.RecoveryOnly && (!found || failure == "") {
+		// Preserve every valid failed observation before replacement, even
+		// across different or previously absent turn identities. Keep the
+		// original JSON bytes; failed evidence never becomes success authority.
+		if err := privateBytes(filepath.Join(filepath.Dir(path), "collected-turn-recovery-"+shortDigest(original)+".json"), original); err != nil {
 			return "", nil, "", fmt.Errorf("retain failed collected turn: %w", err)
 		}
 		found = false

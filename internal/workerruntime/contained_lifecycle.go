@@ -1,10 +1,12 @@
 package workerruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -48,17 +50,22 @@ type containedCapture struct {
 }
 
 // privateJSON publishes a complete record without replacement. Equivalent replay
-// is permitted; a changed record under the same identity is never adopted.
+// must reprove durability; a changed record is never adopted.
 func privateJSON(path string, value any) error {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
+	return privateBytes(path, data)
+}
+
+// privateBytes retains exact bytes, including JSON formatting and unknown fields.
+func privateBytes(path string, data []byte) error {
 	if old, err := readBoundedRegularFile(path, 16<<20); err == nil {
-		if string(old) != string(data) {
+		if !bytes.Equal(old, data) {
 			return errors.New("contained receipt identity changed")
 		}
-		return nil
+		return syncPrivateFile(path, data)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -76,12 +83,49 @@ func privateJSON(path string, value any) error {
 	if err = os.Link(tmp.Name(), path); err != nil {
 		return err
 	}
-	dir, err := os.Open(filepath.Dir(path))
+	return syncPrivateFile(path, data)
+}
+
+// syncPrivateFile proves the visible regular file's exact content and syncs it
+// and its directory. A prior post-link error cannot become replay authority.
+func syncPrivateFile(path string, expected []byte) error {
+	file, err := openRegular(path)
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
-	return dir.Sync()
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	current, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || !current.Mode().IsRegular() || !os.SameFile(info, current) {
+		return errors.New("private receipt file identity changed")
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(data, expected) {
+		return errors.New("contained receipt identity changed")
+	}
+	if err = file.Sync(); err != nil {
+		return err
+	}
+	if err = syncDirectory(filepath.Dir(path)); err != nil {
+		return err
+	}
+	current, err = os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !current.Mode().IsRegular() || !os.SameFile(info, current) {
+		return errors.New("private receipt file identity changed")
+	}
+	return nil
 }
 
 func (p ContainedT3) preparation(pkg workerproto.ExecutionPackage) (containedPreparation, error) {
