@@ -189,8 +189,8 @@ func TestUserStartedTurnIsNotReStoppedWhileBucketStopped(t *testing.T) {
 	}
 }
 
-// The drain notice says how long the session has at the current rate and
-// that the provider ends it at 100%.
+// The drain notice projects quota exhaustion at the measured rate without
+// promising that the provider ends the session at 100%.
 func TestDrainNoticeNamesTimeToExhaustion(t *testing.T) {
 	h := newHarness(t, nil)
 	h.fake.add("a", "codex", "gpt", true)
@@ -206,7 +206,7 @@ func TestDrainNoticeNamesTimeToExhaustion(t *testing.T) {
 		t.Fatalf("warnings = %v stops = %v", h.fake.warnings, h.fake.stops)
 	}
 	text := h.fake.texts["a"]
-	if !strings.Contains(text, "exhausted in about") || !strings.Contains(text, "ends the session at 100%") {
+	if !strings.Contains(text, "At the measured rate of 3.8%/min") || !strings.Contains(text, "quota exhaustion is projected in about 4m") || !strings.Contains(text, "usage and provider behavior may change") || strings.Contains(text, "ends the session at 100%") {
 		t.Fatalf("drain text = %q", text)
 	}
 }

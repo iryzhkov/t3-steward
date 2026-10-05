@@ -1259,7 +1259,7 @@ func (d *LocalDriver) Checkpoint(ctx context.Context, pkg workerproto.ExecutionP
 	if err != nil {
 		return nil, err
 	}
-	text := command.Reason + "\nWrite .t3/checkpoint.md and leave the workspace consistent. If the task is fully complete and all declared outputs are ready, end your final message with the exact line 'backlog status: done'. Otherwise end it with 'backlog status: continue'. End this turn."
+	text := command.Reason + "\nThis is a runtime-owned quota pause, an exception to ordinary end-of-turn task completion. Write .t3/checkpoint.md and leave the workspace consistent. The continue marker is checkpoint evidence under runtime control, not a request for extra turns; the runtime checks completion before considering an authorized resume. If the task is fully complete and all declared outputs are ready, end your final message with the exact line 'backlog status: done'. Otherwise end it with 'backlog status: continue'. End this turn."
 	if err := d.T3.WarnThread(ctx, thread, domain.Warning{Kind: domain.ActionDrain, Text: text}); err != nil {
 		return nil, err
 	}
@@ -1335,7 +1335,7 @@ func (d *LocalDriver) Resume(ctx context.Context, pkg workerproto.ExecutionPacka
 	if err != nil {
 		return err
 	}
-	prompt := "Continue the backlog task from the retained checkpoint. Reconcile the workspace first. Throttle recovery: " + command.Reason
+	prompt := "Inspect current instructions and reconcile the workspace and retained checkpoint first. Continue only unfinished work that is still authorized; cancellation and pause instructions take precedence. Resume permission: " + command.Reason
 	return d.T3.ResumeThread(ctx, thread, prompt)
 }
 

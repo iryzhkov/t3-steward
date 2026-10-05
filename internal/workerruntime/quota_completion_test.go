@@ -65,6 +65,12 @@ func TestCompletedQuotaDrainCollectsWithoutRecovery(t *testing.T) {
 	if base.collectCalls != 1 || base.resumeCalls != 0 || record.LocalThrottle != nil || record.Phase != PhaseCompleted {
 		t.Fatalf("completed drain: collects=%d resumes=%d record=%+v", base.collectCalls, base.resumeCalls, record)
 	}
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if base.collectCalls != 1 || base.resumeCalls != 0 {
+		t.Fatal("completed drain collected or resumed twice")
+	}
 }
 
 func TestLocalDriverQuotaPauseCompletionNeedsExactTurnAndReadySession(t *testing.T) {

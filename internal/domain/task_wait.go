@@ -532,7 +532,7 @@ func (c TaskWaitWakeContext) Prompt() string {
 		// would contradict "end failed, do not write the outputs".
 		return builder.String()
 	}
-	builder.WriteString("\nContinue the task. Write every declared output before ending the turn; ")
+	builder.WriteString("\nFirst inspect current instructions, every wait outcome, and the actual result or review verdict. A met condition or exit 0 does not establish task success or review ACCEPT. Handle failures, cancellations, gave-up outcomes and deadlines by repairing, replanning or reporting as appropriate; an expected deadline is not proof of success. Continue only unfinished work that is still authorized. Cancellation and pause instructions take precedence. Write every declared output before ordinary completion; ")
 	builder.WriteString("the outputs collected are the ones present when a turn ends with nothing parking this task.\n")
 	return builder.String()
 }

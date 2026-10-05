@@ -22,8 +22,8 @@ import (
 func TaskCompletionSupplement(outputs []domain.ArtifactDeclaration) string {
 	var b strings.Builder
 	b.WriteString("\n\n## How this task ends\n")
-	b.WriteString("This task runs unattended and gets one turn: when your turn ends with no task-bound wait registered, the task is complete. ")
-	b.WriteString("There is no next turn, so do not end with BACKLOG STATUS: continue. ")
+	b.WriteString("This task runs unattended and gets one turn: ordinarily, when your turn ends with no task-bound wait registered, the task is complete. ")
+	b.WriteString("For ordinary completion there is no next turn, so do not end with BACKLOG STATUS: continue. Exception: an explicit runtime-owned quota pause asks for a checkpoint and a done/continue marker. In that case follow the quota checkpoint instruction: continue is checkpoint evidence under runtime control, not a request for extra turns. The runtime checks the exact drained turn for completion before considering an authorized resume; incomplete work stays paused until permitted. ")
 	b.WriteString("When the turn ends, the Steward collects the declared outputs from the workspace and runs verification; ")
 	b.WriteString("processes you started in the background (shell jobs, background commands) are not waited for.")
 	var files, commits []string
