@@ -134,7 +134,7 @@ func (s *DeclaredReviewStaging) StageDeclared(ctx context.Context, request Decla
 		return result, errors.New("deadline must follow durable allocation")
 	}
 	phase = "owner-lock"
-	lock, err := childStageLock(ctx, namespace, checkpoint.Key())
+	lock, err := childStageLockWithBoundary(ctx, namespace, checkpoint.Key(), s.boundary)
 	if err != nil {
 		return result, err
 	}
@@ -513,6 +513,16 @@ func childStagePrivateDirectory(path string) error {
 }
 
 func childStageLock(ctx context.Context, namespace, key string) (*fileLock, error) {
+	return childStageLockWithBoundary(ctx, namespace, key, nil)
+}
+
+func childStageLockWithBoundary(ctx context.Context, namespace, key string, boundary func(string) error) (*fileLock, error) {
+	if key == "" || key == "." || key == ".." || len(key) > 200 || filepath.Base(key) != key {
+		return nil, errors.New("owner lock key refused")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// Discovery is not ownership. Any owner evidence requires existing private
 	// custody; no receipt is trusted or repaired by this preflight.
 	owner := filepath.Join(namespace, key)
@@ -535,23 +545,24 @@ func childStageLock(ctx context.Context, namespace, key string) (*fileLock, erro
 		return nil, err
 	}
 	name := filepath.Join(locks, key+".lock")
+	// Existing custody is always opened without creation, including an active
+	// creator's published inode. No private candidate is needed on this path.
+	fd, err := syscall.Open(name, syscall.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	created := false
-	var fd int
-	var err error
-	if existing {
-		fd, err = syscall.Open(name, syscall.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
-	} else {
-		// O_EXCL prevents a second first caller from replacing the winner inode.
-		fd, err = syscall.Open(name, syscall.O_RDWR|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
-		created = err == nil
-		if errors.Is(err, syscall.EEXIST) {
+	var f *os.File
+	if errors.Is(err, os.ErrNotExist) && !existing {
+		f, created, err = childStagePublishLock(ctx, locks, key+".lock", boundary)
+		if err == nil && !created {
 			fd, err = syscall.Open(name, syscall.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 		}
 	}
 	if err != nil {
-		return nil, errors.New("owner lock refused")
+		return nil, errors.Join(errors.New("owner lock refused"), err)
 	}
-	f := os.NewFile(uintptr(fd), name)
+	if f == nil {
+		f = os.NewFile(uintptr(fd), name)
+	}
+	fd = int(f.Fd())
 	refuse := func(err error) (*fileLock, error) {
 		f.Close()
 		return nil, err
@@ -561,12 +572,20 @@ func childStageLock(ctx context.Context, namespace, key string) (*fileLock, erro
 		return refuse(errors.New("owner lock type/mode/size refused"))
 	}
 	for {
+		if err = ctx.Err(); err != nil {
+			return refuse(err)
+		}
 		err = syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
 			break
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
 			return refuse(err)
+		}
+		if boundary != nil {
+			if err = boundary("lock-waiting"); err != nil {
+				return refuse(err)
+			}
 		}
 		timer := time.NewTimer(fileLockRetryInterval)
 		select {
@@ -575,6 +594,14 @@ func childStageLock(ctx context.Context, namespace, key string) (*fileLock, erro
 			return refuse(ctx.Err())
 		case <-timer.C:
 		}
+	}
+	if created && boundary != nil {
+		if err = boundary("lock-published-held"); err != nil {
+			return refuse(err)
+		}
+	}
+	if err = ctx.Err(); err != nil {
+		return refuse(err)
 	}
 	// Recheck after waiting: another cooperating first caller may have
 	// published the owner. Never adopt a replaced lock inode.
@@ -606,6 +633,79 @@ func childStageLock(ctx context.Context, namespace, key string) (*fileLock, erro
 	}
 	return &fileLock{file: f}, nil
 }
+
+// childStagePublishLock publishes only an inode already exclusively locked by
+// this caller. The random O_EXCL private name is never a shared staging owner.
+// A crash can leave that private name, or a published ownerless canonical lock;
+// neither is adopted or garbage-collected. Healthy paths remove only their own
+// private name. A failure after publication leaves canonical custody intact.
+func childStagePublishLock(ctx context.Context, locks, name string, boundary func(string) error) (winner *os.File, created bool, err error) {
+	if err = childStagePrivateDirectory(locks); err != nil {
+		return nil, false, err
+	}
+	// CreateTemp uses bounded random names with O_CREAT|O_EXCL and mode0600;
+	// O_EXCL rejects any existing entry, including a symlink (no following).
+	private, err := os.CreateTemp(locks, ".private-lock-")
+	if err != nil {
+		return nil, false, err
+	}
+	path := private.Name()
+	info, statErr := private.Stat()
+	// Cleanup verifies the fresh path still names our descriptor, and cannot
+	// remove a canonical winner or a pre-existing private crash leftover.
+	defer func() {
+		current, pathErr := os.Lstat(path)
+		opened, openErr := private.Stat()
+		if pathErr != nil || openErr != nil || info == nil || !os.SameFile(info, current) || !os.SameFile(info, opened) {
+			err = errors.Join(err, errors.New("private lock cleanup identity refused"))
+		} else {
+			err = errors.Join(err, os.Remove(path), childStageSync(locks))
+		}
+		if err != nil || !created {
+			err = errors.Join(err, private.Close())
+			winner = nil
+		}
+	}()
+	if statErr != nil || info.Mode() != 0600 || info.Size() != 0 {
+		return nil, false, errors.New("private lock type/mode/size refused")
+	}
+	if err = syscall.Flock(int(private.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return nil, false, err
+	}
+	if err = private.Sync(); err != nil {
+		return nil, false, err
+	}
+	if boundary != nil {
+		if err = boundary("lock-private-held"); err != nil {
+			return nil, false, err
+		}
+	}
+	if err = ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	if err = childStagePrivateDirectory(locks); err != nil {
+		return nil, false, err
+	}
+	current, pathErr := os.Lstat(path)
+	opened, openErr := private.Stat()
+	if pathErr != nil || openErr != nil || current.Mode() != 0600 || current.Size() != 0 ||
+		opened.Mode() != 0600 || opened.Size() != 0 || !os.SameFile(info, current) || !os.SameFile(info, opened) {
+		return nil, false, errors.New("private lock publication identity refused")
+	}
+	// Hardlink is atomic and cannot replace the canonical name. The held
+	// descriptor remains locked across visibility, sync and owner creation.
+	if err = os.Link(path, filepath.Join(locks, name)); errors.Is(err, os.ErrExist) {
+		return nil, false, nil
+	} else if err != nil {
+		return nil, false, err
+	}
+	created = true
+	if err = childStageSync(locks); err != nil {
+		return nil, true, err
+	}
+	return private, true, nil
+}
+
 func childStageVerify(root *os.Root, name string, raw []byte) error {
 	info, err := root.Lstat(name)
 	if err != nil {
