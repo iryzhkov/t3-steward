@@ -163,8 +163,40 @@ func (s *CustodyStore) OpenArtifact(_ context.Context, object workerproto.Artifa
 	return file, nil
 }
 
+// ResultDurable checks the exact result receipt, including acknowledged results.
+// Corrupt or differently bound receipts are ambiguous, never "not published".
+func (s *CustodyStore) ResultDurable(pkg workerproto.ExecutionPackage) (bool, error) {
+	if pkg.CoordinatorID != s.config.CoordinatorID || pkg.CoordinatorEpoch < 1 || pkg.CoordinatorEpoch > s.config.CoordinatorEpoch ||
+		pkg.WorkerID != s.config.WorkerID || pkg.WorkerEpoch != s.config.WorkerEpoch {
+		return false, errors.New("result custody: execution package epoch binding mismatch")
+	}
+	id := "upload-" + pkg.Identity.AssignmentID + "-result"
+	// Outbox first: an acknowledgement can move it to acknowledged between
+	// these reads, but cannot make a durable receipt disappear from both.
+	for _, directory := range []string{"outbox", "acknowledged"} {
+		prior, err := s.loadPending(filepath.Join(s.config.Root, directory, id+".json"))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			// Existing custody is ambiguous. Even a validation size error
+			// here is not a new pre-publication size rejection.
+			return false, fmt.Errorf("result custody receipt is unreadable: %v", err)
+		}
+		if prior.Manifest.ID != id || prior.Manifest.AssignmentID != pkg.Identity.AssignmentID ||
+			prior.Manifest.AssignmentEpoch != pkg.Identity.AssignmentEpoch {
+			return false, errors.New("result custody: immutable assignment binding mismatch")
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 // PublishResult retains finalizer output, final message, and thread archive as one upload.
 func (s *CustodyStore) PublishResult(ctx context.Context, pkg workerproto.ExecutionPackage, result PublishedResult) error {
+	if durable, err := s.ResultDurable(pkg); err != nil || durable {
+		return err
+	}
 	objects := make([]workerproto.ArtifactObject, 0, len(result.Finalized.Artifacts)+2)
 	for _, artifact := range result.Finalized.Artifacts {
 		source, err := finalizedArtifactPath(result.Finalized, artifact)
@@ -435,7 +467,7 @@ func (s *CustodyStore) publishManifest(ctx context.Context, pkg workerproto.Exec
 			return err
 		}
 		if object.Size > s.config.MaxTotalBytes-total {
-			return errors.New("publish artifact: total size exceeds limit")
+			return workerproto.NewArtifactSizeError("aggregate", s.config.MaxTotalBytes, uint64(total)+uint64(object.Size), object)
 		}
 		total += object.Size
 	}
@@ -447,16 +479,12 @@ func (s *CustodyStore) publishManifest(ctx context.Context, pkg workerproto.Exec
 		if reflect.DeepEqual(prior.Manifest.Objects, objects) {
 			return nil
 		}
-		// A repeated collection of the same execution (after a lost settlement
-		// or a crash) re-captures the same workspace under fresh artifact
-		// identities. While the earlier upload is still waiting in the outbox
-		// the newer capture replaces it: it was taken later and is at least as
-		// complete. An acknowledged upload is never revisited.
-		slog.Warn("pending result replaced by a newer capture of the same execution",
-			"assignment", pkg.Identity.AssignmentID, "manifest", id)
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("publish artifact: replace pending upload: %w", err)
+		// First durable result wins, including a failed envelope. A replay
+		// must never replace success with a later failure or recapture.
+		if purpose == "result" {
+			return nil
 		}
+		return errors.New("publish artifact: manifest id replay changed immutable content")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

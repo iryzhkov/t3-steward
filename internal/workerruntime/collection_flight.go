@@ -333,6 +333,10 @@ func (r *Runtime) finishCollection(id string, record AttemptRecord, flight *coll
 	key := r.collectionFlightKey(record)
 	settleUnproven := errors.Is(flight.err, ErrSettleUnproven)
 	if flight.err != nil && !settleUnproven {
+		var permanent *permanentCollectionFailure
+		if errors.As(flight.err, &permanent) {
+			return r.failCollection(id, record, flight, permanent)
+		}
 		// Nothing was finalized, so a fresh collection may start on a later
 		// pass, as a deferred collection always has.
 		releaseCollection(key, flight)

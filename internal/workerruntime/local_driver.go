@@ -903,6 +903,20 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		// so the record leaves here for the same reason it does below.
 		return d.removeTaskIdentity(pkg, workspace)
 	}
+	if custody, ok := d.Publisher.(interface {
+		ResultDurable(workerproto.ExecutionPackage) (bool, error)
+	}); ok {
+		durable, err := custody.ResultDurable(pkg)
+		if err != nil {
+			return fmt.Errorf("inspect result custody: %w", err)
+		}
+		if durable {
+			if err := d.Settle(ctx, pkg); err != nil {
+				return fmt.Errorf("%w: %v", ErrSettleUnproven, err)
+			}
+			return nil
+		}
+	}
 	thread, err := d.T3.GetThread(ctx, pkg.Identity.ThreadID)
 	if err != nil {
 		return fmt.Errorf("collect thread state: %w", err)
@@ -998,6 +1012,10 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
 		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
 	}); err != nil {
+		var size *workerproto.ArtifactSizeError
+		if errors.As(err, &size) {
+			return &permanentCollectionFailure{size: size}
+		}
 		return fmt.Errorf("publish result custody: %w", err)
 	}
 	if thread == nil {
@@ -1127,7 +1145,7 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 	message := FailedMarker + "\n" + failure + "\n"
 	archive := []byte("{}")
 	thread, err := d.T3.GetThread(ctx, pkg.Identity.ThreadID)
-	if err == nil && thread != nil {
+	if !permanentCollectionIntent(failure) && err == nil && thread != nil {
 		if exported, exportErr := d.T3.ExportThread(ctx, pkg.Identity.ThreadID); exportErr == nil && len(exported) != 0 {
 			archive = exported
 		}
@@ -1140,7 +1158,7 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 	}
 	if err == nil && thread != nil {
 		if settleErr := d.T3.SettleThread(ctx, pkg.Identity.ThreadID, pkg.Identity.DispatchToken); settleErr != nil {
-			return fmt.Errorf("settle failed T3 thread: %w", settleErr)
+			return fmt.Errorf("%w: %v", ErrSettleUnproven, settleErr)
 		}
 	}
 	return nil

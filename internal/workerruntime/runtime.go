@@ -681,6 +681,10 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 		} else {
 			err = r.collect(ctx, id)
 		}
+	case PhaseFailed:
+		if permanentCollectionIntent(record.Failure) {
+			err = r.collect(ctx, id)
+		}
 	case PhaseUnknown:
 		err = r.recoverUnknown(ctx, id, record)
 	case PhaseCompleted:
@@ -699,7 +703,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			}
 			break
 		}
-		if now.Sub(record.UpdatedAt) >= r.config.Retention {
+		if !permanentCollectionIntent(record.Failure) && now.Sub(record.UpdatedAt) >= r.config.Retention {
 			err = r.prune(ctx, id, record)
 		}
 	}
@@ -1175,10 +1179,26 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 	case PhaseCompleted:
 		return nil
 	case PhaseFailed:
-		if err := r.driver.CollectFailure(ctx, record.Package.Package, record.WorkspacePath, record.Failure); err != nil {
-			return fmt.Errorf("publish failed result: %w", err)
+		publishErr := r.driver.CollectFailure(ctx, record.Package.Package, record.WorkspacePath, record.Failure)
+		settleUnproven := errors.Is(publishErr, ErrSettleUnproven)
+		if publishErr != nil && !settleUnproven {
+			return fmt.Errorf("publish failed result: %w", publishErr)
 		}
-		return r.markPhase(id, PhaseCompleted, record.Failure, record.WorkspacePath, record.ThreadID)
+		return r.journal.update(func(state *journalState) error {
+			current, ok := state.Attempts[id]
+			if !ok || current.Phase != PhaseFailed ||
+				current.Assignment.Epoch != record.Assignment.Epoch ||
+				current.Package.Package.Identity.AttemptID != record.Package.Package.Identity.AttemptID ||
+				current.Failure != record.Failure {
+				return nil
+			}
+			current.Phase = PhaseCompleted
+			current.SettlePending = settleUnproven
+			current.UpdatedAt = r.now()
+			state.Attempts[id] = current
+			state.Sequence++
+			return nil
+		})
 	case PhaseStopped, PhaseCollecting:
 	default:
 		return fmt.Errorf("collect is invalid in phase %q", record.Phase)
@@ -1539,6 +1559,12 @@ func observation(record AttemptRecord, now time.Time, detailed bool) domain.Work
 	case PhaseCompleted, PhaseFailed:
 		state = domain.AssignmentCompleted
 		control = domain.ControlStopped
+		if record.Phase == PhaseFailed && permanentCollectionIntent(record.Failure) {
+			// Failed intent is not yet failed custody. Keep the reservation
+			// until the bounded failed envelope is durable.
+			state = domain.AssignmentClaimed
+			control = domain.ControlRunning
+		}
 	case PhaseUnknown:
 		state = domain.AssignmentUnknown
 		control = domain.ControlStopped
