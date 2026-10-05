@@ -110,7 +110,7 @@ func ValidateArtifactObject(object ArtifactObject, maxBytes int64) error {
 	if object.Kind == "" || object.MediaType == "" {
 		return errors.New("artifact: kind and media type are required")
 	}
-	if object.Size < 0 || maxBytes <= 0 || object.Size > maxBytes {
+	if object.Size < 0 || maxBytes <= 0 {
 		return errors.New("artifact: invalid or excessive size")
 	}
 	if !validSHA256(object.SHA256) {
@@ -118,6 +118,9 @@ func ValidateArtifactObject(object ArtifactObject, maxBytes int64) error {
 	}
 	if object.ArchiveFormat != "" && object.ArchiveFormat != "tar" {
 		return errors.New("artifact: unsupported archive format")
+	}
+	if object.Size > maxBytes {
+		return NewArtifactSizeError("object", maxBytes, uint64(object.Size), object)
 	}
 	return nil
 }

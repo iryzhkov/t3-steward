@@ -1,10 +1,12 @@
 package workerruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -48,18 +50,18 @@ type containedCapture struct {
 }
 
 // privateJSON publishes a complete record without replacement. Equivalent replay
-// is permitted; a changed record under the same identity is never adopted.
+// must reprove durability; a changed record is never adopted.
 func privateJSON(path string, value any) error {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	if old, err := readBoundedRegularFile(path, 16<<20); err == nil {
-		if string(old) != string(data) {
-			return errors.New("contained receipt identity changed")
-		}
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
+	return privateBytes(path, data)
+}
+
+// privateBytes retains exact bytes, including JSON formatting and unknown fields.
+func privateBytes(path string, data []byte) error {
+	if err := syncPrivateFile(path, data); !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".receipt-")
@@ -76,12 +78,62 @@ func privateJSON(path string, value any) error {
 	if err = os.Link(tmp.Name(), path); err != nil {
 		return err
 	}
-	dir, err := os.Open(filepath.Dir(path))
+	return syncPrivateFile(path, data)
+}
+
+// syncPrivateFile proves the visible regular file's exact content and syncs it
+// and its directory. A prior post-link error cannot become replay authority.
+func syncPrivateFile(path string, expected []byte) error {
+	file, err := openRegular(path)
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
-	return dir.Sync()
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	current, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || !current.Mode().IsRegular() || !os.SameFile(info, current) {
+		return errors.New("private receipt file identity changed")
+	}
+	// Reject foreign sizes before reading. Compare in fixed-size chunks bounded
+	// by the supplied record, never by an unrelated publication size limit.
+	if info.Size() != int64(len(expected)) {
+		return errors.New("contained receipt identity changed")
+	}
+	var buffer [32 << 10]byte
+	for offset := 0; offset < len(expected); {
+		n := min(len(buffer), len(expected)-offset)
+		if _, err = io.ReadFull(file, buffer[:n]); err != nil {
+			return err
+		}
+		if !bytes.Equal(buffer[:n], expected[offset:offset+n]) {
+			return errors.New("contained receipt identity changed")
+		}
+		offset += n
+	}
+	// A concurrent append must not be adopted as an equal replay.
+	if n, err := file.Read(buffer[:1]); n != 0 || err != io.EOF {
+		return errors.Join(errors.New("contained receipt identity changed"), err)
+	}
+	if err = file.Sync(); err != nil {
+		return err
+	}
+	if err = syncDirectory(filepath.Dir(path)); err != nil {
+		return err
+	}
+	current, err = os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !current.Mode().IsRegular() || !os.SameFile(info, current) || current.Size() != int64(len(expected)) {
+		return errors.New("private receipt file identity changed")
+	}
+	return nil
 }
 
 func (p ContainedT3) preparation(pkg workerproto.ExecutionPackage) (containedPreparation, error) {

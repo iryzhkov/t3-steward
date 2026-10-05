@@ -1,3 +1,23 @@
+# Collection repair3 — expected-length recovery replay
+
+Authority jocasta:18633459f8d04a0c33d383c8796cb710@1. Start742639f540f3ccfd3ea38b3a4117f64e416d11ab/tree736e6e5c89e7532e0f14bd5eb894c610f4105eb2/soleparentfddd608a987b213fa3009f151bdb0c028fa290f7. Only the inventory-verified collection bundle was imported. Codex medium; no delegation/nested review/escalation. Final exact identity and custody evidence belong to handoff.md.
+
+R1: privateBytes accepted new snapshots larger than16MiB, but an existing equal recovery copy inherited a fixed16MiB ceiling. Existing replay now calls syncPrivateFile directly. That helper requires regular descriptor/path SameFile identity and exact expected size before reading, streams exact equality through a32KiB buffer bounded by supplied expected length, requires EOF after at most expected length plus one byte, fsyncs file and directory, then rechecks regular pathname/identity/expected size. New snapshots still sync temporary bytes and exclusively Link; no overwrite, chmod, delete or truncate is introduced. Publication per-object/aggregate limits and protocol/runtime binding policy stay unchanged. Equality memory overhead is32KiB beyond supplied expected bytes; a1TiB foreign file with tiny expected data refuses before content reads.
+
+Both FULL actual current review reports are retained verbatim under internal/workerruntime/repair3-evidence/. BOTH complete Go fences remain permanent, unchanged assertions except gofmt, including TestRepair2ReviewLargeRecoveryReplay. Every older portable test/report and custody/lifecycle guard stays unchanged. This document prepends the current contract to the complete exact pre-existing historical contract below, preserving all historical text.
+
+BEFORE probe exit1 reproduced312-byte small completion and18,175,644-byte large collecting/zero verification/publication/settlement despite restored permissions; original recovery bytes exact. AFTER both complete current probes ran together exactly once with exit0: small/large each complete with one verification/settlement/result receipt and exact retained bytes. New actual runtime sparse1TiB and same-length conflicting recovery controls refuse twice after journal reopen with zero effects; active bytes and foreign inode/size/mtime/prefix remain exact without reading the foreign tail. New empty/one/32KiB-boundary/over16MiB streamed replay and late same-length/length conflict controls preserve original bytes/inode/mtime.
+
+Shared privateJSON preparation/capture/preflight/verification callers retain package/worker/launch/directory/request/deadline/stopped-supervision guards. Writer refusal precedes their subsequent effects; existing independent bounded preparation/capture readers are unchanged. Required three-package collection/custody/importer/lifecycle/contained/preflight/verification selection passes0. Unreadable/symlink/binding/refused-directory/current-epoch/quiescence/pending+ack importer/settlement controls remain.
+
+Only one focused production repair was needed. The declared contract path was discovered to hold tracked older evidence after the first gate started. Its guarded preservation/current-prefix correction therefore receives documentation revalidation and a final exact-tree gate, with both actual invocations retained honestly. No Go source changed after the first gate. No source changes follow the final gate.
+
+Permissions fixtures are ordinary-user Linux refusal/restoration and local journal reopen, not EIO, power loss, OS restart or live provider/fleet qualification. Identity checks are point-in-time under existing private ownership/serialization; no hostile concurrent same-inode/ABA namespace guarantee is asserted. Producer remains PROVISIONAL until BOTH dependent independent exact-commit reviews accept. No self acceptance or whole M16/M17/provider-diversity claim. Source publication:none; release publication:none; deployment:none. Publishing deferred; schedules disabled/untouched; no trust/config/live/operator/provider effects.
+
+---
+
+The following historical contract remains complete and byte-exact as a suffix:
+
 # Parent coherence before cancellation disposition
 
 ## Repair3 — dispatch confirmation ambiguity
