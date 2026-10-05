@@ -63,12 +63,28 @@ func (l *reviewNodeLookup) field(n *yaml.Node, name string) (*yaml.Node, bool, e
 	var merge *yaml.Node
 	for i := 0; i < len(n.Content); i += 2 {
 		key := n.Content[i]
+		// Match yaml.v3's merge recognition on the authored key, before
+		// resolving aliases or decoding scalar identity.
+		if key.Kind == yaml.ScalarNode && key.Value == "<<" &&
+			(key.Tag == "" || key.Tag == "!" || key.ShortTag() == "!!merge") {
+			merge = n.Content[i+1]
+			continue
+		}
+		key, err = l.resolve(key)
+		if err != nil {
+			return nil, false, err
+		}
 		if key.Kind != yaml.ScalarNode {
 			return nil, false, fmt.Errorf("review member YAML requires scalar keys")
 		}
-		if key.Tag == "!!merge" {
-			merge = n.Content[i+1]
-		} else if key.Value == name {
+		// Struct field decoding uses a string destination, including decoded
+		// !!binary values. Use that same decoder rather than encoded Value;
+		// retain the downstream strict decoder for duplicates/unknown fields.
+		var decoded string
+		if err := key.Decode(&decoded); err != nil {
+			return nil, false, fmt.Errorf("review member YAML key: %w", err)
+		}
+		if decoded == name {
 			return n.Content[i+1], true, nil
 		}
 	}
