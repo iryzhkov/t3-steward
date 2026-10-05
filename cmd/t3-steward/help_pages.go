@@ -22,6 +22,9 @@ func init() {
 			if _, duplicate := helpPages[page.Path]; duplicate {
 				panic("duplicate help page for " + page.Path)
 			}
+			for _, rule := range agentGuidanceRules {
+				page.RuleIDs = append(page.RuleIDs, rule.ID)
+			}
 			helpPages[page.Path] = page
 		}
 	}

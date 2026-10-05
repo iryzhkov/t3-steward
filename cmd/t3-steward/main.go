@@ -120,7 +120,12 @@ func invoke(args []string, stderr io.Writer) int {
 		// keeps exit 1.
 		code = exitCodeFor(err)
 	}
-	spoolInvocation(args, code, err, time.Since(started))
+	// New help exports have a special instrumentation exemption, including
+	// export refusals. This pure argv guard is not an execution bypass;
+	// ordinary help and runtime commands retain their existing instrumentation.
+	if !isHelpExportInvocation(args) {
+		spoolInvocation(args, code, err, time.Since(started))
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 	}
@@ -187,7 +192,12 @@ func dispatch(args []string) error {
 	// family is the one exception: its help word also names a topic, as in
 	// "campaign help readiness", so it admits its own help through the same
 	// shared helper one level down.
-	if cmd != "campaign" {
+	if cmd == "campaign" {
+		// Preserve raw help provenance before the runtime config strip below.
+		if answered, err := admitCampaignHelp(os.Stdout, rest); answered || err != nil {
+			return err
+		}
+	} else {
 		if answered, err := admitHelp(os.Stdout, nil, args); answered || err != nil {
 			return err
 		}

@@ -81,6 +81,8 @@ type helpPage struct {
 	// the contract test fails when the parser stops accepting one, so the list
 	// cannot quietly rot either.
 	Undocumented []string
+	// RuleIDs bind source-owned guidance to both exports and full reference.
+	RuleIDs []string
 }
 
 // helpTokens are the three spellings of a help request.
@@ -222,6 +224,9 @@ func unknownHelpVerb(parent []string, verb string) error {
 // is what makes a help page that returns a transport failure impossible by
 // construction rather than by review.
 func admitHelp(out io.Writer, family []string, args []string) (bool, error) {
+	if handled, err := admitHelpExport(out, family, args); handled || err != nil {
+		return handled, err
+	}
 	full := false
 	clean := append([]string(nil), args...)
 	for i := 0; i+1 < len(clean); i++ {
@@ -393,7 +398,7 @@ var shortHelpOptions = regexp.MustCompile("--[a-z][a-z0-9-]*")
 
 // render writes the page. A page with a Body carries a reference this package
 // already holds in full and is printed as it stands.
-func (p helpPage) render() string {
+func (p helpPage) renderReference() string {
 	if p.Body != "" {
 		return p.Body
 	}
