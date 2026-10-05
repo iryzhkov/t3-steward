@@ -1030,13 +1030,16 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	return nil
 }
 
-// collectedTurn is the finished turn a collection read, kept so that a
-// collection started again after a worker restart judges the same turn.
+// collectedTurn retains the first terminal observation, including failed raw
+// evidence. Only a successful observation may witness repeated-turn recovery.
 type collectedTurn struct {
 	ThreadID string `json:"threadId"`
 	TurnID   string `json:"turnId"`
 	Message  string `json:"message"`
 	Archive  []byte `json:"archive"`
+	// Failed observations are recovery evidence, never successful-turn witnesses.
+	RecoveryOnly bool                           `json:"recoveryOnly,omitempty"`
+	Identity     *workerproto.ExecutionIdentity `json:"identity,omitempty"`
 }
 
 // settleCollectedTurn records the first finished turn a collection reads and
@@ -1051,7 +1054,16 @@ type collectedTurn struct {
 // only when the thread still reports that same turn: a turn that really did
 // not finish never had a snapshot to reuse.
 func (d *LocalDriver) settleCollectedTurn(pkg workerproto.ExecutionPackage, thread domain.Thread, message string, archive []byte, failure, pauseReason string) (string, []byte, string, error) {
-	if d.Config.RunsRoot == "" || thread.TurnID == "" {
+	if d.Config.RunsRoot == "" {
+		if failure != "" {
+			return "", nil, "", errors.New("record failed collected turn: missing recovery location")
+		}
+		return message, archive, failure, nil
+	}
+	if thread.TurnID == "" && failure == "" {
+		// Without a turn identity there is no reusable successful witness.
+		// Failed observations can still retain the exact absence as recovery
+		// evidence bound to this execution, without inventing a turn ID.
 		return message, archive, failure, nil
 	}
 	// The attempt directory, beside the workspace: Cleanup removes it with the
@@ -1059,31 +1071,50 @@ func (d *LocalDriver) settleCollectedTurn(pkg workerproto.ExecutionPackage, thre
 	path := filepath.Join(d.workspacePath(pkg), "collected-turn.json")
 	var recorded collectedTurn
 	found := false
-	if raw, err := os.ReadFile(path); err == nil {
+	if file, err := openRegular(path); err == nil {
+		raw, readErr := io.ReadAll(file)
+		if err := errors.Join(readErr, file.Close()); err != nil {
+			return "", nil, "", fmt.Errorf("read collected turn: %w", err)
+		}
 		if err := json.Unmarshal(raw, &recorded); err != nil {
 			return "", nil, "", fmt.Errorf("decode collected turn: %w", err)
+		}
+		if recorded.Identity != nil && *recorded.Identity != pkg.Identity {
+			return "", nil, "", errors.New("collected turn: immutable attempt binding mismatch")
 		}
 		found = recorded.ThreadID == pkg.Identity.ThreadID && recorded.TurnID == thread.TurnID
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", nil, "", fmt.Errorf("read collected turn: %w", err)
 	}
-	if failure == "" {
-		if found {
-			return message, archive, failure, nil
+	if found && recorded.RecoveryOnly && failure == "" {
+		// A genuinely successful later observation may become a witness, but
+		// the earlier failed evidence must survive that replacement. Never
+		// reinterpret its bytes as success or discard its recovery copy.
+		raw, err := json.Marshal(recorded)
+		if err != nil {
+			return "", nil, "", fmt.Errorf("retain failed collected turn: %w", err)
 		}
-		// A record of an earlier turn is superseded by this finished one.
+		if err := privateJSON(filepath.Join(filepath.Dir(path), "collected-turn-recovery-"+shortDigest(raw)+".json"), recorded); err != nil {
+			return "", nil, "", fmt.Errorf("retain failed collected turn: %w", err)
+		}
+		found = false
+	}
+	if !found {
+		// Retain the first terminal read even when it already failed, before
+		// finalization/publication can reject its original archive. A record
+		// of an earlier turn is superseded by this finished one.
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return "", nil, "", fmt.Errorf("replace collected turn: %w", err)
 		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return "", nil, "", fmt.Errorf("record collected turn: %w", err)
 		}
-		if err := privateJSON(path, collectedTurn{ThreadID: pkg.Identity.ThreadID, TurnID: thread.TurnID, Message: message, Archive: archive}); err != nil {
+		if err := privateJSON(path, collectedTurn{ThreadID: pkg.Identity.ThreadID, TurnID: thread.TurnID, Message: message, Archive: archive, RecoveryOnly: failure != "", Identity: &pkg.Identity}); err != nil {
 			return "", nil, "", fmt.Errorf("record collected turn: %w", err)
 		}
 		return message, archive, failure, nil
 	}
-	if !found {
+	if failure == "" || recorded.RecoveryOnly {
 		return message, archive, failure, nil
 	}
 	recordedFailure, err := backlog.ResultCompletionFailureWithPause(recorded.Archive, pkg.Identity.ThreadID, recorded.Message, pauseReason)
@@ -1156,7 +1187,10 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 	}); err != nil {
 		return fmt.Errorf("publish failed result custody: %w", err)
 	}
-	if err == nil && thread != nil {
+	if err != nil {
+		return fmt.Errorf("%w: observe thread: %v", ErrSettleUnproven, err)
+	}
+	if thread != nil && thread.SettledAt == nil {
 		if settleErr := d.T3.SettleThread(ctx, pkg.Identity.ThreadID, pkg.Identity.DispatchToken); settleErr != nil {
 			return fmt.Errorf("%w: %v", ErrSettleUnproven, settleErr)
 		}

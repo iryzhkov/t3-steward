@@ -187,6 +187,18 @@ func (s *CustodyStore) ResultDurable(pkg workerproto.ExecutionPackage) (bool, er
 			prior.Manifest.AssignmentEpoch != pkg.Identity.AssignmentEpoch {
 			return false, errors.New("result custody: immutable assignment binding mismatch")
 		}
+		if prior.Manifest.Direction != "upload" || prior.Manifest.CoordinatorEpoch < pkg.CoordinatorEpoch {
+			return false, errors.New("result custody: result upload authority mismatch")
+		}
+		// loadPending already proves the complete ordered object chain and
+		// record checksums. Result authority additionally fixes its endpoints,
+		// just as the coordinator importer does; a rehashed foreign chain is
+		// ambiguous custody, not permission to recapture or complete.
+		for _, record := range prior.Custody {
+			if record.From != "worker:"+pkg.WorkerID || record.To != "outbox:"+pkg.CoordinatorID {
+				return false, errors.New("result custody: result upload custody authority mismatch")
+			}
+		}
 		return true, nil
 	}
 	return false, nil
