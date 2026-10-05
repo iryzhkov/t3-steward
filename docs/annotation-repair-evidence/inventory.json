@@ -1,0 +1,42 @@
+[
+  {
+    "path": "candidate-contract.md",
+    "bytes": 6256,
+    "sha256": "c64586dcc153569ca4d3eaee620cb5ed5d19b42bc07e075b2af3dc21dee12361"
+  },
+  {
+    "path": "candidate-handoff.md",
+    "bytes": 9194,
+    "sha256": "e7a769dbdcd63594718aba996cfb31d6b0320095d8fc323881878df86b510785"
+  },
+  {
+    "path": "candidate.bundle",
+    "bytes": 522918,
+    "sha256": "683042ddbeb2df80be1c896756c6546469b383fd2ebb01706078b53b54c0ebb3"
+  },
+  {
+    "path": "historical-verification.log.xz",
+    "bytes": 431488,
+    "sha256": "4113221fd1540135e44cfc803a3ecdf2fe78a16cb314ba2dd2a30b511e4ed79d"
+  },
+  {
+    "path": "original-plan.md",
+    "bytes": 9398,
+    "sha256": "4f9abfb32a14910e6f6bdc4081d71c34b9345229fb49d9982c0271943bd90470"
+  },
+  {
+    "path": "plan.md",
+    "bytes": 6781,
+    "sha256": "bbd9ac49ed06216ff9f030f70b11d5ac435a93daaa980db951fee61fd98c0a27"
+  },
+  {
+    "path": "review-astra.md",
+    "bytes": 24466,
+    "sha256": "000cc2b7f017911024d92d1d71676c83f35646ca16529b611235c99f50daa956"
+  },
+  {
+    "path": "review-sol.md",
+    "bytes": 18501,
+    "sha256": "662b17bb5b35a91ff2cdc51a01d2d17b6bbe71029015940bfa2ef84738e05ff7"
+  }
+]
