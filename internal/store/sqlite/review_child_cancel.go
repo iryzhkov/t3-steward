@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"reflect"
 	"sort"
 	"strconv"
 	"time"
@@ -24,7 +23,7 @@ type ReviewChildCancellationResult struct {
 }
 
 // ReconcileReviewChildCancellation is a trusted internal boundary with no
-// runtime hook. Only original stored authority and checkpoint are accepted.
+// public API. Only original stored authority and checkpoint are accepted.
 // All observations and effects serialize under the SQLite writer.
 func (s *Store) ReconcileReviewChildCancellation(ctx context.Context, expected review.FrozenAuthority, allocated review.CheckpointAuthority) (ReviewChildCancellationResult, error) {
 	var zero ReviewChildCancellationResult
@@ -37,107 +36,13 @@ func (s *Store) ReconcileReviewChildCancellation(ctx context.Context, expected r
 		return zero, err
 	}
 	defer tx.Rollback()
-	f, cp, round, err := reviewChildAuthorityTx(ctx, tx, expected, allocated)
+	current, err := reviewChildCurrentTx(ctx, tx, expected, allocated, s.now())
 	if err != nil {
 		return zero, err
 	}
-	var authorityRun, authorityTask string
-	if err = tx.QueryRowContext(ctx, "SELECT run_id,task_id FROM coordinator_review_authorities WHERE id=?", f.Key()).Scan(&authorityRun, &authorityTask); err != nil {
-		return zero, err
-	}
-	if authorityRun != f.Parent.RunID || authorityTask != f.Parent.TaskID {
-		return zero, ErrReviewAuthorityIdentity
-	}
-	var indexedRoundRevision int64
-	if err = tx.QueryRowContext(ctx, "SELECT revision FROM coordinator_review_rounds WHERE id=?", cp.RoundID).Scan(&indexedRoundRevision); err != nil {
-		return zero, err
-	}
-	if round.Revision < 1 || indexedRoundRevision != round.Revision {
-		return zero, ErrReviewRoundConflict
-	}
-	receipt, err := loadReviewJSONTx[ReviewMaterialization](ctx, tx, "SELECT record FROM coordinator_review_materializations WHERE checkpoint_id=? AND workflow_id=? AND run_id=?", cp.Key(), review.ChildWorkflowID(cp), cp.RoundID)
-	if err != nil {
-		return zero, err
-	}
-	if !reflect.DeepEqual(receipt.Authority, f) || receipt.Checkpoint != cp ||
-		receipt.Graph.Run.ID != cp.RoundID || receipt.Graph.Workflow.ID != review.ChildWorkflowID(cp) {
-		return zero, ErrReviewMaterialization
-	}
-	if err = validateReviewChildTx(ctx, tx, receipt); err != nil {
-		return zero, err
-	}
-	if len(receipt.Graph.Tasks) == 0 || receipt.Graph.Tasks[0].Deadline == nil {
-		return zero, ErrReviewMaterialization
-	}
-	deadline := *receipt.Graph.Tasks[0].Deadline
-	if deadline.IsZero() || !round.Deadline.Equal(deadline) {
-		return zero, ErrReviewMaterialization
-	}
-	for _, task := range receipt.Graph.Tasks {
-		if task.Deadline == nil || !task.Deadline.Equal(deadline) {
-			return zero, ErrReviewMaterialization
-		}
-	}
-	parent, latest, err := reviewParentAttemptSnapshotTx(ctx, tx, f.Parent)
-	if err != nil {
-		return zero, err
-	}
-	owners, err := validateReviewChildAttemptsTx(ctx, tx, receipt.Graph)
-	if err != nil {
-		return zero, err
-	}
-	attempts := map[string]domain.Attempt{}
-	parentIDs := map[string]domain.Attempt{}
-	err = scanReviewChildRows[domain.Attempt](ctx, tx, "SELECT id,workflow_run_id,task_id,record FROM coordinator_attempts", 3, append(append([]string{}, reviewChildAttemptKeys...), "assignmentId", "threadId", "progress", "control", "completedAt"), func(i []string, a domain.Attempt) error {
-		if _, ok := owners[a.ID]; ok {
-			if !reviewCancellationExecutionCoherent(a) {
-				return ErrReviewMaterialization
-			}
-			attempts[a.ID] = a
-		}
-		if a.WorkflowRunID == f.Parent.RunID && a.TaskID == f.Parent.TaskID {
-			if !reviewCancellationExecutionCoherent(a) || a.SupervisionActivationID != "" || a.SupervisionActivationEpoch != 0 {
-				return ErrReviewAuthorityIdentity
-			}
-			parentIDs[a.ID] = a
-		}
-		return nil
-	})
-	if err != nil {
-		return zero, err
-	}
-	assignments, err := reviewCancellationAssignmentsTx(ctx, tx, attempts, parentIDs, f.Parent.AssignmentID)
-	if err != nil {
-		return zero, err
-	}
-	if err = reviewCancellationParentBindings(f.Parent, parentIDs, assignments); err != nil {
-		return zero, err
-	}
-	for _, assignment := range assignments {
-		owner, ok := attempts[assignment.AttemptID]
-		if !ok {
-			continue
-		}
-		if assignment.Project != "" && assignment.Project != f.Parent.Repository {
-			return zero, ErrReviewMaterialization
-		}
-		for _, task := range receipt.Graph.Tasks {
-			if task.ID != owner.TaskID {
-				continue
-			}
-			if len(task.Routes) != 1 || assignment.Route.ProviderInstanceID != task.Routes[0].ProviderInstanceID || assignment.Route.Model != task.Routes[0].Model {
-				return zero, ErrReviewMaterialization
-			}
-		}
-	}
-	reason, err := reviewCancellationParentTx(ctx, tx, f.Parent, parent, latest, assignments)
-	if err != nil {
-		return zero, err
-	}
+	cp, round := current.checkpoint, current.round
+	attempts, assignments, reason := current.attempts, current.assignments, current.reason
 	now := s.now().UTC()
-	if !deadline.After(now) {
-		reason = "review deadline reached"
-	}
 	if reason == "" {
 		return ReviewChildCancellationResult{Status: "no-action"}, tx.Commit()
 	}

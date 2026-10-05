@@ -16,6 +16,7 @@ import (
 // FleetCoordinatorStore is the durable boundary owned by the authoritative
 // coordinator. Worker transports never mutate coordinator state directly.
 type FleetCoordinatorStore interface {
+	ReconcileMaterializedReviewChildren(context.Context) error
 	CoordinatorEpoch(context.Context) (int64, error)
 	LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRecords, error)
 	LoadWorkerSnapshots(context.Context) ([]domain.WorkerSnapshot, error)
@@ -56,6 +57,9 @@ type WorkerDeliveryReport struct {
 func (c FleetCoordinator) PlanAndCommit(ctx context.Context, input PlanInput) (AssignmentPlanningReport, error) {
 	if c.Store == nil {
 		return AssignmentPlanningReport{}, errors.New("fleet coordinator store is required")
+	}
+	if err := c.Store.ReconcileMaterializedReviewChildren(ctx); err != nil {
+		return AssignmentPlanningReport{}, fmt.Errorf("automatic review cancellation before planning: %w", err)
 	}
 	now := input.Now
 	if now.IsZero() {
@@ -181,6 +185,9 @@ func (c FleetCoordinator) reconcileWorkerCommands(
 	}
 	if transport == nil {
 		return WorkerDeliveryReport{}, errors.New("worker command transport is required")
+	}
+	if err := c.Store.ReconcileMaterializedReviewChildren(ctx); err != nil {
+		return WorkerDeliveryReport{}, fmt.Errorf("automatic review cancellation before worker planning: %w", err)
 	}
 	now := c.now()
 	epoch, err := c.Store.CoordinatorEpoch(ctx)

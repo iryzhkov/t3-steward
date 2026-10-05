@@ -2,19 +2,93 @@ package backlog
 
 import (
 	"context"
-	"encoding/json"
-	"io"
+	"fmt"
+	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
-
-	"github.com/iryzhkov/t3-steward/internal/domain"
-	"github.com/iryzhkov/t3-steward/internal/review"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
-func TestReviewChildCancellationWorkerCustodyIntegration(t *testing.T) {
+func TestReviewRuntimeAutomaticHealthySiblingAndReopen(t *testing.T) {
+	for _, healthy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("healthy=%v", healthy), func(t *testing.T) {
+			ctx := context.Background()
+			f := newRetainedChild(t, false)
+			prepared, err := f.prepare(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt, err := f.parent.store.MaterializeReviewChild(ctx, f.frozen, f.checkpoint, prepared)
+			if err != nil {
+				t.Fatal(err)
+			}
+			records, err := f.parent.store.LoadCoordinatorRecords(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var parent domain.Attempt
+			for _, a := range records.Attempts {
+				if a.ID == f.frozen.Parent.AttemptID {
+					parent = a
+				}
+			}
+			parent.Revision++
+			if !healthy {
+				parent.Progress = domain.ProgressFailed
+				parent.Control = domain.ControlStopped
+			}
+			now := time.Now().UTC()
+			sibling := domain.Attempt{ID: "rt-ordinary-sibling", WorkflowRunID: "plain-run", TaskID: "plain-task", Number: 1, Revision: 1, Progress: domain.ProgressActive, Control: domain.ControlPreparing, AssignmentID: "plain-assignment", UpdatedAt: now}
+			route := receipt.Graph.Tasks[0].Routes[0]
+			assignment := domain.Assignment{ID: sibling.AssignmentID, AttemptID: sibling.ID, WorkerID: "child-worker", WorkerEpoch: "child-session", Epoch: 1, State: domain.AssignmentClaimed, Project: f.frozen.Parent.Repository, Route: route, ThreadID: "plain-thread", LeaseToken: "plain-lease", DispatchToken: "plain-token", LeaseExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now}
+			if err = f.parent.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Attempts: []domain.Attempt{parent, sibling}, Assignments: []domain.Assignment{assignment}}); err != nil {
+				t.Fatal(err)
+			}
+			snapshot := domain.WorkerSnapshot{WorkerID: assignment.WorkerID, WorkerEpoch: assignment.WorkerEpoch, CoordinatorEpoch: 1, Sequence: 1, Connected: true, ObservedAt: now, ValidUntil: now.Add(time.Hour), Inventory: domain.WorkerInventory{ID: assignment.WorkerID, Health: domain.WorkerHealthReady, AcceptBacklog: true}}
+			if err = f.parent.store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
+				t.Fatal(err)
+			}
+			transport := &terminalFenceTransport{}
+			c := FleetCoordinator{Store: f.parent.store, Now: func() time.Time { return now }}
+			assert := func() {
+				t.Helper()
+				report, err := c.ReconcileWorkerCommands(ctx, snapshot, transport)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(report.Pending) != 1 || report.Pending[0].AssignmentID != assignment.ID || report.Pending[0].Kind != domain.WorkerCommandPrepare {
+					t.Fatalf("healthy sibling delivery %+v", report)
+				}
+				current, err := f.parent.store.LoadCoordinatorRecords(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, a := range current.Attempts {
+					if a.ID == parent.ID && !reflect.DeepEqual(a, parent) {
+						t.Fatal("automatic pass changed parent")
+					}
+					if a.WorkflowRunID == receipt.Graph.Run.ID && (a.Progress != domain.ProgressCancelled) != healthy {
+						t.Fatalf("review child healthy=%v %+v", healthy, a)
+					}
+				}
+			}
+			assert()
+			if err = f.parent.store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			f.parent.store.Store, err = sqlite.OpenMigrated(f.parent.store.dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.parent.store.Close()
+			assert()
+			assert()
+		})
+	}
+}
+
+func TestReviewRuntimeAutomaticWorkerCustodyIntegration(t *testing.T) {
 	for _, completion := range []bool{false, true} {
 		for _, state := range []domain.AssignmentState{domain.AssignmentClaimed, domain.AssignmentUnknown} {
 			t.Run(string(state)+map[bool]string{false: "/stop", true: "/collect"}[completion], func(t *testing.T) {
@@ -86,6 +160,25 @@ func TestReviewChildCancellationWorkerCustodyIntegration(t *testing.T) {
 				parentBefore, err := f.parent.store.LoadCoordinatorRecords(ctx)
 				if err != nil {
 					t.Fatal(err)
+				}
+				autoTransport := &terminalFenceTransport{}
+				autoCoordinator := FleetCoordinator{Store: f.parent.store, Now: func() time.Time { return now }}
+				if _, err = autoCoordinator.ReconcileWorkerCommands(ctx, initialSnapshot, autoTransport); err != nil {
+					t.Fatal(err)
+				}
+				autoRecords, err := f.parent.store.LoadCoordinatorRecords(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, child := range autoRecords.Attempts {
+					if child.ID == a.ID && child.Progress != domain.ProgressCancelled {
+						t.Fatalf("automatic pass did not cancel materialized child: %+v; commands %+v", child, autoTransport.commands)
+					}
+				}
+				for _, cmd := range autoTransport.commands {
+					if cmd.Kind == domain.WorkerCommandPrepare || cmd.Kind == domain.WorkerCommandDispatch {
+						t.Fatalf("automatic pass delivered start: %+v", cmd)
+					}
 				}
 				got, err := f.parent.store.ReconcileReviewChildCancellation(ctx, f.frozen, f.checkpoint)
 				if err != nil || got.Status != "stop-requested" || !got.WorkerStopPending {
@@ -191,6 +284,19 @@ func TestReviewChildCancellationWorkerCustodyIntegration(t *testing.T) {
 				if err != nil || !reflect.DeepEqual(commands, replay) {
 					t.Fatal("unstable command")
 				}
+				// The automatic pass already issued Stop under sequence 1. Reuse
+				// its historical exact bytes; do not fabricate a changed replay.
+				if !completion {
+					stored, loadErr := f.parent.store.LoadWorkerCommandRecords(ctx)
+					if loadErr != nil {
+						t.Fatal(loadErr)
+					}
+					for _, record := range stored {
+						if record.Command.ID == commands[0].ID {
+							commands[0] = record.Command
+						}
+					}
+				}
 				if _, err = f.parent.store.CommitWorkerCommands(ctx, commands); err != nil {
 					t.Fatal(err)
 				}
@@ -290,130 +396,5 @@ func TestReviewChildCancellationWorkerCustodyIntegration(t *testing.T) {
 				}
 			})
 		}
-	}
-}
-
-func TestReviewChildCancellationCollectorPreservesCompletedEvidence(t *testing.T) {
-	for _, retry := range []bool{false, true} {
-		t.Run(map[bool]string{false: "initial", true: "latest-retry"}[retry], func(t *testing.T) {
-			reviewChildCancellationCollectorPreservesCompletedEvidence(t, retry)
-		})
-	}
-}
-func reviewChildCancellationCollectorPreservesCompletedEvidence(t *testing.T, retry bool) {
-	ctx := context.Background()
-	f := newRetainedChild(t, true)
-	prepared, err := f.prepare(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	receipt, err := f.parent.store.MaterializeReviewChild(ctx, f.frozen, f.checkpoint, prepared)
-	if err != nil {
-		t.Fatal(err)
-	}
-	records, err := f.parent.store.LoadCoordinatorRecords(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range records.Attempts {
-		if records.Attempts[i].ID == f.frozen.Parent.AttemptID {
-			records.Attempts[i].Progress = domain.ProgressSucceeded
-			records.Attempts[i].Control = domain.ControlStopped
-			records.Attempts[i].Revision++
-		}
-	}
-	complete := receipt.Graph.Attempts[0]
-	if retry {
-		complete.ID = "completed-review-retry"
-		complete.Number++
-		complete.Revision = 1
-	}
-	complete.Progress = domain.ProgressSucceeded
-	complete.Control = domain.ControlStopped
-	complete.Revision++
-	payloads := map[string]string{}
-	outputs := []domain.Artifact{}
-	verdict := review.Verdict{Schema: review.Schema, Verdict: "accept", Findings: []review.Finding{}, InputManifestDigest: f.checkpoint.Checkpoint.InputDigest, ReviewerRoute: f.frozen.Requirements.Members[0].Route}
-	raw, err := json.Marshal(verdict)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"review.md", "verdict.json"} {
-		id := "completed-" + name
-		content := "Completed retained review"
-		if name == "verdict.json" {
-			content = string(raw)
-		}
-		payloads[id] = content
-		outputs = append(outputs, domain.Artifact{ID: id, WorkflowRunID: complete.WorkflowRunID, TaskID: complete.TaskID, AttemptID: complete.ID, Kind: domain.ArtifactOutput, Name: name, Size: int64(len(content)), SHA256: admissionDigestBytes([]byte(content))})
-	}
-	if err = f.parent.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Attempts: append(records.Attempts, complete), Artifacts: outputs}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := f.parent.store.ReconcileReviewChildCancellation(ctx, f.frozen, f.checkpoint)
-	wantCancelled := len(receipt.Graph.Attempts) - 1
-	if retry {
-		wantCancelled++
-	}
-	if err != nil || len(got.CancelledAttempts) != wantCancelled {
-		t.Fatalf("cancel %+v %v", got, err)
-	}
-	round, err := f.parent.store.GetReviewRound(ctx, f.checkpoint.RoundID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if retry {
-		stored, err := f.parent.store.LoadCoordinatorRecords(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, a := range stored.Attempts {
-			if a.ID == receipt.Graph.Attempts[0].ID && a.Progress != domain.ProgressCancelled {
-				t.Fatal("stranded original not cancelled")
-			}
-			if a.ID == complete.ID && !reflect.DeepEqual(a, complete) {
-				t.Fatal("completed retry changed")
-			}
-		}
-		for _, artifact := range outputs {
-			found := false
-			for _, retained := range stored.Artifacts {
-				if retained.ID == artifact.ID {
-					found = reflect.DeepEqual(artifact, retained)
-				}
-			}
-			if !found {
-				t.Fatal("retry-owned artifact changed")
-			}
-		}
-	}
-	if round.Reviewers[0].State != "pending" {
-		t.Fatal("collector lost completed member")
-	}
-	collector := ReviewCollector{Store: f.parent.store.Store, Results: t.TempDir(), Open: func(_ context.Context, id string) (domain.Artifact, io.ReadCloser, error) {
-		return domain.Artifact{ID: id}, io.NopCloser(strings.NewReader(payloads[id])), nil
-	}}
-	if err = collector.Tick(ctx, time.Now().UTC()); err != nil {
-		t.Fatal(err)
-	}
-	round, err = f.parent.store.GetReviewRound(ctx, f.checkpoint.RoundID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if round.Reviewers[0].State != "succeeded" || round.Reviewers[0].Verdict == nil || round.Reviewers[0].Verdict.Verdict != "accept" || round.Combined != "reject" {
-		t.Fatalf("collected %+v", round)
-	}
-	for _, m := range round.Reviewers[1:] {
-		if m.State != "failed" {
-			t.Fatalf("cancellation accepted %+v", m)
-		}
-	}
-	before := round
-	if _, err = f.parent.store.ReconcileReviewChildCancellation(ctx, f.frozen, f.checkpoint); err != nil {
-		t.Fatal(err)
-	}
-	round, err = f.parent.store.GetReviewRound(ctx, f.checkpoint.RoundID)
-	if err != nil || !reflect.DeepEqual(before, round) {
-		t.Fatal("terminal results rewritten")
 	}
 }

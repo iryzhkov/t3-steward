@@ -153,6 +153,21 @@ func (s *Store) ApplyAdminCommand(ctx context.Context, application domain.AdminC
 			application.Attempt, application.RelatedAttempts, application.NewAttempt, application.WorkflowRun = nil, nil, nil, nil
 		}
 	}
+	if application.State == domain.AdminCommandApplied && command.Kind == domain.AdminCommandRetry && command.TargetType == domain.AdminTargetAttempt {
+		current, err := loadAttemptTx(ctx, tx, command.TargetID)
+		if err != nil {
+			return domain.AdminCommandDecision{}, err
+		}
+		refusal, err := s.reviewRetryAdmissionTx(ctx, tx, current, application.NewAttempt)
+		if err != nil {
+			return domain.AdminCommandDecision{}, err
+		}
+		if refusal != "" {
+			application.State = domain.AdminCommandRejected
+			application.Failure = "review retry refused: " + refusal
+			application.Attempt, application.RelatedAttempts, application.NewAttempt, application.WorkflowRun = nil, nil, nil, nil
+		}
+	}
 	currentTarget := (*domain.AdminTargetSnapshot)(nil)
 	expectedTarget := application.ExpectedTargetRevision
 	if expectedTarget != command.ExpectedRevision || target.Revision != expectedTarget {

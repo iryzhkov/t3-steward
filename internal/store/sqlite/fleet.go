@@ -411,6 +411,14 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 		skip := func(reason string) {
 			slog.Warn("assignment plan item skipped", "attempt", assignment.AttemptID, "reason", reason)
 		}
+		reviewRefusal, err := s.reviewAttemptAdmissionTx(ctx, tx, attempt)
+		if err != nil {
+			return nil, err
+		}
+		if reviewRefusal != "" {
+			skip(reviewRefusal)
+			continue
+		}
 		if attempt.AssignmentID != "" {
 			if attempt.AssignmentID != assignment.ID {
 				skip(fmt.Sprintf("attempt is already attached to assignment %q", attempt.AssignmentID))
@@ -605,6 +613,17 @@ func (s *Store) ClaimAssignment(ctx context.Context, request domain.AssignmentCl
 	if assignment.WorkerID != request.WorkerID || assignment.WorkerEpoch != request.WorkerEpoch ||
 		assignment.Epoch != request.AssignmentEpoch || assignment.LeaseToken != request.LeaseToken {
 		return domain.Assignment{}, fmt.Errorf("%w: identity mismatch for %q", ErrAssignmentClaim, request.AssignmentID)
+	}
+	currentAttempt, err := loadAttemptTx(ctx, tx, assignment.AttemptID)
+	if err != nil {
+		return domain.Assignment{}, err
+	}
+	refusal, err := s.reviewAttemptAdmissionTx(ctx, tx, currentAttempt)
+	if err != nil {
+		return domain.Assignment{}, err
+	}
+	if refusal != "" {
+		return domain.Assignment{}, fmt.Errorf("%w: %s", ErrAssignmentClaim, refusal)
 	}
 	if err := bindAssignmentUsageTx(ctx, tx, &assignment, request.ClaimedAt); err != nil {
 		return domain.Assignment{}, err

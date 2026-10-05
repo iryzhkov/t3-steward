@@ -440,6 +440,9 @@ func (p coordinatorPlanner) tick(ctx context.Context, quota backlog.QuotaBridgeR
 	if p.now != nil {
 		now = p.now().UTC()
 	}
+	if err := p.store.ReconcileMaterializedReviewChildren(ctx); err != nil {
+		return backlog.AssignmentPlanningReport{}, fmt.Errorf("automatic review cancellation before planning snapshot: %w", err)
+	}
 	// Publish DAG progress first so dependents of finished tasks are ready
 	// in the durable projection operators read, not only in planner memory.
 	if _, err := backlog.RepairCoordinatorState(ctx, p.store, now); err != nil {
@@ -676,6 +679,12 @@ func logTickFailure(ctx context.Context, logger *slog.Logger, msg string, err er
 }
 
 func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool) {
+	if store, ok := c.projection.(interface{ ReconcileMaterializedReviewChildren(context.Context) error }); ok {
+		if err := store.ReconcileMaterializedReviewChildren(ctx); err != nil {
+			logTickFailure(ctx, c.logger, "automatic review cancellation failed; boundary stopped", err)
+			return
+		}
+	}
 	if c.reviews != nil {
 		if err := c.reviews.Tick(ctx, time.Now().UTC()); err != nil {
 			logTickFailure(ctx, c.logger, "review collection failed", err)
