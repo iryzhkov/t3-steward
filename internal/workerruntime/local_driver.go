@@ -1033,8 +1033,11 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	result := PublishedResult{Finalized: finalized, FinalMessage: message, ThreadArchive: archive}
 	if finalized.Completion.Failure != "" {
 		// A failed attempt does not publish its declared commit, so its
-		// uncommitted work travels with the failure as a bundle.
-		result.Finalized.Completion.Failure = d.retainWorkInProgress(ctx, pkg, workspace, finalized.Completion.Failure)
+		// uncommitted work travels with the failure as a bundle. The
+		// coordinator derives this failure from the uploaded evidence, so the
+		// bundle artifact itself is the record; a bundle that is not retained
+		// or does not fit the upload is named in the worker log.
+		d.retainWorkInProgress(ctx, pkg, workspace)
 		result.WorkInProgressBundle = d.workInProgressBundle(pkg, result)
 	}
 	if err := d.Publisher.PublishResult(ctx, pkg, result); err != nil {
@@ -1203,7 +1206,7 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 	if strings.TrimSpace(failure) == "" {
 		failure = "attempt failed on the worker"
 	}
-	failure = d.retainWorkInProgress(ctx, pkg, workspace, failure)
+	failure = withWorkInProgress(failure, d.retainWorkInProgress(ctx, pkg, workspace))
 	message := FailedMarker + "\n" + failure + "\n"
 	archive := []byte("{}")
 	thread, err := d.T3.GetThread(ctx, pkg.Identity.ThreadID)

@@ -156,24 +156,34 @@ func (d *LocalDriver) SnapshotWorkInProgress(ctx context.Context, pkg workerprot
 }
 
 // retainWorkInProgress keeps the uncommitted work of a failing attempt and
-// returns the failure text naming what was kept. A bundle an earlier step of
-// the same failure already retained, such as the live-commands check, is
-// reused rather than snapshotted again, and is not named twice. A clean tree,
-// or a task with no declared commit, leaves the failure as it is; a snapshot
-// that fails is named but never stops the failure from publishing.
-func (d *LocalDriver) retainWorkInProgress(ctx context.Context, pkg workerproto.ExecutionPackage, workspace, failure string) string {
+// describes what was kept, or nothing for a clean tree or a task with no
+// declared commit. A bundle an earlier step of the same failure already
+// retained, such as the live-commands check or a collection whose publication
+// did not complete, is reused rather than snapshotted again. A snapshot that
+// fails is described but never stops the failure from publishing.
+func (d *LocalDriver) retainWorkInProgress(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) string {
 	if d.Config.DryRun || workspace == "" || !backlog.DeclaresAnyCommit(pkg.Outputs) {
-		return failure
+		return ""
 	}
-	if _, err := os.Lstat(filepath.Join(d.workspacePath(pkg), WorkInProgressBundleFile)); err == nil {
-		return failure
+	path := filepath.Join(d.workspacePath(pkg), WorkInProgressBundleFile)
+	if info, err := os.Lstat(path); err == nil {
+		return fmt.Sprintf("wip.bundle retained: %s, %d bytes", path, info.Size())
 	}
 	retained, err := d.SnapshotWorkInProgress(ctx, pkg, workspace)
 	if err != nil {
 		d.logger().Warn("uncommitted work of the failed attempt is not retained", "attempt", pkg.Identity.AttemptID, "error", err)
-		retained = "wip.bundle not retained: " + err.Error()
+		return "wip.bundle not retained: " + err.Error()
 	}
-	if !strings.HasPrefix(retained, "wip.bundle") || strings.Contains(failure, WorkInProgressBundleFile) {
+	if !strings.HasPrefix(retained, "wip.bundle") {
+		return ""
+	}
+	return retained
+}
+
+// withWorkInProgress names what retainWorkInProgress kept in a failure text
+// that does not already say the bundle was retained.
+func withWorkInProgress(failure, retained string) string {
+	if retained == "" || strings.Contains(failure, "wip.bundle retained") {
 		return failure
 	}
 	return failure + "; " + retained

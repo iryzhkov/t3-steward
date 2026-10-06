@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -215,11 +216,16 @@ func (t *processTable) liveCommandRoot(pid int) (int, bool) {
 			return current, true
 		case len(path) >= 2 && t.commandShell(path[len(path)-2]):
 			// current is the provider and the path runs through a command
-			// shell it started; the command is the shell's child.
-			if len(path) >= 3 {
-				return path[len(path)-3], true
+			// shell it started; the command is the shell's child. Subshells
+			// the shell forked for a pipeline or a group carry its own
+			// command line, which names nothing, so the command below them
+			// is reported where there is one.
+			shell := t.args(path[len(path)-2])
+			command := len(path) - 2
+			for command > 0 && (command == len(path)-2 || slices.Equal(t.args(path[command]), shell)) {
+				command--
 			}
-			return path[len(path)-2], true
+			return path[command], true
 		}
 		return 0, false
 	}

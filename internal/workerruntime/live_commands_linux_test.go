@@ -252,7 +252,9 @@ func TestLiveCommandsSessionHelper(t *testing.T) {
 	case "provider":
 		mcp := exec.Command("sleep", "302")
 		commandFile := pidFile + ".command"
-		tool := exec.Command("sh", "-c", `sleep 303 & echo $! > "$1"; wait`, "sh", commandFile)
+		// The group runs in a subshell that carries the tool shell's own
+		// command line, as a pipeline stage does.
+		tool := exec.Command("sh", "-c", `(sleep 304; true) & sleep 303 & echo $! > "$1"; wait`, "sh", commandFile)
 		for _, child := range []*exec.Cmd{mcp, tool} {
 			child.Dir = workspace
 			if err := child.Start(); err != nil {
@@ -281,8 +283,9 @@ func TestLiveCommandsFindsACommandTheProviderStillTracks(t *testing.T) {
 	workspace := t.TempDir()
 	pidFile := filepath.Join(t.TempDir(), "pids")
 	// The launching shell exits at once, so the server is not this test
-	// process's descendant, as the T3 server is not the worker's.
-	launcher := exec.Command("sh", "-c", `"$1" -test.run='^TestLiveCommandsSessionHelper$' >/dev/null 2>&1 &`, "launcher", os.Args[0])
+	// process's descendant, as the T3 server is not the worker's. The server
+	// leads its own process group, so the cleanup ends every helper.
+	launcher := exec.Command("sh", "-c", `setsid "$1" -test.run='^TestLiveCommandsSessionHelper$' >/dev/null 2>&1 &`, "launcher", os.Args[0])
 	launcher.Dir = t.TempDir()
 	launcher.Env = append(os.Environ(), liveCommandsHelperRole+"=server",
 		"T3_STEWARD_LIVE_COMMANDS_WORKSPACE="+workspace, "T3_STEWARD_LIVE_COMMANDS_PIDS="+pidFile)
@@ -291,12 +294,27 @@ func TestLiveCommandsFindsACommandTheProviderStillTracks(t *testing.T) {
 	}
 	pids := waitForPIDs(t, pidFile, 5)
 	server, provider, mcp, shell, command := pids[0], pids[1], pids[2], pids[3], pids[4]
+	t.Cleanup(func() { _ = syscall.Kill(-server, syscall.SIGKILL) })
 	for _, pid := range []int{provider, mcp, shell, command} {
 		waitInWorkspace(t, pid, workspace)
 	}
-	report, err := scanLiveCommandsIn("linux", "/proc", os.Getpid(), workspace)
-	if err != nil {
-		t.Fatal(err)
+	// Both sleeps may still be replacing the shell's program; the scan is
+	// repeated until both run, and its last answer is checked.
+	var report LiveCommandReport
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var err error
+		if report, err = scanLiveCommandsIn("linux", "/proc", os.Getpid(), workspace); err != nil {
+			t.Fatal(err)
+		}
+		sleeps := 0
+		for _, found := range report.Commands {
+			if strings.HasPrefix(found.Command, "sleep 30") {
+				sleeps++
+			}
+		}
+		if sleeps == 2 || time.Now().After(deadline) {
+			break
+		}
 	}
 	if !reports(report, command) {
 		t.Fatalf("the provider-tracked command %d was not reported: %+v", command, report)
@@ -306,8 +324,9 @@ func TestLiveCommandsFindsACommandTheProviderStillTracks(t *testing.T) {
 			t.Fatalf("the %s %d was reported: %+v", name, pid, report)
 		}
 	}
-	if len(report.Commands) != 1 || !strings.Contains(report.Commands[0].Command, "sleep 303") {
-		t.Fatalf("report = %+v, want only the tracked command", report)
+	if len(report.Commands) != 2 || report.Commands[0].Command == report.Commands[1].Command ||
+		!strings.HasPrefix(report.Commands[0].Command, "sleep 30") || !strings.HasPrefix(report.Commands[1].Command, "sleep 30") {
+		t.Fatalf("report = %+v, want the two tracked sleeps and neither shell", report)
 	}
 	// The driver's turn-end check, which holds the attempt instead of
 	// collecting it, sees the same command.

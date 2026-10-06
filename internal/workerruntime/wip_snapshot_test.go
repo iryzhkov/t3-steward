@@ -245,6 +245,35 @@ func TestLiveCommandsFailureReusesItsSnapshot(t *testing.T) {
 	}
 }
 
+// A collection of the failure that is repeated, because its publication did
+// not complete, finds the bundle the first one retained and still names it,
+// once, even after an earlier snapshot attempt said none was retained.
+func TestRepeatedFailureCollectionNamesTheRetainedBundle(t *testing.T) {
+	for _, failure := range []string{
+		"preparation failed 3 times",
+		LiveCommandsFailure + ": 1 background command still running after 2 nudges: pid 1 sleep; wip.bundle not retained: git status: exit 128",
+	} {
+		f := newWIPFixture(t, commitOutputs)
+		writeTestFile(t, filepath.Join(f.workspace, "c.txt"), "new\n")
+		if _, err := f.driver.SnapshotWorkInProgress(context.Background(), f.pkg, f.workspace); err != nil {
+			t.Fatal(err)
+		}
+		custody := &capturingCustody{CustodyStore: testCustodyStore(t, filepath.Join(t.TempDir(), "custody"), func() time.Time { return runtimeTestNow })}
+		f.driver.Publisher = custody
+		f.driver.T3 = &recordingT3{thread: &domain.Thread{ID: "thread-1", TurnID: "turn-3", TurnState: "completed"}, archive: []byte("{}")}
+		if err := f.driver.CollectFailure(context.Background(), f.pkg, f.workspace, failure); err != nil {
+			t.Fatal(err)
+		}
+		if !uploadsWorkInProgressBundle(t, custody.CustodyStore) {
+			t.Fatal("the retained bundle was not uploaded")
+		}
+		got := custody.results[0].FinalMessage
+		if !strings.Contains(got, failure+"; wip.bundle retained: ") || strings.Count(got, "wip.bundle retained") != 1 {
+			t.Fatalf("final message = %q", got)
+		}
+	}
+}
+
 // The ordinary collection of a turn that ended with no command running, but
 // with dirty work and a missing declared output, fails the attempt. That
 // failure keeps the uncommitted work too: the declared commit is not
@@ -286,9 +315,6 @@ func TestOrdinaryDirtyFailureUploadsTheWorkInProgressBundle(t *testing.T) {
 		}
 		if found := uploadsWorkInProgressBundle(t, custody.CustodyStore); found != dirty {
 			t.Fatalf("dirty %v: bundle uploaded = %v; failure %q", dirty, found, failure)
-		}
-		if strings.Contains(failure, "wip.bundle retained") != dirty {
-			t.Fatalf("dirty %v: failure = %q", dirty, failure)
 		}
 		if !dirty {
 			continue
