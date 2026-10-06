@@ -139,12 +139,16 @@ func (c reviewTaskCLI) gitOut(ctx context.Context, args ...string) (string, erro
 // clientRefusal is a refusal of this command itself: the checkpoint could not
 // be published, so the coordinator was never asked.
 func clientRefusal(checkpoint string, code domain.ReviewCheckpointCode, format string, args ...any) error {
-	return reviewTaskRefusal(checkpoint, domain.ReviewCheckpointRefusal{Code: code, Reason: fmt.Sprintf(format, args...)}, 1)
+	return reviewTaskRefusal(checkpoint, domain.ReviewCheckpointRefusal{Code: code, Reason: fmt.Sprintf(format, args...)}, 1, "")
 }
 
 // reviewTaskRefusal prints a structured refusal in plain language with the
 // next action, and exits with whether repeating can help.
-func reviewTaskRefusal(checkpoint string, refusal domain.ReviewCheckpointRefusal, code int) error {
+//
+// fresh, when set, is an unused checkpoint ID. A refusal that only a new
+// checkpoint gets past names it, because the default ID would choose the
+// refused checkpoint again while HEAD is unchanged.
+func reviewTaskRefusal(checkpoint string, refusal domain.ReviewCheckpointRefusal, code int, fresh string) error {
 	if code == 0 {
 		code = reviewTaskExitRefused
 		if refusal.Retryable {
@@ -158,16 +162,23 @@ func reviewTaskRefusal(checkpoint string, refusal domain.ReviewCheckpointRefusal
 	if checkpoint == "" {
 		checkpoint = "(none)"
 	}
+	next := reviewTaskNextStep(refusal)
+	switch refusal.Code {
+	case domain.ReviewCheckpointHeadConflict, domain.ReviewCheckpointHeadMismatch, domain.ReviewCheckpointDeadlineExpired:
+		if fresh != "" {
+			next += " To review HEAD as a new checkpoint: t3-steward review --task current --checkpoint " + fresh
+		}
+	}
 	return exitCodeError{code: code, error: fmt.Errorf("review checkpoint %s refused (%s, %s): %s\nnext: %s",
-		checkpoint, refusal.Code, retry, refusal.Reason, reviewTaskNextStep(refusal))}
+		checkpoint, refusal.Code, retry, refusal.Reason, next)}
 }
 
 // checkpointCommandError prints a coordinator refusal as a refusal, and passes
 // anything else through.
-func checkpointCommandError(checkpoint string, err error) error {
+func checkpointCommandError(checkpoint, fresh string, err error) error {
 	var refusal *domain.ReviewCheckpointRefusal
 	if errors.As(err, &refusal) {
-		return reviewTaskRefusal(checkpoint, *refusal, 0)
+		return reviewTaskRefusal(checkpoint, *refusal, 0, fresh)
 	}
 	return err
 }
@@ -183,13 +194,13 @@ func reviewTaskNextStep(refusal domain.ReviewCheckpointRefusal) string {
 	case domain.ReviewCheckpointAdmission:
 		return "the manifest review: declaration could not be admitted for this attempt; report the reason above, an in-task review cannot run until it is fixed."
 	case domain.ReviewCheckpointHeadConflict:
-		return "this checkpoint ID already reviews a different head; run the command again without --checkpoint to push the new work to a new checkpoint ID."
+		return "this checkpoint ID already reviews a different head; push the new work to a new checkpoint ID."
 	case domain.ReviewCheckpointHeadMismatch:
-		return "the checkpoint branch moved after it was pushed; make sure nothing else pushes to it, then run the command again without --checkpoint."
+		return "the checkpoint branch moved after it was pushed; make sure nothing else pushes to it, and use a new checkpoint ID."
 	case domain.ReviewCheckpointRoundLimit:
 		return "this task has used every review round its review: declaration allows; report the open findings instead of opening another round."
 	case domain.ReviewCheckpointDeadlineExpired:
-		return "this checkpoint's review deadline has passed; run the command again without --checkpoint to open a new checkpoint."
+		return "this checkpoint's review deadline has passed; use a new checkpoint ID."
 	case domain.ReviewCheckpointWorkerSupport, domain.ReviewCheckpointUnavailable:
 		return "the coordinator or the task's worker cannot open in-task review rounds; report this, and do not end the turn waiting for a review."
 	case domain.ReviewCheckpointPushRefused:
@@ -244,13 +255,18 @@ func nextCheckpointID(branches map[string]string, head string) string {
 	return "cp-" + strconv.Itoa(last+1)
 }
 
+// unusedCheckpointID is the next cp-N no branch of this task has used.
+func unusedCheckpointID(branches map[string]string) string {
+	return nextCheckpointID(branches, "")
+}
+
 // publish pushes head to the checkpoint branch without ever moving it: a
 // branch that does not exist is created, one that already names head is left
 // alone, and one that names anything else is refused.
 func (c reviewTaskCLI) publish(ctx context.Context, checkpoint, branch, head, pushURL string, existing map[string]string) error {
 	conflict := func(object string) error {
 		return reviewTaskRefusal(checkpoint, domain.ReviewCheckpointRefusal{Code: domain.ReviewCheckpointHeadConflict,
-			Reason: fmt.Sprintf("%s already names %s on the project remote, not this workspace's HEAD %s; a checkpoint branch is never moved, so commit the new work to a new checkpoint", branch, object, head)}, 0)
+			Reason: fmt.Sprintf("%s already names %s on the project remote, not this workspace's HEAD %s; a checkpoint branch is never moved", branch, object, head)}, 0, unusedCheckpointID(existing))
 	}
 	if object, ok := existing[checkpoint]; ok {
 		if object != head {
@@ -264,8 +280,12 @@ func (c reviewTaskCLI) publish(ctx context.Context, checkpoint, branch, head, pu
 	if err == nil {
 		return nil
 	}
+	// The remote may have taken the push and lost the answer, or another push
+	// may have won the race; what the branch names now decides which.
 	if object, lsErr := c.gitOut(ctx, "ls-remote", "--refs", "--", pushURL, branch); lsErr == nil {
-		if fields := strings.Fields(object); len(fields) == 2 && fields[0] != head {
+		if fields := strings.Fields(object); len(fields) == 2 && fields[0] == head {
+			return nil
+		} else if len(fields) == 2 {
 			return conflict(fields[0])
 		}
 	}
@@ -317,9 +337,10 @@ func (c reviewTaskCLI) run(ctx context.Context, a reviewTaskArgs) error {
 	if opened.Checkpoint == nil {
 		return errors.New("the coordinator returned no review checkpoint answer; it predates in-task review rounds")
 	}
+	fresh := unusedCheckpointID(branches)
 	round, err := opened.Checkpoint.Outcome()
 	if err != nil {
-		return checkpointCommandError(checkpoint, err)
+		return checkpointCommandError(checkpoint, fresh, err)
 	}
 	parkRequest := request
 	parked, err := c.client.NodeWait(ctx, backlogadmin.NodeWaitOperation{Action: backlogadmin.ReviewCheckpointWaitAction, Checkpoint: &parkRequest})
@@ -331,7 +352,7 @@ func (c reviewTaskCLI) run(ctx context.Context, a reviewTaskArgs) error {
 	}
 	park, err := parked.CheckpointWait.Outcome()
 	if err != nil {
-		return checkpointCommandError(checkpoint, err)
+		return checkpointCommandError(checkpoint, fresh, err)
 	}
 	if park.Parked() {
 		return c.reportParked(round, park, a.asJSON)

@@ -22,7 +22,8 @@ type ReviewParentWaitResult struct {
 
 // WaitReviewParent is a trusted internal lifecycle boundary. The issued authority
 // and allocated checkpoint must be the originals; no policy is resolved here.
-// No public submission, CLI, completion gate or production caller uses it.
+// Its production caller is the coordinator's review-checkpoint-wait operation,
+// which fences the calling task and resolves both from durable records.
 func (s *Store) WaitReviewParent(ctx context.Context, expected review.FrozenAuthority, allocated review.CheckpointAuthority) (ReviewParentWaitResult, error) {
 	var zero ReviewParentWaitResult
 	expected, err := expected.Canonical()

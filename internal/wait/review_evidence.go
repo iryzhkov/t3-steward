@@ -188,19 +188,31 @@ func replaceWorkspaceFile(directory, name string, content []byte) error {
 
 // excludeFromGit adds one pattern to .git/info/exclude of a plain checkout, so
 // a task that commits everything does not commit the steward's files. It is
-// best effort, like the ask answer's exclusion.
+// best effort: a failure leaves a file the task may commit, which is visible.
+//
+// The steward writes here outside any sandbox, into a directory the task
+// controls, so nothing on the way may be a link: .git and .git/info must be
+// real directories, exclude a regular file, and the new content is renamed
+// into place rather than written through whatever the name points at.
 func excludeFromGit(workspace, line string) {
 	gitDir := filepath.Join(workspace, ".git")
-	if info, err := os.Lstat(gitDir); err != nil || !info.IsDir() {
+	if err := realDirectory(gitDir, false); err != nil {
 		return
 	}
 	info := filepath.Join(gitDir, "info")
-	if err := os.MkdirAll(info, 0o700); err != nil {
+	if err := realDirectory(info, true); err != nil {
 		return
 	}
 	exclude := filepath.Join(info, "exclude")
-	current, err := os.ReadFile(exclude)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	var current []byte
+	if existing, err := os.Lstat(exclude); err == nil {
+		if !existing.Mode().IsRegular() {
+			return
+		}
+		if current, err = os.ReadFile(exclude); err != nil {
+			return
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return
 	}
 	for _, existing := range strings.Split(string(current), "\n") {
@@ -212,7 +224,7 @@ func excludeFromGit(workspace, line string) {
 	if updated != "" && !strings.HasSuffix(updated, "\n") {
 		updated += "\n"
 	}
-	_ = os.WriteFile(exclude, []byte(updated+line+"\n"), 0o600)
+	_ = replaceWorkspaceFile(info, "exclude", []byte(updated+line+"\n"))
 }
 
 // Text renders the evidence for an agent: the combined verdict and blocking
@@ -274,7 +286,9 @@ func (r *Runner) reviewWakeEvidence(ctx context.Context, store TaskWaitStore, wa
 		return "\n" + evidence.Text(), false
 	}
 	if !w.Deadline.IsZero() && now.Before(w.Deadline.Add(reviewCollectionGrace)) {
-		r.log.Debug("review wake held until the round is collected", "wait", w.ID, "round", roundID, "err", err)
+		// The attempt has already resumed, so this hold keeps a resumed turn
+		// from starting; it is reported at info level for that reason.
+		r.log.Info("review wake held until the round is collected", "wait", w.ID, "round", roundID, "err", err)
 		return "", true
 	}
 	reason := "its reviews were not collected"

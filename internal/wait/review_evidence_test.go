@@ -116,6 +116,47 @@ func TestReviewParentWakeNamesEvidenceItCouldNotWrite(t *testing.T) {
 	}
 }
 
+// Self-review P2-2: the git exclusion is written outside any sandbox into a
+// directory the task controls, so a planted link at .git/info or at its
+// exclude file must not redirect the write, for review evidence or an answer.
+func TestGitExclusionNeverWritesThroughALink(t *testing.T) {
+	round := review.Round{ID: "round-1", Reviewers: []review.Reviewer{{ID: "a", State: "succeeded", ReviewMD: "ok\n"}}}
+	for _, planted := range []string{"exclude", "info"} {
+		t.Run(planted, func(t *testing.T) {
+			workspace, outside := t.TempDir(), t.TempDir()
+			target := filepath.Join(outside, "victim")
+			if err := os.WriteFile(target, []byte("keep\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(workspace, ".git"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if planted == "exclude" {
+				if err := os.Mkdir(filepath.Join(workspace, ".git", "info"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, filepath.Join(workspace, ".git", "info", "exclude")); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Symlink(outside, filepath.Join(workspace, ".git", "info")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := WriteReviewEvidence(workspace, round); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeAskAnswerFile(workspace, domain.AskAnswer{}); err != nil {
+				t.Fatal(err)
+			}
+			if raw, _ := os.ReadFile(target); string(raw) != "keep\n" {
+				t.Fatalf("the exclusion was written through a link: %q", raw)
+			}
+			if entries, _ := os.ReadDir(outside); len(entries) != 1 {
+				t.Fatalf("files appeared outside the workspace: %v", entries)
+			}
+		})
+	}
+}
+
 // A round that is never collected cannot hold a resumed turn forever: past
 // the wait's deadline the wake goes out and says where to look.
 func TestReviewParentWakeStopsHoldingAfterTheDeadline(t *testing.T) {

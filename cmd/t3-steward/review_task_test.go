@@ -175,10 +175,16 @@ func reviewVerdictJSON(t *testing.T, round review.Round, route string, blocking 
 	return raw
 }
 
-// finishRound ends every reviewer task of a round's child run and records
-// each reviewer's documents, as the coordinator's collector does from the
-// retained outputs. blocking maps a member ID to its blocking finding count.
+// finishRound ends a round's child run and collects its reviews.
 func (h *reviewCheckpointHarness) finishRound(t *testing.T, roundID string, blocking map[string]int) {
+	t.Helper()
+	h.endChildRun(t, roundID)
+	h.collectRound(t, roundID, blocking)
+}
+
+// endChildRun ends every reviewer task of a round's child run, so its sink
+// settles, without collecting any review.
+func (h *reviewCheckpointHarness) endChildRun(t *testing.T, roundID string) {
 	t.Helper()
 	ctx := context.Background()
 	records, err := h.db.LoadCoordinatorRecords(ctx)
@@ -209,6 +215,14 @@ func (h *reviewCheckpointHarness) finishRound(t *testing.T, roundID string, bloc
 	if err := h.db.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{run}, Attempts: attempts}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// collectRound records each reviewer's documents, as the coordinator's
+// collector does from the retained outputs. blocking maps a member ID to its
+// blocking finding count.
+func (h *reviewCheckpointHarness) collectRound(t *testing.T, roundID string, blocking map[string]int) {
+	t.Helper()
+	ctx := context.Background()
 	round, err := h.db.GetReviewRound(ctx, roundID)
 	if err != nil {
 		t.Fatal(err)
@@ -270,6 +284,18 @@ func (h *reviewCheckpointHarness) commitWake(t *testing.T) {
 	if err != nil || len(wakes) != 1 || !wakes[0].Resumption() {
 		t.Fatalf("the settled review wait did not resume the attempt: %+v %v", wakes, err)
 	}
+}
+
+// queriedRoundStore is the coordinator store as a worker host's steward sees
+// review rounds: through the admin query, one document at a time, the way
+// remoteTaskWaitStore reads them.
+type queriedRoundStore struct {
+	*sqlite.Store
+	query func(context.Context, backlogadmin.Query) (backlogadmin.Response, error)
+}
+
+func (s queriedRoundStore) GetReviewRound(ctx context.Context, id string) (review.Round, error) {
+	return fetchReviewRound(ctx, s.query, id)
 }
 
 // reviewWakeControl is a fake T3: one thread, and every wake message sent to it.
@@ -349,16 +375,23 @@ func TestReviewTaskCurrentParksResumesWithVerdictAndOpensTheNextRound(t *testing
 		}
 	}
 
-	// The round completes; the steward wakes the same thread with the verdict.
-	h.finishRound(t, round1, map[string]int{"a": 1})
+	// The child run ends before its reviews are collected: the attempt resumes,
+	// but the wake waits for the verdict.
+	h.endChildRun(t, round1)
 	if err := h.db.SettleNodeWaits(ctx, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	h.reportWorkspace(t, dir)
 	h.commitWake(t)
 	control := &reviewWakeControl{threads: map[string]*domain.Thread{h.parent.ThreadID: {ID: h.parent.ThreadID, ProviderInstanceID: "t3-primary"}}}
-	runner := wait.New(h.db, control, nil)
+	runner := wait.New(queriedRoundStore{Store: h.db, query: cli.query}, control, nil)
 	runner.DisableQuotaChecks = true
+	runner.Tick(ctx, nil, nil)
+	if len(control.texts) != 0 {
+		t.Fatalf("the wake went out before the round was collected:\n%s", control.texts[0])
+	}
+	// The round is collected; the steward wakes the same thread with the verdict.
+	h.collectRound(t, round1, map[string]int{"a": 1})
 	runner.Tick(ctx, nil, nil)
 	if len(control.texts) != 1 || control.sentTo[0] != h.parent.ThreadID {
 		waits, _ := h.db.ListTaskWaits(ctx)
@@ -423,8 +456,67 @@ func TestReviewTaskCurrentParksResumesWithVerdictAndOpensTheNextRound(t *testing
 	out.Reset()
 	err := cli.run(ctx, reviewTaskArgs{checkpoint: "cp-1"})
 	requireReviewTaskExit(t, err, 2, domain.ReviewCheckpointHeadConflict)
-	if remoteHead(t, bare, cp1) != first || h.runCount(t) != runs+1 || !strings.Contains(out.String()+err.Error(), "new checkpoint") {
+	if remoteHead(t, bare, cp1) != first || h.runCount(t) != runs+1 || !strings.Contains(err.Error(), "new checkpoint") || !strings.Contains(err.Error(), "--checkpoint cp-3") {
 		t.Fatalf("head change under cp-1 was not refused cleanly: %v\n%s", err, out.String())
+	}
+}
+
+// Self-review P2-1: a checkpoint whose round deadline has passed is answered
+// as over, never as a retryable refusal a repeating task would loop on, and
+// nothing is parked for it.
+func TestReviewTaskCurrentAfterTheRoundDeadlineReportsTheVerdict(t *testing.T) {
+	ctx := context.Background()
+	h := reviewCheckpointFixture(t, true)
+	dir, bare := reviewTaskWorkspace(t)
+	h.op.refs = bareRemoteRefs{dir: bare}
+	head := commitIn(t, dir, "work.txt", "one")
+	gitIn(t, dir, "push", "-q", "origin", head+":"+domain.ReviewCheckpointBranch(h.request.WorkflowRunID, h.request.TaskID, "cp-1"))
+	request := h.request
+	request.HeadCommit = head
+	round, err := h.call(t, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.finishRound(t, round.RoundID, nil)
+	late := func() time.Time { return round.Deadline.Add(time.Minute) }
+	h.op.now = late
+	h.db.SetClock(late)
+	var out bytes.Buffer
+	if err := h.taskCLI(dir, &adminNodeWaits{admin: h.admin}, &out).run(ctx, reviewTaskArgs{}); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if len(h.liveWaits(t)) != 0 || !strings.Contains(out.String(), "not parked") || !strings.Contains(out.String(), "verdict accept") {
+		t.Fatalf("a round past its deadline was not reported as over:\n%s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".t3", "reviews", round.RoundID, "a", "verdict.json")); err != nil {
+		t.Fatalf("the verdict was not placed in the workspace: %v", err)
+	}
+}
+
+// Self-review P3-2: a push the remote took but whose answer was lost is a
+// published checkpoint, not a refusal.
+func TestReviewTaskCurrentTreatsALostPushAnswerAsPublished(t *testing.T) {
+	h := reviewCheckpointFixture(t, true)
+	dir, bare := reviewTaskWorkspace(t)
+	head := commitIn(t, dir, "work.txt", "one")
+	git := filepath.Join(t.TempDir(), "git")
+	script := "#!/bin/sh\nif [ \"$1\" = push ]; then git \"$@\" >/dev/null 2>&1; echo 'connection reset' >&2; exit 128; fi\nexec git \"$@\"\n"
+	if err := os.WriteFile(git, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	round := domain.ReviewCheckpointRound{RoundID: "round-x", CheckpointID: "cp-1", Number: 1}
+	client := &scriptedNodeWaits{answers: map[string]backlogadmin.NodeWaitResponse{
+		backlogadmin.ReviewCheckpointAction:     {Checkpoint: &domain.ReviewCheckpointResult{Round: &round}},
+		backlogadmin.ReviewCheckpointWaitAction: {CheckpointWait: &domain.ReviewCheckpointWaitResult{Park: &domain.ReviewCheckpointPark{Status: "parked", RoundID: "round-x"}}},
+	}}
+	var out bytes.Buffer
+	cli := h.taskCLI(dir, client, &out)
+	cli.git = git
+	if err := cli.run(context.Background(), reviewTaskArgs{}); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if remoteHead(t, bare, domain.ReviewCheckpointBranch(h.request.WorkflowRunID, h.request.TaskID, "cp-1")) != head || len(client.calls) != 2 {
+		t.Fatalf("lost push answer: calls %d\n%s", len(client.calls), out.String())
 	}
 }
 

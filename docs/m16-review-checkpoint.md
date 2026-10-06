@@ -88,7 +88,8 @@ one task-bound node wait per checkpoint, request ID `review-parent:<checkpoint
 key>`, on the review child's sink, due at the round deadline. The answer is a
 park whose status is `parked` (the attempt is held, the turn must end),
 `settled` (this checkpoint's wait already settled, a replay after the task
-resumed) or `finished` (the child ended before anything parked on it).
+resumed) or `finished` (the child ended before anything parked on it, or the
+round deadline has passed, when there is nothing left to park for).
 
 The child's sink can end before its reviews are collected. The wait settles on
 the sink as it always has; the steward that delivers the wake holds it until the
