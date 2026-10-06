@@ -1030,9 +1030,14 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if err != nil {
 		return err
 	}
-	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
-		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
-	}); err != nil {
+	result := PublishedResult{Finalized: finalized, FinalMessage: message, ThreadArchive: archive}
+	if finalized.Completion.Failure != "" {
+		// A failed attempt does not publish its declared commit, so its
+		// uncommitted work travels with the failure as a bundle.
+		result.Finalized.Completion.Failure = d.retainWorkInProgress(ctx, pkg, workspace, finalized.Completion.Failure)
+		result.WorkInProgressBundle = d.workInProgressBundle(pkg, result)
+	}
+	if err := d.Publisher.PublishResult(ctx, pkg, result); err != nil {
 		var size *workerproto.ArtifactSizeError
 		if errors.As(err, &size) {
 			return &permanentCollectionFailure{size: size}
@@ -1198,6 +1203,7 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 	if strings.TrimSpace(failure) == "" {
 		failure = "attempt failed on the worker"
 	}
+	failure = d.retainWorkInProgress(ctx, pkg, workspace, failure)
 	message := FailedMarker + "\n" + failure + "\n"
 	archive := []byte("{}")
 	thread, err := d.T3.GetThread(ctx, pkg.Identity.ThreadID)
@@ -1208,7 +1214,7 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 	}
 	finalized := backlog.FinalizedAttempt{Completion: backlog.CompletionResult{Failure: failure}}
 	result := PublishedResult{Finalized: finalized, FinalMessage: message, ThreadArchive: archive}
-	result.WorkInProgressBundle = d.workInProgressBundle(pkg, failure, result)
+	result.WorkInProgressBundle = d.workInProgressBundle(pkg, result)
 	if err := d.Publisher.PublishResult(ctx, pkg, result); err != nil {
 		return fmt.Errorf("publish failed result custody: %w", err)
 	}

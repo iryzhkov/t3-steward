@@ -159,42 +159,149 @@ func TestWorkInProgressSnapshotNeedsADeclaredCommit(t *testing.T) {
 	}
 }
 
-// The failed result of a live-commands failure carries the bundle, so the
-// work is recoverable from the coordinator; any other failure does not.
-func TestLiveCommandsFailureUploadsTheWorkInProgressBundle(t *testing.T) {
-	f := newWIPFixture(t, commitOutputs)
-	writeTestFile(t, filepath.Join(f.workspace, "c.txt"), "new\n")
-	if _, err := f.driver.SnapshotWorkInProgress(context.Background(), f.pkg, f.workspace); err != nil {
-		t.Fatal(err)
+// capturingCustody publishes through the real custody store and keeps each
+// result, so a test can read the failure text the upload carries.
+type capturingCustody struct {
+	*CustodyStore
+	results []PublishedResult
+}
+
+func (c *capturingCustody) PublishResult(ctx context.Context, pkg workerproto.ExecutionPackage, result PublishedResult) error {
+	c.results = append(c.results, result)
+	return c.CustodyStore.PublishResult(ctx, pkg, result)
+}
+
+func uploadsWorkInProgressBundle(t *testing.T, custody *CustodyStore) bool {
+	t.Helper()
+	pending, err := custody.PendingUploads()
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending uploads = %d, %v", len(pending), err)
 	}
+	found := false
+	for _, object := range pending[0].Manifest.Objects {
+		if object.Path == "results/"+backlog.WorkInProgressBundleName {
+			found = true
+			if object.ID != backlog.WorkInProgressBundleID("attempt-1") || object.Kind != string(domain.ArtifactGitState) || object.MediaType != backlog.CommitBundleMediaType {
+				t.Fatalf("bundle object = %+v", object)
+			}
+		}
+	}
+	return found
+}
+
+// Every failed result of a task that declares a commit carries the bundle
+// of its uncommitted work, whatever failed it, so the work is recoverable from
+// the coordinator. A clean tree has nothing to carry.
+func TestFailedResultUploadsTheWorkInProgressBundle(t *testing.T) {
 	for _, tc := range []struct {
 		failure string
-		want    bool
+		dirty   bool
 	}{
+		{"preparation failed 3 times", true},
 		{"preparation failed 3 times", false},
 		{LiveCommandsFailure + ": 1 background command still running after 2 nudges: pid 1 sleep", true},
 	} {
-		custody := testCustodyStore(t, filepath.Join(t.TempDir(), "custody"), func() time.Time { return runtimeTestNow })
+		f := newWIPFixture(t, commitOutputs)
+		if tc.dirty {
+			writeTestFile(t, filepath.Join(f.workspace, "c.txt"), "new\n")
+		}
+		custody := &capturingCustody{CustodyStore: testCustodyStore(t, filepath.Join(t.TempDir(), "custody"), func() time.Time { return runtimeTestNow })}
 		f.driver.Publisher = custody
 		f.driver.T3 = &recordingT3{thread: &domain.Thread{ID: "thread-1", TurnID: "turn-3", TurnState: "completed"}, archive: []byte("{}")}
 		if err := f.driver.CollectFailure(context.Background(), f.pkg, f.workspace, tc.failure); err != nil {
 			t.Fatal(err)
 		}
-		pending, err := custody.PendingUploads()
-		if err != nil || len(pending) != 1 {
-			t.Fatalf("pending uploads = %d, %v", len(pending), err)
+		if found := uploadsWorkInProgressBundle(t, custody.CustodyStore); found != tc.dirty {
+			t.Fatalf("failure %q dirty %v: bundle uploaded = %v", tc.failure, tc.dirty, found)
 		}
-		found := false
-		for _, object := range pending[0].Manifest.Objects {
-			if object.Path == "results/"+backlog.WorkInProgressBundleName {
-				found = true
-				if object.ID != backlog.WorkInProgressBundleID("attempt-1") || object.Kind != string(domain.ArtifactGitState) || object.MediaType != backlog.CommitBundleMediaType {
-					t.Fatalf("bundle object = %+v", object)
+		failure := custody.results[0].Finalized.Completion.Failure
+		if !strings.HasPrefix(failure, tc.failure) || strings.Contains(failure, "wip.bundle retained") != tc.dirty {
+			t.Fatalf("failure text = %q", failure)
+		}
+	}
+}
+
+// A live-commands failure has already snapshotted the tree and named the
+// bundle; collecting it uploads that bundle without naming it twice.
+func TestLiveCommandsFailureReusesItsSnapshot(t *testing.T) {
+	f := newWIPFixture(t, commitOutputs)
+	writeTestFile(t, filepath.Join(f.workspace, "c.txt"), "new\n")
+	summary, err := f.driver.SnapshotWorkInProgress(context.Background(), f.pkg, f.workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	custody := &capturingCustody{CustodyStore: testCustodyStore(t, filepath.Join(t.TempDir(), "custody"), func() time.Time { return runtimeTestNow })}
+	f.driver.Publisher = custody
+	f.driver.T3 = &recordingT3{thread: &domain.Thread{ID: "thread-1", TurnID: "turn-3", TurnState: "completed"}, archive: []byte("{}")}
+	failure := LiveCommandsFailure + ": 1 background command still running after 2 nudges: pid 1 sleep; " + summary
+	if err := f.driver.CollectFailure(context.Background(), f.pkg, f.workspace, failure); err != nil {
+		t.Fatal(err)
+	}
+	if !uploadsWorkInProgressBundle(t, custody.CustodyStore) {
+		t.Fatal("the live-commands snapshot was not uploaded")
+	}
+	if got := custody.results[0].Finalized.Completion.Failure; got != failure {
+		t.Fatalf("failure text = %q, want %q", got, failure)
+	}
+}
+
+// The ordinary collection of a turn that ended with no command running, but
+// with dirty work and a missing declared output, fails the attempt. That
+// failure keeps the uncommitted work too: the declared commit is not
+// published from a failed attempt, so without the bundle the work would be
+// lost with the workspace. A clean tree is collected without a bundle.
+func TestOrdinaryDirtyFailureUploadsTheWorkInProgressBundle(t *testing.T) {
+	for _, dirty := range []bool{true, false} {
+		f := newWIPFixture(t, commitOutputs)
+		if dirty {
+			writeTestFile(t, filepath.Join(f.workspace, "a.txt"), "one\nchanged\n")
+		}
+		custody := &capturingCustody{CustodyStore: testCustodyStore(t, filepath.Join(t.TempDir(), "custody"), func() time.Time { return runtimeTestNow })}
+		root := t.TempDir()
+		// Finalization seals the captured artifacts read-only.
+		t.Cleanup(func() {
+			_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+				if err == nil && info.IsDir() {
+					return os.Chmod(path, 0o700)
 				}
-			}
+				return err
+			})
+		})
+		f.driver.Publisher = custody
+		f.driver.Finalizer = backlog.AttemptFinalizer{StorageRoot: filepath.Join(root, "artifacts"), Processes: successfulProcessRunner{}, Now: func() time.Time { return runtimeTestNow }, NewID: func(string) string { return "verification-1" }}
+		f.driver.T3 = &recordingT3{
+			thread:  &domain.Thread{ID: "thread-1", TurnID: "turn-1", TurnState: "completed"},
+			message: "BACKLOG STATUS: done",
+			archive: []byte(`{"thread":{"id":"thread-1","latestTurn":{"turnId":"turn-1","state":"completed","startedAt":"2026-09-13T05:00:00Z","completedAt":"2026-09-13T05:01:00Z"},"session":{"threadId":"thread-1","status":"ready","activeTurnId":null,"lastError":null}}}`),
 		}
-		if found != tc.want {
-			t.Fatalf("failure %q: bundle uploaded = %v, want %v", tc.failure, found, tc.want)
+		if err := f.driver.Collect(context.Background(), f.pkg, f.workspace); err != nil {
+			t.Fatal(err)
+		}
+		if len(custody.results) != 1 {
+			t.Fatalf("results = %d", len(custody.results))
+		}
+		failure := custody.results[0].Finalized.Completion.Failure
+		if !strings.Contains(failure, "handoff.md") {
+			t.Fatalf("dirty %v: failure = %q, want the missing output", dirty, failure)
+		}
+		if found := uploadsWorkInProgressBundle(t, custody.CustodyStore); found != dirty {
+			t.Fatalf("dirty %v: bundle uploaded = %v; failure %q", dirty, found, failure)
+		}
+		if strings.Contains(failure, "wip.bundle retained") != dirty {
+			t.Fatalf("dirty %v: failure = %q", dirty, failure)
+		}
+		if !dirty {
+			continue
+		}
+		bundle := filepath.Join(t.TempDir(), "wip.bundle")
+		if err := os.WriteFile(bundle, custody.results[0].WorkInProgressBundle, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		verify := filepath.Join(t.TempDir(), "verify")
+		runGitForTest(t, filepath.Dir(verify), "clone", "-q", f.upstream, verify)
+		runGitForTest(t, verify, "fetch", "-q", bundle, "refs/steward/wip/attempt-1:refs/heads/wip")
+		if got := runGitForTest(t, verify, "show", "wip:a.txt"); got != "one\nchanged" {
+			t.Fatalf("a.txt in the uploaded snapshot = %q", got)
 		}
 	}
 }

@@ -73,9 +73,13 @@ func (d *LocalDriver) NudgeLiveCommands(ctx context.Context, pkg workerproto.Exe
 // private ref. The bundle carries that ref from the workspace's base pin, so
 // it holds the attempt's own commits as well and verifies against the base
 // alone. The runtime's .t3 directory is never part of it. A clean tree, or a
-// task with no declared commit, is not snapshotted.
+// task with no declared commit, is not snapshotted, and neither is a
+// workspace that never became a Git work tree.
 func (d *LocalDriver) SnapshotWorkInProgress(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) (string, error) {
 	if d.Config.DryRun || workspace == "" || !backlog.DeclaresAnyCommit(pkg.Outputs) {
+		return "", nil
+	}
+	if _, err := os.Lstat(filepath.Join(workspace, ".git")); err != nil {
 		return "", nil
 	}
 	ref := workInProgressRefPrefix + pkg.Identity.AttemptID
@@ -114,7 +118,7 @@ func (d *LocalDriver) SnapshotWorkInProgress(ctx context.Context, pkg workerprot
 		"GIT_AUTHOR_NAME=t3-steward", "GIT_AUTHOR_EMAIL=t3-steward@localhost",
 		"GIT_COMMITTER_NAME=t3-steward", "GIT_COMMITTER_EMAIL=t3-steward@localhost",
 	}
-	message := fmt.Sprintf("t3-steward: uncommitted work of attempt %s when it failed as %s", pkg.Identity.AttemptID, LiveCommandsFailure)
+	message := fmt.Sprintf("t3-steward: uncommitted work of attempt %s when it failed", pkg.Identity.AttemptID)
 	commit, err := workspaceGit(ctx, workspace, identity, "commit-tree", tree, "-p", head, "-m", message)
 	if err != nil {
 		return "", fmt.Errorf("write snapshot commit: %w", err)
@@ -151,11 +155,35 @@ func (d *LocalDriver) SnapshotWorkInProgress(ctx context.Context, pkg workerprot
 	return summary, nil
 }
 
-// workInProgressBundle reads the bundle a live-commands failure uploads with
-// its result. Anything else, a missing bundle, or one the upload would refuse
-// leaves the result without it: the failure itself must still publish.
-func (d *LocalDriver) workInProgressBundle(pkg workerproto.ExecutionPackage, failure string, result PublishedResult) []byte {
-	if !strings.HasPrefix(failure, LiveCommandsFailure) || !backlog.DeclaresAnyCommit(pkg.Outputs) {
+// retainWorkInProgress keeps the uncommitted work of a failing attempt and
+// returns the failure text naming what was kept. A bundle an earlier step of
+// the same failure already retained, such as the live-commands check, is
+// reused rather than snapshotted again, and is not named twice. A clean tree,
+// or a task with no declared commit, leaves the failure as it is; a snapshot
+// that fails is named but never stops the failure from publishing.
+func (d *LocalDriver) retainWorkInProgress(ctx context.Context, pkg workerproto.ExecutionPackage, workspace, failure string) string {
+	if d.Config.DryRun || workspace == "" || !backlog.DeclaresAnyCommit(pkg.Outputs) {
+		return failure
+	}
+	if _, err := os.Lstat(filepath.Join(d.workspacePath(pkg), WorkInProgressBundleFile)); err == nil {
+		return failure
+	}
+	retained, err := d.SnapshotWorkInProgress(ctx, pkg, workspace)
+	if err != nil {
+		d.logger().Warn("uncommitted work of the failed attempt is not retained", "attempt", pkg.Identity.AttemptID, "error", err)
+		retained = "wip.bundle not retained: " + err.Error()
+	}
+	if !strings.HasPrefix(retained, "wip.bundle") || strings.Contains(failure, WorkInProgressBundleFile) {
+		return failure
+	}
+	return failure + "; " + retained
+}
+
+// workInProgressBundle reads the bundle a failed result uploads. A missing
+// bundle, or one the upload would refuse, leaves the result without it: the
+// failure itself must still publish.
+func (d *LocalDriver) workInProgressBundle(pkg workerproto.ExecutionPackage, result PublishedResult) []byte {
+	if result.Finalized.Completion.Failure == "" || !backlog.DeclaresAnyCommit(pkg.Outputs) {
 		return nil
 	}
 	path := filepath.Join(d.workspacePath(pkg), WorkInProgressBundleFile)
