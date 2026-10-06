@@ -419,6 +419,13 @@ type collectionFixture struct {
 
 func newCollectionFixture(t *testing.T, maxObject, maxTotal int64, outputBytes, archiveBytes int) *collectionFixture {
 	t.Helper()
+	return newCollectionFixtureWith(t, maxObject, maxTotal, outputBytes, archiveBytes, nil)
+}
+
+// newCollectionFixtureWith lets a test shape the package and the workspace
+// before the offer is accepted, which is when the journal fixes the package.
+func newCollectionFixtureWith(t *testing.T, maxObject, maxTotal int64, outputBytes, archiveBytes int, edit func(pkg *workerproto.ExecutionPackage, driver *LocalDriver, workspace string)) *collectionFixture {
+	t.Helper()
 	root := t.TempDir()
 	t.Cleanup(func() {
 		// Finalizer seals its capture. Unseal only this disposable test fixture.
@@ -452,6 +459,9 @@ func newCollectionFixture(t *testing.T, maxObject, maxTotal int64, outputBytes, 
 	raw := bytes.Repeat([]byte("x"), outputBytes)
 	if err := os.WriteFile(filepath.Join(workspace, "answer.txt"), raw, 0600); err != nil {
 		t.Fatal(err)
+	}
+	if edit != nil {
+		edit(&pkg, driver, workspace)
 	}
 	journal, err := OpenJournal(filepath.Join(root, "journal"), "normandy", "worker-1", 9)
 	if err != nil {

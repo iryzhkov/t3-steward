@@ -125,6 +125,23 @@ func ValidateArtifactObject(object ArtifactObject, maxBytes int64) error {
 	return nil
 }
 
+// ValidateUploadObjects applies the per-object and aggregate limits of one
+// upload to its objects, in upload order, and returns their total size. A
+// refusal for size is an ArtifactSizeError naming the object it stopped at.
+func ValidateUploadObjects(objects []ArtifactObject, maxArtifactBytes, maxTotalBytes int64) (int64, error) {
+	var total int64
+	for _, object := range objects {
+		if err := ValidateArtifactObject(object, maxArtifactBytes); err != nil {
+			return 0, err
+		}
+		if object.Size > maxTotalBytes-total {
+			return 0, NewArtifactSizeError("aggregate", maxTotalBytes, uint64(total)+uint64(object.Size), object)
+		}
+		total += object.Size
+	}
+	return total, nil
+}
+
 func ValidateArtifactTransferManifest(manifest ArtifactTransferManifest, maxArtifactBytes, maxTotalBytes int64, now time.Time) error {
 	if manifest.Version != ArtifactManifestVersion {
 		return errors.New("artifact manifest: unsupported version")

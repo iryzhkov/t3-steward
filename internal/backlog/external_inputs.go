@@ -124,6 +124,9 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 					SourceAttemptID: observation.AttemptID, SourceArtifactID: found[0].ID,
 					Name: name, ArtifactID: reference.ID,
 				})
+				if DeclaresCommit(producerTask, name) {
+					RequireCommitBundleCapability(consumer)
+				}
 			}
 			delete(consumer.DependencyInputs, producer)
 		}

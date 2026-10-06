@@ -40,7 +40,7 @@ func campaignViabilityRequest(plan campaign.Plan, bundleBytes int64, bundleFiles
 			Ref:           plan.Environment.Ref,
 			Class:         domain.TaskClass(task.Class),
 			Hosts:         append([]string(nil), task.Placement.Hosts...),
-			Capabilities:  append([]string(nil), task.Placement.Requires...),
+			Capabilities:  campaignTaskCapabilities(plan, task),
 			Resources:     campaignResourceDemand(task.Resources),
 			Routes:        campaignProviderRoutes(task.Routes),
 			Directories:   campaignDirectoryRequests(task.Directories),
@@ -67,6 +67,31 @@ func campaignViabilityRequest(plan campaign.Plan, bundleBytes int64, bundleFiles
 		return backlogadmin.ViabilityRequest{}, fmt.Errorf("campaign check: the campaign declares no tasks")
 	}
 	return request, nil
+}
+
+// campaignTaskCapabilities is what a worker must advertise to run a task, as
+// placement will compute it at submission: what the manifest requires, and the
+// commit bundle capability for a task that consumes a declared commit. A worker
+// that lacks it is then reported as unable to obtain the commit instead of
+// being counted as a candidate.
+func campaignTaskCapabilities(plan campaign.Plan, task campaign.Task) []string {
+	capabilities := append([]string(nil), task.Placement.Requires...)
+	if slices.Contains(capabilities, workerproto.PackageCapabilityCommitBundle) {
+		return capabilities
+	}
+	for _, binding := range task.InputsFrom {
+		for _, producer := range plan.Tasks {
+			if producer.Name != binding.Producer {
+				continue
+			}
+			for _, commit := range producer.Commits {
+				if slices.Contains(binding.Artifacts, commit.Name) {
+					return append(capabilities, workerproto.PackageCapabilityCommitBundle)
+				}
+			}
+		}
+	}
+	return capabilities
 }
 
 func campaignResourceDemand(resources campaign.Resources) domain.ResourceDemand {

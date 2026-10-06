@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 var commitCampaignTime = time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
@@ -201,6 +203,32 @@ func TestARerunAuthoredAfterSettlementStillResolvesTheCarriedCommit(t *testing.T
 	}
 	if !campaign.resolves(t) {
 		t.Fatal("retention took the commit away from a live rerun")
+	}
+}
+
+// A rerun that carries a declared commit pins the exact source attempt and
+// record it carried, so that its package can select that attempt's bundle, and
+// requires the capability that imports it, so that placement never puts it on a
+// worker that cannot obtain the commit.
+func TestARerunCarryingACommitBindsItsSourceAndRequiresTheBundleCapability(t *testing.T) {
+	campaign := newCommitCampaign(t)
+	result, err := campaign.service.AmendGraph(context.Background(), Principal{ID: "operator"}, domain.GraphAmendment{
+		ID: "rerun-1", RunID: "run", Operation: "rerun", TaskID: "review",
+		ExpectedRevision: 1, Reason: "review failed on a stale checkout",
+	})
+	if err != nil {
+		t.Fatalf("author the rerun: %v", err)
+	}
+	task := result.Graph.Tasks[0]
+	if len(task.CarriedInputs) != 1 {
+		t.Fatalf("carried inputs = %+v", task.CarriedInputs)
+	}
+	carried := task.CarriedInputs[0]
+	if carried.SourceRunID != "run" || carried.SourceAttemptID != "attempt-implement" || carried.SourceArtifactID != "output-implement" {
+		t.Fatalf("carried input = %+v, want it bound to its source run, attempt and record", carried)
+	}
+	if !slices.Contains(task.Placement.Capabilities, workerproto.PackageCapabilityCommitBundle) {
+		t.Fatalf("placement capabilities = %v, want %q", task.Placement.Capabilities, workerproto.PackageCapabilityCommitBundle)
 	}
 }
 

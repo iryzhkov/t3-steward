@@ -400,7 +400,7 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 			Context: resolvedContext, Outputs: outputs, Verification: append([]string(nil), taskManifest.Verify...),
 			Placement: domain.Placement{
 				Hosts:        append([]string(nil), taskManifest.Placement.Hosts...),
-				Capabilities: append([]string(nil), taskManifest.Placement.Requires...),
+				Capabilities: placementCapabilities(manifest, taskManifest),
 			},
 			ResourceDemand: resourceDemandFor(taskManifest.Resources),
 			Preflight:      PackagePreflightSteps(taskManifest.Preflight.Steps),

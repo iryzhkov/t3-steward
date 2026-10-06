@@ -32,6 +32,13 @@ type CommitProvenance struct {
 	Commit        string    `json:"commit"`
 	Ref           string    `json:"ref"`
 	CreatedAt     time.Time `json:"createdAt"`
+	// Bundle binds the record to the Git bundle of Base..Commit the producer
+	// retained, which is how a consumer on another worker obtains the commit.
+	// It is absent for a commit equal to its base, which needs no bundle, for a
+	// producer whose build could not make one, and when BundleOmitted says why
+	// none was retained.
+	Bundle        *CommitBundleRecord `json:"bundle,omitempty"`
+	BundleOmitted string              `json:"bundleOmitted,omitempty"`
 }
 
 // Report renders the provenance for an operator or a log line.
@@ -66,6 +73,9 @@ type PublishCommitRequest struct {
 type CampaignRefStore struct {
 	Root      string
 	GitBinary string
+	// MaxBundleBytes bounds a commit bundle this store makes or imports. Zero
+	// is DefaultCommitBundleMaxBytes.
+	MaxBundleBytes int64
 }
 
 // CampaignRef names the durable ref of one declared commit.
