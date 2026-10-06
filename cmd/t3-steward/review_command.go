@@ -32,6 +32,7 @@ const reviewUsage = `Usage: t3-steward review [--plan FILE]... [--diff BASE..HEA
  [--swarm LENS,...] [--swarm-model INSTANCE/MODEL]... [--risk routine|risky]
  [--deadline D] [--wait | --no-notify | --notify-thread ID] [--gate] [--json]
  t3-steward review result <round> [--wait] [--gate] [--json]
+ t3-steward review --task current [--checkpoint ID] [--json]
 
 Inputs are snapshotted as files. --diff requires a catalog git project matching
 the current checkout; refs are resolved once and reviewers receive HEAD plus diff.
@@ -51,6 +52,25 @@ Exit 0: all required results valid, whatever verdict; 2: collection failed; 3: g
 --policy-file PATH selects a file (default beside coordinator-client.json).
 The role never chooses a judge or swarm route and never bypasses diversity or tiers.
 Single-candidate roles do not fan out. See docs/route-policy.md and docs/review.md.
+
+Task mode, --task current, runs inside a steward task whose manifest declares
+review:. It pushes the workspace HEAD to steward/<run>/<task>/<checkpoint> on the
+project remote (origin's push URL; an existing checkpoint branch is never moved),
+asks the coordinator to open that checkpoint's review round, and parks the task on
+the round. End this turn when it says so: the steward resumes the same thread with
+the verdict, the blocking finding count and each reviewer's review.md and
+verdict.json under .t3/reviews/<round>/<reviewer>/. --checkpoint ID defaults to
+cp-1, cp-2, ...: the checkpoint already naming HEAD, so a repeated command replays
+its round, otherwise the next unused number. Commit a fix and run it again for the
+next round. Reviewers, roles, risk and inputs come only from the manifest review:
+declaration, so --reviewer, --model, --independent, --judge, --role, --risk,
+--swarm and the other submission flags are refused. A round that is already over
+is printed with its verdict and the task is not parked. Task mode exits 0 parked or
+already complete; 1 invalid flags, not inside a task, no push URL (remote-missing)
+or push refused (push-refused); 2 refused by the coordinator, not retryable (for
+example checkpoint-head-conflict, review-not-declared, attempt-not-current);
+75 refused but retryable, repeat the same command; 3-8 transport failures.
+See docs/m16-review-checkpoint.md.
 `
 
 type reviewArgs struct {

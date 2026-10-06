@@ -1,9 +1,9 @@
 # In-task review checkpoint operation
 
 A running campaign task asks the coordinator to open a review round for its
-current work with one authenticated coordinator operation. The public command
-that calls it, `review --task current`, is the next unit; this document
-describes the coordinator side.
+current work with one authenticated coordinator operation, and parks on that
+round with a second one. The public command that calls both is
+`t3-steward review --task current`, described at the end.
 
 ## Request and transport
 
@@ -78,6 +78,68 @@ checkpoint ID, which allocates the next round up to the frozen round limit
 An error or crash between allocation, staging and materialization is answered
 as `internal` and retryable. Every step replays, so the next identical call
 completes the same checkpoint and creates exactly one child.
+
+## Parking on the round
+
+The node-wait action `review-checkpoint-wait` carries the same request. It is
+fenced exactly like opening the round, requires the checkpoint's round to exist
+(`checkpoint-not-open` otherwise), and registers the store's review parent wait:
+one task-bound node wait per checkpoint, request ID `review-parent:<checkpoint
+key>`, on the review child's sink, due at the round deadline. The answer is a
+park whose status is `parked` (the attempt is held, the turn must end),
+`settled` (this checkpoint's wait already settled, a replay after the task
+resumed) or `finished` (the round was collected before anything parked on it,
+or the round deadline has passed, when there is nothing left to park for). A
+child that ended before the park but whose reviews are not collected still
+parks the task: there is no verdict to report yet.
+
+The child's sink can end before its reviews are collected. The wait settles on
+the sink as it always has; the steward that delivers the wake that resumes the
+task holds it until the round is collected, or until 10 minutes past the round
+deadline, and then sends it with the combined verdict, the blocking finding
+count, each reviewer's verdict and blocking titles, and the workspace paths of
+the documents it placed at `.t3/reviews/<round>/<reviewer>/review.md` and
+`verdict.json`. This applies to every review wait in the wake, also when it
+shares the wake with another wait settled in the same pass. Those files are
+written through real directories only, renamed into place, and excluded in
+`.git/info/exclude`. If they cannot be written, the wake still carries the
+verdict and says so.
+
+A review wake can also arrive mid-turn, when another wait of the attempt
+resumed it first. It carries the verdict and documents the same way if the
+round is collected. It is never held, because a mid-turn wake is abandoned once
+the running turn moves the attempt on; if the round is not collected yet, it
+says so and names `t3-steward review result <round> --wait`.
+
+## The command
+
+`t3-steward review --task current [--checkpoint ID] [--json]` runs inside the
+task workspace:
+
+1. It resolves the task identity from `.t3-steward/task.env` (or the injected
+   environment) and refuses outside a task.
+2. It requires origin's push URL, which workspace preparation points at the
+   project repository (`remote-missing` otherwise), lists this task's
+   checkpoint branches there, and chooses the checkpoint ID: the `cp-N` that
+   already names HEAD, so a repeated command replays its round after a lost
+   answer, or the next unused `cp-N`. Numbering continues across attempts of
+   the task, because the review authority and its checkpoints belong to the
+   task.
+3. It pushes HEAD with `--force-with-lease=<branch>:`, so a checkpoint branch is
+   created once and never moved. A branch that already names another commit is
+   refused as `checkpoint-head-conflict`; any other push failure is
+   `push-refused`.
+4. It opens the round, stating HEAD as the cross-check, then parks on it. When
+   parked it tells the agent to end the turn. When the round is already over it
+   writes the evidence into the workspace, prints the verdict, and says the task
+   is not parked.
+
+Reviewer, model, judge, role, risk, swarm, effort, policy, input and
+notification flags are refused in task mode: the round's requirements come only
+from the manifest `review:` declaration. Refusals print their code, the reason
+and the next action. Exit codes: 0 parked or already complete; 1 invalid flags,
+not inside a task, `remote-missing` or `push-refused`; 2 a coordinator refusal
+that repeating cannot fix; 75 a retryable refusal; 3-8 the transport classes.
 
 ## Limits
 
