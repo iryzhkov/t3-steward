@@ -406,6 +406,8 @@ func (r *Runtime) deliverCommand(ctx context.Context, command domain.WorkerComma
 			if original, found := record.CommandRequests[command.ID]; !found || original != command {
 				return domain.WorkerAcknowledgement{}, errors.New("worker runtime: command id was reused with different content")
 			}
+			// An earlier release stored the detail raw; the replay is redacted.
+			ack.Detail = r.recordableFailure(ctx, command.AssignmentID, ack.Detail)
 			return ack, nil
 		}
 	}
@@ -471,6 +473,8 @@ func (r *Runtime) deliverThrottle(ctx context.Context, command domain.ThrottleCo
 			if original, exists := record.ThrottleRequests[command.ID]; !exists || !reflect.DeepEqual(original, command) {
 				return domain.ThrottleAcknowledgement{}, errors.New("worker runtime: throttle command id was reused with different content")
 			}
+			// An earlier release stored the error raw; the replay is redacted.
+			ack.Error = r.recordableFailure(ctx, command.AssignmentID, ack.Error)
 			return ack, nil
 		}
 	}
@@ -549,7 +553,8 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 	}
 	detail := ""
 	if err != nil {
-		detail = err.Error()
+		// The acknowledgement is sent to the coordinator and stored there.
+		detail = r.recordableFailure(ctx, command.AssignmentID, err.Error())
 	}
 	return r.finishThrottle(command, err == nil, result, checkpoint, detail)
 }
@@ -732,7 +737,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 		if errors.Is(err, errCollectionRunning) {
 			// Expected on every pass while a long verification runs; the start
 			// of that collection is already logged once.
-			r.log.Debug("attempt collection still running", "assignment", id, "detail", err)
+			r.log.Debug("attempt collection still running", "assignment", id, "detail", r.loggedError(ctx, id, err))
 			return nil
 		}
 		r.log.Warn("attempt reconciliation deferred", "assignment", id, "phase", record.Phase, "error", r.loggedError(ctx, id, err))
@@ -1086,7 +1091,7 @@ func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record At
 			observed, turnID, err = observer.ObserveThreadTurn(ctx, record.Package.Package)
 		}
 		if err != nil {
-			r.log.Warn("provider turn identity is unavailable; collection deferred", "assignment", id, "error", err)
+			r.log.Warn("provider turn identity is unavailable; collection deferred", "assignment", id, "error", r.loggedError(ctx, id, err))
 			return nil
 		}
 		if observed == backlog.DispatchThreadActive {
@@ -1133,7 +1138,7 @@ func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record At
 		waiting, err = r.liveTaskWait(ctx, record)
 	}
 	if err != nil {
-		r.log.Warn("task-bound wait state is unavailable; collection deferred", "assignment", id, "error", err)
+		r.log.Warn("task-bound wait state is unavailable; collection deferred", "assignment", id, "error", r.loggedError(ctx, id, err))
 		return nil
 	}
 	if !waiting {
@@ -1173,7 +1178,7 @@ func (r *Runtime) reconcileWaiting(ctx context.Context, id string, record Attemp
 	}
 	threadState, err := r.driver.ObserveThread(ctx, record.Package.Package)
 	if err != nil {
-		r.log.Warn("T3 observation unavailable; parked attempt waits", "assignment", id, "error", err)
+		r.log.Warn("T3 observation unavailable; parked attempt waits", "assignment", id, "error", r.loggedError(ctx, id, err))
 		return nil
 	}
 	switch threadState {

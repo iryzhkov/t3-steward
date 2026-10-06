@@ -36,7 +36,7 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 	}
 	pause, required, err := r.config.Quota.PauseRequired(ctx, record.Package.Package.Route)
 	if err != nil {
-		r.log.Warn("host quota state unavailable; attempt keeps running", "assignment", id, "error", err)
+		r.log.Warn("host quota state unavailable; attempt keeps running", "assignment", id, "error", r.loggedError(ctx, id, err))
 		return nil
 	}
 	if !required {
@@ -126,13 +126,13 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 			// It keeps running; the next reconcile observes it, and the stop
 			// follows once the bucket is stopped and the escalation window
 			// has passed.
-			r.log.Warn("drain requested; thread has not stopped yet", "assignment", id, "error", err)
+			r.log.Warn("drain requested; thread has not stopped yet", "assignment", id, "error", r.loggedError(ctx, id, err))
 			return nil
 		}
 		return r.markLocalPauseStopped(ctx, id, checkpoint)
 	default:
 		if err := r.driver.StopThread(ctx, pkg); err != nil {
-			r.log.Warn("quota stop outcome is unproven; retrying next reconcile", "assignment", id, "error", err)
+			r.log.Warn("quota stop outcome is unproven; retrying next reconcile", "assignment", id, "error", r.loggedError(ctx, id, err))
 			return nil
 		}
 		return r.markLocalPauseStopped(ctx, id, nil)
@@ -281,7 +281,7 @@ func (r *Runtime) reconcileLocalPause(ctx context.Context, id string, record Att
 	pkg := record.Package.Package
 	threadState, observeErr := r.driver.ObserveThread(ctx, pkg)
 	if observeErr != nil {
-		r.log.Warn("T3 observation unavailable; paused attempt waits", "assignment", id, "error", observeErr)
+		r.log.Warn("T3 observation unavailable; paused attempt waits", "assignment", id, "error", r.loggedError(ctx, id, observeErr))
 		return nil
 	}
 	if err := r.noteThreadState(id, threadState); err != nil {
@@ -315,7 +315,7 @@ func (r *Runtime) reconcileLocalPause(ctx context.Context, id string, record Att
 	}
 	allowed, why, err := r.config.Quota.ResumeAllowed(ctx, *record.LocalThrottle, pkg.Route)
 	if err != nil {
-		r.log.Warn("host quota state unavailable; paused attempt waits", "assignment", id, "error", err)
+		r.log.Warn("host quota state unavailable; paused attempt waits", "assignment", id, "error", r.loggedError(ctx, id, err))
 		return nil
 	}
 	if !allowed {
@@ -331,7 +331,7 @@ func (r *Runtime) reconcileLocalPause(ctx context.Context, id string, record Att
 	command := r.localThrottleCommand(record, resume)
 	command.Reason = "quota resume permitted: " + why
 	if err := r.driver.Resume(ctx, pkg, command); err != nil {
-		r.log.Warn("resume after quota pause failed; retrying next reconcile", "assignment", id, "error", err)
+		r.log.Warn("resume after quota pause failed; retrying next reconcile", "assignment", id, "error", r.loggedError(ctx, id, err))
 		return nil
 	}
 	r.log.Info("quota resume permitted; owned attempt resumed", "assignment", id, "thread", pkg.Identity.ThreadID, "reason", why)
@@ -367,7 +367,7 @@ func (r *Runtime) collectCompletedLocalPause(ctx context.Context, id string, rec
 		// tick's budget, is not "not completed": the drained turn may have
 		// finished the task. It is pending, so nothing resumes the attempt
 		// until the check answers.
-		r.log.Warn("quota-pause completion evidence unavailable; attempt remains paused", "assignment", id, "error", err)
+		r.log.Warn("quota-pause completion evidence unavailable; attempt remains paused", "assignment", id, "error", r.loggedError(ctx, id, err))
 		return false, true, nil
 	}
 	if !completed {
