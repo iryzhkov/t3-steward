@@ -60,6 +60,9 @@ type produceOptions struct {
 	noChange bool
 	// oldBuild finalizes as a build without the commit bundle capability.
 	oldBuild bool
+	// edit, when set, changes the producer's workspace before its commit, so a
+	// test can make the commit modify files that already exist in the base.
+	edit func(t *testing.T, workspace string)
 }
 
 func produceCommit(t *testing.T, producer commitWorker, repository, storage string, options produceOptions) producedCommit {
@@ -81,6 +84,9 @@ func produceCommit(t *testing.T, producer commitWorker, repository, storage stri
 		gitRun(t, prepared.WorkspaceDir, "config", "user.email", "test@example.test")
 		writeGitFile(t, prepared.WorkspaceDir, "implementation.txt", "implemented\n")
 		gitRun(t, prepared.WorkspaceDir, "add", "implementation.txt")
+		if options.edit != nil {
+			options.edit(t, prepared.WorkspaceDir)
+		}
 		gitRun(t, prepared.WorkspaceDir, "commit", "-m", "implementation")
 	}
 	task.Outputs = []domain.ArtifactDeclaration{{Name: "repair", Commit: &domain.CommitOutput{}}}

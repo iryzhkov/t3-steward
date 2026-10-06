@@ -114,12 +114,14 @@ func ExportCommitBundle(ctx context.Context, p CommitProvenance, branch string, 
 	if err != nil {
 		return result, err
 	}
+	headerSize := int64(len(signature))
 	var capabilities []string
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			return result, err
 		}
+		headerSize += int64(len(line))
 		if line == "\n" {
 			break
 		}
@@ -143,16 +145,39 @@ func ExportCommitBundle(ctx context.Context, p CommitProvenance, branch string, 
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return result, fmt.Errorf("commit export: init verifier: %w: %s", err, out)
 	}
-	// index-pack checks object decoding, delta resolution and the pack checksum.
-	// Git bundle packs are self-contained even when history has prerequisites.
-	cmd = exec.CommandContext(ctx, "git", "--git-dir", repo, "index-pack", "--stdin")
-	cmd.Stdin = reader
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return result, fmt.Errorf("commit export: invalid bundle pack: %w: %s", err, out)
+	// Bundle packs are thin: objects may be deltas against prerequisite objects
+	// that only a repository at the base holds, so index-pack cannot resolve
+	// them here. A dry-run unpack-objects still inflates every object, applies
+	// every delta whose base is in the pack and checks the object count and the
+	// pack checksum, while queuing deltas against absent bases. It copies any
+	// bytes after the pack to standard output, which must stay empty.
+	pack := io.NewSectionReader(file, headerSize, size-headerSize)
+	var trailing, diagnostics strings.Builder
+	cmd = exec.CommandContext(ctx, "git", "--git-dir", repo, "unpack-objects", "-n", "-q")
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = pack, &trailing, &diagnostics
+	if err := cmd.Run(); err != nil {
+		return result, fmt.Errorf("commit export: invalid bundle pack: %w: %s", err, diagnostics.String())
+	}
+	if trailing.Len() != 0 {
+		return result, errors.New("commit export: invalid bundle pack: data after pack checksum")
+	}
+	// The pack is intact; unpack it for real only to learn which objects it
+	// holds. Git writes every object it can resolve and then exits non-zero
+	// for the deltas left against prerequisite objects, so that status says
+	// nothing the dry run did not and is deliberately ignored.
+	if _, err := pack.Seek(0, io.SeekStart); err != nil {
+		return result, err
+	}
+	cmd = exec.CommandContext(ctx, "git", "--git-dir", repo, "unpack-objects", "-q")
+	var unpacked strings.Builder
+	cmd.Stdin, cmd.Stderr = pack, &unpacked
+	_ = cmd.Run()
+	if err := ctx.Err(); err != nil {
+		return result, err
 	}
 	cmd = exec.CommandContext(ctx, "git", "--git-dir", repo, "cat-file", "-t", p.Commit)
 	if out, err := cmd.Output(); err != nil || strings.TrimSpace(string(out)) != "commit" {
-		return result, errors.New("commit export: pack does not contain declared commit")
+		return result, fmt.Errorf("commit export: pack does not contain declared commit: %s", strings.TrimSpace(unpacked.String()))
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return result, err
