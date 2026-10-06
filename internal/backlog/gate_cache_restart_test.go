@@ -73,6 +73,29 @@ func TestGateEnvironmentDigestAllowlist(t *testing.T) {
 	}
 }
 
+// Variables the gate shell or a non-Go toolchain imports change what a gate
+// command does. bash run as /bin/sh honours SHELLOPTS=nounset, so a cached pass
+// must not survive it.
+func TestGateEnvironmentDigestCoversShellAndToolchains(t *testing.T) {
+	base := []string{"PATH=/usr/bin"}
+	for _, added := range []string{"SHELLOPTS=nounset", "BASHOPTS=failglob", "CDPATH=/x", "BASH_ENV=/x", "ENV=/x", "XDG_DATA_HOME=/x", "PYTHONPATH=/x", "NODE_OPTIONS=--x", "npm_config_registry=x", "CARGO_HOME=/x", "RUSTFLAGS=-x", "JAVA_HOME=/x"} {
+		if gateEnvironmentDigest(append([]string{added}, base...)) == gateEnvironmentDigest(base) {
+			t.Fatalf("%s did not change the digest", added)
+		}
+	}
+}
+
+// exec keeps the last of duplicate variables, so the digest must too: the
+// same entries in a different order are a different effective environment.
+func TestGateEnvironmentDigestDuplicatesLastWins(t *testing.T) {
+	if gateEnvironmentDigest([]string{"GOFLAGS=-a", "GOFLAGS=-b"}) == gateEnvironmentDigest([]string{"GOFLAGS=-b", "GOFLAGS=-a"}) {
+		t.Fatal("duplicate order ignored")
+	}
+	if gateEnvironmentDigest([]string{"GOFLAGS=-a", "GOFLAGS=-b"}) != gateEnvironmentDigest([]string{"GOFLAGS=-b"}) {
+		t.Fatal("shadowed duplicate changed the digest")
+	}
+}
+
 func indexEquals(entry string) int {
 	for i := range entry {
 		if entry[i] == '=' {

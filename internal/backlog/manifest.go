@@ -390,7 +390,7 @@ func ValidateGateTimeouts(manifest Manifest, maximum time.Duration) error {
 	for _, name := range names {
 		gate := manifest.Tasks[name].Gate
 		if gate != nil && gate.Timeout > maximum {
-			return fmt.Errorf("task %q gate timeout %s exceeds this coordinator's backlog_v2.verification.command_timeout %s; lower the gate timeout or raise command_timeout", name, gate.Timeout, maximum)
+			return fmt.Errorf("task %q gate timeout %s exceeds this coordinator's backlog_v2.verification.command_timeout %s; lower the gate timeout or raise command_timeout; a changed campaign needs a new idempotency key", name, gate.Timeout, maximum)
 		}
 	}
 	return nil

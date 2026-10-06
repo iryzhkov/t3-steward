@@ -200,7 +200,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 			RequiredCredentials: append([]string(nil), environment.RequiredCredentials...),
 		},
 		Verification: append([]string(nil), state.task.Verification...),
-		Gate:         cloneTaskGate(state.task.Gate),
+		Gate:         dispatchGate(state.task.Gate, b.VerificationTimeout),
 		Outputs:      append([]domain.ArtifactDeclaration(nil), state.task.Outputs...),
 		Preflight:    append([]workerproto.PreflightStep(nil), state.task.Preflight...),
 		NotBefore:    cloneTime(state.task.NotBefore),

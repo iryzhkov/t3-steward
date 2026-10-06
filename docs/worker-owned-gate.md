@@ -61,14 +61,27 @@ command timeout and toolchain identity. Reuse is marked cached and names the ori
 changing any key input reruns the gate. Cache evidence survives worker restart.
 The toolchain identity includes a digest of only the inherited environment
 variables that can change what a command does: `PATH`, `HOME`, `SHELL`,
-`TMPDIR`, `TZ`, `LANG`, `LANGUAGE`, compiler and linker flags (`CC`, `CXX`, `AR`,
+`TMPDIR`, `TZ`, `LANG`, `LANGUAGE`, the gate shell's own variables (`SHELLOPTS`,
+`BASHOPTS`, `CDPATH`, `BASH_ENV`, `ENV`), compiler and linker flags (`CC`, `CXX`, `AR`,
 `CFLAGS`, `CPPFLAGS`, `CXXFLAGS`, `LDFLAGS`), make flags (`MAKEFLAGS`,
 `GNUMAKEFLAGS`, `MFLAGS`, `MAKEFILES`), loader and pkg-config paths
 (`LD_LIBRARY_PATH`, `LD_PRELOAD`, `PKG_CONFIG_PATH`, `PKG_CONFIG_LIBDIR`),
-`XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, and every variable starting with `GO`,
-`CGO_`, `LC_` or `GIT_`. Per-start service variables such as `INVOCATION_ID` and
-`JOURNAL_STREAM` are excluded, so a restart alone does not miss the cache. A
-variable outside this list that changes a gate's behaviour is not detected.
+`XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and every variable starting
+with `GO`, `CGO_`, `LC_`, `GIT_`, `PYTHON`, `NODE_`, `NPM_CONFIG_`,
+`npm_config_`, `CARGO_`, `RUST` or `JAVA_`. Per-start service variables such as
+`INVOCATION_ID` and `JOURNAL_STREAM` are excluded, so a restart alone does not
+miss the cache. A variable outside this list that changes a gate's behaviour is
+not detected, and neither is a change to files outside the tree that a command
+reads, such as `~/.config/go/env` or `~/.gitconfig`. In the uncontained lane the
+agent runs as the worker's user and can write those files and the worker's
+cache directory, so cached evidence there is only as trustworthy as that
+account; set `gate_cache_age: 0` where that matters.
+
+When a stored task's gate timeout exceeds the coordinator's current
+`command_timeout` (a rerun of a task accepted under a larger setting, or a
+setting lowered after submission), dispatch bounds each gate command by
+`command_timeout` instead of withholding the task, and a gate that needs longer
+fails with a structured timeout.
 `gate_cache_age` defaults to 24h; zero disables reuse.
 
 Gate tasks require the worker capability `worker-owned-gate-v1`. Older workers

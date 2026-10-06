@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/config"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
@@ -41,6 +42,37 @@ func TestGateDefaultTimeoutDispatchesUnderDefaultConfig(t *testing.T) {
 	}
 	if offer.Package.Package.Gate == nil || offer.Package.Package.Gate.Timeout != gate.Timeout {
 		t.Fatalf("gate lost: %+v", offer.Package.Package.Gate)
+	}
+}
+
+// A stored gate that bypassed the submission check (a rerun or amendment of a
+// task accepted under a larger command_timeout, or a coordinator whose setting
+// was lowered afterwards) must still dispatch. Building no package withheld
+// it on every cycle with the reason visible only in a coordinator log; it now
+// runs bounded by the coordinator maximum and a slow gate fails visibly.
+func TestGateTimeoutAboveCoordinatorMaximumStillDispatches(t *testing.T) {
+	now := time.Date(2026, 9, 10, 22, 0, 0, 0, time.UTC)
+	records, a := packageBuilderFixture(now)
+	for i := range records.Tasks {
+		if records.Tasks[i].ID == "task-consumer" {
+			records.Tasks[i].Gate = &domain.TaskGate{Commands: []string{"make check-review"}, Timeout: 45 * time.Minute}
+		}
+	}
+	b := packageBuilder(t, records)
+	b.VerificationTimeout = 30 * time.Minute
+	b.GateCacheAge = 24 * time.Hour
+	b.WorkerCapabilities = map[string][]string{a.WorkerID: {workerproto.PackageCapabilityWorkerOwnedGate}}
+	offer, err := b.BuildAssignmentOffer(context.Background(), a, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("over-limit stored gate withheld: %v", err)
+	}
+	if gate := offer.Package.Package.Gate; gate == nil || gate.Timeout != 30*time.Minute || len(gate.Commands) != 1 {
+		t.Fatalf("gate not bounded by coordinator maximum: %+v", gate)
+	}
+	for _, task := range records.Tasks {
+		if task.ID == "task-consumer" && task.Gate.Timeout != 45*time.Minute {
+			t.Fatal("stored task gate mutated")
+		}
 	}
 }
 

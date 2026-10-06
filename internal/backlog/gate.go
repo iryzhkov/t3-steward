@@ -550,25 +550,37 @@ func gateToolVersions(ctx context.Context) (map[string]string, error) {
 var (
 	gateEnvironmentNames = map[string]struct{}{
 		"PATH": {}, "HOME": {}, "SHELL": {}, "TMPDIR": {}, "TZ": {}, "LANG": {}, "LANGUAGE": {},
+		// The gate shell itself: bash as /bin/sh imports these.
+		"SHELLOPTS": {}, "BASHOPTS": {}, "CDPATH": {}, "BASH_ENV": {}, "ENV": {},
 		"CC": {}, "CXX": {}, "AR": {}, "CFLAGS": {}, "CPPFLAGS": {}, "CXXFLAGS": {}, "LDFLAGS": {},
 		"MAKEFLAGS": {}, "GNUMAKEFLAGS": {}, "MFLAGS": {}, "MAKEFILES": {},
 		"LD_LIBRARY_PATH": {}, "LD_PRELOAD": {}, "PKG_CONFIG_PATH": {}, "PKG_CONFIG_LIBDIR": {},
-		"XDG_CACHE_HOME": {}, "XDG_CONFIG_HOME": {},
+		"XDG_CACHE_HOME": {}, "XDG_CONFIG_HOME": {}, "XDG_DATA_HOME": {},
 	}
-	gateEnvironmentPrefixes = []string{"GO", "CGO_", "LC_", "GIT_"}
+	gateEnvironmentPrefixes = []string{
+		"GO", "CGO_", "LC_", "GIT_",
+		// Toolchains a gate command may run besides Go.
+		"PYTHON", "NODE_", "NPM_CONFIG_", "npm_config_", "CARGO_", "RUST", "JAVA_",
+	}
 )
 
 // gateEnvironmentDigest hashes the allowlisted part of env. Only a digest is
 // stored, because even allowlisted values may carry credentials.
 func gateEnvironmentDigest(env []string) string {
-	selected := make([]string, 0, len(env))
+	// A child process sees the last of duplicate variables, so the last wins
+	// here too; otherwise two different effective values could share a key.
+	last := make(map[string]string)
 	for _, entry := range env {
 		name, _, _ := strings.Cut(entry, "=")
 		if _, ok := gateEnvironmentNames[name]; ok || slices.ContainsFunc(gateEnvironmentPrefixes, func(prefix string) bool {
 			return strings.HasPrefix(name, prefix)
 		}) {
-			selected = append(selected, entry)
+			last[name] = entry
 		}
+	}
+	selected := make([]string, 0, len(last))
+	for _, entry := range last {
+		selected = append(selected, entry)
 	}
 	sort.Strings(selected)
 	sum := sha256.Sum256([]byte(strings.Join(selected, "\x00")))
