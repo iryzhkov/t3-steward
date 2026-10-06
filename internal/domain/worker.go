@@ -36,6 +36,7 @@ type WorkerRuntimeIdentity struct {
 	LastReload      time.Time `json:"lastReload"`
 }
 type WorkerInventory struct {
+	Telemetry       *WorkerTelemetry          `json:"telemetry,omitempty"`
 	Runtime         *WorkerRuntimeIdentity    `json:"runtime,omitempty"`
 	CatalogRevision string                    `json:"catalogRevision,omitempty"`
 	ID              string                    `json:"id"`

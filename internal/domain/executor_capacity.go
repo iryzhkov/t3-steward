@@ -13,11 +13,12 @@ func AssignmentOwnsExecutorCapacity(attempt Attempt, assignment Assignment) bool
 }
 
 // AssignmentExecutorDemand returns the immutable demand committed with an
-// assignment. Overseer activations name no task and are known slot-only work.
+// assignment. Overseer activations name themselves, not a declared task, and
+// are known slot-only work.
 // An ordinary legacy assignment without placement evidence has unknown demand;
 // callers must not reconstruct it from a later mutable graph projection.
 func AssignmentExecutorDemand(attempt Attempt, assignment Assignment) (ResourceDemand, bool) {
-	if attempt.TaskID == "" {
+	if attempt.TaskID == "" || attempt.IsSupervisionActivation() {
 		return ResourceDemand{}, true
 	}
 	if assignment.ExecutorDemand != nil {

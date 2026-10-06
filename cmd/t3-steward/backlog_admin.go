@@ -1727,6 +1727,15 @@ func renderExplanation(out io.Writer, explanation *backlogadmin.Explanation) {
 	if explanation.EarliestAt != nil {
 		fmt.Fprintf(out, "earliest: %s\n", formatTime(*explanation.EarliestAt))
 	}
+	if explanation.Placement != nil {
+		fmt.Fprintf(out, "selected worker: %s\n", explanation.Placement.SelectedWorkerID)
+		for _, evaluation := range explanation.Placement.ResourceEvaluations {
+			fmt.Fprintf(out, "  %s\n", resourceEvaluationText(evaluation))
+		}
+		for _, rejection := range explanation.Placement.Rejections {
+			fmt.Fprintf(out, "  %s %s: %s\n", rejection.WorkerID, rejection.Code, rejection.Detail)
+		}
+	}
 	for _, blocker := range explanation.Blockers {
 		fmt.Fprintf(out, "  %s: %s\n", blocker.Code, blocker.Detail)
 	}

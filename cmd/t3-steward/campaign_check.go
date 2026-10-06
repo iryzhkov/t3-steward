@@ -34,20 +34,21 @@ func campaignViabilityRequest(plan campaign.Plan, bundleBytes int64, bundleFiles
 			continue
 		}
 		request.Tasks = append(request.Tasks, backlogadmin.ViabilityTask{
-			Name:          task.Name,
-			Project:       plan.Environment.Project,
-			Type:          plan.Environment.Type,
-			Ref:           plan.Environment.Ref,
-			Class:         domain.TaskClass(task.Class),
-			Hosts:         append([]string(nil), task.Placement.Hosts...),
-			Capabilities:  campaignTaskCapabilities(plan, task),
-			Resources:     campaignResourceDemand(task.Resources),
-			Routes:        campaignProviderRoutes(task.Routes),
-			Directories:   campaignDirectoryRequests(task.Directories),
-			ResourceLocks: append([]string(nil), task.ResourceLocks...),
-			NotBefore:     task.Timing.NotBefore,
-			ExpiresAt:     task.Timing.ExpiresAt,
-			Outputs:       len(task.Outputs),
+			Name:           task.Name,
+			Project:        plan.Environment.Project,
+			Type:           plan.Environment.Type,
+			Ref:            plan.Environment.Ref,
+			Class:          domain.TaskClass(task.Class),
+			Hosts:          append([]string(nil), task.Placement.Hosts...),
+			Capabilities:   campaignTaskCapabilities(plan, task),
+			Resources:      campaignResourceDemand(task.Resources),
+			ResourcePreset: task.Resources.Preset,
+			Routes:         campaignProviderRoutes(task.Routes),
+			Directories:    campaignDirectoryRequests(task.Directories),
+			ResourceLocks:  append([]string(nil), task.ResourceLocks...),
+			NotBefore:      task.Timing.NotBefore,
+			ExpiresAt:      task.Timing.ExpiresAt,
+			Outputs:        len(task.Outputs),
 		})
 	}
 	if plan.Supervision != nil {
@@ -407,6 +408,9 @@ func renderCampaignCheck(out interface{ Write([]byte) (int, error) }, document c
 	}
 	for _, task := range document.Matrix.Tasks {
 		linef("  %s  %s", task.Task, task.Outcome)
+		if task.SelectedWorker != "" {
+			linef("    selected worker: %s", task.SelectedWorker)
+		}
 		for _, reason := range task.Reasons {
 			linef("    %s  %s: %s", permanenceLabel(reason.Permanent), reason.Code, reason.Detail)
 		}
@@ -442,6 +446,9 @@ func renderCampaignCheck(out interface{ Write([]byte) (int, error) }, document c
 		}
 		for _, candidate := range listed {
 			linef("    %s  %s", candidate.Worker, candidate.Outcome)
+			if candidate.ResourceEvaluation != nil {
+				linef("      %s", resourceEvaluationText(*candidate.ResourceEvaluation))
+			}
 			for _, note := range candidateNotes(candidate) {
 				if !shared[note] {
 					linef("      %s", note)
@@ -471,6 +478,11 @@ func renderCampaignCheck(out interface{ Write([]byte) (int, error) }, document c
 				details = append(details, candidate.Worker+" ("+strings.Join(findings, "; ")+")")
 			}
 			linef("    not eligible, omitted: %d %s: %s", len(excluded), workers, strings.Join(details, ", "))
+			for _, candidate := range excluded {
+				if candidate.ResourceEvaluation != nil {
+					linef("      %s", resourceEvaluationText(*candidate.ResourceEvaluation))
+				}
+			}
 		}
 	}
 	_, err := fmt.Fprint(out, strings.Join(lines, "\n")+"\n")

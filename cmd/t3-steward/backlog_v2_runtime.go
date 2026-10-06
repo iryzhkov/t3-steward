@@ -206,6 +206,13 @@ func (r coordinatorQuotaReconciler) Tick(ctx context.Context) (backlog.QuotaBrid
 	return report, nil
 }
 
+func (p coordinatorPlanner) resourcePlacementPolicy() domain.ResourcePlacementPolicy {
+	if p.settings == nil {
+		return domain.DefaultResourcePlacementPolicy()
+	}
+	return p.settings.Coordinator.ResourcePlacement.Policy()
+}
+
 type coordinatorPlanningTicker interface {
 	Tick(context.Context, backlog.QuotaBridgeReport) (backlog.AssignmentPlanningReport, error)
 }
@@ -317,6 +324,7 @@ func (p coordinatorPlanner) yieldToOlderActivationContender(ctx context.Context,
 		Workflows: records.Workflows, WorkflowRuns: records.WorkflowRuns,
 		Tasks: records.Tasks, Attempts: records.Attempts, Assignments: records.Assignments,
 		WorkerSnapshots: snapshots, QuotaPools: quota.Pools, QuotaWindows: quota.Windows,
+		ResourcePolicy:       p.resourcePlacementPolicy(),
 		DisableQuotaChecks:   quota.ChecksDisabled,
 		MaxWorkerSnapshotAge: p.maxWorkerSnapshotAge, MaxQuotaObservationAge: p.maxQuotaObservationAge,
 		DeadlineRiskWindow: p.deadlineRiskWindow, CheckpointMargin: p.checkpointMargin,
@@ -469,6 +477,7 @@ func (p coordinatorPlanner) tick(ctx context.Context, quota backlog.QuotaBridgeR
 		Workflows: records.Workflows, WorkflowRuns: records.WorkflowRuns,
 		Tasks: records.Tasks, Attempts: records.Attempts, Assignments: records.Assignments,
 		WorkerSnapshots: snapshots, QuotaPools: quota.Pools, QuotaWindows: quota.Windows,
+		ResourcePolicy:         p.resourcePlacementPolicy(),
 		DisableQuotaChecks:     quota.ChecksDisabled,
 		MaxWorkerSnapshotAge:   p.maxWorkerSnapshotAge,
 		MaxQuotaObservationAge: p.maxQuotaObservationAge,
@@ -942,6 +951,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	service.SetCommitBundleOpener(coordinatorCommitBundleOpener(store,
 		newCoordinatorRepositoryObserver(cfg.BacklogV2, workerruntime.ProtocolResolver{}, epoch, nil)))
 	service.SetViability(backlogadmin.ViabilitySettings{
+		ResourcePolicy:    cfg.BacklogV2.Coordinator.ResourcePlacement.Policy(),
 		ReviewRoutes:      cfg.BacklogV2.ReviewRoutes,
 		Projects:          fleetProjects,
 		SetupProfiles:     fleetProfiles,

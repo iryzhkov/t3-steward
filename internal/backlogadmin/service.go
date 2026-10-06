@@ -507,6 +507,7 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 	loaded := newView(records, workers, admissions, s.runtime, s.now().UTC())
 	loaded.supervisorClientConfigured = s.supervisorClientConfigured
 	loaded.workerProviders = s.workerProviders
+	loaded.resourcePolicy = s.viabilitySettings.ResourcePolicy
 	if loaded.supervision, err = s.supervisionSnapshots(ctx, records, workers); err != nil {
 		return view{}, err
 	}
@@ -580,6 +581,7 @@ func notFound(kind, id string) error {
 }
 
 type view struct {
+	resourcePolicy  domain.ResourcePlacementPolicy
 	requirements    []domain.WorkerRequirement
 	enrollments     []domain.WorkerEnrollment
 	workerProviders map[string][]WorkerProviderAuthorization
@@ -1088,6 +1090,12 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 			(!attempt.Progress.Terminal() || !strings.HasPrefix(evidence.TurnEnd, "waiting for ")) {
 			explanation.Details = append(explanation.Details, "turn end: "+evidence.TurnEnd)
 		}
+		for _, assignment := range v.records.Assignments {
+			if assignment.AttemptID == attempt.ID && assignment.Placement != nil {
+				explanation.Placement = assignment.Placement
+				break
+			}
+		}
 		if attempt.Progress.Terminal() {
 			explanation.ReviewVerdict = domain.CloneReviewVerdict(attempt.ReviewVerdict)
 			explanation.Summary = "task is terminal"
@@ -1144,7 +1152,7 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 			}
 		}
 	}
-	v.addWorkerBlocker(&explanation, task)
+	v.addWorkerBlocker(&explanation, task, v.workflows[v.runs[runID].WorkflowID].Project)
 	v.addRouteBlocker(&explanation, task, attempt)
 	v.addQuotaBlocker(&explanation, task, attempt)
 	for _, lock := range v.locks(Filter{}) {
@@ -1212,7 +1220,11 @@ func (v view) addSupervisionBlocker(explanation *Explanation, runID string, task
 // about: an operator whose task requires a device no host provides was told
 // "no fresh ready worker satisfies placement", which names neither the
 // requirement nor the host that failed it.
-func (v view) addWorkerBlocker(explanation *Explanation, task domain.Task) {
+func (v view) addWorkerBlocker(explanation *Explanation, task domain.Task, projects ...string) {
+	var project string
+	if len(projects) != 0 {
+		project = projects[0]
+	}
 	// Staleness stays the view's own decision, which already accounts for the
 	// snapshot's validity window and the coordinator epoch. A stale worker is
 	// dropped here rather than re-judged by the matcher, so this change adds
@@ -1246,8 +1258,8 @@ func (v view) addWorkerBlocker(explanation *Explanation, task domain.Task) {
 	}
 	// MatchWorkers requires a positive bound; freshness was applied above, so
 	// this one is deliberately not binding.
-	placement, err := backlog.MatchWorkers(backlog.WorkerPlacementRequest{
-		Task: task, Now: v.now, MaxSnapshotAge: time.Duration(1 << 62),
+	selection, err := backlog.SelectWorker(backlog.WorkerPlacementRequest{
+		Task: task, Project: project, Now: v.now, MaxSnapshotAge: time.Duration(1 << 62), ResourcePolicy: v.resourcePolicy,
 	}, inventories)
 	if err != nil {
 		explanation.Blockers = append(explanation.Blockers, Blocker{
@@ -1255,6 +1267,10 @@ func (v view) addWorkerBlocker(explanation *Explanation, task domain.Task) {
 		})
 		return
 	}
+	if explanation.Placement == nil {
+		explanation.Placement = &selection.Decision
+	}
+	placement := selection.Placement
 	if len(placement.EligibleWorkerIDs) != 0 {
 		return
 	}

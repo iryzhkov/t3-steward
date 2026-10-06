@@ -532,7 +532,8 @@ type V2Verification struct {
 }
 
 type V2Coordinator struct {
-	ID string `yaml:"id"`
+	ID                string              `yaml:"id"`
+	ResourcePlacement V2ResourcePlacement `yaml:"resource_placement"`
 	// LegacyFileIntakeEnabled is a compatibility boolean. False/default is accepted;
 	// true is rejected because Markdown intake has been retired.
 	LegacyFileIntakeEnabled bool `yaml:"legacy_file_intake_enabled"`

@@ -102,9 +102,10 @@ type Acknowledgements struct {
 }
 
 type Observations struct {
-	Snapshot                  domain.WorkerSnapshot `json:"snapshot"`
-	Usage                     []domain.UsageSample  `json:"usage,omitempty"`
-	AcknowledgedUsageEventIDs []string              `json:"acknowledgedUsageEventIds,omitempty"`
+	Telemetry                 *domain.WorkerTelemetry `json:"telemetry,omitempty"`
+	Snapshot                  domain.WorkerSnapshot   `json:"snapshot"`
+	Usage                     []domain.UsageSample    `json:"usage,omitempty"`
+	AcknowledgedUsageEventIDs []string                `json:"acknowledgedUsageEventIds,omitempty"`
 }
 
 // ParkedAssignment is the coordinator's statement that one claimed assignment
@@ -170,7 +171,11 @@ const CapabilityQuotaObservations = "quota-observations-v1"
 // gated the way CapabilityQuotaObservations is, for the same strict decoding.
 const CapabilityTurnEndCommands = "turn-end-commands-v1"
 
+// CapabilityResourceTelemetry gates optional fields for peers with strict JSON decoding.
+const CapabilityResourceTelemetry = "resource-telemetry-v1"
+
 type SnapshotRequest struct {
+	ReportResourceTelemetry bool `json:"reportResourceTelemetry,omitempty"`
 	// ObservedWorkerEpoch and ObservedSequence acknowledge a durable snapshot
 	// read before the coordinator builds this parked-assignment statement.
 	ObservedWorkerEpoch string             `json:"observedWorkerEpoch,omitempty"`

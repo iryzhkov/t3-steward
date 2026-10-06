@@ -3,6 +3,9 @@ package workerruntime
 import (
 	"context"
 	"fmt"
+	"os"
+
+	"github.com/iryzhkov/t3-steward/internal/resourcetelemetry"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
@@ -57,6 +60,14 @@ func (e Exchange) handle(ctx context.Context, envelope workerproto.Envelope) (wo
 			return "", nil, err
 		}
 		observations := workerproto.Observations{Snapshot: snapshot}
+		if request.ReportResourceTelemetry {
+			collect := e.Runtime.config.CollectResourceTelemetry
+			if collect == nil {
+				collect = resourcetelemetry.New().Collect
+			}
+			telemetry := collect(e.Runtime.config.WorkspaceRoot, os.TempDir(), activeAttempts(snapshot.Assignments))
+			observations.Telemetry = &telemetry
+		}
 		if e.Usage != nil {
 			observations.Usage, err = e.Usage.WorkerUsageBatch(ctx, request.UsageAcknowledgements, workerproto.MaxUsageDelivery)
 			observations.AcknowledgedUsageEventIDs = append([]string(nil), request.UsageAcknowledgements...)
@@ -139,4 +150,17 @@ func (e Exchange) handle(ctx context.Context, envelope workerproto.Envelope) (wo
 	default:
 		return "", nil, &workerproto.ProtocolError{Code: workerproto.ErrorAuthorization, Message: "message kind is not a worker request", RequestID: envelope.RequestID}
 	}
+}
+
+// activeAttempts counts attempts that are using, or about to use, the host:
+// preparing and resuming attempts load it as much as running ones do.
+func activeAttempts(assignments []domain.WorkerAssignmentObservation) int {
+	active := 0
+	for _, assignment := range assignments {
+		switch assignment.Control {
+		case domain.ControlPreparing, domain.ControlRunning, domain.ControlResuming:
+			active++
+		}
+	}
+	return active
 }

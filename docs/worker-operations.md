@@ -65,6 +65,93 @@ A configured worker cannot receive new assignment offers until enrollment
 matches the effective requirement. Exact request replay is idempotent; changing
 its actor or body is rejected.
 
+## Resource-aware placement
+
+Workers include live telemetry in each inventory: one- and five-minute load,
+CPU count, available memory, swap usage, free space on the workspace and temp
+filesystems, and active (preparing, running or resuming) attempts. Linux reads
+/proc and statfs; missing fields on other platforms are unknown. The temp
+filesystem is the worker service's own TMPDIR, falling back to /tmp, and it
+must hold a task's scratch need plus the disk reserve. A worker whose /tmp is
+small therefore never receives `build` tasks until its service sets TMPDIR to a
+larger filesystem, even if the tasks themselves write temporary files elsewhere.
+
+Placement keeps enrollment, capabilities, CPU class, executor capacity and slots
+as hard constraints. Fresh telemetry additionally rejects a worker when memory
+available is below task memory plus reserve, either filesystem is below task
+scratch plus reserve, or swap exceeds the configured limit. Remaining workers
+rank by normalized CPU and memory headroom before existing preference scores.
+CPU headroom is `(cores - max(load1, load5) - task CPU units) / cores`,
+clamped to [-1, 1]. Memory headroom is
+`(available - task memory - reserve) / (available + task memory + reserve)`.
+The configured weights combine these measures; existing preference scores break
+headroom ties.
+Missing, partial and stale telemetry rank after complete fresh telemetry;
+unknown readings alone do not exclude a worker. Telemetry is fresh while its
+timestamp is within `telemetry_max_age` of the coordinator's clock in either
+direction, so a worker clock that leads the coordinator by less than that bound
+does not make its readings stale. Because any fresh, complete worker ranks ahead
+of any worker without such telemetry regardless of load, and CPU load never
+excludes a worker, an overloaded upgraded worker can be preferred over an idle
+worker that does not yet report telemetry until that worker is upgraded.
+
+Each offer cycle adds the expected needs of assignments already proposed in
+that cycle to the proposed worker's load, memory and disk readings, preventing
+a burst from repeatedly using the same idle snapshot. This holds for unsized
+tasks too: a task that declares no size and no CPU class floor is expected to
+use the coordinator's nominal unsized needs.
+
+Coordinator defaults can be adjusted under
+`backlog_v2.coordinator.resource_placement`:
+
+```yaml
+telemetry_max_age: 2m
+memory_reserve_mb: 1024
+disk_reserve_mb: 2048
+max_swap_used_mb: 4096
+cpu_weight: 1
+memory_weight: 1
+unsized_task_cpu_units: 1
+unsized_task_memory_mb: 1024
+unsized_task_scratch_mb: 0
+```
+
+Task resource presets supply expected CPU share, memory and scratch needs for
+the live telemetry floors, ranking and in-cycle reservation: `light` expects
+0.25 CPU units, 256 MiB memory and 512 MiB scratch; `build` expects 2 CPU
+units, 4096 MiB memory and 8192 MiB scratch. Build is intended for race tests
+and full review gates. Ingestion records the declared preset name on the task,
+and the expected needs follow that name, not the CPU classes. A build with
+`min_cpu_class: high` or `preferred_cpu_class: medium` therefore keeps build's
+memory and scratch needs. A task that declares classes without a preset, such
+as a bare `min_cpu_class: medium` or even build's own medium-and-high pair,
+uses the nominal unsized needs. Explicit `cpu_units`, `memory_mb` and
+`scratch_mb` override the expected needs per field. `campaign check` sends the
+preset name with each task so its live floors match placement. A review member's execution profile
+records its preset name too, and the member task inherits it. Tasks and review
+profiles stored before the preset name was recorded have none, so they use the
+nominal unsized needs unless they declare explicit sizes.
+
+With the defaults an unsized task therefore needs 2048 MiB of available memory
+(1024 MiB nominal need plus the 1024 MiB reserve). Setting all three
+`unsized_task_*` values to 0 removes the in-cycle reservation for unsized tasks,
+so a burst of them again fills the worker that looked idlest.
+
+A preset never reserves configured executor capacity. Only explicit
+`cpu_units`, `memory_mb` and `scratch_mb` are checked against a worker's
+configured `executors.cpu_units`, `memory_mb` and `scratch_mb`, so a
+fleet-managed worker that configures executor slots alone keeps receiving
+`light` and `build` tasks. A task with explicit sizes still needs a worker that
+configures those capacity dimensions.
+
+`backlog explain` and `campaign check` report the telemetry used, resource
+rejections, headroom score, ranking and selected worker. Explain preserves the
+assignment's recorded decision after dispatch; queued work and campaign check
+evaluate current snapshots, so a later report may change as load changes.
+Check is read-only and does not reserve resources: it evaluates each task
+independently, so it can name the same worker for every task of a burst that
+the planner will spread across workers within one cycle.
+
 ## Advertised capabilities and campaign supervision
 
 A worker advertises two kinds of capability in one list. The configured kind

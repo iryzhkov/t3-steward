@@ -13,6 +13,9 @@ type ReviewExecutionProfile struct {
 	QuotaPoolID string         `json:"quotaPoolId"`
 	MaxTurns    int            `json:"maxTurns"`
 	Resources   ResourceDemand `json:"resources"`
+	// ResourcePreset is the declared preset name, carried to the member task
+	// so its expected live needs survive a CPU-class override.
+	ResourcePreset string `json:"resourcePreset,omitempty"`
 }
 
 var reviewPoolID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)

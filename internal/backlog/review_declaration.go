@@ -37,7 +37,7 @@ func (e *ManifestReviewExecution) profile() (*domain.ReviewExecutionProfile, err
 	if err := validateResources("review execution resources", resources); err != nil {
 		return nil, err
 	}
-	p := &domain.ReviewExecutionProfile{Effort: e.Effort, QuotaPoolID: e.QuotaPoolID, MaxTurns: e.MaxTurns, Resources: resourceDemandFor(resources)}
+	p := &domain.ReviewExecutionProfile{Effort: e.Effort, QuotaPoolID: e.QuotaPoolID, MaxTurns: e.MaxTurns, Resources: resourceDemandFor(resources), ResourcePreset: resources.Preset}
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}

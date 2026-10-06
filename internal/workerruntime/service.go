@@ -177,6 +177,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		SnapshotTTL:      options.Settings.Freshness.WorkerMaxAge.D(),
 		LeaseDuration:    options.Settings.Leases.Duration.D(),
 		MaxPackageBytes:  options.Settings.MessageLimits.MaxBytes,
+		WorkspaceRoot:    options.Settings.Storage.Workspaces,
 		Inventory:        binding.Inventory,
 		ObserveInventory: observerForSettings(options),
 		LiveTaskWait:     options.LiveTaskWait,

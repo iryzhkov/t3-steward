@@ -236,6 +236,9 @@ func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 			}
 			// Host bucket observations are asked of a worker build that
 			// advertises them, so an older worker never meets the field.
+			if slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityResourceTelemetry) {
+				request.ReportResourceTelemetry = true
+			}
 			if slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityQuotaObservations) {
 				request.QuotaObservationsWanted = true
 			}
@@ -339,6 +342,7 @@ func (c FleetCoordinator) ReconcileWorker(
 		return WorkerExchangeReport{}, err
 	}
 	snapshot := observations.Snapshot
+	snapshot.Inventory.Telemetry = observations.Telemetry.Clone()
 	if err := validateObservationIdentity(transport, snapshot, epoch); err != nil {
 		return WorkerExchangeReport{}, err
 	}
@@ -400,6 +404,13 @@ func (c FleetCoordinator) ReconcileWorker(
 			}
 			continue
 		}
+		// Older workers decode assignment placement strictly. Project only the
+		// wire copy; the durable assignment keeps its complete decision trace.
+		if offer.Assignment.Placement != nil && !slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityResourceTelemetry) {
+			placement := *offer.Assignment.Placement
+			placement.ResourceEvaluations = nil
+			offer.Assignment.Placement = &placement
+		}
 		offers = append(offers, offer)
 		report.Offered = append(report.Offered, assignment)
 	}
@@ -445,6 +456,7 @@ func (c FleetCoordinator) ReconcileWorker(
 			return report, err
 		}
 		snapshot = observations.Snapshot
+		snapshot.Inventory.Telemetry = observations.Telemetry.Clone()
 		if err := validateObservationIdentity(transport, snapshot, epoch); err != nil {
 			return report, err
 		}
@@ -476,6 +488,9 @@ func (c FleetCoordinator) ReconcileWorker(
 			renewedSnapshot.WorkerEpoch != report.Snapshot.WorkerEpoch || renewedSnapshot.Sequence <= report.Snapshot.Sequence {
 			return report, errors.New("worker identity or sequence changed during lease renewal")
 		}
+		// Lease replies carry a snapshot but no resource observation. Keep the
+		// same epoch's last measurement and its original freshness timestamp.
+		renewedSnapshot.Inventory.Telemetry = report.Snapshot.Inventory.Telemetry.Clone()
 		for _, renewal := range renewals {
 			renewed, renewErr := store.RenewAssignmentLease(ctx, renewal)
 			if renewErr != nil {

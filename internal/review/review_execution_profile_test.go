@@ -13,7 +13,7 @@ import (
 func executionSpec() RequirementsSpec {
 	spec := authorityRequirementsSpec()
 	for i := range spec.Members {
-		spec.Members[i].Execution = &domain.ReviewExecutionProfile{Effort: "medium", QuotaPoolID: "review-pool", MaxTurns: 9, Resources: domain.ResourceDemand{MinCPUClass: domain.CPUClassMedium, PreferredCPUClass: domain.CPUClassHigh, CPUUnits: 1.5, MemoryMB: 512, ScratchMB: 64}}
+		spec.Members[i].Execution = &domain.ReviewExecutionProfile{Effort: "medium", QuotaPoolID: "review-pool", MaxTurns: 9, Resources: domain.ResourceDemand{MinCPUClass: domain.CPUClassMedium, PreferredCPUClass: domain.CPUClassHigh, CPUUnits: 1.5, MemoryMB: 512, ScratchMB: 64}, ResourcePreset: "build"}
 	}
 	return spec
 }
@@ -27,6 +27,7 @@ func executionChanges() map[string]func(*domain.ReviewExecutionProfile) {
 		"cpu":        func(p *domain.ReviewExecutionProfile) { p.Resources.CPUUnits++ },
 		"memory":     func(p *domain.ReviewExecutionProfile) { p.Resources.MemoryMB++ },
 		"scratch":    func(p *domain.ReviewExecutionProfile) { p.Resources.ScratchMB++ },
+		"preset":     func(p *domain.ReviewExecutionProfile) { p.ResourcePreset = "light" },
 	}
 }
 func TestReviewExecutionProfileEveryFieldDigestAndIsolation(t *testing.T) {

@@ -41,6 +41,7 @@ func TestReviewExecutionProfilePolicyDigestAndExactGrantCustody(t *testing.T) {
 		"cpu":        func(p *domain.ReviewExecutionProfile) { p.Resources.CPUUnits++ },
 		"memory":     func(p *domain.ReviewExecutionProfile) { p.Resources.MemoryMB++ },
 		"scratch":    func(p *domain.ReviewExecutionProfile) { p.Resources.ScratchMB++ },
+		"preset":     func(p *domain.ReviewExecutionProfile) { p.ResourcePreset = "light" },
 	}
 	for name, change := range changes {
 		t.Run(name, func(t *testing.T) {
@@ -118,7 +119,7 @@ func TestReviewExecutionProfileParserCompiler(t *testing.T) {
 	}
 	r := m.Tasks["inspect"].ReviewRequirements
 	c := compileTaskReview(r, "w", "r", "t", domain.Artifact{ID: "criteria"})
-	expected := domain.ReviewExecutionProfile{Effort: "medium", QuotaPoolID: "review-pool", MaxTurns: 9, Resources: domain.ResourceDemand{MinCPUClass: domain.CPUClassMedium, PreferredCPUClass: domain.CPUClassHigh, CPUUnits: 1.5, MemoryMB: 512, ScratchMB: 64}}
+	expected := domain.ReviewExecutionProfile{Effort: "medium", QuotaPoolID: "review-pool", MaxTurns: 9, Resources: domain.ResourceDemand{MinCPUClass: domain.CPUClassMedium, PreferredCPUClass: domain.CPUClassHigh, CPUUnits: 1.5, MemoryMB: 512, ScratchMB: 64}, ResourcePreset: "build"}
 	if c.Version != 2 || *c.Members[0].Execution != expected {
 		t.Fatalf("wrong compiled profile: %+v", c)
 	}
@@ -139,7 +140,7 @@ func TestReviewExecutionProfileParserCompiler(t *testing.T) {
 		t.Fatal(err)
 	}
 	lc := compileTaskReview(lm.Tasks["inspect"].ReviewRequirements, "w", "r", "t", domain.Artifact{})
-	if lc.Members[0].Execution.Resources.MinCPUClass != domain.CPUClassLow || lc.Members[0].Execution.Resources.PreferredCPUClass != "" {
+	if lc.Members[0].Execution.Resources.MinCPUClass != domain.CPUClassLow || lc.Members[0].Execution.Resources.PreferredCPUClass != "" || lc.Members[0].Execution.ResourcePreset != "light" {
 		t.Fatal("light preset wrong")
 	}
 }
