@@ -326,9 +326,29 @@ over the same artifact path every other input takes:
   64 MiB, never more than `message_limits.max_artifact_bytes`) is not retained.
   The producer still succeeds, because a successor on its own worker needs no
   bundle, and the record states why in `bundleOmitted`.
+- The producer's whole result, including its bundles, its other artifacts, the
+  final message and the thread archive, travels as one upload under the
+  aggregate limit (`message_limits.max_artifact_bytes`). Bundles are budgeted
+  last, in declaration order: a bundle that would push the upload over that
+  limit is not retained, and its record says so in `bundleOmitted`, so bundles
+  can never turn a result that would otherwise be collected into a collection
+  failure.
 - A successor placed on another worker is delivered the bundle with its other
   inputs, outside its dependency view. A successor on the producer's worker is
   delivered nothing and resolves the ref exactly as before.
+- Bundles are also budgeted last in the successor's execution package. One
+  that does not fit the package's total limit is named in the package with the
+  reason instead of being delivered, so the offer is still made; the successor
+  fails preparation with that reason, and only if its worker does not already
+  hold the commit.
+- A successor that carries a declared commit from another run, as a rerun does
+  from its source run and an external dependency does from the run it names,
+  is delivered the bundle of exactly the source attempt it pinned, under the
+  source run's ref. Preparation accepts the carried provenance record only
+  from the dependency bound to that source run and task; the import is held
+  for the source run and released with it. Reruns authored before this change
+  carry no source attempt, so no bundle is selected for them and a successor
+  on another worker fails preparation by the existing run check.
 - Before fetching, the consuming worker looks for the ref in its own store. If
   it is missing, the worker checks the delivered bundle against the digest in
   the provenance record, checks that the bundle names exactly the declared
@@ -343,7 +363,9 @@ over the same artifact path every other input takes:
 
 A task that consumes a declared commit requires `campaign-commit-bundle-v1` of
 the worker that runs it, so placement and `campaign check` exclude a worker
-whose build cannot import a commit, naming the capability. A successor of a
+whose build cannot import a commit, naming the capability. Ingest adds the
+requirement for a direct consumer and for a consumer of an external declared
+commit, and a rerun adds it to a task that carries one. A successor of a
 producer that ran on a build without the capability, or whose bundle was not
 retained, fails preparation on any other worker with that cause rather than
 `couldn't find remote ref`.

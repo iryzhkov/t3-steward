@@ -43,6 +43,13 @@ type AttemptFinalization struct {
 	// CommitBundleLimit is the largest bundle the artifact transport accepts.
 	// Zero leaves only the campaign ref store's own limit.
 	CommitBundleLimit int64
+	// ResultByteLimit is the total limit of the one upload that carries the
+	// attempt's result, and ResultReservedBytes is what collection adds to that
+	// upload after finalization, such as the final message and the thread
+	// archive. Bundles are retained only while the whole upload still fits.
+	// Zero leaves bundles bounded only one by one.
+	ResultByteLimit     int64
+	ResultReservedBytes int64
 }
 
 // FinalizationArtifact is evidence captured alongside an attempt's declared
@@ -244,6 +251,12 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			strings.Join(names, ", ")))
 		commits = nil
 	}
+	var published []publishedCommit
+	defer func() {
+		for _, commit := range published {
+			commit.bundle.discard()
+		}
+	}()
 	for _, declaration := range commits {
 		if f.CampaignRefs.Root == "" {
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt commit %q: campaign ref store is required", declaration.Name)
@@ -261,16 +274,41 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			failures = append(failures, fmt.Sprintf("declared commit %q: %v", declaration.Name, publishErr))
 			continue
 		}
+		entry := publishedCommit{declaration: declaration, provenance: provenance}
 		if request.CommitBundles {
-			bound, bundle, bundleErr := f.retainCommitBundle(ctx, request, stageDir, provenance, now)
+			bound, bundle, bundleErr := f.makeCommitBundle(ctx, request, provenance)
 			if bundleErr != nil {
 				failures = append(failures, fmt.Sprintf("declared commit %q: %v", declaration.Name, bundleErr))
 				continue
 			}
-			provenance = bound
-			if bundle != nil {
-				artifacts = append(artifacts, *bundle)
+			entry.provenance, entry.bundle = bound, bundle
+		}
+		published = append(published, entry)
+	}
+
+	// The attempt's result travels as one upload with one total limit:
+	// everything captured here, and what collection adds afterwards. Bundles
+	// are the only part of it that is optional, so they are what gives way.
+	if request.ResultByteLimit > 0 {
+		used := request.ResultReservedBytes
+		for _, artifact := range artifacts {
+			used += artifact.Size
+		}
+		for _, extra := range request.Extra {
+			used += int64(len(extra.Content))
+		}
+		if err := budgetCommitBundles(published, used, request.ResultByteLimit); err != nil {
+			return FinalizedAttempt{}, fmt.Errorf("finalize attempt commits: %w", err)
+		}
+	}
+	for _, commit := range published {
+		declaration, provenance := commit.declaration, commit.provenance
+		if commit.bundle != nil && provenance.Bundle != nil {
+			bundle, captureErr := f.captureCommitBundle(request, stageDir, provenance, *commit.bundle, now)
+			if captureErr != nil {
+				return FinalizedAttempt{}, fmt.Errorf("finalize attempt commit %q: %w", declaration.Name, captureErr)
 			}
+			artifacts = append(artifacts, bundle)
 		}
 		record, marshalErr := MarshalCommitProvenance(provenance)
 		if marshalErr != nil {

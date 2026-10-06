@@ -204,6 +204,12 @@ func (s *CustodyStore) ResultDurable(pkg workerproto.ExecutionPackage) (bool, er
 	return false, nil
 }
 
+// MaxResultBytes is the total limit of one upload, which is what bounds an
+// attempt's whole result.
+func (s *CustodyStore) MaxResultBytes() int64 {
+	return s.config.MaxTotalBytes
+}
+
 // PublishResult retains finalizer output, final message, and thread archive as one upload.
 func (s *CustodyStore) PublishResult(ctx context.Context, pkg workerproto.ExecutionPackage, result PublishedResult) error {
 	if durable, err := s.ResultDurable(pkg); err != nil || durable {

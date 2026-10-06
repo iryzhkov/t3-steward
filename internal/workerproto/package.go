@@ -96,17 +96,30 @@ type DependencyInput struct {
 // CommitBundleInput is the retained bundle of one declared commit a dependency
 // produced on another worker. It is delivered with the other inputs and is
 // read only when the consuming worker's own store lacks the commit.
+//
+// Exactly one of Bundle and Omitted is set. Omitted is the coordinator's reason
+// for not delivering a bundle it retains, such as the package's total byte
+// limit; the consuming worker refuses the commit with it, and only when its own
+// store does not already hold the commit.
 type CommitBundleInput struct {
-	// TaskID is the producing task, and Name the declared commit.
-	TaskID string         `json:"taskId"`
-	Name   string         `json:"name"`
-	Bundle ArtifactObject `json:"bundle"`
+	// WorkflowRunID and TaskID name the run and task that produced the commit,
+	// which for an input carried from another run are that source run's, and
+	// Name is the declared commit.
+	WorkflowRunID string          `json:"workflowRunId"`
+	TaskID        string          `json:"taskId"`
+	Name          string          `json:"name"`
+	Bundle        *ArtifactObject `json:"bundle,omitempty"`
+	Omitted       string          `json:"omitted,omitempty"`
 }
+
+// maxCommitBundleOmission bounds the reason a package gives for a bundle it
+// does not carry.
+const maxCommitBundleOmission = 1024
 
 // CommitBundlePath is where a package places the bundle of one declared
 // commit. It is outside dependencies/, so it never reaches the task's view.
-func CommitBundlePath(taskID, name string) string {
-	return "commit-bundles/" + taskID + "/" + name + ".bundle"
+func CommitBundlePath(runID, taskID, name string) string {
+	return "commit-bundles/" + runID + "/" + taskID + "/" + name + ".bundle"
 }
 
 // Package capabilities name behaviour a worker must implement to execute a
@@ -345,17 +358,25 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 	}
 	bundles := make(map[string]struct{}, len(pkg.CommitBundles))
 	for _, input := range pkg.CommitBundles {
-		if !identityPattern.MatchString(input.TaskID) || !safeRelativePath(input.Name) || strings.Contains(input.Name, "/") {
+		if !identityPattern.MatchString(input.WorkflowRunID) || !identityPattern.MatchString(input.TaskID) ||
+			!safeRelativePath(input.Name) || strings.Contains(input.Name, "/") {
 			return errors.New("execution package: invalid commit bundle reference")
 		}
-		if _, duplicate := bundles[input.TaskID+"\x00"+input.Name]; duplicate {
+		key := input.WorkflowRunID + "\x00" + input.TaskID + "\x00" + input.Name
+		if _, duplicate := bundles[key]; duplicate {
 			return errors.New("execution package: duplicate commit bundle")
 		}
-		bundles[input.TaskID+"\x00"+input.Name] = struct{}{}
-		if input.Bundle.Path != CommitBundlePath(input.TaskID, input.Name) {
+		bundles[key] = struct{}{}
+		if (input.Bundle == nil) == (input.Omitted == "") || len(input.Omitted) > maxCommitBundleOmission {
+			return errors.New("execution package: a commit bundle must be either delivered or omitted with a reason")
+		}
+		if input.Bundle == nil {
+			continue
+		}
+		if input.Bundle.Path != CommitBundlePath(input.WorkflowRunID, input.TaskID, input.Name) {
 			return errors.New("execution package: commit bundle path does not name its commit")
 		}
-		if err := validatePackageArtifact(input.Bundle, pkg.Limits.MaxArtifactBytes, paths); err != nil {
+		if err := validatePackageArtifact(*input.Bundle, pkg.Limits.MaxArtifactBytes, paths); err != nil {
 			return fmt.Errorf("execution package: commit bundle: %w", err)
 		}
 		total += input.Bundle.Size

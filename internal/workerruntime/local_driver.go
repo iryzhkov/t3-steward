@@ -185,15 +185,14 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	for _, dependency := range pkg.Dependencies {
 		objects = append(objects, dependency.Artifacts...)
 	}
-	commitBundles := make(map[string]backlog.CommitBundleDelivery, len(pkg.CommitBundles))
 	for _, input := range pkg.CommitBundles {
-		objects = append(objects, input.Bundle)
-		object := input.Bundle
-		commitBundles[backlog.CampaignRef(pkg.Identity.WorkflowRunID, input.TaskID, input.Name)] = backlog.CommitBundleDelivery{
-			SHA256: object.SHA256, Size: object.Size,
-			Open: func(context.Context) (io.ReadCloser, error) { return openRegular(d.objectPath(object)) },
+		if input.Bundle != nil {
+			objects = append(objects, *input.Bundle)
 		}
 	}
+	commitBundles := commitBundleDeliveries(pkg, func(object workerproto.ArtifactObject) (io.ReadCloser, error) {
+		return openRegular(d.objectPath(object))
+	})
 	for _, object := range objects {
 		if _, err := d.cacheArtifact(ctx, object, pkg.Limits.MaxArtifactBytes); err != nil {
 			return "", err
@@ -249,6 +248,7 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		WorkflowRunID: pkg.Identity.WorkflowRunID, Task: task, Attempt: attempt,
 		Environment: environment, InputArtifacts: inputs, DependencyTasks: dependencyTasks,
 		DependencyArtifacts: dependencyArtifacts, CommitBundles: commitBundles,
+		DependencySources: dependencySources(pkg),
 	})
 	if err != nil {
 		return "", err
@@ -1019,6 +1019,11 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		// artifact, so it is bounded by the same limit.
 		CommitBundles:     slices.Contains(pkg.RequiredCapabilities, workerproto.PackageCapabilityCommitBundle),
 		CommitBundleLimit: pkg.Limits.MaxArtifactBytes,
+		// The whole result, including the final message and the thread
+		// archive published with it below, is one upload with one total
+		// limit, so bundles are budgeted against what is left of it.
+		ResultByteLimit:     d.resultByteLimit(pkg),
+		ResultReservedBytes: int64(len(message)) + int64(len(archive)),
 	})
 	if err != nil {
 		return err

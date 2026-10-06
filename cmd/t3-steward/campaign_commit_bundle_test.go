@@ -33,12 +33,16 @@ func TestCampaignCheckAsksForTheCommitBundleCapabilityOfACommitConsumer(t *testi
 }
 
 // The bundle travels to the consuming worker with the package's other objects,
-// over the same download, so no new channel is involved.
+// over the same download, so no new channel is involved. A bundle the package
+// names as omitted adds nothing to the download.
 func TestExecutionPackageObjectsIncludeCommitBundles(t *testing.T) {
-	bundle := workerproto.ArtifactObject{ID: "bundle-1", Path: workerproto.CommitBundlePath("task-producer", "repair")}
+	bundle := workerproto.ArtifactObject{ID: "bundle-1", Path: workerproto.CommitBundlePath("run-1", "task-producer", "repair")}
 	objects := executionPackageObjects(workerproto.ExecutionPackage{
-		Prompt:        workerproto.ArtifactObject{ID: "prompt-1"},
-		CommitBundles: []workerproto.CommitBundleInput{{TaskID: "task-producer", Name: "repair", Bundle: bundle}},
+		Prompt: workerproto.ArtifactObject{ID: "prompt-1"},
+		CommitBundles: []workerproto.CommitBundleInput{
+			{WorkflowRunID: "run-1", TaskID: "task-producer", Name: "repair", Bundle: &bundle},
+			{WorkflowRunID: "run-1", TaskID: "task-producer", Name: "followup", Omitted: "over the total"},
+		},
 	})
 	if len(objects) != 2 || objects[1] != bundle {
 		t.Fatalf("delivered objects = %+v", objects)

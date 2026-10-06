@@ -148,7 +148,18 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 	if err != nil {
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: dependencies: %w", err)
 	}
-	commitBundles, err := packageCommitBundles(state.task, state.tasks, state.artifacts, state.run.ID, assignment.WorkerID, attemptWorkers(records))
+	// Bundles are budgeted after every other input, so that they can never
+	// make an otherwise valid package exceed its total byte limit.
+	budget := commitBundleBudget{Remaining: b.MaxTotalBytes - prompt.Size, MaxTotalBytes: b.MaxTotalBytes, MaxArtifactBytes: b.MaxArtifactBytes}
+	for _, object := range staticInputs {
+		budget.Remaining -= object.Size
+	}
+	for _, dependency := range dependencies {
+		for _, object := range dependency.Artifacts {
+			budget.Remaining -= object.Size
+		}
+	}
+	commitBundles, err := packageCommitBundles(state.task, state.tasks, state.artifacts, state.run.ID, assignment.WorkerID, attemptWorkers(records), budget)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: commit bundles: %w", err)
 	}

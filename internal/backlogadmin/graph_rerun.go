@@ -162,9 +162,20 @@ func (b *rerunReferences) detach(ctx context.Context, task *domain.Task, reused 
 			if err != nil {
 				return err
 			}
-			task.CarriedInputs = append(task.CarriedInputs, domain.CarriedInput{
+			carried := domain.CarriedInput{
 				Producer: need, ProducerTaskID: ancestor.ID, Name: name, ArtifactID: referenced,
-			})
+			}
+			if artifact.AttemptID != "" {
+				// The source binding pins the exact attempt whose record is
+				// carried, which is what selects that attempt's commit bundle
+				// for a consumer on another worker and what preparation checks
+				// the carried record against.
+				carried.SourceRunID, carried.SourceAttemptID, carried.SourceArtifactID = b.source.ID, artifact.AttemptID, artifact.ID
+			}
+			task.CarriedInputs = append(task.CarriedInputs, carried)
+			if backlog.DeclaresCommit(ancestor, name) {
+				backlog.RequireCommitBundleCapability(task)
+			}
 		}
 	}
 	task.Needs = keptNeeds

@@ -78,8 +78,9 @@ func TestConsumerOnAnotherWorkerIsSentTheCommitBundle(t *testing.T) {
 		t.Fatalf("commit bundles = %+v", pkg.CommitBundles)
 	}
 	bundle := pkg.CommitBundles[0]
-	if bundle.TaskID != "task-producer" || bundle.Name != "repair" || bundle.Bundle.ID != "bundle-1" ||
-		bundle.Bundle.Path != "commit-bundles/task-producer/repair.bundle" || bundle.Bundle.SHA256 != strings.Repeat("c", 64) {
+	if bundle.WorkflowRunID != "run-1" || bundle.TaskID != "task-producer" || bundle.Name != "repair" || bundle.Bundle == nil ||
+		bundle.Bundle.ID != "bundle-1" || bundle.Bundle.Path != "commit-bundles/run-1/task-producer/repair.bundle" ||
+		bundle.Bundle.SHA256 != strings.Repeat("c", 64) {
 		t.Fatalf("commit bundle = %+v", bundle)
 	}
 	for _, dependency := range pkg.Dependencies {

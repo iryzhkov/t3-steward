@@ -65,11 +65,13 @@ func IsCommitBundleOf(task domain.Task, name string) bool {
 
 // CommitBundleDelivery is a commit bundle as an execution package delivered it
 // to the consuming worker. Open is called only when the worker's own store does
-// not already hold the commit.
+// not already hold the commit. Omitted, when set, is the coordinator's reason
+// for not delivering a bundle it retains, and nothing can be opened.
 type CommitBundleDelivery struct {
-	SHA256 string
-	Size   int64
-	Open   func(context.Context) (io.ReadCloser, error)
+	SHA256  string
+	Size    int64
+	Open    func(context.Context) (io.ReadCloser, error)
+	Omitted string
 }
 
 func (s CampaignRefStore) maxBundleBytes() int64 {
@@ -79,39 +81,145 @@ func (s CampaignRefStore) maxBundleBytes() int64 {
 	return DefaultCommitBundleMaxBytes
 }
 
-// retainCommitBundle makes the bundle of one published commit and captures it
-// in the attempt's staging directory, returning the provenance bound to it and
-// the artifact that carries it.
+// commitBundleCandidate is a verified bundle made for one published commit and
+// not yet captured. Whether it is retained depends on what else the attempt's
+// result upload carries, so it waits in its private temporary directory until
+// that is known.
+type commitBundleCandidate struct {
+	path   string
+	size   int64
+	sha256 string
+}
+
+// discard removes the candidate's temporary directory. It is safe on nil.
+func (c *commitBundleCandidate) discard() {
+	if c != nil {
+		_ = os.RemoveAll(filepath.Dir(c.path))
+	}
+}
+
+// publishedCommit is one declared commit the finalizer published, with the
+// bundle made for it, if any, until the bundle is captured or left out.
+type publishedCommit struct {
+	declaration domain.ArtifactDeclaration
+	provenance  CommitProvenance
+	bundle      *commitBundleCandidate
+}
+
+// makeCommitBundle makes the bundle of one published commit and returns the
+// provenance bound to it.
 //
 // A bundle that cannot be retained for a reason that is a property of the
 // commit, such as its size, does not fail the producer: a consumer on the same
 // worker never needs it. The reason is recorded in the provenance instead, so
 // that a consumer elsewhere is refused with it rather than with a missing ref.
-func (f AttemptFinalizer) retainCommitBundle(
+func (f AttemptFinalizer) makeCommitBundle(
 	ctx context.Context,
 	request AttemptFinalization,
-	stageDir string,
 	provenance CommitProvenance,
-	now time.Time,
-) (CommitProvenance, *domain.Artifact, error) {
+) (CommitProvenance, *commitBundleCandidate, error) {
 	limit := f.CampaignRefs.maxBundleBytes()
 	if request.CommitBundleLimit > 0 && request.CommitBundleLimit < limit {
 		// The bundle travels as an artifact and cannot exceed what the
 		// artifact transport accepts.
 		limit = request.CommitBundleLimit
 	}
-	bundle, omitted, err := f.CampaignRefs.createBundle(ctx, provenance, limit, nil)
+	path, omitted, err := f.CampaignRefs.createBundle(ctx, provenance, limit, nil)
 	if err != nil {
 		return CommitProvenance{}, nil, err
 	}
-	if bundle == "" {
+	if path == "" {
 		provenance.BundleOmitted = omitted
 		return provenance, nil, nil
 	}
-	defer os.RemoveAll(filepath.Dir(bundle))
-	input, err := os.Open(bundle)
+	candidate := &commitBundleCandidate{path: path}
+	input, err := os.Open(path)
 	if err != nil {
+		candidate.discard()
 		return CommitProvenance{}, nil, fmt.Errorf("open commit bundle: %w", err)
+	}
+	defer input.Close()
+	hash := sha256.New()
+	if candidate.size, err = io.Copy(hash, input); err != nil {
+		candidate.discard()
+		return CommitProvenance{}, nil, fmt.Errorf("read commit bundle: %w", err)
+	}
+	candidate.sha256 = fmt.Sprintf("%x", hash.Sum(nil))
+	return candidate.bind(provenance), candidate, nil
+}
+
+// bind returns the provenance bound to this bundle.
+func (c *commitBundleCandidate) bind(provenance CommitProvenance) CommitProvenance {
+	provenance.Bundle = &CommitBundleRecord{Artifact: CommitBundleArtifactName(provenance.Name), SHA256: c.sha256, Size: c.size}
+	provenance.BundleOmitted = ""
+	return provenance
+}
+
+// budgetCommitBundles decides which bundles the attempt's one result upload
+// can carry within limit, when used bytes of it are already taken by
+// everything else. Each bundle is admitted in declaration order only if the
+// whole upload, with every provenance record as it will then read, still fits;
+// the record of a bundle left out says why. Nothing here fails the producer: a
+// consumer on its own worker needs no bundle, and a consumer elsewhere is
+// refused with the recorded reason.
+func budgetCommitBundles(published []publishedCommit, used, limit int64) error {
+	total := func() (int64, error) {
+		sum := used
+		for _, commit := range published {
+			record, err := MarshalCommitProvenance(commit.provenance)
+			if err != nil {
+				return 0, err
+			}
+			sum += int64(len(record))
+			if commit.provenance.Bundle != nil {
+				sum += commit.bundle.size
+			}
+		}
+		return sum, nil
+	}
+	// Every bundle starts out left out, so each admission below is checked
+	// against the records exactly as they would be published at that point.
+	omitted := make([]CommitProvenance, len(published))
+	for index := range published {
+		commit := &published[index]
+		if commit.bundle == nil {
+			continue
+		}
+		commit.provenance.Bundle = nil
+		commit.provenance.BundleOmitted = fmt.Sprintf(
+			"the bundle of %s..%s is %d bytes, and with the attempt's other results the result upload would exceed its total limit of %d bytes",
+			commit.provenance.Base, commit.provenance.Commit, commit.bundle.size, limit)
+		omitted[index] = commit.provenance
+	}
+	for index := range published {
+		commit := &published[index]
+		if commit.bundle == nil {
+			continue
+		}
+		commit.provenance = commit.bundle.bind(commit.provenance)
+		size, err := total()
+		if err != nil {
+			return err
+		}
+		if size > limit {
+			commit.provenance = omitted[index]
+		}
+	}
+	return nil
+}
+
+// captureCommitBundle captures a retained bundle in the attempt's staging
+// directory as the artifact its provenance record is bound to.
+func (f AttemptFinalizer) captureCommitBundle(
+	request AttemptFinalization,
+	stageDir string,
+	provenance CommitProvenance,
+	candidate commitBundleCandidate,
+	now time.Time,
+) (domain.Artifact, error) {
+	input, err := os.Open(candidate.path)
+	if err != nil {
+		return domain.Artifact{}, fmt.Errorf("open commit bundle: %w", err)
 	}
 	defer input.Close()
 	name := CommitBundleArtifactName(provenance.Name)
@@ -120,10 +228,12 @@ func (f AttemptFinalizer) retainCommitBundle(
 	))
 	file, err := writeIngestedFile(input, filepath.Join(stageDir, "artifacts", filepath.FromSlash(name)), name, storagePath)
 	if err != nil {
-		return CommitProvenance{}, nil, fmt.Errorf("capture commit bundle: %w", err)
+		return domain.Artifact{}, fmt.Errorf("capture commit bundle: %w", err)
 	}
-	provenance.Bundle = &CommitBundleRecord{Artifact: name, SHA256: file.sha256, Size: file.size}
-	return provenance, &domain.Artifact{
+	if file.size != candidate.size || !strings.EqualFold(file.sha256, candidate.sha256) {
+		return domain.Artifact{}, fmt.Errorf("capture commit bundle: %s changed after it was bound to its provenance record", name)
+	}
+	return domain.Artifact{
 		ID: f.newID("artifact"), WorkflowRunID: request.Attempt.WorkflowRunID,
 		TaskID: request.Task.ID, AttemptID: request.Attempt.ID,
 		Kind: domain.ArtifactGitState, Name: name, MediaType: CommitBundleMediaType,
@@ -294,6 +404,10 @@ func (s CampaignRefStore) importBundle(ctx context.Context, workspaceDir string,
 				ref, workerproto.PackageCapabilityCommitBundle)
 		}
 	}
+	if delivery.Omitted != "" {
+		return fmt.Errorf("campaign commit %s is not in this worker's campaign ref store, and the coordinator could not deliver its bundle: %s",
+			ref, delivery.Omitted)
+	}
 	if provenance.Bundle == nil {
 		return fmt.Errorf("campaign commit %s: a bundle was delivered, but its provenance record is bound to none", ref)
 	}
@@ -453,6 +567,24 @@ func placementCapabilities(manifest Manifest, task ManifestTask) []string {
 		capabilities = append(capabilities, workerproto.PackageCapabilityCommitBundle)
 	}
 	return capabilities
+}
+
+// RequireCommitBundleCapability adds the commit bundle capability to a task
+// that consumes a declared commit outside manifest ingest: a rerun carrying one
+// from its source run, or an external dependency on one. Placement then
+// excludes a worker that could not obtain the commit, exactly as for a commit
+// consumer placed at ingest.
+func RequireCommitBundleCapability(task *domain.Task) {
+	if !slices.Contains(task.Placement.Capabilities, workerproto.PackageCapabilityCommitBundle) {
+		task.Placement.Capabilities = append(task.Placement.Capabilities, workerproto.PackageCapabilityCommitBundle)
+	}
+}
+
+// DeclaresCommit reports whether a task declares name as a commit output.
+func DeclaresCommit(task domain.Task, name string) bool {
+	return slices.ContainsFunc(task.Outputs, func(output domain.ArtifactDeclaration) bool {
+		return output.Commit != nil && output.Name == filepath.ToSlash(name)
+	})
 }
 
 // ConsumesDeclaredCommit reports whether a manifest task takes a declared
