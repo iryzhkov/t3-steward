@@ -49,6 +49,55 @@ type coordinatorRepositoryObserver struct {
 	// after another, which keeps the number of concurrent worker connections a
 	// single read-only query can open at one.
 	mu sync.Mutex
+
+	// budget bounds one probe, dial included. A readiness check runs inside an
+	// admin request with a 30 s deadline and observes every task on every
+	// eligible worker one after another, so a single worker that accepts a
+	// connection and never answers must not consume the transport's whole
+	// request timeout.
+	budget time.Duration
+	// failures remembers a probe that could not be answered, by key digest, for
+	// repositoryProbeFailureTTL. Without it every task of a campaign re-dialled
+	// the same unreachable worker over a fresh connection. Guarded by mu.
+	failures map[string]failedRepositoryProbe
+}
+
+// repositoryProbeBudget is the default bound on one probe, dial included.
+const repositoryProbeBudget = 10 * time.Second
+
+// repositoryProbeFailureTTL is how long an unanswered probe is remembered. It is
+// short because an unreachable worker is a temporary finding: long enough to
+// cover the remaining tasks of one readiness check and an immediate retry,
+// short enough that a worker that comes back is probed again within minutes.
+const repositoryProbeFailureTTL = 2 * time.Minute
+
+type failedRepositoryProbe struct {
+	err error
+	at  time.Time
+}
+
+// rememberedFailure returns the remembered error for key while it is fresh.
+// The caller holds mu.
+func (o *coordinatorRepositoryObserver) rememberedFailure(key backlog.RepositoryProbeKey) error {
+	failure, found := o.failures[key.Digest()]
+	if !found {
+		return nil
+	}
+	if o.now().Sub(failure.at) > repositoryProbeFailureTTL {
+		delete(o.failures, key.Digest())
+		return nil
+	}
+	return failure.err
+}
+
+// rememberFailure records err for key. The caller holds mu.
+func (o *coordinatorRepositoryObserver) rememberFailure(key backlog.RepositoryProbeKey, err error) error {
+	if o.failures == nil {
+		o.failures = map[string]failedRepositoryProbe{}
+	}
+	err = fmt.Errorf("%w (remembered for %s)", err, repositoryProbeFailureTTL)
+	o.failures[key.Digest()] = failedRepositoryProbe{err: err, at: o.now()}
+	return err
 }
 
 func newCoordinatorRepositoryObserver(
@@ -61,7 +110,8 @@ func newCoordinatorRepositoryObserver(
 		settings: settings, resolver: resolver, epoch: epoch, factory: factory,
 		// time.Now rather than time.Now().UTC(): calling UTC strips the
 		// monotonic reading, and the retention window is an elapsed time.
-		now: time.Now,
+		now:    time.Now,
+		budget: repositoryProbeBudget,
 	}
 	observer.cache = &backlog.RepositoryProbeCache{
 		TTL: backlog.RepositoryProbeEvidenceTTL,
@@ -107,16 +157,36 @@ func (o *coordinatorRepositoryObserver) ObserveRepository(ctx context.Context, k
 	if observation, found := o.cache.Lookup(key); found {
 		return observation, nil
 	}
+	if err := o.rememberedFailure(key); err != nil {
+		return backlog.RepositoryProbeObservation{}, err
+	}
+	caller := ctx
+	if o.budget > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, o.budget)
+		defer cancel()
+		if seconds := int(o.budget / time.Second); seconds >= 1 && seconds < request.TimeoutSeconds {
+			request.TimeoutSeconds = seconds
+		}
+	}
+	// The caller giving up is not evidence about the worker, so only a
+	// failure the probe itself reached is remembered.
+	fail := func(err error) error {
+		if caller.Err() != nil {
+			return err
+		}
+		return o.rememberFailure(key, err)
+	}
 	client, closer, err := o.dial(ctx, key.WorkerID)
 	if err != nil {
-		return backlog.RepositoryProbeObservation{}, err
+		return backlog.RepositoryProbeObservation{}, fail(err)
 	}
 	if closer != nil {
 		defer func() { _ = closer() }()
 	}
 	answer, err := client.ObserveRepository(ctx, request)
 	if err != nil {
-		return backlog.RepositoryProbeObservation{}, err
+		return backlog.RepositoryProbeObservation{}, fail(err)
 	}
 	class, known := backlog.ParseRepositoryReachability(answer.Class)
 	if !known {
