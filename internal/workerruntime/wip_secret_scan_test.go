@@ -49,3 +49,43 @@ func TestFailedResultWorkInProgressBundlePassesTheSecretScan(t *testing.T) {
 		})
 	}
 }
+
+// When the thread archive carries a credential, CollectFailure publishes the
+// secret scan's redacted failure with an empty archive. That result is still a
+// failed result of a task that declares a commit, so it carries a bundle the
+// scan admits on its own and names it; a bundle holding a credential too stays
+// on the worker.
+func TestRedactedFailedResultKeepsACleanWorkInProgressBundle(t *testing.T) {
+	secret := "synthetic-archive-credential-0123456789"
+	for _, tc := range []struct {
+		name     string
+		content  string
+		uploaded bool
+	}{
+		{"clean work is uploaded", "new\n", true},
+		{"work holding a credential stays on the worker", "token=" + secret + "\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newWIPFixture(t, commitOutputs)
+			writeTestFile(t, filepath.Join(f.workspace, "c.txt"), tc.content)
+			custody := &capturingCustody{CustodyStore: testCustodyStore(t, filepath.Join(t.TempDir(), "custody"), func() time.Time { return runtimeTestNow })}
+			custody.config.SecretScan.StaticCanaries = []string{secret}
+			f.driver.Publisher = custody
+			f.driver.T3 = &recordingT3{thread: &domain.Thread{ID: "thread-1", TurnID: "turn-3", TurnState: "completed"}, archive: []byte(`{"text":"` + secret + `"}`)}
+			if err := f.driver.CollectFailure(context.Background(), f.pkg, f.workspace, "preparation failed 3 times"); err != nil {
+				t.Fatal(err)
+			}
+			last := custody.results[len(custody.results)-1]
+			failure := last.Finalized.Completion.Failure
+			if !strings.HasPrefix(failure, permanentSecretFailurePrefix) || strings.Contains(failure, secret) {
+				t.Fatalf("published failure = %q", failure)
+			}
+			if found := uploadsWorkInProgressBundle(t, custody.CustodyStore); found != tc.uploaded {
+				t.Fatalf("bundle uploaded = %v, want %v; failure = %q", found, tc.uploaded, failure)
+			}
+			if !strings.Contains(failure, "wip.bundle retained") {
+				t.Fatalf("the redacted failure does not name the retained bundle: %q", failure)
+			}
+		})
+	}
+}

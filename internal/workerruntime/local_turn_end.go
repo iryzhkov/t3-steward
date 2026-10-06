@@ -211,7 +211,9 @@ func (d *LocalDriver) workInProgressBundle(pkg workerproto.ExecutionPackage, res
 		if err := admitter.AdmitResult(pkg, result); err != nil {
 			var secret *SecretScanError
 			if errors.As(err, &secret) {
-				d.logger().Warn("wip.bundle is withheld by the result secret scan; it stays on the worker", "attempt", pkg.Identity.AttemptID, "bundle", path,
+				// The scan covers the whole result, so the refused object may be
+				// the archive or the reason; a redacted retry tries the bundle again.
+				d.logger().Warn("wip.bundle is left out of a failed result the secret scan refused; it stays on the worker", "attempt", pkg.Identity.AttemptID, "bundle", path,
 					"object", secret.Object, "detector", secret.Detector, "byte_offset", secret.Offset, "fingerprint", secret.Fingerprint)
 				return nil
 			}

@@ -1261,7 +1261,8 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 	if strings.TrimSpace(failure) == "" {
 		failure = "attempt failed on the worker"
 	}
-	failure = withWorkInProgress(failure, d.retainWorkInProgress(ctx, pkg, workspace))
+	retained := d.retainWorkInProgress(ctx, pkg, workspace)
+	failure = withWorkInProgress(failure, retained)
 	message := FailedMarker + "\n" + failure + "\n"
 	archive := []byte("{}")
 	thread, err := d.T3.GetThread(ctx, pkg.Identity.ThreadID)
@@ -1287,10 +1288,19 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 		d.logger().Warn("failed result withheld by secret scan; publishing redacted failure",
 			"attempt", pkg.Identity.AttemptID, "object", secret.Object, "detector", secret.Detector,
 			"byte_offset", secret.Offset, "fingerprint", secret.Fingerprint)
-		publishErr = d.Publisher.PublishResult(ctx, pkg, PublishedResult{
+		// The redacted result is a failed result too, so it carries the
+		// work-in-progress bundle when the scan admits the bundle on its own:
+		// a credential in the archive or the reason must not cost the
+		// uncommitted work. A bundle the scan refuses stays on the worker.
+		if strings.HasPrefix(retained, "wip.bundle retained") {
+			failure += "; " + retained
+		}
+		redacted := PublishedResult{
 			Finalized:    backlog.FinalizedAttempt{Completion: backlog.CompletionResult{Failure: failure}},
-			FinalMessage: FailedMarker + "\n" + failure + "\n", ThreadArchive: []byte("{}"),
-		})
+			FinalMessage: FailedMarker + "\n" + failure + "\n", ThreadArchive: []byte("{}"), WorkspaceDir: workspace,
+		}
+		redacted.WorkInProgressBundle = d.workInProgressBundle(pkg, redacted)
+		publishErr = d.Publisher.PublishResult(ctx, pkg, redacted)
 	}
 	if publishErr != nil {
 		return fmt.Errorf("publish failed result custody: %w", publishErr)
