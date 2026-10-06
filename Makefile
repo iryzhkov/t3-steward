@@ -21,6 +21,15 @@ TEST_TIMEOUT ?= 10m
 RACE_TIMEOUT ?= 25m
 # check-fast runs the race detector only on packages changed against this ref.
 FAST_BASE ?= origin/main
+# The race detector also turns on checkptr, which validates every unsafe pointer
+# conversion. modernc.org/sqlite is SQLite translated from C and makes such a
+# conversion in almost every operation, so under -race checkptr about doubles the
+# CPU cost of each SQL statement while checking only that third-party
+# translation, never this repository's code. The local gates therefore turn
+# checkptr off for modernc.org packages alone; the race detector still
+# instruments them, and `make test`, which CI runs, keeps checkptr everywhere.
+# Set RACE_GCFLAGS= to keep it in the local gates as well.
+RACE_GCFLAGS ?= -gcflags=modernc.org/...=-d=checkptr=0
 
 .PHONY: build test check-fast check-review qualification lint install clean
 
@@ -64,8 +73,8 @@ check-fast check-review:
 	if [ -n "$$pkgs" ]; then \
 		race_short=; \
 		if [ "$@" = check-fast ]; then race_short=-short; fi; \
-		echo "go test -race" $$race_short $$pkgs; \
-		go test -race $$race_short -timeout $(RACE_TIMEOUT) $$pkgs; \
+		echo "go test -race $(RACE_GCFLAGS)" $$race_short $$pkgs; \
+		go test -race $(RACE_GCFLAGS) $$race_short -timeout $(RACE_TIMEOUT) $$pkgs; \
 	else \
 		echo "no Go packages changed against $(FAST_BASE); skipping the race pass"; \
 	fi
