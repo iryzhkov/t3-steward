@@ -63,10 +63,24 @@ type nodeStateRecords struct {
 	// Buckets are the bucket observations with the workers' fresher readings
 	// merged in, which is what a quota wait is evaluated against.
 	Buckets []domain.BucketState
+	// QuotaStaleAfter is the oldest bucket reading a quota wait counts as
+	// fresh; zero means domain.DefaultQuotaStaleAfter.
+	QuotaStaleAfter time.Duration
 }
 
-func nodeStateRecordsTx(ctx context.Context, tx *sql.Tx) (nodeStateRecords, error) {
-	var r nodeStateRecords
+// SetQuotaStaleAfter sets the oldest quota reading a quota wait counts as
+// fresh, which is backlog_v2.coordinator_client.defaults.quota_stale_after,
+// the threshold "t3-steward models" marks readings stale at. Zero or less
+// keeps domain.DefaultQuotaStaleAfter. Call it before the store serves waits.
+func (s *Store) SetQuotaStaleAfter(age time.Duration) {
+	if age < 0 {
+		age = 0
+	}
+	s.quotaStaleAfter = age
+}
+
+func nodeStateRecordsTx(ctx context.Context, tx *sql.Tx, quotaStaleAfter time.Duration) (nodeStateRecords, error) {
+	r := nodeStateRecords{QuotaStaleAfter: quotaStaleAfter}
 	var err error
 	if r.CoordinatorRecords, err = nodeRecordsTx(ctx, tx); err != nil {
 		return r, err
@@ -116,7 +130,7 @@ func resolveNodeState(condition domain.NodeWaitCondition, r nodeStateRecords) (d
 // exit code; a pool that is no longer configured gives up.
 func observeQuota(condition domain.QuotaWaitCondition, r nodeStateRecords, now time.Time) (domain.NodeObservation, error) {
 	observation := domain.NodeObservation{ExitCode: 1, Reason: "pending"}
-	reading, outcome, reason, err := domain.EvaluateQuotaWait(condition, r.QuotaPools, r.Buckets, now)
+	reading, outcome, reason, err := domain.EvaluateQuotaWait(condition, r.QuotaPools, r.Buckets, now, r.QuotaStaleAfter)
 	if err != nil {
 		return observation, err
 	}
@@ -140,10 +154,11 @@ func quotaResetAt(condition domain.QuotaWaitCondition, r nodeStateRecords) (*tim
 	if reading.Buckets == 0 {
 		return nil, fmt.Errorf("quota pool %s has no observation yet, so there is no window to wait out; try --below or --phase normal", condition.Pool)
 	}
-	if reading.ResetsAt == nil {
+	earliest := domain.EarliestQuotaReset(pool, r.Buckets)
+	if earliest == nil {
 		return nil, fmt.Errorf("quota pool %s reports no reset time; try --below or --phase normal", condition.Pool)
 	}
-	return reading.ResetsAt, nil
+	return earliest, nil
 }
 func saveNodeWaitTx(ctx context.Context, tx *sql.Tx, w domain.NodeWait) error {
 	raw, err := json.Marshal(w)
@@ -183,7 +198,7 @@ func (s *Store) RegisterNodeWait(ctx context.Context, request domain.NodeWaitReq
 	if !errors.Is(err, sql.ErrNoRows) {
 		return w, err
 	}
-	records, err := nodeStateRecordsTx(ctx, tx)
+	records, err := nodeStateRecordsTx(ctx, tx, s.quotaStaleAfter)
 	if err != nil {
 		return w, err
 	}
@@ -254,7 +269,7 @@ func (s *Store) SettleNodeWaits(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	records, err := nodeStateRecordsTx(ctx, tx)
+	records, err := nodeStateRecordsTx(ctx, tx, s.quotaStaleAfter)
 	if err != nil {
 		return err
 	}

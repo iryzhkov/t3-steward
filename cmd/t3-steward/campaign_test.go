@@ -474,8 +474,8 @@ func TestCampaignHelpTopicsComeFromTheProjection(t *testing.T) {
 	if err := cli.run(context.Background(), []string{"--help", "full"}); err != nil {
 		t.Fatal(err)
 	}
-	if out.String() != campaignUsage {
-		t.Fatal("campaign help printed something other than the usage")
+	if out.String() != campaignUsage+"\n"+campaign.ExecutorHelp {
+		t.Fatal("campaign full help must include the usage and shared executor contract")
 	}
 	if err := cli.run(context.Background(), []string{"help", "nonexistent"}); err == nil ||
 		!strings.Contains(err.Error(), "unknown campaign help topic") {

@@ -36,6 +36,9 @@ type Store struct {
 	// tests set them, to cross those bounds with fewer rows.
 	diagnosticRetention int
 	runUsageAggregation int
+	// quotaStaleAfter is the oldest quota reading a quota wait counts as
+	// fresh; zero means domain.DefaultQuotaStaleAfter. See SetQuotaStaleAfter.
+	quotaStaleAfter time.Duration
 }
 
 var migrations = []string{

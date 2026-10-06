@@ -1,6 +1,7 @@
 package backlog
 
 import (
+	_ "embed"
 	"fmt"
 	"strings"
 
@@ -8,24 +9,16 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-// TaskCompletionSupplement tells the agent the one rule its own harness does
-// not: ending the turn completes the task. A task that started its long checks
-// in the background and ended its turn to wait for them was collected at once,
-// with no outputs, and failed (S12); nothing it could read said that the turn
-// was the task. The supplement names the declared outputs, because they are
-// what is collected, and the task-bound wait, which is the supported way to
-// wait.
+// TaskContract is the canonical contract linked by authoring docs and included in help.
 //
-// It is part of every task's first turn, so it counts against T3's turn input
-// limit; FirstTurnPrompt is the composition both the worker and the authoring
-// checks use.
+//go:embed task_contract.md
+var TaskContract string
+
+// TaskCompletionSupplement is the Steward-owned contract plus this task's
+// declared outputs. It is shared by runtime composition and size checks.
 func TaskCompletionSupplement(outputs []domain.ArtifactDeclaration) string {
 	var b strings.Builder
-	b.WriteString("\n\n## How this task ends\n")
-	b.WriteString("This task runs unattended and gets one turn: ordinarily, when your turn ends with no task-bound wait registered, the task is complete. ")
-	b.WriteString("For ordinary completion there is no next turn, so do not end with BACKLOG STATUS: continue. Exception: an explicit runtime-owned quota pause asks for a checkpoint and a done/continue marker. In that case follow the quota checkpoint instruction: continue is checkpoint evidence under runtime control, not a request for extra turns. The runtime checks the exact drained turn for completion before considering an authorized resume; incomplete work stays paused until permitted. ")
-	b.WriteString("When the turn ends, the Steward collects the declared outputs from the workspace and runs verification; ")
-	b.WriteString("processes you started in the background (shell jobs, background commands) are not waited for.")
+	b.WriteString(strings.TrimSpace(TaskContract))
 	var files, commits []string
 	for _, output := range outputs {
 		if output.Commit == nil {
@@ -35,26 +28,18 @@ func TaskCompletionSupplement(outputs []domain.ArtifactDeclaration) string {
 		}
 	}
 	if len(files) != 0 {
-		b.WriteString(" Declared outputs, which must exist when the turn ends: " + strings.Join(files, ", ") + ".")
+		b.WriteString("\nDeclared outputs, which must exist when the turn ends: " + strings.Join(files, ", ") + ".")
 	}
 	if len(commits) != 0 {
-		b.WriteString(" Declared commits, which must be committed when the turn ends: " + strings.Join(commits, ", ") + ".")
+		b.WriteString("\nDeclared commits, which must be committed when the turn ends: " + strings.Join(commits, ", ") + ".")
 	}
-	b.WriteString("\nRun long checks in the foreground and wait for them. To wait for something outside this session ")
-	b.WriteString("(CI, another run, a time), register a task-bound wait and then end the turn; ")
-	b.WriteString("the Steward resumes this same session with the outcome, for example ")
-	b.WriteString("`t3-steward wait add --task current --for 30m --or-timeout` ")
-	b.WriteString("(`t3-steward wait --help` lists every kind).")
 	return b.String()
 }
 
-// FirstTurnPrompt is what the worker sends T3 as a task's first turn when no
-// preflight step runs: the author's prompt, unchanged, followed by the
-// task-ending section. Preflight wraps the prompt in an envelope whose size
-// depends on the preflight report, and a recovery retry appends its own
-// section; the worker measures those when it composes them.
+// FirstTurnPrompt prepends the contract to the unchanged author prompt.
+// Preflight and recovery add their own envelopes; the worker measures those.
 func FirstTurnPrompt(prompt string, outputs []domain.ArtifactDeclaration) string {
-	return prompt + TaskCompletionSupplement(outputs)
+	return TaskCompletionSupplement(outputs) + "\n\n" + prompt
 }
 
 // OutputDeclarations are the task's declared outputs as ingestion records

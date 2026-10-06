@@ -452,10 +452,7 @@ func PlanThrottleResumes(
 		previousRevision := record.Revision
 		record.Revision++
 		record.PriorCommandIDs = append(record.PriorCommandIDs, record.Command.ID)
-		reason := fmt.Sprintf("quota pool %s recovered", record.Command.QuotaPoolID)
-		if admission.Reason != "" {
-			reason += ": " + admission.Reason
-		}
+		reason := throttleResumeReason(pool, admission)
 		record.Command = followupThrottleCommand(record.Command, domain.ThrottleCommandResume, record.Revision, record.Checkpoint, now)
 		record.Command.Reason = reason
 		record.Delivery = domain.ThrottleDeliveryPending
@@ -711,6 +708,26 @@ func throttleCommand(
 	}
 	command.ID = throttleCommandID(command.DirectiveID, command.AttemptID, kind, revision)
 	return command
+}
+
+// throttleResumeReason says why a paused attempt may resume. It says the pool
+// recovered only when its admission was derived from observed readings,
+// which are fresh and below the warning threshold by construction; a pool
+// whose quota checks are disabled was opened by policy, and saying recovered
+// would claim a reading nobody took (F6).
+func throttleResumeReason(pool domain.QuotaPool, admission domain.QuotaAdmissionRecord) string {
+	if pool.ChecksDisabled {
+		basis := admission.Reason
+		if basis == "" {
+			basis = "quota checks disabled by coordinator policy"
+		}
+		return fmt.Sprintf("quota resume permitted for pool %s: %s; recovery not observed", pool.ID, basis)
+	}
+	reason := fmt.Sprintf("quota pool %s recovered", pool.ID)
+	if admission.Reason != "" {
+		reason += ": " + admission.Reason
+	}
+	return reason
 }
 
 func followupThrottleCommand(

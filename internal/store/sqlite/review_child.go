@@ -51,6 +51,11 @@ func (s *Store) MaterializeReviewChild(ctx context.Context, expected review.Froz
 	if err != nil {
 		return zero, err
 	}
+	// It still answers only a coordinator that holds the current epoch.
+	if err := requireReviewEpochFenceTx(ctx, tx); err != nil {
+		tx.Rollback()
+		return zero, err
+	}
 	receipt, found, err := reviewChildReplayTx(ctx, tx, expected, allocated, prepared)
 	tx.Rollback()
 	if err != nil || found {

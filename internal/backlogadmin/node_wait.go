@@ -71,6 +71,10 @@ type NodeWaitOperation struct {
 	// so a client that cannot be sure of the coordinator's release has to be
 	// able to fall back to the unfiltered list rather than fail.
 	Undelivered bool `json:"undelivered,omitempty"`
+	// Checkpoint is the request of ReviewCheckpointAction. It rides this
+	// operation for the reason Task does: opening a review round is fenced by
+	// the same task identity, under the same privilege, as parking the task.
+	Checkpoint *domain.ReviewCheckpointRequest `json:"checkpoint,omitempty"`
 }
 
 // NodeWaitTransitionAction moves a node wake through its delivery states on
@@ -86,6 +90,9 @@ type NodeWaitResponse struct {
 	TaskWakes        []domain.TaskWaitWakeContext `json:"taskWakes,omitempty"`
 	Changed          bool                         `json:"changed,omitempty"`
 	AttentionReceipt *domain.AttentionReceipt     `json:"attentionReceipt,omitempty"`
+	// Checkpoint answers ReviewCheckpointAction with a round or a structured
+	// refusal, so the refusal code survives either carrier.
+	Checkpoint *domain.ReviewCheckpointResult `json:"checkpoint,omitempty"`
 }
 type nodeWaitStore interface {
 	RegisterNodeWait(context.Context, domain.NodeWaitRequest, string, string, time.Time) (domain.NodeWait, error)
@@ -141,6 +148,9 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 	if op.Task != nil {
 		action.WorkflowRunID, action.TaskID = op.Task.WorkflowRunID, op.Task.TaskID
 	}
+	if op.Checkpoint != nil {
+		action.WorkflowRunID, action.TaskID = op.Checkpoint.WorkflowRunID, op.Checkpoint.TaskID
+	}
 	if op.Decision != nil {
 		action.Kind, action.WorkflowRunID, action.TaskID = QueryKind("attention-decision"), op.Decision.WorkflowRunID, op.Decision.TaskID
 	} else if op.Action == "inspect-attention" {
@@ -150,6 +160,9 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 	}
 	if err := s.authorizer.Authorize(ctx, principal, action); err != nil {
 		return result, err
+	}
+	if op.Action == ReviewCheckpointAction {
+		return s.openReviewCheckpoint(ctx, op)
 	}
 	if op.Action == "settle-task" || op.Action == "expire-task" || op.Action == "wake-task" || op.Action == "pending-task" || op.Action == "transition-task" {
 		return s.taskWaitRuntime(ctx, op)

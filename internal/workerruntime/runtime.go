@@ -178,6 +178,11 @@ func AdvertisedCapabilities(configured []string) []string {
 	if !slices.Contains(merged, workerproto.CapabilitySessionTitles) {
 		merged = append(merged, workerproto.CapabilitySessionTitles)
 	}
+	// Exact-ref resolution is a message this build understands; the
+	// coordinator sends it only to a worker advertising this.
+	if !slices.Contains(merged, workerproto.CapabilityRepositoryRefResolve) {
+		merged = append(merged, workerproto.CapabilityRepositoryRefResolve)
+	}
 	for _, capability := range workerproto.SupportedPackageCapabilities() {
 		if !slices.Contains(merged, capability) {
 			merged = append(merged, capability)

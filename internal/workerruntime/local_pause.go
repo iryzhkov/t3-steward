@@ -40,9 +40,11 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 	}
 	if !required {
 		if record.LocalThrottle != nil {
-			// A drain was requested but the bucket recovered while the thread
-			// kept working; the request is moot.
-			r.log.Info("quota recovered before the drain took effect; the pause request is withdrawn", "assignment", id)
+			// A drain was requested and no bucket requires a pause any more
+			// while the thread kept working; the request is moot. That is not
+			// necessarily a recovery: the window may have expired, its draining
+			// reading gone stale, or quota checks been disabled.
+			r.log.Info("no quota bucket requires a pause any more; the pause request is withdrawn", "assignment", id)
 			if err := r.withdrawLocalPause(id); err != nil {
 				return err
 			}

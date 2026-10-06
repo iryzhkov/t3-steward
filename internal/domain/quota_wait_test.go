@@ -37,8 +37,9 @@ func TestQuotaWaitConditionNeedsExactlyOneCondition(t *testing.T) {
 	}
 }
 
-// The pool observation is the worst of its buckets: the highest phase and
-// the highest percent, with the earliest reset.
+// The pool observation is the highest phase of its buckets and the percent
+// of its most used bucket, with that same bucket's reset (not the earliest
+// reset of another bucket, which would mix two readings).
 func TestObserveQuotaPoolAndEvaluate(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	soon, later := now.Add(time.Hour), now.Add(5*time.Hour)
@@ -52,7 +53,7 @@ func TestObserveQuotaPoolAndEvaluate(t *testing.T) {
 		{Key: other, Phase: PhaseStopped, UsedPercent: 99, ObservedAt: now},
 	}
 	obs := ObserveQuotaPool(pool, states)
-	if obs.Pool != "claude" || obs.Phase != PhaseWarned || obs.Percent != 82 || obs.Buckets != 2 || obs.ResetsAt == nil || !obs.ResetsAt.Equal(soon) {
+	if obs.Pool != "claude" || obs.Phase != PhaseWarned || obs.Percent != 82 || obs.Buckets != 2 || obs.ResetsAt == nil || !obs.ResetsAt.Equal(later) {
 		t.Fatalf("observation = %+v", obs)
 	}
 	fields := QuotaTrailerFields(obs)

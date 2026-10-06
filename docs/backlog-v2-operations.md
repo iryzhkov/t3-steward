@@ -350,7 +350,9 @@ over the same artifact path every other input takes:
   even the result without bundle metadata is accepted, that result is what is
   published and it fails exactly as it would with bundle generation disabled.
   Bundles therefore never turn a result that would otherwise be collected into
-  a collection failure.
+  a collection failure. The thread archive is checked last and is compacted
+  to whatever room the rest of the result leaves it; see "Oversized thread
+  archive" below.
 - A successor placed on another worker is delivered the bundle with its other
   inputs, outside its dependency view. A successor on the producer's worker is
   delivered nothing and resolves the ref exactly as before.
@@ -584,8 +586,18 @@ t3-steward models [--project NAME] [--instance ID] [--available] [--json]
 ```
 
 One row per `instance/model`, in the form `--model` takes, with the pool, the
-pool's admission state, the phase and used percent of its worst bucket, and how
-many of the workers that advertise it are ready. An instance the fleet catalog
+pool's admission state, the phase and used percent of its worst bucket with
+the age of that same reading, and how many of the workers that advertise that
+model and are authorized for it are ready. A route is `available` only on a
+ready worker that both advertises its model and is authorized for that model
+by the coordinator; a worker may advertise more models than it is authorized
+for, and those routes report `model-not-authorized`. Each route is judged on
+its own: a model that only unready or unauthorized workers offer is not
+`available` because another model of the same instance is, and `--available`
+drops that model alone. In `--json` the verdict for
+each model is under `routes[].availability`, and `observedAt`, `resetsAt` and
+`percent` are one reading, with `oldestObservedAt` the oldest reading of any
+of the pool's buckets. An instance the fleet catalog
 authorises that nobody advertises, and one a worker advertises that the catalog
 authorises in no pool (`missingBinding`), are listed with that as their status
 rather than omitted: a route that cannot run is what the caller most needs to
@@ -1179,7 +1191,19 @@ Every wait has a kind, and the kind decides which side settles it.
 | `time` | `--at RFC3339` or `--for DURATION` | the registering host's wait runner, from the clock; the poll interval follows the remaining time, never under 30 s | `at=` |
 | `github` | `--github run <id> \| pr <n> [--state completed\|merged\|reviewed\|checks-passed] [--repo owner/name]` | the registering host's wait runner, from `gh run view <id> --json status,conclusion,url` or `gh pr view <n> --json state,mergedAt,reviewDecision,statusCheckRollup,url`; three consecutive `gh` errors give up with the last error, a target that is gone gives up at once | `target=run:<id>\|pr:<n> state= conclusion= url=` |
 | `node` | `--node <run>[/<task>] [--state terminal\|succeeded\|paused\|waiting-external\|active]` | the coordinator's node settlement pass (`SettleNodeWaits`), from its own records and the workers' last reports; no local check anywhere | `run= task= attempt= revision= progress=` plus `control=`, `pauseReason=` and, for a terminal run, `failed=<comma list>` and `result="t3-steward task result <run>"` |
-| `quota` | `--quota <pool> --below N \| --phase normal \| --reset` | the same pass, from the merged bucket observations (the coordinator's own and every worker's, freshest per bucket), which is what admission is derived from | `pool= phase= percent=` |
+| `quota` | `--quota <pool> --below N \| --phase normal \| --reset` | the same pass, from the merged bucket observations (the coordinator's own and every worker's, freshest per bucket), which is what admission is derived from | `pool= phase= percent=` plus `resetsAt=` and `window=`, all three read from the pool's most used bucket |
+
+A `--below` or `--phase normal` quota wait is met only by a complete, fresh
+window set: every window the pool's provider declares (Claude `five_hour` and
+`seven_day`; Codex `primary`, and `secondary` when it reports one) and every
+bucket the pool names must have a reading no older than
+`backlog_v2.coordinator_client.defaults.quota_stale_after` (one hour when
+unset), and none taken before a reset that has since passed. A stale or
+missing window keeps the wait open, and its pending reason names the window
+(`pool claude has stale seven_day`). A `--reset` wait is met when the clock
+passes the reset recorded at registration, as before. `t3-steward models`
+reports a route `available` by the same rule, and names the first missing,
+stale or exhausted window otherwise.
 
 The local kinds work as task-bound waits through the existing registration:
 the coordinator holds the kind, name, condition text and deadline and parks
@@ -1750,6 +1774,52 @@ Treat a missing, wrong-size, or checksum-mismatched coordinator artifact as a
 recovery fault. Do not release dependencies or substitute worker-local content.
 Restore the matching database and artifact snapshot together, then verify the
 artifact through `backlog artifact get`.
+
+### Oversized thread archive
+
+The thread archive (`results/thread.json`, T3's full export of the attempt's
+thread) is the one result object whose size the task does not control. A long
+session can export tens of megabytes, and before this change an archive over
+`message_limits.max_artifact_bytes`, or over the room the other result objects
+left in the aggregate limit, made collection fail with `artifact: invalid or
+excessive size` and lost an otherwise valid result.
+
+The worker now checks the archive last, after every other result object has
+been accepted on its own, against the tighter of the worker custody limits and
+the package's. An archive that fits is uploaded byte for byte. One that does
+not is replaced in the upload by a compacted archive of the same thread, and
+the worker logs `thread archive over the result upload limits; publishing a
+compacted archive`. The compacted archive keeps:
+
+- every thread field (latest turn, session, pending approval and input flags,
+  background liveness and the rest);
+- the latest user message, the final assistant message, the newest turn start
+  refusal and the latest turn's last runtime error, which are everything the
+  completion check reads, so the coordinator reaches the same decision from
+  the compacted archive as the worker did from the full one;
+- as long a tail of messages, activities and the thread's other lists as fits.
+
+Fields beside `thread` in the export are left out. Only when even that does
+not fit are the thread fields no decision reads left out, the latest turn and
+the session cut to the fields the completion check decodes (the rest are
+listed under `omittedFields`, such as `thread.latestTurn.<field>`), and the
+kept entries cut to the fields a decision reads (`messageBodiesOmitted`). The
+final assistant message keeps its text even then; only the other bodies are
+left out. The final assistant message is also uploaded whole as
+`results/final-message.md`.
+
+A compacted archive carries a `stewardTruncation` object with the original
+size (`originalSize`) and SHA-256 (`originalSha256`), the counts of omitted
+messages, activities and other entries, and `retainedPath`: where the worker
+keeps the full archive, relative to the worker's artifact root
+(`thread-archives/<attempt>/<sha256>.json`). That copy is read-only, never
+uploaded, and is the place to look for the full transcript.
+
+An archive whose required content alone is over the limit (the fields a
+decision reads, such as a long session error, together with the final
+assistant message's text) cannot be compacted and fails collection exactly as
+before, as does a size error on any other result object. Data no decision
+reads never causes that failure, wherever in the thread it sits.
 
 ### Unknown assignment
 

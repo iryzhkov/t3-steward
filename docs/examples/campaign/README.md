@@ -34,14 +34,37 @@ campaign whose lead fans work out that way is a one-task campaign that reports i
 several. If a task would fan work out, declare that work as tasks instead, and connect them
 with `needs` and `inputs_from`.
 
-The example prompts state this rule to the agent that reads them. Keep it in prompts you
-write: the schema declares the discipline, and the prompt is where it is actually said. The
-Steward cannot technically prevent every harness tool from spawning a helper, so the
-instruction is part of the contract rather than an enforced boundary.
+Steward prepends the [canonical task contract](../../../internal/backlog/task_contract.md)
+to every task's first turn and includes that same source in
+`t3-steward campaign --help full`. It covers outputs relative to the workspace root,
+declared commits, a current continuation.md, a clean tree, no nested submissions,
+turn completion and commands that must finish before the turn ends. Review tasks must
+leave source untouched and write their declared verdict outputs.
 
-What a task may still do inside its own session is ordinary work: reading, searching,
-running tests and builds, and calling tools. The rule is about delegating a unit of work
-that should have been a declared task, not about how a task does its own job.
+Same-provider native subagents (Claude Agent tool or Codex sub-agents) may do bounded
+reading or sub-work inside a task. Their output remains the executor's responsibility;
+they never replace a declared task or independent review. This instruction does not
+claim to enforce a harness capability boundary. Older example prompts may impose stricter
+limits for their particular tasks.
+
+## Executor prompt template
+
+Steward supplies the common contract. Copy this template for the task-specific brief,
+and declare continuation.md in the manifest outputs if its checkpoint must be retained.
+
+```text
+Goal: <bounded outcome>
+Inputs: <pinned paths under .t3/inputs/ and .t3/dependencies/>
+Scope: <allowed changes and effects>
+Outputs: <manifest file paths and declared commit names>
+Verification: <exact commands>
+Review: <declared independent review>
+Acceptance criteria: <observable completion conditions>
+```
+
+Use the manifest's exact paths and commit names. Commands longer than the agent's tool
+limit must write output and an exit code to files, be started detached, and be polled in
+the foreground until they exit. Never finish with a task-owned command still running.
 
 ## When one task is the right answer
 
