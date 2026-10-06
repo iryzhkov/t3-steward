@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
@@ -123,6 +126,10 @@ func (c campaignCLI) runCommit(ctx context.Context, args []string) error {
 	if c.exportCommit == nil {
 		return errors.New("coordinator commit export is unavailable; upgrade the coordinator")
 	}
+	// An interrupt cancels the export so the deferred cleanup removes the
+	// temporary bundle instead of the process dying with it in place.
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	result, err := c.exportCommit(ctx, r)
 	if err != nil {
 		return err
@@ -131,13 +138,20 @@ func (c campaignCLI) runCommit(ctx context.Context, args []string) error {
 		return errors.New("commit export: missing bundle content")
 	}
 	// Close exactly once, before publishing, so a failed transport close cannot
-	// leave a destination that appears successful.
-	closed := false
-	defer func() {
-		if !closed {
-			_ = result.Content.Close()
-		}
-	}()
+	// leave a destination that appears successful. Cancellation closes the
+	// content to unblock a stalled read, and restores default signal handling
+	// so a second interrupt still ends the process at once.
+	var closeOnce sync.Once
+	var closeErr error
+	closeContent := func() error {
+		closeOnce.Do(func() { closeErr = result.Content.Close() })
+		return closeErr
+	}
+	defer closeContent()
+	defer context.AfterFunc(ctx, func() {
+		stop()
+		_ = closeContent()
+	})()
 	if result.Provenance == nil || result.Provenance.WorkflowRunID != r.RunID || result.Provenance.Name != r.Name ||
 		result.Provenance.Commit == "" || result.Provenance.Base == "" || result.Metadata.Size <= 0 || result.Metadata.Size > backlog.DefaultCommitBundleMaxBytes || len(result.Metadata.SHA256) != 64 {
 		return errors.New("commit export: invalid coordinator metadata")
@@ -151,10 +165,12 @@ func (c campaignCLI) runCommit(ctx context.Context, args []string) error {
 	hash := sha256.New()
 	size, copyErr := io.Copy(io.MultiWriter(file, hash), io.LimitReader(result.Content, result.Metadata.Size+1))
 	syncErr := file.Sync()
-	closeErr := file.Close()
-	sourceErr := result.Content.Close()
-	closed = true
-	if err := errors.Join(copyErr, syncErr, closeErr, sourceErr); err != nil {
+	fileErr := file.Close()
+	sourceErr := closeContent()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("commit export: receive bundle: %w", err)
+	}
+	if err := errors.Join(copyErr, syncErr, fileErr, sourceErr); err != nil {
 		return fmt.Errorf("commit export: receive bundle: %w", err)
 	}
 	digest := fmt.Sprintf("%x", hash.Sum(nil))
