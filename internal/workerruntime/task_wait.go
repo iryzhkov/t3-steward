@@ -35,6 +35,15 @@ func (r *Runtime) ApplyParkedAssignments(request workerproto.SnapshotRequest) er
 	// The coordinator asks for host quota observations on the same exchange;
 	// the answer is built by the Snapshot that follows.
 	r.reportQuota = request.QuotaObservationsWanted
+	// Session states ride the same statement and are applied whether or not it
+	// reports parked assignments; the titles they drive are updated after the
+	// reconcile that Snapshot performs.
+	if err := r.journal.update(func(state *journalState) error {
+		applySessionStates(state, request)
+		return nil
+	}); err != nil {
+		return err
+	}
 	if !request.ParkedReported {
 		// An older coordinator says nothing about parked assignments. Keeping
 		// the previous statement would freeze it forever, so the worker goes on

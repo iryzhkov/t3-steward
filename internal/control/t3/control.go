@@ -443,6 +443,32 @@ func (c *Control) SettleThread(ctx context.Context, threadID, effectToken string
 	return fmt.Errorf("settle thread %s outcome is unproven: T3 did not project the settlement", threadID)
 }
 
+// UpdateThreadTitle sets a thread's title with T3's public thread.meta.update,
+// carrying the title and nothing else so that no other thread metadata can move.
+// The command has no expected-title fence: a caller that must not overwrite an
+// operator's rename compares the current title first, and that check-then-write
+// is not atomic.
+func (c *Control) UpdateThreadTitle(ctx context.Context, threadID, title string) error {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" || strings.TrimSpace(title) == "" {
+		return errors.New("update thread title requires a thread ID and a non-empty title")
+	}
+	cmd := map[string]any{
+		"type":      "thread.meta.update",
+		"commandId": newID(),
+		"threadId":  threadID,
+		"title":     title,
+	}
+	if c.DryRun {
+		c.log.Info("dry-run: would update thread title", "thread", threadID, "title", title)
+		return nil
+	}
+	if _, err := c.client.Dispatch(ctx, cmd); err != nil {
+		return fmt.Errorf("update title of thread %s: %w", threadID, err)
+	}
+	return nil
+}
+
 // WaitStopped polls until the thread is no longer running or the timeout
 // passes. It returns the last observed thread.
 func (c *Control) WaitStopped(ctx context.Context, threadID string, timeout time.Duration) (*domain.Thread, bool, error) {
