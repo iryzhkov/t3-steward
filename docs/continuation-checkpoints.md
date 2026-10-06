@@ -56,13 +56,23 @@ a result has already handed its latest checkpoint on. The upload rides the
 checkpoint channel (`upload-<assignment>-checkpoint-continuation-<sequence>`)
 with two objects, the snapshot `continuation-<attempt>-<sequence>` and its
 metadata `continuation-meta-<attempt>-<sequence>`. The coordinator imports it
-under the same fences as any checkpoint: the assignment, its epoch, the worker
-and the worker epoch must match, with the assignment claimed by a running
-attempt or completed with a settled one. The metadata must describe the
-snapshot, under the attempt's own identity and sequence, captured no later
-than the upload. An upload that fails any of these is refused for good. Each
-snapshot is handed on once; one that could not be handed on is retried at the
-attempt's next boundary.
+under the authority of the dispatch that took it, not the assignment's current
+state: the assignment, its epoch, the worker and the worker epoch must match,
+and the assignment must have been claimed (it may since have lost its lease,
+been released or completed), for an attempt that has not moved to another
+assignment. A snapshot is evidence of what the attempt already did, so a
+snapshot the worker queued before the attempt was superseded is still
+imported when the worker is next polled; it grants the old attempt nothing
+else, and its results and lifecycle keep their fences. A dispatch that was
+never claimed, or that the assignment's next epoch replaced, refuses it. The
+metadata must describe the snapshot, under the attempt's own identity and
+sequence, captured no later than the upload. An upload that fails any of
+these is refused for good. Each snapshot is handed on once; one that could not
+be handed on is retried at the attempt's next boundary.
+
+In each exchange with a worker the coordinator imports that worker's pending
+continuation snapshots first, before it expires leases and builds any offer,
+and handles every other upload after.
 
 The latest snapshot also travels with the attempt's result, as
 `continuation/snapshot.md` and `continuation/checkpoint.json`, under the
@@ -81,12 +91,21 @@ snapshot an earlier attempt of the same task in the same run left, as the
 static input `.t3/inputs/continuation/previous.md`, and its first-turn prompt
 says so in one sentence.
 
-A snapshot that is still on its way to the coordinator when the replacement
-attempt is first offered is not carried by that offer: the decision is frozen.
-A snapshot the coordinator has not imported when the attempt's assignment
-moves on (a worker host that is lost or partitioned, and reconnects only
-afterwards) is refused by the fences above and stays only in that worker's
-custody; the replacement receives the latest snapshot imported before.
+Latest follows the task's execution order, never a worker's clock: the
+attempt with the higher number wins; within one attempt the snapshot its
+result carries wins (it is the latest the attempt had when it collected), then
+the higher sequence. Capture time only orders attempts whose number is unknown
+or equal. The order in which snapshots were imported or replayed does not
+matter.
+
+The decision is frozen with the first offer, so a snapshot that reaches the
+coordinator only after the replacement's first offer is not carried by it.
+That happens only when the worker holding it cannot be reached before then (a
+lost or partitioned host): the snapshot is imported when the worker
+reconnects and counts toward the task's latest from then on, for its reports
+and any later attempt.
+A snapshot of an earlier dispatch of the same attempt, which the
+assignment's next epoch replaced, is refused.
 
 A pause snapshot that still cannot be taken when the attempt resumes is
 forgone, with a warning, rather than taken later from the next turn; the

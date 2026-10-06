@@ -117,21 +117,40 @@ func newCoordinatorWorkerSessions(
 					cached[workerID] = session
 				}
 			}
-			report, reconcileErr := coordinator.ReconcileWorker(
-				ctx, session.Client, session.Builder, backlog.WorkerAdmissionPolicyFromQuotaReport(quota), quota.Directives, quota.Pools,
-				settings.Leases.RenewInterval.D(), settings.Leases.Duration.D(),
-			)
-			report, importErr := importCoordinatorWorkerArtifacts(ctx, session, report, settings.MessageLimits.MaxArtifactBytes)
-			if reconcileErr != nil || importErr != nil {
+			report, err := exchangeCoordinatorWorker(ctx, session, settings.MessageLimits.MaxArtifactBytes, func(ctx context.Context) (backlog.WorkerExchangeReport, error) {
+				return coordinator.ReconcileWorker(
+					ctx, session.Client, session.Builder, backlog.WorkerAdmissionPolicyFromQuotaReport(quota), quota.Directives, quota.Pools,
+					settings.Leases.RenewInterval.D(), settings.Leases.Duration.D(),
+				)
+			})
+			if err != nil {
 				if session.Close != nil {
 					_ = session.Close()
 					delete(cached, workerID)
 				}
-				return report, errors.Join(reconcileErr, importErr)
+				return report, err
 			}
 			return report, nil
 		},
 	}, nil
+}
+
+// exchangeCoordinatorWorker runs one exchange with a worker. The
+// continuation.md snapshots the worker holds are imported first, before
+// reconcile expires leases and freezes the continuation decision of any
+// offer: a snapshot an attempt queued before its lease ended then reaches the
+// replacement's first package whenever this worker is reachable. A failure
+// of that first pass never holds back the reconcile; the snapshots stay in
+// the worker's custody and the pass after reconcile tries them again.
+func exchangeCoordinatorWorker(ctx context.Context, session coordinatorWorkerSession, maxArtifactBytes int64, reconcile func(context.Context) (backlog.WorkerExchangeReport, error)) (backlog.WorkerExchangeReport, error) {
+	handedOn, handOnErr := importCoordinatorWorkerCheckpoints(ctx, session, backlog.WorkerExchangeReport{}, maxArtifactBytes, true)
+	if handOnErr != nil {
+		slog.Warn("worker continuation snapshots not imported before offers", "error", handOnErr)
+	}
+	report, reconcileErr := reconcile(ctx)
+	report.Checkpoints = append(handedOn.Checkpoints, report.Checkpoints...)
+	report, importErr := importCoordinatorWorkerArtifacts(ctx, session, report, maxArtifactBytes)
+	return report, errors.Join(reconcileErr, importErr)
 }
 
 func importCoordinatorWorkerArtifacts(ctx context.Context, session coordinatorWorkerSession, report backlog.WorkerExchangeReport, maxArtifactBytes int64) (backlog.WorkerExchangeReport, error) {
@@ -242,6 +261,13 @@ func importCoordinatorWorkerResult(ctx context.Context, session coordinatorWorke
 }
 
 func importCoordinatorWorkerCheckpoint(ctx context.Context, session coordinatorWorkerSession, report backlog.WorkerExchangeReport, maxArtifactBytes int64) (backlog.WorkerExchangeReport, error) {
+	return importCoordinatorWorkerCheckpoints(ctx, session, report, maxArtifactBytes, false)
+}
+
+// importCoordinatorWorkerCheckpoints imports the worker's pending checkpoint
+// uploads. With continuationsOnly it imports only continuation.md snapshots
+// and leaves every other upload pending, untouched, for the ordinary pass.
+func importCoordinatorWorkerCheckpoints(ctx context.Context, session coordinatorWorkerSession, report backlog.WorkerExchangeReport, maxArtifactBytes int64, continuationsOnly bool) (backlog.WorkerExchangeReport, error) {
 	if session.Client == nil || session.ArtifactClient == nil || maxArtifactBytes < 1 {
 		return report, fmt.Errorf("coordinator worker checkpoint import requires control, artifact transport, and a positive limit")
 	}
@@ -254,6 +280,10 @@ func importCoordinatorWorkerCheckpoint(ctx context.Context, session coordinatorW
 		upload, err := session.Client.PollArtifact(ctx, "checkpoint", deferred...)
 		if err != nil || upload == nil {
 			return report, err
+		}
+		if continuationsOnly && !backlog.IsContinuationUpload(upload.Manifest) {
+			deferred = append(deferred, upload.Manifest.ID)
+			continue
 		}
 		fetched, err := session.ArtifactClient.FetchArtifact(ctx, *upload, maxArtifactBytes, maxArtifactBytes)
 		if err != nil {

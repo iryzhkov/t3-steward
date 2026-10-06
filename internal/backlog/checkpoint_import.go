@@ -51,7 +51,7 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 	if err := workerproto.ValidateArtifactTransferManifest(manifest, i.MaxArtifactBytes, i.MaxTotalBytes, now); err != nil {
 		return domain.Artifact{}, err
 	}
-	if isContinuationUpload(manifest) {
+	if IsContinuationUpload(manifest) {
 		return i.importContinuation(ctx, response, opener, now)
 	}
 	// A checkpoint announced under an earlier coordinator epoch is still this
@@ -136,10 +136,10 @@ func (i CoordinatorCheckpointImporter) readCheckpointObject(ctx context.Context,
 	return data, nil
 }
 
-// isContinuationUpload reports whether a checkpoint-channel upload is a
+// IsContinuationUpload reports whether a checkpoint-channel upload is a
 // continuation.md snapshot a running attempt handed on: the snapshot and the
 // metadata describing it, in that order.
-func isContinuationUpload(manifest workerproto.ArtifactTransferManifest) bool {
+func IsContinuationUpload(manifest workerproto.ArtifactTransferManifest) bool {
 	return len(manifest.Objects) == 2 &&
 		strings.HasPrefix(manifest.Objects[0].ID, "continuation-") &&
 		strings.HasPrefix(manifest.Objects[1].ID, "continuation-meta-")
