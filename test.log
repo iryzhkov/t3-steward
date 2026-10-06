@@ -1,0 +1,63 @@
+go test -timeout 10m ./...
+ok  	github.com/iryzhkov/t3-steward/cmd/t3-steward	16.937s
+ok  	github.com/iryzhkov/t3-steward/internal/archive	0.024s
+ok  	github.com/iryzhkov/t3-steward/internal/backlog	64.101s
+ok  	github.com/iryzhkov/t3-steward/internal/backlogadmin	2.671s
+ok  	github.com/iryzhkov/t3-steward/internal/backupsnapshot	1.352s
+ok  	github.com/iryzhkov/t3-steward/internal/blockingwait	0.325s
+ok  	github.com/iryzhkov/t3-steward/internal/campaign	1.009s
+ok  	github.com/iryzhkov/t3-steward/internal/compat	0.004s
+ok  	github.com/iryzhkov/t3-steward/internal/config	0.054s
+ok  	github.com/iryzhkov/t3-steward/internal/control/t3	0.978s
+ok  	github.com/iryzhkov/t3-steward/internal/daemon	1.330s
+ok  	github.com/iryzhkov/t3-steward/internal/directoryresource	0.003s
+ok  	github.com/iryzhkov/t3-steward/internal/domain	0.010s
+?   	github.com/iryzhkov/t3-steward/internal/notify	[no test files]
+ok  	github.com/iryzhkov/t3-steward/internal/ownernotify	0.326s
+ok  	github.com/iryzhkov/t3-steward/internal/pinnedinput	0.004s
+ok  	github.com/iryzhkov/t3-steward/internal/platform	0.005s
+ok  	github.com/iryzhkov/t3-steward/internal/policy	0.003s
+?   	github.com/iryzhkov/t3-steward/internal/privatefile	[no test files]
+ok  	github.com/iryzhkov/t3-steward/internal/providercontainment	0.013s
+ok  	github.com/iryzhkov/t3-steward/internal/report	0.004s
+ok  	github.com/iryzhkov/t3-steward/internal/review	0.007s
+ok  	github.com/iryzhkov/t3-steward/internal/sessionarchive	0.002s
+ok  	github.com/iryzhkov/t3-steward/internal/source/providerlog	0.819s
+ok  	github.com/iryzhkov/t3-steward/internal/store/sqlite	19.245s
+ok  	github.com/iryzhkov/t3-steward/internal/t3api	0.273s
+ok  	github.com/iryzhkov/t3-steward/internal/t3projects	0.004s
+ok  	github.com/iryzhkov/t3-steward/internal/wait	0.063s
+ok  	github.com/iryzhkov/t3-steward/internal/workerproto	0.119s
+ok  	github.com/iryzhkov/t3-steward/internal/workerruntime	6.524s
+go test -race -timeout 25m ./...
+ok  	github.com/iryzhkov/t3-steward/cmd/t3-steward	238.571s
+ok  	github.com/iryzhkov/t3-steward/internal/archive	1.032s
+ok  	github.com/iryzhkov/t3-steward/internal/backlog	716.261s
+ok  	github.com/iryzhkov/t3-steward/internal/backlogadmin	89.783s
+ok  	github.com/iryzhkov/t3-steward/internal/backupsnapshot	18.710s
+ok  	github.com/iryzhkov/t3-steward/internal/blockingwait	2.363s
+ok  	github.com/iryzhkov/t3-steward/internal/campaign	17.466s
+ok  	github.com/iryzhkov/t3-steward/internal/compat	1.027s
+ok  	github.com/iryzhkov/t3-steward/internal/config	1.239s
+ok  	github.com/iryzhkov/t3-steward/internal/control/t3	2.035s
+ok  	github.com/iryzhkov/t3-steward/internal/daemon	41.598s
+ok  	github.com/iryzhkov/t3-steward/internal/directoryresource	1.017s
+ok  	github.com/iryzhkov/t3-steward/internal/domain	1.039s
+?   	github.com/iryzhkov/t3-steward/internal/notify	[no test files]
+ok  	github.com/iryzhkov/t3-steward/internal/ownernotify	1.337s
+ok  	github.com/iryzhkov/t3-steward/internal/pinnedinput	1.018s
+ok  	github.com/iryzhkov/t3-steward/internal/platform	1.011s
+ok  	github.com/iryzhkov/t3-steward/internal/policy	1.019s
+?   	github.com/iryzhkov/t3-steward/internal/privatefile	[no test files]
+ok  	github.com/iryzhkov/t3-steward/internal/providercontainment	1.050s
+ok  	github.com/iryzhkov/t3-steward/internal/report	1.018s
+ok  	github.com/iryzhkov/t3-steward/internal/review	1.038s
+ok  	github.com/iryzhkov/t3-steward/internal/sessionarchive	1.020s
+ok  	github.com/iryzhkov/t3-steward/internal/source/providerlog	1.948s
+ok  	github.com/iryzhkov/t3-steward/internal/store/sqlite	430.157s
+ok  	github.com/iryzhkov/t3-steward/internal/t3api	1.291s
+ok  	github.com/iryzhkov/t3-steward/internal/t3projects	1.018s
+ok  	github.com/iryzhkov/t3-steward/internal/wait	1.435s
+ok  	github.com/iryzhkov/t3-steward/internal/workerproto	7.286s
+ok  	github.com/iryzhkov/t3-steward/internal/workerruntime	58.437s
+go vet ./...

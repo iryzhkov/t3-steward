@@ -35,9 +35,9 @@ type waitListRow struct {
 	Subject string `json:"subject"`
 	// State is waiting, or the settled outcome.
 	State string `json:"state"`
-	// Delivery is the wake's delivery state for a coordinator-held wait, and is
-	// empty for a local check, which has no separate delivery.
-	Delivery string `json:"delivery,omitempty"`
+	// Delivery is the wake's delivery state, independent of settlement.
+	Delivery       string `json:"delivery,omitempty"`
+	DeliveryReason string `json:"deliveryReason,omitempty"`
 	// Host is where the wake would be delivered from. A wait recorded for
 	// another host is not a wait this host will deliver, and the mismatch is
 	// only visible if the host is printed.
@@ -158,7 +158,7 @@ func collectWaitList(ctx context.Context, sources waitListSources, options waitL
 		}
 	}
 	for _, row := range scopeWaitRows(rows, options) {
-		if row.Settled && !options.all {
+		if row.Settled && !options.all && !(row.Source == "local" && (row.Delivery == "held" || row.Delivery == "pending")) {
 			answer.Hidden++
 			continue
 		}
@@ -205,7 +205,8 @@ func localWaitRow(w wait.Wait, host string) waitListRow {
 	}
 	return waitListRow{
 		ID: w.ID, Kind: string(w.Kind.OrShell()), Thread: w.ThreadID, Subject: subject,
-		State: state, Host: host, Registered: w.CreatedAt, Deadline: deadline, TaskWait: w.TaskWaitID,
+		State: state, Delivery: w.Delivery, DeliveryReason: w.DeliveryReason,
+		Host: host, Registered: w.CreatedAt, Deadline: deadline, TaskWait: w.TaskWaitID,
 		Source: "local", Settled: w.Settled() || w.Status == wait.StatusCancelled || w.Status == wait.StatusWoken,
 	}
 }
@@ -312,6 +313,9 @@ func renderWaitList(out io.Writer, answer waitListAnswer, options waitListOption
 		line := fmt.Sprintf("%s %s %q state=%s", row.ID, row.Kind, row.Subject, row.State)
 		if row.Delivery != "" {
 			line += " delivery=" + row.Delivery
+		}
+		if row.DeliveryReason != "" {
+			line += " delivery-reason=" + fmt.Sprintf("%q", row.DeliveryReason)
 		}
 		if row.Host != "" {
 			line += " host=" + row.Host

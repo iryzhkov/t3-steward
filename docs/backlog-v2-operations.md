@@ -374,6 +374,16 @@ Dependency artifacts appear in the successor workspace at
 capture, checksums, final messages, preparation logs, checkpoints, and other
 retained records belong to the coordinator recovery unit.
 
+Declared verification commands run in the task workspace through `/bin/sh -c`
+with a deterministic umask of `022`, matching the agent session's conventional
+shell. This umask applies only to the verification child process and its
+descendants; the worker keeps its inherited owner-only umask for private state.
+A verification command can explicitly choose a different umask when needed.
+Git clone and checkout likewise use a child-only umask of `022` so tracked
+ordinary and executable files retain `0644` and `0755` permissions. The
+workspace root and Steward metadata remain owner-only, and immutable input
+and dependency views retain their sealed permissions.
+
 A failed preparation retains its log next to the attempt directory as
 `<attempt>.preparation.<ordinal>.log`, with the ordinal counted from 1 in the
 order the preparation attempts ran. Every attempt keeps its own immutable file,

@@ -6,9 +6,8 @@
 //
 //	[2026-09-08T16:45:14.478Z] CANON: {"type":"account.rate-limits.updated",...}
 //
-// Files rotate by rename (events.<thread>.log.1 ... .10). Only CANON lines
-// of that one event type are parsed; everything else is skipped without
-// being decoded.
+// Files rotate by rename (events.<thread>.log.1 ... .10). CANON quota events
+// and Claude NTIVE claude/rate_limit_event notifications are parsed.
 package providerlog
 
 import (
@@ -27,6 +26,8 @@ import (
 const EventType = "account.rate-limits.updated"
 
 const canonMarker = "] CANON: "
+const nativeMarker = "] NTIVE: "
+const claudeNativeMethod = "claude/rate_limit_event"
 
 // ErrNotRateLimit marks a line that is well-formed but not a rate-limit event.
 var ErrNotRateLimit = errors.New("not a rate-limit event")
@@ -40,6 +41,12 @@ type record struct {
 	ThreadID           string          `json:"threadId"`
 	CreatedAt          string          `json:"createdAt"`
 	Payload            json.RawMessage `json:"payload"`
+	Raw                struct {
+		Method  string `json:"method"`
+		Payload struct {
+			UUID string `json:"uuid"`
+		} `json:"payload"`
+	} `json:"raw"`
 }
 
 type payload struct {
@@ -50,6 +57,11 @@ type payload struct {
 // ParseLine parses one log line. It returns ErrNotRateLimit for lines of
 // other kinds so that callers can skip them cheaply.
 func ParseLine(line string) ([]domain.QuotaSnapshot, error) {
+	if strings.HasPrefix(line, "[") {
+		if idx := strings.Index(line, nativeMarker); idx >= 0 {
+			return parseNative([]byte(line[idx+len(nativeMarker):]))
+		}
+	}
 	if !strings.Contains(line, EventType) {
 		return nil, ErrNotRateLimit
 	}
@@ -60,6 +72,46 @@ func ParseLine(line string) ([]domain.QuotaSnapshot, error) {
 	body := line[idx+len(canonMarker):]
 	observedAt, _ := time.Parse(time.RFC3339Nano, line[1:idx])
 	return ParseJSON([]byte(body), observedAt)
+}
+
+// parseNative accepts only the Claude SDK rate-limit method and uses the
+// same Claude window normalization as canonical events.
+func parseNative(body []byte) ([]domain.QuotaSnapshot, error) {
+	var envelope struct {
+		Event struct {
+			ID        string          `json:"id"`
+			Provider  string          `json:"provider"`
+			Method    string          `json:"method"`
+			CreatedAt string          `json:"createdAt"`
+			Payload   json.RawMessage `json:"payload"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, fmt.Errorf("decode native event: %w", err)
+	}
+	e := envelope.Event
+	if e.Provider != "claudeAgent" || e.Method != claudeNativeMethod {
+		return nil, ErrNotRateLimit
+	}
+	if e.ID == "" {
+		return nil, errors.New("native event has no id")
+	}
+	if !looksLikeClaude(e.Payload) {
+		return nil, errors.New("native Claude event has no rate_limit_info")
+	}
+	observedAt, err := time.Parse(time.RFC3339Nano, e.CreatedAt)
+	if err != nil || observedAt.IsZero() {
+		return nil, errors.New("native event has no valid createdAt")
+	}
+	snaps, err := normalizeClaude(e.Payload, domain.QuotaSnapshot{
+		Key:        domain.BucketKey{ProviderInstanceID: e.Provider},
+		ObservedAt: observedAt, SourceEventID: e.ID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(snaps, func(i, j int) bool { return snaps[i].Key.Window < snaps[j].Key.Window })
+	return snaps, nil
 }
 
 // ParseJSON parses one canonical event body. fallbackObservedAt is used when
@@ -98,6 +150,11 @@ func ParseJSON(body []byte, fallbackObservedAt time.Time) ([]domain.QuotaSnapsho
 		SourceEventID: rec.EventID,
 		ThreadID:      rec.ThreadID,
 	}
+	// Normalized CANON windows no longer carry the SDK payload under
+	// rateLimits; T3 retains its source identity in raw.payload instead.
+	if rec.Provider == "claudeAgent" && rec.Raw.Method == claudeNativeMethod && rec.Raw.Payload.UUID != "" {
+		base.SourceEventID = rec.Raw.Payload.UUID
+	}
 	var snaps []domain.QuotaSnapshot
 	var err error
 	switch {
@@ -107,6 +164,16 @@ func ParseJSON(body []byte, fallbackObservedAt time.Time) ([]domain.QuotaSnapsho
 		}
 		snaps, err = normalizeWindows(p.Limits, rec.Provider, base)
 	case looksLikeClaude(p.RateLimits):
+		// CANON eventId is T3's ID, while the native ID is the SDK UUID.
+		// Use the shared UUID when present for persistent per-window dedup.
+		if rec.Provider == "claudeAgent" {
+			var sdk struct {
+				UUID string `json:"uuid"`
+			}
+			if json.Unmarshal(p.RateLimits, &sdk) == nil && sdk.UUID != "" {
+				base.SourceEventID = sdk.UUID
+			}
+		}
 		snaps, err = normalizeClaude(p.RateLimits, base)
 	case looksLikeCodex(p.RateLimits):
 		snaps, err = normalizeCodex(p.RateLimits, base)

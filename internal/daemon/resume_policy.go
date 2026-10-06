@@ -32,12 +32,30 @@ func GoverningPause(cfg config.Config, thread domain.Thread, states []domain.Buc
 			// The window passed; a fresh snapshot has to rearm or re-stop it.
 			continue
 		}
+		if StaleDraining(cfg, st, now) {
+			continue
+		}
 		if !found || st.Phase.Rank() > governing.Phase.Rank() {
 			governing = st
 			found = true
 		}
 	}
 	return governing, found
+}
+
+// QuotaStaleThreshold is the configured observation age, defaulting to one hour.
+func QuotaStaleThreshold(cfg config.Config) time.Duration {
+	threshold := cfg.BacklogV2.CoordinatorClient.Defaults.QuotaStaleAfter.D()
+	if threshold <= 0 {
+		return time.Hour
+	}
+	return threshold
+}
+
+// StaleDraining excludes only old draining observations from pause decisions.
+// Stopped buckets still require recovery or the existing elapsed-reset probe.
+func StaleDraining(cfg config.Config, st domain.BucketState, now time.Time) bool {
+	return st.Phase == domain.PhaseDraining && now.Sub(st.ObservedAt) > QuotaStaleThreshold(cfg)
 }
 
 // BucketsRecovered applies the resume eligibility rules: every bucket that
