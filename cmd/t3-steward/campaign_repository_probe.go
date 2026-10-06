@@ -141,7 +141,13 @@ func (o *coordinatorRepositoryObserver) ObserveRepository(ctx context.Context, k
 // probeTimeoutSeconds keeps one probe inside the transport's own request
 // timeout, so a probe cannot outlive the exchange that carries it.
 func (o *coordinatorRepositoryObserver) probeTimeoutSeconds() int {
-	timeout := o.settings.Transport.RequestTimeout.D()
+	return repositoryProbeTimeoutSeconds(o.settings)
+}
+
+// repositoryProbeTimeoutSeconds is the worker-side bound every repository
+// question sent from this coordinator carries.
+func repositoryProbeTimeoutSeconds(settings config.BacklogV2) int {
+	timeout := settings.Transport.RequestTimeout.D()
 	if timeout <= 0 || timeout > workerproto.MaxRepositoryProbeTimeout {
 		timeout = workerproto.MaxRepositoryProbeTimeout
 	}
@@ -157,29 +163,47 @@ func (o *coordinatorRepositoryObserver) probeTimeoutSeconds() int {
 // The probe therefore runs under the identity the real task would run under,
 // which is the whole point of asking the worker rather than answering here.
 func (o *coordinatorRepositoryObserver) dialWorker(ctx context.Context, workerID string) (repositoryProbeClient, func() error, error) {
-	if o.resolver == nil || o.epoch < 1 {
+	client, closer, err := dialRepositoryProbeSession(ctx, o.settings, o.resolver, o.epoch, o.factory, workerID, "-probe")
+	if err != nil {
+		return nil, nil, err
+	}
+	return client, closer, nil
+}
+
+// dialRepositoryProbeSession opens the short-lived control session that every
+// repository question uses: the reachability probe and exact-ref resolution
+// alike. The suffix keeps their session identities apart.
+func dialRepositoryProbeSession(
+	ctx context.Context,
+	settings config.BacklogV2,
+	resolver workerruntime.ProtocolCredentialResolver,
+	epoch int64,
+	factory workerproto.CommandFactory,
+	workerID, sessionSuffix string,
+) (*workerproto.Client, func() error, error) {
+	if resolver == nil || epoch < 1 {
 		return nil, nil, errors.New("repository probe: coordinator authority and credential resolver are required")
 	}
-	worker, configured := o.settings.Workers[workerID]
+	worker, configured := settings.Workers[workerID]
 	if !configured || worker.Epoch == "" {
 		return nil, nil, fmt.Errorf("repository probe: worker %q has no configured epoch", workerID)
 	}
-	binding, err := workerruntime.BuildWorkerBinding(o.settings, workerID, time.Now().UTC())
+	binding, err := workerruntime.BuildWorkerBinding(settings, workerID, time.Now().UTC())
 	if err != nil {
 		return nil, nil, err
 	}
-	credentials, err := o.resolver.ResolveProtocol(ctx, binding.CredentialRef)
+	credentials, err := resolver.ResolveProtocol(ctx, binding.CredentialRef)
 	if err != nil {
 		return nil, nil, err
 	}
-	requestTimeout := o.settings.Transport.RequestTimeout.D()
+	requestTimeout := settings.Transport.RequestTimeout.D()
 	if requestTimeout <= 0 {
 		return nil, nil, errors.New("repository probe: a positive transport request timeout is required")
 	}
 	var transport workerproto.RoundTripper
 	var closer func() error
 	if worker.Connection != "" {
-		stream, err := newPersistentWorkerTransport(worker, credentials, o.settings, o.factory)
+		stream, err := newPersistentWorkerTransport(worker, credentials, settings, factory)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -190,18 +214,18 @@ func (o *coordinatorRepositoryObserver) dialWorker(ctx context.Context, workerID
 			RemoteArguments:   []string{coordinatorWorkerControlOperation},
 			RequestTimeout:    requestTimeout,
 			ConnectTimeout:    min(requestTimeout, 10*time.Second),
-			MaxMessageBytes:   o.settings.MessageLimits.MaxBytes,
-			MaxStderrBytes:    o.settings.MessageLimits.MaxBytes,
+			MaxMessageBytes:   settings.MessageLimits.MaxBytes,
+			MaxStderrBytes:    settings.MessageLimits.MaxBytes,
 			ResponsePrincipal: credentials.WorkerPrincipal,
 			ResponseKeyID:     credentials.WorkerKeyID, ResponseSecret: credentials.WorkerSecret,
-			Factory: o.factory,
+			Factory: factory,
 		})
 		if err != nil {
 			return nil, nil, err
 		}
 		transport = ssh
 	}
-	sessionID, err := newCoordinatorWorkerSessionID(o.settings.Coordinator.ID, workerID+"-probe")
+	sessionID, err := newCoordinatorWorkerSessionID(settings.Coordinator.ID, workerID+sessionSuffix)
 	if err != nil {
 		if closer != nil {
 			_ = closer()
@@ -209,8 +233,8 @@ func (o *coordinatorRepositoryObserver) dialWorker(ctx context.Context, workerID
 		return nil, nil, err
 	}
 	client, err := workerproto.NewClient(workerproto.ClientConfig{
-		CoordinatorID: o.settings.Coordinator.ID, WorkerID: workerID,
-		CoordinatorEpoch: o.epoch, WorkerEpoch: worker.Epoch, SessionID: sessionID,
+		CoordinatorID: settings.Coordinator.ID, WorkerID: workerID,
+		CoordinatorEpoch: epoch, WorkerEpoch: worker.Epoch, SessionID: sessionID,
 		RequestTimeout:  requestTimeout,
 		SignerPrincipal: credentials.CoordinatorPrincipal,
 		SignerKeyID:     credentials.CoordinatorKeyID, SignerSecret: credentials.CoordinatorSecret,

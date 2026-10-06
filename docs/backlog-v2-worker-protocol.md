@@ -87,6 +87,7 @@ The stable message kinds are:
 | artifact-acknowledge / artifact-acknowledged | coordinator to worker / worker to coordinator | Retire discovery only after coordinator import; exact replay is idempotent. |
 | artifact-download | coordinator to worker | Authorize selected immutable inputs. |
 | repository-probe / repository-observation | coordinator to worker / worker to coordinator | Ask one worker whether it can read one repository and ref under the credential references the real task would use, and return the classified answer. |
+| repository-ref-resolve / repository-ref-resolution | coordinator to worker / worker to coordinator | Ask one named worker which object one exact ref names on the project's remote, and return the object ID or a structured not-found, unreachable or invalid-ref answer. Sent only to a worker advertising `repository-ref-resolve-v1`. |
 | error | both | Return a stable structured failure. |
 
 The repository probe is the one message that reaches the network on the worker's
@@ -97,6 +98,34 @@ applying the catalog's own repository and ref validators. A value that Git could
 read as an option is refused as a value on both sides. The answer carries a
 classification, an exit code and a bounded, redacted detail; it reports that a
 credential reference resolved and never what it resolved to.
+
+Exact-ref resolution is the probe's second question, asked over the same path.
+The coordinator addresses it to one named worker, which resolves the ref with
+its own configured remote access and credential references, using the probe's
+fixed `git ls-remote --exit-code -- <repository> <ref>` argument vector under
+the probe's timeout and output bounds. The ref must be a full name under
+`refs/` that passes the `git check-ref-format` rules and contains no pattern
+character; anything else is answered `invalid-ref` without running a process.
+Because `git ls-remote` matches the tail of each ref name, the worker accepts
+only a record whose name is identical to the requested ref, so
+`refs/heads/x/refs/heads/a` never answers for `refs/heads/a`, and a truncated,
+malformed or ambiguous listing produces an error rather than an object ID. A
+resolved answer carries the full object ID and the worker's observation time; a
+remote that answered without the ref is `not-found`; a remote that did not
+answer (timeout, network, authentication, missing repository) is `unreachable`
+with the probe's classification.
+
+The resolution is worker-sourced and non-caching. Unlike the reachability
+observer, which retains an observation for ten minutes, the coordinator's
+resolver retains nothing: every call opens a fresh session to the named worker
+and observes the remote again, so a head that moved between two calls is
+reported moved. It never answers from the coordinator's own network or
+credentials. The coordinator sends the message only to a worker whose stored
+snapshot for its current enrolment advertises `repository-ref-resolve-v1`; a
+worker that does not is reported as unsupported by worker and is never sent it,
+and an older worker that received it anyway would refuse it through its message
+allowlist. The existing probe messages, their decoding and their capability
+checks are unchanged.
 
 Two coordinator statements ride on the snapshot request rather than on messages
 of their own, because the worker has no read of coordinator state and must be
