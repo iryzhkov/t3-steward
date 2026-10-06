@@ -954,7 +954,13 @@ before the worker journal records it, because every worker snapshot reports it t
 the coordinator, which copies it into attempt evidence: each execution credential,
 in any recognized encoding, and each secret pattern becomes `[redacted]`. A reason
 the scanner cannot check is replaced by a fixed notice. A journal written by an
-earlier release is redacted durably when its failed result is collected. A supervision activation whose result is refused fails the same
+earlier release is redacted durably at the first reconcile after start and again
+when its failed result is collected; while the credential history cannot be read,
+every snapshot reports the fixed notice in place of such an unchecked reason, and
+the worker keeps the raw reason only in its local journal until a later pass can
+redact it. Driver errors that reconcile warnings quote, such as a preparation
+retry whose setup command carries a token, are redacted the same way before they
+reach the runtime log. A supervision activation whose result is refused fails the same
 way. Explain and owner notifications therefore receive the redacted reason rather
 than the original secret-bearing message or archive. A refused checkpoint is
 reported as a failed checkpoint with the redacted reason. Fix the source/fixture

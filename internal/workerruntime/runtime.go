@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -106,6 +107,11 @@ type Runtime struct {
 	// failuresRedacted records that this process has redacted the failure
 	// reasons an earlier release left raw in the journal.
 	failuresRedacted atomic.Bool
+	// uncheckedFailures holds, by assignment, the raw reasons the last
+	// redaction pass could not check. A snapshot withholds them until a later
+	// pass redacts them.
+	uncheckedMu       sync.Mutex
+	uncheckedFailures map[string]string
 }
 
 func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
@@ -209,6 +215,9 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 		assignments := make([]domain.WorkerAssignmentObservation, 0, len(state.Attempts))
 		for _, id := range sortedAttemptIDs(state.Attempts) {
 			record := state.Attempts[id]
+			if r.uncheckedFailure(id, record.Failure) {
+				record.Failure = withheldFailure
+			}
 			assignments = append(assignments, observation(record, now, r.reportQuota))
 		}
 		inventory := r.config.Inventory
@@ -595,7 +604,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 		// paused; a stopped one takes the collection path.
 		threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
 		if observeErr != nil {
-			r.log.Warn("T3 observation unavailable; attempt keeps running", "assignment", id, "error", observeErr)
+			r.log.Warn("T3 observation unavailable; attempt keeps running", "assignment", id, "error", r.loggedError(ctx, id, observeErr))
 			break
 		}
 		if err = r.noteThreadState(id, threadState); err != nil {
@@ -635,7 +644,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
 			switch {
 			case observeErr != nil:
-				r.log.Warn("T3 observation unavailable; stopped attempt waits", "assignment", id, "error", observeErr)
+				r.log.Warn("T3 observation unavailable; stopped attempt waits", "assignment", id, "error", r.loggedError(ctx, id, observeErr))
 			case threadState == backlog.DispatchThreadActive:
 				err = r.markPhase(id, PhaseRunning, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
 			case threadState == backlog.DispatchThreadStopped && !hasCommandRequest(record, domain.WorkerCommandStop):
@@ -656,7 +665,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			workspace, exists, inspectErr = r.driver.InspectWorkspace(ctx, record.Package.Package)
 		}
 		if inspectErr != nil {
-			r.log.Warn("workspace observation failed", "assignment", id, "error", inspectErr)
+			r.log.Warn("workspace observation failed", "assignment", id, "error", r.loggedError(ctx, id, inspectErr))
 			break
 		}
 		if exists {
@@ -675,7 +684,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 		err = r.reconcileDispatch(ctx, id)
 	case PhaseStopping:
 		if stopErr := r.driver.StopThread(ctx, record.Package.Package); stopErr != nil {
-			r.log.Warn("stop outcome is unproven; retrying next reconcile", "assignment", id, "error", stopErr)
+			r.log.Warn("stop outcome is unproven; retrying next reconcile", "assignment", id, "error", r.loggedError(ctx, id, stopErr))
 		} else {
 			err = r.confirmStop(id)
 		}
@@ -699,7 +708,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 	case PhaseCompleted:
 		if record.SettlePending {
 			if settleErr := r.driver.Settle(ctx, record.Package.Package); settleErr != nil {
-				r.log.Warn("T3 settlement still unproven; retrying next reconcile", "assignment", id, "error", settleErr)
+				r.log.Warn("T3 settlement still unproven; retrying next reconcile", "assignment", id, "error", r.loggedError(ctx, id, settleErr))
 			} else {
 				err = r.journal.update(func(state *journalState) error {
 					if current, ok := state.Attempts[id]; ok {
@@ -726,7 +735,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			r.log.Debug("attempt collection still running", "assignment", id, "detail", err)
 			return nil
 		}
-		r.log.Warn("attempt reconciliation deferred", "assignment", id, "phase", record.Phase, "error", err)
+		r.log.Warn("attempt reconciliation deferred", "assignment", id, "phase", record.Phase, "error", r.loggedError(ctx, id, err))
 	}
 	return nil
 }
@@ -739,7 +748,7 @@ func (r *Runtime) recoverUnknown(ctx context.Context, id string, record AttemptR
 	pkg := record.Package.Package
 	threadState, err := r.driver.ObserveThread(ctx, pkg)
 	if err != nil {
-		r.log.Warn("unknown attempt cannot be observed yet", "assignment", id, "error", err)
+		r.log.Warn("unknown attempt cannot be observed yet", "assignment", id, "error", r.loggedError(ctx, id, err))
 		return nil
 	}
 	switch threadState {
@@ -1455,17 +1464,40 @@ func (r *Runtime) recordableFailure(ctx context.Context, id, failure string) str
 	return redacted
 }
 
+// loggedError is the text of a driver error a reconcile warning quotes, with
+// the attempt's credentials removed. The error itself still drives control
+// flow; only its logged text is redacted.
+func (r *Runtime) loggedError(ctx context.Context, id string, err error) string {
+	return r.recordableFailure(ctx, id, err.Error())
+}
+
+// uncheckedFailure reports whether failure is the raw reason the last
+// redaction pass could not check for this assignment.
+func (r *Runtime) uncheckedFailure(id, failure string) bool {
+	r.uncheckedMu.Lock()
+	defer r.uncheckedMu.Unlock()
+	raw, ok := r.uncheckedFailures[id]
+	return ok && failure != "" && raw == failure
+}
+
 // redactRecordedFailures redacts, once per process, the failure reasons a
 // journal written by an earlier release holds raw, in any phase, before the
 // first snapshot reports them. A reason the scanner cannot check yet is kept
-// and the pass is repeated on the next reconcile. Permanent collection intents
-// are built from redacted evidence and keep their exact text.
+// locally, withheld from every snapshot, and the pass is repeated on the next
+// reconcile. Permanent collection intents are built from redacted evidence and
+// keep their exact text.
 func (r *Runtime) redactRecordedFailures(ctx context.Context) {
 	state, err := r.journal.snapshot()
 	if err != nil {
 		return
 	}
 	complete := true
+	unchecked := map[string]string{}
+	defer func() {
+		r.uncheckedMu.Lock()
+		r.uncheckedFailures = unchecked
+		r.uncheckedMu.Unlock()
+	}()
 	for _, id := range sortedAttemptIDs(state.Attempts) {
 		record := state.Attempts[id]
 		if record.Failure == "" || permanentCollectionIntent(record.Failure) {
@@ -1474,6 +1506,7 @@ func (r *Runtime) redactRecordedFailures(ctx context.Context) {
 		redacted, err := r.redactFailure(ctx, record.Package.Package, record.Failure)
 		if err != nil {
 			complete = false
+			unchecked[id] = record.Failure
 			continue
 		}
 		if redacted == record.Failure {
@@ -1490,6 +1523,7 @@ func (r *Runtime) redactRecordedFailures(ctx context.Context) {
 			return nil
 		}); err != nil {
 			complete = false
+			unchecked[id] = record.Failure
 		}
 	}
 	if complete {
