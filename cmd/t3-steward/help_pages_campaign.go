@@ -133,7 +133,7 @@ func campaignHelpPages() []helpPage {
 		{
 			Path: "campaign progress", Purpose: "compact read-only progress mirror from coordinator facts.",
 			Usage:    []string{"t3-steward campaign progress [<run>...] [--owner THREAD] [--since RFC3339] [--json]"},
-			Flags:    []helpFlag{{Name: "--owner", Value: "THREAD", Text: "Filter by the recorded notify thread, including settled notifications."}, {Name: "--since", Value: "RFC3339", Text: "Inclusive last-change timestamp; replaces the default 24-hour terminal window."}, {Name: "--json", Text: "Print schemaVersion 1 with complete values."}},
+			Flags:    []helpFlag{{Name: "--owner", Value: "THREAD", Default: "all notify threads", Text: "Filter by the recorded notify thread, including settled notifications."}, {Name: "--since", Value: "RFC3339", Default: "open runs and terminal runs from the last 24 hours", Text: "Inclusive last-change timestamp; replaces the default 24-hour terminal window."}, {Name: "--json", Default: "false", Text: "Print schemaVersion 1 with complete values."}},
 			Exits:    coordinatorExits(),
 			JSONKeys: []string{"schemaVersion", "generatedAt", "runs"},
 			JSONNote: "runs and each tasks/outputs field are arrays, including when empty; see docs/backlog-v2-operations.md.",
