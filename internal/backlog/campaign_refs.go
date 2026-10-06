@@ -144,12 +144,6 @@ func (s CampaignRefStore) Stage(ctx context.Context, request PublishCommitReques
 		return CommitProvenance{}, fmt.Errorf("lock campaign refs: %w", err)
 	}
 	defer lock.Close()
-	// The staged ref belongs to this attempt alone and nobody has been told
-	// what it means, so finalizing the attempt again replaces it.
-	if err := runLoggedCommand(ctx, log, "", s.git(), "-C", request.WorkspaceDir,
-		"push", "--", gitDir, "+"+commit+":"+staged); err != nil {
-		return CommitProvenance{}, fmt.Errorf("stage campaign ref %s: %w", staged, err)
-	}
 	createdAt := request.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now()
@@ -160,8 +154,17 @@ func (s CampaignRefStore) Stage(ctx context.Context, request PublishCommitReques
 		Base: request.Base, Commit: commit, Ref: CampaignRef(request.WorkflowRunID, request.TaskID, request.Name),
 		CreatedAt: createdAt.UTC(),
 	}
+	// The record is written first: release finds staged work by its records,
+	// so a ref without one would never be released, while a record without
+	// its ref is released cleanly and never promoted.
 	if err := writeCommitRecord(s.stagedPath(request.WorkflowRunID, request.TaskID, attemptID, request.Name), provenance); err != nil {
 		return CommitProvenance{}, err
+	}
+	// The staged ref belongs to this attempt alone and nobody has been told
+	// what it means, so finalizing the attempt again replaces it.
+	if err := runLoggedCommand(ctx, log, "", s.git(), "-C", request.WorkspaceDir,
+		"push", "--", gitDir, "+"+commit+":"+staged); err != nil {
+		return CommitProvenance{}, fmt.Errorf("stage campaign ref %s: %w", staged, err)
 	}
 	return provenance, nil
 }

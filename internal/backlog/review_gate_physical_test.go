@@ -178,6 +178,31 @@ func TestReviewGatedCommitIsPublishedWhenTheAcceptedResultIsConsumed(t *testing.
 	}
 }
 
+// A staged ref without its record is invisible to release, so a staging whose
+// record cannot be written must leave no ref behind.
+func TestStageLeavesNoRefWithoutItsRecord(t *testing.T) {
+	repository := newGitFixture(t)
+	base := gitOutput(t, repository, "rev-parse", "HEAD")
+	refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "campaign-refs")}
+	if err := os.MkdirAll(refs.Root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A file where the staging records belong makes the record write fail.
+	if err := os.WriteFile(filepath.Join(refs.Root, "staged"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := refs.Stage(context.Background(), PublishCommitRequest{
+		WorkflowRunID: "run-1", TaskID: "task-1", Name: "change", Repository: repository,
+		WorkspaceDir: repository, Base: base,
+	}, "attempt-1", nil)
+	if err == nil {
+		t.Fatal("staging succeeded without its record")
+	}
+	if out := gitOutput(t, filepath.Join(refs.Root, "campaigns.git"), "for-each-ref"); strings.TrimSpace(out) != "" {
+		t.Fatalf("staged ref left without a record: %s", out)
+	}
+}
+
 // A run that only staged commits, because every result was rejected, is still
 // held and still released.
 func TestReleaseRunDropsCommitsThatWereOnlyStaged(t *testing.T) {
