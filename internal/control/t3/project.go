@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -38,6 +39,17 @@ type ManagedProject struct {
 // The first creation for a key still uses the derived project and command IDs,
 // so an ambiguous response to it is reconciled without creating a second
 // project; after that the root does the reconciling.
+//
+// A spent identity is replaced by one fenced on a root-absent snapshot rather
+// than by one chained from the identity before it. A chain must replay every
+// retained generation to reach the next one, so a root that has been created
+// and swept often enough could never be provisioned within a bounded call. The
+// fenced identity is derived from the sequence of a snapshot in which the root
+// is absent: every project created under it is accepted after that snapshot,
+// so its receipt is newer than the fence, and a retry, restart or concurrent
+// caller that observes the same snapshot dispatches the same command. However
+// many deleted generations the root retains, one fenced identity skips them
+// all, and the call is bounded by a dispatch count and a wall-clock budget.
 func (c *Control) EnsureProject(ctx context.Context, in ManagedProject) (string, error) {
 	if strings.TrimSpace(in.Key) != in.Key || in.Key == "" ||
 		strings.TrimSpace(in.Title) != in.Title || in.Title == "" ||
@@ -74,78 +86,115 @@ func (c *Control) EnsureProject(ctx context.Context, in ManagedProject) (string,
 		c.log.Info("dry-run: would create managed project", "project", id, "workspace", in.WorkspaceRoot)
 		return id, nil
 	}
-	create := func(projectID, commandToken string) (*t3api.DispatchResult, error) {
-		return c.client.Dispatch(ctx, map[string]any{
-			"type": "project.create", "commandId": deterministicID(commandToken, "steward.project.create"),
-			"projectId": projectID, "title": in.Title, "workspaceRoot": in.WorkspaceRoot,
-			"createWorkspaceRootIfMissing": true, "createdAt": now(),
-		})
-	}
-	commandToken := in.Key
-	var dispatchErr error
-	dispatched := false
-	const maxCreateGenerations = 8
-	for generation := 0; generation < maxCreateGenerations; generation++ {
-		result, createErr := create(id, commandToken)
-		dispatchErr = createErr
-		if refusedForASpentProjectID(createErr) {
-			c.log.Info("managed project identity is spent; trying a stable replacement",
-				"spent", id, "workspace", in.WorkspaceRoot, "generation", generation)
-			commandToken = in.Key + "\x00spent\x00" + id
-			id = deterministicID(commandToken, "steward.project")
-			continue
-		}
-		if createErr == nil && result != nil && result.Sequence > 0 &&
-			snapshot.SnapshotSequence >= result.Sequence {
-			// T3 acknowledged a previous invocation of this command. The
-			// root was absent from a snapshot at or after that receipt, so
-			// replaying it cannot recreate a project that was later deleted.
-			c.log.Info("managed project create receipt predates root-absent snapshot; trying a stable replacement",
-				"project", id, "receipt_sequence", result.Sequence,
-				"snapshot_sequence", snapshot.SnapshotSequence, "generation", generation)
-			commandToken = in.Key + "\x00receipt\x00" + fmt.Sprint(result.Sequence)
-			id = deterministicID(commandToken, "steward.project")
-			continue
-		}
-		dispatched = true
-		break
-	}
-	if !dispatched {
-		return id, fmt.Errorf("ensure T3 project: exhausted %d distinct creation identities at owned workspace root %s",
-			maxCreateGenerations, in.WorkspaceRoot)
-	}
-	// Observe after both success and failure. A lost response is not evidence
-	// that creation failed, and an acknowledgement alone is not matching
-	// metadata. Reconcile only this same owned root, within a deadline.
-	const visibilityDeadline = 5 * time.Second
+	// The budget bounds the whole creation, every dispatch and observation
+	// included, so no history of spent identities can hold the caller.
+	const maxCreateDispatches = 4
+	const creationBudget = 10 * time.Second
 	const visibilityInterval = 100 * time.Millisecond
-	reconcileCtx, cancel := context.WithTimeout(ctx, visibilityDeadline)
+	budgetCtx, cancel := context.WithTimeout(ctx, creationBudget)
 	defer cancel()
 	ticker := time.NewTicker(visibilityInterval)
 	defer ticker.Stop()
+	commandToken := in.Key
+	tried := map[string]bool{}
 	observations := 0
-	var observeErr error
-	for {
-		observations++
-		snapshot, observeErr = c.client.ShellSnapshot(reconcileCtx)
-		if observeErr == nil {
-			found, matchErr := adopted(snapshot)
-			if matchErr != nil {
-				return id, matchErr
+	for dispatches := 0; ; dispatches++ {
+		if tried[commandToken] {
+			// Only a fence can repeat, and only when no newer root-absent
+			// snapshot exists; dispatching it again would change nothing.
+			return id, fmt.Errorf("ensure T3 project: creation identity %s at owned workspace root %s is spent and no root-absent snapshot after sequence %d exists to fence a replacement",
+				deterministicID(commandToken, "steward.project"), in.WorkspaceRoot, snapshot.SnapshotSequence)
+		}
+		if dispatches == maxCreateDispatches {
+			return id, fmt.Errorf("ensure T3 project: exhausted %d creation dispatches at owned workspace root %s",
+				maxCreateDispatches, in.WorkspaceRoot)
+		}
+		tried[commandToken] = true
+		id = deterministicID(commandToken, "steward.project")
+		result, dispatchErr := c.client.Dispatch(budgetCtx, map[string]any{
+			"type": "project.create", "commandId": deterministicID(commandToken, "steward.project.create"),
+			"projectId": id, "title": in.Title, "workspaceRoot": in.WorkspaceRoot,
+			"createWorkspaceRootIfMissing": true, "createdAt": now(),
+		})
+		if refusedForASpentProjectID(dispatchErr) {
+			// The refusal postdates the snapshot in hand, so observe again:
+			// the fence must come from a snapshot taken after it.
+			c.log.Info("managed project identity is spent; fencing a replacement on a fresh snapshot",
+				"spent", id, "workspace", in.WorkspaceRoot, "dispatch", dispatches)
+			next, err := c.client.ShellSnapshot(budgetCtx)
+			if err != nil {
+				return id, fmt.Errorf("ensure T3 project: observe after spent identity %s: %w", id, err)
 			}
-			if found != "" {
-				c.log.Info("managed project visible at owned workspace root",
-					"project", found, "workspace", in.WorkspaceRoot, "observations", observations)
-				return found, nil
+			snapshot = next
+			if existing, err := adopted(snapshot); err != nil || existing != "" {
+				return existing, err
+			}
+			commandToken = fencedCreationToken(in.Key, snapshot.SnapshotSequence)
+			continue
+		}
+		var receipt int64
+		if dispatchErr == nil && result != nil {
+			receipt = result.Sequence
+		}
+		if receipt > 0 && snapshot.SnapshotSequence >= receipt {
+			// T3 acknowledged a previous invocation of this command. The
+			// root was absent from a snapshot at or after that receipt, so
+			// replaying it cannot recreate a project that was later deleted.
+			c.log.Info("managed project create receipt predates root-absent snapshot; fencing a replacement",
+				"project", id, "receipt_sequence", receipt,
+				"snapshot_sequence", snapshot.SnapshotSequence, "dispatch", dispatches)
+			commandToken = fencedCreationToken(in.Key, snapshot.SnapshotSequence)
+			continue
+		}
+		// Observe after both success and failure. A lost response is not
+		// evidence that creation failed, and an acknowledgement alone is not
+		// matching metadata. Reconcile only this same owned root. A refusal
+		// nobody understood is never retried under another identity; it is
+		// only observed, in case the root is held by a creation still to be
+		// projected.
+		var observeErr error
+		for {
+			observations++
+			next, err := c.client.ShellSnapshot(budgetCtx)
+			observeErr = err
+			if err == nil {
+				snapshot = next
+				found, matchErr := adopted(snapshot)
+				if matchErr != nil {
+					return id, matchErr
+				}
+				if found != "" {
+					c.log.Info("managed project visible at owned workspace root",
+						"project", found, "workspace", in.WorkspaceRoot, "observations", observations)
+					return found, nil
+				}
+				if receipt > 0 && snapshot.SnapshotSequence >= receipt {
+					// The projection has reached the acknowledged creation
+					// and the root is absent: the project was deleted before
+					// this call saw it, and its identity is spent.
+					c.log.Info("managed project was removed before it was observed; fencing a replacement",
+						"project", id, "receipt_sequence", receipt,
+						"snapshot_sequence", snapshot.SnapshotSequence, "dispatch", dispatches)
+					break
+				}
+			}
+			select {
+			case <-budgetCtx.Done():
+				return id, fmt.Errorf("ensure T3 project: creation not yet visible at owned workspace root %s after %d observations: %w",
+					in.WorkspaceRoot, observations, errors.Join(dispatchErr, observeErr, budgetCtx.Err()))
+			case <-ticker.C:
 			}
 		}
-		select {
-		case <-reconcileCtx.Done():
-			return id, fmt.Errorf("ensure T3 project: creation not yet visible at owned workspace root %s after %d observations: %w",
-				in.WorkspaceRoot, observations, errors.Join(dispatchErr, observeErr, reconcileCtx.Err()))
-		case <-ticker.C:
-		}
+		commandToken = fencedCreationToken(in.Key, snapshot.SnapshotSequence)
 	}
+}
+
+// fencedCreationToken is the command token of the creation that replaces a
+// spent identity once the owned root has been observed absent at sequence. It
+// depends on the key and the fence alone, never on which identities were spent
+// before, so reaching it needs no replay of the retained history.
+func fencedCreationToken(key string, sequence int64) string {
+	return key + "\x00fence\x00" + strconv.FormatInt(sequence, 10)
 }
 
 // refusedForASpentProjectID reports T3's own refusal to create a project under
