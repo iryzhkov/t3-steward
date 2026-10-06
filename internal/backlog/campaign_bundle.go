@@ -37,6 +37,42 @@ const DefaultCommitBundleMaxBytes int64 = 64 << 20
 // CommitBundleMediaType is the media type a retained commit bundle carries.
 const CommitBundleMediaType = "application/x-git-bundle"
 
+// A provenance record whose producer retained no bundle says why with one of
+// these fixed reason codes, never with free text. The record travels in the
+// producer's result upload, which has one total limit, so what it adds must be
+// small, bounded and known before the record is written; a consumer refused
+// for it is told what the code means by describeBundleOmission.
+const (
+	// BundleOmittedSizeLimit: the bundle exceeded the largest commit bundle
+	// the producing worker or the artifact transport accepts.
+	BundleOmittedSizeLimit = "bundle-omitted:size-limit"
+	// BundleOmittedAggregateLimit: the bundle did not fit the result upload's
+	// total limit together with the attempt's other results.
+	BundleOmittedAggregateLimit = "bundle-omitted:aggregate-limit"
+	// BundleOmittedNotDescendant: the commit does not descend from its base, so
+	// there is no base..commit to bundle.
+	BundleOmittedNotDescendant = "bundle-omitted:not-descendant"
+)
+
+// describeBundleOmission explains a recorded omission reason code.
+func describeBundleOmission(code string) string {
+	switch code {
+	case BundleOmittedSizeLimit:
+		return "its bundle exceeded the largest commit bundle the producing worker or the artifact transport accepts " +
+			"(storage.campaign_commit_bundle_max_bytes, or the package's per-artifact limit)"
+	case BundleOmittedAggregateLimit:
+		return "its bundle did not fit within the total limit of its result upload together with the producing attempt's other results"
+	case BundleOmittedNotDescendant:
+		return "the commit does not descend from its base, so no bundle of base..commit exists"
+	default:
+		const maxShown = 256
+		if len(code) > maxShown {
+			code = code[:maxShown] + "..."
+		}
+		return fmt.Sprintf("its producer recorded the unrecognized reason %q", code)
+	}
+}
+
 // CommitBundleRecord binds a provenance record to the bundle retained with it.
 type CommitBundleRecord struct {
 	// Artifact is the bundle's artifact name within the producing attempt.
@@ -155,13 +191,19 @@ func (c *commitBundleCandidate) bind(provenance CommitProvenance) CommitProvenan
 	return provenance
 }
 
-// budgetCommitBundles decides which bundles the attempt's one result upload
-// can carry within limit, when used bytes of it are already taken by
-// everything else. Each bundle is admitted in declaration order only if the
-// whole upload, with every provenance record as it will then read, still fits;
-// the record of a bundle left out says why. Nothing here fails the producer: a
-// consumer on its own worker needs no bundle, and a consumer elsewhere is
-// refused with the recorded reason.
+// budgetCommitBundles decides which bundle metadata the attempt's one result
+// upload can carry within limit, when used bytes of it are already taken by
+// the ordinary results and what collection adds.
+//
+// Bundle bookkeeping must never fail a producer whose result would fit without
+// it, so every record starts out as it would be written with bundle generation
+// disabled: no bundle and no omission. Then, each in declaration order and
+// only while the whole upload, with every record as it will then read, still
+// fits: bundles are admitted, and after them the fixed omission code of each
+// commit whose bundle was not. A commit for which not even its omission code
+// fits keeps the bare record, so its consumer on another worker is refused
+// without a reason rather than its producer failing. The upload is therefore
+// never larger than the ordinary result unless it fits.
 func budgetCommitBundles(published []publishedCommit, used, limit int64) error {
 	total := func() (int64, error) {
 		sum := used
@@ -177,32 +219,52 @@ func budgetCommitBundles(published []publishedCommit, used, limit int64) error {
 		}
 		return sum, nil
 	}
-	// Every bundle starts out left out, so each admission below is checked
-	// against the records exactly as they would be published at that point.
-	omitted := make([]CommitProvenance, len(published))
-	for index := range published {
-		commit := &published[index]
-		if commit.bundle == nil {
-			continue
-		}
-		commit.provenance.Bundle = nil
-		commit.provenance.BundleOmitted = fmt.Sprintf(
-			"the bundle of %s..%s is %d bytes, and with the attempt's other results the result upload would exceed its total limit of %d bytes",
-			commit.provenance.Base, commit.provenance.Commit, commit.bundle.size, limit)
-		omitted[index] = commit.provenance
-	}
-	for index := range published {
-		commit := &published[index]
-		if commit.bundle == nil {
-			continue
-		}
-		commit.provenance = commit.bundle.bind(commit.provenance)
+	// admit applies change to one record and keeps it only if the whole
+	// upload still fits.
+	admit := func(commit *publishedCommit, change func(*CommitProvenance)) (bool, error) {
+		before := commit.provenance
+		change(&commit.provenance)
 		size, err := total()
+		if err != nil {
+			return false, err
+		}
+		if size > limit {
+			commit.provenance = before
+			return false, nil
+		}
+		return true, nil
+	}
+	// The reason each commit would record if its bundle is not retained. A
+	// commit with neither a bundle nor a reason, such as one equal to its base,
+	// has nothing to budget.
+	reasons := make([]string, len(published))
+	for index := range published {
+		commit := &published[index]
+		reasons[index] = commit.provenance.BundleOmitted
+		if commit.bundle != nil {
+			reasons[index] = BundleOmittedAggregateLimit
+		}
+		commit.provenance.Bundle, commit.provenance.BundleOmitted = nil, ""
+	}
+	admitted := make([]bool, len(published))
+	for index := range published {
+		commit := &published[index]
+		if commit.bundle == nil {
+			continue
+		}
+		var err error
+		admitted[index], err = admit(commit, func(provenance *CommitProvenance) { *provenance = commit.bundle.bind(*provenance) })
 		if err != nil {
 			return err
 		}
-		if size > limit {
-			commit.provenance = omitted[index]
+	}
+	for index := range published {
+		if admitted[index] || reasons[index] == "" {
+			continue
+		}
+		reason := reasons[index]
+		if _, err := admit(&published[index], func(provenance *CommitProvenance) { provenance.BundleOmitted = reason }); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -272,8 +334,7 @@ func (s CampaignRefStore) createBundle(ctx context.Context, provenance CommitPro
 		}
 		// The base is not in the commit's history, so there is no base..commit
 		// to carry; a whole-history bundle is not what a consumer was promised.
-		return "", fmt.Sprintf("commit %s does not descend from its base %s, so no bundle of base..commit exists",
-			provenance.Commit, provenance.Base), nil
+		return "", BundleOmittedNotDescendant, nil
 	}
 	directory, err := os.MkdirTemp(s.Root, ".bundle-")
 	if err != nil {
@@ -295,8 +356,7 @@ func (s CampaignRefStore) createBundle(ctx context.Context, provenance CommitPro
 		return "", "", fmt.Errorf("bundle campaign commit: %w", err)
 	}
 	if info.Size() > limit {
-		return "", fmt.Sprintf("the bundle of %s..%s is %d bytes, which exceeds the limit of %d bytes (storage.campaign_commit_bundle_max_bytes)",
-			provenance.Base, provenance.Commit, info.Size(), limit), nil
+		return "", BundleOmittedSizeLimit, nil
 	}
 	if err := runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir, "bundle", "verify", path); err != nil {
 		return "", "", fmt.Errorf("verify commit bundle of %s: %w", provenance.Ref, err)
@@ -392,15 +452,16 @@ func (s CampaignRefStore) importBundle(ctx context.Context, workspaceDir string,
 	if delivery == nil {
 		switch {
 		case provenance.BundleOmitted != "":
-			return fmt.Errorf("campaign commit %s is not in this worker's campaign ref store, and its producer retained no bundle: %s",
-				ref, provenance.BundleOmitted)
+			return fmt.Errorf("campaign commit %s is not in this worker's campaign ref store, and its producer retained no bundle (%s): %s",
+				ref, provenance.BundleOmitted, describeBundleOmission(provenance.BundleOmitted))
 		case provenance.Bundle != nil:
 			return fmt.Errorf("campaign commit %s is not in this worker's campaign ref store, and its bundle %s was not delivered "+
 				"with this task's execution package; the coordinator must support capability %q",
 				ref, provenance.Bundle.Artifact, workerproto.PackageCapabilityCommitBundle)
 		default:
-			return fmt.Errorf("campaign commit %s is not in this worker's campaign ref store, and its producer retained no bundle: "+
-				"the producing worker does not support capability %q, so the commit can be consumed only on the worker that produced it",
+			return fmt.Errorf("campaign commit %s is not in this worker's campaign ref store, and its producer retained no bundle and recorded no reason: "+
+				"either the producing worker does not support capability %q, or not even the omission reason fit within the total limit "+
+				"of the producer's result upload; the commit can be consumed only on the worker that produced it",
 				ref, workerproto.PackageCapabilityCommitBundle)
 		}
 	}

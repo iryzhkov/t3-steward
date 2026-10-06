@@ -326,11 +326,19 @@ over the same artifact path every other input takes:
   64 MiB, never more than `message_limits.max_artifact_bytes`) is not retained.
   The producer still succeeds, because a successor on its own worker needs no
   bundle, and the record states why in `bundleOmitted`.
+- `bundleOmitted` holds one fixed reason code, never free text:
+  `bundle-omitted:size-limit`, `bundle-omitted:aggregate-limit` or
+  `bundle-omitted:not-descendant`. A successor refused for it is told what the
+  code means.
 - The producer's whole result, including its bundles, its other artifacts, the
   final message and the thread archive, travels as one upload under the
-  aggregate limit (`message_limits.max_artifact_bytes`). Bundles are budgeted
-  last, in declaration order: a bundle that would push the upload over that
-  limit is not retained, and its record says so in `bundleOmitted`, so bundles
+  aggregate limit (`message_limits.max_artifact_bytes`). Bundle metadata is
+  budgeted after everything else: first bundles, in declaration order, while
+  they fit; then the omission code of each commit whose bundle did not, while
+  it fits. A commit for which not even its omission code fits carries no
+  bundle metadata at all, and a successor on another worker is refused because
+  the producer recorded no reason. The upload is therefore never larger than
+  the same result with bundle generation disabled unless it fits, so bundles
   can never turn a result that would otherwise be collected into a collection
   failure.
 - A successor placed on another worker is delivered the bundle with its other

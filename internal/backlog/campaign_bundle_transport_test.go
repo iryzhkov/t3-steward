@@ -14,11 +14,30 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
+// twoCommitProducer is a finalized producer that declared two commits of the
+// same change, with what a consumer of its first commit needs.
+type twoCommitProducer struct {
+	finalized FinalizedAttempt
+	records   map[string]CommitProvenance
+	// repair is the producer as a consumer of its first declared commit sees
+	// it: the repository, the shared storage and that commit's record.
+	repair producedCommit
+}
+
 // finalizeTwoCommits finalizes a producer that declares two commits of the
 // same change, so each retains a bundle of the same, incompressible size. The
 // result upload is bounded by limit, of which reserved bytes are already taken
 // by what collection adds after finalization.
 func finalizeTwoCommits(t *testing.T, limit, reserved int64) (FinalizedAttempt, map[string]CommitProvenance) {
+	t.Helper()
+	producer := finalizeTwoCommitsWith(t, limit, reserved, true)
+	return producer.finalized, producer.records
+}
+
+// finalizeTwoCommitsWith finalizes the two-commit producer with bundle
+// generation enabled or disabled. The clock is fixed so that the provenance
+// records of two producers have the same size.
+func finalizeTwoCommitsWith(t *testing.T, limit, reserved int64, bundles bool) twoCommitProducer {
 	t.Helper()
 	ctx := context.Background()
 	repository := newGitFixture(t)
@@ -42,11 +61,14 @@ func finalizeTwoCommits(t *testing.T, limit, reserved int64) (FinalizedAttempt, 
 		{Name: "repair", Commit: &domain.CommitOutput{}},
 		{Name: "followup", Commit: &domain.CommitOutput{}},
 	}
-	finalizer := AttemptFinalizer{StorageRoot: storage, CampaignRefs: worker.refs, Processes: testProcessRunner{}}
+	finalizer := AttemptFinalizer{
+		StorageRoot: storage, CampaignRefs: worker.refs, Processes: testProcessRunner{},
+		Now: func() time.Time { return time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC) },
+	}
 	finalized, err := finalizer.Finalize(ctx, AttemptFinalization{
 		Task: task, Attempt: request.Attempt, WorkspaceDir: prepared.WorkspaceDir,
 		ExplicitSuccess: true, Repository: repository, BaseCommit: prepared.Commit,
-		CommitBundles: true, ResultByteLimit: limit, ResultReservedBytes: reserved,
+		CommitBundles: bundles, ResultByteLimit: limit, ResultReservedBytes: reserved,
 	})
 	if err != nil {
 		t.Fatalf("finalize producer: %v", err)
@@ -55,7 +77,10 @@ func finalizeTwoCommits(t *testing.T, limit, reserved int64) (FinalizedAttempt, 
 	if !finalized.Completion.VerificationPassed {
 		t.Fatalf("producer failed: %+v", finalized.Completion)
 	}
-	records := map[string]CommitProvenance{}
+	producer := twoCommitProducer{
+		finalized: finalized, records: map[string]CommitProvenance{},
+		repair: producedCommit{repository: repository, storage: storage, base: prepared.Commit},
+	}
 	for _, artifact := range finalized.Artifacts {
 		if artifact.Kind != domain.ArtifactOutput {
 			continue
@@ -64,9 +89,12 @@ func finalizeTwoCommits(t *testing.T, limit, reserved int64) (FinalizedAttempt, 
 		if err != nil {
 			t.Fatalf("parse provenance record %s: %v", artifact.Name, err)
 		}
-		records[artifact.Name] = provenance
+		producer.records[artifact.Name] = provenance
+		if artifact.Name == "repair" {
+			producer.repair.record, producer.repair.provenance, producer.repair.commit = artifact, provenance, provenance.Commit
+		}
 	}
-	return finalized, records
+	return producer
 }
 
 func retainedBundles(finalized FinalizedAttempt) (names []string, bytes int64) {
@@ -112,24 +140,90 @@ func TestCommitBundlesAreBudgetedWithTheWholeResultUpload(t *testing.T) {
 	if records["repair"].Bundle == nil || records["repair"].BundleOmitted != "" {
 		t.Fatalf("repair record = %+v", records["repair"])
 	}
-	if omitted := records["followup"].BundleOmitted; records["followup"].Bundle != nil ||
-		!strings.Contains(omitted, "result upload") || !strings.Contains(omitted, "total limit") {
-		t.Fatalf("followup record = %+v, want the aggregate omission", records["followup"])
+	if records["followup"].Bundle != nil || records["followup"].BundleOmitted != BundleOmittedAggregateLimit {
+		t.Fatalf("followup record = %+v, want the aggregate omission code", records["followup"])
+	}
+}
+
+// The invariant of the result budget: bundle bookkeeping never makes a
+// producer fail that would collect with bundle generation disabled. The
+// ordinary result is measured with bundles disabled, and the same producer with
+// bundles enabled is finalized at that size and just above it. Omission records
+// are a fixed reason code counted in the budget; where even that does not fit,
+// the record carries no bundle metadata at all, and a consumer on another
+// worker is still refused by name rather than with a missing ref.
+func TestOmissionMetadataNeverFailsAProducerThatFitsWithoutBundles(t *testing.T) {
+	const reserved = 1500
+	plainProducer := finalizeTwoCommitsWith(t, 0, reserved, false)
+	plain := finalizedBytes(plainProducer.finalized) + reserved
+	for name, record := range plainProducer.records {
+		if record.Bundle != nil || record.BundleOmitted != "" {
+			t.Fatalf("%s record without bundles = %+v", name, record)
+		}
+	}
+	stripped, err := MarshalCommitProvenance(plainProducer.records["repair"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	coded := plainProducer.records["repair"]
+	coded.BundleOmitted = BundleOmittedAggregateLimit
+	withCode, err := MarshalCommitProvenance(coded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	omission := int64(len(withCode) - len(stripped))
+	if omission <= 0 || omission > 64 {
+		t.Fatalf("an omission record adds %d bytes, want a small fixed record", omission)
 	}
 
-	// Room for the ordinary results only: no bundle is retained, and the
-	// producer still succeeds.
-	tight := finalizedBytes(unbounded) - bundleBytes + reserved + 512
-	bare, records := finalizeTwoCommits(t, tight, reserved)
-	if names, _ := retainedBundles(bare); len(names) != 0 {
-		t.Fatalf("retained bundles = %v under a limit with room for none", names)
+	ref := CampaignRef("run-1", "task-producer", "repair")
+	// The review's reproduction left 64 spare bytes, room for one omission
+	// record but not two.
+	if 2*omission <= 64 {
+		t.Fatalf("an omission record adds %d bytes; the 64-byte case expects room for exactly one", omission)
 	}
-	if total := finalizedBytes(bare) + reserved; total > tight {
-		t.Fatalf("result upload is %d bytes, over its limit of %d", total, tight)
-	}
-	for _, name := range []string{"repair", "followup"} {
-		if !strings.Contains(records[name].BundleOmitted, "result upload") {
-			t.Fatalf("%s record = %+v, want the aggregate omission", name, records[name])
+	for _, test := range []struct {
+		name             string
+		limit            int64
+		repair, followup string
+	}{
+		{name: "not even an omission record fits", limit: plain},
+		{name: "one omission record fits", limit: plain + omission, repair: BundleOmittedAggregateLimit},
+		{name: "only omission records fit", limit: plain + 2*omission,
+			repair: BundleOmittedAggregateLimit, followup: BundleOmittedAggregateLimit},
+		{name: "review's 64 spare bytes", limit: plain + 64, repair: BundleOmittedAggregateLimit},
+	} {
+		// Not subtests: the repository path is in every record, and a
+		// subtest's temporary directory would change its length.
+		producer := finalizeTwoCommitsWith(t, test.limit, reserved, true)
+		if total := finalizedBytes(producer.finalized) + reserved; total > test.limit {
+			t.Fatalf("%s: result upload is %d bytes, over its limit of %d; the same result without bundles is %d bytes",
+				test.name, total, test.limit, plain)
+		}
+		if names, _ := retainedBundles(producer.finalized); len(names) != 0 {
+			t.Fatalf("%s: retained bundles = %v under a limit with room for none", test.name, names)
+		}
+		for name, want := range map[string]string{"repair": test.repair, "followup": test.followup} {
+			if record := producer.records[name]; record.Bundle != nil || record.BundleOmitted != want {
+				t.Fatalf("%s: %s record = %+v, want omission %q", test.name, name, record, want)
+			}
+		}
+
+		// A consumer on another worker is refused with the commit named and
+		// the reason, or that no reason was recorded.
+		consumer := newCommitWorker(t, producer.repair.storage)
+		_, err := consume(t, consumer, producer.repair, producer.repair.record, nil, "attempt-2")
+		if err == nil || !strings.Contains(err.Error(), ref) {
+			t.Fatalf("%s: error = %v, want a refusal naming %s", test.name, err, ref)
+		}
+		if test.repair != "" && !strings.Contains(err.Error(), "total limit of its result upload") {
+			t.Fatalf("%s: error = %v, want the aggregate omission explained", test.name, err)
+		}
+		if test.repair == "" && !strings.Contains(err.Error(), "recorded no reason") {
+			t.Fatalf("%s: error = %v, want the missing reason explained", test.name, err)
+		}
+		if strings.Contains(err.Error(), "couldn't find remote ref") {
+			t.Fatalf("%s: error = %v still reads as a missing remote ref", test.name, err)
 		}
 	}
 }

@@ -394,11 +394,11 @@ func TestCommitBundleSizeIsBounded(t *testing.T) {
 	if produced.bundle != nil || produced.provenance.Bundle != nil {
 		t.Fatalf("an oversized bundle was retained: %+v", produced.provenance)
 	}
-	if !strings.Contains(produced.provenance.BundleOmitted, "exceeds the limit of 64 bytes") {
-		t.Fatalf("bundle omission = %q", produced.provenance.BundleOmitted)
+	if produced.provenance.BundleOmitted != BundleOmittedSizeLimit {
+		t.Fatalf("bundle omission = %q, want the fixed size-limit code", produced.provenance.BundleOmitted)
 	}
 	_, err := consume(t, consumer, produced, produced.record, nil, "attempt-2")
-	if err == nil || !strings.Contains(err.Error(), "exceeds the limit of 64 bytes") {
+	if err == nil || !strings.Contains(err.Error(), "storage.campaign_commit_bundle_max_bytes") {
 		t.Fatalf("error = %v, want the size refusal", err)
 	}
 
@@ -450,9 +450,9 @@ func TestImportedCommitIsReleasedOnBothWorkers(t *testing.T) {
 	}
 }
 
-// A producer that ran on a build without the capability retained no bundle. A
-// consumer elsewhere is told which capability is missing, never "couldn't find
-// remote ref".
+// A producer that ran on a build without the capability retained no bundle and
+// recorded no reason. A consumer elsewhere is told which capability may be
+// missing, never "couldn't find remote ref".
 func TestConsumerOfAnOldProducerNamesTheMissingCapability(t *testing.T) {
 	repository := newGitFixture(t)
 	storage := t.TempDir()

@@ -32,6 +32,70 @@ func gitIn(t *testing.T, dir string, args ...string) string {
 // than turning the producer into a permanent collection failure.
 func TestCollectionBudgetsCommitBundlesIntoTheResultUpload(t *testing.T) {
 	const limit = 10000
+	f := collectTwoCommitProducer(t, limit, true)
+	if record := f.record(t); record.Phase != PhaseCompleted {
+		t.Fatalf("phase = %s, failure %q; want a completed collection", record.Phase, record.Failure)
+	}
+	total, bundles := resultUpload(t, f)
+	if total > limit {
+		t.Fatalf("result upload is %d bytes, over the aggregate limit of %d", total, limit)
+	}
+	if !slices.Equal(bundles, []string{"results/" + backlog.CommitBundleArtifactName("repair")}) {
+		t.Fatalf("uploaded bundles = %v, want only the first declared commit's", bundles)
+	}
+}
+
+// Bundle bookkeeping never fails a producer that collects without it. The
+// same valid two-commit producer is collected with bundle generation disabled,
+// which measures its ordinary result upload, and then with it enabled at
+// limits from exactly that size to a little above it, where no bundle fits and
+// at most the fixed omission records do. Every enabled collection completes
+// within the custody store's aggregate limit.
+func TestCollectionWithBundlesCompletesWheneverItCompletesWithout(t *testing.T) {
+	plain := collectTwoCommitProducer(t, 10000, false)
+	if record := plain.record(t); record.Phase != PhaseCompleted {
+		t.Fatalf("phase = %s, failure %q; want the ordinary result collected", record.Phase, record.Failure)
+	}
+	ordinary, _ := resultUpload(t, plain)
+	for _, limit := range []int64{ordinary, ordinary + 32, ordinary + 64, max(ordinary, 1500)} {
+		disabled := collectTwoCommitProducer(t, limit, false)
+		if record := disabled.record(t); record.Phase != PhaseCompleted {
+			t.Fatalf("limit %d without bundles: phase = %s, failure %q", limit, record.Phase, record.Failure)
+		}
+		enabled := collectTwoCommitProducer(t, limit, true)
+		if record := enabled.record(t); record.Phase != PhaseCompleted {
+			t.Fatalf("limit %d with bundles: phase = %s, failure %q; the same result collects without bundles in %d bytes",
+				limit, record.Phase, record.Failure, ordinary)
+		}
+		total, bundles := resultUpload(t, enabled)
+		if total > limit || len(bundles) != 0 {
+			t.Fatalf("limit %d with bundles: upload %d bytes carrying bundles %v", limit, total, bundles)
+		}
+	}
+}
+
+// resultUpload is the size of the collected result upload and the bundles it
+// carries.
+func resultUpload(t *testing.T, f *collectionFixture) (int64, []string) {
+	t.Helper()
+	pending, err := f.custody.PendingUploadByPurpose("result")
+	if err != nil || pending == nil {
+		t.Fatalf("result upload: %+v, %v", pending, err)
+	}
+	var bundles []string
+	for _, object := range pending.Manifest.Objects {
+		if object.Kind == string(domain.ArtifactGitState) {
+			bundles = append(bundles, object.Path)
+		}
+	}
+	return pending.Manifest.TotalBytes, bundles
+}
+
+// collectTwoCommitProducer collects a producer that declared two commits of a
+// 6000-byte incompressible change under a custody store whose per-object and
+// aggregate limits are both limit, with bundle generation enabled or not.
+func collectTwoCommitProducer(t *testing.T, limit int64, bundles bool) *collectionFixture {
+	t.Helper()
 	f := newCollectionFixtureWith(t, limit, limit, 100, 200, func(pkg *workerproto.ExecutionPackage, driver *LocalDriver, workspace string) {
 		gitIn(t, workspace, "init", "--initial-branch=main")
 		gitIn(t, workspace, "config", "user.name", "Test User")
@@ -59,29 +123,13 @@ func TestCollectionBudgetsCommitBundlesIntoTheResultUpload(t *testing.T) {
 			domain.ArtifactDeclaration{Name: "repair", MediaType: "application/json", Commit: &domain.CommitOutput{}},
 			domain.ArtifactDeclaration{Name: "followup", MediaType: "application/json", Commit: &domain.CommitOutput{}},
 		)
-		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityCommitBundle)
+		if bundles {
+			pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityCommitBundle)
+		}
 		driver.Finalizer.CampaignRefs = backlog.CampaignRefStore{Root: filepath.Join(t.TempDir(), "campaign-refs")}
 	})
 	if err := f.runtime.collect(context.Background(), "assignment-1"); err != nil {
 		t.Fatalf("collect: %v", err)
 	}
-	if record := f.record(t); record.Phase != PhaseCompleted {
-		t.Fatalf("phase = %s, failure %q; want a completed collection", record.Phase, record.Failure)
-	}
-	pending, err := f.custody.PendingUploadByPurpose("result")
-	if err != nil || pending == nil {
-		t.Fatalf("result upload: %+v, %v", pending, err)
-	}
-	if pending.Manifest.TotalBytes > limit {
-		t.Fatalf("result upload is %d bytes, over the aggregate limit of %d", pending.Manifest.TotalBytes, limit)
-	}
-	var bundles []string
-	for _, object := range pending.Manifest.Objects {
-		if object.Kind == string(domain.ArtifactGitState) {
-			bundles = append(bundles, object.Path)
-		}
-	}
-	if !slices.Equal(bundles, []string{"results/" + backlog.CommitBundleArtifactName("repair")}) {
-		t.Fatalf("uploaded bundles = %v, want only the first declared commit's", bundles)
-	}
+	return f
 }
