@@ -191,7 +191,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		},
 		CreatedAt: assignment.CreatedAt,
 	}
-	if err := b.declarePackageCapabilities(ctx, &pkg); err != nil {
+	if err := b.declarePackageCapabilities(ctx, &pkg, state.task.ReviewRequirements != nil); err != nil {
 		return workerproto.AssignmentOffer{}, err
 	}
 	if err := b.freezeSessionDisplay(ctx, assignment, &pkg, state.workflow.Name, state.task.Name, state.task.ReviewJudge); err != nil {
@@ -256,7 +256,7 @@ func appendRecoverySupplementInputs(ctx context.Context, store ExecutionPackageR
 	return inputs, context, nil
 }
 
-func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context, pkg *workerproto.ExecutionPackage) error {
+func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context, pkg *workerproto.ExecutionPackage, reviewDeclared bool) error {
 	if len(pkg.Preflight) > 0 {
 		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityPreflight)
 	}
@@ -265,6 +265,12 @@ func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context,
 	}
 	if pkg.Context != nil {
 		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityProjectContext)
+	}
+	if reviewDeclared {
+		// The completion gate needs the workspace HEAD at collection. A worker
+		// that cannot report it is never offered the task, rather than having
+		// every result it returns fail the gate.
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityWorkspaceHead)
 	}
 	if len(pkg.RequiredCapabilities) == 0 {
 		return nil

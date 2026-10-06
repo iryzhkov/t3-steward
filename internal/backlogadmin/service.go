@@ -1062,6 +1062,11 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 	attempt := latestAttempt(v.attempts[runID+"\x00"+task.ID])
 	if attempt != nil {
 		explanation.AttemptID = attempt.ID
+		if gate := attempt.ReviewGate; gate != nil {
+			decided := *gate
+			explanation.ReviewGate = &decided
+			explanation.Details = append(explanation.Details, gate.Summary())
+		}
 		if attempt.Progress.Terminal() {
 			explanation.Summary = "task is terminal"
 			return explanation, true

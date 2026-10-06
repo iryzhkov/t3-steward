@@ -80,8 +80,11 @@ type taskResultTask struct {
 	AttemptID string `json:"attemptId,omitempty"`
 	Progress  string `json:"progress"`
 	// Failure is why the attempt failed, as the coordinator recorded it.
-	Failure   string `json:"failure,omitempty"`
-	Directory string `json:"directory"`
+	Failure string `json:"failure,omitempty"`
+	// ReviewGate is the review completion gate's decision for a
+	// review-declared task, with the reviewed and the workspace heads.
+	ReviewGate *domain.ReviewCompletionGate `json:"reviewGate,omitempty"`
+	Directory  string                       `json:"directory"`
 	// FinalMessage is inlined in JSON and, up to 4096 bytes, in text.
 	// The full content is also written to the printed file path.
 	FinalMessage string           `json:"finalMessage,omitempty"`
@@ -355,6 +358,7 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 		collected.Progress = string(task.Attempt.Progress)
 		collected.AttemptID = task.Attempt.ID
 		collected.Failure = task.Attempt.Failure
+		collected.ReviewGate = task.Attempt.ReviewGate
 	}
 	final := false
 	for _, artifact := range detail.Artifacts {
@@ -473,6 +477,9 @@ func renderTaskResult(out io.Writer, document taskResultDocument) error {
 		fmt.Fprintf(out, "\n%s (%s)\n", task.Task, task.Progress)
 		if task.Failure != "" {
 			fmt.Fprintf(out, "  failure: %s\n", task.Failure)
+		}
+		if task.ReviewGate != nil {
+			fmt.Fprintf(out, "  review gate: %s\n", task.ReviewGate.Summary())
 		}
 		fmt.Fprintf(out, "  %s\n", task.Directory)
 		if len(task.FinalMessage) > 0 && len(task.FinalMessage) <= 4096 {

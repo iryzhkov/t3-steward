@@ -995,6 +995,19 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if err != nil {
 		return fmt.Errorf("collect preflight custody: %w", err)
 	}
+	if pkg.RequiresWorkspaceHead() {
+		// The review completion gate compares this HEAD with the head the
+		// task's latest review round accepted. It is read before verification
+		// runs, so it is the state the turn left behind.
+		head, err := backlog.MarshalWorkspaceHead(backlog.CaptureWorkspaceHead(ctx, "", workspace, pkg.Outputs))
+		if err != nil {
+			return err
+		}
+		extras = append(extras, backlog.FinalizationArtifact{
+			ID: backlog.WorkspaceHeadArtifactID(pkg.Identity.AttemptID), Name: backlog.WorkspaceHeadArtifactName,
+			MediaType: "application/json", Kind: domain.ArtifactGitState, Producer: "worker", Content: head,
+		})
+	}
 	// A task that declares a commit reports the pin its workspace started
 	// from. Its own HEAD has moved by now, so the pin is read back from the
 	// record preparation left in the workspace.

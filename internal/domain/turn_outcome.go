@@ -25,6 +25,9 @@ type TurnOutcome struct {
 	Failure                string            `json:"failure,omitempty"`
 	FinalSummaryArtifactID string            `json:"finalSummaryArtifactId,omitempty"`
 	ObservedAt             time.Time         `json:"observedAt"`
+	// ReviewGate is set on a done outcome of a review-declared task whose
+	// result was otherwise a success; it is carried onto the attempt.
+	ReviewGate *ReviewCompletionGate `json:"reviewGate,omitempty"`
 }
 
 // TurnOutcomeTransition atomically advances a canonical attempt and, when

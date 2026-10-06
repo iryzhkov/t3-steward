@@ -102,13 +102,24 @@ const (
 	PackageCapabilityRecoveryRetry       = "recovery-retry-v1"
 	PackageCapabilityRecoverySupplement  = "recovery-supplement-v1"
 	PackageCapabilityProjectContext      = "project-context-v1"
+	// PackageCapabilityWorkspaceHead asks the worker to report the workspace's
+	// physical HEAD and tracked changes when it collects the turn. A
+	// review-declared task requires it, because the coordinator's completion
+	// gate compares that HEAD with the head its latest review round accepted.
+	PackageCapabilityWorkspaceHead = "workspace-head-v1"
 )
 
 // SupportedPackageCapabilities is what this build implements. A package that
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay}
+	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityWorkspaceHead}
+}
+
+// RequiresWorkspaceHead reports whether the worker must report the workspace's
+// physical HEAD with this package's result.
+func (pkg ExecutionPackage) RequiresWorkspaceHead() bool {
+	return slices.Contains(pkg.RequiredCapabilities, PackageCapabilityWorkspaceHead)
 }
 
 // PreflightStep is one declared step the worker runs after the workspace is
@@ -386,6 +397,9 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 		}
 		if capability == PackageCapabilityRecoveryRetry && (pkg.Supervision == nil || pkg.Supervision.Purpose != "repair") {
 			return errors.New("execution package: only a repair activation may require recovery retry")
+		}
+		if capability == PackageCapabilityWorkspaceHead && pkg.Supervision != nil {
+			return errors.New("execution package: an activation has no reviewed workspace HEAD to report")
 		}
 		if capability == PackageCapabilityProjectContext && pkg.Context == nil {
 			return errors.New("execution package: project context capability requires a context index")
