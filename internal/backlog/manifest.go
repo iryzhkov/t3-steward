@@ -97,6 +97,7 @@ type ManifestTask struct {
 	Outputs            []string                    `yaml:"outputs"`
 	Commits            []ManifestCommit            `yaml:"commits"`
 	Verify             []string                    `yaml:"verify"`
+	Gate               *domain.TaskGate            `yaml:"gate"`
 	Placement          ManifestPlacement           `yaml:"placement"`
 	Resources          ManifestResources           `yaml:"resources"`
 	Preflight          ManifestPreflight           `yaml:"preflight"`
@@ -363,6 +364,9 @@ func applyManifestDefaults(manifest *Manifest) {
 		expandResourcePreset(&task.Resources)
 		task.Preflight = effectivePreflight(manifest.Preflight, task.Preflight)
 		applyPreflightDefaults(&task.Preflight)
+		if task.Gate != nil && task.Gate.Timeout == 0 {
+			task.Gate.Timeout = 45 * time.Minute
+		}
 		manifest.Tasks[name] = task
 	}
 }
@@ -600,6 +604,29 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 	if err := validateManifestCommits(prefix, task); err != nil {
 		return err
 	}
+	if task.Gate != nil {
+		if len(task.Gate.Commands) == 0 || task.Gate.Timeout <= 0 || task.Gate.Timeout > 6*time.Hour {
+			return fmt.Errorf("%s gate requires commands and timeout in (0, 6h]", prefix)
+		}
+		if err := validateNonEmptyUnique(prefix+" gate command", task.Gate.Commands); err != nil {
+			return err
+		}
+		for _, command := range task.Gate.Commands {
+			if strings.ContainsRune(command, 0) {
+				return fmt.Errorf("%s gate command contains NUL", prefix)
+			}
+		}
+		for _, output := range task.Outputs {
+			if output == "gate" || strings.HasPrefix(output, "gate/") {
+				return fmt.Errorf("%s gate artifact name is reserved", prefix)
+			}
+		}
+		for _, commit := range task.Commits {
+			if commit.Name == "gate" {
+				return fmt.Errorf("%s gate artifact name is reserved", prefix)
+			}
+		}
+	}
 	if err := validateNonEmptyUnique(prefix+" verification command", task.Verify); err != nil {
 		return err
 	}
@@ -647,6 +674,10 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 		outputs := make(map[string]struct{})
 		if !external {
 			outputs = make(map[string]struct{}, len(tasks[producer].Outputs)+len(tasks[producer].Commits))
+			if tasks[producer].Gate != nil {
+				outputs["gate"] = struct{}{}
+				outputs["gate/log.txt"] = struct{}{}
+			}
 			for _, output := range tasks[producer].Outputs {
 				outputs[output] = struct{}{}
 			}

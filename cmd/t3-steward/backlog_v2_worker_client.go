@@ -474,6 +474,7 @@ func newCoordinatorWorkerSession(
 				ActivationEvidence: &artifacts,
 				CoordinatorID:      settings.Coordinator.ID, CoordinatorEpoch: coordinatorEpoch,
 				VerificationTimeout: settings.Verification.CommandTimeout.D(),
+				GateCacheAge:        settings.Verification.GateCacheAge.D(),
 				// An overseer activation's preparation is a protocol-sized step;
 				// it keeps the request timeout it always had.
 				ActivationPrepareTimeout: requestTimeout,

@@ -36,6 +36,7 @@ type CoordinatorOfferBuilder struct {
 	CatalogRevision     string
 	CoordinatorID       string
 	CoordinatorEpoch    int64
+	GateCacheAge        time.Duration
 	VerificationTimeout time.Duration
 	// ActivationPrepareTimeout bounds an overseer activation's preparation.
 	// Zero falls back to VerificationTimeout, which is what it was before the
@@ -195,6 +196,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 			RequiredCredentials: append([]string(nil), environment.RequiredCredentials...),
 		},
 		Verification: append([]string(nil), state.task.Verification...),
+		Gate:         cloneTaskGate(state.task.Gate),
 		Outputs:      append([]domain.ArtifactDeclaration(nil), state.task.Outputs...),
 		Preflight:    append([]workerproto.PreflightStep(nil), state.task.Preflight...),
 		NotBefore:    cloneTime(state.task.NotBefore),
@@ -203,6 +205,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		Limits: workerproto.ExecutionLimits{
 			MaxTurns: state.task.MaxTurns, PrepareTimeout: environment.Setup.Timeout,
 			VerificationTimeout: b.VerificationTimeout,
+			GateCacheAge:        b.GateCacheAge,
 			MaxArtifactBytes:    b.MaxArtifactBytes, MaxTotalBytes: b.MaxTotalBytes,
 		},
 		CreatedAt: assignment.CreatedAt,
@@ -273,6 +276,9 @@ func appendRecoverySupplementInputs(ctx context.Context, store ExecutionPackageR
 }
 
 func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context, pkg *workerproto.ExecutionPackage) error {
+	if pkg.Gate != nil {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityWorkerOwnedGate)
+	}
 	if len(pkg.Preflight) > 0 {
 		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityPreflight)
 	}
@@ -309,7 +315,7 @@ func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context,
 		// Nothing can be proven about the worker, so declared preflight is
 		// refused rather than assumed.
 		return fmt.Errorf("execution package builder: worker %q capabilities are unknown, required %q",
-			pkg.WorkerID, workerproto.PackageCapabilityPreflight)
+			pkg.WorkerID, pkg.RequiredCapabilities[0])
 	}
 	for _, capability := range pkg.RequiredCapabilities {
 
@@ -544,7 +550,7 @@ func packageDependencies(
 	}
 	outputs := make(map[string]domain.Artifact)
 	for _, artifact := range artifacts {
-		if artifact.WorkflowRunID != runID || artifact.Kind != domain.ArtifactOutput {
+		if artifact.WorkflowRunID != runID || (artifact.Kind != domain.ArtifactOutput && artifact.Kind != domain.ArtifactGate) {
 			continue
 		}
 		key := artifact.TaskID + "\x00" + artifact.Name
@@ -584,7 +590,7 @@ func packageDependencies(
 			}
 			object, err := packageArtifact(
 				artifact,
-				"dependencies/"+producer+"/"+filepath.ToSlash(artifact.Name),
+				"dependencies/"+producer+"/"+gateDependencyPath(artifact),
 				"dependency",
 			)
 			if err != nil {
@@ -648,7 +654,7 @@ func packageCarriedInputs(task domain.Task, artifacts map[string]domain.Artifact
 			if namespace == "" {
 				namespace = carried.Producer
 			}
-			path := "dependencies/" + namespace + "/" + filepath.ToSlash(carried.Name)
+			path := "dependencies/" + namespace + "/" + gateCarriedDependencyPath(carried)
 			if seenPaths[path] {
 				return nil, fmt.Errorf("duplicate carried input path %q", path)
 			}

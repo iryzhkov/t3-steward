@@ -181,7 +181,11 @@ func (r *Runtime) finalizationTimeout(record AttemptRecord) time.Duration {
 		budget = DefaultFinalizationTimeout
 	}
 	pkg := record.Package.Package
-	if declared := time.Duration(len(pkg.Verification)) * pkg.Limits.VerificationTimeout; declared > budget {
+	declared := time.Duration(len(pkg.Verification)) * pkg.Limits.VerificationTimeout
+	if pkg.Gate != nil {
+		declared += time.Duration(len(pkg.Gate.Commands)) * pkg.Gate.Timeout
+	}
+	if declared > budget {
 		budget = declared
 	}
 	return budget

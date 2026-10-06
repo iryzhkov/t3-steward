@@ -37,6 +37,7 @@ type AttemptFinalization struct {
 	// commit it was built on.
 	Repository string
 	BaseCommit string
+	WorkerID   string
 	// CommitBundles retains a bundle of each declared commit so that a
 	// consumer on another worker can import it. It is set only when the
 	// coordinator declared the commit bundle capability on the package, which
@@ -96,7 +97,11 @@ type AttemptFinalizer struct {
 	Processes   ProcessRunner
 	// CampaignRefs keeps a declared commit reachable for the campaign's
 	// lifetime. It is required only by a task that declares one.
-	CampaignRefs CampaignRefStore
+	CampaignRefs          CampaignRefStore
+	GateCacheAge          time.Duration
+	GateTimeoutMax        time.Duration
+	GateToolchainIdentity string
+	GateCacheDisabled     bool
 }
 
 // Finalize runs verification, captures immutable artifacts, and returns a strict
@@ -127,6 +132,22 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		}
 	}
 
+	if request.Task.Gate != nil && len(failures) == 0 {
+		report, log, gateErr := f.runGate(ctx, request)
+		if gateErr != nil {
+			return FinalizedAttempt{}, fmt.Errorf("finalize gate: %w", gateErr)
+		}
+		raw, marshalErr := json.MarshalIndent(report, "", "  ")
+		if marshalErr != nil {
+			return FinalizedAttempt{}, marshalErr
+		}
+		request.Extra = append(request.Extra,
+			FinalizationArtifact{ID: "gate-" + request.Attempt.ID, Name: "gate", Kind: domain.ArtifactGate, MediaType: "application/json", Producer: "gate", Content: append(raw, '\n')},
+			FinalizationArtifact{ID: "gate-log-" + request.Attempt.ID, Name: "gate/log.txt", Kind: domain.ArtifactGate, MediaType: "text/plain", Producer: "gate", Content: log})
+		if !report.Passed {
+			failures = append(failures, fmt.Sprintf("gate command failed (%d): %s: %s", report.Failure.ExitCode, report.Failure.Command, report.Failure.Reason))
+		}
+	}
 	workspaceRoot, err := os.OpenRoot(request.WorkspaceDir)
 	if err != nil {
 		return FinalizedAttempt{}, fmt.Errorf("finalize attempt: open workspace: %w", err)
@@ -377,13 +398,17 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 	}
 
 	for index, extra := range request.Extra {
+		storageName := extra.Name
+		if extra.Kind == domain.ArtifactGate && extra.Name == "gate" {
+			storageName = "gate/report.json"
+		}
 		storagePath := filepath.ToSlash(filepath.Join(
 			"runs", request.Attempt.WorkflowRunID, request.Task.ID, request.Attempt.ID,
-			"artifacts", extra.Name,
+			"artifacts", storageName,
 		))
 		file, writeErr := writeIngestedFile(
 			bytes.NewReader(extra.Content),
-			filepath.Join(stageDir, "artifacts", filepath.FromSlash(extra.Name)),
+			filepath.Join(stageDir, "artifacts", filepath.FromSlash(storageName)),
 			extra.Name,
 			storagePath,
 		)
@@ -547,7 +572,7 @@ func MaterializeDependencies(workspaceDir, storageRoot, workflowRunID string, ta
 	}
 	artifactByKey := make(map[artifactKey]domain.Artifact, len(artifacts))
 	for _, artifact := range artifacts {
-		if artifact.Kind != domain.ArtifactOutput {
+		if artifact.Kind != domain.ArtifactOutput && !(artifact.Kind == domain.ArtifactGate && (artifact.Name == "gate" || artifact.Name == "gate/log.txt")) {
 			continue
 		}
 		key := artifactKey{taskID: artifact.TaskID, name: artifact.Name}
@@ -558,9 +583,10 @@ func MaterializeDependencies(workspaceDir, storageRoot, workflowRunID string, ta
 	}
 
 	type selectedArtifact struct {
-		producer string
-		artifact domain.Artifact
-		source   string
+		producer         string
+		artifact         domain.Artifact
+		source           string
+		materializedPath string
 	}
 	var selected []selectedArtifact
 	directDependencies := make(map[string]struct{}, len(task.Needs))
@@ -646,7 +672,7 @@ func MaterializeDependencies(workspaceDir, storageRoot, workflowRunID string, ta
 		if err != nil {
 			return nil, fmt.Errorf("materialize dependencies: carried output %q from %q: %w", item.Name, item.Producer, err)
 		}
-		selected = append(selected, selectedArtifact{producer: item.Producer, artifact: artifact, source: relative})
+		selected = append(selected, selectedArtifact{producer: item.Producer, artifact: artifact, source: relative, materializedPath: gateCarriedDependencyPath(item)})
 	}
 	if len(selected) == 0 {
 		return nil, nil
@@ -680,7 +706,14 @@ func MaterializeDependencies(workspaceDir, storageRoot, workflowRunID string, ta
 
 	materialized := make([]string, 0, len(selected))
 	for _, item := range selected {
-		destination := filepath.Join(stageDir, item.producer, filepath.FromSlash(item.artifact.Name))
+		materializedName := item.artifact.Name
+		if item.materializedPath != "" {
+			materializedName = item.materializedPath
+		}
+		if item.artifact.Kind == domain.ArtifactGate && materializedName == "gate" {
+			materializedName = "gate/report.json"
+		}
+		destination := filepath.Join(stageDir, item.producer, filepath.FromSlash(materializedName))
 		file, err := copyIngestedFile(storage, item.source, destination, item.artifact.Name, "")
 		if err != nil {
 			return nil, fmt.Errorf("materialize dependencies: copy %q from %q: %w", item.artifact.Name, item.producer, err)
@@ -688,7 +721,7 @@ func MaterializeDependencies(workspaceDir, storageRoot, workflowRunID string, ta
 		if file.size != item.artifact.Size || !strings.EqualFold(file.sha256, item.artifact.SHA256) {
 			return nil, fmt.Errorf("materialize dependencies: checksum mismatch for %q from %q", item.artifact.Name, item.producer)
 		}
-		materialized = append(materialized, filepath.ToSlash(filepath.Join(".t3", "dependencies", item.producer, item.artifact.Name)))
+		materialized = append(materialized, filepath.ToSlash(filepath.Join(".t3", "dependencies", item.producer, materializedName)))
 	}
 	if err := makeIngestedTreeImmutable(stageDir); err != nil {
 		return nil, fmt.Errorf("materialize dependencies: protect staged files: %w", err)

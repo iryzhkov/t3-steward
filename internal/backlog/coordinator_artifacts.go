@@ -316,7 +316,7 @@ func validatePublicationArtifact(artifact domain.Artifact) error {
 	switch artifact.Kind {
 	case domain.ArtifactInput, domain.ArtifactOutput, domain.ArtifactCheckpoint,
 		domain.ArtifactLog, domain.ArtifactSummary, domain.ArtifactGitState,
-		domain.ArtifactVerification:
+		domain.ArtifactVerification, domain.ArtifactGate:
 	default:
 		return fmt.Errorf("artifact kind %q is invalid", artifact.Kind)
 	}

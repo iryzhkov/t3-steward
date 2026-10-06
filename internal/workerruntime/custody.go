@@ -221,10 +221,14 @@ func resultObjects(pkg workerproto.ExecutionPackage, result PublishedResult) ([]
 	objects := make([]resultObject, 0, len(result.Finalized.Artifacts)+5)
 	for index := range result.Finalized.Artifacts {
 		artifact := &result.Finalized.Artifacts[index]
+		transferName := artifact.Name
+		if artifact.Kind == domain.ArtifactGate && artifact.Name == "gate" {
+			transferName = "gate/report.json"
+		}
 		objects = append(objects, resultObject{
 			object: workerproto.ArtifactObject{
 				ID:        artifact.ID,
-				Path:      "results/" + filepath.ToSlash(artifact.Name),
+				Path:      "results/" + filepath.ToSlash(transferName),
 				Kind:      string(artifact.Kind),
 				MediaType: artifact.MediaType,
 				Size:      artifact.Size,

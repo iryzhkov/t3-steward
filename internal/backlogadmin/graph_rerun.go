@@ -163,7 +163,7 @@ func (b *rerunReferences) detach(ctx context.Context, task *domain.Task, reused 
 				return err
 			}
 			carried := domain.CarriedInput{
-				Producer: need, ProducerTaskID: ancestor.ID, Name: name, ArtifactID: referenced,
+				Producer: need, ProducerTaskID: ancestor.ID, Name: name, ArtifactID: referenced, SourceKind: artifact.Kind,
 			}
 			if artifact.AttemptID != "" {
 				// The source binding pins the exact attempt whose record is
@@ -189,7 +189,7 @@ func (b *rerunReferences) detach(ctx context.Context, task *domain.Task, reused 
 func (b *rerunReferences) output(taskID, name string) (domain.Artifact, bool) {
 	for _, artifact := range b.records.Artifacts {
 		if artifact.WorkflowRunID == b.source.ID && artifact.TaskID == taskID &&
-			artifact.Kind == domain.ArtifactOutput && artifact.Name == name {
+			(artifact.Kind == domain.ArtifactOutput || artifact.Kind == domain.ArtifactGate) && artifact.Name == name {
 			return artifact, true
 		}
 	}

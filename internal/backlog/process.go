@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -18,6 +19,8 @@ type ProcessRequest struct {
 	Program string
 	Args    []string
 	Log     io.Writer
+	// Timeout bounds worker-owned commands; contained runners enforce it internally too.
+	Timeout time.Duration
 	// MaxOutputBytes bounds the combined standard output and standard error
 	// while they are being accumulated, rather than after the process has
 	// finished. A command that writes far more than the caller will ever keep

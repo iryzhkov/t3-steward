@@ -334,6 +334,7 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		if !ok {
 			return Response{}, notFound("task", query.WorkflowRunID+"/"+query.TaskID)
 		}
+		s.addGateExplanation(ctx, query.Principal, &explanation)
 		response.Explanation = &explanation
 	case QueryEvents:
 		if _, ok := view.runs[query.WorkflowRunID]; !ok {
@@ -1059,6 +1060,13 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 	attempt := latestAttempt(v.attempts[runID+"\x00"+task.ID])
 	if attempt != nil {
 		explanation.AttemptID = attempt.ID
+		for _, artifact := range v.records.Artifacts {
+			if artifact.WorkflowRunID == runID && artifact.TaskID == task.ID && artifact.AttemptID == attempt.ID && artifact.Kind == domain.ArtifactGate && artifact.Name == "gate" {
+				explanation.GateArtifactID = artifact.ID
+				explanation.Details = append(explanation.Details, "worker gate evidence: "+artifact.ID)
+				break
+			}
+		}
 		if attempt.Progress.Terminal() {
 			explanation.Summary = "task is terminal"
 			return explanation, true

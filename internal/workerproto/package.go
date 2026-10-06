@@ -38,6 +38,7 @@ type ExecutionLimits struct {
 	MaxTurns            int           `json:"maxTurns"`
 	PrepareTimeout      time.Duration `json:"prepareTimeout"`
 	VerificationTimeout time.Duration `json:"verificationTimeout"`
+	GateCacheAge        time.Duration `json:"gateCacheAge,omitempty"`
 	MaxArtifactBytes    int64         `json:"maxArtifactBytes"`
 	MaxTotalBytes       int64         `json:"maxTotalBytes"`
 }
@@ -126,6 +127,7 @@ func CommitBundlePath(runID, taskID, name string) string {
 // package faithfully. A package that declares one is only understood by a build
 // that supports it; see ValidateExecutionPackage.
 const (
+	PackageCapabilityWorkerOwnedGate     = "worker-owned-gate-v1"
 	PackageCapabilityPreflight           = "preflight"
 	PackageCapabilitySupervisionEvidence = "supervision-evidence-v1"
 	PackageCapabilityRecoveryRetry       = "recovery-retry-v1"
@@ -142,7 +144,7 @@ const (
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle}
+	return []string{PackageCapabilityWorkerOwnedGate, PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle}
 }
 
 // PreflightStep is one declared step the worker runs after the workspace is
@@ -183,6 +185,7 @@ type ExecutionPackage struct {
 	Route         domain.ProviderRoute   `json:"route"`
 	Environment   EnvironmentReference   `json:"environment"`
 	Verification  []string               `json:"verification,omitempty"`
+	Gate          *domain.TaskGate       `json:"gate,omitempty"`
 	Preflight     []PreflightStep        `json:"preflight,omitempty"`
 	// RequiredCapabilities names what a worker must implement to run this
 	// package. The manifest content address already stops an older build from
@@ -397,6 +400,16 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 			return errors.New("execution package: invalid verification command")
 		}
 	}
+	if pkg.Gate != nil {
+		if len(pkg.Gate.Commands) == 0 || pkg.Gate.Timeout <= 0 || pkg.Gate.Timeout > pkg.Limits.VerificationTimeout || pkg.Gate.Timeout > 6*time.Hour || pkg.Limits.GateCacheAge < 0 {
+			return errors.New("execution package: invalid gate limits")
+		}
+		for _, command := range pkg.Gate.Commands {
+			if strings.TrimSpace(command) == "" || strings.ContainsRune(command, 0) {
+				return errors.New("execution package: invalid gate command")
+			}
+		}
+	}
 	outputs := make(map[string]struct{})
 	for _, output := range pkg.Outputs {
 		if !safeRelativePath(output.Name) || output.MediaType == "" {
@@ -436,6 +449,12 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 	// than which behaviour this package needs. An activation package names it
 	// anyway, so that a worker validating a package it should never have been
 	// offered refuses it by name instead of running a review as a task.
+	if pkg.Gate != nil && !slices.Contains(pkg.RequiredCapabilities, PackageCapabilityWorkerOwnedGate) {
+		return errors.New("execution package: gate requires worker-owned-gate-v1 capability")
+	}
+	if pkg.Gate == nil && slices.Contains(pkg.RequiredCapabilities, PackageCapabilityWorkerOwnedGate) {
+		return errors.New("execution package: worker-owned-gate-v1 capability requires a gate")
+	}
 	supported := append(SupportedPackageCapabilities(), CapabilityCampaignSupervision)
 	declared := make(map[string]struct{}, len(pkg.RequiredCapabilities))
 	for _, capability := range pkg.RequiredCapabilities {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/blockingwait"
 	"github.com/iryzhkov/t3-steward/internal/config"
@@ -18,7 +20,9 @@ import (
 const taskResultUsage = `Usage: t3-steward task result <run>[/<task>] [--output DIR] [--json] [--wait [--timeout D]]
 
 Collect a finished task: its final message and every output it declared, in one
-call. Without a task, every task of the run is collected.
+call, including worker gate evidence when present. The gate report is written
+to gate/report.json and its captured output to gate/log.txt. Gate cache provenance
+is inlined in JSON and shown in text. Without a task, every task of the run is collected.
 
 The files are written under DIR, each under the name the task declared for it,
 and the directory is printed. The default is <state>/results/<run>/<task>/,
@@ -84,8 +88,9 @@ type taskResultTask struct {
 	Directory string `json:"directory"`
 	// FinalMessage is inlined in JSON and, up to 4096 bytes, in text.
 	// The full content is also written to the printed file path.
-	FinalMessage string           `json:"finalMessage,omitempty"`
-	Files        []taskResultFile `json:"files"`
+	Gate         *backlog.GateReport `json:"gate,omitempty"`
+	FinalMessage string              `json:"finalMessage,omitempty"`
+	Files        []taskResultFile    `json:"files"`
 	// Missing names what was expected and is not there, such as a final
 	// message a task that never ran cannot have produced.
 	Missing []string `json:"missing,omitempty"`
@@ -367,22 +372,41 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 				continue
 			}
 			final = true
-		case domain.ArtifactOutput:
+		case domain.ArtifactOutput, domain.ArtifactGate:
 		default:
 			// Logs and verification records are the coordinator's evidence, not
 			// the task's result; "backlog artifacts" lists them.
 			continue
+		}
+		originalName := artifact.Metadata.Name
+		if artifact.Metadata.Kind == domain.ArtifactGate {
+			if task.Attempt == nil || artifact.Metadata.AttemptID != task.Attempt.ID {
+				continue
+			}
+			if originalName == "gate" {
+				artifact.Metadata.Name = "gate/report.json"
+			}
 		}
 		body, err := c.fetch(ctx, artifact, collected.Directory)
 		if err != nil {
 			return taskResultTask{}, err
 		}
 		collected.Files = append(collected.Files, taskResultFile{
-			Name: artifact.Metadata.Name,
+			Name: originalName,
 			Path: filepath.Join(collected.Directory, filepath.FromSlash(artifact.Metadata.Name)),
 			Kind: string(artifact.Metadata.Kind),
 			Size: int64(len(body)),
 		})
+		if artifact.Metadata.Kind == domain.ArtifactGate && originalName == "gate" {
+			if len(body) > backlog.GateEvidenceMaxBytes {
+				return taskResultTask{}, errors.New("gate metadata exceeds limit")
+			}
+			var gate backlog.GateReport
+			if err := json.Unmarshal(body, &gate); err != nil {
+				return taskResultTask{}, fmt.Errorf("decode gate evidence: %w", err)
+			}
+			collected.Gate = &gate
+		}
 		if inline && artifact.Metadata.Kind == domain.ArtifactSummary {
 			collected.FinalMessage = string(body)
 		}
@@ -471,6 +495,9 @@ func renderTaskResult(out io.Writer, document taskResultDocument) error {
 	fmt.Fprintf(out, "written to %s\n", directory)
 	for _, task := range document.Tasks {
 		fmt.Fprintf(out, "\n%s (%s)\n", task.Task, task.Progress)
+		if task.Gate != nil {
+			fmt.Fprintf(out, "  gate: passed=%t cached=%t original attempt=%s tree=%s\n", task.Gate.Passed, task.Gate.Cached, task.Gate.OriginalAttempt, task.Gate.TreeHash)
+		}
 		if task.Failure != "" {
 			fmt.Fprintf(out, "  failure: %s\n", task.Failure)
 		}

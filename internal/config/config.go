@@ -529,6 +529,7 @@ type BacklogV2 struct {
 // collection budget.
 type V2Verification struct {
 	CommandTimeout Duration `yaml:"command_timeout"`
+	GateCacheAge   Duration `yaml:"gate_cache_age"`
 }
 
 type V2Coordinator struct {
@@ -930,6 +931,7 @@ func Default() Config {
 	c.BacklogV2.Scheduling.Interval = Duration(10 * time.Second)
 	c.BacklogV2.Scheduling.CatchUpMax = 100
 	c.BacklogV2.Verification.CommandTimeout = Duration(30 * time.Minute)
+	c.BacklogV2.Verification.GateCacheAge = Duration(24 * time.Hour)
 	c.LogLevel = "info"
 	return c
 }

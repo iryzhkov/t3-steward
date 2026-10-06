@@ -166,6 +166,9 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	}
 	verificationPassed, failure, summary, err := evaluateResultEvidence(task, assignment.ThreadID, artifacts, payloads, missingOutputs)
 	if err != nil {
+		if errors.Is(err, ErrInvalidGateEvidence) {
+			return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now, err)
+		}
 		return report, err
 	}
 	for index, artifact := range artifacts {
@@ -380,8 +383,16 @@ func resultArtifact(object workerproto.ArtifactObject, manifest workerproto.Arti
 		return domain.Artifact{}, errors.New("result import object path is invalid")
 	}
 	kind := domain.ArtifactKind(object.Kind)
+	if kind == domain.ArtifactGate && name == "gate/report.json" {
+		name = "gate"
+	}
 	switch kind {
 	case domain.ArtifactOutput:
+	case domain.ArtifactGate:
+		if task.Gate == nil || !((object.ID == "gate-"+attempt.ID && name == "gate" && object.Path == "results/gate/report.json" && object.MediaType == "application/json") ||
+			(object.ID == "gate-log-"+attempt.ID && name == "gate/log.txt" && object.MediaType == "text/plain")) {
+			return domain.Artifact{}, errors.New("result import gate identity or declaration mismatch")
+		}
 	case domain.ArtifactVerification, domain.ArtifactSummary, domain.ArtifactLog:
 	case domain.ArtifactInput, domain.ArtifactCheckpoint:
 		if !attempt.IsSupervisionActivation() || !strings.HasPrefix(name, "recovery/") {
@@ -570,6 +581,13 @@ func evaluateResultEvidence(task domain.Task, threadID string, artifacts []domai
 			failures = append(failures, fmt.Sprintf("verification command failed (%d): %s", report.ExitCode, command))
 			break
 		}
+	}
+	gateFailure, err := evaluateGateEvidence(task, artifacts, payloads, len(failures) == 0)
+	if err != nil {
+		return false, "", summary, err
+	}
+	if gateFailure != "" {
+		failures = append(failures, gateFailure)
 	}
 	if len(missingOutputs) != 0 {
 		failures = append(failures, MissingOutputFailure(missingOutputs))

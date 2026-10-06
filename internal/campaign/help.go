@@ -59,6 +59,20 @@ with needs, and the files that cross them with outputs and inputs_from. The
 graph is fixed at submission. The Steward never invents a task, and neither may
 a running one.
 
+A task can declare a worker-owned final gate:
+  gate:
+    commands: [make check-review]
+    timeout: 45m
+
+The worker runs it after verify succeeds, outside the agent turn. Each command's
+timeout defaults to 45m and must fit the worker's verification.command_timeout maximum (default
+30m; configure at least 45m to use the gate default). Offline validation allows
+up to 6h. The gate produces coordinator-recorded gate and gate/log.txt artifacts,
+which dependents may consume through inputs_from without declaring them in outputs.
+Successful evidence may be reused for the same HEAD tree, commands and toolchain;
+verification.gate_cache_age controls its age (default 24h; 0 disables reuse).
+A failed gate fails the task and still retains its result and bounded log.
+
 Each prompt lives in a file named by prompt_file; inline prompt: is not supported.
 class defaults to surplus (spare quota); required is admitted first. A task may
 inherit the workflow class or declare its own.

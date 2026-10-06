@@ -1011,8 +1011,11 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if err != nil {
 		return err
 	}
-	finalized, err := d.Finalizer.Finalize(ctx, backlog.AttemptFinalization{
-		Task: task, Attempt: attempt, WorkspaceDir: workspace, ExplicitSuccess: failure == "",
+	finalizer := d.Finalizer
+	finalizer.GateCacheAge = pkg.Limits.GateCacheAge
+	finalizer.GateTimeoutMax = pkg.Limits.VerificationTimeout
+	finalized, err := finalizer.Finalize(ctx, backlog.AttemptFinalization{
+		Task: task, Attempt: attempt, WorkspaceDir: workspace, ExplicitSuccess: failure == "", WorkerID: pkg.WorkerID,
 		Extra: extras, Repository: pkg.Environment.Repository, BaseCommit: baseCommit,
 		// The coordinator declares the capability on a producer's package only
 		// when it accepts the bundle artifact, and the bundle is uploaded as one
@@ -1373,7 +1376,7 @@ func (d *LocalDriver) requiredThread(ctx context.Context, id string) (domain.Thr
 func packageRecords(pkg workerproto.ExecutionPackage, now time.Time) (domain.Task, domain.Attempt) {
 	task := domain.Task{
 		ID: pkg.Identity.TaskID, WorkflowID: pkg.Identity.WorkflowID, Name: pkg.Identity.TaskID,
-		Class: pkg.Class, Outputs: pkg.Outputs, Verification: pkg.Verification,
+		Class: pkg.Class, Outputs: pkg.Outputs, Verification: pkg.Verification, Gate: pkg.Gate,
 		DirectoryBindings: pkg.Environment.DirectoryBindings,
 		Routes:            []domain.ProviderRoute{pkg.Route}, ResourceLocks: append([]string(nil), pkg.Environment.ResourceLocks...),
 		MaxTurns: pkg.Limits.MaxTurns, NotBefore: pkg.NotBefore, Deadline: pkg.Deadline, ExpiresAt: pkg.ExpiresAt,

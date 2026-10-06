@@ -231,27 +231,28 @@ type Task struct {
 	// <run>/<task>. They are real dependencies, but they sit outside this
 	// graph, so they add no wave depth and their state is not statically
 	// knowable.
-	ExternalNeeds []string    `json:"externalNeeds,omitempty"`
-	Dependents    []string    `json:"dependents,omitempty"`
-	InputsFrom    []Binding   `json:"inputsFrom,omitempty"`
-	Outputs       []string    `json:"outputs,omitempty"`
-	Commits       []Commit    `json:"commits,omitempty"`
-	Verify        []string    `json:"verify,omitempty"`
-	Placement     Placement   `json:"placement"`
-	PlacementFrom Origin      `json:"placementFrom"`
-	Resources     Resources   `json:"resources"`
-	ResourcesFrom Origin      `json:"resourcesFrom"`
-	Routes        []Route     `json:"routes,omitempty"`
-	RoutesFrom    Origin      `json:"routesFrom"`
-	Preflight     []Step      `json:"preflight,omitempty"`
-	PreflightFrom Origin      `json:"preflightFrom"`
-	Directories   []Directory `json:"directories,omitempty"`
-	ResourceLocks []string    `json:"resourceLocks,omitempty"`
-	Importance    int         `json:"importance"`
-	Difficulty    int         `json:"difficulty"`
-	MaxTurns      int         `json:"maxTurns"`
-	EstimatedCost *float64    `json:"estimatedCost,omitempty"`
-	Timing        Timing      `json:"timing"`
+	ExternalNeeds []string         `json:"externalNeeds,omitempty"`
+	Dependents    []string         `json:"dependents,omitempty"`
+	InputsFrom    []Binding        `json:"inputsFrom,omitempty"`
+	Outputs       []string         `json:"outputs,omitempty"`
+	Commits       []Commit         `json:"commits,omitempty"`
+	Verify        []string         `json:"verify,omitempty"`
+	Gate          *domain.TaskGate `json:"gate,omitempty"`
+	Placement     Placement        `json:"placement"`
+	PlacementFrom Origin           `json:"placementFrom"`
+	Resources     Resources        `json:"resources"`
+	ResourcesFrom Origin           `json:"resourcesFrom"`
+	Routes        []Route          `json:"routes,omitempty"`
+	RoutesFrom    Origin           `json:"routesFrom"`
+	Preflight     []Step           `json:"preflight,omitempty"`
+	PreflightFrom Origin           `json:"preflightFrom"`
+	Directories   []Directory      `json:"directories,omitempty"`
+	ResourceLocks []string         `json:"resourceLocks,omitempty"`
+	Importance    int              `json:"importance"`
+	Difficulty    int              `json:"difficulty"`
+	MaxTurns      int              `json:"maxTurns"`
+	EstimatedCost *float64         `json:"estimatedCost,omitempty"`
+	Timing        Timing           `json:"timing"`
 	// Root is true when the task declares no dependency of any kind and may be
 	// admitted as soon as the run starts.
 	Root bool `json:"root"`
@@ -413,6 +414,7 @@ func Project(manifest backlog.Manifest, opts Options) (Plan, error) {
 			Outputs:       cloneStrings(source.Outputs),
 			Commits:       projectCommits(source.Commits),
 			Verify:        cloneStrings(source.Verify),
+			Gate:          source.Gate,
 			Placement:     projectPlacement(source.Placement),
 			Resources:     projectResources(source.Resources),
 			Routes:        projectRoutes(source.Routes),
