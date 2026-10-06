@@ -101,6 +101,17 @@ func TestClaudeNativeCanonIdentity(t *testing.T) {
 	}
 }
 
+func TestClaudeNativeNormalizedCanonIdentity(t *testing.T) {
+	body := []byte(`{"type":"account.rate-limits.updated","eventId":"t3-id","provider":"claudeAgent","createdAt":"2026-10-06T06:01:06.684Z","raw":{"method":"claude/rate_limit_event","payload":{"uuid":"sdk-id"}},"payload":{"limits":{"windows":[{"id":"seven_day","kind":"weekly","label":"Claude weekly","usedPercent":1}]}}}`)
+	snaps, err := ParseJSON(body, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snaps) != 1 || snaps[0].SourceEventID != "sdk-id" {
+		t.Fatalf("normalized copy=%+v", snaps)
+	}
+}
+
 func TestClaudeNativeLiveAndBootstrap(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/events.native.log"

@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Claude quota readings now also ingest native SDK rate-limit events when
+  T3 omits their CANON copy, with shared SDK identity for deduplication.
+  Stale draining observations no longer require work to pause; the daemon
+  logs each disregarded observation once. Stopped-bucket recovery and
+  elapsed-reset probes, admission thresholds and display rules are unchanged.
+
 - A slow T3 no longer stalls a persistent worker's exchanges through the
   collection and quota-pause decisions. The provider-turn observation, the
   configured task-wait probe, the workspace inspection, and the quota pause's
