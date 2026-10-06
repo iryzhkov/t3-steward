@@ -172,6 +172,77 @@ func TestQuotaPauseSnapshotIsRetriedAfterItFailedAtTheDurableStop(t *testing.T) 
 	}
 }
 
+// A pause snapshot that still cannot be taken when the attempt resumes is
+// forgone durably before the resume, never taken later from the next turn
+// and passed off as the paused one. The resume itself is not held back.
+func TestAResumeNeverLeavesAPauseSnapshotOwedToTheNextTurn(t *testing.T) {
+	ctx := context.Background()
+	t.Run("throttle", func(t *testing.T) {
+		now := runtimeTestNow
+		root := t.TempDir()
+		base := &fakeDriver{workspace: root, workspaceReady: true}
+		r := runningRuntime(t, base, nil, &now)
+		local := &LocalDriver{Config: LocalDriverConfig{RunsRoot: t.TempDir()}, Now: func() time.Time { return now }}
+		turns := &continuationTurnDriver{fakeDriver: base, local: local, turnID: "paused-turn"}
+		driver := &flakyContinuationDriver{continuationTurnDriver: turns, failures: 2}
+		r.driver = driver
+		writeContinuation(t, root, "at the pause")
+		record := journalRecord(t, r)
+		stop := r.localThrottleCommand(record, LocalThrottleRequest{Kind: domain.ThrottleCommandHardStop, RequestedAt: now})
+		if ack, err := r.deliverThrottle(ctx, stop); err != nil || !ack.Accepted {
+			t.Fatalf("stop = %+v, %v", ack, err)
+		}
+		if record := journalRecord(t, r); record.PendingContinuation == nil {
+			t.Fatal("setup: the failed pause snapshot is not owed")
+		}
+		resume := r.localThrottleCommand(journalRecord(t, r), LocalThrottleRequest{Kind: domain.ThrottleCommandResume, RequestedAt: now.Add(time.Minute)})
+		if ack, err := r.deliverThrottle(ctx, resume); err != nil || !ack.Accepted || base.resumeCalls != 1 {
+			t.Fatalf("resume = %+v, %v (resumes %d)", ack, err, base.resumeCalls)
+		}
+		if record := journalRecord(t, r); record.PendingContinuation != nil {
+			t.Fatalf("the pause snapshot is still owed in the next turn: %+v", record.PendingContinuation)
+		}
+		turns.turnID = "next-turn"
+		writeContinuation(t, root, "in the middle of the next turn")
+		if err := r.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if latest, _, err := local.LatestContinuation(record.Package.Package); err != nil || (latest != nil && latest.Boundary == domain.ContinuationPause) {
+			t.Fatalf("the next turn was passed off as the pause: %+v, %v", latest, err)
+		}
+	})
+	t.Run("quota", func(t *testing.T) {
+		now := runtimeTestNow
+		root := t.TempDir()
+		workspace := filepath.Join(root, "workspace")
+		base := &fakeDriver{workspace: workspace, workspaceReady: true,
+			observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}}
+		local := &LocalDriver{Config: LocalDriverConfig{RunsRoot: filepath.Join(root, "runs")}, Now: func() time.Time { return now }}
+		driver := &flakyContinuationDriver{continuationTurnDriver: &continuationTurnDriver{fakeDriver: base, local: local, turnID: "turn-drained"}, failures: 1 << 10}
+		guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
+		runtime := runningRuntime(t, base, guard, &now)
+		runtime.driver = driver
+		writeContinuation(t, workspace, "checkpoint before the pause\n")
+		if err := runtime.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if record := journalRecord(t, runtime); record.LocalThrottle == nil || record.PendingContinuation == nil {
+			t.Fatalf("setup: the pause should owe its snapshot: %+v", record)
+		}
+		guard.pauseNeeded, guard.resumeOK, guard.resumeWhy = false, true, "window reset"
+		if err := runtime.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		record := journalRecord(t, runtime)
+		if base.resumeCalls != 1 || record.LocalThrottle != nil {
+			t.Fatalf("a failing snapshot held the resume back: resumes %d, pause %+v", base.resumeCalls, record.LocalThrottle)
+		}
+		if record.PendingContinuation != nil {
+			t.Fatalf("the pause snapshot is still owed in the next turn: %+v", record.PendingContinuation)
+		}
+	})
+}
+
 // R3: a replay of a turn the store considered long ago, after many later
 // turns, never takes a new snapshot or moves the latest back to that turn.
 func TestContinuationReplayOfALongForgottenTurnNeverRegresses(t *testing.T) {

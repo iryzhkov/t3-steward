@@ -104,6 +104,40 @@ func TestSupersededAttemptHandsItsLiveCheckpointToItsReplacement(t *testing.T) {
 	}
 }
 
+// A turn-end snapshot polled after the attempt reported its result, while it
+// verifies, is still the attempt's own and is imported: it may be the only
+// copy when the result could not carry it. Different bytes under a sequence
+// already imported are refused for good rather than retried on every pass.
+func TestLiveContinuationImportWhileVerifyingAndUnderAReusedSequence(t *testing.T) {
+	ctx := context.Background()
+	now := coordinatorTestTime
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	task := testTask("task")
+	attempt := domain.Attempt{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: task.ID, Number: 1, Progress: domain.ProgressVerifying, Control: domain.ControlStopped, Revision: 4, AssignmentID: "assignment-1", UpdatedAt: now}
+	assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "worker-a", WorkerEpoch: "worker-epoch-1", State: domain.AssignmentCompleted, Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{{ID: attempt.WorkflowRunID, WorkflowID: task.WorkflowID}}, Tasks: []domain.Task{task}, Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment}}); err != nil {
+		t.Fatal(err)
+	}
+	importer := CoordinatorCheckpointImporter{CoordinatorID: "coordinator", CoordinatorEpoch: 1, Store: store, Artifacts: CoordinatorArtifactStore{Root: filepath.Join(t.TempDir(), "artifacts"), Catalog: store}, MaxArtifactBytes: 1024, MaxTotalBytes: 4096, Now: func() time.Time { return now.Add(2 * time.Minute) }}
+	upload := func(snapshot []byte) (workerproto.ArtifactUploadResponse, resultUploadOpener) {
+		checkpoint := domain.ContinuationCheckpoint{AttemptID: attempt.ID, Sequence: 1, Turn: "turn-1", Boundary: domain.ContinuationTurnEnd,
+			SHA256: resultObject("x", "x", "checkpoint", "text/markdown", snapshot).SHA256, Size: int64(len(snapshot)), OriginalSize: int64(len(snapshot)), CapturedAt: now}
+		return liveContinuationUpload(t, assignment, checkpoint, snapshot, now.Add(time.Minute))
+	}
+	response, data := upload([]byte("last turn: done\n"))
+	if artifact, err := importer.Import(ctx, response, data); err != nil || artifact.Name != domain.ContinuationArtifactName {
+		t.Fatalf("a snapshot of a verifying attempt was not imported: %+v, %v", artifact, err)
+	}
+	reused, reusedData := upload([]byte("other bytes, same sequence\n"))
+	if artifact, err := importer.Import(ctx, reused, reusedData); !errors.Is(err, ErrCheckpointImportRejected) {
+		t.Fatalf("a reused sequence = %+v, %v; want a final refusal", artifact, err)
+	}
+}
+
 // The live checkpoint channel keeps the fences of every other upload: a
 // snapshot from an assignment that has moved on, or one its metadata does not
 // describe, is refused for good rather than imported.

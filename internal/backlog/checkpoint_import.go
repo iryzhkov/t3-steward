@@ -213,11 +213,17 @@ func (i CoordinatorCheckpointImporter) importContinuation(ctx context.Context, r
 		Size: snapshot.Size, SHA256: strings.ToLower(snapshot.SHA256), Producer: "worker:" + manifest.WorkerID,
 		CreatedAt: checkpoint.CapturedAt.UTC(),
 	}
-	return i.Artifacts.Publish(ctx, domain.ArtifactPublication{
+	published, err := i.Artifacts.Publish(ctx, domain.ArtifactPublication{
 		CoordinatorEpoch: i.CoordinatorEpoch, WorkerID: manifest.WorkerID, WorkerEpoch: manifest.WorkerEpoch,
 		AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
 		AttemptRevision: attempt.Revision, Artifact: artifact,
 	}, bytes.NewReader(payloads[0]))
+	if errors.Is(err, sqlite.ErrArtifactConflict) {
+		// The attempt already handed on different bytes under this sequence;
+		// the first stands and this one can never be imported.
+		return domain.Artifact{}, i.reject(ctx, records, manifest, now, err)
+	}
+	return published, err
 }
 
 // ErrCheckpointImportRejected marks a checkpoint upload that can never be
@@ -306,8 +312,12 @@ func checkpointImportBinding(records sqlite.CoordinatorRecords, manifest workerp
 	// its control: a pause that is later resumed keeps the checkpoint it took,
 	// and an import that missed the paused window must not become impossible
 	// (and block the worker's exchange) just because the attempt is running.
+	// A continuation snapshot (no checkpointID) taken at the attempt's last
+	// turn end may arrive after its result was reported and before the
+	// result is imported, while the attempt verifies.
 	validProgress := assignment.State == domain.AssignmentClaimed && !attempt.Progress.Terminal() ||
-		assignment.State == domain.AssignmentCompleted && attempt.Progress.Terminal()
+		assignment.State == domain.AssignmentCompleted && (attempt.Progress.Terminal() ||
+			checkpointID == "" && attempt.Progress == domain.ProgressVerifying)
 	if attempt.ID == "" || attempt.AssignmentID != assignment.ID || !validProgress ||
 		(checkpointID != "" && attempt.CheckpointArtifactID != checkpointID) {
 		return assignment, attempt, domain.Task{}, errors.New("checkpoint import attempt binding is stale")

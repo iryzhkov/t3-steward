@@ -421,6 +421,24 @@ func (r *Runtime) settlePendingContinuation(ctx context.Context, id string) {
 	}
 }
 
+// closePendingContinuation takes the pause snapshot the attempt owes, or,
+// when it still cannot be taken, durably forgoes it, before a resume starts a
+// new turn: taken later, it would be a snapshot of that turn passed off as
+// the paused one. A resume is never held back for a snapshot.
+func (r *Runtime) closePendingContinuation(ctx context.Context, id string) error {
+	r.settlePendingContinuation(ctx, id)
+	return r.journal.update(func(state *journalState) error {
+		current, ok := state.Attempts[id]
+		if !ok || current.PendingContinuation == nil {
+			return nil
+		}
+		r.log.Warn("the pause snapshot could not be taken before the resume; it is forgone", "assignment", id, "turn", current.PendingContinuation.Turn)
+		current.PendingContinuation = nil
+		state.Attempts[id] = current
+		return nil
+	})
+}
+
 // recordContinuation snapshots the attempt's continuation.md at a boundary
 // and keeps the latest checkpoint on the journal record. It never fails the
 // caller: a checkpoint is evidence for a later attempt, and losing one must

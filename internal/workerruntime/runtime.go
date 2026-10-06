@@ -543,8 +543,10 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 		result = domain.ThrottleResultStopped
 	case domain.ThrottleCommandResume:
 		// A pause snapshot still owed is of the paused turn: it is taken
-		// before a new turn can change the file.
-		r.settlePendingContinuation(ctx, command.AssignmentID)
+		// before a new turn can change the file, or forgone.
+		if err = r.closePendingContinuation(ctx, command.AssignmentID); err != nil {
+			return domain.ThrottleAcknowledgement{}, err
+		}
 		err = r.driver.Resume(ctx, pkg, command)
 		result = domain.ThrottleResultResumed
 	default:
