@@ -196,6 +196,11 @@ func (d *LocalDriver) createActivationThread(ctx context.Context, pkg workerprot
 	if d.Config.DryRun {
 		return os.WriteFile(d.noEffectsThreadPath(pkg), []byte("active\n"), 0o600)
 	}
+	if recorder, ok := d.Publisher.(secretRecorder); ok {
+		if err := recorder.SnapshotSecrets(ctx, pkg); err != nil {
+			return err
+		}
+	}
 	// The overseer's sessions get a project of their own, so one never lands in
 	// a project a reviewed task is using. It is keyed by the run rather than by
 	// the thread: every activation of one run is the same supervision of the

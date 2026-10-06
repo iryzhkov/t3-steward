@@ -292,6 +292,10 @@ func (s *CustodyStore) AdmitResult(pkg workerproto.ExecutionPackage, result Publ
 	if err != nil {
 		return err
 	}
+	return s.admitPlannedResult(context.Background(), pkg, result, planned)
+}
+
+func (s *CustodyStore) admitPlannedResult(ctx context.Context, pkg workerproto.ExecutionPackage, result PublishedResult, planned []resultObject) error {
 	objects := make([]workerproto.ArtifactObject, 0, len(planned))
 	for _, entry := range planned {
 		objects = append(objects, entry.object)
@@ -307,7 +311,7 @@ func (s *CustodyStore) AdmitResult(pkg workerproto.ExecutionPackage, result Publ
 	if result.Finalized.StorageDir == "" && len(result.Finalized.Artifacts) > 0 {
 		return nil
 	}
-	return s.scanResult(context.Background(), pkg, result, planned)
+	return s.scanResult(ctx, pkg, result, planned)
 }
 
 // PublishResult retains finalizer output, final message, and thread archive as one upload.
@@ -315,14 +319,14 @@ func (s *CustodyStore) PublishResult(ctx context.Context, pkg workerproto.Execut
 	if durable, err := s.ResultDurable(pkg); err != nil || durable {
 		return err
 	}
-	if err := s.AdmitResult(pkg, result); err != nil {
-		return err
-	}
 	planned, err := resultObjects(pkg, result)
 	if err != nil {
 		return err
 	}
 	objects := make([]workerproto.ArtifactObject, 0, len(planned))
+	if err := s.admitPlannedResult(ctx, pkg, result, planned); err != nil {
+		return err
+	}
 	for _, entry := range planned {
 		if err := s.storeResultObject(result.Finalized, entry); err != nil {
 			return err

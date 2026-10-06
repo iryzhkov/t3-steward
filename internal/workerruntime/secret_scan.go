@@ -1,7 +1,6 @@
 package workerruntime
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -41,6 +40,8 @@ func secretFingerprint(value string) string {
 	prefix := value
 	if len(prefix) > 4 {
 		prefix = prefix[:4]
+	} else {
+		prefix = "****"
 	}
 	return fmt.Sprintf("%s:%x", prefix, sum[:6])
 }
@@ -69,6 +70,7 @@ type resultScanner struct {
 	canaries []canaryVariant
 	allow    map[string]bool
 	overlap  int
+	history  []canarySignature
 }
 
 func newResultScanner(config SecretScanConfig, canaries []string, allow map[string]bool) *resultScanner {
@@ -97,9 +99,18 @@ func newResultScanner(config SecretScanConfig, canaries []string, allow map[stri
 	return s
 }
 func (s *resultScanner) safeName(name string) string {
-	for _, c := range s.canaries {
-		name = strings.ReplaceAll(name, string(c.value), "[redacted]")
+	var redacted strings.Builder
+	for {
+		start, end, _ := s.canaryMatch([]byte(name))
+		if start < 0 {
+			redacted.WriteString(name)
+			break
+		}
+		redacted.WriteString(name[:start])
+		redacted.WriteString("[redacted]")
+		name = name[end:]
 	}
+	name = redacted.String()
 	for _, p := range resultSecretPatterns {
 		name = p.re.ReplaceAllString(name, "[redacted]")
 	}
@@ -129,10 +140,8 @@ func (s *resultScanner) scan(object, kind string, r io.Reader) error {
 			cut = len(pending)
 		}
 		if cut > 0 {
-			for _, c := range s.canaries {
-				if at := bytes.Index(pending, c.value); at >= 0 && at < cut {
-					return &SecretScanError{Object: object, Detector: "canary", Offset: base + int64(at), Fingerprint: c.fingerprint}
-				}
+			if at, _, fp := s.canaryMatch(pending); at >= 0 && at < cut {
+				return &SecretScanError{Object: object, Detector: "canary", Offset: base + int64(at), Fingerprint: fp}
 			}
 			for _, p := range resultSecretPatterns {
 				for _, match := range p.re.FindAllSubmatchIndex(pending, -1) {

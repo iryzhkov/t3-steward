@@ -160,7 +160,19 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		if d.Credentials == nil {
 			return "", errors.New("prepare workspace: required credential resolver is unavailable")
 		}
-		if err := d.Credentials.Require(ctx, environment.RequiredCredentials); err != nil {
+		if recorder, ok := d.Publisher.(secretRecorder); ok {
+			resolver, ok := d.Credentials.(secretValueResolver)
+			if !ok {
+				return "", errors.New("required credential resolver does not expose secret scan canaries")
+			}
+			values, err := resolver.SecretValues(ctx, environment.RequiredCredentials)
+			if err != nil {
+				return "", err
+			}
+			if err := recorder.RecordSecretValues(ctx, pkg, values); err != nil {
+				return "", err
+			}
+		} else if err := d.Credentials.Require(ctx, environment.RequiredCredentials); err != nil {
 			return "", err
 		}
 	}
@@ -764,6 +776,11 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 	}
 	if d.Config.DryRun {
 		return os.WriteFile(d.noEffectsThreadPath(pkg), []byte("active\n"), 0o600)
+	}
+	if recorder, ok := d.Publisher.(secretRecorder); ok {
+		if err := recorder.SnapshotSecrets(ctx, pkg); err != nil {
+			return err
+		}
 	}
 	promptArtifact, err := d.readCachedArtifact(pkg.Prompt, pkg.Limits.MaxArtifactBytes)
 	if err != nil {

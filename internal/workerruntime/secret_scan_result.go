@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +31,9 @@ func (s *CustodyStore) scanResult(ctx context.Context, pkg workerproto.Execution
 		}
 	}
 	scanner := newResultScanner(config, canaries, nil)
+	if err := s.addSecretHistory(pkg, scanner); err != nil {
+		return &SecretScanError{Object: "execution", Detector: "credential-history", Offset: 0}
+	}
 	allow, err := loadSecretAllowlist(result.WorkspaceDir)
 	if err != nil {
 		return &SecretScanError{Object: ".t3/secret-scan-allow", Detector: "allowlist-read", Offset: 0}
@@ -40,6 +45,12 @@ func (s *CustodyStore) scanResult(ctx context.Context, pkg workerproto.Execution
 			declarations[output.Name] = true
 		}
 	}
+	var bundleRoot string
+	defer func() {
+		if bundleRoot != "" {
+			_ = os.RemoveAll(bundleRoot)
+		}
+	}()
 	for _, entry := range planned {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -71,14 +82,51 @@ func (s *CustodyStore) scanResult(ctx context.Context, pkg workerproto.Execution
 			}
 			reader = file
 		}
+		var record bytes.Buffer
+		var retained *os.File
+		if kind == "commit" {
+			if entry.object.Size > 1<<20 {
+				if file != nil {
+					_ = file.Close()
+				}
+				return &SecretScanError{Object: scanner.safeName(entry.object.Path), Detector: "commit-record", Offset: 0}
+			}
+			reader = io.TeeReader(reader, &record)
+		}
+		if kind == "bundle" {
+			if bundleRoot == "" {
+				bundleRoot, err = os.MkdirTemp(s.config.Root, ".secret-scan-")
+			}
+			if err == nil {
+				retained, err = os.CreateTemp(bundleRoot, "bundle-")
+			}
+			if err != nil {
+				if file != nil {
+					_ = file.Close()
+				}
+				return &SecretScanError{Object: scanner.safeName(entry.object.Path), Detector: "bundle-retain", Offset: 0}
+			}
+			source = retained.Name()
+			reader = io.TeeReader(reader, retained)
+		}
+		digest := sha256.New()
+		count := &scanCountingReader{reader: io.TeeReader(reader, digest)}
 		scanErr := scanner.scan(entry.object.Path, kind, strings.NewReader(entry.object.Path))
 		if scanErr == nil {
-			scanErr = scanner.scan(entry.object.Path, kind, reader)
+			scanErr = scanner.scan(entry.object.Path, kind, count)
+		}
+		if scanErr == nil && (count.bytes != entry.object.Size || hex.EncodeToString(digest.Sum(nil)) != strings.ToLower(entry.object.SHA256)) {
+			scanErr = &SecretScanError{Object: scanner.safeName(entry.object.Path), Detector: "object-digest", Offset: count.bytes}
 		}
 		if file != nil {
 			closeErr := file.Close()
-			if scanErr == nil {
-				scanErr = closeErr
+			if scanErr == nil && closeErr != nil {
+				scanErr = &SecretScanError{Object: scanner.safeName(entry.object.Path), Detector: "object-read", Offset: count.bytes}
+			}
+		}
+		if retained != nil {
+			if err := retained.Close(); scanErr == nil && err != nil {
+				scanErr = &SecretScanError{Object: scanner.safeName(entry.object.Path), Detector: "bundle-retain", Offset: count.bytes}
 			}
 		}
 		if scanErr != nil {
@@ -88,15 +136,11 @@ func (s *CustodyStore) scanResult(ctx context.Context, pkg workerproto.Execution
 			if result.WorkspaceDir == "" {
 				return &SecretScanError{Object: scanner.safeName(entry.object.Path), Detector: "missing-git-context", Offset: 0}
 			}
-			raw, readErr := readScanBounded(source, 1<<20)
-			if readErr != nil {
-				return &SecretScanError{Object: scanner.safeName(entry.object.Path), Detector: "commit-record", Offset: 0}
-			}
-			provenance, parseErr := backlog.ParseCommitProvenance(raw)
+			provenance, parseErr := backlog.ParseCommitProvenance(record.Bytes())
 			if parseErr != nil {
 				return &SecretScanError{Object: scanner.safeName(entry.object.Path), Detector: "commit-record", Offset: 0}
 			}
-			listing, gitErr := scanGitOutput(ctx, result.WorkspaceDir, "rev-list", "--objects", provenance.Base+".."+provenance.Commit, "--")
+			listing, gitErr := scanCommitListing(ctx, result.WorkspaceDir, provenance.Base, provenance.Commit)
 			if gitErr != nil {
 				return &SecretScanError{Object: scanner.safeName(entry.object.Path), Detector: "git-objects", Offset: 0}
 			}
@@ -238,7 +282,11 @@ func (s *resultScanner) scanGitObjects(ctx context.Context, repo, object, kind, 
 		if err != nil || size < 0 {
 			return &SecretScanError{Object: s.safeName(object), Detector: "git-read", Offset: 0}
 		}
-		label := fmt.Sprintf("%s/%s (%s %d bytes)", object, names[fields[0]], fields[1], size)
+		name := names[fields[0]]
+		if name == "" {
+			name = fields[0]
+		}
+		label := fmt.Sprintf("%s/%s (%s %d bytes)", object, name, fields[1], size)
 		// Tree names (including binary files) and commit metadata are scanned too.
 		if err := s.scan(object, kind, strings.NewReader(label)); err != nil {
 			return err

@@ -873,7 +873,8 @@ its candidate files have not been captured yet. Final admission scans declared
 outputs and verification logs, the thread archive, final message, recovery objects,
 declared Git commits, and both packed and decoded Git bundles. Git scanning covers
 every new reachable object from the recorded base, including intermediate commits,
-commit messages, trees, and binary blobs; locations include the file/object name,
+commit messages, trees, and binary blobs, plus both sides of changed endpoint files
+(including copied blobs already reachable at the base); locations include the file/object name,
 object type and size, and byte offset.
 
 Exact execution credentials always block. The worker resolves required credential
@@ -881,7 +882,13 @@ references in memory, includes its protocol credentials, model API environment
 values, and available Codex, Claude and OpenCode login tokens. For contained
 executions it reads the assigned provider home rather than the host home.
 Plain, standard/URL-safe base64 (padded or unpadded), and URL-encoded forms are
-recognized. Values never enter the package or scan report.
+recognized, including mixed-case and partial percent escapes. Values never enter
+the package or scan report. At credential resolution and before provider startup,
+the worker retains execution-specific SHA-256 signatures, lengths and four-byte
+prefixes in private custody, so later rotation and restart do not forget those
+canaries. Complete credential values are never written to these snapshots.
+Credentials issued and replaced entirely between worker observations remain
+outside the exact canary set; high-confidence token patterns still apply.
 
 High-confidence patterns cover GitHub tokens, Anthropic and OpenAI keys, AWS AKIA
 access IDs, labeled Cloudflare API tokens, PEM private-key headers and age secret
@@ -901,6 +908,9 @@ including a decoded Git blob; it never means that an unscanned suffix is accepte
 hits without blocking. Canary hits block under every policy. These settings belong
 to the worker runtime's local configuration; default policy applies when absent.
 Scanning uses bounded streaming buffers with overlap for matches across chunks.
+The scanned bytes must match their declared size and SHA-256. Commit records are
+parsed from those verified bytes, and bundle decoding uses a temporary copy of
+the verified stream, preserving the fence between scanned and published content.
 
 Known repository fixtures can be listed in `.t3/secret-scan-allow`, one fingerprint
 per line (blank lines and lines starting with `#` are ignored). A fingerprint is
