@@ -343,6 +343,7 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 		TaskIDs:          append([]string(nil), taskIDs...),
 		InputArtifactIDs: append([]string(nil), workflowInputIDs...),
 		InputManifest:    inputManifest,
+		Ledger:           manifest.Ledger.workflowLedger(),
 		CreatedAt:        now,
 	}}
 	records.WorkflowRuns = []domain.WorkflowRun{{

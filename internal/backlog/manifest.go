@@ -56,6 +56,9 @@ type Manifest struct {
 	// the effective graph rather than of any task definition, and they require
 	// Supervision to be present.
 	Gates map[string]ManifestGate `yaml:"gates"`
+	// Ledger opts the campaign into the Steward-authored Jocasta milestone
+	// ledger. A nil pointer is the default and writes no ledger anywhere.
+	Ledger *ManifestLedger `yaml:"ledger"`
 }
 
 // ManifestPlacement limits eligible hosts and names capabilities that a worker
@@ -199,6 +202,7 @@ var manifestObjects = map[string]string{
 	"ManifestRecovery":              "the recovery block",
 	"ManifestSupervisionEscalation": "an escalation",
 	"ManifestGate":                  "a gate",
+	"ManifestLedger":                "the ledger block",
 }
 
 // manifestObjectNames rewrites the decoder's "in type backlog.ManifestTask"
@@ -465,6 +469,9 @@ func validateManifest(manifest Manifest) error {
 		return err
 	}
 	if err := validateUniquePaths("inputs", manifest.Inputs, true); err != nil {
+		return err
+	}
+	if err := validateManifestLedger(manifest.Ledger); err != nil {
 		return err
 	}
 
