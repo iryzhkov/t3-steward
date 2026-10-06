@@ -3,6 +3,7 @@ package workerruntime
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -10,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 // A legacy failure reason carrying a protocol credential, with no recorded
@@ -236,5 +239,52 @@ func TestSecretScanHistoryRecordIgnoresValueOrder(t *testing.T) {
 	}
 	if got := executionHistoryFiles(t, f); got != 1 {
 		t.Fatalf("one credential set recorded in %d orders left %d history snapshots, want 1", len(orders), got)
+	}
+}
+
+// One credential may be the base64 encoding of another, as a login file
+// holding a password and its encoded auth field. The encoded credential is
+// then a variant of both values, and it must be searched across line breaks
+// whichever value produced it first: in the live scanner, in recorded
+// history once both values rotate out, and in history while the encoded
+// value is still current as a plain credential.
+func TestSecretScanWrappedBase64CredentialIndependentOfOrder(t *testing.T) {
+	plain := "synthetic-lens-credential-value-xyz"
+	for len(plain)%3 != 0 {
+		plain += "q"
+	}
+	encoded := base64.RawStdEncoding.EncodeToString([]byte(plain))
+	wrapped := "auth " + encoded[:24] + "\n" + encoded[24:] + " end"
+	for _, order := range []string{"plain-first", "encoded-first"} {
+		first := []string{plain, encoded}
+		if order == "encoded-first" {
+			first = []string{encoded, plain}
+		}
+		for _, after := range []string{"current", "rotated", "encoded-current"} {
+			t.Run(order+"/"+after, func(t *testing.T) {
+				f := newCollectionFixture(t, 8192, 16384, 100, 100)
+				current := first
+				f.custody.config.SecretScan.StaticCanaries = nil
+				f.custody.config.SecretScan.Canaries = func(context.Context, workerproto.ExecutionPackage) ([]string, error) {
+					return current, nil
+				}
+				if _, err := f.custody.RedactText(context.Background(), f.pkg, "ordinary"); err != nil {
+					t.Fatal(err)
+				}
+				switch after {
+				case "rotated":
+					current = []string{"synthetic-rotated-new-credential"}
+				case "encoded-current":
+					current = []string{encoded, "synthetic-rotated-new-credential"}
+				}
+				got, err := f.custody.RedactText(context.Background(), f.pkg, wrapped)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(got, encoded[:24]) {
+					t.Fatalf("wrapped base64 credential published: %q", got)
+				}
+			})
+		}
 	}
 }

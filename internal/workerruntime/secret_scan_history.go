@@ -244,11 +244,14 @@ func (s *CustodyStore) addSecretHistory(pkg workerproto.ExecutionPackage, scanne
 	prefix := secretSnapshotKey(pkg) + "-"
 	// A signature of a current canary variant is already matched exactly;
 	// searching it again would only double the cost of the scan.
-	seen := map[string]bool{}
+	// The value maps to whether the current variant is searched as base64; a
+	// signature recorded as base64 is still added for a plain current variant.
+	current := map[string]bool{}
 	for _, c := range scanner.canaries {
 		sum := sha256.Sum256(c.value)
-		seen[hex.EncodeToString(sum[:])] = true
+		current[hex.EncodeToString(sum[:])] = c.base64
 	}
+	recorded := map[string]int{}
 	// An earlier release recorded the first four bytes of every credential
 	// in its fingerprint. The shortest signature of a fingerprint is its plain
 	// value; a short one has its fingerprint masked as secretFingerprint now
@@ -287,10 +290,14 @@ func (s *CustodyStore) addSecretHistory(pkg workerproto.ExecutionPackage, scanne
 			if length, ok := shortest[c.Fingerprint]; !ok || c.Length < length {
 				shortest[c.Fingerprint] = c.Length
 			}
-			if seen[c.SHA256] {
+			if base64, ok := current[c.SHA256]; ok && (base64 || !c.Base64) {
 				continue
 			}
-			seen[c.SHA256] = true
+			if i, ok := recorded[c.SHA256]; ok {
+				scanner.history[i].Base64 = scanner.history[i].Base64 || c.Base64
+				continue
+			}
+			recorded[c.SHA256] = len(scanner.history)
 			scanner.history = append(scanner.history, c)
 			if len(scanner.history) > 4096 {
 				return errors.New("secret snapshot count exceeded")

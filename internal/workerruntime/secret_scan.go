@@ -139,7 +139,7 @@ func newResultScanner(config SecretScanConfig, canaries []string, allow map[stri
 		config.MaxBytes = 64 << 20
 	}
 	s := &resultScanner{config: config, allow: allow, overlap: 1024}
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	for _, value := range append(append([]string(nil), config.StaticCanaries...), canaries...) {
 		if len(value) < minCanaryBytes {
 			if value != "" {
@@ -149,11 +149,21 @@ func newResultScanner(config SecretScanConfig, canaries []string, allow map[stri
 		}
 		fingerprint := secretFingerprint(value)
 		add := func(variant string, base64 bool) {
-			if len(variant) < minCanaryBytes || seen[variant] {
+			if len(variant) < minCanaryBytes {
 				return
 			}
-			seen[variant] = true
-			s.canaries = append(s.canaries, canaryVariant{[]byte(variant), fingerprint, base64})
+			if i, ok := seen[variant]; ok {
+				// One credential may be the base64 encoding of another. The
+				// variant is then searched across line breaks whichever value
+				// produced it first.
+				if !base64 || s.canaries[i].base64 {
+					return
+				}
+				s.canaries[i].base64 = true
+			} else {
+				seen[variant] = len(s.canaries)
+				s.canaries = append(s.canaries, canaryVariant{[]byte(variant), fingerprint, base64})
+			}
 			width := len(variant)
 			if base64 {
 				// Room for the line breaks of a wrapped encoding.
