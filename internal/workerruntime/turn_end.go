@@ -25,6 +25,10 @@ const maxTurnEndNote = 512
 // withheldTurnEndNote replaces a turn-end note the secret scan could not check.
 const withheldTurnEndNote = "turn-end note withheld: the result secret scan could not check it for credentials"
 
+// withheldCommandLine replaces a running command line the secret scan could
+// not check.
+const withheldCommandLine = "[command line withheld]"
+
 // maxLiveCommandFailure keeps the failure inside the 2048 bytes a journal
 // excerpt carries.
 const maxLiveCommandFailure = 1800
@@ -101,13 +105,18 @@ func (r *Runtime) holdForLiveCommands(ctx context.Context, id string, record Att
 		}
 		return false, nil
 	}
+	// The note and the failure shorten command lines, and a credential cut in
+	// half no longer matches the scanner, so whole command lines are redacted
+	// first. The nudge goes to the session that started them and names them
+	// as they are.
+	checked := r.checkedCommands(ctx, id, pkg, report.Commands)
 	if check.Nudges >= MaxLiveCommandNudges {
-		return true, r.failLiveCommands(ctx, id, record, inspector, report.Commands, check.Nudges)
+		return true, r.failLiveCommands(ctx, id, record, inspector, checked, check.Nudges)
 	}
 	nudge := check.Nudges + 1
 	text := liveCommandNudgeText(report.Commands, nudge)
 	note := r.checkedTurnEndNote(ctx, id, pkg, fmt.Sprintf("waiting for %s: %s (nudge %d of %d)",
-		countCommands(len(report.Commands)), commandNames(report.Commands), nudge, MaxLiveCommandNudges))
+		countCommands(len(checked)), commandNames(checked), nudge, MaxLiveCommandNudges))
 	// The claim is durable before the effect: a worker that dies after
 	// sending comes back to a claimed nudge and resends it under the same
 	// identity, which T3 recognises, rather than sending a second one.
@@ -134,6 +143,31 @@ func (r *Runtime) checkedTurnEndNote(ctx context.Context, id string, pkg workerp
 		return withheldTurnEndNote
 	}
 	return redacted
+}
+
+// checkedCommands is commands with the attempt's credentials removed from each
+// whole command line, or every line replaced by a fixed notice when the
+// scanner cannot run. The lines are redacted in one pass, joined by NUL,
+// which neither a credential nor the redaction marker contains.
+func (r *Runtime) checkedCommands(ctx context.Context, id string, pkg workerproto.ExecutionPackage, commands []LiveCommand) []LiveCommand {
+	lines := make([]string, len(commands))
+	for index, command := range commands {
+		lines[index] = command.Command
+	}
+	redacted, err := r.redactFailure(ctx, pkg, strings.Join(lines, "\x00"))
+	checked := append([]LiveCommand(nil), commands...)
+	parts := strings.Split(redacted, "\x00")
+	if err != nil || len(parts) != len(commands) {
+		r.log.Warn("command lines withheld; the secret scan could not check them", "assignment", id, "error", err)
+		for index := range checked {
+			checked[index].Command = withheldCommandLine
+		}
+		return checked
+	}
+	for index := range checked {
+		checked[index].Command = parts[index]
+	}
+	return checked
 }
 
 func (r *Runtime) sendLiveCommandNudge(ctx context.Context, id string, inspector turnEndInspector, pkg workerproto.ExecutionPackage, turnID, token, text string) error {
