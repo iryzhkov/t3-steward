@@ -599,6 +599,55 @@ index, but it has not been qualified in the field: do not rely on it. Pass the
 same material as input files (inputs, inputs_from) and name them in the prompt.
 `
 
+// LedgerHelp documents the ledger opt-in: the Jocasta milestone ledger the
+// coordinator writes for a campaign.
+const LedgerHelp = `Have the coordinator keep a campaign's milestone ledger in Jocasta.
+
+  ledger: {jocasta_project: steward}
+
+or, with the optional header fields:
+
+  ledger:
+    jocasta_project: steward                 # required; one Jocasta project name
+    plan: steward/plans/m16-plan.md          # optional; your plan reference, one line
+    risk: medium                             # optional; low, medium or high
+    acceptance:                              # optional; one line per criterion, at most 64
+      - Submission creates the ledger once
+
+Without a ledger block nothing is written anywhere; that is the default.
+validate checks the block offline and refuses an unknown field, a
+jocasta_project that is not a single lowercase project name, an unknown risk, and
+a plan or criterion that is not a single line.
+
+The coordinator writes the document <jocasta_project>/handoffs/<run id>.md with
+the jocasta CLI configured on the coordinator host:
+
+  - at submission it creates the document: run, workflow, plan, risk,
+    acceptance criteria and one milestone row per task;
+  - when an attempt of a task ends (succeeded, failed, cancelled or skipped) it
+    appends one record;
+  - when the run ends it appends a closing record.
+
+Each record has two parts. "Steward record" holds facts the coordinator itself
+holds: the attempt's state, the route, effort and worker it actually ran on,
+review verdicts the coordinator recorded, the retained output names and
+digests, attributed usage when available and ask answers. "Executor-provided"
+quotes the task's own handoff.md, labelled as not verified by Steward and
+truncated at 8 KiB with a pointer to the retained artifact.
+
+Every append reads the whole document, appends one record and writes it back
+with --if-revision, so a newer revision written by anyone else is kept, never
+overwritten; a conflict is re-read and retried a bounded number of times. If
+Jocasta or its CLI is unavailable, the run carries on untouched: the ledger is
+marked behind in coordinator state and retried later with backoff, and nothing
+is written to any other store. Records are keyed per run and boundary, so a
+coordinator restart never writes one twice.
+
+The ledger replaces the hand-written milestone ledger of a lead agent for this
+campaign. Add your own notes to the document freely: the coordinator only ever
+appends after them.
+`
+
 // HelpTopic is one named block of help the command tree can attach wherever it
 // wants it.
 type HelpTopic struct {
@@ -620,5 +669,6 @@ func HelpTopics() []HelpTopic {
 		{Name: "readiness", Body: ReadinessHelp},
 		{Name: "rerun", Body: RerunHelp},
 		{Name: "notify", Body: NotifyHelp},
+		{Name: "ledger", Body: LedgerHelp},
 	}
 }

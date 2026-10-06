@@ -367,7 +367,7 @@ func TestReviewChildV34Migration(t *testing.T) {
 	if err = s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
-	if schemaVersionOf(t, s) != 34 {
+	if schemaVersionOf(t, s) != currentSchemaVersion {
 		t.Fatal("wrong schema")
 	}
 	var kept string

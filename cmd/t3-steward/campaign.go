@@ -59,7 +59,7 @@ Authoring and lifecycle topics are documented once:
   t3-steward campaign help authoring
   t3-steward campaign help <topic>
   Topics: fresh, readiness, dag-semantics, static-versus-dynamic, plan, graph,
-  commits, rerun, notify, routes, supervision.
+  commits, rerun, notify, ledger, routes, supervision.
 Examples: docs/examples/campaign/single-lead, docs/examples/campaign/three-node
 `
 
