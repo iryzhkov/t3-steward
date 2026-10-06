@@ -110,6 +110,9 @@ func (c *Config) validateBacklogV2() error {
 	if err := validateV2Storage(v.Storage); err != nil {
 		return err
 	}
+	if v.Storage.CampaignCommitBundleMaxBytes < 0 {
+		return errors.New("backlog_v2: storage.campaign_commit_bundle_max_bytes must not be negative")
+	}
 	for id, pool := range v.QuotaPools {
 		if strings.TrimSpace(id) != id || id == "" ||
 			strings.TrimSpace(pool.Provider) != pool.Provider || pool.Provider == "" {

@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A commit declared by a campaign task now reaches consumers on other workers.
+  The producer retains a verified base..commit bundle artifact, and a consumer
+  on another worker imports it after checking its digest, size, ref, commit,
+  prerequisites and base ancestry; a consumer on the producer's worker reads
+  its local store as before. Bundles are admitted with the producer's result
+  through the same validation the result upload applies, so an otherwise
+  collectable result never fails because of them; when a needed bundle is
+  unavailable, the consumer receives an explicit preparation refusal instead
+  of an offer that is withheld indefinitely. Reruns and external inputs carry
+  their source-run bundle.
+
 ### Fixed
 
 - A worker can again create its managed T3 project at a workspace root whose

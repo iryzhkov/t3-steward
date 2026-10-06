@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 type externalInputStore struct {
@@ -106,6 +108,9 @@ func TestRetainExternalInputsPinsExactSuccessfulArtifact(t *testing.T) {
 	if len(task.DependencyInputs) != 0 {
 		t.Fatalf("external dependency remained local: %+v", task.DependencyInputs)
 	}
+	if len(task.Placement.Capabilities) != 0 {
+		t.Fatalf("an ordinary external file required capabilities %v", task.Placement.Capabilities)
+	}
 	if len(target.Artifacts) != 1 {
 		t.Fatalf("retained artifacts = %d", len(target.Artifacts))
 	}
@@ -193,6 +198,11 @@ func TestRetainExternalCampaignCommitKeepsExactProvenance(t *testing.T) {
 		dependencies[0].Artifacts[0].SHA256 != "commit-record-digest" ||
 		dependencies[0].Artifacts[0].MediaType != "application/json" {
 		t.Fatalf("packaged campaign commit = %+v", dependencies)
+	}
+	// A consumer of an external declared commit may run on another worker
+	// than its producer, so placement requires the capability to import it.
+	if !slices.Contains(target.Tasks[0].Placement.Capabilities, workerproto.PackageCapabilityCommitBundle) {
+		t.Fatalf("placement capabilities = %v, want %q", target.Tasks[0].Placement.Capabilities, workerproto.PackageCapabilityCommitBundle)
 	}
 }
 

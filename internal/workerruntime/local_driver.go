@@ -185,6 +185,14 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	for _, dependency := range pkg.Dependencies {
 		objects = append(objects, dependency.Artifacts...)
 	}
+	for _, input := range pkg.CommitBundles {
+		if input.Bundle != nil {
+			objects = append(objects, *input.Bundle)
+		}
+	}
+	commitBundles := commitBundleDeliveries(pkg, func(object workerproto.ArtifactObject) (io.ReadCloser, error) {
+		return openRegular(d.objectPath(object))
+	})
 	for _, object := range objects {
 		if _, err := d.cacheArtifact(ctx, object, pkg.Limits.MaxArtifactBytes); err != nil {
 			return "", err
@@ -239,7 +247,8 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	prepared, err := d.Workspace.Prepare(ctx, backlog.WorkspacePreparation{
 		WorkflowRunID: pkg.Identity.WorkflowRunID, Task: task, Attempt: attempt,
 		Environment: environment, InputArtifacts: inputs, DependencyTasks: dependencyTasks,
-		DependencyArtifacts: dependencyArtifacts,
+		DependencyArtifacts: dependencyArtifacts, CommitBundles: commitBundles,
+		DependencySources: dependencySources(pkg),
 	})
 	if err != nil {
 		return "", err
@@ -1005,6 +1014,15 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	finalized, err := d.Finalizer.Finalize(ctx, backlog.AttemptFinalization{
 		Task: task, Attempt: attempt, WorkspaceDir: workspace, ExplicitSuccess: failure == "",
 		Extra: extras, Repository: pkg.Environment.Repository, BaseCommit: baseCommit,
+		// The coordinator declares the capability on a producer's package only
+		// when it accepts the bundle artifact, and the bundle is uploaded as one
+		// artifact, so it is bounded by the same limit.
+		CommitBundles:     slices.Contains(pkg.RequiredCapabilities, workerproto.PackageCapabilityCommitBundle),
+		CommitBundleLimit: pkg.Limits.MaxArtifactBytes,
+		// The whole result, including the final message and the thread
+		// archive published with it below, is one upload, so bundle metadata
+		// is kept only where that upload would still be accepted.
+		AdmitResult: d.resultAdmission(pkg, message, archive),
 	})
 	if err != nil {
 		return err

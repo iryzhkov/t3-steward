@@ -122,6 +122,20 @@ type WorkspacePreparation struct {
 	InputArtifacts      []domain.Artifact
 	DependencyTasks     []domain.Task
 	DependencyArtifacts []domain.Artifact
+	// CommitBundles are the bundles of declared dependency commits produced on
+	// another worker, keyed by campaign ref.
+	CommitBundles map[string]CommitBundleDelivery
+	// DependencySources binds each dependency carried from another run, keyed
+	// by the dependency directory it is materialized in, to the run and task
+	// that produced it. A commit record of another run is accepted only from a
+	// directory bound to exactly that run and task.
+	DependencySources map[string]DependencySource
+}
+
+// DependencySource is the run and task a carried dependency came from.
+type DependencySource struct {
+	WorkflowRunID string
+	TaskID        string
 }
 
 // PreparedWorkspace is the published run directory and pinned source revision.
@@ -478,14 +492,36 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 			return nil
 		}
 		if provenance.WorkflowRunID != request.WorkflowRunID {
-			return fmt.Errorf("dependency commit %s belongs to run %q, want %q",
-				provenance.Ref, provenance.WorkflowRunID, request.WorkflowRunID)
+			// A record of another run arrives only as a carried input, and only
+			// the source binding of the dependency it arrived in can vouch for
+			// it: the run and the task must both be that binding's.
+			relative, relErr := filepath.Rel(dependenciesDir, path)
+			if relErr != nil {
+				return fmt.Errorf("resolve dependency commits: %w", relErr)
+			}
+			directory, _, _ := strings.Cut(filepath.ToSlash(relative), "/")
+			source, bound := request.DependencySources[directory]
+			if !bound || source.WorkflowRunID != provenance.WorkflowRunID {
+				return fmt.Errorf("dependency commit %s belongs to run %q, want %q",
+					provenance.Ref, provenance.WorkflowRunID, request.WorkflowRunID)
+			}
+			if source.TaskID != provenance.TaskID {
+				return fmt.Errorf("dependency commit %s was carried from task %q of run %q, but its record names task %q",
+					provenance.Ref, source.TaskID, source.WorkflowRunID, provenance.TaskID)
+			}
 		}
 		if request.Environment.Type == EnvironmentFresh {
 			return fmt.Errorf("dependency commit %s cannot be resolved in a fresh workspace", provenance.Ref)
 		}
 		if p.CampaignRefs.Root == "" {
 			return fmt.Errorf("dependency commit %s needs a campaign ref store", provenance.Ref)
+		}
+		var delivery *CommitBundleDelivery
+		if bundle, ok := request.CommitBundles[provenance.Ref]; ok {
+			delivery = &bundle
+		}
+		if err := p.CampaignRefs.Obtain(ctx, workspaceDir, provenance, delivery, log); err != nil {
+			return err
 		}
 		if err := p.CampaignRefs.FetchInto(ctx, workspaceDir, provenance, log); err != nil {
 			return err

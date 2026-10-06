@@ -3,11 +3,13 @@ package backlog
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +37,22 @@ type AttemptFinalization struct {
 	// commit it was built on.
 	Repository string
 	BaseCommit string
+	// CommitBundles retains a bundle of each declared commit so that a
+	// consumer on another worker can import it. It is set only when the
+	// coordinator declared the commit bundle capability on the package, which
+	// is its statement that it accepts the bundle artifact.
+	CommitBundles bool
+	// CommitBundleLimit is the largest bundle the artifact transport accepts.
+	// Zero leaves only the campaign ref store's own limit.
+	CommitBundleLimit int64
+	// AdmitResult, when set, is the check the upload carrying the attempt's
+	// result applies to it, given every artifact the finalizer would capture:
+	// the publisher's own validation, with every limit it enforces, of the
+	// result together with what collection adds after finalization. Bundle
+	// metadata is optional, so it is kept only in a result this admits, and a
+	// result it admits with none is never given more. Nil leaves bundles bounded
+	// only one by one.
+	AdmitResult func([]domain.Artifact) error
 }
 
 // FinalizationArtifact is evidence captured alongside an attempt's declared
@@ -236,6 +254,12 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			strings.Join(names, ", ")))
 		commits = nil
 	}
+	var published []publishedCommit
+	defer func() {
+		for _, commit := range published {
+			commit.bundle.discard()
+		}
+	}()
 	for _, declaration := range commits {
 		if f.CampaignRefs.Root == "" {
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt commit %q: campaign ref store is required", declaration.Name)
@@ -252,6 +276,78 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			// missing declared output is.
 			failures = append(failures, fmt.Sprintf("declared commit %q: %v", declaration.Name, publishErr))
 			continue
+		}
+		entry := publishedCommit{declaration: declaration, provenance: provenance}
+		if request.CommitBundles {
+			bound, bundle, bundleErr := f.makeCommitBundle(ctx, request, provenance)
+			if bundleErr != nil {
+				failures = append(failures, fmt.Sprintf("declared commit %q: %v", declaration.Name, bundleErr))
+				continue
+			}
+			entry.provenance, entry.bundle = bound, bundle
+		}
+		published = append(published, entry)
+	}
+
+	// Every artifact still to be captured has its identity now, so that the
+	// result admitted below is exactly the result captured.
+	for index := range published {
+		if published[index].bundle != nil {
+			published[index].bundleID = f.newID("artifact")
+		}
+		published[index].recordID = f.newID("artifact")
+	}
+	extraIDs := make([]string, len(request.Extra))
+	for index, extra := range request.Extra {
+		extraIDs[index] = extra.ID
+		if extraIDs[index] == "" {
+			extraIDs[index] = f.newID("artifact")
+		}
+	}
+	// The attempt's result travels as one upload, and bundle metadata is the
+	// only optional part of it, so it is what gives way when the upload's own
+	// validation would refuse it.
+	if request.AdmitResult != nil && len(published) != 0 {
+		// candidate is every artifact the result would capture with the
+		// records as they currently read, in capture order.
+		candidate := func() ([]domain.Artifact, error) {
+			result := slices.Clone(artifacts)
+			for _, commit := range published {
+				if commit.provenance.Bundle != nil {
+					result = append(result, domain.Artifact{
+						ID: commit.bundleID, Kind: domain.ArtifactGitState, Name: CommitBundleArtifactName(commit.provenance.Name),
+						MediaType: CommitBundleMediaType, Size: commit.bundle.size, SHA256: commit.bundle.sha256,
+					})
+				}
+				record, err := MarshalCommitProvenance(commit.provenance)
+				if err != nil {
+					return nil, err
+				}
+				result = append(result, domain.Artifact{
+					ID: commit.recordID, Kind: domain.ArtifactOutput, Name: filepath.ToSlash(commit.declaration.Name),
+					MediaType: "application/json", Size: int64(len(record)), SHA256: fmt.Sprintf("%x", sha256.Sum256(record)),
+				})
+			}
+			for index, extra := range request.Extra {
+				result = append(result, domain.Artifact{
+					ID: extraIDs[index], Kind: extra.Kind, Name: extra.Name, MediaType: extra.MediaType,
+					Size: int64(len(extra.Content)), SHA256: fmt.Sprintf("%x", sha256.Sum256(extra.Content)),
+				})
+			}
+			return result, nil
+		}
+		if err := admitCommitBundles(published, candidate, request.AdmitResult); err != nil {
+			return FinalizedAttempt{}, fmt.Errorf("finalize attempt commits: %w", err)
+		}
+	}
+	for _, commit := range published {
+		declaration, provenance := commit.declaration, commit.provenance
+		if commit.bundle != nil && provenance.Bundle != nil {
+			bundle, captureErr := f.captureCommitBundle(request, stageDir, provenance, *commit.bundle, commit.bundleID, now)
+			if captureErr != nil {
+				return FinalizedAttempt{}, fmt.Errorf("finalize attempt commit %q: %w", declaration.Name, captureErr)
+			}
+			artifacts = append(artifacts, bundle)
 		}
 		record, marshalErr := MarshalCommitProvenance(provenance)
 		if marshalErr != nil {
@@ -271,7 +367,7 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt commit %q: %w", declaration.Name, writeErr)
 		}
 		artifacts = append(artifacts, domain.Artifact{
-			ID: f.newID("artifact"), WorkflowRunID: request.Attempt.WorkflowRunID,
+			ID: commit.recordID, WorkflowRunID: request.Attempt.WorkflowRunID,
 			TaskID: request.Task.ID, AttemptID: request.Attempt.ID,
 			Kind: domain.ArtifactOutput, Name: filepath.ToSlash(declaration.Name),
 			MediaType: "application/json",
@@ -294,12 +390,8 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		if writeErr != nil {
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt extra artifact %d: %w", index+1, writeErr)
 		}
-		id := extra.ID
-		if id == "" {
-			id = f.newID("artifact")
-		}
 		artifacts = append(artifacts, domain.Artifact{
-			ID: id, WorkflowRunID: request.Attempt.WorkflowRunID,
+			ID: extraIDs[index], WorkflowRunID: request.Attempt.WorkflowRunID,
 			TaskID: request.Task.ID, AttemptID: request.Attempt.ID,
 			Kind: extra.Kind, Name: extra.Name, MediaType: extra.MediaType,
 			Size: file.size, SHA256: file.sha256, StoragePath: file.storagePath,

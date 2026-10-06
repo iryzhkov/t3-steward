@@ -148,6 +148,21 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 	if err != nil {
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: dependencies: %w", err)
 	}
+	// Bundles are budgeted after every other input, so that they can never
+	// make an otherwise valid package exceed its total byte limit.
+	budget := commitBundleBudget{Remaining: b.MaxTotalBytes - prompt.Size, MaxTotalBytes: b.MaxTotalBytes, MaxArtifactBytes: b.MaxArtifactBytes}
+	for _, object := range staticInputs {
+		budget.Remaining -= object.Size
+	}
+	for _, dependency := range dependencies {
+		for _, object := range dependency.Artifacts {
+			budget.Remaining -= object.Size
+		}
+	}
+	commitBundles, err := packageCommitBundles(state.task, state.tasks, state.artifacts, state.run.ID, assignment.WorkerID, attemptWorkers(records), budget)
+	if err != nil {
+		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: commit bundles: %w", err)
+	}
 	pkg := workerproto.ExecutionPackage{
 		Timeout:       state.task.Timeout,
 		GraphRevision: assignment.GraphRevision, TaskRevision: assignment.TaskRevision, TaskDigest: assignment.TaskDigest,
@@ -163,13 +178,14 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 			AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
 			DispatchToken: assignment.DispatchToken, ThreadID: assignment.ThreadID,
 		},
-		Class:        state.task.Class,
-		Prompt:       prompt,
-		StaticInputs: staticInputs,
-		Recovery:     recovery,
-		Dependencies: dependencies,
-		Context:      reviewJudgeInputs(state.task, state.tasks, state.artifacts, state.run.ID, assignment.CreatedAt),
-		Route:        cloneProviderRoute(assignment.Route),
+		Class:         state.task.Class,
+		Prompt:        prompt,
+		StaticInputs:  staticInputs,
+		Recovery:      recovery,
+		Dependencies:  dependencies,
+		CommitBundles: commitBundles,
+		Context:       reviewJudgeInputs(state.task, state.tasks, state.artifacts, state.run.ID, assignment.CreatedAt),
+		Route:         cloneProviderRoute(assignment.Route),
 		Environment: workerproto.EnvironmentReference{
 			DirectoryBindings: directoryresource.CloneBindings(state.task.DirectoryBindings),
 			Type:              environment.Type, CatalogRevision: b.CatalogRevision, Project: environment.ProjectName,
@@ -266,12 +282,28 @@ func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context,
 	if pkg.Context != nil {
 		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityProjectContext)
 	}
-	if len(pkg.RequiredCapabilities) == 0 {
+	if len(pkg.CommitBundles) != 0 {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityCommitBundle)
+	}
+	// A producer of a declared commit retains its bundle only when told that
+	// this coordinator accepts one. That is offered, never required: a worker
+	// without the capability still produces the commit for consumers on its own
+	// worker, and a consumer elsewhere is refused with the capability named.
+	offerBundle := declaresCommit(*pkg) && len(pkg.CommitBundles) == 0
+	if len(pkg.RequiredCapabilities) == 0 && !offerBundle {
 		return nil
 	}
 	advertised, known, err := b.advertisedCapabilities(ctx, pkg.WorkerID)
 	if err != nil {
 		return err
+	}
+	if offerBundle && slices.Contains(advertised, workerproto.PackageCapabilityCommitBundle) {
+		// Declared only once the worker is known to advertise it, so the
+		// checks below hold for it as for every required capability.
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityCommitBundle)
+	}
+	if len(pkg.RequiredCapabilities) == 0 {
+		return nil
 	}
 	if !known {
 		// Nothing can be proven about the worker, so declared preflight is
