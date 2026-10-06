@@ -34,6 +34,9 @@ type PublishedResult struct {
 	RecoveryProposal      *domain.RecoveryProposal
 	RecoveryInstructions  []byte
 	RecoveryCheckpointTar []byte
+	// WorkInProgressBundle is the snapshot of uncommitted work a failed
+	// attempt uploads when its commands were still running at turn end.
+	WorkInProgressBundle []byte
 }
 
 type ArtifactPublisher interface {
@@ -1204,9 +1207,9 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 		}
 	}
 	finalized := backlog.FinalizedAttempt{Completion: backlog.CompletionResult{Failure: failure}}
-	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
-		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
-	}); err != nil {
+	result := PublishedResult{Finalized: finalized, FinalMessage: message, ThreadArchive: archive}
+	result.WorkInProgressBundle = d.workInProgressBundle(pkg, failure, result)
+	if err := d.Publisher.PublishResult(ctx, pkg, result); err != nil {
 		return fmt.Errorf("publish failed result custody: %w", err)
 	}
 	if err != nil {

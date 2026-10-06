@@ -164,6 +164,12 @@ const CapabilityCampaignSupervision = "campaign-supervision-v1"
 // the snapshot must be gated this way.
 const CapabilityQuotaObservations = "quota-observations-v1"
 
+// CapabilityTurnEndCommands advertises that this worker build holds an
+// attempt whose turn ended while commands it started were still running, and
+// reports that state in the journal excerpt's TurnEnd field when asked. It is
+// gated the way CapabilityQuotaObservations is, for the same strict decoding.
+const CapabilityTurnEndCommands = "turn-end-commands-v1"
+
 type SnapshotRequest struct {
 	// ObservedWorkerEpoch and ObservedSequence acknowledge a durable snapshot
 	// read before the coordinator builds this parked-assignment statement.
@@ -186,8 +192,12 @@ type SnapshotRequest struct {
 	// QuotaObservationsWanted asks the worker to include its host's bucket
 	// observations in the snapshot. It is sent only to a worker advertising
 	// CapabilityQuotaObservations.
-	QuotaObservationsWanted bool     `json:"quotaObservationsWanted,omitempty"`
-	UsageAcknowledgements   []string `json:"usageAcknowledgements,omitempty"`
+	QuotaObservationsWanted bool `json:"quotaObservationsWanted,omitempty"`
+	// TurnEndWanted asks the worker to include each attempt's turn-end state
+	// in its journal excerpt. It is sent only to a worker advertising
+	// CapabilityTurnEndCommands.
+	TurnEndWanted         bool     `json:"turnEndWanted,omitempty"`
+	UsageAcknowledgements []string `json:"usageAcknowledgements,omitempty"`
 }
 
 const MaxUsageDelivery = 128

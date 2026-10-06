@@ -238,6 +238,9 @@ func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 			if slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityQuotaObservations) {
 				request.QuotaObservationsWanted = true
 			}
+			if slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityTurnEndCommands) {
+				request.TurnEndWanted = true
+			}
 			if snapshot.Sequence > 0 && slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityTaskWaitCollectionFence) {
 				request.ObservedWorkerEpoch = snapshot.WorkerEpoch
 				request.ObservedSequence = snapshot.Sequence

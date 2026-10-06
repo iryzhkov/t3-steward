@@ -268,6 +268,11 @@ func resultObjects(pkg workerproto.ExecutionPackage, result PublishedResult) ([]
 	} else if result.RecoveryInstructions != nil || result.RecoveryCheckpointTar != nil {
 		return nil, errors.New("publish result: recovery bytes need a typed proposal")
 	}
+	if len(result.WorkInProgressBundle) != 0 {
+		bundle := objectForBytes(backlog.WorkInProgressBundleID(pkg.Identity.AttemptID), "results/"+backlog.WorkInProgressBundleName,
+			string(domain.ArtifactGitState), backlog.CommitBundleMediaType, result.WorkInProgressBundle)
+		objects = append(objects, resultObject{object: bundle, data: result.WorkInProgressBundle, failure: "publish work-in-progress bundle"})
+	}
 	for _, extra := range []struct {
 		id, path, kind, media string
 		data                  []byte

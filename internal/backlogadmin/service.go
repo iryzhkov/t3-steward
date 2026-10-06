@@ -1069,6 +1069,15 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 		if attempt.Control == domain.ControlPaused || attempt.Control == domain.ControlPausedUncheckpointed || attempt.Control == domain.ControlDraining {
 			explanation.Blockers = append(explanation.Blockers, Blocker{Code: "control", Detail: "attempt control state is " + string(attempt.Control)})
 		}
+		// The worker holding a finished turn while its commands run blocks no
+		// scheduling decision, so it is a detail rather than a blocker.
+		var assignment *domain.Assignment
+		if found, ok := v.assignments[attempt.AssignmentID]; ok {
+			assignment = &found
+		}
+		if evidence := v.attemptEvidence(*attempt, assignment); evidence != nil && evidence.TurnEnd != "" {
+			explanation.Details = append(explanation.Details, "turn end: "+evidence.TurnEnd)
+		}
 	}
 	for _, dependency := range task.Needs {
 		dependencyTask, found := v.resolveTask(runID, dependency)

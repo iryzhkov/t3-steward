@@ -482,7 +482,11 @@ type AttemptEvidence struct {
 	// PauseReason names the bucket that paused the attempt on the worker
 	// host while a quota pause is in force.
 	PauseReason string `json:"pauseReason,omitempty"`
-	Failure     string `json:"failure,omitempty"`
+	// TurnEnd is why the worker holds a turn that ended instead of collecting
+	// it: the background commands it is waiting for, or that it could not
+	// look for them on its platform.
+	TurnEnd string `json:"turnEnd,omitempty"`
+	Failure string `json:"failure,omitempty"`
 	// ObservedAt is when the worker reported this; zero when the worker has
 	// not reported the assignment yet.
 	ObservedAt time.Time `json:"observedAt,omitzero"`

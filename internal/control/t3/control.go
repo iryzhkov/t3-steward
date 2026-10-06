@@ -307,6 +307,22 @@ func (c *Control) ResumeThread(ctx context.Context, thread domain.Thread, prompt
 	return c.sendMessage(ctx, thread, prompt, "resume")
 }
 
+// SendOnce starts a turn whose command and message identities derive from
+// token and purpose, so that a caller retrying after a crash is recognised
+// instead of starting a second turn. A message already visible under the
+// derived identity is not sent again; T3 refuses a reused command identity.
+func (c *Control) SendOnce(ctx context.Context, thread domain.Thread, token, purpose, text string) error {
+	messageID := deterministicID(token, purpose+"-message")
+	if detail, err := c.client.ThreadDetail(ctx, thread.ID, 100); err == nil {
+		for _, message := range detail.Messages {
+			if message.ID == messageID && message.Role == "user" {
+				return nil
+			}
+		}
+	}
+	return c.sendMessageIDs(ctx, thread, text, purpose, deterministicID(token, purpose+"-command"), messageID)
+}
+
 func (c *Control) sendMessage(ctx context.Context, thread domain.Thread, text, purpose string) error {
 	return c.sendMessageIDs(ctx, thread, text, purpose, newID(), newID())
 }

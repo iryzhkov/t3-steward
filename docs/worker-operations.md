@@ -93,6 +93,46 @@ assignment outstanding, so the same activation is offered again once the worker
 is back on a capable release. Unsupervised campaigns are unaffected and require
 no capability at all.
 
+## Turns that end while their commands still run
+
+Ending a turn completes a task, so a turn that ends while a command the task
+started is still running (typically a long gate started with `nohup ... &`)
+would be collected with uncommitted work and missing outputs. When an attempt's
+turn ends with no task-bound wait, the worker first looks for such commands.
+
+On Linux it reads `/proc`. A process counts when its working directory is inside
+the attempt workspace and it is detached: following its parents while they are
+inside the workspace, the first one outside is pid 1 or an ancestor of the
+worker, which is where the kernel puts a command whose starting shell has
+exited (`systemd --user` on a fleet host). The worker's own processes, such as
+verification commands, are excluded, and so is everything still attached to the
+provider session through the T3 server: the provider, its MCP servers and their
+language servers run in the workspace for the whole session and cannot be told
+apart from a provider-tracked background task by the process table.
+
+If such commands are found, the attempt is not collected. The worker sends one
+follow-up turn to the same session naming the commands and telling it to wait
+for them in the foreground and then finish. At most two follow-up turns are sent
+per attempt; each is claimed in the worker journal before it is sent and carries
+T3 identities derived from the dispatch token and the ended turn, so a worker
+restart never sends a second one for the same turn. A third turn that ends the
+same way fails the attempt with the reason `live-children-at-turn-end`, followed
+by the process list, which declared outputs are present or missing, and what was
+retained. When the task declares a commit and the tree has uncommitted changes
+(the runtime's `.t3` directory aside), the worker first snapshots them as a
+commit on the private ref `refs/steward/wip/<attempt>` and uploads a bundle of
+it from the workspace base as the result artifact `wip.bundle`; the bundle stays
+in the attempt directory on the worker too. A clean tree is not snapshotted.
+
+`backlog explain` (as a `turn end:` detail) and `backlog task show` (as a
+`turn end:` line) show the state, for example `waiting for 2 background
+commands: sh -c make check-review ..., sleep 300 (nudge 1 of 2)`, once the worker
+advertises the build capability `turn-end-commands-v1` and the coordinator asks
+for it. A host without `/proc` (macOS) collects the turn as before and reports
+that the check did not run, rather than failing a task it cannot judge.
+Contained executions are not inspected: their provider runs in its own pid and
+mount namespaces, and the supervisor stops the whole sandbox at collection.
+
 Upgrading the worker binary is a lifecycle operation of its own: install the new
 release, then restart `t3-steward-worker.service`, or the host keeps serving the
 previous release against the new coordinator. `t3-steward worker inspect-journal`

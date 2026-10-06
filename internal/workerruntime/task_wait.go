@@ -35,6 +35,7 @@ func (r *Runtime) ApplyParkedAssignments(request workerproto.SnapshotRequest) er
 	// The coordinator asks for host quota observations on the same exchange;
 	// the answer is built by the Snapshot that follows.
 	r.reportQuota = request.QuotaObservationsWanted
+	r.reportTurnEnd = request.TurnEndWanted
 	if !request.ParkedReported {
 		// An older coordinator says nothing about parked assignments. Keeping
 		// the previous statement would freeze it forever, so the worker goes on
