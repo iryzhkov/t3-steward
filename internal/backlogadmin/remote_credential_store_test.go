@@ -22,6 +22,10 @@ func writeAdminSecret(t *testing.T, home, reference string, mode os.FileMode) {
 	if err := os.WriteFile(path, raw, mode); err != nil {
 		t.Fatal(err)
 	}
+	// Fixture permissions must not depend on the worker's inherited umask.
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // The store is where UpKeeper's reference actually resolves on these hosts, so
