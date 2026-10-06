@@ -145,7 +145,11 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 	if err != nil {
 		return workerproto.AssignmentOffer{}, err
 	}
-	dependencies, err := packageDependencies(state.task, state.tasks, state.artifacts, state.run.ID)
+	dependencyArtifacts, err := gateDependencyArtifacts(state.tasks, state.artifacts, records.Attempts, state.run.ID)
+	if err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
+	dependencies, err := packageDependencies(state.task, state.tasks, dependencyArtifacts, state.run.ID)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: dependencies: %w", err)
 	}
@@ -160,7 +164,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 			budget.Remaining -= object.Size
 		}
 	}
-	commitBundles, err := packageCommitBundles(state.task, state.tasks, state.artifacts, state.run.ID, assignment.WorkerID, attemptWorkers(records), budget)
+	commitBundles, err := packageCommitBundles(state.task, state.tasks, dependencyArtifacts, state.run.ID, assignment.WorkerID, attemptWorkers(records), budget)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: commit bundles: %w", err)
 	}
@@ -533,6 +537,45 @@ func packageArtifact(artifact domain.Artifact, path, kind string) (workerproto.A
 		ID: artifact.ID, Path: path, Kind: kind, MediaType: artifact.MediaType,
 		Size: artifact.Size, SHA256: artifact.SHA256,
 	}, nil
+}
+
+func gateDependencyArtifacts(tasks []domain.Task, artifacts map[string]domain.Artifact, attempts []domain.Attempt, runID string) (map[string]domain.Artifact, error) {
+	gated := map[string]bool{}
+	for _, task := range tasks {
+		if task.Gate != nil {
+			gated[task.ID] = true
+		}
+	}
+	if len(gated) == 0 {
+		return artifacts, nil
+	}
+	latest := map[string]domain.Attempt{}
+	for _, attempt := range attempts {
+		if attempt.WorkflowRunID != runID || !gated[attempt.TaskID] || attempt.IsSupervisionActivation() {
+			continue
+		}
+		previous, exists := latest[attempt.TaskID]
+		if exists && previous.Number == attempt.Number && previous.ID != attempt.ID {
+			return nil, fmt.Errorf("gate dependency task %q has ambiguous attempt number", attempt.TaskID)
+		}
+		if !exists || attempt.Number > previous.Number {
+			latest[attempt.TaskID] = attempt
+		}
+	}
+	selected := make(map[string]domain.Artifact, len(artifacts))
+	for id, artifact := range artifacts {
+		if artifact.WorkflowRunID == runID && gated[artifact.TaskID] && (artifact.Kind == domain.ArtifactGate || artifact.Kind == domain.ArtifactOutput || artifact.Kind == domain.ArtifactGitState) {
+			attempt, exists := latest[artifact.TaskID]
+			if !exists {
+				return nil, fmt.Errorf("gate dependency task %q has no authoritative attempt", artifact.TaskID)
+			}
+			if artifact.AttemptID != attempt.ID {
+				continue
+			}
+		}
+		selected[id] = artifact
+	}
+	return selected, nil
 }
 
 func packageDependencies(
