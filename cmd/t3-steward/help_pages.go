@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"io"
+
+	"github.com/iryzhkov/t3-steward/internal/campaign"
 )
 
 // helpPages is the registry every help request is answered from. It is
@@ -326,7 +328,7 @@ func familyHelpPages() []helpPage {
 		{Path: "thread", Body: threadUsage},
 		{Path: "bucket", Body: bucketUsage},
 		{Path: "archive", Body: archiveUsage},
-		{Path: "campaign", Body: campaignUsage},
+		{Path: "campaign", Body: campaignUsage + "\n" + campaign.ExecutorHelp},
 		{Path: "coordinator", Body: coordinatorUsage},
 		{Path: "worker", Body: workerUsage},
 		{

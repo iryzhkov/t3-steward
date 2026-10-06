@@ -1,5 +1,7 @@
 package campaign
 
+import "github.com/iryzhkov/t3-steward/internal/backlog"
+
 // The help text lives beside the projection it describes so that the two stay
 // consistent: a change to what plan reports is a change to this file. The
 // command tree consumes these strings and does not restate them.
@@ -49,7 +51,7 @@ declared task with a native subagent: t3-steward campaign help authoring.
 // declared task with a native subagent. It is a help topic rather than part of
 // the usage block because the usage has to stay short enough to sit in an
 // agent's context, and this is read once, while authoring.
-const AuthoringHelp = `How many tasks a campaign should have, and what a task may not delegate.
+var AuthoringHelp = `How many tasks a campaign should have, and what a task may not delegate.
 
 Multi-task work is authored as a static version 2 DAG. Every task declared in
 workflow.yaml becomes a task the Steward schedules: it is admitted against quota
@@ -73,13 +75,10 @@ whose lead fans work out that way is a one-task campaign that looks like
 several. Declare the work a task would fan out as tasks, joined with needs and
 inputs_from.
 
-Say this in the prompt as well as meaning it in the schema. The manifest
-declares the discipline, the prompt is where the agent is actually told, and
-nothing in the coordinator can prevent a harness tool from spawning a helper.
-Where a runtime supports disabling that capability, disable it.
-
-What a task does inside its own session is unaffected: reading, searching,
-building, running tests and calling tools are how a task does its own job.
+Steward prepends the shared task contract below to every task's first turn.
+Same-provider native subagents may do bounded reading or sub-work within a
+task; the executor remains responsible. They never replace a declared task
+or review. This is an instruction contract, not a harness capability fence.
 
 One task is a legitimate authoring choice, not a fallback. Author a single-task
 campaign when:
@@ -109,6 +108,22 @@ Templates:
   docs/examples/campaign/README.md    how to choose between them
 
 See also: t3-steward campaign help dag-semantics.
+
+` + ExecutorHelp
+
+// ExecutorHelp shares the runtime contract and a task-specific authoring template.
+var ExecutorHelp = backlog.TaskContract + `
+Executor prompt template:
+  Goal: <bounded outcome>
+  Inputs: <pinned paths under .t3/inputs/ and .t3/dependencies/>
+  Scope: <allowed changes and effects>
+  Outputs: <manifest file paths and declared commit names>
+  Verification: <exact commands>
+  Review: <declared independent review>
+  Acceptance criteria: <observable completion conditions>
+
+Steward supplies the task contract; keep the task's own prompt focused on
+these requirements. Declare continuation.md as an output to retain it.
 `
 
 // GraphHelp is the long help of the graph command, which reads a submitted run

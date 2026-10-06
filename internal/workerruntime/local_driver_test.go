@@ -227,7 +227,7 @@ func TestLocalDriverBindsCatalogArtifactsWorkspaceAndT3(t *testing.T) {
 	}
 	if len(control.created) != 1 || control.created[0].ThreadID != "thread-1" ||
 		control.created[0].DispatchToken != "dispatch-1" || control.created[0].WorktreePath != workspace ||
-		!strings.HasPrefix(control.created[0].Prompt, "prompt\n\n## How this task ends\n") {
+		control.created[0].Prompt != backlog.FirstTurnPrompt("prompt", pkg.Outputs) {
 		t.Fatalf("create input = %+v", control.created)
 	}
 	if state, err := driver.ObserveThread(context.Background(), pkg); err != nil || state != backlog.DispatchThreadActive {
@@ -352,13 +352,13 @@ func TestTaskPromptSaysEndingTheTurnCompletesTheTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	prompt := control.created[0].Prompt
-	if !strings.HasPrefix(prompt, "prompt\n\n") {
-		t.Fatalf("the author's prompt must come first and unchanged: %q", prompt)
+	if !strings.HasSuffix(prompt, "\n\nprompt") {
+		t.Fatalf("the author's prompt must follow the contract unchanged: %q", prompt)
 	}
 	for _, want := range []string{
-		"when your turn ends with no task-bound wait registered, the task is complete",
+		"ending your turn with no task-bound wait registered completes the task",
 		"do not end with BACKLOG STATUS: continue",
-		"(shell jobs, background commands) are not waited for",
+		"Ending the turn does not wait for shell jobs",
 		"Declared outputs, which must exist when the turn ends: `report.md`.",
 		"Declared commits, which must be committed when the turn ends: `implementation`.",
 		"t3-steward wait add --task current",
