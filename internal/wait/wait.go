@@ -94,6 +94,9 @@ type Wait struct {
 	LastExit   int        `json:"lastExit"`
 	LastOutput string     `json:"lastOutput"`
 	Reason     string     `json:"reason,omitempty"`
+	// Delivery records local wake visibility without changing the settled outcome.
+	Delivery       string `json:"delivery,omitempty"`
+	DeliveryReason string `json:"deliveryReason,omitempty"`
 }
 
 // Settled reports whether the wait has an outcome.
@@ -379,13 +382,34 @@ func (r *Runner) wakeThread(ctx context.Context, threadID string, due []Wait, no
 	if thread == nil || thread.ArchivedAt != nil {
 		for _, w := range due {
 			w.Status, w.Reason = StatusCancelled, "thread gone or archived before it could be woken"
+			w.Delivery, w.DeliveryReason = "cancelled", ""
 			r.save(ctx, w)
 		}
 		return
 	}
 	if ok, why := r.healthy(*thread); !ok {
-		log.Debug("wake held", "reason", why)
+		var heldIDs []string
+		for _, w := range due {
+			if w.Delivery != "held" {
+				heldIDs = append(heldIDs, w.ID)
+			}
+			if w.Delivery != "held" || w.DeliveryReason != why {
+				w.Delivery, w.DeliveryReason = "held", why
+				r.save(ctx, w)
+			}
+		}
+		if len(heldIDs) != 0 {
+			log.Info("wake held", "wait_ids", heldIDs, "reason", why)
+		}
 		return
+	}
+	// A healthy observation ends the hold episode even if sending later fails
+	// or dry run leaves the wake pending.
+	for i := range due {
+		if due[i].Delivery == "held" {
+			due[i].Delivery, due[i].DeliveryReason = "pending", ""
+			r.save(ctx, due[i])
+		}
 	}
 	text := WakeMessage(due)
 	if r.DryRun {
@@ -400,6 +424,7 @@ func (r *Runner) wakeThread(ctx context.Context, threadID string, due []Wait, no
 	names := make([]string, 0, len(due))
 	for _, w := range due {
 		w.Status = StatusWoken
+		w.Delivery, w.DeliveryReason = "delivered", ""
 		t := now
 		w.WokenAt = &t
 		r.save(ctx, w)
