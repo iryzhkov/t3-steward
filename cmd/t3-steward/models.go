@@ -38,6 +38,17 @@ Each row is one instance/model pair, in the form "t3-steward task run --model
 [INSTANCE/]MODEL" takes. A bare model name is enough when exactly one instance
 offers it.
 
+STATUS says "available" only when every window the pool's provider declares
+(Claude five_hour and seven_day; Codex primary, and secondary when it reports
+one) has a reading no older than the stale threshold, no window is used up, the
+pool admits work, and at least one ready worker advertises the route.
+Otherwise it names the first reason: "quota unknown", "missing <window>",
+"stale <window>", "exhausted <window> until <reset>", "pool <admission>" or
+"no ready worker". --json carries the same verdict under availability, with a
+stable code: available, missing-binding, not-advertised, quota-unknown,
+missing-window, stale-window, exhausted-window, pool-admission or
+no-ready-worker.
+
 Narrowing the answer. Each of these says what to read, and all of them are
 applied before anything decides how much of it to print, so a narrowed answer
 is the whole of a smaller question rather than a window onto a larger one:
@@ -174,7 +185,30 @@ type modelsInstance struct {
 	// vocabulary the worker rows use, and is empty when one does or when no
 	// worker reported an authorization that could explain it.
 	Reason string `json:"reason,omitempty"`
+	// Availability is whether the route can run now and, when it cannot, the
+	// first reason why, as a stable code and the status column's words.
+	Availability modelsAvailability `json:"availability"`
 }
+
+// modelsAvailability is the verdict the status column prints. Code is
+// "available" or one of the reason codes: missing-binding, not-advertised,
+// quota-unknown, missing-window, stale-window, exhausted-window,
+// pool-admission or no-ready-worker. Window and ResetsAt name the window a
+// window code is about.
+type modelsAvailability struct {
+	Code     string     `json:"code"`
+	Window   string     `json:"window,omitempty"`
+	ResetsAt *time.Time `json:"resetsAt,omitempty"`
+	Detail   string     `json:"detail"`
+}
+
+// The availability codes that are not window codes; those are domain's.
+const (
+	modelsAvailabilityMissingBinding = "missing-binding"
+	modelsAvailabilityNotAdvertised  = "not-advertised"
+	modelsAvailabilityPoolAdmission  = "pool-admission"
+	modelsAvailabilityNoReadyWorker  = "no-ready-worker"
+)
 
 // modelsWorker is one worker the instance is authorized for, advertised by, or
 // both. The two halves fail separately, so each is reported.
@@ -311,11 +345,16 @@ func (c modelsCLI) run(ctx context.Context, scope modelsScope, asJSON bool) erro
 	}
 	document := scopeModelsDocument(buildModelsDocument(scope.Project, workers.Workers, quotas.Quotas, eligible, c.staleAfter), scope)
 	if asJSON {
-		encoder := json.NewEncoder(c.stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(document)
+		return c.encode(document)
 	}
 	return renderModels(c.stdout, document)
+}
+
+// encode prints the document as models --json does.
+func (c modelsCLI) encode(document modelsDocument) error {
+	encoder := json.NewEncoder(c.stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(document)
 }
 
 func (c modelsCLI) query(ctx context.Context, query backlogadmin.Query) (backlogadmin.Response, error) {
@@ -350,6 +389,8 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 		snapshots = append(snapshots, worker.Snapshot)
 	}
 	states := domain.MergeQuotaObservations(nil, snapshots)
+	now := modelsNow()
+	windowSets := make(map[string]domain.QuotaWindowSet, len(quotas))
 
 	instances := make(map[string]*modelsInstance)
 	entry := func(id string) *modelsInstance {
@@ -362,11 +403,12 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 	}
 	for _, quota := range quotas {
 		observation := domain.ObserveQuotaPool(quota.Pool, states)
+		windowSets[quota.Pool.ID] = domain.ReadQuotaWindows(quota.Pool, states, now, staleAfter)
 		for _, id := range quota.Pool.ProviderInstanceIDs {
 			item := entry(id)
 			item.Authorized = true
 			item.QuotaPool = quota.Pool.ID
-			item.Windows = modelsPoolWindows(quota.Pool, states, modelsNow(), staleAfter)
+			item.Windows = modelsPoolWindows(quota.Pool, states, now, staleAfter)
 			item.Admission = string(quota.Pool.Admission)
 			if quota.Admission != nil {
 				item.Admission = string(quota.Admission.Admission)
@@ -377,7 +419,7 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 				item.Phase = string(observation.Phase)
 				item.Percent = &percent
 				item.ResetsAt = observation.ResetsAt
-				item.ObservedAt, item.Stale = modelsPoolFreshness(quota.Pool, states, modelsNow(), staleAfter)
+				item.ObservedAt, item.Stale = modelsPoolFreshness(quota.Pool, states, now, staleAfter)
 			}
 		}
 	}
@@ -464,6 +506,11 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 			}
 		}
 		sort.Slice(item.Workers, func(i, j int) bool { return item.Workers[i].Worker < item.Workers[j].Worker })
+		var windows *domain.QuotaWindowSet
+		if set, ok := windowSets[item.QuotaPool]; ok && item.Authorized {
+			windows = &set
+		}
+		item.Availability = modelsAvailabilityFor(*item, windows)
 		document.Instances = append(document.Instances, *item)
 	}
 	sort.Slice(document.Instances, func(i, j int) bool {
@@ -596,6 +643,10 @@ func renderModels(out io.Writer, document modelsDocument) error {
 				fmt.Fprintln(out, "  governing windows: unknown")
 			} else {
 				for _, w := range instance.Windows {
+					if w.Unknown && w.Key.LimitID == "" {
+						fmt.Fprintf(out, "  %s: missing (the provider declares it and no reading has arrived)\n", w.Key.Window)
+						continue
+					}
 					if w.Unknown {
 						fmt.Fprintf(out, "  %s (%s): unknown (no governing observation)\n", w.Key.Window, w.Key.LimitID)
 						continue
@@ -771,18 +822,44 @@ func modelsAge(age time.Duration) string {
 const modelsStatusAvailable = "available"
 
 // modelsStatus is the one phrase that says whether this route can run, and
-// what is missing when it cannot.
+// what is missing when it cannot. It is the availability built with the
+// document; an instance built without one is judged with no quota reading,
+// so it is never called available on telemetry nobody read.
 func modelsStatus(instance modelsInstance) string {
+	if instance.Availability.Code != "" {
+		return instance.Availability.Detail
+	}
+	return modelsAvailabilityFor(instance, nil).Detail
+}
+
+// modelsAvailabilityFor decides whether a route can run now (F2: models
+// called a route available on stale, incomplete or exhausted telemetry, and
+// with no ready worker). In order: the catalog has to bind it, a worker has
+// to advertise it, its pool's window set has to be complete, fresh and not
+// exhausted (windows is nil when the instance has no authorized pool), the
+// pool has to admit work, and at least one ready worker has to be able to
+// dispatch it. The first failure is the reason.
+func modelsAvailabilityFor(instance modelsInstance, windows *domain.QuotaWindowSet) modelsAvailability {
 	switch {
 	case instance.MissingBinding:
-		return "no quota binding: the fleet catalog authorizes no pool for it"
+		return modelsAvailability{Code: modelsAvailabilityMissingBinding, Detail: "no quota binding: the fleet catalog authorizes no pool for it"}
 	case !instance.Advertised && instance.Reason != "":
-		return "not advertised: " + modelsReasonText(instance.Reason)
+		return modelsAvailability{Code: modelsAvailabilityNotAdvertised, Detail: "not advertised: " + modelsReasonText(instance.Reason)}
 	case !instance.Advertised:
-		return "authorized, not advertised: no worker offers it"
-	case instance.Admission != "" && instance.Admission != string(domain.AdmissionOpen):
-		return "pool " + instance.Admission
-	default:
-		return modelsStatusAvailable
+		return modelsAvailability{Code: modelsAvailabilityNotAdvertised, Detail: "authorized, not advertised: no worker offers it"}
+	case windows == nil:
+		return modelsAvailability{Code: domain.QuotaWindowUnknown, Detail: domain.QuotaWindowProblem{Code: domain.QuotaWindowUnknown}.String()}
 	}
+	if problem, found := windows.Problem(); found {
+		return modelsAvailability{Code: problem.Code, Window: problem.Window, ResetsAt: problem.ResetsAt, Detail: problem.String()}
+	}
+	if instance.Admission != "" && instance.Admission != string(domain.AdmissionOpen) {
+		return modelsAvailability{Code: modelsAvailabilityPoolAdmission, Detail: "pool " + instance.Admission}
+	}
+	for _, worker := range instance.Workers {
+		if worker.Advertised && worker.Ready && worker.Reason == "" {
+			return modelsAvailability{Code: modelsStatusAvailable, Detail: modelsStatusAvailable}
+		}
+	}
+	return modelsAvailability{Code: modelsAvailabilityNoReadyWorker, Detail: "no ready worker"}
 }

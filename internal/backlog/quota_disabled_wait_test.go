@@ -60,13 +60,15 @@ func TestQuotaWaitsWithChecksDisabledReadOnlyGoverningBuckets(t *testing.T) {
 		wantMet      bool
 		wantReason   string
 	}{
-		{name: "governing and excluded windows", observations: append([]domain.WorkerQuotaObservation{reading(key("acct-1", "seven_day"), 10, "")}, excluded...),
-			wantBuckets: 1, wantMet: true, wantReason: "is at 10%, below 50%"},
+		{name: "governing and excluded windows", observations: append([]domain.WorkerQuotaObservation{reading(key("acct-1", "seven_day"), 10, ""), reading(key("acct-1", "five_hour"), 5, "")}, excluded...),
+			wantBuckets: 2, wantMet: true, wantReason: "is at 10%, below 50%"},
+		{name: "a declared window missing among excluded ones", observations: append([]domain.WorkerQuotaObservation{reading(key("acct-1", "seven_day"), 10, "")}, excluded...),
+			wantBuckets: 1, wantReason: "pending: pool pool-claude has missing five_hour"},
 		{name: "only excluded windows", observations: excluded, wantReason: "pending: no observation of pool pool-claude yet"},
 		{name: "no observations", wantReason: "pending: no observation of pool pool-claude yet"},
 		{name: "a failing local store with worker observations", store: failingBucketStore{},
-			observations: append([]domain.WorkerQuotaObservation{reading(key("acct-1", "five_hour"), 20, "")}, excluded...),
-			wantBuckets:  1, wantMet: true, wantReason: "is at 20%, below 50%"},
+			observations: append([]domain.WorkerQuotaObservation{reading(key("acct-1", "five_hour"), 20, ""), reading(key("acct-1", "seven_day"), 15, "")}, excluded...),
+			wantBuckets:  2, wantMet: true, wantReason: "is at 20%, below 50%"},
 		{name: "a failing local store and no worker observation", store: failingBucketStore{},
 			wantReason: "pending: the buckets that govern pool pool-claude are unknown"},
 	} {
@@ -78,7 +80,7 @@ func TestQuotaWaitsWithChecksDisabledReadOnlyGoverningBuckets(t *testing.T) {
 				t.Fatal(err)
 			}
 			states := domain.MergeQuotaObservations(nil, workers)
-			observation, outcome, reason, err := domain.EvaluateQuotaWait(wait, report.Pools, states, now)
+			observation, outcome, reason, err := domain.EvaluateQuotaWait(wait, report.Pools, states, now, 0)
 			if err != nil {
 				t.Fatal(err)
 			}

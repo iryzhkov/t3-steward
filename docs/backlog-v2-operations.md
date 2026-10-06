@@ -1179,7 +1179,19 @@ Every wait has a kind, and the kind decides which side settles it.
 | `time` | `--at RFC3339` or `--for DURATION` | the registering host's wait runner, from the clock; the poll interval follows the remaining time, never under 30 s | `at=` |
 | `github` | `--github run <id> \| pr <n> [--state completed\|merged\|reviewed\|checks-passed] [--repo owner/name]` | the registering host's wait runner, from `gh run view <id> --json status,conclusion,url` or `gh pr view <n> --json state,mergedAt,reviewDecision,statusCheckRollup,url`; three consecutive `gh` errors give up with the last error, a target that is gone gives up at once | `target=run:<id>\|pr:<n> state= conclusion= url=` |
 | `node` | `--node <run>[/<task>] [--state terminal\|succeeded\|paused\|waiting-external\|active]` | the coordinator's node settlement pass (`SettleNodeWaits`), from its own records and the workers' last reports; no local check anywhere | `run= task= attempt= revision= progress=` plus `control=`, `pauseReason=` and, for a terminal run, `failed=<comma list>` and `result="t3-steward task result <run>"` |
-| `quota` | `--quota <pool> --below N \| --phase normal \| --reset` | the same pass, from the merged bucket observations (the coordinator's own and every worker's, freshest per bucket), which is what admission is derived from | `pool= phase= percent=` |
+| `quota` | `--quota <pool> --below N \| --phase normal \| --reset` | the same pass, from the merged bucket observations (the coordinator's own and every worker's, freshest per bucket), which is what admission is derived from | `pool= phase= percent=` plus `resetsAt=` and `window=`, all three read from the pool's most used bucket |
+
+A `--below` or `--phase normal` quota wait is met only by a complete, fresh
+window set: every window the pool's provider declares (Claude `five_hour` and
+`seven_day`; Codex `primary`, and `secondary` when it reports one) and every
+bucket the pool names must have a reading no older than
+`backlog_v2.coordinator_client.defaults.quota_stale_after` (one hour when
+unset), and none taken before a reset that has since passed. A stale or
+missing window keeps the wait open, and its pending reason names the window
+(`pool claude has stale seven_day`). A `--reset` wait is met when the clock
+passes the reset recorded at registration, as before. `t3-steward models`
+reports a route `available` by the same rule, and names the first missing,
+stale or exhausted window otherwise.
 
 The local kinds work as task-bound waits through the existing registration:
 the coordinator holds the kind, name, condition text and deadline and parks

@@ -808,6 +808,9 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 		return err
 	}
 	defer store.Close()
+	// Quota waits count a reading fresh by the same threshold models marks
+	// readings stale at.
+	store.SetQuotaStaleAfter(modelsStaleAfter(cfg))
 	epoch, err := store.AcquireCoordinator(ctx, cfg.BacklogV2.Coordinator.ID)
 	if err != nil {
 		return err

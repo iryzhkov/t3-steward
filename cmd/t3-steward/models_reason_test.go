@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
@@ -33,6 +34,12 @@ func modelsReasonFixture() *modelsFixtureService {
 					{InstanceID: "t3-primary", QuotaPoolID: "pool-claude", Available: true, Models: []string{"opus"}},
 					{InstanceID: "codex", QuotaPoolID: "pool-codex", Available: false},
 				},
+			},
+			// t3-primary's pool is complete and fresh, so that its route is the
+			// available one.
+			QuotaObservations: []domain.WorkerQuotaObservation{
+				{Key: domain.BucketKey{ProviderInstanceID: "t3-primary", LimitID: "claude", Window: "five_hour"}, Phase: domain.PhaseNormal, UsedPercent: 10, Healthy: true, ObservedAt: modelsNow().UTC().Add(-time.Minute)},
+				{Key: domain.BucketKey{ProviderInstanceID: "t3-primary", LimitID: "claude", Window: "seven_day"}, Phase: domain.PhaseNormal, UsedPercent: 20, Healthy: true, ObservedAt: modelsNow().UTC().Add(-time.Minute)},
 			},
 		},
 		Providers: []backlogadmin.WorkerProviderAuthorization{

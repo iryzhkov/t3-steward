@@ -15,7 +15,7 @@ func quotaFixture(t *testing.T, store *Store, now time.Time, phase domain.Phase,
 	reset := now.Add(6 * time.Hour)
 	ctx := context.Background()
 	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{QuotaPools: []domain.QuotaPool{
-		{ID: "claude", Provider: "claudeAgent", ProviderInstanceIDs: []string{"claudeAgent"}, Buckets: []domain.BucketKey{key}, Admission: domain.AdmissionOpen, MaxConcurrent: 2},
+		{ID: "claude", Provider: "claudeAgent", ProviderInstanceIDs: []string{"claudeAgent"}, Buckets: []domain.BucketKey{fiveHourKey, key}, Admission: domain.AdmissionOpen, MaxConcurrent: 2},
 		{ID: "codex", Provider: "codex", ProviderInstanceIDs: []string{"codex"}, Admission: domain.AdmissionOpen, MaxConcurrent: 1},
 	}}); err != nil {
 		t.Fatal(err)
@@ -23,7 +23,19 @@ func quotaFixture(t *testing.T, store *Store, now time.Time, phase domain.Phase,
 	if err := store.SaveBucket(ctx, domain.BucketState{Key: key, Phase: phase, UsedPercent: used, ResetsAt: &reset, ObservedAt: now.Add(-time.Minute), Epoch: domain.EpochFor(&reset)}); err != nil {
 		t.Fatal(err)
 	}
+	// Claude declares a five-hour window too, and a quota wait is met only
+	// when every declared window has a fresh reading.
+	saveFiveHourReading(t, store, now.Add(-time.Minute))
 	return key, reset
+}
+
+var fiveHourKey = domain.BucketKey{ProviderInstanceID: "claudeAgent", LimitID: "claude", Window: "five_hour"}
+
+func saveFiveHourReading(t *testing.T, store *Store, observed time.Time) {
+	t.Helper()
+	if err := store.SaveBucket(context.Background(), domain.BucketState{Key: fiveHourKey, Phase: domain.PhaseNormal, UsedPercent: 10, Healthy: true, ObservedAt: observed}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func quotaRegistration(attempt domain.Attempt, requestID string, condition domain.QuotaWaitCondition) domain.TaskWaitRegistration {
@@ -132,6 +144,7 @@ func TestTaskBoundQuotaWaitConditionsAndRefusals(t *testing.T) {
 	if err := store.SaveBucket(ctx, domain.BucketState{Key: key, Phase: domain.PhaseNormal, UsedPercent: 12, ObservedAt: reset.Add(2 * time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
+	saveFiveHourReading(t, store, reset.Add(2*time.Minute))
 	if err := store.SettleNodeWaits(ctx, reset.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
@@ -140,6 +153,52 @@ func TestTaskBoundQuotaWaitConditionsAndRefusals(t *testing.T) {
 		if w.ID == phase.ID && (w.Result == nil || w.Result.Outcome != domain.TaskWaitMet || w.Result.Fields["phase"] != "normal") {
 			t.Fatalf("phase normal not settled: %+v", w.Result)
 		}
+	}
+}
+
+// F3 at the store: a stale window that is present keeps a quota wait open, the
+// observation says which window, and the threshold the store judges
+// freshness by is the one SetQuotaStaleAfter sets.
+func TestQuotaWaitStaysOpenOnAStaleWindow(t *testing.T) {
+	ctx := context.Background()
+	store, _, now := taskWaitFixture(t)
+	quotaFixture(t, store, now, domain.PhaseNormal, 20)
+	saveFiveHourReading(t, store, now.Add(-2*time.Hour))
+	below := 50.0
+	request := domain.NodeWaitRequest{ID: "nw-stale", ThreadID: "thread", Name: "claude below 50", Quota: &domain.QuotaWaitCondition{Pool: "claude", Below: &below}, Timeout: time.Hour}
+	registered, err := store.RegisterNodeWait(ctx, request, "operator", "host", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registered.SettledAt != nil {
+		t.Fatalf("a stale window met the wait at registration: %+v", registered.Observation)
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := nodeStateRecordsTx(ctx, tx, store.quotaStaleAfter)
+	_ = tx.Rollback()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation, err := observeQuota(*request.Quota, records, now); err != nil || observation.ExitCode != 1 || !strings.Contains(observation.Reason, "stale five_hour") {
+		t.Fatalf("the pending wait does not name the stale window: %+v %v", observation, err)
+	}
+	if err := store.SettleNodeWaits(ctx, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	waits, _ := store.ListNodeWaits(ctx)
+	if waits[0].SettledAt != nil {
+		t.Fatalf("a stale window settled the wait: %+v", waits[0].Observation)
+	}
+	store.SetQuotaStaleAfter(3 * time.Hour)
+	if err := store.SettleNodeWaits(ctx, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	waits, _ = store.ListNodeWaits(ctx)
+	if waits[0].Observation == nil || waits[0].Observation.Outcome != domain.TaskWaitMet {
+		t.Fatalf("a three-hour threshold did not count a two-hour reading fresh: %+v", waits[0].Observation)
 	}
 }
 
