@@ -23,6 +23,15 @@ func (d *LocalDriver) ensureDependencyIntegrity(ctx context.Context, pkg workerp
 	if err := d.verifyDependencyIntegrity(ctx, pkg, workspace); err == nil {
 		return nil
 	}
+	lock, err := lockDependencyRepair(ctx, workspace)
+	if err != nil {
+		return &backlog.DependencyIntegrityError{Artifact: ".t3/dependencies", Err: err}
+	}
+	defer lock.Close()
+	// Another caller may have repaired the view while this caller waited.
+	if err := d.verifyDependencyIntegrity(ctx, pkg, workspace); err == nil {
+		return nil
+	}
 	// Retry materialization once from checksum-verified custody. Stage the whole
 	// tree, so a failed download or commit resolution leaves the old view intact.
 	if d.Source == nil {

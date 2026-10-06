@@ -27,6 +27,11 @@ func ValidateExportBranch(branch string) error {
 	if branch == "" || len(branch) > 1024 || strings.HasPrefix(branch, "-") || strings.TrimSpace(branch) != branch {
 		return errors.New("commit export: a valid branch name of at most 1024 bytes is required")
 	}
+	for _, component := range strings.Split(branch, "/") {
+		if strings.HasSuffix(component, ".lock") {
+			return errors.New("commit export: branch components cannot end in .lock")
+		}
+	}
 	if err := validateGitRef("refs/heads/" + branch); err != nil {
 		return fmt.Errorf("commit export branch: %w", err)
 	}
@@ -121,6 +126,17 @@ func ExportCommitBundle(ctx context.Context, p CommitProvenance, branch string, 
 		if strings.HasPrefix(line, "@") {
 			capabilities = append(capabilities, line)
 		}
+	}
+	if signature == "# v2 git bundle\n" {
+		if len(capabilities) != 0 {
+			return result, errors.New("commit export: version 2 bundle cannot declare capabilities")
+		}
+	} else if signature == "# v3 git bundle\n" {
+		if len(capabilities) != 1 || capabilities[0] != "@object-format=sha1\n" {
+			return result, errors.New("commit export: version 3 bundle requires exactly the supported sha1 object format")
+		}
+	} else {
+		return result, errors.New("commit export: unsupported bundle version")
 	}
 	repo := filepath.Join(directory, "verify.git")
 	cmd := exec.CommandContext(ctx, "git", "init", "--bare", "--quiet", repo)
