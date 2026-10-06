@@ -57,22 +57,40 @@ func (s *Store) CommitArtifactPublication(ctx context.Context, publication domai
 	if err != nil {
 		return domain.Artifact{}, fmt.Errorf("%w: load assignment: %v", ErrStaleArtifactPublication, err)
 	}
+	// A continuation snapshot a running attempt handed on is evidence of what
+	// that execution already did, not an effect it may still have, so it is
+	// fenced to the execution that took it rather than to the assignment's
+	// current state: the exact dispatch (assignment, epoch, worker, worker
+	// epoch) of the attempt, whether that dispatch still runs, lost its lease,
+	// was released or completed. That lets a superseded attempt hand on the
+	// snapshot it queued before its lease ended. A dispatch that was never
+	// claimed, or that the assignment's next epoch replaced, still refuses it.
+	historical := isLiveContinuationSnapshot(artifact)
+	stateAdmits := assignment.State == domain.AssignmentClaimed || assignment.State == domain.AssignmentCompleted
+	if historical {
+		stateAdmits = assignment.State != domain.AssignmentOffered
+	}
 	if assignment.AttemptID != artifact.AttemptID ||
 		assignment.WorkerID != publication.WorkerID ||
 		assignment.WorkerEpoch != publication.WorkerEpoch ||
-		assignment.Epoch != publication.AssignmentEpoch ||
-		(assignment.State != domain.AssignmentClaimed && assignment.State != domain.AssignmentCompleted) {
+		assignment.Epoch != publication.AssignmentEpoch || !stateAdmits {
 		return domain.Artifact{}, fmt.Errorf("%w: assignment identity or state changed", ErrStaleArtifactPublication)
 	}
 	attempt, err := loadAttemptTx(ctx, tx, artifact.AttemptID)
 	if err != nil {
 		return domain.Artifact{}, fmt.Errorf("%w: load attempt: %v", ErrStaleArtifactPublication, err)
 	}
-	if attempt.WorkflowRunID != artifact.WorkflowRunID || attempt.TaskID != artifact.TaskID ||
-		attempt.AssignmentID != assignment.ID || attempt.Revision != publication.AttemptRevision {
+	if attempt.WorkflowRunID != artifact.WorkflowRunID || attempt.TaskID != artifact.TaskID {
 		return domain.Artifact{}, fmt.Errorf("%w: attempt identity or revision changed", ErrStaleArtifactPublication)
 	}
-	if assignment.State == domain.AssignmentCompleted &&
+	if historical {
+		if attempt.AssignmentID != assignment.ID && attempt.AssignmentID != "" {
+			return domain.Artifact{}, fmt.Errorf("%w: attempt moved to another assignment", ErrStaleArtifactPublication)
+		}
+	} else if attempt.AssignmentID != assignment.ID || attempt.Revision != publication.AttemptRevision {
+		return domain.Artifact{}, fmt.Errorf("%w: attempt identity or revision changed", ErrStaleArtifactPublication)
+	}
+	if !historical && assignment.State == domain.AssignmentCompleted &&
 		attempt.Progress != domain.ProgressVerifying && !attempt.Progress.Terminal() {
 		return domain.Artifact{}, fmt.Errorf("%w: completed assignment is not ready for result publication", ErrStaleArtifactPublication)
 	}
@@ -93,6 +111,13 @@ func (s *Store) CommitArtifactPublication(ctx context.Context, publication domai
 		return domain.Artifact{}, fmt.Errorf("commit artifact %q: %w", artifact.ID, err)
 	}
 	return artifact, nil
+}
+
+// isLiveContinuationSnapshot reports whether an artifact is a continuation.md
+// snapshot its attempt handed on while it ran, under its own live identity.
+func isLiveContinuationSnapshot(artifact domain.Artifact) bool {
+	_, live := domain.ContinuationLiveSequence(artifact.ID, artifact.AttemptID)
+	return live && artifact.Kind == domain.ArtifactCheckpoint && artifact.Name == domain.ContinuationArtifactName
 }
 
 func insertArtifactPublicationAuditEvent(ctx context.Context, tx *sql.Tx, publication domain.ArtifactPublication) (domain.AuditEvent, error) {

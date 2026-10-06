@@ -61,12 +61,23 @@ func IsContinuationSnapshotID(id, attemptID string) bool {
 	if id == ContinuationArtifactID(attemptID) {
 		return true
 	}
+	_, live := ContinuationLiveSequence(id, attemptID)
+	return live
+}
+
+// ContinuationLiveSequence returns the sequence of a live snapshot identity of
+// attemptID, and false for any other identity, the result's fixed one
+// included.
+func ContinuationLiveSequence(id, attemptID string) (int64, bool) {
 	sequence, ok := strings.CutPrefix(id, ContinuationArtifactID(attemptID)+"-")
 	if !ok {
-		return false
+		return 0, false
 	}
 	parsed, err := strconv.ParseInt(sequence, 10, 64)
-	return err == nil && parsed > 0 && id == ContinuationLiveArtifactID(attemptID, parsed)
+	if err != nil || parsed < 1 || id != ContinuationLiveArtifactID(attemptID, parsed) {
+		return 0, false
+	}
+	return parsed, true
 }
 
 // ContinuationBoundary names the moment a snapshot was taken.

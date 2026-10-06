@@ -76,7 +76,7 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 	if err != nil {
 		return domain.Artifact{}, err
 	}
-	assignment, attempt, task, err := checkpointImportBinding(records, manifest, object.ID)
+	assignment, attempt, task, err := checkpointImportBinding(records, manifest)
 	if err != nil {
 		if checkpointBindingIsFinal(assignment, attempt, manifest) {
 			return domain.Artifact{}, i.reject(ctx, records, manifest, now, err)
@@ -146,18 +146,20 @@ func isContinuationUpload(manifest workerproto.ArtifactTransferManifest) bool {
 }
 
 // importContinuation imports a continuation.md snapshot a worker took at a
-// turn end or a pause, while its attempt still holds its assignment. It is
-// what lets a superseded attempt, which never publishes a result, hand its
-// latest checkpoint to the task's next attempt.
+// turn end or a pause. It is what lets a superseded attempt, which never
+// publishes a result, hand its latest checkpoint to the task's next attempt.
 //
-// It binds exactly as a checkpoint does (same assignment, assignment epoch,
-// worker and worker epoch; claimed with a running attempt or completed with a
-// settled one), except that no throttle evidence names it: the metadata
-// travelling with the snapshot is checked against it instead, and the
-// snapshot must be under its attempt's own identity and sequence. An upload
-// whose assignment has moved on, or whose metadata does not describe it, is
-// refused for good. Only the snapshot is kept, dated by its capture; an exact
-// replay returns the same immutable artifact.
+// It binds under the authority of the dispatch that took it, not the
+// assignment's current state (see continuationImportBinding): a snapshot the
+// worker queued before the attempt's lease expired, or before it was released
+// or superseded, is still imported when the worker is next polled. No
+// throttle evidence names it: the metadata travelling with the snapshot is
+// checked against it instead, and the snapshot must be under its attempt's
+// own identity and sequence. An upload whose dispatch was never claimed or was
+// replaced, or whose metadata does not describe it, is refused for good. Only
+// the snapshot is kept, dated by its capture; an exact replay returns the same
+// immutable artifact. Importing it grants the old attempt nothing else: its
+// results and lifecycle stay fenced as before.
 func (i CoordinatorCheckpointImporter) importContinuation(ctx context.Context, response workerproto.ArtifactUploadResponse, opener WorkerUploadOpener, now time.Time) (domain.Artifact, error) {
 	manifest := response.Manifest
 	if manifest.Direction != "upload" || manifest.CoordinatorEpoch < 1 || manifest.CoordinatorEpoch > i.CoordinatorEpoch {
@@ -170,12 +172,9 @@ func (i CoordinatorCheckpointImporter) importContinuation(ctx context.Context, r
 	if err != nil {
 		return domain.Artifact{}, err
 	}
-	assignment, attempt, task, err := checkpointImportBinding(records, manifest, "")
-	if err == nil && attempt.IsSupervisionActivation() {
-		err = errors.New("continuation import names a supervision activation")
-	}
+	assignment, attempt, task, final, err := continuationImportBinding(records, manifest)
 	if err != nil {
-		if checkpointBindingIsFinal(assignment, attempt, manifest) || attempt.IsSupervisionActivation() {
+		if final {
 			return domain.Artifact{}, i.reject(ctx, records, manifest, now, err)
 		}
 		return domain.Artifact{}, err
@@ -224,6 +223,45 @@ func (i CoordinatorCheckpointImporter) importContinuation(ctx context.Context, r
 		return domain.Artifact{}, i.reject(ctx, records, manifest, now, err)
 	}
 	return published, err
+}
+
+// continuationImportBinding binds a continuation upload to the dispatch that
+// took it: the assignment it names, at the epoch it names, claimed at some
+// point by the same worker process (claimed, lease lost, released or
+// completed), for an attempt that has not moved to another assignment. Any
+// progress and control are accepted, because the snapshot records what the
+// attempt already did. A refusal is final unless only the task is missing,
+// which a later projection may still supply.
+func continuationImportBinding(records sqlite.CoordinatorRecords, manifest workerproto.ArtifactTransferManifest) (domain.Assignment, domain.Attempt, domain.Task, bool, error) {
+	var assignment domain.Assignment
+	for _, candidate := range records.Assignments {
+		if candidate.ID == manifest.AssignmentID {
+			assignment = candidate
+			break
+		}
+	}
+	if assignment.ID == "" || assignment.State == domain.AssignmentOffered || assignment.Epoch != manifest.AssignmentEpoch ||
+		assignment.WorkerID != manifest.WorkerID || assignment.WorkerEpoch != manifest.WorkerEpoch {
+		return assignment, domain.Attempt{}, domain.Task{}, true, errors.New("continuation import names no dispatch of this worker process")
+	}
+	var attempt domain.Attempt
+	for _, candidate := range records.Attempts {
+		if candidate.ID == assignment.AttemptID {
+			attempt = candidate
+			break
+		}
+	}
+	if attempt.ID == "" || (attempt.AssignmentID != assignment.ID && attempt.AssignmentID != "") {
+		return assignment, attempt, domain.Task{}, true, errors.New("continuation import attempt binding is stale")
+	}
+	if attempt.IsSupervisionActivation() {
+		return assignment, attempt, domain.Task{}, true, errors.New("continuation import names a supervision activation")
+	}
+	task, _ := domain.TaskForAttempt(attempt, records.WorkflowRuns, records.Tasks)
+	if task.ID == "" {
+		return assignment, attempt, task, false, errors.New("continuation import task is missing")
+	}
+	return assignment, attempt, task, false, nil
 }
 
 // ErrCheckpointImportRejected marks a checkpoint upload that can never be
@@ -287,9 +325,7 @@ func checkpointBindingIsFinal(assignment domain.Assignment, attempt domain.Attem
 	return assignment.State == domain.AssignmentCompleted
 }
 
-// checkpointImportBinding binds an upload to its assignment, attempt and
-// task. A non-empty checkpointID must be the checkpoint the attempt records.
-func checkpointImportBinding(records sqlite.CoordinatorRecords, manifest workerproto.ArtifactTransferManifest, checkpointID string) (domain.Assignment, domain.Attempt, domain.Task, error) {
+func checkpointImportBinding(records sqlite.CoordinatorRecords, manifest workerproto.ArtifactTransferManifest) (domain.Assignment, domain.Attempt, domain.Task, error) {
 	var assignment domain.Assignment
 	for _, candidate := range records.Assignments {
 		if candidate.ID == manifest.AssignmentID {
@@ -312,14 +348,10 @@ func checkpointImportBinding(records sqlite.CoordinatorRecords, manifest workerp
 	// its control: a pause that is later resumed keeps the checkpoint it took,
 	// and an import that missed the paused window must not become impossible
 	// (and block the worker's exchange) just because the attempt is running.
-	// A continuation snapshot (no checkpointID) taken at the attempt's last
-	// turn end may arrive after its result was reported and before the
-	// result is imported, while the attempt verifies.
 	validProgress := assignment.State == domain.AssignmentClaimed && !attempt.Progress.Terminal() ||
-		assignment.State == domain.AssignmentCompleted && (attempt.Progress.Terminal() ||
-			checkpointID == "" && attempt.Progress == domain.ProgressVerifying)
+		assignment.State == domain.AssignmentCompleted && attempt.Progress.Terminal()
 	if attempt.ID == "" || attempt.AssignmentID != assignment.ID || !validProgress ||
-		(checkpointID != "" && attempt.CheckpointArtifactID != checkpointID) {
+		attempt.CheckpointArtifactID != manifest.Objects[0].ID {
 		return assignment, attempt, domain.Task{}, errors.New("checkpoint import attempt binding is stale")
 	}
 	task, _ := domain.TaskForAttempt(attempt, records.WorkflowRuns, records.Tasks)

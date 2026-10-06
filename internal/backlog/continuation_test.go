@@ -212,14 +212,14 @@ func TestRetryPackageCarriesTheLatestContinuationCheckpoint(t *testing.T) {
 func TestLatestContinuationCheckpointPicksTheNewestCaptureOfTheTask(t *testing.T) {
 	now := time.Date(2026, 9, 10, 22, 0, 0, 0, time.UTC)
 	records, _ := continuationRetryFixture(now)
-	latest := LatestContinuationArtifact(records.Artifacts, "run-1", "task-consumer", "")
+	latest := LatestContinuationArtifact(records.Artifacts, records.Attempts, "run-1", "task-consumer", "")
 	if latest == nil || latest.AttemptID != "attempt-0" {
 		t.Fatalf("latest = %+v", latest)
 	}
-	if excluded := LatestContinuationArtifact(records.Artifacts, "run-1", "task-consumer", "attempt-0"); excluded == nil || excluded.AttemptID != "attempt-00" {
+	if excluded := LatestContinuationArtifact(records.Artifacts, records.Attempts, "run-1", "task-consumer", "attempt-0"); excluded == nil || excluded.AttemptID != "attempt-00" {
 		t.Fatalf("latest excluding attempt-0 = %+v", excluded)
 	}
-	if none := LatestContinuationArtifact(records.Artifacts, "run-2", "task-consumer", ""); none != nil {
+	if none := LatestContinuationArtifact(records.Artifacts, records.Attempts, "run-2", "task-consumer", ""); none != nil {
 		t.Fatalf("another run's snapshot was offered: %+v", none)
 	}
 }

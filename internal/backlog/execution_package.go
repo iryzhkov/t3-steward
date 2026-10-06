@@ -403,6 +403,9 @@ type executionPackageState struct {
 	attempt   domain.Attempt
 	tasks     []domain.Task
 	artifacts map[string]domain.Artifact
+	// attempts holds every attempt, so continuation snapshots are ordered by
+	// the task's execution order rather than by a worker's clock.
+	attempts []domain.Attempt
 	// definitionRuns holds every run of this workflow. A task's prompt and its
 	// static inputs are the workflow's definition, retained under the run that
 	// submitted them, and every later run of that workflow executes those same
@@ -504,6 +507,7 @@ func resolveExecutionPackageState(records sqlite.CoordinatorRecords, assignment 
 		}
 		state.artifacts[artifact.ID] = artifact
 	}
+	state.attempts = records.Attempts
 	return state, nil
 }
 

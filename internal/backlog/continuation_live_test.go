@@ -99,7 +99,7 @@ func TestSupersededAttemptHandsItsLiveCheckpointToItsReplacement(t *testing.T) {
 	if delivered == nil || delivered.ID != artifact.ID || delivered.SHA256 != artifact.SHA256 {
 		t.Fatalf("static inputs = %+v", pkg.StaticInputs)
 	}
-	if latest := LatestContinuationArtifact(records.Artifacts, "run-1", consumer.ID, ""); latest == nil || latest.ID != artifact.ID {
+	if latest := LatestContinuationArtifact(records.Artifacts, records.Attempts, "run-1", consumer.ID, ""); latest == nil || latest.ID != artifact.ID {
 		t.Fatalf("the task's latest checkpoint = %+v", latest)
 	}
 }
@@ -138,9 +138,12 @@ func TestLiveContinuationImportWhileVerifyingAndUnderAReusedSequence(t *testing.
 	}
 }
 
-// The live checkpoint channel keeps the fences of every other upload: a
-// snapshot from an assignment that has moved on, or one its metadata does not
-// describe, is refused for good rather than imported.
+// The live checkpoint channel is fenced to the dispatch that took the
+// snapshot: one from a dispatch that was never claimed, that the assignment's
+// next epoch replaced, from another worker process, for an attempt that moved
+// to another assignment, or one its metadata does not describe, is refused for
+// good rather than imported. A dispatch that was merely released is not a
+// fence; see TestSupersessionBeforeTheNextImportStillHandsTheCheckpointOn.
 func TestLiveContinuationImportIsFencedToTheAttempt(t *testing.T) {
 	ctx := context.Background()
 	now := coordinatorTestTime
@@ -149,8 +152,14 @@ func TestLiveContinuationImportIsFencedToTheAttempt(t *testing.T) {
 		name   string
 		mutate func(*domain.Assignment, *domain.ContinuationCheckpoint)
 	}{
-		{name: "released", mutate: func(assignment *domain.Assignment, _ *domain.ContinuationCheckpoint) {
-			assignment.State = domain.AssignmentReleased
+		{name: "never claimed", mutate: func(assignment *domain.Assignment, _ *domain.ContinuationCheckpoint) {
+			assignment.State = domain.AssignmentOffered
+		}},
+		{name: "replaced by the next epoch", mutate: func(assignment *domain.Assignment, _ *domain.ContinuationCheckpoint) {
+			assignment.State, assignment.Epoch = domain.AssignmentClaimed, 2
+		}},
+		{name: "another worker process", mutate: func(assignment *domain.Assignment, _ *domain.ContinuationCheckpoint) {
+			assignment.WorkerEpoch = "worker-epoch-2"
 		}},
 		{name: "another attempt", mutate: func(_ *domain.Assignment, checkpoint *domain.ContinuationCheckpoint) {
 			checkpoint.AttemptID = "attempt-9"
