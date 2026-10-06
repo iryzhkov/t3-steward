@@ -73,10 +73,19 @@ func TestSecretScanFailedAttemptCanaryPublishesRedactedFailure(t *testing.T) {
 					summary = string(raw)
 				}
 			}
-			if !strings.HasPrefix(summary, FailedMarker+"\n") || !strings.Contains(summary, "detector=canary") {
+			// An archive finding is reported by the scanner; a credential in
+			// the failure text is already redacted when the failure is recorded.
+			redacted := "detector=canary"
+			if !test.archive {
+				redacted = "token="
+				if !strings.Contains(summary, "[redacted]") {
+					t.Fatalf("failure reason not redacted in place: %q", summary)
+				}
+			}
+			if !strings.HasPrefix(summary, FailedMarker+"\n") || !strings.Contains(summary, redacted) {
 				t.Fatalf("redacted failure reason missing: %q", summary)
 			}
-			if strings.Contains(logs.String(), secret) || !strings.Contains(logs.String(), "detector") {
+			if strings.Contains(logs.String(), secret) || test.archive && !strings.Contains(logs.String(), "detector") {
 				t.Fatalf("unsafe or missing log evidence: %s", logs.String())
 			}
 		})

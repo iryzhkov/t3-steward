@@ -1264,6 +1264,20 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 	return nil
 }
 
+// RedactFailure removes the execution's credentials and secret patterns from
+// a failure reason before the runtime records it, because the journal failure
+// is reported to the coordinator. A publisher without a scanner leaves the
+// text unchanged.
+func (d *LocalDriver) RedactFailure(ctx context.Context, pkg workerproto.ExecutionPackage, failure string) (string, error) {
+	redactor, ok := d.Publisher.(interface {
+		RedactText(context.Context, workerproto.ExecutionPackage, string) (string, error)
+	})
+	if d.Config.DryRun || !ok {
+		return failure, nil
+	}
+	return redactor.RedactText(ctx, pkg, failure)
+}
+
 func (d *LocalDriver) Cleanup(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
 	if manager := d.containedManager(pkg); manager != nil {
 		if err := manager.Quiesce(ctx, pkg, true); err != nil {

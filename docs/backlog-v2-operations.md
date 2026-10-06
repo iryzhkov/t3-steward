@@ -893,9 +893,11 @@ executions it reads the assigned provider home rather than the host home.
 Plain, standard/URL-safe base64 (padded or unpadded, at any byte alignment, so a
 credential inside a Basic authorization or a docker `auth` field is found, and
 across the line breaks of MIME or PEM wrapping), and URL-encoded forms are
-recognized, including mixed-case and partial percent escapes. Credentials shorter
-than eight bytes cannot be matched without refusing ordinary text; they are
-counted in a warning and not scanned. Login-file metadata such as `token_type`,
+recognized, including mixed-case and partial percent escapes. Credentials of five
+bytes or more are matched exactly. A credential of four bytes or fewer cannot be
+matched without refusing ordinary text; it is counted in a warning and not
+scanned. Evidence for a credential shorter than sixteen bytes shows `****` in
+place of its first four characters. Login-file metadata such as `token_type`,
 expiry times and key IDs is not treated as a credential. Values never enter
 the package or scan report. At credential resolution and before provider startup,
 the worker retains execution-specific SHA-256 signatures, lengths and four-byte
@@ -944,9 +946,13 @@ without the matched value or surrounding content. Warning logs use the same
 redacted evidence. A typed refusal becomes a permanent collection failure and
 publishes only a bounded redacted failure summary and empty archive; rejected
 bytes stay in worker-local recovery storage. The same holds for an attempt that
-had already failed: when its thread archive or failure text carries a credential,
-the worker publishes the redacted finding with an empty archive in place of the
-original reason. A supervision activation whose result is refused fails the same
+had already failed: when its thread archive carries a credential, the worker
+publishes the redacted finding with an empty archive. A failure reason is redacted
+before the worker journal records it, because every worker snapshot reports it to
+the coordinator, which copies it into attempt evidence: each execution credential,
+in any recognized encoding, and each secret pattern becomes `[redacted]`. A reason
+the scanner cannot check is replaced by a fixed notice. A journal written by an
+earlier release is redacted durably when its failed result is collected. A supervision activation whose result is refused fails the same
 way. Explain and owner notifications therefore receive the redacted reason rather
 than the original secret-bearing message or archive. A refused checkpoint is
 reported as a failed checkpoint with the redacted reason. Fix the source/fixture

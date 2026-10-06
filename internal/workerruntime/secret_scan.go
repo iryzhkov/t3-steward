@@ -48,13 +48,14 @@ func (e *SecretScanError) retryable() bool {
 func (e *SecretScanError) Error() string {
 	return fmt.Sprintf("result secret scan refused object %q: detector=%s byte=%d fingerprint=%s", e.Object, e.Detector, e.Offset, e.Fingerprint)
 }
+
+// secretFingerprint names a value in redacted evidence. Its first four bytes
+// are shown only for a value long enough that they reveal little of it.
 func secretFingerprint(value string) string {
 	sum := sha256.Sum256([]byte(value))
-	prefix := value
-	if len(prefix) > 4 {
-		prefix = prefix[:4]
-	} else {
-		prefix = "****"
+	prefix := "****"
+	if len(value) >= 16 {
+		prefix = value[:4]
 	}
 	return fmt.Sprintf("%s:%x", prefix, sum[:6])
 }
@@ -109,9 +110,10 @@ var resultSecretPatterns = []secretPattern{
 }
 
 // minCanaryBytes is the shortest credential or encoded form matched exactly.
-// A shorter value would refuse ordinary text, so it is counted and skipped
-// rather than failing the execution.
-const minCanaryBytes = 8
+// A value of four bytes or fewer would refuse ordinary text, so it is counted
+// and skipped rather than failing the execution. Five bytes and longer, such
+// as a short project password, stay protected.
+const minCanaryBytes = 5
 
 type canaryVariant struct {
 	value       []byte

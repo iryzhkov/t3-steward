@@ -851,6 +851,7 @@ func (r *Runtime) prepare(ctx context.Context, id string) error {
 			}
 			return nil
 		}
+		failure := r.recordableFailure(ctx, id, "preparation failed: "+err.Error())
 		if updateErr := r.journal.update(func(state *journalState) error {
 			current, ok := state.Attempts[id]
 			if !ok {
@@ -860,7 +861,7 @@ func (r *Runtime) prepare(ctx context.Context, id string) error {
 			if current.FirstPrepareFailure == "" {
 				current.FirstPrepareFailure = first
 			}
-			current.Failure = "preparation failed: " + err.Error()
+			current.Failure = failure
 			current.UpdatedAt = r.now()
 			state.Attempts[id] = current
 			state.Sequence++
@@ -1179,6 +1180,28 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 	case PhaseCompleted:
 		return nil
 	case PhaseFailed:
+		// A record written before failure reasons were redacted on entry can
+		// still hold a credential. Redact it durably before publishing, so the
+		// next snapshot cannot report it; a scanner failure retries later.
+		redacted, err := r.redactFailure(ctx, record.Package.Package, record.Failure)
+		if err != nil {
+			return fmt.Errorf("collection deferred: redact failure reason: %w", err)
+		}
+		if redacted != record.Failure {
+			if err := r.journal.update(func(state *journalState) error {
+				current, ok := state.Attempts[id]
+				if !ok || current.Phase != PhaseFailed || current.Failure != record.Failure {
+					return nil
+				}
+				current.Failure = redacted
+				state.Attempts[id] = current
+				state.Sequence++
+				return nil
+			}); err != nil {
+				return err
+			}
+			record.Failure = redacted
+		}
 		publishErr := r.driver.CollectFailure(ctx, record.Package.Package, record.WorkspacePath, record.Failure)
 		settleUnproven := errors.Is(publishErr, ErrSettleUnproven)
 		if publishErr != nil && !settleUnproven {
@@ -1379,7 +1402,62 @@ func (r *Runtime) finishThrottle(command domain.ThrottleCommand, accepted bool, 
 	return acknowledgement, err
 }
 
+// failureRedactor is the driver's scanner for failure reasons. The journal
+// failure is reported to the coordinator in every snapshot, so no reason is
+// recorded until the execution's credentials are removed from it.
+type failureRedactor interface {
+	RedactFailure(context.Context, workerproto.ExecutionPackage, string) (string, error)
+}
+
+// withheldFailure replaces a failure reason the scanner could not check.
+const withheldFailure = "failure reason withheld: the result secret scan could not check it for credentials"
+
+// failureRedactionTimeout bounds credential resolution for a redaction made
+// without a caller context.
+const failureRedactionTimeout = 30 * time.Second
+
+func (r *Runtime) redactFailure(ctx context.Context, pkg workerproto.ExecutionPackage, failure string) (string, error) {
+	redactor, ok := r.driver.(failureRedactor)
+	if failure == "" || !ok {
+		return failure, nil
+	}
+	return redactor.RedactFailure(ctx, pkg, failure)
+}
+
+// recordableFailure is failure with the attempt's credentials removed, or a
+// fixed notice when the scanner cannot run. The raw reason is never logged.
+func (r *Runtime) recordableFailure(ctx context.Context, id, failure string) string {
+	if failure == "" {
+		return ""
+	}
+	state, err := r.journal.snapshot()
+	if err != nil {
+		return withheldFailure
+	}
+	record, ok := state.Attempts[id]
+	if !ok {
+		return withheldFailure
+	}
+	redacted, err := r.redactFailure(ctx, record.Package.Package, failure)
+	if err != nil {
+		r.log.Warn("failure reason withheld; the secret scan could not check it", "assignment", id, "error", err)
+		return withheldFailure
+	}
+	return redacted
+}
+
+// markPhase records phase and, with its credentials removed, failure.
 func (r *Runtime) markPhase(id string, phase Phase, failure, workspace, thread string) error {
+	if failure != "" {
+		ctx, cancel := context.WithTimeout(r.config.Lifetime, failureRedactionTimeout)
+		failure = r.recordableFailure(ctx, id, failure)
+		cancel()
+	}
+	return r.writePhase(id, phase, failure, workspace, thread)
+}
+
+// writePhase records failure as given; the caller has already redacted it.
+func (r *Runtime) writePhase(id string, phase Phase, failure, workspace, thread string) error {
 	return r.journal.update(func(state *journalState) error {
 		record, ok := state.Attempts[id]
 		if !ok {
@@ -1404,8 +1482,11 @@ func (r *Runtime) markPhase(id string, phase Phase, failure, workspace, thread s
 }
 
 func (r *Runtime) markUnknown(id, detail string) error {
+	ctx, cancel := context.WithTimeout(r.config.Lifetime, failureRedactionTimeout)
+	detail = r.recordableFailure(ctx, id, detail)
+	cancel()
 	r.log.Warn("attempt execution is unknown until re-observed", "assignment", id, "detail", detail)
-	return r.markPhase(id, PhaseUnknown, detail, "", "")
+	return r.writePhase(id, PhaseUnknown, detail, "", "")
 }
 
 // markFailed records a deterministic, effect-free failure. The coordinator
@@ -1424,8 +1505,9 @@ func (r *Runtime) markFailed(ctx context.Context, id, detail string) error {
 	if err := r.stopPreparation(ctx, record.Package.Package); err != nil {
 		return err
 	}
+	detail = r.recordableFailure(ctx, id, detail)
 	r.log.Warn("attempt failed on the worker", "assignment", id, "detail", detail)
-	return r.markPhase(id, PhaseFailed, detail, "", "")
+	return r.writePhase(id, PhaseFailed, detail, "", "")
 }
 
 func (r *Runtime) now() time.Time { return r.config.Now().UTC() }
