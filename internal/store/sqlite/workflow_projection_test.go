@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -14,11 +13,8 @@ import (
 
 func sinkStoreFixture(t *testing.T) (*Store, WorkflowProjectionSnapshot, time.Time) {
 	t.Helper()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := openSchemaFixture(t)
+	var err error
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
 	before := WorkflowProjectionSnapshot{
 		Run:      domain.WorkflowRun{ID: "r", WorkflowID: "w", Revision: 1, Progress: domain.ProgressActive, CreatedAt: now, UpdatedAt: now},
