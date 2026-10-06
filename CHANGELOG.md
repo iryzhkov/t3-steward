@@ -18,6 +18,34 @@ All notable changes to this project are documented here. The format follows
   unavailable, the consumer receives an explicit preparation refusal instead
   of an offer that is withheld indefinitely. Reruns and external inputs carry
   their source-run bundle.
+- The coordinator can keep a campaign's milestone ledger in Jocasta. A
+  campaign opts in with a `ledger:` block in its manifest
+  (`ledger: {jocasta_project: steward}`, optionally with `plan`, `risk` and
+  `acceptance`); without that block nothing is written anywhere, which is the
+  default. For an opted-in run the coordinator creates
+  `<jocasta_project>/handoffs/<run id>.md` at submission, appends one record
+  when each task attempt ends and a closing record when the run ends, using the
+  jocasta CLI configured on the coordinator host. Each record separates facts
+  Steward holds (state, route, effort, worker, recorded review verdicts,
+  output digests, usage, ask answers) from the task's own handoff, which is
+  quoted as not verified. Appends use `--if-revision`, so notes added by
+  anyone else are kept. If Jocasta is unavailable the run is never blocked:
+  the ledger is marked behind and retried with backoff. See
+  `t3-steward campaign help ledger`. This raises the coordinator schema to
+  version 37 (new `coordinator_ledgers` table); an older binary refuses to open
+  the migrated state database.
+- Steward-launched T3 threads now carry a live title that follows the
+  coordinator's recorded lifecycle:
+  `[Steward] <workflow>: <task> · <role> · <state>[ · campaign n/m] · run <suffix>`.
+  Titles are updated by workers that advertise `session-titles-v1`, survive
+  worker restarts, and also apply to directory-bound executions through their
+  supervisor's scoped T3 control, never the host's. Renaming a thread in T3
+  stops further updates to it. Limitation: T3 offers no expected-title fence,
+  so a rename made between Steward's read and its write is overwritten once;
+  the next update then sees the rename and stops. A directory-bound execution
+  whose supervisor has already stopped keeps its last title, which can read
+  "collecting" rather than "completed". Packages without frozen display
+  metadata keep their initial title.
 
 ### Fixed
 
