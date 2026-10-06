@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -18,10 +19,16 @@ func runModeTestUnderWorkerUmask(t *testing.T) bool {
 		return false
 	}
 	command := exec.Command("/bin/sh", "-c", `umask 077 && exec "$0" "$@"`,
-		os.Args[0], "-test.run=^"+t.Name()+"$", "-test.count=1")
+		os.Args[0], "-test.run=^"+regexp.QuoteMeta(t.Name())+"$", "-test.count=1", "-test.v")
 	command.Env = append(os.Environ(), helper+"="+t.Name())
-	if output, err := command.CombinedOutput(); err != nil {
+	output, err := command.CombinedOutput()
+	if err != nil {
 		t.Fatalf("test under worker umask: %v\n%s", err, output)
+	}
+	// A -test.run pattern that matches nothing also exits 0, so require the
+	// child to report this exact test as passed.
+	if !strings.Contains(string(output), "--- PASS: "+t.Name()+" (") {
+		t.Fatalf("test under worker umask did not run %s:\n%s", t.Name(), output)
 	}
 	return true
 }
@@ -31,7 +38,12 @@ func TestVerificationUsesConventionalUmask(t *testing.T) {
 		return
 	}
 
-	workspace := t.TempDir()
+	// The verification shell reports $PWD with symlinks resolved, and on macOS
+	// t.TempDir() lives under /var, a symlink to /private/var.
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	assertPrivateCreation := func(name string) {
 		t.Helper()
 		path := filepath.Join(workspace, name)
