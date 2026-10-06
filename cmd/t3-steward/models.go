@@ -255,6 +255,11 @@ type modelsWorker struct {
 	// model). A worker may advertise more models than it is authorized for,
 	// and a route runs only where both name its model.
 	AuthorizedModels []string `json:"authorizedModels,omitempty"`
+	// grants keeps each authorization entry's allowlist apart, because a
+	// sole "*" in one entry stops being one once merged with another; a model
+	// is authorized when any entry authorizes it, as validatePolicyCatalog
+	// reads them.
+	grants [][]string
 	// Advertised reports that this worker's inventory offers it now.
 	Advertised bool `json:"advertised"`
 	// Reason is why this instance and worker pair cannot run a route:
@@ -458,6 +463,20 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 			}
 		}
 	}
+	// worker.Providers is the coordinator's own statement of what each worker
+	// is authorized for. When it carries something for any worker, the
+	// coordinator reports the per-worker catalog, and an instance absent from a
+	// worker's list (or a worker with no list at all) is a fact the row says;
+	// when it is empty for every worker the coordinator reported nothing, and
+	// the rows say nothing either. This is the rule validatePolicyCatalog
+	// applies, decided over every worker before the project filter.
+	reported := false
+	for _, worker := range workers {
+		if len(worker.Providers) > 0 {
+			reported = true
+			break
+		}
+	}
 	for _, worker := range workers {
 		id := worker.Snapshot.WorkerID
 		if eligible != nil && !eligible[id] {
@@ -466,11 +485,6 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 		ready := worker.Enrolled && !worker.Stale && worker.Snapshot.Connected &&
 			worker.State == "observed" && worker.Health == string(domain.WorkerHealthReady)
 		rows := map[string]*modelsWorker{}
-		// worker.Providers is the coordinator's own statement of what this
-		// worker is authorized for. When it carries something, an instance
-		// absent from it is a fact and the row says so; when it is empty the
-		// coordinator reported nothing, and the row says nothing either.
-		reported := len(worker.Providers) > 0
 		row := func(instance string) *modelsWorker {
 			if existing, ok := rows[instance]; ok {
 				return existing
@@ -494,7 +508,10 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 			current := row(granted.Instance)
 			yes := true
 			current.Authorized = &yes
-			current.AuthorizedModels = mergeSorted(current.AuthorizedModels, granted.Models)
+			if granted.Dropped == "" {
+				current.AuthorizedModels = mergeSorted(current.AuthorizedModels, granted.Models)
+				current.grants = append(current.grants, granted.Models)
+			}
 			current.Reason = workerRouteReason(granted, installed)
 		}
 		for _, provider := range worker.Snapshot.Inventory.Providers {
@@ -968,7 +985,10 @@ func modelsWorkerAuthorizes(worker modelsWorker, model string) bool {
 	if model == "" {
 		return len(worker.AuthorizedModels) > 0
 	}
-	return domain.ModelAuthorized(worker.AuthorizedModels, model)
+	if worker.grants == nil {
+		return domain.ModelAuthorized(worker.AuthorizedModels, model)
+	}
+	return slices.ContainsFunc(worker.grants, func(allowed []string) bool { return domain.ModelAuthorized(allowed, model) })
 }
 
 // modelsWorkerServes reports whether a worker both advertises a route and is

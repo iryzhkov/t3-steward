@@ -133,3 +133,68 @@ func TestModelsRouteAuthorizationAndAdvertisementMeetOnOneWorker(t *testing.T) {
 		t.Errorf("opus with its only authorized worker degraded: code %q, want %q", got, modelsAvailabilityNoReadyWorker)
 	}
 }
+
+// Self-review: whether the coordinator reports the per-worker catalog is a
+// fact about the coordinator, not about one worker. A ready worker with no
+// authorization entry at all, on a coordinator that reports entries for other
+// workers, is authorized for nothing, as validatePolicyCatalog reads it.
+func TestModelsWorkerWithoutAuthorizationOnAReportingCoordinatorIsRefused(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	pinModelsNow(t, now)
+	workers, quotas := availabilityFixture(now)
+	workers[0].Providers = []backlogadmin.WorkerProviderAuthorization{{
+		Instance: "t3-primary", QuotaPool: "pool-claude", Models: []string{"opus"},
+	}}
+	unlisted := workers[0]
+	unlisted.Providers = nil
+	unlisted.Snapshot.WorkerID = "unlisted"
+	unlisted.Snapshot.QuotaObservations = nil
+	unlisted.Snapshot.Inventory.Providers = []domain.WorkerProviderInventory{{
+		InstanceID: "t3-primary", QuotaPoolID: "pool-claude", Available: true, Models: []string{"opus", "sonnet"},
+	}}
+	workers = append(workers, unlisted)
+	policy := &routePolicy{Roles: []policyRole{{Name: "execute",
+		Candidates: []policyCandidate{{Route: "t3-primary/sonnet"}}}}}
+	if err := validatePolicyCatalog(policy, workers); err == nil {
+		t.Fatal("fixture unexpectedly authorizes sonnet")
+	}
+
+	document := buildModelsDocument("", workers, quotas, nil, time.Hour)
+	instance := modelsInstanceByName(t, document, "t3-primary")
+	if got := modelsRouteAvailability(instance, "sonnet").Code; got != modelsAvailabilityModelNotAuthorized {
+		t.Errorf("sonnet offered only by an unlisted worker: code %q, want %q", got, modelsAvailabilityModelNotAuthorized)
+	}
+	for _, worker := range instance.Workers {
+		if worker.Worker == "unlisted" && (worker.Authorized == nil || *worker.Authorized) {
+			t.Errorf("the unlisted worker's row says authorized=%v, want false", worker.Authorized)
+		}
+	}
+	// The project filter leaving out the reporting worker does not turn the
+	// coordinator into one that reports nothing.
+	scoped := buildModelsDocument("", workers, quotas, map[string]bool{"unlisted": true}, time.Hour)
+	if got := modelsRouteAvailability(modelsInstanceByName(t, scoped, "t3-primary"), "opus").Code; got != modelsAvailabilityModelNotAuthorized {
+		t.Errorf("opus with only the unlisted worker eligible: code %q, want %q", got, modelsAvailabilityModelNotAuthorized)
+	}
+}
+
+// A sole wildcard in one authorization entry keeps its meaning when the same
+// instance has another entry for the worker; a dropped entry authorizes
+// nothing.
+func TestModelsWorkerAuthorizationEntriesAreReadApart(t *testing.T) {
+	worker := modelsWorker{Authorized: new(bool), grants: [][]string{{"*"}, {"opus"}}, AuthorizedModels: []string{"*", "opus"}}
+	*worker.Authorized = true
+	if !modelsWorkerAuthorizes(worker, "sonnet") {
+		t.Error("a sole wildcard entry merged with another entry no longer authorizes sonnet")
+	}
+	workers, _ := availabilityFixture(time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC))
+	workers[0].Providers = []backlogadmin.WorkerProviderAuthorization{
+		{Instance: "t3-primary", Models: []string{"sonnet"}, Dropped: "missing binding"},
+		{Instance: "t3-primary", QuotaPool: "pool-claude", Models: []string{"opus"}},
+	}
+	document := buildModelsDocument("", workers, nil, nil, time.Hour)
+	for _, row := range modelsInstanceByName(t, document, "t3-primary").Workers {
+		if modelsWorkerAuthorizes(row, "sonnet") {
+			t.Errorf("a dropped entry authorizes sonnet: %+v", row)
+		}
+	}
+}
