@@ -584,8 +584,14 @@ t3-steward models [--project NAME] [--instance ID] [--available] [--json]
 ```
 
 One row per `instance/model`, in the form `--model` takes, with the pool, the
-pool's admission state, the phase and used percent of its worst bucket, and how
-many of the workers that advertise it are ready. An instance the fleet catalog
+pool's admission state, the phase and used percent of its worst bucket with
+the age of that same reading, and how many of the workers that advertise that
+model are ready. Each route is judged on its own: a model that only unready
+workers offer is not `available` because another model of the same instance
+is, and `--available` drops that model alone. In `--json` the verdict for
+each model is under `routes[].availability`, and `observedAt`, `resetsAt` and
+`percent` are one reading, with `oldestObservedAt` the oldest reading of any
+of the pool's buckets. An instance the fleet catalog
 authorises that nobody advertises, and one a worker advertises that the catalog
 authorises in no pool (`missingBinding`), are listed with that as their status
 rather than omitted: a route that cannot run is what the caller most needs to
