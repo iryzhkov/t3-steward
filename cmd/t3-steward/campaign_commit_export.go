@@ -18,6 +18,41 @@ const campaignCommitExportUsage = "Usage: t3-steward campaign commit export <run
 
 func exportCLIHash(data []byte) string { return fmt.Sprintf("%x", sha256.Sum256(data)) }
 
+// linkCommitExport is os.Link; tests replace it to stand in for a destination
+// filesystem without hard links.
+var linkCommitExport = os.Link
+
+// publishCommitExport moves a complete, verified temporary bundle to path and
+// never replaces an existing destination, including a concurrently created
+// one. Linking publishes atomically. Filesystems without hard links (some
+// FUSE, SMB and exFAT mounts) get an exclusive create and copy instead, which
+// still never overwrites but is visible while it is written; a failed copy
+// removes only the file it created.
+func publishCommitExport(tmp, path string) error {
+	linkErr := linkCommitExport(tmp, path)
+	if linkErr == nil || errors.Is(linkErr, os.ErrExist) {
+		return linkErr
+	}
+	source, err := os.Open(tmp)
+	if err != nil {
+		return errors.Join(linkErr, err)
+	}
+	defer source.Close()
+	target, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return err
+		}
+		return errors.Join(linkErr, err)
+	}
+	_, copyErr := io.Copy(target, source)
+	if err := errors.Join(copyErr, target.Sync(), target.Close()); err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("copy after hard link failed (%v): %w", linkErr, err)
+	}
+	return nil
+}
+
 func parseCampaignCommitExportArgs(args []string) (backlogadmin.CommitExportRequest, string, error) {
 	var r backlogadmin.CommitExportRequest
 	path := ""
@@ -126,9 +161,7 @@ func (c campaignCLI) runCommit(ctx context.Context, args []string) error {
 	if size != result.Metadata.Size || !strings.EqualFold(digest, result.Metadata.SHA256) {
 		return errors.New("commit export: bundle digest or size mismatch")
 	}
-	// Linking an already-complete private file publishes atomically without
-	// replacing an existing destination, including a concurrently created one.
-	if err := os.Link(tmp, path); err != nil {
+	if err := publishCommitExport(tmp, path); err != nil {
 		return fmt.Errorf("commit export: publish bundle: %w", err)
 	}
 	_, err = fmt.Fprintf(c.stdout, "commit %s\nbase %s\nbundle %s\nsha256 %s\n", result.Provenance.Commit, result.Provenance.Base, path, digest)
