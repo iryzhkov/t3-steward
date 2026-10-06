@@ -12,11 +12,12 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 func TestExecutePendingCommandsSurvivesRestartAndReplaysRetry(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := sqlite.OpenMigrated(path)
+	store, err := sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +48,7 @@ func TestExecutePendingCommandsSurvivesRestartAndReplaysRetry(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = sqlite.OpenMigrated(path)
+	store, err = sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +82,7 @@ func TestExecutePendingCommandsSurvivesRestartAndReplaysRetry(t *testing.T) {
 
 func TestExecutePendingPausePersistsDeliveryIntentAcrossRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := sqlite.OpenMigrated(path)
+	store, err := sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +197,7 @@ func TestExecutePendingPausePersistsDeliveryIntentAcrossRestart(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = sqlite.OpenMigrated(path)
+	store, err = sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}

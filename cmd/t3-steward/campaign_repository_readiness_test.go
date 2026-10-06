@@ -12,6 +12,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 var probeNow = time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
@@ -55,7 +56,7 @@ func probeQuotaPools() sqlite.CoordinatorRecords {
 // it.
 func probeReadinessService(t *testing.T, observer backlogadmin.RepositoryObserver, workerIDs ...string) (*backlogadmin.Service, *sqlite.Store) {
 	t.Helper()
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"io"
 	"testing"
 	"time"
@@ -53,7 +54,7 @@ func TestReviewParentWaitRetainedDAGCollector(t *testing.T) {
 				t.Fatal(err)
 			}
 			// Reopen before either settlement or collection.
-			other, err := sqlite.OpenMigrated(f.parent.store.dbPath)
+			other, err := sqlitetest.OpenMigrated(f.parent.store.dbPath)
 			if err != nil {
 				t.Fatal(err)
 			}

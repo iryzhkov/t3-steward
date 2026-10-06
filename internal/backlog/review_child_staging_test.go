@@ -8,6 +8,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/pinnedinput"
 	"github.com/iryzhkov/t3-steward/internal/review"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -96,7 +97,7 @@ func TestReviewChildStagingReopenAndOriginalIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.catalog.catalog.Classifications = nil // valid replay must keep original issue
-	reopened, err := sqlite.OpenMigrated(f.store.dbPath)
+	reopened, err := sqlitetest.OpenMigrated(f.store.dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +186,7 @@ func TestReviewChildStagingFaultRecovery(t *testing.T) {
 			if checkpoints != 1 || rounds != 1 {
 				t.Fatal("lost allocation-only evidence", checkpoints, rounds)
 			}
-			reopened, err := sqlite.OpenMigrated(f.store.dbPath)
+			reopened, err := sqlitetest.OpenMigrated(f.store.dbPath)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -414,7 +415,7 @@ func TestReviewChildStagingAllocationCurrentWriterInitialReplay(t *testing.T) {
 						t.Fatal("allocation refusal changed full SQL/native audit")
 					}
 				}
-				reopened, e := sqlite.OpenMigrated(f.store.dbPath)
+				reopened, e := sqlitetest.OpenMigrated(f.store.dbPath)
 				if e != nil {
 					t.Fatal(e)
 				}

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // A rejected usage sample is kept nowhere on the coordinator, so the one log
@@ -18,7 +18,7 @@ import (
 // and a replayed batch must not repeat it.
 func TestReceiveWorkerUsageLogsRejectedSamplesOncePerBatch(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

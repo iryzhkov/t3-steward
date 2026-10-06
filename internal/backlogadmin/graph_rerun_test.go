@@ -14,6 +14,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // rerunFixture builds a terminal three-task run shaped like the campaign the
@@ -25,7 +26,7 @@ func rerunFixture(t *testing.T) (*Service, *sqlite.Store, string) {
 	ctx := context.Background()
 	root := t.TempDir()
 	artifactRoot := filepath.Join(root, "artifacts")
-	store, err := sqlite.OpenMigrated(filepath.Join(root, "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

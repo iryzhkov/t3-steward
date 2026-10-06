@@ -16,6 +16,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/pinnedinput"
 	"github.com/iryzhkov/t3-steward/internal/review"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 type admissionFixtureCatalog struct{ catalog AdmissionCatalog }
@@ -52,7 +53,7 @@ func newAdmissionFixture(t *testing.T) admissionFixture {
 	writeBundleFile(t, bundle, "inputs/context.md", "context")
 	rewriteBundleManifest(t, bundle, "version: 2\nname: admission\npinned_inputs: true\nenvironment: {project: t3-steward, ref: "+strings.Repeat("c", 40)+"}\ninputs: [inputs/*.md]\ntasks:\n  inspect: {prompt_file: prompts/inspect.md}\n")
 	dbPath := filepath.Join(t.TempDir(), "state.db")
-	db, err := sqlite.OpenMigrated(dbPath)
+	db, err := sqlitetest.OpenMigrated(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

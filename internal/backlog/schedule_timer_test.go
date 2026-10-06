@@ -8,6 +8,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 func TestParseScheduleExpressionSyntaxAndMatching(t *testing.T) {
@@ -67,7 +68,7 @@ func TestScheduleExpressionDSTGapAndFold(t *testing.T) {
 func TestScheduleTimerCatchUpOverlapAndRestart(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := sqlite.OpenMigrated(path)
+	store, err := sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}

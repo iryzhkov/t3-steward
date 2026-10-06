@@ -9,6 +9,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 func TestProjectedFreshProjectBuildsExecutionPackage(t *testing.T) {
@@ -48,7 +49,7 @@ func TestProjectedFreshProjectBuildsExecutionPackage(t *testing.T) {
 		State: domain.AssignmentOffered, Epoch: 1, LeaseToken: "lease", LeaseExpiresAt: runtimeTestNow.Add(time.Hour), DispatchToken: "dispatch", ThreadID: "thread", CreatedAt: runtimeTestNow, UpdatedAt: runtimeTestNow}
 	assignment.TaskDigest = domain.TaskDigest(task)
 	prompt := qualificationArtifact("prompt", run.ID, task.ID, attempt.ID, "tasks/task.md", "objects/prompt", []byte("prompt"))
-	store, err := sqlite.OpenMigrated(t.TempDir() + "/state.db")
+	store, err := sqlitetest.OpenMigrated(t.TempDir() + "/state.db")
 	if err != nil {
 		t.Fatal(err)
 	}

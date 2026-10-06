@@ -11,6 +11,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 type fairnessQuota struct{ report backlog.QuotaBridgeReport }
@@ -34,7 +35,7 @@ func (fairnessAdmin) ExecutePendingCommands(context.Context) (backlogadmin.Comma
 // separately scheduled task wake can reacquire the worker's only slot.
 func TestSettledParkedWakeGetsServiceUnderContinuousOrdinaryLoad(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.OpenMigrated(t.TempDir() + "/state.db")
+	store, err := sqlitetest.OpenMigrated(t.TempDir() + "/state.db")
 	if err != nil {
 		t.Fatal(err)
 	}

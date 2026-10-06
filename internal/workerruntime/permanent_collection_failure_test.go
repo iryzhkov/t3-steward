@@ -16,6 +16,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -567,7 +568,7 @@ func TestPermanentCollectionFailureRealCustodyImport(t *testing.T) {
 				}
 			}
 			ctx := context.Background()
-			db, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "coordinator.db"))
+			db, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "coordinator.db"))
 			if err != nil {
 				t.Fatal(err)
 			}

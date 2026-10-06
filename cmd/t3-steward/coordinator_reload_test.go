@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/config"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 	"gopkg.in/yaml.v3"
 )
@@ -101,7 +101,7 @@ func TestCoordinatorReloadRejectsMissingAndMalformedFile(t *testing.T) {
 	ctx := context.Background()
 	cfg := qualificationConfig(t.TempDir())
 	cfg.Path = filepath.Join(t.TempDir(), "config.yaml")
-	s, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	s, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

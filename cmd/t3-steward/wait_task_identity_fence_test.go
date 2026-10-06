@@ -9,7 +9,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/wait"
 )
 
@@ -42,7 +42,7 @@ func TestTaskWaitInvalidIdentityFencesEveryRuntimeCall(t *testing.T) {
 	previous := taskWaitWorkerHome
 	taskWaitWorkerHome = func() (string, error) { return home, nil }
 	t.Cleanup(func() { taskWaitWorkerHome = previous })
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

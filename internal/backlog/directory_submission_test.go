@@ -9,13 +9,13 @@ import (
 	"testing"
 
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 func TestDirectorySubmissionResolvesOperatorEvidenceAndReplays(t *testing.T) {
 	ctx := context.Background()
 	db := filepath.Join(t.TempDir(), "state.db")
-	store, err := sqlite.OpenMigrated(db)
+	store, err := sqlitetest.OpenMigrated(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestDirectorySubmissionResolvesOperatorEvidenceAndReplays(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := sqlite.OpenMigrated(db)
+	reopened, err := sqlitetest.OpenMigrated(db)
 	if err != nil {
 		t.Fatal(err)
 	}

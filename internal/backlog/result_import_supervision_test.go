@@ -9,6 +9,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -18,7 +19,7 @@ import (
 func TestAnActivationResultImportsWithoutADeclaredTask(t *testing.T) {
 	ctx := context.Background()
 	now := coordinatorTestTime
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +80,7 @@ func TestAnActivationResultImportsWithoutADeclaredTask(t *testing.T) {
 func TestAResultWhoseTaskIsGoneIsDeadLetteredRatherThanRetriedForever(t *testing.T) {
 	ctx := context.Background()
 	now := coordinatorTestTime
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

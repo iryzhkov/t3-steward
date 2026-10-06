@@ -5,7 +5,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/pinnedinput"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,7 +41,7 @@ func TestTaskInputDigestMatchesIngestion(t *testing.T) {
 				})
 				_ = os.RemoveAll(root)
 			}()
-			db, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+			db, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -11,13 +11,14 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 func TestCoordinatorCheckpointImporterRequiresThrottleEvidenceAndReplays(t *testing.T) {
 	ctx := context.Background()
 	now := coordinatorTestTime
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +85,7 @@ func TestCoordinatorCheckpointImporterAcceptsAnEarlierEpochAndRejectsASettledBin
 	// advances the epoch; the upload below was announced before them.
 	var epoch int64
 	for epoch < 3 {
-		restarted, err := sqlite.OpenMigrated(path)
+		restarted, err := sqlitetest.OpenMigrated(path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -93,7 +94,7 @@ func TestCoordinatorCheckpointImporterAcceptsAnEarlierEpochAndRejectsASettledBin
 		}
 		restarted.Close()
 	}
-	store, err := sqlite.OpenMigrated(path)
+	store, err := sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}

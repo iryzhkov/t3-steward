@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 func TestMaterializationLeavesSQLiteInboxUnreadAcrossRestart(t *testing.T) {
@@ -17,7 +18,7 @@ func TestMaterializationLeavesSQLiteInboxUnreadAcrossRestart(t *testing.T) {
 		t.Run(fmt.Sprintf("%d", count), func(t *testing.T) {
 			ctx := context.Background()
 			path := filepath.Join(t.TempDir(), "state.db")
-			store, err := sqlite.OpenMigrated(path)
+			store, err := sqlitetest.OpenMigrated(path)
 			if err != nil {
 				t.Fatal(err)
 			}

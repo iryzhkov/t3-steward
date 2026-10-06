@@ -3,7 +3,7 @@ package backlog
 import (
 	"context"
 	"github.com/iryzhkov/t3-steward/internal/review"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"testing"
 )
 
@@ -40,7 +40,7 @@ func TestIndependentProfileWriterRejectsRehashedOverride(t *testing.T) {
 				t.Fatal(err)
 			}
 			changed.RequirementsDigest = req.Digest()
-			writer, err := sqlite.OpenMigrated(f.store.dbPath)
+			writer, err := sqlitetest.OpenMigrated(f.store.dbPath)
 			if err != nil {
 				t.Fatal(err)
 			}

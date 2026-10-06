@@ -11,6 +11,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -38,7 +39,7 @@ func newWakeWindowFixture(t *testing.T) *wakeWindowFixture {
 	// A published capture is made read-only on purpose, so the root has to be
 	// one whose cleanup can still remove it.
 	root := artifactTestRoot(t)
-	store, err := sqlite.OpenMigrated(filepath.Join(root, "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

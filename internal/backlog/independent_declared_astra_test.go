@@ -15,6 +15,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/review"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 type independentDeclaredStore struct {
@@ -147,7 +148,7 @@ func TestIndependentDeclaredCurrentTransaction(t *testing.T) {
 			if err != nil && before != after {
 				t.Error("refusal leaked logical tables/native audit")
 			}
-			reopened, e := sqlite.OpenMigrated(f.store.dbPath)
+			reopened, e := sqlitetest.OpenMigrated(f.store.dbPath)
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -314,7 +315,7 @@ func TestIndependentDeclaredGraphCustody(t *testing.T) {
 					if before != independentDeclaredTables(t, db) {
 						t.Fatal("graph refusal leaked logical tables/audit")
 					}
-					reopened, e := sqlite.OpenMigrated(f.store.dbPath)
+					reopened, e := sqlitetest.OpenMigrated(f.store.dbPath)
 					if e != nil {
 						t.Fatal(e)
 					}

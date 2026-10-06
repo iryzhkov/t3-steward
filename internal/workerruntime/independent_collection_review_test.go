@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -75,7 +75,7 @@ func TestIndependentCollectionReceiptAndRetention(t *testing.T) {
 				mutation, durable, inspectErr, collectErr, record.Phase, f.process.calls,
 				receipt.Manifest.Direction, receipt.Custody[0].From, receipt.Custody[0].To)
 			if mutation == "download" || mutation == "wrong-custody" {
-				db, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "probe.db"))
+				db, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "probe.db"))
 				if err != nil {
 					t.Fatal(err)
 				}

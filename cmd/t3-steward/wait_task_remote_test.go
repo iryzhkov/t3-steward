@@ -13,6 +13,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/wait"
 )
 
@@ -65,7 +66,7 @@ func remoteTaskWaitFixture(t *testing.T) (config.Config, *sqlite.Store, *sqlite.
 		CoordinatorID: "test-coordinator", Address: "disposable.invalid", Connection: "ssh", RemoteCommand: "t3-steward", Credential: "secretref:f03-admin/test",
 		RequestTimeout: config.Duration(10 * time.Second), MessageLimits: config.V2MessageLimits{MaxBytes: 1 << 20, MaxFiles: 100, MaxArtifactBytes: 1 << 20},
 	}
-	worker, err := sqlite.OpenMigrated(cfg.StatePath)
+	worker, err := sqlitetest.OpenMigrated(cfg.StatePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +162,7 @@ func TestRemoteTaskWaitCancellationAndNoPollTimeout(t *testing.T) {
 			} else {
 				// Model registration committed but local save failed: coordinator expiry
 				// and assignment-derived ownership must still deliver the timeout.
-				empty, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "no-poll.db"))
+				empty, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "no-poll.db"))
 				if err != nil {
 					t.Fatal(err)
 				}

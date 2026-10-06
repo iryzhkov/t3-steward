@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // fakeT3 is an in-memory controller that records every call.
@@ -126,7 +128,7 @@ func newHarness(t *testing.T, mutate func(*config.Config)) *harness {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	store, err := sqlite.OpenMigrated(":memory:")
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

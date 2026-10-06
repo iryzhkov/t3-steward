@@ -16,6 +16,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 var adminTestNow = time.Date(2026, 9, 10, 20, 0, 0, 0, time.UTC)
@@ -679,7 +680,7 @@ func (r *countingReader) LoadQuotaAdmissions(context.Context) ([]domain.QuotaAdm
 
 func openAdminTestStore(t *testing.T) *sqlite.Store {
 	t.Helper()
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 type fakeAdminMutationService struct {
@@ -391,7 +392,7 @@ func TestNewAdminCommandID(t *testing.T) {
 
 func TestBacklogMutationSubmitsAndReplaysWithoutExecuting(t *testing.T) {
 	path := t.TempDir() + "/state.db"
-	store, err := sqlite.OpenMigrated(path)
+	store, err := sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +433,7 @@ func TestBacklogMutationSubmitsAndReplaysWithoutExecuting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err = sqlite.OpenMigrated(path)
+	store, err = sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}

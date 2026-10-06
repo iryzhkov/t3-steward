@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	storesqlite "github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // A real coordinator retains thousands of artifact files, and the manifest that
@@ -23,7 +23,7 @@ func TestAManifestLargerThanAMegabyteStillVerifies(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(database), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := storesqlite.OpenMigrated(database)
+	store, err := sqlitetest.OpenMigrated(database)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // Snapshot all private evidence without following symlinks or opening special
@@ -205,7 +205,7 @@ func TestReviewChildStagingFix1CompleteReplayMatrix(t *testing.T) {
 			db := stagingSQL(t, f)
 			before := independentDeclaredTables(t, db)
 			// Fresh migrated store attachment and owner, not an OS restart.
-			reopened, err := sqlite.OpenMigrated(f.store.dbPath)
+			reopened, err := sqlitetest.OpenMigrated(f.store.dbPath)
 			if err != nil {
 				t.Fatal(err)
 			}

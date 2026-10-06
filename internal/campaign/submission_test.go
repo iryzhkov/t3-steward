@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // The packed bytes must be exactly what the coordinator accepts, and the
@@ -127,7 +127,7 @@ func plainTar(t *testing.T, root string) []byte {
 
 func newSubmissionService(t *testing.T) *backlog.SubmissionService {
 	t.Helper()
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

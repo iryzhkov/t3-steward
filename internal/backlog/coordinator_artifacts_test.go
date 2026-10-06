@@ -16,6 +16,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 var coordinatorArtifactTime = time.Date(2026, 9, 10, 20, 0, 0, 0, time.UTC)
@@ -108,7 +109,7 @@ func TestCoordinatorArtifactsTransferAcrossWorkerRestartAndVerifyChecksum(t *tes
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = sqlite.OpenMigrated(dbPath)
+	store, err = sqlitetest.OpenMigrated(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +258,7 @@ func coordinatorArtifactFixture(t *testing.T) (*sqlite.Store, string, domain.Art
 	t.Helper()
 	base := t.TempDir()
 	dbPath := filepath.Join(base, "state.db")
-	store, err := sqlite.OpenMigrated(dbPath)
+	store, err := sqlitetest.OpenMigrated(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

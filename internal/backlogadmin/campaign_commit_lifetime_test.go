@@ -14,6 +14,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -53,7 +54,7 @@ func newCommitCampaign(t *testing.T) commitCampaign {
 		t.Fatal(err)
 	}
 
-	store, err := sqlite.OpenMigrated(filepath.Join(root, "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

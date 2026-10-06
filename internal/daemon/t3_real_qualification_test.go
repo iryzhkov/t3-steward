@@ -19,7 +19,7 @@ import (
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/source/providerlog"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
 )
 
@@ -103,7 +103,7 @@ func TestRealT3Qualification(t *testing.T) {
 		"t3":         map[string]any{"url": url, "data_dir": data, "t3_binary": binary, "token_command": []string{binary, "auth", "session", "issue", "--base-dir", data, "--ttl", "15m", "--label", "isolated-check", "--token-only"}},
 		"state_path": filepath.Join(t.TempDir(), "check.sqlite"),
 	}
-	checkStore, err := sqlite.OpenMigrated(checkConfig["state_path"].(string))
+	checkStore, err := sqlitetest.OpenMigrated(checkConfig["state_path"].(string))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestRealT3Qualification(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "steward.sqlite"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "steward.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}

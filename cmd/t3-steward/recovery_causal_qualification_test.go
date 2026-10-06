@@ -16,6 +16,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
@@ -63,7 +64,7 @@ func TestRecoveryProposalCausallyReentersOriginalGateAndContinuesDependency(t *t
 	}
 	ctx := context.Background()
 	now := time.Date(2026, 9, 22, 15, 0, 0, 0, time.UTC)
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

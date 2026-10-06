@@ -9,6 +9,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // Unlike the original portable probe's invalid initial allocation, these cases
@@ -149,7 +150,7 @@ func TestReviewDeclaredCurrentCustodyInitialAndStoredReplay(t *testing.T) {
 					// OpenMigrated runs startup graph-history backfill. Raw JSON run-ID
 					// corruption would make that backfill add a foreign history row;
 					// attach with Open for this case to isolate freeze rollback.
-					open := sqlite.OpenMigrated
+					open := sqlitetest.OpenMigrated
 					if kind == "wrong-run" {
 						open = sqlite.Open
 					}

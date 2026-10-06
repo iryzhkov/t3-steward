@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // Probe the interval AFTER saved-authority resolution, using the same real writer.
@@ -101,7 +101,7 @@ func TestIndependentRepairLateReplayAndProjection(t *testing.T) {
 						t.Fatal("refusal changed full logical tables or exact original row")
 					}
 				}
-				reopened, e := sqlite.OpenMigrated(f.store.dbPath)
+				reopened, e := sqlitetest.OpenMigrated(f.store.dbPath)
 				if e != nil {
 					t.Fatal(e)
 				}

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 func TestReviewChildStagingFix2EntryMatrix(t *testing.T) {
@@ -60,7 +60,7 @@ func TestReviewChildStagingFix2EntryMatrix(t *testing.T) {
 				}
 				evidence := stageFix1Evidence(t, namespace)
 				before := independentDeclaredTables(t, stagingSQL(t, f))
-				reopened, err := sqlite.OpenMigrated(f.store.dbPath)
+				reopened, err := sqlitetest.OpenMigrated(f.store.dbPath)
 				if err != nil {
 					t.Fatal(err)
 				}

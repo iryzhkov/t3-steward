@@ -9,6 +9,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // Registration and the real release planner/store precede the ready wait.
@@ -18,7 +19,7 @@ func TestIndependentRepair2UnknownRegisteredReceiptAbandonment(t *testing.T) {
 		t.Run(evidence, func(t *testing.T) {
 			ctx := context.Background()
 			path := filepath.Join(t.TempDir(), "state.db")
-			s, err := sqlite.OpenMigrated(path)
+			s, err := sqlitetest.OpenMigrated(path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -123,7 +124,7 @@ func TestIndependentRepair2UnknownRegisteredReceiptAbandonment(t *testing.T) {
 			if err = s.Close(); err != nil {
 				t.Fatal(err)
 			}
-			s, err = sqlite.OpenMigrated(path)
+			s, err = sqlitetest.OpenMigrated(path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -151,7 +152,7 @@ func TestIndependentRepair2UnknownRegisteredReceiptAbandonment(t *testing.T) {
 			if err = s.Close(); err != nil {
 				t.Fatal(err)
 			}
-			s, err = sqlite.OpenMigrated(path)
+			s, err = sqlitetest.OpenMigrated(path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -185,7 +186,7 @@ func TestIndependentRepair2UnknownRegisteredReceiptAbandonment(t *testing.T) {
 					if err = s.Close(); err != nil {
 						t.Fatal(err)
 					}
-					s, err = sqlite.OpenMigrated(path)
+					s, err = sqlitetest.OpenMigrated(path)
 					if err != nil {
 						t.Fatal(err)
 					}
