@@ -97,17 +97,13 @@ func taskIdentityValuesFrom(getenv func(string) string, directory string) (map[s
 	return fileValues, nil
 }
 
-// readTaskIdentityFile reads the worker-written identity record from the
-// current directory or an ancestor, the way a tool finds the repository it is
-// inside.
+// readTaskIdentityFileFrom reads the worker-written identity record from the
+// directory, or the current directory when it is empty, or an ancestor, the
+// way a tool finds the repository it is inside.
 //
 // The file is accepted only as a private regular file owned by this user. It
 // decides which attempt a command speaks for, so a copy anyone could have
 // written, or a symlink pointing somewhere else, is refused rather than read.
-func readTaskIdentityFile() (map[string]string, error) {
-	return readTaskIdentityFileFrom("")
-}
-
 func readTaskIdentityFileFrom(directory string) (map[string]string, error) {
 	if directory == "" {
 		var err error
