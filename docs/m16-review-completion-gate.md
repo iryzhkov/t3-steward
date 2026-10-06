@@ -18,11 +18,18 @@ When the worker collects such a turn, after the task identity record is removed
 and after verification commands have run, it reads:
 
 - `git rev-parse HEAD` in the workspace, the physical HEAD;
-- `git diff-index --cached HEAD`, the changes staged in the workspace's own
-  index, which reads no worktree file; and
-- the same status against a fresh index read from HEAD in a scratch
-  repository of the worker's own, which compares every tracked file by
-  content, mode and type.
+- the workspace's own index (`git ls-files --stage`), compared entry by entry
+  with HEAD's tree, which reads no worktree file: an entry that is missing,
+  extra, unmerged or names another mode or object is a change; and
+- a status against a fresh index read from HEAD in a scratch repository of
+  the worker's own, which compares every tracked file by content, mode and
+  type.
+
+The workspace and every checked-out submodule, at any depth, are judged by
+the same two comparisons, against the commit their parent's HEAD records. A
+change in any repository's index or worktree is therefore a change, whether
+or not that repository's HEAD moved; untracked and ignored files that no
+index tracks are not counted at any level.
 
 The report is taken after verification because a verification command such as
 a generator or formatter can rewrite tracked source, and that is work the
@@ -59,8 +66,8 @@ run a filter. A file that a filter driver such as Git LFS produced differs
 from its blob there and counts as changed, so such a repository fails closed.
 Git would compare a submodule's content inside the submodule, with the
 submodule's configuration, so every checked-out submodule is compared the same
-way against the commit HEAD records for it, to a depth of eight, and its
-changes are reported under its path. A submodule directory without `.git`,
+way, index and worktree, against the commit HEAD records for it, to a depth of
+eight, and its changes are reported under its path. A submodule directory without `.git`,
 which Git does not look inside, must be empty.
 
 A filter is code, and a filter the executor planted could put a file back for

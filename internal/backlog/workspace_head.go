@@ -37,8 +37,8 @@ func WorkspaceHeadArtifactID(attemptID string) string {
 // The workspace's index and configuration belong to the executor, so neither
 // is trusted to say what changed. Files marked assume-unchanged or
 // skip-worktree, a stat cache with forged timestamps, and a configured file
-// system monitor all let "git status" skip a file. The worktree is therefore
-// also compared by content with a fresh index read from HEAD, which carries no
+// system monitor all let "git status" skip a file. The index is therefore
+// compared with HEAD entry by entry, and the worktree is compared by content with a fresh index read from HEAD, which carries no
 // flags and no cached stat data, with the monitor and sparse checkout off. A
 // configured core.worktree could point every query at a clean copy elsewhere,
 // so each query names the task workspace as its worktree.
@@ -71,20 +71,6 @@ func CaptureWorkspaceHead(ctx context.Context, gitBinary, workspace string, outp
 		captured.Head, captured.Error = "", fmt.Sprintf("resolve workspace HEAD: Git returned %q", captured.Head)
 		return captured
 	}
-	// The workspace's own index also reports staged changes. Only the index
-	// is compared with HEAD here: reading the worktree under the workspace's
-	// configuration would run the executor's filters during the capture.
-	staged, err := workspaceGit(ctx, gitBinary, workspace, nil, "diff-index", "--cached", "--no-renames", "--name-only", "-z", captured.Head, "--")
-	if err != nil {
-		captured.Head, captured.Error = "", "read workspace status: "+err.Error()
-		return captured
-	}
-	var status []byte
-	for _, name := range strings.Split(string(staged), "\x00") {
-		if name != "" {
-			status = append(status, "M  "+name+"\x00"...)
-		}
-	}
 	physical, err := compareWorkspaceWithHead(ctx, gitBinary, workspace, captured.Head, 0)
 	if err != nil {
 		captured.Head, captured.Error = "", "compare the workspace with HEAD: "+err.Error()
@@ -96,17 +82,26 @@ func CaptureWorkspaceHead(ctx context.Context, gitBinary, workspace string, outp
 			excluded[path.Clean(output.Name)] = struct{}{}
 		}
 	}
-	seen := make(map[string]struct{})
-	countWorkspaceChanges(&captured, status, excluded, seen)
-	countWorkspaceChanges(&captured, physical, excluded, seen)
+	countWorkspaceChanges(&captured, physical, excluded, make(map[string]struct{}))
 	return captured
 }
 
 // compareWorkspaceWithHead lists the tracked files of the workspace whose
-// content, mode or type differs from the commit head. It reads head into a
-// fresh index of a scratch repository that borrows the workspace's objects
-// through an alternate, which is safe because objects are named by their
-// content. That repository has the worker's own configuration, so neither the
+// entry in the workspace's own index, or whose content, mode or type in the
+// worktree, differs from the commit head. The workspace and every populated
+// submodule at any depth are judged by these same two comparisons, so no
+// state of a repository's index or worktree is seen at one level and missed
+// at another.
+//
+// The index is compared entry by entry with head's tree: any entry that is
+// missing, extra, unmerged or names another mode or object is a change. That
+// reads no worktree file, so it runs no filter, and it is not subject to any
+// diff or submodule configuration. The flags an entry carries do not matter,
+// because the worktree is compared separately.
+//
+// For the worktree, it reads head into a fresh index of a scratch repository
+// that borrows the workspace's objects through an alternate, which is safe
+// because objects are named by their content. That repository has the worker's own configuration, so neither the
 // workspace's configuration and info/attributes nor the system and global
 // configuration and attributes take part: there are no filter drivers, line
 // endings are not converted by configuration, symbolic links and file modes
@@ -184,8 +179,17 @@ func compareWorkspaceWithHead(ctx context.Context, gitBinary, workspace, head st
 	}
 	tree, err := trustedWorkspaceGit(ctx, gitBinary, workspace, repository, head, "ls-tree", "-r", "-z", "--full-tree", head)
 	if err != nil {
-		return nil, fmt.Errorf("list HEAD's submodules: %w", err)
+		return nil, fmt.Errorf("list HEAD's tree: %w", err)
 	}
+	index, err := workspaceGit(ctx, gitBinary, workspace, nil, "ls-files", "--stage", "-z", "--full-name")
+	if err != nil {
+		return nil, fmt.Errorf("read the workspace's index: %w", err)
+	}
+	staged, err := compareIndexWithTree(index, tree)
+	if err != nil {
+		return nil, err
+	}
+	status = append(status, staged...)
 	for _, entry := range strings.Split(string(tree), "\x00") {
 		meta, name, found := strings.Cut(entry, "\t")
 		fields := strings.Fields(meta)
@@ -212,6 +216,48 @@ func compareWorkspaceWithHead(ctx context.Context, gitBinary, workspace, head st
 			return nil, fmt.Errorf("submodule %s: %w", name, err)
 		}
 		status = append(status, prefixWorkspaceChanges(nested, name+"/")...)
+	}
+	return status, nil
+}
+
+// compareIndexWithTree lists, as porcelain v1 -z entries, every path whose
+// entry in an index listing from "ls-files --stage -z" differs from a tree
+// listing from "ls-tree -r -z": a path in only one of them, an unmerged
+// entry, or another mode or object. A listing it cannot read is an error, so
+// an unexpected format fails closed.
+func compareIndexWithTree(index, tree []byte) ([]byte, error) {
+	reviewed := make(map[string]string)
+	for _, entry := range strings.Split(string(tree), "\x00") {
+		if entry == "" {
+			continue
+		}
+		meta, name, found := strings.Cut(entry, "\t")
+		fields := strings.Fields(meta)
+		if !found || len(fields) != 3 || name == "" {
+			return nil, fmt.Errorf("read HEAD's tree: unexpected entry %q", entry)
+		}
+		reviewed[name] = fields[0] + " " + fields[2]
+	}
+	var status []byte
+	for _, entry := range strings.Split(string(index), "\x00") {
+		if entry == "" {
+			continue
+		}
+		meta, name, found := strings.Cut(entry, "\t")
+		fields := strings.Fields(meta)
+		if !found || len(fields) != 3 || name == "" {
+			return nil, fmt.Errorf("read the workspace's index: unexpected entry %q", entry)
+		}
+		want, tracked := reviewed[name]
+		delete(reviewed, name)
+		if fields[2] != "0" || !tracked || want != fields[0]+" "+fields[1] {
+			status = append(status, "M  "+name+"\x00"...)
+		}
+	}
+	// What is left is in head but not in the index, a staged deletion. An
+	// unmerged path removed its tree entry at its first stage above.
+	for name := range reviewed {
+		status = append(status, "D  "+name+"\x00"...)
 	}
 	return status, nil
 }
