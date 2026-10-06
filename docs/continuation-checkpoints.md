@@ -83,8 +83,15 @@ says so in one sentence.
 
 A snapshot that is still on its way to the coordinator when the replacement
 attempt is first offered is not carried by that offer: the decision is frozen.
-A worker host that is lost before the coordinator imports a snapshot takes
-that snapshot with it.
+A snapshot the coordinator has not imported when the attempt's assignment
+moves on (a worker host that is lost or partitioned, and reconnects only
+afterwards) is refused by the fences above and stays only in that worker's
+custody; the replacement receives the latest snapshot imported before.
+
+A pause snapshot that still cannot be taken when the attempt resumes is
+forgone, with a warning, rather than taken later from the next turn; the
+resume is never held back for it, and the next turn end takes a snapshot
+as usual.
 
 ## Where it is reported
 
