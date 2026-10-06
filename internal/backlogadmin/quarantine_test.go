@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // A quarantined submission is reported once and then silent, and its audit
@@ -17,7 +17,7 @@ import (
 // time and the reason, and explain deliberate historical marker cleanup.
 func TestQuarantineQueryShowsWhatIntakeRefused(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestQuarantineQueryShowsWhatIntakeRefused(t *testing.T) {
 // The release is audited with the operator's reason and is safe to repeat.
 func TestQuarantineReleaseClearsAMarkerAndIsSafeToRepeat(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestQuarantineReleaseClearsAMarkerAndIsSafeToRepeat(t *testing.T) {
 
 // A release needs a key and a reason, and is refused without them.
 func TestQuarantineReleaseRefusesAnIncompleteRequest(t *testing.T) {
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestQuarantineQueryIsAReadWithoutATarget(t *testing.T) {
 	if !validQuery(Query{Kind: QueryQuarantine}) {
 		t.Fatal("a quarantine query needs no target and must be valid without one")
 	}
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

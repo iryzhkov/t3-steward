@@ -24,7 +24,7 @@ func insertRecoveryActivation(t *testing.T, store *Store, activation domain.Acti
 
 func TestRecoveryRetriesAdvanceOneEpisodeToBoundedExhaustion(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

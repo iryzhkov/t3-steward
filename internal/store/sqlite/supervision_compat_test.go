@@ -164,7 +164,7 @@ func TestSchemaSeventeenMigratesForwardWithPreSupervisionRuns(t *testing.T) {
 
 	// The forward migration is whatever a new binary does on startup, which is
 	// exactly OpenMigrated.
-	store, err := OpenMigrated(path)
+	store, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatalf("migrate %d to %d: %v", preSupervisionSchemaVersion, currentSchemaVersion, err)
 	}
@@ -302,7 +302,7 @@ func TestSupervisionSchemaRefusesABinaryExpectingTheOlderSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := OpenMigrated(path)
+	reopened, err := openMigratedFixture(path)
 	if err == nil {
 		_ = reopened.Close()
 		t.Fatal("a database newer than this binary was opened and migrated")

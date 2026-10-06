@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -46,7 +47,7 @@ func declaredRequest(f admissionFixture) DeclaredAdmissionRequest {
 func TestReviewDeclarationSQLiteReloadFreezeAndOriginalIssue(t *testing.T) {
 	f := newDeclaredAdmissionFixture(t)
 	ctx := context.Background()
-	reopened, err := sqlite.OpenMigrated(f.store.dbPath)
+	reopened, err := sqlitetest.OpenMigrated(f.store.dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

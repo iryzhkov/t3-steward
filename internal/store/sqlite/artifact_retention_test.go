@@ -16,7 +16,7 @@ import (
 // pin meant no artifact anywhere was ever pruned.
 func TestPruneArtifactsSkipsPinnedRunsAndPrunesTheRest(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestPruneArtifactsSkipsPinnedRunsAndPrunesTheRest(t *testing.T) {
 // so there is nothing to report about it.
 func TestPruneArtifactsReportsNoSkipForAProtectedRun(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

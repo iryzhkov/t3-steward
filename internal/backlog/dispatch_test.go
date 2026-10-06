@@ -10,6 +10,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 type dispatchWorkerResult struct {
@@ -183,7 +184,7 @@ func TestReconcileAssignmentDispatchRetainsAmbiguousWorkerOwnership(t *testing.T
 
 func openDispatchTestStore(t *testing.T, path string) *sqlite.Store {
 	t.Helper()
-	store, err := sqlite.OpenMigrated(path)
+	store, err := sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}

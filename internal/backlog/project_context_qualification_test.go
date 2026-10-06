@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 func TestProjectContextColdStartCustodySurvivesCrashRestartAndProducerArchive(t *testing.T) {
@@ -54,7 +54,7 @@ func TestProjectContextColdStartCustodySurvivesCrashRestartAndProducerArchive(t 
 	target.Artifacts = append(target.Artifacts, source.records.Artifacts...)
 
 	dbPath := filepath.Join(t.TempDir(), "state.db")
-	store, err := sqlite.OpenMigrated(dbPath)
+	store, err := sqlitetest.OpenMigrated(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestProjectContextColdStartCustodySurvivesCrashRestartAndProducerArchive(t 
 	if err := ingester.retainExternalInputs(ctx, manifest, &staged, "target-run"); err != nil {
 		t.Fatal(err)
 	}
-	store, err = sqlite.OpenMigrated(dbPath)
+	store, err = sqlitetest.OpenMigrated(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestProjectContextColdStartCustodySurvivesCrashRestartAndProducerArchive(t 
 		t.Fatal(err)
 	}
 
-	store, err = sqlite.OpenMigrated(dbPath)
+	store, err = sqlitetest.OpenMigrated(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

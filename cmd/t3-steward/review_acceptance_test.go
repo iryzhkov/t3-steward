@@ -7,8 +7,9 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/campaign"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ import (
 
 func TestReviewAcceptanceRefusesForgedClassification(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.OpenMigrated(":memory:")
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

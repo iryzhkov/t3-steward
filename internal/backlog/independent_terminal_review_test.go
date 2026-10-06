@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -93,7 +94,7 @@ func TestIndependentRuntimeTerminalFencesDurableCleanup(t *testing.T) {
 	for _, evidence := range []string{"released", "collect", "restart"} {
 		t.Run(evidence, func(t *testing.T) {
 			ctx := context.Background()
-			s, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+			s, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 			if err != nil {
 				t.Fatal(err)
 			}

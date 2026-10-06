@@ -10,6 +10,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	storesqlite "github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 var supervisionBackupTime = time.Date(2026, 9, 16, 10, 0, 0, 0, time.UTC)
@@ -68,7 +69,7 @@ func readSupervisionFacts(t *testing.T, store *storesqlite.Store) []byte {
 func seedMidSupervisionRun(t *testing.T, databasePath string) {
 	t.Helper()
 	ctx := context.Background()
-	store, err := storesqlite.OpenMigrated(databasePath)
+	store, err := sqlitetest.OpenMigrated(databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}

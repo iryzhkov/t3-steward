@@ -10,6 +10,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 func TestBacklogV2EndToEndLocalWorkflowHardening(t *testing.T) {
@@ -40,7 +41,7 @@ tasks:
       - test -f result.txt && grep -q inspected .t3/dependencies/inspect/findings.md && grep -q complete result.txt
 `)
 
-	store, err := sqlite.OpenMigrated(statePath)
+	store, err := sqlitetest.OpenMigrated(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +221,7 @@ tasks:
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = sqlite.OpenMigrated(statePath)
+	store, err = sqlitetest.OpenMigrated(statePath)
 	if err != nil {
 		t.Fatalf("restart coordinator store: %v", err)
 	}

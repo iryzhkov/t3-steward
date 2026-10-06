@@ -21,8 +21,25 @@ TEST_TIMEOUT ?= 10m
 RACE_TIMEOUT ?= 25m
 # check-fast runs the race detector only on packages changed against this ref.
 FAST_BASE ?= origin/main
+# Extra flags for the race pass of check-fast and check-review. Empty by default,
+# so the race detector keeps checkptr, which validates every unsafe pointer
+# conversion, in every package, including modernc.org's SQLite translation: an
+# invalid conversion there can still return the expected rows and pass every
+# assertion, and only checkptr reports it. It is assigned with = rather than ?=
+# so that a value left in the environment cannot weaken the gate; only an
+# explicit `make check-review RACE_GCFLAGS=...` changes it.
+RACE_GCFLAGS =
+# check-fast-no-sqlite-checkptr and check-review-no-sqlite-checkptr are opt-in
+# faster variants of the two gates. modernc.org/sqlite converts pointers in almost
+# every operation, so under -race checkptr about doubles the CPU cost of each SQL
+# statement; these targets turn checkptr off for modernc.org packages alone. The
+# race detector still instruments them and checkptr still covers every other
+# package, but a pointer bug inside modernc.org goes unreported, so they never
+# replace check-review as the gate before review.
+NO_SQLITE_CHECKPTR_GCFLAGS := -gcflags=modernc.org/...=-d=checkptr=0
+check-fast-no-sqlite-checkptr check-review-no-sqlite-checkptr: RACE_GCFLAGS = $(NO_SQLITE_CHECKPTR_GCFLAGS)
 
-.PHONY: build test check-fast check-review qualification lint install clean
+.PHONY: build test check-fast check-review check-fast-no-sqlite-checkptr check-review-no-sqlite-checkptr qualification lint install clean
 
 build:
 	CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o bin/$(BINARY) ./cmd/$(BINARY)
@@ -41,17 +58,32 @@ test:
 # cannot list the changes. It is not a substitute for `make test`, which CI
 # runs in full. check-review uses the same checks with a full-size changed-package
 # race pass, replacing check-fast followed by a second full-size race invocation.
-check-fast check-review:
+#
+# The short pass leaves out the changed packages, because the race pass runs
+# every one of their tests again (all of them for check-review, the same short
+# set for check-fast) with the race detector added. Running them first without
+# it repeated the slowest packages for no additional assertion.
+check-fast check-review check-fast-no-sqlite-checkptr check-review-no-sqlite-checkptr:
 	go build ./...
 	go vet ./...
-	go test -short -timeout $(TEST_TIMEOUT) ./...
-	$(MAKE) lint
 	@pkgs=$$(sh scripts/changed-go-packages.sh '$(FAST_BASE)') || exit 1; \
 	if [ -n "$$pkgs" ]; then \
+		changed=$$(go list $$pkgs) || exit 1; \
+		all_pkgs=$$(go list ./...) || exit 1; \
+		short_pkgs=$$(printf '%s\n' "$$all_pkgs" | grep -vxF "$$changed") || [ $$? -eq 1 ] || exit 1; \
+	else \
+		short_pkgs=./...; \
+	fi; \
+	if [ -n "$$short_pkgs" ]; then \
+		echo "go test -short ./... except the packages the race pass runs"; \
+		go test -short -timeout $(TEST_TIMEOUT) $$short_pkgs || exit 1; \
+	fi; \
+	$(MAKE) lint || exit 1; \
+	if [ -n "$$pkgs" ]; then \
 		race_short=; \
-		if [ "$@" = check-fast ]; then race_short=-short; fi; \
-		echo "go test -race" $$race_short $$pkgs; \
-		go test -race $$race_short -timeout $(RACE_TIMEOUT) $$pkgs; \
+		case "$@" in check-fast*) race_short=-short;; esac; \
+		echo "go test -race $(RACE_GCFLAGS)" $$race_short $$pkgs; \
+		go test -race $(RACE_GCFLAGS) $$race_short -timeout $(RACE_TIMEOUT) $$pkgs; \
 	else \
 		echo "no Go packages changed against $(FAST_BASE); skipping the race pass"; \
 	fi

@@ -10,7 +10,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
@@ -30,7 +30,7 @@ func TestWakeResumeGraceOutlastsACollection(t *testing.T) {
 func TestPersistentWorkerOptionsForwardTheHostsUsage(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")
-	seeded, err := sqlite.OpenMigrated(path)
+	seeded, err := sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}

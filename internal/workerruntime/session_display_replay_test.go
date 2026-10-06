@@ -12,6 +12,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -106,7 +107,7 @@ func TestFrozenProducerLostAndUnpersistedClaimReplay(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				ctx := context.Background()
 				now := runtimeTestNow
-				store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+				store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 				if err != nil {
 					t.Fatal(err)
 				}

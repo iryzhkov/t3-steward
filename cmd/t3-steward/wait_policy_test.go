@@ -15,7 +15,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/wait"
 )
 
@@ -65,7 +65,7 @@ func TestWaitDeliveryIndependentOfWatchdogDryRun(t *testing.T) {
 				cfg.Wait.QuotaChecks = &deliver
 			}
 			cfg.Archive.Enabled = false
-			store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+			store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 			if err != nil {
 				t.Fatal(err)
 			}

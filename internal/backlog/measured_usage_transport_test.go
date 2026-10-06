@@ -15,6 +15,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/source/providerlog"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -212,12 +213,12 @@ func TestMeasuredUsageSignedReconcileClaimReplayAndPublicQuery(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	workerPath := filepath.Join(root, "worker.db")
-	workerStore, err := sqlite.OpenMigrated(workerPath)
+	workerStore, err := sqlitetest.OpenMigrated(workerPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	coordinatorPath := filepath.Join(root, "coordinator.db")
-	coordinatorStore, err := sqlite.OpenMigrated(coordinatorPath)
+	coordinatorStore, err := sqlitetest.OpenMigrated(coordinatorPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +320,7 @@ func TestMeasuredUsageSignedReconcileClaimReplayAndPublicQuery(t *testing.T) {
 	if err := workerStore.Close(); err != nil {
 		t.Fatal(err)
 	}
-	workerStore, err = sqlite.OpenMigrated(workerPath)
+	workerStore, err = sqlitetest.OpenMigrated(workerPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +353,7 @@ func TestMeasuredUsageSignedReconcileClaimReplayAndPublicQuery(t *testing.T) {
 	}
 
 	otherPath := filepath.Join(root, "worker-b.db")
-	otherStore, err := sqlite.OpenMigrated(otherPath)
+	otherStore, err := sqlitetest.OpenMigrated(otherPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +372,7 @@ func TestMeasuredUsageSignedReconcileClaimReplayAndPublicQuery(t *testing.T) {
 	if err := coordinatorStore.Close(); err != nil {
 		t.Fatal(err)
 	}
-	coordinatorStore, err = sqlite.OpenMigrated(coordinatorPath)
+	coordinatorStore, err = sqlitetest.OpenMigrated(coordinatorPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,11 +427,11 @@ func TestMeasuredUsageSignedOverflowRevisionsSurviveRestart(t *testing.T) {
 	root := t.TempDir()
 	workerPath := filepath.Join(root, "worker.db")
 	coordinatorPath := filepath.Join(root, "coordinator.db")
-	workerStore, err := sqlite.OpenMigrated(workerPath)
+	workerStore, err := sqlitetest.OpenMigrated(workerPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinatorStore, err := sqlite.OpenMigrated(coordinatorPath)
+	coordinatorStore, err := sqlitetest.OpenMigrated(coordinatorPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,13 +488,13 @@ func TestMeasuredUsageSignedOverflowRevisionsSurviveRestart(t *testing.T) {
 	if err := coordinatorStore.Close(); err != nil {
 		t.Fatal(err)
 	}
-	workerStore, err = sqlite.OpenMigrated(workerPath)
+	workerStore, err = sqlitetest.OpenMigrated(workerPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer workerStore.Close()
 	lowerRetention(workerStore)
-	coordinatorStore, err = sqlite.OpenMigrated(coordinatorPath)
+	coordinatorStore, err = sqlitetest.OpenMigrated(coordinatorPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -555,7 +556,7 @@ func TestMeasuredUsageRejectsSpoofedSnapshotBeforeMutation(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
-			workerStore, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "worker.db"))
+			workerStore, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "worker.db"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -564,7 +565,7 @@ func TestMeasuredUsageRejectsSpoofedSnapshotBeforeMutation(t *testing.T) {
 			if err := workerStore.RecordUsage(ctx, sample); err != nil {
 				t.Fatal(err)
 			}
-			coordinatorStore, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "coordinator.db"))
+			coordinatorStore, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "coordinator.db"))
 			if err != nil {
 				t.Fatal(err)
 			}

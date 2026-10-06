@@ -10,6 +10,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -36,7 +37,7 @@ func (s *recoveryProposalImportStore) CommitRecoveryRetry(ctx context.Context, r
 func TestRepairProposalImportsThroughWorkerCustodyBeforeRetry(t *testing.T) {
 	ctx := context.Background()
 	now := coordinatorTestTime
-	sqlStore, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	sqlStore, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

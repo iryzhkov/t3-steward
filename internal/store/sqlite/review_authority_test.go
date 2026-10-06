@@ -187,7 +187,7 @@ func TestReviewAuthorityFreezeReplayAndConflicts(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s, err = OpenMigrated(path)
+	s, err = openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}

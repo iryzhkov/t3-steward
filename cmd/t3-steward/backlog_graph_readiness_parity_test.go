@@ -12,6 +12,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
@@ -99,7 +100,7 @@ func TestGraphTaskValidatorAgreesWithReadiness(t *testing.T) {
 	// worker snapshot before their read-only viability query. Migrate one
 	// store for this logical test; no task records or live store are shared
 	// with other tests.
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -17,7 +18,7 @@ func TestIndependentRuntimeTerminalFencesParkCleanupBoundary(t *testing.T) {
 		t.Run(evidence, func(t *testing.T) {
 			ctx := context.Background()
 			path := filepath.Join(t.TempDir(), "state.db")
-			s, err := sqlite.OpenMigrated(path)
+			s, err := sqlitetest.OpenMigrated(path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -113,7 +114,7 @@ func TestIndependentRuntimeTerminalFencesParkCleanupBoundary(t *testing.T) {
 				if e := s.Close(); e != nil {
 					t.Fatal(e)
 				}
-				s, e := sqlite.OpenMigrated(path)
+				s, e := sqlitetest.OpenMigrated(path)
 				if e != nil {
 					t.Fatal(e)
 				}
@@ -148,7 +149,7 @@ func TestIndependentRuntimeTerminalFencesMissingOldEvidenceMixed(t *testing.T) {
 		t.Run(evidence, func(t *testing.T) {
 			ctx := context.Background()
 			path := filepath.Join(t.TempDir(), "state.db")
-			s, err := sqlite.OpenMigrated(path)
+			s, err := sqlitetest.OpenMigrated(path)
 			if err != nil {
 				t.Fatal(err)
 			}

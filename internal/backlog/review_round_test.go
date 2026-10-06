@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,13 +12,14 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/review"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 func TestReviewCollectorFullRoundWithMalformedAndTimeout(t *testing.T) {
 	for _, bad := range []string{"", "malformed", "timeout"} {
 		t.Run(bad, func(t *testing.T) {
 			ctx := context.Background()
-			store, err := sqlite.OpenMigrated(":memory:")
+			store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 			if err != nil {
 				t.Fatal(err)
 			}

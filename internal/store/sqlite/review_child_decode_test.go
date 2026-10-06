@@ -43,6 +43,7 @@ func TestReviewChildAnalogousRuntimeOwnership(t *testing.T) {
 			} // Valid runtime execution records on replay are not an orphan fence.
 			for _, shape := range []string{"duplicate", "case", "escaped", "mixed", "reverse"} {
 				t.Run(fmt.Sprintf("%s/%s/bound=%v", kind, shape, bound), func(t *testing.T) {
+					t.Parallel()
 					s, f, cp, p, _ := childFixture(t)
 					ctx := context.Background()
 					g, err := p.Build(f, cp, time.Time{})

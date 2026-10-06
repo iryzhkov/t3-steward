@@ -9,6 +9,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // Actual durable receipts under the old epoch, followed by a replacement worker
@@ -19,7 +20,7 @@ func TestIndependentRepair1EpochReceiptBoundary(t *testing.T) {
 			t.Run(shape+"/"+evidence, func(t *testing.T) {
 				ctx := context.Background()
 				path := filepath.Join(t.TempDir(), "state.db")
-				s, err := sqlite.OpenMigrated(path)
+				s, err := sqlitetest.OpenMigrated(path)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -118,7 +119,7 @@ func TestIndependentRepair1EpochReceiptBoundary(t *testing.T) {
 						if err = s.Close(); err != nil {
 							t.Fatal(err)
 						}
-						s, err = sqlite.OpenMigrated(path)
+						s, err = sqlitetest.OpenMigrated(path)
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -151,7 +152,7 @@ func TestIndependentRepair1ParkCleanupMixedBatch(t *testing.T) {
 		for _, evidence := range []string{"released", "accepted-stop", "observed-completed", "accepted-collect"} {
 			t.Run(shape+"/"+evidence, func(t *testing.T) {
 				ctx := context.Background()
-				s, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+				s, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 				if err != nil {
 					t.Fatal(err)
 				}

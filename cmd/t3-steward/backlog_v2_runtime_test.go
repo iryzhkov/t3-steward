@@ -21,6 +21,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // shortTempDir is t.TempDir without the test name in the path. The coordinator
@@ -516,7 +517,7 @@ func TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands(t *testing.T
 		Misfire: domain.ScheduleMisfireSkip, AfterFailure: domain.ScheduleFailureNextCycle,
 		Enabled: true, Revision: 1, CreatedAt: created, UpdatedAt: created,
 	}
-	seed, err := sqlite.OpenMigrated(cfg.StatePath)
+	seed, err := sqlitetest.OpenMigrated(cfg.StatePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -730,7 +731,7 @@ func (t recordingCoordinatorWorkerTicker) Tick(_ context.Context, report backlog
 func TestCoordinatorQuotaReconcilerPersistsClosedAdmissionWithoutEvidence(t *testing.T) {
 	cfg := config.Default()
 	setCoordinatorTestRoots(t, &cfg)
-	store, err := sqlite.OpenMigrated(cfg.StatePath)
+	store, err := sqlitetest.OpenMigrated(cfg.StatePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -771,7 +772,7 @@ func TestCoordinatorQuotaReconcilerPersistsClosedAdmissionWithoutEvidence(t *tes
 }
 func TestCoordinatorPlannerCommitsOneOfferedAssignmentWithoutDispatch(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.OpenMigrated(t.TempDir() + "/state.db")
+	store, err := sqlitetest.OpenMigrated(t.TempDir() + "/state.db")
 	if err != nil {
 		t.Fatal(err)
 	}

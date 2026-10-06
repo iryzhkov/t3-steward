@@ -20,7 +20,7 @@ import (
 // every later coordinator reload that changed homelab's catalog.
 func TestReleaseDeadActivationOffersReleasesOnlyOffersOfEndedActivations(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestReleaseDeadActivationOffersReleasesOnlyOffersOfEndedActivations(t *test
 // attempt, and one whose attempt names another assignment does not.
 func TestReleaseDeadActivationOffersHandlesOrphanedOffersAndClearedReferences(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

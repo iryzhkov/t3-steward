@@ -11,6 +11,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/wait"
 )
 
@@ -28,7 +29,7 @@ func taskWaitCLIFixture(t *testing.T) (config.Config, *sqlite.Store) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	statePath := filepath.Join(root, "state.db")
-	store, err := sqlite.OpenMigrated(statePath)
+	store, err := sqlitetest.OpenMigrated(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}

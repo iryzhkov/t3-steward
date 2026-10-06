@@ -106,7 +106,7 @@ func TestReviewParentWaitLifecycleReopen(t *testing.T) {
 	}
 	path := s.path
 	s.Close()
-	s, err = OpenMigrated(path)
+	s, err = openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}

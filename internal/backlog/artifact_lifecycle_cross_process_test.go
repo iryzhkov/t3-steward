@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 const artifactLifecycleHelperEnv = "T3_ARTIFACT_LIFECYCLE_HELPER"
@@ -32,7 +32,7 @@ func TestArtifactLifecycleLockCrossProcessHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := sqlite.OpenMigrated(os.Getenv("T3_ARTIFACT_DATABASE"))
+	store, err := sqlitetest.OpenMigrated(os.Getenv("T3_ARTIFACT_DATABASE"))
 	if err != nil {
 		t.Fatal(err)
 	}

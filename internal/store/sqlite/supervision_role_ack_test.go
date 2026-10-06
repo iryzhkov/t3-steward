@@ -63,7 +63,7 @@ func TestSupervisionInboxAcknowledgementsAreRoleOwnedAcrossRestart(t *testing.T)
 				t.Fatal(err)
 			}
 			var err error
-			store, err = OpenMigrated(path)
+			store, err = openMigratedFixture(path)
 			if err != nil {
 				t.Fatal(err)
 			}

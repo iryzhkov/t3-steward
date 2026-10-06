@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 type quarantineReadAuthorizer struct{}
@@ -45,7 +45,7 @@ func assertHistoricalQuarantineAdvice(t *testing.T, advice string) {
 
 func TestQuarantineRetirementAdviceThroughConsumers(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

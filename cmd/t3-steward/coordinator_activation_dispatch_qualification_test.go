@@ -11,6 +11,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -68,7 +69,7 @@ func TestFailedActivationPackageSurvivesRestartAndReassessmentDispatchesFreshOff
 	var dbPath string
 	fixture := newActivationLeaseFixtureWithStore(t, func(path string) (*sqlite.Store, error) {
 		dbPath = path
-		return sqlite.OpenMigrated(path)
+		return sqlitetest.OpenMigrated(path)
 	})
 	fixture.coordinator.logger = slog.Default()
 	snapshots, err := fixture.store.LoadWorkerSnapshots(ctx)
@@ -137,7 +138,7 @@ func TestFailedActivationPackageSurvivesRestartAndReassessmentDispatchesFreshOff
 	if err := fixture.store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := sqlite.OpenMigrated(dbPath)
+	reopened, err := sqlitetest.OpenMigrated(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

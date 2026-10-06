@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // blockingValidator records concurrency: it reports the highest number of
@@ -86,7 +86,7 @@ func TestPermanentValidationDoesNotHoldThePublicationLock(t *testing.T) {
 // exercise ordering against the persistence the production path uses.
 func gateService(t *testing.T) *SubmissionService {
 	t.Helper()
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

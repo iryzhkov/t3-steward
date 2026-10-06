@@ -14,7 +14,7 @@ import (
 )
 
 func TestUnknownRecoveryIsEvidenceRevisionAndReplayFenced(t *testing.T) {
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestUnknownRecoveryIsEvidenceRevisionAndReplayFenced(t *testing.T) {
 }
 
 func TestUnknownRecoveryStoppedPreservesTerminalAttempt(t *testing.T) {
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestUnknownRecoveryStoppedPreservesTerminalAttempt(t *testing.T) {
 }
 
 func TestUnknownRecoveryRefusesMissingEvidenceAndStaleState(t *testing.T) {
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestUnknownRecoveryRefusesMissingEvidenceAndStaleState(t *testing.T) {
 }
 
 func TestUnknownRecoveryCanResolveAssignmentAsTerminalFailure(t *testing.T) {
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

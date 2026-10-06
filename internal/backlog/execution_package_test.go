@@ -10,6 +10,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -170,7 +171,7 @@ func packageBuilder(t *testing.T, records sqlite.CoordinatorRecords) Coordinator
 		t.Fatal(err)
 	}
 	decisionsPath := filepath.Join(t.TempDir(), "display.db")
-	decisions, err := sqlite.OpenMigrated(decisionsPath)
+	decisions, err := sqlitetest.OpenMigrated(decisionsPath)
 	if err != nil {
 		t.Fatal(err)
 	}

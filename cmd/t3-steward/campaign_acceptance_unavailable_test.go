@@ -12,6 +12,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // failingAdminReader fails the store read every query begins with, which is the
@@ -68,7 +69,7 @@ func TestAcceptanceGateRefusesWhenItCannotValidate(t *testing.T) {
 		{
 			name: "the coordinator has no configured project",
 			validator: func(t *testing.T) coordinatorPermanentValidator {
-				store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+				store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 				if err != nil {
 					t.Fatal(err)
 				}

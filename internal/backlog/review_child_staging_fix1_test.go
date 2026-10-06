@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // Snapshot all private evidence without following symlinks or opening special
@@ -177,6 +177,7 @@ func TestReviewChildStagingFix1CompleteReplayMatrix(t *testing.T) {
 	}
 	for _, kind := range cases {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			f, o, req := newStageOwner(t)
 			first, err := o.StageDeclared(context.Background(), req)
 			if err != nil {
@@ -205,7 +206,7 @@ func TestReviewChildStagingFix1CompleteReplayMatrix(t *testing.T) {
 			db := stagingSQL(t, f)
 			before := independentDeclaredTables(t, db)
 			// Fresh migrated store attachment and owner, not an OS restart.
-			reopened, err := sqlite.OpenMigrated(f.store.dbPath)
+			reopened, err := sqlitetest.OpenMigrated(f.store.dbPath)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -243,6 +244,7 @@ func TestReviewChildStagingFix1FinalReadOnlyMatrix(t *testing.T) {
 	for _, boundary := range []string{"receipt-retained", "after-prepare-build-current-deadline"} {
 		for _, kind := range cases {
 			t.Run(boundary+"/"+kind, func(t *testing.T) {
+				t.Parallel()
 				f, o, req := newStageOwner(t)
 				db := stagingSQL(t, f)
 				var evidence, before, namespace string

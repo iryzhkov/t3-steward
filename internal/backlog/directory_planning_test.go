@@ -9,6 +9,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 func directoryTestBinding(access directoryresource.Access) directoryresource.Binding {
@@ -55,7 +56,7 @@ func TestDirectoryPlanningReservesWithinBatchAndPinsHost(t *testing.T) {
 func TestDirectoryOwnershipSurvivesDatabaseRestartCancellationAndExpiredLease(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := sqlite.OpenMigrated(path)
+	store, err := sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}

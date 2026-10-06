@@ -15,6 +15,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
@@ -75,7 +76,7 @@ func TestNewCoordinatorWorkerSessionBindsConfiguredAuthenticationAndPackage(t *t
 	project.SetupProfile = "test"
 	project.Repository = "https://example.invalid/steward.git"
 	cfg.BacklogV2.Projects["steward"] = project
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +109,7 @@ func TestNewCoordinatorWorkerSessionFailsWithoutConfiguredWorkerEpoch(t *testing
 		Address: "normandy", AcceptBacklog: true, Credential: "test",
 		Providers: cfg.BacklogV2.Workers["normandy"].Providers,
 	}
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +166,7 @@ func TestCoordinatorWorkerSessionsApplyFinalAdmissionAndIsolateFailures(t *testi
 func TestImportCoordinatorWorkerResultFetchesImportsThenAcknowledges(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 9, 10, 15, 0, 0, 0, time.UTC)
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +246,7 @@ func importCoordinatorWorkerCheckpointCase(t *testing.T, state domain.Assignment
 	t.Helper()
 	ctx := context.Background()
 	now := time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC)
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

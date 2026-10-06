@@ -39,6 +39,7 @@ func TestReviewChildCancellationParentCoherenceCrossProduct(t *testing.T) {
 	for _, branch := range branches {
 		for _, corruption := range corruptions {
 			t.Run(branch+"/"+corruption, func(t *testing.T) {
+				t.Parallel()
 				s, f, cp, receipt := parentWaitFixture(t)
 				p := cancellationParentRow(t, s, f.Parent.AttemptID)
 				assignment := cancellationParentAssignment(t, s, f.Parent.AssignmentID)

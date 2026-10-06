@@ -73,7 +73,7 @@ func terminalRun(t *testing.T, store *Store, id string, progress domain.Progress
 func TestOwnerNotificationsBaselineHistoryAndDeliverOnceAcrossRestart(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := OpenMigrated(path)
+	store, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestOwnerNotificationsBaselineHistoryAndDeliverOnceAcrossRestart(t *testing
 
 	// After the restart the recorded event is sent once, and detection does
 	// not record it a second time.
-	store, err = OpenMigrated(path)
+	store, err = openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestOwnerNotificationsBaselineHistoryAndDeliverOnceAcrossRestart(t *testing
 	}
 
 	// And a restart after delivery sends nothing again.
-	store, err = OpenMigrated(path)
+	store, err = openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestOwnerNotificationsBaselineHistoryAndDeliverOnceAcrossRestart(t *testing
 // coordinator's own attention and supervision records, each once.
 func TestOwnerNotificationsDetectOperatorAttention(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +442,7 @@ func clockedNotifier(store *Store, now *time.Time, sinks ...ownernotify.Sink) *o
 
 func openOwnerNotificationStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +598,7 @@ func TestOwnerNotificationRetryIsDroppedWhenTheQuestionWasAnswered(t *testing.T)
 // does not replay the scheduled successes that already happened.
 func TestOwnerNotificationsReportScheduledSuccessesOnlyWhenOptedIn(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
