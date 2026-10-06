@@ -70,6 +70,10 @@ func TestCredentialFileIsRefusedWhenWorldReadableOrMissing(t *testing.T) {
 	if err := os.WriteFile(path, []byte("leaked-content\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Explicitly make this unsafe even when the test inherits umask 077.
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	lookup := environmentFrom(map[string]string{"T3_STEWARD_CREDENTIAL_GITHUB_TOKEN_FILE": path})
 	for _, test := range []struct {
 		name    string

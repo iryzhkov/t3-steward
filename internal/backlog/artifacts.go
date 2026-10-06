@@ -374,7 +374,11 @@ func (f AttemptFinalizer) validateRequest(request AttemptFinalization) error {
 func (f AttemptFinalizer) runVerification(ctx context.Context, processID, workspace, command string) (VerificationReport, error) {
 	started := f.now()
 	result, err := f.processRunner().Run(ctx, ProcessRequest{
-		ID: processID, Dir: workspace, Program: "/bin/sh", Args: []string{"-c", command},
+		ID: processID, Dir: workspace, Program: "/bin/sh",
+		// Set the umask only in the verification child, matching an agent's
+		// conventional shell without changing the worker's private writes.
+		// Pass the command as an argument so the wrapper never interpolates it.
+		Args: []string{"-c", `umask 022 && exec "$0" "$@"`, "/bin/sh", "-c", command},
 	})
 	completed := f.now()
 	report := VerificationReport{

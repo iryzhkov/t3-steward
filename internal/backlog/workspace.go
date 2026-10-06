@@ -495,21 +495,27 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 }
 
 func exposeWorkspaceInputs(workspaceDir string) error {
-	metadataDir := filepath.Join(workspaceDir, ".t3")
-	if info, err := os.Lstat(metadataDir); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return errors.New("prepare workspace: repository .t3 is not a real directory")
+	// Reserved metadata directories may be tracked by the repository. They
+	// hold Steward inputs or identity state, so restore owner-only access
+	// after checkout. Never follow a repository-provided symlink for chmod.
+	for _, name := range []string{".t3", domain.TaskIdentityDir} {
+		path := filepath.Join(workspaceDir, name)
+		if info, err := os.Lstat(path); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return fmt.Errorf("prepare workspace: repository %s is not a real directory", name)
+			}
+			if err := os.Chmod(path, 0o700); err != nil {
+				return fmt.Errorf("prepare workspace: protect repository %s: %w", name, err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("prepare workspace: inspect repository %s: %w", name, err)
+		} else if name == ".t3" {
+			if err := os.Mkdir(path, 0o700); err != nil {
+				return fmt.Errorf("prepare workspace: create .t3: %w", err)
+			}
 		}
-		// A .t3 the repository tracks was checked out under the conventional
-		// umask; it holds the Steward's view of inputs, so it stays owner-only.
-		if err := os.Chmod(metadataDir, 0o700); err != nil {
-			return fmt.Errorf("prepare workspace: protect repository .t3: %w", err)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("prepare workspace: inspect repository .t3: %w", err)
-	} else if err := os.Mkdir(metadataDir, 0o700); err != nil {
-		return fmt.Errorf("prepare workspace: create .t3: %w", err)
 	}
+	metadataDir := filepath.Join(workspaceDir, ".t3")
 	for name, target := range map[string]string{
 		"inputs": "../../inputs", "dependencies": "../../dependencies",
 	} {

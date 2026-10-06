@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"syscall"
+	"strings"
 	"testing"
 )
 
@@ -14,21 +14,20 @@ import (
 // that check file modes failed only inside campaigns. The checkout must carry
 // Git's modes while the workspace root and Steward-private directories stay
 // owner-only.
-//
-// This test changes the process umask, so it must never call t.Parallel.
 func TestWorkspacePreparerKeepsGitFileModesUnderOwnerOnlyUmask(t *testing.T) {
+	if runModeTestUnderWorkerUmask(t) {
+		return
+	}
 	repository := newGitFixture(t)
 	writeGitFile(t, repository, "script.sh", "#!/bin/sh\n")
 	if err := os.Chmod(filepath.Join(repository, "script.sh"), 0o755); err != nil {
 		t.Fatalf("make fixture executable: %v", err)
 	}
 	writeGitFile(t, repository, ".t3/tracked.txt", "tracked metadata\n")
-	gitRun(t, repository, "add", "script.sh", ".t3/tracked.txt")
+	writeGitFile(t, repository, ".t3-steward/tracked.txt", "tracked identity metadata\n")
+	gitRun(t, repository, "add", "script.sh", ".t3/tracked.txt", ".t3-steward/tracked.txt")
 	gitRun(t, repository, "commit", "-m", "modes")
 	commit := gitOutput(t, repository, "rev-parse", "HEAD")
-
-	previous := syscall.Umask(0o077)
-	t.Cleanup(func() { syscall.Umask(previous) })
 
 	runsRoot := t.TempDir()
 	prepared, err := workspacePreparer(runsRoot, t.TempDir()).Prepare(context.Background(),
@@ -37,6 +36,10 @@ func TestWorkspacePreparerKeepsGitFileModesUnderOwnerOnlyUmask(t *testing.T) {
 		t.Fatalf("prepare workspace: %v", err)
 	}
 	cleanupImmutable(t, prepared.RootDir)
+	privateFile := filepath.Join(prepared.RootDir, "worker-created.txt")
+	if err := os.WriteFile(privateFile, nil, 0o666); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, want := range []struct {
 		path string
@@ -46,7 +49,12 @@ func TestWorkspacePreparerKeepsGitFileModesUnderOwnerOnlyUmask(t *testing.T) {
 		{filepath.Join(prepared.WorkspaceDir, "script.sh"), 0o755},
 		{prepared.WorkspaceDir, 0o700},
 		{filepath.Join(prepared.WorkspaceDir, ".t3"), 0o700},
+		{filepath.Join(prepared.WorkspaceDir, ".t3-steward"), 0o700},
 		{prepared.RootDir, 0o700},
+		{prepared.InputsDir, 0o500},
+		{prepared.DependenciesDir, 0o500},
+		{prepared.PreparationLog, 0o400},
+		{privateFile, 0o600},
 	} {
 		info, err := os.Lstat(want.path)
 		if err != nil {
@@ -55,5 +63,38 @@ func TestWorkspacePreparerKeepsGitFileModesUnderOwnerOnlyUmask(t *testing.T) {
 		if got := info.Mode().Perm(); got != want.mode {
 			t.Errorf("%s mode = %#o, want %#o", want.path, got, want.mode)
 		}
+	}
+}
+
+func TestWorkspaceMetadataProtectionRefusesInvalidIdentityDirectory(t *testing.T) {
+	for _, kind := range []string{"file", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			workspace := t.TempDir()
+			path := filepath.Join(workspace, ".t3-steward")
+			target := t.TempDir()
+			// This exact mode proves chmod did not follow the symlink, even
+			// when the suite itself runs under an owner-only umask.
+			if err := os.Chmod(target, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "file" {
+				if err := os.WriteFile(path, []byte("not a directory"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Symlink(target, path); err != nil {
+				t.Fatal(err)
+			}
+			err := exposeWorkspaceInputs(workspace)
+			if err == nil || !strings.Contains(err.Error(), "repository .t3-steward is not a real directory") {
+				t.Fatalf("invalid identity metadata error = %v", err)
+			}
+			info, err := os.Stat(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0o755 {
+				t.Fatalf("outside directory mode = %#o, want unchanged 0755", info.Mode().Perm())
+			}
+		})
 	}
 }
