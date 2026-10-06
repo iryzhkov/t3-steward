@@ -97,8 +97,11 @@ type AttemptFinalizer struct {
 	Processes   ProcessRunner
 	// CampaignRefs keeps a declared commit reachable for the campaign's
 	// lifetime. It is required only by a task that declares one.
-	CampaignRefs          CampaignRefStore
-	GateCacheAge          time.Duration
+	CampaignRefs CampaignRefStore
+	GateCacheAge time.Duration
+	// GateCacheOrigins are the attempts the coordinator attests passed a gate
+	// on this worker. A cache record from any other attempt is not reused.
+	GateCacheOrigins      []string
 	GateTimeoutMax        time.Duration
 	GateToolchainIdentity string
 	GateCacheDisabled     bool

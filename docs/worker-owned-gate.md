@@ -73,9 +73,20 @@ with `GO`, `CGO_`, `LC_`, `GIT_`, `PYTHON`, `NODE_`, `NPM_CONFIG_`,
 miss the cache. A variable outside this list that changes a gate's behaviour is
 not detected, and neither is a change to files outside the tree that a command
 reads, such as `~/.config/go/env` or `~/.gitconfig`. In the uncontained lane the
-agent runs as the worker's user and can write those files and the worker's
-cache directory, so cached evidence there is only as trustworthy as that
-account; set `gate_cache_age: 0` where that matters.
+agent runs as the worker's user and can write those files; set
+`gate_cache_age: 0` where that matters.
+
+The worker's cache directory is writable by that same account, so a cache
+record is never trusted on its own. The coordinator is the authority: each gate
+package lists the attempts whose passing gate report the coordinator recorded
+from that worker within `gate_cache_age` (at most 256, newest first), and the
+worker reuses a record only when its original attempt is in that list. On
+import the coordinator then compares a cached report with the uncached passing
+report it recorded for the original attempt (same worker, cache key, tree and
+completion time) and rejects the result when they differ or the original is
+missing. Forging a cached pass therefore requires an authentic pass of the same
+key on the same worker. A record whose original attempt was never imported is
+ignored and the gate runs again.
 
 When a stored task's gate timeout exceeds the coordinator's current
 `command_timeout` (a rerun of a task accepted under a larger setting, or a

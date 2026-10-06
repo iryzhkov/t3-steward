@@ -171,6 +171,9 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		}
 		return report, err
 	}
+	if err := i.corroborateCachedGate(ctx, records, attempt, manifest.WorkerID, artifacts, payloads); err != nil {
+		return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now, err)
+	}
 	for index, artifact := range artifacts {
 		published, err := i.Artifacts.Publish(ctx, domain.ArtifactPublication{
 			CoordinatorEpoch: i.CoordinatorEpoch, WorkerID: manifest.WorkerID, WorkerEpoch: manifest.WorkerEpoch,

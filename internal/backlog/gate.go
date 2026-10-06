@@ -132,7 +132,10 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 	cachePath := filepath.Join(cacheRoot, report.CacheKey+".json")
 	if f.GateCacheAge > 0 && !f.GateCacheDisabled {
 		cached, ok := readGateCache(cachePath, report.CacheKey, f.now(), f.GateCacheAge)
-		if ok {
+		// The record is only a pointer: it is reused when the coordinator
+		// attests that its original attempt passed here, and the coordinator
+		// checks the replayed report against the one it recorded.
+		if ok && !cached.Report.Cached && cached.Report.OriginalAttempt != req.Attempt.ID && slices.Contains(f.GateCacheOrigins, cached.Report.OriginalAttempt) {
 			// Recheck after taking the cross-process lock: another finalizer could have
 			// waited while the workspace was changed.
 			clean, err = gateCleanTree(ctx, req)

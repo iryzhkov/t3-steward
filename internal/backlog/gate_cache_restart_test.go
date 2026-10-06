@@ -29,7 +29,7 @@ func TestH2GateCacheSurvivesServiceRestartEnvironment(t *testing.T) {
 	t.Setenv("JOURNAL_STREAM", "8:2222")
 	t.Setenv("SYSTEMD_EXEC_PID", "200")
 	restartRunner := &directRunner{}
-	second, err := AttemptFinalizer{StorageRoot: storage, Processes: restartRunner, GateCacheAge: time.Hour}.
+	second, err := AttemptFinalizer{StorageRoot: storage, Processes: restartRunner, GateCacheAge: time.Hour, GateCacheOrigins: []string{"first"}}.
 		Finalize(context.Background(), h2GateRequest(dir, "second"))
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +42,7 @@ func TestH2GateCacheSurvivesServiceRestartEnvironment(t *testing.T) {
 	// A variable that does change what the commands do still misses.
 	t.Setenv("GOFLAGS", "-tags=h2-restart-probe")
 	changedRunner := &directRunner{}
-	third, err := AttemptFinalizer{StorageRoot: storage, Processes: changedRunner, GateCacheAge: time.Hour}.
+	third, err := AttemptFinalizer{StorageRoot: storage, Processes: changedRunner, GateCacheAge: time.Hour, GateCacheOrigins: []string{"first"}}.
 		Finalize(context.Background(), h2GateRequest(dir, "third"))
 	if err != nil {
 		t.Fatal(err)

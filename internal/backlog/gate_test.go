@@ -109,7 +109,7 @@ func TestH2GateConcurrentCacheAndCorruptReplay(t *testing.T) {
 	responses := make(chan response, 2)
 	for _, id := range []string{"concurrent-a", "concurrent-b"} {
 		go func(id string) {
-			f := AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, GateCacheAge: time.Hour}
+			f := AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, GateCacheAge: time.Hour, GateCacheOrigins: []string{"concurrent-a", "concurrent-b"}}
 			result, err := f.Finalize(context.Background(), h2GateRequest(dir, id))
 			responses <- response{result, err}
 		}(id)
@@ -338,7 +338,7 @@ func TestH2GateAfterVerifyAndDurableCache(t *testing.T) {
 	}
 	// A new finalizer simulates restart; verification still runs, gate reuses durable evidence.
 	restartRunner := &directRunner{}
-	restart := AttemptFinalizer{StorageRoot: storage, Processes: restartRunner, GateCacheAge: time.Hour}
+	restart := AttemptFinalizer{StorageRoot: storage, Processes: restartRunner, GateCacheAge: time.Hour, GateCacheOrigins: []string{"first"}}
 	second, err := restart.Finalize(context.Background(), h2GateRequest(dir, "second"))
 	if err != nil {
 		t.Fatal(err)
