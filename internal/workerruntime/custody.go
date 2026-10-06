@@ -32,6 +32,7 @@ const UploadRetention = 30 * 24 * time.Hour
 
 // CustodyConfig binds a worker-local content store to one coordinator and worker epoch.
 type CustodyConfig struct {
+	SecretScan       SecretScanConfig
 	Root             string
 	CoordinatorID    string
 	CoordinatorEpoch int64
@@ -299,12 +300,22 @@ func (s *CustodyStore) AdmitResult(pkg workerproto.ExecutionPackage, result Publ
 	if err != nil {
 		return err
 	}
-	return s.validateManifest(s.uploadManifest(pkg, "result", objects, total, s.now()), "upload")
+	if err := s.validateManifest(s.uploadManifest(pkg, "result", objects, total, s.now()), "upload"); err != nil {
+		return err
+	}
+	// The finalizer's optional-bundle size probe has no file bytes yet.
+	if result.Finalized.StorageDir == "" && len(result.Finalized.Artifacts) > 0 {
+		return nil
+	}
+	return s.scanResult(context.Background(), pkg, result, planned)
 }
 
 // PublishResult retains finalizer output, final message, and thread archive as one upload.
 func (s *CustodyStore) PublishResult(ctx context.Context, pkg workerproto.ExecutionPackage, result PublishedResult) error {
 	if durable, err := s.ResultDurable(pkg); err != nil || durable {
+		return err
+	}
+	if err := s.AdmitResult(pkg, result); err != nil {
 		return err
 	}
 	planned, err := resultObjects(pkg, result)

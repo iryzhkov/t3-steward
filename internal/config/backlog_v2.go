@@ -21,6 +21,14 @@ const (
 
 func (c *Config) validateBacklogV2() error {
 	v := &c.BacklogV2
+	if v.ResultSecretScan.MaxObjectBytes < 0 {
+		return errors.New("backlog_v2.result_secret_scan.max_object_bytes must be nonnegative")
+	}
+	switch v.ResultSecretScan.PatternPolicy {
+	case "", "default", "block", "warn":
+	default:
+		return errors.New("backlog_v2.result_secret_scan.pattern_policy must be default, block, or warn")
+	}
 	for route, metadata := range v.ReviewRoutes {
 		if !review.ValidRoute(route) {
 			return fmt.Errorf("backlog_v2.review_routes.%s: route must be nonempty INSTANCE/MODEL, with no whitespace and at most 256 bytes; MODEL may contain slashes and colons", route)

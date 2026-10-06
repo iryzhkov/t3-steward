@@ -28,6 +28,8 @@ type ArtifactSource interface {
 }
 
 type PublishedResult struct {
+	// WorkspaceDir supplies Git objects and the repository fixture allowlist.
+	WorkspaceDir          string
 	Finalized             backlog.FinalizedAttempt
 	FinalMessage          string
 	ThreadArchive         []byte
@@ -1028,11 +1030,15 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		return err
 	}
 	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
-		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
+		Finalized: finalized, FinalMessage: message, ThreadArchive: archive, WorkspaceDir: workspace,
 	}); err != nil {
 		var size *workerproto.ArtifactSizeError
 		if errors.As(err, &size) {
 			return &permanentCollectionFailure{size: size}
+		}
+		var secret *SecretScanError
+		if errors.As(err, &secret) {
+			return &permanentCollectionFailure{secret: secret}
 		}
 		return fmt.Errorf("publish result custody: %w", err)
 	}

@@ -864,6 +864,61 @@ been seen serving; rolling back is copying the retained unit file back over
 the generated one, `daemon-reload` and a restart. The retirement is a live
 change on the host and is done with approval, not by a pull.
 
+### Result secret scanning
+
+Workers scan sealed result bytes at the custody admission boundary shared by local
+and contained executions, before storing any object or advertising an upload.
+The earlier M16 bundle admission probe still checks sizes using metadata, because
+its candidate files have not been captured yet. Final admission scans declared
+outputs and verification logs, the thread archive, final message, recovery objects,
+declared Git commits, and both packed and decoded Git bundles. Git scanning covers
+every new reachable object from the recorded base, including intermediate commits,
+commit messages, trees, and binary blobs; locations include the file/object name,
+object type and size, and byte offset.
+
+Exact execution credentials always block. The worker resolves required credential
+references in memory, includes its protocol credentials, model API environment
+values, and available Codex, Claude and OpenCode login tokens. For contained
+executions it reads the assigned provider home rather than the host home.
+Plain, standard/URL-safe base64 (padded or unpadded), and URL-encoded forms are
+recognized. Values never enter the package or scan report.
+
+High-confidence patterns cover GitHub tokens, Anthropic and OpenAI keys, AWS AKIA
+access IDs, labeled Cloudflare API tokens, PEM private-key headers and age secret
+keys. The default policy blocks patterns in declared commits and bundles and warns
+for outputs, archives and final messages. Configure the worker runtime with:
+
+```yaml
+backlog_v2:
+  result_secret_scan:
+    max_object_bytes: 67108864
+    pattern_policy: default
+```
+
+A zero byte limit selects 64 MiB per object. Exceeding the cap fails closed,
+including a decoded Git blob; it never means that an unscanned suffix is accepted.
+`pattern_policy: block` blocks patterns in every class; `warn` reports all pattern
+hits without blocking. Canary hits block under every policy. These settings belong
+to the worker runtime's local configuration; default policy applies when absent.
+Scanning uses bounded streaming buffers with overlap for matches across chunks.
+
+Known repository fixtures can be listed in `.t3/secret-scan-allow`, one fingerprint
+per line (blank lines and lines starting with `#` are ignored). A fingerprint is
+the token's first four characters, a colon, and the first twelve lowercase hex
+characters of SHA-256 of the complete token. For example, a GitHub fixture entry
+has the form `ghp_:0123456789ab`; compute the digest of the actual fixture, not this
+example. Symlinked or malformed allowlists are refused. An allowlist suppresses
+pattern findings only and can never authorize an execution credential.
+
+A refusal reports a structured object, detector, byte offset and fingerprint,
+without the matched value or surrounding content. Warning logs use the same
+redacted evidence. A typed refusal becomes a permanent collection failure and
+publishes only a bounded redacted failure summary and empty archive; rejected
+bytes stay in worker-local recovery storage. Explain and owner notifications
+therefore receive the redacted reason rather than the original secret-bearing
+message or archive. Fix the source/fixture policy and start a new attempt after
+reviewing the retained local evidence.
+
 ### Reloading the coordinator
 
 The coordinator re-reads its configuration file on SIGHUP and replaces its
