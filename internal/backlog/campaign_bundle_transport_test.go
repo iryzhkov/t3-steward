@@ -65,9 +65,15 @@ func uploadAdmission(objectLimit, totalLimit, reserved int64) func([]domain.Arti
 // finalizeTwoCommitsWith finalizes the two-commit producer with bundle
 // generation enabled or disabled, admitted as an upload under objectLimit and
 // limit (see uploadAdmission). The clock is fixed so that the provenance
-// records of two producers have the same size.
+// records of two producers have the same size. Git's commit dates are fixed for
+// the same reason: git writes the current second into every commit, and a
+// bundle's compressed size follows those digits, so two producers committed a
+// second apart could differ by a byte and leave both bundles inside a limit
+// computed from the first.
 func finalizeTwoCommitsWith(t *testing.T, objectLimit, limit, reserved int64, bundles bool) twoCommitProducer {
 	t.Helper()
+	t.Setenv("GIT_AUTHOR_DATE", "2026-10-06T09:00:00Z")
+	t.Setenv("GIT_COMMITTER_DATE", "2026-10-06T09:00:00Z")
 	ctx := context.Background()
 	repository := newGitFixture(t)
 	storage := t.TempDir()
