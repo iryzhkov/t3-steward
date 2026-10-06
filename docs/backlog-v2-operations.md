@@ -902,7 +902,9 @@ expiry times and key IDs is not treated as a credential. Values never enter
 the package or scan report. At credential resolution and before provider startup,
 the worker retains execution-specific SHA-256 signatures, lengths and four-byte
 prefixes in private custody, so later rotation and restart do not forget those
-canaries. Complete credential values are never written to these snapshots.
+canaries. Complete credential values are never written to these snapshots, but
+for a credential shorter than eight bytes the four-byte prefix and digest
+together make it easy to recover from worker custody, which holds it anyway.
 Credentials issued and replaced entirely between worker observations remain
 outside the exact canary set; high-confidence token patterns still apply.
 

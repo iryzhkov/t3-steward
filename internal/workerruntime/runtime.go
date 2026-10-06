@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
@@ -102,6 +103,9 @@ type Runtime struct {
 	// on its last snapshot request. It is not durable: the coordinator asks
 	// again on every exchange.
 	reportQuota bool
+	// failuresRedacted records that this process has redacted the failure
+	// reasons an earlier release left raw in the journal.
+	failuresRedacted atomic.Bool
 }
 
 func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
@@ -422,9 +426,11 @@ func (r *Runtime) deliverCommand(ctx context.Context, command domain.WorkerComma
 	}
 	detail := ""
 	if effectErr != nil {
-		detail = effectErr.Error()
+		// The acknowledgement goes to the coordinator, and an effect error
+		// can quote a setup command or remote URL that carries a credential.
+		detail = r.recordableFailure(ctx, command.AssignmentID, effectErr.Error())
 		r.log.Warn("worker command effect deferred", "command", command.ID, "kind", command.Kind,
-			"assignment", command.AssignmentID, "error", effectErr)
+			"assignment", command.AssignmentID, "error", detail)
 	}
 	return r.finishCommand(command, true, detail)
 }
@@ -545,6 +551,9 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 func (r *Runtime) Reconcile(ctx context.Context) error {
 	if observer, ok := r.driver.(interface{ BeginObservationPass() }); ok {
 		observer.BeginObservationPass()
+	}
+	if !r.failuresRedacted.Load() {
+		r.redactRecordedFailures(ctx)
 	}
 	state, err := r.journal.snapshot()
 	if err != nil {
@@ -837,7 +846,7 @@ func (r *Runtime) prepare(ctx context.Context, id string) error {
 		first := record.FirstPrepareFailure
 		lostFirst := first == "" && record.PrepareAttempts > 0
 		if first == "" && !lostFirst {
-			first = err.Error()
+			first = r.recordableFailure(ctx, id, err.Error())
 		}
 		if attempts >= MaxPrepareAttempts {
 			quoted := first
@@ -1444,6 +1453,48 @@ func (r *Runtime) recordableFailure(ctx context.Context, id, failure string) str
 		return withheldFailure
 	}
 	return redacted
+}
+
+// redactRecordedFailures redacts, once per process, the failure reasons a
+// journal written by an earlier release holds raw, in any phase, before the
+// first snapshot reports them. A reason the scanner cannot check yet is kept
+// and the pass is repeated on the next reconcile. Permanent collection intents
+// are built from redacted evidence and keep their exact text.
+func (r *Runtime) redactRecordedFailures(ctx context.Context) {
+	state, err := r.journal.snapshot()
+	if err != nil {
+		return
+	}
+	complete := true
+	for _, id := range sortedAttemptIDs(state.Attempts) {
+		record := state.Attempts[id]
+		if record.Failure == "" || permanentCollectionIntent(record.Failure) {
+			continue
+		}
+		redacted, err := r.redactFailure(ctx, record.Package.Package, record.Failure)
+		if err != nil {
+			complete = false
+			continue
+		}
+		if redacted == record.Failure {
+			continue
+		}
+		if err := r.journal.update(func(state *journalState) error {
+			current, ok := state.Attempts[id]
+			if !ok || current.Failure != record.Failure {
+				return nil
+			}
+			current.Failure = redacted
+			state.Attempts[id] = current
+			state.Sequence++
+			return nil
+		}); err != nil {
+			complete = false
+		}
+	}
+	if complete {
+		r.failuresRedacted.Store(true)
+	}
 }
 
 // markPhase records phase and, with its credentials removed, failure.

@@ -1272,7 +1272,7 @@ func (d *LocalDriver) RedactFailure(ctx context.Context, pkg workerproto.Executi
 	redactor, ok := d.Publisher.(interface {
 		RedactText(context.Context, workerproto.ExecutionPackage, string) (string, error)
 	})
-	if d.Config.DryRun || !ok {
+	if !ok {
 		return failure, nil
 	}
 	return redactor.RedactText(ctx, pkg, failure)

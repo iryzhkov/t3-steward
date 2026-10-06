@@ -3,15 +3,21 @@ package workerruntime
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 // A failure reason is reported to the coordinator in every snapshot, before
@@ -82,6 +88,101 @@ func TestSecretScanFailureObservationRedacted(t *testing.T) {
 				t.Fatalf("credential logged: %s", logs.String())
 			}
 		})
+	}
+}
+
+// redactingDriver stands in for the local driver's scanner around a fake.
+type redactingDriver struct {
+	*fakeDriver
+	secret string
+}
+
+func (d redactingDriver) RedactFailure(_ context.Context, _ workerproto.ExecutionPackage, failure string) (string, error) {
+	return strings.ReplaceAll(failure, d.secret, "[redacted]"), nil
+}
+
+// A command acknowledgement is sent to the coordinator and stored there; a
+// preparation error quoting a credential-bearing setup command must not reach
+// it raw.
+func TestSecretScanCommandAcknowledgementRedacted(t *testing.T) {
+	secret := "synthetic-prepare-credential"
+	driver := &fakeDriver{prepareErr: errors.New(`setup command "npm config set //registry/:_authToken=` + secret + `" failed`)}
+	runtime := newClaimedRuntime(t, t.TempDir(), driver)
+	runtime.driver = redactingDriver{driver, secret}
+	prepare := testCommand(t, runtime, domain.WorkerCommandPrepare, "prepare")
+	acks, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{prepare}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(acks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), secret) || !strings.Contains(string(raw), "[redacted]") {
+		t.Fatalf("acknowledgement not redacted: %s", raw)
+	}
+	state, err := runtime.journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record, _ := json.Marshal(state.Attempts["assignment-1"]); strings.Contains(string(record), secret) {
+		t.Fatalf("journal record carries the credential: %s", record)
+	}
+}
+
+// A journal written by an earlier release can hold a raw reason in a phase
+// collection never visits again; the first reconcile redacts it, before the
+// snapshot that follows reports it.
+func TestSecretScanLegacyFailureRedactedOnFirstReconcile(t *testing.T) {
+	secret := "synthetic-legacy-credential"
+	driver := &fakeDriver{}
+	runtime := newClaimedRuntime(t, t.TempDir(), driver)
+	runtime.driver = redactingDriver{driver, secret}
+	if err := runtime.writePhase("assignment-1", PhaseCompleted, "verification failed: token="+secret, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state, err := runtime.journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failure := state.Attempts["assignment-1"].Failure; failure != "verification failed: token=[redacted]" {
+		t.Fatalf("legacy failure not redacted: %q", failure)
+	}
+}
+
+// History recorded by an earlier release names a short credential by its
+// first four bytes; the fingerprint reported for it is masked.
+func TestSecretScanLegacyShortHistoryFingerprintMasked(t *testing.T) {
+	root := t.TempDir()
+	store := testCustodyStore(t, root, func() time.Time { return runtimeTestNow })
+	pkg := testPackage()
+	secret := "q9Z7x2Pa1k"
+	sum := sha256.Sum256([]byte(secret))
+	legacy := secretSnapshot{Version: 1, Signatures: []canarySignature{{
+		Prefix: []byte(secret[:4]), Length: len(secret), SHA256: hex.EncodeToString(sum[:]),
+		Fingerprint: fmt.Sprintf("%s:%x", secret[:4], sum[:6]),
+	}}}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(raw)
+	if err := os.MkdirAll(filepath.Join(root, "secret-scans"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "secret-scans", secretSnapshotKey(pkg)+"-"+hex.EncodeToString(digest[:])+".json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = store.AdmitResult(pkg, PublishedResult{FinalMessage: "token=" + secret, ThreadArchive: []byte("{}")})
+	var finding *SecretScanError
+	if !errors.As(err, &finding) || finding.Detector != "canary" {
+		t.Fatalf("legacy history credential published: %v", err)
+	}
+	if strings.Contains(finding.Error(), secret[:4]) || !strings.HasPrefix(finding.Fingerprint, "****:") {
+		t.Fatalf("finding shows the credential's first bytes: %v", finding)
 	}
 }
 

@@ -240,6 +240,20 @@ func (s *CustodyStore) addSecretHistory(pkg workerproto.ExecutionPackage, scanne
 		sum := sha256.Sum256(c.value)
 		seen[hex.EncodeToString(sum[:])] = true
 	}
+	// An earlier release recorded the first four bytes of every credential
+	// in its fingerprint. The shortest signature of a fingerprint is its plain
+	// value; a short one has its fingerprint masked as secretFingerprint now
+	// masks it.
+	shortest := map[string]int{}
+	defer func() {
+		for i, c := range scanner.history {
+			if length := shortest[c.Fingerprint]; length < 16 {
+				if _, digest, found := strings.Cut(c.Fingerprint, ":"); found {
+					scanner.history[i].Fingerprint = "****:" + digest
+				}
+			}
+		}
+	}()
 	for _, entry := range entries {
 		if !strings.HasPrefix(entry.Name(), prefix) {
 			continue
@@ -260,6 +274,9 @@ func (s *CustodyStore) addSecretHistory(pkg workerproto.ExecutionPackage, scanne
 			digest, err := hex.DecodeString(c.SHA256)
 			if err != nil || len(digest) != 32 || len(c.Prefix) != 4 || c.Length <= 4 || c.Length > 1<<20 {
 				return errors.New("secret snapshot invalid")
+			}
+			if length, ok := shortest[c.Fingerprint]; !ok || c.Length < length {
+				shortest[c.Fingerprint] = c.Length
 			}
 			if seen[c.SHA256] {
 				continue

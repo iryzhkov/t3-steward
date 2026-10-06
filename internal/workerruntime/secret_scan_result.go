@@ -67,6 +67,12 @@ func (s *CustodyStore) RedactText(ctx context.Context, pkg workerproto.Execution
 		resolved, err := config.Canaries(ctx, pkg)
 		if err == nil {
 			canaries = resolved
+		} else {
+			logger := config.Log
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Warn("credential resolution failed; redacting with static canaries and recorded history only", "attempt", pkg.Identity.AttemptID)
 		}
 	}
 	scanner := newResultScanner(config, canaries, nil)
