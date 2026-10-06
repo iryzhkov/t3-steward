@@ -113,6 +113,7 @@ func TestRuntimeTerminalFencesForgedTransitionRollback(t *testing.T) {
 	for _, progress := range []domain.ProgressState{domain.ProgressCancelled, domain.ProgressFailed, domain.ProgressSucceeded, domain.ProgressActive} {
 		for _, mutation := range []string{"active", "ready", "verifying", "preparing", "resuming", "running", "completion", "failure", "checkpoint", "summary"} {
 			t.Run(string(progress)+"/"+mutation, func(t *testing.T) {
+				t.Parallel()
 				ctx := context.Background()
 				s := openFleetTestStore(t)
 				claimFleetAssignment(t, s)

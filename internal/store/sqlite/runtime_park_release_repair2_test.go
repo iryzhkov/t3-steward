@@ -16,6 +16,7 @@ func TestRuntimeTerminalFencesCurrentParkReleaseProof(t *testing.T) {
 	for _, shape := range []string{"progress-only", "control-only", "both"} {
 		for _, state := range []domain.AssignmentState{domain.AssignmentClaimed, domain.AssignmentUnknown} {
 			t.Run(shape+"/"+string(state), func(t *testing.T) {
+				t.Parallel()
 				ctx := context.Background()
 				s := openFleetTestStore(t)
 				defer func() { s.Close() }()

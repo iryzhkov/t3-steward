@@ -123,6 +123,7 @@ func TestReviewRuntimeCurrentAdmissionInterleavings(t *testing.T) {
 	for _, boundary := range []string{"offer", "claim", "prepare", "dispatch", "pending", "retry"} {
 		for _, kind := range kinds {
 			t.Run(boundary+"/"+kind, func(t *testing.T) {
+				t.Parallel()
 				s, f, _, receipt := parentWaitFixture(t)
 				reviewRuntimeWorker(t, s)
 				// Pure plan / earlier successful tick is deliberately before the parent change.

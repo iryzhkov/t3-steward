@@ -98,6 +98,7 @@ func TestIndependentCancellationRepair2ConfirmationAmbiguity(t *testing.T) {
 	for _, branch := range []string{"ended", "superseded", "run-ended", "ownership-lost", "deadline"} {
 		for _, mode := range []string{"omitted", "canonical-null", "confirmed", "duplicate-confirmed", "case-confirmed", "escaped-confirmed", "duplicate-state", "duplicate-revision"} {
 			t.Run(branch+"/"+mode, func(t *testing.T) {
+				t.Parallel()
 				ctx := context.Background()
 				s, f, cp, receipt := parentWaitFixture(t)
 				if _, err := s.WaitReviewParent(ctx, f, cp); err != nil {

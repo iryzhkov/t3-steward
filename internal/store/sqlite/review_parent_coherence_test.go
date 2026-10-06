@@ -84,6 +84,7 @@ func TestReviewParentWaitCoherentOwnershipBranches(t *testing.T) {
 	for _, branch := range []string{"pending", "sink-finished", "collected", "live", "settled", "resumed"} {
 		for _, tc := range cases {
 			t.Run(branch+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
 				ctx := context.Background()
 				s, f, cp, receipt := parentWaitFixture(t)
 				if branch == "live" || branch == "settled" || branch == "resumed" {
