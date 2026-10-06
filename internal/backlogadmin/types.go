@@ -464,6 +464,20 @@ type TaskDetail struct {
 	Evidence      *AttemptEvidence `json:"evidence,omitempty"`
 	Artifacts     []Artifact       `json:"artifacts,omitempty"`
 	ResourceLocks []string         `json:"resourceLocks,omitempty"`
+	// Checkpoint is the latest continuation.md checkpoint the coordinator
+	// holds for the task; absent means no checkpoint.
+	Checkpoint *ContinuationCheckpoint `json:"checkpoint,omitempty"`
+}
+
+// ContinuationCheckpoint is when the task's latest continuation.md snapshot
+// was taken, by which attempt, and how large it is; never its content. The
+// coordinator receives a snapshot with each attempt's result, so a running
+// attempt's newer turn-end snapshots stay in its worker's journal until then.
+type ContinuationCheckpoint struct {
+	AttemptID  string    `json:"attemptId"`
+	ArtifactID string    `json:"artifactId"`
+	Size       int64     `json:"size"`
+	CapturedAt time.Time `json:"capturedAt"`
 }
 
 // AttemptEvidence is the worker's last word on an attempt, as carried by its
@@ -560,6 +574,9 @@ type Explanation struct {
 	// project-binding-defaulted. They never influence Eligible; a detail that
 	// changed eligibility would be a blocker wearing an informational label.
 	Details []string `json:"details,omitempty"`
+	// Checkpoint is the task's latest continuation.md checkpoint; absent
+	// means no checkpoint.
+	Checkpoint *ContinuationCheckpoint `json:"checkpoint,omitempty"`
 }
 
 type Event struct {

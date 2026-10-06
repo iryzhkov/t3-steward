@@ -1383,6 +1383,11 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 		if task.Attempt != nil && task.Attempt.Failure != "" {
 			fmt.Fprintf(out, "    failure: %s\n", task.Attempt.Failure)
 		}
+		// The run's answer names a checkpoint only where one exists; task
+		// show and explain also say when there is none.
+		if task.Checkpoint != nil {
+			fmt.Fprintf(out, "    %s\n", checkpointLine(task.Checkpoint))
+		}
 		// A parked task says what it is parked on. The wait is the reason the
 		// task is not moving, and its condition is what an operator can go and
 		// satisfy or cancel.
@@ -1496,7 +1501,18 @@ func renderTask(out io.Writer, detail *backlogadmin.TaskDetail, now time.Time) {
 	}
 	renderAttemptTimeline(out, "", detail, now)
 	renderAttemptEvidence(out, detail)
+	fmt.Fprintln(out, checkpointLine(detail.Checkpoint))
 	fmt.Fprintf(out, "artifacts: %d\nlocks: %s\n", len(detail.Artifacts), strings.Join(detail.ResourceLocks, ", "))
+}
+
+// checkpointLine reports a task's latest continuation.md checkpoint: its size,
+// when it was taken and by which attempt, never its content.
+func checkpointLine(checkpoint *backlogadmin.ContinuationCheckpoint) string {
+	if checkpoint == nil {
+		return "checkpoint: no checkpoint"
+	}
+	return fmt.Sprintf("checkpoint: continuation.md %d bytes captured %s by %s",
+		checkpoint.Size, formatTime(checkpoint.CapturedAt), checkpoint.AttemptID)
 }
 
 // renderAttemptEvidence prints what the worker last reported about the
@@ -1718,6 +1734,7 @@ func renderExplanation(out io.Writer, explanation *backlogadmin.Explanation) {
 	if explanation.EarliestAt != nil {
 		fmt.Fprintf(out, "earliest: %s\n", formatTime(*explanation.EarliestAt))
 	}
+	fmt.Fprintln(out, checkpointLine(explanation.Checkpoint))
 	for _, blocker := range explanation.Blockers {
 		fmt.Fprintf(out, "  %s: %s\n", blocker.Code, blocker.Detail)
 	}

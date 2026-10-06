@@ -64,10 +64,11 @@ type resultAdmitter interface {
 // it under, and must be accepted by the publisher's own validation, which is
 // what PublishResult applies. Only the publisher knows its limits, so a
 // publisher that cannot answer is held to the package's alone.
-func (d *LocalDriver) resultAdmission(pkg workerproto.ExecutionPackage, message string, archive []byte) func([]domain.Artifact) error {
+func (d *LocalDriver) resultAdmission(pkg workerproto.ExecutionPackage, message string, archive []byte, continuation *ContinuationSnapshot) func([]domain.Artifact) error {
 	return func(artifacts []domain.Artifact) error {
 		result := PublishedResult{
 			Finalized: backlog.FinalizedAttempt{Artifacts: artifacts}, FinalMessage: message, ThreadArchive: archive,
+			Continuation: continuation,
 		}
 		// The archive is published compacted where it has no room, so it is
 		// checked as it would be published. The admitter bounds its own.

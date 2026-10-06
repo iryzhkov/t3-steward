@@ -183,7 +183,8 @@ func (r *Runtime) markLocalPauseStopped(ctx context.Context, id string, checkpoi
 		}
 	}
 	now := r.now()
-	return r.journal.update(func(state *journalState) error {
+	pauseKey := ""
+	if err := r.journal.update(func(state *journalState) error {
 		current, ok := state.Attempts[id]
 		if !ok {
 			return fmt.Errorf("worker journal: unknown assignment %q", id)
@@ -192,6 +193,7 @@ func (r *Runtime) markLocalPauseStopped(ctx context.Context, id string, checkpoi
 			return nil
 		}
 		request := *current.LocalThrottle
+		pauseKey = "pause:" + request.RequestedAt.UTC().Format(time.RFC3339Nano)
 		if request.StoppedAt == nil {
 			request.StoppedAt = &now
 		}
@@ -210,7 +212,18 @@ func (r *Runtime) markLocalPauseStopped(ctx context.Context, id string, checkpoi
 		state.Attempts[id] = current
 		state.Sequence++
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	if pauseKey != "" {
+		// The paused turn has stopped: its continuation.md is checkpointed,
+		// keyed by the turn when it is known and by the pause otherwise.
+		if turnID != "" {
+			pauseKey = turnID
+		}
+		r.recordContinuation(ctx, id, domain.ContinuationPause, pauseKey)
+	}
+	return nil
 }
 
 // keepPauseCheckpoint records a checkpoint on the pause request in force

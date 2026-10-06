@@ -84,7 +84,11 @@ type AttemptRecord struct {
 	ObservedThreadState string `json:"observedThreadState,omitempty"`
 	// ObservedTurnID binds the stopped fence to a concrete provider turn even
 	// when a park and resume happen entirely between worker polls.
-	ObservedTurnID   string                                    `json:"observedTurnId,omitempty"`
+	ObservedTurnID string `json:"observedTurnId,omitempty"`
+	// Continuation is the attempt's latest continuation.md checkpoint taken
+	// at a turn end or a pause: its digest, size and time, never its content,
+	// which the attempt directory keeps.
+	Continuation     *domain.ContinuationCheckpoint            `json:"continuation,omitempty"`
 	Assignment       domain.Assignment                         `json:"assignment"`
 	Package          workerproto.ExecutionPackageManifest      `json:"package"`
 	Phase            Phase                                     `json:"phase"`

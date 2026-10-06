@@ -269,6 +269,25 @@ func resultObjects(pkg workerproto.ExecutionPackage, result PublishedResult) ([]
 	} else if result.RecoveryInstructions != nil || result.RecoveryCheckpointTar != nil {
 		return nil, errors.New("publish result: recovery bytes need a typed proposal")
 	}
+	if continuation := result.Continuation; continuation != nil {
+		if continuation.Checkpoint.AttemptID != pkg.Identity.AttemptID {
+			return nil, errors.New("publish result: continuation checkpoint belongs to another attempt")
+		}
+		snapshot := objectForBytes(domain.ContinuationArtifactID(pkg.Identity.AttemptID),
+			"results/"+domain.ContinuationArtifactName, string(domain.ArtifactCheckpoint), "text/markdown", continuation.Data)
+		if snapshot.SHA256 != continuation.Checkpoint.SHA256 || snapshot.Size != continuation.Checkpoint.Size {
+			return nil, errors.New("publish result: continuation snapshot does not match its checkpoint")
+		}
+		raw, err := json.Marshal(continuation.Checkpoint)
+		if err != nil {
+			return nil, err
+		}
+		metadata := objectForBytes(domain.ContinuationMetadataArtifactID(pkg.Identity.AttemptID),
+			"results/"+domain.ContinuationMetadataArtifactName, string(domain.ArtifactCheckpoint), "application/json", raw)
+		objects = append(objects,
+			resultObject{object: snapshot, data: continuation.Data, failure: "publish continuation checkpoint"},
+			resultObject{object: metadata, data: raw, failure: "publish continuation checkpoint metadata"})
+	}
 	for _, extra := range []struct {
 		id, path, kind, media string
 		data                  []byte

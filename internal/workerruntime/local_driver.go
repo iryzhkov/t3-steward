@@ -34,6 +34,9 @@ type PublishedResult struct {
 	RecoveryProposal      *domain.RecoveryProposal
 	RecoveryInstructions  []byte
 	RecoveryCheckpointTar []byte
+	// Continuation is the attempt's latest continuation.md snapshot, carried
+	// only when the package declares that the coordinator accepts it.
+	Continuation *ContinuationSnapshot
 }
 
 type ArtifactPublisher interface {
@@ -781,6 +784,9 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 			prompt += "\nReview retained checkpoint `" + checkpoint + "`."
 		}
 	}
+	if pkg.Continuation != nil {
+		prompt += "\n\n## Previous checkpoint\n" + continuationPromptSentence(*pkg.Continuation)
+	}
 	// T3 refuses an over-long input only when the turn starts, after the
 	// thread exists. Refused here, the dispatch fails before any provider
 	// effect and the attempt's failure names the size and the limit.
@@ -997,6 +1003,9 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 			return err
 		}
 	}
+	// The continuation checkpoint is taken before verification runs in the
+	// workspace, keyed by the turn this collection binds to.
+	continuation := d.continuationForResult(ctx, pkg, workspace, identity)
 	task, attempt := packageRecords(pkg, d.Now().UTC())
 	// Preflight logs are captured with the attempt's own outputs, in the same
 	// pass, because the capture tree is sealed before it is published.
@@ -1022,13 +1031,22 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		// The whole result, including the final message and the thread
 		// archive published with it below, is one upload, so bundle metadata
 		// is kept only where that upload would still be accepted.
-		AdmitResult: d.resultAdmission(pkg, message, archive),
+		AdmitResult: d.resultAdmission(pkg, message, archive, nil),
 	})
 	if err != nil {
 		return err
 	}
+	// The checkpoint is optional evidence and goes only where the upload would
+	// still be accepted with it; it never costs the result its publication.
+	if continuation != nil {
+		if err := d.resultAdmission(pkg, message, archive, continuation)(finalized.Artifacts); err != nil {
+			d.logger().Warn("the continuation checkpoint does not fit the result upload; the result goes without it",
+				"attempt", pkg.Identity.AttemptID, "error", err)
+			continuation = nil
+		}
+	}
 	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
-		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
+		Finalized: finalized, FinalMessage: message, ThreadArchive: archive, Continuation: continuation,
 	}); err != nil {
 		var size *workerproto.ArtifactSizeError
 		if errors.As(err, &size) {
@@ -1204,8 +1222,15 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 		}
 	}
 	finalized := backlog.FinalizedAttempt{Completion: backlog.CompletionResult{Failure: failure}}
+	// A failed attempt hands on its latest checkpoint too; that is when the
+	// next attempt needs it most. A failure that is about the result's size
+	// publishes the bounded envelope alone.
+	var continuation *ContinuationSnapshot
+	if !permanentCollectionIntent(failure) {
+		continuation = d.continuationForResult(ctx, pkg, workspace, "")
+	}
 	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
-		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
+		Finalized: finalized, FinalMessage: message, ThreadArchive: archive, Continuation: continuation,
 	}); err != nil {
 		return fmt.Errorf("publish failed result custody: %w", err)
 	}

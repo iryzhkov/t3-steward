@@ -160,6 +160,7 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		}
 		payloads[index] = data
 	}
+	artifacts, payloads = keepContinuationCheckpoint(artifacts, payloads, attempt, manifest.CreatedAt)
 	proposal, err := recoveryProposalFromResult(artifacts, payloads, attempt, assignment)
 	if err != nil {
 		return report, err
@@ -384,6 +385,11 @@ func resultArtifact(object workerproto.ArtifactObject, manifest workerproto.Arti
 	case domain.ArtifactOutput:
 	case domain.ArtifactVerification, domain.ArtifactSummary, domain.ArtifactLog:
 	case domain.ArtifactInput, domain.ArtifactCheckpoint:
+		// A task attempt's continuation.md snapshot and its metadata, under
+		// the attempt's own identity; see keepContinuationCheckpoint.
+		if isContinuationResultObject(object, name, attempt) {
+			break
+		}
 		if !attempt.IsSupervisionActivation() || !strings.HasPrefix(name, "recovery/") {
 			return domain.Artifact{}, fmt.Errorf("result import object %q cannot publish recovery content", object.ID)
 		}

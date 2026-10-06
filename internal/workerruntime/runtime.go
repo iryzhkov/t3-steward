@@ -551,7 +551,13 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 	if err != nil {
 		detail = err.Error()
 	}
-	return r.finishThrottle(command, err == nil, result, checkpoint, detail)
+	acknowledgement, finishErr := r.finishThrottle(command, err == nil, result, checkpoint, detail)
+	if finishErr == nil && acknowledgement.Accepted &&
+		(command.Kind == domain.ThrottleCommandDrain || command.Kind == domain.ThrottleCommandHardStop) {
+		// An operator or coordinator pause has stopped the turn.
+		r.recordContinuation(ctx, command.AssignmentID, domain.ContinuationPause, r.pauseTurnKey(ctx, pkg, "throttle:"+command.ID))
+	}
+	return acknowledgement, finishErr
 }
 
 // Reconcile advances every durable attempt as far as local evidence allows.
@@ -1104,6 +1110,9 @@ func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record At
 		}); err != nil {
 			return err
 		}
+		// The turn has ended, whether it parks or is collected next: its
+		// continuation.md is checkpointed now, once per turn.
+		r.recordContinuation(ctx, id, domain.ContinuationTurnEnd, turnID)
 	}
 	// The stopped observation must become durable before an empty coordinator
 	// statement can authorize collection. A report received earlier in this

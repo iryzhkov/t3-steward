@@ -86,6 +86,9 @@ type taskResultTask struct {
 	// The full content is also written to the printed file path.
 	FinalMessage string           `json:"finalMessage,omitempty"`
 	Files        []taskResultFile `json:"files"`
+	// Checkpoint is the task's latest continuation.md checkpoint: time and
+	// size, not content. Absent means no checkpoint.
+	Checkpoint *backlogadmin.ContinuationCheckpoint `json:"checkpoint,omitempty"`
 	// Missing names what was expected and is not there, such as a final
 	// message a task that never ran cannot have produced.
 	Missing []string `json:"missing,omitempty"`
@@ -345,11 +348,12 @@ func selectResultTasks(detail backlogadmin.WorkflowDetail, name string) ([]backl
 // collect writes one task's final message and declared outputs.
 func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.WorkflowDetail, task backlogadmin.TaskDetail, base string, inline bool) (taskResultTask, error) {
 	collected := taskResultTask{
-		Task:      task.Task.Name,
-		TaskID:    task.Task.ID,
-		Progress:  string(domain.ProgressQueued),
-		Directory: filepath.Join(base, task.Task.Name),
-		Files:     []taskResultFile{},
+		Task:       task.Task.Name,
+		TaskID:     task.Task.ID,
+		Progress:   string(domain.ProgressQueued),
+		Directory:  filepath.Join(base, task.Task.Name),
+		Files:      []taskResultFile{},
+		Checkpoint: task.Checkpoint,
 	}
 	if task.Attempt != nil {
 		collected.Progress = string(task.Attempt.Progress)
@@ -474,6 +478,7 @@ func renderTaskResult(out io.Writer, document taskResultDocument) error {
 		if task.Failure != "" {
 			fmt.Fprintf(out, "  failure: %s\n", task.Failure)
 		}
+		fmt.Fprintf(out, "  %s\n", checkpointLine(task.Checkpoint))
 		fmt.Fprintf(out, "  %s\n", task.Directory)
 		if len(task.FinalMessage) > 0 && len(task.FinalMessage) <= 4096 {
 			fmt.Fprintln(out, strings.TrimSpace(string(safeTerminalText([]byte(task.FinalMessage)))))
