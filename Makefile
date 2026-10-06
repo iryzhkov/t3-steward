@@ -25,8 +25,10 @@ FAST_BASE ?= origin/main
 # so the race detector keeps checkptr, which validates every unsafe pointer
 # conversion, in every package, including modernc.org's SQLite translation: an
 # invalid conversion there can still return the expected rows and pass every
-# assertion, and only checkptr reports it.
-RACE_GCFLAGS ?=
+# assertion, and only checkptr reports it. It is assigned with = rather than ?=
+# so that a value left in the environment cannot weaken the gate; only an
+# explicit `make check-review RACE_GCFLAGS=...` changes it.
+RACE_GCFLAGS =
 # check-fast-no-sqlite-checkptr and check-review-no-sqlite-checkptr are opt-in
 # faster variants of the two gates. modernc.org/sqlite converts pointers in almost
 # every operation, so under -race checkptr about doubles the CPU cost of each SQL
@@ -67,7 +69,8 @@ check-fast check-review check-fast-no-sqlite-checkptr check-review-no-sqlite-che
 	@pkgs=$$(sh scripts/changed-go-packages.sh '$(FAST_BASE)') || exit 1; \
 	if [ -n "$$pkgs" ]; then \
 		changed=$$(go list $$pkgs) || exit 1; \
-		short_pkgs=$$(go list ./... | grep -vxF "$$changed"); \
+		all_pkgs=$$(go list ./...) || exit 1; \
+		short_pkgs=$$(printf '%s\n' "$$all_pkgs" | grep -vxF "$$changed") || [ $$? -eq 1 ] || exit 1; \
 	else \
 		short_pkgs=./...; \
 	fi; \
