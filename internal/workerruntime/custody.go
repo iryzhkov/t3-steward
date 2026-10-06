@@ -33,6 +33,7 @@ const UploadRetention = 30 * 24 * time.Hour
 
 // CustodyConfig binds a worker-local content store to one coordinator and worker epoch.
 type CustodyConfig struct {
+	SecretScan       SecretScanConfig
 	Root             string
 	CoordinatorID    string
 	CoordinatorEpoch int64
@@ -298,6 +299,10 @@ func (s *CustodyStore) AdmitResult(pkg workerproto.ExecutionPackage, result Publ
 	if err != nil {
 		return err
 	}
+	return s.admitPlannedResult(context.Background(), pkg, result, planned)
+}
+
+func (s *CustodyStore) admitPlannedResult(ctx context.Context, pkg workerproto.ExecutionPackage, result PublishedResult, planned []resultObject) error {
 	objects := make([]workerproto.ArtifactObject, 0, len(planned))
 	for _, entry := range planned {
 		objects = append(objects, entry.object)
@@ -306,7 +311,14 @@ func (s *CustodyStore) AdmitResult(pkg workerproto.ExecutionPackage, result Publ
 	if err != nil {
 		return err
 	}
-	return s.validateManifest(s.uploadManifest(pkg, "result", objects, total, s.now()), "upload")
+	if err := s.validateManifest(s.uploadManifest(pkg, "result", objects, total, s.now()), "upload"); err != nil {
+		return err
+	}
+	// The finalizer's optional-bundle size probe has no file bytes yet.
+	if result.Finalized.StorageDir == "" && len(result.Finalized.Artifacts) > 0 {
+		return nil
+	}
+	return s.scanResult(ctx, pkg, result, planned)
 }
 
 // PublishResult retains finalizer output, final message, and thread archive as one upload.
@@ -331,6 +343,9 @@ func (s *CustodyStore) PublishResult(ctx context.Context, pkg workerproto.Execut
 		return err
 	}
 	objects := make([]workerproto.ArtifactObject, 0, len(planned))
+	if err := s.admitPlannedResult(ctx, pkg, result, planned); err != nil {
+		return err
+	}
 	for _, entry := range planned {
 		if err := s.storeResultObject(result.Finalized, entry); err != nil {
 			return err
@@ -479,6 +494,15 @@ func (s *CustodyStore) storeResultObject(finalized backlog.FinalizedAttempt, ent
 
 // PublishCheckpoint retains checkpoint bytes and advertises an immutable upload.
 func (s *CustodyStore) PublishCheckpoint(ctx context.Context, pkg workerproto.ExecutionPackage, path string, data []byte) (*domain.CheckpointMetadata, error) {
+	// The task wrote the checkpoint, and it reaches the coordinator like a
+	// result, so it passes the same scan; patterns only warn, as for outputs.
+	scanner, _, err := s.executionScanner(ctx, pkg)
+	if err != nil {
+		return nil, err
+	}
+	if err := scanner.scan(path, "checkpoint", bytes.NewReader(data)); err != nil {
+		return nil, err
+	}
 	id := "checkpoint-" + pkg.Identity.AttemptID + "-" + shortDigest(data)
 	object := objectForBytes(id, "checkpoints/"+id+".md", "checkpoint", "text/markdown", data)
 	if err := s.storeObject(bytes.NewReader(data), object); err != nil {

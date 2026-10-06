@@ -346,7 +346,9 @@ func (r *Runtime) finishCollection(id string, record AttemptRecord, flight *coll
 		// The result is durable in custody; only the provider settlement is
 		// still unproven. Complete the attempt and retry settlement later
 		// instead of repeating collection.
-		r.log.Warn("result published; T3 settlement deferred", "assignment", id, "error", flight.err)
+		ctx, cancel := context.WithTimeout(r.config.Lifetime, failureRedactionTimeout)
+		r.log.Warn("result published; T3 settlement deferred", "assignment", id, "error", r.loggedError(ctx, id, flight.err))
+		cancel()
 	}
 	err := r.journal.update(func(state *journalState) error {
 		current, ok := state.Attempts[id]

@@ -916,6 +916,121 @@ been seen serving; rolling back is copying the retained unit file back over
 the generated one, `daemon-reload` and a restart. The retirement is a live
 change on the host and is done with approval, not by a pull.
 
+### Result secret scanning
+
+Workers scan sealed result bytes at the custody admission boundary shared by local
+and contained executions, before storing any object or advertising an upload.
+The earlier M16 bundle admission probe still checks sizes using metadata, because
+its candidate files have not been captured yet. Final admission scans declared
+outputs and verification logs, the thread archive, final message, recovery objects,
+declared Git commits, and both packed and decoded Git bundles. Quota-pause
+checkpoints (`.t3/checkpoint.md`) pass the same scan before they are published.
+Git scanning covers every new reachable object from the recorded base, including
+intermediate commits, commit messages, trees, and binary blobs, plus both sides of
+changed endpoint files (including copied blobs already reachable at the base);
+locations include the file/object name, object type and size, and byte offset.
+Git reads ignore replace refs, grafts, shallow markers and commit-graph files,
+all of which the task can write and which could otherwise hide history.
+
+The base is the scan baseline the worker records in private custody when it
+creates the execution's thread, before the provider's first turn: the commit the
+workspace was pinned to, and the allowlist committed at that commit. The task can
+rewrite `.t3/base-commit` afterwards; when the commit record names a different
+base, both ranges are scanned.
+
+Exact execution credentials always block. The worker resolves required credential
+references in memory, includes its protocol credentials, model API environment
+values, and available Codex, Claude and OpenCode login tokens. For contained
+executions it reads the assigned provider home rather than the host home.
+Plain, standard/URL-safe base64 (padded or unpadded, at any byte alignment, so a
+credential inside a Basic authorization or a docker `auth` field is found, and
+across the line breaks of MIME or PEM wrapping), and URL-encoded forms are
+recognized, including mixed-case and partial percent escapes. Credentials of five
+bytes or more are matched exactly. A credential of four bytes or fewer cannot be
+matched without refusing ordinary text; it is counted in a warning and not
+scanned. Evidence for a credential shorter than sixteen bytes shows `****` in
+place of its first four characters. Login-file metadata such as `token_type`,
+expiry times and key IDs is not treated as a credential. Values never enter
+the package or scan report. At credential resolution, before provider startup,
+and at every later result scan or text redaction that resolves them, the worker retains execution-specific SHA-256 signatures, lengths and four-byte
+prefixes in private custody, so later rotation and restart do not forget those
+canaries. Complete credential values are never written to these snapshots, but
+for a credential shorter than eight bytes the four-byte prefix and digest
+together make it easy to recover from worker custody, which holds it anyway.
+Credentials issued and replaced entirely between worker observations remain
+outside the exact canary set; high-confidence token patterns still apply.
+
+High-confidence patterns cover GitHub tokens, Anthropic and OpenAI keys, AWS AKIA
+access IDs, labeled Cloudflare API tokens, PEM private-key headers and age secret
+keys. The default policy blocks patterns in declared commits and bundles and warns
+for outputs, archives and final messages. Configure the worker runtime with:
+
+```yaml
+backlog_v2:
+  result_secret_scan:
+    max_object_bytes: 67108864
+    pattern_policy: default
+```
+
+A zero byte limit selects 64 MiB per object. Exceeding the cap fails closed,
+including a decoded Git blob; it never means that an unscanned suffix is accepted.
+`pattern_policy: block` blocks patterns in every class; `warn` reports all pattern
+hits without blocking. Canary hits block under every policy. These settings belong
+to the worker runtime's local configuration; default policy applies when absent.
+Scanning uses bounded streaming buffers with overlap for matches across chunks;
+all exact canaries and signatures are found in one indexed pass per view (plain,
+URL-decoded, unwrapped base64), so the cost does not grow with their number.
+The scanned bytes must match their declared size and SHA-256. Commit records are
+parsed from those verified bytes, and bundle decoding uses a temporary copy of
+the verified stream, preserving the fence between scanned and published content.
+
+Known repository fixtures can be listed in a committed `.t3/secret-scan-allow`,
+one fingerprint per line (blank lines and lines starting with `#` are ignored).
+Only the file as committed at the execution's recorded base counts; a copy the
+task writes or commits during its own run is ignored, so a task cannot approve
+its own findings. A fingerprint is
+the token's first four characters, a colon, and the first twelve lowercase hex
+characters of SHA-256 of the complete token. For example, a GitHub fixture entry
+has the form `ghp_:0123456789ab`; compute the digest of the actual fixture, not this
+example. A committed symlink or a malformed allowlist is refused. An allowlist suppresses
+pattern findings only and can never authorize an execution credential.
+
+A refusal reports a structured object, detector, byte offset and fingerprint,
+without the matched value or surrounding content. Warning logs use the same
+redacted evidence. A typed refusal becomes a permanent collection failure and
+publishes only a bounded redacted failure summary and empty archive; rejected
+bytes stay in worker-local recovery storage. The same holds for an attempt that
+had already failed: when its thread archive carries a credential, the worker
+publishes the redacted finding with an empty archive. A failure reason is redacted
+before the worker journal records it, because every worker snapshot reports it to
+the coordinator, which copies it into attempt evidence: each execution credential,
+in any recognized encoding, and each secret pattern becomes `[redacted]`. A reason
+the scanner cannot check is replaced by a fixed notice; that includes every reason
+while the execution's complete credential set cannot be resolved, for example
+because a model login file is malformed or a credential resolver is unavailable,
+since the recorded history alone does not cover a credential that was never
+recorded. A journal written by an
+earlier release is redacted durably at the first reconcile after start and again
+when its failed result is collected; while the credential history cannot be read
+or the credentials cannot be resolved, every snapshot reports the fixed notice in place of such an unchecked reason, and
+the worker keeps the raw reason only in its local journal until a later pass can
+redact it. Driver errors that runtime warnings quote, such as a preparation
+retry whose setup command carries a token, a failed quota drain, task-timeout
+stop or task-timeout preparation stop, or the stop of an execution a higher-epoch offer supersedes, are redacted
+the same way before they reach the runtime log, and so is the error of a throttle
+acknowledgement. Collection logs that quote a provider's completion reason, such
+as a supervision activation's reason or the discarded reading of a repeated
+collection, are redacted, or replaced by the fixed notice, before they are written. A command or throttle acknowledgement an
+earlier release stored raw is redacted when a redelivered command replays it. A supervision activation whose result is refused fails the same
+way. Explain and owner notifications therefore receive the redacted reason rather
+than the original secret-bearing message or archive. A refused checkpoint is
+reported as a failed checkpoint with the redacted reason. Fix the source/fixture
+policy and start a new attempt after reviewing the retained local evidence. A
+refused declared commit still remains under
+`refs/campaigns/<run>/<task>/<name>` in the worker's `campaigns.git`, where
+finalization pushed it before admission; a retry that produces a different commit
+for the same declaration conflicts on that ref until the ref is removed there.
+
 ### Reloading the coordinator
 
 The coordinator re-reads its configuration file on SIGHUP and replaces its

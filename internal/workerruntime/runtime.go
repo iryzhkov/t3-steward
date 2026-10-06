@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
@@ -113,6 +114,14 @@ type Runtime struct {
 	// reportTurnEnd records that the coordinator asked for turn-end notes on
 	// its last snapshot request, like reportQuota.
 	reportTurnEnd bool
+	// failuresRedacted records that this process has redacted the failure
+	// reasons an earlier release left raw in the journal.
+	failuresRedacted atomic.Bool
+	// uncheckedFailures holds, by assignment, the raw reasons the last
+	// redaction pass could not check. A snapshot withholds them until a later
+	// pass redacts them.
+	uncheckedMu       sync.Mutex
+	uncheckedFailures map[string]string
 }
 
 func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
@@ -231,6 +240,9 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 		assignments := make([]domain.WorkerAssignmentObservation, 0, len(state.Attempts))
 		for _, id := range sortedAttemptIDs(state.Attempts) {
 			record := state.Attempts[id]
+			if r.uncheckedFailure(id, record.Failure) {
+				record.Failure = withheldFailure
+			}
 			observed := observation(record, now, r.reportQuota)
 			if r.reportTurnEnd && record.TurnEnd != nil && observed.Journal != nil {
 				observed.Journal.TurnEnd = truncateText(record.TurnEnd.Note, maxTurnEndNote)
@@ -268,8 +280,14 @@ func (r *Runtime) AcceptOffers(ctx context.Context, offers workerproto.Assignmen
 				switch {
 				case offer.Assignment.Epoch > existing.Assignment.Epoch:
 					if err := r.containSuperseded(ctx, existing); err != nil {
+						// The journal lock is held, so the existing record's
+						// package redacts the error without reading the journal,
+						// within a bound on credential resolution.
+						redactCtx, cancel := context.WithTimeout(ctx, failureRedactionTimeout)
 						r.log.Warn("superseded assignment could not be contained; offer withheld",
-							"assignment", id, "epoch", existing.Assignment.Epoch, "error", err)
+							"assignment", id, "epoch", existing.Assignment.Epoch,
+							"error", r.checkedText(redactCtx, id, existing.Package.Package, err.Error()))
+						cancel()
 						continue
 					}
 				case offer.Assignment.Epoch < existing.Assignment.Epoch:
@@ -423,6 +441,8 @@ func (r *Runtime) deliverCommand(ctx context.Context, command domain.WorkerComma
 			if original, found := record.CommandRequests[command.ID]; !found || original != command {
 				return domain.WorkerAcknowledgement{}, errors.New("worker runtime: command id was reused with different content")
 			}
+			// An earlier release stored the detail raw; the replay is redacted.
+			ack.Detail = r.recordableFailure(ctx, command.AssignmentID, ack.Detail)
 			return ack, nil
 		}
 	}
@@ -452,9 +472,11 @@ func (r *Runtime) deliverCommand(ctx context.Context, command domain.WorkerComma
 	}
 	detail := ""
 	if effectErr != nil {
-		detail = effectErr.Error()
+		// The acknowledgement goes to the coordinator, and an effect error
+		// can quote a setup command or remote URL that carries a credential.
+		detail = r.recordableFailure(ctx, command.AssignmentID, effectErr.Error())
 		r.log.Warn("worker command effect deferred", "command", command.ID, "kind", command.Kind,
-			"assignment", command.AssignmentID, "error", effectErr)
+			"assignment", command.AssignmentID, "error", detail)
 	}
 	return r.finishCommand(command, true, detail)
 }
@@ -486,6 +508,8 @@ func (r *Runtime) deliverThrottle(ctx context.Context, command domain.ThrottleCo
 			if original, exists := record.ThrottleRequests[command.ID]; !exists || !reflect.DeepEqual(original, command) {
 				return domain.ThrottleAcknowledgement{}, errors.New("worker runtime: throttle command id was reused with different content")
 			}
+			// An earlier release stored the error raw; the replay is redacted.
+			ack.Error = r.recordableFailure(ctx, command.AssignmentID, ack.Error)
 			return ack, nil
 		}
 	}
@@ -564,7 +588,8 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 	}
 	detail := ""
 	if err != nil {
-		detail = err.Error()
+		// The acknowledgement is sent to the coordinator and stored there.
+		detail = r.recordableFailure(ctx, command.AssignmentID, err.Error())
 	}
 	return r.finishThrottle(command, err == nil, result, checkpoint, detail)
 }
@@ -575,6 +600,9 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 func (r *Runtime) Reconcile(ctx context.Context) error {
 	if observer, ok := r.driver.(interface{ BeginObservationPass() }); ok {
 		observer.BeginObservationPass()
+	}
+	if !r.failuresRedacted.Load() {
+		r.redactRecordedFailures(ctx)
 	}
 	state, err := r.journal.snapshot()
 	if err != nil {
@@ -588,7 +616,12 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 		record := state.Attempts[id]
 		if taskTimeoutExpired(record, now) {
 			if err := r.expireTask(ctx, id, record); err != nil {
-				return err
+				if isJournalError(err) {
+					return err
+				}
+				// A driver error, such as an unproven preparation stop, is
+				// retried next pass; its text is redacted before it is logged.
+				r.log.Warn("task timeout reconciliation deferred", "assignment", id, "phase", record.Phase, "error", r.loggedError(ctx, id, err))
 			}
 			continue
 		}
@@ -616,7 +649,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 		// paused; a stopped one takes the collection path.
 		threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
 		if observeErr != nil {
-			r.log.Warn("T3 observation unavailable; attempt keeps running", "assignment", id, "error", observeErr)
+			r.log.Warn("T3 observation unavailable; attempt keeps running", "assignment", id, "error", r.loggedError(ctx, id, observeErr))
 			break
 		}
 		if err = r.noteThreadState(id, threadState); err != nil {
@@ -656,7 +689,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
 			switch {
 			case observeErr != nil:
-				r.log.Warn("T3 observation unavailable; stopped attempt waits", "assignment", id, "error", observeErr)
+				r.log.Warn("T3 observation unavailable; stopped attempt waits", "assignment", id, "error", r.loggedError(ctx, id, observeErr))
 			case threadState == backlog.DispatchThreadActive:
 				err = r.markPhase(id, PhaseRunning, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID)
 			case threadState == backlog.DispatchThreadStopped && !hasCommandRequest(record, domain.WorkerCommandStop):
@@ -677,7 +710,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			workspace, exists, inspectErr = r.driver.InspectWorkspace(ctx, record.Package.Package)
 		}
 		if inspectErr != nil {
-			r.log.Warn("workspace observation failed", "assignment", id, "error", inspectErr)
+			r.log.Warn("workspace observation failed", "assignment", id, "error", r.loggedError(ctx, id, inspectErr))
 			break
 		}
 		if exists {
@@ -696,7 +729,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 		err = r.reconcileDispatch(ctx, id)
 	case PhaseStopping:
 		if stopErr := r.driver.StopThread(ctx, record.Package.Package); stopErr != nil {
-			r.log.Warn("stop outcome is unproven; retrying next reconcile", "assignment", id, "error", stopErr)
+			r.log.Warn("stop outcome is unproven; retrying next reconcile", "assignment", id, "error", r.loggedError(ctx, id, stopErr))
 		} else {
 			err = r.confirmStop(id)
 		}
@@ -720,7 +753,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 	case PhaseCompleted:
 		if record.SettlePending {
 			if settleErr := r.driver.Settle(ctx, record.Package.Package); settleErr != nil {
-				r.log.Warn("T3 settlement still unproven; retrying next reconcile", "assignment", id, "error", settleErr)
+				r.log.Warn("T3 settlement still unproven; retrying next reconcile", "assignment", id, "error", r.loggedError(ctx, id, settleErr))
 			} else {
 				err = r.journal.update(func(state *journalState) error {
 					if current, ok := state.Attempts[id]; ok {
@@ -744,10 +777,10 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 		if errors.Is(err, errCollectionRunning) {
 			// Expected on every pass while a long verification runs; the start
 			// of that collection is already logged once.
-			r.log.Debug("attempt collection still running", "assignment", id, "detail", err)
+			r.log.Debug("attempt collection still running", "assignment", id, "detail", r.loggedError(ctx, id, err))
 			return nil
 		}
-		r.log.Warn("attempt reconciliation deferred", "assignment", id, "phase", record.Phase, "error", err)
+		r.log.Warn("attempt reconciliation deferred", "assignment", id, "phase", record.Phase, "error", r.loggedError(ctx, id, err))
 	}
 	return nil
 }
@@ -760,7 +793,7 @@ func (r *Runtime) recoverUnknown(ctx context.Context, id string, record AttemptR
 	pkg := record.Package.Package
 	threadState, err := r.driver.ObserveThread(ctx, pkg)
 	if err != nil {
-		r.log.Warn("unknown attempt cannot be observed yet", "assignment", id, "error", err)
+		r.log.Warn("unknown attempt cannot be observed yet", "assignment", id, "error", r.loggedError(ctx, id, err))
 		return nil
 	}
 	switch threadState {
@@ -867,7 +900,7 @@ func (r *Runtime) prepare(ctx context.Context, id string) error {
 		first := record.FirstPrepareFailure
 		lostFirst := first == "" && record.PrepareAttempts > 0
 		if first == "" && !lostFirst {
-			first = err.Error()
+			first = r.recordableFailure(ctx, id, err.Error())
 		}
 		if attempts >= MaxPrepareAttempts {
 			quoted := first
@@ -881,6 +914,7 @@ func (r *Runtime) prepare(ctx context.Context, id string) error {
 			}
 			return nil
 		}
+		failure := r.recordableFailure(ctx, id, "preparation failed: "+err.Error())
 		if updateErr := r.journal.update(func(state *journalState) error {
 			current, ok := state.Attempts[id]
 			if !ok {
@@ -890,7 +924,7 @@ func (r *Runtime) prepare(ctx context.Context, id string) error {
 			if current.FirstPrepareFailure == "" {
 				current.FirstPrepareFailure = first
 			}
-			current.Failure = "preparation failed: " + err.Error()
+			current.Failure = failure
 			current.UpdatedAt = r.now()
 			state.Attempts[id] = current
 			state.Sequence++
@@ -1098,7 +1132,7 @@ func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record At
 			observed, turnID, err = observer.ObserveThreadTurn(ctx, record.Package.Package)
 		}
 		if err != nil {
-			r.log.Warn("provider turn identity is unavailable; collection deferred", "assignment", id, "error", err)
+			r.log.Warn("provider turn identity is unavailable; collection deferred", "assignment", id, "error", r.loggedError(ctx, id, err))
 			return nil
 		}
 		if observed == backlog.DispatchThreadActive {
@@ -1146,7 +1180,7 @@ func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record At
 		waiting, err = r.liveTaskWait(ctx, record)
 	}
 	if err != nil {
-		r.log.Warn("task-bound wait state is unavailable; collection deferred", "assignment", id, "error", err)
+		r.log.Warn("task-bound wait state is unavailable; collection deferred", "assignment", id, "error", r.loggedError(ctx, id, err))
 		return nil
 	}
 	if !waiting {
@@ -1192,7 +1226,7 @@ func (r *Runtime) reconcileWaiting(ctx context.Context, id string, record Attemp
 	}
 	threadState, err := r.driver.ObserveThread(ctx, record.Package.Package)
 	if err != nil {
-		r.log.Warn("T3 observation unavailable; parked attempt waits", "assignment", id, "error", err)
+		r.log.Warn("T3 observation unavailable; parked attempt waits", "assignment", id, "error", r.loggedError(ctx, id, err))
 		return nil
 	}
 	switch threadState {
@@ -1217,6 +1251,28 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 	case PhaseCompleted:
 		return nil
 	case PhaseFailed:
+		// A record written before failure reasons were redacted on entry can
+		// still hold a credential. Redact it durably before publishing, so the
+		// next snapshot cannot report it; a scanner failure retries later.
+		redacted, err := r.redactFailure(ctx, record.Package.Package, record.Failure)
+		if err != nil {
+			return fmt.Errorf("collection deferred: redact failure reason: %w", err)
+		}
+		if redacted != record.Failure {
+			if err := r.journal.update(func(state *journalState) error {
+				current, ok := state.Attempts[id]
+				if !ok || current.Phase != PhaseFailed || current.Failure != record.Failure {
+					return nil
+				}
+				current.Failure = redacted
+				state.Attempts[id] = current
+				state.Sequence++
+				return nil
+			}); err != nil {
+				return err
+			}
+			record.Failure = redacted
+		}
 		publishErr := r.driver.CollectFailure(ctx, record.Package.Package, record.WorkspacePath, record.Failure)
 		settleUnproven := errors.Is(publishErr, ErrSettleUnproven)
 		if publishErr != nil && !settleUnproven {
@@ -1417,7 +1473,136 @@ func (r *Runtime) finishThrottle(command domain.ThrottleCommand, accepted bool, 
 	return acknowledgement, err
 }
 
+// failureRedactor is the driver's scanner for failure reasons. The journal
+// failure is reported to the coordinator in every snapshot, so no reason is
+// recorded until the execution's credentials are removed from it.
+type failureRedactor interface {
+	RedactFailure(context.Context, workerproto.ExecutionPackage, string) (string, error)
+}
+
+// withheldFailure replaces a failure reason the scanner could not check.
+const withheldFailure = "failure reason withheld: the result secret scan could not check it for credentials"
+
+// failureRedactionTimeout bounds credential resolution for a redaction made
+// without a caller context.
+const failureRedactionTimeout = 30 * time.Second
+
+func (r *Runtime) redactFailure(ctx context.Context, pkg workerproto.ExecutionPackage, failure string) (string, error) {
+	redactor, ok := r.driver.(failureRedactor)
+	if failure == "" || !ok {
+		return failure, nil
+	}
+	return redactor.RedactFailure(ctx, pkg, failure)
+}
+
+// recordableFailure is failure with the attempt's credentials removed, or a
+// fixed notice when the scanner cannot run. The raw reason is never logged.
+func (r *Runtime) recordableFailure(ctx context.Context, id, failure string) string {
+	if failure == "" {
+		return ""
+	}
+	state, err := r.journal.snapshot()
+	if err != nil {
+		return withheldFailure
+	}
+	record, ok := state.Attempts[id]
+	if !ok {
+		return withheldFailure
+	}
+	return r.checkedText(ctx, id, record.Package.Package, failure)
+}
+
+// checkedText is text with pkg's credentials removed, or the withheld notice
+// when the scanner cannot run. It does not read the journal, so a caller
+// holding the journal lock can use it with the record it already has.
+func (r *Runtime) checkedText(ctx context.Context, id string, pkg workerproto.ExecutionPackage, text string) string {
+	redacted, err := r.redactFailure(ctx, pkg, text)
+	if err != nil {
+		r.log.Warn("failure reason withheld; the secret scan could not check it", "assignment", id, "error", err)
+		return withheldFailure
+	}
+	return redacted
+}
+
+// loggedError is the text of a driver error a reconcile warning quotes, with
+// the attempt's credentials removed. The error itself still drives control
+// flow; only its logged text is redacted.
+func (r *Runtime) loggedError(ctx context.Context, id string, err error) string {
+	return r.recordableFailure(ctx, id, err.Error())
+}
+
+// uncheckedFailure reports whether failure is the raw reason the last
+// redaction pass could not check for this assignment.
+func (r *Runtime) uncheckedFailure(id, failure string) bool {
+	r.uncheckedMu.Lock()
+	defer r.uncheckedMu.Unlock()
+	raw, ok := r.uncheckedFailures[id]
+	return ok && failure != "" && raw == failure
+}
+
+// redactRecordedFailures redacts, once per process, the failure reasons a
+// journal written by an earlier release holds raw, in any phase, before the
+// first snapshot reports them. A reason the scanner cannot check yet is kept
+// locally, withheld from every snapshot, and the pass is repeated on the next
+// reconcile. Permanent collection intents are built from redacted evidence and
+// keep their exact text.
+func (r *Runtime) redactRecordedFailures(ctx context.Context) {
+	state, err := r.journal.snapshot()
+	if err != nil {
+		return
+	}
+	complete := true
+	unchecked := map[string]string{}
+	defer func() {
+		r.uncheckedMu.Lock()
+		r.uncheckedFailures = unchecked
+		r.uncheckedMu.Unlock()
+	}()
+	for _, id := range sortedAttemptIDs(state.Attempts) {
+		record := state.Attempts[id]
+		if record.Failure == "" || permanentCollectionIntent(record.Failure) {
+			continue
+		}
+		redacted, err := r.redactFailure(ctx, record.Package.Package, record.Failure)
+		if err != nil {
+			complete = false
+			unchecked[id] = record.Failure
+			continue
+		}
+		if redacted == record.Failure {
+			continue
+		}
+		if err := r.journal.update(func(state *journalState) error {
+			current, ok := state.Attempts[id]
+			if !ok || current.Failure != record.Failure {
+				return nil
+			}
+			current.Failure = redacted
+			state.Attempts[id] = current
+			state.Sequence++
+			return nil
+		}); err != nil {
+			complete = false
+			unchecked[id] = record.Failure
+		}
+	}
+	if complete {
+		r.failuresRedacted.Store(true)
+	}
+}
+
+// markPhase records phase and, with its credentials removed, failure.
 func (r *Runtime) markPhase(id string, phase Phase, failure, workspace, thread string) error {
+	if failure != "" {
+		ctx, cancel := context.WithTimeout(r.config.Lifetime, failureRedactionTimeout)
+		failure = r.recordableFailure(ctx, id, failure)
+		cancel()
+	}
+	return r.writePhase(id, phase, failure, workspace, thread)
+}
+
+// writePhase records failure as given; the caller has already redacted it.
+func (r *Runtime) writePhase(id string, phase Phase, failure, workspace, thread string) error {
 	return r.journal.update(func(state *journalState) error {
 		record, ok := state.Attempts[id]
 		if !ok {
@@ -1442,8 +1627,11 @@ func (r *Runtime) markPhase(id string, phase Phase, failure, workspace, thread s
 }
 
 func (r *Runtime) markUnknown(id, detail string) error {
+	ctx, cancel := context.WithTimeout(r.config.Lifetime, failureRedactionTimeout)
+	detail = r.recordableFailure(ctx, id, detail)
+	cancel()
 	r.log.Warn("attempt execution is unknown until re-observed", "assignment", id, "detail", detail)
-	return r.markPhase(id, PhaseUnknown, detail, "", "")
+	return r.writePhase(id, PhaseUnknown, detail, "", "")
 }
 
 // markFailed records a deterministic, effect-free failure. The coordinator
@@ -1462,8 +1650,9 @@ func (r *Runtime) markFailed(ctx context.Context, id, detail string) error {
 	if err := r.stopPreparation(ctx, record.Package.Package); err != nil {
 		return err
 	}
+	detail = r.recordableFailure(ctx, id, detail)
 	r.log.Warn("attempt failed on the worker", "assignment", id, "detail", detail)
-	return r.markPhase(id, PhaseFailed, detail, "", "")
+	return r.writePhase(id, PhaseFailed, detail, "", "")
 }
 
 func (r *Runtime) now() time.Time { return r.config.Now().UTC() }
