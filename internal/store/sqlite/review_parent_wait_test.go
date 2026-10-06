@@ -165,9 +165,24 @@ func TestReviewParentWaitEarlyFinished(t *testing.T) {
 			}
 			before := parentWaitSnapshot(t, s, f)
 			got, err := s.WaitReviewParent(ctx, f, cp)
-			if err != nil || got.Status != "finished" || got.Wait != nil || got.RoundID != cp.RoundID ||
-				got.CollectionPending == collection || before != parentWaitSnapshot(t, s, f) {
-				t.Fatalf("early finish: %+v %v", got, err)
+			if collection {
+				if err != nil || got.Status != "finished" || got.Wait != nil || got.RoundID != cp.RoundID ||
+					got.CollectionPending || before != parentWaitSnapshot(t, s, f) {
+					t.Fatalf("early finish: %+v %v", got, err)
+				}
+				return
+			}
+			// The child ended but nothing is collected: there is no verdict to
+			// report, so the task parks, and the wait settles on the ended sink.
+			if err != nil || got.Status != "parked" || got.Wait == nil || got.RoundID != cp.RoundID || !got.CollectionPending {
+				t.Fatalf("uncollected early finish did not park: %+v %v", got, err)
+			}
+			if err := s.SettleNodeWaits(ctx, time.Now().UTC()); err != nil {
+				t.Fatal(err)
+			}
+			replay, err := s.WaitReviewParent(ctx, f, cp)
+			if err != nil || replay.Status != "settled" || replay.Wait == nil || replay.Wait.ID != got.Wait.ID || replay.Wait.Result == nil {
+				t.Fatalf("the wait on an ended child did not settle: %+v %v", replay, err)
 			}
 		})
 	}

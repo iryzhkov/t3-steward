@@ -461,6 +461,73 @@ func TestReviewTaskCurrentParksResumesWithVerdictAndOpensTheNextRound(t *testing
 	}
 }
 
+// childEndsBeforeParking ends the round's child run as soon as the round is
+// open, before the command asks to park on it.
+type childEndsBeforeParking struct {
+	h *reviewCheckpointHarness
+	t *testing.T
+}
+
+func (c childEndsBeforeParking) NodeWait(ctx context.Context, op backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error) {
+	response, err := c.h.admin.NodeWait(ctx, checkpointPrincipal, op)
+	if err == nil && op.Action == backlogadmin.ReviewCheckpointAction && response.Checkpoint != nil && response.Checkpoint.Round != nil {
+		c.h.endChildRun(c.t, response.Checkpoint.Round.RoundID)
+	}
+	return response, err
+}
+
+// Review finding 1: the child run can end between opening the round and
+// parking on it. Its reviews are not collected yet, so the task still parks,
+// and the steward resumes it with the verdict once collection completes rather
+// than the command reporting a round with no verdict as complete.
+func TestReviewTaskCurrentParksWhenTheChildEndsBeforeParking(t *testing.T) {
+	ctx := context.Background()
+	h := reviewCheckpointFixture(t, true)
+	dir, bare := reviewTaskWorkspace(t)
+	h.op.refs = bareRemoteRefs{dir: bare}
+	commitIn(t, dir, "work.txt", "one")
+	var out bytes.Buffer
+	cli := h.taskCLI(dir, childEndsBeforeParking{h: h, t: t}, &out)
+	if err := cli.run(ctx, reviewTaskArgs{}); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	live := h.liveWaits(t)
+	if len(live) != 1 || live[0].ReviewRoundID() == "" || !strings.Contains(out.String(), "End this turn now") || strings.Contains(out.String(), "not parked") {
+		t.Fatalf("a round whose child ended before parking did not park the task: %+v\n%s", live, out.String())
+	}
+	round := live[0].ReviewRoundID()
+	if parked := h.attempt(t); parked.Progress != domain.ProgressWaitingExternal {
+		t.Fatalf("attempt is %s, not parked", parked.Progress)
+	}
+
+	// The wait settles on the already-ended child; the wake waits for the verdict.
+	if err := h.db.SettleNodeWaits(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	h.reportWorkspace(t, dir)
+	h.commitWake(t)
+	control := &reviewWakeControl{threads: map[string]*domain.Thread{h.parent.ThreadID: {ID: h.parent.ThreadID, ProviderInstanceID: "t3-primary"}}}
+	runner := wait.New(queriedRoundStore{Store: h.db, query: cli.query}, control, nil)
+	runner.DisableQuotaChecks = true
+	runner.Tick(ctx, nil, nil)
+	if len(control.texts) != 0 {
+		t.Fatalf("the wake went out before the round was collected:\n%s", control.texts[0])
+	}
+	h.collectRound(t, round, map[string]int{"a": 1})
+	runner.Tick(ctx, nil, nil)
+	if len(control.texts) != 1 || control.sentTo[0] != h.parent.ThreadID {
+		t.Fatalf("the parked thread was not woken exactly once: %v", control.sentTo)
+	}
+	for _, want := range []string{"verdict reject", "blocking findings: 1", filepath.ToSlash(filepath.Join(".t3", "reviews", round, "a", "verdict.json"))} {
+		if !strings.Contains(control.texts[0], want) {
+			t.Fatalf("wake does not carry %q:\n%s", want, control.texts[0])
+		}
+	}
+	if resumed := h.attempt(t); resumed.ID != h.parent.ID || resumed.Progress != domain.ProgressActive {
+		t.Fatalf("the attempt did not resume in the same session: %+v", resumed)
+	}
+}
+
 // Self-review P2-1: a checkpoint whose round deadline has passed is answered
 // as over, never as a retryable refusal a repeating task would loop on, and
 // nothing is parked for it.

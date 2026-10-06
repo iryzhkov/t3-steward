@@ -64,7 +64,9 @@ func TestReviewParentWaitRetainedDAGCollector(t *testing.T) {
 				}
 			}
 			got, err := other.WaitReviewParent(ctx, f.frozen, f.checkpoint)
-			want := "finished"
+			// A child that ended before anything parked on it still parks the
+			// task: only a collected round is finished.
+			want := "parked"
 			if park {
 				want = "settled"
 			}

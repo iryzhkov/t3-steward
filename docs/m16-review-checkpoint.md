@@ -88,12 +88,16 @@ one task-bound node wait per checkpoint, request ID `review-parent:<checkpoint
 key>`, on the review child's sink, due at the round deadline. The answer is a
 park whose status is `parked` (the attempt is held, the turn must end),
 `settled` (this checkpoint's wait already settled, a replay after the task
-resumed) or `finished` (the child ended before anything parked on it, or the
-round deadline has passed, when there is nothing left to park for).
+resumed) or `finished` (the round was collected before anything parked on it,
+or the round deadline has passed, when there is nothing left to park for). A
+child that ended before the park but whose reviews are not collected still
+parks the task: there is no verdict to report yet.
 
 The child's sink can end before its reviews are collected. The wait settles on
 the sink as it always has; the steward that delivers the wake holds it until the
-round is collected, or until 10 minutes past the round deadline, and then sends
+round is collected, whether or not that wake is the one that resumed the turn
+(another wait of the attempt can resume it first, and the review wake then
+arrives mid-turn), or until 10 minutes past the round deadline, and then sends
 it with the combined verdict, the blocking finding count, each reviewer's
 verdict and blocking titles, and the workspace paths of the documents it placed
 at `.t3/reviews/<round>/<reviewer>/review.md` and `verdict.json`. Those files

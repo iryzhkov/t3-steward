@@ -148,7 +148,11 @@ func (s *Store) WaitReviewParent(ctx context.Context, expected review.FrozenAuth
 	if err != nil {
 		return zero, err
 	}
-	if round.Terminal() || observation.Outcome != "" {
+	// Only a collected round is finished. A child that ended before anything
+	// parked on it has no verdict yet, so the task still parks: the wait
+	// settles on the ended sink at once, and the wake that resumes the task is
+	// held until the round is collected, exactly as when the child ends later.
+	if round.Terminal() {
 		result.Status = "finished"
 		return result, tx.Commit()
 	}
@@ -158,8 +162,15 @@ func (s *Store) WaitReviewParent(ctx context.Context, expected review.FrozenAuth
 	if err := request.Validate(); err != nil {
 		return zero, err
 	}
-	if err := validateStructuredRegistrationTx(ctx, tx, &request, now); err != nil {
-		return zero, err
+	if observation.Outcome == "" {
+		if err := validateStructuredRegistrationTx(ctx, tx, &request, now); err != nil {
+			return zero, err
+		}
+	} else {
+		// The general registration refuses a condition that already holds;
+		// here it is the child's sink, resolved above from the materialized
+		// graph, and the wait exists for the collection that follows it.
+		request.Condition, request.Name = node.String(), node.String()
 	}
 	w, err := parkTaskWaitTx(ctx, tx, request, attempt, now)
 	if err != nil {

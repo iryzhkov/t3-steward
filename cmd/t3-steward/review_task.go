@@ -409,7 +409,8 @@ func (c reviewTaskCLI) printRound(round domain.ReviewCheckpointRound) {
 }
 
 // reportComplete answers a checkpoint whose round is already over: its wait
-// settled, or the child ended before anything could park on it. The task is
+// settled, its reviews were collected before anything parked on it, or its
+// deadline passed. The task is
 // not parked and is told the verdict now, with the documents placed in the
 // workspace exactly as a wake places them.
 func (c reviewTaskCLI) reportComplete(ctx context.Context, workspace string, round domain.ReviewCheckpointRound, park domain.ReviewCheckpointPark, asJSON bool) error {

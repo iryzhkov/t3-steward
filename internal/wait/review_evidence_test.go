@@ -94,6 +94,41 @@ func TestReviewParentWakeWaitsForCollectionThenCarriesTheVerdict(t *testing.T) {
 	}
 }
 
+// Review finding 2: a review wait can settle while the turn is already running,
+// because another wait of the same attempt resumed it first, so its delivery is
+// not the resumption. The verdict, the blocking count and the documents still
+// travel with it, and it is still held until the round is collected.
+func TestReviewParentWakeArrivingMidTurnCarriesTheVerdict(t *testing.T) {
+	runner, store, control, now := reviewParentRunner(t)
+	attempt := store.attempts["a1"]
+	attempt.Progress, attempt.Control = domain.ProgressActive, domain.ControlRunning
+	store.attempts["a1"] = attempt
+	runner.Tick(context.Background(), nil, healthyBuckets())
+	if len(control.sends) != 0 {
+		t.Fatalf("a mid-turn review wake went out before the round was collected: %q", control.texts)
+	}
+	if w := store.taskWaits["tw-1"]; w.Resumption || w.Delivery != "pending" {
+		t.Fatalf("the review wake is not a held mid-turn delivery: resumption=%v delivery=%q", w.Resumption, w.Delivery)
+	}
+
+	verdict := review.Verdict{Schema: review.Schema, Verdict: "reject", Findings: []review.Finding{{ID: "f1", Blocking: true, Title: "fix me"}}}
+	store.round.Reviewers[0] = review.Reviewer{ID: "a", Route: "codex/sol", Required: true, State: "succeeded", Verdict: &verdict,
+		ReviewMD: "review\n", VerdictJSON: []byte(`{}`)}
+	*now = now.Add(time.Minute)
+	runner.Tick(context.Background(), nil, healthyBuckets())
+	if len(control.texts) != 1 {
+		t.Fatalf("the collected round did not deliver one mid-turn wake: %q", control.texts)
+	}
+	for _, want := range []string{"verdict reject", "blocking findings: 1", "fix me", ".t3/reviews/round-1/a/review.md", ".t3/reviews/round-1/a/verdict.json"} {
+		if !strings.Contains(control.texts[0], want) {
+			t.Fatalf("mid-turn review wake does not carry %q:\n%s", want, control.texts[0])
+		}
+	}
+	if _, err := os.Stat(filepath.Join(store.workspace, ".t3", "reviews", "round-1", "a", "verdict.json")); err != nil {
+		t.Fatalf("verdict.json was not placed for a mid-turn wake: %v", err)
+	}
+}
+
 // Evidence that cannot be placed is named in the wake rather than blocking it,
 // and a planted link is never followed.
 func TestReviewParentWakeNamesEvidenceItCouldNotWrite(t *testing.T) {

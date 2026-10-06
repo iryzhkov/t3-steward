@@ -287,7 +287,8 @@ func (r *Runner) reviewWakeEvidence(ctx context.Context, store TaskWaitStore, wa
 	}
 	if !w.Deadline.IsZero() && now.Before(w.Deadline.Add(reviewCollectionGrace)) {
 		// The attempt has already resumed, so this hold keeps a resumed turn
-		// from starting; it is reported at info level for that reason.
+		// from starting (or, mid-turn, keeps the verdict from arriving); it is
+		// reported at info level for that reason.
 		r.log.Info("review wake held until the round is collected", "wait", w.ID, "round", roundID, "err", err)
 		return "", true
 	}
