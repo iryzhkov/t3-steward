@@ -22,6 +22,9 @@ const LiveCommandsFailure = "live-children-at-turn-end"
 // maxTurnEndNote bounds the turn-end note a snapshot carries for one attempt.
 const maxTurnEndNote = 512
 
+// withheldTurnEndNote replaces a turn-end note the secret scan could not check.
+const withheldTurnEndNote = "turn-end note withheld: the result secret scan could not check it for credentials"
+
 // maxLiveCommandFailure keeps the failure inside the 2048 bytes a journal
 // excerpt carries.
 const maxLiveCommandFailure = 1800
@@ -87,9 +90,9 @@ func (r *Runtime) holdForLiveCommands(ctx context.Context, id string, record Att
 		report = LiveCommandReport{Unsupported: "background command check failed: " + err.Error()}
 	}
 	if report.Unsupported != "" {
-		note := report.Unsupported + "; the turn end was collected without looking for background commands"
+		note := r.checkedTurnEndNote(ctx, id, pkg, report.Unsupported+"; the turn end was collected without looking for background commands")
 		r.log.Warn("background commands cannot be checked at turn end; collecting as before",
-			"assignment", id, "reason", report.Unsupported)
+			"assignment", id, "reason", note)
 		return false, r.updateTurnEnd(id, func(current *TurnEndCheck) { current.Note = truncateText(note, maxTurnEndNote) })
 	}
 	if len(report.Commands) == 0 {
@@ -103,8 +106,8 @@ func (r *Runtime) holdForLiveCommands(ctx context.Context, id string, record Att
 	}
 	nudge := check.Nudges + 1
 	text := liveCommandNudgeText(report.Commands, nudge)
-	note := fmt.Sprintf("waiting for %s: %s (nudge %d of %d)",
-		countCommands(len(report.Commands)), commandNames(report.Commands), nudge, MaxLiveCommandNudges)
+	note := r.checkedTurnEndNote(ctx, id, pkg, fmt.Sprintf("waiting for %s: %s (nudge %d of %d)",
+		countCommands(len(report.Commands)), commandNames(report.Commands), nudge, MaxLiveCommandNudges))
 	// The claim is durable before the effect: a worker that dies after
 	// sending comes back to a claimed nudge and resends it under the same
 	// identity, which T3 recognises, rather than sending a second one.
@@ -118,6 +121,19 @@ func (r *Runtime) holdForLiveCommands(ctx context.Context, id string, record Att
 		"assignment", id, "thread", pkg.Identity.ThreadID, "turn", turnID, "commands", len(report.Commands),
 		"nudge", nudge, "of", MaxLiveCommandNudges)
 	return true, r.sendLiveCommandNudge(ctx, id, inspector, pkg, turnID, token, text)
+}
+
+// checkedTurnEndNote is note with the attempt's credentials removed, or a fixed
+// notice when the scanner cannot run. The note quotes the command lines still
+// running and every snapshot that asks for it carries it to the coordinator,
+// so it is scanned like a failure reason before it is recorded.
+func (r *Runtime) checkedTurnEndNote(ctx context.Context, id string, pkg workerproto.ExecutionPackage, note string) string {
+	redacted, err := r.redactFailure(ctx, pkg, note)
+	if err != nil {
+		r.log.Warn("turn-end note withheld; the secret scan could not check it", "assignment", id, "error", err)
+		return withheldTurnEndNote
+	}
+	return redacted
 }
 
 func (r *Runtime) sendLiveCommandNudge(ctx context.Context, id string, inspector turnEndInspector, pkg workerproto.ExecutionPackage, turnID, token, text string) error {
