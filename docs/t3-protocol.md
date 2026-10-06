@@ -305,6 +305,30 @@ Stop the provider session:
 {"type":"thread.session.stop","commandId":"...","threadId":"...","createdAt":"..."}
 ```
 
+Set a thread's title (live session titles):
+
+```json
+{"type":"thread.meta.update","commandId":"...","threadId":"...","title":"..."}
+```
+
+Verified against the 0.0.45 client contract (`thread.meta.update` in the
+dispatchable command union, with optional `title`, `regenerateTitle`,
+`modelSelection`, `branch`, `expectedBranch`, `worktreePath` and
+`linkedPullRequest`). Steward sends the title and nothing else, and never
+`regenerateTitle`. The contract has no expected-title fence, so a worker
+compares the thread's current title with the last title Steward set before
+writing, and stops updating a thread whose title differs: the operator renamed
+it. That check-then-write is not atomic; a rename landing between the read and
+the write is overwritten once, and the next update sees it and stops.
+
+The title is `[Steward] <workflow>: <task> · <role> · <state>[ · campaign n/m] ·
+run <suffix>`. The state and campaign progress come from the coordinator's
+recorded attempt state, carried to a worker advertising `session-titles-v1` on
+the snapshot exchange; packages without frozen display metadata keep their
+initial title. A directory-bound execution's thread is retitled through the
+scoped T3 of its running supervisor, never the host's; once that supervisor has
+stopped, its thread keeps the last title set.
+
 After an interrupt the thread's `latestTurn.state` becomes `interrupted`
 and `session.status` returns to `ready`; the turn id does not change. A
 later user message starts a new turn with a new id, which is how the

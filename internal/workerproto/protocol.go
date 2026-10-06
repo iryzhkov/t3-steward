@@ -188,6 +188,14 @@ type SnapshotRequest struct {
 	// CapabilityQuotaObservations.
 	QuotaObservationsWanted bool     `json:"quotaObservationsWanted,omitempty"`
 	UsageAcknowledgements   []string `json:"usageAcknowledgements,omitempty"`
+	// SessionStatesReported says that SessionStates is a statement rather than
+	// an absence, for the same reason ParkedReported does. Both are sent only to
+	// a worker advertising CapabilitySessionTitles.
+	SessionStatesReported bool `json:"sessionStatesReported,omitempty"`
+	// SessionStates is the coordinator's recorded lifecycle and campaign
+	// progress for this worker's current executions, which the worker shows in
+	// their thread titles. It is descriptive and never authority.
+	SessionStates []AssignmentSessionState `json:"sessionStates,omitempty"`
 }
 
 const MaxUsageDelivery = 128
@@ -227,6 +235,9 @@ func ValidateSnapshotRequest(request SnapshotRequest) error {
 			return fmt.Errorf("worker protocol: parked assignments repeat %q", parked.AssignmentID)
 		}
 		seen[parked.AssignmentID] = struct{}{}
+	}
+	if err := validateSessionStates(request); err != nil {
+		return err
 	}
 	return validateRetainedCampaignRuns(request)
 }

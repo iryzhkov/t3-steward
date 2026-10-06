@@ -219,6 +219,7 @@ func (c FleetCoordinator) parkedAssignments(ctx context.Context, workerID string
 // rather than against a hand-written copy of it.
 func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (workerproto.SnapshotRequest, error) {
 	request := workerproto.SnapshotRequest{ParkedReported: true}
+	sessionTitles := false
 	// Read the durable worker observation BEFORE the parked state. This ack
 	// proves that the report was constructed after that worker observation;
 	// receiving a recently-built empty list by itself provides no such fence.
@@ -238,6 +239,8 @@ func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 			if slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityQuotaObservations) {
 				request.QuotaObservationsWanted = true
 			}
+			// Session states likewise go only to a build that decodes them.
+			sessionTitles = slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilitySessionTitles)
 			if snapshot.Sequence > 0 && slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityTaskWaitCollectionFence) {
 				request.ObservedWorkerEpoch = snapshot.WorkerEpoch
 				request.ObservedSequence = snapshot.Sequence
@@ -259,6 +262,9 @@ func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 	}
 	if err := stateCampaignRefs(&request, records); err != nil {
 		return workerproto.SnapshotRequest{}, err
+	}
+	if sessionTitles {
+		stateSessionTitles(&request, records, workerID, time.Now())
 	}
 	if len(parked) == 0 {
 		return request, nil
