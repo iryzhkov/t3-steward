@@ -55,6 +55,9 @@ Repositories with submodules or manual gitlinks are rejected explicitly because
 the outer tree cannot attest a nested mutable worktree. Assume-unchanged and
 skip-worktree index entries are also rejected. Workspace file bytes are checked
 against committed blobs, and Git metadata is bound to the actual workspace.
+Git metadata reads ignore replace refs, and every declared commit's revision
+must resolve to HEAD, so the attested tree is the tree of the commit that is
+published.
 
 Successful cache evidence is keyed by the final HEAD tree, ordered commands,
 command timeout and toolchain identity. Reuse is marked cached and names the original attempt;

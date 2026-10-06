@@ -65,12 +65,18 @@ func gateCacheOrigins(gate *domain.TaskGate, records sqlite.CoordinatorRecords, 
 	return ids
 }
 
+// errGateStorage marks a retryable coordinator storage failure.
+type errGateStorage struct{ error }
+
+func (e errGateStorage) Unwrap() error { return e.error }
+
 // corroborateCachedGate refuses a cached gate report unless the coordinator
 // itself recorded the passing, uncached report it claims to replay: same
 // worker, cache key, tree and completion time.
 func (i CoordinatorResultImporter) corroborateCachedGate(ctx context.Context, records sqlite.CoordinatorRecords, attempt domain.Attempt, worker string, artifacts []domain.Artifact, payloads [][]byte) (err error) {
 	defer func() {
-		if err != nil {
+		var storage errGateStorage
+		if err != nil && !errors.As(err, &storage) {
 			err = fmt.Errorf("%w: %w", ErrInvalidGateEvidence, err)
 		}
 	}()
@@ -102,13 +108,16 @@ func (i CoordinatorResultImporter) corroborateCachedGate(ctx context.Context, re
 	if original[0].Producer != "worker:"+worker {
 		return fmt.Errorf("cached gate original attempt %q ran on another worker", report.OriginalAttempt)
 	}
-	_, file, err := i.Artifacts.Open(ctx, original[0].ID)
-	if err != nil {
-		return fmt.Errorf("cached gate original report: %w", err)
+	// Storage failures are retryable rather than evidence of forgery: the
+	// original's metadata still names it, so a rejection here would recur
+	// on every retry instead of letting the worker rerun the gate.
+	_, file, openErr := i.Artifacts.Open(ctx, original[0].ID)
+	if openErr != nil {
+		return errGateStorage{fmt.Errorf("cached gate original report: %w", openErr)}
 	}
 	raw, readErr := io.ReadAll(io.LimitReader(file, GateEvidenceMaxBytes+1))
-	if err = errors.Join(readErr, file.Close()); err != nil {
-		return fmt.Errorf("cached gate original report: %w", err)
+	if readErr = errors.Join(readErr, file.Close()); readErr != nil {
+		return errGateStorage{fmt.Errorf("cached gate original report: %w", readErr)}
 	}
 	recorded, err := decodeGateEvidence(raw)
 	if err != nil {

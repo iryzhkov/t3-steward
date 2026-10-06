@@ -96,6 +96,11 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 	if _, err = hex.DecodeString(report.TreeHash); err != nil || (len(report.TreeHash) != 40 && len(report.TreeHash) != 64) {
 		return fail("git rev-parse HEAD^{tree}", 1, "invalid commit tree hash")
 	}
+	if reason, err := gateDeclaredCommitsAtHead(ctx, req); err != nil {
+		return fail("git rev-parse", 1, err.Error())
+	} else if reason != "" {
+		return fail("git rev-parse", 1, reason)
+	}
 	clean, err := gateCleanTree(ctx, req)
 	if err != nil {
 		return fail("git status", 1, err.Error())
@@ -262,6 +267,40 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 	return report, rawLog, nil
 }
 
+// gateDeclaredCommitsAtHead requires every declared commit to be HEAD, the
+// commit whose tree the gate attests. Otherwise a task could gate one commit
+// and publish another under the declared revision.
+func gateDeclaredCommitsAtHead(ctx context.Context, req AttemptFinalization) (string, error) {
+	head := ""
+	for _, output := range req.Task.Outputs {
+		if output.Commit == nil {
+			continue
+		}
+		revision := output.Commit.Revision
+		if revision == "" {
+			revision = "HEAD"
+		}
+		if strings.HasPrefix(revision, "-") {
+			return fmt.Sprintf("declared commit %q has an invalid revision", output.Name), nil
+		}
+		if head == "" {
+			resolved, err := gateGit(ctx, req.WorkspaceDir, "rev-parse", "--verify", "HEAD^{commit}")
+			if err != nil {
+				return "", err
+			}
+			head = strings.TrimSpace(resolved)
+		}
+		resolved, err := gateGit(ctx, req.WorkspaceDir, "rev-parse", "--verify", revision+"^{commit}")
+		if err != nil {
+			return fmt.Sprintf("declared commit %q revision %q does not resolve", output.Name, revision), nil
+		}
+		if strings.TrimSpace(resolved) != head {
+			return fmt.Sprintf("gate attests HEAD, but declared commit %q revision %q is a different commit", output.Name, revision), nil
+		}
+	}
+	return "", nil
+}
+
 func gateStructuredReason(reason string) string {
 	reason = strings.ToValidUTF8(reason, "?")
 	if len(reason) <= 16000 {
@@ -306,7 +345,9 @@ func readGateCache(path, key string, now time.Time, age time.Duration) (gateCach
 func gateGit(ctx context.Context, dir string, args ...string) (string, error) {
 	// Metadata runs on the worker even for contained gates. Never allow a
 	// repository's fsmonitor, hook or conversion filter to execute on the host.
-	base := []string{"--work-tree=" + dir, "-c", "core.bare=false", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=/dev/null"}
+	// Replace refs would let the attested tree differ from the commit that is
+	// published, which is read without them.
+	base := []string{"--no-replace-objects", "--work-tree=" + dir, "-c", "core.bare=false", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=/dev/null"}
 	keys, err := gateMetadataCommand(ctx, dir, "git", append(append([]string(nil), base...), "config", "--null", "--name-only", "--get-regexp", `^filter\..*\.(clean|process|required)$`)...)
 	if err != nil {
 		var exit *exec.ExitError
