@@ -74,8 +74,22 @@ Line format:
 ```
 
 `CANON` lines are the normalized `ProviderRuntimeEvent`; `NTIVE` lines are
-the raw provider-protocol messages. The watchdog only decodes `CANON` lines
-whose JSON contains `"type":"account.rate-limits.updated"`.
+the raw provider-protocol messages. The watchdog decodes `CANON` events of
+type `account.rate-limits.updated`, and `NTIVE` events only when
+`event.provider` is `claudeAgent` and `event.method` is
+`claude/rate_limit_event`. Native Claude readings use
+`event.payload.rate_limit_info` (including `unifiedWindows`), the event's
+`createdAt`, and its `id`. A CANON Claude copy uses the SDK payload's
+`uuid` (or `raw.payload.uuid` for normalized windows) when present, so the daemon's persistent event/window deduplication
+applies the same SDK event once. Other native methods are ignored; malformed
+quota records are skipped with a Debug log.
+
+A draining observation older than
+`backlog_v2.coordinator_client.defaults.quota_stale_after` (one hour when
+unset) no longer requires a running thread to pause. The daemon logs that
+disregarded observation once per bucket at Info with its age and threshold.
+Stopped buckets retain their recovery and elapsed-reset probe rules.
+Admission and display staleness rules are unchanged.
 
 Rotation is by rename: when a file exceeds 10 MiB it becomes
 `events.<id>.log.1` (older backups shift to `.2` ... `.10`) and a fresh file

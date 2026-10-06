@@ -19,6 +19,11 @@ All notable changes to this project are documented here. The format follows
   dispatches. The whole creation is bounded to four dispatches and ten
   seconds, an unrecognised refusal is still observed rather than retried under
   a new identity, and no receipts, tombstones or ownership checks change.
+- Claude quota readings now also ingest native SDK rate-limit events when
+  T3 omits their CANON copy, with shared SDK identity for deduplication.
+  Stale draining observations no longer require work to pause; the daemon
+  logs each disregarded observation once. Stopped-bucket recovery and
+  elapsed-reset probes, admission thresholds and display rules are unchanged.
 
 - A slow T3 no longer stalls a persistent worker's exchanges through the
   collection and quota-pause decisions. The provider-turn observation, the

@@ -87,6 +87,8 @@ type Daemon struct {
 	// probed records, per provider instance, the reset time a probe resume
 	// was sent for.
 	probed map[string]time.Time
+	// staleDrainingLogged tracks the last disregarded observation per bucket.
+	staleDrainingLogged map[domain.BucketKey]time.Time
 }
 
 // New builds a daemon.
@@ -95,18 +97,19 @@ func New(cfg config.Config, logger *slog.Logger, store *sqlite.Store, control Co
 		logger = slog.Default()
 	}
 	return &Daemon{
-		cfg:            cfg,
-		log:            logger.With("component", "daemon"),
-		store:          store,
-		control:        control,
-		source:         source,
-		notifier:       notify.Notifier{Enabled: cfg.Notifications.Desktop, Logger: logger},
-		ControlAllowed: true,
-		now:            time.Now,
-		engines:        map[domain.BucketKey]*policy.Engine{},
-		lastResume:     map[string]time.Time{},
-		probed:         map[string]time.Time{},
-		threadModels:   map[string]string{},
+		cfg:                 cfg,
+		log:                 logger.With("component", "daemon"),
+		store:               store,
+		control:             control,
+		source:              source,
+		notifier:            notify.Notifier{Enabled: cfg.Notifications.Desktop, Logger: logger},
+		ControlAllowed:      true,
+		now:                 time.Now,
+		engines:             map[domain.BucketKey]*policy.Engine{},
+		lastResume:          map[string]time.Time{},
+		probed:              map[string]time.Time{},
+		threadModels:        map[string]string{},
+		staleDrainingLogged: map[domain.BucketKey]time.Time{},
 	}
 }
 
@@ -456,6 +459,17 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 		}
 		if st.ResetsAt != nil && !st.ResetsAt.After(now) {
 			// The window passed; wait for a fresh snapshot to rearm.
+			continue
+		}
+		if StaleDraining(d.cfg, st, now) {
+			d.mu.Lock()
+			loggedAt, logged := d.staleDrainingLogged[st.Key]
+			if !logged || !loggedAt.Equal(st.ObservedAt) {
+				d.staleDrainingLogged[st.Key] = st.ObservedAt
+				d.log.Info("disregarding stale draining bucket", "bucket", st.Key.String(),
+					"age", now.Sub(st.ObservedAt), "threshold", QuotaStaleThreshold(d.cfg))
+			}
+			d.mu.Unlock()
 			continue
 		}
 		var running []domain.Thread

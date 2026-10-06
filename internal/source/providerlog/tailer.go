@@ -282,6 +282,9 @@ func (t *Tailer) tailSnapshots(path string, size int64) []domain.QuotaSnapshot {
 		}
 		snaps, err := ParseLine(string(line))
 		if err != nil {
+			if !errors.Is(err, ErrNotRateLimit) {
+				t.log.Debug("malformed provider log record", "file", path, "err", err)
+			}
 			continue
 		}
 		for _, s := range snaps {
@@ -416,7 +419,7 @@ func (t *Tailer) readNew(ctx context.Context, fs *fileState, output chan<- domai
 		snaps, perr := ParseLine(string(line))
 		if perr != nil {
 			if !errors.Is(perr, ErrNotRateLimit) {
-				t.log.Warn("malformed provider log record", "file", fs.path, "offset", consumed-int64(len(chunk)), "err", perr)
+				t.log.Debug("malformed provider log record", "file", fs.path, "offset", consumed-int64(len(chunk)), "err", perr)
 			}
 			continue
 		}
