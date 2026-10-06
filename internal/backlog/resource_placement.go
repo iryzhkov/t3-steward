@@ -7,6 +7,49 @@ import (
 	"sort"
 )
 
+// Live-telemetry exclusion codes. They are temporary resource pressure, never
+// a statement about configured capacity.
+const (
+	ExclusionResourceMemory        = "resource-memory"
+	ExclusionResourceSwap          = "resource-swap"
+	ExclusionResourceWorkspaceDisk = "resource-workspace-disk"
+	ExclusionResourceTempDisk      = "resource-temp-disk"
+)
+
+// Expected live needs of one attempt of a preset. They are telemetry inputs
+// only: a preset never reserves configured CPU, memory or scratch capacity, so
+// a worker that configures executor slots alone still receives preset tasks.
+var (
+	buildResourceNeeds = domain.ResourceDemand{CPUUnits: 2, MemoryMB: 4096, ScratchMB: 8192}
+	lightResourceNeeds = domain.ResourceDemand{CPUUnits: .25, MemoryMB: 256, ScratchMB: 512}
+)
+
+// expectedResourceNeeds is the live use one attempt is expected to add to a
+// worker. Explicit sizes win per dimension. Otherwise the class floor a preset
+// sets selects that preset's needs (build sets medium, light sets low, and an
+// explicit floor is read the same way). A task with neither size nor floor uses
+// the policy's nominal unsized needs, so a burst of unsized tasks still spreads.
+func expectedResourceNeeds(demand domain.ResourceDemand, p domain.ResourcePlacementPolicy) domain.ResourceDemand {
+	needs := domain.ResourceDemand{CPUUnits: p.UnsizedTaskCPUUnits, MemoryMB: p.UnsizedTaskMemoryMB, ScratchMB: p.UnsizedTaskScratchMB}
+	switch {
+	case demand.MinCPUClass == "":
+	case demand.MinCPUClass.Compare(domain.CPUClassMedium) >= 0:
+		needs = buildResourceNeeds
+	default:
+		needs = lightResourceNeeds
+	}
+	if demand.CPUUnits > 0 {
+		needs.CPUUnits = demand.CPUUnits
+	}
+	if demand.MemoryMB > 0 {
+		needs.MemoryMB = demand.MemoryMB
+	}
+	if demand.ScratchMB > 0 {
+		needs.ScratchMB = demand.ScratchMB
+	}
+	return needs
+}
+
 func liveResourceEvaluation(request WorkerPlacementRequest, worker domain.WorkerInventory) (domain.ResourceEvaluation, []WorkerExclusion) {
 	p := request.ResourcePolicy.WithDefaults()
 	e := domain.ResourceEvaluation{WorkerID: worker.ID, Telemetry: worker.Telemetry.Clone(), State: "unknown"}
@@ -14,8 +57,10 @@ func liveResourceEvaluation(request WorkerPlacementRequest, worker domain.Worker
 	if v == nil {
 		return e, nil
 	}
+	// A worker clock may lead the coordinator's; tolerate a lead up to the same
+	// bound as the age, as snapshot freshness tolerates future timestamps.
 	age := request.Now.Sub(v.ObservedAt)
-	if v.ObservedAt.IsZero() || age < 0 || age > p.TelemetryMaxAge {
+	if v.ObservedAt.IsZero() || age < -p.TelemetryMaxAge || age > p.TelemetryMaxAge {
 		e.State = "stale"
 		return e, nil
 	}
@@ -32,12 +77,12 @@ func liveResourceEvaluation(request WorkerPlacementRequest, worker domain.Worker
 			exclusions = append(exclusions, WorkerExclusion{Code: code, Detail: fmt.Sprintf("%s available %d MB is below task need %d MB plus reserve %d MB", dimension, *value, need, reserve)})
 		}
 	}
-	demand := request.Task.ResourceDemand
-	addFloor(v.MemoryAvailableMB, demand.MemoryMB, p.MemoryReserveMB, "resource-memory", "memory")
-	addFloor(v.WorkspaceFreeMB, demand.ScratchMB, p.DiskReserveMB, "resource-workspace-disk", "workspace disk")
-	addFloor(v.TempFreeMB, demand.ScratchMB, p.DiskReserveMB, "resource-temp-disk", "temp disk")
+	demand := expectedResourceNeeds(request.Task.ResourceDemand, p)
+	addFloor(v.MemoryAvailableMB, demand.MemoryMB, p.MemoryReserveMB, ExclusionResourceMemory, "memory")
+	addFloor(v.WorkspaceFreeMB, demand.ScratchMB, p.DiskReserveMB, ExclusionResourceWorkspaceDisk, "workspace disk")
+	addFloor(v.TempFreeMB, demand.ScratchMB, p.DiskReserveMB, ExclusionResourceTempDisk, "temp disk")
 	if validSize(v.SwapUsedMB) && *v.SwapUsedMB > p.MaxSwapUsedMB {
-		exclusions = append(exclusions, WorkerExclusion{Code: "resource-swap", Detail: fmt.Sprintf("swap used %d MB exceeds limit %d MB", *v.SwapUsedMB, p.MaxSwapUsedMB)})
+		exclusions = append(exclusions, WorkerExclusion{Code: ExclusionResourceSwap, Detail: fmt.Sprintf("swap used %d MB exceeds limit %d MB", *v.SwapUsedMB, p.MaxSwapUsedMB)})
 	}
 	if knownCPU {
 		cores := float64(*v.CPUCount)
@@ -97,8 +142,9 @@ func rankResourceEvaluations(decision *domain.PlacementDecision) {
 	}
 }
 
-// reservePlacementResources adds planned demand to a private snapshot. Live
-// metrics already account for running tasks; only newly proposed work is added.
+// reservePlacementResources adds planned expected needs to a private snapshot.
+// Live metrics already account for running tasks; only newly proposed work is
+// added.
 func reservePlacementResources(workers []domain.WorkerInventory, workerID string, demand domain.ResourceDemand) []domain.WorkerInventory {
 	result := append([]domain.WorkerInventory(nil), workers...)
 	for i := range result {

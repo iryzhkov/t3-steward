@@ -20,8 +20,8 @@ const (
 	CPUClassHigh   CPUClass = "high"
 )
 
-// Resource presets expand to a class floor, preference and expected CPU,
-// memory and disk needs. An explicitly declared task field always wins.
+// Resource presets expand to a class floor and preference. An explicitly
+// declared field always wins over what a preset would have expanded to.
 const (
 	ResourcePresetBuild = "build"
 	ResourcePresetLight = "light"
@@ -69,7 +69,6 @@ type ManifestResources struct {
 func expandResourcePreset(resources *ManifestResources) {
 	switch resources.Preset {
 	case ResourcePresetBuild:
-		defaultResourceSizes(resources, 2, 4096, 8192)
 		if resources.MinCPUClass == "" {
 			resources.MinCPUClass = CPUClassMedium
 		}
@@ -77,22 +76,9 @@ func expandResourcePreset(resources *ManifestResources) {
 			resources.PreferredCPUClass = CPUClassHigh
 		}
 	case ResourcePresetLight:
-		defaultResourceSizes(resources, .25, 256, 512)
 		if resources.MinCPUClass == "" {
 			resources.MinCPUClass = CPUClassLow
 		}
-	}
-}
-
-func defaultResourceSizes(r *ManifestResources, cpu float64, memory, disk int) {
-	if r.CPUUnits == nil {
-		r.CPUUnits = &cpu
-	}
-	if r.MemoryMB == nil {
-		r.MemoryMB = &memory
-	}
-	if r.ScratchMB == nil {
-		r.ScratchMB = &disk
 	}
 }
 

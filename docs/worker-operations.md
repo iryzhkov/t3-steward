@@ -69,9 +69,12 @@ its actor or body is rejected.
 
 Workers include live telemetry in each inventory: one- and five-minute load,
 CPU count, available memory, swap usage, free space on the workspace and temp
-filesystems, and running attempts. Linux reads /proc and statfs; missing fields
-on other platforms are unknown. The temp filesystem follows TMPDIR, falling
-back to /tmp.
+filesystems, and active (preparing, running or resuming) attempts. Linux reads
+/proc and statfs; missing fields on other platforms are unknown. The temp
+filesystem is the worker service's own TMPDIR, falling back to /tmp, and it
+must hold a task's scratch need plus the disk reserve. A worker whose /tmp is
+small therefore never receives `build` tasks until its service sets TMPDIR to a
+larger filesystem, even if the tasks themselves write temporary files elsewhere.
 
 Placement keeps enrollment, capabilities, CPU class, executor capacity and slots
 as hard constraints. Fresh telemetry additionally rejects a worker when memory
@@ -84,9 +87,19 @@ clamped to [-1, 1]. Memory headroom is
 The configured weights combine these measures; existing preference scores break
 headroom ties.
 Missing, partial and stale telemetry rank after complete fresh telemetry;
-unknown readings alone do not exclude a worker. Each offer cycle subtracts the
-resource needs of assignments already made in that cycle, preventing a burst
-from repeatedly using the same idle snapshot.
+unknown readings alone do not exclude a worker. Telemetry is fresh while its
+timestamp is within `telemetry_max_age` of the coordinator's clock in either
+direction, so a worker clock that leads the coordinator by less than that bound
+does not make its readings stale. Because any fresh, complete worker ranks ahead
+of any worker without such telemetry regardless of load, and CPU load never
+excludes a worker, an overloaded upgraded worker can be preferred over an idle
+worker that does not yet report telemetry until that worker is upgraded.
+
+Each offer cycle adds the expected needs of assignments already proposed in
+that cycle to the proposed worker's load, memory and disk readings, preventing
+a burst from repeatedly using the same idle snapshot. This holds for unsized
+tasks too: a task that declares no size and no CPU class floor is expected to
+use the coordinator's nominal unsized needs.
 
 Coordinator defaults can be adjusted under
 `backlog_v2.coordinator.resource_placement`:
@@ -98,12 +111,25 @@ disk_reserve_mb: 2048
 max_swap_used_mb: 4096
 cpu_weight: 1
 memory_weight: 1
+unsized_task_cpu_units: 1
+unsized_task_memory_mb: 1024
+unsized_task_scratch_mb: 0
 ```
 
-Task resource presets supply CPU share, memory and scratch needs: `light`
-uses 0.25 CPU units, 256 MiB memory and 512 MiB scratch; `build` uses
-2 CPU units, 4096 MiB memory and 8192 MiB scratch. Explicit resource fields
-override preset values. Build is intended for race tests and full review gates.
+Task resource presets supply expected CPU share, memory and scratch needs for
+the live telemetry floors, ranking and in-cycle reservation: `light` expects
+0.25 CPU units, 256 MiB memory and 512 MiB scratch; `build` expects 2 CPU
+units, 4096 MiB memory and 8192 MiB scratch. Build is intended for race tests
+and full review gates. The expected needs follow the CPU class floor the preset
+sets (medium or above reads as build, low as light), and explicit
+`cpu_units`, `memory_mb` and `scratch_mb` override them per field.
+
+A preset never reserves configured executor capacity. Only explicit
+`cpu_units`, `memory_mb` and `scratch_mb` are checked against a worker's
+configured `executors.cpu_units`, `memory_mb` and `scratch_mb`, so a
+fleet-managed worker that configures executor slots alone keeps receiving
+`light` and `build` tasks. A task with explicit sizes still needs a worker that
+configures those capacity dimensions.
 
 `backlog explain` and `campaign check` report the telemetry used, resource
 rejections, headroom score, ranking and selected worker. Explain preserves the

@@ -16,6 +16,8 @@ func TestResourceViabilityReportsPressureAsTemporaryAndConfiguredPolicy(t *testi
 	settings.Projects[0].Type = "fresh"
 	settings.ResourcePolicy = domain.DefaultResourcePlacementPolicy()
 	settings.ResourcePolicy.MemoryReserveMB = 1000
+	// Isolate the reserve: the unsized task is given no nominal memory need.
+	settings.ResourcePolicy.UnsizedTaskMemoryMB = 0
 	v := viabilityView(t, nil)
 	memory := int64(900)
 	v.workers[0].Inventory.Telemetry = &domain.WorkerTelemetry{ObservedAt: viabilityNow, MemoryAvailableMB: &memory}

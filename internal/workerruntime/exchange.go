@@ -65,13 +65,7 @@ func (e Exchange) handle(ctx context.Context, envelope workerproto.Envelope) (wo
 			if collect == nil {
 				collect = resourcetelemetry.New().Collect
 			}
-			running := 0
-			for _, assignment := range snapshot.Assignments {
-				if assignment.Control == domain.ControlRunning {
-					running++
-				}
-			}
-			telemetry := collect(e.Runtime.config.WorkspaceRoot, os.TempDir(), running)
+			telemetry := collect(e.Runtime.config.WorkspaceRoot, os.TempDir(), activeAttempts(snapshot.Assignments))
 			observations.Telemetry = &telemetry
 		}
 		if e.Usage != nil {
@@ -149,4 +143,17 @@ func (e Exchange) handle(ctx context.Context, envelope workerproto.Envelope) (wo
 	default:
 		return "", nil, &workerproto.ProtocolError{Code: workerproto.ErrorAuthorization, Message: "message kind is not a worker request", RequestID: envelope.RequestID}
 	}
+}
+
+// activeAttempts counts attempts that are using, or about to use, the host:
+// preparing and resuming attempts load it as much as running ones do.
+func activeAttempts(assignments []domain.WorkerAssignmentObservation) int {
+	active := 0
+	for _, assignment := range assignments {
+		switch assignment.Control {
+		case domain.ControlPreparing, domain.ControlRunning, domain.ControlResuming:
+			active++
+		}
+	}
+	return active
 }

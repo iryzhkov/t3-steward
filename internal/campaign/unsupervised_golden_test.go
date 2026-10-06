@@ -33,12 +33,6 @@ import (
 // difficulty named beside each number, because "effort" is also a route option
 // and the old label read as a model setting. The three lines were edited to
 // match; the numbers, and every other byte, are unchanged.
-//
-// F1 resource placement expands numeric preset defaults in both recordings:
-// the workflow and two producer tasks gain light's cpuUnits=0.25,
-// memoryMb=256 and scratchMb=512; the join gains build's cpuUnits=2,
-// memoryMb=4096 and scratchMb=8192. Only those four resource declarations
-// changed. The digest and strict byte-for-byte golden comparisons remain.
 const (
 	unsupervisedPlanTextGolden = "testdata/origin-main-three-node-plan.txt"
 	unsupervisedPlanJSONGolden = "testdata/origin-main-three-node-plan.json"

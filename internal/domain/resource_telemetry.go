@@ -44,17 +44,27 @@ func copyMeasurement[T any](v *T) *T {
 	return &c
 }
 
+// ResourcePlacementPolicy holds the coordinator's live-telemetry thresholds and
+// weights. The UnsizedTask fields are the nominal live use expected of one
+// attempt that declares no size and no preset class; they feed safety floors,
+// ranking and in-cycle burst reservation, and never reserve configured capacity.
 type ResourcePlacementPolicy struct {
-	TelemetryMaxAge time.Duration
-	MemoryReserveMB int64
-	DiskReserveMB   int64
-	MaxSwapUsedMB   int64
-	CPUWeight       float64
-	MemoryWeight    float64
+	TelemetryMaxAge      time.Duration
+	MemoryReserveMB      int64
+	DiskReserveMB        int64
+	MaxSwapUsedMB        int64
+	CPUWeight            float64
+	MemoryWeight         float64
+	UnsizedTaskCPUUnits  float64
+	UnsizedTaskMemoryMB  int
+	UnsizedTaskScratchMB int
 }
 
 func DefaultResourcePlacementPolicy() ResourcePlacementPolicy {
-	return ResourcePlacementPolicy{TelemetryMaxAge: 2 * time.Minute, MemoryReserveMB: 1024, DiskReserveMB: 2048, MaxSwapUsedMB: 4096, CPUWeight: 1, MemoryWeight: 1}
+	return ResourcePlacementPolicy{
+		TelemetryMaxAge: 2 * time.Minute, MemoryReserveMB: 1024, DiskReserveMB: 2048, MaxSwapUsedMB: 4096, CPUWeight: 1, MemoryWeight: 1,
+		UnsizedTaskCPUUnits: 1, UnsizedTaskMemoryMB: 1024,
+	}
 }
 
 // WithDefaults preserves explicit zero thresholds in a configured policy.
@@ -73,6 +83,9 @@ func (p ResourcePlacementPolicy) Validate() error {
 	}
 	if math.IsNaN(p.CPUWeight) || math.IsInf(p.CPUWeight, 0) || math.IsNaN(p.MemoryWeight) || math.IsInf(p.MemoryWeight, 0) || p.CPUWeight < 0 || p.MemoryWeight < 0 || p.CPUWeight+p.MemoryWeight <= 0 || math.IsInf(p.CPUWeight+p.MemoryWeight, 0) {
 		return fmt.Errorf("resource placement weights must be finite and nonnegative, with at least one positive")
+	}
+	if math.IsNaN(p.UnsizedTaskCPUUnits) || math.IsInf(p.UnsizedTaskCPUUnits, 0) || p.UnsizedTaskCPUUnits < 0 || p.UnsizedTaskMemoryMB < 0 || p.UnsizedTaskScratchMB < 0 {
+		return fmt.Errorf("resource placement unsized task needs must be finite and nonnegative")
 	}
 	return nil
 }

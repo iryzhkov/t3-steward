@@ -11,6 +11,11 @@ type V2ResourcePlacement struct {
 	MaxSwapUsedMB   *int64    `yaml:"max_swap_used_mb"`
 	CPUWeight       *float64  `yaml:"cpu_weight"`
 	MemoryWeight    *float64  `yaml:"memory_weight"`
+	// The nominal live use of one attempt that declares neither a size nor a
+	// preset class, used for safety floors, ranking and burst reservation.
+	UnsizedTaskCPUUnits  *float64 `yaml:"unsized_task_cpu_units"`
+	UnsizedTaskMemoryMB  *int     `yaml:"unsized_task_memory_mb"`
+	UnsizedTaskScratchMB *int     `yaml:"unsized_task_scratch_mb"`
 }
 
 // Policy resolves omitted values to the coordinator's safe defaults.
@@ -33,6 +38,15 @@ func (c V2ResourcePlacement) Policy() domain.ResourcePlacementPolicy {
 	}
 	if c.MemoryWeight != nil {
 		policy.MemoryWeight = *c.MemoryWeight
+	}
+	if c.UnsizedTaskCPUUnits != nil {
+		policy.UnsizedTaskCPUUnits = *c.UnsizedTaskCPUUnits
+	}
+	if c.UnsizedTaskMemoryMB != nil {
+		policy.UnsizedTaskMemoryMB = *c.UnsizedTaskMemoryMB
+	}
+	if c.UnsizedTaskScratchMB != nil {
+		policy.UnsizedTaskScratchMB = *c.UnsizedTaskScratchMB
 	}
 	return policy
 }

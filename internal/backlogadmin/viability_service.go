@@ -720,7 +720,8 @@ func placementReasonCode(exclusion string) string {
 		return ReasonCapabilityMissing
 	case backlog.ExclusionCPUClassBelowMinimum, backlog.ExclusionCPUClassUnknown:
 		return ReasonCPUClassImpossible
-	case "resource-memory", "resource-swap", "resource-workspace-disk", "resource-temp-disk":
+	case backlog.ExclusionResourceMemory, backlog.ExclusionResourceSwap,
+		backlog.ExclusionResourceWorkspaceDisk, backlog.ExclusionResourceTempDisk:
 		return "resource-pressure"
 	case backlog.ExclusionCapacityExhausted:
 		return ReasonWorkerAtCapacity

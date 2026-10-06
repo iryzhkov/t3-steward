@@ -8,6 +8,16 @@ import (
 	"testing"
 )
 
+func TestResourceTelemetryCountsPreparingAndResumingAttempts(t *testing.T) {
+	assignments := []domain.WorkerAssignmentObservation{
+		{Control: domain.ControlPreparing}, {Control: domain.ControlRunning}, {Control: domain.ControlResuming},
+		{Control: domain.ControlPaused}, {Control: domain.ControlStopped},
+	}
+	if got := activeAttempts(assignments); got != 3 {
+		t.Fatalf("active attempts = %d, want 3", got)
+	}
+}
+
 func TestResourceTelemetrySnapshotGate(t *testing.T) {
 	runtime := newTestRuntime(t, t.TempDir(), &fakeDriver{})
 	calls := 0
