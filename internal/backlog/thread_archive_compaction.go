@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -31,11 +32,12 @@ type ThreadArchiveTruncation struct {
 	// OmittedEntries counts the entries left out of the thread's other lists.
 	OmittedEntries map[string]int `json:"omittedEntries,omitempty"`
 	// OmittedFields names the fields left out whole: top-level fields beside
-	// the thread, and, in the last resort, thread fields no decision reads.
+	// the thread, and, in the last resort, thread fields and fields of the
+	// latest turn and the session that no decision reads.
 	OmittedFields []string `json:"omittedFields,omitempty"`
 	// MessageBodiesOmitted says the kept messages and activities hold only
-	// the fields a completion decision reads. It is set only when nothing
-	// smaller would fit.
+	// the fields a completion decision reads, and the final assistant
+	// message its text besides. It is set only when nothing larger would fit.
 	MessageBodiesOmitted bool `json:"messageBodiesOmitted,omitempty"`
 }
 
@@ -55,6 +57,14 @@ var decisionThreadFields = map[string]bool{
 	"hasPendingApprovals": true, "hasPendingUserInput": true, "backgroundLiveness": true,
 }
 
+// decisionObjectFields are, for the thread fields that are objects, the
+// fields of them threadArchive decodes. The last-resort compaction keeps only
+// these, so data a decision never reads cannot keep an archive over budget.
+var decisionObjectFields = map[string][]string{
+	"latestTurn": {"turnId", "state", "requestedAt", "startedAt", "completedAt"},
+	"session":    {"threadId", "status", "activeTurnId", "lastError"},
+}
+
 // CompactThreadArchive returns archive unchanged when it is at most maxBytes,
 // and otherwise a smaller archive of the same thread that is.
 //
@@ -62,17 +72,18 @@ var decisionThreadFields = map[string]bool{
 // the final assistant message, the turn start refusal and the runtime error
 // the completion decision would take, and as long a tail of messages,
 // activities and the thread's other lists as fits. Fields beside the thread
-// are left out. Only if that cannot fit with no tail at all are the thread
-// fields no decision reads left out and the kept entries cut to the fields a
-// decision reads. Every judgement ResultCompletionFailure,
+// are left out. Only if that cannot fit with no tail at all are the thread,
+// latest turn and session fields no decision reads left out and the kept
+// entries cut to the fields a decision reads, which for the final assistant
+// message include its text. Every judgement ResultCompletionFailure,
 // LatestTurnStartFailure and ArchiveCurrentRequest make is the same for the
 // compacted archive as for the full one. The archive records its original
 // size and digest and retainedPath under ThreadArchiveTruncationKey.
 //
 // The result depends only on its arguments, so a size check and the
 // publication it admits see the same bytes. An archive the completion check
-// cannot read is refused, as is one whose decision evidence alone is over
-// maxBytes.
+// cannot read is refused, as is one whose decision evidence and final
+// assistant text alone are over maxBytes.
 func CompactThreadArchive(archive []byte, maxBytes int64, retainedPath string) ([]byte, error) {
 	if int64(len(archive)) <= maxBytes {
 		return archive, nil
@@ -108,8 +119,10 @@ func CompactThreadArchive(archive []byte, maxBytes int64, retainedPath string) (
 		}
 		compaction.lists[key] = entries
 	}
+	var messages map[int]bool
+	messages, compaction.finalAssistant = requiredMessages(compaction.lists["messages"])
 	compaction.required = map[string]map[int]bool{
-		"messages":   requiredMessages(compaction.lists["messages"]),
+		"messages":   messages,
 		"activities": snapshot.requiredActivities(),
 	}
 	for _, minimal := range []bool{false, true} {
@@ -137,12 +150,15 @@ type archiveCompaction struct {
 	lists map[string][]json.RawMessage
 	// required holds, per list, the indexes of the entries a decision reads.
 	required map[string]map[int]bool
-	marker   ThreadArchiveTruncation
+	// finalAssistant is the index in messages of the final assistant
+	// message, whose text every compaction keeps; -1 when there is none.
+	finalAssistant int
+	marker         ThreadArchiveTruncation
 }
 
 // build assembles the archive that keeps the last tail entries of every
 // thread list besides the required ones. minimal also leaves out the thread
-// fields and entry fields no decision reads.
+// fields, latest turn and session fields, and entry fields no decision reads.
 func (c archiveCompaction) build(tail int, minimal bool) ([]byte, error) {
 	marker := c.marker
 	marker.MessageBodiesOmitted = minimal
@@ -164,6 +180,13 @@ func (c archiveCompaction) build(tail int, minimal bool) ([]byte, error) {
 			continue
 		}
 		if !isList {
+			if keep, ok := decisionObjectFields[key]; ok && minimal {
+				var omitted []string
+				raw, omitted = projectObject(raw, keep)
+				for _, field := range omitted {
+					marker.OmittedFields = append(marker.OmittedFields, "thread."+key+"."+field)
+				}
+			}
 			thread[key] = raw
 			continue
 		}
@@ -174,7 +197,8 @@ func (c archiveCompaction) build(tail int, minimal bool) ([]byte, error) {
 			}
 			if minimal {
 				var err error
-				if entry, err = decisionFields(key, entry); err != nil {
+				keepText := key == "messages" && index == c.finalAssistant
+				if entry, err = decisionFields(key, entry, keepText); err != nil {
 					return nil, err
 				}
 			}
@@ -209,14 +233,60 @@ func (c archiveCompaction) build(tail int, minimal bool) ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// projectObject cuts a JSON object to the fields named in keep and returns
+// the names of the fields it left out, sorted. A field matches a name as
+// encoding/json matches it, ignoring case. A value that is not an object,
+// such as null, is returned unchanged.
+func projectObject(raw json.RawMessage, keep []string) (json.RawMessage, []string) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return raw, nil
+	}
+	kept, omitted := keepFields(fields, keep)
+	if len(omitted) == 0 {
+		return raw, nil
+	}
+	out, err := json.Marshal(kept)
+	if err != nil {
+		return raw, nil
+	}
+	return out, omitted
+}
+
+// keepFields splits fields into those named in keep, ignoring case as
+// encoding/json does, and the sorted names of the rest.
+func keepFields(fields map[string]json.RawMessage, keep []string) (map[string]json.RawMessage, []string) {
+	kept := make(map[string]json.RawMessage, len(keep))
+	var omitted []string
+	for name, raw := range fields {
+		matched := false
+		for _, want := range keep {
+			if strings.EqualFold(name, want) {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			kept[name] = raw
+		} else {
+			omitted = append(omitted, name)
+		}
+	}
+	sort.Strings(omitted)
+	return kept, omitted
+}
+
 // decisionFields cuts one message or activity to the fields a completion
-// decision reads.
-func decisionFields(list string, entry json.RawMessage) (json.RawMessage, error) {
+// decision reads, and keepText also keeps a message's text.
+func decisionFields(list string, entry json.RawMessage, keepText bool) (json.RawMessage, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(entry, &fields); err != nil || fields == nil {
 		return entry, nil
 	}
 	keep := []string{"id", "role", "turnId", "createdAt"}
+	if keepText {
+		keep = append(keep, "text")
+	}
 	if list == "activities" {
 		keep = []string{"id", "kind", "turnId", "createdAt"}
 		var payload struct {
@@ -232,18 +302,14 @@ func decisionFields(list string, entry json.RawMessage) (json.RawMessage, error)
 			keep = append(keep, "payload")
 		}
 	}
-	cut := make(map[string]json.RawMessage, len(keep))
-	for _, key := range keep {
-		if raw, ok := fields[key]; ok {
-			cut[key] = raw
-		}
-	}
+	cut, _ := keepFields(fields, keep)
 	return json.Marshal(cut)
 }
 
 // requiredMessages are the indexes of the latest user message, which is the
-// current start request, and of the final assistant message.
-func requiredMessages(entries []json.RawMessage) map[int]bool {
+// current start request, and of the final assistant message, which is also
+// returned on its own (-1 when there is none).
+func requiredMessages(entries []json.RawMessage) (map[int]bool, int) {
 	required := map[int]bool{}
 	latestUser, finalAssistant := -1, -1
 	var latest time.Time
@@ -277,7 +343,7 @@ func requiredMessages(entries []json.RawMessage) map[int]bool {
 			required[index] = true
 		}
 	}
-	return required
+	return required, finalAssistant
 }
 
 // requiredActivities are the indexes of the activities a completion decision

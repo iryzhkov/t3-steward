@@ -1778,9 +1778,13 @@ compacted archive`. The compacted archive keeps:
 - as long a tail of messages, activities and the thread's other lists as fits.
 
 Fields beside `thread` in the export are left out. Only when even that does
-not fit are the thread fields no decision reads left out and the kept entries
-cut to the fields a decision reads (`messageBodiesOmitted`). The final
-assistant message is still uploaded whole as `results/final-message.md`.
+not fit are the thread fields no decision reads left out, the latest turn and
+the session cut to the fields the completion check decodes (the rest are
+listed under `omittedFields`, such as `thread.latestTurn.<field>`), and the
+kept entries cut to the fields a decision reads (`messageBodiesOmitted`). The
+final assistant message keeps its text even then; only the other bodies are
+left out. The final assistant message is also uploaded whole as
+`results/final-message.md`.
 
 A compacted archive carries a `stewardTruncation` object with the original
 size (`originalSize`) and SHA-256 (`originalSha256`), the counts of omitted
@@ -1789,9 +1793,11 @@ keeps the full archive, relative to the worker's artifact root
 (`thread-archives/<attempt>/<sha256>.json`). That copy is read-only, never
 uploaded, and is the place to look for the full transcript.
 
-An archive whose decision evidence alone is over the limit cannot be
-compacted and fails collection exactly as before, as does a size error on any
-other result object.
+An archive whose required content alone is over the limit (the fields a
+decision reads, such as a long session error, together with the final
+assistant message's text) cannot be compacted and fails collection exactly as
+before, as does a size error on any other result object. Data no decision
+reads never causes that failure, wherever in the thread it sits.
 
 ### Unknown assignment
 

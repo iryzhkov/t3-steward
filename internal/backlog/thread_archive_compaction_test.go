@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -192,12 +193,13 @@ func TestCompactedThreadArchiveKeepsTheFinalAssistantMessage(t *testing.T) {
 }
 
 // Message bodies are the last thing given up: an archive whose required
-// messages alone are over budget keeps their decision fields and says so.
+// messages alone are over budget keeps their decision fields and the final
+// assistant text, and says so.
 func TestCompactedThreadArchiveDropsBodiesOnlyAsALastResort(t *testing.T) {
 	archive := `{"thread":{"id":"thread-1","latestTurn":{"turnId":"turn-1","state":"completed","startedAt":"2026-09-13T05:00:00Z","completedAt":"2026-09-13T05:01:00Z"},` +
 		`"session":{"threadId":"thread-1","status":"ready","activeTurnId":null,"lastError":null},"messages":[` +
 		`{"id":"ask","role":"user","text":"` + strings.Repeat("q", 20000) + `","createdAt":"2026-09-13T04:59:59Z"},` +
-		`{"id":"final","role":"assistant","text":"` + strings.Repeat("a", 20000) + `","createdAt":"2026-09-13T05:00:59Z"}]}}`
+		`{"id":"final","role":"assistant","text":"` + strings.Repeat("a", 3000) + `","createdAt":"2026-09-13T05:00:59Z"}]}}`
 	compacted, err := CompactThreadArchive([]byte(archive), 4<<10, "retained.json")
 	if err != nil {
 		t.Fatal(err)
@@ -205,7 +207,67 @@ func TestCompactedThreadArchiveDropsBodiesOnlyAsALastResort(t *testing.T) {
 	if len(compacted) > 4<<10 || !truncationOf(t, compacted).MessageBodiesOmitted {
 		t.Fatalf("size=%d marker=%+v", len(compacted), truncationOf(t, compacted))
 	}
+	if !strings.Contains(string(compacted), strings.Repeat("a", 3000)) || strings.Contains(string(compacted), strings.Repeat("q", 100)) {
+		t.Fatal("the last resort must keep the final text and only the final text")
+	}
 	if want, got := decisionsOf(t, []byte(archive)), decisionsOf(t, compacted); !reflect.DeepEqual(want, got) {
+		t.Fatalf("decisions changed\nfull      %+v\ncompacted %+v", want, got)
+	}
+}
+
+// Fields of the latest turn and the session that no decision reads are not
+// evidence, so they cannot keep an archive from compacting. The independent
+// review of round 1 found 2,000 bytes of latestTurn.padding refused.
+func TestCompactThreadArchiveProjectsUnusedTurnAndSessionFields(t *testing.T) {
+	padding := strings.Repeat("x", 2000)
+	full := strings.Replace(compactionFixtures["clean turn"], `"turnId":"turn-1"`, `"padding":"`+padding+`","turnId":"turn-1"`, 1)
+	full = strings.Replace(full, `"threadId":"thread-1"`, `"providerOptions":{"padding":"`+padding+`"},"threadId":"thread-1"`, 1)
+	compacted, err := CompactThreadArchive([]byte(full), 1024, "retained.json")
+	if err != nil {
+		t.Fatalf("unused nested fields defeat compaction: %v", err)
+	}
+	if len(compacted) > 1024 || strings.Contains(string(compacted), padding) {
+		t.Fatalf("unused nested fields kept: %d bytes", len(compacted))
+	}
+	if want, got := decisionsOf(t, []byte(full)), decisionsOf(t, compacted); !reflect.DeepEqual(want, got) {
+		t.Fatalf("decisions changed\nfull      %+v\ncompacted %+v", want, got)
+	}
+	if got, err := ResultCompletionFailure(compacted, "thread-1", ""); err != nil || got != "" {
+		t.Fatalf("decision=%q err=%v", got, err)
+	}
+	marker := truncationOf(t, compacted)
+	if !marker.MessageBodiesOmitted || !reflect.DeepEqual(marker.OmittedFields, []string{"thread.latestTurn.padding", "thread.session.providerOptions"}) {
+		t.Fatalf("marker=%+v", marker)
+	}
+}
+
+// The last resort leaves out optional bodies but keeps the final assistant
+// message's text. The independent review of round 1 found a short final
+// answer dropped beside a 20,000-byte user request.
+func TestCompactedThreadArchiveKeepsTheFinalTextInTheLastResort(t *testing.T) {
+	var root map[string]any
+	if err := json.Unmarshal([]byte(compactionFixtures["clean turn"]), &root); err != nil {
+		t.Fatal(err)
+	}
+	root["thread"].(map[string]any)["messages"] = []any{
+		map[string]any{"id": "ask", "role": "user", "text": strings.Repeat("q", 20000), "createdAt": "2026-09-13T04:59:59Z"},
+		map[string]any{"id": "final", "role": "assistant", "text": "FINAL ANSWER", "createdAt": "2026-09-13T05:00:59Z"},
+	}
+	full, err := json.Marshal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compacted, err := CompactThreadArchive(full, 4096, "retained.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(compacted), "FINAL ANSWER") {
+		t.Fatal("short final assistant message lost when a large user body forces the last resort")
+	}
+	if strings.Contains(string(compacted), strings.Repeat("q", 100)) || !truncationOf(t, compacted).MessageBodiesOmitted {
+		t.Fatalf("optional body kept: %s", compacted)
+	}
+	if want, got := decisionsOf(t, full), decisionsOf(t, compacted); !reflect.DeepEqual(want, got) {
 		t.Fatalf("decisions changed\nfull      %+v\ncompacted %+v", want, got)
 	}
 }
@@ -225,5 +287,15 @@ func TestCompactThreadArchiveRefusesWhatItCannotKeepWhole(t *testing.T) {
 	}
 	if _, err := CompactThreadArchive(inflateArchive(t, compactionFixtures["competing evidence"], 10), 64, "retained.json"); err == nil {
 		t.Fatal("archive compacted below the size of its decision evidence")
+	}
+	// Required content that is itself over budget is refused, never cut: a
+	// session error a decision reports and a final assistant text.
+	longError := strings.Replace(compactionFixtures["failed turn runtime error"], `"session went away"`, `"`+strings.Repeat("e", 5000)+`"`, 1)
+	if _, err := CompactThreadArchive([]byte(longError), 4<<10, "retained.json"); !errors.Is(err, ErrThreadArchiveEvidenceTooLarge) {
+		t.Fatalf("session error over budget: %v", err)
+	}
+	longFinal := strings.Replace(compactionFixtures["clean turn"], `}}`, `},"messages":[{"id":"final","role":"assistant","text":"`+strings.Repeat("a", 5000)+`","createdAt":"2026-09-13T05:00:59Z"}]}`, 1)
+	if _, err := CompactThreadArchive([]byte(longFinal), 4<<10, "retained.json"); !errors.Is(err, ErrThreadArchiveEvidenceTooLarge) {
+		t.Fatalf("final assistant text over budget: %v", err)
 	}
 }

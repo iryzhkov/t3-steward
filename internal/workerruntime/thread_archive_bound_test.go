@@ -105,6 +105,34 @@ func TestOversizeThreadArchiveCollectsCompacted(t *testing.T) {
 	}
 }
 
+// Data inside the latest turn and the session that no completion decision
+// reads is not evidence: an archive whose size is there still collects, with
+// those fields left out of the upload.
+func TestThreadArchiveWithUnusedTurnDataCollectsCompacted(t *testing.T) {
+	f := newCollectionFixture(t, 1024, 4096, 100, 100)
+	padding := strings.Repeat("a", 2000)
+	f.control.archive = []byte(`{"thread":{"id":"thread-1","latestTurn":{"turnId":"turn-1","state":"completed","startedAt":"2026-09-13T05:00:00Z","completedAt":"2026-09-13T05:01:00Z","padding":"` + padding + `"},` +
+		`"session":{"threadId":"thread-1","status":"ready","activeTurnId":null,"lastError":null,"padding":"` + padding + `"}}}`)
+	full := append([]byte(nil), f.control.archive...)
+	if err := f.runtime.collect(context.Background(), "assignment-1"); err != nil {
+		t.Fatalf("collection failed: %v", err)
+	}
+	if record := f.record(t); record.Phase != PhaseCompleted || record.Failure != "" {
+		t.Fatalf("record=%+v", record)
+	}
+	object, uploaded := uploadedThreadArchive(t, f)
+	if object.Size > 1024 || bytes.Contains(uploaded, []byte(padding)) {
+		t.Fatalf("unused turn data uploaded: %d bytes", object.Size)
+	}
+	want, err := backlog.ResultCompletionFailure(full, "thread-1", "BACKLOG STATUS: done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := backlog.ResultCompletionFailure(uploaded, "thread-1", "BACKLOG STATUS: done"); err != nil || got != want {
+		t.Fatalf("completion changed: %q != %q (%v)", got, want, err)
+	}
+}
+
 // An archive that fits each object but not the aggregate beside the other
 // result objects is compacted to the remainder.
 func TestThreadArchiveOverTheAggregateIsCompacted(t *testing.T) {
