@@ -62,8 +62,19 @@ system and global configuration and attributes are read, and attributes come
 from HEAD's tree (`GIT_ATTR_SOURCE`), so only the reviewed `.gitattributes`
 apply. Git older than 2.40 ignores `GIT_ATTR_SOURCE` and reads the worktree's
 `.gitattributes`, which can still convert line endings or encodings but cannot
-run a filter. A file that a filter driver such as Git LFS produced differs
-from its blob there and counts as changed, so such a repository fails closed.
+run a filter. The `ident` attribute is cleared in the scratch repository,
+because it would let any text between `$Id:` and `$` equal the committed
+`$Id$`. A file that a filter driver such as Git LFS produced, or that `ident`
+expanded at checkout, differs from its blob there and counts as changed, so
+such a repository fails closed.
+
+The object store is the executor's as well, and Git checks the name of a
+commit it parses but not of a tree or blob it reads. A tree rewritten under
+the reviewed tree's name would make an unreviewed file the reviewed one in
+both comparisons. Before either comparison, the worker therefore hashes the
+commit, every tree it reaches and every `.gitattributes` blob in them, and a
+mismatch is an error. A file's own blob needs no check, because the worktree
+file is hashed and compared with the name that the verified tree gives it.
 Git would compare a submodule's content inside the submodule, with the
 submodule's configuration, so every checked-out submodule is compared the same
 way, index and worktree, against the commit HEAD records for it, to a depth of

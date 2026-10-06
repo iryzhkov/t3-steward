@@ -3,9 +3,13 @@ package backlog
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"maps"
 	"os"
@@ -13,6 +17,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -112,8 +117,14 @@ func CaptureWorkspaceHead(ctx context.Context, gitBinary, workspace string, outp
 // and reads the worktree's .gitattributes, which can still convert line
 // endings and encodings but cannot run a filter.
 //
-// A file that a filter driver, such as Git LFS, produced in the worktree
-// differs from its blob here and is reported as changed, which fails closed.
+// The ident attribute is cleared, because it would let any text between
+// "$Id:" and "$" equal the committed "$Id$". A file that a filter driver,
+// such as Git LFS, produced in the worktree, or that ident expanded, differs
+// from its blob here and is reported as changed, which fails closed.
+//
+// The borrowed objects are the executor's, so the commit, its trees and
+// their .gitattributes are checked against their names before they are used,
+// see verifyReviewedObjects.
 //
 // Git compares a submodule's content inside the submodule, with the
 // submodule's own configuration, so every populated submodule is compared the
@@ -158,6 +169,7 @@ func compareWorkspaceWithHead(ctx context.Context, gitBinary, workspace, head st
 		"HEAD":                    head + "\n",
 		"config":                  config,
 		"objects/info/alternates": objects + "\n",
+		"info/attributes":         "* -ident\n",
 		"refs/.keep":              "",
 	} {
 		file := filepath.Join(repository, filepath.FromSlash(name))
@@ -168,6 +180,13 @@ func compareWorkspaceWithHead(ctx context.Context, gitBinary, workspace, head st
 			return nil, fmt.Errorf("create scratch repository: %w", err)
 		}
 	}
+	tree, err := trustedWorkspaceGit(ctx, gitBinary, workspace, repository, head, "ls-tree", "-r", "-t", "-z", "--full-tree", head)
+	if err != nil {
+		return nil, fmt.Errorf("list HEAD's tree: %w", err)
+	}
+	if err := verifyReviewedObjects(ctx, gitBinary, workspace, repository, head, format, tree); err != nil {
+		return nil, err
+	}
 	if _, err := trustedWorkspaceGit(ctx, gitBinary, workspace, repository, head, "read-tree", head); err != nil {
 		return nil, fmt.Errorf("read HEAD into a scratch index: %w", err)
 	}
@@ -177,10 +196,6 @@ func compareWorkspaceWithHead(ctx context.Context, gitBinary, workspace, head st
 		"status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=dirty")
 	if err != nil {
 		return nil, err
-	}
-	tree, err := trustedWorkspaceGit(ctx, gitBinary, workspace, repository, head, "ls-tree", "-r", "-z", "--full-tree", head)
-	if err != nil {
-		return nil, fmt.Errorf("list HEAD's tree: %w", err)
 	}
 	index, err := workspaceGit(ctx, gitBinary, workspace, nil, "ls-files", "--stage", "-z", "--full-name")
 	if err != nil {
@@ -223,7 +238,7 @@ func compareWorkspaceWithHead(ctx context.Context, gitBinary, workspace, head st
 
 // compareIndexWithTree lists, as porcelain v1 -z entries, every path whose
 // entry in an index listing from "ls-files --stage -z" differs from a tree
-// listing from "ls-tree -r -z": a path in only one of them, an unmerged
+// listing from "ls-tree -r -t -z": a path in only one of them, an unmerged
 // entry, or another mode or object. A listing it cannot read is an error, so
 // an unexpected format fails closed.
 func compareIndexWithTree(index, tree []byte) ([]byte, error) {
@@ -236,6 +251,10 @@ func compareIndexWithTree(index, tree []byte) ([]byte, error) {
 		fields := strings.Fields(meta)
 		if !found || len(fields) != 3 || name == "" {
 			return nil, fmt.Errorf("read HEAD's tree: unexpected entry %q", entry)
+		}
+		if fields[1] == "tree" {
+			// A directory has no index entry of its own.
+			continue
 		}
 		reviewed[name] = fields[0] + " " + fields[2]
 	}
@@ -264,6 +283,59 @@ func compareIndexWithTree(index, tree []byte) ([]byte, error) {
 	return status, nil
 }
 
+// verifyReviewedObjects checks that the commit head, every tree it reaches
+// and every .gitattributes blob in them are stored under their own names. The
+// objects come from the workspace's store, which belongs to the executor, and
+// Git checks the name of a commit it parses but not of a tree or blob it
+// reads: a tree rewritten under the reviewed tree's name would make an
+// unreviewed file the reviewed one in both comparisons. tree is the listing
+// from "ls-tree -r -t -z". A file's own blob needs no check, because the
+// worktree is hashed and compared with the name the verified tree gives it.
+func verifyReviewedObjects(ctx context.Context, gitBinary, workspace, repository, head, format string, tree []byte) error {
+	want := []string{"commit", "tree"}
+	input := head + "\n" + head + "^{tree}\n"
+	for _, entry := range strings.Split(string(tree), "\x00") {
+		meta, name, _ := strings.Cut(entry, "\t")
+		fields := strings.Fields(meta)
+		if len(fields) != 3 {
+			continue
+		}
+		if fields[1] == "tree" || (fields[1] == "blob" && path.Base(name) == ".gitattributes") {
+			want = append(want, fields[1])
+			input += fields[2] + "\n"
+		}
+	}
+	batch, err := trustedWorkspaceGitInput(ctx, gitBinary, workspace, repository, head, []byte(input), "cat-file", "--batch")
+	if err != nil {
+		return fmt.Errorf("read HEAD's trees: %w", err)
+	}
+	for _, kind := range want {
+		header, rest, found := bytes.Cut(batch, []byte("\n"))
+		fields := strings.Fields(string(header))
+		if !found || len(fields) != 3 || fields[1] != kind {
+			return fmt.Errorf("read HEAD's trees: unexpected object %q", header)
+		}
+		size, err := strconv.Atoi(fields[2])
+		if err != nil || size < 0 || size >= len(rest) || rest[size] != '\n' {
+			return fmt.Errorf("read HEAD's trees: object %s is truncated", fields[0])
+		}
+		var digest hash.Hash = sha1.New()
+		if format == "sha256" {
+			digest = sha256.New()
+		}
+		fmt.Fprintf(digest, "%s %d\x00", kind, size)
+		digest.Write(rest[:size])
+		if name := hex.EncodeToString(digest.Sum(nil)); name != fields[0] {
+			return fmt.Errorf("%s %s in the workspace's object store has the content of %s", kind, fields[0], name)
+		}
+		batch = rest[size+1:]
+	}
+	if len(batch) != 0 {
+		return errors.New("read HEAD's trees: unexpected trailing output")
+	}
+	return nil
+}
+
 // maxWorkspaceSubmoduleDepth bounds how deeply submodules are compared.
 const maxWorkspaceSubmoduleDepth = 8
 
@@ -290,6 +362,12 @@ func prefixWorkspaceChanges(status []byte, prefix string) []byte {
 // the scratch repository, with no system or global configuration or
 // attributes and with attributes read from head.
 func trustedWorkspaceGit(ctx context.Context, gitBinary, workspace, repository, head string, args ...string) ([]byte, error) {
+	return trustedWorkspaceGitInput(ctx, gitBinary, workspace, repository, head, nil, args...)
+}
+
+// trustedWorkspaceGitInput is trustedWorkspaceGit with input on the query's
+// standard input.
+func trustedWorkspaceGitInput(ctx context.Context, gitBinary, workspace, repository, head string, input []byte, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, gitBinary, append([]string{
 		"--no-optional-locks", "--no-replace-objects",
 		"--git-dir", repository, "--work-tree", workspace,
@@ -300,6 +378,9 @@ func trustedWorkspaceGit(ctx context.Context, gitBinary, workspace, repository, 
 		return slices.Contains(workspaceGitLocationVariables, name) || slices.Contains(trustedGitDroppedVariables, name) ||
 			strings.HasPrefix(name, "GIT_CONFIG") || strings.HasPrefix(name, "GIT_ATTR")
 	}), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_ATTR_NOSYSTEM=1", "GIT_ATTR_SOURCE="+head)
+	if input != nil {
+		command.Stdin = bytes.NewReader(input)
+	}
 	return runWorkspaceGit(command)
 }
 
