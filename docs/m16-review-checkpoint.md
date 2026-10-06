@@ -94,16 +94,22 @@ child that ended before the park but whose reviews are not collected still
 parks the task: there is no verdict to report yet.
 
 The child's sink can end before its reviews are collected. The wait settles on
-the sink as it always has; the steward that delivers the wake holds it until the
-round is collected, whether or not that wake is the one that resumed the turn
-(another wait of the attempt can resume it first, and the review wake then
-arrives mid-turn), or until 10 minutes past the round deadline, and then sends
-it with the combined verdict, the blocking finding count, each reviewer's
-verdict and blocking titles, and the workspace paths of the documents it placed
-at `.t3/reviews/<round>/<reviewer>/review.md` and `verdict.json`. Those files
-are written through real directories only, renamed into place, and excluded in
+the sink as it always has; the steward that delivers the wake that resumes the
+task holds it until the round is collected, or until 10 minutes past the round
+deadline, and then sends it with the combined verdict, the blocking finding
+count, each reviewer's verdict and blocking titles, and the workspace paths of
+the documents it placed at `.t3/reviews/<round>/<reviewer>/review.md` and
+`verdict.json`. This applies to every review wait in the wake, also when it
+shares the wake with another wait settled in the same pass. Those files are
+written through real directories only, renamed into place, and excluded in
 `.git/info/exclude`. If they cannot be written, the wake still carries the
 verdict and says so.
+
+A review wake can also arrive mid-turn, when another wait of the attempt
+resumed it first. It carries the verdict and documents the same way if the
+round is collected. It is never held, because a mid-turn wake is abandoned once
+the running turn moves the attempt on; if the round is not collected yet, it
+says so and names `t3-steward review result <round> --wait`.
 
 ## The command
 

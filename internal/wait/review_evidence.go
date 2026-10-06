@@ -266,11 +266,33 @@ func evidenceLine(value string) string {
 	return strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(value)
 }
 
+// reviewWakeEvidenceFor prepares the review evidence of every review parent
+// wait in one delivery, and reports hold if any of them is still held.
+func (r *Runner) reviewWakeEvidenceFor(ctx context.Context, store TaskWaitStore, wake domain.TaskWaitWakeContext, deliveryID string, now time.Time) (string, bool) {
+	notes := ""
+	for _, member := range wake.Waits {
+		if member.DeliveryID != deliveryID || member.ReviewRoundID() == "" {
+			continue
+		}
+		note, hold := r.reviewWakeEvidence(ctx, store, wake, member, now)
+		if hold {
+			return "", true
+		}
+		notes += note
+	}
+	return notes, false
+}
+
 // reviewWakeEvidence prepares what the wake of a review parent wait tells the
-// resumed task. The child run can end before its reviews are collected, so a
-// wake whose round is not collected yet is held, by reporting hold, until the
-// round is, or until the round deadline plus a grace has passed; then it goes
-// out saying where the verdict can be read.
+// task. The child run can end before its reviews are collected, so a wake that
+// resumes the task while its round is not collected yet is held, by reporting
+// hold, until the round is, or until the round deadline plus a grace has
+// passed; then it goes out saying where the verdict can be read.
+//
+// A wake arriving mid-turn is never held: it is pinned to the attempt revision
+// it was woken at, and the store abandons it once the running turn moves that
+// revision on, so holding it could lose it with nothing said. It goes out at
+// once and says where the verdict will be read.
 func (r *Runner) reviewWakeEvidence(ctx context.Context, store TaskWaitStore, wake domain.TaskWaitWakeContext, w domain.TaskWait, now time.Time) (string, bool) {
 	roundID := w.ReviewRoundID()
 	reader, ok := store.(ReviewRoundReader)
@@ -285,10 +307,12 @@ func (r *Runner) reviewWakeEvidence(ctx context.Context, store TaskWaitStore, wa
 		}
 		return "\n" + evidence.Text(), false
 	}
-	if !w.Deadline.IsZero() && now.Before(w.Deadline.Add(reviewCollectionGrace)) {
+	if err == nil && !w.Resumption {
+		return fmt.Sprintf("\nReview round %s: its reviews are not collected yet; read the verdict with `t3-steward review result %s --wait`.\n", roundID, roundID), false
+	}
+	if w.Resumption && !w.Deadline.IsZero() && now.Before(w.Deadline.Add(reviewCollectionGrace)) {
 		// The attempt has already resumed, so this hold keeps a resumed turn
-		// from starting (or, mid-turn, keeps the verdict from arriving); it is
-		// reported at info level for that reason.
+		// from starting; it is reported at info level for that reason.
 		r.log.Info("review wake held until the round is collected", "wait", w.ID, "round", roundID, "err", err)
 		return "", true
 	}

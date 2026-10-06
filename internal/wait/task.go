@@ -212,19 +212,17 @@ func (r *Runner) deliverTaskWake(ctx context.Context, store TaskWaitStore, contr
 				fileNote = askAnswerFileNote(err)
 			}
 		}
-		if wait.ReviewRoundID() != "" {
-			// A task parked on its review round is resumed to act on the
-			// verdict, so the wake carries it and places the documents in the
-			// workspace. Until the round is collected the wake is held. This
-			// holds whether or not this wait resumed the turn: another wait of
-			// the attempt can resume it first, and the review wake then arrives
-			// mid-turn, where the verdict matters just as much.
-			note, hold := r.reviewWakeEvidence(ctx, store, wake, wait, now)
-			if hold {
-				continue
-			}
-			fileNote += note
+		// A task parked on its review round is resumed to act on the verdict,
+		// so the wake carries it and places the documents in the workspace.
+		// Every member of this delivery is checked, because waits woken in the
+		// same pass share one message and the review wait need not sort first;
+		// and a review wake that arrives mid-turn, after another wait resumed
+		// the attempt, carries the verdict too.
+		note, hold := r.reviewWakeEvidenceFor(ctx, store, wake, wait.DeliveryID, now)
+		if hold {
+			continue
 		}
+		fileNote += note
 		claimed, err := store.TransitionTaskWake(ctx, wait.ID, wait.Delivery, "sending", now)
 		if err != nil || !claimed {
 			continue
