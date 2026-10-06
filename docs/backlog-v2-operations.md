@@ -350,7 +350,9 @@ over the same artifact path every other input takes:
   even the result without bundle metadata is accepted, that result is what is
   published and it fails exactly as it would with bundle generation disabled.
   Bundles therefore never turn a result that would otherwise be collected into
-  a collection failure.
+  a collection failure. The thread archive is checked last and is compacted
+  to whatever room the rest of the result leaves it; see "Oversized thread
+  archive" below.
 - A successor placed on another worker is delivered the bundle with its other
   inputs, outside its dependency view. A successor on the producer's worker is
   delivered nothing and resolves the ref exactly as before.
@@ -1750,6 +1752,46 @@ Treat a missing, wrong-size, or checksum-mismatched coordinator artifact as a
 recovery fault. Do not release dependencies or substitute worker-local content.
 Restore the matching database and artifact snapshot together, then verify the
 artifact through `backlog artifact get`.
+
+### Oversized thread archive
+
+The thread archive (`results/thread.json`, T3's full export of the attempt's
+thread) is the one result object whose size the task does not control. A long
+session can export tens of megabytes, and before this change an archive over
+`message_limits.max_artifact_bytes`, or over the room the other result objects
+left in the aggregate limit, made collection fail with `artifact: invalid or
+excessive size` and lost an otherwise valid result.
+
+The worker now checks the archive last, after every other result object has
+been accepted on its own, against the tighter of the worker custody limits and
+the package's. An archive that fits is uploaded byte for byte. One that does
+not is replaced in the upload by a compacted archive of the same thread, and
+the worker logs `thread archive over the result upload limits; publishing a
+compacted archive`. The compacted archive keeps:
+
+- every thread field (latest turn, session, pending approval and input flags,
+  background liveness and the rest);
+- the latest user message, the final assistant message, the newest turn start
+  refusal and the latest turn's last runtime error, which are everything the
+  completion check reads, so the coordinator reaches the same decision from
+  the compacted archive as the worker did from the full one;
+- as long a tail of messages, activities and the thread's other lists as fits.
+
+Fields beside `thread` in the export are left out. Only when even that does
+not fit are the thread fields no decision reads left out and the kept entries
+cut to the fields a decision reads (`messageBodiesOmitted`). The final
+assistant message is still uploaded whole as `results/final-message.md`.
+
+A compacted archive carries a `stewardTruncation` object with the original
+size (`originalSize`) and SHA-256 (`originalSha256`), the counts of omitted
+messages, activities and other entries, and `retainedPath`: where the worker
+keeps the full archive, relative to the worker's artifact root
+(`thread-archives/<attempt>/<sha256>.json`). That copy is read-only, never
+uploaded, and is the place to look for the full transcript.
+
+An archive whose decision evidence alone is over the limit cannot be
+compacted and fails collection exactly as before, as does a size error on any
+other result object.
 
 ### Unknown assignment
 
