@@ -20,6 +20,8 @@ import (
 type slowVerifyDriver struct {
 	*fakeDriver
 	verify time.Duration
+	// release, when set, lets the test choose completion without a timer.
+	release <-chan struct{}
 	// fail is what a collection that runs to the end returns.
 	fail error
 
@@ -47,17 +49,24 @@ func (d *slowVerifyDriver) Collect(ctx context.Context, _ workerproto.ExecutionP
 		d.running--
 		d.mu.Unlock()
 	}()
+	var elapsed <-chan time.Time
+	if d.release == nil {
+		timer := time.NewTimer(d.verify)
+		defer timer.Stop()
+		elapsed = timer.C
+	}
 	select {
-	case <-time.After(d.verify):
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		return d.fail
+	case <-d.release:
+	case <-elapsed:
 	case <-ctx.Done():
 		d.mu.Lock()
 		d.cancelled++
 		d.mu.Unlock()
 		return fmt.Errorf("finalize attempt verification %q: %w", "sh check-build.sh", ctx.Err())
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.fail
 }
 
 func (d *slowVerifyDriver) counts() (calls, cancelled, maxRunning int, deadlines []time.Duration) {
@@ -338,33 +347,114 @@ func TestStopYieldsToCollection(t *testing.T) {
 // collection fails, the stop takes effect on a later pass instead of another
 // collection starting in its place.
 func TestDeferredStopSurvivesFailedCollection(t *testing.T) {
-	runtime, driver := startSlowCollection(t, 300*time.Millisecond)
-	driver.mu.Lock()
-	driver.fail = errors.New("collect thread archive: T3 unreachable")
-	driver.mu.Unlock()
+	root := t.TempDir()
+	release := make(chan struct{})
+	failure := errors.New("collect thread archive: T3 unreachable")
+	driver := &slowVerifyDriver{
+		fakeDriver: &fakeDriver{
+			workspace:      filepath.Join(root, "workspace"),
+			workspaceReady: true,
+			observations:   []backlog.DispatchThreadState{backlog.DispatchThreadStopped},
+		},
+		release: release,
+		fail:    failure,
+	}
+	lifetime, shutdown := context.WithCancel(context.Background())
+	runtime := newSlowVerifyRuntimeWithLifetime(t, root, driver, lifetime)
+	var flight *collectionFlight
+	var record AttemptRecord
+	t.Cleanup(func() {
+		shutdown()
+		if flight != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			select {
+			case <-flight.done:
+				releaseCollection(runtime.collectionFlightKey(record), flight)
+			case <-ctx.Done():
+				t.Fatal("collection did not end with test lifetime")
+			}
+		}
+	})
+	if _, err := runtime.AcceptOffers(context.Background(), workerproto.AssignmentOffers{Offers: []workerproto.AssignmentOffer{testOffer(t)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.markPhase("assignment-1", PhaseStopped, "", driver.workspace, "thread-1"); err != nil {
+		t.Fatal(err)
+	}
+	reconcile := func(pass *collectionPass) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		if pass != nil {
+			ctx = withCollectionPass(ctx, pass)
+		}
+		if err := runtime.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Start without waiting under a pass deadline. The test owns when the
+	// collection can finish, so stop delivery cannot race a 300ms timer.
+	pass := &collectionPass{}
+	reconcile(pass)
+	if len(pass.started) != 1 {
+		t.Fatalf("started collections = %d, want 1", len(pass.started))
+	}
+	flight = pass.started[0]
+	record = attemptRecord(t, runtime)
+	if record.Phase != PhaseCollecting || !runtime.collectionRunning(record) {
+		t.Fatalf("phase=%q running=%v; want an in-flight collection", record.Phase, runtime.collectionRunning(record))
+	}
 	stop := testCommand(t, runtime, domain.WorkerCommandStop, "stop-1")
 	acks, err := runtime.DeliverCommands(context.Background(), workerproto.CommandDelivery{Commands: []domain.WorkerCommand{stop}})
 	if err != nil || len(acks.Acknowledgements) != 1 || !acks.Acknowledgements[0].Accepted {
 		t.Fatalf("stop acknowledgement = %+v, err = %v", acks, err)
 	}
+	reconcile(nil)
 	if record := attemptRecord(t, runtime); record.Phase != PhaseCollecting || driver.stopCalls != 0 {
 		t.Fatalf("during: phase=%q stops=%d; want the stop deferred behind the collection", record.Phase, driver.stopCalls)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	record := attemptRecord(t, runtime)
-	for time.Now().Before(deadline) && !record.StopConfirmed {
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		err := runtime.Reconcile(ctx)
-		cancel()
-		if err != nil {
-			t.Fatal(err)
-		}
-		record = attemptRecord(t, runtime)
+	// An expired pass reports its deadline; it must not cancel the collection
+	// or consume the accepted stop. Do not suppress errors from live passes.
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Nanosecond))
+	err = runtime.Reconcile(expired)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) || !runtime.collectionRunning(record) {
+		t.Fatalf("expired pass: err=%v running=%v", err, runtime.collectionRunning(record))
 	}
-	calls, _, _, _ := driver.counts()
-	if record.Phase != PhaseStopped || !record.StopConfirmed || driver.stopCalls != 1 || calls != 1 {
+
+	// Wait on this collection's publication signal, without spinning journal
+	// reads against 50ms pass deadlines or sleeping to guess its completion.
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	select {
+	case <-flight.done:
+	case <-ctx.Done():
+		t.Fatal("collection did not finish")
+	}
+	if flight.err != failure || runtime.collectionRunning(record) || !runtime.collectionRegistered(record) {
+		t.Fatalf("finished: err=%v running=%v registered=%v", flight.err, runtime.collectionRunning(record), runtime.collectionRegistered(record))
+	}
+	reconcile(nil) // Consume the failed collection exactly once.
+	after := attemptRecord(t, runtime)
+	if after.Phase != PhaseCollecting || after.StopConfirmed || driver.stopCalls != 0 || runtime.collectionRegistered(record) {
+		t.Fatalf("consumed: phase=%q stopConfirmed=%v stops=%d registered=%v", after.Phase, after.StopConfirmed, driver.stopCalls, runtime.collectionRegistered(record))
+	}
+	reconcile(nil) // With no collection left, execute the deferred stop.
+	reconcile(nil) // A further pass must not repeat either effect.
+	after = attemptRecord(t, runtime)
+	calls, cancelled, maxRunning, deadlines := driver.counts()
+	if after.Phase != PhaseStopped || !after.StopConfirmed || driver.stopCalls != 1 || calls != 1 {
 		t.Fatalf("phase=%q stopConfirmed=%v stops=%d collections=%d; want the stop confirmed and no second collection",
-			record.Phase, record.StopConfirmed, driver.stopCalls, calls)
+			after.Phase, after.StopConfirmed, driver.stopCalls, calls)
+	}
+	if after.Assignment.Epoch != record.Assignment.Epoch || after.WorkspacePath != record.WorkspacePath ||
+		after.Package.Package.Identity.AttemptID != record.Package.Package.Identity.AttemptID ||
+		cancelled != 0 || maxRunning != 1 || len(deadlines) != 1 ||
+		deadlines[0] < 10*time.Minute || deadlines[0] > DefaultFinalizationTimeout {
+		t.Fatalf("collection ownership or lifetime changed: before=%+v after=%+v cancelled=%d concurrent=%d deadlines=%v",
+			record, after, cancelled, maxRunning, deadlines)
 	}
 }
 
