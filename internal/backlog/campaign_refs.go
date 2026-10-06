@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -73,32 +74,106 @@ func CampaignRef(workflowRunID, taskID, name string) string {
 	return "refs/campaigns/" + workflowRunID + "/" + taskID + "/" + name
 }
 
-// Publish makes the declared commit reachable under its campaign ref and
-// returns its provenance. Publishing the same commit again is idempotent;
-// publishing a different commit under a ref that already exists is refused,
-// because a downstream task has already been told what that ref means.
-func (s CampaignRefStore) Publish(ctx context.Context, request PublishCommitRequest, log io.Writer) (CommitProvenance, error) {
+// StagedCampaignRef names where one attempt's declared commit waits for the
+// coordinator's review gate. It is never handed to a downstream task.
+func StagedCampaignRef(workflowRunID, taskID, attemptID, name string) string {
+	return "refs/campaign-staged/" + workflowRunID + "/" + taskID + "/" + attemptID + "/" + name
+}
+
+// resolveDeclaredCommit checks a publication request and resolves the commit
+// it names in the producing workspace.
+func (s CampaignRefStore) resolveDeclaredCommit(ctx context.Context, request PublishCommitRequest, log io.Writer) (string, error) {
 	if err := s.validate(); err != nil {
-		return CommitProvenance{}, err
+		return "", err
 	}
 	if err := validateCommitTarget(request.WorkflowRunID, request.TaskID, request.Name); err != nil {
-		return CommitProvenance{}, err
+		return "", err
 	}
 	if request.WorkspaceDir == "" {
-		return CommitProvenance{}, errors.New("publish campaign commit: producing workspace is required")
+		return "", errors.New("publish campaign commit: producing workspace is required")
 	}
 	if request.Repository == "" {
-		return CommitProvenance{}, errors.New("publish campaign commit: repository is required")
+		return "", errors.New("publish campaign commit: repository is required")
 	}
 	if !validGitObjectID(request.Base) {
-		return CommitProvenance{}, fmt.Errorf("publish campaign commit: base %q is not a commit ID", request.Base)
+		return "", fmt.Errorf("publish campaign commit: base %q is not a commit ID", request.Base)
 	}
 	revision := request.Revision
 	if revision == "" {
 		revision = "HEAD"
 	}
 	if err := validateGitRef(revision); revision != "HEAD" && err != nil {
-		return CommitProvenance{}, fmt.Errorf("publish campaign commit revision: %w", err)
+		return "", fmt.Errorf("publish campaign commit revision: %w", err)
+	}
+	raw, err := runLoggedCommandOutput(ctx, log, "", s.git(), "-C", request.WorkspaceDir,
+		"rev-parse", "--verify", revision+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolve declared commit %q: %w", request.Name, err)
+	}
+	commit := strings.TrimSpace(string(raw))
+	if !validGitObjectID(commit) {
+		return "", fmt.Errorf("resolve declared commit %q: Git returned invalid commit %q", request.Name, commit)
+	}
+	return commit, nil
+}
+
+// Stage keeps one attempt's declared commit reachable without making it the
+// task's campaign output, and returns the provenance it will have once it is.
+// A review-declared task's commit is staged: the worker cannot know whether
+// the coordinator's review gate will accept it, and a published ref is
+// permanent. Each attempt stages under its own ref, so a retry that produces a
+// different commit is never refused by an earlier attempt's work.
+func (s CampaignRefStore) Stage(ctx context.Context, request PublishCommitRequest, attemptID string, log io.Writer) (CommitProvenance, error) {
+	if !safePathComponent(attemptID) {
+		return CommitProvenance{}, fmt.Errorf("stage campaign commit: attempt ID %q is not a safe path component", attemptID)
+	}
+	commit, err := s.resolveDeclaredCommit(ctx, request, log)
+	if err != nil {
+		return CommitProvenance{}, err
+	}
+	staged := StagedCampaignRef(request.WorkflowRunID, request.TaskID, attemptID, request.Name)
+	if err := validateGitRef(staged); err != nil {
+		return CommitProvenance{}, fmt.Errorf("stage campaign commit: %w", err)
+	}
+	gitDir, err := s.open(ctx, log)
+	if err != nil {
+		return CommitProvenance{}, err
+	}
+	lock, err := acquireFileLock(ctx, s.Root, "campaign-refs")
+	if err != nil {
+		return CommitProvenance{}, fmt.Errorf("lock campaign refs: %w", err)
+	}
+	defer lock.Close()
+	// The staged ref belongs to this attempt alone and nobody has been told
+	// what it means, so finalizing the attempt again replaces it.
+	if err := runLoggedCommand(ctx, log, "", s.git(), "-C", request.WorkspaceDir,
+		"push", "--", gitDir, "+"+commit+":"+staged); err != nil {
+		return CommitProvenance{}, fmt.Errorf("stage campaign ref %s: %w", staged, err)
+	}
+	createdAt := request.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	provenance := CommitProvenance{
+		Version: CampaignCommitRecordVersion, WorkflowRunID: request.WorkflowRunID,
+		TaskID: request.TaskID, Name: request.Name, Repository: request.Repository,
+		Base: request.Base, Commit: commit, Ref: CampaignRef(request.WorkflowRunID, request.TaskID, request.Name),
+		CreatedAt: createdAt.UTC(),
+	}
+	if err := writeCommitRecord(s.stagedPath(request.WorkflowRunID, request.TaskID, attemptID, request.Name), provenance); err != nil {
+		return CommitProvenance{}, err
+	}
+	return provenance, nil
+}
+
+// Publish makes the declared commit reachable under its campaign ref and
+// returns its provenance. Publishing the same commit again is idempotent;
+// publishing a different commit under a ref that already exists is refused,
+// because a downstream task has already been told what that ref means.
+func (s CampaignRefStore) Publish(ctx context.Context, request PublishCommitRequest, log io.Writer) (CommitProvenance, error) {
+	commit, err := s.resolveDeclaredCommit(ctx, request, log)
+	if err != nil {
+		return CommitProvenance{}, err
 	}
 	gitDir, err := s.open(ctx, log)
 	if err != nil {
@@ -110,15 +185,6 @@ func (s CampaignRefStore) Publish(ctx context.Context, request PublishCommitRequ
 	}
 	defer lock.Close()
 
-	raw, err := runLoggedCommandOutput(ctx, log, "", s.git(), "-C", request.WorkspaceDir,
-		"rev-parse", "--verify", revision+"^{commit}")
-	if err != nil {
-		return CommitProvenance{}, fmt.Errorf("resolve declared commit %q: %w", request.Name, err)
-	}
-	commit := strings.TrimSpace(string(raw))
-	if !validGitObjectID(commit) {
-		return CommitProvenance{}, fmt.Errorf("resolve declared commit %q: Git returned invalid commit %q", request.Name, commit)
-	}
 	ref := CampaignRef(request.WorkflowRunID, request.TaskID, request.Name)
 	if existing, found, err := s.head(ctx, gitDir, ref, log); err != nil {
 		return CommitProvenance{}, err
@@ -179,6 +245,9 @@ func (s CampaignRefStore) FetchInto(ctx context.Context, workspaceDir string, pr
 	if err != nil {
 		return err
 	}
+	if err := s.promote(ctx, gitDir, provenance, log); err != nil {
+		return err
+	}
 	if err := runLoggedCommand(ctx, log, "", s.git(), "-C", workspaceDir,
 		"fetch", "--no-tags", "--", gitDir, "+"+ref+":"+ref); err != nil {
 		return fmt.Errorf("fetch campaign ref %s: %w", ref, err)
@@ -193,6 +262,45 @@ func (s CampaignRefStore) FetchInto(ctx context.Context, workspaceDir string, pr
 	return nil
 }
 
+// promote publishes a staged commit under its campaign ref the first time its
+// provenance is consumed. A consumer holds that provenance only because the
+// coordinator accepted the producing result and handed it on as a dependency,
+// so consumption is the acceptance the worker could not see at finalization.
+// A ref that already exists is left alone; the fetch then checks it names the
+// commit the consumer was told about.
+func (s CampaignRefStore) promote(ctx context.Context, gitDir string, provenance CommitProvenance, log io.Writer) error {
+	ref := CampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.Name)
+	lock, err := acquireFileLock(ctx, s.Root, "campaign-refs")
+	if err != nil {
+		return fmt.Errorf("lock campaign refs: %w", err)
+	}
+	defer lock.Close()
+	if _, found, err := s.head(ctx, gitDir, ref, log); err != nil || found {
+		return err
+	}
+	stagedRecords, err := filepath.Glob(filepath.Join(s.Root, "staged", provenance.WorkflowRunID, provenance.TaskID, "*", provenance.Name+".json"))
+	if err != nil {
+		return fmt.Errorf("find staged campaign commit: %w", err)
+	}
+	for _, path := range stagedRecords {
+		staged, readErr := s.readProvenance(path)
+		if readErr != nil {
+			return readErr
+		}
+		if staged.Commit != provenance.Commit || staged.Base != provenance.Base || staged.Repository != provenance.Repository {
+			continue
+		}
+		// The staged ref keeps the commit in this store; the campaign ref is
+		// created only if it still does not exist.
+		if err := runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir,
+			"update-ref", ref, staged.Commit, ""); err != nil {
+			return fmt.Errorf("publish staged campaign ref %s: %w", ref, err)
+		}
+		return s.writeProvenance(staged)
+	}
+	return fmt.Errorf("campaign commit %s at %s was neither published nor staged in this store", ref, provenance.Commit)
+}
+
 // List reports every commit published for one workflow run, oldest first.
 func (s CampaignRefStore) List(workflowRunID string) ([]CommitProvenance, error) {
 	if err := s.validate(); err != nil {
@@ -201,7 +309,10 @@ func (s CampaignRefStore) List(workflowRunID string) ([]CommitProvenance, error)
 	if !safePathComponent(workflowRunID) {
 		return nil, fmt.Errorf("campaign commits: workflow run ID %q is not a safe path component", workflowRunID)
 	}
-	root := filepath.Join(s.Root, "provenance", workflowRunID)
+	return s.listRecords(filepath.Join(s.Root, "provenance", workflowRunID))
+}
+
+func (s CampaignRefStore) listRecords(root string) ([]CommitProvenance, error) {
 	var records []CommitProvenance
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -240,17 +351,20 @@ func (s CampaignRefStore) Runs() ([]string, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(filepath.Join(s.Root, "provenance"))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("list campaign commit runs: %w", err)
-	}
+	// A run whose every declared commit is still staged holds commits too.
 	var runs []string
-	for _, entry := range entries {
-		if entry.IsDir() && safePathComponent(entry.Name()) {
-			runs = append(runs, entry.Name())
+	for _, kind := range []string{"provenance", "staged"} {
+		entries, err := os.ReadDir(filepath.Join(s.Root, kind))
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("list campaign commit runs: %w", err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() && safePathComponent(entry.Name()) && !slices.Contains(runs, entry.Name()) {
+				runs = append(runs, entry.Name())
+			}
 		}
 	}
 	sort.Strings(runs)
@@ -278,7 +392,7 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 	// destroyed by the wholesale removal below and its ref left behind forever,
 	// so the list this acts on is read again under the lock that publication
 	// also takes.
-	if records, err := s.List(workflowRunID); err != nil || len(records) == 0 {
+	if holds, err := s.holdsRun(workflowRunID); err != nil || !holds {
 		return err
 	}
 	lock, err := acquireFileLock(ctx, s.Root, "campaign-refs")
@@ -286,12 +400,16 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 		return fmt.Errorf("lock campaign refs: %w", err)
 	}
 	defer lock.Close()
+	if holds, err := s.holdsRun(workflowRunID); err != nil || !holds {
+		return err
+	}
 	records, err := s.List(workflowRunID)
 	if err != nil {
 		return err
 	}
-	if len(records) == 0 {
-		return nil
+	staged, err := s.listRecords(filepath.Join(s.Root, "staged", workflowRunID))
+	if err != nil {
+		return fmt.Errorf("list staged campaign commits: %w", err)
 	}
 	gitDir, err := s.open(ctx, log)
 	if err != nil {
@@ -303,10 +421,46 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 			return fmt.Errorf("release campaign ref %s: %w", record.Ref, err)
 		}
 	}
-	if err := removeIngestedTree(filepath.Join(s.Root, "provenance", workflowRunID)); err != nil {
-		return fmt.Errorf("release campaign commit records: %w", err)
+	if len(staged) != 0 {
+		// Staged refs are named by attempt, which the records do not repeat,
+		// so they are found under the run's staging namespace.
+		names, err := runLoggedCommandOutput(ctx, log, "", s.git(), "--git-dir", gitDir,
+			"for-each-ref", "--format=%(refname)", "refs/campaign-staged/"+workflowRunID+"/")
+		if err != nil {
+			return fmt.Errorf("list staged campaign refs: %w", err)
+		}
+		for _, name := range strings.Fields(string(names)) {
+			if err := runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir,
+				"update-ref", "-d", name); err != nil {
+				return fmt.Errorf("release staged campaign ref %s: %w", name, err)
+			}
+		}
+	}
+	for _, kind := range []string{"provenance", "staged"} {
+		dir := filepath.Join(s.Root, kind, workflowRunID)
+		if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err := removeIngestedTree(dir); err != nil {
+			return fmt.Errorf("release campaign commit records: %w", err)
+		}
 	}
 	return nil
+}
+
+// holdsRun reports whether the store has published or staged anything for one
+// workflow run.
+func (s CampaignRefStore) holdsRun(workflowRunID string) (bool, error) {
+	for _, kind := range []string{"provenance", "staged"} {
+		records, err := s.listRecords(filepath.Join(s.Root, kind, workflowRunID))
+		if err != nil {
+			return false, err
+		}
+		if len(records) != 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s CampaignRefStore) validate() error {
@@ -370,8 +524,15 @@ func (s CampaignRefStore) provenancePath(workflowRunID, taskID, name string) str
 	return filepath.Join(s.Root, "provenance", workflowRunID, taskID, name+".json")
 }
 
+func (s CampaignRefStore) stagedPath(workflowRunID, taskID, attemptID, name string) string {
+	return filepath.Join(s.Root, "staged", workflowRunID, taskID, attemptID, name+".json")
+}
+
 func (s CampaignRefStore) writeProvenance(provenance CommitProvenance) error {
-	path := s.provenancePath(provenance.WorkflowRunID, provenance.TaskID, provenance.Name)
+	return writeCommitRecord(s.provenancePath(provenance.WorkflowRunID, provenance.TaskID, provenance.Name), provenance)
+}
+
+func writeCommitRecord(path string, provenance CommitProvenance) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create campaign commit record directory: %w", err)
 	}

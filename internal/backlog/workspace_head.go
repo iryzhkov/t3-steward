@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,12 +32,19 @@ func WorkspaceHeadArtifactID(attemptID string) string {
 // .t3-steward directories are not the reviewed work and are not counted;
 // neither are untracked files. A workspace without a usable HEAD is reported
 // through Error, never as an empty clean head.
+//
+// The workspace's index and configuration belong to the executor, so neither
+// is trusted to say what changed. Files marked assume-unchanged or
+// skip-worktree, a stat cache with forged timestamps, and a configured file
+// system monitor all let "git status" skip a file. The worktree is therefore
+// also compared by content with a fresh index read from HEAD, which carries no
+// flags and no cached stat data, with the monitor and sparse checkout off.
 func CaptureWorkspaceHead(ctx context.Context, gitBinary, workspace string, outputs []domain.ArtifactDeclaration) domain.WorkspaceHead {
 	captured := domain.WorkspaceHead{Schema: domain.WorkspaceHeadSchema}
 	if gitBinary == "" {
 		gitBinary = "git"
 	}
-	head, err := workspaceGit(ctx, gitBinary, workspace, "rev-parse", "--verify", "--end-of-options", "HEAD^{commit}")
+	head, err := workspaceGit(ctx, gitBinary, workspace, nil, "rev-parse", "--verify", "--end-of-options", "HEAD^{commit}")
 	if err != nil {
 		captured.Error = "resolve workspace HEAD: " + err.Error()
 		return captured
@@ -45,9 +54,27 @@ func CaptureWorkspaceHead(ctx context.Context, gitBinary, workspace string, outp
 		captured.Head, captured.Error = "", fmt.Sprintf("resolve workspace HEAD: Git returned %q", captured.Head)
 		return captured
 	}
-	status, err := workspaceGit(ctx, gitBinary, workspace, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=none")
+	statusArgs := []string{"status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=none"}
+	// The workspace's own index also reports staged changes.
+	status, err := workspaceGit(ctx, gitBinary, workspace, nil, statusArgs...)
 	if err != nil {
 		captured.Head, captured.Error = "", "read workspace status: "+err.Error()
+		return captured
+	}
+	scratch, err := os.MkdirTemp("", "workspace-head-")
+	if err != nil {
+		captured.Head, captured.Error = "", "create scratch index: "+err.Error()
+		return captured
+	}
+	defer os.RemoveAll(scratch)
+	freshIndex := []string{"GIT_INDEX_FILE=" + filepath.Join(scratch, "index")}
+	if _, err := workspaceGit(ctx, gitBinary, workspace, freshIndex, "read-tree", captured.Head); err != nil {
+		captured.Head, captured.Error = "", "read HEAD into a scratch index: "+err.Error()
+		return captured
+	}
+	physical, err := workspaceGit(ctx, gitBinary, workspace, freshIndex, statusArgs...)
+	if err != nil {
+		captured.Head, captured.Error = "", "compare the workspace with HEAD: "+err.Error()
 		return captured
 	}
 	excluded := make(map[string]struct{}, len(outputs))
@@ -56,6 +83,15 @@ func CaptureWorkspaceHead(ctx context.Context, gitBinary, workspace string, outp
 			excluded[path.Clean(output.Name)] = struct{}{}
 		}
 	}
+	seen := make(map[string]struct{})
+	countWorkspaceChanges(&captured, status, excluded, seen)
+	countWorkspaceChanges(&captured, physical, excluded, seen)
+	return captured
+}
+
+// countWorkspaceChanges adds the tracked paths of one porcelain v1 -z listing
+// to the report, once each.
+func countWorkspaceChanges(captured *domain.WorkspaceHead, status []byte, excluded, seen map[string]struct{}) {
 	entries := strings.Split(string(status), "\x00")
 	for index := 0; index < len(entries); index++ {
 		entry := entries[index]
@@ -77,13 +113,16 @@ func CaptureWorkspaceHead(ctx context.Context, gitBinary, workspace string, outp
 			if _, skip := excluded[name]; skip || workspaceHeadIgnored(name) {
 				continue
 			}
+			if _, counted := seen[name]; counted {
+				continue
+			}
+			seen[name] = struct{}{}
 			captured.Dirty = true
 			if len(captured.DirtyPaths) < domain.MaxWorkspaceHeadDirtyPaths {
 				captured.DirtyPaths = append(captured.DirtyPaths, name)
 			}
 		}
 	}
-	return captured
 }
 
 func workspaceHeadIgnored(name string) bool {
@@ -95,11 +134,19 @@ func workspaceHeadIgnored(name string) bool {
 	return false
 }
 
-// workspaceGit runs one read-only Git query in the workspace and returns its
-// standard output alone, so a warning on standard error cannot corrupt a
-// porcelain listing.
-func workspaceGit(ctx context.Context, gitBinary, workspace string, args ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, gitBinary, append([]string{"-C", workspace}, args...)...)
+// workspaceGit runs one Git query in the workspace and returns its standard
+// output alone, so a warning on standard error cannot corrupt a porcelain
+// listing. It writes nothing in the workspace: optional locks are off, so
+// status does not refresh the workspace's index, and the workspace's file
+// system monitor and sparse checkout settings are overridden. env adds to the
+// worker's environment.
+func workspaceGit(ctx context.Context, gitBinary, workspace string, env []string, args ...string) ([]byte, error) {
+	command := exec.CommandContext(ctx, gitBinary, append([]string{
+		"--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.sparseCheckout=false", "-C", workspace,
+	}, args...)...)
+	if len(env) != 0 {
+		command.Env = append(os.Environ(), env...)
+	}
 	command.WaitDelay = time.Second
 	var stderr bytes.Buffer
 	command.Stderr = &stderr

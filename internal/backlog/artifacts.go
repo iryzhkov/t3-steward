@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +36,13 @@ type AttemptFinalization struct {
 	// commit it was built on.
 	Repository string
 	BaseCommit string
+	// ReviewGated marks a task whose completion the coordinator decides by
+	// comparing its work with the head its latest review round accepted. Its
+	// workspace HEAD is reported as it stands after verification, and its
+	// declared commits are staged rather than published, because only the
+	// coordinator can say whether they are the reviewed work. A task that
+	// declares review requirements is gated whether or not this is set.
+	ReviewGated bool
 }
 
 // FinalizationArtifact is evidence captured alongside an attempt's declared
@@ -107,6 +115,22 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			failures = append(failures, fmt.Sprintf("verification command failed (%d): %s", report.ExitCode, command))
 			break
 		}
+	}
+	gated := request.ReviewGated || request.Task.ReviewRequirements != nil
+	extras := request.Extra
+	if gated {
+		// The review completion gate compares this HEAD with the head the
+		// task's latest review round accepted. It is read after verification,
+		// because a verification command that rewrites tracked source leaves
+		// work the review never saw.
+		head, err := MarshalWorkspaceHead(CaptureWorkspaceHead(ctx, "", request.WorkspaceDir, request.Task.Outputs))
+		if err != nil {
+			return FinalizedAttempt{}, fmt.Errorf("finalize attempt: %w", err)
+		}
+		extras = append(slices.Clip(extras), FinalizationArtifact{
+			ID: WorkspaceHeadArtifactID(request.Attempt.ID), Name: WorkspaceHeadArtifactName,
+			MediaType: "application/json", Kind: domain.ArtifactGitState, Producer: "worker", Content: head,
+		})
 	}
 
 	workspaceRoot, err := os.OpenRoot(request.WorkspaceDir)
@@ -240,12 +264,23 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		if f.CampaignRefs.Root == "" {
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt commit %q: campaign ref store is required", declaration.Name)
 		}
-		provenance, publishErr := f.CampaignRefs.Publish(ctx, PublishCommitRequest{
+		publication := PublishCommitRequest{
 			WorkflowRunID: request.Attempt.WorkflowRunID, TaskID: request.Task.ID,
 			Name: declaration.Name, Repository: request.Repository,
 			WorkspaceDir: request.WorkspaceDir, Revision: declaration.Commit.Revision,
 			Base: request.BaseCommit, CreatedAt: now,
-		}, nil)
+		}
+		var provenance CommitProvenance
+		var publishErr error
+		if gated {
+			// Only the coordinator's review gate can say whether this commit
+			// is the reviewed work, so it is staged under this attempt and
+			// becomes the task's campaign output only when a dependent task
+			// consumes the accepted result.
+			provenance, publishErr = f.CampaignRefs.Stage(ctx, publication, request.Attempt.ID, nil)
+		} else {
+			provenance, publishErr = f.CampaignRefs.Publish(ctx, publication, nil)
+		}
 		if publishErr != nil {
 			// The task promised a commit and the promise could not be kept.
 			// That is the task's failure, reported with its cause, exactly as a
@@ -280,7 +315,7 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		})
 	}
 
-	for index, extra := range request.Extra {
+	for index, extra := range extras {
 		storagePath := filepath.ToSlash(filepath.Join(
 			"runs", request.Attempt.WorkflowRunID, request.Task.ID, request.Attempt.ID,
 			"artifacts", extra.Name,

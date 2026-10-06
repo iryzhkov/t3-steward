@@ -15,10 +15,24 @@ advertises it is offered the task, so an older worker never runs one and returns
 results that cannot be judged.
 
 When the worker collects such a turn, after the task identity record is removed
-and before verification commands run, it reads:
+and after verification commands have run, it reads:
 
-- `git rev-parse HEAD` in the workspace, the physical HEAD; and
-- `git status --porcelain --untracked-files=no`, the tracked changes.
+- `git rev-parse HEAD` in the workspace, the physical HEAD;
+- `git status --porcelain --untracked-files=no`, the tracked changes the
+  workspace's own index reports, including staged ones; and
+- the same status against a scratch index read from HEAD, which compares
+  every tracked file by content.
+
+The report is taken after verification because a verification command such as
+a generator or formatter can rewrite tracked source, and that is work the
+review never saw.
+
+The workspace's index and Git configuration belong to the executor, so neither
+is trusted to say what changed. Files flagged assume-unchanged or
+skip-worktree, forged stat data and a configured file system monitor can all
+make the workspace's own status skip a file; the scratch index carries no flags
+and no stat cache, and both queries run with `core.fsmonitor` and
+`core.sparseCheckout` off and without refreshing the workspace's index.
 
 Declared file outputs, `.t3/` and `.t3-steward/` are not counted as changes,
 and untracked files are not either. The report travels with the result as one
@@ -69,6 +83,23 @@ A declared commit output must resolve to the accepted head. Its provenance
 record's commit is compared with the head of the latest accepted round, and any
 other commit fails the gate as `head-changed-after-review`.
 
+The worker cannot know whether the gate will accept its result, and a published
+campaign ref is permanent, so a review-declared task's declared commit is only
+staged while it finalizes: it is kept reachable under
+`refs/campaign-staged/<run>/<task>/<attempt>/<name>`, with its provenance
+record under the store's `staged/` directory, and the provenance artifact the
+result carries already names the campaign ref it will have. Each attempt stages
+under its own ref, so a retry that produces a different commit is not refused
+by an earlier attempt's work.
+
+The campaign ref `refs/campaigns/<run>/<task>/<name>` and its record are
+created only when a dependent task consumes the commit. A consumer holds the
+provenance only because the coordinator accepted the producing result and
+handed it on, so consumption is that acceptance. Until then `Resolve` finds
+nothing for the task, and a commit the gate rejected never becomes the task's
+output. Releasing a run drops its staged refs and records with its published
+ones, and a run that only staged commits still counts as held.
+
 ## Where the decision is shown
 
 - `campaign explain <run>/<task>` (and `backlog explain`) prints the decision
@@ -85,10 +116,12 @@ settles the attempt.
 
 ## Limits
 
-- The worker publishes a declared commit to its campaign ref while finalizing,
-  before the coordinator's gate runs. A gate failure therefore leaves that ref
-  naming the unreviewed commit, and a retry that produces a different commit is
-  refused by the existing ref-redefinition rule.
+- Every tracked file is hashed at collection, because the scratch index has
+  no stat cache. That is a cost in proportion to the repository's size, paid
+  only by review-declared tasks.
+- A staged commit is promoted on the worker that staged it, which is the only
+  store that holds it, exactly as a published commit is fetched only from the
+  worker that published it.
 - The frozen review authority is bound to the task's first attempt
   (M16-1), so a retried attempt cannot open rounds of its own. A retry
   completes only if its HEAD is exactly the head the latest round accepted;
