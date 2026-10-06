@@ -65,7 +65,10 @@ func (s *Store) CommitArtifactPublication(ctx context.Context, publication domai
 	// was released or completed. That lets a superseded attempt hand on the
 	// snapshot it queued before its lease ended. A dispatch that was never
 	// claimed, or that the assignment's next epoch replaced, still refuses it.
-	historical := isLiveContinuationSnapshot(artifact)
+	historical := publication.LiveContinuation
+	if historical && !isLiveContinuationSnapshot(artifact) {
+		return domain.Artifact{}, errors.New("live continuation publication is not a continuation snapshot")
+	}
 	stateAdmits := assignment.State == domain.AssignmentClaimed || assignment.State == domain.AssignmentCompleted
 	if historical {
 		stateAdmits = assignment.State != domain.AssignmentOffered
@@ -116,7 +119,7 @@ func (s *Store) CommitArtifactPublication(ctx context.Context, publication domai
 // isLiveContinuationSnapshot reports whether an artifact is a continuation.md
 // snapshot its attempt handed on while it ran, under its own live identity.
 func isLiveContinuationSnapshot(artifact domain.Artifact) bool {
-	_, live := domain.ContinuationLiveSequence(artifact.ID, artifact.AttemptID)
+	_, _, live := domain.ContinuationLiveSequence(artifact.ID, artifact.AttemptID)
 	return live && artifact.Kind == domain.ArtifactCheckpoint && artifact.Name == domain.ContinuationArtifactName
 }
 

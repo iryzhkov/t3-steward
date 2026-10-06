@@ -486,7 +486,7 @@ func (r *Runtime) recordContinuation(ctx context.Context, id string, boundary do
 // checkpoint an earlier attempt of its task left is. Static inputs are
 // materialized under the workspace's .t3/ directory.
 func continuationPromptSentence(input workerproto.ContinuationInput) string {
-	return fmt.Sprintf("An earlier attempt of this task (%s) left its continuation.md checkpoint, %d bytes captured %s, at `.t3/%s`: read it before you start, and keep your own continuation.md current.",
+	return fmt.Sprintf("Earlier work on this task (attempt %s) left its continuation.md checkpoint, %d bytes captured %s, at `.t3/%s`: read it before you start, and keep your own continuation.md current.",
 		input.AttemptID, input.Size, input.CapturedAt.UTC().Format(time.RFC3339), input.Path)
 }
 

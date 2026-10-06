@@ -80,7 +80,7 @@ func TestSupersessionBeforeTheNextImportStillHandsTheCheckpointOn(t *testing.T) 
 			if delivered == nil || delivered.ID != artifact.ID || delivered.SHA256 != artifact.SHA256 {
 				t.Fatalf("static inputs = %+v", pkg.StaticInputs)
 			}
-			if latest := LatestContinuationArtifact(records.Artifacts, records.Attempts, "run-1", consumer.ID, ""); latest == nil || latest.ID != artifact.ID {
+			if latest := LatestContinuationArtifact(records.Artifacts, records.Attempts, "run-1", consumer.ID); latest == nil || latest.ID != artifact.ID {
 				t.Fatalf("the task's latest checkpoint = %+v", latest)
 			}
 		})
@@ -96,7 +96,10 @@ func TestLatestContinuationNeverSelectsAnOlderSnapshot(t *testing.T) {
 			Kind: domain.ArtifactCheckpoint, Name: domain.ContinuationArtifactName, CreatedAt: at}
 	}
 	live := func(attemptID string, sequence int64, at time.Time) domain.Artifact {
-		return snapshot(attemptID, domain.ContinuationLiveArtifactID(attemptID, sequence), at)
+		return snapshot(attemptID, domain.ContinuationLiveArtifactID(attemptID, 1, sequence), at)
+	}
+	dispatched := func(attemptID string, epoch, sequence int64, at time.Time) domain.Artifact {
+		return snapshot(attemptID, domain.ContinuationLiveArtifactID(attemptID, epoch, sequence), at)
 	}
 	attempts := []domain.Attempt{
 		{ID: "attempt-b", WorkflowRunID: "run-1", TaskID: "task", Number: 1},
@@ -112,6 +115,7 @@ func TestLatestContinuationNeverSelectsAnOlderSnapshot(t *testing.T) {
 		{name: "the result outranks every live snapshot", older: live("attempt-1", 10, now), newer: snapshot("attempt-1", domain.ContinuationArtifactID("attempt-1"), now.Add(-time.Minute))},
 		{name: "a later attempt outranks an earlier attempt's clock", older: live("attempt-b", 3, now.Add(time.Hour)), newer: live("attempt-a", 1, now)},
 		{name: "capture time orders attempts of unknown number", older: live("attempt-y", 5, now), newer: live("attempt-x", 1, now.Add(time.Second)), withoutNumber: true},
+		{name: "a later dispatch of the attempt outranks an earlier one", older: dispatched("attempt-1", 1, 5, now), newer: dispatched("attempt-1", 2, 1, now.Add(-time.Minute))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			known := attempts
@@ -119,11 +123,110 @@ func TestLatestContinuationNeverSelectsAnOlderSnapshot(t *testing.T) {
 				known = nil
 			}
 			for _, artifacts := range [][]domain.Artifact{{tc.older, tc.newer}, {tc.newer, tc.older}} {
-				latest := LatestContinuationArtifact(artifacts, known, "run-1", "task", "")
+				latest := LatestContinuationArtifact(artifacts, known, "run-1", "task")
 				if latest == nil || latest.ID != tc.newer.ID {
 					t.Fatalf("latest = %+v; want %s, not %s", latest, tc.newer.ID, tc.older.ID)
 				}
 			}
 		})
+	}
+
+	// Two attempts of one number: each attempt's latest is chosen by its own
+	// sequence first, so every storage order gives the same answer.
+	t.Run("equal attempt numbers in any storage order", func(t *testing.T) {
+		equal := []domain.Attempt{{ID: "attempt-x", WorkflowRunID: "run-1", TaskID: "task", Number: 2}, {ID: "attempt-y", WorkflowRunID: "run-1", TaskID: "task", Number: 2}}
+		x1, x2, y1 := live("attempt-x", 1, now.Add(10*time.Minute)), live("attempt-x", 2, now.Add(5*time.Minute)), live("attempt-y", 1, now.Add(7*time.Minute))
+		for _, artifacts := range [][]domain.Artifact{{x1, x2, y1}, {x1, y1, x2}, {x2, x1, y1}, {x2, y1, x1}, {y1, x1, x2}, {y1, x2, x1}} {
+			if latest := LatestContinuationArtifact(artifacts, equal, "run-1", "task"); latest == nil || latest.ID != y1.ID {
+				t.Fatalf("order %v: latest = %+v; want %s", []string{artifacts[0].ID, artifacts[1].ID, artifacts[2].ID}, latest, y1.ID)
+			}
+		}
+	})
+}
+
+// Self-review of round 2: a lost lease releases the assignment and the
+// planner offers the same attempt again at the next assignment epoch. The
+// snapshot the first dispatch queued is imported after the release, and the
+// second dispatch's first package carries the attempt's own checkpoint.
+func TestAnAttemptOfferedAgainResumesFromItsEarlierDispatch(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 10, 22, 0, 0, 0, time.UTC)
+	records, reoffer := packageBuilderFixture(now)
+	consumer := records.Tasks[1]
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	// The first dispatch ran on worker-a and queued a snapshot; its lease was
+	// lost and the assignment released before the snapshot was polled.
+	attempt := records.Attempts[0]
+	attempt.Progress, attempt.Control, attempt.AssignmentID = domain.ProgressReady, domain.ControlUnassigned, ""
+	first := domain.Assignment{ID: reoffer.ID, AttemptID: attempt.ID, WorkerID: "worker-a", WorkerEpoch: "worker-epoch-1", State: domain.AssignmentReleased, Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Minute)}
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{WorkflowRuns: records.WorkflowRuns, Tasks: []domain.Task{consumer}, Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{first}}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := []byte("step 3 of 5; next: the gate\n")
+	captured := now.Add(-20 * time.Minute)
+	checkpoint := domain.ContinuationCheckpoint{AttemptID: attempt.ID, Sequence: 1, Turn: "turn-3", Boundary: domain.ContinuationTurnEnd,
+		SHA256: resultObject("x", "x", "checkpoint", "text/markdown", snapshot).SHA256, Size: int64(len(snapshot)), OriginalSize: int64(len(snapshot)), CapturedAt: captured}
+	response, data := liveContinuationUpload(t, first, checkpoint, snapshot, now.Add(-19*time.Minute))
+	importer := CoordinatorCheckpointImporter{CoordinatorID: "coordinator", CoordinatorEpoch: 1, Store: store, Artifacts: CoordinatorArtifactStore{Root: filepath.Join(t.TempDir(), "artifacts"), Catalog: store}, MaxArtifactBytes: 1024, MaxTotalBytes: 4096, Now: func() time.Time { return now }}
+	artifact, err := importer.Import(ctx, response, data)
+	if err != nil {
+		t.Fatalf("the first dispatch's snapshot was not imported after the release: %v", err)
+	}
+
+	// The planner offers the same attempt again at epoch 2.
+	reoffer.Epoch = 2
+	records.Assignments[0] = reoffer
+	stored, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records.Artifacts = append(records.Artifacts, stored.Artifacts...)
+	builder := packageBuilder(t, records)
+	builder.WorkerCapabilities = map[string][]string{"normandy": workerproto.SupportedPackageCapabilities()}
+	offer, err := builder.BuildAssignmentOffer(ctx, reoffer, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := offer.Package.Package
+	if pkg.Continuation == nil || pkg.Continuation.AttemptID != attempt.ID || !pkg.Continuation.CapturedAt.Equal(captured) {
+		t.Fatalf("the attempt offered again did not receive its own checkpoint: %+v", pkg.Continuation)
+	}
+	var delivered *workerproto.ArtifactObject
+	for index := range pkg.StaticInputs {
+		if pkg.StaticInputs[index].Path == workerproto.ContinuationInputPath {
+			delivered = &pkg.StaticInputs[index]
+		}
+	}
+	if delivered == nil || delivered.ID != artifact.ID {
+		t.Fatalf("static inputs = %+v", pkg.StaticInputs)
+	}
+
+	// The second dispatch starts its sequence again at 1. Its snapshot is its
+	// own artifact, never a conflict with the first dispatch's, and it is the
+	// attempt's latest.
+	second := first
+	second.WorkerID, second.WorkerEpoch, second.State, second.Epoch = "worker-b", "worker-epoch-1", domain.AssignmentClaimed, 2
+	attempt.Progress, attempt.Control, attempt.AssignmentID = domain.ProgressActive, domain.ControlRunning, second.ID
+	if err := store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{WorkflowRuns: records.WorkflowRuns, Tasks: []domain.Task{consumer}, Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{second}}); err != nil {
+		t.Fatal(err)
+	}
+	resumed := []byte("step 4 of 5\n")
+	checkpoint.SHA256, checkpoint.Size, checkpoint.OriginalSize, checkpoint.CapturedAt = resultObject("x", "x", "checkpoint", "text/markdown", resumed).SHA256, int64(len(resumed)), int64(len(resumed)), now
+	response, data = liveContinuationUpload(t, second, checkpoint, resumed, now.Add(time.Second))
+	later, err := importer.Import(ctx, response, data)
+	if err != nil || later.ID == artifact.ID {
+		t.Fatalf("the second dispatch's first snapshot = %+v, %v", later, err)
+	}
+	stored, err = store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest := LatestContinuationArtifact(stored.Artifacts, stored.Attempts, "run-1", consumer.ID); latest == nil || latest.ID != later.ID {
+		t.Fatalf("latest = %+v; want the second dispatch's %s", latest, later.ID)
 	}
 }

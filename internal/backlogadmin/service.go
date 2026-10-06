@@ -1353,7 +1353,7 @@ func (v view) artifacts(query Query) []Artifact {
 // continuationCheckpoint is the task's latest continuation.md checkpoint, or
 // nil when the coordinator holds none.
 func (v view) continuationCheckpoint(runID, taskID string) *ContinuationCheckpoint {
-	latest := backlog.LatestContinuationArtifact(v.records.Artifacts, v.records.Attempts, runID, taskID, "")
+	latest := backlog.LatestContinuationArtifact(v.records.Artifacts, v.records.Attempts, runID, taskID)
 	if latest == nil {
 		return nil
 	}

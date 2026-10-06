@@ -91,33 +91,39 @@ func keepContinuationCheckpoint(artifacts []domain.Artifact, payloads [][]byte, 
 }
 
 // LatestContinuationArtifact returns the newest continuation snapshot the
-// coordinator holds for a task of a run, leaving out the named attempt's own.
-// A snapshot counts whether it arrived while its attempt ran or with its
-// result.
+// coordinator holds for a task of a run. A snapshot counts whether it arrived
+// while its attempt ran or with its result. An attempt's own snapshots count
+// too: an attempt offered again after its lease was lost or its assignment
+// released resumes from what its earlier dispatch left.
 //
-// Newest follows the task's execution order, never a worker's clock: the
-// attempt with the higher number wins, and within one attempt the snapshot
-// its result carries wins (it is the attempt's latest when it collected),
-// then the higher live sequence. Capture time only orders snapshots of
-// attempts whose number is unknown or equal, and the attempt and artifact IDs
-// break what is left, so the answer never depends on storage order or on the
-// order in which snapshots were imported.
-func LatestContinuationArtifact(artifacts []domain.Artifact, attempts []domain.Attempt, runID, taskID, excludeAttemptID string) *domain.Artifact {
+// Newest follows the task's execution order, never a worker's clock. Each
+// attempt's latest is its result's snapshot when it has one (the latest the
+// attempt had when it collected), and otherwise its live snapshot of the
+// highest assignment epoch, then sequence. Among attempts, the higher number
+// wins; capture time only orders attempts whose number is unknown or equal,
+// and the attempt ID breaks what is left. Both steps are total orders, so the
+// answer never depends on storage order or on the order of imports.
+func LatestContinuationArtifact(artifacts []domain.Artifact, attempts []domain.Attempt, runID, taskID string) *domain.Artifact {
 	numbers := make(map[string]int, len(attempts))
 	for _, attempt := range attempts {
 		if attempt.WorkflowRunID == runID && attempt.TaskID == taskID {
 			numbers[attempt.ID] = attempt.Number
 		}
 	}
-	var latest *domain.Artifact
-	for index := range artifacts {
-		artifact := artifacts[index]
+	perAttempt := map[string]domain.Artifact{}
+	for _, artifact := range artifacts {
 		if artifact.Kind != domain.ArtifactCheckpoint || artifact.Name != domain.ContinuationArtifactName ||
 			artifact.WorkflowRunID != runID || artifact.TaskID != taskID || artifact.AttemptID == "" ||
-			artifact.AttemptID == excludeAttemptID || !domain.IsContinuationSnapshotID(artifact.ID, artifact.AttemptID) {
+			!domain.IsContinuationSnapshotID(artifact.ID, artifact.AttemptID) {
 			continue
 		}
-		if latest == nil || continuationNewer(artifact, *latest, numbers) {
+		if current, seen := perAttempt[artifact.AttemptID]; !seen || continuationLaterInAttempt(artifact, current) {
+			perAttempt[artifact.AttemptID] = artifact
+		}
+	}
+	var latest *domain.Artifact
+	for _, artifact := range perAttempt {
+		if latest == nil || continuationLaterAttempt(artifact, *latest, numbers) {
 			copy := artifact
 			latest = &copy
 		}
@@ -125,15 +131,29 @@ func LatestContinuationArtifact(artifacts []domain.Artifact, attempts []domain.A
 	return latest
 }
 
-// continuationNewer reports whether snapshot a comes after snapshot b in the
-// order LatestContinuationArtifact describes.
-func continuationNewer(a, b domain.Artifact, numbers map[string]int) bool {
-	if a.AttemptID == b.AttemptID {
-		if rankA, rankB := continuationRank(a), continuationRank(b); rankA != rankB {
-			return rankA > rankB
+// continuationLaterInAttempt orders two snapshots of one attempt: live ones by
+// assignment epoch, then sequence, and the one its result carries after all
+// of them.
+func continuationLaterInAttempt(a, b domain.Artifact) bool {
+	rank := func(artifact domain.Artifact) (int64, int64) {
+		if epoch, sequence, live := domain.ContinuationLiveSequence(artifact.ID, artifact.AttemptID); live {
+			return epoch, sequence
 		}
-		return a.ID > b.ID
+		return math.MaxInt64, math.MaxInt64
 	}
+	epochA, sequenceA := rank(a)
+	epochB, sequenceB := rank(b)
+	if epochA != epochB {
+		return epochA > epochB
+	}
+	if sequenceA != sequenceB {
+		return sequenceA > sequenceB
+	}
+	return a.ID > b.ID
+}
+
+// continuationLaterAttempt orders the latest snapshots of two attempts.
+func continuationLaterAttempt(a, b domain.Artifact, numbers map[string]int) bool {
 	if numberA, numberB := numbers[a.AttemptID], numbers[b.AttemptID]; numberA != numberB {
 		return numberA > numberB
 	}
@@ -141,15 +161,6 @@ func continuationNewer(a, b domain.Artifact, numbers map[string]int) bool {
 		return a.CreatedAt.After(b.CreatedAt)
 	}
 	return a.AttemptID > b.AttemptID
-}
-
-// continuationRank orders the snapshots of one attempt: a live snapshot by
-// its sequence, and the one its result carries after all of them.
-func continuationRank(artifact domain.Artifact) int64 {
-	if sequence, live := domain.ContinuationLiveSequence(artifact.ID, artifact.AttemptID); live {
-		return sequence
-	}
-	return math.MaxInt64
 }
 
 // assignmentContinuationStore freezes an assignment's continuation decision;
@@ -160,8 +171,9 @@ type assignmentContinuationStore interface {
 
 // continuationInputs offers the continuation checkpoint contract to a worker
 // that advertises it: the package then declares the capability, so the worker
-// returns its own snapshot with the result, and a retry carries the latest
-// snapshot an earlier attempt of the task left. A worker that does not
+// returns its own snapshot with the result, and a retry, or an attempt offered
+// again after it lost its lease, carries the latest snapshot the task left. A
+// worker that does not
 // advertise it gets exactly the package it got before.
 //
 // The decision is frozen with the assignment's first offer, as the session
@@ -187,7 +199,7 @@ func (b CoordinatorOfferBuilder) continuationInputs(ctx context.Context, state e
 		for _, artifact := range state.artifacts {
 			retained = append(retained, artifact)
 		}
-		if latest := LatestContinuationArtifact(retained, state.attempts, state.run.ID, state.task.ID, state.attempt.ID); latest != nil {
+		if latest := LatestContinuationArtifact(retained, state.attempts, state.run.ID, state.task.ID); latest != nil {
 			proposed.ArtifactID = latest.ID
 			proposed.Input = &workerproto.ContinuationInput{
 				Path: workerproto.ContinuationInputPath, AttemptID: latest.AttemptID,

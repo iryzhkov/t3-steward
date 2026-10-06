@@ -53,9 +53,12 @@ accepts them; an older coordinator never receives an object it would reject.
 Each new snapshot taken at a turn end or a pause is handed to the coordinator
 at once, while the attempt runs, so that an attempt superseded before it has
 a result has already handed its latest checkpoint on. The upload rides the
-checkpoint channel (`upload-<assignment>-checkpoint-continuation-<sequence>`)
-with two objects, the snapshot `continuation-<attempt>-<sequence>` and its
-metadata `continuation-meta-<attempt>-<sequence>`. The coordinator imports it
+checkpoint channel (`upload-<assignment>-checkpoint-continuation-<epoch>-<sequence>`)
+with two objects, the snapshot `continuation-<attempt>-e<epoch>-<sequence>` and
+its metadata `continuation-meta-<attempt>-e<epoch>-<sequence>`, where epoch is
+the assignment epoch of the dispatch that took it: an attempt offered again
+after it lost its lease starts its sequence again at 1, and its snapshots never
+collide with the earlier dispatch's. The coordinator imports it
 under the authority of the dispatch that took it, not the assignment's current
 state: the assignment, its epoch, the worker and the worker epoch must match,
 and the assignment must have been claimed (it may since have lost its lease,
@@ -86,17 +89,20 @@ capture time.
 The coordinator offers the capability to a worker that advertises it. The
 decision, and for a retry the snapshot it carries, is frozen with the
 assignment's first offer (schema V39, `coordinator_assignment_continuations`),
-so a replayed offer is the same package. A retry of a task receives the latest
-snapshot an earlier attempt of the same task in the same run left, as the
+so a replayed offer is the same package. A retry of a task, and an attempt
+offered again at the next assignment epoch after its lease was lost or its
+assignment released, receives the latest snapshot the same task in the same
+run left, including the attempt's own from its earlier dispatch, as the
 static input `.t3/inputs/continuation/previous.md`, and its first-turn prompt
 says so in one sentence.
 
 Latest follows the task's execution order, never a worker's clock: the
 attempt with the higher number wins; within one attempt the snapshot its
 result carries wins (it is the latest the attempt had when it collected), then
-the higher sequence. Capture time only orders attempts whose number is unknown
-or equal. The order in which snapshots were imported or replayed does not
-matter.
+the higher assignment epoch, then the higher sequence. Capture time only
+orders attempts whose number is unknown or equal, comparing each attempt's own
+latest. The order in which snapshots were stored, imported or replayed does
+not matter.
 
 The decision is frozen with the first offer, so a snapshot that reaches the
 coordinator only after the replacement's first offer is not carried by it.
@@ -104,8 +110,12 @@ That happens only when the worker holding it cannot be reached before then (a
 lost or partitioned host): the snapshot is imported when the worker
 reconnects and counts toward the task's latest from then on, for its reports
 and any later attempt.
-A snapshot of an earlier dispatch of the same attempt, which the
-assignment's next epoch replaced, is refused.
+A snapshot of an earlier dispatch that is polled only after the attempt was
+offered again at the next epoch is refused: the coordinator keeps only the
+current dispatch's worker identity, so it can no longer authenticate the
+earlier one. A reachable worker has its snapshots imported in every exchange,
+before any offer is built, so this needs the worker to stay unreachable from
+the end of the lease until the attempt is offered again.
 
 A pause snapshot that still cannot be taken when the attempt resumes is
 forgone, with a warning, rather than taken later from the next turn; the

@@ -517,15 +517,16 @@ func (s *CustodyStore) PublishCheckpoint(ctx context.Context, pkg workerproto.Ex
 // newer snapshot is a new one.
 func (s *CustodyStore) PublishContinuation(ctx context.Context, pkg workerproto.ExecutionPackage, snapshot ContinuationSnapshot) error {
 	checkpoint := snapshot.Checkpoint
-	if checkpoint.AttemptID != pkg.Identity.AttemptID || checkpoint.Sequence < 1 {
+	epoch := pkg.Identity.AssignmentEpoch
+	if checkpoint.AttemptID != pkg.Identity.AttemptID || checkpoint.Sequence < 1 || epoch < 1 {
 		return errors.New("publish continuation checkpoint: the snapshot belongs to another attempt")
 	}
 	raw, err := json.Marshal(checkpoint)
 	if err != nil {
 		return err
 	}
-	snapshotID := domain.ContinuationLiveArtifactID(checkpoint.AttemptID, checkpoint.Sequence)
-	metadataID := domain.ContinuationLiveMetadataArtifactID(checkpoint.AttemptID, checkpoint.Sequence)
+	snapshotID := domain.ContinuationLiveArtifactID(checkpoint.AttemptID, epoch, checkpoint.Sequence)
+	metadataID := domain.ContinuationLiveMetadataArtifactID(checkpoint.AttemptID, epoch, checkpoint.Sequence)
 	objects := []workerproto.ArtifactObject{
 		objectForBytes(snapshotID, "checkpoints/"+snapshotID+".md", string(domain.ArtifactCheckpoint), "text/markdown", snapshot.Data),
 		objectForBytes(metadataID, "checkpoints/"+metadataID+".json", string(domain.ArtifactCheckpoint), "application/json", raw),
@@ -539,8 +540,9 @@ func (s *CustodyStore) PublishContinuation(ctx context.Context, pkg workerproto.
 		}
 	}
 	// The purpose contains "checkpoint-", so the coordinator polls it with the
-	// other checkpoints; the zero-padded sequence keeps snapshots in order.
-	return s.publishManifest(ctx, pkg, fmt.Sprintf("checkpoint-continuation-%020d", checkpoint.Sequence), objects)
+	// other checkpoints; the zero-padded epoch and sequence keep snapshots in
+	// order and apart from another dispatch's.
+	return s.publishManifest(ctx, pkg, fmt.Sprintf("checkpoint-continuation-%020d-%020d", epoch, checkpoint.Sequence), objects)
 }
 
 // BuildUpload opens one complete immutable outbox manifest for authenticated transfer.

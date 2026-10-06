@@ -192,8 +192,8 @@ func (i CoordinatorCheckpointImporter) importContinuation(ctx context.Context, r
 	case json.Unmarshal(payloads[1], &checkpoint) != nil:
 		reason = "the metadata is not a checkpoint description"
 	case checkpoint.AttemptID != attempt.ID || checkpoint.Sequence < 1 ||
-		snapshot.ID != domain.ContinuationLiveArtifactID(attempt.ID, checkpoint.Sequence) ||
-		metadata.ID != domain.ContinuationLiveMetadataArtifactID(attempt.ID, checkpoint.Sequence):
+		snapshot.ID != domain.ContinuationLiveArtifactID(attempt.ID, assignment.Epoch, checkpoint.Sequence) ||
+		metadata.ID != domain.ContinuationLiveMetadataArtifactID(attempt.ID, assignment.Epoch, checkpoint.Sequence):
 		reason = "the snapshot is not under its attempt's own identity and sequence"
 	case snapshot.Kind != string(domain.ArtifactCheckpoint) || snapshot.MediaType != "text/markdown" || !strings.HasPrefix(snapshot.Path, "checkpoints/") ||
 		metadata.Kind != string(domain.ArtifactCheckpoint) || metadata.MediaType != "application/json" || !strings.HasPrefix(metadata.Path, "checkpoints/"):
@@ -215,7 +215,7 @@ func (i CoordinatorCheckpointImporter) importContinuation(ctx context.Context, r
 	published, err := i.Artifacts.Publish(ctx, domain.ArtifactPublication{
 		CoordinatorEpoch: i.CoordinatorEpoch, WorkerID: manifest.WorkerID, WorkerEpoch: manifest.WorkerEpoch,
 		AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
-		AttemptRevision: attempt.Revision, Artifact: artifact,
+		AttemptRevision: attempt.Revision, Artifact: artifact, LiveContinuation: true,
 	}, bytes.NewReader(payloads[0]))
 	if errors.Is(err, sqlite.ErrArtifactConflict) {
 		// The attempt already handed on different bytes under this sequence;

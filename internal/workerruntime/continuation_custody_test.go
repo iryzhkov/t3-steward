@@ -42,7 +42,8 @@ func TestTurnEndCheckpointIsHandedToTheCoordinatorWhileTheAttemptRuns(t *testing
 		t.Fatalf("the turn-end snapshot was not handed to the coordinator: %+v, %v", upload, err)
 	}
 	objects := upload.Manifest.Objects
-	if len(objects) != 2 || objects[0].ID != "continuation-attempt-1-1" || objects[1].ID != "continuation-meta-attempt-1-1" ||
+	if len(objects) != 2 || objects[0].ID != domain.ContinuationLiveArtifactID("attempt-1", pkg.Identity.AssignmentEpoch, 1) ||
+		objects[1].ID != domain.ContinuationLiveMetadataArtifactID("attempt-1", pkg.Identity.AssignmentEpoch, 1) ||
 		objects[0].SHA256 != checkpoint.SHA256 || objects[0].Size != checkpoint.Size || objects[0].Kind != string(domain.ArtifactCheckpoint) {
 		t.Fatalf("live checkpoint upload = %+v", objects)
 	}
@@ -75,7 +76,7 @@ func TestTurnEndCheckpointIsHandedToTheCoordinatorWhileTheAttemptRuns(t *testing
 		t.Fatal(err)
 	}
 	newer, err := custody.PendingUploadByPurpose("checkpoint")
-	if err != nil || newer == nil || newer.Manifest.Objects[0].ID != "continuation-attempt-1-2" {
+	if err != nil || newer == nil || newer.Manifest.Objects[0].ID != domain.ContinuationLiveArtifactID("attempt-1", pkg.Identity.AssignmentEpoch, 2) {
 		t.Fatalf("the newer snapshot was not handed on: %+v, %v", newer, err)
 	}
 

@@ -114,15 +114,16 @@ func TestTheExchangeImportsContinuationSnapshotsBeforeItBuildsOffers(t *testing.
 	}, other)
 	// The continuation snapshot the attempt queued before it was released.
 	snapshot := []byte("step 2 of 3\n")
-	snapshotObject := coordinatorResultObject("continuation-attempt-1-1", "checkpoints/continuation-attempt-1-1.md", "checkpoint", "text/markdown", snapshot)
+	snapshotID, metadataID := domain.ContinuationLiveArtifactID(attempt.ID, 1, 1), domain.ContinuationLiveMetadataArtifactID(attempt.ID, 1, 1)
+	snapshotObject := coordinatorResultObject(snapshotID, "checkpoints/"+snapshotID+".md", "checkpoint", "text/markdown", snapshot)
 	metadata, err := json.Marshal(domain.ContinuationCheckpoint{AttemptID: attempt.ID, Sequence: 1, Turn: "turn-2", Boundary: domain.ContinuationTurnEnd,
 		SHA256: snapshotObject.SHA256, Size: snapshotObject.Size, OriginalSize: snapshotObject.Size, CapturedAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
-	continuation := upload("upload-assignment-1-checkpoint-continuation-00000000000000000001", []workerproto.ArtifactObject{
+	continuation := upload("upload-assignment-1-checkpoint-continuation-00000000000000000001-00000000000000000001", []workerproto.ArtifactObject{
 		snapshotObject,
-		coordinatorResultObject("continuation-meta-attempt-1-1", "checkpoints/continuation-meta-attempt-1-1.json", "checkpoint", "application/json", metadata),
+		coordinatorResultObject(metadataID, "checkpoints/"+metadataID+".json", "checkpoint", "application/json", metadata),
 	}, bytes.Join([][]byte{snapshot, metadata}, nil))
 	control := &queuedUploadControl{uploads: []*pendingUpload{throttle, continuation}}
 	session := coordinatorWorkerSession{
@@ -137,7 +138,7 @@ func TestTheExchangeImportsContinuationSnapshotsBeforeItBuildsOffers(t *testing.
 		if err != nil {
 			return backlog.WorkerExchangeReport{}, err
 		}
-		if backlog.LatestContinuationArtifact(records.Artifacts, records.Attempts, attempt.WorkflowRunID, task.ID, "") == nil {
+		if backlog.LatestContinuationArtifact(records.Artifacts, records.Attempts, attempt.WorkflowRunID, task.ID) == nil {
 			t.Error("offers were built before the queued continuation snapshot was imported")
 		}
 		if throttle.acked {

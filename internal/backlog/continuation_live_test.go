@@ -3,6 +3,7 @@ package backlog
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -17,15 +18,15 @@ import (
 // attempt's identity and the snapshot's sequence, on the checkpoint channel.
 func liveContinuationUpload(t *testing.T, assignment domain.Assignment, checkpoint domain.ContinuationCheckpoint, snapshot []byte, uploadedAt time.Time) (workerproto.ArtifactUploadResponse, resultUploadOpener) {
 	t.Helper()
-	snapshotID := "continuation-" + assignment.AttemptID + "-1"
-	metadataID := "continuation-meta-" + assignment.AttemptID + "-1"
+	snapshotID := domain.ContinuationLiveArtifactID(assignment.AttemptID, assignment.Epoch, 1)
+	metadataID := domain.ContinuationLiveMetadataArtifactID(assignment.AttemptID, assignment.Epoch, 1)
 	data := resultUploadOpener{snapshotID: snapshot, metadataID: continuationMetadata(t, checkpoint)}
 	objects := []workerproto.ArtifactObject{
 		resultObject(snapshotID, "checkpoints/"+snapshotID+".md", "checkpoint", "text/markdown", data[snapshotID]),
 		resultObject(metadataID, "checkpoints/"+metadataID+".json", "checkpoint", "application/json", data[metadataID]),
 	}
 	manifest := resultManifest(uploadedAt, assignment, objects)
-	manifest.ID = "upload-" + assignment.ID + "-checkpoint-continuation-00000000000000000001"
+	manifest.ID = fmt.Sprintf("upload-%s-checkpoint-continuation-%020d-%020d", assignment.ID, assignment.Epoch, 1)
 	manifest.WorkerID, manifest.WorkerEpoch = assignment.WorkerID, assignment.WorkerEpoch
 	return workerproto.ArtifactUploadResponse{Manifest: manifest, Custody: resultCustody(t, manifest, "coordinator")}, data
 }
@@ -99,7 +100,7 @@ func TestSupersededAttemptHandsItsLiveCheckpointToItsReplacement(t *testing.T) {
 	if delivered == nil || delivered.ID != artifact.ID || delivered.SHA256 != artifact.SHA256 {
 		t.Fatalf("static inputs = %+v", pkg.StaticInputs)
 	}
-	if latest := LatestContinuationArtifact(records.Artifacts, records.Attempts, "run-1", consumer.ID, ""); latest == nil || latest.ID != artifact.ID {
+	if latest := LatestContinuationArtifact(records.Artifacts, records.Attempts, "run-1", consumer.ID); latest == nil || latest.ID != artifact.ID {
 		t.Fatalf("the task's latest checkpoint = %+v", latest)
 	}
 }

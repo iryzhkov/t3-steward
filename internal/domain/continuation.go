@@ -43,16 +43,18 @@ func ContinuationMetadataArtifactID(attemptID string) string {
 
 // ContinuationLiveArtifactID is the identity of a snapshot a running attempt
 // hands to the coordinator before it has a result: the attempt's own
-// identity and the snapshot's sequence, so each distinct snapshot is its own
-// immutable artifact and never conflicts with the one the result carries.
-func ContinuationLiveArtifactID(attemptID string, sequence int64) string {
-	return fmt.Sprintf("continuation-%s-%d", attemptID, sequence)
+// identity, the assignment epoch of the dispatch that took it and the
+// snapshot's sequence. Each distinct snapshot is its own immutable artifact;
+// it never conflicts with the one the result carries, nor with a snapshot of
+// another dispatch of the same attempt, whose sequence starts again at 1.
+func ContinuationLiveArtifactID(attemptID string, assignmentEpoch, sequence int64) string {
+	return fmt.Sprintf("continuation-%s-e%d-%d", attemptID, assignmentEpoch, sequence)
 }
 
 // ContinuationLiveMetadataArtifactID is the identity of a live snapshot's
 // metadata object.
-func ContinuationLiveMetadataArtifactID(attemptID string, sequence int64) string {
-	return fmt.Sprintf("continuation-meta-%s-%d", attemptID, sequence)
+func ContinuationLiveMetadataArtifactID(attemptID string, assignmentEpoch, sequence int64) string {
+	return fmt.Sprintf("continuation-meta-%s-e%d-%d", attemptID, assignmentEpoch, sequence)
 }
 
 // IsContinuationSnapshotID reports whether id is one of attemptID's snapshot
@@ -61,23 +63,29 @@ func IsContinuationSnapshotID(id, attemptID string) bool {
 	if id == ContinuationArtifactID(attemptID) {
 		return true
 	}
-	_, live := ContinuationLiveSequence(id, attemptID)
+	_, _, live := ContinuationLiveSequence(id, attemptID)
 	return live
 }
 
-// ContinuationLiveSequence returns the sequence of a live snapshot identity of
-// attemptID, and false for any other identity, the result's fixed one
-// included.
-func ContinuationLiveSequence(id, attemptID string) (int64, bool) {
-	sequence, ok := strings.CutPrefix(id, ContinuationArtifactID(attemptID)+"-")
+// ContinuationLiveSequence returns the assignment epoch and sequence of a
+// live snapshot identity of attemptID, and false for any other identity, the
+// result's fixed one included.
+func ContinuationLiveSequence(id, attemptID string) (int64, int64, bool) {
+	rest, ok := strings.CutPrefix(id, ContinuationArtifactID(attemptID)+"-e")
 	if !ok {
-		return 0, false
+		return 0, 0, false
 	}
-	parsed, err := strconv.ParseInt(sequence, 10, 64)
-	if err != nil || parsed < 1 || id != ContinuationLiveArtifactID(attemptID, parsed) {
-		return 0, false
+	epochText, sequenceText, ok := strings.Cut(rest, "-")
+	if !ok {
+		return 0, 0, false
 	}
-	return parsed, true
+	epoch, epochErr := strconv.ParseInt(epochText, 10, 64)
+	sequence, sequenceErr := strconv.ParseInt(sequenceText, 10, 64)
+	if epochErr != nil || sequenceErr != nil || epoch < 1 || sequence < 1 ||
+		id != ContinuationLiveArtifactID(attemptID, epoch, sequence) {
+		return 0, 0, false
+	}
+	return epoch, sequence, true
 }
 
 // ContinuationBoundary names the moment a snapshot was taken.

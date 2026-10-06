@@ -10,6 +10,10 @@ type ArtifactPublication struct {
 	AssignmentEpoch  int64    `json:"assignmentEpoch"`
 	AttemptRevision  int64    `json:"attemptRevision"`
 	Artifact         Artifact `json:"artifact"`
+	// LiveContinuation declares a continuation.md snapshot an attempt handed
+	// on while it ran. It is fenced to the dispatch that took it rather than to
+	// the assignment's current state; see sqlite.Store.CommitArtifactPublication.
+	LiveContinuation bool `json:"liveContinuation,omitempty"`
 }
 
 // ArtifactFetchRequest describes the coordinator metadata a worker needs in
