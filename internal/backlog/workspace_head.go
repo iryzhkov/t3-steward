@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,11 +39,18 @@ func WorkspaceHeadArtifactID(attemptID string) string {
 // skip-worktree, a stat cache with forged timestamps, and a configured file
 // system monitor all let "git status" skip a file. The worktree is therefore
 // also compared by content with a fresh index read from HEAD, which carries no
-// flags and no cached stat data, with the monitor and sparse checkout off.
+// flags and no cached stat data, with the monitor and sparse checkout off. A
+// configured core.worktree could point every query at a clean copy elsewhere,
+// so each query names the task workspace as its worktree.
 func CaptureWorkspaceHead(ctx context.Context, gitBinary, workspace string, outputs []domain.ArtifactDeclaration) domain.WorkspaceHead {
 	captured := domain.WorkspaceHead{Schema: domain.WorkspaceHeadSchema}
 	if gitBinary == "" {
 		gitBinary = "git"
+	}
+	workspace, err := filepath.Abs(workspace)
+	if err != nil {
+		captured.Error = "resolve workspace path: " + err.Error()
+		return captured
 	}
 	head, err := workspaceGit(ctx, gitBinary, workspace, nil, "rev-parse", "--verify", "--end-of-options", "HEAD^{commit}")
 	if err != nil {
@@ -138,15 +146,20 @@ func workspaceHeadIgnored(name string) bool {
 // output alone, so a warning on standard error cannot corrupt a porcelain
 // listing. It writes nothing in the workspace: optional locks are off, so
 // status does not refresh the workspace's index, and the workspace's file
-// system monitor and sparse checkout settings are overridden. env adds to the
+// system monitor and sparse checkout settings are overridden. The worktree is
+// pinned to the workspace itself, because core.worktree in the workspace's
+// configuration, or GIT_WORK_TREE and GIT_DIR in the worker's environment,
+// would otherwise choose which directory Git examines. env adds to the
 // worker's environment.
 func workspaceGit(ctx context.Context, gitBinary, workspace string, env []string, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, gitBinary, append([]string{
-		"--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.sparseCheckout=false", "-C", workspace,
+		"--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.sparseCheckout=false",
+		"-C", workspace, "--work-tree", workspace,
 	}, args...)...)
-	if len(env) != 0 {
-		command.Env = append(os.Environ(), env...)
-	}
+	command.Env = append(slices.DeleteFunc(os.Environ(), func(variable string) bool {
+		name, _, _ := strings.Cut(variable, "=")
+		return slices.Contains(workspaceGitLocationVariables, name)
+	}), env...)
 	command.WaitDelay = time.Second
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
@@ -159,6 +172,11 @@ func workspaceGit(ctx context.Context, gitBinary, workspace string, env []string
 	}
 	return output, nil
 }
+
+// workspaceGitLocationVariables are the environment variables that tell Git
+// where a repository and its worktree are. The workspace is located by its own
+// path alone.
+var workspaceGitLocationVariables = []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"}
 
 // MarshalWorkspaceHead encodes the report the worker publishes.
 func MarshalWorkspaceHead(head domain.WorkspaceHead) ([]byte, error) {

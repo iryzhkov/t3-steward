@@ -224,10 +224,27 @@ func (s CampaignRefStore) Resolve(workflowRunID, taskID, name string) (CommitPro
 	return s.readProvenance(s.provenancePath(workflowRunID, taskID, name))
 }
 
-// FetchInto makes a published commit reachable in a consuming workspace under
+// FetchInto makes a declared commit reachable in a consuming workspace under
 // the same campaign ref. The consumer resolves it by that reference and never
 // searches a repository cache for it.
+//
+// FetchInto never decides what the producer's campaign output is. A commit that
+// is only staged, because the coordinator has not accepted the result that
+// declared it, is fetched from its staging for the consumer to inspect, and the
+// store's campaign ref is left absent. FetchAcceptedInto is the one path that
+// publishes a staged commit.
 func (s CampaignRefStore) FetchInto(ctx context.Context, workspaceDir string, provenance CommitProvenance, log io.Writer) error {
+	return s.fetchInto(ctx, workspaceDir, provenance, false, log)
+}
+
+// FetchAcceptedInto is FetchInto for a consumer whose execution package says
+// the coordinator accepted the producing result. A staged commit becomes the
+// producer's campaign output here, and only here.
+func (s CampaignRefStore) FetchAcceptedInto(ctx context.Context, workspaceDir string, provenance CommitProvenance, log io.Writer) error {
+	return s.fetchInto(ctx, workspaceDir, provenance, true, log)
+}
+
+func (s CampaignRefStore) fetchInto(ctx context.Context, workspaceDir string, provenance CommitProvenance, accepted bool, log io.Writer) error {
 	if err := s.validate(); err != nil {
 		return err
 	}
@@ -248,11 +265,16 @@ func (s CampaignRefStore) FetchInto(ctx context.Context, workspaceDir string, pr
 	if err != nil {
 		return err
 	}
-	if err := s.promote(ctx, gitDir, provenance, log); err != nil {
+	source := ref
+	if accepted {
+		if err := s.promote(ctx, gitDir, provenance, log); err != nil {
+			return err
+		}
+	} else if source, err = s.inspectionSource(ctx, gitDir, provenance, log); err != nil {
 		return err
 	}
 	if err := runLoggedCommand(ctx, log, "", s.git(), "-C", workspaceDir,
-		"fetch", "--no-tags", "--", gitDir, "+"+ref+":"+ref); err != nil {
+		"fetch", "--no-tags", "--", gitDir, "+"+source+":"+ref); err != nil {
 		return fmt.Errorf("fetch campaign ref %s: %w", ref, err)
 	}
 	raw, err := runLoggedCommandOutput(ctx, log, "", s.git(), "-C", workspaceDir, "rev-parse", "--verify", ref+"^{commit}")
@@ -265,12 +287,12 @@ func (s CampaignRefStore) FetchInto(ctx context.Context, workspaceDir string, pr
 	return nil
 }
 
-// promote publishes a staged commit under its campaign ref the first time its
-// provenance is consumed. A consumer holds that provenance only because the
-// coordinator accepted the producing result and handed it on as a dependency,
-// so consumption is the acceptance the worker could not see at finalization.
-// A ref that already exists is left alone; the fetch then checks it names the
-// commit the consumer was told about.
+// promote publishes a staged commit under its campaign ref the first time an
+// accepted consumer fetches it. The worker cannot see the coordinator's review
+// gate at finalization; a consumer's execution package carries that decision,
+// and the caller passes it here only when the package says the producing result
+// was accepted. A ref that already exists is left alone; the fetch then checks
+// it names the commit the consumer was told about.
 func (s CampaignRefStore) promote(ctx context.Context, gitDir string, provenance CommitProvenance, log io.Writer) error {
 	ref := CampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.Name)
 	lock, err := acquireFileLock(ctx, s.Root, "campaign-refs")
@@ -281,27 +303,67 @@ func (s CampaignRefStore) promote(ctx context.Context, gitDir string, provenance
 	if _, found, err := s.head(ctx, gitDir, ref, log); err != nil || found {
 		return err
 	}
+	staged, _, found, err := s.findStaged(provenance)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("campaign commit %s at %s was neither published nor staged in this store", ref, provenance.Commit)
+	}
+	// The staged ref keeps the commit in this store; the campaign ref is
+	// created only if it still does not exist.
+	if err := runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir,
+		"update-ref", ref, staged.Commit, ""); err != nil {
+		return fmt.Errorf("publish staged campaign ref %s: %w", ref, err)
+	}
+	return s.writeProvenance(staged)
+}
+
+// inspectionSource names the ref a consumer without acceptance fetches: the
+// campaign ref once the output is published, otherwise the staged ref of the
+// attempt that declared this commit. Nothing is written.
+func (s CampaignRefStore) inspectionSource(ctx context.Context, gitDir string, provenance CommitProvenance, log io.Writer) (string, error) {
+	ref := CampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.Name)
+	lock, err := acquireFileLock(ctx, s.Root, "campaign-refs")
+	if err != nil {
+		return "", fmt.Errorf("lock campaign refs: %w", err)
+	}
+	defer lock.Close()
+	if _, found, err := s.head(ctx, gitDir, ref, log); err != nil || found {
+		return ref, err
+	}
+	_, attemptID, found, err := s.findStaged(provenance)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf("campaign commit %s at %s was neither published nor staged in this store", ref, provenance.Commit)
+	}
+	return StagedCampaignRef(provenance.WorkflowRunID, provenance.TaskID, attemptID, provenance.Name), nil
+}
+
+// findStaged returns the staging record of the commit a provenance names, and
+// the attempt that staged it.
+func (s CampaignRefStore) findStaged(provenance CommitProvenance) (CommitProvenance, string, bool, error) {
 	stagedRecords, err := filepath.Glob(filepath.Join(s.Root, "staged", provenance.WorkflowRunID, provenance.TaskID, "*", provenance.Name+".json"))
 	if err != nil {
-		return fmt.Errorf("find staged campaign commit: %w", err)
+		return CommitProvenance{}, "", false, fmt.Errorf("find staged campaign commit: %w", err)
 	}
 	for _, path := range stagedRecords {
+		attemptID := filepath.Base(filepath.Dir(path))
+		if !safePathComponent(attemptID) {
+			continue
+		}
 		staged, readErr := s.readProvenance(path)
 		if readErr != nil {
-			return readErr
+			return CommitProvenance{}, "", false, readErr
 		}
 		if staged.Commit != provenance.Commit || staged.Base != provenance.Base || staged.Repository != provenance.Repository {
 			continue
 		}
-		// The staged ref keeps the commit in this store; the campaign ref is
-		// created only if it still does not exist.
-		if err := runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir,
-			"update-ref", ref, staged.Commit, ""); err != nil {
-			return fmt.Errorf("publish staged campaign ref %s: %w", ref, err)
-		}
-		return s.writeProvenance(staged)
+		return staged, attemptID, true, nil
 	}
-	return fmt.Errorf("campaign commit %s at %s was neither published nor staged in this store", ref, provenance.Commit)
+	return CommitProvenance{}, "", false, nil
 }
 
 // List reports every commit published for one workflow run, oldest first.

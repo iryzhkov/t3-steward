@@ -128,7 +128,7 @@ func TestReviewGateRejectedCommitIsNotPublished(t *testing.T) {
 }
 
 // The accepted result's commit becomes the campaign output when a dependent
-// task consumes it, and a retry that stages a different commit is not refused
+// task whose package marks it accepted consumes it, and a retry that stages a different commit is not refused
 // by an earlier attempt's staging.
 func TestReviewGatedCommitIsPublishedWhenTheAcceptedResultIsConsumed(t *testing.T) {
 	ctx := context.Background()
@@ -153,7 +153,7 @@ func TestReviewGatedCommitIsPublishedWhenTheAcceptedResultIsConsumed(t *testing.
 
 	consumer := t.TempDir()
 	gitRun(t, consumer, "init", "-q")
-	if err := refs.FetchInto(ctx, consumer, staged, nil); err != nil {
+	if err := refs.FetchAcceptedInto(ctx, consumer, staged, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := gitOutput(t, consumer, "rev-parse", staged.Ref); got != accepted {
@@ -163,7 +163,7 @@ func TestReviewGatedCommitIsPublishedWhenTheAcceptedResultIsConsumed(t *testing.
 		t.Fatalf("published provenance = %+v %v, want %s", provenance, err, accepted)
 	}
 	// The output is now fixed: the rejected staging cannot redefine it.
-	if err := refs.FetchInto(ctx, t.TempDir(), rejected, nil); err == nil {
+	if err := refs.FetchAcceptedInto(ctx, t.TempDir(), rejected, nil); err == nil {
 		t.Fatal("a rejected staging redefined the published output")
 	}
 

@@ -181,6 +181,7 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	inputs := make([]domain.Artifact, 0, len(pkg.StaticInputs))
 	dependencyTasks := make([]domain.Task, 0, len(pkg.Dependencies))
 	dependencyArtifacts := make([]domain.Artifact, 0)
+	var acceptedProducers []string
 	objects := append([]workerproto.ArtifactObject{pkg.Prompt}, pkg.StaticInputs...)
 	for _, dependency := range pkg.Dependencies {
 		objects = append(objects, dependency.Artifacts...)
@@ -218,6 +219,9 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		}
 		task.DependencyInputs[dependency.TaskID] = names
 		dependencyTasks = append(dependencyTasks, dependencyTask)
+		if dependency.Accepted {
+			acceptedProducers = append(acceptedProducers, dependency.TaskID)
+		}
 	}
 	if d.Config.DryRun {
 		path := d.workspacePath(pkg)
@@ -239,7 +243,7 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	prepared, err := d.Workspace.Prepare(ctx, backlog.WorkspacePreparation{
 		WorkflowRunID: pkg.Identity.WorkflowRunID, Task: task, Attempt: attempt,
 		Environment: environment, InputArtifacts: inputs, DependencyTasks: dependencyTasks,
-		DependencyArtifacts: dependencyArtifacts,
+		DependencyArtifacts: dependencyArtifacts, AcceptedProducers: acceptedProducers,
 	})
 	if err != nil {
 		return "", err

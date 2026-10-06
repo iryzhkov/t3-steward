@@ -91,6 +91,13 @@ type DependencyInput struct {
 	TaskID     string                `json:"taskId"`
 	Provenance *DependencyProvenance `json:"provenance,omitempty"`
 	Artifacts  []ArtifactObject      `json:"artifacts"`
+	// Accepted says the coordinator's review gate accepted the result that
+	// produced these artifacts. Only then may a declared commit the producer
+	// staged become its campaign output; a review judge may also be given a
+	// rejected result to inspect, and that never publishes it. It is set only
+	// for review-declared producers and requires the accepted-dependencies
+	// capability.
+	Accepted bool `json:"accepted,omitempty"`
 }
 
 // Package capabilities name behaviour a worker must implement to execute a
@@ -107,19 +114,29 @@ const (
 	// review-declared task requires it, because the coordinator's completion
 	// gate compares that HEAD with the head its latest review round accepted.
 	PackageCapabilityWorkspaceHead = "workspace-head-v1"
+	// PackageCapabilityAcceptedDependencies asks the worker to publish a
+	// review-declared producer's staged commit only for a dependency the
+	// package marks as accepted.
+	PackageCapabilityAcceptedDependencies = "accepted-dependencies-v1"
 )
 
 // SupportedPackageCapabilities is what this build implements. A package that
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityWorkspaceHead}
+	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityWorkspaceHead, PackageCapabilityAcceptedDependencies}
 }
 
 // RequiresWorkspaceHead reports whether the worker must report the workspace's
 // physical HEAD with this package's result.
 func (pkg ExecutionPackage) RequiresWorkspaceHead() bool {
 	return slices.Contains(pkg.RequiredCapabilities, PackageCapabilityWorkspaceHead)
+}
+
+// HasAcceptedDependencies reports whether any dependency is marked as the
+// accepted result of a review-declared producer.
+func (pkg ExecutionPackage) HasAcceptedDependencies() bool {
+	return slices.ContainsFunc(pkg.Dependencies, func(dependency DependencyInput) bool { return dependency.Accepted })
 }
 
 // PreflightStep is one declared step the worker runs after the workspace is
@@ -312,6 +329,9 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 			return errors.New("execution package: duplicate dependency task")
 		}
 		dependencies[dependency.TaskID] = struct{}{}
+		if dependency.Accepted && (dependency.Provenance != nil || len(dependency.Artifacts) == 0) {
+			return errors.New("execution package: only a producer of this run with outputs can be accepted")
+		}
 		if provenance := dependency.Provenance; provenance != nil {
 			if strings.TrimSpace(provenance.RunID) == "" || strings.TrimSpace(provenance.TaskID) == "" ||
 				strings.TrimSpace(provenance.AttemptID) == "" ||
@@ -420,6 +440,9 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 	}
 	if _, ok := declared[PackageCapabilityProjectContext]; pkg.Context != nil && !ok {
 		return errors.New("execution package: project context requires the project context capability")
+	}
+	if _, ok := declared[PackageCapabilityAcceptedDependencies]; ok != pkg.HasAcceptedDependencies() {
+		return errors.New("execution package: accepted dependencies and the accepted dependencies capability must be declared together")
 	}
 	if _, ok := declared[PackageCapabilitySessionDisplay]; pkg.Display != nil && !ok {
 		return errors.New("execution package: display requires session display capability")

@@ -32,7 +32,11 @@ is trusted to say what changed. Files flagged assume-unchanged or
 skip-worktree, forged stat data and a configured file system monitor can all
 make the workspace's own status skip a file; the scratch index carries no flags
 and no stat cache, and both queries run with `core.fsmonitor` and
-`core.sparseCheckout` off and without refreshing the workspace's index.
+`core.sparseCheckout` off and without refreshing the workspace's index. Every
+query names the task workspace as its worktree (`--work-tree`), and the
+worker's `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_COMMON_DIR` are
+not passed on, so a `core.worktree` setting cannot point the comparison at a
+clean copy elsewhere.
 
 Declared file outputs, `.t3/` and `.t3-steward/` are not counted as changes,
 and untracked files are not either. The report travels with the result as one
@@ -93,12 +97,24 @@ under its own ref, so a retry that produces a different commit is not refused
 by an earlier attempt's work.
 
 The campaign ref `refs/campaigns/<run>/<task>/<name>` and its record are
-created only when a dependent task consumes the commit. A consumer holds the
-provenance only because the coordinator accepted the producing result and
-handed it on, so consumption is that acceptance. Until then `Resolve` finds
-nothing for the task, and a commit the gate rejected never becomes the task's
-output. Releasing a run drops its staged refs and records with its published
-ones, and a run that only staged commits still counts as held.
+created only when a dependent task whose execution package marks the producer
+`accepted` consumes the commit. Consumption alone is not acceptance: a review
+judge may run after its dependency failed and is given the failed result's
+outputs to inspect. The coordinator therefore marks a dependency `accepted`
+only for a review-declared producer whose packaged outputs all came from an
+attempt that succeeded, and a package with such a mark requires the
+`accepted-dependencies-v1` capability, so an older worker is never offered it.
+The worker publishes a staged commit only for a commit reference that sits in
+the accepted producer's directory of the dependency view and names that
+producer as its task. Any other consumer fetches a staged commit from its
+staged ref, under the campaign ref name in its own workspace, and the store's
+campaign ref stays absent. Producers without `review:` publish directly, and
+their consumers' packages are unchanged.
+
+Until an accepted consumer fetches it, `Resolve` finds nothing for the task,
+and a commit the gate rejected never becomes the task's output. Releasing a run
+drops its staged refs and records with its published ones, and a run that only
+staged commits still counts as held.
 
 ## Where the decision is shown
 

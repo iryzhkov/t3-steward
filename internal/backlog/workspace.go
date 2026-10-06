@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -122,6 +123,11 @@ type WorkspacePreparation struct {
 	InputArtifacts      []domain.Artifact
 	DependencyTasks     []domain.Task
 	DependencyArtifacts []domain.Artifact
+	// AcceptedProducers names the dependency tasks, by ID, whose result the
+	// coordinator's review gate accepted. A declared commit such a producer
+	// staged is published when it is consumed; any other staged commit is only
+	// fetched for inspection.
+	AcceptedProducers []string
 }
 
 // PreparedWorkspace is the published run directory and pinned source revision.
@@ -480,10 +486,30 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 		if p.CampaignRefs.Root == "" {
 			return fmt.Errorf("dependency commit %s needs a campaign ref store", provenance.Ref)
 		}
-		if err := p.CampaignRefs.FetchInto(ctx, workspaceDir, provenance, log); err != nil {
-			return err
+		if acceptedDependencyCommit(dependenciesDir, path, provenance, request) {
+			return p.CampaignRefs.FetchAcceptedInto(ctx, workspaceDir, provenance, log)
 		}
-		return nil
+		return p.CampaignRefs.FetchInto(ctx, workspaceDir, provenance, log)
+	})
+}
+
+// acceptedDependencyCommit reports whether a commit reference found in the
+// dependency view may publish its producer's staged commit. The coordinator
+// must have accepted the producer's result, and the reference must be that
+// producer's own: it sits in the producer's directory of the view and names
+// the producer as its task, so an accepted producer's file cannot publish
+// another task's rejected commit.
+func acceptedDependencyCommit(dependenciesDir, path string, provenance CommitProvenance, request WorkspacePreparation) bool {
+	relative, err := filepath.Rel(dependenciesDir, path)
+	if err != nil {
+		return false
+	}
+	directory, _, nested := strings.Cut(filepath.ToSlash(relative), "/")
+	if !nested || !slices.Contains(request.AcceptedProducers, provenance.TaskID) {
+		return false
+	}
+	return slices.ContainsFunc(request.DependencyTasks, func(task domain.Task) bool {
+		return task.Name == directory && task.ID == provenance.TaskID
 	})
 }
 
