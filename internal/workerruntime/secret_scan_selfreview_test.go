@@ -101,7 +101,13 @@ func TestSecretScanArchiveCanaryEndToEnd(t *testing.T) {
 	secret := "synthetic-archive-credential-end-to-end"
 	f := newCollectionFixture(t, 8192, 16384, 100, 100)
 	f.custody.config.SecretScan.StaticCanaries = []string{secret}
-	f.control.archive = []byte(strings.Replace(string(f.control.archive), `"padding":"`, `"padding":"`+secret, 1))
+	// The fixture archive's only free text is the final assistant message,
+	// which every compaction keeps whole, so the credential goes there.
+	archive := strings.Replace(string(f.control.archive), `"text":"`, `"text":"`+secret, 1)
+	if archive == string(f.control.archive) {
+		t.Fatal("fixture archive has no assistant text to carry the credential")
+	}
+	f.control.archive = []byte(archive)
 	if err := f.runtime.collect(context.Background(), "assignment-1"); err == nil || strings.Contains(err.Error(), secret) {
 		t.Fatalf("unsafe or missing refusal: %v", err)
 	}
