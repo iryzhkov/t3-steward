@@ -9,6 +9,7 @@ git clone https://github.com/iryzhkov/t3-steward
 cd t3-steward
 make check-fast  # build, vet, go test -short, lint, short race on changed packages
 make check-review # same checks, full-size race on changed packages once
+make check-review-no-sqlite-checkptr # opt-in: faster, no checkptr in modernc.org
 make test        # go test, go test -race, go vet: the complete gate
 make lint        # staticcheck and gofmt
 make build       # bin/t3-steward
@@ -27,13 +28,20 @@ short plain suite and lint, then runs changed-package race tests once without
 targets use the same changed-package detection and refuse an invalid
 `FAST_BASE`; a missing change list never counts as a passing race run. The
 short plain pass leaves out the changed packages, because the race pass runs
-all of their tests again, and the race pass turns the race detector's checkptr
-instrumentation off for the `modernc.org` SQLite translation only
-(`RACE_GCFLAGS` in the Makefile; set it empty to keep checkptr). `make test`
-keeps checkptr everywhere.
-It does not replace `make test` when the task requires the complete gate.
-Run `make test` before asking for review under the repository's default
-policy: it runs every test at full size, under the race detector too.
+all of their tests again. The race pass keeps the race detector's checkptr
+instrumentation in every package, including the `modernc.org` SQLite
+translation, where an invalid unsafe pointer conversion can still return the
+expected rows and only checkptr reports it.
+`make check-review` does not replace `make test` when the task requires the
+complete gate. Run `make test` before asking for review under the repository's
+default policy: it runs every test at full size, under the race detector too.
+
+`make check-fast-no-sqlite-checkptr` and `make check-review-no-sqlite-checkptr`
+are opt-in faster variants for iterating on SQLite-heavy packages. They turn
+checkptr off for `modernc.org` packages alone, which roughly halves the CPU cost
+of each SQL statement under the race detector; checkptr still covers every other
+package. They lose that one check, so they never replace `make check-review`
+before review, and CI keeps checkptr everywhere.
 
 `make qualification` runs the nested-process qualification gates
 (`TestBacklogV2ProductionQualification`, `TestCoordinatorLocalMultiProcessWorkflow`),

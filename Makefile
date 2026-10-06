@@ -21,17 +21,23 @@ TEST_TIMEOUT ?= 10m
 RACE_TIMEOUT ?= 25m
 # check-fast runs the race detector only on packages changed against this ref.
 FAST_BASE ?= origin/main
-# The race detector also turns on checkptr, which validates every unsafe pointer
-# conversion. modernc.org/sqlite is SQLite translated from C and makes such a
-# conversion in almost every operation, so under -race checkptr about doubles the
-# CPU cost of each SQL statement while checking only that third-party
-# translation, never this repository's code. The local gates therefore turn
-# checkptr off for modernc.org packages alone; the race detector still
-# instruments them, and `make test`, which CI runs, keeps checkptr everywhere.
-# Set RACE_GCFLAGS= to keep it in the local gates as well.
-RACE_GCFLAGS ?= -gcflags=modernc.org/...=-d=checkptr=0
+# Extra flags for the race pass of check-fast and check-review. Empty by default,
+# so the race detector keeps checkptr, which validates every unsafe pointer
+# conversion, in every package, including modernc.org's SQLite translation: an
+# invalid conversion there can still return the expected rows and pass every
+# assertion, and only checkptr reports it.
+RACE_GCFLAGS ?=
+# check-fast-no-sqlite-checkptr and check-review-no-sqlite-checkptr are opt-in
+# faster variants of the two gates. modernc.org/sqlite converts pointers in almost
+# every operation, so under -race checkptr about doubles the CPU cost of each SQL
+# statement; these targets turn checkptr off for modernc.org packages alone. The
+# race detector still instruments them and checkptr still covers every other
+# package, but a pointer bug inside modernc.org goes unreported, so they never
+# replace check-review as the gate before review.
+NO_SQLITE_CHECKPTR_GCFLAGS := -gcflags=modernc.org/...=-d=checkptr=0
+check-fast-no-sqlite-checkptr check-review-no-sqlite-checkptr: RACE_GCFLAGS = $(NO_SQLITE_CHECKPTR_GCFLAGS)
 
-.PHONY: build test check-fast check-review qualification lint install clean
+.PHONY: build test check-fast check-review check-fast-no-sqlite-checkptr check-review-no-sqlite-checkptr qualification lint install clean
 
 build:
 	CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o bin/$(BINARY) ./cmd/$(BINARY)
@@ -55,7 +61,7 @@ test:
 # every one of their tests again (all of them for check-review, the same short
 # set for check-fast) with the race detector added. Running them first without
 # it repeated the slowest packages for no additional assertion.
-check-fast check-review:
+check-fast check-review check-fast-no-sqlite-checkptr check-review-no-sqlite-checkptr:
 	go build ./...
 	go vet ./...
 	@pkgs=$$(sh scripts/changed-go-packages.sh '$(FAST_BASE)') || exit 1; \
@@ -72,7 +78,7 @@ check-fast check-review:
 	$(MAKE) lint || exit 1; \
 	if [ -n "$$pkgs" ]; then \
 		race_short=; \
-		if [ "$@" = check-fast ]; then race_short=-short; fi; \
+		case "$@" in check-fast*) race_short=-short;; esac; \
 		echo "go test -race $(RACE_GCFLAGS)" $$race_short $$pkgs; \
 		go test -race $(RACE_GCFLAGS) $$race_short -timeout $(RACE_TIMEOUT) $$pkgs; \
 	else \
