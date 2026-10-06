@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -41,16 +42,20 @@ offers it.
 STATUS says "available" only when every window the pool's provider declares
 (Claude five_hour and seven_day; Codex primary, and secondary when it reports
 one) has a reading no older than the stale threshold, no window is used up, the
-pool admits work, and at least one ready worker advertises the route's model.
-Each model is judged on its own, so --available drops a model only unready
-workers offer while keeping the instance's other models. Otherwise it names
-the first reason: "quota unknown", "missing <window>", "stale <window>",
-"exhausted <window> until <reset>", "pool <admission>" or "no ready worker".
+pool admits work, and at least one ready worker both advertises the route's
+model and is authorized for it by the coordinator. A worker may advertise
+more models than it is authorized for, and those routes are not available.
+Each model is judged on its own, so --available drops a model only unready or
+unauthorized workers offer while keeping the instance's other models.
+Otherwise it names the first reason: "not authorized", "quota unknown",
+"missing <window>", "stale <window>", "exhausted <window> until <reset>",
+"pool <admission>" or "no ready worker".
 --json carries the same verdict for each route under routes[].availability,
 and the instance's availability is available when any of its routes is, with
-a stable code: available, missing-binding, not-advertised, quota-unknown,
-missing-window, stale-window, exhausted-window, pool-admission or
-no-ready-worker.
+a stable code: available, missing-binding, not-advertised,
+model-not-authorized, quota-unknown, missing-window, stale-window,
+exhausted-window, pool-admission or no-ready-worker. Each worker's
+authorizedModels is the coordinator's allowlist for it.
 
 Narrowing the answer. Each of these says what to read, and all of them are
 applied before anything decides how much of it to print, so a narrowed answer
@@ -213,7 +218,8 @@ type modelsRoute struct {
 // modelsAvailability is the verdict the status column prints. Code is
 // "available" or one of the reason codes: missing-binding, not-advertised,
 // quota-unknown, missing-window, stale-window, exhausted-window,
-// pool-admission or no-ready-worker. Window and ResetsAt name the window a
+// pool-admission, model-not-authorized or no-ready-worker. Window and
+// ResetsAt name the window a
 // window code is about.
 type modelsAvailability struct {
 	Code     string     `json:"code"`
@@ -228,6 +234,9 @@ const (
 	modelsAvailabilityNotAdvertised  = "not-advertised"
 	modelsAvailabilityPoolAdmission  = "pool-admission"
 	modelsAvailabilityNoReadyWorker  = "no-ready-worker"
+	// modelsAvailabilityModelNotAuthorized is a route whose model no worker
+	// that advertises it is authorized for.
+	modelsAvailabilityModelNotAuthorized = "model-not-authorized"
 )
 
 // modelsWorker is one worker the instance is authorized for, advertised by, or
@@ -241,6 +250,11 @@ type modelsWorker struct {
 	// all: a release older than this one answers the same query without it, and
 	// false would assert as fact what that answer does not carry.
 	Authorized *bool `json:"authorized,omitempty"`
+	// AuthorizedModels is the coordinator's model allowlist for this instance
+	// on this worker, as domain.ModelAuthorized reads it (a sole "*" is every
+	// model). A worker may advertise more models than it is authorized for,
+	// and a route runs only where both name its model.
+	AuthorizedModels []string `json:"authorizedModels,omitempty"`
 	// Advertised reports that this worker's inventory offers it now.
 	Advertised bool `json:"advertised"`
 	// Reason is why this instance and worker pair cannot run a route:
@@ -480,6 +494,7 @@ func buildModelsDocument(project string, workers []backlogadmin.Worker, quotas [
 			current := row(granted.Instance)
 			yes := true
 			current.Authorized = &yes
+			current.AuthorizedModels = mergeSorted(current.AuthorizedModels, granted.Models)
 			current.Reason = workerRouteReason(granted, installed)
 		}
 		for _, provider := range worker.Snapshot.Inventory.Providers {
@@ -733,13 +748,13 @@ func renderModels(out io.Writer, document modelsDocument) error {
 			if model != "" {
 				route += "/" + model
 			}
-			// The column counts the workers that are offering this route now,
-			// not the ones it is authorized for: a worker that does not
-			// advertise the model cannot run it however ready it is, and the
-			// reason is below the table.
+			// The column counts the workers that are offering this route now:
+			// a worker that does not advertise the model, or is not authorized
+			// for it, cannot run it however ready it is, and the reason is in
+			// the status column or below the table.
 			ready, advertising := 0, 0
 			for _, worker := range instance.Workers {
-				if !modelsWorkerOffers(worker, model) {
+				if !modelsWorkerServes(worker, model) {
 					continue
 				}
 				advertising++
@@ -937,14 +952,40 @@ func modelsWorkerOffers(worker modelsWorker, model string) bool {
 	return false
 }
 
+// modelsWorkerAuthorizes reports whether the coordinator authorizes a worker
+// for a route: the instance, and the model when the route names one. A worker
+// the coordinator reported no authorization for at all (a release older than
+// the per-worker catalog) is not refused here, because that answer does not
+// say; a worker it reported authorizations for, none of which names the
+// instance, is refused.
+func modelsWorkerAuthorizes(worker modelsWorker, model string) bool {
+	if worker.Authorized == nil {
+		return true
+	}
+	if !*worker.Authorized {
+		return false
+	}
+	if model == "" {
+		return len(worker.AuthorizedModels) > 0
+	}
+	return domain.ModelAuthorized(worker.AuthorizedModels, model)
+}
+
+// modelsWorkerServes reports whether a worker both advertises a route and is
+// authorized for it, which is what dispatch needs from one worker.
+func modelsWorkerServes(worker modelsWorker, model string) bool {
+	return modelsWorkerOffers(worker, model) && modelsWorkerAuthorizes(worker, model)
+}
+
 // modelsAvailabilityFor decides whether a route can run now (F2: models
 // called a route available on stale, incomplete or exhausted telemetry, and
 // with no ready worker). In order: the catalog has to bind it, a worker has
-// to advertise it, its pool's window set has to be complete, fresh and not
+// to advertise it, some worker that advertises the model has to be authorized
+// for that model, its pool's window set has to be complete, fresh and not
 // exhausted (windows is nil when the instance has no authorized pool), the
-// pool has to admit work, and at least one ready worker that advertises the
-// model has to be able to dispatch it (an empty model asks for any model of
-// the instance). The first failure is the reason.
+// pool has to admit work, and at least one ready worker that both advertises
+// the model and is authorized for it has to be able to dispatch it (an empty
+// model asks for any model of the instance). The first failure is the reason.
 func modelsAvailabilityFor(instance modelsInstance, windows *domain.QuotaWindowSet, model string) modelsAvailability {
 	switch {
 	case instance.MissingBinding:
@@ -953,6 +994,8 @@ func modelsAvailabilityFor(instance modelsInstance, windows *domain.QuotaWindowS
 		return modelsAvailability{Code: modelsAvailabilityNotAdvertised, Detail: "not advertised: " + modelsReasonText(instance.Reason)}
 	case !instance.Advertised:
 		return modelsAvailability{Code: modelsAvailabilityNotAdvertised, Detail: "authorized, not advertised: no worker offers it"}
+	case !slices.ContainsFunc(instance.Workers, func(worker modelsWorker) bool { return modelsWorkerServes(worker, model) }):
+		return modelsAvailability{Code: modelsAvailabilityModelNotAuthorized, Detail: "not authorized: no worker that offers it is authorized for this model"}
 	case windows == nil:
 		return modelsAvailability{Code: domain.QuotaWindowUnknown, Detail: domain.QuotaWindowProblem{Code: domain.QuotaWindowUnknown}.String()}
 	}
@@ -963,7 +1006,7 @@ func modelsAvailabilityFor(instance modelsInstance, windows *domain.QuotaWindowS
 		return modelsAvailability{Code: modelsAvailabilityPoolAdmission, Detail: "pool " + instance.Admission}
 	}
 	for _, worker := range instance.Workers {
-		if modelsWorkerOffers(worker, model) && worker.Ready && worker.Reason == "" {
+		if modelsWorkerServes(worker, model) && worker.Ready && worker.Reason == "" {
 			return modelsAvailability{Code: modelsStatusAvailable, Detail: modelsStatusAvailable}
 		}
 	}
