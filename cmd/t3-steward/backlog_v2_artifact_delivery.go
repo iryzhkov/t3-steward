@@ -160,6 +160,11 @@ func executionPackageObjects(pkg workerproto.ExecutionPackage) []workerproto.Art
 	for _, dependency := range pkg.Dependencies {
 		objects = append(objects, dependency.Artifacts...)
 	}
+	// A commit bundle is in the package only when the consumer runs on another
+	// worker than the producer, so a same-worker consumer downloads nothing.
+	for _, bundle := range pkg.CommitBundles {
+		objects = append(objects, bundle.Bundle)
+	}
 	return objects
 }
 

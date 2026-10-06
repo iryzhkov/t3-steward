@@ -35,6 +35,14 @@ type AttemptFinalization struct {
 	// commit it was built on.
 	Repository string
 	BaseCommit string
+	// CommitBundles retains a bundle of each declared commit so that a
+	// consumer on another worker can import it. It is set only when the
+	// coordinator declared the commit bundle capability on the package, which
+	// is its statement that it accepts the bundle artifact.
+	CommitBundles bool
+	// CommitBundleLimit is the largest bundle the artifact transport accepts.
+	// Zero leaves only the campaign ref store's own limit.
+	CommitBundleLimit int64
 }
 
 // FinalizationArtifact is evidence captured alongside an attempt's declared
@@ -252,6 +260,17 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			// missing declared output is.
 			failures = append(failures, fmt.Sprintf("declared commit %q: %v", declaration.Name, publishErr))
 			continue
+		}
+		if request.CommitBundles {
+			bound, bundle, bundleErr := f.retainCommitBundle(ctx, request, stageDir, provenance, now)
+			if bundleErr != nil {
+				failures = append(failures, fmt.Sprintf("declared commit %q: %v", declaration.Name, bundleErr))
+				continue
+			}
+			provenance = bound
+			if bundle != nil {
+				artifacts = append(artifacts, *bundle)
+			}
 		}
 		record, marshalErr := MarshalCommitProvenance(provenance)
 		if marshalErr != nil {

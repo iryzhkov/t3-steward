@@ -93,6 +93,22 @@ type DependencyInput struct {
 	Artifacts  []ArtifactObject      `json:"artifacts"`
 }
 
+// CommitBundleInput is the retained bundle of one declared commit a dependency
+// produced on another worker. It is delivered with the other inputs and is
+// read only when the consuming worker's own store lacks the commit.
+type CommitBundleInput struct {
+	// TaskID is the producing task, and Name the declared commit.
+	TaskID string         `json:"taskId"`
+	Name   string         `json:"name"`
+	Bundle ArtifactObject `json:"bundle"`
+}
+
+// CommitBundlePath is where a package places the bundle of one declared
+// commit. It is outside dependencies/, so it never reaches the task's view.
+func CommitBundlePath(taskID, name string) string {
+	return "commit-bundles/" + taskID + "/" + name + ".bundle"
+}
+
 // Package capabilities name behaviour a worker must implement to execute a
 // package faithfully. A package that declares one is only understood by a build
 // that supports it; see ValidateExecutionPackage.
@@ -102,13 +118,18 @@ const (
 	PackageCapabilityRecoveryRetry       = "recovery-retry-v1"
 	PackageCapabilityRecoverySupplement  = "recovery-supplement-v1"
 	PackageCapabilityProjectContext      = "project-context-v1"
+	// PackageCapabilityCommitBundle is the transport of a declared campaign
+	// commit between workers. A producing worker that has it retains a bundle
+	// of each declared commit, and a consuming worker that has it imports one
+	// delivered in CommitBundles into its own campaign ref store.
+	PackageCapabilityCommitBundle = "campaign-commit-bundle-v1"
 )
 
 // SupportedPackageCapabilities is what this build implements. A package that
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay}
+	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle}
 }
 
 // PreflightStep is one declared step the worker runs after the workspace is
@@ -127,27 +148,29 @@ type RecoveryExecutionContext struct {
 }
 
 type ExecutionPackage struct {
-	Display          *SessionDisplay        `json:"display,omitempty"`
-	Timeout          time.Duration          `json:"timeout,omitempty"`
-	GraphRevision    int64                  `json:"graphRevision,omitempty"`
-	TaskRevision     int64                  `json:"taskRevision,omitempty"`
-	TaskDigest       string                 `json:"taskDigest,omitempty"`
-	Version          int                    `json:"version"`
-	ID               string                 `json:"id"`
-	CoordinatorID    string                 `json:"coordinatorId"`
-	CoordinatorEpoch int64                  `json:"coordinatorEpoch"`
-	WorkerID         string                 `json:"workerId"`
-	WorkerEpoch      string                 `json:"workerEpoch"`
-	Identity         ExecutionIdentity      `json:"identity"`
-	Class            domain.TaskClass       `json:"class"`
-	Prompt           ArtifactObject         `json:"prompt"`
-	StaticInputs     []ArtifactObject       `json:"staticInputs,omitempty"`
-	Dependencies     []DependencyInput      `json:"dependencies,omitempty"`
-	Context          *domain.ProjectContext `json:"context,omitempty"`
-	Route            domain.ProviderRoute   `json:"route"`
-	Environment      EnvironmentReference   `json:"environment"`
-	Verification     []string               `json:"verification,omitempty"`
-	Preflight        []PreflightStep        `json:"preflight,omitempty"`
+	Display          *SessionDisplay   `json:"display,omitempty"`
+	Timeout          time.Duration     `json:"timeout,omitempty"`
+	GraphRevision    int64             `json:"graphRevision,omitempty"`
+	TaskRevision     int64             `json:"taskRevision,omitempty"`
+	TaskDigest       string            `json:"taskDigest,omitempty"`
+	Version          int               `json:"version"`
+	ID               string            `json:"id"`
+	CoordinatorID    string            `json:"coordinatorId"`
+	CoordinatorEpoch int64             `json:"coordinatorEpoch"`
+	WorkerID         string            `json:"workerId"`
+	WorkerEpoch      string            `json:"workerEpoch"`
+	Identity         ExecutionIdentity `json:"identity"`
+	Class            domain.TaskClass  `json:"class"`
+	Prompt           ArtifactObject    `json:"prompt"`
+	StaticInputs     []ArtifactObject  `json:"staticInputs,omitempty"`
+	Dependencies     []DependencyInput `json:"dependencies,omitempty"`
+	// CommitBundles requires PackageCapabilityCommitBundle.
+	CommitBundles []CommitBundleInput    `json:"commitBundles,omitempty"`
+	Context       *domain.ProjectContext `json:"context,omitempty"`
+	Route         domain.ProviderRoute   `json:"route"`
+	Environment   EnvironmentReference   `json:"environment"`
+	Verification  []string               `json:"verification,omitempty"`
+	Preflight     []PreflightStep        `json:"preflight,omitempty"`
 	// RequiredCapabilities names what a worker must implement to run this
 	// package. The manifest content address already stops an older build from
 	// silently dropping a field it cannot decode; this list makes the refusal
@@ -320,6 +343,23 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 			total += artifact.Size
 		}
 	}
+	bundles := make(map[string]struct{}, len(pkg.CommitBundles))
+	for _, input := range pkg.CommitBundles {
+		if !identityPattern.MatchString(input.TaskID) || !safeRelativePath(input.Name) || strings.Contains(input.Name, "/") {
+			return errors.New("execution package: invalid commit bundle reference")
+		}
+		if _, duplicate := bundles[input.TaskID+"\x00"+input.Name]; duplicate {
+			return errors.New("execution package: duplicate commit bundle")
+		}
+		bundles[input.TaskID+"\x00"+input.Name] = struct{}{}
+		if input.Bundle.Path != CommitBundlePath(input.TaskID, input.Name) {
+			return errors.New("execution package: commit bundle path does not name its commit")
+		}
+		if err := validatePackageArtifact(input.Bundle, pkg.Limits.MaxArtifactBytes, paths); err != nil {
+			return fmt.Errorf("execution package: commit bundle: %w", err)
+		}
+		total += input.Bundle.Size
+	}
 	if total > pkg.Limits.MaxTotalBytes {
 		return errors.New("execution package: inputs exceed total byte limit")
 	}
@@ -397,6 +437,9 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 			return fmt.Errorf("execution package: duplicate required capability %q", capability)
 		}
 		declared[capability] = struct{}{}
+	}
+	if _, ok := declared[PackageCapabilityCommitBundle]; len(pkg.CommitBundles) != 0 && !ok {
+		return errors.New("execution package: commit bundles require the commit bundle capability")
 	}
 	if _, ok := declared[PackageCapabilityPreflight]; len(pkg.Preflight) != 0 && !ok {
 		return errors.New("execution package: preflight steps require the preflight capability")

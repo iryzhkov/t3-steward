@@ -122,6 +122,9 @@ type WorkspacePreparation struct {
 	InputArtifacts      []domain.Artifact
 	DependencyTasks     []domain.Task
 	DependencyArtifacts []domain.Artifact
+	// CommitBundles are the bundles of declared dependency commits produced on
+	// another worker, keyed by campaign ref.
+	CommitBundles map[string]CommitBundleDelivery
 }
 
 // PreparedWorkspace is the published run directory and pinned source revision.
@@ -479,6 +482,13 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 		}
 		if p.CampaignRefs.Root == "" {
 			return fmt.Errorf("dependency commit %s needs a campaign ref store", provenance.Ref)
+		}
+		var delivery *CommitBundleDelivery
+		if bundle, ok := request.CommitBundles[provenance.Ref]; ok {
+			delivery = &bundle
+		}
+		if err := p.CampaignRefs.Obtain(ctx, workspaceDir, provenance, delivery, log); err != nil {
+			return err
 		}
 		if err := p.CampaignRefs.FetchInto(ctx, workspaceDir, provenance, log); err != nil {
 			return err

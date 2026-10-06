@@ -131,6 +131,10 @@ level: unknown keys are startup errors. Backlog-v2 is disabled by default.
 - `storage` declares absolute, non-root, non-overlapping bundle, artifact, and
   workspace roots. Worker journals, replay state, workspaces, and custody live
   beneath the configured worker-scoped roots and must be restored coherently.
+  `storage.campaign_commit_bundle_max_bytes` bounds the Git bundle of a
+  declared campaign commit (default 64 MiB, `0` keeps the default; never more
+  than `message_limits.max_artifact_bytes`). See "Declared commits across
+  workers" below.
 - `transport`, `message_limits`, `freshness`, `leases`, and `scheduling`
   set bounded exchange and lifecycle controls. `message_limits.max_files`
   bounds bundle/archive expansion. The worker caps
@@ -305,6 +309,44 @@ commits that worker must keep; the worker releases every run it holds that the
 list does not name. The statement carries an explicit flag, so a coordinator
 that says nothing is not read as "release everything", and it is refused whole
 rather than applied in part.
+
+### Declared commits across workers
+
+A successor may run on a different worker from its producer, whose campaign
+ref store has never held the commit. The commit then crosses as a Git bundle,
+over the same artifact path every other input takes:
+
+- When the coordinator offers a producer's package with the
+  `campaign-commit-bundle-v1` capability, which it does only for a worker that
+  advertises it, the producer retains a verified bundle of `base..commit` as
+  the git-state artifact `git/campaign-commits/<name>.bundle`. Its digest and
+  size are bound into the provenance record (`bundle`). A commit equal to its
+  base needs no bundle: the consumer already holds the base.
+- A bundle larger than `storage.campaign_commit_bundle_max_bytes` (default
+  64 MiB, never more than `message_limits.max_artifact_bytes`) is not retained.
+  The producer still succeeds, because a successor on its own worker needs no
+  bundle, and the record states why in `bundleOmitted`.
+- A successor placed on another worker is delivered the bundle with its other
+  inputs, outside its dependency view. A successor on the producer's worker is
+  delivered nothing and resolves the ref exactly as before.
+- Before fetching, the consuming worker looks for the ref in its own store. If
+  it is missing, the worker checks the delivered bundle against the digest in
+  the provenance record, checks that the bundle names exactly the declared
+  commit under the declared ref, that its prerequisites are the declared base
+  or its ancestors, that the base is present in its repository cache, and that
+  the imported commit descends from that base, and only then records the ref
+  and its provenance in its own store. It is released there by the same keep
+  list as a commit published locally.
+- Every one of those checks fails by name — a corrupt bundle, a bundle for a
+  different commit, a missing prerequisite, a bundle over the limit — and none
+  falls back to any other commit.
+
+A task that consumes a declared commit requires `campaign-commit-bundle-v1` of
+the worker that runs it, so placement and `campaign check` exclude a worker
+whose build cannot import a commit, naming the capability. A successor of a
+producer that ran on a build without the capability, or whose bundle was not
+retained, fails preparation on any other worker with that cause rather than
+`couldn't find remote ref`.
 
 **Known limitation: nothing prunes coordinator artifacts yet.** Artifact
 retention exists as a function and is what campaign refs now follow, but no

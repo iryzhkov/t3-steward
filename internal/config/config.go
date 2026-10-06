@@ -727,6 +727,11 @@ type V2Storage struct {
 	// Retention is how long a worker keeps finished attempt workspaces and
 	// their journal records before pruning them (default 72h).
 	Retention Duration `yaml:"retention"`
+	// CampaignCommitBundleMaxBytes bounds the Git bundle a worker retains for
+	// a declared campaign commit, and the bundle it will import for a consumer
+	// on another worker (default 64 MiB). A bundle is also never larger than
+	// message_limits.max_artifact_bytes, because it travels as an artifact.
+	CampaignCommitBundleMaxBytes int64 `yaml:"campaign_commit_bundle_max_bytes"`
 }
 
 type V2Transport struct {

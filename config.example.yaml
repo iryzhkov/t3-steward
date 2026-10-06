@@ -203,6 +203,10 @@ backlog_v2:
     bundles: ""
     artifacts: ""
     workspaces: ""
+    # Largest Git bundle a worker retains or imports for a declared campaign
+    # commit consumed on another worker; 0 means 64 MiB. Never more than
+    # message_limits.max_artifact_bytes.
+    campaign_commit_bundle_max_bytes: 0
   transport:
     kind: ssh
     request_timeout: 30s
