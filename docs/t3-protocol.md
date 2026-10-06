@@ -319,7 +319,9 @@ dispatchable command union, with optional `title`, `regenerateTitle`,
 compares the thread's current title with the last title Steward set before
 writing, and stops updating a thread whose title differs: the operator renamed
 it. That check-then-write is not atomic; a rename landing between the read and
-the write is overwritten once, and the next update sees it and stops.
+the write is overwritten and lost: the worker records its own title as the
+last title it set, so later updates continue until the operator renames the
+thread again.
 
 The title is `[Steward] <workflow>: <task> · <role> · <state>[ · campaign n/m] ·
 run <suffix>`. The state and campaign progress come from the coordinator's

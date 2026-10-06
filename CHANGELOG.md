@@ -41,8 +41,9 @@ All notable changes to this project are documented here. The format follows
   worker restarts, and also apply to directory-bound executions through their
   supervisor's scoped T3 control, never the host's. Renaming a thread in T3
   stops further updates to it. Limitation: T3 offers no expected-title fence,
-  so a rename made between Steward's read and its write is overwritten once;
-  the next update then sees the rename and stops. A directory-bound execution
+  so a rename made between Steward's read and its write is overwritten and
+  lost, and updates continue; rename the thread again for the next update to
+  see the rename and stop. A directory-bound execution
   whose supervisor has already stopped keeps its last title, which can read
   "collecting" rather than "completed". Packages without frozen display
   metadata keep their initial title.
