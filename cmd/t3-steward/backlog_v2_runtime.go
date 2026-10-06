@@ -961,6 +961,17 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	// know whether an overseer could be dispatched at all, and none of them can
 	// discover it from a record.
 	service.SetSupervisorClientConfigured(supervisorPrincipal != "")
+	// A running task opens its review rounds through this coordinator. The head
+	// it names is resolved by the worker assigned to the task, never by this
+	// host and never from the task's own word. Unusable review storage disables
+	// only this operation, which then refuses every checkpoint as unavailable.
+	reviewRefs := newCoordinatorRepositoryRefResolver(cfg.BacklogV2, workerruntime.ProtocolResolver{}, epoch, nil, store)
+	if checkpoint, err := newCoordinatorReviewCheckpoint(cfg.BacklogV2, store, epoch, reviewRefs); err != nil {
+		logger.Warn("in-task review checkpoints are disabled", "error", err,
+			"effect", "a task asking for a review round is refused as unavailable")
+	} else {
+		service.SetReviewCheckpoint(checkpoint)
+	}
 	reviewCatalog, err := workerruntime.NewConfiguredAdmissionCatalog(cfg.BacklogV2)
 	if err != nil {
 		return fmt.Errorf("configured review admission: %w", err)

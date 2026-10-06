@@ -89,6 +89,9 @@ type Service struct {
 	// effective configuration and appears in no record a query reads.
 	workerProviders map[string][]WorkerProviderAuthorization
 	usageCursorKey  []byte
+	// reviewCheckpoint opens in-task review rounds. It is composed by the
+	// coordinator runtime from its own configuration and worker transport.
+	reviewCheckpoint ReviewCheckpointOpener
 }
 
 // SetWorkerAuthorization supplies the provider authorization the coordinator

@@ -30,8 +30,9 @@ func newCoordinatorDeclaredReviewAdmission(settings config.BacklogV2, store *sql
 	return coordinatorDeclaredReviewAdmission{backlog.ReviewAdmissionService{Store: store, Projects: projectCatalog, Catalog: catalog, Artifacts: backlog.CoordinatorArtifactStore{Root: settings.Storage.Artifacts, SubmissionRoot: settings.Storage.Bundles, Catalog: store}}}, nil
 }
 
-// newCoordinatorDeclaredReviewStaging is internal only; no transport or task
-// command registers it. Storage and catalog are coordinator configuration.
+// newCoordinatorDeclaredReviewStaging is reached only through the coordinator's
+// review checkpoint operation, never from a task command directly. Storage and
+// catalog are coordinator configuration.
 func newCoordinatorDeclaredReviewStaging(settings config.BacklogV2, store *sqlite.Store) (*backlog.DeclaredReviewStaging, error) {
 	admission, err := newCoordinatorDeclaredReviewAdmission(settings, store)
 	if err != nil {

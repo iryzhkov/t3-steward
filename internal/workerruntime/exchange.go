@@ -100,6 +100,13 @@ func (e Exchange) handle(ctx context.Context, envelope workerproto.Envelope) (wo
 		}
 		observation, err := e.Runtime.ObserveRepository(ctx, request)
 		return workerproto.MessageRepositoryObservation, observation, err
+	case workerproto.MessageRepositoryRefResolve:
+		var request workerproto.RepositoryRefRequest
+		if err := workerproto.DecodePayload(envelope, workerproto.MessageRepositoryRefResolve, &request); err != nil {
+			return "", nil, err
+		}
+		resolution, err := e.Runtime.ResolveRepositoryRef(ctx, request)
+		return workerproto.MessageRepositoryRefResolution, resolution, err
 	case workerproto.MessageArtifactPoll:
 		if e.Custody == nil {
 			return "", nil, fmt.Errorf("worker exchange: custody is required")

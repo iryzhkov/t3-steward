@@ -48,12 +48,18 @@ var (
 // reviewAuthorityWriteTx acquires SQLite's writer before reading the allocation
 // count. Independent connections serialize rather than upgrading stale snapshots.
 // The no-op parent write and attempt CAS share the allocation transaction.
+// A coordinator epoch fence bound to ctx is compared under that writer lock, so
+// an epoch advance either precedes the comparison or follows the commit.
 func (s *Store) reviewAuthorityWriteTx(ctx context.Context, p review.ParentBinding) (*sql.Tx, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	if _, err = tx.ExecContext(ctx, "UPDATE coordinator_workflow_runs SET revision=revision WHERE id=?", p.RunID); err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+	if err = requireReviewEpochFenceTx(ctx, tx); err != nil {
 		tx.Rollback()
 		return nil, err
 	}
