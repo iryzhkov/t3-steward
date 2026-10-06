@@ -20,7 +20,7 @@ func TestWorkerOwnedGateManifestEvidenceBounds(t *testing.T) {
 func TestWorkerOwnedGateManifest(t *testing.T) {
 	base := "version: 2\nname: gate-test\nenvironment:\n  project: steward\ntasks:\n  build:\n    prompt_file: build.md\n    gate:\n      commands: [make check-review]\n"
 	m := mustParseManifest(t, base)
-	if m.Tasks["build"].Gate == nil || m.Tasks["build"].Gate.Timeout != 45*time.Minute {
+	if m.Tasks["build"].Gate == nil || m.Tasks["build"].Gate.Timeout != 30*time.Minute {
 		t.Fatalf("gate defaults = %+v", m.Tasks["build"].Gate)
 	}
 	for _, suffix := range []string{"      timeout: 7h\n", "      timeout: -1s\n"} {

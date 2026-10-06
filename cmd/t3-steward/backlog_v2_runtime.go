@@ -972,6 +972,9 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		// client that skipped it, or a fleet that changed after the client
 		// checked, still cannot create an impossible run.
 		Permanent: coordinatorPermanentValidator{admin: service, reviews: reviewCatalog},
+		// Every gate command is bounded by command_timeout at dispatch, so a
+		// longer gate is refused here instead of being withheld forever.
+		MaxGateTimeout: cfg.BacklogV2.Verification.CommandTimeout.D(),
 		Audit: func(_ context.Context, audit backlog.SubmissionAudit) {
 			if !audit.Unverified {
 				return

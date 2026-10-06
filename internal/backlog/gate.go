@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -534,10 +535,42 @@ func gateToolVersions(ctx context.Context) (map[string]string, error) {
 		}
 		tools[tool.name] = identity
 	}
-	// Store only a digest: environment may include credential values.
-	env := append([]string(nil), os.Environ()...)
-	sort.Strings(env)
-	sum := sha256.Sum256([]byte(strings.Join(env, "\x00")))
-	tools["environmentSHA256"] = hex.EncodeToString(sum[:])
+	tools["environmentSHA256"] = gateEnvironmentDigest(os.Environ())
 	return tools, nil
+}
+
+// gateEnvironmentNames and gateEnvironmentPrefixes name the inherited
+// variables that can change what a gate command builds or how it runs.
+//
+// The digest covers only these. Hashing the whole environment made the cache
+// useless across service restarts: systemd sets INVOCATION_ID, JOURNAL_STREAM,
+// SYSTEMD_EXEC_PID, MANAGERPID and MEMORY_PRESSURE_WATCH afresh on every start,
+// and a desktop session adds its own instance signatures, so an unchanged tree
+// missed after every restart or converge.
+var (
+	gateEnvironmentNames = map[string]struct{}{
+		"PATH": {}, "HOME": {}, "SHELL": {}, "TMPDIR": {}, "TZ": {}, "LANG": {}, "LANGUAGE": {},
+		"CC": {}, "CXX": {}, "AR": {}, "CFLAGS": {}, "CPPFLAGS": {}, "CXXFLAGS": {}, "LDFLAGS": {},
+		"MAKEFLAGS": {}, "GNUMAKEFLAGS": {}, "MFLAGS": {}, "MAKEFILES": {},
+		"LD_LIBRARY_PATH": {}, "LD_PRELOAD": {}, "PKG_CONFIG_PATH": {}, "PKG_CONFIG_LIBDIR": {},
+		"XDG_CACHE_HOME": {}, "XDG_CONFIG_HOME": {},
+	}
+	gateEnvironmentPrefixes = []string{"GO", "CGO_", "LC_", "GIT_"}
+)
+
+// gateEnvironmentDigest hashes the allowlisted part of env. Only a digest is
+// stored, because even allowlisted values may carry credentials.
+func gateEnvironmentDigest(env []string) string {
+	selected := make([]string, 0, len(env))
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if _, ok := gateEnvironmentNames[name]; ok || slices.ContainsFunc(gateEnvironmentPrefixes, func(prefix string) bool {
+			return strings.HasPrefix(name, prefix)
+		}) {
+			selected = append(selected, entry)
+		}
+	}
+	sort.Strings(selected)
+	sum := sha256.Sum256([]byte(strings.Join(selected, "\x00")))
+	return hex.EncodeToString(sum[:])
 }

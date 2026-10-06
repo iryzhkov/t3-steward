@@ -365,10 +365,35 @@ func applyManifestDefaults(manifest *Manifest) {
 		task.Preflight = effectivePreflight(manifest.Preflight, task.Preflight)
 		applyPreflightDefaults(&task.Preflight)
 		if task.Gate != nil && task.Gate.Timeout == 0 {
-			task.Gate.Timeout = 45 * time.Minute
+			task.Gate.Timeout = DefaultGateTimeout
 		}
 		manifest.Tasks[name] = task
 	}
+}
+
+// DefaultGateTimeout is the per-command gate timeout when a task names none.
+// It equals the default backlog_v2.verification.command_timeout, which bounds
+// every gate command at dispatch, so a gate declared with no timeout dispatches
+// on a coordinator running its default configuration.
+const DefaultGateTimeout = 30 * time.Minute
+
+// ValidateGateTimeouts refuses a manifest whose gate timeout exceeds the
+// coordinator's verification.command_timeout. Such a task could never be
+// packaged: accepting it left the assignment withheld on every dispatch cycle
+// with the reason visible only in a coordinator log.
+func ValidateGateTimeouts(manifest Manifest, maximum time.Duration) error {
+	names := make([]string, 0, len(manifest.Tasks))
+	for name := range manifest.Tasks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		gate := manifest.Tasks[name].Gate
+		if gate != nil && gate.Timeout > maximum {
+			return fmt.Errorf("task %q gate timeout %s exceeds this coordinator's backlog_v2.verification.command_timeout %s; lower the gate timeout or raise command_timeout", name, gate.Timeout, maximum)
+		}
+	}
+	return nil
 }
 
 func cloneRoutes(routes []ManifestRoute) []ManifestRoute {

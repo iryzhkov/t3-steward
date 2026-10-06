@@ -62,12 +62,12 @@ a running one.
 A task can declare a worker-owned final gate:
   gate:
     commands: [make check-review]
-    timeout: 45m
+    timeout: 30m
 
 The worker runs it after verify succeeds, outside the agent turn. Each command's
-timeout defaults to 45m and must fit the worker's verification.command_timeout maximum (default
-30m; configure at least 45m to use the gate default). Offline validation allows
-up to 6h. The gate produces coordinator-recorded gate and gate/log.txt artifacts,
+timeout defaults to 30m and must fit the coordinator's verification.command_timeout
+(default 30m); submission refuses a longer gate timeout and names the setting.
+Offline validation allows up to 6h. The gate produces coordinator-recorded gate and gate/log.txt artifacts,
 which dependents may consume through inputs_from without declaring them in outputs.
 Successful evidence may be reused for the same HEAD tree, commands and toolchain;
 verification.gate_cache_age controls its age (default 24h; 0 disables reuse).

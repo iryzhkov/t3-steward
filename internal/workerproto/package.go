@@ -404,7 +404,10 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 		if err := pkg.Gate.Validate(); err != nil {
 			return fmt.Errorf("execution package: %w", err)
 		}
-		if len(pkg.Gate.Commands) == 0 || pkg.Gate.Timeout <= 0 || pkg.Gate.Timeout > pkg.Limits.VerificationTimeout || pkg.Gate.Timeout > 6*time.Hour || pkg.Limits.GateCacheAge < 0 {
+		if pkg.Gate.Timeout > pkg.Limits.VerificationTimeout && pkg.Gate.Timeout <= 6*time.Hour {
+			return fmt.Errorf("execution package: gate timeout %s exceeds verification timeout %s", pkg.Gate.Timeout, pkg.Limits.VerificationTimeout)
+		}
+		if len(pkg.Gate.Commands) == 0 || pkg.Gate.Timeout <= 0 || pkg.Gate.Timeout > 6*time.Hour || pkg.Limits.GateCacheAge < 0 {
 			return errors.New("execution package: invalid gate limits")
 		}
 		for _, command := range pkg.Gate.Commands {
