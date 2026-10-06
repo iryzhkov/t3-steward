@@ -393,6 +393,7 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 			}
 		}
 		records.Tasks = append(records.Tasks, domain.Task{
+			ReviewOutput:       domain.CloneReviewOutput(taskManifest.ReviewOutput),
 			ReviewRequirements: compiledReview,
 			DirectoryBindings:  directoryresource.CloneBindings(directoryBindings[name]),
 			ID:                 taskID, RunID: runID, WorkflowID: workflowID, Name: name, Class: taskManifest.Class,

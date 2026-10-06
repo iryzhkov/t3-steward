@@ -1380,6 +1380,9 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 		fmt.Fprintf(out, "  %s (%s): %s %s attempt=%s%s\n", task.Task.Name, task.Task.ID, state, control, attempt, evidenceMarker(task.Evidence))
 		// A failed task says why, so the run's answer is readable without a
 		// "task show" per task.
+		if task.Attempt != nil && task.Attempt.ReviewVerdict != nil {
+			fmt.Fprintln(out, task.Attempt.ReviewVerdict.Prose())
+		}
 		if task.Attempt != nil && task.Attempt.Failure != "" {
 			fmt.Fprintf(out, "    failure: %s\n", task.Attempt.Failure)
 		}
@@ -1715,6 +1718,9 @@ func renderExplanation(out io.Writer, explanation *backlogadmin.Explanation) {
 	}
 	fmt.Fprintf(out, "%s/%s: %s\neligible: %t\n", explanation.WorkflowRunID, explanation.TaskID,
 		explanation.Summary, explanation.Eligible)
+	if explanation.ReviewVerdict != nil {
+		fmt.Fprintln(out, explanation.ReviewVerdict.Prose())
+	}
 	if explanation.EarliestAt != nil {
 		fmt.Fprintf(out, "earliest: %s\n", formatTime(*explanation.EarliestAt))
 	}

@@ -491,9 +491,13 @@ func cloneDAGState(state DAGState) DAGState {
 	cloned.Run.InputArtifactIDs = append([]string(nil), state.Run.InputArtifactIDs...)
 	cloned.Tasks = append([]domain.Task(nil), state.Tasks...)
 	cloned.Attempts = append([]domain.Attempt(nil), state.Attempts...)
+	for i := range cloned.Attempts {
+		cloned.Attempts[i].ReviewVerdict = domain.CloneReviewVerdict(state.Attempts[i].ReviewVerdict)
+	}
 	for index := range cloned.Tasks {
 		source := state.Tasks[index]
 		task := &cloned.Tasks[index]
+		task.ReviewOutput = domain.CloneReviewOutput(source.ReviewOutput)
 		task.ReviewRequirements = domain.CloneTaskReview(source.ReviewRequirements)
 		task.Needs = append([]string(nil), source.Needs...)
 		task.ExternalNeeds = append([]domain.NodeRef(nil), source.ExternalNeeds...)

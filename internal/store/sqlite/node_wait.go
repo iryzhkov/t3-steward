@@ -361,7 +361,7 @@ func settleStructuredTaskWaitsTx(ctx context.Context, tx *sql.Tx, records nodeSt
 				result = &domain.TaskWaitResult{Outcome: domain.TaskWaitGaveUp, ExitCode: 2, Reason: err.Error(),
 					Fields: domain.NodeTrailerFields(domain.NodeObservation{Target: wait.Node.Target})}
 			case obs.Outcome != "":
-				result = &domain.TaskWaitResult{Outcome: obs.Outcome, ExitCode: obs.ExitCode, Reason: obs.Reason, Fields: domain.NodeTrailerFields(obs)}
+				result = &domain.TaskWaitResult{Outcome: obs.Outcome, ExitCode: obs.ExitCode, Reason: obs.Reason, Output: obs.ReviewVerdict.Prose(), Fields: domain.NodeTrailerFields(obs)}
 			}
 		case wait.Quota != nil:
 			obs, err := observeQuota(*wait.Quota, records, now)

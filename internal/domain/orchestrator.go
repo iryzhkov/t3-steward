@@ -177,6 +177,7 @@ type ProviderRoute struct {
 
 // Task is an immutable node in a workflow definition.
 type Task struct {
+	ReviewOutput       *ReviewOutput           `json:"reviewOutput,omitempty"`
 	ReviewRequirements *TaskReviewRequirements `json:"reviewRequirements,omitempty"`
 	// ReviewJudge is derived only from a validated review manifest by ingestion.
 	// Its swarm dependencies require terminal attempts rather than success.
@@ -229,6 +230,7 @@ type Task struct {
 // An attempt that carries a supervision activation is the one exception to
 // "one attempt per declared task": see SupervisionActivationID.
 type Attempt struct {
+	ReviewVerdict *ReviewVerdict `json:"reviewVerdict,omitempty"`
 	// SupervisionActivationID names the overseer activation this attempt
 	// executes, and SupervisionActivationEpoch the epoch it was issued at. Both
 	// are empty and zero on every attempt of a declared task, which is every
