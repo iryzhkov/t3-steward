@@ -51,7 +51,7 @@ func parseCampaignCommitExportArgs(args []string) (backlogadmin.CommitExportRequ
 		}
 	}
 	if len(positional) != 1 || path == "" {
-		return r, path, errors.New(campaignCommitExportUsage)
+		return r, path, fmt.Errorf("invalid commit export arguments: %s", strings.TrimSpace(campaignCommitExportUsage))
 	}
 	parts := strings.Split(positional[0], "/")
 	if len(parts) != 3 {
@@ -74,7 +74,7 @@ func parseCampaignCommitExportArgs(args []string) (backlogadmin.CommitExportRequ
 
 func (c campaignCLI) runCommit(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] != "export" {
-		return errors.New(campaignCommitExportUsage)
+		return fmt.Errorf("invalid commit export arguments: %s", strings.TrimSpace(campaignCommitExportUsage))
 	}
 	r, path, err := parseCampaignCommitExportArgs(args[1:])
 	if err != nil {
