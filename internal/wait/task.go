@@ -212,6 +212,16 @@ func (r *Runner) deliverTaskWake(ctx context.Context, store TaskWaitStore, contr
 				fileNote = askAnswerFileNote(err)
 			}
 		}
+		if wait.ReviewRoundID() != "" && wait.Resumption {
+			// A task parked on its review round is resumed to act on the
+			// verdict, so the wake carries it and places the documents in the
+			// workspace. Until the round is collected the wake is held.
+			note, hold := r.reviewWakeEvidence(ctx, store, wake, wait, now)
+			if hold {
+				continue
+			}
+			fileNote += note
+		}
 		claimed, err := store.TransitionTaskWake(ctx, wait.ID, wait.Delivery, "sending", now)
 		if err != nil || !claimed {
 			continue

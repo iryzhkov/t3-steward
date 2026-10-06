@@ -62,12 +62,14 @@ func applyAskDeadline(wait *domain.TaskWait, settled time.Time) bool {
 // askAnswerWorkspaceTx finds the workspace whose ask-answer.json an ask's
 // wake prepares: the one the attempt's worker last reported for its
 // assignment. It is looked up for every wake that carries an ask, answered or
-// not, because an unanswered one must remove an earlier ask's file. An unknown
-// workspace is not an error: the wake says the file could not be prepared.
+// not, because an unanswered one must remove an earlier ask's file, and for
+// every wake of a review parent wait, which places the round's documents
+// there. An unknown workspace is not an error: the wake says the file could
+// not be prepared.
 func askAnswerWorkspaceTx(ctx context.Context, tx *sql.Tx, assignment domain.Assignment, waits []domain.TaskWait) (string, error) {
 	asked := false
 	for _, wait := range waits {
-		if wait.Ask != nil {
+		if wait.Ask != nil || wait.ReviewRoundID() != "" {
 			asked = true
 		}
 	}

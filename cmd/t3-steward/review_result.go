@@ -44,6 +44,9 @@ func cmdReview(g globalFlags, args []string) error {
 				return nil
 			}
 		}
+		if reviewTaskArgsRequested(args) {
+			return cmdReviewTask(g, args)
+		}
 		return cmdReviewSubmit(g, args)
 	}
 	for _, arg := range args[1:] {
@@ -83,6 +86,53 @@ func (c reviewResultCLI) document(ctx context.Context, round, reviewer, name str
 		return nil, errors.New("coordinator returned no matching bounded review document")
 	}
 	return d.Content, nil
+}
+
+// fillDocuments fetches the documents a round's metadata omits, one at a time,
+// and validates every succeeded reviewer's verdict against the round.
+func (c reviewResultCLI) fillDocuments(ctx context.Context, round *review.Round) error {
+	for i := range round.Reviewers {
+		v := &round.Reviewers[i]
+		if v.ReviewAvailable && v.ReviewMD == "" {
+			raw, err := c.document(ctx, round.ID, v.ID, "review.md")
+			if err != nil {
+				return err
+			}
+			v.ReviewMD = string(raw)
+		}
+		if v.VerdictAvailable && len(v.VerdictJSON) == 0 {
+			raw, err := c.document(ctx, round.ID, v.ID, "verdict.json")
+			if err != nil {
+				return err
+			}
+			v.VerdictJSON = raw
+		}
+		if v.State == "succeeded" {
+			verdict, err := review.ValidateVerdict(v.VerdictJSON, round.InputManifestDigest, v.Route)
+			if err != nil {
+				return fmt.Errorf("coordinator returned invalid validated verdict for %s: %w", v.ID, err)
+			}
+			v.Verdict = &verdict
+		}
+	}
+	return nil
+}
+
+// fetchReviewRound reads one round with every document, as review result
+// does, for a caller that is not collecting it into the results directory.
+func fetchReviewRound(ctx context.Context, query func(context.Context, backlogadmin.Query) (backlogadmin.Response, error), id string) (review.Round, error) {
+	response, err := query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryReviewRound, RoundID: id})
+	if err != nil {
+		return review.Round{}, err
+	}
+	if response.ReviewRound == nil || response.ReviewRound.ID != id {
+		return review.Round{}, errors.New("coordinator returned no matching review round")
+	}
+	round := *response.ReviewRound
+	if err := (reviewResultCLI{query: query}).fillDocuments(ctx, &round); err != nil {
+		return review.Round{}, err
+	}
+	return round, nil
 }
 
 // Keep each reviewer-controlled value on its own terminal line.
@@ -158,29 +208,8 @@ func (c reviewResultCLI) run(ctx context.Context, args []string) error {
 	} else if _, err := probe(ctx); err != nil {
 		return err
 	}
-	for i := range round.Reviewers {
-		v := &round.Reviewers[i]
-		if v.ReviewAvailable && v.ReviewMD == "" {
-			raw, err := c.document(ctx, id, v.ID, "review.md")
-			if err != nil {
-				return err
-			}
-			v.ReviewMD = string(raw)
-		}
-		if v.VerdictAvailable && len(v.VerdictJSON) == 0 {
-			raw, err := c.document(ctx, id, v.ID, "verdict.json")
-			if err != nil {
-				return err
-			}
-			v.VerdictJSON = raw
-		}
-		if v.State == "succeeded" {
-			verdict, err := review.ValidateVerdict(v.VerdictJSON, round.InputManifestDigest, v.Route)
-			if err != nil {
-				return fmt.Errorf("coordinator returned invalid validated verdict for %s: %w", v.ID, err)
-			}
-			v.Verdict = &verdict
-		}
+	if err := c.fillDocuments(ctx, round); err != nil {
+		return err
 	}
 	reply, err := review.WriteOutput(c.results, *round)
 	if err != nil {

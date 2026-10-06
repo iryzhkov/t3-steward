@@ -75,7 +75,7 @@ func (s *Store) WaitReviewParent(ctx context.Context, expected review.FrozenAuth
 	now := s.now().UTC()
 	p := frozen.Parent
 	node := domain.NodeWaitCondition{Target: domain.NodeRef{RunID: cp.RoundID, TaskID: receipt.Graph.Run.Sink.ID}, State: domain.NodeStateTerminal}
-	requestID := "review-parent:" + cp.Key()
+	requestID := domain.ReviewParentWaitPrefix + cp.Key()
 	result := ReviewParentWaitResult{RoundID: round.ID, RoundState: round.Combined, CollectionPending: !round.Terminal()}
 	// Look up both identities: a foreign row cannot masquerade as a registration.
 	rows, err := tx.QueryContext(ctx, "SELECT id,request_id,attempt_id,thread_id,record FROM coordinator_task_waits WHERE request_id=? OR id=?", requestID, taskWaitID(requestID))

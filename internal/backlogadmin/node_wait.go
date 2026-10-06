@@ -93,6 +93,9 @@ type NodeWaitResponse struct {
 	// Checkpoint answers ReviewCheckpointAction with a round or a structured
 	// refusal, so the refusal code survives either carrier.
 	Checkpoint *domain.ReviewCheckpointResult `json:"checkpoint,omitempty"`
+	// CheckpointWait answers ReviewCheckpointWaitAction with a park or a
+	// structured refusal.
+	CheckpointWait *domain.ReviewCheckpointWaitResult `json:"checkpointWait,omitempty"`
 }
 type nodeWaitStore interface {
 	RegisterNodeWait(context.Context, domain.NodeWaitRequest, string, string, time.Time) (domain.NodeWait, error)
@@ -163,6 +166,9 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 	}
 	if op.Action == ReviewCheckpointAction {
 		return s.openReviewCheckpoint(ctx, op)
+	}
+	if op.Action == ReviewCheckpointWaitAction {
+		return s.waitReviewCheckpoint(ctx, op)
 	}
 	if op.Action == "settle-task" || op.Action == "expire-task" || op.Action == "wake-task" || op.Action == "pending-task" || op.Action == "transition-task" {
 		return s.taskWaitRuntime(ctx, op)
