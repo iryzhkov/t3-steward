@@ -1,5 +1,45 @@
 # Backlog-v2 operations and recovery
 
+## Read-only campaign progress mirror
+
+`t3-steward campaign progress [<run>...] [--owner THREAD] [--since RFC3339] [--json]`
+reads coordinator facts through the authenticated workflow-list query. Remote
+admin reads use their existing authorization. It creates no records, reads no
+result bodies, and makes no Jocasta writes. A coordinator without the mirror
+returns an upgrade error.
+
+Without IDs it includes nonterminal runs and runs that became terminal in the
+last 24 hours. Explicit IDs bypass that default window; a missing ID is an error.
+`--owner` matches sink notification waits, including settled waits.
+`--since` is an inclusive RFC3339 last-change timestamp and replaces the default
+terminal window. It includes changes to attempts and recorded review rounds.
+Runs sort by last change descending, then ID; tasks sort by name.
+
+Text prints one row per run and task, each bounded to 120 terminal columns.
+Non-ASCII values are escaped in text; JSON preserves their original characters.
+Long rows end in an ellipsis; JSON preserves full values. Text verdicts omit
+reviewer metadata so the recorded decision remains visible. Run rows include name,
+state, terminal tasks/total, current nonterminal task/state, and last change.
+Task rows include latest attempt state, actual assigned route and effort,
+attempt count, latest attempt's retained output names, and recorded review verdicts.
+Queued tasks without attempts have no assigned route or effort. Synthetic
+supervisor activations and sink tasks are excluded from task totals.
+
+JSON schema version 1 is a document with:
+- `schemaVersion`: integer 1; `generatedAt`: UTC RFC3339 timestamp.
+- `runs`: array (always present). Each run has `id`, `name`, `state`,
+  `done` (terminal tasks), `total`, `currentTask`, `currentState`,
+  `lastChange` (UTC timestamp), and `tasks` (always an array).
+- Each task has `id`, `name`, `state`, `control`, `route`
+  (`instance/model` from the actual assignment), `effort`, `reviewVerdicts`,
+  `outputs` (array of retained names), and `attempts` (number of recorded attempts).
+- Unknown route/effort/control and absent current task/state are empty strings.
+  `reviewVerdicts` uses the ledger's identical fact formatter: recorded verdicts,
+  pending review state, `none recorded`, or explicit unavailability on a reader
+  without review-round support. Review-read errors fail the query.
+- Empty selection is `runs: []`; text says `No campaign runs match.`.
+
+
 This runbook describes the backlog-v2 release-candidate interfaces on branch
 `feature/backlog-orchestrator`. It is an operator reference, not deployment
 authorization.

@@ -275,6 +275,9 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 	if query.Version != Version && !intakeStatus {
 		return Response{}, fmt.Errorf("%w: got %q, want %q", ErrUnsupportedVersion, query.Version, Version)
 	}
+	if query.ProgressMirror != nil && query.Kind != QueryWorkflows {
+		return Response{}, fmt.Errorf("%w: progress mirror needs workflows query", ErrInvalidQuery)
+	}
 	if !validQuery(query) {
 		return Response{}, fmt.Errorf("%w: kind %q or target is invalid", ErrInvalidQuery, query.Kind)
 	}
@@ -314,7 +317,15 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		}
 		response.Status = &status
 	case QueryWorkflows:
-		response.Workflows = view.workflowSummaries(query.Filter)
+		if query.ProgressMirror != nil {
+			doc, err := s.progressMirror(ctx, view.records, *query.ProgressMirror, view.now)
+			if err != nil {
+				return Response{}, err
+			}
+			response.ProgressMirror = &doc
+		} else {
+			response.Workflows = view.workflowSummaries(query.Filter)
+		}
 	case QueryWorkflow:
 		detail, ok := view.workflowDetail(query.WorkflowRunID)
 		if !ok {
