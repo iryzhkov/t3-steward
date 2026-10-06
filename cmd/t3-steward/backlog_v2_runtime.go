@@ -646,7 +646,10 @@ type coordinatorBoundaryCycle struct {
 	// supervisor route nobody can run. A nil value is the unsupervised
 	// deployment and changes nothing.
 	supervision *coordinatorSupervision
-	logger      *slog.Logger
+	// ledgers writes the Jocasta milestone ledgers of opted-in campaigns, in
+	// the background; nil writes none.
+	ledgers *coordinatorLedger
+	logger  *slog.Logger
 }
 
 func (c coordinatorBoundaryCycle) Tick(ctx context.Context) {
@@ -735,6 +738,9 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 			c.logger.Info("campaign commits released", "runs", len(report.Released))
 		}
 	}
+	// The milestone ledger records boundaries the projection above just made
+	// durable. It never blocks this cycle: the pass runs in the background.
+	c.ledgers.Tick(ctx)
 	quotaHealthy := true
 	quotaReport, err := c.quota.Tick(ctx)
 	if err != nil {
@@ -1020,6 +1026,8 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		return err
 	}
 	reviewArtifacts := backlog.CoordinatorArtifactStore{Root: cfg.BacklogV2.Storage.Artifacts, SubmissionRoot: cfg.BacklogV2.Storage.Bundles, Catalog: store}
+	ledgers := newCoordinatorLedger(cfg, store, reviewArtifacts, logger)
+	defer ledgers.stop()
 	cycle := coordinatorBoundaryCycle{
 		reviews: &backlog.ReviewCollector{Store: store, Results: resultsDir, Open: func(ctx context.Context, id string) (domain.Artifact, io.ReadCloser, error) {
 			a, f, err := reviewArtifacts.Open(ctx, id)
@@ -1067,7 +1075,8 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			Records: store.LoadCoordinatorRecords,
 			Refs:    backlog.CampaignRefStore{Root: filepath.Join(cfg.BacklogV2.Storage.Workspaces, "campaign-refs")},
 		},
-		logger: logger,
+		ledgers: ledgers,
+		logger:  logger,
 	}
 	logger.Info("retired coordinator Markdown intake", "enabled", false,
 		"replacement", "t3-steward task run / campaign submit")

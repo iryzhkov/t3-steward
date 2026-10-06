@@ -115,7 +115,10 @@ type Workflow struct {
 	TaskIDs          []string              `json:"taskIds"`
 	InputArtifactIDs []string              `json:"inputArtifactIds,omitempty"`
 	InputManifest    *pinnedinput.Manifest `json:"inputManifest,omitempty"`
-	CreatedAt        time.Time             `json:"createdAt"`
+	// Ledger opts every run of this workflow into the Steward-authored Jocasta
+	// milestone ledger. Nil is the default and writes nothing anywhere.
+	Ledger    *WorkflowLedger `json:"ledger,omitempty"`
+	CreatedAt time.Time       `json:"createdAt"`
 }
 
 // WorkflowRun is one execution of a workflow definition.

@@ -103,6 +103,9 @@ type AttemptRecord struct {
 	StopConfirmed       bool      `json:"stopConfirmed,omitempty"`
 	SettlePending       bool      `json:"settlePending,omitempty"`
 	UpdatedAt           time.Time `json:"updatedAt"`
+	// SessionTitle is the last title Steward set on this execution's thread,
+	// and whether an operator rename stopped further updates.
+	SessionTitle *SessionTitleRecord `json:"sessionTitle,omitempty"`
 }
 
 type journalState struct {
@@ -126,6 +129,12 @@ type journalState struct {
 	// ParkedObservedAt bounds how long the last statement may be trusted.
 	ParkedObservedAt           time.Time `json:"parkedObservedAt,omitempty"`
 	ParkedAcknowledgedSequence int64     `json:"parkedAcknowledgedSequence,omitempty"`
+
+	// SessionStates is the coordinator's last statement of its executions'
+	// recorded lifecycle, keyed by assignment ID. It is durable so that a
+	// restarted worker converges its titles on its first pass.
+	SessionStates         map[string]workerproto.AssignmentSessionState `json:"sessionStates,omitempty"`
+	SessionStatesReported bool                                          `json:"sessionStatesReported,omitempty"`
 }
 
 type Journal struct {

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
@@ -102,6 +103,11 @@ type Runtime struct {
 	// on its last snapshot request. It is not durable: the coordinator asks
 	// again on every exchange.
 	reportQuota bool
+	// titleFailures holds, per assignment, the session title whose last update
+	// failed, so it is retried at the next state change rather than on every
+	// exchange. It is not durable on purpose; see titleFailed.
+	titleMu       sync.Mutex
+	titleFailures map[string]string
 }
 
 func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
@@ -169,6 +175,9 @@ func AdvertisedCapabilities(configured []string) []string {
 	if !slices.Contains(merged, workerproto.CapabilityQuotaObservations) {
 		merged = append(merged, workerproto.CapabilityQuotaObservations)
 	}
+	if !slices.Contains(merged, workerproto.CapabilitySessionTitles) {
+		merged = append(merged, workerproto.CapabilitySessionTitles)
+	}
 	for _, capability := range workerproto.SupportedPackageCapabilities() {
 		if !slices.Contains(merged, capability) {
 			merged = append(merged, capability)
@@ -189,6 +198,7 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 	if err := r.Reconcile(ctx); err != nil {
 		return domain.WorkerSnapshot{}, err
 	}
+	r.UpdateSessionTitles(ctx)
 	now := r.now()
 	var quota []domain.WorkerQuotaObservation
 	if r.reportQuota && r.config.Quota != nil {
