@@ -258,6 +258,45 @@ func TestSessionTitleConvergesAfterRestartWithoutDuplicateUpdates(t *testing.T) 
 	}
 }
 
+// A worker that dies after replacing an unconfirmed pending title with the next
+// one, but before dispatching the next one, still recognises the title the
+// thread shows as its own after a restart, and converges instead of stopping.
+func TestSessionTitleConvergesAfterACrashBetweenReplacingAPendingTitleAndItsDispatch(t *testing.T) {
+	root := t.TempDir()
+	pkg := displayPackage()
+	driver := newTitleDriver(root, pkg)
+	driver.lostResponse = true
+	runtime := titleRuntime(t, root, driver, pkg)
+	applyTitles(t, runtime, sessionState(workerproto.SessionRunning, nil))
+	running := workerproto.SessionTitle(pkg, workerproto.SessionRunning, nil)
+	if driver.title != running || mustRecord(t, runtime, "assignment-1").SessionTitle.Pending != running {
+		t.Fatalf("setup: title %q, record %+v", driver.title, mustRecord(t, runtime, "assignment-1").SessionTitle)
+	}
+
+	// The next pending title is recorded, then the process dies before the
+	// dispatch reaches T3: the thread still shows the running title.
+	driver.lostResponse = false
+	driver.setErr = errors.New("worker died before the dispatch")
+	applyTitles(t, runtime, sessionState(workerproto.SessionWaiting, nil))
+	waiting := workerproto.SessionTitle(pkg, workerproto.SessionWaiting, nil)
+	if driver.title != running || mustRecord(t, runtime, "assignment-1").SessionTitle.Pending != waiting {
+		t.Fatalf("crash boundary not reached: title %q, record %+v", driver.title, mustRecord(t, runtime, "assignment-1").SessionTitle)
+	}
+	driver.setErr = nil
+
+	restarted := signalRuntime(t, root, nil, func() time.Time { return runtimeTestNow })
+	restarted.driver = driver
+	applyTitles(t, restarted, sessionState(workerproto.SessionWaiting, nil))
+	record := mustRecord(t, restarted, "assignment-1").SessionTitle
+	if driver.title != waiting || record.Stopped || record.Last != waiting || record.Pending != "" {
+		t.Fatalf("restart did not converge: title %q, record %+v", driver.title, record)
+	}
+	applyTitles(t, restarted, sessionState(workerproto.SessionCompleted, nil))
+	if completed := workerproto.SessionTitle(pkg, workerproto.SessionCompleted, nil); driver.title != completed {
+		t.Fatalf("later lifecycle changes no longer update the thread: %q", driver.title)
+	}
+}
+
 // Legacy paths keep today's behaviour: no display metadata, no statement from
 // the coordinator, a statement about another execution, a thread T3 does not
 // hold, or a driver without title support.
@@ -345,8 +384,8 @@ func (c *titledT3) UpdateThreadTitle(_ context.Context, threadID, title string) 
 }
 
 // The local driver retitles through the cached control and invalidates the
-// cached listing; it leaves contained executions, no-effects mode and a control
-// without the ability alone.
+// cached listing; it leaves no-effects mode and a control without the ability
+// alone.
 func TestLocalDriverSetsThreadTitlesThroughTheCachedControl(t *testing.T) {
 	pkg := displayPackage()
 	control := &titledT3{recordingT3: &recordingT3{thread: &domain.Thread{ID: "thread-1", Title: "initial"}}}
@@ -362,15 +401,9 @@ func TestLocalDriverSetsThreadTitlesThroughTheCachedControl(t *testing.T) {
 		t.Fatalf("title after update = %q, updates %v", title, control.updates)
 	}
 
-	contained := pkg
-	contained.Environment.DirectoryBindings = []directoryresource.Binding{{}}
 	dryRun := &LocalDriver{T3: control, Config: LocalDriverConfig{DryRun: true}}
 	legacy := &LocalDriver{T3: NewCachedT3(control.recordingT3)}
 	for name, check := range map[string]func() (bool, error){
-		"contained": func() (bool, error) {
-			_, found, err := driver.ThreadTitle(context.Background(), contained)
-			return found, err
-		},
 		"dry run": func() (bool, error) {
 			_, found, err := dryRun.ThreadTitle(context.Background(), pkg)
 			return found, err
@@ -386,6 +419,89 @@ func TestLocalDriverSetsThreadTitlesThroughTheCachedControl(t *testing.T) {
 	}
 	if err := legacy.SetThreadTitle(context.Background(), pkg, "x"); err == nil || len(control.updates) != 1 {
 		t.Fatalf("a control without title support was used: %v", err)
+	}
+}
+
+// A contained (directory-bound) execution's thread is retitled through the
+// scoped T3 attached to its existing supervisor, never the host's. A retained
+// stopped execution has no thread to retitle, and a failed attachment is an
+// error, never a fallback to the host.
+func TestLocalDriverRetitlesContainedThreadsThroughTheScopedControl(t *testing.T) {
+	ctx := context.Background()
+	pkg := displayPackage()
+	pkg.Environment.DirectoryBindings = []directoryresource.Binding{{}}
+	host := &titledT3{recordingT3: &recordingT3{thread: &domain.Thread{ID: "thread-1", Title: "host"}}}
+	scoped := &titledT3{recordingT3: &recordingT3{thread: &domain.Thread{ID: "thread-1", Title: "initial"}}}
+	var attach func() (T3Control, error)
+	driver := &LocalDriver{T3: NewCachedT3(host), ScopedT3: attachFunc(func(_ context.Context, got workerproto.ExecutionPackage) (T3Control, error) {
+		if got.Identity.ThreadID != pkg.Identity.ThreadID {
+			t.Fatal("wrong execution attachment")
+		}
+		return attach()
+	})}
+
+	attach = func() (T3Control, error) { return scoped, nil }
+	title, found, err := driver.ThreadTitle(ctx, pkg)
+	if err != nil || !found || title != "initial" {
+		t.Fatalf("title = %q, %v, %v", title, found, err)
+	}
+	if err := driver.SetThreadTitle(ctx, pkg, "next"); err != nil {
+		t.Fatal(err)
+	}
+	if scoped.thread.Title != "next" || len(scoped.updates) != 1 || len(host.updates) != 0 || host.thread.Title != "host" {
+		t.Fatalf("scoped updates %v, host updates %v", scoped.updates, host.updates)
+	}
+
+	// A stopped execution's retained record cannot set titles.
+	attach = func() (T3Control, error) { return retainedT3{}, nil }
+	if _, found, err := driver.ThreadTitle(ctx, pkg); found || err != nil {
+		t.Fatalf("a retained execution was offered for a title: %v, %v", found, err)
+	}
+
+	refused := errors.New("scoped execution unavailable")
+	attach = func() (T3Control, error) { return nil, refused }
+	if _, _, err := driver.ThreadTitle(ctx, pkg); !errors.Is(err, refused) {
+		t.Fatalf("read after a failed attachment: %v", err)
+	}
+	if err := driver.SetThreadTitle(ctx, pkg, "host fallback"); !errors.Is(err, refused) {
+		t.Fatalf("write after a failed attachment: %v", err)
+	}
+	if len(host.updates) != 0 {
+		t.Fatalf("a contained title fell back to the host: %v", host.updates)
+	}
+}
+
+// A contained execution's title follows its lifecycle end to end, through the
+// runtime and the local driver's scoped control.
+func TestSessionTitleFollowsTheLifecycleOfAContainedExecution(t *testing.T) {
+	root := t.TempDir()
+	pkg := displayPackage()
+	scoped := &titledT3{recordingT3: &recordingT3{thread: &domain.Thread{ID: "thread-1", Title: workerproto.InitialSessionTitle(pkg)}}}
+	driver := &LocalDriver{ScopedT3: attachFunc(func(_ context.Context, got workerproto.ExecutionPackage) (T3Control, error) {
+		if len(got.Environment.DirectoryBindings) == 0 {
+			t.Fatal("a host execution attached a scoped control")
+		}
+		return scoped, nil
+	})}
+	runtime := titleRuntime(t, root, driver, pkg)
+	// Admission of a directory-bound offer needs a resolved binding catalog,
+	// which this test does not exercise; bind the admitted execution instead.
+	if err := runtime.journal.update(func(state *journalState) error {
+		record := state.Attempts["assignment-1"]
+		record.Package.Package.Environment.DirectoryBindings = []directoryresource.Binding{{}}
+		state.Attempts["assignment-1"] = record
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []workerproto.SessionState{workerproto.SessionRunning, workerproto.SessionWaiting, workerproto.SessionCollecting, workerproto.SessionCompleted} {
+		applyTitles(t, runtime, sessionState(state, nil))
+		if want := workerproto.SessionTitle(pkg, state, nil); scoped.thread.Title != want {
+			t.Fatalf("after %s: title %q, want %q", state, scoped.thread.Title, want)
+		}
+	}
+	if len(scoped.updates) != 4 {
+		t.Fatalf("updates %v", scoped.updates)
 	}
 }
 

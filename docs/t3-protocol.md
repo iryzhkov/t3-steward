@@ -311,7 +311,9 @@ The title is `[Steward] <workflow>: <task> · <role> · <state>[ · campaign n/m
 run <suffix>`. The state and campaign progress come from the coordinator's
 recorded attempt state, carried to a worker advertising `session-titles-v1` on
 the snapshot exchange; packages without frozen display metadata keep their
-initial title.
+initial title. A directory-bound execution's thread is retitled through the
+scoped T3 of its running supervisor, never the host's; once that supervisor has
+stopped, its thread keeps the last title set.
 
 After an interrupt the thread's `latestTurn.state` becomes `interrupted`
 and `session.status` returns to `ready`; the turn id does not change. A

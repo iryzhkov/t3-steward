@@ -155,7 +155,12 @@ func (r *Runtime) updateSessionTitle(ctx context.Context, titles SessionTitleDri
 		r.log.Info("session title updates stopped", "assignment", id, "reason", reason, "title", observed)
 		return
 	}
-	if !r.recordSessionTitle(record, func(title *SessionTitleRecord) { title.Pending = desired }) {
+	// The thread shows either the last title or the pending one, so the
+	// observed title is Steward's own and is confirmed as the last title in the
+	// same write that replaces the pending one. Otherwise a restart between this
+	// write and the dispatch would find a title that is neither, and read
+	// Steward's own title as an operator's rename.
+	if !r.recordSessionTitle(record, func(title *SessionTitleRecord) { title.Last, title.Pending = observed, desired }) {
 		return
 	}
 	if err := titles.SetThreadTitle(ctx, pkg, desired); err != nil {
@@ -218,12 +223,14 @@ func (r *Runtime) clearTitleFailure(id string) {
 	delete(r.titleFailures, id)
 }
 
-// ThreadTitle reads the title of the execution's thread. Contained executions
-// and drivers whose T3 control cannot set titles report no thread, so their
-// titles are left as they are.
+// ThreadTitle reads the title of the execution's thread. No-effects mode and
+// drivers whose T3 control cannot set titles report no thread, so their titles
+// are left as they are. A contained execution's thread is read through its
+// identity-fenced scoped T3, never the host's.
 func (d *LocalDriver) ThreadTitle(ctx context.Context, pkg workerproto.ExecutionPackage) (string, bool, error) {
-	if !d.retitles(pkg) {
-		return "", false, nil
+	d, err := d.titleDriver(ctx, pkg)
+	if err != nil || d == nil {
+		return "", false, err
 	}
 	thread, err := d.T3.GetThread(ctx, pkg.Identity.ThreadID)
 	if err != nil || thread == nil {
@@ -234,25 +241,42 @@ func (d *LocalDriver) ThreadTitle(ctx context.Context, pkg workerproto.Execution
 
 // SetThreadTitle sets the title of the execution's thread.
 func (d *LocalDriver) SetThreadTitle(ctx context.Context, pkg workerproto.ExecutionPackage, title string) error {
-	if !d.retitles(pkg) {
+	d, err := d.titleDriver(ctx, pkg)
+	if err != nil {
+		return err
+	}
+	if d == nil {
 		return errors.New("this execution's thread cannot be retitled")
 	}
 	return d.T3.(ThreadTitleUpdater).UpdateThreadTitle(ctx, pkg.Identity.ThreadID, title)
 }
 
-// retitles excludes no-effects mode and contained executions, whose scoped T3
-// is attached on demand and is not worth starting for a title.
-func (d *LocalDriver) retitles(pkg workerproto.ExecutionPackage) bool {
-	if d.Config.DryRun || d.T3 == nil || len(pkg.Environment.DirectoryBindings) != 0 {
-		return false
+// titleDriver is the driver whose T3 holds the execution's thread, or nil when
+// that thread cannot be retitled: no-effects mode, or a control without the
+// ability, such as the retained record of a stopped contained execution. A
+// contained execution attaches to its existing supervisor, which never
+// launches one, and a failed attachment never falls back to the host's T3.
+func (d *LocalDriver) titleDriver(ctx context.Context, pkg workerproto.ExecutionPackage) (*LocalDriver, error) {
+	if d.Config.DryRun {
+		return nil, nil
+	}
+	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
+		return nil, err
+	} else if scoped != nil {
+		d = scoped
+	}
+	if d.T3 == nil {
+		return nil, nil
 	}
 	control := d.T3
 	if cached, ok := control.(*CachedT3); ok {
 		// The cache forwards the ability only when the control it wraps has it.
 		control = cached.Inner
 	}
-	_, ok := control.(ThreadTitleUpdater)
-	return ok
+	if _, ok := control.(ThreadTitleUpdater); !ok {
+		return nil, nil
+	}
+	return d, nil
 }
 
 // UpdateThreadTitle forwards to the wrapped control and invalidates the cached
