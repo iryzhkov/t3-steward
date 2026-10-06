@@ -18,8 +18,8 @@ When the worker collects such a turn, after the task identity record is removed
 and after verification commands have run, it reads:
 
 - `git rev-parse HEAD` in the workspace, the physical HEAD;
-- `git status --porcelain --untracked-files=no`, the tracked changes the
-  workspace's own index reports, including staged ones; and
+- `git diff-index --cached HEAD`, the changes staged in the workspace's own
+  index, which reads no worktree file; and
 - the same status against a fresh index read from HEAD in a scratch
   repository of the worker's own, which compares every tracked file by
   content, mode and type.
@@ -60,7 +60,16 @@ from its blob there and counts as changed, so such a repository fails closed.
 Git would compare a submodule's content inside the submodule, with the
 submodule's configuration, so every checked-out submodule is compared the same
 way against the commit HEAD records for it, to a depth of eight, and its
-changes are reported under its path.
+changes are reported under its path. A submodule directory without `.git`,
+which Git does not look inside, must be empty.
+
+A filter is code, and a filter the executor planted could put a file back for
+the length of the capture and redo the edit afterwards. No query of the
+capture therefore reads the worktree under the workspace's or a submodule's
+configuration, so none of their filters runs. A process the executor left
+running as the worker's user can still change files, or the scratch
+repository, while the capture runs; closing that needs process containment
+and is not a property of the comparison.
 
 Declared file outputs, `.t3/` and `.t3-steward/` are not counted as changes,
 and untracked files are not either. The report travels with the result as one

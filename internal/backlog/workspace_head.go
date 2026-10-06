@@ -47,7 +47,10 @@ func WorkspaceHeadArtifactID(attemptID string) string {
 // too: a clean filter or an untracked .gitattributes can turn edited bytes
 // back into the committed blob, and core.symlinks=false lets a regular file
 // stand in for a tracked symlink. The content comparison therefore runs in a
-// scratch repository of the worker's own, see compareWorkspaceWithHead.
+// scratch repository of the worker's own, see compareWorkspaceWithHead. No
+// query reads the worktree under the workspace's configuration, because a
+// filter is code the executor could use to restore a file for the length of
+// the capture.
 func CaptureWorkspaceHead(ctx context.Context, gitBinary, workspace string, outputs []domain.ArtifactDeclaration) domain.WorkspaceHead {
 	captured := domain.WorkspaceHead{Schema: domain.WorkspaceHeadSchema}
 	if gitBinary == "" {
@@ -68,14 +71,21 @@ func CaptureWorkspaceHead(ctx context.Context, gitBinary, workspace string, outp
 		captured.Head, captured.Error = "", fmt.Sprintf("resolve workspace HEAD: Git returned %q", captured.Head)
 		return captured
 	}
-	statusArgs := []string{"status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=none"}
-	// The workspace's own index also reports staged changes.
-	status, err := workspaceGit(ctx, gitBinary, workspace, nil, statusArgs...)
+	// The workspace's own index also reports staged changes. Only the index
+	// is compared with HEAD here: reading the worktree under the workspace's
+	// configuration would run the executor's filters during the capture.
+	staged, err := workspaceGit(ctx, gitBinary, workspace, nil, "diff-index", "--cached", "--no-renames", "--name-only", "-z", captured.Head, "--")
 	if err != nil {
 		captured.Head, captured.Error = "", "read workspace status: "+err.Error()
 		return captured
 	}
-	physical, err := compareWorkspaceWithHead(ctx, gitBinary, workspace, captured.Head, statusArgs, 0)
+	var status []byte
+	for _, name := range strings.Split(string(staged), "\x00") {
+		if name != "" {
+			status = append(status, "M  "+name+"\x00"...)
+		}
+	}
+	physical, err := compareWorkspaceWithHead(ctx, gitBinary, workspace, captured.Head, 0)
 	if err != nil {
 		captured.Head, captured.Error = "", "compare the workspace with HEAD: "+err.Error()
 		return captured
@@ -113,7 +123,7 @@ func CaptureWorkspaceHead(ctx context.Context, gitBinary, workspace string, outp
 // submodule's own configuration, so every populated submodule is compared the
 // same way against the commit head records for it, and its changes are
 // reported under its path.
-func compareWorkspaceWithHead(ctx context.Context, gitBinary, workspace, head string, statusArgs []string, depth int) ([]byte, error) {
+func compareWorkspaceWithHead(ctx context.Context, gitBinary, workspace, head string, depth int) ([]byte, error) {
 	if depth > maxWorkspaceSubmoduleDepth {
 		return nil, fmt.Errorf("submodules are nested deeper than %d levels", maxWorkspaceSubmoduleDepth)
 	}
@@ -125,11 +135,15 @@ func compareWorkspaceWithHead(ctx context.Context, gitBinary, workspace, head st
 	if format != "sha1" && format != "sha256" {
 		return nil, fmt.Errorf("workspace object format %q is not supported", format)
 	}
-	if objects == "" || strings.ContainsAny(objects, "\n\r") {
-		return nil, fmt.Errorf("workspace object directory %q is not usable", objects)
+	if objects == "" {
+		return nil, errors.New("workspace object directory is not reported")
 	}
 	if !filepath.IsAbs(objects) {
 		objects = filepath.Join(workspace, objects)
+	}
+	if strings.ContainsAny(objects, "\n\r") {
+		// The alternates file holds one path per line.
+		return nil, fmt.Errorf("workspace object directory %q cannot be borrowed: its path has a line break", objects)
 	}
 	scratch, err := os.MkdirTemp("", "workspace-head-")
 	if err != nil {
@@ -161,7 +175,10 @@ func compareWorkspaceWithHead(ctx context.Context, gitBinary, workspace, head st
 	if _, err := trustedWorkspaceGit(ctx, gitBinary, workspace, repository, head, "read-tree", head); err != nil {
 		return nil, fmt.Errorf("read HEAD into a scratch index: %w", err)
 	}
-	status, err := trustedWorkspaceGit(ctx, gitBinary, workspace, repository, head, statusArgs...)
+	// A submodule's commit is compared here, but not its content: Git would
+	// read that with the submodule's configuration and could run its filters.
+	status, err := trustedWorkspaceGit(ctx, gitBinary, workspace, repository, head,
+		"status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=dirty")
 	if err != nil {
 		return nil, err
 	}
@@ -177,11 +194,20 @@ func compareWorkspaceWithHead(ctx context.Context, gitBinary, workspace, head st
 		}
 		directory := filepath.Join(workspace, filepath.FromSlash(name))
 		if _, err := os.Lstat(filepath.Join(directory, ".git")); errors.Is(err, os.ErrNotExist) {
-			// Not checked out; the status above reports a submodule that
-			// went away.
+			// Git treats a submodule without .git as not checked out and
+			// does not look inside, and the status above reports one that
+			// went away. A submodule that is not checked out is an empty
+			// directory, so anything in it is unreviewed content.
+			entries, err := os.ReadDir(directory)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("submodule %s: %w", name, err)
+			}
+			if len(entries) > 0 {
+				status = append(status, " M "+name+"\x00"...)
+			}
 			continue
 		}
-		nested, err := compareWorkspaceWithHead(ctx, gitBinary, directory, fields[2], statusArgs, depth+1)
+		nested, err := compareWorkspaceWithHead(ctx, gitBinary, directory, fields[2], depth+1)
 		if err != nil {
 			return nil, fmt.Errorf("submodule %s: %w", name, err)
 		}

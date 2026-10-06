@@ -2,10 +2,13 @@ package backlog
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
@@ -155,7 +158,7 @@ func TestCaptureWorkspaceHeadSeesAChangedSubmodule(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(submodule, "main.go"), []byte("two\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	requireDirtyPath(t, CaptureWorkspaceHead(context.Background(), "", dir, nil), head, "lib")
+	requireDirtyPath(t, CaptureWorkspaceHead(context.Background(), "", dir, nil), head, "lib/main.go")
 
 	gitRun(t, submodule, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qam", "moved")
 	requireDirtyPath(t, CaptureWorkspaceHead(context.Background(), "", dir, nil), head, "lib")
@@ -186,6 +189,102 @@ func TestCaptureWorkspaceHeadIgnoresCleanFiltersInASubmodule(t *testing.T) {
 		t.Fatalf("fixture: the submodule's filter does not hide the edit from git status: %q", status)
 	}
 	requireDirtyPath(t, CaptureWorkspaceHead(context.Background(), "", dir, nil), head, "lib/main.go")
+}
+
+// Git does not look inside a submodule directory without .git, so removing it
+// would hide edits to the files left there. An empty directory, the state of
+// a submodule that is not checked out, stays clean.
+func TestCaptureWorkspaceHeadSeesEditsInADepopulatedSubmodule(t *testing.T) {
+	library, _ := workspaceHeadRepository(t)
+	dir, _ := workspaceHeadRepository(t)
+	gitRun(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-q", library, "lib")
+	gitRun(t, dir, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "submodule")
+	head := gitOutput(t, dir, "rev-parse", "HEAD")
+	gitRun(t, dir, "submodule", "deinit", "-q", "lib")
+	requireCleanCapture(t, CaptureWorkspaceHead(context.Background(), "", dir, nil), head)
+
+	if err := os.WriteFile(filepath.Join(dir, "lib", "main.go"), []byte("two\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	requireDirtyPath(t, CaptureWorkspaceHead(context.Background(), "", dir, nil), head, "lib")
+}
+
+// The alternates file holds one path per line, so an object directory whose
+// path has a line break cannot be borrowed; the capture says so rather than
+// failing with Git's error about a malformed alternate.
+func TestCaptureWorkspaceHeadExplainsAnObjectPathWithALineBreak(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "a\nb")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "init", "-q")
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "add", "main.go")
+	gitRun(t, dir, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "base")
+	captured := CaptureWorkspaceHead(context.Background(), "", dir, nil)
+	if captured.Head != "" || captured.Dirty || !strings.Contains(captured.Error, "line break") {
+		t.Fatalf("capture = %+v", captured)
+	}
+}
+
+// plantMarkingFilter configures a clean filter for main.go in the repository
+// at dir, through its own configuration and info/attributes, that records
+// each run in the returned marker file and passes its input through.
+func plantMarkingFilter(t *testing.T, dir string) string {
+	t.Helper()
+	marker := filepath.Join(t.TempDir(), "ran")
+	gitDir := gitOutput(t, dir, "rev-parse", "--absolute-git-dir")
+	script := filepath.Join(gitDir, "mark.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho ran >> '"+marker+"'\ncat\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "config", "filter.mark.clean", script)
+	if err := os.MkdirAll(filepath.Join(gitDir, "info"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "info", "attributes"), []byte("main.go filter=mark\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return marker
+}
+
+// A filter is code, and code the executor planted could put a file back for
+// the length of the capture and redo the edit afterwards. The capture must
+// therefore not run the workspace's filters at all, even for a file whose
+// stat data says it changed.
+func TestCaptureWorkspaceHeadRunsNoWorkspaceFilter(t *testing.T) {
+	dir, head := workspaceHeadRepository(t)
+	marker := plantMarkingFilter(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("two\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	requireDirtyPath(t, CaptureWorkspaceHead(context.Background(), "", dir, nil), head, "main.go")
+	if ran, err := os.ReadFile(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the workspace's filter ran during the capture: %q %v", ran, err)
+	}
+}
+
+// The same holds for a submodule's filters, which Git would run when it
+// compares the submodule's content inside the submodule.
+func TestCaptureWorkspaceHeadRunsNoSubmoduleFilter(t *testing.T) {
+	library, _ := workspaceHeadRepository(t)
+	dir, _ := workspaceHeadRepository(t)
+	gitRun(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-q", library, "lib")
+	gitRun(t, dir, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "submodule")
+	head := gitOutput(t, dir, "rev-parse", "HEAD")
+	submodule := filepath.Join(dir, "lib")
+	marker := plantMarkingFilter(t, submodule)
+	// A changed modification time makes Git compare the content.
+	past := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(filepath.Join(submodule, "main.go"), past, past); err != nil {
+		t.Fatal(err)
+	}
+	requireCleanCapture(t, CaptureWorkspaceHead(context.Background(), "", dir, nil), head)
+	if ran, err := os.ReadFile(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the submodule's filter ran during the capture: %q %v", ran, err)
+	}
 }
 
 func TestCaptureWorkspaceHeadComparesASHA256Repository(t *testing.T) {
