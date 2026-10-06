@@ -98,8 +98,9 @@ type processTable struct {
 //
 // A provider launched through a command shell would make its whole session
 // look like a command; the providers T3 runs are started directly. A command
-// the provider runs in its own session and without any shell cannot be told
-// apart from an MCP server; neither provider runs commands that way.
+// the provider runs in the provider's own session, without a shell or a
+// sandbox wrapper, cannot be told apart from an MCP server; neither provider
+// runs commands that way.
 func scanLiveCommandsIn(goos, procRoot string, self int, workspace string) (LiveCommandReport, error) {
 	if goos != "linux" {
 		return LiveCommandReport{Unsupported: "process inspection is unavailable on " + goos}, nil

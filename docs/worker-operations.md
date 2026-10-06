@@ -124,8 +124,11 @@ the process outside the workspace that holds the topmost of them decides:
 The worker's own processes, such as verification commands, are excluded. A
 provider started through a command shell would make its whole session look like
 a command; T3 starts providers directly. A command a provider ran directly in
-its own session, without a shell, would look like an MCP server; neither
-provider runs commands that way.
+the provider's own session, without a shell or a sandbox wrapper, would look
+like an MCP server; neither provider runs commands that way. Conversely, a
+provider that started infrastructure in a session of its own (Node's `detached`
+spawn) would have it reported; neither provider does today, and the follow-up
+turn budget bounds the cost.
 
 If such commands are found, the attempt is not collected. The worker sends one
 follow-up turn to the same session naming the commands and telling it to wait

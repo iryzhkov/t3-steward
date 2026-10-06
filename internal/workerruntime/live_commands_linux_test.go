@@ -274,11 +274,11 @@ func TestLiveCommandsSessionHelper(t *testing.T) {
 		// the shell replaces itself with the command.
 		inPlace := exec.Command("sh", "-c", "exec sleep 305")
 		inPlace.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		// A Codex command under a sandbox wrapper that forks the command
-		// rather than becoming it, as bwrap does.
+		// A command under a sandbox wrapper that forks the command rather
+		// than becoming it, as bwrap does. The wrapper stays in the
+		// provider's session, so its name alone marks it as a tool execution.
 		wrapper := exec.Command(filepath.Join(filepath.Dir(pidFile), "bwrap"), "-test.run=^TestLiveCommandsSessionHelper$")
 		wrapper.Env = append(os.Environ(), liveCommandsHelperRole+"=wrapper")
-		wrapper.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 		for _, child := range []*exec.Cmd{piped, quiet, inPlace, wrapper} {
 			child.Dir = workspace
 			if err := child.Start(); err != nil {
