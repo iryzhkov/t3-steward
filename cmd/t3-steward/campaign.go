@@ -34,6 +34,7 @@ Read-only (coordinator):
   check <directory|workflow.yaml> [--json] [--task NAME]
   list [--state open|terminal] [--project P] [--class C] [--json]
     --limit N and --since DURATION select the list window; --limit 0 lists all.
+  progress [<run>...] [--owner THREAD] [--since RFC3339] [--json]
   show <run> [--json]
   status <run> [--json]                 alias of show
   graph <run> [--json|--dot]
@@ -333,6 +334,8 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 	case "help", "--help", "-h":
 		_, err := admitCampaignHelp(c.stdout, args)
 		return err
+	case "progress":
+		return c.runProgress(ctx, args[1:])
 	case "validate":
 		return c.runValidate(args[1:])
 	case "plan":
@@ -433,7 +436,7 @@ func (c campaignCLI) explainNamesATask(ctx context.Context, args []string) error
 
 // campaignCommands are the subcommands run dispatches, in the order a
 // did-you-mean suggestion prefers them.
-var campaignCommands = []string{"validate", "plan", "check", "submit", "list", "show", "status", "explain", "graph", "cancel", "rerun", "supervision", "recovery", "help"}
+var campaignCommands = []string{"validate", "plan", "check", "submit", "list", "progress", "show", "status", "explain", "graph", "cancel", "rerun", "supervision", "recovery", "help"}
 
 // nearestCampaignCommand returns the campaign subcommand within two edits of
 // name, or "" when none is that close.

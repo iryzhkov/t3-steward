@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-06T12:00:00Z",
+  "runs": [
+    {
+      "id": "a",
+      "name": "queued",
+      "state": "queued",
+      "done": 0,
+      "total": 1,
+      "currentTask": "work",
+      "currentState": "queued",
+      "lastChange": "2026-10-06T12:00:00Z",
+      "tasks": [
+        {
+          "id": "a",
+          "name": "work",
+          "state": "queued",
+          "control": "",
+          "route": "",
+          "effort": "",
+          "reviewVerdicts": "none recorded",
+          "outputs": [],
+          "attempts": 0
+        }
+      ]
+    },
+    {
+      "id": "b",
+      "name": "active",
+      "state": "active",
+      "done": 0,
+      "total": 1,
+      "currentTask": "work",
+      "currentState": "active",
+      "lastChange": "2026-10-06T12:00:00Z",
+      "tasks": [
+        {
+          "id": "b",
+          "name": "work",
+          "state": "active",
+          "control": "running",
+          "route": "codex/sol",
+          "effort": "medium",
+          "reviewVerdicts": "none recorded",
+          "outputs": [],
+          "attempts": 1
+        }
+      ]
+    },
+    {
+      "id": "c",
+      "name": "waiting-external",
+      "state": "waiting-external",
+      "done": 0,
+      "total": 1,
+      "currentTask": "work",
+      "currentState": "waiting-external",
+      "lastChange": "2026-10-06T12:00:00Z",
+      "tasks": [
+        {
+          "id": "c",
+          "name": "work",
+          "state": "waiting-external",
+          "control": "running",
+          "route": "codex/sol",
+          "effort": "medium",
+          "reviewVerdicts": "none recorded",
+          "outputs": [],
+          "attempts": 1
+        }
+      ]
+    },
+    {
+      "id": "d",
+      "name": "failed",
+      "state": "failed",
+      "done": 1,
+      "total": 1,
+      "currentTask": "",
+      "currentState": "",
+      "lastChange": "2026-10-06T12:00:00Z",
+      "tasks": [
+        {
+          "id": "d",
+          "name": "work",
+          "state": "failed",
+          "control": "running",
+          "route": "codex/sol",
+          "effort": "medium",
+          "reviewVerdicts": "none recorded",
+          "outputs": [],
+          "attempts": 1
+        }
+      ]
+    },
+    {
+      "id": "e",
+      "name": "succeeded",
+      "state": "succeeded",
+      "done": 1,
+      "total": 1,
+      "currentTask": "",
+      "currentState": "",
+      "lastChange": "2026-10-06T12:00:00Z",
+      "tasks": [
+        {
+          "id": "e",
+          "name": "work",
+          "state": "succeeded",
+          "control": "running",
+          "route": "codex/sol",
+          "effort": "medium",
+          "reviewVerdicts": "round reviewer r (reviewer, codex/sol): accept",
+          "outputs": [
+            "handoff.md"
+          ],
+          "attempts": 1
+        }
+      ]
+    },
+    {
+      "id": "f",
+      "name": "cancelled",
+      "state": "cancelled",
+      "done": 1,
+      "total": 1,
+      "currentTask": "",
+      "currentState": "",
+      "lastChange": "2026-10-06T12:00:00Z",
+      "tasks": [
+        {
+          "id": "f",
+          "name": "work",
+          "state": "cancelled",
+          "control": "running",
+          "route": "codex/sol",
+          "effort": "medium",
+          "reviewVerdicts": "none recorded",
+          "outputs": [],
+          "attempts": 1
+        }
+      ]
+    }
+  ]
+}

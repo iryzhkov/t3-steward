@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/review"
 )
@@ -120,21 +121,22 @@ type Filter struct {
 }
 
 type Query struct {
-	RoundID        string    `json:"roundId,omitempty"`
-	ReviewerID     string    `json:"reviewerId,omitempty"`
-	ReviewDocument string    `json:"reviewDocument,omitempty"`
-	IncludeSink    bool      `json:"includeSink,omitempty"`
-	Version        string    `json:"version"`
-	Kind           QueryKind `json:"kind"`
-	Principal      Principal `json:"principal"`
-	WorkflowRunID  string    `json:"workflowRunId,omitempty"`
-	TaskID         string    `json:"taskId,omitempty"`
-	ArtifactID     string    `json:"artifactId,omitempty"`
-	CommandID      string    `json:"commandId,omitempty"`
-	Filter         Filter    `json:"filter,omitempty"`
-	UsageRaw       bool      `json:"usageRaw,omitempty"`
-	UsageLimit     int       `json:"usageLimit,omitempty"`
-	UsageCursor    string    `json:"usageCursor,omitempty"`
+	ProgressMirror *backlog.ProgressFilter `json:"progressMirror,omitempty"`
+	RoundID        string                  `json:"roundId,omitempty"`
+	ReviewerID     string                  `json:"reviewerId,omitempty"`
+	ReviewDocument string                  `json:"reviewDocument,omitempty"`
+	IncludeSink    bool                    `json:"includeSink,omitempty"`
+	Version        string                  `json:"version"`
+	Kind           QueryKind               `json:"kind"`
+	Principal      Principal               `json:"principal"`
+	WorkflowRunID  string                  `json:"workflowRunId,omitempty"`
+	TaskID         string                  `json:"taskId,omitempty"`
+	ArtifactID     string                  `json:"artifactId,omitempty"`
+	CommandID      string                  `json:"commandId,omitempty"`
+	Filter         Filter                  `json:"filter,omitempty"`
+	UsageRaw       bool                    `json:"usageRaw,omitempty"`
+	UsageLimit     int                     `json:"usageLimit,omitempty"`
+	UsageCursor    string                  `json:"usageCursor,omitempty"`
 	// Viability carries the projected requirements of a campaign that has not
 	// been submitted. It is present only on a QueryViability query, and it
 	// never carries the bundle.
@@ -187,32 +189,33 @@ type UnknownRecoveryRequest struct {
 }
 
 type Response struct {
-	ReviewRound    *review.Round         `json:"reviewRound,omitempty"`
-	ReviewDocument *ReviewDocument       `json:"reviewDocument,omitempty"`
-	Diagnosis      *Diagnosis            `json:"diagnosis,omitempty"`
-	Version        string                `json:"version"`
-	Kind           QueryKind             `json:"kind"`
-	GeneratedAt    time.Time             `json:"generatedAt"`
-	Status         *Status               `json:"status,omitempty"`
-	Workflows      []WorkflowSummary     `json:"workflows,omitempty"`
-	Workflow       *WorkflowDetail       `json:"workflow,omitempty"`
-	Graph          *Graph                `json:"graph,omitempty"`
-	Task           *TaskDetail           `json:"task,omitempty"`
-	Explanation    *Explanation          `json:"explanation,omitempty"`
-	Events         []Event               `json:"events,omitempty"`
-	Artifacts      []Artifact            `json:"artifacts,omitempty"`
-	Artifact       *Artifact             `json:"artifact,omitempty"`
-	Schedules      []Schedule            `json:"schedules,omitempty"`
-	Workers        []Worker              `json:"workers,omitempty"`
-	Quotas         []Quota               `json:"quotas,omitempty"`
-	Reservations   []Reservation         `json:"reservations,omitempty"`
-	ResourceLocks  []ResourceLock        `json:"resourceLocks,omitempty"`
-	Commands       []Command             `json:"commands,omitempty"`
-	Usage          []domain.UsageSample  `json:"usage,omitempty"`
-	UsageReport    *domain.UsageReport   `json:"usageReport,omitempty"`
-	UsageCoverage  *domain.UsageCoverage `json:"usageCoverage,omitempty"`
-	UsageSemantics string                `json:"usageSemantics,omitempty"`
-	Viability      *ViabilityMatrix      `json:"viability,omitempty"`
+	ProgressMirror *backlog.ProgressDocument `json:"progressMirror,omitempty"`
+	ReviewRound    *review.Round             `json:"reviewRound,omitempty"`
+	ReviewDocument *ReviewDocument           `json:"reviewDocument,omitempty"`
+	Diagnosis      *Diagnosis                `json:"diagnosis,omitempty"`
+	Version        string                    `json:"version"`
+	Kind           QueryKind                 `json:"kind"`
+	GeneratedAt    time.Time                 `json:"generatedAt"`
+	Status         *Status                   `json:"status,omitempty"`
+	Workflows      []WorkflowSummary         `json:"workflows,omitempty"`
+	Workflow       *WorkflowDetail           `json:"workflow,omitempty"`
+	Graph          *Graph                    `json:"graph,omitempty"`
+	Task           *TaskDetail               `json:"task,omitempty"`
+	Explanation    *Explanation              `json:"explanation,omitempty"`
+	Events         []Event                   `json:"events,omitempty"`
+	Artifacts      []Artifact                `json:"artifacts,omitempty"`
+	Artifact       *Artifact                 `json:"artifact,omitempty"`
+	Schedules      []Schedule                `json:"schedules,omitempty"`
+	Workers        []Worker                  `json:"workers,omitempty"`
+	Quotas         []Quota                   `json:"quotas,omitempty"`
+	Reservations   []Reservation             `json:"reservations,omitempty"`
+	ResourceLocks  []ResourceLock            `json:"resourceLocks,omitempty"`
+	Commands       []Command                 `json:"commands,omitempty"`
+	Usage          []domain.UsageSample      `json:"usage,omitempty"`
+	UsageReport    *domain.UsageReport       `json:"usageReport,omitempty"`
+	UsageCoverage  *domain.UsageCoverage     `json:"usageCoverage,omitempty"`
+	UsageSemantics string                    `json:"usageSemantics,omitempty"`
+	Viability      *ViabilityMatrix          `json:"viability,omitempty"`
 	// Quarantine is the whole list on a QueryQuarantine response. It is absent
 	// when nothing is quarantined, which the text renderer states in words so
 	// that an empty answer is never mistaken for a failed query.

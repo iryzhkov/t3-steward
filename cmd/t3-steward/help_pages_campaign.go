@@ -130,6 +130,16 @@ func campaignHelpPages() []helpPage {
 				"--since takes a Go duration or a whole number of days, such as 24h or 7d."
 			return page
 		}(),
+		{
+			Path: "campaign progress", Purpose: "compact read-only progress mirror from coordinator facts.",
+			Usage:    []string{"t3-steward campaign progress [<run>...] [--owner THREAD] [--since RFC3339] [--json]"},
+			Flags:    []helpFlag{{Name: "--owner", Value: "THREAD", Text: "Filter by the recorded notify thread, including settled notifications."}, {Name: "--since", Value: "RFC3339", Text: "Inclusive last-change timestamp; replaces the default 24-hour terminal window."}, {Name: "--json", Text: "Print schemaVersion 1 with complete values."}},
+			Exits:    coordinatorExits(),
+			JSONKeys: []string{"schemaVersion", "generatedAt", "runs"},
+			JSONNote: "runs and each tasks/outputs field are arrays, including when empty; see docs/backlog-v2-operations.md.",
+			Notes:    "Without run IDs, lists open runs and runs terminal in the last 24 hours. Explicit IDs bypass that default window. No result bodies or state writes. Text rows are at most 120 Unicode characters. An older coordinator is refused; upgrade it.",
+			Parsers:  []parserSite{{Func: "parseProgressArgs"}},
+		},
 		campaignAliasPage("campaign status", "alias of campaign show: one run with its tasks and supervision.",
 			"t3-steward campaign status <run> [--json]", "backlog show"),
 		func() helpPage {
