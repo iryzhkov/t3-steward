@@ -1052,6 +1052,7 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 	if sink := v.runs[runID].Sink; sink != nil && task.ID == sink.ID {
 		explanation.Summary = "coordinator sink waits for all predecessors to be terminal and execution to be quiescent"
 		if sink.Progress.Terminal() {
+			explanation.ReviewVerdict = domain.AggregateReviewVerdicts(runID, "", v.records.Attempts)
 			explanation.Summary = "coordinator sink is terminal: " + string(sink.Progress)
 		}
 		return explanation, true
@@ -1060,6 +1061,7 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 	if attempt != nil {
 		explanation.AttemptID = attempt.ID
 		if attempt.Progress.Terminal() {
+			explanation.ReviewVerdict = domain.CloneReviewVerdict(attempt.ReviewVerdict)
 			explanation.Summary = "task is terminal"
 			return explanation, true
 		}

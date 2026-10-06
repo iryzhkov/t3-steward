@@ -24,11 +24,12 @@ func ParseNodeRef(value string) (NodeRef, error) {
 func (n NodeRef) String() string { return n.RunID + "/" + n.TaskID }
 
 type NodeObservation struct {
-	Target          NodeRef       `json:"target"`
-	RunRevision     int64         `json:"runRevision"`
-	AttemptID       string        `json:"attemptId,omitempty"`
-	AttemptRevision int64         `json:"attemptRevision,omitempty"`
-	Progress        ProgressState `json:"progress"`
+	ReviewVerdict   *ReviewVerdict `json:"reviewVerdict,omitempty"`
+	Target          NodeRef        `json:"target"`
+	RunRevision     int64          `json:"runRevision"`
+	AttemptID       string         `json:"attemptId,omitempty"`
+	AttemptRevision int64          `json:"attemptRevision,omitempty"`
+	Progress        ProgressState  `json:"progress"`
 	// ExitCode is the check-protocol reading of the observation: 0 met, 1 not
 	// yet, 2 settled against the waiter. Success dependencies read it.
 	ExitCode int    `json:"exitCode"`
@@ -69,6 +70,10 @@ func ResolveNodeState(ref NodeRef, state NodeWaitState, runs []WorkflowRun, task
 		return out, fmt.Errorf("--state %s needs a task: a run's sink has no attempt to be %s; name <run>/<task>, or wait for the run with --state terminal or succeeded", state, state)
 	}
 	out.Fields = map[string]string{}
+	if out.ReviewVerdict != nil {
+		out.Fields["review"] = out.ReviewVerdict.Verdict
+		out.Fields["blocking"] = strconv.Itoa(out.ReviewVerdict.BlockingFindings)
+	}
 	if run != nil && run.Sink != nil && run.Sink.Progress.Terminal() && run.Sink.Result != nil && len(run.Sink.Result.FailedTaskIDs) != 0 {
 		out.Fields["failed"] = strings.Join(run.Sink.Result.FailedTaskIDs, ",")
 	}
@@ -161,6 +166,10 @@ func NodeTrailerFields(o NodeObservation) map[string]string {
 	for key, value := range o.Fields {
 		fields[key] = value
 	}
+	if o.ReviewVerdict != nil {
+		fields["review"] = o.ReviewVerdict.Verdict
+		fields["blocking"] = strconv.Itoa(o.ReviewVerdict.BlockingFindings)
+	}
 	fields["run"] = o.Target.RunID
 	fields["task"] = o.Target.TaskID
 	fields["attempt"] = o.AttemptID
@@ -208,6 +217,9 @@ func ResolveNode(ref NodeRef, runs []WorkflowRun, tasks []Task, attempts []Attem
 	if run.Sink != nil && (ref.TaskID == SinkTaskName || ref.TaskID == run.Sink.ID) {
 		out.Target.TaskID = run.Sink.ID
 		out.Progress = run.Sink.Progress
+		if out.Progress.Terminal() {
+			out.ReviewVerdict = AggregateReviewVerdicts(run.ID, "", attempts)
+		}
 		if !run.Sink.Progress.Terminal() {
 			return out, nil
 		}
@@ -245,6 +257,9 @@ func ResolveNode(ref NodeRef, runs []WorkflowRun, tasks []Task, attempts []Attem
 		out.Progress = latest.Progress
 		out.AttemptID = latest.ID
 		out.AttemptRevision = latest.Revision
+		if latest.Progress.Terminal() {
+			out.ReviewVerdict = CloneReviewVerdict(latest.ReviewVerdict)
+		}
 		if !latest.Progress.Terminal() || !RunExecutionsQuiescent(run.ID, owned, assignments) {
 			return out, nil
 		}
@@ -258,6 +273,10 @@ func ResolveNode(ref NodeRef, runs []WorkflowRun, tasks []Task, attempts []Attem
 	} else {
 		out.ExitCode = 2
 		out.Reason = string(out.Progress)
+	}
+	if out.ReviewVerdict != nil {
+		// Reason is retained by older workers that ignore the new verdict field.
+		out.Reason += "\nReview verdict: " + out.ReviewVerdict.Prose()
 	}
 	return out, nil
 }

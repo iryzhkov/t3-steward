@@ -101,7 +101,8 @@ func (s *Store) CommitWorkerStateTransitions(
 				!reflect.DeepEqual(next.CompletedAt, currentAttempt.CompletedAt) ||
 				next.Failure != currentAttempt.Failure ||
 				next.CheckpointArtifactID != currentAttempt.CheckpointArtifactID ||
-				next.FinalSummaryArtifactID != currentAttempt.FinalSummaryArtifactID {
+				next.FinalSummaryArtifactID != currentAttempt.FinalSummaryArtifactID ||
+				!reflect.DeepEqual(next.ReviewVerdict, currentAttempt.ReviewVerdict) {
 				return nil, fmt.Errorf("%w: finished attempt %q cannot be projected live or lose evidence",
 					ErrStaleWorkerStateTransition, currentAttempt.ID)
 			}

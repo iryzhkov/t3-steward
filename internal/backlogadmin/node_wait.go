@@ -2,6 +2,7 @@ package backlogadmin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -87,6 +88,27 @@ type NodeWaitResponse struct {
 	Changed          bool                         `json:"changed,omitempty"`
 	AttentionReceipt *domain.AttentionReceipt     `json:"attentionReceipt,omitempty"`
 }
+
+// MarshalJSON keeps node-wait responses readable by older worker carriers,
+// whose strict decoders reject new observation fields. The existing Reason
+// and Fields carry the bounded review prose and trailer evidence.
+func (r NodeWaitResponse) MarshalJSON() ([]byte, error) {
+	type wireResponse NodeWaitResponse
+	wire := wireResponse(r)
+	if r.Waits != nil {
+		wire.Waits = make([]domain.NodeWait, len(r.Waits))
+		copy(wire.Waits, r.Waits)
+	}
+	for i := range wire.Waits {
+		if wire.Waits[i].Observation != nil {
+			obs := *wire.Waits[i].Observation
+			obs.ReviewVerdict = nil
+			wire.Waits[i].Observation = &obs
+		}
+	}
+	return json.Marshal(wire)
+}
+
 type nodeWaitStore interface {
 	RegisterNodeWait(context.Context, domain.NodeWaitRequest, string, string, time.Time) (domain.NodeWait, error)
 	ListNodeWaits(context.Context) ([]domain.NodeWait, error)

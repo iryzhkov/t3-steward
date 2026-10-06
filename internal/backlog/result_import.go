@@ -168,6 +168,11 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	if err != nil {
 		return report, err
 	}
+	reviewVerdict, reviewErr := reviewVerdictFromResult(task, artifacts, payloads)
+	if reviewErr != nil {
+		verificationPassed = false
+		failure = strings.TrimPrefix(failure+"; review_output verification failed: "+reviewErr.Error(), "; ")
+	}
 	for index, artifact := range artifacts {
 		published, err := i.Artifacts.Publish(ctx, domain.ArtifactPublication{
 			CoordinatorEpoch: i.CoordinatorEpoch, WorkerID: manifest.WorkerID, WorkerEpoch: manifest.WorkerEpoch,
@@ -211,6 +216,7 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	report.Transition, err = ReconcileTurnOutcomes(ctx, i.Store, []domain.TurnOutcome{{
 		ID: outcomeID, AttemptID: attempt.ID,
 		Marker: domain.TurnOutcomeDone, VerificationPassed: verificationPassed, Failure: failure,
+		ReviewVerdict:          reviewVerdict,
 		FinalSummaryArtifactID: summary.ID, ObservedAt: manifest.CreatedAt,
 	}}, now)
 	return report, err

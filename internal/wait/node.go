@@ -77,11 +77,18 @@ func nodeWakeProse(w domain.NodeWait) string {
 			w.Request.Name, w.Request.Quota.Pool, w.Observation.Reason)
 	}
 	return fmt.Sprintf("Wait finished (T3 steward): %q. Node %s: %s (exit %d).%s%s\nFirst inspect current instructions, every wait outcome, and the actual result or review verdict. A met condition or exit 0 does not establish task success or review ACCEPT. Handle failures, cancellations, gave-up outcomes and deadlines by repairing, replanning or reporting as appropriate; an expected deadline is not proof of success. Continue only unfinished work that is still authorized. Cancellation and pause instructions take precedence.",
-		w.Request.Name, w.Request.Target.String(), w.Observation.Reason, w.Observation.ExitCode, nodeWakeObservation(w), nodeWakeResult(w))
+		w.Request.Name, w.Request.Target.String(), w.Observation.Reason, w.Observation.ExitCode, nodeWakeObservation(w), nodeWakeReview(w)+nodeWakeResult(w))
 }
 
 // nodeWakeResult renders only a bounded, command-safe terminal run identity.
 // It changes prose only; machine trailer fields keep their original bytes.
+func nodeWakeReview(w domain.NodeWait) string {
+	if w.Observation == nil || w.Observation.ReviewVerdict == nil || strings.Contains(w.Observation.Reason, w.Observation.ReviewVerdict.Summary()) {
+		return ""
+	}
+	return "\nReview verdict: " + w.Observation.ReviewVerdict.Prose() + "."
+}
+
 func nodeWakeResult(w domain.NodeWait) string {
 	if w.Observation == nil || !w.Observation.Progress.Terminal() {
 		return ""

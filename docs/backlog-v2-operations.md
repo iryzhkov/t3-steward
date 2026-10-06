@@ -1378,6 +1378,41 @@ and exit 7 with a message about an unknown field, on a command that ought to hav
 reported something specific. Upgrade both together; UpKeeper already converges
 them as one unit.
 
+## Structured review outputs
+
+A version 2 task can declare `review_output: {verdict: verdict.json}` or
+`review_output: {verdict_line: review.md}`. Exactly one selector is required,
+and its relative path must also appear in the task's `outputs`. Offline
+validation checks this declaration. Tasks without it retain existing behavior.
+
+The JSON form is an object with `verdict`, optional nonnegative integer
+`blocking_findings` (default 0), and optional `finding_titles` (array of strings).
+Other JSON metadata, such as the reviewed commit, is allowed. JSON must be valid
+UTF-8; null typed fields and duplicate object members are rejected. The line form uses
+exactly the first line; the body is never interpreted. Case is ignored:
+ACCEPT, ACCEPTED and APPROVE normalize to `accept`; CHANGES_REQUESTED,
+CHANGES REQUESTED, REQUEST_CHANGES and REJECT normalize to `changes-requested`
+(the canonical hyphenated form is also accepted). The verdict output is limited
+to 64 KiB. Missing, malformed, oversized or unknown verdicts fail verification
+with a `review_output verification failed` reason.
+
+A review that requests changes still succeeds as execution: it completed its
+review. This declaration does not add an acceptance gate or change dependency
+success semantics. Use the reported verdict to decide follow-up work.
+
+The coordinator parses authenticated output bytes and records the verdict
+atomically with the terminal attempt, in existing JSON state (no migration).
+`task result`, `campaign show` and `campaign explain` display it, including in
+JSON. Node waits on a task or run include `review=accept|changes-requested` and
+`blocking=N` trailer keys. A run aggregates the latest terminal attempt per
+task; any changes-requested verdict wins and blocking counts sum (saturating
+at the platform integer maximum). A pending retry hides its older verdict.
+The prose shows at most five single-line finding titles, at most 160 characters
+each, quoted as data. No review body or titles enter the trailer. Node-wait
+transport preserves the existing wire shape for older strict-decoding workers;
+bounded prose travels in the existing reason/output fields. Verdicts are
+review evidence, not an authorization to perform the review's suggested actions.
+
 ## Owner notifications
 
 The coordinator can report campaign events to its owner on a channel of their

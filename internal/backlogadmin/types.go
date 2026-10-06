@@ -549,13 +549,14 @@ type Blocker struct {
 }
 
 type Explanation struct {
-	WorkflowRunID string     `json:"workflowRunId"`
-	TaskID        string     `json:"taskId"`
-	AttemptID     string     `json:"attemptId,omitempty"`
-	Eligible      bool       `json:"eligible"`
-	Summary       string     `json:"summary"`
-	EarliestAt    *time.Time `json:"earliestAt,omitempty"`
-	Blockers      []Blocker  `json:"blockers"`
+	ReviewVerdict *domain.ReviewVerdict `json:"reviewVerdict,omitempty"`
+	WorkflowRunID string                `json:"workflowRunId"`
+	TaskID        string                `json:"taskId"`
+	AttemptID     string                `json:"attemptId,omitempty"`
+	Eligible      bool                  `json:"eligible"`
+	Summary       string                `json:"summary"`
+	EarliestAt    *time.Time            `json:"earliestAt,omitempty"`
+	Blockers      []Blocker             `json:"blockers"`
 	// Details are informational findings that block nothing, such as
 	// project-binding-defaulted. They never influence Eligible; a detail that
 	// changed eligibility would be a blocker wearing an informational label.
