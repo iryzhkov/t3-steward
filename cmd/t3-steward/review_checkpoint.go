@@ -49,7 +49,8 @@ type coordinatorReviewCheckpoint struct {
 	// durable step is idempotent on its own; this only keeps two identical
 	// calls from racing through staging side by side.
 	mu sync.Mutex
-	// fault is a test seam at the durable boundaries between steps.
+	// fault is a test seam at the durable boundaries between steps: frozen,
+	// allocated, staged and confirmed.
 	fault func(string) error
 }
 
@@ -84,6 +85,8 @@ func checkpointRefusal(code domain.ReviewCheckpointCode, retryable bool, format 
 // real crash between steps, is retryable because every step replays.
 func checkpointStoreRefusal(step string, err error) domain.ReviewCheckpointResult {
 	switch {
+	case errors.Is(err, sqlite.ErrStaleCoordinatorEpoch):
+		return checkpointRefusal(domain.ReviewCheckpointStaleCoordinator, true, "%s: this coordinator no longer holds the durable epoch; repeat the call against the current coordinator: %v", step, err)
 	case errors.Is(err, sqlite.ErrReviewAuthorityConflict):
 		return checkpointRefusal(domain.ReviewCheckpointHeadConflict, false, "%s: this checkpoint ID is already bound to a different head or input; push to a new checkpoint ID: %v", step, err)
 	case errors.Is(err, sqlite.ErrReviewAuthorityLimit):
@@ -108,7 +111,11 @@ func (c *coordinatorReviewCheckpoint) OpenReviewCheckpoint(ctx context.Context, 
 	if err := backlog.ValidateExactRef(branch); err != nil {
 		return checkpointRefusal(domain.ReviewCheckpointInvalidRequest, false, "checkpoint branch %q: %v", branch, err)
 	}
-	// Every fence is read-only and precedes the first write.
+	// Every fence is read-only and precedes the first write. The epoch is also
+	// bound to every durable step below, whose own transaction compares it
+	// again: the remote probe and staging IO leave time for a replacement
+	// coordinator to advance it.
+	ctx = sqlite.WithCoordinatorEpochFence(ctx, c.epoch)
 	assignment, refusal := c.fence(ctx, request)
 	if refusal != nil {
 		return *refusal
@@ -137,6 +144,9 @@ func (c *coordinatorReviewCheckpoint) OpenReviewCheckpoint(ctx context.Context, 
 
 	snapshot, err := c.admission.FreezeDeclared(ctx, parent)
 	if err != nil {
+		return checkpointStoreRefusal("freeze declared review", err)
+	}
+	if err := c.boundary("frozen"); err != nil {
 		return checkpointStoreRefusal("freeze declared review", err)
 	}
 	candidate := review.Checkpoint{ID: request.CheckpointID, HeadCommit: head, InputDigest: snapshot.Provenance.InputManifest.Digest}
@@ -173,6 +183,9 @@ func (c *coordinatorReviewCheckpoint) OpenReviewCheckpoint(ctx context.Context, 
 	}
 	if current != staged.Checkpoint || current != allocated {
 		return checkpointRefusal(domain.ReviewCheckpointHeadConflict, false, "checkpoint %q changed while it was staged", request.CheckpointID)
+	}
+	if err := c.boundary("confirmed"); err != nil {
+		return checkpointStoreRefusal("confirm review checkpoint", err)
 	}
 	receipt, err := c.store.MaterializeReviewChild(ctx, staged.Admission.Authority, current, staged.Preparation)
 	if err != nil {

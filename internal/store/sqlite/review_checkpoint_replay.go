@@ -31,6 +31,11 @@ func (s *Store) ReviewCheckpointReplay(ctx context.Context, expected review.Froz
 		return zero, nil, false, err
 	}
 	defer tx.Rollback()
+	// A replay answer carries authority, so a coordinator epoch fence bound to
+	// ctx is compared in the same snapshot the answer is read from.
+	if err := requireReviewEpochFenceTx(ctx, tx); err != nil {
+		return zero, nil, false, err
+	}
 	frozen, err := expectedReviewAuthorityTx(ctx, tx, expected)
 	if errors.Is(err, sql.ErrNoRows) {
 		return zero, nil, false, nil

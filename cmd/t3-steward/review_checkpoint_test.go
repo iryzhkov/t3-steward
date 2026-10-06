@@ -31,12 +31,19 @@ type fakeCheckpointRefs struct {
 	err     error
 	status  workerproto.RefResolutionStatus
 	queries []repositoryRefQuery
+	// during runs inside the probe, after the query is recorded and before the
+	// answer is returned, so a test can move durable state while the
+	// coordinator waits on the remote.
+	during func()
 }
 
 func (f *fakeCheckpointRefs) ResolveRef(_ context.Context, query repositoryRefQuery) (repositoryRefAnswer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.queries = append(f.queries, query)
+	if f.during != nil {
+		f.during()
+	}
 	if f.err != nil {
 		return repositoryRefAnswer{}, f.err
 	}

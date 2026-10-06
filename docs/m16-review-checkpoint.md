@@ -39,6 +39,16 @@ both admin carriers.
   (`review-not-declared`).
 - Declared review admission resolves for the attempt (`admission-refused`).
 
+The epoch check is not only made once. The remote head probe and child staging
+take time, and a replacement coordinator can advance the epoch meanwhile, so
+the coordinator's epoch is bound to every durable step: the authority freeze,
+each checkpoint allocation, child materialization, and the read-only replay
+that answers a repeated call each compare it with the durable epoch inside
+their own transaction, the writers under the SQLite writer lock. A coordinator
+superseded at any point is refused with `stale-coordinator-epoch` and writes
+nothing further; the current coordinator completes the same checkpoint from
+what was already durable.
+
 ## Trusted base and head
 
 The base is the stored immutable workflow base frozen into the review
