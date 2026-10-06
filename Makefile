@@ -41,12 +41,26 @@ test:
 # cannot list the changes. It is not a substitute for `make test`, which CI
 # runs in full. check-review uses the same checks with a full-size changed-package
 # race pass, replacing check-fast followed by a second full-size race invocation.
+#
+# The short pass leaves out the changed packages, because the race pass runs
+# every one of their tests again (all of them for check-review, the same short
+# set for check-fast) with the race detector added. Running them first without
+# it repeated the slowest packages for no additional assertion.
 check-fast check-review:
 	go build ./...
 	go vet ./...
-	go test -short -timeout $(TEST_TIMEOUT) ./...
-	$(MAKE) lint
 	@pkgs=$$(sh scripts/changed-go-packages.sh '$(FAST_BASE)') || exit 1; \
+	if [ -n "$$pkgs" ]; then \
+		changed=$$(go list $$pkgs) || exit 1; \
+		short_pkgs=$$(go list ./... | grep -vxF "$$changed"); \
+	else \
+		short_pkgs=./...; \
+	fi; \
+	if [ -n "$$short_pkgs" ]; then \
+		echo "go test -short ./... except the packages the race pass runs"; \
+		go test -short -timeout $(TEST_TIMEOUT) $$short_pkgs || exit 1; \
+	fi; \
+	$(MAKE) lint || exit 1; \
 	if [ -n "$$pkgs" ]; then \
 		race_short=; \
 		if [ "$@" = check-fast ]; then race_short=-short; fi; \
