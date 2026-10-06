@@ -395,7 +395,7 @@ func (d *LocalDriver) collectActivation(ctx context.Context, pkg workerproto.Exe
 		// A refusal is permanent: the runtime records it as the activation's
 		// failure and publishes the redacted failed result in its place.
 		var secret *SecretScanError
-		if errors.As(err, &secret) {
+		if errors.As(err, &secret) && !secret.retryable() {
 			return &permanentCollectionFailure{secret: secret}
 		}
 		return fmt.Errorf("publish supervision activation custody: %w", err)

@@ -2,6 +2,7 @@ package workerruntime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -111,6 +112,15 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 	switch kind {
 	case domain.ThrottleCommandDrain:
 		checkpoint, err := r.driver.Checkpoint(ctx, pkg, command)
+		var refused *SecretScanError
+		if errors.As(err, &refused) {
+			// The thread stopped and wrote its checkpoint, but the checkpoint
+			// carries a credential and is not published. The pause stands
+			// without checkpoint evidence, as after a stop.
+			r.log.Warn("drained thread stopped; its checkpoint was refused by the result secret scan", "assignment", id,
+				"object", refused.Object, "detector", refused.Detector, "byte_offset", refused.Offset, "fingerprint", refused.Fingerprint)
+			return r.markLocalPauseStopped(ctx, id, nil)
+		}
 		if err != nil {
 			// The notice went out but the thread has not ended its turn yet.
 			// It keeps running; the next reconcile observes it, and the stop

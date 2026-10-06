@@ -1059,7 +1059,7 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 			return &permanentCollectionFailure{size: size}
 		}
 		var secret *SecretScanError
-		if errors.As(err, &secret) {
+		if errors.As(err, &secret) && !secret.retryable() {
 			return &permanentCollectionFailure{secret: secret}
 		}
 		return fmt.Errorf("publish result custody: %w", err)
@@ -1236,7 +1236,7 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
 	})
 	var secret *SecretScanError
-	if errors.As(publishErr, &secret) {
+	if errors.As(publishErr, &secret) && !secret.retryable() {
 		// The thread or the failure text carries a credential. Publish the
 		// redacted finding with an empty archive instead, so the failed result
 		// still reaches the coordinator; the raw text stays on the worker.

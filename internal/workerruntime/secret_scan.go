@@ -33,6 +33,18 @@ type SecretScanError struct {
 	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
+// retryable reports a worker-local failure to assemble the scan (credential
+// resolution, snapshot or baseline reads) rather than a finding in the
+// content. A later collection may succeed, so it never fails a result
+// permanently.
+func (e *SecretScanError) retryable() bool {
+	switch e.Detector {
+	case "credential-resolution", "credential-history", "scan-baseline":
+		return true
+	}
+	return false
+}
+
 func (e *SecretScanError) Error() string {
 	return fmt.Sprintf("result secret scan refused object %q: detector=%s byte=%d fingerprint=%s", e.Object, e.Detector, e.Offset, e.Fingerprint)
 }

@@ -66,6 +66,38 @@ func TestSecretScanBaselineAllowlistComesFromBaseCommit(t *testing.T) {
 	}
 }
 
+// Thread creation records the baseline before the first turn, and a later
+// creation for the same execution keeps the first record.
+func TestSecretScanCreateThreadRecordsBaselineOnce(t *testing.T) {
+	token := "ghp_" + strings.Repeat("F", 36)
+	repo, base, _ := baselineRepo(t, secretFingerprint(token)+"\n", []byte(token))
+	pkg := testPackage()
+	root := t.TempDir()
+	store := testCustodyStore(t, filepath.Join(root, "custody"), func() time.Time { return runtimeTestNow })
+	driver := &LocalDriver{Config: LocalDriverConfig{ArtifactRoot: root}, T3: &recordingT3{projectID: "project-uuid"}, Publisher: store}
+	cachePath := filepath.Join(root, "objects", pkg.Prompt.SHA256)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, []byte("prompt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.CreateThread(context.Background(), pkg, repo); err != nil {
+		t.Fatal(err)
+	}
+	head := commitTaskWork(t, repo)
+	if err := os.WriteFile(filepath.Join(repo, ".t3", "base-commit"), []byte(head+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.CreateThread(context.Background(), pkg, repo); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := store.loadScanBaseline(pkg)
+	if err != nil || baseline == nil || baseline.Base != base || len(baseline.Allow) != 1 || baseline.Allow[0] != secretFingerprint(token) {
+		t.Fatalf("baseline = %+v, %v", baseline, err)
+	}
+}
+
 func TestSecretScanBaselineIgnoresAllowlistAddedByTask(t *testing.T) {
 	token := "ghp_" + strings.Repeat("E", 36)
 	repo, base, _ := baselineRepo(t, "", []byte(token))

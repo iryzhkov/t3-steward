@@ -68,17 +68,20 @@ func (s *resultScanner) rawCanaryMatch(data []byte, base64Only bool) (int, int, 
 		if index.bits[h/64]&(1<<(h%64)) == 0 {
 			continue
 		}
+		// The longest match at the earliest position, so redaction never
+		// leaves the tail of a credential that extends a shorter one.
+		end, fingerprint := -1, ""
 		for _, c := range index.candidates[key] {
-			if base64Only && !c.base64 || i+c.length > len(data) {
+			if base64Only && !c.base64 || i+c.length > len(data) || i+c.length <= end {
 				continue
 			}
-			if c.value != nil {
-				if bytes.Equal(data[i:i+c.length], c.value) {
-					return i, i + c.length, c.fingerprint
-				}
-			} else if sha256.Sum256(data[i:i+c.length]) == c.digest {
-				return i, i + c.length, c.fingerprint
+			if c.value != nil && bytes.Equal(data[i:i+c.length], c.value) ||
+				c.value == nil && sha256.Sum256(data[i:i+c.length]) == c.digest {
+				end, fingerprint = i+c.length, c.fingerprint
 			}
+		}
+		if end >= 0 {
+			return i, end, fingerprint
 		}
 	}
 	return -1, 0, ""

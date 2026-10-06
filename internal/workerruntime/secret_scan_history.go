@@ -81,16 +81,18 @@ func unwrapScanBase64(data []byte) ([]byte, []int, bool) {
 	}
 	// A break joins two runs when a wrapped line of at least 16 base64 bytes
 	// ends at it and base64 continues after it. Prose lines rarely qualify.
+	// A scan window can start inside a wrapped line, so a break nearer the
+	// start only needs base64 back to the window's first byte.
 	const wrappedLine = 16
 	joins := func(i int) (int, bool) {
 		j := i
 		for j < len(data) && (data[j] == '\r' || data[j] == '\n') {
 			j++
 		}
-		if i < wrappedLine || j >= len(data) || j-i > 2 || !base64Byte(data[j]) {
+		if i == 0 || j >= len(data) || j-i > 2 || !base64Byte(data[j]) {
 			return j, false
 		}
-		for k := i - wrappedLine; k < i; k++ {
+		for k := max(0, i-wrappedLine); k < i; k++ {
 			if !base64Byte(data[k]) {
 				return j, false
 			}
