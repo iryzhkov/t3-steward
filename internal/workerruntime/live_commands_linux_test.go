@@ -228,12 +228,17 @@ func TestLiveCommandsExcludesTheWorkersOwnCommandShell(t *testing.T) {
 // liveCommandsHelperRole selects what TestLiveCommandsSessionHelper plays.
 const liveCommandsHelperRole = "T3_STEWARD_LIVE_COMMANDS_HELPER"
 
+// liveCommandsProviderRole selects which provider the server helper starts.
+const liveCommandsProviderRole = "T3_STEWARD_LIVE_COMMANDS_PROVIDER"
+
 // TestLiveCommandsSessionHelper is not a test. Re-executed by
 // TestLiveCommandsFindsACommandTheProviderStillTracks it plays the T3 server
 // outside the workspace, which starts the provider session inside it. The
 // provider starts an MCP server directly and a command through its command
 // tool's shell, and tracks both, the way a run_in_background command stays
-// attached to the provider.
+// attached to the provider. Re-executed by
+// TestLiveCommandsFindsToolExecutionsWhoseShellIsGone the provider instead
+// runs its tool commands the way Codex does, each in a session of its own.
 func TestLiveCommandsSessionHelper(t *testing.T) {
 	role := os.Getenv(liveCommandsHelperRole)
 	if role == "" {
@@ -242,13 +247,65 @@ func TestLiveCommandsSessionHelper(t *testing.T) {
 	workspace, pidFile := os.Getenv("T3_STEWARD_LIVE_COMMANDS_WORKSPACE"), os.Getenv("T3_STEWARD_LIVE_COMMANDS_PIDS")
 	switch role {
 	case "server":
+		providerRole := os.Getenv(liveCommandsProviderRole)
+		if providerRole == "" {
+			providerRole = "provider"
+		}
 		provider := exec.Command(os.Args[0], "-test.run=^TestLiveCommandsSessionHelper$")
 		provider.Dir = workspace
-		provider.Env = append(os.Environ(), liveCommandsHelperRole+"=provider")
+		provider.Env = append(os.Environ(), liveCommandsHelperRole+"="+providerRole)
 		if err := provider.Start(); err != nil {
 			os.Exit(2)
 		}
 		_ = provider.Wait()
+	case "codex-provider":
+		// Two MCP servers in the provider's session: one reading requests
+		// from a pipe, one that put /dev/null on its stdin, as a Python MCP
+		// server on a fleet host does.
+		piped := exec.Command("sleep", "302")
+		piped.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		requests, err := piped.StdinPipe()
+		if err != nil {
+			os.Exit(2)
+		}
+		defer requests.Close()
+		quiet := exec.Command("sleep", "306")
+		// A Codex command: bash -lc '<command>' in a session of its own, where
+		// the shell replaces itself with the command.
+		inPlace := exec.Command("sh", "-c", "exec sleep 305")
+		inPlace.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		// A Codex command under a sandbox wrapper that forks the command
+		// rather than becoming it, as bwrap does.
+		wrapper := exec.Command(filepath.Join(filepath.Dir(pidFile), "bwrap"), "-test.run=^TestLiveCommandsSessionHelper$")
+		wrapper.Env = append(os.Environ(), liveCommandsHelperRole+"=wrapper")
+		wrapper.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		for _, child := range []*exec.Cmd{piped, quiet, inPlace, wrapper} {
+			child.Dir = workspace
+			if err := child.Start(); err != nil {
+				os.Exit(2)
+			}
+		}
+		var wrapped []byte
+		for len(strings.TrimSpace(string(wrapped))) == 0 {
+			time.Sleep(10 * time.Millisecond)
+			wrapped, _ = os.ReadFile(pidFile + ".wrapped")
+		}
+		pids := fmt.Sprintf("%d %d %d %d %d %d %s\n", os.Getppid(), os.Getpid(), piped.Process.Pid, quiet.Process.Pid,
+			inPlace.Process.Pid, wrapper.Process.Pid, strings.TrimSpace(string(wrapped)))
+		if err := os.WriteFile(pidFile+".tmp", []byte(pids), 0o600); err != nil || os.Rename(pidFile+".tmp", pidFile) != nil {
+			os.Exit(2)
+		}
+		_ = inPlace.Wait()
+	case "wrapper":
+		command := exec.Command("sh", "-c", "exec sleep 307")
+		command.Dir = workspace
+		if err := command.Start(); err != nil {
+			os.Exit(2)
+		}
+		if err := os.WriteFile(pidFile+".wrapped", []byte(strconv.Itoa(command.Process.Pid)), 0o600); err != nil {
+			os.Exit(2)
+		}
+		_ = command.Wait()
 	case "provider":
 		mcp := exec.Command("sleep", "302")
 		commandFile := pidFile + ".command"
@@ -332,6 +389,68 @@ func TestLiveCommandsFindsACommandTheProviderStillTracks(t *testing.T) {
 	// collecting it, sees the same command.
 	driverReport, err := (&LocalDriver{}).LiveCommands(context.Background(), testPackage(), workspace)
 	if err != nil || !reports(driverReport, command) {
+		t.Fatalf("driver report = %+v, %v", driverReport, err)
+	}
+}
+
+// A Codex command leads a session of its own, and its shell may replace itself
+// with the command or run it under a sandbox wrapper, so no command shell is
+// left below the provider. The command is still reported, and the MCP servers
+// in the provider's session are not, whatever their stdin.
+func TestLiveCommandsFindsToolExecutionsWhoseShellIsGone(t *testing.T) {
+	workspace := t.TempDir()
+	helpers := t.TempDir()
+	pidFile := filepath.Join(helpers, "pids")
+	if err := os.Symlink(os.Args[0], filepath.Join(helpers, "bwrap")); err != nil {
+		t.Fatal(err)
+	}
+	launcher := exec.Command("sh", "-c", `setsid "$1" -test.run='^TestLiveCommandsSessionHelper$' >/dev/null 2>&1 &`, "launcher", os.Args[0])
+	launcher.Dir = t.TempDir()
+	launcher.Env = append(os.Environ(), liveCommandsHelperRole+"=server", liveCommandsProviderRole+"=codex-provider",
+		"T3_STEWARD_LIVE_COMMANDS_WORKSPACE="+workspace, "T3_STEWARD_LIVE_COMMANDS_PIDS="+pidFile)
+	if err := launcher.Run(); err != nil {
+		t.Fatal(err)
+	}
+	pids := waitForPIDs(t, pidFile, 7)
+	server, provider, piped, quiet, inPlace, wrapper, wrapped := pids[0], pids[1], pids[2], pids[3], pids[4], pids[5], pids[6]
+	t.Cleanup(func() { _ = syscall.Kill(-server, syscall.SIGKILL) })
+	for _, pid := range pids[1:] {
+		killOnCleanup(t, pid)
+		waitInWorkspace(t, pid, workspace)
+	}
+	// Wait until both commands have replaced their shells, as the provider's
+	// command has by the time an agent ends its turn.
+	for _, pid := range []int{inPlace, wrapped} {
+		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			if raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline")); err == nil && strings.HasPrefix(string(raw), "sleep\x00") {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("command %d never replaced its shell", pid)
+			}
+		}
+	}
+	report, err := scanLiveCommandsIn("linux", "/proc", os.Getpid(), workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reports(report, inPlace) {
+		t.Fatalf("the command %d its shell was replaced by was not reported: %+v", inPlace, report)
+	}
+	if !reports(report, wrapped) {
+		t.Fatalf("the command %d under a sandbox wrapper was not reported: %+v", wrapped, report)
+	}
+	for name, pid := range map[string]int{"server": server, "provider": provider, "piped MCP server": piped, "MCP server without stdin": quiet, "sandbox wrapper": wrapper} {
+		if reports(report, pid) {
+			t.Fatalf("the %s %d was reported: %+v", name, pid, report)
+		}
+	}
+	if len(report.Commands) != 2 || report.Commands[0].Command == report.Commands[1].Command ||
+		!strings.HasPrefix(report.Commands[0].Command, "sleep 30") || !strings.HasPrefix(report.Commands[1].Command, "sleep 30") {
+		t.Fatalf("report = %+v, want the two commands and nothing else", report)
+	}
+	driverReport, err := (&LocalDriver{}).LiveCommands(context.Background(), testPackage(), workspace)
+	if err != nil || !reports(driverReport, inPlace) || !reports(driverReport, wrapped) {
 		t.Fatalf("driver report = %+v, %v", driverReport, err)
 	}
 }

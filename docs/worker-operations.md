@@ -111,14 +111,21 @@ the process outside the workspace that holds the topmost of them decides:
   outside the workspace counts;
 - any other live process, such as the T3 server: the topmost process is the
   provider session. The provider, its MCP servers and their language servers
-  are started directly and run in the workspace for the whole session, so they
-  do not count; a command shell the provider itself started does, because that
-  is a command-tool call the provider still tracks, such as a Claude Code
-  `run_in_background` command. The command the shell runs is reported.
+  run in the workspace for the whole session and do not count. A tool execution
+  the provider itself started does, because that is a command-tool call the
+  provider still tracks, such as a Claude Code `run_in_background` command or a
+  Codex command. A child of the provider is a tool execution when it leads a
+  session of its own, which Claude Code and Codex give every command they run
+  while MCP servers stay in the provider's session; the session survives a
+  `bash -lc '<command>'` shell replacing itself with the command. A command
+  shell or a sandbox wrapper (`bwrap`, `codex-linux-sandbox`) the provider
+  started counts too. The command below the shells and wrappers is reported.
 
 The worker's own processes, such as verification commands, are excluded. A
 provider started through a command shell would make its whole session look like
-a command; T3 starts providers directly.
+a command; T3 starts providers directly. A command a provider ran directly in
+its own session, without a shell, would look like an MCP server; neither
+provider runs commands that way.
 
 If such commands are found, the attempt is not collected. The worker sends one
 follow-up turn to the same session naming the commands and telling it to wait

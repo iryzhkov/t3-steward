@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,9 +40,10 @@ func scanLiveCommands(workspace string) (LiveCommandReport, error) {
 }
 
 type procEntry struct {
-	parent int
-	inside bool
-	zombie bool
+	parent  int
+	session int
+	inside  bool
+	zombie  bool
 }
 
 // processTable is one reading of /proc. Command lines are read only for the
@@ -80,12 +80,17 @@ type processTable struct {
 //   - a command shell (sh -c and the like): a command started the subtree
 //     from outside the workspace, and its topmost process is reported.
 //   - any other live process, such as the T3 server: the topmost process is
-//     that process's session, the provider. The provider, its MCP servers and
-//     their language servers are started directly, never through a shell, so
-//     only a command shell the provider itself started is the agent's: a
-//     command tool call the provider still tracks, such as a Claude Code
-//     run_in_background command. The command that shell runs is reported, or
-//     the shell when it runs nothing else.
+//     that process's session, the provider. Only a tool execution the
+//     provider itself started is the agent's: a command tool call the
+//     provider still tracks, such as a Claude Code run_in_background command
+//     or a Codex command. The provider's MCP servers stay in the provider's
+//     session and are started directly, and their language servers are not
+//     the provider's children, so a child of the provider is a tool execution
+//     when it leads a session of its own, which Claude Code and Codex give
+//     every command they run and which survives the shell replacing itself
+//     with the command (bash -lc 'exec make check'), or when it is a command
+//     shell. The command it runs is reported, below its shells and sandbox
+//     wrappers, or the shell when it runs nothing else.
 //
 // Anything descending from the worker itself is excluded, as are zombies,
 // processes whose parent this worker cannot see, and git's file-system
@@ -93,8 +98,8 @@ type processTable struct {
 //
 // A provider launched through a command shell would make its whole session
 // look like a command; the providers T3 runs are started directly. A command
-// the provider runs without any shell, which a provider tracking it as its own
-// background task does not do, cannot be told apart from an MCP server.
+// the provider runs in its own session and without any shell cannot be told
+// apart from an MCP server; neither provider runs commands that way.
 func scanLiveCommandsIn(goos, procRoot string, self int, workspace string) (LiveCommandReport, error) {
 	if goos != "linux" {
 		return LiveCommandReport{Unsupported: "process inspection is unavailable on " + goos}, nil
@@ -122,14 +127,14 @@ func scanLiveCommandsIn(goos, procRoot string, self int, workspace string) (Live
 			// The process exited between the listing and the read.
 			continue
 		}
-		parent, state, ok := parseProcStat(raw)
+		stat, ok := parseProcStat(raw)
 		if !ok {
 			continue
 		}
 		// An unreadable working directory belongs to another user, or to a
 		// process that has exited, and is treated as outside the workspace.
 		cwd, _ := os.Readlink(filepath.Join(procRoot, entry.Name(), "cwd"))
-		table.entries[pid] = procEntry{parent: parent, inside: withinDirectory(cwd, root), zombie: state == "Z"}
+		table.entries[pid] = procEntry{parent: stat.parent, session: stat.session, inside: withinDirectory(cwd, root), zombie: stat.state == "Z"}
 	}
 	for pid := self; pid > 0 && !table.ancestors[pid]; {
 		table.ancestors[pid] = true
@@ -214,15 +219,14 @@ func (t *processTable) liveCommandRoot(pid int) (int, bool) {
 			return 0, false
 		case t.commandShell(parent):
 			return current, true
-		case len(path) >= 2 && t.commandShell(path[len(path)-2]):
-			// current is the provider and the path runs through a command
-			// shell it started; the command is the shell's child. Subshells
-			// the shell forked for a pipeline or a group carry its own
-			// command line, which names nothing, so the command below them
-			// is reported where there is one.
-			shell := t.args(path[len(path)-2])
+		case len(path) >= 2 && t.toolExecution(path[len(path)-2]):
+			// current is the provider and the path runs through a tool
+			// execution it started. Its command shells, the subshells they
+			// forked for a pipeline or a group, which carry the shell's own
+			// command line, and its sandbox wrappers name nothing, so the
+			// command below them is reported where there is one.
 			command := len(path) - 2
-			for command > 0 && (command == len(path)-2 || slices.Equal(t.args(path[command]), shell)) {
+			for command > 0 && (t.commandShell(path[command]) || t.sandboxWrapper(path[command])) {
 				command--
 			}
 			return path[command], true
@@ -230,6 +234,21 @@ func (t *processTable) liveCommandRoot(pid int) (int, bool) {
 		return 0, false
 	}
 	return 0, false
+}
+
+// toolExecution reports whether pid, a child of the provider, is a command
+// the provider runs for the agent rather than one of its MCP servers.
+func (t *processTable) toolExecution(pid int) bool {
+	return t.entries[pid].session == pid || t.commandShell(pid) || t.sandboxWrapper(pid)
+}
+
+// sandboxWrappers are the programs a provider runs a tool command under that
+// fork the command rather than becoming it.
+var sandboxWrappers = map[string]bool{"bwrap": true, "codex-linux-sandbox": true, "firejail": true, "nsjail": true, "timeout": true}
+
+func (t *processTable) sandboxWrapper(pid int) bool {
+	args := t.args(pid)
+	return len(args) > 0 && sandboxWrappers[filepath.Base(args[0])]
 }
 
 // descendsFromSelf reports whether pid is the worker or one of its
@@ -290,23 +309,33 @@ func (t *processTable) commandShell(pid int) bool {
 	return false
 }
 
-// parseProcStat reads the parent pid and the state from /proc/<pid>/stat. The
-// command name is in parentheses and may itself contain spaces and
-// parentheses, so the fields are read after the last closing one.
-func parseProcStat(raw []byte) (int, string, bool) {
+type procStat struct {
+	state   string
+	parent  int
+	session int
+}
+
+// parseProcStat reads the state, the parent pid and the session id from
+// /proc/<pid>/stat. The command name is in parentheses and may itself contain
+// spaces and parentheses, so the fields are read after the last closing one.
+func parseProcStat(raw []byte) (procStat, bool) {
 	end := bytes.LastIndexByte(raw, ')')
 	if end < 0 {
-		return 0, "", false
+		return procStat{}, false
 	}
 	fields := strings.Fields(string(raw[end+1:]))
-	if len(fields) < 2 {
-		return 0, "", false
+	if len(fields) < 4 {
+		return procStat{}, false
 	}
 	parent, err := strconv.Atoi(fields[1])
 	if err != nil {
-		return 0, "", false
+		return procStat{}, false
 	}
-	return parent, fields[0], true
+	session, err := strconv.Atoi(fields[3])
+	if err != nil {
+		return procStat{}, false
+	}
+	return procStat{state: fields[0], parent: parent, session: session}, true
 }
 
 func withinDirectory(path, root string) bool {
