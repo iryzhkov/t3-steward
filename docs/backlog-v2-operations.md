@@ -953,10 +953,14 @@ publishes the redacted finding with an empty archive. A failure reason is redact
 before the worker journal records it, because every worker snapshot reports it to
 the coordinator, which copies it into attempt evidence: each execution credential,
 in any recognized encoding, and each secret pattern becomes `[redacted]`. A reason
-the scanner cannot check is replaced by a fixed notice. A journal written by an
+the scanner cannot check is replaced by a fixed notice; that includes every reason
+while the execution's complete credential set cannot be resolved, for example
+because a model login file is malformed or a credential resolver is unavailable,
+since the recorded history alone does not cover a credential that was never
+recorded. A journal written by an
 earlier release is redacted durably at the first reconcile after start and again
-when its failed result is collected; while the credential history cannot be read,
-every snapshot reports the fixed notice in place of such an unchecked reason, and
+when its failed result is collected; while the credential history cannot be read
+or the credentials cannot be resolved, every snapshot reports the fixed notice in place of such an unchecked reason, and
 the worker keeps the raw reason only in its local journal until a later pass can
 redact it. Driver errors that runtime warnings quote, such as a preparation
 retry whose setup command carries a token, a failed quota drain, task-timeout

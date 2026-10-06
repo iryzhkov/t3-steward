@@ -57,23 +57,19 @@ func (s *CustodyStore) executionScanner(ctx context.Context, pkg workerproto.Exe
 // RedactText replaces every known credential of the execution, in any
 // encoding the scanner recognizes, and every secret pattern in text, so the
 // text can leave the worker as coordinator metadata. A failed credential
-// resolution still redacts the static canaries and the recorded credential
-// history: a value this execution was ever given was recorded when it was
-// resolved. A failed history read fails the redaction.
+// resolution or history read fails the redaction, so the caller withholds the
+// text: the recorded history does not cover a credential that was never
+// recorded, such as a protocol credential quoted by a reason an earlier
+// release journaled, and a partial canary set cannot prove the text clean.
 func (s *CustodyStore) RedactText(ctx context.Context, pkg workerproto.ExecutionPackage, text string) (string, error) {
 	config := s.config.SecretScan
 	var canaries []string
 	if config.Canaries != nil {
 		resolved, err := config.Canaries(ctx, pkg)
-		if err == nil {
-			canaries = resolved
-		} else {
-			logger := config.Log
-			if logger == nil {
-				logger = slog.Default()
-			}
-			logger.Warn("credential resolution failed; redacting with static canaries and recorded history only", "attempt", pkg.Identity.AttemptID)
+		if err != nil {
+			return "", &SecretScanError{Object: "execution", Detector: "credential-resolution", Offset: 0}
 		}
+		canaries = resolved
 	}
 	scanner := newResultScanner(config, canaries, nil)
 	if err := s.addSecretHistory(pkg, scanner); err != nil {
