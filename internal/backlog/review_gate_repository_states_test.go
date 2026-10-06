@@ -2,10 +2,12 @@ package backlog
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -53,6 +55,32 @@ func nestedSubmoduleWorkspace(t *testing.T) (string, string) {
 	gitRun(t, dir, "-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init", "--recursive")
 	gitRun(t, dir, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "submodule")
 	return dir, gitOutput(t, dir, "rev-parse", "HEAD")
+}
+
+// The report is published as an artifact and its paths are capped, so the
+// same workspace must give the same paths in the same order every time, staged
+// deletions included.
+func TestCaptureWorkspaceHeadReportsStagedDeletionsInAStableOrder(t *testing.T) {
+	dir, _ := workspaceHeadRepository(t)
+	for index := range 2 * domain.MaxWorkspaceHeadDirtyPaths {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%02d.txt", index)), []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "many")
+	head := gitOutput(t, dir, "rev-parse", "HEAD")
+	gitRun(t, dir, "rm", "-q", "--cached", "f*.txt")
+	first := CaptureWorkspaceHead(context.Background(), "", dir, nil)
+	requireDirtyPath(t, first, head, "f00.txt")
+	if !slices.IsSorted(first.DirtyPaths) {
+		t.Fatalf("staged deletions out of order: %v", first.DirtyPaths)
+	}
+	for range 5 {
+		if again := CaptureWorkspaceHead(context.Background(), "", dir, nil); !slices.Equal(again.DirtyPaths, first.DirtyPaths) {
+			t.Fatalf("repeated capture differs:\n%v\n%v", first.DirtyPaths, again.DirtyPaths)
+		}
+	}
 }
 
 // gitWithInput runs Git in repository with input on its standard input.

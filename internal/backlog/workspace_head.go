@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
@@ -255,8 +256,9 @@ func compareIndexWithTree(index, tree []byte) ([]byte, error) {
 		}
 	}
 	// What is left is in head but not in the index, a staged deletion. An
-	// unmerged path removed its tree entry at its first stage above.
-	for name := range reviewed {
+	// unmerged path removed its tree entry at its first stage above. The
+	// paths are sorted so that the same workspace gives the same report.
+	for _, name := range slices.Sorted(maps.Keys(reviewed)) {
 		status = append(status, "D  "+name+"\x00"...)
 	}
 	return status, nil
