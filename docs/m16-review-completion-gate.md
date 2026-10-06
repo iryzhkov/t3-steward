@@ -14,8 +14,9 @@ package with the package capability `workspace-head-v1`. Only a worker that
 advertises it is offered the task, so an older worker never runs one and returns
 results that cannot be judged.
 
-When the worker collects such a turn, after the task identity record is removed
-and after verification commands have run, it reads:
+When the worker collects such a turn, after the task identity record is removed,
+after verification commands have run and after every declared commit has been
+staged, it reads:
 
 - `git rev-parse HEAD` in the workspace, the physical HEAD;
 - the workspace's own index (`git ls-files --stage`), compared entry by entry
@@ -33,7 +34,15 @@ index tracks are not counted at any level.
 
 The report is taken after verification because a verification command such as
 a generator or formatter can rewrite tracked source, and that is work the
-review never saw.
+review never saw. It is taken after staging for the same reason: it must
+describe the workspace after everything collection runs in it.
+
+Staging itself runs nothing the executor controls. The campaign ref store
+fetches the declared commit from the workspace's repository instead of the
+workspace pushing it, so the workspace's hooks (`pre-push`,
+`reference-transaction` and the rest), its remote and URL configuration and any
+receive-pack command it names never run; only an upload-pack, which runs no
+hook or repository-configured command, reads the workspace's repository.
 
 The workspace's index and Git configuration belong to the executor, so neither
 is trusted to say what changed. Files flagged assume-unchanged or

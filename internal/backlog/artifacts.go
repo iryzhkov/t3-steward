@@ -117,21 +117,6 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		}
 	}
 	gated := request.ReviewGated || request.Task.ReviewRequirements != nil
-	extras := request.Extra
-	if gated {
-		// The review completion gate compares this HEAD with the head the
-		// task's latest review round accepted. It is read after verification,
-		// because a verification command that rewrites tracked source leaves
-		// work the review never saw.
-		head, err := MarshalWorkspaceHead(CaptureWorkspaceHead(ctx, "", request.WorkspaceDir, request.Task.Outputs))
-		if err != nil {
-			return FinalizedAttempt{}, fmt.Errorf("finalize attempt: %w", err)
-		}
-		extras = append(slices.Clip(extras), FinalizationArtifact{
-			ID: WorkspaceHeadArtifactID(request.Attempt.ID), Name: WorkspaceHeadArtifactName,
-			MediaType: "application/json", Kind: domain.ArtifactGitState, Producer: "worker", Content: head,
-		})
-	}
 
 	workspaceRoot, err := os.OpenRoot(request.WorkspaceDir)
 	if err != nil {
@@ -315,6 +300,23 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		})
 	}
 
+	extras := request.Extra
+	if gated {
+		// The review completion gate compares this HEAD with the head the
+		// task's latest review round accepted. It is read last, after
+		// verification and after every declared commit is staged, because
+		// work done by anything collection runs in the workspace before this
+		// point, such as a verification command that rewrites tracked source,
+		// is work the review never saw.
+		head, err := MarshalWorkspaceHead(CaptureWorkspaceHead(ctx, "", request.WorkspaceDir, request.Task.Outputs))
+		if err != nil {
+			return FinalizedAttempt{}, fmt.Errorf("finalize attempt: %w", err)
+		}
+		extras = append(slices.Clip(extras), FinalizationArtifact{
+			ID: WorkspaceHeadArtifactID(request.Attempt.ID), Name: WorkspaceHeadArtifactName,
+			MediaType: "application/json", Kind: domain.ArtifactGitState, Producer: "worker", Content: head,
+		})
+	}
 	for index, extra := range extras {
 		storagePath := filepath.ToSlash(filepath.Join(
 			"runs", request.Attempt.WorkflowRunID, request.Task.ID, request.Attempt.ID,
