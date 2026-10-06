@@ -1059,6 +1059,19 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 	attempt := latestAttempt(v.attempts[runID+"\x00"+task.ID])
 	if attempt != nil {
 		explanation.AttemptID = attempt.ID
+		// What the worker did about background commands at the turn end blocks
+		// no scheduling decision, so it is a detail rather than a blocker. A
+		// host that could not look for them collected the turn as before, and
+		// that warning stays visible once the attempt is terminal; a terminal
+		// attempt no longer waits for anything.
+		var assignment *domain.Assignment
+		if found, ok := v.assignments[attempt.AssignmentID]; ok {
+			assignment = &found
+		}
+		if evidence := v.attemptEvidence(*attempt, assignment); evidence != nil && evidence.TurnEnd != "" &&
+			(!attempt.Progress.Terminal() || !strings.HasPrefix(evidence.TurnEnd, "waiting for ")) {
+			explanation.Details = append(explanation.Details, "turn end: "+evidence.TurnEnd)
+		}
 		if attempt.Progress.Terminal() {
 			explanation.Summary = "task is terminal"
 			return explanation, true
@@ -1068,15 +1081,6 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 		}
 		if attempt.Control == domain.ControlPaused || attempt.Control == domain.ControlPausedUncheckpointed || attempt.Control == domain.ControlDraining {
 			explanation.Blockers = append(explanation.Blockers, Blocker{Code: "control", Detail: "attempt control state is " + string(attempt.Control)})
-		}
-		// The worker holding a finished turn while its commands run blocks no
-		// scheduling decision, so it is a detail rather than a blocker.
-		var assignment *domain.Assignment
-		if found, ok := v.assignments[attempt.AssignmentID]; ok {
-			assignment = &found
-		}
-		if evidence := v.attemptEvidence(*attempt, assignment); evidence != nil && evidence.TurnEnd != "" {
-			explanation.Details = append(explanation.Details, "turn end: "+evidence.TurnEnd)
 		}
 	}
 	for _, dependency := range task.Needs {

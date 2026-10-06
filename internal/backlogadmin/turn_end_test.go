@@ -47,3 +47,46 @@ func TestExplanationShowsTurnEndBackgroundCommands(t *testing.T) {
 		}
 	}
 }
+
+// A host that cannot look for background commands collects the turn as
+// before, so the attempt reaches a terminal state with the warning still in
+// the worker's evidence. Explain keeps showing it once the result is
+// imported, whether the attempt succeeded or failed. A stale waiting note is
+// not shown for a terminal attempt, which no longer waits for anything.
+func TestExplanationShowsTheUnsupportedTurnEndWarningForTerminalAttempts(t *testing.T) {
+	now := adminTestNow
+	warning := "process inspection is unavailable on darwin; the turn end was collected without looking for background commands"
+	waiting := "waiting for 1 background command: sleep 300 (nudge 1 of 2)"
+	for _, tc := range []struct {
+		progress domain.ProgressState
+		note     string
+		shown    bool
+	}{
+		{domain.ProgressSucceeded, warning, true},
+		{domain.ProgressFailed, warning, true},
+		{domain.ProgressSucceeded, waiting, false},
+	} {
+		records := parkedRecords(now)
+		records.Attempts[0].Progress, records.Attempts[0].Control = tc.progress, domain.ControlRunning
+		workers := []domain.WorkerSnapshot{{
+			WorkerID: "homelab", WorkerEpoch: "worker-1", Sequence: 4, Connected: true, ObservedAt: now, ValidUntil: now.Add(time.Minute),
+			Inventory: domain.WorkerInventory{ID: "homelab"},
+			Assignments: []domain.WorkerAssignmentObservation{{
+				AssignmentID: "assignment-1", AssignmentEpoch: 1, State: domain.AssignmentClaimed, Control: domain.ControlRunning,
+				ThreadID: "thread-1", ObservedAt: now,
+				Journal: &domain.WorkerJournalExcerpt{Phase: "completed", ThreadState: "stopped", TurnEnd: tc.note},
+			}},
+		}}
+		v := newView(records, workers, nil, RuntimeInfo{}, now)
+		explanation, ok := v.explanation("run-1", "nest-model")
+		if !ok {
+			t.Fatal("no explanation")
+		}
+		if explanation.Summary != "task is terminal" {
+			t.Fatalf("%s: summary = %q", tc.progress, explanation.Summary)
+		}
+		if got := slices.Contains(explanation.Details, "turn end: "+tc.note); got != tc.shown {
+			t.Fatalf("%s %q: shown = %v, want %v; details = %q", tc.progress, tc.note, got, tc.shown, explanation.Details)
+		}
+	}
+}
