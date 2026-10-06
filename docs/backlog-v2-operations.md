@@ -959,9 +959,12 @@ when its failed result is collected; while the credential history cannot be read
 every snapshot reports the fixed notice in place of such an unchecked reason, and
 the worker keeps the raw reason only in its local journal until a later pass can
 redact it. Driver errors that runtime warnings quote, such as a preparation
-retry whose setup command carries a token or a failed quota drain or task-timeout
-stop, are redacted the same way before they reach the runtime log, and so is the
-error of a throttle acknowledgement. A command or throttle acknowledgement an
+retry whose setup command carries a token, a failed quota drain or task-timeout
+stop, or the stop of an execution a higher-epoch offer supersedes, are redacted
+the same way before they reach the runtime log, and so is the error of a throttle
+acknowledgement. Collection logs that quote a provider's completion reason, such
+as a supervision activation's reason or the discarded reading of a repeated
+collection, are redacted, or replaced by the fixed notice, before they are written. A command or throttle acknowledgement an
 earlier release stored raw is redacted when a redelivered command replays it. A supervision activation whose result is refused fails the same
 way. Explain and owner notifications therefore receive the redacted reason rather
 than the original secret-bearing message or archive. A refused checkpoint is

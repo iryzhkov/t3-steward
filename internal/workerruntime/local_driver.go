@@ -1171,8 +1171,12 @@ func (d *LocalDriver) settleCollectedTurn(pkg workerproto.ExecutionPackage, thre
 	if err != nil || recordedFailure != "" {
 		return message, archive, failure, nil
 	}
+	// The current reading is discarded in favour of the recorded turn, so the
+	// result scan never sees it; it is redacted here before it is logged.
+	ctx, cancel := context.WithTimeout(context.Background(), failureRedactionTimeout)
+	defer cancel()
 	d.logger().Info("the turn read as unfinished on a repeated collection; judging the turn this collection recorded when it started",
-		"attempt", pkg.Identity.AttemptID, "thread", pkg.Identity.ThreadID, "turn", thread.TurnID, "reading", failure)
+		"attempt", pkg.Identity.AttemptID, "thread", pkg.Identity.ThreadID, "turn", thread.TurnID, "reading", d.loggedText(ctx, pkg, failure))
 	return recorded.Message, recorded.Archive, "", nil
 }
 
@@ -1276,6 +1280,21 @@ func (d *LocalDriver) RedactFailure(ctx context.Context, pkg workerproto.Executi
 		return failure, nil
 	}
 	return redactor.RedactText(ctx, pkg, failure)
+}
+
+// loggedText is provider or agent text a collection log quotes, with the
+// execution's credentials removed, or the withheld notice when the scanner
+// cannot check it. The caller keeps the original text for its own decisions.
+func (d *LocalDriver) loggedText(ctx context.Context, pkg workerproto.ExecutionPackage, text string) string {
+	if text == "" {
+		return ""
+	}
+	redacted, err := d.RedactFailure(ctx, pkg, text)
+	if err != nil {
+		d.logger().Warn("logged text withheld; the secret scan could not check it", "attempt", pkg.Identity.AttemptID, "error", err)
+		return withheldFailure
+	}
+	return redacted
 }
 
 func (d *LocalDriver) Cleanup(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {

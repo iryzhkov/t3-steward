@@ -251,8 +251,11 @@ func (r *Runtime) AcceptOffers(ctx context.Context, offers workerproto.Assignmen
 				switch {
 				case offer.Assignment.Epoch > existing.Assignment.Epoch:
 					if err := r.containSuperseded(ctx, existing); err != nil {
+						// The journal lock is held, so the existing record's
+						// package redacts the error without reading the journal.
 						r.log.Warn("superseded assignment could not be contained; offer withheld",
-							"assignment", id, "epoch", existing.Assignment.Epoch, "error", err)
+							"assignment", id, "epoch", existing.Assignment.Epoch,
+							"error", r.checkedText(ctx, id, existing.Package.Package, err.Error()))
 						continue
 					}
 				case offer.Assignment.Epoch < existing.Assignment.Epoch:
@@ -1461,7 +1464,14 @@ func (r *Runtime) recordableFailure(ctx context.Context, id, failure string) str
 	if !ok {
 		return withheldFailure
 	}
-	redacted, err := r.redactFailure(ctx, record.Package.Package, failure)
+	return r.checkedText(ctx, id, record.Package.Package, failure)
+}
+
+// checkedText is text with pkg's credentials removed, or the withheld notice
+// when the scanner cannot run. It does not read the journal, so a caller
+// holding the journal lock can use it with the record it already has.
+func (r *Runtime) checkedText(ctx context.Context, id string, pkg workerproto.ExecutionPackage, text string) string {
+	redacted, err := r.redactFailure(ctx, pkg, text)
 	if err != nil {
 		r.log.Warn("failure reason withheld; the secret scan could not check it", "assignment", id, "error", err)
 		return withheldFailure

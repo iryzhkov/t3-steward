@@ -371,7 +371,7 @@ func (d *LocalDriver) collectActivation(ctx context.Context, pkg workerproto.Exe
 	}
 	d.logger().Info("supervision activation turn ended",
 		"activation", pkg.Supervision.ActivationID, "run", pkg.Supervision.RunID,
-		"epoch", pkg.Supervision.Epoch, "outcome", outcome, "reason", failure)
+		"epoch", pkg.Supervision.Epoch, "outcome", outcome, "reason", d.loggedText(ctx, pkg, failure))
 	proposal, instructions, checkpoint, err := d.collectRecoveryProposal(pkg, workspace)
 	if err != nil {
 		return err
