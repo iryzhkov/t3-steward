@@ -209,6 +209,12 @@ func (d *LocalDriver) workInProgressBundle(pkg workerproto.ExecutionPackage, res
 		AdmitResult(workerproto.ExecutionPackage, PublishedResult) error
 	}); ok {
 		if err := admitter.AdmitResult(pkg, result); err != nil {
+			var secret *SecretScanError
+			if errors.As(err, &secret) {
+				d.logger().Warn("wip.bundle is withheld by the result secret scan; it stays on the worker", "attempt", pkg.Identity.AttemptID, "bundle", path,
+					"object", secret.Object, "detector", secret.Detector, "byte_offset", secret.Offset, "fingerprint", secret.Fingerprint)
+				return nil
+			}
 			d.logger().Warn("wip.bundle does not fit the failed result upload; it stays on the worker", "attempt", pkg.Identity.AttemptID, "bundle", path, "error", err)
 			return nil
 		}

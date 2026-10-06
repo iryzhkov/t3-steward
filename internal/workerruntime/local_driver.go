@@ -1271,7 +1271,10 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 		}
 	}
 	finalized := backlog.FinalizedAttempt{Completion: backlog.CompletionResult{Failure: failure}}
-	result := PublishedResult{Finalized: finalized, FinalMessage: message, ThreadArchive: archive}
+	// The workspace lends the secret scan the objects a work-in-progress
+	// bundle's prerequisites need; without it the scan cannot decode the bundle
+	// and refuses it.
+	result := PublishedResult{Finalized: finalized, FinalMessage: message, ThreadArchive: archive, WorkspaceDir: workspace}
 	result.WorkInProgressBundle = d.workInProgressBundle(pkg, result)
 	publishErr := d.Publisher.PublishResult(ctx, pkg, result)
 	var secret *SecretScanError
