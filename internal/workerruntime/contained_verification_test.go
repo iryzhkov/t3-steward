@@ -20,6 +20,29 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/providercontainment"
 )
 
+func TestContainedVerificationPreservesTinyGateTimeout(t *testing.T) {
+	verifier, workspace := containedVerificationFixture(t)
+	plan, err := verifier.manager.preparation(verifier.pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := plan.Launch.Spec
+	spec.Control, spec.ControlPort, spec.ProviderHosts = nil, 0, nil
+	spec.Command = []string{"/usr/bin/timeout", "--kill-after=5s", "0.000001000s", "/bin/sh", "-c", "true"}
+	launch := providercontainment.Launch{ExecutionID: verifier.pkg.Identity.ThreadID + ":verify-tiny-gate-0", Spec: spec}
+	seedContainedVerificationResult(t, verifier.manager.Supervisor, launch, 0)
+	_, err = verifier.Run(context.Background(), backlog.ProcessRequest{ID: "verify-tiny-gate-0", Dir: workspace, Program: "/bin/sh", Args: []string{"-c", "true"}, Timeout: time.Microsecond})
+	if err != nil {
+		t.Fatalf("tiny bounded durable timeout rejected: %v", err)
+	}
+	if got := containedVerificationTimeout(time.Nanosecond); got != "0.000000001s" {
+		t.Fatalf("tiny deadline=%s", got)
+	}
+	if got := containedVerificationTimeout(time.Second); got != "1.000s" {
+		t.Fatalf("existing durable invocation changed: %s", got)
+	}
+}
+
 func containedVerificationFixture(t *testing.T) (containedVerifier, string) {
 	t.Helper()
 	root := t.TempDir()

@@ -12,7 +12,7 @@ func TestGateCollectionBudgetIncludesVerifyAndGate(t *testing.T) {
 	r.config.FinalizationTimeout = time.Minute
 	p := workerproto.ExecutionPackage{Verification: []string{"one", "two"}, Gate: &domain.TaskGate{Commands: []string{"gate", "gate2"}, Timeout: 45 * time.Minute}, Limits: workerproto.ExecutionLimits{VerificationTimeout: 30 * time.Minute}}
 	got := r.finalizationTimeout(AttemptRecord{Package: workerproto.ExecutionPackageManifest{Package: p}})
-	if got != 150*time.Minute {
+	if got != 150*time.Minute+30*time.Second+4*10*time.Second {
 		t.Fatalf("budget %s", got)
 	}
 	task, _ := packageRecords(p, time.Now())

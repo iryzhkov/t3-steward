@@ -401,6 +401,9 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 		}
 	}
 	if pkg.Gate != nil {
+		if err := pkg.Gate.Validate(); err != nil {
+			return fmt.Errorf("execution package: %w", err)
+		}
 		if len(pkg.Gate.Commands) == 0 || pkg.Gate.Timeout <= 0 || pkg.Gate.Timeout > pkg.Limits.VerificationTimeout || pkg.Gate.Timeout > 6*time.Hour || pkg.Limits.GateCacheAge < 0 {
 			return errors.New("execution package: invalid gate limits")
 		}

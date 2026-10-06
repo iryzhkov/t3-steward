@@ -185,6 +185,15 @@ func (r *Runtime) finalizationTimeout(record AttemptRecord) time.Duration {
 	if pkg.Gate != nil {
 		declared += time.Duration(len(pkg.Gate.Commands)) * pkg.Gate.Timeout
 	}
+	// Leave time for metadata, containment kill grace/custody, and artifact
+	// publication after the last command reaches its own deadline.
+	commands := len(pkg.Verification)
+	if pkg.Gate != nil {
+		commands += len(pkg.Gate.Commands)
+	}
+	if pkg.Gate != nil && commands > 0 {
+		declared += 30*time.Second + time.Duration(commands)*10*time.Second
+	}
 	if declared > budget {
 		budget = declared
 	}

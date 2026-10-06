@@ -205,6 +205,73 @@ func TestH2GateMetadataDoesNotRunRepositoryHooks(t *testing.T) {
 	}
 }
 
+func TestH2GatePreparationFailureFitsCoordinatorBounds(t *testing.T) {
+	dir := h2GateRepository(t)
+	toolDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(toolDir, "go"), []byte("#!/bin/sh\nhead -c 20000 /dev/zero | tr '\\000' x\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", toolDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	storage := t.TempDir()
+	req := h2GateRequest(dir, "tool-fail")
+	result, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}}).Finalize(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupImmutable(t, result.StorageDir)
+	report := h2ReadGate(t, storage, result)
+	if report.Passed || report.Failure == nil || len(report.Failure.Reason) > 16384 {
+		t.Fatalf("report=%+v", report)
+	}
+	if err := validateGateReport(req.Task, report); err != nil {
+		t.Fatalf("worker failure rejects itself: %v", err)
+	}
+	for _, a := range result.Artifacts {
+		if a.Name == "gate/log.txt" {
+			raw := readStoredArtifact(t, storage, a)
+			if len(raw) < 20000 {
+				t.Fatal("full diagnostic lost from log")
+			}
+			return
+		}
+	}
+	t.Fatal("missing failure log")
+}
+func TestH2GateDirtySubmoduleCannotReuseCache(t *testing.T) {
+	sub := h2GateRepository(t)
+	dir := h2GateRepository(t)
+	for _, args := range [][]string{{"-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "sub"}, {"commit", "-qm", "submodule"}} {
+		c := exec.Command("git", args...)
+		c.Dir = dir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git: %s %v", out, err)
+		}
+	}
+	storage := t.TempDir()
+	req := h2GateRequest(dir, "sub-clean")
+	req.Task.Gate.Commands = []string{"test \"$(cat sub/source.txt)\" = source"}
+	f := AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, GateCacheAge: time.Hour}
+	first, err := f.Finalize(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupImmutable(t, first.StorageDir)
+	if h2ReadGate(t, storage, first).Passed {
+		t.Fatal("submodule repo attested without nested tree support")
+	}
+	writeTestFile(t, dir, "sub/source.txt", "poison")
+	req.Attempt.ID = "sub-dirty"
+	second, err := f.Finalize(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupImmutable(t, second.StorageDir)
+	report := h2ReadGate(t, storage, second)
+	if report.Passed || report.Cached {
+		t.Fatalf("dirty nested tree reused: %+v", report)
+	}
+}
+
 func h2GateRepository(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

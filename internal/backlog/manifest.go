@@ -605,6 +605,9 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 		return err
 	}
 	if task.Gate != nil {
+		if err := (domain.TaskGate{Commands: task.Gate.Commands, Timeout: task.Gate.Timeout}).Validate(); err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
 		if len(task.Gate.Commands) == 0 || task.Gate.Timeout <= 0 || task.Gate.Timeout > 6*time.Hour {
 			return fmt.Errorf("%s gate requires commands and timeout in (0, 6h]", prefix)
 		}

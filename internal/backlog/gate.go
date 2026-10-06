@@ -2,11 +2,13 @@ package backlog
 
 import (
 	"context"
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"os/exec"
@@ -64,8 +66,18 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 	}
 	fail := func(command string, code int, reason string) (GateReport, []byte, error) {
 		report.CompletedAt = f.now()
-		report.Failure = &GateFailure{Command: command, ExitCode: code, Reason: reason}
-		return report, []byte(reason + "\n"), nil
+		report.Failure = &GateFailure{Command: command, ExitCode: code, Reason: gateStructuredReason(reason)}
+		log := boundedBuffer{limit: gateLogLimit}
+		_, _ = log.Write([]byte(reason + "\n"))
+		report.LogTruncated = log.truncated
+		raw := []byte(log.String())
+		if log.truncated {
+			raw = append(raw, []byte("\n[output truncated; structured result: gate; log: gate/log.txt]\n")...)
+		}
+		return report, raw, nil
+	}
+	if err := gate.Validate(); err != nil {
+		return fail("gate", 1, err.Error())
 	}
 	if gate.Timeout <= 0 || gate.Timeout > 6*time.Hour || (f.GateTimeoutMax > 0 && gate.Timeout > f.GateTimeoutMax) || len(gate.Commands) == 0 {
 		return fail("gate", 1, "invalid gate commands or timeout exceeds worker maximum")
@@ -168,6 +180,10 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 				reason = runErr.Error()
 			}
 		}
+		if len(reason) > 16000 {
+			fmt.Fprintln(&log, reason)
+		}
+		reason = gateStructuredReason(reason)
 		if code != 0 && reason == "" {
 			reason = fmt.Sprintf("command exited %d", code)
 		}
@@ -189,6 +205,20 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 		} else {
 			report.Passed = true
 		}
+	}
+	// Enforce the transport/evidence cap before writing reusable cache evidence.
+	// Unusual tool output must become an importable failure, never poison a run.
+	structured, marshalErr := json.Marshal(report)
+	if marshalErr != nil {
+		return report, nil, marshalErr
+	}
+	if len(structured) > GateEvidenceMaxBytes {
+		fmt.Fprintf(&log, "\n[gate metadata exceeded coordinator limit]\n%s\n", structured)
+		report.Passed = false
+		report.Failure = &GateFailure{Command: "gate metadata", ExitCode: 1, Reason: "structured gate metadata exceeds coordinator limit; see gate/log.txt"}
+		report.Commands = nil
+		report.ToolVersions = map[string]string{}
+		report.CacheKey = ""
 	}
 	report.LogTruncated = report.LogTruncated || log.truncated
 	rawLog := []byte(log.String())
@@ -228,6 +258,16 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 	return report, rawLog, nil
 }
 
+func gateStructuredReason(reason string) string {
+	reason = strings.ToValidUTF8(reason, "?")
+	if len(reason) <= 16000 {
+		return reason
+	}
+	buffer := boundedBuffer{limit: 16000}
+	_, _ = buffer.Write([]byte(reason))
+	return buffer.String() + " [truncated; see gate/log.txt]"
+}
+
 func readGateCache(path, key string, now time.Time, age time.Duration) (gateCacheRecord, bool) {
 	var record gateCacheRecord
 	file, err := os.Open(path)
@@ -262,8 +302,8 @@ func readGateCache(path, key string, now time.Time, age time.Duration) (gateCach
 func gateGit(ctx context.Context, dir string, args ...string) (string, error) {
 	// Metadata runs on the worker even for contained gates. Never allow a
 	// repository's fsmonitor, hook or conversion filter to execute on the host.
-	base := []string{"-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=/dev/null"}
-	keys, err := gateMetadataCommand(ctx, dir, "git", append(append([]string(nil), base...), "config", "--local", "--null", "--name-only", "--get-regexp", `^filter\..*\.(clean|process|required)$`)...)
+	base := []string{"--work-tree=" + dir, "-c", "core.bare=false", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=/dev/null"}
+	keys, err := gateMetadataCommand(ctx, dir, "git", append(append([]string(nil), base...), "config", "--null", "--name-only", "--get-regexp", `^filter\..*\.(clean|process|required)$`)...)
 	if err != nil {
 		var exit *exec.ExitError
 		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
@@ -283,15 +323,18 @@ func gateGit(ctx context.Context, dir string, args ...string) (string, error) {
 		}
 		base = append(base, "-c", key+"="+value)
 	}
-	return gateMetadataCommand(ctx, dir, "git", append(base, args...)...)
+	return gateMetadataCommandBounded(ctx, dir, "git", gateLogLimit, append(base, args...)...)
 }
 
 var gateFilterKey = regexp.MustCompile(`^filter\.[A-Za-z0-9_.-]+\.(clean|process|required)$`)
 
 func gateMetadataCommand(ctx context.Context, dir, program string, args ...string) (string, error) {
+	return gateMetadataCommandBounded(ctx, dir, program, 64<<10, args...)
+}
+func gateMetadataCommandBounded(ctx context.Context, dir, program string, limit int, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	output := boundedBuffer{limit: 64 << 10}
+	output := boundedBuffer{limit: limit}
 	command := exec.CommandContext(ctx, program, args...)
 	command.Dir = dir
 	command.WaitDelay = time.Second
@@ -306,6 +349,26 @@ func gateMetadataCommand(ctx context.Context, dir, program string, args ...strin
 	return output.String(), nil
 }
 func gateCleanTree(ctx context.Context, req AttemptFinalization) (bool, error) {
+	// Submodule worktrees are not described by the outer commit tree alone.
+	// Reject this unsupported layout rather than attest or cache a different tree.
+	if _, err := os.Lstat(filepath.Join(req.WorkspaceDir, ".gitmodules")); err == nil {
+		return false, errors.New("worker-owned gate requires a repository without submodules")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	flags, err := gateGit(ctx, req.WorkspaceDir, "ls-files", "-v", "-z")
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range strings.Split(flags, "\x00") {
+		if entry != "" && (entry[0] == 'S' || (entry[0] >= 'a' && entry[0] <= 'z')) {
+			return false, errors.New("gate cannot attest assume-unchanged or skip-worktree index entries")
+		}
+	}
+	clean, err := gateCommittedBytes(ctx, req.WorkspaceDir)
+	if err != nil || !clean {
+		return false, err
+	}
 	status, err := gateGit(ctx, req.WorkspaceDir, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all")
 	if err != nil || status != "" {
 		return false, err
@@ -327,6 +390,95 @@ func gateCleanTree(ctx context.Context, req AttemptFinalization) (bool, error) {
 	}
 	return true, nil
 }
+
+func gateCommittedBytes(ctx context.Context, workspace string) (bool, error) {
+	listing, err := gateGit(ctx, workspace, "ls-tree", "-r", "-z", "HEAD")
+	if err != nil {
+		return false, err
+	}
+	root, err := os.OpenRoot(workspace)
+	if err != nil {
+		return false, err
+	}
+	defer root.Close()
+	for _, entry := range strings.Split(listing, "\x00") {
+		if entry == "" {
+			continue
+		}
+		metadata, name, ok := strings.Cut(entry, "\t")
+		fields := strings.Fields(metadata)
+		if !ok || len(fields) != 3 || validateRelativePath(name, false) != nil {
+			return false, errors.New("invalid committed gate path")
+		}
+		mode, kind, digest := fields[0], fields[1], fields[2]
+		if mode == "160000" || kind == "commit" {
+			return false, errors.New("worker-owned gate requires a repository without gitlinks")
+		}
+		info, err := root.Lstat(name)
+		if err != nil {
+			return false, err
+		}
+		var h hash.Hash
+		switch len(digest) {
+		case 40:
+			h = sha1.New()
+		case 64:
+			h = sha256.New()
+		default:
+			return false, errors.New("invalid committed blob hash")
+		}
+		if mode == "120000" {
+			if info.Mode()&os.ModeSymlink == 0 {
+				return false, nil
+			}
+			target, err := root.Readlink(name)
+			if err != nil {
+				return false, err
+			}
+			fmt.Fprintf(h, "blob %d\x00", len(target))
+			_, _ = io.WriteString(h, target)
+		} else {
+			if !info.Mode().IsRegular() || kind != "blob" || (mode != "100644" && mode != "100755") {
+				return false, nil
+			}
+			if (mode == "100755") != (info.Mode().Perm()&0111 != 0) {
+				return false, nil
+			}
+			file, err := root.Open(name)
+			if err != nil {
+				return false, err
+			}
+			actual, statErr := file.Stat()
+			if statErr != nil {
+				file.Close()
+				return false, statErr
+			}
+			fmt.Fprintf(h, "blob %d\x00", actual.Size())
+			_, copyErr := io.Copy(h, gateContextReader{ctx: ctx, reader: file})
+			closeErr := file.Close()
+			if err = errors.Join(copyErr, closeErr); err != nil {
+				return false, err
+			}
+		}
+		if hex.EncodeToString(h.Sum(nil)) != digest {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+type gateContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r gateContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+
 func gateToolVersions(ctx context.Context) (map[string]string, error) {
 	tools := map[string]string{"workerRuntime": runtime.Version() + "/" + runtime.GOOS + "/" + runtime.GOARCH}
 	binary, err := os.Executable()
@@ -373,6 +525,12 @@ func gateToolVersions(ctx context.Context) (map[string]string, error) {
 				return nil, err
 			}
 			identity += " " + strings.TrimSpace(version)
+		}
+		if len(identity) > 3500 {
+			full := sha256.Sum256([]byte(identity))
+			buffer := boundedBuffer{limit: 3500}
+			_, _ = buffer.Write([]byte(strings.ToValidUTF8(identity, "?")))
+			identity = buffer.String() + " identity-sha256:" + hex.EncodeToString(full[:])
 		}
 		tools[tool.name] = identity
 	}

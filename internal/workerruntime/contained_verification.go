@@ -73,6 +73,15 @@ func (p ContainedT3) stopVerifications(ctx context.Context, pkg workerproto.Exec
 	return nil
 }
 
+// Keep existing millisecond invocation bytes stable for durable replay, while
+// preserving sub-millisecond declarations instead of rounding them to zero.
+func containedVerificationTimeout(timeout time.Duration) string {
+	if timeout%time.Millisecond != 0 {
+		return fmt.Sprintf("%.9fs", timeout.Seconds())
+	}
+	return fmt.Sprintf("%.3fs", timeout.Seconds())
+}
+
 type containedVerifier struct {
 	manager ContainedT3
 	pkg     workerproto.ExecutionPackage
@@ -113,7 +122,7 @@ func (v containedVerifier) Run(ctx context.Context, request backlog.ProcessReque
 	spec.Control = nil
 	spec.ControlPort = 0
 	spec.ProviderHosts = nil
-	spec.Command = append([]string{"/usr/bin/timeout", "--kill-after=5s", fmt.Sprintf("%.3fs", timeout.Seconds()), request.Program}, request.Args...)
+	spec.Command = append([]string{"/usr/bin/timeout", "--kill-after=5s", containedVerificationTimeout(timeout), request.Program}, request.Args...)
 	launch := providercontainment.Launch{ExecutionID: v.pkg.Identity.ThreadID + ":" + request.ID, Spec: spec}
 	path, err := v.manager.recordPath(v.pkg)
 	if err != nil {

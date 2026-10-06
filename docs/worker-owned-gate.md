@@ -21,6 +21,8 @@ The gate runs only after ordinary verification passes. It runs on the producing
 worker with the final workspace HEAD, outside the agent turn. A failure fails the
 task while preserving the result and log for inspection.
 
+A gate allows at most 64 unique commands, at most 4096 bytes per command and
+16 KiB of commands in total, so structured evidence fits the coordinator limit.
 Each command's timeout defaults to 45m. Offline validation bounds it to a positive duration
 no greater than 6h. At dispatch the declared timeout must also fit
 `backlog_v2.verification.command_timeout`, the worker execution maximum. That
@@ -47,6 +49,10 @@ Gate workspaces must have clean tracked files and no undeclared untracked files
 (except `.t3` metadata). Declared output files may remain untracked. Metadata
 reads disable repository executable hooks and conversion filters; a worktree
 that needs a conversion filter to match its committed bytes fails this check.
+Repositories with submodules or manual gitlinks are rejected explicitly because
+the outer tree cannot attest a nested mutable worktree. Assume-unchanged and
+skip-worktree index entries are also rejected. Workspace file bytes are checked
+against committed blobs, and Git metadata is bound to the actual workspace.
 
 Successful cache evidence is keyed by the final HEAD tree, ordered commands,
 command timeout and toolchain identity. Reuse is marked cached and names the original attempt;
