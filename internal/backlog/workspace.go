@@ -587,12 +587,21 @@ func runLoggedCommand(ctx context.Context, log io.Writer, dir, program string, a
 }
 
 func runLoggedCommandOutput(ctx context.Context, log io.Writer, dir, program string, args ...string) ([]byte, error) {
+	return runLoggedCommandOutputEnv(ctx, log, dir, nil, program, args...)
+}
+
+// runLoggedCommandOutputEnv is runLoggedCommandOutput with env added to the
+// worker's environment.
+func runLoggedCommandOutputEnv(ctx context.Context, log io.Writer, dir string, env []string, program string, args ...string) ([]byte, error) {
 	if log == nil {
 		log = io.Discard
 	}
 	fmt.Fprintf(log, "$ %s %s\n", program, strings.Join(args, " "))
 	command := exec.CommandContext(ctx, program, args...)
 	command.Dir = dir
+	if len(env) != 0 {
+		command.Env = append(os.Environ(), env...)
+	}
 	// A cancelled command may leave children holding the output pipe (dash does
 	// not exec the last command of -c). Stop waiting for them shortly after the
 	// context ends instead of blocking until they exit on their own.

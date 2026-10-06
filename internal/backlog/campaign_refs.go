@@ -105,7 +105,7 @@ func (s CampaignRefStore) resolveDeclaredCommit(ctx context.Context, request Pub
 	if err := validateGitRef(revision); revision != "HEAD" && err != nil {
 		return "", fmt.Errorf("publish campaign commit revision: %w", err)
 	}
-	raw, err := runLoggedCommandOutput(ctx, log, "", s.git(), "-C", request.WorkspaceDir,
+	raw, err := runLoggedCommandOutputEnv(ctx, log, "", workspaceGitNoTransport, s.git(), "-C", request.WorkspaceDir,
 		"rev-parse", "--verify", revision+"^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("resolve declared commit %q: %w", request.Name, err)
@@ -162,7 +162,7 @@ func (s CampaignRefStore) Stage(ctx context.Context, request PublishCommitReques
 	}
 	// The staged ref belongs to this attempt alone and nobody has been told
 	// what it means, so finalizing the attempt again replaces it.
-	if err := s.copyCommit(ctx, gitDir, request.WorkspaceDir, "+"+commit+":"+staged, log); err != nil {
+	if err := s.copyCommit(ctx, gitDir, request.WorkspaceDir, commit, staged, true, log); err != nil {
 		return CommitProvenance{}, fmt.Errorf("stage campaign ref %s: %w", staged, err)
 	}
 	return provenance, nil
@@ -193,7 +193,7 @@ func (s CampaignRefStore) Publish(ctx context.Context, request PublishCommitRequ
 	} else if found && existing != commit {
 		return CommitProvenance{}, fmt.Errorf("campaign ref %s already names commit %s", ref, existing)
 	}
-	if err := s.copyCommit(ctx, gitDir, request.WorkspaceDir, commit+":"+ref, log); err != nil {
+	if err := s.copyCommit(ctx, gitDir, request.WorkspaceDir, commit, ref, false, log); err != nil {
 		return CommitProvenance{}, fmt.Errorf("publish campaign ref %s: %w", ref, err)
 	}
 	createdAt := request.CreatedAt
@@ -212,15 +212,17 @@ func (s CampaignRefStore) Publish(ctx context.Context, request PublishCommitRequ
 }
 
 // copyCommit copies a declared commit from the producing workspace into the
-// store under refspec. The store fetches it, rather than the workspace pushing
-// it, because a push runs in the workspace's repository: its hooks, its remote
-// and URL configuration and any receive-pack command it names belong to the
-// executor, and they would run during collection, after verification. A fetch
-// runs the store's own configuration and only an upload-pack in the
-// workspace's repository, which runs no hook and no command that repository
-// configures.
-func (s CampaignRefStore) copyCommit(ctx context.Context, gitDir, workspaceDir, refspec string, log io.Writer) error {
-	raw, err := runLoggedCommandOutput(ctx, log, "", s.git(), "-C", workspaceDir,
+// store under ref, replacing what ref names only when force is set. The store
+// fetches it, rather than the workspace pushing it, because a push runs in the
+// workspace's repository: its hooks, its remote and URL configuration and any
+// receive-pack command it names belong to the executor, and they would run
+// during collection, after verification. A fetch runs the store's own
+// configuration and only an upload-pack in the workspace's repository, which
+// runs no hook and no command that repository configures, and fetches no
+// missing object itself. Git can decline a ref update and still exit
+// successfully, as it does for a shallow source, so the ref is read back.
+func (s CampaignRefStore) copyCommit(ctx context.Context, gitDir, workspaceDir, commit, ref string, force bool, log io.Writer) error {
+	raw, err := runLoggedCommandOutputEnv(ctx, log, "", workspaceGitNoTransport, s.git(), "-C", workspaceDir,
 		"rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return fmt.Errorf("locate producing repository: %w", err)
@@ -229,8 +231,20 @@ func (s CampaignRefStore) copyCommit(ctx context.Context, gitDir, workspaceDir, 
 	if !filepath.IsAbs(source) {
 		return fmt.Errorf("locate producing repository: Git returned %q", source)
 	}
-	return runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir,
-		"fetch", "--no-tags", "--", source, refspec)
+	refspec := commit + ":" + ref
+	if force {
+		refspec = "+" + refspec
+	}
+	if err := runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir,
+		"fetch", "--no-tags", "--", source, refspec); err != nil {
+		return err
+	}
+	if got, found, err := s.head(ctx, gitDir, ref, log); err != nil {
+		return err
+	} else if !found || got != commit {
+		return fmt.Errorf("fetch left %s at %q, want %s", ref, got, commit)
+	}
+	return nil
 }
 
 // Resolve returns the provenance recorded for one declared commit.

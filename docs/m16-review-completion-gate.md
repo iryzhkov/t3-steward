@@ -42,7 +42,16 @@ fetches the declared commit from the workspace's repository instead of the
 workspace pushing it, so the workspace's hooks (`pre-push`,
 `reference-transaction` and the rest), its remote and URL configuration and any
 receive-pack command it names never run; only an upload-pack, which runs no
-hook or repository-configured command, reads the workspace's repository.
+hook or repository-configured command, reads the workspace's repository. The
+store then reads the ref back, because Git can decline the update, as it does
+for a shallow source, and still exit successfully.
+
+No Git command the worker runs in the workspace during collection may reach a
+remote. A repository the executor configures as a partial clone would fetch a
+missing object from its promisor remote, running that remote's upload-pack
+command as the worker. Those commands run with `GIT_NO_LAZY_FETCH=1` (Git 2.45
+and later) and `GIT_ALLOW_PROTOCOL=none` (every supported Git), so a missing
+object is an error and the capture fails closed.
 
 The workspace's index and Git configuration belong to the executor, so neither
 is trusted to say what changed. Files flagged assume-unchanged or

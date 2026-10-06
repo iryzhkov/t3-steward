@@ -378,6 +378,7 @@ func trustedWorkspaceGitInput(ctx context.Context, gitBinary, workspace, reposit
 		return slices.Contains(workspaceGitLocationVariables, name) || slices.Contains(trustedGitDroppedVariables, name) ||
 			strings.HasPrefix(name, "GIT_CONFIG") || strings.HasPrefix(name, "GIT_ATTR")
 	}), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_ATTR_NOSYSTEM=1", "GIT_ATTR_SOURCE="+head)
+	command.Env = append(command.Env, workspaceGitNoTransport...)
 	if input != nil {
 		command.Stdin = bytes.NewReader(input)
 	}
@@ -454,7 +455,7 @@ func workspaceGit(ctx context.Context, gitBinary, workspace string, env []string
 	command.Env = append(slices.DeleteFunc(os.Environ(), func(variable string) bool {
 		name, _, _ := strings.Cut(variable, "=")
 		return slices.Contains(workspaceGitLocationVariables, name)
-	}), env...)
+	}), append(slices.Clip(env), workspaceGitNoTransport...)...)
 	return runWorkspaceGit(command)
 }
 
@@ -477,6 +478,15 @@ func runWorkspaceGit(command *exec.Cmd) ([]byte, error) {
 // where a repository, its worktree and its replace refs are. The workspace is
 // located by its own path alone.
 var workspaceGitLocationVariables = []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_REPLACE_REF_BASE"}
+
+// workspaceGitNoTransport keeps a Git command that reads the workspace's
+// repository from reaching any remote. A repository the executor configured as
+// a partial clone fetches a missing object from its promisor remote, and that
+// remote's upload-pack command is the executor's shell code, run as the worker.
+// GIT_NO_LAZY_FETCH stops the fetch on Git 2.45 and later; GIT_ALLOW_PROTOCOL
+// naming no real protocol refuses every transport on older Git too. A missing
+// object is then an error.
+var workspaceGitNoTransport = []string{"GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=none"}
 
 // MarshalWorkspaceHead encodes the report the worker publishes.
 func MarshalWorkspaceHead(head domain.WorkspaceHead) ([]byte, error) {
