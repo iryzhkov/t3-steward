@@ -402,6 +402,7 @@ func (v view) viabilityTask(ctx context.Context, settings ViabilitySettings, tas
 		ID: task.Name, Name: task.Name, Class: task.Class,
 		Placement:      domain.Placement{Hosts: task.Hosts, Capabilities: task.Capabilities},
 		ResourceDemand: task.Resources,
+		ResourcePreset: task.ResourcePreset,
 		Routes:         task.Routes,
 		ResourceLocks:  task.ResourceLocks,
 	}

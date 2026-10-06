@@ -34,20 +34,21 @@ func campaignViabilityRequest(plan campaign.Plan, bundleBytes int64, bundleFiles
 			continue
 		}
 		request.Tasks = append(request.Tasks, backlogadmin.ViabilityTask{
-			Name:          task.Name,
-			Project:       plan.Environment.Project,
-			Type:          plan.Environment.Type,
-			Ref:           plan.Environment.Ref,
-			Class:         domain.TaskClass(task.Class),
-			Hosts:         append([]string(nil), task.Placement.Hosts...),
-			Capabilities:  campaignTaskCapabilities(plan, task),
-			Resources:     campaignResourceDemand(task.Resources),
-			Routes:        campaignProviderRoutes(task.Routes),
-			Directories:   campaignDirectoryRequests(task.Directories),
-			ResourceLocks: append([]string(nil), task.ResourceLocks...),
-			NotBefore:     task.Timing.NotBefore,
-			ExpiresAt:     task.Timing.ExpiresAt,
-			Outputs:       len(task.Outputs),
+			Name:           task.Name,
+			Project:        plan.Environment.Project,
+			Type:           plan.Environment.Type,
+			Ref:            plan.Environment.Ref,
+			Class:          domain.TaskClass(task.Class),
+			Hosts:          append([]string(nil), task.Placement.Hosts...),
+			Capabilities:   campaignTaskCapabilities(plan, task),
+			Resources:      campaignResourceDemand(task.Resources),
+			ResourcePreset: task.Resources.Preset,
+			Routes:         campaignProviderRoutes(task.Routes),
+			Directories:    campaignDirectoryRequests(task.Directories),
+			ResourceLocks:  append([]string(nil), task.ResourceLocks...),
+			NotBefore:      task.Timing.NotBefore,
+			ExpiresAt:      task.Timing.ExpiresAt,
+			Outputs:        len(task.Outputs),
 		})
 	}
 	if plan.Supervision != nil {

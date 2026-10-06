@@ -18,6 +18,7 @@ func TestResourcePlacementSlotOnlyWorkerTakesPresetTasks(t *testing.T) {
 			expandResourcePreset(&resources)
 			task := placementTask()
 			task.ResourceDemand = resourceDemandFor(resources)
+			task.ResourcePreset = resources.Preset
 			if task.ResourceDemand.CPUUnits != 0 || task.ResourceDemand.MemoryMB != 0 || task.ResourceDemand.ScratchMB != 0 {
 				t.Fatalf("preset %s reserves configured capacity: %+v", preset, task.ResourceDemand)
 			}
@@ -47,6 +48,7 @@ func TestResourcePlacementPresetNeedsDriveLiveFloors(t *testing.T) {
 			expandResourcePreset(&resources)
 			task := placementTask()
 			task.ResourceDemand = resourceDemandFor(resources)
+			task.ResourcePreset = resources.Preset
 			worker := resourceWorker("fleet")
 			worker.Allocatable = domain.AllocatableCapacity{ExecutorSlots: 4}
 			worker.Telemetry.MemoryAvailableMB = resourcePtr(int64(3072))
@@ -63,14 +65,17 @@ func TestResourcePlacementPresetNeedsDriveLiveFloors(t *testing.T) {
 
 // A bare class floor is a CPU-quality requirement, not a size: it must not be
 // read as a build preset and refused by a worker with ordinary free temp disk.
+// Without a declared preset even build's own class pair is unsized.
 func TestResourcePlacementBareClassFloorIsNotSizedAsBuild(t *testing.T) {
 	policy := domain.DefaultResourcePlacementPolicy()
 	for _, demand := range []domain.ResourceDemand{
 		{MinCPUClass: domain.CPUClassMedium},
 		{MinCPUClass: domain.CPUClassHigh},
 		{MinCPUClass: domain.CPUClassLow, PreferredCPUClass: domain.CPUClassHigh},
+		{MinCPUClass: domain.CPUClassMedium, PreferredCPUClass: domain.CPUClassHigh},
+		{MinCPUClass: domain.CPUClassLow},
 	} {
-		needs := expectedResourceNeeds(demand, policy)
+		needs := expectedResourceNeeds(domain.Task{ResourceDemand: demand}, policy)
 		if needs.CPUUnits != policy.UnsizedTaskCPUUnits || needs.MemoryMB != policy.UnsizedTaskMemoryMB || needs.ScratchMB != policy.UnsizedTaskScratchMB {
 			t.Fatalf("demand %+v sized as a preset: %+v", demand, needs)
 		}

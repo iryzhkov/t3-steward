@@ -255,7 +255,7 @@ func BuildPlan(input PlanInput) (Plan, error) {
 		}
 		if proposal != nil {
 			input.Workers = reservePlacementResources(input.Workers, proposal.WorkerID,
-				expectedResourceNeeds(entry.task.ResourceDemand, input.ResourcePolicy.WithDefaults()))
+				expectedResourceNeeds(entry.task, input.ResourcePolicy.WithDefaults()))
 			decision.Proposed = true
 			result.Proposals = append(result.Proposals, *proposal)
 			for _, resource := range proposal.ResourceLocks {

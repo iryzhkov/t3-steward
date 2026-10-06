@@ -44,6 +44,29 @@ func TestResourceViabilityReportsPressureAsTemporaryAndConfiguredPolicy(t *testi
 	}
 }
 
+// Check sizes a build preset by its name, so overriding its CPU class still
+// applies build's memory floor, while the same classes without the preset do not.
+func TestResourceViabilityKeepsBuildNeedsUnderClassOverride(t *testing.T) {
+	settings := viabilityCatalog(t)
+	settings.Projects[0].Type = "fresh"
+	settings.ResourcePolicy = domain.DefaultResourcePlacementPolicy()
+	v := viabilityView(t, nil)
+	memory := int64(3072)
+	v.workers[0].Inventory.CPUClass = domain.CPUClassHigh
+	v.workers[0].Inventory.Telemetry = &domain.WorkerTelemetry{ObservedAt: viabilityNow, MemoryAvailableMB: &memory}
+	task := viabilityTaskRequest()
+	task.Type = "fresh"
+	task.Resources = domain.ResourceDemand{MinCPUClass: domain.CPUClassHigh, PreferredCPUClass: domain.CPUClassHigh}
+	task.ResourcePreset = "build"
+	if matrix := v.viability(context.Background(), settings, ViabilityRequest{Tasks: []ViabilityTask{task}}); matrix.Outcome != ViabilityAcceptedWaiting {
+		t.Fatalf("class-overridden build passed the build memory floor: %+v", matrix)
+	}
+	task.ResourcePreset = ""
+	if matrix := v.viability(context.Background(), settings, ViabilityRequest{Tasks: []ViabilityTask{task}}); matrix.Outcome != ViabilityReady {
+		t.Fatalf("classes alone sized as a build: %+v", matrix)
+	}
+}
+
 func TestResourceCheckSelectsFreshHeadroomBeforeUnknownWorker(t *testing.T) {
 	settings := viabilityCatalog(t)
 	settings.Projects[0].Type = "fresh"

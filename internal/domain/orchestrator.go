@@ -205,6 +205,11 @@ type Task struct {
 	// ResourceDemand sizes the task independently of the eligibility rules in
 	// Placement, which is why it is a sibling field rather than a member.
 	ResourceDemand ResourceDemand `json:"resourceDemand,omitempty"`
+	// ResourcePreset names the preset the task's resources were declared with,
+	// if any. A preset's expected live needs follow its name, not the classes it
+	// expands to, because those classes may be overridden. It sizes telemetry
+	// floors, ranking and in-cycle reservation only, never configured capacity.
+	ResourcePreset string `json:"resourcePreset,omitempty"`
 	// Preflight is the ordered evidence the worker establishes after the
 	// workspace is prepared and before a provider session is created. It is
 	// durable task state rather than a dispatch-time lookup, so a retry

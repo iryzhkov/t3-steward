@@ -120,12 +120,17 @@ Task resource presets supply expected CPU share, memory and scratch needs for
 the live telemetry floors, ranking and in-cycle reservation: `light` expects
 0.25 CPU units, 256 MiB memory and 512 MiB scratch; `build` expects 2 CPU
 units, 4096 MiB memory and 8192 MiB scratch. Build is intended for race tests
-and full review gates. Tasks carry the classes a preset expands to rather than
-the preset name, so the expected needs follow the exact class pair: a medium
-floor with a high preference reads as `build`, a low floor with no preference as
-`light`, and any other declaration, such as a bare `min_cpu_class: medium`,
+and full review gates. Ingestion records the declared preset name on the task,
+and the expected needs follow that name, not the CPU classes. A build with
+`min_cpu_class: high` or `preferred_cpu_class: medium` therefore keeps build's
+memory and scratch needs. A task that declares classes without a preset, such
+as a bare `min_cpu_class: medium` or even build's own medium-and-high pair,
 uses the nominal unsized needs. Explicit `cpu_units`, `memory_mb` and
-`scratch_mb` override the expected needs per field.
+`scratch_mb` override the expected needs per field. `campaign check` sends the
+preset name with each task so its live floors match placement. Review member
+tasks are built from a normalized execution profile that keeps only the
+expanded classes, and tasks ingested before the preset name was recorded have
+none, so both use the nominal unsized needs unless they declare explicit sizes.
 
 With the defaults an unsized task therefore needs 2048 MiB of available memory
 (1024 MiB nominal need plus the 1024 MiB reserve). Setting all three

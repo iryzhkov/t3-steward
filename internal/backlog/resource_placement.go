@@ -25,18 +25,19 @@ var (
 )
 
 // expectedResourceNeeds is the live use one attempt is expected to add to a
-// worker. Explicit sizes win per dimension. Otherwise the exact class pair a
-// preset expands to selects that preset's needs: build is a medium floor with a
-// high preference, light a low floor with no preference. The task carries only
-// the expanded classes, so declaring that same pair explicitly reads the same.
-// Any other task uses the policy's nominal unsized needs, so a burst of unsized
-// tasks still spreads and a bare class floor is not mistaken for a build.
-func expectedResourceNeeds(demand domain.ResourceDemand, p domain.ResourcePlacementPolicy) domain.ResourceDemand {
+// worker. Explicit sizes win per dimension. Otherwise the declared preset
+// selects its needs, whatever CPU classes the task overrode, because a class
+// says nothing about memory or scratch. Any other task, including one that
+// declares a preset's classes without the preset, uses the policy's nominal
+// unsized needs, so a burst of unsized tasks still spreads and a bare class
+// floor is not mistaken for a build.
+func expectedResourceNeeds(task domain.Task, p domain.ResourcePlacementPolicy) domain.ResourceDemand {
+	demand := task.ResourceDemand
 	needs := domain.ResourceDemand{CPUUnits: p.UnsizedTaskCPUUnits, MemoryMB: p.UnsizedTaskMemoryMB, ScratchMB: p.UnsizedTaskScratchMB}
-	switch {
-	case demand.MinCPUClass == domain.CPUClassMedium && demand.PreferredCPUClass == domain.CPUClassHigh:
+	switch task.ResourcePreset {
+	case ResourcePresetBuild:
 		needs = buildResourceNeeds
-	case demand.MinCPUClass == domain.CPUClassLow && demand.PreferredCPUClass == "":
+	case ResourcePresetLight:
 		needs = lightResourceNeeds
 	}
 	if demand.CPUUnits > 0 {
@@ -78,7 +79,7 @@ func liveResourceEvaluation(request WorkerPlacementRequest, worker domain.Worker
 			exclusions = append(exclusions, WorkerExclusion{Code: code, Detail: fmt.Sprintf("%s available %d MB is below task need %d MB plus reserve %d MB", dimension, *value, need, reserve)})
 		}
 	}
-	demand := expectedResourceNeeds(request.Task.ResourceDemand, p)
+	demand := expectedResourceNeeds(request.Task, p)
 	addFloor(v.MemoryAvailableMB, demand.MemoryMB, p.MemoryReserveMB, ExclusionResourceMemory, "memory")
 	addFloor(v.WorkspaceFreeMB, demand.ScratchMB, p.DiskReserveMB, ExclusionResourceWorkspaceDisk, "workspace disk")
 	addFloor(v.TempFreeMB, demand.ScratchMB, p.DiskReserveMB, ExclusionResourceTempDisk, "temp disk")
