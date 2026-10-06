@@ -61,6 +61,33 @@ func TestResourcePlacementPresetNeedsDriveLiveFloors(t *testing.T) {
 	}
 }
 
+// A bare class floor is a CPU-quality requirement, not a size: it must not be
+// read as a build preset and refused by a worker with ordinary free temp disk.
+func TestResourcePlacementBareClassFloorIsNotSizedAsBuild(t *testing.T) {
+	policy := domain.DefaultResourcePlacementPolicy()
+	for _, demand := range []domain.ResourceDemand{
+		{MinCPUClass: domain.CPUClassMedium},
+		{MinCPUClass: domain.CPUClassHigh},
+		{MinCPUClass: domain.CPUClassLow, PreferredCPUClass: domain.CPUClassHigh},
+	} {
+		needs := expectedResourceNeeds(demand, policy)
+		if needs.CPUUnits != policy.UnsizedTaskCPUUnits || needs.MemoryMB != policy.UnsizedTaskMemoryMB || needs.ScratchMB != policy.UnsizedTaskScratchMB {
+			t.Fatalf("demand %+v sized as a preset: %+v", demand, needs)
+		}
+	}
+	task := placementTask()
+	task.ResourceDemand = domain.ResourceDemand{MinCPUClass: domain.CPUClassMedium}
+	worker := resourceWorker("a")
+	worker.Telemetry.TempFreeMB = resourcePtr(int64(8192))
+	s, err := SelectWorker(placementRequest(task), []domain.WorkerInventory{worker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Decision.SelectedWorkerID != "a" {
+		t.Fatalf("bare medium floor refused: %+v", s.Decision)
+	}
+}
+
 // Unsized tasks are the default task shape. Within one planning cycle each
 // proposal must reserve a nominal per-attempt cost, so a burst spreads across
 // workers instead of filling the one that looked idlest at the snapshot.

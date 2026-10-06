@@ -120,9 +120,17 @@ Task resource presets supply expected CPU share, memory and scratch needs for
 the live telemetry floors, ranking and in-cycle reservation: `light` expects
 0.25 CPU units, 256 MiB memory and 512 MiB scratch; `build` expects 2 CPU
 units, 4096 MiB memory and 8192 MiB scratch. Build is intended for race tests
-and full review gates. The expected needs follow the CPU class floor the preset
-sets (medium or above reads as build, low as light), and explicit
-`cpu_units`, `memory_mb` and `scratch_mb` override them per field.
+and full review gates. Tasks carry the classes a preset expands to rather than
+the preset name, so the expected needs follow the exact class pair: a medium
+floor with a high preference reads as `build`, a low floor with no preference as
+`light`, and any other declaration, such as a bare `min_cpu_class: medium`,
+uses the nominal unsized needs. Explicit `cpu_units`, `memory_mb` and
+`scratch_mb` override the expected needs per field.
+
+With the defaults an unsized task therefore needs 2048 MiB of available memory
+(1024 MiB nominal need plus the 1024 MiB reserve). Setting all three
+`unsized_task_*` values to 0 removes the in-cycle reservation for unsized tasks,
+so a burst of them again fills the worker that looked idlest.
 
 A preset never reserves configured executor capacity. Only explicit
 `cpu_units`, `memory_mb` and `scratch_mb` are checked against a worker's
@@ -135,7 +143,9 @@ configures those capacity dimensions.
 rejections, headroom score, ranking and selected worker. Explain preserves the
 assignment's recorded decision after dispatch; queued work and campaign check
 evaluate current snapshots, so a later report may change as load changes.
-Check is read-only and does not reserve resources.
+Check is read-only and does not reserve resources: it evaluates each task
+independently, so it can name the same worker for every task of a burst that
+the planner will spread across workers within one cycle.
 
 ## Advertised capabilities and campaign supervision
 

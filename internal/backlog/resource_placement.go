@@ -25,17 +25,18 @@ var (
 )
 
 // expectedResourceNeeds is the live use one attempt is expected to add to a
-// worker. Explicit sizes win per dimension. Otherwise the class floor a preset
-// sets selects that preset's needs (build sets medium, light sets low, and an
-// explicit floor is read the same way). A task with neither size nor floor uses
-// the policy's nominal unsized needs, so a burst of unsized tasks still spreads.
+// worker. Explicit sizes win per dimension. Otherwise the exact class pair a
+// preset expands to selects that preset's needs: build is a medium floor with a
+// high preference, light a low floor with no preference. The task carries only
+// the expanded classes, so declaring that same pair explicitly reads the same.
+// Any other task uses the policy's nominal unsized needs, so a burst of unsized
+// tasks still spreads and a bare class floor is not mistaken for a build.
 func expectedResourceNeeds(demand domain.ResourceDemand, p domain.ResourcePlacementPolicy) domain.ResourceDemand {
 	needs := domain.ResourceDemand{CPUUnits: p.UnsizedTaskCPUUnits, MemoryMB: p.UnsizedTaskMemoryMB, ScratchMB: p.UnsizedTaskScratchMB}
 	switch {
-	case demand.MinCPUClass == "":
-	case demand.MinCPUClass.Compare(domain.CPUClassMedium) >= 0:
+	case demand.MinCPUClass == domain.CPUClassMedium && demand.PreferredCPUClass == domain.CPUClassHigh:
 		needs = buildResourceNeeds
-	default:
+	case demand.MinCPUClass == domain.CPUClassLow && demand.PreferredCPUClass == "":
 		needs = lightResourceNeeds
 	}
 	if demand.CPUUnits > 0 {
