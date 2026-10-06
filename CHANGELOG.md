@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- M16-5: Campaign executors receive a concise contract for authorized work,
+  declared outputs, completion and task-bound waits; campaign help and examples
+  explain how to hand off a finished attempt without leaving commands running.
+- Bounded thread archive: Workers compact oversized thread archives to the
+  result-upload budget, retaining outcome evidence and an explicit omission
+  summary so a large conversation does not permanently prevent collection.
+- M17-1: Quota waits require complete, fresh window readings, and model
+  availability reports route-specific admission and worker authorization.
+  In `t3-steward models --json`, `observedAt` now belongs to the reading behind
+  `percent`; the oldest reading moved to `oldestObservedAt`. Each route carries
+  `routes[].availability`, and a worker without an authorization entry reports
+  `authorized: false`.
+- M16-1: The coordinator supports fenced in-task review checkpoints through
+  the authenticated node-wait operation; the public `review --task current`
+  command follows in a later unit. Review repository refs are resolved exactly
+  by capable workers, preserving the parent attempt and rejecting stale epochs.
+
 ### Added
 
 - A commit declared by a campaign task now reaches consumers on other workers.
