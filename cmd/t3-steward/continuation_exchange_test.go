@@ -53,7 +53,7 @@ func (t *queuedUploadControl) RoundTripWithRetry(_ context.Context, request work
 				pending.acked = true
 			}
 		}
-		return coordinatorResultResponse(request, workerproto.MessageArtifactAcknowledged, workerproto.ArtifactAcknowledgement{ManifestID: ack.ManifestID})
+		return coordinatorResultResponse(request, workerproto.MessageArtifactAcknowledged, workerproto.ArtifactAcknowledgement(ack))
 	default:
 		return workerproto.Envelope{}, errors.New("unexpected control request")
 	}
