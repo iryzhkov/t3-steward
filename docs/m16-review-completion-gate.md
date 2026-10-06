@@ -20,8 +20,9 @@ and after verification commands have run, it reads:
 - `git rev-parse HEAD` in the workspace, the physical HEAD;
 - `git status --porcelain --untracked-files=no`, the tracked changes the
   workspace's own index reports, including staged ones; and
-- the same status against a scratch index read from HEAD, which compares
-  every tracked file by content.
+- the same status against a fresh index read from HEAD in a scratch
+  repository of the worker's own, which compares every tracked file by
+  content, mode and type.
 
 The report is taken after verification because a verification command such as
 a generator or formatter can rewrite tracked source, and that is work the
@@ -40,6 +41,26 @@ point the comparison at a clean copy elsewhere. Replace refs are ignored
 (`--no-replace-objects`), because one could substitute another tree for HEAD's
 while HEAD still names the accepted commit, and `core.fileMode` is forced on,
 so a mode change is a change.
+
+Conversion rules decide what equal means, and the executor controls those as
+well: a clean filter can turn edited bytes back into the committed blob, an
+untracked `.gitattributes` can convert line endings back, and
+`core.symlinks=false` lets a regular file stand in for a tracked symbolic
+link. The content comparison therefore runs in the scratch repository, which
+borrows the workspace's objects through an alternate (objects are named by
+their content) and has its own fixed configuration: no filter drivers, no
+line ending conversion by configuration, symbolic links and file modes
+compared. Neither the workspace's configuration and `info/attributes` nor the
+system and global configuration and attributes are read, and attributes come
+from HEAD's tree (`GIT_ATTR_SOURCE`), so only the reviewed `.gitattributes`
+apply. Git older than 2.40 ignores `GIT_ATTR_SOURCE` and reads the worktree's
+`.gitattributes`, which can still convert line endings or encodings but cannot
+run a filter. A file that a filter driver such as Git LFS produced differs
+from its blob there and counts as changed, so such a repository fails closed.
+Git would compare a submodule's content inside the submodule, with the
+submodule's configuration, so every checked-out submodule is compared the same
+way against the commit HEAD records for it, to a depth of eight, and its
+changes are reported under its path.
 
 Declared file outputs, `.t3/` and `.t3-steward/` are not counted as changes,
 and untracked files are not either. The report travels with the result as one

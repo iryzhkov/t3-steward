@@ -42,6 +42,12 @@ func WorkspaceHeadArtifactID(attemptID string) string {
 // flags and no cached stat data, with the monitor and sparse checkout off. A
 // configured core.worktree could point every query at a clean copy elsewhere,
 // so each query names the task workspace as its worktree.
+//
+// Conversion rules decide what "equal" means, and the executor controls them
+// too: a clean filter or an untracked .gitattributes can turn edited bytes
+// back into the committed blob, and core.symlinks=false lets a regular file
+// stand in for a tracked symlink. The content comparison therefore runs in a
+// scratch repository of the worker's own, see compareWorkspaceWithHead.
 func CaptureWorkspaceHead(ctx context.Context, gitBinary, workspace string, outputs []domain.ArtifactDeclaration) domain.WorkspaceHead {
 	captured := domain.WorkspaceHead{Schema: domain.WorkspaceHeadSchema}
 	if gitBinary == "" {
@@ -69,18 +75,7 @@ func CaptureWorkspaceHead(ctx context.Context, gitBinary, workspace string, outp
 		captured.Head, captured.Error = "", "read workspace status: "+err.Error()
 		return captured
 	}
-	scratch, err := os.MkdirTemp("", "workspace-head-")
-	if err != nil {
-		captured.Head, captured.Error = "", "create scratch index: "+err.Error()
-		return captured
-	}
-	defer os.RemoveAll(scratch)
-	freshIndex := []string{"GIT_INDEX_FILE=" + filepath.Join(scratch, "index")}
-	if _, err := workspaceGit(ctx, gitBinary, workspace, freshIndex, "read-tree", captured.Head); err != nil {
-		captured.Head, captured.Error = "", "read HEAD into a scratch index: "+err.Error()
-		return captured
-	}
-	physical, err := workspaceGit(ctx, gitBinary, workspace, freshIndex, statusArgs...)
+	physical, err := compareWorkspaceWithHead(ctx, gitBinary, workspace, captured.Head, statusArgs, 0)
 	if err != nil {
 		captured.Head, captured.Error = "", "compare the workspace with HEAD: "+err.Error()
 		return captured
@@ -96,6 +91,147 @@ func CaptureWorkspaceHead(ctx context.Context, gitBinary, workspace string, outp
 	countWorkspaceChanges(&captured, physical, excluded, seen)
 	return captured
 }
+
+// compareWorkspaceWithHead lists the tracked files of the workspace whose
+// content, mode or type differs from the commit head. It reads head into a
+// fresh index of a scratch repository that borrows the workspace's objects
+// through an alternate, which is safe because objects are named by their
+// content. That repository has the worker's own configuration, so neither the
+// workspace's configuration and info/attributes nor the system and global
+// configuration and attributes take part: there are no filter drivers, line
+// endings are not converted by configuration, symbolic links and file modes
+// are compared, and the file system monitor and sparse checkout are off.
+// Attributes are read from head's tree rather than the worktree, so only the
+// reviewed .gitattributes apply. Git older than 2.40 ignores GIT_ATTR_SOURCE
+// and reads the worktree's .gitattributes, which can still convert line
+// endings and encodings but cannot run a filter.
+//
+// A file that a filter driver, such as Git LFS, produced in the worktree
+// differs from its blob here and is reported as changed, which fails closed.
+//
+// Git compares a submodule's content inside the submodule, with the
+// submodule's own configuration, so every populated submodule is compared the
+// same way against the commit head records for it, and its changes are
+// reported under its path.
+func compareWorkspaceWithHead(ctx context.Context, gitBinary, workspace, head string, statusArgs []string, depth int) ([]byte, error) {
+	if depth > maxWorkspaceSubmoduleDepth {
+		return nil, fmt.Errorf("submodules are nested deeper than %d levels", maxWorkspaceSubmoduleDepth)
+	}
+	location, err := workspaceGit(ctx, gitBinary, workspace, nil, "rev-parse", "--show-object-format", "--git-path", "objects")
+	if err != nil {
+		return nil, fmt.Errorf("locate the workspace's objects: %w", err)
+	}
+	format, objects, _ := strings.Cut(strings.TrimSuffix(string(location), "\n"), "\n")
+	if format != "sha1" && format != "sha256" {
+		return nil, fmt.Errorf("workspace object format %q is not supported", format)
+	}
+	if objects == "" || strings.ContainsAny(objects, "\n\r") {
+		return nil, fmt.Errorf("workspace object directory %q is not usable", objects)
+	}
+	if !filepath.IsAbs(objects) {
+		objects = filepath.Join(workspace, objects)
+	}
+	scratch, err := os.MkdirTemp("", "workspace-head-")
+	if err != nil {
+		return nil, fmt.Errorf("create scratch repository: %w", err)
+	}
+	defer os.RemoveAll(scratch)
+	repository := filepath.Join(scratch, "repository")
+	config := "[core]\n\trepositoryformatversion = 0\n"
+	if format == "sha256" {
+		config = "[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectformat = sha256\n"
+	}
+	config += "[core]\n\tbare = false\n\tfilemode = true\n\tsymlinks = true\n\tignorecase = false\n\tprecomposeunicode = false\n" +
+		"\tautocrlf = false\n\tfsmonitor = false\n\tsparseCheckout = false\n" +
+		"\tattributesFile = " + os.DevNull + "\n"
+	for name, content := range map[string]string{
+		"HEAD":                    head + "\n",
+		"config":                  config,
+		"objects/info/alternates": objects + "\n",
+		"refs/.keep":              "",
+	} {
+		file := filepath.Join(repository, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+			return nil, fmt.Errorf("create scratch repository: %w", err)
+		}
+		if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
+			return nil, fmt.Errorf("create scratch repository: %w", err)
+		}
+	}
+	if _, err := trustedWorkspaceGit(ctx, gitBinary, workspace, repository, head, "read-tree", head); err != nil {
+		return nil, fmt.Errorf("read HEAD into a scratch index: %w", err)
+	}
+	status, err := trustedWorkspaceGit(ctx, gitBinary, workspace, repository, head, statusArgs...)
+	if err != nil {
+		return nil, err
+	}
+	tree, err := trustedWorkspaceGit(ctx, gitBinary, workspace, repository, head, "ls-tree", "-r", "-z", "--full-tree", head)
+	if err != nil {
+		return nil, fmt.Errorf("list HEAD's submodules: %w", err)
+	}
+	for _, entry := range strings.Split(string(tree), "\x00") {
+		meta, name, found := strings.Cut(entry, "\t")
+		fields := strings.Fields(meta)
+		if !found || len(fields) != 3 || fields[0] != "160000" {
+			continue
+		}
+		directory := filepath.Join(workspace, filepath.FromSlash(name))
+		if _, err := os.Lstat(filepath.Join(directory, ".git")); errors.Is(err, os.ErrNotExist) {
+			// Not checked out; the status above reports a submodule that
+			// went away.
+			continue
+		}
+		nested, err := compareWorkspaceWithHead(ctx, gitBinary, directory, fields[2], statusArgs, depth+1)
+		if err != nil {
+			return nil, fmt.Errorf("submodule %s: %w", name, err)
+		}
+		status = append(status, prefixWorkspaceChanges(nested, name+"/")...)
+	}
+	return status, nil
+}
+
+// maxWorkspaceSubmoduleDepth bounds how deeply submodules are compared.
+const maxWorkspaceSubmoduleDepth = 8
+
+// prefixWorkspaceChanges puts prefix in front of every path of a porcelain
+// v1 -z listing, including the source path that follows a rename or copy.
+func prefixWorkspaceChanges(status []byte, prefix string) []byte {
+	var prefixed []byte
+	entries := strings.Split(string(status), "\x00")
+	for index := 0; index < len(entries); index++ {
+		entry := entries[index]
+		if len(entry) < 4 {
+			continue
+		}
+		prefixed = append(prefixed, entry[:3]+prefix+entry[3:]+"\x00"...)
+		if strings.ContainsAny(entry[:2], "RC") && index+1 < len(entries) {
+			index++
+			prefixed = append(prefixed, prefix+entries[index]+"\x00"...)
+		}
+	}
+	return prefixed
+}
+
+// trustedWorkspaceGit runs one Git query on the workspace's worktree through
+// the scratch repository, with no system or global configuration or
+// attributes and with attributes read from head.
+func trustedWorkspaceGit(ctx context.Context, gitBinary, workspace, repository, head string, args ...string) ([]byte, error) {
+	command := exec.CommandContext(ctx, gitBinary, append([]string{
+		"--no-optional-locks", "--no-replace-objects",
+		"--git-dir", repository, "--work-tree", workspace,
+	}, args...)...)
+	command.Dir = workspace
+	command.Env = append(slices.DeleteFunc(os.Environ(), func(variable string) bool {
+		name, _, _ := strings.Cut(variable, "=")
+		return slices.Contains(workspaceGitLocationVariables, name) || slices.Contains(trustedGitDroppedVariables, name) ||
+			strings.HasPrefix(name, "GIT_CONFIG") || strings.HasPrefix(name, "GIT_ATTR")
+	}), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_ATTR_NOSYSTEM=1", "GIT_ATTR_SOURCE="+head)
+	return runWorkspaceGit(command)
+}
+
+// trustedGitDroppedVariables would point the scratch repository at other
+// objects, or at part of them.
+var trustedGitDroppedVariables = []string{"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE"}
 
 // countWorkspaceChanges adds the tracked paths of one porcelain v1 -z listing
 // to the report, once each.
@@ -164,6 +300,11 @@ func workspaceGit(ctx context.Context, gitBinary, workspace string, env []string
 		name, _, _ := strings.Cut(variable, "=")
 		return slices.Contains(workspaceGitLocationVariables, name)
 	}), env...)
+	return runWorkspaceGit(command)
+}
+
+// runWorkspaceGit returns a query's standard output alone.
+func runWorkspaceGit(command *exec.Cmd) ([]byte, error) {
 	command.WaitDelay = time.Second
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
