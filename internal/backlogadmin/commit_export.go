@@ -167,9 +167,12 @@ func (s *Service) ExportCommit(ctx context.Context, principal Principal, request
 	if source == nil {
 		return ArtifactContent{}, errors.New("commit export: producing worker returned no bundle")
 	}
-	defer source.Close()
-	exported, err := backlog.ExportCommitBundle(ctx, verificationProvenance, request.Branch, source, backlog.DefaultCommitBundleMaxBytes)
-	if err != nil {
+	exported, exportErr := backlog.ExportCommitBundle(ctx, verificationProvenance, request.Branch, source, backlog.DefaultCommitBundleMaxBytes)
+	closeErr = source.Close()
+	if err := errors.Join(exportErr, closeErr); err != nil {
+		if exportErr == nil {
+			_ = exported.Close()
+		}
 		return ArtifactContent{}, err
 	}
 	file, err := os.Open(exported.Path)
