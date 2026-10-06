@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -51,15 +52,37 @@ func dependencySources(pkg workerproto.ExecutionPackage) map[string]backlog.Depe
 	return sources
 }
 
-// resultByteLimit is the total limit of the upload that carries an attempt's
-// result: the package's, or the publisher's own when that is lower, since the
-// publisher is what refuses an upload over it.
-func (d *LocalDriver) resultByteLimit(pkg workerproto.ExecutionPackage) int64 {
-	limit := pkg.Limits.MaxTotalBytes
-	if publisher, ok := d.Publisher.(interface{ MaxResultBytes() int64 }); ok {
-		if own := publisher.MaxResultBytes(); own > 0 && (limit <= 0 || own < limit) {
-			limit = own
+// resultAdmitter is a publisher that can say, before anything is stored,
+// whether it would accept a result's upload.
+type resultAdmitter interface {
+	AdmitResult(workerproto.ExecutionPackage, PublishedResult) error
+}
+
+// resultAdmission is the finalizer's check of a candidate result: the upload
+// it makes together with the final message and the thread archive must fit
+// the package's per-artifact and total limits, which the coordinator imports
+// it under, and must be accepted by the publisher's own validation, which is
+// what PublishResult applies. Only the publisher knows its limits, so a
+// publisher that cannot answer is held to the package's alone.
+func (d *LocalDriver) resultAdmission(pkg workerproto.ExecutionPackage, message string, archive []byte) func([]domain.Artifact) error {
+	return func(artifacts []domain.Artifact) error {
+		result := PublishedResult{
+			Finalized: backlog.FinalizedAttempt{Artifacts: artifacts}, FinalMessage: message, ThreadArchive: archive,
 		}
+		planned, err := resultObjects(pkg, result)
+		if err != nil {
+			return err
+		}
+		objects := make([]workerproto.ArtifactObject, 0, len(planned))
+		for _, entry := range planned {
+			objects = append(objects, entry.object)
+		}
+		if _, err := workerproto.ValidateUploadObjects(objects, pkg.Limits.MaxArtifactBytes, pkg.Limits.MaxTotalBytes); err != nil {
+			return err
+		}
+		if admitter, ok := d.Publisher.(resultAdmitter); ok {
+			return admitter.AdmitResult(pkg, result)
+		}
+		return nil
 	}
-	return limit
 }

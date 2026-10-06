@@ -330,17 +330,27 @@ over the same artifact path every other input takes:
   `bundle-omitted:size-limit`, `bundle-omitted:aggregate-limit` or
   `bundle-omitted:not-descendant`. A successor refused for it is told what the
   code means.
-- The producer's whole result, including its bundles, its other artifacts, the
-  final message and the thread archive, travels as one upload under the
-  aggregate limit (`message_limits.max_artifact_bytes`). Bundle metadata is
-  budgeted after everything else: first bundles, in declaration order, while
-  they fit; then the omission code of each commit whose bundle did not, while
-  it fits. A commit for which not even its omission code fits carries no
-  bundle metadata at all, and a successor on another worker is refused because
-  the producer recorded no reason. The upload is therefore never larger than
-  the same result with bundle generation disabled unless it fits, so bundles
-  can never turn a result that would otherwise be collected into a collection
-  failure.
+- The producer's whole result, including its bundles, its provenance records,
+  its other artifacts, the final message and the thread archive, travels as
+  one upload, and every object in it is bounded by the per-artifact limit and
+  all of them together by the aggregate limit. Bundle metadata (bundles, their
+  bindings in the records, and omission codes) is the only optional part, and
+  it is kept only in a result the upload's own validation accepts: the same
+  check, with the package's limits and the worker custody store's, that
+  publishing the result applies. The finalizer first tries every bundle and
+  every omission code. If that is refused it starts again from the records as
+  they would be written with bundle generation disabled and adds bundles in
+  declaration order, then the omission codes of the commits whose bundles were
+  refused, each only if the result is still accepted. A bundle refused because
+  it, or its record with the bundle bound, is over the per-artifact limit gets
+  `bundle-omitted:size-limit`; one refused otherwise gets
+  `bundle-omitted:aggregate-limit`. A commit for which not even its omission
+  code is accepted carries no bundle metadata at all, and a successor on
+  another worker is refused because the producer recorded no reason. If not
+  even the result without bundle metadata is accepted, that result is what is
+  published and it fails exactly as it would with bundle generation disabled.
+  Bundles therefore never turn a result that would otherwise be collected into
+  a collection failure.
 - A successor placed on another worker is delivered the bundle with its other
   inputs, outside its dependency view. A successor on the producer's worker is
   delivered nothing and resolves the ref exactly as before.

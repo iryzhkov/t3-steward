@@ -204,87 +204,69 @@ func (s *CustodyStore) ResultDurable(pkg workerproto.ExecutionPackage) (bool, er
 	return false, nil
 }
 
-// MaxResultBytes is the total limit of one upload, which is what bounds an
-// attempt's whole result.
-func (s *CustodyStore) MaxResultBytes() int64 {
-	return s.config.MaxTotalBytes
+// resultObject is one object of a result upload: a finalized artifact, read
+// from the finalizer's storage when it is stored, or bytes the result holds.
+type resultObject struct {
+	object   workerproto.ArtifactObject
+	artifact *domain.Artifact
+	data     []byte
+	// failure prefixes an error storing the object.
+	failure string
 }
 
-// PublishResult retains finalizer output, final message, and thread archive as one upload.
-func (s *CustodyStore) PublishResult(ctx context.Context, pkg workerproto.ExecutionPackage, result PublishedResult) error {
-	if durable, err := s.ResultDurable(pkg); err != nil || durable {
-		return err
-	}
-	objects := make([]workerproto.ArtifactObject, 0, len(result.Finalized.Artifacts)+2)
-	for _, artifact := range result.Finalized.Artifacts {
-		source, err := finalizedArtifactPath(result.Finalized, artifact)
-		if err != nil {
-			return err
-		}
-		file, err := openRegular(source)
-		if err != nil {
-			return fmt.Errorf("publish result: open %q: %w", artifact.Name, err)
-		}
-		object := workerproto.ArtifactObject{
-			ID:        artifact.ID,
-			Path:      "results/" + filepath.ToSlash(artifact.Name),
-			Kind:      string(artifact.Kind),
-			MediaType: artifact.MediaType,
-			Size:      artifact.Size,
-			SHA256:    artifact.SHA256,
-		}
-		storeErr := s.storeObject(file, object)
-		closeErr := file.Close()
-		if storeErr != nil {
-			return fmt.Errorf("publish result %q: %w", artifact.Name, storeErr)
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-		objects = append(objects, object)
+// resultObjects lists, in upload order, the objects of the one upload that
+// carries result. It reads no file, so that AdmitResult checks exactly the
+// upload PublishResult makes before anything exists to store.
+func resultObjects(pkg workerproto.ExecutionPackage, result PublishedResult) ([]resultObject, error) {
+	objects := make([]resultObject, 0, len(result.Finalized.Artifacts)+5)
+	for index := range result.Finalized.Artifacts {
+		artifact := &result.Finalized.Artifacts[index]
+		objects = append(objects, resultObject{
+			object: workerproto.ArtifactObject{
+				ID:        artifact.ID,
+				Path:      "results/" + filepath.ToSlash(artifact.Name),
+				Kind:      string(artifact.Kind),
+				MediaType: artifact.MediaType,
+				Size:      artifact.Size,
+				SHA256:    artifact.SHA256,
+			},
+			artifact: artifact,
+			failure:  fmt.Sprintf("publish result %q", artifact.Name),
+		})
 	}
 	if result.RecoveryProposal != nil {
 		proposal := *result.RecoveryProposal
 		if proposal.InstructionArtifact.ArtifactID == "" || len(result.RecoveryInstructions) == 0 {
-			return errors.New("publish result: recovery proposal is missing retained instructions")
+			return nil, errors.New("publish result: recovery proposal is missing retained instructions")
 		}
 		instruction := objectForBytes(proposal.InstructionArtifact.ArtifactID,
 			"results/recovery/instructions.md", string(domain.ArtifactInput), "text/markdown", result.RecoveryInstructions)
 		if instruction.SHA256 != proposal.InstructionArtifact.Digest {
-			return errors.New("publish result: recovery instruction digest changed")
+			return nil, errors.New("publish result: recovery instruction digest changed")
 		}
-		if err := s.storeObject(bytes.NewReader(result.RecoveryInstructions), instruction); err != nil {
-			return fmt.Errorf("publish recovery instructions: %w", err)
-		}
-		objects = append(objects, instruction)
+		objects = append(objects, resultObject{object: instruction, data: result.RecoveryInstructions, failure: "publish recovery instructions"})
 		if len(proposal.CheckpointArtifacts) > 1 {
-			return errors.New("publish result: recovery proposal has too many checkpoints")
+			return nil, errors.New("publish result: recovery proposal has too many checkpoints")
 		}
 		if len(proposal.CheckpointArtifacts) == 1 {
 			checkpoint := objectForBytes(proposal.CheckpointArtifacts[0].ArtifactID,
 				"results/recovery/checkpoint.tar", string(domain.ArtifactCheckpoint), "application/x-tar", result.RecoveryCheckpointTar)
 			if checkpoint.SHA256 != proposal.CheckpointArtifacts[0].Digest {
-				return errors.New("publish result: recovery checkpoint digest changed")
+				return nil, errors.New("publish result: recovery checkpoint digest changed")
 			}
-			if err := s.storeObject(bytes.NewReader(result.RecoveryCheckpointTar), checkpoint); err != nil {
-				return fmt.Errorf("publish recovery checkpoint: %w", err)
-			}
-			objects = append(objects, checkpoint)
+			objects = append(objects, resultObject{object: checkpoint, data: result.RecoveryCheckpointTar, failure: "publish recovery checkpoint"})
 		} else if result.RecoveryCheckpointTar != nil {
-			return errors.New("publish result: undeclared recovery checkpoint")
+			return nil, errors.New("publish result: undeclared recovery checkpoint")
 		}
 		raw, err := json.Marshal(proposal)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		proposalObject := objectForBytes("recovery-proposal-"+pkg.Identity.AttemptID,
 			"results/recovery/proposal.json", string(domain.ArtifactInput), "application/json", raw)
-		if err := s.storeObject(bytes.NewReader(raw), proposalObject); err != nil {
-			return fmt.Errorf("publish recovery proposal: %w", err)
-		}
-		objects = append(objects, proposalObject)
+		objects = append(objects, resultObject{object: proposalObject, data: raw, failure: "publish recovery proposal"})
 	} else if result.RecoveryInstructions != nil || result.RecoveryCheckpointTar != nil {
-		return errors.New("publish result: recovery bytes need a typed proposal")
+		return nil, errors.New("publish result: recovery bytes need a typed proposal")
 	}
 	for _, extra := range []struct {
 		id, path, kind, media string
@@ -294,12 +276,72 @@ func (s *CustodyStore) PublishResult(ctx context.Context, pkg workerproto.Execut
 		{"thread-archive-" + pkg.Identity.AttemptID, "results/thread.json", "log", "application/json", result.ThreadArchive},
 	} {
 		object := objectForBytes(extra.id, extra.path, extra.kind, extra.media, extra.data)
-		if err := s.storeObject(bytes.NewReader(extra.data), object); err != nil {
-			return fmt.Errorf("publish result %q: %w", extra.path, err)
+		objects = append(objects, resultObject{object: object, data: extra.data, failure: fmt.Sprintf("publish result %q", extra.path)})
+	}
+	return objects, nil
+}
+
+// AdmitResult reports whether PublishResult would accept the upload of result,
+// by the same object list and the same limit and manifest checks, without
+// storing anything. The finalizer asks it before it settles optional result
+// metadata, so that metadata never makes a result fail that would otherwise
+// publish.
+func (s *CustodyStore) AdmitResult(pkg workerproto.ExecutionPackage, result PublishedResult) error {
+	planned, err := resultObjects(pkg, result)
+	if err != nil {
+		return err
+	}
+	objects := make([]workerproto.ArtifactObject, 0, len(planned))
+	for _, entry := range planned {
+		objects = append(objects, entry.object)
+	}
+	total, err := s.checkUpload(pkg, objects)
+	if err != nil {
+		return err
+	}
+	return s.validateManifest(s.uploadManifest(pkg, "result", objects, total, s.now()), "upload")
+}
+
+// PublishResult retains finalizer output, final message, and thread archive as one upload.
+func (s *CustodyStore) PublishResult(ctx context.Context, pkg workerproto.ExecutionPackage, result PublishedResult) error {
+	if durable, err := s.ResultDurable(pkg); err != nil || durable {
+		return err
+	}
+	planned, err := resultObjects(pkg, result)
+	if err != nil {
+		return err
+	}
+	objects := make([]workerproto.ArtifactObject, 0, len(planned))
+	for _, entry := range planned {
+		if err := s.storeResultObject(result.Finalized, entry); err != nil {
+			return err
 		}
-		objects = append(objects, object)
+		objects = append(objects, entry.object)
 	}
 	return s.publishManifest(ctx, pkg, "result", objects)
+}
+
+func (s *CustodyStore) storeResultObject(finalized backlog.FinalizedAttempt, entry resultObject) error {
+	if entry.artifact == nil {
+		if err := s.storeObject(bytes.NewReader(entry.data), entry.object); err != nil {
+			return fmt.Errorf("%s: %w", entry.failure, err)
+		}
+		return nil
+	}
+	source, err := finalizedArtifactPath(finalized, *entry.artifact)
+	if err != nil {
+		return err
+	}
+	file, err := openRegular(source)
+	if err != nil {
+		return fmt.Errorf("publish result: open %q: %w", entry.artifact.Name, err)
+	}
+	storeErr := s.storeObject(file, entry.object)
+	closeErr := file.Close()
+	if storeErr != nil {
+		return fmt.Errorf("%s: %w", entry.failure, storeErr)
+	}
+	return closeErr
 }
 
 // PublishCheckpoint retains checkpoint bytes and advertises an immutable upload.
@@ -471,24 +513,12 @@ func (s *CustodyStore) publishManifest(ctx context.Context, pkg workerproto.Exec
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// A package created under an earlier coordinator authority is still this
-	// worker's own execution; its result must survive a coordinator restart.
-	if pkg.CoordinatorID != s.config.CoordinatorID || pkg.CoordinatorEpoch < 1 || pkg.CoordinatorEpoch > s.config.CoordinatorEpoch ||
-		pkg.WorkerID != s.config.WorkerID || pkg.WorkerEpoch != s.config.WorkerEpoch {
-		return errors.New("publish artifact: execution package epoch binding mismatch")
+	total, err := s.checkUpload(pkg, objects)
+	if err != nil {
+		return err
 	}
 	id := "upload-" + pkg.Identity.AssignmentID + "-" + purpose
 	path := filepath.Join(s.config.Root, "outbox", id+".json")
-	var total int64
-	for _, object := range objects {
-		if err := workerproto.ValidateArtifactObject(object, s.config.MaxArtifactBytes); err != nil {
-			return err
-		}
-		if object.Size > s.config.MaxTotalBytes-total {
-			return workerproto.NewArtifactSizeError("aggregate", s.config.MaxTotalBytes, uint64(total)+uint64(object.Size), object)
-		}
-		total += object.Size
-	}
 	if prior, err := s.loadPending(path); err == nil {
 		if prior.Manifest.AssignmentID != pkg.Identity.AssignmentID ||
 			prior.Manifest.AssignmentEpoch != pkg.Identity.AssignmentEpoch {
@@ -507,20 +537,7 @@ func (s *CustodyStore) publishManifest(ctx context.Context, pkg workerproto.Exec
 		return err
 	}
 	now := s.now()
-	manifest := workerproto.ArtifactTransferManifest{
-		Version:          workerproto.ArtifactManifestVersion,
-		ID:               id,
-		Direction:        "upload",
-		CoordinatorEpoch: s.config.CoordinatorEpoch,
-		WorkerID:         s.config.WorkerID,
-		WorkerEpoch:      s.config.WorkerEpoch,
-		AssignmentID:     pkg.Identity.AssignmentID,
-		AssignmentEpoch:  pkg.Identity.AssignmentEpoch,
-		Objects:          append([]workerproto.ArtifactObject(nil), objects...),
-		TotalBytes:       total,
-		CreatedAt:        now,
-		ExpiresAt:        now.Add(UploadRetention),
-	}
+	manifest := s.uploadManifest(pkg, purpose, objects, total, now)
 	if err := s.validateManifest(manifest, "upload"); err != nil {
 		return err
 	}
@@ -545,6 +562,37 @@ func (s *CustodyStore) publishManifest(ctx context.Context, pkg workerproto.Exec
 		records = append(records, record)
 	}
 	return writeJSONExclusive(path, PendingUpload{Version: custodyReceiptVersion, Manifest: manifest, Custody: records})
+}
+
+// checkUpload checks that this store may publish an upload of objects for pkg
+// and that the objects fit its per-object and aggregate limits, and returns
+// their total size.
+func (s *CustodyStore) checkUpload(pkg workerproto.ExecutionPackage, objects []workerproto.ArtifactObject) (int64, error) {
+	// A package created under an earlier coordinator authority is still this
+	// worker's own execution; its result must survive a coordinator restart.
+	if pkg.CoordinatorID != s.config.CoordinatorID || pkg.CoordinatorEpoch < 1 || pkg.CoordinatorEpoch > s.config.CoordinatorEpoch ||
+		pkg.WorkerID != s.config.WorkerID || pkg.WorkerEpoch != s.config.WorkerEpoch {
+		return 0, errors.New("publish artifact: execution package epoch binding mismatch")
+	}
+	return workerproto.ValidateUploadObjects(objects, s.config.MaxArtifactBytes, s.config.MaxTotalBytes)
+}
+
+// uploadManifest is the manifest of one upload of objects for pkg.
+func (s *CustodyStore) uploadManifest(pkg workerproto.ExecutionPackage, purpose string, objects []workerproto.ArtifactObject, total int64, now time.Time) workerproto.ArtifactTransferManifest {
+	return workerproto.ArtifactTransferManifest{
+		Version:          workerproto.ArtifactManifestVersion,
+		ID:               "upload-" + pkg.Identity.AssignmentID + "-" + purpose,
+		Direction:        "upload",
+		CoordinatorEpoch: s.config.CoordinatorEpoch,
+		WorkerID:         s.config.WorkerID,
+		WorkerEpoch:      s.config.WorkerEpoch,
+		AssignmentID:     pkg.Identity.AssignmentID,
+		AssignmentEpoch:  pkg.Identity.AssignmentEpoch,
+		Objects:          append([]workerproto.ArtifactObject(nil), objects...),
+		TotalBytes:       total,
+		CreatedAt:        now,
+		ExpiresAt:        now.Add(UploadRetention),
+	}
 }
 
 func (s *CustodyStore) validateManifest(manifest workerproto.ArtifactTransferManifest, direction string) error {

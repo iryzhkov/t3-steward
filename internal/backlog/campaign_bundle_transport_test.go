@@ -30,14 +30,43 @@ type twoCommitProducer struct {
 // by what collection adds after finalization.
 func finalizeTwoCommits(t *testing.T, limit, reserved int64) (FinalizedAttempt, map[string]CommitProvenance) {
 	t.Helper()
-	producer := finalizeTwoCommitsWith(t, limit, reserved, true)
+	producer := finalizeTwoCommitsWith(t, 0, limit, reserved, true)
 	return producer.finalized, producer.records
 }
 
+// uploadAdmission admits a result as an upload of its artifacts and of
+// reserved further bytes would be admitted under per-artifact limit
+// objectLimit and total limit totalLimit, by the shared upload validation. A
+// zero objectLimit is totalLimit, and a zero totalLimit admits everything.
+func uploadAdmission(objectLimit, totalLimit, reserved int64) func([]domain.Artifact) error {
+	if totalLimit <= 0 {
+		return nil
+	}
+	if objectLimit <= 0 {
+		objectLimit = totalLimit
+	}
+	return func(artifacts []domain.Artifact) error {
+		objects := make([]workerproto.ArtifactObject, 0, len(artifacts)+1)
+		for _, artifact := range artifacts {
+			objects = append(objects, workerproto.ArtifactObject{
+				ID: artifact.ID, Path: "results/" + artifact.Name, Kind: string(artifact.Kind),
+				MediaType: artifact.MediaType, Size: artifact.Size, SHA256: artifact.SHA256,
+			})
+		}
+		objects = append(objects, workerproto.ArtifactObject{
+			ID: "collection-reserved", Path: "results/thread.json", Kind: "log",
+			MediaType: "application/json", Size: reserved, SHA256: strings.Repeat("0", 64),
+		})
+		_, err := workerproto.ValidateUploadObjects(objects, objectLimit, totalLimit)
+		return err
+	}
+}
+
 // finalizeTwoCommitsWith finalizes the two-commit producer with bundle
-// generation enabled or disabled. The clock is fixed so that the provenance
+// generation enabled or disabled, admitted as an upload under objectLimit and
+// limit (see uploadAdmission). The clock is fixed so that the provenance
 // records of two producers have the same size.
-func finalizeTwoCommitsWith(t *testing.T, limit, reserved int64, bundles bool) twoCommitProducer {
+func finalizeTwoCommitsWith(t *testing.T, objectLimit, limit, reserved int64, bundles bool) twoCommitProducer {
 	t.Helper()
 	ctx := context.Background()
 	repository := newGitFixture(t)
@@ -68,7 +97,7 @@ func finalizeTwoCommitsWith(t *testing.T, limit, reserved int64, bundles bool) t
 	finalized, err := finalizer.Finalize(ctx, AttemptFinalization{
 		Task: task, Attempt: request.Attempt, WorkspaceDir: prepared.WorkspaceDir,
 		ExplicitSuccess: true, Repository: repository, BaseCommit: prepared.Commit,
-		CommitBundles: bundles, ResultByteLimit: limit, ResultReservedBytes: reserved,
+		CommitBundles: bundles, AdmitResult: uploadAdmission(objectLimit, limit, reserved),
 	})
 	if err != nil {
 		t.Fatalf("finalize producer: %v", err)
@@ -154,7 +183,7 @@ func TestCommitBundlesAreBudgetedWithTheWholeResultUpload(t *testing.T) {
 // worker is still refused by name rather than with a missing ref.
 func TestOmissionMetadataNeverFailsAProducerThatFitsWithoutBundles(t *testing.T) {
 	const reserved = 1500
-	plainProducer := finalizeTwoCommitsWith(t, 0, reserved, false)
+	plainProducer := finalizeTwoCommitsWith(t, 0, 0, reserved, false)
 	plain := finalizedBytes(plainProducer.finalized) + reserved
 	for name, record := range plainProducer.records {
 		if record.Bundle != nil || record.BundleOmitted != "" {
@@ -194,8 +223,9 @@ func TestOmissionMetadataNeverFailsAProducerThatFitsWithoutBundles(t *testing.T)
 		{name: "review's 64 spare bytes", limit: plain + 64, repair: BundleOmittedAggregateLimit},
 	} {
 		// Not subtests: the repository path is in every record, and a
-		// subtest's temporary directory would change its length.
-		producer := finalizeTwoCommitsWith(t, test.limit, reserved, true)
+		// subtest's temporary directory would change its length. The
+		// per-artifact limit is ample, so the aggregate is what binds.
+		producer := finalizeTwoCommitsWith(t, 1<<20, test.limit, reserved, true)
 		if total := finalizedBytes(producer.finalized) + reserved; total > test.limit {
 			t.Fatalf("%s: result upload is %d bytes, over its limit of %d; the same result without bundles is %d bytes",
 				test.name, total, test.limit, plain)
@@ -224,6 +254,79 @@ func TestOmissionMetadataNeverFailsAProducerThatFitsWithoutBundles(t *testing.T)
 		}
 		if strings.Contains(err.Error(), "couldn't find remote ref") {
 			t.Fatalf("%s: error = %v still reads as a missing remote ref", test.name, err)
+		}
+	}
+}
+
+// The same invariant at the per-artifact limit, which the review of round 3
+// found the aggregate budget did not cover: with ample total room, a
+// provenance record that fits the per-artifact limit without bundles must not
+// be made to exceed it by bundle metadata. The plain records are measured with
+// bundles disabled, and the producer is finalized with them enabled at a
+// per-artifact limit of exactly the larger record, where no omission code fits
+// it, and with room for a code in each record.
+func TestOmissionMetadataNeverExceedsThePerArtifactLimit(t *testing.T) {
+	const reserved, total = 100, 1 << 20
+	plainProducer := finalizeTwoCommitsWith(t, 0, 0, reserved, false)
+	var largest int64
+	for _, artifact := range plainProducer.finalized.Artifacts {
+		largest = max(largest, artifact.Size)
+	}
+	stripped, err := MarshalCommitProvenance(plainProducer.records["followup"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	coded := plainProducer.records["followup"]
+	coded.BundleOmitted = BundleOmittedSizeLimit
+	withCode, err := MarshalCommitProvenance(coded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	omission := int64(len(withCode) - len(stripped))
+
+	ref := CampaignRef("run-1", "task-producer", "repair")
+	for _, test := range []struct {
+		name        string
+		objectLimit int64
+		coded       bool
+	}{
+		{name: "the largest ordinary object exactly", objectLimit: largest},
+		{name: "room for a code in every record", objectLimit: largest + omission, coded: true},
+	} {
+		// Not subtests: the repository path is in every record, and a
+		// subtest's temporary directory would change its length.
+		producer := finalizeTwoCommitsWith(t, test.objectLimit, total, reserved, true)
+		for _, artifact := range producer.finalized.Artifacts {
+			if artifact.Size > test.objectLimit {
+				t.Fatalf("%s: %s is %d bytes, over the per-artifact limit of %d; without bundles the largest is %d bytes",
+					test.name, artifact.Name, artifact.Size, test.objectLimit, largest)
+			}
+		}
+		if names, _ := retainedBundles(producer.finalized); len(names) != 0 {
+			t.Fatalf("%s: retained bundles = %v over the per-artifact limit", test.name, names)
+		}
+		for name, record := range producer.records {
+			if record.Bundle != nil || (record.BundleOmitted != "" && record.BundleOmitted != BundleOmittedSizeLimit) {
+				t.Fatalf("%s: %s record = %+v", test.name, name, record)
+			}
+			if test.coded && record.BundleOmitted != BundleOmittedSizeLimit {
+				t.Fatalf("%s: %s record = %+v, want the size omission code", test.name, name, record)
+			}
+		}
+		if !test.coded && producer.records["followup"].BundleOmitted != "" {
+			t.Fatalf("%s: followup record = %+v, want it bare, with no room for a code", test.name, producer.records["followup"])
+		}
+
+		consumer := newCommitWorker(t, producer.repair.storage)
+		_, err := consume(t, consumer, producer.repair, producer.repair.record, nil, "attempt-2")
+		if err == nil || !strings.Contains(err.Error(), ref) {
+			t.Fatalf("%s: error = %v, want a refusal naming %s", test.name, err, ref)
+		}
+		if producer.repair.provenance.BundleOmitted != "" && !strings.Contains(err.Error(), "per-artifact limit") {
+			t.Fatalf("%s: error = %v, want the per-artifact omission explained", test.name, err)
+		}
+		if producer.repair.provenance.BundleOmitted == "" && !strings.Contains(err.Error(), "recorded no reason") {
+			t.Fatalf("%s: error = %v, want the missing reason explained", test.name, err)
 		}
 	}
 }

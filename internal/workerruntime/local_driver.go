@@ -1020,10 +1020,9 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		CommitBundles:     slices.Contains(pkg.RequiredCapabilities, workerproto.PackageCapabilityCommitBundle),
 		CommitBundleLimit: pkg.Limits.MaxArtifactBytes,
 		// The whole result, including the final message and the thread
-		// archive published with it below, is one upload with one total
-		// limit, so bundles are budgeted against what is left of it.
-		ResultByteLimit:     d.resultByteLimit(pkg),
-		ResultReservedBytes: int64(len(message)) + int64(len(archive)),
+		// archive published with it below, is one upload, so bundle metadata
+		// is kept only where that upload would still be accepted.
+		AdmitResult: d.resultAdmission(pkg, message, archive),
 	})
 	if err != nil {
 		return err

@@ -43,8 +43,9 @@ const CommitBundleMediaType = "application/x-git-bundle"
 // small, bounded and known before the record is written; a consumer refused
 // for it is told what the code means by describeBundleOmission.
 const (
-	// BundleOmittedSizeLimit: the bundle exceeded the largest commit bundle
-	// the producing worker or the artifact transport accepts.
+	// BundleOmittedSizeLimit: the bundle, or the provenance record with the
+	// bundle bound to it, exceeded the largest commit bundle the producing
+	// worker accepts or the largest artifact its result upload accepts.
 	BundleOmittedSizeLimit = "bundle-omitted:size-limit"
 	// BundleOmittedAggregateLimit: the bundle did not fit the result upload's
 	// total limit together with the attempt's other results.
@@ -59,7 +60,7 @@ func describeBundleOmission(code string) string {
 	switch code {
 	case BundleOmittedSizeLimit:
 		return "its bundle exceeded the largest commit bundle the producing worker or the artifact transport accepts " +
-			"(storage.campaign_commit_bundle_max_bytes, or the package's per-artifact limit)"
+			"(storage.campaign_commit_bundle_max_bytes, or the per-artifact limit of the package and of the producer's result upload)"
 	case BundleOmittedAggregateLimit:
 		return "its bundle did not fit within the total limit of its result upload together with the producing attempt's other results"
 	case BundleOmittedNotDescendant:
@@ -140,6 +141,9 @@ type publishedCommit struct {
 	declaration domain.ArtifactDeclaration
 	provenance  CommitProvenance
 	bundle      *commitBundleCandidate
+	// bundleID and recordID are the artifact identities of the bundle, if it
+	// is retained, and of the provenance record.
+	bundleID, recordID string
 }
 
 // makeCommitBundle makes the bundle of one published commit and returns the
@@ -191,83 +195,93 @@ func (c *commitBundleCandidate) bind(provenance CommitProvenance) CommitProvenan
 	return provenance
 }
 
-// budgetCommitBundles decides which bundle metadata the attempt's one result
-// upload can carry within limit, when used bytes of it are already taken by
-// the ordinary results and what collection adds.
+// admitCommitBundles decides which bundle metadata the attempt's result
+// carries. candidate lists every artifact the result would capture with the
+// records as they currently read, and admitResult is the upload's own
+// validation of it, with every limit the upload enforces, per artifact and in
+// total. Nothing here repeats those limits.
 //
-// Bundle bookkeeping must never fail a producer whose result would fit without
-// it, so every record starts out as it would be written with bundle generation
-// disabled: no bundle and no omission. Then, each in declaration order and
-// only while the whole upload, with every record as it will then read, still
-// fits: bundles are admitted, and after them the fixed omission code of each
-// commit whose bundle was not. A commit for which not even its omission code
-// fits keeps the bare record, so its consumer on another worker is refused
-// without a reason rather than its producer failing. The upload is therefore
-// never larger than the ordinary result unless it fits.
-func budgetCommitBundles(published []publishedCommit, used, limit int64) error {
-	total := func() (int64, error) {
-		sum := used
-		for _, commit := range published {
-			record, err := MarshalCommitProvenance(commit.provenance)
-			if err != nil {
-				return 0, err
-			}
-			sum += int64(len(record))
-			if commit.provenance.Bundle != nil {
-				sum += commit.bundle.size
-			}
-		}
-		return sum, nil
-	}
-	// admit applies change to one record and keeps it only if the whole
-	// upload still fits.
-	admit := func(commit *publishedCommit, change func(*CommitProvenance)) (bool, error) {
-		before := commit.provenance
-		change(&commit.provenance)
-		size, err := total()
+// Bundle bookkeeping must never fail a producer whose result is admitted
+// without it, so only admitted results are kept, tried in a fixed order:
+//
+//  1. Every bundle, and the omission code of each commit without one.
+//  2. Otherwise, starting from every record as it would be written with bundle
+//     generation disabled, with no bundle and no omission: each bundle in
+//     declaration order, then the omission code of each commit whose bundle
+//     was not admitted, each kept only if the result is still admitted.
+//
+// A commit for which not even its omission code is admitted keeps the bare
+// record, so its consumer on another worker is refused without a reason
+// rather than its producer failing. When not even the bare result is admitted
+// the bare result is what is captured, and the producer fails exactly as it
+// would with bundle generation disabled.
+func admitCommitBundles(published []publishedCommit, candidate func() ([]domain.Artifact, error), admitResult func([]domain.Artifact) error) error {
+	var refusal error
+	admitted := func() (bool, error) {
+		artifacts, err := candidate()
 		if err != nil {
 			return false, err
 		}
-		if size > limit {
-			commit.provenance = before
-			return false, nil
-		}
-		return true, nil
+		refusal = admitResult(artifacts)
+		return refusal == nil, nil
+	}
+	if ok, err := admitted(); err != nil || ok {
+		return err
 	}
 	// The reason each commit would record if its bundle is not retained. A
 	// commit with neither a bundle nor a reason, such as one equal to its base,
-	// has nothing to budget.
+	// has no metadata to admit.
 	reasons := make([]string, len(published))
 	for index := range published {
 		commit := &published[index]
 		reasons[index] = commit.provenance.BundleOmitted
-		if commit.bundle != nil {
-			reasons[index] = BundleOmittedAggregateLimit
-		}
 		commit.provenance.Bundle, commit.provenance.BundleOmitted = nil, ""
 	}
-	admitted := make([]bool, len(published))
+	retained := make([]bool, len(published))
 	for index := range published {
 		commit := &published[index]
 		if commit.bundle == nil {
 			continue
 		}
-		var err error
-		admitted[index], err = admit(commit, func(provenance *CommitProvenance) { *provenance = commit.bundle.bind(*provenance) })
+		before := commit.provenance
+		commit.provenance = commit.bundle.bind(commit.provenance)
+		ok, err := admitted()
 		if err != nil {
 			return err
 		}
+		retained[index] = ok
+		if !ok {
+			commit.provenance = before
+			reasons[index] = bundleRefusalReason(refusal)
+		}
 	}
 	for index := range published {
-		if admitted[index] || reasons[index] == "" {
+		commit := &published[index]
+		if retained[index] || reasons[index] == "" {
 			continue
 		}
-		reason := reasons[index]
-		if _, err := admit(&published[index], func(provenance *CommitProvenance) { provenance.BundleOmitted = reason }); err != nil {
+		commit.provenance.BundleOmitted = reasons[index]
+		ok, err := admitted()
+		if err != nil {
 			return err
+		}
+		if !ok {
+			commit.provenance.BundleOmitted = ""
 		}
 	}
 	return nil
+}
+
+// bundleRefusalReason is the omission code of a bundle whose result upload
+// refused it: the per-artifact limit when the refusal names an artifact over
+// it, which is the bundle or its record with the bundle bound to it, and
+// otherwise the upload's limits as a whole.
+func bundleRefusalReason(refusal error) string {
+	var size *workerproto.ArtifactSizeError
+	if errors.As(refusal, &size) && size.Scope == "object" {
+		return BundleOmittedSizeLimit
+	}
+	return BundleOmittedAggregateLimit
 }
 
 // captureCommitBundle captures a retained bundle in the attempt's staging
@@ -277,6 +291,7 @@ func (f AttemptFinalizer) captureCommitBundle(
 	stageDir string,
 	provenance CommitProvenance,
 	candidate commitBundleCandidate,
+	id string,
 	now time.Time,
 ) (domain.Artifact, error) {
 	input, err := os.Open(candidate.path)
@@ -296,7 +311,7 @@ func (f AttemptFinalizer) captureCommitBundle(
 		return domain.Artifact{}, fmt.Errorf("capture commit bundle: %s changed after it was bound to its provenance record", name)
 	}
 	return domain.Artifact{
-		ID: f.newID("artifact"), WorkflowRunID: request.Attempt.WorkflowRunID,
+		ID: id, WorkflowRunID: request.Attempt.WorkflowRunID,
 		TaskID: request.Task.ID, AttemptID: request.Attempt.ID,
 		Kind: domain.ArtifactGitState, Name: name, MediaType: CommitBundleMediaType,
 		Size: file.size, SHA256: file.sha256, StoragePath: file.storagePath,
@@ -460,8 +475,8 @@ func (s CampaignRefStore) importBundle(ctx context.Context, workspaceDir string,
 				ref, provenance.Bundle.Artifact, workerproto.PackageCapabilityCommitBundle)
 		default:
 			return fmt.Errorf("campaign commit %s is not in this worker's campaign ref store, and its producer retained no bundle and recorded no reason: "+
-				"either the producing worker does not support capability %q, or not even the omission reason fit within the total limit "+
-				"of the producer's result upload; the commit can be consumed only on the worker that produced it",
+				"either the producing worker does not support capability %q, or not even the omission reason fit within the per-artifact "+
+				"or total limit of the producer's result upload; the commit can be consumed only on the worker that produced it",
 				ref, workerproto.PackageCapabilityCommitBundle)
 		}
 	}
