@@ -216,6 +216,17 @@ func (w *ledgerWorld) reconciler() *LedgerReconciler {
 			defer w.mu.Unlock()
 			return w.records, nil
 		},
+		ReviewRounds: func(_ context.Context, runID string) ([]review.Round, error) {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			var rounds []review.Round
+			for _, round := range w.records.ReviewRounds {
+				if round.WorkflowRunID == runID {
+					rounds = append(rounds, round)
+				}
+			}
+			return rounds, nil
+		},
 		States: w.states,
 		Client: w.jocasta,
 		Open: func(_ context.Context, id string) (domain.Artifact, io.ReadCloser, error) {

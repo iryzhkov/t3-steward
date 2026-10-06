@@ -35,9 +35,10 @@ type coordinatorLedger struct {
 func newCoordinatorLedger(cfg config.Config, store *sqlite.Store, artifacts backlog.CoordinatorArtifactStore, logger *slog.Logger) *coordinatorLedger {
 	return &coordinatorLedger{
 		reconciler: &backlog.LedgerReconciler{
-			Records: store.LoadCoordinatorRecords,
-			States:  store,
-			Client:  jocasta.CLI{TempDir: filepath.Join(cfg.BacklogV2.Storage.Workspaces, "jocasta-ledger")},
+			Records:      store.LoadCoordinatorRecords,
+			ReviewRounds: store.ListReviewRoundsForRun,
+			States:       store,
+			Client:       jocasta.CLI{TempDir: filepath.Join(cfg.BacklogV2.Storage.Workspaces, "jocasta-ledger")},
 			Open: func(ctx context.Context, id string) (domain.Artifact, io.ReadCloser, error) {
 				artifact, content, err := artifacts.Open(ctx, id)
 				return artifact, content, err

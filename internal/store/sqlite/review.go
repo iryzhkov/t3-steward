@@ -73,6 +73,32 @@ func (s *Store) ListUncollectedReviewRounds(ctx context.Context) ([]review.Round
 	}
 	return result, rows.Err()
 }
+
+// ListReviewRoundsForRun returns every round of one run, collected or not,
+// with its combined verdict and without bulk evidence. It is bounded by the
+// run, not by history.
+func (s *Store) ListReviewRoundsForRun(ctx context.Context, runID string) ([]review.Round, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT record FROM coordinator_review_rounds WHERE json_extract(record,'$.workflowRunId')=? ORDER BY id", runID)
+	if err != nil {
+		return nil, fmt.Errorf("list review rounds of run %s: %w", runID, err)
+	}
+	defer rows.Close()
+	var result []review.Round
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var r review.Round
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return nil, err
+		}
+		r.Combined = r.CombinedVerdict()
+		result = append(result, r.Metadata())
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) PublishReviewReply(ctx context.Context, id string, revision int64, text string) error {
 	if len(text) > 16<<10 {
 		return errors.New("review reply exceeds 16 KiB")

@@ -17,6 +17,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/jocasta"
+	"github.com/iryzhkov/t3-steward/internal/review"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
@@ -93,6 +94,11 @@ type LedgerStateStore interface {
 type LedgerReconciler struct {
 	// Records loads the coordinator snapshot boundaries are derived from.
 	Records func(context.Context) (sqlite.CoordinatorRecords, error)
+	// ReviewRounds loads the review rounds the coordinator recorded for one
+	// run. The coordinator snapshot does not carry them, so the verdicts come
+	// from here. Nil means verdicts are reported as unavailable; a load that
+	// fails leaves the boundary pending, because a record is never revisited.
+	ReviewRounds func(context.Context, string) ([]review.Round, error)
 	// States persists the applied boundaries and the Jocasta revision.
 	States LedgerStateStore
 	// Client is the Jocasta CLI configured on the coordinator host.
@@ -250,7 +256,10 @@ func (r *LedgerReconciler) advance(
 		if key == ledgerBoundaryOpen {
 			revision, err = r.open(ctx, state, view)
 		} else {
-			revision, err = r.append(ctx, state, key, view.record(ctx, facts, key, r.maxHandoffBytes()))
+			var record []byte
+			if record, err = view.record(ctx, facts, key, r.maxHandoffBytes()); err == nil {
+				revision, err = r.append(ctx, state, key, record)
+			}
 		}
 		if err != nil {
 			return fmt.Errorf("ledger %s boundary %s: %w", state.Path, key, err)
@@ -359,6 +368,7 @@ type ledgerFacts struct {
 	waitsLoaded bool
 	waitsErr    error
 	usage       map[string]ledgerUsage
+	rounds      map[string][]review.Round
 }
 
 type ledgerUsage struct {
@@ -392,6 +402,35 @@ func (f *ledgerFacts) runUsage(ctx context.Context, runID string) (domain.UsageR
 	return report, err
 }
 
+// reviewRounds loads one run's review rounds at most once per pass. reported
+// is false when this coordinator does not report them at all.
+func (f *ledgerFacts) reviewRounds(ctx context.Context, runID string) ([]review.Round, bool, error) {
+	if f.reconciler.ReviewRounds == nil {
+		return nil, false, nil
+	}
+	if f.rounds == nil {
+		f.rounds = make(map[string][]review.Round)
+	}
+	if cached, ok := f.rounds[runID]; ok {
+		return cached, true, nil
+	}
+	rounds, err := f.reconciler.ReviewRounds(ctx, runID)
+	if err != nil {
+		return nil, false, fmt.Errorf("load the review rounds of run %s: %w", runID, err)
+	}
+	var own []review.Round
+	for _, round := range rounds {
+		if round.WorkflowRunID == runID {
+			own = append(own, round)
+		}
+	}
+	if own == nil {
+		own = []review.Round{}
+	}
+	f.rounds[runID] = own
+	return own, true, nil
+}
+
 // ledgerRunView is one run as the coordinator records describe it.
 type ledgerRunView struct {
 	workflow    domain.Workflow
@@ -401,21 +440,20 @@ type ledgerRunView struct {
 	attempts    []domain.Attempt
 	assignments map[string]domain.Assignment
 	artifacts   map[string][]domain.Artifact
-	records     sqlite.CoordinatorRecords
 }
 
 func newLedgerRunView(records sqlite.CoordinatorRecords, workflow domain.Workflow, run domain.WorkflowRun) ledgerRunView {
 	view := ledgerRunView{
-		workflow: workflow, run: run, records: records,
+		workflow: workflow, run: run,
 		taskByID:    make(map[string]domain.Task),
 		assignments: make(map[string]domain.Assignment),
 		artifacts:   make(map[string][]domain.Artifact),
 	}
-	for _, task := range records.Tasks {
-		if task.RunID == run.ID || (task.RunID == "" && task.WorkflowID == workflow.ID) {
-			view.tasks = append(view.tasks, task)
-			view.taskByID[task.ID] = task
-		}
+	// The run's graph, when it has one, is the authoritative definition: an
+	// amendment changes run.Graph and leaves the task templates as they were.
+	for _, task := range domain.TasksForRun(run, records.Tasks) {
+		view.tasks = append(view.tasks, task)
+		view.taskByID[task.ID] = task
 	}
 	sort.Slice(view.tasks, func(i, j int) bool { return view.tasks[i].Name < view.tasks[j].Name })
 	var runAttempts []domain.Attempt
@@ -525,10 +563,15 @@ func (v ledgerRunView) header() []byte {
 	return []byte(b.String())
 }
 
-// record renders the record of one boundary after open.
-func (v ledgerRunView) record(ctx context.Context, facts *ledgerFacts, key string, maxHandoff int) []byte {
+// record renders the record of one boundary after open. It fails only when a
+// fact the record must carry could not be read, so the boundary stays pending.
+func (v ledgerRunView) record(ctx context.Context, facts *ledgerFacts, key string, maxHandoff int) ([]byte, error) {
+	rounds, reported, err := facts.reviewRounds(ctx, v.run.ID)
+	if err != nil {
+		return nil, err
+	}
 	if key == ledgerBoundaryClose {
-		return v.closing(ctx, facts)
+		return v.closing(ctx, facts, rounds, reported), nil
 	}
 	attemptID := strings.TrimPrefix(key, ledgerAttemptBoundary)
 	var attempt domain.Attempt
@@ -549,16 +592,16 @@ func (v ledgerRunView) record(ctx context.Context, facts *ledgerFacts, key strin
 	}
 	fmt.Fprintf(&b, "- State: %s\n", stateLine)
 	fmt.Fprintf(&b, "- Route: %s\n", v.route(attempt))
-	fmt.Fprintf(&b, "- Review verdicts: %s\n", v.verdicts(task.ID))
+	fmt.Fprintf(&b, "- Review verdicts: %s\n", ledgerVerdicts(rounds, reported, task.ID))
 	fmt.Fprintf(&b, "- Retained outputs: %s\n", v.outputs(attempt.ID))
 	fmt.Fprintf(&b, "- Usage: %s\n", v.attemptUsage(ctx, facts, attempt.ID))
 	fmt.Fprintf(&b, "- Ask answers: %s\n", v.answers(ctx, facts, attempt.ID))
 	b.WriteString("\n")
 	b.WriteString(v.handoff(ctx, facts, attempt.ID, maxHandoff))
-	return []byte(b.String())
+	return []byte(b.String()), nil
 }
 
-func (v ledgerRunView) closing(ctx context.Context, facts *ledgerFacts) []byte {
+func (v ledgerRunView) closing(ctx context.Context, facts *ledgerFacts, rounds []review.Round, reported bool) []byte {
 	var b strings.Builder
 	b.WriteString(ledgerMarker(ledgerBoundaryClose) + "\n")
 	completed := v.run.UpdatedAt
@@ -589,14 +632,16 @@ func (v ledgerRunView) closing(ctx context.Context, facts *ledgerFacts) []byte {
 		}
 	}
 	fmt.Fprintf(&b, "- Tasks: %s\n", ledgerOr(strings.Join(tasks, "; "), "none"))
-	var rounds []string
-	for _, round := range v.records.ReviewRounds {
-		if round.WorkflowRunID == v.run.ID {
-			rounds = append(rounds, fmt.Sprintf("%s: %s", round.ID, ledgerOr(round.Combined, "no combined verdict")))
+	if reported {
+		var combined []string
+		for _, round := range rounds {
+			combined = append(combined, fmt.Sprintf("%s: %s", round.ID, ledgerOr(round.Combined, "no combined verdict")))
 		}
+		sort.Strings(combined)
+		fmt.Fprintf(&b, "- Review rounds: %s\n", ledgerOr(strings.Join(combined, "; "), "none recorded"))
+	} else {
+		b.WriteString("- Review rounds: " + ledgerReviewsUnavailable + "\n")
 	}
-	sort.Strings(rounds)
-	fmt.Fprintf(&b, "- Review rounds: %s\n", ledgerOr(strings.Join(rounds, "; "), "none recorded"))
 	usage, err := facts.runUsage(ctx, v.run.ID)
 	if err != nil {
 		fmt.Fprintf(&b, "- Usage: unavailable (%s)\n", ledgerInline(err.Error(), ledgerMaxInlineBytes))
@@ -617,9 +662,16 @@ func (v ledgerRunView) route(attempt domain.Attempt) string {
 		ledgerInline(effort, 64), ledgerOr(ledgerInline(assignment.WorkerID, 128), "unknown"))
 }
 
-func (v ledgerRunView) verdicts(taskID string) string {
+const ledgerReviewsUnavailable = "unavailable (not reported on this coordinator)"
+
+// ledgerVerdicts lists the verdicts of the reviewers whose task is taskID,
+// from the rounds of the record's own run.
+func ledgerVerdicts(rounds []review.Round, reported bool, taskID string) string {
+	if !reported {
+		return ledgerReviewsUnavailable
+	}
 	var verdicts []string
-	for _, round := range v.records.ReviewRounds {
+	for _, round := range rounds {
 		for _, reviewer := range round.Reviewers {
 			if taskID == "" || reviewer.TaskID != taskID {
 				continue
