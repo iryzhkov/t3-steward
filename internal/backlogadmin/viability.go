@@ -207,17 +207,19 @@ const ViabilityMatrixSchemaVersion = 1
 // copying a project-level finding onto every candidate would have said the same
 // thing N times and implied it was a property of the worker.
 type ViabilityTaskResult struct {
-	Task       string               `json:"task"`
-	Outcome    ViabilityOutcome     `json:"outcome"`
-	Reasons    []ViabilityReason    `json:"reasons,omitempty"`
-	Candidates []ViabilityCandidate `json:"candidates"`
+	SelectedWorker string               `json:"selectedWorker,omitempty"`
+	Task           string               `json:"task"`
+	Outcome        ViabilityOutcome     `json:"outcome"`
+	Reasons        []ViabilityReason    `json:"reasons,omitempty"`
+	Candidates     []ViabilityCandidate `json:"candidates"`
 }
 
 // ViabilityCandidate is one worker's answer for one task.
 type ViabilityCandidate struct {
-	Worker  string            `json:"worker"`
-	Outcome ViabilityOutcome  `json:"outcome"`
-	Reasons []ViabilityReason `json:"reasons,omitempty"`
+	ResourceEvaluation *domain.ResourceEvaluation `json:"resourceEvaluation,omitempty"`
+	Worker             string                     `json:"worker"`
+	Outcome            ViabilityOutcome           `json:"outcome"`
+	Reasons            []ViabilityReason          `json:"reasons,omitempty"`
 	// Repository says whether this candidate's repository reachability was
 	// actually observed, and what it observed. It is a separate field from
 	// Reasons because the task-level verdict depends on the difference between

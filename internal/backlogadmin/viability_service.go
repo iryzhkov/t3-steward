@@ -37,7 +37,8 @@ type CredentialResolver interface {
 // ViabilitySettings is what a viability answer needs beyond the coordinator's
 // own records.
 type ViabilitySettings struct {
-	ReviewRoutes map[string]config.ReviewRouteMetadata
+	ResourcePolicy domain.ResourcePlacementPolicy
+	ReviewRoutes   map[string]config.ReviewRouteMetadata
 	// Projects and SetupProfiles are the catalog entries this coordinator is
 	// configured with. They are the definitions rather than a constructed
 	// ProjectCatalog on purpose: the catalog constructor refuses to hold a
@@ -408,8 +409,44 @@ func (v view) viabilityTask(ctx context.Context, settings ViabilitySettings, tas
 		candidate := v.viabilityCandidate(ctx, settings, task, project, ref, repositoryUsable, domainTask, worker)
 		result.Candidates = append(result.Candidates, candidate)
 	}
+	// Rank ready candidates together through the coordinator's actual selector.
+	var inventories []domain.WorkerInventory
+	for _, worker := range workers {
+		if worker.hasSnapshot {
+			inventory := worker.inventory
+			inventory.ObservedAt = v.now
+			inventories = append(inventories, inventory)
+		}
+	}
+	if selection, err := backlog.SelectWorker(backlog.WorkerPlacementRequest{Task: domainTask, Project: task.Project, Now: v.now, MaxSnapshotAge: time.Duration(1 << 62), ResourcePolicy: settings.ResourcePolicy}, inventories); err == nil {
+		for i := range result.Candidates {
+			for _, evaluation := range selection.Decision.ResourceEvaluations {
+				if evaluation.WorkerID == result.Candidates[i].Worker {
+					value := evaluation
+					result.Candidates[i].ResourceEvaluation = &value
+				}
+			}
+		}
+		// Quota, credentials, connectivity and routes can make the placement winner
+		// unavailable. Select again from candidates whose entire readiness passed.
+		var ready []domain.WorkerInventory
+		for _, inventory := range inventories {
+			for _, candidate := range result.Candidates {
+				if candidate.Worker == inventory.ID && candidate.Outcome == ViabilityReady {
+					ready = append(ready, inventory)
+					break
+				}
+			}
+		}
+		if selected, err := backlog.SelectWorker(backlog.WorkerPlacementRequest{Task: domainTask, Project: task.Project, Now: v.now, MaxSnapshotAge: time.Duration(1 << 62), ResourcePolicy: settings.ResourcePolicy}, ready); err == nil {
+			result.SelectedWorker = selected.Decision.SelectedWorkerID
+		}
+	}
 	result.Reasons = append(result.Reasons, repositoryVerdict(project.Repository, ref, result.Candidates)...)
 	result.Outcome = taskOutcome(result)
+	if result.Outcome != ViabilityReady {
+		result.SelectedWorker = ""
+	}
 	return result
 }
 
@@ -572,7 +609,7 @@ func (v view) viabilityCandidate(
 
 	// Freshness was judged above, and the view presented the inventory as
 	// observed now, so the matcher applies no staleness rule of its own.
-	matchReasons, err := WorkerMatchReasons(domainTask, task.Project, worker.inventory, v.records.QuotaPools, v.now)
+	matchReasons, err := WorkerMatchReasons(domainTask, task.Project, worker.inventory, v.records.QuotaPools, v.now, settings.ResourcePolicy)
 	if err != nil {
 		candidate.Reasons = append(candidate.Reasons, newViabilityReason(ReasonWorkerNotEligible,
 			"placement could not be evaluated: "+err.Error()))
@@ -683,6 +720,8 @@ func placementReasonCode(exclusion string) string {
 		return ReasonCapabilityMissing
 	case backlog.ExclusionCPUClassBelowMinimum, backlog.ExclusionCPUClassUnknown:
 		return ReasonCPUClassImpossible
+	case "resource-memory", "resource-swap", "resource-workspace-disk", "resource-temp-disk":
+		return "resource-pressure"
 	case backlog.ExclusionCapacityExhausted:
 		return ReasonWorkerAtCapacity
 	case backlog.ExclusionWorkerHealth:
@@ -712,10 +751,14 @@ func placementReasonCode(exclusion string) string {
 // The inventory is taken as observed at now: freshness is the caller's
 // judgement, made before the call, so the matcher applies no staleness rule of
 // its own. The error reports an inventory the matcher could not evaluate.
-func WorkerMatchReasons(task domain.Task, project string, inventory domain.WorkerInventory, pools []domain.QuotaPool, now time.Time) ([]ViabilityReason, error) {
+func WorkerMatchReasons(task domain.Task, project string, inventory domain.WorkerInventory, pools []domain.QuotaPool, now time.Time, policies ...domain.ResourcePlacementPolicy) ([]ViabilityReason, error) {
+	var policy domain.ResourcePlacementPolicy
+	if len(policies) != 0 {
+		policy = policies[0]
+	}
 	inventory.ObservedAt = now
 	placement, err := backlog.MatchWorkers(backlog.WorkerPlacementRequest{
-		Task: task, Project: project, Now: now,
+		Task: task, Project: project, Now: now, ResourcePolicy: policy,
 		MaxSnapshotAge: time.Duration(1 << 62),
 	}, []domain.WorkerInventory{inventory})
 	if err != nil {

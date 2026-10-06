@@ -3,6 +3,9 @@ package workerruntime
 import (
 	"context"
 	"fmt"
+	"os"
+
+	"github.com/iryzhkov/t3-steward/internal/resourcetelemetry"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
@@ -57,6 +60,20 @@ func (e Exchange) handle(ctx context.Context, envelope workerproto.Envelope) (wo
 			return "", nil, err
 		}
 		observations := workerproto.Observations{Snapshot: snapshot}
+		if request.ReportResourceTelemetry {
+			collect := e.Runtime.config.CollectResourceTelemetry
+			if collect == nil {
+				collect = resourcetelemetry.New().Collect
+			}
+			running := 0
+			for _, assignment := range snapshot.Assignments {
+				if assignment.Control == domain.ControlRunning {
+					running++
+				}
+			}
+			telemetry := collect(e.Runtime.config.WorkspaceRoot, os.TempDir(), running)
+			observations.Telemetry = &telemetry
+		}
 		if e.Usage != nil {
 			observations.Usage, err = e.Usage.WorkerUsageBatch(ctx, request.UsageAcknowledgements, workerproto.MaxUsageDelivery)
 			observations.AcknowledgedUsageEventIDs = append([]string(nil), request.UsageAcknowledgements...)

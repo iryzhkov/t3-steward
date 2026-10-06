@@ -381,6 +381,8 @@ func baselineSnapshot() domain.WorkerSnapshot {
 		Inventory: domain.WorkerInventory{
 			ID: baselineWorker, AcceptBacklog: true, Health: domain.WorkerHealthReady,
 			CPUClass: domain.CPUClassHigh,
+			// Both examples now expand light/build presets to sized demand.
+			Allocatable: domain.AllocatableCapacity{ExecutorSlots: 8, CPUUnits: 16, MemoryMB: 32768, ScratchMB: 131072},
 			Projects: []domain.WorkerProjectInventory{{
 				Name: "example-project", Available: true, UpdatedAt: baselineTime,
 			}},

@@ -5,7 +5,7 @@ class        surplus
 environment  project example-project, git, scope task, ref main
 graph        3 tasks, 2 edges, 2 waves, 2 roots, 1 leaf, 1 component, 2 artifact bindings
 sink         __sink waits for every task in the run, not only the leaves; the coordinator creates and settles it
-resources    preset light, min cpu low
+resources    preset light, min cpu low, cpu units 0.25, memory 256 MB, scratch 512 MB
 routes       claudeAgent/claude-opus-5, pool claude-main
 preflight    source: context probe git_head, on failure record, include summary
 inputs       inputs/scope.md -> inputs/scope.md
@@ -17,7 +17,7 @@ wave 0 (2 tasks may start together)
     outputs     interfaces.md
     verify      git diff --quiet
     unblocks    join
-    resources   preset light, min cpu low (inherited)
+    resources   preset light, min cpu low, cpu units 0.25, memory 256 MB, scratch 512 MB (inherited)
     routes      inherited, 1 candidate(s)
     preflight   inherited, 1 step(s)
     scheduling  importance 3 (dispatch order), difficulty 2 (admission estimate), max turns 3
@@ -27,7 +27,7 @@ wave 0 (2 tasks may start together)
     outputs     tests.md
     verify      git diff --quiet
     unblocks    join
-    resources   preset light, min cpu low (inherited)
+    resources   preset light, min cpu low, cpu units 0.25, memory 256 MB, scratch 512 MB (inherited)
     routes      inherited, 1 candidate(s)
     preflight   inherited, 1 step(s)
     scheduling  importance 3 (dispatch order), difficulty 2 (admission estimate), max turns 3
@@ -41,7 +41,7 @@ wave 1 (1 task)
                 tests: tests.md
     outputs     combined.md
     verify      test -s combined.md
-    resources   preset build, min cpu medium, prefer cpu high (task)
+    resources   preset build, min cpu medium, prefer cpu high, cpu units 2, memory 4096 MB, scratch 8192 MB (task)
     routes      inherited, 1 candidate(s)
     preflight   inherited, 1 step(s)
     scheduling  importance 4 (dispatch order), difficulty 3 (admission estimate), max turns 8

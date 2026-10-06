@@ -32,6 +32,9 @@ func (c *Config) validateBacklogV2() error {
 			return fmt.Errorf("backlog_v2.review_routes.%s.tier must be economy|executor|critical", route)
 		}
 	}
+	if err := v.Coordinator.ResourcePlacement.Policy().Validate(); err != nil {
+		return fmt.Errorf("backlog_v2.coordinator.resource_placement: %w", err)
+	}
 	v.Mode = strings.ToLower(strings.TrimSpace(v.Mode))
 	if v.Coordinator.LegacyFileIntakeEnabled {
 		return errors.New("backlog_v2.coordinator.legacy_file_intake_enabled: Markdown intake is retired; set false and use t3-steward task run or campaign submit")

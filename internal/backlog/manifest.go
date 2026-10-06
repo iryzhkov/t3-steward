@@ -327,6 +327,9 @@ func applyManifestDefaults(manifest *Manifest) {
 	if manifest.Environment.Scope == "" {
 		manifest.Environment.Scope = EnvironmentScopeTask
 	}
+	// Keep numeric declarations separate from expanded defaults: an explicit
+	// workflow size wins over a task preset's implied size.
+	workflowResourceDeclarations := manifest.Resources
 	// Expand the workflow-level preset before the tasks inherit from it, so a
 	// task sees the same values the workflow author would read back.
 	expandResourcePreset(&manifest.Resources)
@@ -352,8 +355,11 @@ func applyManifestDefaults(manifest *Manifest) {
 		task.placementImpossible = len(manifest.Placement.Hosts) != 0 && len(task.Placement.Hosts) != 0 &&
 			len(intersectConstraints(manifest.Placement.Hosts, task.Placement.Hosts)) == 0
 		task.Placement = effectivePlacement(manifest.Placement, task.Placement)
+		taskResourceDeclarations := task.Resources
 		expandResourcePreset(&task.Resources)
 		task.Resources = effectiveResources(manifest.Resources, task.Resources)
+		sizes := effectiveResources(workflowResourceDeclarations, taskResourceDeclarations)
+		task.Resources.CPUUnits, task.Resources.MemoryMB, task.Resources.ScratchMB = sizes.CPUUnits, sizes.MemoryMB, sizes.ScratchMB
 		// Expand once more: a task that inherited only a preset from the
 		// workflow still needs that preset's classes filled in.
 		expandResourcePreset(&task.Resources)

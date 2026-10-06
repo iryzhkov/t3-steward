@@ -37,6 +37,7 @@ type PlanningWorkflow struct {
 }
 
 type PlanInput struct {
+	ResourcePolicy         domain.ResourcePlacementPolicy
 	DirectoryOwners        []DirectoryOwner
 	Now                    time.Time
 	MaxWorkerSnapshotAge   time.Duration
@@ -239,6 +240,7 @@ func BuildPlan(input PlanInput) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
+	input.Workers = append([]domain.WorkerInventory(nil), input.Workers...)
 	resourceOwners := cloneStringMap(input.ResourceOwners)
 	checkoutOwners := cloneStringMap(input.WorkflowCheckoutOwners)
 	result := Plan{Decisions: make([]TaskPlanningDecision, 0, len(entries))}
@@ -252,6 +254,7 @@ func BuildPlan(input PlanInput) (Plan, error) {
 			return Plan{}, err
 		}
 		if proposal != nil {
+			input.Workers = reservePlacementResources(input.Workers, proposal.WorkerID, entry.task.ResourceDemand)
 			decision.Proposed = true
 			result.Proposals = append(result.Proposals, *proposal)
 			for _, resource := range proposal.ResourceLocks {
@@ -432,7 +435,7 @@ func planningOrderReason(order PlanningOrder) string {
 
 func planTask(input PlanInput, router *providerRouter, constraints []PlanningConstraintSession, workflow domain.Workflow, state DAGState, task domain.Task, attempt domain.Attempt, order PlanningOrder, resourceOwners, checkoutOwners map[string]string) (TaskPlanningDecision, *ProposedTask, error) {
 	selection, err := SelectWorker(WorkerPlacementRequest{
-		Task: task, Project: workflow.Project, Now: input.Now, MaxSnapshotAge: input.MaxWorkerSnapshotAge,
+		Task: task, Project: workflow.Project, Now: input.Now, MaxSnapshotAge: input.MaxWorkerSnapshotAge, ResourcePolicy: input.ResourcePolicy,
 	}, input.Workers)
 	if err != nil {
 		return TaskPlanningDecision{}, nil, fmt.Errorf("plan task %q: %w", task.Name, err)
@@ -470,7 +473,6 @@ func planTask(input PlanInput, router *providerRouter, constraints []PlanningCon
 	}
 
 	var selected *PlanningCandidate
-	var selectedScore float64
 	for _, routed := range router.Candidates(task, attempt, placement.EligibleWorkerIDs) {
 		candidate := clonePlanningCandidate(routed.candidate)
 		candidate.WorkflowRunID = state.Run.ID
@@ -498,10 +500,9 @@ func planTask(input PlanInput, router *providerRouter, constraints []PlanningCon
 		// Candidates arrive in a deterministic worker and route order and the
 		// comparison is strict, so an equal score keeps the incumbent and a
 		// replan of unchanged input produces the same plan.
-		score := scoreFor(selection.Decision.Scores, candidate.WorkerID).Total
-		if selected == nil || score > selectedScore {
+		if selected == nil || placementBetter(selection.Decision, candidate.WorkerID, selected.WorkerID) {
 			copied := clonePlanningCandidate(candidate)
-			selected, selectedScore = &copied, score
+			selected = &copied
 		}
 	}
 	if len(placement.EligibleWorkerIDs) == 0 {

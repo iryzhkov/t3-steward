@@ -65,6 +65,52 @@ A configured worker cannot receive new assignment offers until enrollment
 matches the effective requirement. Exact request replay is idempotent; changing
 its actor or body is rejected.
 
+## Resource-aware placement
+
+Workers include live telemetry in each inventory: one- and five-minute load,
+CPU count, available memory, swap usage, free space on the workspace and temp
+filesystems, and running attempts. Linux reads /proc and statfs; missing fields
+on other platforms are unknown. The temp filesystem follows TMPDIR, falling
+back to /tmp.
+
+Placement keeps enrollment, capabilities, CPU class, executor capacity and slots
+as hard constraints. Fresh telemetry additionally rejects a worker when memory
+available is below task memory plus reserve, either filesystem is below task
+scratch plus reserve, or swap exceeds the configured limit. Remaining workers
+rank by normalized CPU and memory headroom before existing preference scores.
+CPU headroom is `(cores - max(load1, load5) - task CPU units) / cores`,
+clamped to [-1, 1]. Memory headroom is
+`(available - task memory - reserve) / (available + task memory + reserve)`.
+The configured weights combine these measures; existing preference scores break
+headroom ties.
+Missing, partial and stale telemetry rank after complete fresh telemetry;
+unknown readings alone do not exclude a worker. Each offer cycle subtracts the
+resource needs of assignments already made in that cycle, preventing a burst
+from repeatedly using the same idle snapshot.
+
+Coordinator defaults can be adjusted under
+`backlog_v2.coordinator.resource_placement`:
+
+```yaml
+telemetry_max_age: 2m
+memory_reserve_mb: 1024
+disk_reserve_mb: 2048
+max_swap_used_mb: 4096
+cpu_weight: 1
+memory_weight: 1
+```
+
+Task resource presets supply CPU share, memory and scratch needs: `light`
+uses 0.25 CPU units, 256 MiB memory and 512 MiB scratch; `build` uses
+2 CPU units, 4096 MiB memory and 8192 MiB scratch. Explicit resource fields
+override preset values. Build is intended for race tests and full review gates.
+
+`backlog explain` and `campaign check` report the telemetry used, resource
+rejections, headroom score, ranking and selected worker. Explain preserves the
+assignment's recorded decision after dispatch; queued work and campaign check
+evaluate current snapshots, so a later report may change as load changes.
+Check is read-only and does not reserve resources.
+
 ## Advertised capabilities and campaign supervision
 
 A worker advertises two kinds of capability in one list. The configured kind

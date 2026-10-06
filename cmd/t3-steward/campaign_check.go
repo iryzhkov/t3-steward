@@ -407,6 +407,9 @@ func renderCampaignCheck(out interface{ Write([]byte) (int, error) }, document c
 	}
 	for _, task := range document.Matrix.Tasks {
 		linef("  %s  %s", task.Task, task.Outcome)
+		if task.SelectedWorker != "" {
+			linef("    selected worker: %s", task.SelectedWorker)
+		}
 		for _, reason := range task.Reasons {
 			linef("    %s  %s: %s", permanenceLabel(reason.Permanent), reason.Code, reason.Detail)
 		}
@@ -442,6 +445,9 @@ func renderCampaignCheck(out interface{ Write([]byte) (int, error) }, document c
 		}
 		for _, candidate := range listed {
 			linef("    %s  %s", candidate.Worker, candidate.Outcome)
+			if candidate.ResourceEvaluation != nil {
+				linef("      %s", resourceEvaluationText(*candidate.ResourceEvaluation))
+			}
 			for _, note := range candidateNotes(candidate) {
 				if !shared[note] {
 					linef("      %s", note)
@@ -471,6 +477,11 @@ func renderCampaignCheck(out interface{ Write([]byte) (int, error) }, document c
 				details = append(details, candidate.Worker+" ("+strings.Join(findings, "; ")+")")
 			}
 			linef("    not eligible, omitted: %d %s: %s", len(excluded), workers, strings.Join(details, ", "))
+			for _, candidate := range excluded {
+				if candidate.ResourceEvaluation != nil {
+					linef("      %s", resourceEvaluationText(*candidate.ResourceEvaluation))
+				}
+			}
 		}
 	}
 	_, err := fmt.Fprint(out, strings.Join(lines, "\n")+"\n")

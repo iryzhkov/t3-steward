@@ -13,7 +13,10 @@
   "placement": {},
   "resources": {
     "preset": "light",
-    "minCpuClass": "low"
+    "minCpuClass": "low",
+    "cpuUnits": 0.25,
+    "memoryMb": 256,
+    "scratchMb": 512
   },
   "routes": [
     {
@@ -61,7 +64,10 @@
       "placementFrom": "unset",
       "resources": {
         "preset": "light",
-        "minCpuClass": "low"
+        "minCpuClass": "low",
+        "cpuUnits": 0.25,
+        "memoryMb": 256,
+        "scratchMb": 512
       },
       "resourcesFrom": "inherited",
       "routes": [
@@ -110,7 +116,10 @@
       "placementFrom": "unset",
       "resources": {
         "preset": "light",
-        "minCpuClass": "low"
+        "minCpuClass": "low",
+        "cpuUnits": 0.25,
+        "memoryMb": 256,
+        "scratchMb": 512
       },
       "resourcesFrom": "inherited",
       "routes": [
@@ -175,7 +184,10 @@
       "resources": {
         "preset": "build",
         "minCpuClass": "medium",
-        "preferredCpuClass": "high"
+        "preferredCpuClass": "high",
+        "cpuUnits": 2,
+        "memoryMb": 4096,
+        "scratchMb": 8192
       },
       "resourcesFrom": "task",
       "routes": [

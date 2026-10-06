@@ -46,7 +46,9 @@ const DefaultRetention = 72 * time.Hour
 const MaxPrepareAttempts = 3
 
 type Config struct {
-	ObserveInventory func(context.Context, domain.WorkerInventory) (domain.WorkerInventory, error)
+	WorkspaceRoot            string
+	CollectResourceTelemetry func(string, string, int) domain.WorkerTelemetry
+	ObserveInventory         func(context.Context, domain.WorkerInventory) (domain.WorkerInventory, error)
 	// LiveTaskWait overrides how the worker answers whether an attempt is
 	// parked on a task-bound wait. It exists for an embedded worker that can
 	// read coordinator state directly, and for tests.
@@ -168,6 +170,9 @@ func AdvertisedCapabilities(configured []string) []string {
 	}
 	if !slices.Contains(merged, workerproto.CapabilityQuotaObservations) {
 		merged = append(merged, workerproto.CapabilityQuotaObservations)
+	}
+	if !slices.Contains(merged, workerproto.CapabilityResourceTelemetry) {
+		merged = append(merged, workerproto.CapabilityResourceTelemetry)
 	}
 	for _, capability := range workerproto.SupportedPackageCapabilities() {
 		if !slices.Contains(merged, capability) {

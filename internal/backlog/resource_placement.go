@@ -1,0 +1,132 @@
+package backlog
+
+import (
+	"fmt"
+	"github.com/iryzhkov/t3-steward/internal/domain"
+	"math"
+	"sort"
+)
+
+func liveResourceEvaluation(request WorkerPlacementRequest, worker domain.WorkerInventory) (domain.ResourceEvaluation, []WorkerExclusion) {
+	p := request.ResourcePolicy.WithDefaults()
+	e := domain.ResourceEvaluation{WorkerID: worker.ID, Telemetry: worker.Telemetry.Clone(), State: "unknown"}
+	v := e.Telemetry
+	if v == nil {
+		return e, nil
+	}
+	age := request.Now.Sub(v.ObservedAt)
+	if v.ObservedAt.IsZero() || age < 0 || age > p.TelemetryMaxAge {
+		e.State = "stale"
+		return e, nil
+	}
+	validSize := func(x *int64) bool { return x != nil && *x >= 0 }
+	validLoad := func(x *float64) bool { return x != nil && *x >= 0 && !math.IsNaN(*x) && !math.IsInf(*x, 0) }
+	knownCPU := v.CPUCount != nil && *v.CPUCount > 0 && validLoad(v.Load1) && validLoad(v.Load5)
+	e.State = "partial"
+	if knownCPU && validSize(v.MemoryAvailableMB) && validSize(v.SwapUsedMB) && validSize(v.WorkspaceFreeMB) && validSize(v.TempFreeMB) && v.RunningAttempts != nil && *v.RunningAttempts >= 0 {
+		e.State = "known"
+	}
+	var exclusions []WorkerExclusion
+	addFloor := func(value *int64, need int, reserve int64, code, dimension string) {
+		if validSize(value) && float64(*value) < float64(need)+float64(reserve) {
+			exclusions = append(exclusions, WorkerExclusion{Code: code, Detail: fmt.Sprintf("%s available %d MB is below task need %d MB plus reserve %d MB", dimension, *value, need, reserve)})
+		}
+	}
+	demand := request.Task.ResourceDemand
+	addFloor(v.MemoryAvailableMB, demand.MemoryMB, p.MemoryReserveMB, "resource-memory", "memory")
+	addFloor(v.WorkspaceFreeMB, demand.ScratchMB, p.DiskReserveMB, "resource-workspace-disk", "workspace disk")
+	addFloor(v.TempFreeMB, demand.ScratchMB, p.DiskReserveMB, "resource-temp-disk", "temp disk")
+	if validSize(v.SwapUsedMB) && *v.SwapUsedMB > p.MaxSwapUsedMB {
+		exclusions = append(exclusions, WorkerExclusion{Code: "resource-swap", Detail: fmt.Sprintf("swap used %d MB exceeds limit %d MB", *v.SwapUsedMB, p.MaxSwapUsedMB)})
+	}
+	if knownCPU {
+		cores := float64(*v.CPUCount)
+		e.CPUHeadroom = math.Max(-1, math.Min(1, (cores-math.Max(*v.Load1, *v.Load5)-demand.CPUUnits)/cores))
+	}
+	if validSize(v.MemoryAvailableMB) {
+		available := float64(*v.MemoryAvailableMB)
+		required := float64(demand.MemoryMB) + float64(p.MemoryReserveMB)
+		if available+required > 0 {
+			e.MemoryHeadroom = (available - required) / (available + required)
+		}
+	}
+	e.Score = p.CPUWeight*e.CPUHeadroom + p.MemoryWeight*e.MemoryHeadroom
+	return e, exclusions
+}
+
+// ResourceRankLess orders resource evidence before the existing worker score.
+// Partial and absent observations share the conservative fallback tier.
+func ResourceRankLess(a, b domain.ResourceEvaluation) bool {
+	if (a.State == "known") != (b.State == "known") {
+		return a.State == "known"
+	}
+	return a.State == "known" && a.Score > b.Score
+}
+
+func placementBetter(decision domain.PlacementDecision, candidate, incumbent string) bool {
+	var a, b domain.ResourceEvaluation
+	for _, e := range decision.ResourceEvaluations {
+		if e.WorkerID == candidate {
+			a = e
+		}
+		if e.WorkerID == incumbent {
+			b = e
+		}
+	}
+	if ResourceRankLess(a, b) {
+		return true
+	}
+	if ResourceRankLess(b, a) {
+		return false
+	}
+	return scoreFor(decision.Scores, candidate).Total > scoreFor(decision.Scores, incumbent).Total
+}
+
+func rankResourceEvaluations(decision *domain.PlacementDecision) {
+	ids := make([]string, 0, len(decision.Scores))
+	for _, s := range decision.Scores {
+		ids = append(ids, s.WorkerID)
+	}
+	sort.SliceStable(ids, func(i, j int) bool { return placementBetter(*decision, ids[i], ids[j]) })
+	for i, id := range ids {
+		for j := range decision.ResourceEvaluations {
+			if decision.ResourceEvaluations[j].WorkerID == id {
+				decision.ResourceEvaluations[j].Rank = i + 1
+			}
+		}
+	}
+}
+
+// reservePlacementResources adds planned demand to a private snapshot. Live
+// metrics already account for running tasks; only newly proposed work is added.
+func reservePlacementResources(workers []domain.WorkerInventory, workerID string, demand domain.ResourceDemand) []domain.WorkerInventory {
+	result := append([]domain.WorkerInventory(nil), workers...)
+	for i := range result {
+		if result[i].ID != workerID || result[i].Telemetry == nil {
+			continue
+		}
+		v := result[i].Telemetry.Clone()
+		result[i].Telemetry = v
+		if v.Load1 != nil {
+			*v.Load1 += demand.CPUUnits
+		}
+		if v.Load5 != nil {
+			*v.Load5 += demand.CPUUnits
+		}
+		deduct := func(x *int64, need int) {
+			if x != nil {
+				*x -= int64(need)
+				if *x < 0 {
+					*x = 0
+				}
+			}
+		}
+		deduct(v.MemoryAvailableMB, demand.MemoryMB)
+		deduct(v.WorkspaceFreeMB, demand.ScratchMB)
+		deduct(v.TempFreeMB, demand.ScratchMB)
+		if v.RunningAttempts != nil {
+			*v.RunningAttempts++
+		}
+	}
+	return result
+}
