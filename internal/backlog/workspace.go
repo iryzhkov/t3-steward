@@ -234,8 +234,15 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 			return fail(fmt.Errorf("resolve ref %q: Git returned invalid commit %q", request.Environment.Ref, commit))
 		}
 
-		if err := runLoggedCommand(ctx, logFile, "", p.git(), "clone", "--no-local", "--no-checkout", "--", cached.Path, workspaceDir); err != nil {
+		if err := runLoggedCheckoutCommand(ctx, logFile, p.git(), "clone", "--no-local", "--no-checkout", "--", cached.Path, workspaceDir); err != nil {
 			return fail(fmt.Errorf("clone task workspace: %w", err))
+		}
+		// The clone ran under the conventional umask, so Git created the
+		// workspace root group- and world-readable. The root stays owner-only
+		// like the rest of the worker's state; the files under it keep the
+		// modes Git records.
+		if err := os.Chmod(workspaceDir, 0o700); err != nil {
+			return fail(fmt.Errorf("protect task workspace: %w", err))
 		}
 		// The clone's origin is the worker's repository cache, which is a
 		// mirror: a push into it lands nowhere the owner can see, and the
@@ -246,7 +253,7 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 		if err := runLoggedCommand(ctx, logFile, "", p.git(), "-C", workspaceDir, "remote", "set-url", "--push", "--", "origin", request.Environment.Repository); err != nil {
 			return fail(fmt.Errorf("point the workspace's origin push URL at the project repository: %w", err))
 		}
-		if err := runLoggedCommand(ctx, logFile, "", p.git(), "-C", workspaceDir, "checkout", "--detach", commit); err != nil {
+		if err := runLoggedCheckoutCommand(ctx, logFile, p.git(), "-C", workspaceDir, "checkout", "--detach", commit); err != nil {
 			return fail(fmt.Errorf("checkout pinned commit %s: %w", commit, err))
 		}
 		head, err := runLoggedCommandOutput(ctx, logFile, "", p.git(), "-C", workspaceDir, "rev-parse", "HEAD")
@@ -493,6 +500,11 @@ func exposeWorkspaceInputs(workspaceDir string) error {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return errors.New("prepare workspace: repository .t3 is not a real directory")
 		}
+		// A .t3 the repository tracks was checked out under the conventional
+		// umask; it holds the Steward's view of inputs, so it stays owner-only.
+		if err := os.Chmod(metadataDir, 0o700); err != nil {
+			return fmt.Errorf("prepare workspace: protect repository .t3: %w", err)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("prepare workspace: inspect repository .t3: %w", err)
 	} else if err := os.Mkdir(metadataDir, 0o700); err != nil {
@@ -558,6 +570,20 @@ func (p WorkspacePreparer) processRunner() ProcessRunner {
 func runLoggedCommand(ctx context.Context, log io.Writer, dir, program string, args ...string) error {
 	_, err := runLoggedCommandOutput(ctx, log, dir, program, args...)
 	return err
+}
+
+// checkoutUmask is the umask Git checks a task workspace out under. The worker
+// runs with UMask=0077, and Git creates checked-out files with the umask it
+// inherits, so without it a tracked 0644 file became 0600 and a 0755 file
+// 0700, and repository tests that check file modes failed only in campaigns.
+const checkoutUmask = "022"
+
+// runLoggedCheckoutCommand runs a Git command that writes the task workspace
+// under checkoutUmask. Only the child process gets that umask: changing the
+// worker's own umask would race with every other goroutine creating files.
+func runLoggedCheckoutCommand(ctx context.Context, log io.Writer, program string, args ...string) error {
+	wrapped := append([]string{"-c", `umask ` + checkoutUmask + ` && exec "$0" "$@"`, program}, args...)
+	return runLoggedCommand(ctx, log, "", "/bin/sh", wrapped...)
 }
 
 func runLoggedCommandOutput(ctx context.Context, log io.Writer, dir, program string, args ...string) ([]byte, error) {
