@@ -8,6 +8,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 func TestCrossRunDependencyWaitsThenReleasesOrSkips(t *testing.T) {
@@ -15,7 +16,7 @@ func TestCrossRunDependencyWaitsThenReleasesOrSkips(t *testing.T) {
 		t.Run(map[bool]string{false: "success", true: "cancelled"}[cancelled], func(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now().UTC()
-			store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+			store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 			if err != nil {
 				t.Fatal(err)
 			}

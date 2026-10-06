@@ -20,6 +20,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -47,7 +48,7 @@ type activationLeaseFixture struct {
 
 func newActivationLeaseFixture(t *testing.T) *activationLeaseFixture {
 	t.Helper()
-	return newActivationLeaseFixtureWithStore(t, sqlite.OpenMigrated)
+	return newActivationLeaseFixtureWithStore(t, sqlitetest.OpenMigrated)
 }
 
 func newActivationLeaseFixtureWithStore(t *testing.T, openStore func(string) (*sqlite.Store, error)) *activationLeaseFixture {

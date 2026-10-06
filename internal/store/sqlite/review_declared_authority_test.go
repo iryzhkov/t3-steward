@@ -59,7 +59,7 @@ func TestReviewDeclaredAuthorityOwningTransactionRollbackReopen(t *testing.T) {
 	for _, kind := range []string{"healthy", "advanced before initial freeze", "ended", "assignment epoch", "source", "declaration", "input manifest", "input membership", "policy forgery"} {
 		t.Run(kind, func(t *testing.T) {
 			s, f := declaredAuthorityFixture(t)
-			other, err := OpenMigrated(s.path)
+			other, err := openMigratedFixture(s.path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -108,7 +108,7 @@ func TestReviewDeclaredAuthorityOwningTransactionRollbackReopen(t *testing.T) {
 				if err = s.Close(); err != nil {
 					t.Fatal(err)
 				}
-				s, err = OpenMigrated(path)
+				s, err = openMigratedFixture(path)
 				if err != nil {
 					t.Fatal(err)
 				}

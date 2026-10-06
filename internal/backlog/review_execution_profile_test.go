@@ -10,6 +10,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 func executionManifestYAML() string {
@@ -266,7 +267,7 @@ func TestReviewExecutionProfileOriginalAuthorityCatalogChangeAndCopies(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := sqlite.OpenMigrated(f.store.dbPath)
+	reopened, err := sqlitetest.OpenMigrated(f.store.dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

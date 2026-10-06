@@ -11,6 +11,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/wait"
 )
 
@@ -45,7 +46,7 @@ func TestM5RetainedAccumulatedHistorySurvivesRestartAndActivation(t *testing.T) 
 	ctx := context.Background()
 	root := t.TempDir()
 	statePath := filepath.Join(root, "state.db")
-	store, err := sqlite.OpenMigrated(statePath)
+	store, err := sqlitetest.OpenMigrated(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +181,7 @@ func TestM5RetainedAccumulatedHistorySurvivesRestartAndActivation(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	store, err = sqlite.OpenMigrated(statePath)
+	store, err = sqlitetest.OpenMigrated(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}

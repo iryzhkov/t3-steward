@@ -171,7 +171,7 @@ func TestAssignmentLeaseRenewalAndExpiryFailClosed(t *testing.T) {
 
 func TestMigrationFromVersionEightBackfillsLeaseExpiry(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := OpenMigrated(path)
+	store, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestMigrationFromVersionEightBackfillsLeaseExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err = OpenMigrated(path)
+	store, err = openMigratedFixture(path)
 	if err != nil {
 		t.Fatalf("migrate version 8 database: %v", err)
 	}

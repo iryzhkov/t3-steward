@@ -12,6 +12,7 @@ import (
 	"time"
 
 	storesqlite "github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 func TestSnapshotBackupRestoreDrill(t *testing.T) {
@@ -22,7 +23,7 @@ func TestSnapshotBackupRestoreDrill(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(database), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := storesqlite.OpenMigrated(database)
+	store, err := sqlitetest.OpenMigrated(database)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +88,7 @@ func TestSnapshotBackupRestoreDrill(t *testing.T) {
 
 func TestSnapshotRefusesActiveCoordinatorAndUnsafeFiles(t *testing.T) {
 	root, database, artifacts := snapshotFixture(t)
-	store, err := storesqlite.OpenMigrated(database)
+	store, err := sqlitetest.OpenMigrated(database)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +257,7 @@ func snapshotFixture(t *testing.T) (string, string, string) {
 	if err := os.MkdirAll(filepath.Dir(database), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := storesqlite.OpenMigrated(database)
+	store, err := sqlitetest.OpenMigrated(database)
 	if err != nil {
 		t.Fatal(err)
 	}

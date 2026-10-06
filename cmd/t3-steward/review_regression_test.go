@@ -4,7 +4,7 @@ import (
 	"context"
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/campaign"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,7 +62,7 @@ func TestReviewRegisterOnlyNamesItsRefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
-	store, err := sqlite.OpenMigrated(":memory:")
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/config"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
@@ -60,7 +60,7 @@ func TestPersistentCoordinatorCatalogAndExecutionSessionsShareWorker(t *testing.
 			t.Error(err)
 		}
 	}()
-	store, err := sqlite.OpenMigrated(filepath.Join(root, "coordinator.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(root, "coordinator.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

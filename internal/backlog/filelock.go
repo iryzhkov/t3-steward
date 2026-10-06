@@ -11,7 +11,11 @@ import (
 	"time"
 )
 
-const fileLockRetryInterval = 10 * time.Millisecond
+// fileLockRetryInterval is how long a waiter sleeps between non-blocking
+// attempts on a held lock. It is a variable only so that this package's tests,
+// which contend on locks thousands of times, can poll more often; production
+// code never assigns it.
+var fileLockRetryInterval = 10 * time.Millisecond
 
 type fileLock struct {
 	file *os.File

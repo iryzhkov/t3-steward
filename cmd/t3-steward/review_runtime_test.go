@@ -11,6 +11,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/pinnedinput"
 	"github.com/iryzhkov/t3-steward/internal/review"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -26,7 +27,7 @@ func reviewRuntimeProductionFixture(t *testing.T) (*sqlite.Store, review.FrozenA
 	t.Helper()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := sqlite.OpenMigrated(path)
+	store, err := sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +149,7 @@ func TestReviewRuntimeProductionPlannerAutomaticWithoutCapacity(t *testing.T) {
 				if err = store.Close(); err != nil {
 					t.Fatal(err)
 				}
-				store, err = sqlite.OpenMigrated(path)
+				store, err = sqlitetest.OpenMigrated(path)
 				if err != nil {
 					t.Fatal(err)
 				}

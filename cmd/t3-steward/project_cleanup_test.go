@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/iryzhkov/t3-steward/internal/config"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/t3projects"
 )
 
@@ -75,7 +75,7 @@ func TestWatchdogSweepsItsOwnEmptyProjects(t *testing.T) {
 	home := t.TempDir()
 	projectCleanupHome = func() (string, error) { return home, nil }
 	t.Cleanup(func() { projectCleanupHome = os.UserHomeDir })
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestProjectCleanupFollowsBothDryRunSwitches(t *testing.T) {
 			cfg.Archive.Enabled = false
 			cfg.Policy.DryRun, cfg.ProjectCleanup.DryRun = tc.policy, tc.cleanup
 			cfg.BacklogV2.Storage.Workspaces = filepath.Join(t.TempDir(), "workspaces")
-			store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+			store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -157,7 +157,7 @@ func TestWatchdogWithoutProjectCleanup(t *testing.T) {
 	cfg.T3.URL, cfg.T3.Token, cfg.T3.DataDir = "http://127.0.0.1:1", "test", t.TempDir()
 	cfg.Archive.Enabled = false
 	cfg.ProjectCleanup.Enabled = false
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

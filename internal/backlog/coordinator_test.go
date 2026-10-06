@@ -9,13 +9,14 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 var coordinatorTestTime = time.Date(2026, time.September, 10, 20, 0, 0, 0, time.UTC)
 
 func TestFleetCoordinatorWithholdsNewWorkAtFinalQuotaBoundary(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +73,7 @@ func TestFleetCoordinatorWithholdsNewWorkAtFinalQuotaBoundary(t *testing.T) {
 
 func TestFleetCoordinatorCommitsPlanAndReplaysLostCommandResponse(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +201,7 @@ func TestFleetCoordinatorCommitsPlanAndReplaysLostCommandResponse(t *testing.T) 
 
 func TestFleetCoordinatorRecoversLostDispatchAcknowledgementWithoutDuplicateExecution(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

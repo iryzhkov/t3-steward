@@ -15,7 +15,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 func TestRunBacklogV2CoordinatorDefaultIntakeLeavesFilesAndQuarantine(t *testing.T) {
@@ -30,7 +30,7 @@ func TestRunBacklogV2CoordinatorDefaultIntakeLeavesFilesAndQuarantine(t *testing
 			t.Fatal(err)
 		}
 	}
-	store, err := sqlite.OpenMigrated(cfg.StatePath)
+	store, err := sqlitetest.OpenMigrated(cfg.StatePath)
 	if err != nil {
 		t.Fatal(err)
 	}

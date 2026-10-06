@@ -4,14 +4,15 @@ import (
 	"context"
 	"errors"
 	"github.com/iryzhkov/t3-steward/internal/review"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestReviewRoundQueryUsesExistingReadAuthorization(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.OpenMigrated(":memory:")
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

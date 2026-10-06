@@ -17,7 +17,7 @@ var supervisionTestTime = time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
 
 func openSupervisionStore(t *testing.T, path string) *Store {
 	t.Helper()
-	store, err := OpenMigrated(path)
+	store, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}

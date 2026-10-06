@@ -8,6 +8,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 func TestNativeWaitRoutingNeverOpensShellCheck(t *testing.T) {
@@ -38,7 +39,7 @@ func TestAttentionInspectIsDiscoverable(t *testing.T) {
 }
 
 func TestCoordinatorSettlesNodeWaitDespiteQuotaFailure(t *testing.T) {
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

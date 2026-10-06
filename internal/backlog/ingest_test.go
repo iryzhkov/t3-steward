@@ -14,6 +14,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 type ingestionStore struct {
@@ -53,7 +54,7 @@ tasks:
 `)
 
 	stateDir := t.TempDir()
-	store, err := sqlite.OpenMigrated(filepath.Join(stateDir, "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(stateDir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

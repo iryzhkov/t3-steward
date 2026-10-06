@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"reflect"
 	"testing"
 	"time"
@@ -77,7 +78,7 @@ func TestReviewRuntimeAutomaticHealthySiblingAndReopen(t *testing.T) {
 			if err = f.parent.store.Close(); err != nil {
 				t.Fatal(err)
 			}
-			f.parent.store.Store, err = sqlite.OpenMigrated(f.parent.store.dbPath)
+			f.parent.store.Store, err = sqlitetest.OpenMigrated(f.parent.store.dbPath)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -59,7 +59,7 @@ tasks:
         fresh_through: 2026-09-22T19:00:00Z
 `, reference))
 			statePath := filepath.Join(t.TempDir(), "state.db")
-			store, err := sqlite.OpenMigrated(statePath)
+			store, err := sqlitetest.OpenMigrated(statePath)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -74,7 +74,7 @@ tasks:
 			if err := store.Close(); err != nil {
 				t.Fatal(err)
 			}
-			store, err = sqlite.OpenMigrated(statePath)
+			store, err = sqlitetest.OpenMigrated(statePath)
 			if err != nil {
 				t.Fatal(err)
 			}

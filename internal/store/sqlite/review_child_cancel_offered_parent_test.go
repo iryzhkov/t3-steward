@@ -15,6 +15,7 @@ func TestReviewChildCancellationOfferedParentRetryLifecycle(t *testing.T) {
 	for _, branch := range []string{"ended", "superseded", "run-ended", "ownership-lost", "deadline"} {
 		for _, layout := range []string{"queued", "ready", "blocked", "commit"} {
 			t.Run(branch+"/"+layout, func(t *testing.T) {
+				t.Parallel()
 				ctx := context.Background()
 				s, f, cp, receipt := parentWaitFixture(t)
 				if _, err := s.WaitReviewParent(ctx, f, cp); err != nil {

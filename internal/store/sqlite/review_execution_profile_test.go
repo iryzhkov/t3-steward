@@ -123,7 +123,7 @@ func TestReviewExecutionProfileSQLiteFreshReopenedTerminal(t *testing.T) {
 			if reopen {
 				s.Close()
 				var err error
-				s, err = OpenMigrated(path)
+				s, err = openMigratedFixture(path)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -191,6 +191,7 @@ func TestReviewExecutionProfileSQLiteEveryFieldTamperRefused(t *testing.T) {
 	for _, target := range []string{"template", "graph", "run-graph", "receipt"} {
 		for path, value := range paths {
 			t.Run(target+"/"+path, func(t *testing.T) {
+				t.Parallel()
 				s, f, cp, p, _ := executionChildFixture(t)
 				ctx := context.Background()
 				first, err := s.MaterializeReviewChild(ctx, f, cp, p)

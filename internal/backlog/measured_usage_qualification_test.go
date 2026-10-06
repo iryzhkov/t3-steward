@@ -19,6 +19,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/source/providerlog"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 type qualificationFixture struct {
@@ -165,7 +166,7 @@ func runQualificationScenario(t *testing.T, scenario qualificationScenario) (qua
 	ctx := context.Background()
 	root := t.TempDir()
 	coordinatorPath := filepath.Join(root, "coordinator.db")
-	coordinatorStore, err := sqlite.OpenMigrated(coordinatorPath)
+	coordinatorStore, err := sqlitetest.OpenMigrated(coordinatorPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +246,7 @@ func runQualificationScenario(t *testing.T, scenario qualificationScenario) (qua
 		})
 		if _, ok := workerStores[item.WorkerID]; !ok {
 			path := filepath.Join(root, item.WorkerID+".db")
-			store, openErr := sqlite.OpenMigrated(path)
+			store, openErr := sqlitetest.OpenMigrated(path)
 			if openErr != nil {
 				t.Fatal(openErr)
 			}
@@ -303,7 +304,7 @@ func runQualificationScenario(t *testing.T, scenario qualificationScenario) (qua
 			if err := workerStores[workerID].Close(); err != nil {
 				return err
 			}
-			reopened, err := sqlite.OpenMigrated(workerPaths[workerID])
+			reopened, err := sqlitetest.OpenMigrated(workerPaths[workerID])
 			if err != nil {
 				return err
 			}
@@ -311,7 +312,7 @@ func runQualificationScenario(t *testing.T, scenario qualificationScenario) (qua
 			if err := coordinatorStore.Close(); err != nil {
 				return err
 			}
-			coordinatorStore, err = sqlite.OpenMigrated(coordinatorPath)
+			coordinatorStore, err = sqlitetest.OpenMigrated(coordinatorPath)
 			if err != nil {
 				return err
 			}
@@ -379,7 +380,7 @@ func runQualificationScenario(t *testing.T, scenario qualificationScenario) (qua
 	if err := coordinatorStore.Close(); err != nil {
 		t.Fatal(err)
 	}
-	coordinatorStore, err = sqlite.OpenMigrated(coordinatorPath)
+	coordinatorStore, err = sqlitetest.OpenMigrated(coordinatorPath)
 	if err != nil {
 		t.Fatal(err)
 	}

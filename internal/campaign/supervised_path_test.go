@@ -24,6 +24,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 type supervisedFixture struct {
@@ -270,7 +271,7 @@ func submitSupervisedCampaign(t *testing.T) supervisedFixture {
 	t.Helper()
 	ctx := context.Background()
 	root := t.TempDir()
-	store, err := sqlite.OpenMigrated(filepath.Join(root, "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

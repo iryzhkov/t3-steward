@@ -99,7 +99,7 @@ func TestReviewChildAllocationReopenProgressReplay(t *testing.T) {
 	s, f, cp, p, _ := childFixture(t)
 	path := s.path
 	s.Close()
-	s, err := OpenMigrated(path)
+	s, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}

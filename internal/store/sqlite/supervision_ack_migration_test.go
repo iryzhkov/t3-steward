@@ -30,7 +30,7 @@ func TestMigrationV22ProjectsLegacyConsumedReviewerEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err := OpenMigrated(path)
+	store, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}

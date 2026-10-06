@@ -13,7 +13,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -98,7 +98,7 @@ func TestCollectionFix1ReceiptAuthority(t *testing.T) {
 					if durable || inspectErr == nil || collectErr == nil || errors.As(collectErr, &permanent) || f.record(t).Phase != PhaseCollecting || f.record(t).Failure != "" {
 						t.Fatalf("ambiguous authority completed/reclassified: durable=%v inspect=%v collect=%v record=%+v", durable, inspectErr, collectErr, f.record(t))
 					}
-					db, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "coordinator.db"))
+					db, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "coordinator.db"))
 					if err != nil {
 						t.Fatal(err)
 					}

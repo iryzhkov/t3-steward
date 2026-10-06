@@ -262,7 +262,7 @@ func TestAdminCommandValidationAndMissingTargets(t *testing.T) {
 
 func openAdminCommandStore(t *testing.T, path string) *Store {
 	t.Helper()
-	store, err := OpenMigrated(path)
+	store, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}

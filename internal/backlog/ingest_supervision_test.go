@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
-	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 const supervisedIngestionManifest = `
@@ -39,7 +39,7 @@ tasks:
 // The durable gate identity must be the run's, not the authored word, or the
 // second ingestion silently rewrites the first run's gate row.
 func TestSupervisedIngestionMintsRunScopedGateIdentities(t *testing.T) {
-	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

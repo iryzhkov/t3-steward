@@ -11,6 +11,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 var bucketTestKey = domain.BucketKey{ProviderInstanceID: "claudeAgent", LimitID: "claude", Window: "five_hour"}
@@ -25,7 +26,7 @@ func bucketTestState(t *testing.T, phase domain.Phase, used float64) (string, st
 	if err := os.WriteFile(configPath, []byte("state_path: "+statePath+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	store, err := sqlite.OpenMigrated(statePath)
+	store, err := sqlitetest.OpenMigrated(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}

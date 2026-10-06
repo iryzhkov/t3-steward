@@ -15,6 +15,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"gopkg.in/yaml.v3"
 )
 
@@ -64,7 +65,7 @@ func newReloadFixture(t *testing.T) *reloadFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := sqlite.OpenMigrated(cfg.StatePath)
+	store, err := sqlitetest.OpenMigrated(cfg.StatePath)
 	if err != nil {
 		t.Fatal(err)
 	}

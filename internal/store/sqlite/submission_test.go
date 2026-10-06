@@ -15,7 +15,7 @@ import (
 
 func TestSubmissionReservationSerializesReplayAndConflict(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	first, err := OpenMigrated(path)
+	first, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestSubmissionReservationSerializesReplayAndConflict(t *testing.T) {
 
 func TestMigrationFromVersionTenAddsSubmissionJournal(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := OpenMigrated(path)
+	store, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestMigrationFromVersionTenAddsSubmissionJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err = OpenMigrated(path)
+	store, err = openMigratedFixture(path)
 	if err != nil {
 		t.Fatalf("migrate version 10 database: %v", err)
 	}
@@ -126,7 +126,7 @@ func submissionDigestFixture(value string) string {
 }
 
 func TestCompleteSubmissionPersistsOneNativeEventAcrossReplay(t *testing.T) {
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestCompleteSubmissionPersistsOneNativeEventAcrossReplay(t *testing.T) {
 }
 
 func TestCompleteSubmissionRollsBackWhenNativeEventConflicts(t *testing.T) {
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

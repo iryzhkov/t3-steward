@@ -20,7 +20,7 @@ import (
 // steward runs. A check that is still waiting, and an interactive outcome whose
 // wake this host still owes, are custody and stay so.
 func TestSettledTaskBoundCheckReleasesItsThread(t *testing.T) {
-	s, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	s, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestSettledTaskBoundCheckReleasesItsThread(t *testing.T) {
 }
 
 func TestSessionArchiveRetainsExpiredAssignmentCustody(t *testing.T) {
-	s, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	s, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

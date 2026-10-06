@@ -12,6 +12,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/daemon"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
 // fakeThreads is the host's T3 thread list as the guard sees it.
@@ -36,7 +37,7 @@ func newRecoveryFixture(t *testing.T, now *time.Time) *recoveryFixture {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	store, err := sqlite.OpenMigrated(":memory:")
+	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

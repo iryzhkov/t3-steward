@@ -166,7 +166,7 @@ func TestSettledWakeAgeSurvivesStoreRestart(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := OpenMigrated(path)
+	reopened, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
