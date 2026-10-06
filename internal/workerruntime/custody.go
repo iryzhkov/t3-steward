@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -287,6 +288,7 @@ func resultObjects(pkg workerproto.ExecutionPackage, result PublishedResult) ([]
 // metadata, so that metadata never makes a result fail that would otherwise
 // publish.
 func (s *CustodyStore) AdmitResult(pkg workerproto.ExecutionPackage, result PublishedResult) error {
+	result = boundThreadArchive(pkg, result, s.resultLimits(pkg))
 	planned, err := resultObjects(pkg, result)
 	if err != nil {
 		return err
@@ -303,9 +305,21 @@ func (s *CustodyStore) AdmitResult(pkg workerproto.ExecutionPackage, result Publ
 }
 
 // PublishResult retains finalizer output, final message, and thread archive as one upload.
+// A thread archive the upload has no room for is published compacted, and the
+// full archive is kept in this store, never uploaded.
 func (s *CustodyStore) PublishResult(ctx context.Context, pkg workerproto.ExecutionPackage, result PublishedResult) error {
 	if durable, err := s.ResultDurable(pkg); err != nil || durable {
 		return err
+	}
+	full := result.ThreadArchive
+	result = boundThreadArchive(pkg, result, s.resultLimits(pkg))
+	if !bytes.Equal(full, result.ThreadArchive) {
+		retained, err := s.retainThreadArchive(pkg.Identity.AttemptID, full)
+		if err != nil {
+			return fmt.Errorf("publish result: retain full thread archive: %w", err)
+		}
+		slog.Warn("thread archive over the result upload limits; publishing a compacted archive",
+			"attempt", pkg.Identity.AttemptID, "size", len(full), "compacted", len(result.ThreadArchive), "retained", retained)
 	}
 	planned, err := resultObjects(pkg, result)
 	if err != nil {
@@ -319,6 +333,120 @@ func (s *CustodyStore) PublishResult(ctx context.Context, pkg workerproto.Execut
 		objects = append(objects, entry.object)
 	}
 	return s.publishManifest(ctx, pkg, "result", objects)
+}
+
+// uploadLimits are the per-object and aggregate byte limits of one upload.
+type uploadLimits struct {
+	object, total int64
+}
+
+// resultLimits are the limits a result upload for pkg must meet: this store's,
+// and the package's where it sets tighter ones, because the coordinator
+// imports the result under the package's.
+func (s *CustodyStore) resultLimits(pkg workerproto.ExecutionPackage) uploadLimits {
+	limits := uploadLimits{object: s.config.MaxArtifactBytes, total: s.config.MaxTotalBytes}
+	if pkg.Limits.MaxArtifactBytes > 0 && pkg.Limits.MaxArtifactBytes < limits.object {
+		limits.object = pkg.Limits.MaxArtifactBytes
+	}
+	if pkg.Limits.MaxTotalBytes > 0 && pkg.Limits.MaxTotalBytes < limits.total {
+		limits.total = pkg.Limits.MaxTotalBytes
+	}
+	return limits
+}
+
+// retainedThreadArchivePath is where a worker keeps the full thread archive of
+// an attempt whose upload carries a compacted one, relative to the custody
+// root. It is named by the archive's digest, so a retry finds its own copy.
+func retainedThreadArchivePath(attemptID string, archive []byte) string {
+	sum := sha256.Sum256(archive)
+	return path.Join("thread-archives", attemptID, hex.EncodeToString(sum[:])+".json")
+}
+
+// boundThreadArchive returns result with its thread archive compacted to the
+// room the upload leaves it under limits, when the archive is what would make
+// the upload too large. Anything else is returned unchanged, so that a size
+// error on another object, an archive within its room and an archive that
+// cannot be compacted all meet the upload's own validation as before.
+func boundThreadArchive(pkg workerproto.ExecutionPackage, result PublishedResult, limits uploadLimits) PublishedResult {
+	planned, err := resultObjects(pkg, result)
+	if err != nil || len(planned) == 0 {
+		return result
+	}
+	// The thread archive is the last object of the upload; every other
+	// object must be accepted on its own first.
+	others := make([]workerproto.ArtifactObject, 0, len(planned)-1)
+	for _, entry := range planned[:len(planned)-1] {
+		others = append(others, entry.object)
+	}
+	total, err := workerproto.ValidateUploadObjects(others, limits.object, limits.total)
+	if err != nil {
+		return result
+	}
+	room := min(limits.object, limits.total-total)
+	if int64(len(result.ThreadArchive)) <= room {
+		return result
+	}
+	attemptID := pkg.Identity.AttemptID
+	if attemptID == "" || filepath.Base(attemptID) != attemptID || attemptID == "." || attemptID == ".." {
+		return result
+	}
+	compacted, err := backlog.CompactThreadArchive(result.ThreadArchive, room,
+		retainedThreadArchivePath(attemptID, result.ThreadArchive))
+	if err != nil {
+		return result
+	}
+	result.ThreadArchive = compacted
+	return result
+}
+
+// retainThreadArchive keeps the full thread archive of an attempt in this
+// store, read-only, and returns its path. A copy already there is verified.
+func (s *CustodyStore) retainThreadArchive(attemptID string, archive []byte) (string, error) {
+	relative := retainedThreadArchivePath(attemptID, archive)
+	target := filepath.Join(s.config.Root, filepath.FromSlash(relative))
+	dir := filepath.Dir(target)
+	if err := ensureRealDirectory(filepath.Dir(dir)); err != nil {
+		return "", err
+	}
+	if err := ensureRealDirectory(dir); err != nil {
+		return "", err
+	}
+	if existing, err := openRegular(target); err == nil {
+		defer existing.Close()
+		kept, err := io.ReadAll(existing)
+		if err != nil {
+			return "", err
+		}
+		if !bytes.Equal(kept, archive) {
+			return "", errors.New("retained thread archive differs from its digest")
+		}
+		return target, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	temp, err := os.CreateTemp(dir, ".retain-")
+	if err != nil {
+		return "", err
+	}
+	tempName := temp.Name()
+	defer os.Remove(tempName)
+	_, writeErr := temp.Write(archive)
+	if writeErr == nil {
+		writeErr = temp.Sync()
+	}
+	if closeErr := temp.Close(); writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		return "", writeErr
+	}
+	if err := os.Chmod(tempName, 0o400); err != nil {
+		return "", err
+	}
+	if err := os.Link(tempName, target); err != nil && !errors.Is(err, os.ErrExist) {
+		return "", err
+	}
+	return target, syncDirectory(dir)
 }
 
 func (s *CustodyStore) storeResultObject(finalized backlog.FinalizedAttempt, entry resultObject) error {

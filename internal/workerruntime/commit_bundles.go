@@ -69,7 +69,10 @@ func (d *LocalDriver) resultAdmission(pkg workerproto.ExecutionPackage, message 
 		result := PublishedResult{
 			Finalized: backlog.FinalizedAttempt{Artifacts: artifacts}, FinalMessage: message, ThreadArchive: archive,
 		}
-		planned, err := resultObjects(pkg, result)
+		// The archive is published compacted where it has no room, so it is
+		// checked as it would be published. The admitter bounds its own.
+		bounded := boundThreadArchive(pkg, result, uploadLimits{object: pkg.Limits.MaxArtifactBytes, total: pkg.Limits.MaxTotalBytes})
+		planned, err := resultObjects(pkg, bounded)
 		if err != nil {
 			return err
 		}
