@@ -127,10 +127,10 @@ memory and scratch needs. A task that declares classes without a preset, such
 as a bare `min_cpu_class: medium` or even build's own medium-and-high pair,
 uses the nominal unsized needs. Explicit `cpu_units`, `memory_mb` and
 `scratch_mb` override the expected needs per field. `campaign check` sends the
-preset name with each task so its live floors match placement. Review member
-tasks are built from a normalized execution profile that keeps only the
-expanded classes, and tasks ingested before the preset name was recorded have
-none, so both use the nominal unsized needs unless they declare explicit sizes.
+preset name with each task so its live floors match placement. A review member's execution profile
+records its preset name too, and the member task inherits it. Tasks and review
+profiles stored before the preset name was recorded have none, so they use the
+nominal unsized needs unless they declare explicit sizes.
 
 With the defaults an unsized task therefore needs 2048 MiB of available memory
 (1024 MiB nominal need plus the 1024 MiB reserve). Setting all three
