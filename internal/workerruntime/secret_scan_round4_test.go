@@ -91,3 +91,75 @@ func TestSecretScanLegacyFailureWithheldWhenCanaryResolutionFails(t *testing.T) 
 		})
 	}
 }
+
+// A model token the provider refreshes mid-run is known to the worker once a
+// resolution has seen it. A task that then deletes or empties its login file
+// must not shrink the canary set: a later redaction, snapshot or result scan
+// still matches the refreshed token from recorded history.
+func TestSecretScanObservedLoginTokenSurvivesLoginRemoval(t *testing.T) {
+	for _, removal := range []struct {
+		name   string
+		remove func(path string) error
+	}{
+		{name: "deleted", remove: os.Remove},
+		{name: "emptied", remove: func(path string) error { return os.WriteFile(path, []byte("{}"), 0o600) }},
+	} {
+		t.Run(removal.name, func(t *testing.T) {
+			f := newCollectionFixture(t, 8192, 16384, 100, 100)
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, nil))
+			f.runtime.log = logger
+			f.driver.Log = logger
+			f.custody.config.SecretScan.Log = logger
+			login := filepath.Join(t.TempDir(), "auth.json")
+			first := "synthetic-model-login-dispatch-token"
+			refreshed := "synthetic-model-login-refreshed-token"
+			if err := os.WriteFile(login, []byte(`{"access_token":"`+first+`"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			f.custody.config.SecretScan.StaticCanaries = nil
+			f.custody.config.SecretScan.Canaries = serviceScanCanaries(WorkerServiceOptions{ModelLoginFiles: []string{login}}, ProtocolCredentials{WorkerSecret: []byte("synthetic-worker-secret-round4")}, t.TempDir())
+			if err := f.custody.SnapshotSecrets(context.Background(), f.pkg); err != nil {
+				t.Fatal(err)
+			}
+			// The provider refreshes its token; a redaction observes it.
+			if err := os.WriteFile(login, []byte(`{"access_token":"`+refreshed+`"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := f.custody.RedactText(context.Background(), f.pkg, "said "+refreshed); err != nil || got != "said [redacted]" {
+				t.Fatalf("live login redaction = %q, %v", got, err)
+			}
+			if err := removal.remove(login); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := f.custody.RedactText(context.Background(), f.pkg, "said "+refreshed)
+			if err == nil && strings.Contains(got, refreshed) {
+				t.Fatalf("redaction after login removal treats the refreshed token as clean: %q", got)
+			}
+			scanner, _, err := f.custody.executionScanner(context.Background(), f.pkg)
+			if err == nil {
+				if scanErr := scanner.scan("answer.txt", "output", strings.NewReader("said "+refreshed)); scanErr == nil {
+					t.Fatal("result scan after login removal admits the refreshed token")
+				}
+			}
+			if err := f.runtime.markPhase("assignment-1", PhaseFailed, "provider said "+refreshed, f.workspace, "thread-1"); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := f.runtime.Snapshot(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(raw), refreshed) {
+				t.Fatalf("snapshot carries the refreshed model token: %s", raw)
+			}
+			if strings.Contains(logs.String(), refreshed) {
+				t.Fatalf("refreshed model token logged: %s", logs.String())
+			}
+		})
+	}
+}

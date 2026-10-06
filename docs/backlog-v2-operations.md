@@ -899,8 +899,8 @@ matched without refusing ordinary text; it is counted in a warning and not
 scanned. Evidence for a credential shorter than sixteen bytes shows `****` in
 place of its first four characters. Login-file metadata such as `token_type`,
 expiry times and key IDs is not treated as a credential. Values never enter
-the package or scan report. At credential resolution and before provider startup,
-the worker retains execution-specific SHA-256 signatures, lengths and four-byte
+the package or scan report. At credential resolution, before provider startup,
+and at every later result scan or text redaction that resolves them, the worker retains execution-specific SHA-256 signatures, lengths and four-byte
 prefixes in private custody, so later rotation and restart do not forget those
 canaries. Complete credential values are never written to these snapshots, but
 for a credential shorter than eight bytes the four-byte prefix and digest

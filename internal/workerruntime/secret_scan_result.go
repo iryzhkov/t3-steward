@@ -25,13 +25,9 @@ import (
 // credentials, their recorded history and the trusted baseline allowlist.
 func (s *CustodyStore) executionScanner(ctx context.Context, pkg workerproto.ExecutionPackage) (*resultScanner, *scanBaseline, error) {
 	config := s.config.SecretScan
-	var canaries []string
-	if config.Canaries != nil {
-		var err error
-		canaries, err = config.Canaries(ctx, pkg)
-		if err != nil {
-			return nil, nil, &SecretScanError{Object: "execution", Detector: "credential-resolution", Offset: 0}
-		}
+	canaries, err := s.resolveCanaries(ctx, pkg)
+	if err != nil {
+		return nil, nil, err
 	}
 	scanner := newResultScanner(config, canaries, nil)
 	if scanner.skipped > 0 {
@@ -54,6 +50,24 @@ func (s *CustodyStore) executionScanner(ctx context.Context, pkg workerproto.Exe
 	return scanner, baseline, nil
 }
 
+// resolveCanaries resolves the execution's current credentials and records
+// them in its credential history before they are used. A value the provider
+// refreshed after dispatch is then known to every later scan, even when the
+// task deletes or rewrites the login file it was read from.
+func (s *CustodyStore) resolveCanaries(ctx context.Context, pkg workerproto.ExecutionPackage) ([]string, error) {
+	if s.config.SecretScan.Canaries == nil {
+		return nil, nil
+	}
+	canaries, err := s.config.SecretScan.Canaries(ctx, pkg)
+	if err != nil {
+		return nil, &SecretScanError{Object: "execution", Detector: "credential-resolution", Offset: 0}
+	}
+	if err := s.RecordSecretValues(ctx, pkg, canaries); err != nil {
+		return nil, err
+	}
+	return canaries, nil
+}
+
 // RedactText replaces every known credential of the execution, in any
 // encoding the scanner recognizes, and every secret pattern in text, so the
 // text can leave the worker as coordinator metadata. A failed credential
@@ -62,16 +76,11 @@ func (s *CustodyStore) executionScanner(ctx context.Context, pkg workerproto.Exe
 // recorded, such as a protocol credential quoted by a reason an earlier
 // release journaled, and a partial canary set cannot prove the text clean.
 func (s *CustodyStore) RedactText(ctx context.Context, pkg workerproto.ExecutionPackage, text string) (string, error) {
-	config := s.config.SecretScan
-	var canaries []string
-	if config.Canaries != nil {
-		resolved, err := config.Canaries(ctx, pkg)
-		if err != nil {
-			return "", &SecretScanError{Object: "execution", Detector: "credential-resolution", Offset: 0}
-		}
-		canaries = resolved
+	canaries, err := s.resolveCanaries(ctx, pkg)
+	if err != nil {
+		return "", err
 	}
-	scanner := newResultScanner(config, canaries, nil)
+	scanner := newResultScanner(s.config.SecretScan, canaries, nil)
 	if err := s.addSecretHistory(pkg, scanner); err != nil {
 		return "", &SecretScanError{Object: "execution", Detector: "credential-history", Offset: 0}
 	}
