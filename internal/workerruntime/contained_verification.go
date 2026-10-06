@@ -100,6 +100,12 @@ func (v containedVerifier) Run(ctx context.Context, request backlog.ProcessReque
 		return backlog.ProcessResult{}, errors.New("contained verification request does not match prepared workspace")
 	}
 	timeout := v.pkg.Limits.VerificationTimeout
+	if request.Timeout < 0 || request.Timeout > timeout {
+		return backlog.ProcessResult{}, errors.New("contained verification deadline exceeds worker limit or is negative")
+	}
+	if request.Timeout > 0 {
+		timeout = request.Timeout
+	}
 	if timeout <= 0 {
 		return backlog.ProcessResult{}, errors.New("contained verification needs a bounded deadline")
 	}

@@ -5,9 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,6 +125,100 @@ func TestFinalizerContainedVerificationUmaskContract(t *testing.T) {
 	}
 	if !reflect.DeepEqual(actual.Launch.Spec.Command, spec.Command) {
 		t.Fatalf("command=%q", actual.Launch.Spec.Command)
+	}
+}
+
+func TestContainedVerificationUsesBoundedGateTimeout(t *testing.T) {
+	verifier, workspace := containedVerificationFixture(t)
+	plan, err := verifier.manager.preparation(verifier.pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := plan.Launch.Spec
+	spec.Control, spec.ControlPort, spec.ProviderHosts = nil, 0, nil
+	spec.Command = []string{"/usr/bin/timeout", "--kill-after=5s", "2.000s", "/bin/sh", "-c", "true"}
+	seedContainedVerificationResult(t, verifier.manager.Supervisor, providercontainment.Launch{
+		ExecutionID: verifier.pkg.Identity.ThreadID + ":verify-test-gate-0", Spec: spec,
+	}, 0)
+	_, err = verifier.Run(context.Background(), backlog.ProcessRequest{
+		ID: "verify-test-gate-0", Dir: workspace, Program: "/bin/sh", Args: []string{"-c", "true"}, Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("gate timeout not honored: %v", err)
+	}
+	for _, timeout := range []time.Duration{-time.Second, 2 * time.Minute} {
+		_, err = verifier.Run(context.Background(), backlog.ProcessRequest{
+			ID: "verify-invalid-gate", Dir: workspace, Program: "/bin/sh", Args: []string{"-c", "true"}, Timeout: timeout,
+		})
+		if err == nil {
+			t.Fatalf("accepted invalid gate timeout %v", timeout)
+		}
+	}
+}
+
+func TestFinalizerContainedGateRetainsSummaryAndFailure(t *testing.T) {
+	for _, code := range []int{0, 7} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			verifier, workspace := containedVerificationFixture(t)
+			for _, args := range [][]string{{"init", "-q"}, {"-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"}} {
+				command := exec.Command("git", args...)
+				command.Dir = workspace
+				if out, err := command.CombinedOutput(); err != nil {
+					t.Fatalf("fixture git: %s %v", out, err)
+				}
+			}
+			plan, err := verifier.manager.preparation(verifier.pkg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec := plan.Launch.Spec
+			spec.Control, spec.ControlPort, spec.ProviderHosts = nil, 0, nil
+			spec.Command = []string{"/usr/bin/timeout", "--kill-after=5s", "2.000s", "/bin/sh", "-c", `umask 022 && exec "$0" "$@"`, "/bin/sh", "-c", "true"}
+			seedContainedVerificationResult(t, verifier.manager.Supervisor, providercontainment.Launch{ExecutionID: verifier.pkg.Identity.ThreadID + ":verify-attempt-1-gate-0", Spec: spec}, code)
+			storage := t.TempDir()
+			t.Cleanup(func() {
+				_ = filepath.Walk(storage, func(path string, info os.FileInfo, err error) error {
+					if err == nil && info.IsDir() {
+						return os.Chmod(path, 0700)
+					}
+					return err
+				})
+			})
+			finalizer := backlog.AttemptFinalizer{StorageRoot: storage, Processes: verifier, GateTimeoutMax: time.Minute, GateCacheDisabled: true, GateToolchainIdentity: "contained unavailable"}
+			result, err := finalizer.Finalize(context.Background(), backlog.AttemptFinalization{
+				Task:    domain.Task{ID: "task-1", Name: "test", Gate: &domain.TaskGate{Commands: []string{"true"}, Timeout: 2 * time.Second}},
+				Attempt: domain.Attempt{ID: "attempt-1", TaskID: "task-1", WorkflowRunID: "run-1"}, WorkspaceDir: workspace, ExplicitSuccess: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (result.Completion.Failure == "") != (code == 0) {
+				t.Fatalf("completion=%+v", result.Completion)
+			}
+			names := map[string]bool{}
+			for _, artifact := range result.Artifacts {
+				names[artifact.Name] = true
+				data, err := os.ReadFile(filepath.Join(storage, artifact.StoragePath))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if artifact.Name == "gate/log.txt" && !strings.Contains(string(data), "fixture-invocation") {
+					t.Fatalf("summary log=%s", data)
+				}
+				if artifact.Name == "gate" {
+					var report backlog.GateReport
+					if err = json.Unmarshal(data, &report); err != nil {
+						t.Fatal(err)
+					}
+					if report.Cached || report.Passed != (code == 0) || len(report.Commands) != 1 || report.Commands[0].ExitCode != code {
+						t.Fatalf("report=%+v", report)
+					}
+				}
+			}
+			if !names["gate"] || !names["gate/log.txt"] {
+				t.Fatalf("artifacts=%+v", result.Artifacts)
+			}
+		})
 	}
 }
 
