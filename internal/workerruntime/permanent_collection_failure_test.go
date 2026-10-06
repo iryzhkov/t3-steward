@@ -442,10 +442,14 @@ func newCollectionFixtureWith(t *testing.T, maxObject, maxTotal int64, outputByt
 	pkg.Outputs = []domain.ArtifactDeclaration{{Name: "answer.txt", MediaType: "text/plain"}}
 	pkg.Verification = []string{"verify-once"}
 	process := &collectionCountingProcess{}
+	// The padding sits inside the latest turn, which a completion decision
+	// reads, so an archive over the limits cannot be compacted and reaches
+	// the real size boundary. thread_archive_bound_test.go covers the
+	// archives that can be compacted.
 	control := &recordingT3{
 		thread:  &domain.Thread{ID: "thread-1", TurnID: "turn-1", TurnState: "completed"},
 		message: "BACKLOG STATUS: done",
-		archive: []byte(`{"thread":{"id":"thread-1","latestTurn":{"turnId":"turn-1","state":"completed","startedAt":"2026-09-13T05:00:00Z","completedAt":"2026-09-13T05:01:00Z"},"session":{"threadId":"thread-1","status":"ready","activeTurnId":null,"lastError":null}},"padding":"` + strings.Repeat("a", archiveBytes) + `"}`),
+		archive: []byte(`{"thread":{"id":"thread-1","latestTurn":{"turnId":"turn-1","state":"completed","startedAt":"2026-09-13T05:00:00Z","completedAt":"2026-09-13T05:01:00Z","padding":"` + strings.Repeat("a", archiveBytes) + `"},"session":{"threadId":"thread-1","status":"ready","activeTurnId":null,"lastError":null}}}`),
 	}
 	driver := &LocalDriver{
 		Config:    LocalDriverConfig{ArtifactRoot: filepath.Join(root, "artifacts"), RunsRoot: filepath.Join(root, "runs")},
