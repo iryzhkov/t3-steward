@@ -8,6 +8,18 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A worker can again create its managed T3 project at a workspace root whose
+  earlier projects were created and deleted many times. Each replacement
+  creation identity was derived from the previous creation's receipt, and the
+  worker gave up after eight, so a root with eight or more retained deleted
+  generations replayed the same old receipts and never reached a new creation
+  ("exhausted 8 distinct creation identities"). A spent identity is now
+  replaced by one fenced to the sequence of a snapshot in which the owned root
+  is absent, so any number of retained generations costs at most two
+  dispatches. The whole creation is bounded to four dispatches and ten
+  seconds, an unrecognised refusal is still observed rather than retried under
+  a new identity, and no receipts, tombstones or ownership checks change.
+
 - A slow T3 no longer stalls a persistent worker's exchanges through the
   collection and quota-pause decisions. The provider-turn observation, the
   configured task-wait probe, the workspace inspection, and the quota pause's
