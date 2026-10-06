@@ -68,6 +68,10 @@ func uploadAdmission(objectLimit, totalLimit, reserved int64) func([]domain.Arti
 // records of two producers have the same size.
 func finalizeTwoCommitsWith(t *testing.T, objectLimit, limit, reserved int64, bundles bool) twoCommitProducer {
 	t.Helper()
+	// Both the base and producer commit must be identical across finalizations:
+	// changing their timestamps changes compressed bundle sizes at the limit.
+	t.Setenv("GIT_AUTHOR_DATE", "2026-10-06T09:00:00Z")
+	t.Setenv("GIT_COMMITTER_DATE", "2026-10-06T09:00:00Z")
 	ctx := context.Background()
 	repository := newGitFixture(t)
 	storage := t.TempDir()
