@@ -11,7 +11,7 @@ import (
 func TestReviewRoundPersistsValidatedResultsAndFencesUpdates(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")
-	s, err := OpenMigrated(path)
+	s, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestReviewRoundPersistsValidatedResultsAndFencesUpdates(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s, err = OpenMigrated(path)
+	s, err = openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}

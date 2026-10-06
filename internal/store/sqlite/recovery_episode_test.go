@@ -18,7 +18,7 @@ func TestRecoveryEpisodeExhaustsOnceAcrossRestart(t *testing.T) {
 	config := domain.RecoveryConfig{Version: domain.RecoveryContractV1,
 		Route: domain.ProviderRoute{ProviderInstanceID: "repairer", Model: "model"}, PromptArtifactID: "prompt",
 		MaxAttemptsPerIncident: 1, IncidentDeadline: time.Hour, StalledAfter: time.Minute}
-	store, err := OpenMigrated(path)
+	store, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestRecoveryEpisodeExhaustsOnceAcrossRestart(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = OpenMigrated(path)
+	store, err = openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestRecoveryEpisodeExhaustsOnceAcrossRestart(t *testing.T) {
 
 func TestRecoverySuccessResolvesOnlyItsEpisode(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

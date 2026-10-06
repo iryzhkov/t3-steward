@@ -37,7 +37,7 @@ func TestMeasuredUsageMigrationPreservesHistoryAndReopensIdempotently(t *testing
 	}
 
 	for reopen := 0; reopen < 2; reopen++ {
-		store, err := OpenMigrated(path)
+		store, err := openMigratedFixture(path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -66,7 +66,7 @@ func TestMeasuredUsageMigrationPreservesHistoryAndReopensIdempotently(t *testing
 func TestMeasuredUsageBindingIsAuthoritativeIsolatedAndReplaySafe(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := OpenMigrated(path)
+	store, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestMeasuredUsageBindingIsAuthoritativeIsolatedAndReplaySafe(t *testing.T) 
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = OpenMigrated(path)
+	store, err = openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func applyTestUsageDiagnosticRetention(t *testing.T, store *Store) int {
 // MaxUsageDiagnostics would let a test or caller keep more diagnostics than
 // a production store does.
 func TestSetUsageDiagnosticRetentionOnlyLowersTheBound(t *testing.T) {
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestSetUsageDiagnosticRetentionOnlyLowersTheBound(t *testing.T) {
 
 func TestAttributedUsageAppliesDeterministicSafetyBound(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestAttributedUsageAppliesDeterministicSafetyBound(t *testing.T) {
 // its worker id is one reading, not two, and is counted once.
 func TestAttributedUsageSeparatesTheRunsAmbiguityFromTheFleets(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestAttributedUsageSeparatesTheRunsAmbiguityFromTheFleets(t *testing.T) {
 // checkpoint follow-up: unowned rows counted twice).
 func TestUnscopedUsageCountsAForwardedUnownedReadingOnce(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +468,7 @@ func TestUnscopedUsageCountsAForwardedUnownedReadingOnce(t *testing.T) {
 // run with no bindings at all read as having nothing unattributed.
 func TestAttributedUsageCountsSamplesOfAnAssignmentWithoutABinding(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,7 +509,7 @@ func TestAttributedUsageCountsSamplesOfAnAssignmentWithoutABinding(t *testing.T)
 func TestCoordinatorUsageCursorKeyPersistsAndRejectsCorruption(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "coordinator.db")
-	store, err := OpenMigrated(path)
+	store, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -520,7 +520,7 @@ func TestCoordinatorUsageCursorKeyPersistsAndRejectsCorruption(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = OpenMigrated(path)
+	store, err = openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,7 +553,7 @@ func TestCoordinatorUsageCursorKeyPersistsAndRejectsCorruption(t *testing.T) {
 func TestRecordUsageRollsBackDiagnosticOverflowAtEveryCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "worker.db")
-	store, err := OpenMigrated(path)
+	store, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -623,7 +623,7 @@ func TestRecordUsageRollsBackDiagnosticOverflowAtEveryCheckpoint(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = OpenMigrated(path)
+	store, err = openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -655,7 +655,7 @@ func TestRecordUsageRollsBackDiagnosticOverflowAtEveryCheckpoint(t *testing.T) {
 // only its own host's readings, never another worker's as its own.
 func TestWorkerUsageBatchForwardsOnlyThisHostsReadings(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -684,7 +684,7 @@ func TestWorkerUsageBatchForwardsOnlyThisHostsReadings(t *testing.T) {
 
 func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -732,7 +732,7 @@ func TestUsageDiagnosticsAreBoundedWithOverflowEvidence(t *testing.T) {
 		t.Fatalf("overflow coverage = %#v", report.Coverage)
 	}
 
-	coordinator, err := OpenMigrated(filepath.Join(t.TempDir(), "coordinator.db"))
+	coordinator, err := openMigratedFixture(filepath.Join(t.TempDir(), "coordinator.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -861,7 +861,7 @@ func TestPruneHistoryIsAtomicAndForgetsExactDeliveryIdentity(t *testing.T) {
 	for _, stage := range stages {
 		t.Run(stage, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "state.db")
-			store, err := OpenMigrated(path)
+			store, err := openMigratedFixture(path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -882,7 +882,7 @@ func TestPruneHistoryIsAtomicAndForgetsExactDeliveryIdentity(t *testing.T) {
 			if err := store.Close(); err != nil {
 				t.Fatal(err)
 			}
-			store, err = OpenMigrated(path)
+			store, err = openMigratedFixture(path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -925,7 +925,7 @@ func TestPruneHistoryIsAtomicAndForgetsExactDeliveryIdentity(t *testing.T) {
 // batch intact.
 func TestReceiveWorkerUsageRejectsBadSamplesIndividually(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1008,7 +1008,7 @@ func TestReceiveWorkerUsageRejectsBadSamplesIndividually(t *testing.T) {
 // take a place in every batch.
 func TestWorkerUsageBatchNeverOffersASampleWithoutAnEventID(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

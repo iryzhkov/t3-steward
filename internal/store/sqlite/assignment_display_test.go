@@ -121,7 +121,7 @@ func TestAssignmentDisplayV33MigrationReplayAndBinding(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := OpenMigrated(path)
+	reopened, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}

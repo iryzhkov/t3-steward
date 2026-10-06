@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -34,8 +36,24 @@ func checkpointFixture(s *Store) error {
 
 func fixtureSchema(t testing.TB) string {
 	t.Helper()
+	image, err := migratedSchemaImage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return image
+}
+
+// migratedSchemaImage builds the template once per test process. It does not
+// take a testing.TB so that openMigratedFixture keeps OpenMigrated's signature.
+func migratedSchemaImage() (string, error) {
 	emptySchemaFixture.once.Do(func() {
-		path := filepath.Join(t.TempDir(), "template.db")
+		dir, err := os.MkdirTemp("", "t3-steward-schema-template-")
+		if err != nil {
+			emptySchemaFixture.err = err
+			return
+		}
+		defer os.RemoveAll(dir)
+		path := filepath.Join(dir, "template.db")
 		s, err := OpenMigrated(path)
 		if err != nil {
 			emptySchemaFixture.err = err
@@ -72,10 +90,31 @@ func fixtureSchema(t testing.TB) string {
 		}
 		emptySchemaFixture.image = string(raw)
 	})
-	if emptySchemaFixture.err != nil {
-		t.Fatal(emptySchemaFixture.err)
+	return emptySchemaFixture.image, emptySchemaFixture.err
+}
+
+// openMigratedFixture has OpenMigrated's signature and result for tests whose
+// subject is not migration or database creation. A missing file is first
+// written from the migrated template, about thirty times cheaper than migrating
+// under the race detector; OpenMigrated then opens it with the production
+// connection settings and its idempotent migration pass. An existing file and
+// ":memory:" go straight to OpenMigrated, so reopening behaves as before.
+func openMigratedFixture(path string) (*Store, error) {
+	if path != ":memory:" {
+		if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+			image, err := migratedSchemaImage()
+			if err != nil {
+				return nil, err
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(path, []byte(image), 0o600); err != nil {
+				return nil, err
+			}
+		}
 	}
-	return emptySchemaFixture.image
+	return OpenMigrated(path)
 }
 
 func copyFixtureSchema(t testing.TB) string {

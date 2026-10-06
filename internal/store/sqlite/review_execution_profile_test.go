@@ -123,7 +123,7 @@ func TestReviewExecutionProfileSQLiteFreshReopenedTerminal(t *testing.T) {
 			if reopen {
 				s.Close()
 				var err error
-				s, err = OpenMigrated(path)
+				s, err = openMigratedFixture(path)
 				if err != nil {
 					t.Fatal(err)
 				}

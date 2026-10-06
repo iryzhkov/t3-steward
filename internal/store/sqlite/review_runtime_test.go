@@ -29,7 +29,7 @@ func reviewRuntimeReopen(t *testing.T, s *Store) *Store {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := OpenMigrated(path)
+	reopened, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func reviewRuntimeInvalidate(t *testing.T, s *Store, f review.FrozenAuthority, r
 		s.now = func() time.Time { return edge }
 		return
 	}
-	other, err := OpenMigrated(reviewRuntimePath(t, s))
+	other, err := openMigratedFixture(reviewRuntimePath(t, s))
 	if err != nil {
 		t.Fatal(err)
 	}

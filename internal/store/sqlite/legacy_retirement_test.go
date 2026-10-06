@@ -12,7 +12,7 @@ import (
 func TestRetainedLegacyRecordsStillProtectArchiveAndForecast(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := OpenMigrated(path)
+	store, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func TestRetainedLegacyRecordsStillProtectArchiveAndForecast(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = OpenMigrated(path)
+	store, err = openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}

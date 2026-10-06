@@ -174,7 +174,7 @@ func reopenParkProof(t *testing.T, s *Store) *Store {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := OpenMigrated(path)
+	reopened, err := openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}

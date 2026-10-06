@@ -11,7 +11,7 @@ import (
 
 func TestReviewRegressionEventIDCollisionAcrossRunsIsRejectedAtomically(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

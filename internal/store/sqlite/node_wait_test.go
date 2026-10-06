@@ -56,7 +56,7 @@ func TestNativeWaitRetryRestartSettlementAndDeliveryFence(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = OpenMigrated(path)
+	store, err = openMigratedFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
