@@ -19,6 +19,7 @@ func TestReviewChildStagingFix2EntryMatrix(t *testing.T) {
 	for _, damaged := range []bool{false, true} {
 		for _, kind := range cases {
 			t.Run(map[bool]string{false: "intact", true: "damaged"}[damaged]+"/"+kind, func(t *testing.T) {
+				t.Parallel()
 				f, o, req := newStageOwner(t)
 				first, err := o.StageDeclared(context.Background(), req)
 				if err != nil {

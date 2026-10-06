@@ -177,6 +177,7 @@ func TestReviewChildStagingFix1CompleteReplayMatrix(t *testing.T) {
 	}
 	for _, kind := range cases {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			f, o, req := newStageOwner(t)
 			first, err := o.StageDeclared(context.Background(), req)
 			if err != nil {
@@ -243,6 +244,7 @@ func TestReviewChildStagingFix1FinalReadOnlyMatrix(t *testing.T) {
 	for _, boundary := range []string{"receipt-retained", "after-prepare-build-current-deadline"} {
 		for _, kind := range cases {
 			t.Run(boundary+"/"+kind, func(t *testing.T) {
+				t.Parallel()
 				f, o, req := newStageOwner(t)
 				db := stagingSQL(t, f)
 				var evidence, before, namespace string

@@ -28,6 +28,7 @@ func TestReviewDeclaredCurrentCustodyInitialAndStoredReplay(t *testing.T) {
 			}
 			for _, kind := range []string{"healthy", "missing", "duplicate", "unrelated-duplicate", "empty-entry", "wrong-task", "wrong-task-workflow", "wrong-task-run", "wrong-workflow", "wrong-run", "project", "empty-project", "activation"} {
 				t.Run(mode+"/"+phase+"/"+kind, func(t *testing.T) {
+					t.Parallel()
 					f := newDeclaredAdmissionFixture(t)
 					run := f.records.WorkflowRuns[0]
 					task := f.records.Tasks[0]
