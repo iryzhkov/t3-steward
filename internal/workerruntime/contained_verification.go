@@ -90,7 +90,13 @@ func (v containedVerifier) Run(ctx context.Context, request backlog.ProcessReque
 	if !stopped.Stopped {
 		return backlog.ProcessResult{}, errors.New("provider supervisor must stop before verification")
 	}
-	if request.ID == "" || request.Dir != plan.Launch.Spec.Workspace.Registration.Path || request.Program != "/bin/sh" || len(request.Args) != 2 || request.Args[0] != "-c" {
+	// Accept only the historical shell form and the finalizer's exact umask
+	// wrapper. The command stays a separate argument in both forms.
+	plainShell := len(request.Args) == 2 && request.Args[0] == "-c"
+	umaskShell := len(request.Args) == 5 && request.Args[0] == "-c" &&
+		request.Args[1] == `umask 022 && exec "$0" "$@"` &&
+		request.Args[2] == "/bin/sh" && request.Args[3] == "-c"
+	if request.ID == "" || request.Dir != plan.Launch.Spec.Workspace.Registration.Path || request.Program != "/bin/sh" || (!plainShell && !umaskShell) {
 		return backlog.ProcessResult{}, errors.New("contained verification request does not match prepared workspace")
 	}
 	timeout := v.pkg.Limits.VerificationTimeout
