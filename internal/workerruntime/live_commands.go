@@ -45,14 +45,24 @@ type procEntry struct {
 	zombie bool
 }
 
-// scanLiveCommandsIn finds the commands an attempt detached inside its
-// workspace and left running, by reading /proc.
+// processTable is one reading of /proc. Command lines are read only for the
+// processes a decision needs, and at most once each.
+type processTable struct {
+	procRoot  string
+	self      int
+	entries   map[int]procEntry
+	ancestors map[int]bool
+	argv      map[int][]string
+}
+
+// scanLiveCommandsIn finds the commands an attempt left running inside its
+// workspace, by reading /proc.
 //
 // The mechanism is the working directory, combined with where a process
 // hangs in the process tree, because neither alone is reliable on Linux:
 //
-//   - The provider session's process tree does not hold the commands that
-//     matter. An agent that backgrounds a gate with nohup or "&" starts it
+//   - The provider session's process tree does not hold every command that
+//     matters. An agent that backgrounds a gate with nohup or "&" starts it
 //     from a shell that exits at once, and the kernel hands the orphan to the
 //     nearest subreaper (systemd --user on a fleet host), which is the
 //     worker's own ancestor and not the provider's descendant.
@@ -60,19 +70,30 @@ type procEntry struct {
 //     servers and their language servers all run in the workspace for the
 //     whole session, and so do the worker's own verification commands.
 //
-// So a process counts when its working directory is inside the workspace and
-// it is detached: following its parents while they too are inside the
-// workspace, the first parent outside it is pid 1 or one of the worker's own
-// ancestors, which is where an orphan lands. A process whose chain reaches a
-// live process outside the workspace that is not the worker's ancestor (the
-// T3 server, through the provider session) belongs to that process and is
-// excluded, as is anything descending from the worker itself. One command per
-// detached subtree is reported: its topmost process, which is the command
-// line the agent wrote.
+// So, for a process whose working directory is inside the workspace, its
+// parents are followed while they too are inside, up to the topmost of them,
+// and the process outside the workspace that holds that subtree decides:
 //
-// A command a provider still tracks as its own background task stays attached
-// to the session and is therefore not reported; it cannot be told apart from
-// the session's MCP and language servers by the process table alone.
+//   - pid 1 or one of the worker's own ancestors: the subtree is detached,
+//     where an orphan lands, and its topmost process is reported.
+//   - a command shell (sh -c and the like): a command started the subtree
+//     from outside the workspace, and its topmost process is reported.
+//   - any other live process, such as the T3 server: the topmost process is
+//     that process's session, the provider. The provider, its MCP servers and
+//     their language servers are started directly, never through a shell, so
+//     only a command shell the provider itself started is the agent's: a
+//     command tool call the provider still tracks, such as a Claude Code
+//     run_in_background command. The command that shell runs is reported, or
+//     the shell when it runs nothing else.
+//
+// Anything descending from the worker itself is excluded, as are zombies,
+// processes whose parent this worker cannot see, and git's file-system
+// monitor. One command per subtree is reported.
+//
+// A provider launched through a command shell would make its whole session
+// look like a command; the providers T3 runs are started directly. A command
+// the provider runs without any shell, which a provider tracking it as its own
+// background task does not do, cannot be told apart from an MCP server.
 func scanLiveCommandsIn(goos, procRoot string, self int, workspace string) (LiveCommandReport, error) {
 	if goos != "linux" {
 		return LiveCommandReport{Unsupported: "process inspection is unavailable on " + goos}, nil
@@ -89,7 +110,7 @@ func scanLiveCommandsIn(goos, procRoot string, self int, workspace string) (Live
 	if err != nil {
 		return LiveCommandReport{}, fmt.Errorf("read %s: %w", procRoot, err)
 	}
-	processes := make(map[int]procEntry, len(entries))
+	table := processTable{procRoot: procRoot, self: self, entries: make(map[int]procEntry, len(entries)), ancestors: make(map[int]bool), argv: make(map[int][]string)}
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil || pid <= 0 {
@@ -107,36 +128,49 @@ func scanLiveCommandsIn(goos, procRoot string, self int, workspace string) (Live
 		// An unreadable working directory belongs to another user, or to a
 		// process that has exited, and is treated as outside the workspace.
 		cwd, _ := os.Readlink(filepath.Join(procRoot, entry.Name(), "cwd"))
-		processes[pid] = procEntry{parent: parent, inside: withinDirectory(cwd, root), zombie: state == "Z"}
+		table.entries[pid] = procEntry{parent: parent, inside: withinDirectory(cwd, root), zombie: state == "Z"}
 	}
-	ancestors := make(map[int]bool)
-	for pid := self; pid > 0 && !ancestors[pid]; {
-		ancestors[pid] = true
-		entry, ok := processes[pid]
+	for pid := self; pid > 0 && !table.ancestors[pid]; {
+		table.ancestors[pid] = true
+		entry, ok := table.entries[pid]
 		if !ok {
 			break
 		}
 		pid = entry.parent
 	}
 	roots := make(map[int]bool)
-	for pid, entry := range processes {
+	for pid, entry := range table.entries {
 		if !entry.inside || entry.zombie || pid == self {
 			continue
 		}
-		if top, detached := detachedRoot(pid, processes, self, ancestors); detached {
-			roots[top] = true
+		if command, found := table.liveCommandRoot(pid); found {
+			roots[command] = true
 		}
+	}
+	// A command shell is reported only when it runs nothing that is reported
+	// itself: the command it runs names the work better.
+	runsReported := make(map[int]bool)
+	for pid := range roots {
+		runsReported[table.entries[pid].parent] = true
 	}
 	pids := make([]int, 0, len(roots))
 	for pid := range roots {
-		pids = append(pids, pid)
+		if !runsReported[pid] {
+			pids = append(pids, pid)
+		}
 	}
 	sort.Ints(pids)
 	var report LiveCommandReport
 	for _, pid := range pids {
-		command := processCommand(procRoot, pid)
+		command := truncateText(strings.Join(strings.Fields(strings.Join(table.args(pid), " ")), " "), maxLiveCommandText)
 		if command == "" {
-			continue
+			// The command line reads empty while a process is replacing its
+			// program; the process still runs, under its command name.
+			name, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "comm"))
+			if err != nil || strings.TrimSpace(string(name)) == "" {
+				continue
+			}
+			command = "[" + strings.TrimSpace(string(name)) + "]"
 		}
 		// Git's file-system monitor daemonizes inside a repository on its
 		// own whenever it is configured; it is not a command the task ran.
@@ -148,18 +182,20 @@ func scanLiveCommandsIn(goos, procRoot string, self int, workspace string) (Live
 	return report, nil
 }
 
-// detachedRoot follows pid's parents while they are inside the workspace and
-// reports the topmost of them, and whether the process outside the workspace
-// that holds that subtree is pid 1 or an ancestor of the worker.
-func detachedRoot(pid int, processes map[int]procEntry, self int, ancestors map[int]bool) (int, bool) {
+// liveCommandRoot follows pid's parents while they are inside the workspace
+// and decides, from the process outside the workspace that holds the topmost
+// of them, whether pid belongs to a command the attempt left running, and
+// which process names that command.
+func (t *processTable) liveCommandRoot(pid int) (int, bool) {
+	path := []int{pid}
 	current := pid
-	for steps := 0; steps <= len(processes); steps++ {
-		parent := processes[current].parent
-		if parent == self {
+	for steps := 0; steps <= len(t.entries); steps++ {
+		parent := t.entries[current].parent
+		if parent == t.self {
 			// The worker's own work, such as a verification command.
 			return 0, false
 		}
-		entry, visible := processes[parent]
+		entry, visible := t.entries[parent]
 		if !visible {
 			// A parent this worker cannot see proves nothing either way, and a
 			// false report would cost the task a nudge or its result.
@@ -167,11 +203,85 @@ func detachedRoot(pid int, processes map[int]procEntry, self int, ancestors map[
 		}
 		if entry.inside && !entry.zombie {
 			current = parent
+			path = append(path, parent)
 			continue
 		}
-		return current, parent == 1 || ancestors[parent]
+		switch {
+		case parent == 1 || t.ancestors[parent]:
+			return current, true
+		case t.descendsFromSelf(parent):
+			return 0, false
+		case t.commandShell(parent):
+			return current, true
+		case len(path) >= 2 && t.commandShell(path[len(path)-2]):
+			// current is the provider and the path runs through a command
+			// shell it started; the command is the shell's child.
+			if len(path) >= 3 {
+				return path[len(path)-3], true
+			}
+			return path[len(path)-2], true
+		}
+		return 0, false
 	}
 	return 0, false
+}
+
+// descendsFromSelf reports whether pid is the worker or one of its
+// descendants, whose processes are the worker's own work.
+func (t *processTable) descendsFromSelf(pid int) bool {
+	for steps := 0; pid > 0 && steps <= len(t.entries); steps++ {
+		if pid == t.self {
+			return true
+		}
+		entry, ok := t.entries[pid]
+		if !ok {
+			return false
+		}
+		pid = entry.parent
+	}
+	return false
+}
+
+func (t *processTable) args(pid int) []string {
+	if args, ok := t.argv[pid]; ok {
+		return args
+	}
+	var args []string
+	if raw, err := os.ReadFile(filepath.Join(t.procRoot, strconv.Itoa(pid), "cmdline")); err == nil {
+		args = strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+		if len(args) == 1 && args[0] == "" {
+			args = nil
+		}
+	}
+	t.argv[pid] = args
+	return args
+}
+
+// commandShells are the shells whose -c runs a command line.
+var commandShells = map[string]bool{"sh": true, "bash": true, "dash": true, "zsh": true, "ksh": true, "mksh": true, "ash": true, "fish": true}
+
+// commandShell reports whether pid is a shell running a command string, the
+// way every provider's command tool and nohup-style launchers run commands,
+// as opposed to an interactive shell or a script.
+func (t *processTable) commandShell(pid int) bool {
+	args := t.args(pid)
+	if len(args) < 2 || !commandShells[strings.TrimPrefix(filepath.Base(args[0]), "-")] {
+		return false
+	}
+	for index := 1; index < len(args); index++ {
+		arg := args[index]
+		switch {
+		case arg == "-o" || arg == "+o":
+			// The option name that follows is not an operand.
+			index++
+		case arg == "--" || len(arg) < 2 || (arg[0] != '-' && arg[0] != '+'):
+			// The first operand ends the options: a script and its arguments.
+			return false
+		case arg[0] == '-' && arg[1] != '-' && strings.Contains(arg, "c"):
+			return true
+		}
+	}
+	return false
 }
 
 // parseProcStat reads the parent pid and the state from /proc/<pid>/stat. The
@@ -191,15 +301,6 @@ func parseProcStat(raw []byte) (int, string, bool) {
 		return 0, "", false
 	}
 	return parent, fields[0], true
-}
-
-func processCommand(procRoot string, pid int) string {
-	raw, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "cmdline"))
-	if err != nil {
-		return ""
-	}
-	command := strings.Join(strings.Fields(strings.ReplaceAll(string(raw), "\x00", " ")), " ")
-	return truncateText(command, maxLiveCommandText)
 }
 
 func withinDirectory(path, root string) bool {

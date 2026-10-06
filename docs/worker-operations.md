@@ -100,15 +100,25 @@ started is still running (typically a long gate started with `nohup ... &`)
 would be collected with uncommitted work and missing outputs. When an attempt's
 turn ends with no task-bound wait, the worker first looks for such commands.
 
-On Linux it reads `/proc`. A process counts when its working directory is inside
-the attempt workspace and it is detached: following its parents while they are
-inside the workspace, the first one outside is pid 1 or an ancestor of the
-worker, which is where the kernel puts a command whose starting shell has
-exited (`systemd --user` on a fleet host). The worker's own processes, such as
-verification commands, are excluded, and so is everything still attached to the
-provider session through the T3 server: the provider, its MCP servers and their
-language servers run in the workspace for the whole session and cannot be told
-apart from a provider-tracked background task by the process table.
+On Linux it reads `/proc`. For a process whose working directory is inside the
+attempt workspace, the worker follows its parents while they are inside too, and
+the process outside the workspace that holds the topmost of them decides:
+
+- pid 1 or an ancestor of the worker, which is where the kernel puts a command
+  whose starting shell has exited (`systemd --user` on a fleet host): the
+  command is detached and counts;
+- a command shell (`sh -c`, `bash -c` and the like): a command started from
+  outside the workspace counts;
+- any other live process, such as the T3 server: the topmost process is the
+  provider session. The provider, its MCP servers and their language servers
+  are started directly and run in the workspace for the whole session, so they
+  do not count; a command shell the provider itself started does, because that
+  is a command-tool call the provider still tracks, such as a Claude Code
+  `run_in_background` command. The command the shell runs is reported.
+
+The worker's own processes, such as verification commands, are excluded. A
+provider started through a command shell would make its whole session look like
+a command; T3 starts providers directly.
 
 If such commands are found, the attempt is not collected. The worker sends one
 follow-up turn to the same session naming the commands and telling it to wait
@@ -118,18 +128,25 @@ T3 identities derived from the dispatch token and the ended turn, so a worker
 restart never sends a second one for the same turn. A third turn that ends the
 same way fails the attempt with the reason `live-children-at-turn-end`, followed
 by the process list, which declared outputs are present or missing, and what was
-retained. When the task declares a commit and the tree has uncommitted changes
-(the runtime's `.t3` directory aside), the worker first snapshots them as a
-commit on the private ref `refs/steward/wip/<attempt>` and uploads a bundle of
-it from the workspace base as the result artifact `wip.bundle`; the bundle stays
-in the attempt directory on the worker too. A clean tree is not snapshotted.
+retained.
+
+Whenever an attempt of a task that declares a commit fails with uncommitted
+changes in its tree (the runtime's `.t3` directory aside), whether for live
+commands, a missing declared output, a failed verification or a worker-side
+failure, the worker snapshots them as a commit on the private ref
+`refs/steward/wip/<attempt>` and uploads a bundle of it from the workspace base
+as the result artifact `wip.bundle`, naming it in the failure text; the bundle
+stays in the attempt directory on the worker too. A failed attempt does not
+publish its declared commit, so this is how its work is recovered. A clean tree
+is not snapshotted.
 
 `backlog explain` (as a `turn end:` detail) and `backlog task show` (as a
 `turn end:` line) show the state, for example `waiting for 2 background
 commands: sh -c make check-review ..., sleep 300 (nudge 1 of 2)`, once the worker
 advertises the build capability `turn-end-commands-v1` and the coordinator asks
 for it. A host without `/proc` (macOS) collects the turn as before and reports
-that the check did not run, rather than failing a task it cannot judge.
+that the check did not run, rather than failing a task it cannot judge; explain
+keeps showing that warning after the attempt is terminal.
 Contained executions are not inspected: their provider runs in its own pid and
 mount namespaces, and the supervisor stops the whole sandbox at collection.
 
