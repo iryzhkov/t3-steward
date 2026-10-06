@@ -91,13 +91,14 @@ type DependencyInput struct {
 	TaskID     string                `json:"taskId"`
 	Provenance *DependencyProvenance `json:"provenance,omitempty"`
 	Artifacts  []ArtifactObject      `json:"artifacts"`
-	// Accepted says the coordinator's review gate accepted the result that
-	// produced these artifacts. Only then may a declared commit the producer
-	// staged become its campaign output; a review judge may also be given a
-	// rejected result to inspect, and that never publishes it. It is set only
-	// for review-declared producers and requires the accepted-dependencies
-	// capability.
-	Accepted bool `json:"accepted,omitempty"`
+	// AcceptedCommits names the producer's declared commit outputs, among
+	// these artifacts, whose result the coordinator's review gate accepted.
+	// Only such a commit reference may make a commit the producer staged its
+	// campaign output: a review judge may also be given a rejected result to
+	// inspect, and any other file in the producer's outputs is the executor's
+	// content. It is set only for review-declared producers and requires the
+	// accepted-dependencies capability.
+	AcceptedCommits []string `json:"acceptedCommits,omitempty"`
 }
 
 // Package capabilities name behaviour a worker must implement to execute a
@@ -133,10 +134,10 @@ func (pkg ExecutionPackage) RequiresWorkspaceHead() bool {
 	return slices.Contains(pkg.RequiredCapabilities, PackageCapabilityWorkspaceHead)
 }
 
-// HasAcceptedDependencies reports whether any dependency is marked as the
-// accepted result of a review-declared producer.
+// HasAcceptedDependencies reports whether any dependency names an accepted
+// commit output of a review-declared producer.
 func (pkg ExecutionPackage) HasAcceptedDependencies() bool {
-	return slices.ContainsFunc(pkg.Dependencies, func(dependency DependencyInput) bool { return dependency.Accepted })
+	return slices.ContainsFunc(pkg.Dependencies, func(dependency DependencyInput) bool { return len(dependency.AcceptedCommits) != 0 })
 }
 
 // PreflightStep is one declared step the worker runs after the workspace is
@@ -329,8 +330,8 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 			return errors.New("execution package: duplicate dependency task")
 		}
 		dependencies[dependency.TaskID] = struct{}{}
-		if dependency.Accepted && (dependency.Provenance != nil || len(dependency.Artifacts) == 0) {
-			return errors.New("execution package: only a producer of this run with outputs can be accepted")
+		if err := validateAcceptedCommits(dependency); err != nil {
+			return err
 		}
 		if provenance := dependency.Provenance; provenance != nil {
 			if strings.TrimSpace(provenance.RunID) == "" || strings.TrimSpace(provenance.TaskID) == "" ||
@@ -398,6 +399,29 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 		return err
 	}
 	return validatePackagePreflight(pkg.Preflight)
+}
+
+// validateAcceptedCommits requires each accepted commit to name one of the
+// dependency's own artifacts, once, for a producer of this run.
+func validateAcceptedCommits(dependency DependencyInput) error {
+	if len(dependency.AcceptedCommits) == 0 {
+		return nil
+	}
+	if dependency.Provenance != nil {
+		return errors.New("execution package: a carried input cannot be an accepted commit")
+	}
+	for index, name := range dependency.AcceptedCommits {
+		if slices.Contains(dependency.AcceptedCommits[:index], name) {
+			return errors.New("execution package: duplicate accepted commit")
+		}
+		if !slices.ContainsFunc(dependency.Artifacts, func(artifact ArtifactObject) bool {
+			parts := strings.SplitN(artifact.Path, "/", 3)
+			return len(parts) == 3 && parts[0] == "dependencies" && parts[2] == name
+		}) {
+			return errors.New("execution package: accepted commit is not one of the dependency's artifacts")
+		}
+	}
+	return nil
 }
 
 func validatePackageCapabilities(pkg ExecutionPackage) error {

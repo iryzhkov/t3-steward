@@ -42,8 +42,9 @@ func TestLocalDriverPublishesAStagedDependencyCommitOnlyWhenAccepted(t *testing.
 		pkg.Environment.Repository = "https://example.com/steward.git"
 		pkg.Environment.Ref = commit
 		reference := testArtifact("commit-1", "dependencies/producer/change", string(raw))
-		pkg.Dependencies = []workerproto.DependencyInput{{TaskID: "producer", Artifacts: []workerproto.ArtifactObject{reference}, Accepted: accepted}}
+		pkg.Dependencies = []workerproto.DependencyInput{{TaskID: "producer", Artifacts: []workerproto.ArtifactObject{reference}}}
 		if accepted {
+			pkg.Dependencies[0].AcceptedCommits = []string{"change"}
 			pkg.RequiredCapabilities = []string{workerproto.PackageCapabilityAcceptedDependencies}
 		}
 		root := t.TempDir()

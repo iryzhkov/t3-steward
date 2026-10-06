@@ -164,29 +164,35 @@ func coordinatorDependency(t *testing.T, f *reviewGateFixture, consumer domain.T
 }
 
 // consumeDependencyCommit runs the worker's dependency resolution for a
-// consumer whose dependency view holds the producer's commit reference,
-// accepted or not as the execution package said, and returns the commit the
-// consumer resolved.
-func consumeDependencyCommit(t *testing.T, refs CampaignRefStore, runID string, provenance CommitProvenance, dependency workerproto.DependencyInput) string {
+// consumer whose dependency view holds the producer's commit reference under
+// change, and any further files given, accepted or not as the execution
+// package said, and returns the commit the consumer resolved.
+func consumeDependencyCommit(t *testing.T, refs CampaignRefStore, runID string, provenance CommitProvenance, dependency workerproto.DependencyInput, extra map[string]CommitProvenance) string {
 	t.Helper()
 	dependencies := t.TempDir()
-	raw, err := MarshalCommitProvenance(provenance)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := os.MkdirAll(filepath.Join(dependencies, dependency.TaskID), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dependencies, dependency.TaskID, "change"), raw, 0o600); err != nil {
-		t.Fatal(err)
+	files := map[string]CommitProvenance{"change": provenance}
+	for name, content := range extra {
+		files[name] = content
+	}
+	for name, content := range files {
+		raw, err := MarshalCommitProvenance(content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dependencies, dependency.TaskID, name), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// The worker names each dependency task by its ID, as LocalDriver does.
 	request := WorkspacePreparation{
 		WorkflowRunID: runID, Environment: ResolvedEnvironment{Type: EnvironmentGit},
 		DependencyTasks: []domain.Task{{ID: dependency.TaskID, Name: dependency.TaskID}},
 	}
-	if dependency.Accepted {
-		request.AcceptedProducers = []string{dependency.TaskID}
+	if len(dependency.AcceptedCommits) != 0 {
+		request.AcceptedCommits = map[string][]string{dependency.TaskID: dependency.AcceptedCommits}
 	}
 	consumer := t.TempDir()
 	gitRun(t, consumer, "init", "-q")
@@ -204,10 +210,10 @@ func TestReviewGatedCommitIsPublishedOnlyThroughAnAcceptedDependency(t *testing.
 	t.Run("rejected", func(t *testing.T) {
 		f, refs, staged, _, later := rejectedReviewGatedOutput(t)
 		dependency := coordinatorDependency(t, f, reviewJudgeOf(f))
-		if dependency.Accepted {
+		if len(dependency.AcceptedCommits) != 0 {
 			t.Fatalf("rejected result marked accepted: %+v", dependency)
 		}
-		if got := consumeDependencyCommit(t, refs, f.attempt.WorkflowRunID, staged, dependency); got != later {
+		if got := consumeDependencyCommit(t, refs, f.attempt.WorkflowRunID, staged, dependency, nil); got != later {
 			t.Fatalf("judge resolved %s, want the rejected %s", got, later)
 		}
 		if provenance, err := refs.Resolve(f.attempt.WorkflowRunID, f.task.ID, "change"); err == nil {
@@ -228,10 +234,10 @@ func TestReviewGatedCommitIsPublishedOnlyThroughAnAcceptedDependency(t *testing.
 		consumer := domain.Task{ID: "consumer", Name: "consumer", Needs: []string{f.task.Name},
 			DependencyInputs: map[string][]string{f.task.Name: {"change"}}}
 		dependency := coordinatorDependency(t, f, consumer)
-		if !dependency.Accepted {
+		if !slices.Equal(dependency.AcceptedCommits, []string{"change"}) {
 			t.Fatalf("accepted result not marked: %+v", dependency)
 		}
-		if got := consumeDependencyCommit(t, refs, f.attempt.WorkflowRunID, staged, dependency); got != accepted {
+		if got := consumeDependencyCommit(t, refs, f.attempt.WorkflowRunID, staged, dependency, nil); got != accepted {
 			t.Fatalf("consumer resolved %s, want %s", got, accepted)
 		}
 		if provenance, err := refs.Resolve(f.attempt.WorkflowRunID, f.task.ID, "change"); err != nil || provenance.Commit != accepted {
@@ -240,28 +246,62 @@ func TestReviewGatedCommitIsPublishedOnlyThroughAnAcceptedDependency(t *testing.
 	})
 }
 
-// The acceptance mark covers the accepted producer's own commit reference
-// only. A file in its outputs that names another task, or one outside its
-// directory of the view, cannot publish that task's staged commit.
+// An accepted retry's ordinary output that holds the commit reference of the
+// rejected first attempt must not publish that attempt's commit: only the
+// declared commit output the coordinator accepted can.
+func TestAcceptedProducersOtherOutputCannotPublishARejectedStaging(t *testing.T) {
+	ctx := context.Background()
+	repository := newGitFixture(t)
+	base := gitOutput(t, repository, "rev-parse", "HEAD")
+	refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "campaign-refs")}
+	request := PublishCommitRequest{WorkflowRunID: "run-1", TaskID: "producer", Name: "change",
+		Repository: "repo", WorkspaceDir: repository, Base: base}
+	gitRun(t, repository, "commit", "--allow-empty", "-m", "rejected")
+	rejected, err := refs.Stage(ctx, request, "attempt-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repository, "commit", "--allow-empty", "-m", "accepted")
+	accepted, err := refs.Stage(ctx, request, "attempt-2", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dependency := workerproto.DependencyInput{TaskID: "producer", AcceptedCommits: []string{"change"}}
+	// "aaa-notes" sorts first, so it is resolved before the declared output.
+	got := consumeDependencyCommit(t, refs, "run-1", accepted, dependency, map[string]CommitProvenance{"aaa-notes": rejected})
+	if got != accepted.Commit {
+		t.Fatalf("consumer resolved %s, want %s", got, accepted.Commit)
+	}
+	if provenance, err := refs.Resolve("run-1", "producer", "change"); err != nil || provenance.Commit != accepted.Commit {
+		t.Fatalf("published provenance = %+v %v, want %s (rejected %s)", provenance, err, accepted.Commit, rejected.Commit)
+	}
+}
+
+// The acceptance covers the accepted producer's declared commit output only.
+// Any other file in its outputs, a file naming another task or output, or one
+// outside its directory of the view, cannot publish a staged commit.
 func TestAcceptedDependencyCommitMustBeTheProducersOwn(t *testing.T) {
 	dependencies := filepath.Join(t.TempDir(), "dependencies")
 	request := WorkspacePreparation{
-		DependencyTasks:   []domain.Task{{ID: "producer", Name: "producer"}, {ID: "other", Name: "other"}},
-		AcceptedProducers: []string{"producer"},
+		DependencyTasks: []domain.Task{{ID: "producer", Name: "producer"}, {ID: "other", Name: "other"}},
+		AcceptedCommits: map[string][]string{"producer": {"change"}},
 	}
 	for _, test := range []struct {
-		name, path, task string
-		want             bool
+		name, path, task, output string
+		want                     bool
 	}{
-		{"own reference", "producer/change", "producer", true},
-		{"nested own reference", "producer/nested/change", "producer", true},
-		{"names another task", "producer/forged", "other", false},
-		{"unaccepted producer", "other/change", "other", false},
-		{"outside a producer directory", "change", "producer", false},
-		{"another producer's directory", "other/forged", "producer", false},
+		{"declared commit output", "producer/change", "producer", "change", true},
+		{"another output naming the producer", "producer/notes", "producer", "change", false},
+		{"another output naming itself", "producer/notes", "producer", "notes", false},
+		{"nested output", "producer/nested/change", "producer", "change", false},
+		{"names another output", "producer/change", "producer", "other-change", false},
+		{"names another task", "producer/change", "other", "change", false},
+		{"unaccepted producer", "other/change", "other", "change", false},
+		{"outside a producer directory", "change", "producer", "change", false},
+		{"another producer's directory", "other/change", "producer", "change", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			provenance := CommitProvenance{TaskID: test.task}
+			provenance := CommitProvenance{TaskID: test.task, Name: test.output}
 			if got := acceptedDependencyCommit(dependencies, filepath.Join(dependencies, filepath.FromSlash(test.path)), provenance, request); got != test.want {
 				t.Fatalf("accepted = %v, want %v", got, test.want)
 			}
@@ -280,6 +320,7 @@ func TestOfferMarksOnlyAnAcceptedReviewDeclaredProducer(t *testing.T) {
 		if declared {
 			records.Tasks[0].ReviewRequirements = &domain.TaskReviewRequirements{Version: 1}
 		}
+		records.Tasks[0].Outputs = []domain.ArtifactDeclaration{{Name: "reports/result.txt", Commit: &domain.CommitOutput{}}}
 		records.Attempts = append(records.Attempts, domain.Attempt{
 			ID: "producer-attempt", WorkflowRunID: "run-1", TaskID: records.Tasks[0].ID, Number: 1,
 			Progress: progress, Control: domain.ControlStopped, Revision: 4, UpdatedAt: now,
@@ -302,7 +343,7 @@ func TestOfferMarksOnlyAnAcceptedReviewDeclaredProducer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !pkg.Dependencies[0].Accepted || !slices.Contains(pkg.RequiredCapabilities, workerproto.PackageCapabilityAcceptedDependencies) {
+	if !slices.Equal(pkg.Dependencies[0].AcceptedCommits, []string{"reports/result.txt"}) || !slices.Contains(pkg.RequiredCapabilities, workerproto.PackageCapabilityAcceptedDependencies) {
 		t.Fatalf("accepted review-declared producer not marked: %+v %v", pkg.Dependencies, pkg.RequiredCapabilities)
 	}
 	if _, err := build(t, true, domain.ProgressSucceeded, []string{}); err == nil || !strings.Contains(err.Error(), workerproto.PackageCapabilityAcceptedDependencies) {
@@ -322,7 +363,7 @@ func TestOfferMarksOnlyAnAcceptedReviewDeclaredProducer(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if pkg.Dependencies[0].Accepted || len(pkg.RequiredCapabilities) != 0 {
+			if len(pkg.Dependencies[0].AcceptedCommits) != 0 || len(pkg.RequiredCapabilities) != 0 {
 				t.Fatalf("package changed: %+v %v", pkg.Dependencies, pkg.RequiredCapabilities)
 			}
 		})

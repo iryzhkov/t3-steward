@@ -123,11 +123,11 @@ type WorkspacePreparation struct {
 	InputArtifacts      []domain.Artifact
 	DependencyTasks     []domain.Task
 	DependencyArtifacts []domain.Artifact
-	// AcceptedProducers names the dependency tasks, by ID, whose result the
-	// coordinator's review gate accepted. A declared commit such a producer
-	// staged is published when it is consumed; any other staged commit is only
-	// fetched for inspection.
-	AcceptedProducers []string
+	// AcceptedCommits names, by dependency task ID, the declared commit outputs
+	// whose result the coordinator's review gate accepted. The commit such an
+	// output references is published when it is consumed; any other staged
+	// commit is only fetched for inspection.
+	AcceptedCommits map[string][]string
 }
 
 // PreparedWorkspace is the published run directory and pinned source revision.
@@ -494,18 +494,18 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 }
 
 // acceptedDependencyCommit reports whether a commit reference found in the
-// dependency view may publish its producer's staged commit. The coordinator
-// must have accepted the producer's result, and the reference must be that
-// producer's own: it sits in the producer's directory of the view and names
-// the producer as its task, so an accepted producer's file cannot publish
-// another task's rejected commit.
+// dependency view may publish its producer's staged commit. It must be the
+// file of a declared commit output the coordinator accepted, in that
+// producer's directory of the view, naming that producer and that output. Any
+// other file is the executor's content, and it could name another task's or
+// another attempt's rejected staging.
 func acceptedDependencyCommit(dependenciesDir, path string, provenance CommitProvenance, request WorkspacePreparation) bool {
 	relative, err := filepath.Rel(dependenciesDir, path)
 	if err != nil {
 		return false
 	}
-	directory, _, nested := strings.Cut(filepath.ToSlash(relative), "/")
-	if !nested || !slices.Contains(request.AcceptedProducers, provenance.TaskID) {
+	directory, name, nested := strings.Cut(filepath.ToSlash(relative), "/")
+	if !nested || name != provenance.Name || !slices.Contains(request.AcceptedCommits[provenance.TaskID], name) {
 		return false
 	}
 	return slices.ContainsFunc(request.DependencyTasks, func(task domain.Task) bool {

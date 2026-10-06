@@ -590,12 +590,15 @@ func packageDependencies(
 	return append(result, carried...), nil
 }
 
-// markAcceptedDependencies marks each review-declared producer whose packaged
-// outputs all came from an attempt the coordinator accepted. A review-declared
-// producer's declared commit is only staged by its worker, and this mark is
-// what lets the consuming worker publish it. A review judge can be given the
-// outputs of a failed producer, and those stay unmarked. Producers without a
-// review declaration publish directly and are never marked, so their
+// markAcceptedDependencies names, for each review-declared producer whose
+// packaged outputs all came from an attempt the coordinator accepted, the
+// declared commit outputs among them. A review-declared producer's declared
+// commit is only staged by its worker, and this list is what lets the
+// consuming worker publish it. Only the commit reference the producer's worker
+// wrote for a declared commit output is named: any other output file is the
+// executor's content and could name a rejected staging. A review judge can be
+// given the outputs of a failed producer, and those stay unnamed. Producers
+// without a review declaration publish directly and are never marked, so their
 // consumers' packages are unchanged.
 func markAcceptedDependencies(dependencies []workerproto.DependencyInput, tasks []domain.Task, artifacts map[string]domain.Artifact, succeededAttempts map[string]struct{}) {
 	for index := range dependencies {
@@ -607,14 +610,25 @@ func markAcceptedDependencies(dependencies []workerproto.DependencyInput, tasks 
 		if producer < 0 || tasks[producer].ReviewRequirements == nil {
 			continue
 		}
-		dependency.Accepted = !slices.ContainsFunc(dependency.Artifacts, func(object workerproto.ArtifactObject) bool {
+		var accepted []string
+		for _, object := range dependency.Artifacts {
 			artifact, exists := artifacts[object.ID]
 			if !exists || artifact.TaskID != dependency.TaskID || artifact.AttemptID == "" {
-				return true
+				accepted = nil
+				break
 			}
-			_, succeeded := succeededAttempts[artifact.AttemptID]
-			return !succeeded
-		})
+			if _, succeeded := succeededAttempts[artifact.AttemptID]; !succeeded {
+				accepted = nil
+				break
+			}
+			name := filepath.ToSlash(artifact.Name)
+			if slices.ContainsFunc(tasks[producer].Outputs, func(output domain.ArtifactDeclaration) bool {
+				return output.Commit != nil && filepath.ToSlash(output.Name) == name
+			}) {
+				accepted = append(accepted, name)
+			}
+		}
+		dependency.AcceptedCommits = accepted
 	}
 }
 

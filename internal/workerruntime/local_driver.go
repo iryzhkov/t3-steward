@@ -181,7 +181,7 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	inputs := make([]domain.Artifact, 0, len(pkg.StaticInputs))
 	dependencyTasks := make([]domain.Task, 0, len(pkg.Dependencies))
 	dependencyArtifacts := make([]domain.Artifact, 0)
-	var acceptedProducers []string
+	var acceptedCommits map[string][]string
 	objects := append([]workerproto.ArtifactObject{pkg.Prompt}, pkg.StaticInputs...)
 	for _, dependency := range pkg.Dependencies {
 		objects = append(objects, dependency.Artifacts...)
@@ -219,8 +219,11 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		}
 		task.DependencyInputs[dependency.TaskID] = names
 		dependencyTasks = append(dependencyTasks, dependencyTask)
-		if dependency.Accepted {
-			acceptedProducers = append(acceptedProducers, dependency.TaskID)
+		if len(dependency.AcceptedCommits) != 0 {
+			if acceptedCommits == nil {
+				acceptedCommits = make(map[string][]string)
+			}
+			acceptedCommits[dependency.TaskID] = append([]string(nil), dependency.AcceptedCommits...)
 		}
 	}
 	if d.Config.DryRun {
@@ -243,7 +246,7 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	prepared, err := d.Workspace.Prepare(ctx, backlog.WorkspacePreparation{
 		WorkflowRunID: pkg.Identity.WorkflowRunID, Task: task, Attempt: attempt,
 		Environment: environment, InputArtifacts: inputs, DependencyTasks: dependencyTasks,
-		DependencyArtifacts: dependencyArtifacts, AcceptedProducers: acceptedProducers,
+		DependencyArtifacts: dependencyArtifacts, AcceptedCommits: acceptedCommits,
 	})
 	if err != nil {
 		return "", err

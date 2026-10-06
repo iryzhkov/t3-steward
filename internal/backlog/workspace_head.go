@@ -149,11 +149,15 @@ func workspaceHeadIgnored(name string) bool {
 // system monitor and sparse checkout settings are overridden. The worktree is
 // pinned to the workspace itself, because core.worktree in the workspace's
 // configuration, or GIT_WORK_TREE and GIT_DIR in the worker's environment,
-// would otherwise choose which directory Git examines. env adds to the
-// worker's environment.
+// would otherwise choose which directory Git examines. Replace refs are
+// ignored, because one could substitute another tree for HEAD's while HEAD
+// still names the accepted commit, and file modes are always compared, because
+// core.fileMode=false hides a mode change. env adds to the worker's
+// environment.
 func workspaceGit(ctx context.Context, gitBinary, workspace string, env []string, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, gitBinary, append([]string{
-		"--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.sparseCheckout=false",
+		"--no-optional-locks", "--no-replace-objects",
+		"-c", "core.fsmonitor=false", "-c", "core.sparseCheckout=false", "-c", "core.fileMode=true",
 		"-C", workspace, "--work-tree", workspace,
 	}, args...)...)
 	command.Env = append(slices.DeleteFunc(os.Environ(), func(variable string) bool {
@@ -174,9 +178,9 @@ func workspaceGit(ctx context.Context, gitBinary, workspace string, env []string
 }
 
 // workspaceGitLocationVariables are the environment variables that tell Git
-// where a repository and its worktree are. The workspace is located by its own
-// path alone.
-var workspaceGitLocationVariables = []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"}
+// where a repository, its worktree and its replace refs are. The workspace is
+// located by its own path alone.
+var workspaceGitLocationVariables = []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_REPLACE_REF_BASE"}
 
 // MarshalWorkspaceHead encodes the report the worker publishes.
 func MarshalWorkspaceHead(head domain.WorkspaceHead) ([]byte, error) {

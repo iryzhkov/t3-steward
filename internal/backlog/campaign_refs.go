@@ -292,7 +292,8 @@ func (s CampaignRefStore) fetchInto(ctx context.Context, workspaceDir string, pr
 // gate at finalization; a consumer's execution package carries that decision,
 // and the caller passes it here only when the package says the producing result
 // was accepted. A ref that already exists is left alone; the fetch then checks
-// it names the commit the consumer was told about.
+// it names the commit the consumer was told about. A ref whose record a failed
+// promotion never wrote gets that record now, so Resolve and ReleaseRun see it.
 func (s CampaignRefStore) promote(ctx context.Context, gitDir string, provenance CommitProvenance, log io.Writer) error {
 	ref := CampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.Name)
 	lock, err := acquireFileLock(ctx, s.Root, "campaign-refs")
@@ -300,8 +301,12 @@ func (s CampaignRefStore) promote(ctx context.Context, gitDir string, provenance
 		return fmt.Errorf("lock campaign refs: %w", err)
 	}
 	defer lock.Close()
-	if _, found, err := s.head(ctx, gitDir, ref, log); err != nil || found {
+	existing, found, err := s.head(ctx, gitDir, ref, log)
+	if err != nil {
 		return err
+	}
+	if found {
+		return s.restorePromotedRecord(provenance, existing)
 	}
 	staged, _, found, err := s.findStaged(provenance)
 	if err != nil {
@@ -319,9 +324,29 @@ func (s CampaignRefStore) promote(ctx context.Context, gitDir string, provenance
 	return s.writeProvenance(staged)
 }
 
+// restorePromotedRecord writes the record of a campaign ref that names the
+// accepted commit but has none, which is what a promotion that failed between
+// its ref and its record leaves. A ref naming another commit is left to the
+// fetch, which refuses it.
+func (s CampaignRefStore) restorePromotedRecord(provenance CommitProvenance, existing string) error {
+	if existing != provenance.Commit {
+		return nil
+	}
+	if _, err := os.Lstat(s.provenancePath(provenance.WorkflowRunID, provenance.TaskID, provenance.Name)); !errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	staged, _, found, err := s.findStaged(provenance)
+	if err != nil || !found {
+		return err
+	}
+	return s.writeProvenance(staged)
+}
+
 // inspectionSource names the ref a consumer without acceptance fetches: the
-// campaign ref once the output is published, otherwise the staged ref of the
-// attempt that declared this commit. Nothing is written.
+// campaign ref once it names this commit, otherwise the staged ref of the
+// attempt that declared this commit. A judge inspecting a rejected commit
+// still receives it after another attempt's commit was published. Nothing is
+// written.
 func (s CampaignRefStore) inspectionSource(ctx context.Context, gitDir string, provenance CommitProvenance, log io.Writer) (string, error) {
 	ref := CampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.Name)
 	lock, err := acquireFileLock(ctx, s.Root, "campaign-refs")
@@ -329,7 +354,7 @@ func (s CampaignRefStore) inspectionSource(ctx context.Context, gitDir string, p
 		return "", fmt.Errorf("lock campaign refs: %w", err)
 	}
 	defer lock.Close()
-	if _, found, err := s.head(ctx, gitDir, ref, log); err != nil || found {
+	if existing, found, err := s.head(ctx, gitDir, ref, log); err != nil || (found && existing == provenance.Commit) {
 		return ref, err
 	}
 	_, attemptID, found, err := s.findStaged(provenance)
