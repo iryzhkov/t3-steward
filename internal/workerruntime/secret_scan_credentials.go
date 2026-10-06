@@ -44,7 +44,10 @@ func modelLoginCanaries(paths []string) ([]string, error) {
 		case map[string]any:
 			for key, value := range item {
 				name := strings.ToLower(key)
-				if str, ok := value.(string); ok && str != "" && (strings.Contains(name, "token") || strings.Contains(name, "key") || strings.Contains(name, "secret") || strings.Contains(name, "password") || name == "access" || name == "refresh") {
+				// Metadata beside a credential (token_type, expires_at, key_id)
+				// is not secret and would refuse ordinary text such as "Bearer".
+				metadata := strings.Contains(name, "type") || strings.Contains(name, "expir") || strings.Contains(name, "scope") || strings.HasSuffix(name, "_at") || strings.HasSuffix(name, "id")
+				if str, ok := value.(string); ok && str != "" && !metadata && (strings.Contains(name, "token") || strings.Contains(name, "key") || strings.Contains(name, "secret") || strings.Contains(name, "password") || name == "access" || name == "refresh") {
 					values = append(values, str)
 				} else {
 					visit(value)

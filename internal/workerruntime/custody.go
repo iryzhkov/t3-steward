@@ -361,6 +361,15 @@ func (s *CustodyStore) storeResultObject(finalized backlog.FinalizedAttempt, ent
 
 // PublishCheckpoint retains checkpoint bytes and advertises an immutable upload.
 func (s *CustodyStore) PublishCheckpoint(ctx context.Context, pkg workerproto.ExecutionPackage, path string, data []byte) (*domain.CheckpointMetadata, error) {
+	// The task wrote the checkpoint, and it reaches the coordinator like a
+	// result, so it passes the same scan; patterns only warn, as for outputs.
+	scanner, _, err := s.executionScanner(ctx, pkg)
+	if err != nil {
+		return nil, err
+	}
+	if err := scanner.scan(path, "checkpoint", bytes.NewReader(data)); err != nil {
+		return nil, err
+	}
 	id := "checkpoint-" + pkg.Identity.AttemptID + "-" + shortDigest(data)
 	object := objectForBytes(id, "checkpoints/"+id+".md", "checkpoint", "text/markdown", data)
 	if err := s.storeObject(bytes.NewReader(data), object); err != nil {

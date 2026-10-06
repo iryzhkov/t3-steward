@@ -781,6 +781,11 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 		if err := recorder.SnapshotSecrets(ctx, pkg); err != nil {
 			return err
 		}
+		// Before the provider's first turn the workspace is still what
+		// preparation checked out, so its base and allowlist are trusted.
+		if err := recorder.RecordScanBaseline(ctx, pkg, workspace); err != nil {
+			return err
+		}
 	}
 	promptArtifact, err := d.readCachedArtifact(pkg.Prompt, pkg.Limits.MaxArtifactBytes)
 	if err != nil {
@@ -1227,10 +1232,26 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 		}
 	}
 	finalized := backlog.FinalizedAttempt{Completion: backlog.CompletionResult{Failure: failure}}
-	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
+	publishErr := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
 		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
-	}); err != nil {
-		return fmt.Errorf("publish failed result custody: %w", err)
+	})
+	var secret *SecretScanError
+	if errors.As(publishErr, &secret) {
+		// The thread or the failure text carries a credential. Publish the
+		// redacted finding with an empty archive instead, so the failed result
+		// still reaches the coordinator; the raw text stays on the worker.
+		failure = permanentSecretFailurePrefix + secret.Error() +
+			"; the failure reason and thread archive were withheld and remain on the worker for this assignment"
+		d.logger().Warn("failed result withheld by secret scan; publishing redacted failure",
+			"attempt", pkg.Identity.AttemptID, "object", secret.Object, "detector", secret.Detector,
+			"byte_offset", secret.Offset, "fingerprint", secret.Fingerprint)
+		publishErr = d.Publisher.PublishResult(ctx, pkg, PublishedResult{
+			Finalized:    backlog.FinalizedAttempt{Completion: backlog.CompletionResult{Failure: failure}},
+			FinalMessage: FailedMarker + "\n" + failure + "\n", ThreadArchive: []byte("{}"),
+		})
+	}
+	if publishErr != nil {
+		return fmt.Errorf("publish failed result custody: %w", publishErr)
 	}
 	if err != nil {
 		return fmt.Errorf("%w: observe thread: %v", ErrSettleUnproven, err)

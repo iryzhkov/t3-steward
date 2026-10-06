@@ -19,6 +19,7 @@ import (
 type secretRecorder interface {
 	RecordSecretValues(context.Context, workerproto.ExecutionPackage, []string) error
 	SnapshotSecrets(context.Context, workerproto.ExecutionPackage) error
+	RecordScanBaseline(context.Context, workerproto.ExecutionPackage, string) error
 }
 
 type canarySignature struct {
@@ -26,52 +27,17 @@ type canarySignature struct {
 	Length      int    `json:"length"`
 	SHA256      string `json:"sha256"`
 	Fingerprint string `json:"fingerprint"`
+	Base64      bool   `json:"base64,omitempty"`
 }
 type secretSnapshot struct {
 	Version    int               `json:"version"`
 	Signatures []canarySignature `json:"signatures"`
 }
 
-func (s *resultScanner) rawCanaryMatch(data []byte) (int, int, string) {
-	start, end, fp := -1, 0, ""
-	add := func(at, length int, fingerprint string) {
-		if at >= 0 && (start < 0 || at < start) {
-			start, end, fp = at, at+length, fingerprint
-		}
-	}
-	for _, c := range s.canaries {
-		add(bytes.Index(data, c.value), len(c.value), c.fingerprint)
-	}
-	for _, c := range s.history {
-		search := data
-		offset := 0
-		for {
-			at := bytes.Index(search, c.Prefix)
-			if at < 0 {
-				break
-			}
-			at += offset
-			if at+c.Length <= len(data) {
-				sum := sha256.Sum256(data[at : at+c.Length])
-				if hex.EncodeToString(sum[:]) == c.SHA256 {
-					add(at, c.Length, c.Fingerprint)
-					break
-				}
-			}
-			offset = at + 1
-			search = data[offset:]
-		}
-	}
-	return start, end, fp
-}
 func (s *resultScanner) canaryMatch(data []byte) (int, int, string) {
-	start, end, fp := s.rawCanaryMatch(data)
-	if !bytes.ContainsAny(data, "%+") {
-		return start, end, fp
-	}
-	for _, query := range []bool{false, true} {
-		decoded, locations := decodeScanURL(data, query)
-		at, last, fingerprint := s.rawCanaryMatch(decoded)
+	start, end, fp := s.rawCanaryMatch(data, false)
+	view := func(decoded []byte, locations []int, base64Only bool) {
+		at, last, fingerprint := s.rawCanaryMatch(decoded, base64Only)
 		if at >= 0 {
 			original := locations[at]
 			originalEnd := len(data)
@@ -83,7 +49,83 @@ func (s *resultScanner) canaryMatch(data []byte) (int, int, string) {
 			}
 		}
 	}
+	if bytes.ContainsAny(data, "%+") {
+		for _, query := range []bool{false, true} {
+			decoded, locations := decodeScanURL(data, query)
+			view(decoded, locations, false)
+		}
+	}
+	if s.hasBase64 || s.historyBase64() {
+		if decoded, locations, wrapped := unwrapScanBase64(data); wrapped {
+			view(decoded, locations, true)
+		}
+	}
 	return start, end, fp
+}
+
+func (s *resultScanner) historyBase64() bool {
+	for _, c := range s.history {
+		if c.Base64 {
+			return true
+		}
+	}
+	return false
+}
+
+// unwrapScanBase64 removes the line breaks that wrapped base64 (MIME, PEM)
+// inserts between two base64 runs. It reports false when there is no such
+// break, so ordinary text costs one pass over its line ends.
+func unwrapScanBase64(data []byte) ([]byte, []int, bool) {
+	base64Byte := func(c byte) bool {
+		return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '+' || c == '/' || c == '-' || c == '_'
+	}
+	// A break joins two runs when a wrapped line of at least 16 base64 bytes
+	// ends at it and base64 continues after it. Prose lines rarely qualify.
+	const wrappedLine = 16
+	joins := func(i int) (int, bool) {
+		j := i
+		for j < len(data) && (data[j] == '\r' || data[j] == '\n') {
+			j++
+		}
+		if i < wrappedLine || j >= len(data) || j-i > 2 || !base64Byte(data[j]) {
+			return j, false
+		}
+		for k := i - wrappedLine; k < i; k++ {
+			if !base64Byte(data[k]) {
+				return j, false
+			}
+		}
+		return j, true
+	}
+	first := -1
+	for i := bytes.IndexAny(data, "\r\n"); i >= 0; {
+		j, ok := joins(i)
+		if ok {
+			first = i
+			break
+		}
+		next := bytes.IndexAny(data[j:], "\r\n")
+		if next < 0 {
+			break
+		}
+		i = j + next
+	}
+	if first < 0 {
+		return nil, nil, false
+	}
+	decoded := make([]byte, 0, len(data))
+	locations := make([]int, 0, len(data))
+	for i := 0; i < len(data); i++ {
+		if i >= first && (data[i] == '\r' || data[i] == '\n') {
+			if j, ok := joins(i); ok {
+				i = j - 1
+				continue
+			}
+		}
+		decoded = append(decoded, data[i])
+		locations = append(locations, i)
+	}
+	return decoded, locations, true
 }
 func decodeScanURL(data []byte, query bool) ([]byte, []int) {
 	decoded := make([]byte, 0, len(data))
@@ -138,8 +180,9 @@ func (s *CustodyStore) RecordSecretValues(_ context.Context, pkg workerproto.Exe
 	snapshot := secretSnapshot{Version: 1}
 	seen := map[string]bool{}
 	for _, c := range scanner.canaries {
+		// newResultScanner already skipped values too short to match safely.
 		if len(c.value) <= 4 {
-			return &SecretScanError{Object: "execution", Detector: "short-canary", Offset: 0}
+			continue
 		}
 		sum := sha256.Sum256(c.value)
 		digest := hex.EncodeToString(sum[:])
@@ -147,7 +190,7 @@ func (s *CustodyStore) RecordSecretValues(_ context.Context, pkg workerproto.Exe
 			continue
 		}
 		seen[digest] = true
-		snapshot.Signatures = append(snapshot.Signatures, canarySignature{Prefix: append([]byte(nil), c.value[:4]...), Length: len(c.value), SHA256: digest, Fingerprint: c.fingerprint})
+		snapshot.Signatures = append(snapshot.Signatures, canarySignature{Prefix: append([]byte(nil), c.value[:4]...), Length: len(c.value), SHA256: digest, Fingerprint: c.fingerprint, Base64: c.base64})
 	}
 	if len(snapshot.Signatures) == 0 {
 		return nil
@@ -188,7 +231,13 @@ func (s *CustodyStore) addSecretHistory(pkg workerproto.ExecutionPackage, scanne
 		return errors.New("secret snapshot read failed")
 	}
 	prefix := secretSnapshotKey(pkg) + "-"
+	// A signature of a current canary variant is already matched exactly;
+	// searching it again would only double the cost of the scan.
 	seen := map[string]bool{}
+	for _, c := range scanner.canaries {
+		sum := sha256.Sum256(c.value)
+		seen[hex.EncodeToString(sum[:])] = true
+	}
 	for _, entry := range entries {
 		if !strings.HasPrefix(entry.Name(), prefix) {
 			continue

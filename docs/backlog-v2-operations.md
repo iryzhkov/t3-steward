@@ -871,18 +871,32 @@ and contained executions, before storing any object or advertising an upload.
 The earlier M16 bundle admission probe still checks sizes using metadata, because
 its candidate files have not been captured yet. Final admission scans declared
 outputs and verification logs, the thread archive, final message, recovery objects,
-declared Git commits, and both packed and decoded Git bundles. Git scanning covers
-every new reachable object from the recorded base, including intermediate commits,
-commit messages, trees, and binary blobs, plus both sides of changed endpoint files
-(including copied blobs already reachable at the base); locations include the file/object name,
-object type and size, and byte offset.
+declared Git commits, and both packed and decoded Git bundles. Quota-pause
+checkpoints (`.t3/checkpoint.md`) pass the same scan before they are published.
+Git scanning covers every new reachable object from the recorded base, including
+intermediate commits, commit messages, trees, and binary blobs, plus both sides of
+changed endpoint files (including copied blobs already reachable at the base);
+locations include the file/object name, object type and size, and byte offset.
+Git reads ignore replace refs, grafts, shallow markers and commit-graph files,
+all of which the task can write and which could otherwise hide history.
+
+The base is the scan baseline the worker records in private custody when it
+creates the execution's thread, before the provider's first turn: the commit the
+workspace was pinned to, and the allowlist committed at that commit. The task can
+rewrite `.t3/base-commit` afterwards; when the commit record names a different
+base, both ranges are scanned.
 
 Exact execution credentials always block. The worker resolves required credential
 references in memory, includes its protocol credentials, model API environment
 values, and available Codex, Claude and OpenCode login tokens. For contained
 executions it reads the assigned provider home rather than the host home.
-Plain, standard/URL-safe base64 (padded or unpadded), and URL-encoded forms are
-recognized, including mixed-case and partial percent escapes. Values never enter
+Plain, standard/URL-safe base64 (padded or unpadded, at any byte alignment, so a
+credential inside a Basic authorization or a docker `auth` field is found, and
+across the line breaks of MIME or PEM wrapping), and URL-encoded forms are
+recognized, including mixed-case and partial percent escapes. Credentials shorter
+than eight bytes cannot be matched without refusing ordinary text; they are
+counted in a warning and not scanned. Login-file metadata such as `token_type`,
+expiry times and key IDs is not treated as a credential. Values never enter
 the package or scan report. At credential resolution and before provider startup,
 the worker retains execution-specific SHA-256 signatures, lengths and four-byte
 prefixes in private custody, so later rotation and restart do not forget those
@@ -907,27 +921,40 @@ including a decoded Git blob; it never means that an unscanned suffix is accepte
 `pattern_policy: block` blocks patterns in every class; `warn` reports all pattern
 hits without blocking. Canary hits block under every policy. These settings belong
 to the worker runtime's local configuration; default policy applies when absent.
-Scanning uses bounded streaming buffers with overlap for matches across chunks.
+Scanning uses bounded streaming buffers with overlap for matches across chunks;
+all exact canaries and signatures are found in one indexed pass per view (plain,
+URL-decoded, unwrapped base64), so the cost does not grow with their number.
 The scanned bytes must match their declared size and SHA-256. Commit records are
 parsed from those verified bytes, and bundle decoding uses a temporary copy of
 the verified stream, preserving the fence between scanned and published content.
 
-Known repository fixtures can be listed in `.t3/secret-scan-allow`, one fingerprint
-per line (blank lines and lines starting with `#` are ignored). A fingerprint is
+Known repository fixtures can be listed in a committed `.t3/secret-scan-allow`,
+one fingerprint per line (blank lines and lines starting with `#` are ignored).
+Only the file as committed at the execution's recorded base counts; a copy the
+task writes or commits during its own run is ignored, so a task cannot approve
+its own findings. A fingerprint is
 the token's first four characters, a colon, and the first twelve lowercase hex
 characters of SHA-256 of the complete token. For example, a GitHub fixture entry
 has the form `ghp_:0123456789ab`; compute the digest of the actual fixture, not this
-example. Symlinked or malformed allowlists are refused. An allowlist suppresses
+example. A committed symlink or a malformed allowlist is refused. An allowlist suppresses
 pattern findings only and can never authorize an execution credential.
 
 A refusal reports a structured object, detector, byte offset and fingerprint,
 without the matched value or surrounding content. Warning logs use the same
 redacted evidence. A typed refusal becomes a permanent collection failure and
 publishes only a bounded redacted failure summary and empty archive; rejected
-bytes stay in worker-local recovery storage. Explain and owner notifications
-therefore receive the redacted reason rather than the original secret-bearing
-message or archive. Fix the source/fixture policy and start a new attempt after
-reviewing the retained local evidence.
+bytes stay in worker-local recovery storage. The same holds for an attempt that
+had already failed: when its thread archive or failure text carries a credential,
+the worker publishes the redacted finding with an empty archive in place of the
+original reason. A supervision activation whose result is refused fails the same
+way. Explain and owner notifications therefore receive the redacted reason rather
+than the original secret-bearing message or archive. A refused checkpoint is
+reported as a failed checkpoint with the redacted reason. Fix the source/fixture
+policy and start a new attempt after reviewing the retained local evidence. A
+refused declared commit still remains under
+`refs/campaigns/<run>/<task>/<name>` in the worker's `campaigns.git`, where
+finalization pushed it before admission; a retry that produces a different commit
+for the same declaration conflicts on that ref until the ref is removed there.
 
 ### Reloading the coordinator
 

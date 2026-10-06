@@ -109,13 +109,7 @@ func TestSecretScanGitPatternsAndRepositoryAllowlist(t *testing.T) {
 	if scanner.scanBundle(context.Background(), repo, "bundle", bundle) == nil {
 		t.Fatal("bundle pattern admitted")
 	}
-	if err := os.Mkdir(filepath.Join(repo, ".t3"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, ".t3", "secret-scan-allow"), []byte(secretFingerprint(token)+"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	allow, err := loadSecretAllowlist(repo)
+	allow, err := parseSecretAllowlist([]byte("# fixtures\n" + secretFingerprint(token) + "\n"))
 	if err != nil {
 		t.Fatal(err)
 	}

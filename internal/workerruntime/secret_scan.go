@@ -1,6 +1,7 @@
 package workerruntime
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -49,28 +50,74 @@ func secretFingerprint(value string) string {
 type secretPattern struct {
 	name string
 	re   *regexp.Regexp
+	// keywords, when set, must occur (ASCII case-insensitively) before the
+	// expression runs; a case-insensitive expression has no literal prefix
+	// for the regexp engine to skip ahead with.
+	keywords []string
+}
+
+func (p secretPattern) mayMatch(data []byte) bool {
+	if len(p.keywords) == 0 {
+		return true
+	}
+	for _, keyword := range p.keywords {
+		if containsFoldASCII(data, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsFoldASCII reports whether data contains the lowercase ASCII needle
+// in any letter case.
+func containsFoldASCII(data []byte, needle string) bool {
+	for _, first := range []byte{needle[0], needle[0] - 'a' + 'A'} {
+		for rest := data; ; {
+			at := bytes.IndexByte(rest, first)
+			if at < 0 || len(rest)-at < len(needle) {
+				break
+			}
+			if bytes.EqualFold(rest[at:at+len(needle)], []byte(needle)) {
+				return true
+			}
+			rest = rest[at+1:]
+		}
+	}
+	return false
 }
 
 var resultSecretPatterns = []secretPattern{
-	{"github", regexp.MustCompile(`(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{60,255})`)},
-	{"anthropic", regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{32,255}`)},
-	{"openai", regexp.MustCompile(`sk-[A-Za-z0-9_-]{32,255}`)},
-	{"aws", regexp.MustCompile(`AKIA[A-Z0-9]{16}`)},
-	{"cloudflare", regexp.MustCompile(`(?i)(?:cloudflare[_ -]*(?:api[_ -]*)?token|cf_api_token)[\t "'=:]{1,16}([A-Za-z0-9_-]{40})`)},
-	{"private-key", regexp.MustCompile(`-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----`)},
-	{"age", regexp.MustCompile(`AGE-SECRET-KEY-1[0-9A-Z]{58}`)},
+	{"github", regexp.MustCompile(`(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{60,255})`), nil},
+	{"anthropic", regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{32,255}`), nil},
+	{"openai", regexp.MustCompile(`sk-[A-Za-z0-9_-]{32,255}`), nil},
+	{"aws", regexp.MustCompile(`AKIA[A-Z0-9]{16}`), nil},
+	{"cloudflare", regexp.MustCompile(`(?i)(?:cloudflare[_ -]*(?:api[_ -]*)?token|cf_api_token)[\t "'=:]{1,16}([A-Za-z0-9_-]{40})`), []string{"cloudflare", "cf_api_token"}},
+	{"private-key", regexp.MustCompile(`-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----`), nil},
+	{"age", regexp.MustCompile(`AGE-SECRET-KEY-1[0-9A-Z]{58}`), nil},
 }
+
+// minCanaryBytes is the shortest credential or encoded form matched exactly.
+// A shorter value would refuse ordinary text, so it is counted and skipped
+// rather than failing the execution.
+const minCanaryBytes = 8
 
 type canaryVariant struct {
 	value       []byte
 	fingerprint string
+	// base64 variants are also matched across line breaks (MIME, PEM).
+	base64 bool
 }
 type resultScanner struct {
-	config   SecretScanConfig
-	canaries []canaryVariant
-	allow    map[string]bool
-	overlap  int
-	history  []canarySignature
+	config    SecretScanConfig
+	canaries  []canaryVariant
+	allow     map[string]bool
+	overlap   int
+	history   []canarySignature
+	skipped   int
+	hasBase64 bool
+	// tempRoot holds decoded bundles; empty selects the system default.
+	tempRoot string
+	index    *canaryIndex
 }
 
 func newResultScanner(config SecretScanConfig, canaries []string, allow map[string]bool) *resultScanner {
@@ -78,25 +125,65 @@ func newResultScanner(config SecretScanConfig, canaries []string, allow map[stri
 		config.MaxBytes = 64 << 20
 	}
 	s := &resultScanner{config: config, allow: allow, overlap: 1024}
+	seen := map[string]bool{}
 	for _, value := range append(append([]string(nil), config.StaticCanaries...), canaries...) {
-		if value == "" {
+		if len(value) < minCanaryBytes {
+			if value != "" {
+				s.skipped++
+			}
 			continue
 		}
-		variants := []string{value, base64.StdEncoding.EncodeToString([]byte(value)), base64.RawStdEncoding.EncodeToString([]byte(value)), base64.URLEncoding.EncodeToString([]byte(value)), base64.RawURLEncoding.EncodeToString([]byte(value)), url.QueryEscape(value), url.PathEscape(value)}
+		fingerprint := secretFingerprint(value)
+		add := func(variant string, base64 bool) {
+			if len(variant) < minCanaryBytes || seen[variant] {
+				return
+			}
+			seen[variant] = true
+			s.canaries = append(s.canaries, canaryVariant{[]byte(variant), fingerprint, base64})
+			width := len(variant)
+			if base64 {
+				// Room for the line breaks of a wrapped encoding.
+				width += len(variant)/16 + 4
+				s.hasBase64 = true
+			}
+			if width > s.overlap {
+				s.overlap = width
+			}
+		}
+		for _, variant := range []string{value, url.QueryEscape(value), url.PathEscape(value)} {
+			add(variant, false)
+		}
 		// Also recognize percent-encoding of all bytes, in either hex case.
 		var encoded strings.Builder
 		for _, c := range []byte(value) {
 			fmt.Fprintf(&encoded, "%%%02X", c)
 		}
-		variants = append(variants, encoded.String(), strings.ToLower(encoded.String()))
-		for _, v := range variants {
-			s.canaries = append(s.canaries, canaryVariant{[]byte(v), secretFingerprint(value)})
-			if len(v) > s.overlap {
-				s.overlap = len(v)
-			}
+		add(encoded.String(), false)
+		add(strings.ToLower(encoded.String()), false)
+		for _, variant := range base64CanaryVariants(value) {
+			add(variant, true)
 		}
 	}
 	return s
+}
+
+// base64CanaryVariants returns, for both alphabets and each of the three byte
+// alignments a value can have inside a longer encoded string (a Basic
+// credential, a docker auth field), the characters determined by the value
+// alone. Characters that also encode neighbouring bytes, and padding, are
+// trimmed, so the variant matches whatever precedes or follows the value.
+func base64CanaryVariants(value string) []string {
+	var variants []string
+	for _, encoding := range []*base64.Encoding{base64.RawStdEncoding, base64.RawURLEncoding} {
+		for offset := 0; offset < 3; offset++ {
+			encoded := encoding.EncodeToString(append(make([]byte, offset), value...))
+			start, end := (offset*8+5)/6, (offset+len(value))*8/6
+			if end > start {
+				variants = append(variants, encoded[start:end])
+			}
+		}
+	}
+	return variants
 }
 func (s *resultScanner) safeName(name string) string {
 	var redacted strings.Builder
@@ -144,6 +231,9 @@ func (s *resultScanner) scan(object, kind string, r io.Reader) error {
 				return &SecretScanError{Object: object, Detector: "canary", Offset: base + int64(at), Fingerprint: fp}
 			}
 			for _, p := range resultSecretPatterns {
+				if !p.mayMatch(pending) {
+					continue
+				}
 				for _, match := range p.re.FindAllSubmatchIndex(pending, -1) {
 					if match[0] >= cut {
 						continue

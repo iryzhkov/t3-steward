@@ -392,6 +392,12 @@ func (d *LocalDriver) collectActivation(ctx context.Context, pkg workerproto.Exe
 		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
 		RecoveryProposal: proposal, RecoveryInstructions: instructions, RecoveryCheckpointTar: checkpoint,
 	}); err != nil {
+		// A refusal is permanent: the runtime records it as the activation's
+		// failure and publishes the redacted failed result in its place.
+		var secret *SecretScanError
+		if errors.As(err, &secret) {
+			return &permanentCollectionFailure{secret: secret}
+		}
 		return fmt.Errorf("publish supervision activation custody: %w", err)
 	}
 	if thread == nil {

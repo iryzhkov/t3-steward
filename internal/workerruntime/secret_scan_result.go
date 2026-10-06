@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,25 +21,44 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
-func (s *CustodyStore) scanResult(ctx context.Context, pkg workerproto.ExecutionPackage, result PublishedResult, planned []resultObject) error {
+// executionScanner builds the scanner for one execution: its current
+// credentials, their recorded history and the trusted baseline allowlist.
+func (s *CustodyStore) executionScanner(ctx context.Context, pkg workerproto.ExecutionPackage) (*resultScanner, *scanBaseline, error) {
 	config := s.config.SecretScan
 	var canaries []string
 	if config.Canaries != nil {
 		var err error
 		canaries, err = config.Canaries(ctx, pkg)
 		if err != nil {
-			return &SecretScanError{Object: "execution", Detector: "credential-resolution", Offset: 0}
+			return nil, nil, &SecretScanError{Object: "execution", Detector: "credential-resolution", Offset: 0}
 		}
 	}
 	scanner := newResultScanner(config, canaries, nil)
+	if scanner.skipped > 0 {
+		logger := config.Log
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("result secret scan skips execution credentials too short to match", "attempt", pkg.Identity.AttemptID, "count", scanner.skipped, "minimum_bytes", minCanaryBytes)
+	}
 	if err := s.addSecretHistory(pkg, scanner); err != nil {
-		return &SecretScanError{Object: "execution", Detector: "credential-history", Offset: 0}
+		return nil, nil, &SecretScanError{Object: "execution", Detector: "credential-history", Offset: 0}
 	}
-	allow, err := loadSecretAllowlist(result.WorkspaceDir)
+	// The allowlist comes only from the baseline recorded before the task
+	// ran; the workspace copy is task-writable and never consulted.
+	baseline, err := s.loadScanBaseline(pkg)
 	if err != nil {
-		return &SecretScanError{Object: ".t3/secret-scan-allow", Detector: "allowlist-read", Offset: 0}
+		return nil, nil, &SecretScanError{Object: "execution", Detector: "scan-baseline", Offset: 0}
 	}
-	scanner.allow = allow
+	scanner.allow = baseline.allowSet()
+	return scanner, baseline, nil
+}
+
+func (s *CustodyStore) scanResult(ctx context.Context, pkg workerproto.ExecutionPackage, result PublishedResult, planned []resultObject) error {
+	scanner, baseline, err := s.executionScanner(ctx, pkg)
+	if err != nil {
+		return err
+	}
 	declarations := map[string]bool{}
 	for _, output := range pkg.Outputs {
 		if output.Commit != nil {
@@ -140,15 +160,24 @@ func (s *CustodyStore) scanResult(ctx context.Context, pkg workerproto.Execution
 			if parseErr != nil {
 				return &SecretScanError{Object: scanner.safeName(entry.object.Path), Detector: "commit-record", Offset: 0}
 			}
-			listing, gitErr := scanCommitListing(ctx, result.WorkspaceDir, provenance.Base, provenance.Commit)
-			if gitErr != nil {
-				return &SecretScanError{Object: scanner.safeName(entry.object.Path), Detector: "git-objects", Offset: 0}
+			// The recorded base bounds the range even when the task rewrote
+			// .t3/base-commit, which the provenance base was read from.
+			bases := []string{provenance.Base}
+			if baseline != nil && baseline.Base != "" && baseline.Base != provenance.Base {
+				bases = []string{baseline.Base, provenance.Base}
 			}
-			if err := scanner.scanGitObjects(ctx, result.WorkspaceDir, entry.object.Path, "commit", string(listing)); err != nil {
-				return err
+			for _, base := range bases {
+				listing, gitErr := scanCommitListing(ctx, result.WorkspaceDir, base, provenance.Commit)
+				if gitErr != nil {
+					return &SecretScanError{Object: scanner.safeName(entry.object.Path), Detector: "git-objects", Offset: 0}
+				}
+				if err := scanner.scanGitObjects(ctx, result.WorkspaceDir, entry.object.Path, "commit", string(listing)); err != nil {
+					return err
+				}
 			}
 		}
 		if kind == "bundle" {
+			scanner.tempRoot = bundleRoot
 			if err := scanner.scanBundle(ctx, result.WorkspaceDir, entry.object.Path, source); err != nil {
 				return err
 			}
@@ -165,28 +194,8 @@ func (e resultObject) artifactName() string {
 
 var fixtureFingerprint = regexp.MustCompile(`^.{1,4}:[a-f0-9]{12}$`)
 
-func loadSecretAllowlist(workspace string) (map[string]bool, error) {
+func parseSecretAllowlist(raw []byte) (map[string]bool, error) {
 	allow := map[string]bool{}
-	if workspace == "" {
-		return allow, nil
-	}
-	// Refuse symlinked parents as well as a symlinked allowlist.
-	dir := filepath.Join(workspace, ".t3")
-	info, err := os.Lstat(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return allow, nil
-	}
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, errors.New("unsafe allowlist directory")
-	}
-	path := filepath.Join(dir, "secret-scan-allow")
-	raw, err := readScanBounded(path, 1<<20)
-	if errors.Is(err, os.ErrNotExist) {
-		return allow, nil
-	}
-	if err != nil {
-		return nil, err
-	}
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -215,7 +224,7 @@ func readScanBounded(path string, limit int64) ([]byte, error) {
 // Git stderr can contain credential-bearing filenames or commit messages.
 // Never incorporate it (or command stdout on failure) in public errors.
 func scanGitOutput(ctx context.Context, repo string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
+	cmd := scanGitCommand(ctx, repo, args...)
 	pipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, errors.New("git scan pipe")
@@ -234,6 +243,15 @@ func scanGitOutput(ctx context.Context, repo string, args ...string) ([]byte, er
 	return raw, nil
 }
 
+// scanGitCommand reads objects as stored. Replace refs, grafts, shallow
+// markers and commit-graph files live in the task-writable repository and
+// could otherwise hide content or history from the scan.
+func scanGitCommand(ctx context.Context, repo string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-replace-objects", "-c", "core.commitGraph=false", "-C", repo}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1", "GIT_GRAFT_FILE="+os.DevNull, "GIT_SHALLOW_FILE="+os.DevNull)
+	return cmd
+}
+
 var gitObjectID = regexp.MustCompile(`^[a-f0-9]{40,64}$`)
 
 func (s *resultScanner) scanGitObjects(ctx context.Context, repo, object, kind, listing string) error {
@@ -249,7 +267,7 @@ func (s *resultScanner) scanGitObjects(ctx context.Context, repo, object, kind, 
 			names[fields[0]] = fields[1]
 		}
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", repo, "cat-file", "--batch")
+	cmd := scanGitCommand(ctx, repo, "cat-file", "--batch")
 	cmd.Stdin = strings.NewReader(ids.String())
 	pipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -315,7 +333,7 @@ func (s *resultScanner) scanBundle(ctx context.Context, workspace, object, path 
 	if workspace == "" || path == "" {
 		return failure()
 	}
-	dir, err := os.MkdirTemp("", "steward-secret-bundle-")
+	dir, err := os.MkdirTemp(s.tempRoot, "steward-secret-bundle-")
 	if err != nil {
 		return failure()
 	}
