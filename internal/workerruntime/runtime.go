@@ -108,6 +108,9 @@ type Runtime struct {
 	// exchange. It is not durable on purpose; see titleFailed.
 	titleMu       sync.Mutex
 	titleFailures map[string]string
+	// reportTurnEnd records that the coordinator asked for turn-end notes on
+	// its last snapshot request, like reportQuota.
+	reportTurnEnd bool
 }
 
 func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
@@ -183,6 +186,9 @@ func AdvertisedCapabilities(configured []string) []string {
 	if !slices.Contains(merged, workerproto.CapabilityRepositoryRefResolve) {
 		merged = append(merged, workerproto.CapabilityRepositoryRefResolve)
 	}
+	if !slices.Contains(merged, workerproto.CapabilityTurnEndCommands) {
+		merged = append(merged, workerproto.CapabilityTurnEndCommands)
+	}
 	for _, capability := range workerproto.SupportedPackageCapabilities() {
 		if !slices.Contains(merged, capability) {
 			merged = append(merged, capability)
@@ -220,7 +226,11 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 		assignments := make([]domain.WorkerAssignmentObservation, 0, len(state.Attempts))
 		for _, id := range sortedAttemptIDs(state.Attempts) {
 			record := state.Attempts[id]
-			assignments = append(assignments, observation(record, now, r.reportQuota))
+			observed := observation(record, now, r.reportQuota)
+			if r.reportTurnEnd && record.TurnEnd != nil && observed.Journal != nil {
+				observed.Journal.TurnEnd = truncateText(record.TurnEnd.Note, maxTurnEndNote)
+			}
+			assignments = append(assignments, observed)
 		}
 		inventory := r.config.Inventory
 		inventory.Capabilities = AdvertisedCapabilities(inventory.Capabilities)
@@ -1076,6 +1086,7 @@ func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record At
 	}
 	// Stopped/stopped observations cannot distinguish a task that parked and
 	// resumed entirely between polls. Bind this decision to the provider turn.
+	endedTurn := ""
 	if observer, ok := r.driver.(turnObserver); ok {
 		observed, turnID, err := answer.turnState, answer.turnID, answer.turnErr
 		if direct {
@@ -1091,6 +1102,7 @@ func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record At
 		if observed != backlog.DispatchThreadStopped || turnID == "" {
 			return nil
 		}
+		endedTurn = turnID
 		if err := r.journal.update(func(state *journalState) error {
 			current := state.Attempts[id]
 			if current.ObservedTurnID != turnID {
@@ -1148,6 +1160,12 @@ func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record At
 			if err := r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.ThreadID); err != nil {
 				return err
 			}
+		}
+		// A turn that ended while commands it started still run is not the
+		// end of the task: the session is told to wait for them, and only a
+		// turn that keeps ending that way fails the attempt.
+		if held, err := r.holdForLiveCommands(ctx, id, record, endedTurn); held || err != nil {
+			return err
 		}
 		return r.collect(ctx, id)
 	}

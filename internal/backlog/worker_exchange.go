@@ -241,6 +241,9 @@ func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 			}
 			// Session states likewise go only to a build that decodes them.
 			sessionTitles = slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilitySessionTitles)
+			if slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityTurnEndCommands) {
+				request.TurnEndWanted = true
+			}
 			if snapshot.Sequence > 0 && slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityTaskWaitCollectionFence) {
 				request.ObservedWorkerEpoch = snapshot.WorkerEpoch
 				request.ObservedSequence = snapshot.Sequence

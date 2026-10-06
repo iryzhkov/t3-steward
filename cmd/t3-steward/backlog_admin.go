@@ -1522,6 +1522,9 @@ func renderAttemptEvidence(out io.Writer, detail *backlogadmin.TaskDetail) {
 	if evidence.PauseReason != "" {
 		fmt.Fprintf(out, "paused: %s\n", evidence.PauseReason)
 	}
+	if evidence.TurnEnd != "" {
+		fmt.Fprintf(out, "turn end: %s\n", evidence.TurnEnd)
+	}
 	if evidence.Failure != "" && (detail.Attempt == nil || detail.Attempt.Failure != evidence.Failure) {
 		fmt.Fprintf(out, "worker failure: %s\n", evidence.Failure)
 	}

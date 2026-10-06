@@ -394,9 +394,11 @@ func resultArtifact(object workerproto.ArtifactObject, manifest workerproto.Arti
 			return domain.Artifact{}, fmt.Errorf("result import object %q cannot publish recovery content", object.ID)
 		}
 	case domain.ArtifactGitState:
-		// The only Git state a result carries is the bundle of a commit the task
-		// declared, which is how that commit reaches a consumer on another worker.
-		if !IsCommitBundleOf(task, name) || object.MediaType != CommitBundleMediaType {
+		// The Git state a result carries is the bundle of a commit the task
+		// declared, which is how that commit reaches a consumer on another
+		// worker, or the work-in-progress bundle of a failed attempt whose
+		// commands were still running when its turn ended.
+		if !(IsCommitBundleOf(task, name) || isWorkInProgressBundleOf(task, attempt.ID, object.ID, name)) || object.MediaType != CommitBundleMediaType {
 			return domain.Artifact{}, fmt.Errorf("result import object %q is not the bundle of a commit the task declares", object.ID)
 		}
 	default:

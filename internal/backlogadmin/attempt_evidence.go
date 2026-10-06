@@ -25,6 +25,7 @@ func (v view) attemptEvidence(attempt domain.Attempt, assignment *domain.Assignm
 					evidence.Phase = observed.Journal.Phase
 					evidence.ThreadState = observed.Journal.ThreadState
 					evidence.PauseReason = observed.Journal.PauseReason
+					evidence.TurnEnd = observed.Journal.TurnEnd
 					evidence.Failure = observed.Journal.Failure
 				}
 			}
