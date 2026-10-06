@@ -135,7 +135,8 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		// Only a review-declared task is asked for its workspace HEAD, and it
 		// is asked once.
 		return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now,
-			fmt.Errorf("result import carries %d workspace HEAD reports for a task that declares review: %t", workspaceHeads, task.ReviewRequirements != nil))
+			fmt.Errorf("result import carries %d workspace HEAD reports; only a task that declares review: carries one, and this task declares review: %t",
+				workspaceHeads, task.ReviewRequirements != nil))
 	}
 	missingOutputs, err := validateDeclaredResultOutputs(task, outputs)
 	if err != nil {

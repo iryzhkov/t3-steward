@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -53,6 +54,25 @@ func TestCaptureWorkspaceHeadReportsHeadAndTrackedChangesOnly(t *testing.T) {
 	dirty := CaptureWorkspaceHead(ctx, "", dir, outputs)
 	if !dirty.Dirty || dirty.Head != head || !slices.Contains(dirty.DirtyPaths, "main.go") || !slices.Contains(dirty.DirtyPaths, "moved.txt") {
 		t.Fatalf("tracked change not reported: %+v", dirty)
+	}
+}
+
+// A rename onto a declared output still removes a tracked file the review saw,
+// so the source side of the rename counts even when the destination does not.
+func TestCaptureWorkspaceHeadCountsTheSourceOfARenameOntoAnOutput(t *testing.T) {
+	dir, head := workspaceHeadRepository(t)
+	gitRun(t, dir, "mv", "main.go", "report.txt")
+	if status := gitOutput(t, dir, "status", "--porcelain"); !strings.HasPrefix(status, "R ") {
+		t.Fatalf("fixture is not a staged rename: %q", status)
+	}
+	captured := CaptureWorkspaceHead(context.Background(), "", dir, []domain.ArtifactDeclaration{{Name: "report.txt"}})
+	if captured.Head != head || !captured.Dirty || !slices.Contains(captured.DirtyPaths, "main.go") {
+		t.Fatalf("rename source not reported: %+v", captured)
+	}
+	for _, name := range captured.DirtyPaths {
+		if name == "" || name == "report.txt" {
+			t.Fatalf("dirty paths %q name the excluded output or a garbled entry", captured.DirtyPaths)
+		}
 	}
 }
 

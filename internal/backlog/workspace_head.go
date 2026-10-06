@@ -62,18 +62,25 @@ func CaptureWorkspaceHead(ctx context.Context, gitBinary, workspace string, outp
 		if len(entry) < 4 {
 			continue
 		}
-		name := entry[3:]
-		if entry[0] == 'R' || entry[0] == 'C' {
-			// A rename or copy is followed by its source path, which is part of
-			// the same change and not a second entry.
+		changed := []string{entry[3:]}
+		if strings.ContainsAny(entry[:2], "RC") && index+1 < len(entries) {
+			// A rename or copy, staged or not, is followed by its source path,
+			// which is part of the same entry. A renamed source is a tracked
+			// file that went away, and counts even when the destination is a
+			// declared output; a copied source is unchanged.
 			index++
+			if strings.Contains(entry[:2], "R") {
+				changed = append(changed, entries[index])
+			}
 		}
-		if _, skip := excluded[name]; skip || workspaceHeadIgnored(name) {
-			continue
-		}
-		captured.Dirty = true
-		if len(captured.DirtyPaths) < domain.MaxWorkspaceHeadDirtyPaths {
-			captured.DirtyPaths = append(captured.DirtyPaths, name)
+		for _, name := range changed {
+			if _, skip := excluded[name]; skip || workspaceHeadIgnored(name) {
+				continue
+			}
+			captured.Dirty = true
+			if len(captured.DirtyPaths) < domain.MaxWorkspaceHeadDirtyPaths {
+				captured.DirtyPaths = append(captured.DirtyPaths, name)
+			}
 		}
 	}
 	return captured

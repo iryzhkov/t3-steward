@@ -89,6 +89,16 @@ settles the attempt.
   before the coordinator's gate runs. A gate failure therefore leaves that ref
   naming the unreviewed commit, and a retry that produces a different commit is
   refused by the existing ref-redefinition rule.
+- The frozen review authority is bound to the task's first attempt
+  (M16-1), so a retried attempt cannot open rounds of its own. A retry
+  completes only if its HEAD is exactly the head the latest round accepted;
+  otherwise a gate failure is in effect final for the task until M16-4
+  decides how rounds carry across attempts.
+- The latest round is read in its own snapshot rather than in the transaction
+  that settles the attempt. That is safe because opening a round needs a live
+  turn, and an attempt whose result is being imported is no longer live. A
+  verdict recorded in between can only turn pending into a verdict, which at
+  worst fails a task that would have passed a moment later.
 - The head is not checked to descend from the frozen base.
 - Round limits, escalation and cancelling open rounds when the task ends are
   out of scope (M16-4).
