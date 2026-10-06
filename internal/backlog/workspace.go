@@ -429,7 +429,7 @@ func (p WorkspacePreparer) materializeInputs(stageDir string, request WorkspaceP
 
 func (p WorkspacePreparer) materializeDependencyView(stageDir string, request WorkspacePreparation) error {
 	dependenciesDir := filepath.Join(stageDir, "dependencies")
-	if len(request.Task.DependencyInputs) == 0 {
+	if len(request.Task.DependencyInputs) == 0 && len(request.Task.CarriedInputs) == 0 {
 		if err := os.Mkdir(dependenciesDir, 0o500); err != nil {
 			return fmt.Errorf("create dependency directory: %w", err)
 		}

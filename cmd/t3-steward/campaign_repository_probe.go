@@ -233,23 +233,31 @@ func repositoryProbeTimeoutSeconds(settings config.BacklogV2) int {
 // The probe therefore runs under the identity the real task would run under,
 // which is the whole point of asking the worker rather than answering here.
 func (o *coordinatorRepositoryObserver) dialWorker(ctx context.Context, workerID string) (repositoryProbeClient, func() error, error) {
-	client, closer, err := dialRepositoryProbeSession(ctx, o.settings, o.resolver, o.epoch, o.factory, workerID, "-probe")
+	return o.dialWorkerOperation(ctx, workerID, coordinatorWorkerControlOperation)
+}
+
+// dialWorkerOperation opens the same session as dialWorker but names the
+// worker operation the SSH transport starts, which commit export needs to
+// reach the artifact send operation rather than control.
+func (o *coordinatorRepositoryObserver) dialWorkerOperation(ctx context.Context, workerID, operation string) (repositoryProbeClient, func() error, error) {
+	client, closer, err := dialRepositoryProbeSession(ctx, o.settings, o.resolver, o.epoch, o.factory, workerID, operation, "-probe")
 	if err != nil {
 		return nil, nil, err
 	}
 	return client, closer, nil
 }
 
-// dialRepositoryProbeSession opens the short-lived control session that every
-// repository question uses: the reachability probe and exact-ref resolution
-// alike. The suffix keeps their session identities apart.
+// dialRepositoryProbeSession opens the short-lived session that every
+// repository question uses: the reachability probe, exact-ref resolution and
+// commit export alike. The operation selects the worker entry point an SSH
+// transport starts; the suffix keeps their session identities apart.
 func dialRepositoryProbeSession(
 	ctx context.Context,
 	settings config.BacklogV2,
 	resolver workerruntime.ProtocolCredentialResolver,
 	epoch int64,
 	factory workerproto.CommandFactory,
-	workerID, sessionSuffix string,
+	workerID, operation, sessionSuffix string,
 ) (*workerproto.Client, func() error, error) {
 	if resolver == nil || epoch < 1 {
 		return nil, nil, errors.New("repository probe: coordinator authority and credential resolver are required")
@@ -281,7 +289,7 @@ func dialRepositoryProbeSession(
 	} else {
 		ssh, err := workerproto.NewSSHTransport(workerproto.SSHConfig{
 			Address: worker.Address, RemoteCommand: coordinatorWorkerRemoteCommand,
-			RemoteArguments:   []string{coordinatorWorkerControlOperation},
+			RemoteArguments:   []string{operation},
 			RequestTimeout:    requestTimeout,
 			ConnectTimeout:    min(requestTimeout, 10*time.Second),
 			MaxMessageBytes:   settings.MessageLimits.MaxBytes,

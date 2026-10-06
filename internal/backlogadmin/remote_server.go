@@ -251,7 +251,7 @@ func decodeCachedResponse(raw []byte) (localResponse, error) {
 // and an artifact read streams bytes that no cache could replay.
 func mutatingOperation(operation string) bool {
 	switch operation {
-	case localOperationQuery, localOperationArtifact, localOperationSupervisionShow:
+	case localOperationQuery, localOperationArtifact, localOperationCommitExport, localOperationSupervisionShow:
 		return false
 	case localOperationSupervisionDecision:
 		// A supervision decision is an effect: accepting a gate releases a

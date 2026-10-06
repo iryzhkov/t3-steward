@@ -54,6 +54,10 @@ func (d adminDispatch) handle(
 	body io.Reader,
 ) (localResponse, *ArtifactContent) {
 	response := localResponse{Version: LocalTransportVersion}
+	if request.CommitExport != nil && request.Operation != localOperationCommitExport {
+		response.Error = "unexpected commit export request"
+		return response, nil
+	}
 	if request.RecoveryRetry != nil && request.Operation != localOperationRecoveryRetry {
 		response.Error = "unexpected recovery retry request"
 		return response, nil
@@ -75,6 +79,30 @@ func (d adminDispatch) handle(
 		return response, nil
 	}
 	switch request.Operation {
+	case localOperationCommitExport:
+		handler, ok := d.service.(interface {
+			ExportCommit(context.Context, Principal, CommitExportRequest) (ArtifactContent, error)
+		})
+		if !ok || request.CommitExport == nil || request.Query != nil || request.Mutation != nil || request.ArtifactID != "" || request.Submission != nil || request.SubmissionSize != 0 || request.ScheduleDefinition != nil || request.UnknownRecovery != nil || request.QuarantineRelease != nil || request.GraphAmendment != nil || request.NodeWait != nil || request.WorkerEnrollment != nil || request.Supervision != nil || request.RecoveryRetry != nil {
+			response.Error = "malformed commit export request"
+			break
+		}
+		value, err := handler.ExportCommit(ctx, principal, *request.CommitExport)
+		if err != nil {
+			response.Error = err.Error()
+			break
+		}
+		if value.Content == nil || value.Provenance == nil || value.Metadata.Size < 0 || value.Metadata.Size > d.maxArtifactBytes {
+			if value.Content != nil {
+				_ = value.Content.Close()
+			}
+			response.Error = "invalid or oversized commit export"
+			break
+		}
+		response.ArtifactMetadata = &value.Metadata
+		response.ArtifactSize = value.Metadata.Size
+		response.CommitProvenance = value.Provenance
+		return response, &value
 	case localOperationRecoveryRetry:
 		d.retryRecovery(ctx, principal, request, &response)
 	case localOperationSupervisionShow, localOperationSupervisionDecision:

@@ -1,0 +1,185 @@
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+
+	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
+)
+
+const campaignCommitExportUsage = "Usage: t3-steward campaign commit export <run>/<task>/<commit-name> --bundle FILE [--branch NAME]\n"
+
+func exportCLIHash(data []byte) string { return fmt.Sprintf("%x", sha256.Sum256(data)) }
+
+// linkCommitExport is os.Link; tests replace it to stand in for a destination
+// filesystem without hard links.
+var linkCommitExport = os.Link
+
+// publishCommitExport moves a complete, verified temporary bundle to path and
+// never replaces an existing destination, including a concurrently created
+// one. Linking publishes atomically. Filesystems without hard links (some
+// FUSE, SMB and exFAT mounts) get an exclusive create and copy instead, which
+// still never overwrites but is visible while it is written; a failed copy
+// removes only the file it created.
+func publishCommitExport(tmp, path string) error {
+	linkErr := linkCommitExport(tmp, path)
+	if linkErr == nil || errors.Is(linkErr, os.ErrExist) {
+		return linkErr
+	}
+	source, err := os.Open(tmp)
+	if err != nil {
+		return errors.Join(linkErr, err)
+	}
+	defer source.Close()
+	target, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return err
+		}
+		return errors.Join(linkErr, err)
+	}
+	_, copyErr := io.Copy(target, source)
+	if err := errors.Join(copyErr, target.Sync(), target.Close()); err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("copy after hard link failed (%v): %w", linkErr, err)
+	}
+	return nil
+}
+
+func parseCampaignCommitExportArgs(args []string) (backlogadmin.CommitExportRequest, string, error) {
+	var r backlogadmin.CommitExportRequest
+	path := ""
+	var positional []string
+	branchSet := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--bundle", "--branch":
+			flag := args[i]
+			if i+1 >= len(args) || args[i+1] == "" {
+				return r, path, fmt.Errorf("%s requires a value", flag)
+			}
+			i++
+			if flag == "--bundle" {
+				if path != "" {
+					return r, path, errors.New("duplicate --bundle")
+				}
+				path = args[i]
+			} else {
+				if branchSet {
+					return r, path, errors.New("duplicate --branch")
+				}
+				r.Branch = args[i]
+				branchSet = true
+			}
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return r, path, fmt.Errorf("unknown commit export option %q", args[i])
+			}
+			positional = append(positional, args[i])
+		}
+	}
+	if len(positional) != 1 || path == "" {
+		return r, path, fmt.Errorf("invalid commit export arguments: %s", strings.TrimSpace(campaignCommitExportUsage))
+	}
+	parts := strings.Split(positional[0], "/")
+	if len(parts) != 3 {
+		return r, path, errors.New("commit export requires <run>/<task>/<commit-name>")
+	}
+	for _, s := range parts {
+		if s == "" || s == "." || s == ".." || len(s) > 1024 || strings.TrimSpace(s) != s {
+			return r, path, errors.New("invalid declared commit reference")
+		}
+	}
+	r.RunID, r.TaskID, r.Name = parts[0], parts[1], parts[2]
+	if !branchSet {
+		r.Branch = r.Name
+	}
+	if err := backlog.ValidateExportBranch(r.Branch); err != nil {
+		return r, path, err
+	}
+	return r, path, nil
+}
+
+func (c campaignCLI) runCommit(ctx context.Context, args []string) error {
+	if len(args) == 0 || args[0] != "export" {
+		return fmt.Errorf("invalid commit export arguments: %s", strings.TrimSpace(campaignCommitExportUsage))
+	}
+	r, path, err := parseCampaignCommitExportArgs(args[1:])
+	if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("commit export: destination %s already exists", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if c.exportCommit == nil {
+		return errors.New("coordinator commit export is unavailable; upgrade the coordinator")
+	}
+	// An interrupt cancels the export so the deferred cleanup removes the
+	// temporary bundle instead of the process dying with it in place.
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	result, err := c.exportCommit(ctx, r)
+	if err != nil {
+		return err
+	}
+	if result.Content == nil {
+		return errors.New("commit export: missing bundle content")
+	}
+	// Close exactly once, before publishing, so a failed transport close cannot
+	// leave a destination that appears successful. Cancellation closes the
+	// content to unblock a stalled read, and restores default signal handling
+	// so a second interrupt still ends the process at once.
+	var closeOnce sync.Once
+	var closeErr error
+	closeContent := func() error {
+		closeOnce.Do(func() { closeErr = result.Content.Close() })
+		return closeErr
+	}
+	defer closeContent()
+	defer context.AfterFunc(ctx, func() {
+		stop()
+		_ = closeContent()
+	})()
+	if result.Provenance == nil || result.Provenance.WorkflowRunID != r.RunID || result.Provenance.Name != r.Name ||
+		result.Provenance.Commit == "" || result.Provenance.Base == "" || result.Metadata.Size <= 0 || result.Metadata.Size > backlog.DefaultCommitBundleMaxBytes || len(result.Metadata.SHA256) != 64 {
+		return errors.New("commit export: invalid coordinator metadata")
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), ".t3-commit-export-")
+	if err != nil {
+		return err
+	}
+	tmp := file.Name()
+	defer os.Remove(tmp)
+	hash := sha256.New()
+	size, copyErr := io.Copy(io.MultiWriter(file, hash), io.LimitReader(result.Content, result.Metadata.Size+1))
+	syncErr := file.Sync()
+	fileErr := file.Close()
+	sourceErr := closeContent()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("commit export: receive bundle: %w", err)
+	}
+	if err := errors.Join(copyErr, syncErr, fileErr, sourceErr); err != nil {
+		return fmt.Errorf("commit export: receive bundle: %w", err)
+	}
+	digest := fmt.Sprintf("%x", hash.Sum(nil))
+	if size != result.Metadata.Size || !strings.EqualFold(digest, result.Metadata.SHA256) {
+		return errors.New("commit export: bundle digest or size mismatch")
+	}
+	if err := publishCommitExport(tmp, path); err != nil {
+		return fmt.Errorf("commit export: publish bundle: %w", err)
+	}
+	_, err = fmt.Fprintf(c.stdout, "commit %s\nbase %s\nbundle %s\nsha256 %s\n", result.Provenance.Commit, result.Provenance.Base, path, digest)
+	return err
+}

@@ -218,6 +218,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 			workerproto.MessageArtifactAcknowledge:  true,
 			workerproto.MessageRepositoryProbe:      true,
 			workerproto.MessageRepositoryRefResolve: true,
+			workerproto.MessageCommitBundle:         true,
 		},
 		SupportedVersions: []int{workerproto.Version},
 		MaxClockSkew:      options.Settings.Freshness.WorkerMaxAge.D(),

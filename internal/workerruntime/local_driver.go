@@ -170,6 +170,9 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 				return "", errors.New("contained workspace is not a real directory")
 			}
+			if err := d.ensureDependencyIntegrity(ctx, pkg, workspace); err != nil {
+				return "", err
+			}
 			if err := manager.PrepareExecution(ctx, pkg, workspace); err != nil {
 				return "", err
 			}
@@ -206,11 +209,22 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		inputs = append(inputs, d.domainArtifact(pkg, object, domain.ArtifactInput, name, "submission"))
 	}
 	for _, dependency := range pkg.Dependencies {
-		dependencyTask := domain.Task{ID: dependency.TaskID, WorkflowID: pkg.Identity.WorkflowID, Name: dependency.TaskID}
+		producer := dependency.TaskID
+		if len(dependency.Artifacts) > 0 {
+			relative, err := dependencyObjectPath(dependency, dependency.Artifacts[0])
+			if err != nil {
+				return "", dependencyFailure(dependency, dependency.Artifacts[0], err)
+			}
+			producer = strings.Split(filepath.ToSlash(relative), "/")[0]
+		}
+		dependencyTask := domain.Task{ID: dependency.TaskID, WorkflowID: pkg.Identity.WorkflowID, Name: producer}
 		names := make([]string, 0, len(dependency.Artifacts))
 		for _, object := range dependency.Artifacts {
 			parts := strings.Split(filepath.ToSlash(object.Path), "/")
-			if len(parts) < 3 || parts[0] != "dependencies" {
+			if _, err := dependencyObjectPath(dependency, object); err != nil {
+				return "", dependencyFailure(dependency, object, err)
+			}
+			if len(parts) < 3 || parts[0] != "dependencies" || parts[1] != producer {
 				return "", fmt.Errorf("prepare workspace: invalid dependency object path %q", object.Path)
 			}
 			name := strings.Join(parts[2:], "/")
@@ -220,11 +234,11 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 			artifact.AttemptID = ""
 			dependencyArtifacts = append(dependencyArtifacts, artifact)
 		}
-		task.Needs = append(task.Needs, dependency.TaskID)
+		task.Needs = append(task.Needs, producer)
 		if task.DependencyInputs == nil {
 			task.DependencyInputs = make(map[string][]string)
 		}
-		task.DependencyInputs[dependency.TaskID] = names
+		task.DependencyInputs[producer] = names
 		dependencyTasks = append(dependencyTasks, dependencyTask)
 	}
 	if d.Config.DryRun {
@@ -264,6 +278,9 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	if err := d.writeProjectContext(pkg, prepared.WorkspaceDir); err != nil {
 		return "", err
 	}
+	if err := d.ensureDependencyIntegrity(ctx, pkg, prepared.WorkspaceDir); err != nil {
+		return "", err
+	}
 	if manager := d.containedManager(pkg); manager != nil {
 		if err := manager.PrepareExecution(ctx, pkg, prepared.WorkspaceDir); err != nil {
 			return "", err
@@ -283,6 +300,9 @@ func (d *LocalDriver) InspectWorkspace(ctx context.Context, pkg workerproto.Exec
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return "", false, errors.New("prepared workspace is not a real directory")
+	}
+	if err := d.ensureDependencyIntegrity(ctx, pkg, workspace); err != nil {
+		return workspace, false, err
 	}
 	if err := verifyProjectContextFile(pkg, workspace); err != nil {
 		return workspace, false, fmt.Errorf("inspect prepared workspace: %w", err)
@@ -753,6 +773,9 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 		if _, _, _, err := d.executionRecords(pkg); err != nil {
 			return fmt.Errorf("execution package environment is no longer authorized: %w", err)
 		}
+	}
+	if err := d.ensureDependencyIntegrity(ctx, pkg, workspace); err != nil {
+		return err
 	}
 
 	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {

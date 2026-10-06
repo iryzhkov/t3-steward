@@ -27,7 +27,7 @@ func OperationFor(kind workerproto.MessageType) string {
 	switch kind {
 	case workerproto.MessageArtifactDownload:
 		return OperationArtifactReceive
-	case workerproto.MessageArtifactUpload:
+	case workerproto.MessageArtifactUpload, workerproto.MessageCommitBundle:
 		return OperationArtifactSend
 	default:
 		return OperationControl
