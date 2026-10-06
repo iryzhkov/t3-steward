@@ -17,13 +17,13 @@ type modelsWindow struct {
 	Stale       bool             `json:"stale"`
 }
 
-// modelsBucketStale is shared by aggregate and window freshness.
+// modelsBucketStale is shared by aggregate and window freshness, and is the
+// freshness predicate quota waits use.
 func modelsBucketStale(s domain.BucketState, now time.Time, staleAfter time.Duration) bool {
 	if staleAfter <= 0 {
 		staleAfter = defaultModelsStaleAfter
 	}
-	return s.ObservedAt.IsZero() || now.Sub(s.ObservedAt) > staleAfter ||
-		s.ResetsAt != nil && s.ObservedAt.Before(*s.ResetsAt) && !now.Before(*s.ResetsAt)
+	return !domain.QuotaReadingFresh(s, now, staleAfter)
 }
 
 func modelsPoolWindows(pool domain.QuotaPool, states []domain.BucketState, now time.Time, staleAfter time.Duration) []modelsWindow {
@@ -45,6 +45,20 @@ func modelsPoolWindows(pool domain.QuotaPool, states []domain.BucketState, now t
 		}
 		if !found {
 			result = append(result, modelsWindow{Key: key, Unknown: true})
+		}
+	}
+	// A window the provider declares and nobody has read is listed too: it is
+	// what keeps the pool's window set incomplete.
+	for _, window := range domain.ReadQuotaWindows(pool, states, now, staleAfter).Windows {
+		if !window.Missing {
+			continue
+		}
+		listed := false
+		for _, w := range result {
+			listed = listed || w.Key.Window == window.Window
+		}
+		if !listed {
+			result = append(result, modelsWindow{Key: window.Key, Unknown: true})
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Key.String() < result[j].Key.String() })

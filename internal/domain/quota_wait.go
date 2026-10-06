@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -67,49 +68,115 @@ func (c QuotaWaitCondition) String() string {
 	}
 }
 
-// QuotaPoolObservation is a pool read as the worst of its buckets: the
-// highest phase, the highest usage and the earliest reset.
+// QuotaPoolObservation is a pool read as its most used bucket: Percent,
+// ResetsAt and ObservedAt all come from that one bucket, named by Window, so
+// the triple is a reading some observation actually made (F4: the highest
+// percent of one window, the earliest reset of another and the newest time of
+// a third described nothing). Phase is the highest phase of any bucket, and
+// Windows lists every bucket's own reading.
 type QuotaPoolObservation struct {
-	Pool       string     `json:"pool"`
-	Phase      Phase      `json:"phase"`
-	Percent    float64    `json:"percent"`
-	ResetsAt   *time.Time `json:"resetsAt,omitempty"`
-	Buckets    int        `json:"buckets"`
-	ObservedAt time.Time  `json:"observedAt"`
+	Pool       string               `json:"pool"`
+	Phase      Phase                `json:"phase"`
+	Percent    float64              `json:"percent"`
+	ResetsAt   *time.Time           `json:"resetsAt,omitempty"`
+	Buckets    int                  `json:"buckets"`
+	ObservedAt time.Time            `json:"observedAt"`
+	Window     string               `json:"window,omitempty"`
+	Windows    []QuotaWindowReading `json:"windows,omitempty"`
 }
 
 // ObserveQuotaPool folds the bucket states that belong to a pool into one
-// observation; PoolBucketMatcher says which belong.
+// observation; PoolBucketMatcher says which belong. The most used bucket is
+// the one with the highest percent, then the highest phase, then the earliest
+// reset, then the lowest key, so the choice does not depend on input order.
 func ObserveQuotaPool(pool QuotaPool, states []BucketState) QuotaPoolObservation {
 	observation := QuotaPoolObservation{Pool: pool.ID, Phase: PhaseNormal}
 	belongs := PoolBucketMatcher(pool)
-	for _, state := range states {
-		if !belongs(state) {
+	var worst *BucketState
+	for index := range states {
+		state := &states[index]
+		if !belongs(*state) {
 			continue
 		}
 		observation.Buckets++
+		observation.Windows = append(observation.Windows, quotaWindowReading(*state))
 		if state.Phase.Rank() > observation.Phase.Rank() {
 			observation.Phase = state.Phase
 		}
-		if state.UsedPercent > observation.Percent {
-			observation.Percent = state.UsedPercent
-		}
-		if state.ResetsAt != nil && (observation.ResetsAt == nil || state.ResetsAt.Before(*observation.ResetsAt)) {
-			at := *state.ResetsAt
-			observation.ResetsAt = &at
-		}
-		if state.ObservedAt.After(observation.ObservedAt) {
-			observation.ObservedAt = state.ObservedAt
+		if worst == nil || moreUsedBucket(*state, *worst) {
+			worst = state
 		}
 	}
+	if worst != nil {
+		reading := quotaWindowReading(*worst)
+		observation.Percent, observation.ResetsAt, observation.ObservedAt = reading.UsedPercent, reading.ResetsAt, reading.ObservedAt
+		observation.Window = worst.Key.String()
+	}
+	sort.Slice(observation.Windows, func(i, j int) bool {
+		return observation.Windows[i].Key.String() < observation.Windows[j].Key.String()
+	})
 	return observation
+}
+
+// moreUsedBucket orders buckets for ObserveQuotaPool.
+func moreUsedBucket(candidate, current BucketState) bool {
+	if candidate.UsedPercent != current.UsedPercent {
+		return candidate.UsedPercent > current.UsedPercent
+	}
+	if candidate.Phase.Rank() != current.Phase.Rank() {
+		return candidate.Phase.Rank() > current.Phase.Rank()
+	}
+	if (candidate.ResetsAt == nil) != (current.ResetsAt == nil) {
+		return candidate.ResetsAt != nil
+	}
+	if candidate.ResetsAt != nil && !candidate.ResetsAt.Equal(*current.ResetsAt) {
+		return candidate.ResetsAt.Before(*current.ResetsAt)
+	}
+	return candidate.Key.String() < current.Key.String()
+}
+
+// earliestReset is the earliest reset among the observation's buckets: a
+// --reset wait recorded the earliest one at registration, and its window has
+// reset once every bucket reports a later one.
+func (o QuotaPoolObservation) earliestReset() *time.Time {
+	var earliest *time.Time
+	for _, window := range o.Windows {
+		if window.ResetsAt != nil && (earliest == nil || window.ResetsAt.Before(*earliest)) {
+			earliest = window.ResetsAt
+		}
+	}
+	return earliest
+}
+
+// EarliestQuotaReset is the earliest reset any bucket of the pool reports, the
+// window a --reset wait waits out; nil when none reports one.
+func EarliestQuotaReset(pool QuotaPool, states []BucketState) *time.Time {
+	belongs := PoolBucketMatcher(pool)
+	var earliest *time.Time
+	for _, state := range states {
+		if !belongs(state) || state.ResetsAt == nil {
+			continue
+		}
+		if earliest == nil || state.ResetsAt.Before(*earliest) {
+			at := *state.ResetsAt
+			earliest = &at
+		}
+	}
+	return earliest
 }
 
 // EvaluateQuotaWait is the quota wait evaluator: it finds the condition's
 // pool, reads it from the observations that govern it and evaluates the
 // condition. A pool whose governing buckets are unknown stays pending with
 // that reason instead of being read from every window.
-func EvaluateQuotaWait(condition QuotaWaitCondition, pools []QuotaPool, states []BucketState, now time.Time) (QuotaPoolObservation, TaskWaitOutcome, string, error) {
+//
+// A --below or --phase wait is met only by a complete, fresh window set (F3:
+// a stale window that was present, or a declared weekly window that was
+// missing, met it). maxAge is the oldest reading that counts as fresh; zero
+// means DefaultQuotaStaleAfter. A --reset wait waits for the clock to pass
+// the reset recorded at registration, a fact no reading can make stale, so it
+// is evaluated as before.
+func EvaluateQuotaWait(condition QuotaWaitCondition, pools []QuotaPool, states []BucketState, now time.Time, maxAge time.Duration) (QuotaPoolObservation, TaskWaitOutcome, string, error) {
 	pool, err := FindQuotaPool(pools, condition.Pool)
 	if err != nil {
 		return QuotaPoolObservation{}, "", "", err
@@ -117,6 +184,12 @@ func EvaluateQuotaWait(condition QuotaWaitCondition, pools []QuotaPool, states [
 	observation := ObserveQuotaPool(pool, states)
 	if pool.BucketSelection == BucketSelectionUnknown {
 		return observation, "", fmt.Sprintf("pending: the buckets that govern pool %s are unknown (the coordinator could not read its quota observations)", condition.Pool), nil
+	}
+	if observation.Buckets > 0 && !condition.Reset {
+		set := ReadQuotaWindows(pool, states, now, maxAge)
+		if problem, found := set.Problem(); found && problem.Code != QuotaWindowExhausted {
+			return observation, "", fmt.Sprintf("pending: pool %s has %s; a quota wait is met only when every window of the pool has a fresh reading", condition.Pool, problem), nil
+		}
 	}
 	outcome, reason := condition.Evaluate(observation, now)
 	return observation, outcome, reason, nil
@@ -144,7 +217,7 @@ func (c QuotaWaitCondition) Evaluate(observation QuotaPoolObservation, now time.
 		if c.ResetAt == nil {
 			return "", "pending: no reset time was recorded at registration"
 		}
-		if !now.Before(*c.ResetAt) || (observation.ResetsAt != nil && observation.ResetsAt.After(*c.ResetAt)) {
+		if earliest := observation.earliestReset(); !now.Before(*c.ResetAt) || (earliest != nil && earliest.After(*c.ResetAt)) {
 			return TaskWaitMet, fmt.Sprintf("pool %s reset at %s", c.Pool, c.ResetAt.UTC().Format(time.RFC3339))
 		}
 		return "", fmt.Sprintf("pending: pool %s resets at %s", c.Pool, c.ResetAt.UTC().Format(time.RFC3339))
@@ -160,6 +233,9 @@ func QuotaTrailerFields(observation QuotaPoolObservation) map[string]string {
 	}
 	if observation.ResetsAt != nil {
 		fields["resetsAt"] = observation.ResetsAt.UTC().Format(time.RFC3339)
+	}
+	if observation.Window != "" {
+		fields["window"] = observation.Window
 	}
 	return fields
 }

@@ -214,7 +214,7 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		// A coordinator kind is checked against the records it will be settled
 		// from, so a condition that can never settle, or already holds, is
 		// refused before anything is parked, as a local check would be.
-		if err := validateStructuredRegistrationTx(ctx, tx, &request, now); err != nil {
+		if err := validateStructuredRegistrationTx(ctx, tx, &request, now, s.quotaStaleAfter); err != nil {
 			return wait, err
 		}
 	}
@@ -302,8 +302,8 @@ func sideOf(kind domain.WaitKind) string {
 // validateStructuredRegistrationTx checks a coordinator-kind registration
 // against the records it will be settled from, canonicalises its target and
 // fills the condition text and name when the caller gave none.
-func validateStructuredRegistrationTx(ctx context.Context, tx *sql.Tx, request *domain.TaskWaitRegistration, now time.Time) error {
-	records, err := nodeStateRecordsTx(ctx, tx)
+func validateStructuredRegistrationTx(ctx context.Context, tx *sql.Tx, request *domain.TaskWaitRegistration, now time.Time, quotaStaleAfter time.Duration) error {
+	records, err := nodeStateRecordsTx(ctx, tx, quotaStaleAfter)
 	if err != nil {
 		return err
 	}

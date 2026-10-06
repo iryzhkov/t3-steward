@@ -44,9 +44,12 @@ func (s *modelsFixtureService) Query(_ context.Context, query backlogadmin.Query
 	return response, nil
 }
 
+// modelsFixture's t3-primary pool is complete and fresh at modelsNow: both
+// Claude windows were read a minute ago, so the route is available.
 func modelsFixture() *modelsFixtureService {
-	observed := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	observed := modelsNow().UTC().Add(-time.Minute)
 	primaryBucket := domain.BucketKey{ProviderInstanceID: "t3-primary", LimitID: "claude", Window: "seven_day"}
+	fiveHourBucket := domain.BucketKey{ProviderInstanceID: "t3-primary", LimitID: "claude", Window: "five_hour"}
 	worker := func(id string, providers []domain.WorkerProviderInventory, observations []domain.WorkerQuotaObservation) backlogadmin.Worker {
 		return backlogadmin.Worker{
 			State: "observed", Enrolled: true, Health: string(domain.WorkerHealthReady),
@@ -68,6 +71,8 @@ func modelsFixture() *modelsFixtureService {
 				{InstanceID: "opencode", QuotaPoolID: "", Available: true, Models: []string{"grok-code"}},
 			}, []domain.WorkerQuotaObservation{{
 				Key: primaryBucket, Phase: domain.PhaseWarned, UsedPercent: 82, Healthy: true, ObservedAt: observed,
+			}, {
+				Key: fiveHourBucket, Phase: domain.PhaseNormal, UsedPercent: 10, Healthy: true, ObservedAt: observed,
 			}}),
 			worker("normandy", []domain.WorkerProviderInventory{
 				{InstanceID: "t3-primary", QuotaPoolID: "pool-claude", Available: true, Models: []string{"opus"}},
@@ -76,7 +81,7 @@ func modelsFixture() *modelsFixtureService {
 		quotas: []backlogadmin.Quota{
 			{Pool: domain.QuotaPool{
 				ID: "pool-claude", Provider: "claude", ProviderInstanceIDs: []string{"t3-primary"},
-				Buckets: []domain.BucketKey{primaryBucket}, Admission: domain.AdmissionOpen, MaxConcurrent: 2,
+				Buckets: []domain.BucketKey{fiveHourBucket, primaryBucket}, Admission: domain.AdmissionOpen, MaxConcurrent: 2,
 			}},
 			{Pool: domain.QuotaPool{
 				ID: "pool-codex", Provider: "codex", ProviderInstanceIDs: []string{"codex"},
@@ -102,6 +107,9 @@ func TestModelsShowsQuotaReadingAgeAndStaleness(t *testing.T) {
 	reset := observed.Add(30 * time.Minute)
 	fixture := modelsFixture()
 	fixture.workers[0].Snapshot.QuotaObservations[0].ResetsAt = &reset
+	for index := range fixture.workers[0].Snapshot.QuotaObservations {
+		fixture.workers[0].Snapshot.QuotaObservations[index].ObservedAt = observed
+	}
 	for _, tc := range []struct {
 		name      string
 		now       time.Time

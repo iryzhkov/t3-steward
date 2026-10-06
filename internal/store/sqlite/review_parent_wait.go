@@ -139,7 +139,7 @@ func (s *Store) WaitReviewParent(ctx context.Context, expected review.FrozenAuth
 	if !deadline.After(now) {
 		return zero, errors.New("review parent wait deadline expired")
 	}
-	records, err := nodeStateRecordsTx(ctx, tx)
+	records, err := nodeStateRecordsTx(ctx, tx, s.quotaStaleAfter)
 	if err != nil {
 		return zero, err
 	}
@@ -157,7 +157,7 @@ func (s *Store) WaitReviewParent(ctx context.Context, expected review.FrozenAuth
 	if err := request.Validate(); err != nil {
 		return zero, err
 	}
-	if err := validateStructuredRegistrationTx(ctx, tx, &request, now); err != nil {
+	if err := validateStructuredRegistrationTx(ctx, tx, &request, now, s.quotaStaleAfter); err != nil {
 		return zero, err
 	}
 	w, err := parkTaskWaitTx(ctx, tx, request, attempt, now)
