@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
@@ -174,7 +175,14 @@ func secretSnapshotKey(pkg workerproto.ExecutionPackage) string {
 
 // RecordSecretValues captures hashes at credential resolution, before setup.
 // SnapshotSecrets captures model/login material before starting a provider turn.
+//
+// A snapshot file is named by the hash of its content, so recording a set
+// already on disk writes nothing. Resolvers return values in no fixed order
+// (login JSON is a map), and an encoded variant of one value may be another
+// value; the values are sorted first so that the same set always yields the
+// same signatures with the same metadata, in the same order.
 func (s *CustodyStore) RecordSecretValues(_ context.Context, pkg workerproto.ExecutionPackage, values []string) error {
+	values = slices.Compact(slices.Sorted(slices.Values(values)))
 	scanner := newResultScanner(SecretScanConfig{}, values, nil)
 	if scanner.overlap > 1<<20 {
 		return &SecretScanError{Object: "execution", Detector: "canary-size", Offset: 0}
@@ -197,6 +205,7 @@ func (s *CustodyStore) RecordSecretValues(_ context.Context, pkg workerproto.Exe
 	if len(snapshot.Signatures) == 0 {
 		return nil
 	}
+	slices.SortFunc(snapshot.Signatures, func(a, b canarySignature) int { return strings.Compare(a.SHA256, b.SHA256) })
 	if len(snapshot.Signatures) > 4096 {
 		return &SecretScanError{Object: "execution", Detector: "canary-count", Offset: 0}
 	}

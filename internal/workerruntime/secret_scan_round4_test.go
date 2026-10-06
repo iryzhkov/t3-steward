@@ -163,3 +163,78 @@ func TestSecretScanObservedLoginTokenSurvivesLoginRemoval(t *testing.T) {
 		})
 	}
 }
+
+// executionHistoryFiles counts the credential history snapshots recorded for
+// the fixture's execution, excluding the baseline and other executions.
+func executionHistoryFiles(t *testing.T, f *collectionFixture) int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(f.custody.config.Root, "secret-scans"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), secretSnapshotKey(f.pkg)+"-") {
+			count++
+		}
+	}
+	return count
+}
+
+// An unchanged credential set is one history snapshot, however often it is
+// resolved and in whatever order the resolver returns it. The service
+// resolver walks login JSON maps in unspecified order, and every scan and
+// redaction records what it resolved; a snapshot per ordering would make
+// each later redaction read a growing pile of duplicates.
+func TestSecretScanStableLoginHistoryIsIdempotent(t *testing.T) {
+	f := newCollectionFixture(t, 8192, 16384, 100, 100)
+	names := []string{"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"}
+	login := map[string]string{}
+	for _, name := range names {
+		login["token_"+name] = "synthetic-stable-model-" + name
+	}
+	raw, err := json.Marshal(login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.custody.config.SecretScan.StaticCanaries = nil
+	f.custody.config.SecretScan.Canaries = serviceScanCanaries(WorkerServiceOptions{ModelLoginFiles: []string{path}}, ProtocolCredentials{WorkerSecret: []byte("synthetic-independent-protocol")}, t.TempDir())
+	for i := 0; i < 40; i++ {
+		got, err := f.custody.RedactText(context.Background(), f.pkg, "said synthetic-stable-model-seven")
+		if err != nil || got != "said [redacted]" {
+			t.Fatalf("redaction %d = %q, %v", i, got, err)
+		}
+	}
+	if got := executionHistoryFiles(t, f); got != 1 {
+		t.Fatalf("an unchanged login resolved 40 times left %d history snapshots, want 1", got)
+	}
+}
+
+// Recording is canonical in the values, not in their order, including when
+// one credential's encoded variant is another credential's plain value: the
+// signature metadata (fingerprint, base64) must not depend on which of the
+// two came first.
+func TestSecretScanHistoryRecordIgnoresValueOrder(t *testing.T) {
+	f := newCollectionFixture(t, 8192, 16384, 100, 100)
+	plain := "synthetic/order/credential/value"
+	escaped := "synthetic%2Forder%2Fcredential%2Fvalue"
+	other := "synthetic-order-other-credential"
+	orders := [][]string{
+		{plain, escaped, other},
+		{escaped, plain, other},
+		{other, escaped, plain},
+		{other, plain, escaped, plain},
+	}
+	for _, values := range orders {
+		if err := f.custody.RecordSecretValues(context.Background(), f.pkg, values); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := executionHistoryFiles(t, f); got != 1 {
+		t.Fatalf("one credential set recorded in %d orders left %d history snapshots, want 1", len(orders), got)
+	}
+}
