@@ -216,7 +216,7 @@ func (h *CatalogHost) HandleFrame(ctx context.Context, raw []byte) ([]byte, erro
 	switch envelope.Type {
 	case workerproto.MessageArtifactDownload:
 		err = h.service.ServeArtifactReceiveEnvelope(ctx, envelope, buffered, &output)
-	case workerproto.MessageArtifactUpload:
+	case workerproto.MessageArtifactUpload, workerproto.MessageCommitBundle:
 		err = h.service.ServeArtifactSendEnvelope(ctx, envelope, buffered, &output)
 	default:
 		if _, e := buffered.ReadByte(); !errors.Is(e, io.EOF) {

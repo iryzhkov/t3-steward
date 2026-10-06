@@ -157,6 +157,10 @@ func (o *coordinatorRepositoryObserver) probeTimeoutSeconds() int {
 // The probe therefore runs under the identity the real task would run under,
 // which is the whole point of asking the worker rather than answering here.
 func (o *coordinatorRepositoryObserver) dialWorker(ctx context.Context, workerID string) (repositoryProbeClient, func() error, error) {
+	return o.dialWorkerOperation(ctx, workerID, coordinatorWorkerControlOperation)
+}
+
+func (o *coordinatorRepositoryObserver) dialWorkerOperation(ctx context.Context, workerID, operation string) (repositoryProbeClient, func() error, error) {
 	if o.resolver == nil || o.epoch < 1 {
 		return nil, nil, errors.New("repository probe: coordinator authority and credential resolver are required")
 	}
@@ -187,7 +191,7 @@ func (o *coordinatorRepositoryObserver) dialWorker(ctx context.Context, workerID
 	} else {
 		ssh, err := workerproto.NewSSHTransport(workerproto.SSHConfig{
 			Address: worker.Address, RemoteCommand: coordinatorWorkerRemoteCommand,
-			RemoteArguments:   []string{coordinatorWorkerControlOperation},
+			RemoteArguments:   []string{operation},
 			RequestTimeout:    requestTimeout,
 			ConnectTimeout:    min(requestTimeout, 10*time.Second),
 			MaxMessageBytes:   o.settings.MessageLimits.MaxBytes,

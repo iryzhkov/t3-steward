@@ -63,17 +63,18 @@ type QuarantineReader interface {
 }
 
 type Service struct {
-	enrollWorker   WorkerEnrollmentHandler
-	graphInputRoot string
-	graphValidator func(domain.Workflow, domain.Task) error
-	reader         Reader
-	authorizer     Authorizer
-	now            func() time.Time
-	artifactOpen   ArtifactOpenFunc
-	runtime        RuntimeInfo
-	recovery       UnknownRecoveryWriter
-	quarantine     QuarantineReader
-	quarantineOps  QuarantineWriter
+	enrollWorker     WorkerEnrollmentHandler
+	graphInputRoot   string
+	graphValidator   func(domain.Workflow, domain.Task) error
+	reader           Reader
+	authorizer       Authorizer
+	now              func() time.Time
+	artifactOpen     ArtifactOpenFunc
+	commitBundleOpen CommitBundleOpenFunc
+	runtime          RuntimeInfo
+	recovery         UnknownRecoveryWriter
+	quarantine       QuarantineReader
+	quarantineOps    QuarantineWriter
 	// supervision is the durable half of the supervision family. It is set
 	// explicitly rather than asserted from the reader because the binding is
 	// phrased in this package's types and the store cannot name them.

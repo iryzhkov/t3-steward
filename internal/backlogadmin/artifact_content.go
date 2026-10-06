@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -15,8 +16,9 @@ var ErrArtifactContentUnavailable = errors.New("artifact content is unavailable"
 type ArtifactOpenFunc func(context.Context, string) (domain.Artifact, io.ReadCloser, error)
 
 type ArtifactContent struct {
-	Metadata ArtifactMetadata
-	Content  io.ReadCloser
+	Metadata   ArtifactMetadata
+	Content    io.ReadCloser
+	Provenance *backlog.CommitProvenance
 }
 
 func (s *Service) SetArtifactOpener(open ArtifactOpenFunc) {

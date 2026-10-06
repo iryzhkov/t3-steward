@@ -936,6 +936,8 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		projectWorkers[name] = append([]string(nil), project.Workers...)
 	}
 	service.SetWorkerAuthorization(coordinatorWorkerAuthorization(cfg))
+	service.SetCommitBundleOpener(coordinatorCommitBundleOpener(store,
+		newCoordinatorRepositoryObserver(cfg.BacklogV2, workerruntime.ProtocolResolver{}, epoch, nil)))
 	service.SetViability(backlogadmin.ViabilitySettings{
 		ReviewRoutes:      cfg.BacklogV2.ReviewRoutes,
 		Projects:          fleetProjects,

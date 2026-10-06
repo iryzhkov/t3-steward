@@ -273,6 +273,26 @@ cache that is never pruned, and it is kept for the campaign's lifetime. (Since
 than the cache; a declared commit is still how a successor receives a commit,
 and a push is how the owner does.)
 
+Export for a fix round or integration from any authenticated client:
+
+  t3-steward campaign commit export <run>/<task>/<name> --bundle repair.bundle
+  t3-steward campaign commit export <run>/<task>/<name> --bundle repair.bundle --branch fix/h3
+
+The coordinator resolves the declared provenance and reads the retained bundle,
+or asks the producing worker when no retained bundle is available. The command
+prints commit, base and sha256, and writes a bundle with exactly one branch ref
+(default: the declared commit name) and the campaign base as prerequisite.
+It never writes refs in worker stores. The destination must not exist. Unknown
+runs/tasks/names, missing provenance and unavailable older worker transports
+are refused. In a checkout that already holds the base:
+
+  git bundle verify repair.bundle
+  git fetch repair.bundle refs/heads/fix/h3:refs/heads/fix/h3
+
+Workers also verify dependency file digests and declared commit refs before
+starting an agent; a damaged dependency view is rematerialized once, then a
+structured dependency_integrity error names the producer and input.
+
 plan cannot print the ref. It contains the workflow run and task IDs, which are
 assigned at ingestion, so a static plan reports the declaration and the revision
 and leaves the ref to the run.

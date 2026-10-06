@@ -3,6 +3,7 @@ package workerruntime
 import (
 	"context"
 	"io"
+	"strings"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -45,8 +46,13 @@ func dependencySources(pkg workerproto.ExecutionPackage) map[string]backlog.Depe
 		if sources == nil {
 			sources = make(map[string]backlog.DependencySource)
 		}
-		sources[dependency.TaskID] = backlog.DependencySource{
-			WorkflowRunID: dependency.Provenance.RunID, TaskID: dependency.Provenance.TaskID,
+		for _, object := range dependency.Artifacts {
+			parts := strings.Split(object.Path, "/")
+			if len(parts) >= 3 && parts[0] == "dependencies" {
+				sources[parts[1]] = backlog.DependencySource{
+					WorkflowRunID: dependency.Provenance.RunID, TaskID: dependency.Provenance.TaskID,
+				}
+			}
 		}
 	}
 	return sources
