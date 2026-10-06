@@ -199,10 +199,25 @@ func base64CanaryVariants(value string) []string {
 	}
 	return variants
 }
+
+// safeName redacts every canary in name. Each search covers a bounded window
+// rather than the whole remainder, so text with many matches costs time in
+// proportion to its length. A match that starts before step ends inside the
+// window, because no canary's encoded form is wider than the overlap.
 func (s *resultScanner) safeName(name string) string {
+	step := max(4096, s.overlap)
 	var redacted strings.Builder
 	for {
-		start, end, _ := s.canaryMatch([]byte(name))
+		window, limited := name, len(name) > step+s.overlap
+		if limited {
+			window = name[:step+s.overlap]
+		}
+		start, end, _ := s.canaryMatch([]byte(window))
+		if limited && (start < 0 || start >= step) {
+			redacted.WriteString(name[:step])
+			name = name[step:]
+			continue
+		}
 		if start < 0 {
 			redacted.WriteString(name)
 			break

@@ -252,10 +252,13 @@ func (r *Runtime) AcceptOffers(ctx context.Context, offers workerproto.Assignmen
 				case offer.Assignment.Epoch > existing.Assignment.Epoch:
 					if err := r.containSuperseded(ctx, existing); err != nil {
 						// The journal lock is held, so the existing record's
-						// package redacts the error without reading the journal.
+						// package redacts the error without reading the journal,
+						// within a bound on credential resolution.
+						redactCtx, cancel := context.WithTimeout(ctx, failureRedactionTimeout)
 						r.log.Warn("superseded assignment could not be contained; offer withheld",
 							"assignment", id, "epoch", existing.Assignment.Epoch,
-							"error", r.checkedText(ctx, id, existing.Package.Package, err.Error()))
+							"error", r.checkedText(redactCtx, id, existing.Package.Package, err.Error()))
+						cancel()
 						continue
 					}
 				case offer.Assignment.Epoch < existing.Assignment.Epoch:
@@ -584,7 +587,12 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 		record := state.Attempts[id]
 		if taskTimeoutExpired(record, now) {
 			if err := r.expireTask(ctx, id, record); err != nil {
-				return err
+				if isJournalError(err) {
+					return err
+				}
+				// A driver error, such as an unproven preparation stop, is
+				// retried next pass; its text is redacted before it is logged.
+				r.log.Warn("task timeout reconciliation deferred", "assignment", id, "phase", record.Phase, "error", r.loggedError(ctx, id, err))
 			}
 			continue
 		}
