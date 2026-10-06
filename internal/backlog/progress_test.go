@@ -69,6 +69,23 @@ func TestProgressReplayAndAmendedGraph(t *testing.T) {
 	}
 }
 
+func TestProgressTextColumns(t *testing.T) {
+	line := progressLine(strings.Repeat("界", 120))
+	// Non-ASCII names must be escaped or measured for terminal display width.
+	// Every retained wide glyph occupies two columns.
+	columns := 0
+	for _, r := range line {
+		if r == '界' {
+			columns += 2
+		} else {
+			columns++
+		}
+	}
+	if columns > 120 {
+		t.Fatalf("text occupies %d terminal columns: %s", columns, line)
+	}
+}
+
 func TestProgressGolden(t *testing.T) {
 	records, now := progressFixture()
 	doc, err := BuildProgress(records, records.ReviewRounds, true, nil, ProgressFilter{}, now)
@@ -90,6 +107,9 @@ func TestProgressGolden(t *testing.T) {
 	var text strings.Builder
 	if err := RenderProgress(&text, doc); err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(text.String(), "review=accept") {
+		t.Fatalf("text hides recorded verdict: %s", text.String())
 	}
 	want, err = os.ReadFile("testdata/progress.txt")
 	if err != nil {

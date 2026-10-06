@@ -63,6 +63,10 @@ func (c campaignCLI) runProgress(ctx context.Context, args []string) error {
 	}
 	response, err := c.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryWorkflows, ProgressMirror: &filter})
 	if err != nil {
+		var transportError *backlogadmin.TransportError
+		if errors.As(err, &transportError) && transportError.Class == backlogadmin.ClassProtocol {
+			return fmt.Errorf("progress mirror protocol error; upgrade an older coordinator: %w", err)
+		}
 		return err
 	}
 	if response.ProgressMirror == nil {

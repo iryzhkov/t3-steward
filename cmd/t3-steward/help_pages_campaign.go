@@ -137,7 +137,7 @@ func campaignHelpPages() []helpPage {
 			Exits:    coordinatorExits(),
 			JSONKeys: []string{"schemaVersion", "generatedAt", "runs"},
 			JSONNote: "runs and each tasks/outputs field are arrays, including when empty; see docs/backlog-v2-operations.md.",
-			Notes:    "Without run IDs, lists open runs and runs terminal in the last 24 hours. Explicit IDs bypass that default window. No result bodies or state writes. Text rows are at most 120 Unicode characters. An older coordinator is refused; upgrade it.",
+			Notes:    "Without run IDs, lists open runs and runs terminal in the last 24 hours. Explicit IDs bypass that default window. No result bodies or state writes. Text rows are at most 120 terminal columns; non-ASCII values are escaped. An older coordinator is refused; upgrade it.",
 			Parsers:  []parserSite{{Func: "parseProgressArgs"}},
 		},
 		campaignAliasPage("campaign status", "alias of campaign show: one run with its tasks and supervision.",

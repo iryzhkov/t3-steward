@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -194,7 +195,8 @@ func BuildProgress(records sqlite.CoordinatorRecords, rounds []review.Round, rep
 }
 
 // progressLine prevents control characters and bounds every text row to 120
-// Unicode code points. JSON retains complete values and no result bodies.
+// terminal columns. Non-ASCII text is escaped so wide and combining glyphs
+// cannot exceed the bound. JSON retains complete values and no result bodies.
 func progressLine(s string) string {
 	s = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
@@ -202,12 +204,26 @@ func progressLine(s string) string {
 		}
 		return r
 	}, s)
-	r := []rune(s)
-	if len(r) > 120 {
-		s = string(r[:119]) + "…"
+	quoted := strconv.QuoteToASCII(s)
+	s = quoted[1 : len(quoted)-1]
+	if len(s) > 120 {
+		s = s[:119] + "…"
 	}
 	return s
 }
+
+// progressVerdictLabel retains verdicts from the shared ledger fact string,
+// without the reviewer metadata that would bury them in a compact text row.
+func progressVerdictLabel(facts string) string {
+	labels := strings.Split(facts, "; ")
+	for i, label := range labels {
+		if at := strings.LastIndex(label, ": "); at >= 0 {
+			labels[i] = label[at+2:]
+		}
+	}
+	return strings.Join(labels, "; ")
+}
+
 func RenderProgress(out io.Writer, doc ProgressDocument) error {
 	if len(doc.Runs) == 0 {
 		_, err := fmt.Fprintln(out, "No campaign runs match.")
@@ -232,7 +248,7 @@ func RenderProgress(out io.Writer, doc ProgressDocument) error {
 			if effort == "" {
 				effort = "-"
 			}
-			line = fmt.Sprintf("  %s %s route=%s effort=%s attempts=%d outputs=%s review=%s", t.Name, t.State, route, effort, t.Attempts, strings.Join(t.Outputs, ","), t.ReviewVerdicts)
+			line = fmt.Sprintf("  %s %s route=%s effort=%s attempts=%d outputs=%s review=%s", t.Name, t.State, route, effort, t.Attempts, strings.Join(t.Outputs, ","), progressVerdictLabel(t.ReviewVerdicts))
 			if _, err := fmt.Fprintln(out, progressLine(line)); err != nil {
 				return err
 			}

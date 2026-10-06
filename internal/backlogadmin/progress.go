@@ -34,7 +34,18 @@ func (s *Service) progressMirror(ctx context.Context, records sqlite.Coordinator
 	})
 	if reported {
 		// Only fetch rounds for selected runs; reuse the builder's selection rules.
-		selected, err := backlog.BuildProgress(records, nil, false, waits, filter, now)
+		candidateFilter := filter
+		if !filter.Since.IsZero() {
+			// A review can be the only recent change. Apply Since after loading
+			// rounds; explicit candidate IDs also bypass the default terminal window.
+			candidateFilter.Since = time.Time{}
+			if len(candidateFilter.RunIDs) == 0 {
+				for _, run := range records.WorkflowRuns {
+					candidateFilter.RunIDs = append(candidateFilter.RunIDs, run.ID)
+				}
+			}
+		}
+		selected, err := backlog.BuildProgress(records, nil, false, waits, candidateFilter, now)
 		if err != nil {
 			return backlog.ProgressDocument{}, err
 		}

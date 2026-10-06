@@ -15,8 +15,10 @@ last 24 hours. Explicit IDs bypass that default window; a missing ID is an error
 terminal window. It includes changes to attempts and recorded review rounds.
 Runs sort by last change descending, then ID; tasks sort by name.
 
-Text prints one row per run and task, each bounded to 120 Unicode characters.
-Long rows end in an ellipsis; JSON preserves full values. Run rows include name,
+Text prints one row per run and task, each bounded to 120 terminal columns.
+Non-ASCII values are escaped in text; JSON preserves their original characters.
+Long rows end in an ellipsis; JSON preserves full values. Text verdicts omit
+reviewer metadata so the recorded decision remains visible. Run rows include name,
 state, terminal tasks/total, current nonterminal task/state, and last change.
 Task rows include latest attempt state, actual assigned route and effort,
 attempt count, latest attempt's retained output names, and recorded review verdicts.

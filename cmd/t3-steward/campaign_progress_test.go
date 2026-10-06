@@ -42,6 +42,17 @@ func TestCampaignProgress(t *testing.T) {
 	}
 }
 
+func TestCampaignProgressOldCoordinatorProtocolError(t *testing.T) {
+	expected := &backlogadmin.TransportError{Class: backlogadmin.ClassProtocol, Operation: "query", Err: errors.New("decode local admin frame: json: unknown field \"progressMirror\"")}
+	c := campaignCLI{stdout: io.Discard, query: func(context.Context, backlogadmin.Query) (backlogadmin.Response, error) {
+		return backlogadmin.Response{}, expected
+	}}
+	err := c.runProgress(context.Background(), nil)
+	if !errors.Is(err, expected) || !strings.Contains(err.Error(), "upgrade") {
+		t.Fatalf("old coordinator needs upgrade guidance while preserving transport error: %v", err)
+	}
+}
+
 func TestCampaignProgressErrors(t *testing.T) {
 	for _, args := range [][]string{{"--since", "yesterday"}, {"--since"}, {"--owner"}, {"--owner", ""}, {"--json", "--json"}, {"--owner", "a", "--owner", "b"}, {"--limit", "1"}, {"run/task"}, {""}, {"--since", "-1"}} {
 		calls := 0

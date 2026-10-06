@@ -7,6 +7,6 @@ c waiting-external waiting-external 0/1 current=work:waiting-external changed=20
 d failed failed 1/1 current=- changed=2026-10-06T12:00:00Z
   work failed route=codex/sol effort=medium attempts=1 outputs= review=none recorded
 e succeeded succeeded 1/1 current=- changed=2026-10-06T12:00:00Z
-  work succeeded route=codex/sol effort=medium attempts=1 outputs=handoff.md review=round reviewer r (reviewer, codex/s…
+  work succeeded route=codex/sol effort=medium attempts=1 outputs=handoff.md review=accept
 f cancelled cancelled 1/1 current=- changed=2026-10-06T12:00:00Z
   work cancelled route=codex/sol effort=medium attempts=1 outputs= review=none recorded
